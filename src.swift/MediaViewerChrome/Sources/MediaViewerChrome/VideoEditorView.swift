@@ -67,6 +67,8 @@ final class VideoEditorStore: ObservableObject {
   @Published private(set) var volume: Float = 1
   @Published private(set) var fadeIn: Float = 0
   @Published private(set) var fadeOut: Float = 0
+  /// The edit's speed: 0.5, 1 or 2.
+  @Published private(set) var speed: Float = 1
   @Published private(set) var thumbs: [EditorThumb] = []
   @Published private(set) var peaks: [Float] = []
 
@@ -148,6 +150,7 @@ final class VideoEditorStore: ObservableObject {
     if volume != v.look_volume { volume = v.look_volume }
     if fadeIn != Float(v.look_fade_in_ms) / 1000 { fadeIn = Float(v.look_fade_in_ms) / 1000 }
     if fadeOut != Float(v.look_fade_out_ms) / 1000 { fadeOut = Float(v.look_fade_out_ms) / 1000 }
+    if speed != v.look_speed { speed = v.look_speed }
     var buf = [CChar](repeating: 0, count: 1024)
     _ = mv_chrome_editor_name(&buf, Int32(buf.count))
     let newName = String(cString: buf)
@@ -223,6 +226,9 @@ final class VideoEditorStore: ObservableObject {
   func saveFrame() { mv_chrome_editor_edit(27) }
   func autoLight() { mv_chrome_editor_edit(28) }
   func toggleMute() { mv_chrome_editor_edit(30) }
+  /// 0.5, 1 or 2.
+  func setSpeed(_ s: Float) { mv_chrome_editor_edit(s < 0.75 ? 31 : s < 1.5 ? 32 : 33) }
+  static func speedName(_ s: Float) -> String { s < 0.75 ? "0.5×" : s < 1.5 ? "1×" : "2×" }
   /// param 0 volume (0..2), 1 fade in, 2 fade out (seconds); phase as setLight.
   func setSound(_ param: Int, _ value: Float, phase: Int32) {
     switch param {
@@ -411,6 +417,25 @@ struct VideoEditorView: View {
       .accessibilityLabel("Mirror and crop")
       EditorLightButton(store: store)
       EditorSoundButton(store: store)
+      Menu {
+        ForEach([Float(0.5), 1, 2], id: \.self) { s in
+          Button {
+            store.setSpeed(s)
+          } label: {
+            if store.speed == s {
+              Label(VideoEditorStore.speedName(s), systemImage: "checkmark")
+            } else {
+              Text(VideoEditorStore.speedName(s))
+            }
+          }
+        }
+      } label: {
+        Text(VideoEditorStore.speedName(store.speed))
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .help("Speed of the whole clip: playback and Export exact")
+      .accessibilityLabel("Speed")
       Button { store.saveFrame() } label: { Image(systemName: "camera") }
         .help("Save this frame as a photo (⇧⌘S)").accessibilityLabel("Save frame")
       Spacer(minLength: MVTheme.space(8))

@@ -4534,6 +4534,7 @@ void push_editor_view(app_state* app, bool edit) noexcept {
     a.look_volume = lk.volume;
     a.look_fade_in_ms = lk.fade_in_ms;
     a.look_fade_out_ms = lk.fade_out_ms;
+    a.look_speed = lk.speed;
     app->chrome.set_editor_view(a);
   } catch (...) {
   }
@@ -4648,11 +4649,17 @@ void editor_set_rate(app_state* app, double rate) noexcept {
   ed.rate_changed = rate != 1.0;
 }
 
+// The editor's playback at the edit's speed (the look, slice 4): Space and
+// J K L ask for 1x, 2x, 4x of it. Leaving the editor uses editor_set_rate.
+void editor_play_rate(app_state* app, double rate) noexcept {
+  editor_set_rate(app, rate * static_cast<double>(app->editor.timeline.look().speed));
+}
+
 void editor_toggle_play(app_state* app) noexcept {
   auto& ed = app->editor;
   if (!ed.timeline.loaded() || !app->session) return;
   ed.shuttle.stop();
-  editor_set_rate(app, 1.0);  // Space plays at 1x
+  editor_play_rate(app, 1.0);  // Space plays at 1x
   const bool playing = editor_playing(app);
   // At the end, Play starts the program again.
   if (!playing && ed.timeline.next_play_start(clip_position(app), kEditorLeadNs) < 0) {
@@ -4866,6 +4873,16 @@ void editor_edit(app_state* app, int what) noexcept {
       changed = ed.timeline.set_look(l);
       break;
     }
+    case 31:
+    case 32:
+    case 33: {
+      // The speed: 0.5x, 1x, 2x. Playback follows at once.
+      mv::edit::clip::look l = ed.timeline.look();
+      l.speed = what == 31 ? 0.5f : what == 32 ? 1.0f : 2.0f;
+      changed = ed.timeline.set_look(l);
+      if (changed) editor_play_rate(app, ed.shuttle.rate());
+      break;
+    }
     default: break;
   }
   editor_publish_look(app);
@@ -4964,7 +4981,7 @@ void editor_shuttle_key(app_state* app, int key, bool down, bool repeat) noexcep
         return;
       }
       if (editor_playing(app)) (void)mv_video_pause(app->session);
-      editor_set_rate(app, 1.0);
+      editor_play_rate(app, 1.0);
       const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now().time_since_epoch()).count();
       const std::int64_t to = ed.shuttle.back(editor_timeline_position(app), now, repeat);
@@ -4980,12 +4997,12 @@ void editor_shuttle_key(app_state* app, int key, bool down, bool repeat) noexcep
       if (!down || repeat) return;
       ed.shuttle.stop();
       if (editor_playing(app)) (void)mv_video_pause(app->session);
-      editor_set_rate(app, 1.0);
+      editor_play_rate(app, 1.0);
       push_editor_view(app, false);
       return;
     case 'L': {
       if (!down || repeat) return;
-      const double rate = ed.shuttle.forward();
+      const double rate = ed.shuttle.forward() * static_cast<double>(ed.timeline.look().speed);
       (void)mv_video_set_rate(app->session, rate);
       ed.rate_changed = rate != 1.0;
       if (!editor_playing(app)) {
@@ -5042,7 +5059,10 @@ void editor_run_action(app_state* app, int action) {
     case chrome_editor_action::crop_4_3:
     case chrome_editor_action::crop_4_5:
     case chrome_editor_action::reset_light:
-    case chrome_editor_action::toggle_mute: editor_edit(app, action); break;
+    case chrome_editor_action::toggle_mute:
+    case chrome_editor_action::speed_half:
+    case chrome_editor_action::speed_normal:
+    case chrome_editor_action::speed_double: editor_edit(app, action); break;
     case chrome_editor_action::auto_light: editor_auto_light(app); break;
     case chrome_editor_action::save_frame: editor_save_frame(app); break;
     case chrome_editor_action::toggle_play: editor_toggle_play(app); break;

@@ -62,7 +62,8 @@ decision log records the line.
    op's gain and fades; keyframe Export with mute only.
    *Verify:* exported RMS of a 1 kHz tone at 50 % is −6 dB ± 0.2; a 1 s fade-out's last 10 ms are
    below −40 dB; the preview's envelope matches (unit test on the envelope, by ear in the app).
-4. **Speed.** 0.5× / 1× / 2× in the bar; preview at that rate; the render op retimes frames
+4. **Speed** — built 2026-11-03 (Mac verified by tests; the Windows native half and both apps'
+   clicks owed). 0.5× / 1× / 2× in the bar; preview at that rate; the render op retimes frames
    (2×: every frame at half its duration; 0.5×: double) and the sound through a tempo change at
    the same pitch.
    *Verify:* a 10 s edit at 2× exports 5.0 s ± 1 frame with picture and sound in sync at the end

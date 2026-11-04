@@ -261,6 +261,9 @@ enum class chrome_editor_action : std::int32_t {
   auto_light = 28,   // auto tone on the frame at the playhead (exposure, contrast)
   reset_light = 29,  // every light and colour slider back to 0
   toggle_mute = 30,  // the edit's sound off / on
+  speed_half = 31,   // the edit at 0.5x, 1x, 2x (slice 4)
+  speed_normal = 32,
+  speed_double = 33,
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -716,7 +719,7 @@ struct chrome_editor_view_args {
   float look_volume;            // 0..2
   std::int32_t look_fade_in_ms;
   std::int32_t look_fade_out_ms;
-  std::int32_t pad_sound;
+  float look_speed;             // 0.5, 1 or 2 (slice 4)
 };
 
 static_assert(sizeof(chrome_editor_view_args) == 160, "keep in sync with IslandHost.VideoEditor");

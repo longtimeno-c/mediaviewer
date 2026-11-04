@@ -85,7 +85,7 @@ prompt; *Keep editing* leaves both windows open.
 ## Timeline UI
 
 Transport, timecode (frames at the clip's rate), Split / Delete / Mark in / Mark out / Trim start /
-Trim end / Undo / Redo, Turn left / Turn right / Crop (mirror and crop menu) / Light / Sound / Save frame, an
+Trim end / Undo / Redo, Turn left / Turn right / Crop (mirror and crop menu) / Light / Sound / Save frame / speed (0.5× 1× 2×), an
 add-on's buttons (`editor_items`, contribution API 11: Enhance… when
 Enhance is installed, [29](29-enhance.md) "In the Video Editor"; each gets the clip and the kept
 pieces, or the whole clip when nothing is cut, and writes a new file), Export / Export exact, Done. A ruler, one thumbnail track and one waveform
@@ -93,7 +93,7 @@ per piece, a draggable playhead that snaps to joins and marks, piece selection, 
 edges (the preview shows the edge frame). On Mac the playhead is its own layer, so the thumbnail
 canvas does not redraw while playing, and the timeline stops polling when the window closes.
 
-Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (160 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104, its five light values at 120, mute, volume and fades at 140) on each
+Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (160 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104, its five light values at 120, mute, volume and fades at 140, speed at 156) on each
 edit and the playhead on the tick, and `chrome_editor_strip_args` once per clip. The island sends
 `editor_seek` (1023, program milliseconds), `editor_action` (1024, `chrome_editor_action`; 1–6, 14–16
 and the look's 17–27 are the Mac bridge's `mv_chrome_editor_edit` codes), `editor_trim_grab` (1028), `editor_trim_to`
@@ -151,6 +151,13 @@ pieces place the fades; in a cut it is the volume alone). Windows sends it with
 the clip playing (`present_lab_mac::set_sound_envelope`). It is separate from the listener's own
 volume and mute, and cleared when the editor closes. Export exact writes the same gains on the
 program's sound (`clip_look_run.cpp`); Export on keyframes writes mute only (no sound stream).
+
+**Speed** (slice 4): 0.5×, 1× or 2× for the whole edit, from a menu in the bar. Playback runs at
+it (Space and `J K L` ask for 1×, 2×, 4× of the edit's speed, on the viewer's rate ladder, pitch
+kept); the timeline and its timecode stay in the program's own time. Export exact puts the frames
+on the clip's own frame grid (each slot the latest frame due: 2× keeps every other frame, 0.5×
+shows each twice) and the sound through FFmpeg's `atempo` (pitch kept) after the volume and fades.
+Export on keyframes cannot carry it.
 
 - **Preview:** the host puts the turn, mirror and crop on the input snapshot
   (`video_look_*`); the render thread adds the turn to the clip's own and passes the mirror and

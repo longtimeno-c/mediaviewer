@@ -10,6 +10,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -19,6 +22,13 @@
 #include "edit/clip_sample.h"
 #include "edit/picture_io.h"
 
+extern "C" {
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
+#include <libavutil/channel_layout.h>
+}
+
 namespace mv::edit::clip::detail {
 
 namespace {
@@ -26,6 +36,92 @@ namespace {
 constexpr std::uint32_t kSoundRate = 48000;
 constexpr std::int64_t kNsPerUs = 1000;
 constexpr std::int64_t kSoundLeadNs = 500'000'000;  // sound written this far ahead of the frames
+
+struct graph_deleter {
+  void operator()(AVFilterGraph* g) const noexcept { avfilter_graph_free(&g); }
+};
+
+// The look's speed on the sound: FFmpeg's atempo (LGPL, docs/design/11), the
+// pitch kept, as the player does it (player/transport.cpp). 0.5 and 2 are
+// inside one instance's range. Interleaved float in and out.
+class tempo_stage {
+ public:
+  static result<std::unique_ptr<tempo_stage>> open(float speed, std::uint32_t channels) {
+    auto t = std::unique_ptr<tempo_stage>(new tempo_stage);
+    t->channels_ = channels;
+    t->graph_.reset(avfilter_graph_alloc());
+    if (!t->graph_) return err(status::out_of_memory);
+    AVChannelLayout layout{};
+    av_channel_layout_default(&layout, static_cast<int>(channels));
+    char desc[64] = {};
+    av_channel_layout_describe(&layout, desc, sizeof(desc));
+    av_channel_layout_uninit(&layout);
+    char args[160];
+    std::snprintf(args, sizeof(args), "sample_rate=%u:sample_fmt=flt:channel_layout=%s:time_base=1/%u", kSoundRate,
+                  desc, kSoundRate);
+    char chain[64];
+    std::snprintf(chain, sizeof(chain), "atempo=%.3f,aformat=sample_fmts=flt", static_cast<double>(speed));
+    AVFilterInOut* outputs = avfilter_inout_alloc();
+    AVFilterInOut* inputs = avfilter_inout_alloc();
+    const bool ok =
+        outputs && inputs &&
+        avfilter_graph_create_filter(&t->src_, avfilter_get_by_name("abuffer"), "in", args, nullptr,
+                                     t->graph_.get()) >= 0 &&
+        avfilter_graph_create_filter(&t->sink_, avfilter_get_by_name("abuffersink"), "out", nullptr, nullptr,
+                                     t->graph_.get()) >= 0;
+    if (ok) {
+      outputs->name = av_strdup("in");
+      outputs->filter_ctx = t->src_;
+      inputs->name = av_strdup("out");
+      inputs->filter_ctx = t->sink_;
+    }
+    const bool built = ok && avfilter_graph_parse_ptr(t->graph_.get(), chain, &inputs, &outputs, nullptr) >= 0 &&
+                       avfilter_graph_config(t->graph_.get(), nullptr) >= 0;
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+    if (!built) return err(status::internal);
+    t->frame_.reset(av_frame_alloc());
+    if (!t->frame_) return err(status::out_of_memory);
+    return t;
+  }
+
+  // Pushes `in` (or, empty with `flush`, the end) and appends what comes out.
+  expected push(std::span<const float> in, bool flush, std::vector<float>& out) {
+    if (!in.empty()) {
+      frame_ptr f(av_frame_alloc());
+      if (!f) return err(status::out_of_memory);
+      f->format = AV_SAMPLE_FMT_FLT;
+      f->sample_rate = static_cast<int>(kSoundRate);
+      av_channel_layout_default(&f->ch_layout, static_cast<int>(channels_));
+      f->nb_samples = static_cast<int>(in.size() / channels_);
+      f->pts = pts_;
+      pts_ += f->nb_samples;
+      if (av_frame_get_buffer(f.get(), 0) < 0) return err(status::out_of_memory);
+      std::memcpy(f->data[0], in.data(), static_cast<std::size_t>(f->nb_samples) * channels_ * sizeof(float));
+      if (av_buffersrc_add_frame(src_, f.get()) < 0) return err(status::internal);
+    }
+    if (flush && av_buffersrc_add_frame(src_, nullptr) < 0) return err(status::internal);
+    for (;;) {
+      const int rc = av_buffersink_get_frame(sink_, frame_.get());
+      if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) break;
+      if (rc < 0) return err(status::internal);
+      const auto* p = reinterpret_cast<const float*>(frame_->data[0]);
+      out.insert(out.end(), p, p + static_cast<std::size_t>(frame_->nb_samples) * channels_);
+      av_frame_unref(frame_.get());
+    }
+    return {};
+  }
+
+ private:
+  tempo_stage() = default;
+  std::unique_ptr<AVFilterGraph, graph_deleter> graph_;
+  AVFilterContext* src_ = nullptr;
+  AVFilterContext* sink_ = nullptr;
+  frame_ptr frame_;
+  std::uint32_t channels_ = 1;
+  std::int64_t pts_ = 0;
+};
+
 
 // The program's sound, pulled through the cut on demand.
 class cut_sound {
@@ -69,10 +165,24 @@ class cut_sound {
       frames = std::min<std::uint64_t>(frames, total_frames_ - written_);
       std::span<float> block(pending_.data(), static_cast<std::size_t>(frames) * channels_);
       shape(block, written_);
-      MV_TRY_VOID(w.write_sound(block));
       written_ += frames;
+      if (tempo_) {
+        // The speed: the same sound in less (or more) time, its pitch kept.
+        tempo_out_.clear();
+        MV_TRY_VOID(tempo_->push(block, done(), tempo_out_));
+        if (!tempo_out_.empty()) MV_TRY_VOID(w.write_sound(tempo_out_));
+      } else {
+        MV_TRY_VOID(w.write_sound(block));
+      }
       pending_.clear();
     }
+    return {};
+  }
+
+  // The look's speed (not 1): the sound goes through atempo.
+  expected set_speed(float speed) {
+    if (speed == 1.0f) return {};
+    MV_TRY(tempo_, tempo_stage::open(speed, channels_));
     return {};
   }
 
@@ -107,6 +217,8 @@ class cut_sound {
   std::int64_t base_ns_ = 0;
   bool ended_ = false;
   std::vector<float> pending_;
+  std::unique_ptr<tempo_stage> tempo_;
+  std::vector<float> tempo_out_;
 };
 
 }  // namespace
@@ -147,6 +259,7 @@ result<render_done> render_look(std::string_view src_path, const render_spec& sp
     auto r = audio_reader::open(src_path, kSoundRate, 0, ctl.cancel, 0);
     if (r) {
       sound = std::make_unique<cut_sound>(std::move(*r), keep, l, program_ns);
+      MV_TRY_VOID(sound->set_speed(l.speed));
       o.sound_rate = kSoundRate;
       o.sound_channels = sound->channels();
     } else if (r.error() != status::unsupported_format) {
@@ -159,6 +272,22 @@ result<render_done> render_look(std::string_view src_path, const render_spec& sp
   std::vector<std::uint8_t> rgb, out;
   if (turn_pixels) out.resize(static_cast<std::size_t>(g.out_w) * g.out_h * 3);
   const colour_table light(l.light);
+  // The speed: frames go out on the clip's own frame grid (constant rate):
+  // each slot shows the latest frame due by then, so 2x keeps every other
+  // frame and 0.5x shows each one twice.
+  const double speed = l.speed;
+  const double fps = f.fps > 1.0 && f.fps < 1000.0 ? f.fps : 30.0;
+  std::vector<std::uint8_t> held;
+  std::uint32_t held_stride = 0;
+  std::int64_t slot = 0;
+  const auto slot_us = [&](std::int64_t k) { return std::llround(static_cast<double>(k) * 1e6 / fps); };
+  const auto emit_until = [&](std::int64_t t_us) -> expected {
+    while (!held.empty() && slot_us(slot) < t_us) {
+      MV_TRY_VOID(w->write_frame(held.data(), held_stride, slot_us(slot)));
+      ++slot;
+    }
+    return {};
+  };
   std::int64_t pts_us = 0;
   for (;;) {
     if (cancelled(ctl.cancel)) return err(status::cancelled);
@@ -179,11 +308,18 @@ result<render_done> render_look(std::string_view src_path, const render_spec& sp
       bytes = out.size();
     }
     light.apply(std::span<std::uint8_t>(px, bytes), 3);
-    MV_TRY_VOID(w->write_frame(px, stride, *prog / kNsPerUs));
+    if (speed == 1.0) {
+      MV_TRY_VOID(w->write_frame(px, stride, *prog / kNsPerUs));
+    } else {
+      MV_TRY_VOID(emit_until(std::llround(static_cast<double>(*prog) / kNsPerUs / speed)));
+      held.assign(px, px + bytes);
+      held_stride = stride;
+    }
     if (ctl.progress && program_ns > 0) {
       ctl.progress(ctl.user, std::min(1.0, static_cast<double>(*prog) / static_cast<double>(program_ns)));
     }
   }
+  if (speed != 1.0) MV_TRY_VOID(emit_until(std::llround(static_cast<double>(program_ns) / kNsPerUs / speed)));
   if (sound) MV_TRY_VOID(sound->write_until(*w, program_ns));
   if (cancelled(ctl.cancel)) return err(status::cancelled);
   render_done done;
