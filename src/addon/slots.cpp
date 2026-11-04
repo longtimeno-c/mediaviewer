@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "addon/index_locations.h"
 #include "addon/settings_values.h"
 #include "core/json.h"
 
@@ -1791,6 +1792,13 @@ status slot_registry::notice_action(const std::string& addon_id, const std::stri
 
 slot_registry& default_slots() {
   static slot_registry r;
+  // An add-on's locations_of_index with no index attached asks the host,
+  // through this registry's listener, to start the pack.
+  static const bool wired = [] {
+    set_index_wanted_listener([] { r.index_wanted(); });
+    return true;
+  }();
+  (void)wired;
   return r;
 }
 

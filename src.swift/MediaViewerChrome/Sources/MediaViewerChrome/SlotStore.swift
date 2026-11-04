@@ -222,6 +222,8 @@ final class SlotStore: ObservableObject {
     }
     if bits & 16 != 0 { readBadges() }
     if bits & 32 != 0 { readStatus() }
+    // 0.38: an add-on (the Places world map) wants the Local search index.
+    if bits & 128 != 0 { mv_addon2_index_wanted() }
     if bits & 64 != 0 { readNotices() }
   }
 

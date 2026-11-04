@@ -76,6 +76,10 @@ enum slot_change : std::uint32_t {
   slot_changed_badges = 1u << 4,
   slot_changed_status = 1u << 5,
   slot_changed_notices = 1u << 6,  // #452: a notice, the keep-alive list or a permission ask
+  // An add-on asked for the Local search index and none is attached (the
+  // pack loads on demand): the host starts it, or calls
+  // decline_index_request (addon/index_locations.h). Places' world map.
+  slot_changed_index_wanted = 1u << 7,
 };
 
 struct surface_pixels {
@@ -286,6 +290,9 @@ class slot_registry {
   status keep_alive(const std::string& addon_id, bool on, const std::string& screen_id, std::string label);
   // #510 (host table busy_post): "" ends it. In notices_json's "busy".
   status post_busy(const std::string& addon_id, std::string what);
+
+  // Tells the listener slot_changed_index_wanted (addon/index_locations.h).
+  void index_wanted() { notify(slot_changed_index_wanted); }
 
   // ---- for tests and the PR 59 verify --------------------------------------
   // Every call made into any add-on's client since construction.

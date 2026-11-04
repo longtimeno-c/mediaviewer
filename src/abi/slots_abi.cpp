@@ -13,6 +13,7 @@
 #include <string>
 
 #include "abi/guard.h"
+#include "addon/index_locations.h"
 #include "addon/slots.h"
 
 namespace {
@@ -79,6 +80,13 @@ MV_API mv_status MV_CALL mv_slots_info_json(char* out, uint32_t cap, uint32_t* n
 MV_API mv_status MV_CALL mv_slots_screens_json(char* out, uint32_t cap, uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_slots_screens_json", [&] {
     return write_out(mv::addon::default_slots().screens_json(), out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_slots_index_unavailable(void) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_index_unavailable", [&] {
+    mv::addon::decline_index_request();
+    return mv::status::ok;
   }));
 }
 

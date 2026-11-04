@@ -824,6 +824,9 @@ void* mv_addon2_settings_view(const char* id);                             // [m
 // indexing pill's "index_anyway" (set_setting battery_override: ignore the
 // battery pause until the Mac is next on power; false from an older pack).
 bool mv_addon2_run_command(const char* name);                              // [main-thread]
+// 0.38: an add-on asked for the Local search index and none is attached (slots
+// change bit 128): start the pack without its panel, or tell the add-on there is none.
+void mv_addon2_index_wanted(void);                                        // [main-thread]
 // The command bar's indexing pill: mv.ai.1 status (mediaviewer_ai.h), POD.
 // False while the AI pack is not loaded. [main-thread][no-block]
 typedef struct mv_chrome_ai_status {

@@ -21,6 +21,7 @@
 // Portable (D9).
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <string>
 
@@ -48,6 +49,26 @@ void wait_index_locations_idle() noexcept;
 // Streams the published source. status::not_found when none is published,
 // status::cancelled when `visit` stopped it or the source was retracted.
 [[nodiscard]] expected each_index_location(const index_location_visit& visit);
+
+// ---- asking for the index (docs/plans/places-world-map.md) ----------------------
+// Both hosts load the AI pack on demand (docs/design/17 "Starting on demand"),
+// so an add-on can ask for the index before anything started it (the Places
+// world map opened before Local search this session). The core cannot start
+// the pack; the host can. So a call that finds no source asks the host through
+// this listener (any thread; it must not block) and waits a bounded time for
+// publish_index_locations, or for decline_index_request when the host has no
+// pack to start (none installed, or it would not load).
+using index_wanted_fn = std::function<void()>;
+void set_index_wanted_listener(index_wanted_fn fn);
+// The host will not publish a source for the requests made so far: waiters stop.
+void decline_index_request() noexcept;
+// each_index_location; when no source is published and a listener is set,
+// asks for one and waits up to `max` for it (polling `keep_waiting`, which
+// false stops with status::cancelled), then streams it. status::not_found when
+// declined, timed out, or no listener.
+[[nodiscard]] expected each_index_location_or_wait(const index_location_visit& visit,
+                                                   const std::function<bool()>& keep_waiting,
+                                                   std::chrono::milliseconds max);
 
 // The AI pack's mv.ai.1 table as a source: its each_location row. Empty when
 // the table is NULL or predates the row (an older pack).

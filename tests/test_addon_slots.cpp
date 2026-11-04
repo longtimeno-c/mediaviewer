@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "addon/host.h"
+#include "addon/index_locations.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "addon/open_manifest.h"
@@ -827,6 +828,68 @@ TEST_CASE("locations_of_index streams the index's coordinates, generation-tagged
   }
 }
 
+TEST_CASE("an add-on asking for the index starts the pack, or stops waiting when there is none (0.38)",
+          "[addon][slots]") {
+  slot_registry r;
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
+          status::ok);
+  const std::uint64_t g = r.search(MV_SLOT_SCOPE_LOCAL, "test: portugal", "");
+  r.drain();
+  mv::addon::host_services svc;
+  svc.slots = &r;
+  mv::addon::host_table t(svc);
+  t.set_addon_id("slotstest");
+  const mv_host_api* api = t.api();
+  mv::addon::retract_index_locations();
+
+  // The host starts its pack, which attaches a moment later: the walk waits
+  // for it and then reads it.
+  std::atomic<int> asked{0};
+  std::thread loader;
+  mv::addon::set_index_wanted_listener([&] {
+    ++asked;
+    loader = std::thread([] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(150));
+      mv::addon::publish_index_locations([](const mv::addon::index_location_visit& visit) -> mv::expected {
+        mv_addon_location_entry e{};
+        e.path_utf8 = "/index/late.jpg";
+        e.location.has = 1;
+        e.location.lat = 38.7;
+        e.location.lon = -9.1;
+        if (!visit(e)) return mv::err(status::cancelled);
+        return {};
+      });
+    });
+  });
+  index_walk w;
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_OK);
+  loader.join();
+  CHECK(asked == 1);
+  REQUIRE(w.paths.size() == 1);
+  CHECK(w.paths[0] == "/index/late.jpg");
+
+  // No pack to start: the host declines and the walk stops at once.
+  mv::addon::retract_index_locations();
+  mv::addon::set_index_wanted_listener([] { mv::addon::decline_index_request(); });
+  const auto t0 = std::chrono::steady_clock::now();
+  index_walk w2;
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w2) == MV_ERR_NOT_FOUND);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+  CHECK(w2.paths.empty());
+
+  // The request goes stale while it waits (the window closed): cancelled.
+  mv::addon::set_index_wanted_listener([] {});
+  std::thread later([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    (void)r.search(MV_SLOT_SCOPE_LOCAL, "test: spain", "");
+  });
+  index_walk w3;
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w3) == MV_ERR_CANCELLED);
+  later.join();
+  mv::addon::set_index_wanted_listener({});
+  r.drain();
+}
+
 TEST_CASE("the index's coordinates come from the AI pack while it is published, and stop when it goes",
           "[addon][slots]") {
   slot_registry r;
@@ -840,7 +903,9 @@ TEST_CASE("the index's coordinates come from the AI pack while it is published, 
   t.set_addon_id("slotstest");
   const mv_host_api* api = t.api();
 
-  // Nothing published (the AI pack not loaded): not found, nothing visited.
+  // Nothing published (the AI pack not loaded) and no host to ask: not
+  // found at once, nothing visited.
+  mv::addon::set_index_wanted_listener({});
   mv::addon::retract_index_locations();
   index_walk w;
   CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_ERR_NOT_FOUND);

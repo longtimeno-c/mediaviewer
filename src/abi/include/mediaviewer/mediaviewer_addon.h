@@ -1157,10 +1157,17 @@ MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
  * ------------------------------------------------------------------------- */
 
 /* What changed (bits): 1 contributions, 2 info, 4 screens, 8 search, 16
- * badges, 32 status, 64 notices and keep-alive (0.33). Called on any thread; must not block (the chrome hops to
- * its dispatcher). NULL clears it. */
+ * badges, 32 status, 64 notices and keep-alive (0.33), 128 an add-on asked
+ * for the Local search index and none is attached (0.38: the chrome starts
+ * the AI pack as its search button would, without opening the panel, or calls
+ * mv_slots_index_unavailable). Called on any thread; must not block (the
+ * chrome hops to its dispatcher). NULL clears it. */
 typedef void(MV_CALL* mv_slots_changed_fn)(void* user, uint32_t bits);
 MV_API mv_status MV_CALL mv_slots_set_listener(mv_slots_changed_fn fn, void* user);
+/* 0.38: the chrome will not attach an index for the requests so far (no AI
+ * pack installed, or it would not load): an add-on waiting in
+ * locations_of_index stops waiting (MV_ERR_NOT_FOUND). [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_slots_index_unavailable(void);
 
 MV_API mv_status MV_CALL mv_slots_contributions_json(char* out, uint32_t cap, uint32_t* needed);
 MV_API mv_status MV_CALL mv_slots_info_json(char* out, uint32_t cap, uint32_t* needed);

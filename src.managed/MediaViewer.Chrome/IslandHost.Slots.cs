@@ -191,6 +191,7 @@ public static partial class IslandHost
             ReadSlotScreens();
             ReadSlotOpenList();
         }
+        if (bits.HasFlag(SlotChange.IndexWanted)) StartAiForIndex();
         if (bits.HasFlag(SlotChange.Search)) ReadSlotSearch();
         if (bits.HasFlag(SlotChange.Badges)) ReadSlotBadges();
         if (bits.HasFlag(SlotChange.Status)) ReadSlotStatus();
@@ -349,6 +350,22 @@ public static partial class IslandHost
             }
         }
         catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+    }
+
+    // ABI 0.38: an add-on (the Places world map) asked for the Local search
+    // index and none is attached: the pack starts as the search icon would
+    // start it, without opening the panel; a later window starts its reader.
+    // With no pack to start, the add-on is told so and stops waiting.
+    private static void StartAiForIndex()
+    {
+        if (SearchChrome is not null || AiStarting()) return;
+        if (_addonsElsewhere)
+        {
+            if (_readerStarted || _folderSession is null || !AiSlot.Usable) { SlotNative.IndexUnavailable(); return; }
+            EnsureReaderStarted();
+            return;
+        }
+        if (!StartAiOnDemand(open: false)) SlotNative.IndexUnavailable();
     }
 
     // ABI 0.38 (docs/plans/places-world-map.md): an add-on's window asked the

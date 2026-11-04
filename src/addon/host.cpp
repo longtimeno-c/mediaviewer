@@ -877,7 +877,13 @@ mv_status MV_CALL t_locations_of_index(void* host, uint64_t g, mv_addon_location
       return false;
     };
     const auto& svc = t.services().index_locations;
-    const expected r = svc ? svc(each) : each_index_location(each);
+    // No index attached yet (the pack loads on demand): ask the host to start
+    // it and wait for it, a bounded time, while the request is current.
+    const expected r =
+        svc ? svc(each)
+            : each_index_location_or_wait(
+                  each, [&] { return !t.slots().is_stale(t.addon_id(), g); }, std::chrono::seconds(60));
+    if (!r && r.error() == status::cancelled && t.slots().is_stale(t.addon_id(), g)) return MV_ERR_CANCELLED;
     if (stale) return MV_ERR_CANCELLED;
     if (r || stopped) return MV_OK;
     // Cancelled by neither: the index went mid-walk (the pack is going).

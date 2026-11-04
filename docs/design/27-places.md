@@ -498,7 +498,11 @@ and from the command bar (**World Map**). Read-only, offline, nothing leaves the
 
 - **What it shows.** Every asset of the Local search index with coordinates
   (`locations_of_index`, index.db's own lat / lon: no file read); a clip is one dot at its first
-  fix (`ROUTE_POINT` rows are skipped). Without the AI pack, or when nothing indexed has a place,
+  fix (`ROUTE_POINT` rows are skipped). The pack loads on demand on both hosts, so a walk that
+  finds no index attached asks the host for it (slots change bit 128): the chrome starts the
+  pack as its search button would, without the panel, or says there is none
+  (`mv_slots_index_unavailable`); the walk waits up to 60 s for it on Places' worker, the window
+  saying "Finding your geotagged photos…". Without the AI pack, or when nothing indexed has a place,
   it shows the folder of the file on screen (`locations_in`) and says so. At most 400 000 items,
   kept compact (`world_points`: points apart from one buffer of paths). The file on screen when
   it opened is the pin.

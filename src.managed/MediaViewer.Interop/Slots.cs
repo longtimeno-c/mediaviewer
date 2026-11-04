@@ -32,6 +32,7 @@ public enum SlotChange : uint
     Badges = 16,
     Status = 32,
     Notices = 64,  // #452: notices, the keep-alive list, a permission ask
+    IndexWanted = 128,  // 0.38: an add-on asked for the Local search index and none is attached
 }
 
 /// <summary>
@@ -80,6 +81,11 @@ public static unsafe partial class SlotNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_badges_json(byte* output, uint cap, uint* needed);
+
+    // ABI 0.38: no index will be attached for the add-on waiting on one.
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_index_unavailable();
 
     // ABI 0.38 (docs/plans/places-world-map.md): the last list an add-on asked the viewer to show.
     [LibraryImport(Library)]
@@ -226,6 +232,13 @@ public static unsafe partial class SlotNative
     /// <summary>ABI 0.38: {"revision","addon","title","paths":[...],"select"} or {"revision":0};
     /// "" on an older core. The revision only grows; act on each once.</summary>
     public static string OpenListJson() => Json(mv_slots_open_list_json);
+    /// <summary>ABI 0.38: no AI pack will attach for the add-on waiting on the index; it stops waiting.
+    /// False on an older core (the entry is missing).</summary>
+    public static bool IndexUnavailable()
+    {
+        try { return mv_slots_index_unavailable() == MvStatus.Ok; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
     public static string StatusJson() => Json(mv_slots_status_json);
     /// <summary>#452: {"ask","keep":[...],"notices":[...]} (slot_registry::notices_json); "" on an older core.</summary>
     public static string NoticesJson() => Json(mv_slots_notices_json);

@@ -3139,12 +3139,26 @@ full-screen add-on windows) and the WinUI half (`IslandHost.Screens` fill grid, 
   `MV_GEO_BLOB` = the installed add-on's full blob, 100 000 items, 15 runs): a redraw is
   25–40 ms median, 50.5 ms max, on Places' worker; the dots alone 2–2.7 ms. Numbers in
   [27](design/27-places.md#the-world-map).
-- **Owed:** the window driven by hand on both hosts (open, resize, full screen, pinch / wheel /
-  drag / trackpad pan, a click opening the list, the viewer coming forward); the whole-library
-  path against a real AI index (the dev app was not given an AI pack); the index walk's time on
-  the owner's library; 0 presents and ~0 % CPU with the window open and still; `--browse-soak`
-  with the window open against base; both PR 1 present-loop gates. The change adds no work to the
-  UI or render thread beyond reading a small JSON on a slots change.
+- **Driven by hand on the Mac (2026-11-04)** in a copy of the app with its own bundle id, the
+  dev-signed Places and AI pack sideloaded, over an APFS clone of the owner's AI data (11,442
+  geotagged items; the real profile untouched): Open map opens the window; it frames the whole
+  world and says "11,442 photos and videos with a place"; −/+, drag, double-click and a
+  two-finger trackpad scroll move it; a resize and full screen (View → Enter Full Screen) redraw
+  it at the new size; a click on the Venice cluster showed "Venice, Veneto, Italy (192)" in the
+  viewer with the map behind it. Of the 192, 64 are Photos library items, which that profile
+  (no library added) skipped, so the list held 128. Not exercised: pinch and the mouse wheel
+  (synthetic events do not reach the hover-armed handler), and the green button from the
+  background (it began the transition and came back).
+- **Found and fixed there:** the AI pack loads on demand, so a map opened before Local search
+  this session fell back to the folder. A walk with no index attached now raises slots change bit
+  128; the chrome starts the pack as the search button does (no panel), or calls
+  `mv_slots_index_unavailable`; the walk waits up to 60 s on Places' worker
+  (`each_index_location_or_wait`). Checked again by hand: the whole library with no search
+  opened first.
+- **Owed:** the Windows half driven by hand (only compiled here); the index walk's time on the
+  owner's library; 0 presents and ~0 % CPU with the window open and still; `--browse-soak` with
+  the window open against base; both PR 1 present-loop gates. The change adds no work to the UI or
+  render thread beyond reading a small JSON on a slots change.
 - **Windows behaviour to confirm:** the map's window is not owned by the viewer (so the viewer can
   come in front when a click opens a list); it has its own taskbar button.
 
