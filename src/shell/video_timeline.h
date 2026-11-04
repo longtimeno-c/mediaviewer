@@ -101,6 +101,12 @@ class video_timeline {
   // would lose work.
   [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
 
+  // The pieces flattened (in0, out0, in1, out1, ...) for the player's sound
+  // look (mv_video_set_sound_look, core/sound_envelope.h).
+  [[nodiscard]] std::vector<time_ns> flat_pieces() const;
+  // Whether playback should hear the look (volume, mute or fades set).
+  [[nodiscard]] bool sound_shaped() const noexcept { return !look_.sound_identity(); }
+
   // The export: clip::op::keep_ranges over the pieces, with the look.
   [[nodiscard]] edit::clip::request export_request(std::string source, bool exact) const;
 

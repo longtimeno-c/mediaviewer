@@ -4530,6 +4530,10 @@ void push_editor_view(app_state* app, bool edit) noexcept {
     a.look_crop = static_cast<std::int32_t>(lk.crop);
     a.look_copyable = lk.copyable() ? 1 : 0;
     for (std::size_t i = 0; i < lk.light.v.size(); ++i) a.look_light[i] = lk.light.v[i];
+    a.look_mute = lk.mute ? 1 : 0;
+    a.look_volume = lk.volume;
+    a.look_fade_in_ms = lk.fade_in_ms;
+    a.look_fade_out_ms = lk.fade_out_ms;
     app->chrome.set_editor_view(a);
   } catch (...) {
   }
@@ -4693,6 +4697,19 @@ void editor_publish_look(app_state* app) noexcept {
   app->input.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
   app->input.video_look_light = on ? l.light.v : decltype(l.light.v){};
   publish(app);
+  // Its sound, in playback: the pieces place the fades (mv_video_set_sound_look).
+  if (app->session) {
+    if (on && ed.timeline.sound_shaped()) {
+      try {
+        const std::vector<std::int64_t> flat = ed.timeline.flat_pieces();
+        (void)mv_video_set_sound_look(app->session, flat.data(), static_cast<std::uint32_t>(flat.size() / 2),
+                                      l.mute ? 0.0f : l.volume, l.fade_in_ms, l.fade_out_ms);
+      } catch (...) {
+      }
+    } else {
+      (void)mv_video_set_sound_look(app->session, nullptr, 0, 1.0f, 0, 0);
+    }
+  }
 }
 
 // The frame at the playhead as a JPEG beside the clip, with the look's turn,
@@ -4719,6 +4736,20 @@ void editor_set_light(app_state* app, int param, float value) noexcept {
   if (!ed.timeline.loaded() || param < 0 || param >= mv::edit::kAdjustParamCount) return;
   mv::edit::clip::look l = ed.timeline.look();
   l.light.v[static_cast<std::size_t>(param)] = value;
+  if (ed.timeline.set_look(l)) {
+    editor_publish_look(app);
+    push_editor_view(app, true);
+  }
+}
+
+// The sound: param 0 volume (0..2), 1 fade in, 2 fade out (milliseconds).
+void editor_set_sound(app_state* app, int param, float value) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded()) return;
+  mv::edit::clip::look l = ed.timeline.look();
+  if (param == 0) l.volume = value;
+  if (param == 1) l.fade_in_ms = static_cast<std::int32_t>(std::lround(value));
+  if (param == 2) l.fade_out_ms = static_cast<std::int32_t>(std::lround(value));
   if (ed.timeline.set_look(l)) {
     editor_publish_look(app);
     push_editor_view(app, true);
@@ -4829,6 +4860,12 @@ void editor_edit(app_state* app, int what) noexcept {
       changed = ed.timeline.set_look(l);
       break;
     }
+    case 30: {
+      mv::edit::clip::look l = ed.timeline.look();
+      l.mute = !l.mute;
+      changed = ed.timeline.set_look(l);
+      break;
+    }
     default: break;
   }
   editor_publish_look(app);
@@ -4888,6 +4925,7 @@ void editor_trim_grab(app_state* app, int code) noexcept {
       editor_seek_source(app, editor_edge_frame(app, ed.trim_in ? p.in_ns : p.out_ns));
     }
     ed.trim_index = -1;
+    editor_publish_look(app);  // the fades follow the program's new ends
     push_editor_view(app, true);
     return;
   }
@@ -5003,7 +5041,8 @@ void editor_run_action(app_state* app, int action) {
     case chrome_editor_action::crop_1_1:
     case chrome_editor_action::crop_4_3:
     case chrome_editor_action::crop_4_5:
-    case chrome_editor_action::reset_light: editor_edit(app, action); break;
+    case chrome_editor_action::reset_light:
+    case chrome_editor_action::toggle_mute: editor_edit(app, action); break;
     case chrome_editor_action::auto_light: editor_auto_light(app); break;
     case chrome_editor_action::save_frame: editor_save_frame(app); break;
     case chrome_editor_action::toggle_play: editor_toggle_play(app); break;
@@ -5696,6 +5735,11 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
     case mv::shell::chrome_cmd_editor_light_temperature:
     case mv::shell::chrome_cmd_editor_light_tint:
       editor_set_light(app, command - static_cast<int>(mv::shell::chrome_cmd_editor_light_exposure), arg);
+      return true;
+    case mv::shell::chrome_cmd_editor_sound_volume:
+    case mv::shell::chrome_cmd_editor_sound_fade_in:
+    case mv::shell::chrome_cmd_editor_sound_fade_out:
+      editor_set_sound(app, command - static_cast<int>(mv::shell::chrome_cmd_editor_sound_volume), arg);
       return true;
     case mv::shell::chrome_cmd_editor_light_drag:
       if (arg != 0.0f) {

@@ -54,6 +54,8 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
   std::uint32_t generation = 0;
   int stream_index = -1;
   double rate = 1;
+  sound_envelope envelope;            // this thread's copy of pipe.envelope
+  std::uint32_t envelope_seq = 0;
   time_ns next_pts = 0;
   bool seeded = false;
   // Held while a packet is in libavcodec, given back while parked (issue #233).
@@ -126,6 +128,13 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
           block.pts_ns = next_pts;
           next_pts += static_cast<time_ns>(static_cast<double>(block.frames) * 1'000'000'000.0 * rate / 48000.0);
           std::memcpy(block.samples, samples + offset * 2, block.frames * 2 * sizeof(float));
+          // The Video Editor's sound look, by each sample's source time.
+          if (const std::uint32_t seq = pipe.envelope_seq.load(std::memory_order_acquire); seq != envelope_seq) {
+            std::lock_guard lock(pipe.envelope_mu);
+            envelope = pipe.envelope;
+            envelope_seq = seq;
+          }
+          envelope.apply(block.samples, block.frames, 2, block.pts_ns, 1'000'000'000.0 * rate / 48000.0);
           offset += static_cast<int>(block.frames);
           const auto target = pipe.audio_target_ns.load();
           if (target >= 0 && next_pts <= target) continue;

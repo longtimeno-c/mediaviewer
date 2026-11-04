@@ -39,9 +39,11 @@
 #include "player/poster.h"
 #include "core/job_system.h"
 #include "core/result.h"
+#include "core/sound_envelope.h"
 #include "core/spsc_ring.h"
 #include "core/status.h"
 #include "core/trace.h"
+#include "edit/clip.h"
 #include "gfx/device.h"
 #include "image/page_thumbs.h"
 #include "image/pipeline.h"
@@ -3144,6 +3146,23 @@ mv_status MV_CALL mv_video_set_muted(mv_session_t session, int32_t muted) {
   return static_cast<mv_status>(guard("mv_video_set_muted", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
     session->video.command([=](mv::player::media_source& s) { s.set_muted(muted != 0); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_sound_look(mv_session_t session, const int64_t* ranges_ns, uint32_t range_count,
+                                          float volume, int32_t fade_in_ms, int32_t fade_out_ms) {
+  return static_cast<mv_status>(guard("mv_video_set_sound_look", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(range_count == 0 || ranges_ns != nullptr, "ranges must not be null");
+    MV_REQUIRE(range_count <= mv::edit::clip::kMaxRanges, "too many ranges");
+    mv::sound_envelope e;
+    if (!e.set(std::span<const std::int64_t>(ranges_ns, static_cast<std::size_t>(range_count) * 2), volume,
+               static_cast<std::int64_t>(std::max(0, fade_in_ms)) * 1'000'000,
+               static_cast<std::int64_t>(std::max(0, fade_out_ms)) * 1'000'000)) {
+      return status::invalid_arg;
+    }
+    session->video.command([e](mv::player::media_source& s) { s.set_sound_envelope(e); });
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
     return status::ok;
   }));

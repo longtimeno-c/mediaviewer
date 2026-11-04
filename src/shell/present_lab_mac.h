@@ -19,6 +19,7 @@
 #include "canvas/refinement.h"
 #include "core/job_system.h"
 #include "core/result.h"
+#include "core/sound_envelope.h"
 #include "core/spsc_ring.h"
 #include "gfx/blit_metal.h"
 #include "gfx/device_mac.h"
@@ -84,6 +85,17 @@ class present_lab_mac {
   [[nodiscard]] mv::expected start(void* nsview, const mac_lab_options& options) noexcept;
   void stop() noexcept;
   void publish(const input_snapshot& snapshot) noexcept { input_.publish(snapshot); }
+  // [ui-thread] The Video Editor's sound look for the clip playing (the Mac
+  // twin of mv_video_set_sound_look); the render thread hands it to the
+  // player, and to the next clip it adopts.
+  void set_sound_envelope(const sound_envelope& e) noexcept {
+    {
+      std::lock_guard lock(envelope_mu_);
+      envelope_ = e;
+    }
+    envelope_seq_.fetch_add(1, std::memory_order_release);
+    wake();
+  }
   void wake() noexcept;
 
   // [any-thread] Loads `path_utf8`, replacing whatever is on screen once
@@ -461,6 +473,12 @@ class present_lab_mac {
   float video_volume_ = 1.0f;  // survives from clip to clip
   std::uint32_t seen_video_seek_ = 0;
   std::uint32_t seen_video_loop_ = 0;  // PR 13
+  // The Video Editor's sound look: set by the UI thread, applied by this one.
+  std::mutex envelope_mu_;
+  sound_envelope envelope_;
+  std::atomic<std::uint32_t> envelope_seq_{0};
+  std::uint32_t seen_envelope_ = 0;
+  void apply_sound_envelope(bool force) noexcept;
 
   // Animated GIF/APNG/WebP playback (docs/design/04, folded into PR 18's "animated
   // GIF/APNG/WebP on the display-link frame clock", docs/design/15). Frame 0 already

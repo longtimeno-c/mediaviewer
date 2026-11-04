@@ -57,7 +57,8 @@ decision log records the line.
    *Verify:* the exported frame and the preview agree within 2 codes at five patches for each
    slider at ±50; playback of a 4K HEVC clip with a colour look holds the clip's rate with 0
    dropped presents (`--soak` on video), measured against no look.
-3. **Sound: mute, volume, fades.** A Sound popover; the envelope in `audio_decode`; the render
+3. **Sound: mute, volume, fades** — built 2026-11-03 (Mac verified by tests; the Windows native
+   half, both apps' clicks and listening owed). A Sound popover; the envelope in `audio_decode`; the render
    op's gain and fades; keyframe Export with mute only.
    *Verify:* exported RMS of a 1 kHz tone at 50 % is −6 dB ± 0.2; a 1 s fade-out's last 10 ms are
    below −40 dB; the preview's envelope matches (unit test on the envelope, by ear in the app).

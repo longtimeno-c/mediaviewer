@@ -1110,6 +1110,11 @@ typedef struct mv_editor_view {
   // Light and colour: exposure (EV, ±5), contrast, saturation, temperature,
   // tint (±100); 0 = unchanged.
   float look_light[5];
+  // Sound (slice 3): muted, volume 0..2, fades on the program's ends.
+  int32_t look_mute;
+  float look_volume;
+  int32_t look_fade_in_ms;
+  int32_t look_fade_out_ms;
 } mv_editor_view;
 uint64_t mv_chrome_editor_generation(void);
 bool mv_chrome_editor_view(mv_editor_view* out);
@@ -1132,7 +1137,7 @@ void mv_chrome_editor_step(int32_t frames);
 // (docs/plans/video-editor-look.md): 17 turn left, 18 turn right, 19 mirror
 // left-right, 20 upside down, 21-26 crop original / 16:9 / 9:16 / 1:1 / 4:3 /
 // 4:5, 27 save the frame at the playhead, 28 Auto light (auto tone on the frame
-// at the playhead), 29 reset light and colour. A change that
+// at the playhead), 29 reset light and colour, 30 mute / unmute. A change that
 // changes nothing beeps.
 void mv_chrome_editor_edit(int32_t what);
 // The look's light and colour (slice 2): slider `param` (0 exposure,
@@ -1140,6 +1145,9 @@ void mv_chrome_editor_edit(int32_t what);
 // a drag (one undo step), 1 moves it, 2 ends it. Auto and Reset are
 // mv_chrome_editor_edit 28 and 29.
 void mv_chrome_editor_set_light(int32_t param, float value, int32_t phase);
+// The look's sound (slice 3): `param` 0 volume (0..2), 1 fade in, 2 fade out
+// (seconds, 0..5); phase as set_light. Mute is mv_chrome_editor_edit 30.
+void mv_chrome_editor_set_sound(int32_t param, float value, int32_t phase);
 void mv_chrome_editor_select(int32_t index);
 // Queues keep_ranges on the Jobs pane: 0 keyframe cuts (instant), 1 exact.
 void mv_chrome_editor_export(int32_t exact);

@@ -38,7 +38,7 @@ public static partial class IslandHost
     // chrome_host.h chrome_editor_*_args.
     internal const int EditorAttachArgsSize = 16;
     internal const int EditorLayoutArgsSize = 40;
-    internal const int EditorViewArgsSize = 144;
+    internal const int EditorViewArgsSize = 160;
     internal const int EditorStripArgsSize = 24;
     internal const int EditorThumbSize = 24;
 
@@ -69,6 +69,7 @@ public static partial class IslandHost
         public const int SaveFrame = 27;
         public const int AutoLight = 28;
         public const int ResetLight = 29;
+        public const int ToggleMute = 30;
     }
 
     // PR 11's five sliders (edit/adjust.cpp range_of), as on the Mac.
@@ -78,6 +79,10 @@ public static partial class IslandHost
         ("Temperature", -100, 100, 5), ("Tint", -100, 100, 5),
     };
     private static readonly float[] _editorLight = new float[5];
+    // Sound (slice 3): mute, volume 0..2, fades in milliseconds.
+    private static bool _editorMuted;
+    private static float _editorVolume = 1;
+    private static int _editorFadeInMs, _editorFadeOutMs;
 
     private static readonly string[] EditorCropNames = { "Original", "16:9", "9:16", "1:1", "4:3", "4:5" };
 
@@ -259,6 +264,10 @@ public static partial class IslandHost
                 {
                     _editorLight[i] = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 120 + 4 * i));
                 }
+                _editorMuted = Marshal.ReadInt32(arg, 140) != 0;
+                _editorVolume = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 144));
+                _editorFadeInMs = Marshal.ReadInt32(arg, 148);
+                _editorFadeOutMs = Marshal.ReadInt32(arg, 152);
                 long pieces = Marshal.ReadInt64(arg, 64);
                 var list = new (long, long)[pieces == 0 ? 0 : count];
                 for (int i = 0; i < list.Length; i++)
@@ -467,6 +476,7 @@ public static partial class IslandHost
             EditButton("Turn right", () => SendEditor(EditorActions.TurnRight), tip: "Turn the clip right"),
             EditorCropButton(),
             EditorLightButton(),
+            EditorSoundButton(),
             EditButton("Save frame", () => SendEditor(EditorActions.SaveFrame),
                        tip: "Save this frame as a photo  Ctrl+Shift+S"));
         bar.Children.Add(left);
@@ -777,6 +787,60 @@ public static partial class IslandHost
         flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
         light.Flyout = flyout;
         return light;
+    }
+
+    // The edit's sound (slice 3): Mute, Volume (0-200 %) and fades (0-5 s) in a
+    // flyout; a flyout session is one undo step, as Light's.
+    private static Button EditorSoundButton()
+    {
+        Button sound = EditButton("Sound", () => { }, tip: "Sound for the whole clip");
+        var flyout = new Flyout();
+        bool updating = false;
+        var col = new StackPanel { Spacing = Space(6), Width = 260 };
+        var mute = new CheckBox { Content = "Mute" };
+        mute.Click += (_, _) => SendEditor(EditorActions.ToggleMute);
+        col.Children.Add(mute);
+        Slider Row(string name, double min, double max, double step, int command, Func<double, string> format)
+        {
+            var head = new Grid();
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            head.Children.Add(Text(name, Body));
+            TextBlock readout = Text("", Body);
+            Grid.SetColumn(readout, 1);
+            head.Children.Add(readout);
+            col.Children.Add(head);
+            var slider = new Slider
+            {
+                Minimum = min, Maximum = max, StepFrequency = step, SmallChange = step, LargeChange = step * 10,
+                IsThumbToolTipEnabled = false,
+            };
+            AutomationProperties_SetName(slider, name);
+            slider.ValueChanged += (_, e) =>
+            {
+                readout.Text = format(e.NewValue);
+                if (!updating) Send(command, (float)e.NewValue);
+            };
+            col.Children.Add(slider);
+            return slider;
+        }
+        Slider volume = Row("Volume", 0, 2, 0.05, Command.EditorSoundVolume, v => $"{v * 100:0} %");
+        Slider fadeIn = Row("Fade in", 0, 5000, 100, Command.EditorSoundFadeIn, v => $"{v / 1000:0.0} s");
+        Slider fadeOut = Row("Fade out", 0, 5000, 100, Command.EditorSoundFadeOut, v => $"{v / 1000:0.0} s");
+        flyout.Content = col;
+        flyout.Opening += (_, _) =>
+        {
+            updating = true;
+            mute.IsChecked = _editorMuted;
+            volume.Value = _editorVolume;
+            fadeIn.Value = _editorFadeInMs;
+            fadeOut.Value = _editorFadeOutMs;
+            updating = false;
+            Send(Command.EditorLightDrag, 1);
+        };
+        flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
+        sound.Flyout = flyout;
+        return sound;
     }
 
     private static void RebuildEditorAddons()

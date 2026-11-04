@@ -211,6 +211,10 @@ public static partial class IslandHost
         public const int EditorLightTemperature = 1103;
         public const int EditorLightTint = 1104;
         public const int EditorLightDrag = 1105;
+        // Its sound: volume 1106, fade in 1107, fade out 1108 (ms).
+        public const int EditorSoundVolume = 1106;
+        public const int EditorSoundFadeIn = 1107;
+        public const int EditorSoundFadeOut = 1108;
         // Drag-out (IslandHost.DragDrop.cs). DragItems: a cell starts a drag,
         // arg is its folder index; native answers inside the call with
         // SetDragPaths. DragEnded: that drag finished. OpenRecent: arg is the

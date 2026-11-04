@@ -796,6 +796,17 @@ void present_lab_mac::retire_media() noexcept {
 // item_kind::clip and item_kind::animation to mode::video on Windows for the
 // same reason); everything else here only ever applies to a clip. Returns
 // true when it changed what should be on screen, so the caller redraws.
+void present_lab_mac::apply_sound_envelope(bool force) noexcept {
+  const std::uint32_t seq = envelope_seq_.load(std::memory_order_acquire);
+  if (!media_ || (!force && seq == seen_envelope_)) return;
+  // try_lock: the render thread never waits on the UI thread; a miss is
+  // picked up on the next frame.
+  std::unique_lock lock(envelope_mu_, std::try_to_lock);
+  if (!lock.owns_lock()) return;
+  media_->set_sound_envelope(envelope_);
+  seen_envelope_ = seq;
+}
+
 bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   static constexpr double kLadder[] = {0.25, 0.5, 1.0, 1.5, 2.0, 4.0};
   constexpr int kRungs = 6;
@@ -939,6 +950,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
     media_->set_loop(s.video_loop_a_ns, s.video_loop_b_ns);
     changed = true;
   }
+  apply_sound_envelope(false);
   if (s.video_mute_seq != seen_video_mute_) {
     if ((s.video_mute_seq - seen_video_mute_) & 1u) {
       video_muted_ = !video_muted_;
@@ -1671,6 +1683,7 @@ void present_lab_mac::render_thread_main() noexcept {
           speed_rung_ = 2;
           video_muted_ = false;
           media_->set_volume(video_volume_);
+          apply_sound_envelope(true);  // the editor's sound look, if any, on its clip
           if (moment_ms >= 0) {
             // Milestone H: a search result lands paused on its moment. The
             // exact seek decodes forward from the keyframe before it and

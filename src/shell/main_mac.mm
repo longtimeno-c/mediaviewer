@@ -864,6 +864,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editorSelect:(int32_t)index;
 - (void)editorExport:(BOOL)exact;
 - (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase;
+- (void)editorSetSound:(int32_t)param value:(float)value phase:(int32_t)phase;
 - (BOOL)editorTrimBegin:(int32_t)index edge:(int32_t)edge;
 - (int64_t)editorTrimTo:(int64_t)source_ns;
 - (void)editorTrimEnd;
@@ -1898,6 +1899,10 @@ extern "C" void mv_chrome_editor_toggle_play(void) {
 }
 extern "C" void mv_chrome_editor_step(int32_t frames) {
   if (g_chrome_app) [g_chrome_app editorStep:frames];
+}
+extern "C" void mv_chrome_editor_set_sound(int32_t param, float value, int32_t phase) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorSetSound:param value:value phase:phase];
 }
 extern "C" void mv_chrome_editor_set_light(int32_t param, float value, int32_t phase) {
   (void)mv::shell::crash::note_native_call();
@@ -8583,6 +8588,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->look_crop = static_cast<int32_t>(lk.crop);
   out->look_copyable = lk.copyable() ? 1 : 0;
   for (std::size_t i = 0; i < lk.light.v.size(); ++i) out->look_light[i] = lk.light.v[i];
+  out->look_mute = lk.mute ? 1 : 0;
+  out->look_volume = lk.volume;
+  out->look_fade_in_ms = lk.fade_in_ms;
+  out->look_fade_out_ms = lk.fade_out_ms;
 }
 
 - (void)setEditorOpen:(BOOL)open {
@@ -8865,6 +8874,14 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   _snap.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
   _snap.video_look_light = on ? l.light.v : decltype(l.light.v){};
   [self publish];
+  // Its sound, in playback: the pieces place the fades (core/sound_envelope.h).
+  mv::sound_envelope e;
+  if (on && _timeline.sound_shaped()) {
+    const std::vector<std::int64_t> flat = _timeline.flat_pieces();
+    (void)e.set(flat, l.mute ? 0.0f : l.volume, static_cast<std::int64_t>(l.fade_in_ms) * 1'000'000,
+                static_cast<std::int64_t>(l.fade_out_ms) * 1'000'000);
+  }
+  _lab.set_sound_envelope(e);
 }
 
 // A light and colour slider (param: edit::adjust_param); a drag is one undo step.
@@ -8873,6 +8890,20 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (phase == 0) _timeline.begin_look_drag();
   mv::edit::clip::look l = _timeline.look();
   l.light.v[static_cast<std::size_t>(param)] = value;
+  if (_timeline.set_look(l)) [self editorPublishLook];
+  if (phase == 2) _timeline.end_look_drag();
+  ++_editorGeneration;
+}
+
+// The sound: param 0 volume (0..2), 1 fade in, 2 fade out (seconds); a drag
+// is one undo step.
+- (void)editorSetSound:(int32_t)param value:(float)value phase:(int32_t)phase {
+  if (!_timeline.loaded() || param < 0 || param > 2) return;
+  if (phase == 0) _timeline.begin_look_drag();
+  mv::edit::clip::look l = _timeline.look();
+  if (param == 0) l.volume = value;
+  if (param == 1) l.fade_in_ms = static_cast<std::int32_t>(std::lround(value * 1000.0f));
+  if (param == 2) l.fade_out_ms = static_cast<std::int32_t>(std::lround(value * 1000.0f));
   if (_timeline.set_look(l)) [self editorPublishLook];
   if (phase == 2) _timeline.end_look_drag();
   ++_editorGeneration;
@@ -8974,6 +9005,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
     }
     case 27: [self editorSaveFrame]; return;
     case 28: [self editorAutoLight]; return;
+    case 30: {
+      mv::edit::clip::look l = _timeline.look();
+      l.mute = !l.mute;
+      changed = _timeline.set_look(l);
+      break;
+    }
     case 29: {
       mv::edit::clip::look l = _timeline.look();
       l.light = {};
@@ -9034,6 +9071,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
     const auto& p = pieces[static_cast<std::size_t>(_editorTrimIndex)];
     [self editorSeekSource:[self editorEdgeFrame:_editorTrimEdge == 0 ? p.in_ns : p.out_ns]];
   }
+  [self editorPublishLook];  // the fades follow the program's new ends
   ++_editorGeneration;
 }
 

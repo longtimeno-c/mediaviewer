@@ -24,10 +24,12 @@ extern "C" {
 }
 
 #include "clip_fixture.h"
+#include "core/sound_envelope.h"
 #include "edit/clip.h"
 #include "gfx/adjust_kernel.h"
 #include "edit/clip_internal.h"
 #include "edit/clip_jobs.h"
+#include "edit/clip_sample.h"
 #include "edit/clip_strip.h"
 #include "edit/clip_wire.h"
 #include "edit/hwencode.h"
@@ -975,4 +977,86 @@ TEST_CASE("Export exact and Save frame carry the light", "[clip][look][light]") 
     return static_cast<int>(px[(static_cast<std::size_t>(180) * 320 + 160) * 4]);
   };
   CHECK(centre(lit->outputs[0]) > centre(dark->outputs[0]) + 10);
+}
+
+TEST_CASE("the sound envelope: volume, fades on the program, nothing in a cut", "[clip][look][sound]") {
+  constexpr std::int64_t kS = 1'000'000'000;
+  mv::sound_envelope e;
+  CHECK(e.set({}, 1.0f, 0, 0));
+  CHECK_FALSE(e.active());  // volume 1, no fades: off
+  CHECK(e.gain_at(3 * kS) == 1.0f);
+  // Pieces 0-2 s and 5-8 s: a 5 s program. Fades of 1 s at each end.
+  const std::vector<std::int64_t> pieces = {0, 2 * kS, 5 * kS, 8 * kS};
+  REQUIRE(e.set(pieces, 0.5f, kS, kS));
+  REQUIRE(e.active());
+  CHECK(e.gain_at(0) == 0.0f);
+  CHECK(std::abs(e.gain_at(kS / 2) - 0.25f) < 1e-6f);    // half way in, at half volume
+  CHECK(std::abs(e.gain_at(kS * 3 / 2) - 0.5f) < 1e-6f);  // past the fade in
+  CHECK(e.gain_at(3 * kS) == 0.5f);                       // in the cut: the volume alone
+  CHECK(std::abs(e.gain_at(7 * kS + kS / 2) - 0.25f) < 1e-6f);  // program 4.5 s of 5
+  CHECK(e.gain_at(8 * kS - 1) < 0.001f);
+  // apply(): interleaved frames, by source time.
+  std::vector<float> pcm(2 * 4, 1.0f);
+  e.apply(pcm.data(), 4, 2, 3 * kS, 1e9 / 48000.0);
+  CHECK(pcm[0] == 0.5f);
+  CHECK(pcm[7] == 0.5f);
+  // Mute is volume 0.
+  REQUIRE(e.set(pieces, 0.0f, 0, 0));
+  CHECK(e.gain_at(kS) == 0.0f);
+  const std::vector<std::int64_t> overlapping = {0, 2 * kS, kS, 3 * kS};
+  CHECK_FALSE(e.set(overlapping, 1.0f, 0, 0));  // refused
+  CHECK_FALSE(e.active());
+}
+
+TEST_CASE("Export exact writes the volume and the fades", "[clip][look][sound]") {
+  scratch_dir d("clip_look_sound");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 120;  // 4 s of a 440 Hz tone
+  REQUIRE(fx::make(utf8(src), s));
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{0, 3'000'000'000}};
+  r.look.flip_h = true;
+  const auto rms_of = [](const std::string& path, double from_s, double to_s) {
+    auto reader = clip::audio_reader::open(path, 48000, 0, nullptr, 1);
+    REQUIRE(reader);
+    std::vector<float> all;
+    std::int64_t start = 0;
+    for (;;) {
+      auto chunk = (*reader)->read(48000, start);
+      REQUIRE(chunk);
+      if (chunk->empty()) break;
+      all.insert(all.end(), chunk->begin(), chunk->end());
+    }
+    const auto a = static_cast<std::size_t>(std::max(0.0, from_s) * 48000);
+    const auto b = std::min(all.size(), static_cast<std::size_t>(to_s * 48000));
+    double sum = 0;
+    for (std::size_t i = a; i < b; ++i) sum += static_cast<double>(all[i]) * all[i];
+    return std::make_pair(b > a ? std::sqrt(sum / static_cast<double>(b - a)) : 0.0, all.size());
+  };
+  auto plain = run_soft(r);
+  REQUIRE(plain);
+  r.look.volume = 0.5f;
+  auto half = run_soft(r);
+  REQUIRE(half);
+  const double full_rms = rms_of(plain->outputs[0], 1.0, 2.0).first;
+  const double half_rms = rms_of(half->outputs[0], 1.0, 2.0).first;
+  REQUIRE(full_rms > 0.05);
+  CHECK(std::abs(20 * std::log10(half_rms / full_rms) - (-6.02)) < 0.2);
+
+  r.look.volume = 1.0f;
+  r.look.fade_in_ms = 1000;
+  r.look.fade_out_ms = 1000;
+  auto faded = run_soft(r);
+  REQUIRE(faded);
+  const auto [mid, frames] = rms_of(faded->outputs[0], 1.2, 1.8);
+  CHECK(std::abs(20 * std::log10(mid / full_rms)) < 0.2);  // between the fades: untouched
+  const double end_s = static_cast<double>(frames) / 48000.0;
+  const double head = rms_of(faded->outputs[0], 0.0, 0.01).first;
+  const double tail = rms_of(faded->outputs[0], end_s - 0.01, end_s).first;
+  INFO("head " << 20 * std::log10(head / full_rms + 1e-12) << " dB, tail "
+               << 20 * std::log10(tail / full_rms + 1e-12) << " dB, " << end_s << " s");
+  CHECK(20 * std::log10(head / full_rms + 1e-12) < -30.0);
+  CHECK(20 * std::log10(tail / full_rms + 1e-12) < -40.0);
 }

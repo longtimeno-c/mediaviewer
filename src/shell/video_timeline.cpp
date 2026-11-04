@@ -259,6 +259,16 @@ bool video_timeline::edited() const noexcept {
          !look_.identity();
 }
 
+std::vector<video_timeline::time_ns> video_timeline::flat_pieces() const {
+  std::vector<time_ns> flat;
+  flat.reserve(pieces_.size() * 2);
+  for (const range& p : pieces_) {
+    flat.push_back(p.in_ns);
+    flat.push_back(p.out_ns);
+  }
+  return flat;
+}
+
 edit::clip::request video_timeline::export_request(std::string source, bool exact) const {
   edit::clip::request r;
   r.kind = edit::clip::op::keep_ranges;
