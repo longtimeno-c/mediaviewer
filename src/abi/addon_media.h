@@ -107,6 +107,15 @@ struct eyes_outcome {
 [[nodiscard]] std::string eyes_note(status pack, const result<eyes_outcome>& r);
 [[nodiscard]] result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view pack_json,
                                                     const job_context* ctx = nullptr);
+// Owner 2026-11-04, the wand menu's "Improve faces from your photos": for each
+// face, the best donor of the same person (the pack's answer: the same moment
+// and their other photos in People) turned as it is; when that face is clearly
+// better (the pack's face quality, and open eyes over shut), the whole inner
+// face from it (edit::transfer_face), in this photo's light. A new photo
+// "<stem>-faces.jpg" beside the original; `fixed` counts the faces replaced.
+[[nodiscard]] result<eyes_outcome> improve_faces(const std::string& path, std::string_view pack_json,
+                                                 const job_context* ctx = nullptr);
+[[nodiscard]] std::string faces_note(status pack, const result<eyes_outcome>& r);
 [[nodiscard]] result<std::string> write_still(const std::string& source, const rgb_image& pixels,
                                               const std::string& suffix);
 // #354: a document's text in reading order with the page each paragraph

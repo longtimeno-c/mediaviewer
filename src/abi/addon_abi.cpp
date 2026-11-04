@@ -290,6 +290,18 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
   }));
 }
 
+MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_improve_faces", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
+    if (pack) r = mv::addon::media::improve_faces(path_utf8, *pack);
+    return write_out(mv::addon::media::faces_note(pack ? status::ok : pack.error(), r), note_out, cap, needed);
+  }));
+}
+
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
 }

@@ -195,9 +195,9 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
   // Photos and a clip's picture: one tiled model runner.
   p.load_restyle = [runtime](const model_spec& spec, const std::string& models_dir)
       -> result<std::unique_ptr<restyle_model>> {
-    (void)spec;
+    restyle_io io = restyle_io_of(spec);
     MV_TRY(infer::runtime * rt, runtime->runtime());
-    return restyle_model::open(*rt, models_dir, models_dir + "-cache");
+    return restyle_model::open(*rt, models_dir, models_dir + "-cache", std::move(io));
   };
   // Slice 7: the brush and the inpainting model.
   if (has_mask_row(h)) {

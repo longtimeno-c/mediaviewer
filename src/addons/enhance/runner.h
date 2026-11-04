@@ -103,6 +103,9 @@ inline constexpr std::uint32_t kMaxStillEdge = 16384;
 inline constexpr std::uint32_t kMaxLongEdge = 3840;
 inline constexpr std::uint32_t kMaxShortEdge = 2160;
 
+// Restyle's tensor names from its spec (io.tensors); the defaults when absent.
+[[nodiscard]] restyle_io restyle_io_of(const model_spec& spec);
+
 class job_runner final : public runner {
  public:
   explicit job_runner(run_port port);

@@ -35,6 +35,14 @@ enum class adjust_pick : std::int32_t {
   remove = 3,         // slice 7: drag to brush what Remove takes out, until turned off
 };
 
+// The Edit strip's wand menu: what it shows checked or enabled. Both chromes
+// read these bits (mv_edit_view.wand, chrome_edit_args.wand).
+inline constexpr std::int32_t kWandBrushOn = 1;       // the Remove brush paints on the photo
+inline constexpr std::int32_t kWandBrushStrokes = 2;  // something is brushed
+inline constexpr std::int32_t kWandBrushFull = 4;     // the brush holds all it can
+inline constexpr std::int32_t kWandRestyle = 8;       // Enhance has its "restyle" command
+inline constexpr std::int32_t kWandEyesBusy = 16;     // Open closed eyes is running
+
 enum class adjust_readiness : std::int32_t {
   none = 0,       // no still on the canvas (or a clip): the pane says so
   preparing = 1,  // working image building: sliders disabled

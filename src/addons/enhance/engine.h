@@ -126,7 +126,9 @@ class engine {
   void closed(const std::string& screen);
   // The command or the context entry: these files (the first is enhanced),
   // then the sheet. From the Video Editor, `keep_ns` is the edit (job_request).
-  void command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns = {});
+  // `start_on`: the wand menu's Restyle opens the sheet on it (when offered).
+  void command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns = {},
+               std::optional<photo_target> start_on = std::nullopt);
   void event(const std::string& screen, const std::string& node, std::uint32_t kind, const std::string& value_json);
 
   // For tests: the specs this build found, and a kind's download status.

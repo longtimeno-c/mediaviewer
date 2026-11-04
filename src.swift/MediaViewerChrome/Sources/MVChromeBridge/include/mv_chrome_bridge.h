@@ -955,6 +955,10 @@ void mv_chrome_adjust_open_eyes(void);
 // −100..100 about the default): 0 the last stroke off, 1 every stroke off,
 // 2 Remove — Enhance's sheet opens to take out what is brushed.
 void mv_chrome_adjust_brush(int32_t action);
+// The wand menu's faces (owner 2026-11-04): 0 Open closed eyes, 1 Improve faces
+// from your photos. Each looks in the same moment, then the person's other
+// photos in People, and writes a new file; the note says what happened.
+void mv_chrome_edit_faces(int32_t mode);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);
@@ -1051,6 +1055,10 @@ typedef struct mv_edit_view {
   int32_t crop_height;
   int32_t document;       // a PDF or DOCX: nothing to edit; the bar offers "Open in <app>"
   int32_t enhance;        // edit-adjust slice 5: the Enhance add-on is loaded (the strip offers Enhance…)
+  // The wand menu's state, bits: 1 the Remove brush is on, 2 something is
+  // brushed, 4 the brush is full, 8 Enhance offers Restyle, 16 Open closed eyes
+  // is running (shell/adjust_pane.h kWand*).
+  int32_t wand;
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -1067,6 +1075,9 @@ void mv_chrome_edit_set_straighten(float degrees);
 void mv_chrome_edit_cancel_crop(void);
 // The strip's Original toggle (the same state Y holds).
 void mv_chrome_edit_show_original(int32_t on);
+// The wand menu: one of Enhance's commands ("open", "restyle") for the photo,
+// its copy carrying the edit; a crop draft is applied first.
+void mv_chrome_edit_enhance_command(const char* command);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
 // Slice 5: Enhance… from the strip: Enhance's own sheet for the photo, whose

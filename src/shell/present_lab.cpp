@@ -1630,7 +1630,7 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || current_video_.texture || snapshot.blackout) return;
   const edit_view* v = edit_for(*current_image_);
   // Slice 7: the Remove brush, the same body as the Mac's (brush_overlay.h).
-  if (v && v->brush_on && !v->crop_overlay) {
+  if (v && (v->brush_on || v->brush_cursor[2] > 0.0f) && !v->crop_overlay) {
     const float pw = media_width(), ph = media_height(), zoom = camera_.zoom();
     const auto view = usable_canvas(snapshot);
     const float cx = view.x + view.w * 0.5f, cy = view.y + view.h * 0.5f;

@@ -788,9 +788,11 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)adjustPick:(int32_t)mode size:(float)size;
 - (void)adjustPrompt:(const std::string&)text;
 - (void)adjustOpenEyes;
+- (void)adjustFaces:(int32_t)mode;
 - (BOOL)adjustPicking;
 - (void)adjustPickAtX:(float)x y:(float)y;
 - (BOOL)brushActive;
+- (BOOL)redEyeRing;
 - (void)adjustBrush:(int32_t)action;
 - (void)brushPublish;
 - (BOOL)brushPressX:(float)x y:(float)y;
@@ -1776,6 +1778,10 @@ extern "C" void mv_chrome_adjust_brush(int32_t action) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app adjustBrush:action];
 }
+extern "C" void mv_chrome_edit_faces(int32_t mode) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustFaces:mode];
+}
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
 }
@@ -1839,6 +1845,12 @@ extern "C" void mv_chrome_edit_enhance(void) {
   (void)mv::shell::crash::note_native_call();
   if (!g_chrome_app) return;
   const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+  if (id != mv::shell::command_id::none) (void)[g_chrome_app runCommand:id back:mv::shell::back_target::none];
+}
+extern "C" void mv_chrome_edit_enhance_command(const char* command) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || !command) return;
+  const mv::shell::command_id id = mv::shell::find_addon_command("enhance", command);
   if (id != mv::shell::command_id::none) (void)[g_chrome_app runCommand:id back:mv::shell::back_target::none];
 }
 extern "C" void mv_chrome_edit_save_copy(void) {
@@ -2387,13 +2399,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self trackPointer:event];
   // Slice 3: the adjust pane's white-balance picker or red-eye tool takes the
   // click on the photo; nothing pans.
+  // Slice 7: the Remove brush strokes while the button is down (on any tab).
+  if (self.app && [self.app brushActive]) {
+    _brushStroke = [self.app brushPressX:self.snap->mouse_x y:self.snap->mouse_y];
+    return;
+  }
   if (self.app && [self.app adjustPicking]) {
-    // Slice 7: the Remove brush strokes while the button is down.
-    if ([self.app brushActive]) {
-      _brushStroke = [self.app brushPressX:self.snap->mouse_x y:self.snap->mouse_y];
-    } else {
-      [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
-    }
+    [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
     return;
   }
   _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
@@ -2563,10 +2575,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseMoved:(NSEvent*)event {
   [self trackPointer:event];
-  // Slice 7: the brush's ring follows the pointer; a drag paints.
+  // Slice 7: the brush's ring follows the pointer; a drag paints. The red-eye
+  // tool shows the same ring, at its own size, where a click would land.
   if (self.app && [self.app brushActive]) {
     if (_brushStroke) [self.app brushDragX:self.snap->mouse_x y:self.snap->mouse_y];
     else [self.app brushHoverX:self.snap->mouse_x y:self.snap->mouse_y];
+  } else if (self.app && [self.app redEyeRing]) {
+    [self.app brushHoverX:self.snap->mouse_x y:self.snap->mouse_y];
   }
   // A recent folder under the pointer reads as a link. Only a change of row
   // redraws (the app bumps the snapshot); an empty welcome stays idle.
@@ -3278,6 +3293,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // (−100..+100 about kBrushDefaultRadius), the ring under the pointer, and a
   // count of changes the canvas redraws on.
   mv::shell::remove_brush _brush;
+  BOOL _brushOn;  // the wand menu's (or the pane's) brush: paints whatever tab is up
   float _brushSize;
   float _brushCursor[3];
   std::uint32_t _brushRev;
@@ -7922,6 +7938,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _wsSyncing = YES;
   const BOOL open = _ws.open ? YES : NO;
   const edit_tab tab = _ws.tab;
+  // The Remove brush belongs to Edit: closing it puts the brush down.
+  if (!open && _brushOn) {
+    _brushOn = NO;
+    _brushCursor[0] = -1.0f;
+    [self brushPublish];
+  }
   // A crop draft belongs to the Crop tab: leaving it applies the draft
   // (Lightroom's rule), so no crop is lost to a tab click.
   if (_edits.crop_active() && !(open && tab == edit_tab::crop)) {
@@ -7986,6 +8008,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->edit_count = static_cast<int32_t>(_edits.edit_count());
   out->show_original = _showOriginal ? 1 : 0;
   out->enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
+  out->wand = (_brushOn ? mv::shell::kWandBrushOn : 0) | (_brush.empty() ? 0 : mv::shell::kWandBrushStrokes) |
+              (_brush.full() ? mv::shell::kWandBrushFull : 0) |
+              (mv::shell::find_addon_command("enhance", "restyle") != mv::shell::command_id::none
+                   ? mv::shell::kWandRestyle : 0) |
+              (_eyesRunning ? mv::shell::kWandEyesBusy : 0);
   if (subject == mv::shell::edit_subject::still && _edits.has_item()) {
     std::uint32_t w = 0, h = 0;
     if (_lab.still_size(_itemId, &w, &h)) {
@@ -10111,6 +10138,7 @@ static double mv_wall_seconds() {
 - (uint64_t)adjustGeneration { return _adjustViewGeneration; }
 - (mv::shell::adjust_view)adjustView {
   mv::shell::adjust_view v = _adjust.view(_edits.colour());
+  if (_brushOn) v.picking = static_cast<std::int32_t>(mv::shell::adjust_pick::remove);
   v.brush_strokes = static_cast<std::int32_t>(_brush.strokes());
   v.brush_full = _brush.full() ? 1 : 0;
   return v;
@@ -10405,20 +10433,31 @@ static double mv_wall_seconds() {
 // Slice 6: Open closed eyes. On the pool: the frames of the same moment, the
 // pack's faces and same-person donors (People data, owner 2026-11-02), then
 // the transfer and a new file beside the photo. The note says what happened.
-- (void)adjustOpenEyes {
+- (void)adjustOpenEyes { [self adjustFaces:0]; }
+
+// The wand menu's faces: 0 Open closed eyes, 1 Improve faces from your photos.
+// The same pack answer (the moment, then the person's other photos in People).
+- (void)adjustFaces:(int32_t)mode {
   if (_eyesRunning || ![self adjustStill] || _items.empty() || _index.current() >= _items.size()) return;
   _eyesRunning = YES;
-  _adjust.set_prompt_note("Looking for open eyes in the same moment…");
+  ++_editGeneration;  // the wand menu: busy
+  _adjust.set_prompt_note(mode == 1 ? "Looking through this person's photos for a better face…"
+                                    : "Looking for open eyes in this person's photos…");
   [self bumpAdjustView];
   const std::string path = _items[_index.current()].path_utf8;
   __weak MvLabApp* weakSelf = self;
-  _jobs.submit_at(mv::background_generation, [path, weakSelf](const mv::job_context& ctx) -> mv::status {
+  _jobs.submit_at(mv::background_generation, [path, mode, weakSelf](const mv::job_context& ctx) -> mv::status {
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
     auto pack = mv::addon::ai_eyes_json(path, candidates);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
-    if (pack) r = mv::addon::media::open_closed_eyes(path, *pack, &ctx);
-    const std::string note = mv::addon::media::eyes_note(pack ? mv::status::ok : pack.error(), r);
+    if (pack) {
+      r = mode == 1 ? mv::addon::media::improve_faces(path, *pack, &ctx)
+                    : mv::addon::media::open_closed_eyes(path, *pack, &ctx);
+    }
+    const mv::status ps = pack ? mv::status::ok : pack.error();
+    const std::string note =
+        mode == 1 ? mv::addon::media::faces_note(ps, r) : mv::addon::media::eyes_note(ps, r);
     dispatch_async(dispatch_get_main_queue(), ^{
       [weakSelf eyesLanded:note];
     });
@@ -10428,8 +10467,10 @@ static double mv_wall_seconds() {
 
 - (void)eyesLanded:(const std::string&)note {
   _eyesRunning = NO;
+  ++_editGeneration;
   _adjust.set_prompt_note(note);
   [self bumpAdjustView];
+  [self noticeShow:note];  // seen on any tab (the wand menu ran it)
 }
 
 // Slice 3: what the next click on the photo does (shell::adjust_pick).
@@ -10437,24 +10478,39 @@ static double mv_wall_seconds() {
 - (void)adjustPick:(int32_t)mode size:(float)size {
   if (mode < 0 || mode > static_cast<int32_t>(mv::shell::adjust_pick::remove)) return;
   if (mode == static_cast<int32_t>(mv::shell::adjust_pick::remove)) {
+    // The brush needs only the photo on screen, not the Colour pane.
     _brushSize = std::clamp(size, -100.0f, 100.0f);
+    _brushOn = [self adjustStill];
+    _adjust.set_pick(mv::shell::adjust_pick::none);
   } else {
     _redEyeSize = std::clamp(size, -100.0f, 100.0f);
+    _brushOn = NO;
+    _adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
   }
-  _adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
   _brushCursor[0] = -1.0f;
   [self brushPublish];
   [self bumpAdjustView];
+  ++_editGeneration;  // the wand menu's check mark
 }
 
 // ---- Slice 7: the Remove brush ---------------------------------------------------
 
 - (BOOL)brushActive {
-  return _adjust.pick() == mv::shell::adjust_pick::remove && [self adjustStill] && !_edits.crop_active() ? YES : NO;
+  return _brushOn && [self adjustStill] && !_edits.crop_active() ? YES : NO;
 }
 
 - (float)brushRadius {
-  return mv::shell::kBrushDefaultRadius * std::exp2(_brushSize / 100.0f);
+  if (_brushOn) return mv::shell::kBrushDefaultRadius * std::exp2(_brushSize / 100.0f);
+  // The red-eye tool's ring: its radius is over the diagonal, the ring's over
+  // the long side.
+  const mv::edit::placement p = _edits.preview_placement();
+  const float w = static_cast<float>(p.cropped.w), h = static_cast<float>(p.cropped.h);
+  const float over_long = w > 0 && h > 0 ? std::sqrt(w * w + h * h) / std::max(w, h) : 1.0f;
+  return mv::edit::kRedEyeDefaultRadius * std::exp2(_redEyeSize / 100.0f) * over_long;
+}
+
+- (BOOL)redEyeRing {
+  return _adjust.pick() == mv::shell::adjust_pick::red_eye && [self adjustPicking] ? YES : NO;
 }
 
 // Screen → the shown (edited) image's uv; false off the picture.
@@ -10509,6 +10565,7 @@ static double mv_wall_seconds() {
 - (void)brushRelease {
   _brush.end();
   [self bumpAdjustView];
+  ++_editGeneration;  // the wand menu: Undo stroke / Remove… enabled
 }
 
 // 0 the last stroke off, 1 all of them, 2 Remove: Enhance's sheet takes it.
@@ -10536,6 +10593,7 @@ static double mv_wall_seconds() {
   }
   [self brushPublish];
   [self bumpAdjustView];
+  ++_editGeneration;  // the wand menu
 }
 
 - (BOOL)adjustPicking {

@@ -183,9 +183,12 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.items[1].slot == mv::addon::item_slot::editor);
   CHECK(c.items[1].label == "Enhance…");
   CHECK(c.api_min == 11);
-  REQUIRE(d.m.commands.size() == 1);
+  // "open" and the Edit strip wand menu's "restyle", neither with a default key (docs/design/16).
+  REQUIRE(d.m.commands.size() == 2);
   CHECK(d.m.commands[0].id == "open");
-  CHECK(d.m.commands[0].windows.empty());  // no default key (docs/design/16)
+  CHECK(d.m.commands[1].id == "restyle");
+  CHECK(d.m.commands[0].windows.empty());
+  CHECK(d.m.commands[1].windows.empty());
   CHECK(d.m.chrome.empty());
   CHECK(mv::addon::loads_for_slots(d.m));
 }

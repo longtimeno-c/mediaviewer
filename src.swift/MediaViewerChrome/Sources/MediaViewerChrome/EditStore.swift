@@ -87,6 +87,13 @@ final class EditStore: ObservableObject {
   @Published private(set) var document = false
   /// Slice 5: the Enhance add-on is loaded; the strip offers Enhance….
   @Published private(set) var enhance = false
+  /// The wand menu's state (mv_edit_view.wand bits).
+  @Published private(set) var wand: Int32 = 0
+  var brushOn: Bool { wand & 1 != 0 }
+  var brushed: Bool { wand & 2 != 0 }
+  var brushFull: Bool { wand & 4 != 0 }
+  var offersRestyle: Bool { wand & 8 != 0 }
+  var eyesBusy: Bool { wand & 16 != 0 }
   @Published private(set) var cropActive = false
   @Published private(set) var aspect: CropAspect = .free
   @Published private(set) var portrait = false
@@ -124,6 +131,7 @@ final class EditStore: ObservableObject {
     if v.subject != subject { subject = v.subject }
     if (v.document != 0) != document { document = v.document != 0 }
     if (v.enhance != 0) != enhance { enhance = v.enhance != 0 }
+    if v.wand != wand { wand = v.wand }
     if document { OpenInStore.shared.follow() }
     let gallery = mv_chrome_gallery_visible()
     if gallery != galleryVisible { galleryVisible = gallery }
@@ -158,4 +166,12 @@ final class EditStore: ObservableObject {
   func setShowOriginal(_ on: Bool) { mv_chrome_edit_show_original(on ? 1 : 0) }
   func saveCopy() { mv_chrome_edit_save_copy() }
   func enhancePhoto() { mv_chrome_edit_enhance() }
+  /// The wand menu: Enhance's sheet started on Restyle with words.
+  func restylePhoto() { mv_chrome_edit_enhance_command("restyle") }
+  /// The Remove brush: on (at `size`, −100…100 about the default) or off.
+  func setBrush(_ on: Bool, size: Double) { mv_chrome_adjust_pick(on ? 3 : 0, Float(size)) }
+  /// 0 the last stroke off, 1 all of them, 2 Remove (Enhance's sheet).
+  func brushAction(_ action: Int32) { mv_chrome_adjust_brush(action) }
+  func openClosedEyes() { mv_chrome_edit_faces(0) }
+  func improveFaces() { mv_chrome_edit_faces(1) }
 }

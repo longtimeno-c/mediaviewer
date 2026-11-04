@@ -41,6 +41,24 @@ struct rgb8 {
   std::vector<std::uint8_t> rgb;  // width * height * 3
 };
 
+// The graphs' tensor and free-dimension names, from the spec's io.tensors.
+// Defaults are tools/package/restyle-export.py's; a diffusers-style export
+// (ForserX/instruct-pix2pix-onnx, pinned) names them as the comments say.
+struct restyle_io {
+  std::string ids = "input_ids";       // the text encoder's in (int64 or int32)
+  std::string sample = "sample";       // the UNet's ins
+  std::string timestep = "timestep";
+  std::string hidden = "hidden";       // "encoder_hidden_states"
+  std::string encode_in = "image";     // the VAE encoder's in ("sample")
+  std::string decode_in = "latent";    // the VAE decoder's in ("latent_sample")
+  std::string dim_batch = "b", dim_h = "h", dim_w = "w";  // "batch", "height", "width"
+  std::vector<std::pair<std::string, std::int64_t>> fixed;  // more dims to pin ("channels" 8, "sequence" 77)
+  // Core ML for the UNet where the runtime has it. The pinned export's UNet
+  // compiles there but fails to run (2026-11-04), so its spec turns it off:
+  // the CPU, about 5 s a step at Standard on an M-series Mac.
+  bool coreml = true;
+};
+
 struct restyle_params {
   std::string prompt;
   int steps = 20;
@@ -77,7 +95,8 @@ class restyle_model {
   // vae_decoder.onnx, vocab.json, merges.txt. The UNet runs on Core ML where
   // the runtime has it (compiled into `cache_dir` per picture size), else CPU.
   [[nodiscard]] static result<std::unique_ptr<restyle_model>> open(infer::runtime& rt, const std::string& dir,
-                                                                   const std::string& cache_dir);
+                                                                   const std::string& cache_dir,
+                                                                   restyle_io io = {});
   // `small` is at the edit's size (restyle_size: multiples of 64, else
   // invalid_arg). `progress(step, steps)`
   // returning false cancels (status::cancelled).

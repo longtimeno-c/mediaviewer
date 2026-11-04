@@ -1803,7 +1803,17 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   REQUIRE(rt);
   scratch_dir cache("restyle_cache");
   auto t0 = std::chrono::steady_clock::now();
-  auto model = restyle_model::open(**rt, dir, utf8(cache.root()));
+  // The shipped spec's tensor names (the pinned export's), unless
+  // MV_RESTYLE_OURS asks for restyle-export.py's own.
+  restyle_io io;
+  if (!std::getenv("MV_RESTYLE_OURS")) {
+    const auto text = mv::test::read_bytes(MV_ENHANCE_RESTYLE_SPEC);
+    const auto shipped = parse_spec(std::string_view(reinterpret_cast<const char*>(text.data()), text.size()),
+                                    model_kind::restyle);
+    REQUIRE(shipped);
+    io = restyle_io_of(*shipped);
+  }
+  auto model = restyle_model::open(**rt, dir, utf8(cache.root()), io);
   REQUIRE(model);
   // MV_RESTYLE_EDGE: a quality's long edge (768 High, 1024 Best), to measure it.
   const char* edge_env = std::getenv("MV_RESTYLE_EDGE");
@@ -1856,7 +1866,7 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
     return std::string("/tmp/photo-enhance.jpg");
   };
   port.load_restyle = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
-    return restyle_model::open(**rt, dir, utf8(cache.root()));
+    return restyle_model::open(**rt, dir, utf8(cache.root()), io);
   };
   job_runner jr(port);
   model_spec spec;

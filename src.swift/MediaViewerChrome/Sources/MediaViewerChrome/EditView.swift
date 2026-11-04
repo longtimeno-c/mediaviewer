@@ -68,13 +68,10 @@ struct EditStripView: View {
           .help("Show the original while on (or hold Y)")
           .accessibilityHint("Shows the photo without edits; nothing is changed")
           Spacer()
-          // An icon, so the strip keeps "Original" whole.
-          if store.enhance && !store.isClip {
-            Button { store.enhancePhoto() } label: { Image(systemName: "wand.and.stars") }
-              .buttonStyle(FlatButtonStyle(compact: true))
-              .fixedSize()
-              .help("Enhance… — a restored copy from the Enhance add-on, with these edits in it")
-              .accessibilityLabel("Enhance…")
+          // The wand: every Enhance feature for the photo, in one menu. An
+          // icon, so the strip keeps "Original" whole.
+          if !store.isClip {
+            WandMenu(store: store)
           }
           Button("Save copy…") { store.saveCopy() }
             .buttonStyle(FlatButtonStyle(compact: true))
@@ -293,3 +290,61 @@ private struct TrimPane: View {
       .accessibilityHint("Key \(key)")
   }
 }
+
+/// The Edit strip's wand: Enhance (more detail), Restyle with words, the
+/// Remove brush and Open closed eyes. Every action writes a new file; the
+/// photo's own edits are carried into it.
+private struct WandMenu: View {
+  @ObservedObject var store: EditStore
+  @State private var brushSize = 0.0
+
+  var body: some View {
+    Menu {
+      if store.enhance {
+        Button("Enhance photo…") { store.enhancePhoto() }
+          .help("A restored copy with more detail, from the Enhance add-on")
+        if store.offersRestyle {
+          Button("Restyle with words…") { store.restylePhoto() }
+            .help("Describe a new look (\"a snowy winter day\"); a new file is written")
+        }
+        Divider()
+      }
+      Section("Remove") {
+        Toggle("Brush over what to remove", isOn: Binding(get: { store.brushOn },
+                                                          set: { store.setBrush($0, size: brushSize) }))
+        Picker("Brush size", selection: Binding(get: { brushSize }, set: { size in
+          brushSize = size
+          if store.brushOn { store.setBrush(true, size: size) }
+        })) {
+          Text("Small").tag(-60.0)
+          Text("Medium").tag(0.0)
+          Text("Large").tag(60.0)
+        }
+        Button("Undo last stroke") { store.brushAction(0) }.disabled(!store.brushed)
+        Button("Clear brush") { store.brushAction(1) }.disabled(!store.brushed)
+        Button(store.enhance ? "Remove brushed area…" : "Remove brushed area… (needs Enhance)") {
+          store.brushAction(2)
+        }
+        .disabled(!store.brushed || !store.enhance)
+      }
+      Divider()
+      Section("Faces") {
+        Button("Open closed eyes") { store.openClosedEyes() }
+          .disabled(store.eyesBusy)
+          .help("This person's open eyes from another of their photos, turned the same way and in this photo's light. Saves a new file.")
+        Button("Improve faces from your photos") { store.improveFaces() }
+          .disabled(store.eyesBusy)
+          .help("Each face replaced by a clearly better one of the same person from your photos (People in Local search), turned the same way and in this photo's light. Saves a new file.")
+        if store.eyesBusy { Text("Looking through their photos…") }
+      }
+    } label: {
+      Image(systemName: store.brushOn ? "paintbrush.pointed.fill" : "wand.and.stars")
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .help("Enhance, restyle, remove and fix faces — each writes a new file")
+    .accessibilityLabel("Enhance tools")
+  }
+}
+

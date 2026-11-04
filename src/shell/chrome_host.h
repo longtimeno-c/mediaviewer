@@ -240,6 +240,7 @@ enum class chrome_edit_action : std::int32_t {
   original_on = 2,
   save_copy = 3,     // applies a crop draft, then the PR 10 export dialog
   enhance = 4,       // slice 5: Enhance's sheet for the photo, with the edit in its copy
+  restyle = 5,       // the wand menu: Enhance's sheet, started on Restyle with words
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -622,7 +623,8 @@ struct chrome_edit_args {
   std::int32_t document;
   // edit-adjust slice 5: the Enhance add-on is loaded; the strip offers Enhance….
   std::int32_t enhance;
-  std::int32_t reserved;
+  // The wand menu (adjust_pane.h kWand*): the Remove brush and what Enhance offers.
+  std::int32_t wand;
 };
 
 static_assert(sizeof(chrome_edit_args) == 96, "keep in sync with IslandHost.Edit EditArgsSize");

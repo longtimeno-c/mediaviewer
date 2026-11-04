@@ -1235,6 +1235,11 @@ MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* 
  * [worker-thread]. */
 MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_out, uint32_t cap,
                                              uint32_t* needed);
+/* The wand menu's "Improve faces from your photos" (owner 2026-11-04): each
+ * face replaced by a clearly better one of the same person from the same
+ * moment or their other photos in People, turned the same way, in this
+ * photo's light; a new file beside the photo. As mv_open_closed_eyes. */
+MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out, uint32_t cap, uint32_t* needed);
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file

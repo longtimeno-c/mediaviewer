@@ -683,7 +683,7 @@ edit::placement present_lab_mac::place_image(const image::gpu_image_mac& img) co
 void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || video_frame_) return;
   const edit_view* v = edit_for(current_image_->item_id);
-  if (v && v->brush_on && !v->crop_overlay) {
+  if (v && (v->brush_on || v->brush_cursor[2] > 0.0f) && !v->crop_overlay) {
     float pw = 0.0f, ph = 0.0f;
     if (!picture_size(&pw, &ph)) return;
     const float win_w = usable_window_w(snapshot), win_h = usable_window_h(snapshot);

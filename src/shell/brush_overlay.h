@@ -16,12 +16,13 @@ namespace mv::shell {
 // `pw` x `ph` the shown picture, `zoom` screen pixels per picture pixel.
 template <class ToScreen>
 void draw_brush_overlay(const edit_view& v, float pw, float ph, float zoom, float scale, ToScreen to_screen) {
-  if (!v.brush_on || pw <= 0.0f || ph <= 0.0f || zoom <= 0.0f) return;
+  if (pw <= 0.0f || ph <= 0.0f || zoom <= 0.0f) return;
   ImDrawList* fg = ImGui::GetForegroundDrawList();
   const float long_side = std::max(pw, ph);
-  // Overlapping dabs build up toward solid, as a soft brush would.
+  // Overlapping dabs build up toward solid, as a soft brush would. The ring
+  // alone (no dabs) is the red-eye tool's: where a click lands, and its size.
   const ImU32 paint = IM_COL32(255, 70, 90, 46);
-  for (std::uint32_t i = 0; i < v.brush_count && i < kBrushDabs; ++i) {
+  for (std::uint32_t i = 0; v.brush_on && i < v.brush_count && i < kBrushDabs; ++i) {
     const brush_dab& d = v.brush[i];
     fg->AddCircleFilled(to_screen(d.u * pw, d.v * ph), d.r * long_side * zoom, paint);
   }

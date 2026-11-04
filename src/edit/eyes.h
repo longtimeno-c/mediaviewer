@@ -40,6 +40,25 @@ using face_landmarks = std::array<float, 10>;
 // target's: a little more open is noise, not a fix.
 inline constexpr float kEyesBetter = 1.35f;
 
+// How differently two faces are turned: the nose and mouth corners placed in
+// each face's own frame (eye midpoint at 0, the eye line along x, eye distance
+// 1), the mean distance between the two. 0 the same pose; a frontal face and
+// one turned about 30 degrees are about 0.25 apart. Landmarks are 0..1 of
+// their image, so each image's size is given. A donor from another day (People)
+// must be within kPoseMatch: further, its eyes look the wrong way.
+[[nodiscard]] float pose_distance(const face_landmarks& a, float aw, float ah, const face_landmarks& b, float bw,
+                                  float bh) noexcept;
+inline constexpr float kPoseMatch = 0.12f;
+
+// The whole inner face (brows to chin, cheek to cheek) from a donor photo of
+// the same person, turned as this one is (owner 2026-11-04: "improve faces from
+// your photos"): aligned by the least-squares similarity of the five
+// landmarks, its light, glints, sharpness and grain matched to the target's as
+// transfer_eyes does, feathered into the face around it. invalid_arg for a
+// face under 24 px between the eyes or a donor at another pose.
+[[nodiscard]] expected transfer_face(image::linear_image& target, const face_landmarks& target_lm,
+                                     const image::linear_image& donor, const face_landmarks& donor_lm);
+
 // `target` with both eyes of the face at `target_lm` replaced by those of the
 // donor face at `donor_lm` in `donor`. Refused (invalid_arg) when either
 // face's eyes are under 12 px apart: nothing to transfer.

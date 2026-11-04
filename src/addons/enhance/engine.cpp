@@ -332,11 +332,13 @@ void engine::closed(const std::string& screen) {
   if (cancel_run) cancel();
 }
 
-void engine::command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns) {
+void engine::command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns,
+                     std::optional<photo_target> start_on) {
   std::uint64_t open = 0;
   float width = 420, scale = 2;
   {
     std::lock_guard lock(m_);
+    if (start_on && !running_) prefs_.photo = *start_on;
     if (!paths.empty()) {
       pending_path_ = paths.front();
       pending_keep_ = std::move(keep_ns);

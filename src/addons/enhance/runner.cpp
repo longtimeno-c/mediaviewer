@@ -148,6 +148,32 @@ restyle_quality quality_of(const job_request::part& part) {
 
 }  // namespace
 
+// io.tensors: the graphs' names when the pinned export is not our own.
+restyle_io restyle_io_of(const model_spec& spec) {
+  restyle_io io;
+  if (const json::value* t = spec.io.find("tensors")) {
+    const auto take = [&](const char* key, std::string& into) {
+      if (const std::string* v = t->str(key)) into = *v;
+    };
+    take("ids", io.ids);
+    take("sample", io.sample);
+    take("timestep", io.timestep);
+    take("hidden", io.hidden);
+    take("encode_in", io.encode_in);
+    take("decode_in", io.decode_in);
+    take("dim_batch", io.dim_batch);
+    take("dim_h", io.dim_h);
+    take("dim_w", io.dim_w);
+    if (const json::value* c = t->find("coreml"); c && c->k == json::kind::boolean) io.coreml = c->b;
+    if (const json::value* fixed = t->find("fixed"); fixed && fixed->k == json::kind::object) {
+      for (const auto& [name, v] : fixed->o) {
+        if (v.k == json::kind::number && v.is_integer && v.i > 0 && v.i < 4096) io.fixed.emplace_back(name, v.i);
+      }
+    }
+  }
+  return io;
+}
+
 job_runner::job_runner(run_port port) : port_(std::move(port)) {}
 
 job_runner::~job_runner() {

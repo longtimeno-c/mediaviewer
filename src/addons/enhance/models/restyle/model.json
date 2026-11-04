@@ -1,11 +1,10 @@
 {
  "kind": "restyle",
  "name": "Restyle",
- "credit": "InstructPix2Pix, Tim Brooks, Aleksander Holynski, Alexei A. Efros (CreativeML OpenRAIL-M: its use restrictions apply)",
- "weights": ["text_encoder.onnx", "unet.onnx", "unet.onnx.data", "vae_encoder.onnx", "vae_decoder.onnx",
-             "vocab.json", "merges.txt"],
+ "credit": "InstructPix2Pix, Tim Brooks, Aleksander Holynski, Alexei A. Efros; ONNX export by ForserX (CreativeML OpenRAIL-M: its use restrictions apply)",
+ "weights": ["text_encoder.onnx", "unet.onnx", "vae_encoder.onnx", "vae_decoder.onnx", "vocab.json", "merges.txt"],
  "run_bytes": 12000000000,
- "cpu": false,
+ "cpu": true,
  "knobs": [
   {"id": "prompt", "label": "Change", "type": "text", "default": "",
    "placeholder": "make it a snowy winter day",
@@ -21,5 +20,9 @@
  "io": {"runner": "diffusion", "edge": 512, "steps": 20,
         "qualities": {"standard": {"edge": 512, "run_bytes": 12000000000},
                       "high": {"edge": 768, "run_bytes": 18000000000},
-                      "best": {"edge": 1024, "run_bytes": 32000000000}}}
+                      "best": {"edge": 1024, "run_bytes": 32000000000}},
+        "tensors": {"ids": "input_ids", "sample": "sample", "timestep": "timestep",
+                    "hidden": "encoder_hidden_states", "encode_in": "sample", "decode_in": "latent_sample",
+                    "dim_batch": "batch", "dim_h": "height", "dim_w": "width", "coreml": false,
+                    "fixed": {"channels": 8, "sequence": 77}}}
 }

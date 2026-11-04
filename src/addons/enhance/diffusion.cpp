@@ -166,6 +166,7 @@ struct restyle_model::impl {
   std::unique_ptr<infer::session> text, enc, dec;
   std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<infer::session>> unets;  // by latent h, w
   std::unique_ptr<infer::clip_tokenizer> tok;
+  restyle_io io;
   bool gpu = false;
 
   result<infer::session*> unet(std::int64_t h, std::int64_t w) {
@@ -173,8 +174,9 @@ struct restyle_model::impl {
     if (auto it = unets.find(key); it != unets.end()) return it->second.get();
     const std::string file = dir + "/unet.onnx";
     infer::session_options o;
-    o.fixed_dims = {{"b", 3}, {"h", h}, {"w", w}};
-    if (rt->has_provider(infer::backend::coreml)) {
+    o.fixed_dims = {{io.dim_batch, 3}, {io.dim_h, h}, {io.dim_w, w}};
+    for (const auto& [name, size] : io.fixed) o.fixed_dims.emplace_back(name, size);
+    if (io.coreml && rt->has_provider(infer::backend::coreml)) {
       o.on = infer::backend::coreml;
       o.cache_dir_utf8 = cache;
       if (auto s = infer::session::open(*rt, file, o); s && (*s)->on() == infer::backend::coreml) {
@@ -202,8 +204,9 @@ expected restyle_model::prepare(std::uint32_t width, std::uint32_t height) {
 }
 
 result<std::unique_ptr<restyle_model>> restyle_model::open(infer::runtime& rt, const std::string& dir,
-                                                           const std::string& cache_dir) {
+                                                           const std::string& cache_dir, restyle_io io) {
   auto p = std::make_unique<impl>();
+  p->io = std::move(io);
   p->rt = &rt;
   p->dir = dir;
   p->cache = cache_dir;
@@ -232,7 +235,7 @@ result<rgb8> restyle_model::run(const rgb8& small, const restyle_params& prm,
     const std::vector<std::int64_t> t = p_->tok->encode(row == 0 ? prm.prompt : std::string());
     std::copy_n(t.begin(), std::min<std::size_t>(t.size(), kTokens), ids.begin() + row * kTokens);
   }
-  const infer::session::named_input text_in{"input_ids", {2, kTokens}, infer::session::element::i64, nullptr,
+  const infer::session::named_input text_in{p_->io.ids, {2, kTokens}, infer::session::element::i64, nullptr,
                                             ids.data(), nullptr, ids.size()};
   MV_TRY(auto text, p_->text->run_named(std::span(&text_in, 1)));
   if (text.empty() || text[0].data.size() != static_cast<std::size_t>(2 * kTokens * kHidden)) return err(status::internal);
@@ -249,7 +252,7 @@ result<rgb8> restyle_model::run(const rgb8& small, const restyle_params& prm,
   for (std::size_t i = 0; i < px; ++i) {
     for (int k = 0; k < 3; ++k) image[static_cast<std::size_t>(k) * px + i] = small.rgb[i * 3 + static_cast<std::size_t>(k)] / 127.5f - 1.0f;
   }
-  const infer::session::named_input enc_in{"image", {1, 3, H, W}, infer::session::element::f32, image.data(),
+  const infer::session::named_input enc_in{p_->io.encode_in, {1, 3, H, W}, infer::session::element::f32, image.data(),
                                            nullptr, nullptr, image.size()};
   MV_TRY(auto enc, p_->enc->run_named(std::span(&enc_in, 1)));
   const std::size_t lat = static_cast<std::size_t>(4 * h * w);
@@ -275,9 +278,9 @@ result<rgb8> restyle_model::run(const rgb8& small, const restyle_params& prm,
     }
     const std::vector<float> t(3, s.timesteps[static_cast<std::size_t>(i)]);
     const infer::session::named_input in[3] = {
-        {"sample", {3, 8, h, w}, infer::session::element::f32, sample.data(), nullptr, nullptr, sample.size()},
-        {"timestep", {3}, infer::session::element::f32, t.data(), nullptr, nullptr, t.size()},
-        {"hidden", {3, kTokens, kHidden}, infer::session::element::f32, hidden.data(), nullptr, nullptr, hidden.size()},
+        {p_->io.sample, {3, 8, h, w}, infer::session::element::f32, sample.data(), nullptr, nullptr, sample.size()},
+        {p_->io.timestep, {3}, infer::session::element::f32, t.data(), nullptr, nullptr, t.size()},
+        {p_->io.hidden, {3, kTokens, kHidden}, infer::session::element::f32, hidden.data(), nullptr, nullptr, hidden.size()},
     };
     MV_TRY(auto eps, unet->run_named(std::span(in, 3)));
     if (eps.empty() || eps[0].data.size() != 3 * lat) return err(status::internal);
@@ -300,7 +303,7 @@ result<rgb8> restyle_model::run(const rgb8& small, const restyle_params& prm,
 
   // 4. Back to pixels.
   for (float& v : latents) v /= kVaeScale;
-  const infer::session::named_input dec_in{"latent", {1, 4, h, w}, infer::session::element::f32, latents.data(),
+  const infer::session::named_input dec_in{p_->io.decode_in, {1, 4, h, w}, infer::session::element::f32, latents.data(),
                                            nullptr, nullptr, latents.size()};
   MV_TRY(auto dec, p_->dec->run_named(std::span(&dec_in, 1)));
   if (dec.empty() || dec[0].data.size() != 3 * px) return err(status::internal);

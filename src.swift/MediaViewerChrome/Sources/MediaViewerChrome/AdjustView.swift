@@ -27,6 +27,9 @@ struct AdjustView: View {
   @State private var brushSize = 0.0
   @State private var curvesChannel = 0
   @FocusState private var focused: Bool
+  /// The request field has the keyboard: the pane's own keys (0, A, R, arrows)
+  /// step aside, or typing "warmer" would reset every slider on its "r".
+  @FocusState private var typing: Bool
 
   private var status: String {
     switch store.readiness {
@@ -88,6 +91,7 @@ struct AdjustView: View {
       TextField("Describe a change — a bit warmer, less noise…", text: $request)
         .textFieldStyle(.roundedBorder)
         .disabled(!store.ready)
+        .focused($typing)
         .onSubmit {
           store.prompt(request)
           request = ""
@@ -98,7 +102,11 @@ struct AdjustView: View {
       }
       ScrollView {
         VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-          ForEach(AdjustStore.sections.indices, id: \.self) { i in
+          // Faces and Remove live in the Edit strip's wand menu, with the
+          // other Enhance features; the pane is colour and tone.
+          ForEach(AdjustStore.sections.indices.filter {
+            $0 != AdjustStore.facesSection && $0 != AdjustStore.removeSection
+          }, id: \.self) { i in
             sectionView(i)
           }
         }
@@ -116,31 +124,47 @@ struct AdjustView: View {
     .focusable()
     .focused($focused)
     .onKeyPress(.upArrow) {
+      if typing { return .ignored }
       let n = rows.count
       if n > 0 { row = (min(row, n - 1) + n - 1) % n }
       return .handled
     }
     .onKeyPress(.downArrow) {
+      if typing { return .ignored }
       let n = rows.count
       if n > 0 { row = (min(row, n - 1) + 1) % n }
       return .handled
     }
     .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+      if typing { return .ignored }
       guard let p = current else { return .ignored }
       let sign: Double = press.key == .leftArrow ? -1 : 1
       step(p, sign * (press.modifiers.contains(.shift) ? 10 : 1))
       return .handled
     }
     .onKeyPress("0") {
+      if typing { return .ignored }
       if let p = current { store.set(p, 0) }
       return .handled
     }
     .onKeyPress("a") {
+      if typing { return .ignored }
       if let p = current, let sec = sectionOf(p), AdjustStore.sections[sec].hasAuto { store.auto(sec) }
       return .handled
     }
-    .onKeyPress("r") { store.reset(); return .handled }
-    .onKeyPress(.escape) { store.blur(); return .handled }
+    .onKeyPress("r") {
+      if typing { return .ignored }
+      store.reset()
+      return .handled
+    }
+    .onKeyPress(.escape) {
+      if typing {
+        typing = false  // out of the field, still in the pane
+        return .handled
+      }
+      store.blur()
+      return .handled
+    }
     .onAppear { focused = store.visible }
     .onChange(of: store.visible) { _, nowVisible in if nowVisible { focused = true } }
   }
@@ -264,7 +288,8 @@ struct AdjustView: View {
         HStack {
           Text("Size").foregroundStyle(.secondary)
           Slider(value: $redEyeSize, in: -100...100, step: 5)
-            .onChange(of: redEyeSize) { _, v in if store.picking == 2 { store.pick(2, size: v) } }
+            // Moving the size picks the tool up: the next click on a pupil fixes it.
+            .onChange(of: redEyeSize) { _, v in store.pick(2, size: v) }
         }
         if store.spotCount > 0 {
           Text("\(store.spotCount) fixed").font(.caption).foregroundStyle(.secondary)

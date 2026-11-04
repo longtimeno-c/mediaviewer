@@ -121,3 +121,76 @@ TEST_CASE("eyes: a shut pair takes the donor's, aligned, colour-matched, nothing
   auto t2 = draw(100, 100, tiny);
   CHECK_FALSE(edit::transfer_eyes(t2, marks(t2, tiny), donor, marks(donor, donor_face)));
 }
+
+TEST_CASE("eyes: pose distance is 0 for one face anywhere and grows as the head turns", "[eyes]") {
+  // Right eye, left eye, nose, mouth right, mouth left (0..1 of a 1000 x 800 image).
+  const mv::edit::face_landmarks front{0.40f, 0.40f, 0.50f, 0.40f, 0.45f, 0.4625f, 0.42f, 0.525f, 0.48f, 0.525f};
+  // The same face moved, scaled and the image a different size: the same pose.
+  mv::edit::face_landmarks moved{};
+  for (int i = 0; i < 10; i += 2) {
+    moved[i] = (front[i] * 1000.0f * 0.5f + 100.0f) / 2000.0f;
+    moved[i + 1] = (front[i + 1] * 800.0f * 0.5f + 50.0f) / 1000.0f;
+  }
+  CHECK(mv::edit::pose_distance(front, 1000, 800, moved, 2000, 1000) < 0.01f);
+  // Turned: the nose and mouth slide toward one eye.
+  mv::edit::face_landmarks turned = front;
+  turned[4] += 0.03f;
+  turned[6] += 0.03f;
+  turned[8] += 0.03f;
+  const float d = mv::edit::pose_distance(front, 1000, 800, turned, 1000, 800);
+  CHECK(d > mv::edit::kPoseMatch);
+  // Tilted (rolled) only: the frame follows the eye line, so it still matches.
+  mv::edit::face_landmarks rolled{};
+  const float a = 0.3f, cx = 450.0f, cy = 360.0f;
+  for (int i = 0; i < 10; i += 2) {
+    const float x = front[i] * 1000.0f - cx, y = front[i + 1] * 800.0f - cy;
+    rolled[i] = (cx + std::cos(a) * x - std::sin(a) * y) / 1000.0f;
+    rolled[i + 1] = (cy + std::sin(a) * x + std::cos(a) * y) / 800.0f;
+  }
+  CHECK(mv::edit::pose_distance(front, 1000, 800, rolled, 1000, 800) < 0.01f);
+}
+
+namespace {
+// All five points (the nose and mouth too), for the whole-face transfer.
+mv::edit::face_landmarks five(const mv::image::linear_image& img, const face& f) {
+  mv::edit::face_landmarks lm = marks(img, f);
+  const float c = std::cos(f.turn), s = std::sin(f.turn);
+  const float w = static_cast<float>(img.width), h = static_cast<float>(img.height);
+  const auto put = [&](int i, float ux, float uy) {
+    lm[2 * i] = (f.cx + c * ux * f.d - s * uy * f.d) / w;
+    lm[2 * i + 1] = (f.cy + s * ux * f.d + c * uy * f.d) / h;
+  };
+  put(2, 0.0f, 0.55f);    // nose
+  put(3, -0.35f, 1.0f);   // mouth corners
+  put(4, 0.35f, 1.0f);
+  return lm;
+}
+}  // namespace
+
+TEST_CASE("faces: the whole face comes from another photo, in this photo's light, at its pose only",
+          "[eyes][face]") {
+  // This photo: shut, dim, small. The donor: open, twice as bright, larger and
+  // a little tilted (another day).
+  const face here{200, 140, 60, 0.0f, false, 0.6f};
+  const face there{330, 230, 96, 0.12f, true, 1.2f};
+  mv::image::linear_image target = draw(400, 320, here);
+  const mv::image::linear_image donor = draw(640, 480, there);
+  const mv::image::linear_image before = target;
+  const auto t = five(target, here), d = five(donor, there);
+  const float shut = mv::edit::eye_openness(target, t);
+  REQUIRE(mv::edit::transfer_face(target, t, donor, d));
+  CHECK(mv::edit::eye_openness(target, t) > shut * mv::edit::kEyesBetter);
+  // The skin keeps this photo's light (the donor's is twice as bright).
+  const auto red = [](const mv::image::linear_image& img, int x, int y) {
+    return mv::image::half_to_float(img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4]);
+  };
+  CHECK(red(target, 200, 175) == Approx(red(before, 200, 175)).margin(0.06));
+  // Outside the face, nothing moved.
+  CHECK(red(target, 20, 20) == red(before, 20, 20));
+  CHECK(red(target, 380, 300) == red(before, 380, 300));
+  // A donor turned away (its nose and mouth slid to one side) is refused.
+  auto turned = d;
+  for (int i = 4; i < 10; i += 2) turned[i] += 0.04f;
+  mv::image::linear_image again = before;
+  CHECK_FALSE(mv::edit::transfer_face(again, t, donor, turned));
+}
