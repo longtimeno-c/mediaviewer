@@ -122,6 +122,7 @@ Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in
 | **gallery** | The gallery grid is visible (and no popup) | Owns navigation even with canvas focus. Unmodified printable keys reach only gallery navigation, `G`, `F`, `?`, `/`; other letters are typeahead |
 | **island** | Filmstrip or gallery island has focus | In-pane traversal belongs to XAML; unmodified printable keys are typeahead. Named keys and chords still route |
 | **crop** | Crop mode on a still | Owns its keys; `A` `D`, `G`, `Ctrl+O` do nothing (walking away would drop the draft) |
+| **tool** | A canvas tool armed on a still (the Remove brush, red-eye, the white-balance picker; `shell/canvas_tool.h`), not in a slideshow | Layers over **browse**: only the tool's rows differ (below, "Canvas tools"). `blocked_in_tool` refuses rotate, flip, crop and the Bin always, and walking away (`A` `D`, `←` `→`, `Home` `End`, the folder walks, page skips) while strokes are pending; a refused key says why ("Remove or clear the strokes first") once, not per repeat. The same rule greys or refuses those commands from the menus and buttons |
 | **trim** | Trim armed on a clip (not in a slideshow) | Layers over **video**: unbound keys fall back to the video rows |
 | **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
 | **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
@@ -136,7 +137,8 @@ folder and `Q` / `E` still skip.
 ### `Esc` walks out
 
 `resolve_back` picks one target per press, never quitting: text field → popup (`?`, go-to, find)
-→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
+→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → canvas tool (put down;
+the brush's strokes stay, dimmed, for Remove later) → trim (disarm, markers kept) → pane → gallery →
 slideshow → fullscreen → runner → canvas focus → result list ("Back to folder", the outermost:
 a search result list is a place, not an overlay). A list opened from the empty window (a search
 from the welcome) goes back to the empty window: the welcome card with its recent folders, the
@@ -473,6 +475,23 @@ yet) and not in a slideshow.
 | `Ctrl+S` | browse | Export the edits to a new file beside the original (`<name>-edit.jpg`); never overwrites |
 | hold `Y` | browse | Show the original (edit stack untouched) |
 | `Enter` | browse, video | Open / close the **Edit workspace** — Edit image on a still, Edit video on a clip ([edit workspace](20-edit-workspace.md)). `Shift+C` / `Shift+A` / `Ctrl+T` open it on Crop / Colour / Trim; with it open `I` / `Ctrl+J` select its Info / Jobs tabs |
+
+### Canvas tools
+
+docs/plans/edit-refresh.md S3 (`shell/canvas_tool.h`, [20](20-edit-workspace.md) "Canvas tools"). Rows in
+mode **tool**; everything else is the browse row underneath, minus what `blocked_in_tool` refuses.
+
+| Key | Modes | Command |
+|---|---|---|
+| `B` | browse, tool | **Remove brush** (`tool_brush`): opens Edit on the Enhance tab with the brush armed (owner call D). `Ctrl+B` stays the clip split |
+| `[` `]` (repeat) | tool | **Smaller / Bigger brush** (`tool_smaller` / `tool_bigger`): the ring ×1/1.2 / ×1.2, 4–400 px on screen, with a fading "48 px" beside it. Never rotates in this mode |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | tool | **Undo / Redo stroke** (`tool_undo` / `tool_redo`): one stroke; with red-eye, one fix (the edit stack's undo) |
+| `Backspace`, `Delete` | tool | **Clear strokes** (`tool_clear`); with red-eye, every fix off as one step. Never the Bin |
+| `Enter` | tool | **Apply tool** (`tool_apply`): Remove (Enhance takes what is brushed); otherwise the tool goes down |
+| hold `Space` | tool | **Pan while brushing** (`tool_pan` / `tool_pan_release`): a drag pans, the open hand shows. Never next |
+| `Alt` / `⌥` held | tool | The brush erases while it is down (the ring dashes); no row, read at the press |
+| `Esc` | tool | The tool goes down (strokes kept, dimmed) |
+| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): the rail, the Enhance tab's cards, Edit ▸ on the Mac, Settings. Faces and Extend open the Enhance tab / Enhance's sheet until S8 / S6 make them canvas tools |
 
 ### Crop
 

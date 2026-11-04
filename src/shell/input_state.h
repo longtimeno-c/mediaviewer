@@ -13,6 +13,7 @@
 // threading model the one the plan describes.
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 
 #include "gfx/adjust_kernel.h"
@@ -71,7 +72,24 @@ struct canvas_map {
     return true;
   }
   [[nodiscard]] float aspect() const noexcept { return height > 0.0f ? width / height : 1.0f; }
+  // docs/plans/edit-refresh.md S3: the shown picture's long side on screen, in
+  // physical pixels (a tool's ring and dabs are sized against it).
+  [[nodiscard]] float screen_long_px() const noexcept {
+    return valid && zoom > 0.0f ? (width > height ? width : height) * zoom : 0.0f;
+  }
 };
+
+// S3: the clock both threads read for the tools' overlay deadlines
+// (edit_view::tool_label_until_ms, tool_pulse_until_ms).
+[[nodiscard]] inline std::uint64_t steady_ms() noexcept {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch())
+                                        .count());
+}
+
+// S3: the red-eye spots an edit_view carries (edit::kRedEyeSpots; asserted in
+// shell/canvas_tool.h, which this header must not include).
+inline constexpr int kToolSpots = 8;
 
 // PR 10: the edit geometry for one opened item, as the render thread needs it
 // (edit::geometry flattened to POD). The render thread places it against the
@@ -104,6 +122,25 @@ struct edit_view {
   std::uint32_t brush_count = 0;
   float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
   brush_dab brush[kBrushDabs] = {};
+  // docs/plans/edit-refresh.md S3: the canvas tool's overlay (shell/tool_overlay.h).
+  // `tool` is shell::canvas_tool. The ring under the pointer is brush_cursor's
+  // u, v drawn at `tool_ring_px` (physical pixels, sized on screen, not in
+  // the picture), dashed while the brush erases. The red-eye spots are in
+  // the shown picture's uv with radii over its long side; `tool_hover_spot` is
+  // the one a click would remove (-1 none). The pulse marks a fix just made
+  // (until `tool_pulse_until_ms`), the size label shows `tool_label_px` until
+  // `tool_label_until_ms` (shell::steady_ms). Every change bumps brush_rev.
+  std::uint8_t tool = 0;
+  std::uint8_t tool_erase = 0;
+  std::uint8_t tool_dim = 0;  // put down with strokes kept: drawn dimmed
+  std::int8_t tool_hover_spot = -1;
+  float tool_ring_px = 0.0f;
+  float tool_label_px = 0.0f;
+  std::uint64_t tool_label_until_ms = 0;
+  std::uint32_t tool_spot_count = 0;
+  float tool_spots[kToolSpots][3] = {};
+  float tool_pulse[3] = {-1.0f, -1.0f, 0.0f};
+  std::uint64_t tool_pulse_until_ms = 0;
 };
 
 struct input_snapshot {

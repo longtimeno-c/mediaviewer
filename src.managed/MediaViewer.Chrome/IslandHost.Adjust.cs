@@ -148,23 +148,22 @@ public static partial class IslandHost
     private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false, false, false, false };
     private const int FacesSection = 9;
     private const int RemoveSection = 10;
-    // Slice 7: the Remove brush from native, its size, and its controls.
+    // Slice 7: the Remove brush from native and its controls (S3: its size is
+    // the context bar's, IslandHost.ToolBar.cs).
     private static int _brushStrokes;
     private static bool _brushFull;
-    private static double _brushSize;
     private static Button? _brushPick;
     private static Button? _brushUndo;
     private static Button? _brushClear;
     private static Button? _brushRemove;
     private static TextBlock? _brushNote;
     // Slice 3: the band Selective Colour shows, the pick mode and fixes from
-    // native, the red-eye tool's size, and their controls.
+    // native, and their controls.
     private static int _band;
     private static string _promptNote = "";
     private static TextBlock? _promptNoteText;
     private static int _picking;
     private static int _spotCount;
-    private static double _redEyeSize;
     private static Button? _wbPick;
     private static Button? _redEyePick;
     private static TextBlock? _redEyeCount;
@@ -763,15 +762,9 @@ public static partial class IslandHost
             _redEyePick = EditButton("Fix red eyes", () => SendPick(_picking == 2 ? 0 : 2));
             _redEyePick.TabIndex = tab++;
             bodyStack.Children.Add(_redEyePick);
-            var size = new Slider { Minimum = -100, Maximum = 100, StepFrequency = 5, Value = _redEyeSize, TabIndex = tab++ };
-            AutomationProperties_SetName(size, "Red-eye size");
-            size.ValueChanged += (_, e) =>
-            {
-                _redEyeSize = e.NewValue;
-                if (_picking == 2) SendPick(2);
-            };
-            bodyStack.Children.Add(Text("Size", Body));
-            bodyStack.Children.Add(size);
+            // docs/plans/edit-refresh.md S3: the size, Find eyes and Done are the
+            // context bar's, below the photo, while the tool is armed.
+            bodyStack.Children.Add(Text("Size, Find eyes and Done are in the bar below the photo", Body, UiFontSize - 3));
             _redEyeCount = Text("", Body, UiFontSize - 2);
             bodyStack.Children.Add(_redEyeCount);
         }
@@ -781,15 +774,8 @@ public static partial class IslandHost
             _brushPick = EditButton("Brush over what to remove", () => SendPick(_picking == 3 ? 0 : 3));
             _brushPick.TabIndex = tab++;
             bodyStack.Children.Add(_brushPick);
-            var size = new Slider { Minimum = -100, Maximum = 100, StepFrequency = 5, Value = _brushSize, TabIndex = tab++ };
-            AutomationProperties_SetName(size, "Brush size");
-            size.ValueChanged += (_, e) =>
-            {
-                _brushSize = e.NewValue;
-                if (_picking == 3) SendPick(3);
-            };
-            bodyStack.Children.Add(Text("Size", Body));
-            bodyStack.Children.Add(size);
+            // S3: the size (and Erase) are the context bar's, below the photo.
+            bodyStack.Children.Add(Text("Size and Erase are in the bar below the photo", Body, UiFontSize - 3));
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
             _brushUndo = EditButton("Undo stroke", () => Send(Command.AdjustBrush, 0));
             _brushUndo.TabIndex = tab++;
@@ -1061,8 +1047,8 @@ public static partial class IslandHost
 
     // Slice 3: what the next click on the photo does (shell::adjust_pick).
     // The size is the red-eye tool's, or the Remove brush's (mode 3).
-    private static void SendPick(int mode) =>
-        Send(Command.AdjustPick, mode * 1000 + (float)Math.Round((mode == 3 ? _brushSize : _redEyeSize) + 100));
+    // The size travels apart now (the context bar, [ ]): native ignores it.
+    private static void SendPick(int mode) => Send(Command.AdjustPick, mode * 1000 + 100);
 
     private static void PickChannel(int section, int channel)
     {

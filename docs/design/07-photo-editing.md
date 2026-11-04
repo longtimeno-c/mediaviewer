@@ -108,10 +108,12 @@ The stack folds into two canonical states:
   definition 32 ms, noise 87 ms, all four 96 ms.
 
   **Remove** (its own section; [plan](../plans/edit-adjust.md) slice 7) is a brush: the pane's
-  button turns it on (`adjust_pick::remove`), a drag on the photo paints round dabs in the shown
-  picture's uv (`shell/remove_brush.h`, at most 512, one undo step a stroke), and the canvas draws
-  them and a ring under the pointer in the crop overlay's pass (`shell/brush_overlay.h`, both
-  labs), presenting only while they change. A new item, a geometry change or crop mode clears them.
+  button, `B`, the rail or the Enhance tab arms it (a canvas tool since
+  docs/plans/edit-refresh.md S3, [20](20-edit-workspace.md) "Canvas tools"), a drag on the photo
+  paints round dabs in the shown picture's uv, sized in screen pixels (`shell/remove_brush.h`, at
+  most 512, one undo step a stroke, redo, Alt / ⌥ erases), and the canvas draws them and a ring
+  under the pointer in the crop overlay's pass (`shell/tool_overlay.h`, both labs), presenting
+  only while they change. A new item, a geometry change or crop mode clears them.
   **Remove…** hands the dabs to Enhance (`still_mask`, [14](14-abi.md)) and opens its sheet, which
   fills what is brushed with LaMa and writes a new file ([29](29-enhance.md) "Remove"); the stack
   and the original are untouched.

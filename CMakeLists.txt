@@ -1220,6 +1220,7 @@ if(MV_BUILD_TESTS)
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
     # Slice 7: the Remove brush's strokes and mask.
+    tests/test_canvas_tool.cpp
     tests/test_remove_brush.cpp
     src/shell/remove_brush.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).

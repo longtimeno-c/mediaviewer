@@ -41,7 +41,8 @@ TEST_CASE("table rows are well-formed", "[shell][commands][review]") {
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
                b.command == command_id::kind_filter_next || b.command == command_id::pane_wider ||
                b.command == command_id::pane_narrower ||
-               b.command == command_id::auto_enhance));
+               b.command == command_id::auto_enhance || b.command == command_id::tool_red_eye ||
+               b.command == command_id::tool_extend || b.command == command_id::tool_faces));
       continue;
     }
     REQUIRE(static_cast<int>(b.k) > 0);

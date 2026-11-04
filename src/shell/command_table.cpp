@@ -344,6 +344,25 @@ constexpr binding kBindings[] = {
     // on a still (the Edit header's ✦ Auto), from the Edit menu or a key the
     // user gives it in Settings.
     row(key::none, mod_none, kBrowse, edge, auto_enhance),
+    // docs/plans/edit-refresh.md S3 (shell/canvas_tool.h). Appended. Tool mode
+    // layers over browse (key_router.cpp), so only what a tool changes is
+    // here: `[` `]` size it (the rotate rows are kBrowse | kCrop, so a tool
+    // never turns the photo), the undo pair is one stroke or spot, Backspace
+    // and Delete clear the strokes (never the Bin), Enter applies, and Space
+    // held pans instead of walking. Plain `B` (owner call D) arms the brush
+    // on a still; Ctrl+B stays the clip split. The other tools ship unbound.
+    row(C('['), mod_none, kTool, repeat, tool_smaller),
+    row(C(']'), mod_none, kTool, repeat, tool_bigger),
+    row(C('Z'), mod_ctrl, kTool, edge, tool_undo),
+    row(C('Z'), mod_ctrl | mod_shift, kTool, edge, tool_redo),
+    row(key::backspace, mod_none, kTool, edge, tool_clear),
+    row(key::del, mod_none, kTool, edge, tool_clear),
+    row(key::enter, mod_none, kTool, edge, tool_apply),
+    row(key::space, mod_none, kTool, momentary, tool_pan, none, tool_pan_release),
+    row(C('B'), mod_none, kBrowse | kTool, edge, tool_brush),
+    row(key::none, mod_none, kBrowse, edge, tool_red_eye),
+    row(key::none, mod_none, kBrowse, edge, tool_extend),
+    row(key::none, mod_none, kBrowse, edge, tool_faces),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -566,6 +585,18 @@ constexpr command_info kCommands[] = {
     {pane_wider, "Wider side pane"},
     {pane_narrower, "Narrower side pane"},
     {auto_enhance, "Auto enhance"},
+    {tool_smaller, "Smaller brush"},
+    {tool_bigger, "Bigger brush"},
+    {tool_undo, "Undo stroke"},
+    {tool_redo, "Redo stroke"},
+    {tool_clear, "Clear strokes"},
+    {tool_apply, "Apply tool"},
+    {tool_pan, "Pan while brushing"},
+    {tool_pan_release, "Stop panning"},
+    {tool_brush, "Remove brush"},
+    {tool_red_eye, "Red-eye tool"},
+    {tool_extend, "Extend edges"},
+    {tool_faces, "Faces tool"},
 };
 
 const char* named_key(key k) noexcept {

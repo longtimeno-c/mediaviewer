@@ -139,12 +139,22 @@ public static partial class IslandHost
                 _volume = null;
                 _mute = null;
                 DropTrimUi();
+                DropToolBarUi();  // docs/plans/edit-refresh.md S3
                 SetTransportHeld(false);
                 _transport.Content = null;
                 MoveAt(_transport, args.X, args.Y, args.Width, args.Height);
                 return 0;
             }
             MoveAt(_transport, args.X, args.Y, args.Width, args.Height);
+            // docs/plans/edit-refresh.md S3: on a still with a canvas tool armed the
+            // island holds the tool's context bar (IslandHost.ToolBar.cs), set by
+            // SetToolBar just before; a clip's controls otherwise.
+            if (ToolBarWanted)
+            {
+                _transport.Content = BuildToolBar();
+                return 0;
+            }
+            DropToolBarUi();
             _transport.Content = BuildTransport();
             UpdateVideoControls();
             RenderTrim();
@@ -184,6 +194,8 @@ public static partial class IslandHost
             _volume = null;
             _mute = null;
             DropTrimUi();
+            DropToolBarUi();
+            _toolBar = default;
             _videoActive = false;
             _transportWidth = 0;
             _matchMs = Array.Empty<long>();

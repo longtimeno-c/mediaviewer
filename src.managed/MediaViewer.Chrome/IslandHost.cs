@@ -181,6 +181,29 @@ public static partial class IslandHost
         // docs/plans/edit-refresh.md S2: the Edit header's ✦ Auto (one undo
         // step; again right after takes it back). No default key.
         public const int AutoEnhance = 214;
+        // docs/plans/edit-refresh.md S3: the canvas tools (shell/canvas_tool.h).
+        // Keyed in tool mode ([ ] size, Ctrl+Z / Ctrl+Shift+Z one stroke or fix,
+        // Backspace / Delete clear, Enter apply, Space held pans); B arms the
+        // brush on a still; red-eye, Extend and Faces ship unbound.
+        public const int ToolSmaller = 215;
+        public const int ToolBigger = 216;
+        public const int ToolUndo = 217;
+        public const int ToolRedo = 218;
+        public const int ToolClear = 219;
+        public const int ToolApply = 220;
+        public const int ToolPan = 221;
+        public const int ToolPanRelease = 222;
+        public const int ToolBrush = 223;
+        public const int ToolRedEye = 224;
+        public const int ToolExtend = 225;
+        public const int ToolFaces = 226;
+        // The context bar (IslandHost.ToolBar.cs, chrome_host.h). CanvasTool: arg
+        // >= 0 arms a tool, tool * 1000 + size (0 keeps the tool's own; tool 0
+        // puts it down); arg < 0 is a bar button, -(ToolBarAction + 1).
+        // ToolSizeSet: DIP. ToolEraseSet: 1 erase, 0 paint.
+        public const int CanvasTool = 1096;
+        public const int ToolSizeSet = 1097;
+        public const int ToolEraseSet = 1098;
         public const int AdjustParam = 1091;
         public const int AdjustPrompt = 1092;  // slice 5b: parked UTF-8 request
         // Slice 7: the Remove brush: 0 the last stroke off, 1 all, 2 Remove.
@@ -296,6 +319,7 @@ public static partial class IslandHost
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
                 Rename, GalleryRange,
                 EditStripHeight, PaneEdgeState, InspectorMin,
+                CanvasTool, ToolSizeSet, ToolEraseSet,
             };
             unchecked
             {

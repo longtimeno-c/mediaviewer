@@ -339,6 +339,27 @@ ideal width no longer includes the whole file name, so a long name does not drop
 
 ## 4. Canvas tools: keys, context bar, overlay
 
+**S3 built (2026-11-04):** tool mode on both hosts. Portable: `shell/canvas_tool.h` (+
+`test_canvas_tool`), `shell/tool_overlay.h` (replaces `brush_overlay.h`), `mode::tool` / `kTool`,
+`blocked_in_tool`, `back_target::tool`, `view_state.tool` / `tool_pending`, `route.blocked`, the
+twelve `tool_*` rows (ids 215–226, as reserved), `edit_session::remove_red_eye` / `add_red_eyes`,
+`remove_brush` redo / erase dabs / `handoff()`, `canvas_map::screen_long_px`, `steady_ms`,
+`edit_view.tool_*`, and `mv_eyes_json` (the Windows exe reaches the pack's eyes through it). Mac:
+the tool state in `main_mac.mm` (`_tool`, `-armTool:`, `-toolDown`, the blank cursor,
+`-toolFetchEyes`, Find eyes), `ToolBarView.swift` in `toolBarHost` (`mv_tool_bar_view`,
+`mv_chrome_tool_action` / `_set_size` / `_set_erase`), Edit ▸ Remove Brush / Red-Eye / Faces /
+Extend Edges. Windows: the same in `main.cpp` (decoupled from the Colour pane's pick, the ring on
+`WM_MOUSEMOVE`, `SetCursor(nullptr)`, `kMsgToolJob`), the transport's island holding
+`IslandHost.ToolBar.cs` (`SetToolBar`, `chrome_tool_bar_args` 56 bytes, `chrome_cmd_canvas_tool`
+/ `tool_size_set` / `tool_erase_set` = 1096–1098, in both checksums), Alt + wheel with
+`SC_KEYMENU` swallowed. The S2 Flyout wand was already built. The Adjust pane's dead size sliders
+are gone (the size is the bar's). Not built here: the crop "Discard 3 strokes?" question in the bar
+(crop is refused while a tool is armed; with the tool down a crop still clears strokes silently),
+the brush's tint texture and the 64-stroke cap (S4a), Faces and Extend as canvas tools (S8, S6),
+the Windows ring re-dashing on Alt before the next move (the Mac's `flagsChanged:` twin). Not run
+here: the app on either host, both PR 1 gates, the 0-presents check with a tool armed; the Windows
+native C++ is not compiled (C# compiles).
+
 ### 4.1 Tool mode (shared, portable)
 
 **`src/shell/commands.h`.**

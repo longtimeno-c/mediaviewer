@@ -289,6 +289,29 @@ edit_effect edit_session::add_red_eye(const edit::red_eye_spot& s) {
   return edit_effect::redraw;
 }
 
+edit_effect edit_session::remove_red_eye(int index) {
+  if (!has_item_) return edit_effect::refused;
+  edit::colour c = colour();
+  if (index < 0 || index >= c.spot_count) return edit_effect::none;
+  for (int k = index; k + 1 < c.spot_count; ++k) {
+    c.spots[static_cast<std::size_t>(k)] = c.spots[static_cast<std::size_t>(k + 1)];
+  }
+  --c.spot_count;
+  c.spots[c.spot_count] = {};
+  return set_colour(c);
+}
+
+edit_effect edit_session::add_red_eyes(std::span<const edit::red_eye_spot> spots) {
+  if (!has_item_) return edit_effect::refused;
+  edit::colour c = colour();
+  for (const edit::red_eye_spot& s : spots) {
+    if (c.spot_count >= edit::kRedEyeSpots) break;
+    if (!(s.r > 0.0f) || !std::isfinite(s.x) || !std::isfinite(s.y)) continue;
+    c.spots[c.spot_count++] = {std::clamp(s.x, 0.0f, 1.0f), std::clamp(s.y, 0.0f, 1.0f), std::clamp(s.r, 0.001f, 0.1f)};
+  }
+  return set_colour(c);
+}
+
 edit_effect edit_session::set_colour(const edit::colour& c) {
   if (!has_item_) return edit_effect::refused;
   op o{op_kind::adjust_all};

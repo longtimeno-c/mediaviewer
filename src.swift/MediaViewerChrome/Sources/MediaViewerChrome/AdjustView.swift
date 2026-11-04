@@ -84,7 +84,6 @@ private struct AdjustPane: View {
   @State private var levelsChannel = 0
   @State private var band = 0
   @State private var request = ""
-  @State private var redEyeSize = 0.0
   @State private var curvesChannel = 0
   /// A value readout being typed into (its parameter): the pane's keys step aside.
   @State private var editingValue: Int? = nil
@@ -416,16 +415,12 @@ private struct AdjustPane: View {
       VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         ToolChip(symbol: "eye",
                  title: store.picking == 2 ? "Click each red eye — click here when done" : "Fix red eyes",
-                 on: store.picking == 2) { store.pick(store.picking == 2 ? 0 : 2, size: redEyeSize) }
+                 on: store.picking == 2) { store.pick(store.picking == 2 ? 0 : 2) }
           .disabled(!store.ready)
-        HStack(spacing: MVTheme.space(8)) {
-          Text("Size").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-          Slider(value: $redEyeSize, in: -100...100, step: 5)
-            .controlSize(.small)
-            // Moving the size picks the tool up: the next click on a pupil fixes it.
-            .onChange(of: redEyeSize) { _, v in store.pick(2, size: v) }
-            .accessibilityLabel("Red-eye size")
-        }
+        // docs/plans/edit-refresh.md S3: the size, Find eyes and Done are the
+        // context bar's, below the photo, while the tool is armed.
+        Text("Size, Find eyes and Done are in the bar below the photo")
+          .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         if store.spotCount > 0 {
           Text(store.spotCount == 1 ? "1 fixed" : "\(store.spotCount) fixed")
             .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)

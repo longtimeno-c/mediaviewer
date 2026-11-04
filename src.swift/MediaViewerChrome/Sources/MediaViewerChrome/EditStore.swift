@@ -153,6 +153,11 @@ final class EditStore: ObservableObject {
   @Published private(set) var name = ""
   /// While the straighten slider is held, it wins over the polled angle.
   var draggingStraighten = false
+  /// docs/plans/edit-refresh.md S3: the canvas tool's context bar (ToolBarView),
+  /// the host's shell::tool_bar. The size slider wins over the polled size
+  /// while it is held.
+  @Published private(set) var toolBar = ToolBarState()
+  var draggingToolSize = false
 
   var isClip: Bool { subject == 2 }
   var canEdit: Bool { subject != 0 }
@@ -202,6 +207,11 @@ final class EditStore: ObservableObject {
     var buf = [CChar](repeating: 0, count: Int(max(need, 1)))
     _ = mv_chrome_edit_name(&buf, Int32(buf.count))
     name = String(cString: buf)
+    var t = mv_tool_bar_view()
+    if mv_chrome_tool_bar(&t) {
+      let next = ToolBarState(t)
+      if next != toolBar { toolBar = next }
+    }
   }
 
   func run(_ command: Int32) { mv_chrome_run_command(command) }
@@ -230,6 +240,48 @@ final class EditStore: ObservableObject {
   func setBrush(_ on: Bool, size: Double) { mv_chrome_adjust_pick(on ? 3 : 0, Float(size)) }
   /// 0 the last stroke off, 1 all of them, 2 Remove (Enhance's sheet).
   func brushAction(_ action: Int32) { mv_chrome_adjust_brush(action) }
+  /// S3: the context bar's buttons, size slider and Paint / Erase toggle.
+  func toolAction(_ a: ToolBarState.Action) { mv_chrome_tool_action(a.rawValue) }
+  func setToolSize(_ px: Double) { mv_chrome_tool_set_size(Float(px)) }
+  func setToolErase(_ on: Bool) { mv_chrome_tool_set_erase(on ? 1 : 0) }
   func openClosedEyes() { mv_chrome_edit_faces(0) }
   func improveFaces() { mv_chrome_edit_faces(1) }
+}
+
+/// docs/plans/edit-refresh.md S3: what the context bar below the photo shows
+/// (shell::tool_bar through mv_tool_bar_view).
+struct ToolBarState: Equatable {
+  /// shell::canvas_tool.
+  enum Tool: Int32 { case none = 0, brush = 1, redEye = 2, whiteBalance = 3, faces = 4, extend = 5 }
+  /// shell::tool_bar_action.
+  enum Action: Int32 { case done = 0, undo = 1, redo = 2, clear = 3, apply = 4, findEyes = 5 }
+
+  var visible = false
+  var tool: Tool = .none
+  var sizePx: Double = 40
+  var erase = false
+  var strokes = 0
+  var spots = 0
+  var canApply = false
+  var busy = false
+  var progress = 0
+  var full = false
+  var canRedo = false
+  var eyes = 0
+
+  init() {}
+  init(_ v: mv_tool_bar_view) {
+    visible = v.visible != 0
+    tool = Tool(rawValue: v.tool) ?? .none
+    sizePx = Double(v.size_px)
+    erase = v.erase != 0
+    strokes = Int(v.strokes)
+    spots = Int(v.spots)
+    canApply = v.can_apply != 0
+    busy = v.busy != 0
+    progress = Int(v.progress_permille)
+    full = v.full != 0
+    canRedo = v.can_redo != 0
+    eyes = Int(v.eyes)
+  }
 }

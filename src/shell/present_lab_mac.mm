@@ -3,7 +3,7 @@
 #include "shell/present_lab_mac.h"
 #include "shell/present_busy.h"
 #include "shell/video_report.h"
-#include "shell/brush_overlay.h"
+#include "shell/tool_overlay.h"
 #include "shell/edit_view.h"
 #include "shell/af_focus.h"
 #include "shell/compare.h"
@@ -683,18 +683,20 @@ edit::placement present_lab_mac::place_image(const image::gpu_image_mac& img) co
 void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || video_frame_) return;
   const edit_view* v = edit_for(current_image_->item_id);
-  if (v && (v->brush_on || v->brush_cursor[2] > 0.0f) && !v->crop_overlay) {
+  // docs/plans/edit-refresh.md S3: the canvas tools (tool_overlay.h).
+  if (v && tool_overlay_wanted(*v)) {
     float pw = 0.0f, ph = 0.0f;
     if (!picture_size(&pw, &ph)) return;
     const float win_w = usable_window_w(snapshot), win_h = usable_window_h(snapshot);
     const float origin_x = canvas_origin_x(snapshot);
     const float origin_y = static_cast<float>(snapshot.chrome_height_px);
     const float zoom = camera_.zoom();
-    draw_brush_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
-                       [&](float ix, float iy) {
-                         return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
-                                       origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
-                       });
+    draw_tool_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
+                      snapshot.home.accent, steady_ms(),
+                      [&](float ix, float iy) {
+                        return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
+                                      origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
+                      });
     return;
   }
   if (!v || !v->crop_overlay) return;
@@ -1863,6 +1865,19 @@ void present_lab_mac::render_thread_main() noexcept {
                                            snapshot.reduce_motion, elapsed);
           ground_tick_ = ground_.step(ground_every_, elapsed);
           if (ground_tick_) redraw = true;
+        }
+        // S3: the tool's size label and red-eye pulse fade on their own: draw
+        // until the deadline, then once more to clear, then idle again.
+        if (current_image_ && !video_frame_) {
+          const edit_view* tv = edit_for(current_image_->item_id);
+          const std::uint64_t until = tv ? tool_hud_until(*tv) : 0;
+          if (until > steady_ms()) {
+            redraw = true;
+            tool_hud_drawn_ = true;
+          } else if (tool_hud_drawn_) {
+            redraw = true;
+            tool_hud_drawn_ = false;
+          }
         }
         if (redraw) last_input_time_ = elapsed;
         if (fade_from_ && !fade_.active(elapsed)) {

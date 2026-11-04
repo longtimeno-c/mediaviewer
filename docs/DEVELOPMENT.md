@@ -713,6 +713,15 @@ Keys go through one router and one table (`src/shell/commands.h`,
 [docs/design/16](design/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
 keyboard layout, not a US key position.
 
+Canvas tools (docs/plans/edit-refresh.md S3, [docs/design/20](design/20-edit-workspace.md)
+"Canvas tools"): `B` on a still arms the Remove brush; red-eye is on the Edit rail, the Adjust
+pane and (Mac) Edit ▸ Red-Eye. While one is armed a bar below the photo shows its controls, `[`
+`]` size the ring (Alt / ⌥ + wheel too), Alt / ⌥ held erases, `Space` held pans, `Ctrl/⌘+Z`
+undoes a stroke or fix, `Enter` removes, `Esc` puts the tool down. Rotate, flip, crop and Delete
+are refused meanwhile, and `A` / `D` while strokes are pending. Tests: `mv_tests
+"[canvas-tool],[remove-brush],[tool]"`. Red-eye's snap and Find eyes need the AI pack with
+People on.
+
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
 springs back to centre. Drop a file on the window. A pinch (touchscreen,

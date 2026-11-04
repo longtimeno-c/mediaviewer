@@ -975,6 +975,7 @@ if(MV_BUILD_TESTS)
     tests/test_text_select.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp
+    tests/test_canvas_tool.cpp
     tests/test_remove_brush.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp

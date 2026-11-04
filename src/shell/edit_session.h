@@ -137,6 +137,12 @@ class edit_session {
   // Slice 3: one red-eye fix at `s` (source uv, radius a fraction of the
   // diagonal), one op; r 0 clears every fix. `refused` past kRedEyeSpots.
   [[nodiscard]] edit_effect add_red_eye(const edit::red_eye_spot& s);
+  // docs/plans/edit-refresh.md S3: the red-eye tool's click on a fix takes it
+  // off (the others kept), and Find eyes adds every red eye it found; each
+  // one op, so one Ctrl+Z puts it back. `none` for an index that is not a
+  // fix, or when nothing would change; `refused` with no item.
+  [[nodiscard]] edit_effect remove_red_eye(int index);
+  [[nodiscard]] edit_effect add_red_eyes(std::span<const edit::red_eye_spot> spots);
 
   // PR 12. A metadata write (rating, comment, orientation tag) landed on
   // `path`: the bytes changed (size, mtime), the pixels did not. Moves the

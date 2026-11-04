@@ -131,10 +131,10 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
   `rail_pick`). A window too narrow for any inspector beside the canvas (`clamp_inspector`
   returns 0) folds it too, and unfolds when it is wide enough again. A tab's own key unfolds a
   folded inspector rather than closing it. Closing forgets the fold.
-- **Tools:** Remove (the Remove brush, on the Enhance tab; on Windows the brush is still the
-  Adjust pane's pick, so Adjust shows with its Remove section), Red-eye (Adjust's picker on),
-  Faces (the Enhance tab), Extend (Enhance's sheet, whose photo choice offers *Extend the
-  picture*). S3 makes these canvas tools of their own.
+- **Tools:** Remove and Red-eye are canvas tools ("Canvas tools" below): a click arms one (Remove
+  on the Enhance tab, Red-eye on Adjust), a second click puts it down, and the armed one wears the
+  selection. Faces opens the Enhance tab and Extend Enhance's sheet (whose photo choice offers
+  *Extend the picture*) until S8 / S6 make them canvas tools too.
 - **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
   keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
@@ -164,6 +164,55 @@ and *Improve faces* (the Mac; Windows has Open closed eyes, its Improve faces tw
 Enhance add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance).
 Cards are one column, two from 560. Running inside the pane (`place "edit"`) and the result row are
 S5's; every result is a new file today, as before.
+
+### Canvas tools
+
+docs/plans/edit-refresh.md S3. A **canvas tool** is what a press on the photo does while it is armed
+(`shell/canvas_tool.h`, one model on both hosts): the **Remove brush**, **red-eye** and the
+**white-balance picker** today (Faces and Extend are S8's and S6's). The Adjust pane's picks, the
+rail, the Enhance tab's cards, the ✦ popover / Windows `Flyout`, `B` and the Edit menu all arm the
+same state; it is the host's, not the Colour pane's, so the brush and the red-eye ring work on any
+tab and before the working image is built (the white-balance picker alone needs it, and says so).
+Arming a tool opens the workspace on the tool's home tab, unfolded, and applies a crop draft first
+(a tool and crop are exclusive). An armed tool stays armed on the next still; on a clip, an
+animation or with the workspace closed it goes down.
+
+- **Keys:** tool mode ([16](16-commands.md) "Canvas tools"): `[` `]` size, `Ctrl/⌘+Z` and
+  `Ctrl/⌘+Shift+Z` one stroke or fix, `Backspace` / `Delete` clear, `Enter` applies, hold `Space` to
+  pan, `Alt` / `⌥` held erases, `Esc` puts the tool down with the strokes kept (dimmed). Rotate,
+  flip, crop and the Bin are refused while a tool is armed, and walking away (`A` `D` …) while
+  strokes are pending (owner call G); the notice says why. The menus grey the same.
+- **The context bar** (owner call A): a 44 pt capsule, at most 640 wide, centred on the canvas,
+  8 above the filmstrip, in the **transport's slot** (a still has no transport). The canvas leaves a
+  56 pt band for it (`kToolBarBand` added to `chrome_bottom_px`; a `refit_seq` refit, never a
+  swapchain resize), so the bar never covers the picture. Brush: Paint / Erase · Size (a log slider,
+  "48 px") · Undo · Redo · Clear · "3 strokes" · **Remove ↵** · Done. Red-eye: "Click a red pupil ·
+  2 fixed" · Size · **Find eyes** · Undo · Done. The picker: a line and Done. When the brush is full
+  it says "Brush full: Remove, then brush more" instead of beeping. Its tooltip lists the live keys.
+  Mac: `ToolBarView.swift` in `toolBarHost` (`mv_tool_bar_view`, `mv_chrome_tool_*`); Windows: the
+  transport's island holds `IslandHost.ToolBar.cs` (`SetToolBar`, `chrome_tool_bar_args`, 56 bytes;
+  `chrome_cmd_canvas_tool` / `tool_size_set` / `tool_erase_set`, 1096–1098), Button, Slider and
+  TextBlock only.
+- **Sizes are screen pixels:** 4–400, the brush 40 and red-eye 24 by default. A dab's radius is the
+  ring over the shown picture's long side on screen (`canvas_map::screen_long_px`), so a 40 px ring
+  paints 40 px at any zoom.
+- **The ring** replaces the OS cursor over the canvas (Mac: a blank `NSCursor`; Windows:
+  `SetCursor(nullptr)` in `WM_SETCURSOR`; the picker keeps a cross, `Space` the open hand). It is
+  drawn in the same present as the photo (`shell/tool_overlay.h`, replacing `brush_overlay.h`, one
+  body for both labs): a 1.5 px dark ring outside a 1 px light one and a 2 px centre dot, dashed while
+  erasing; the size label for 800 ms after a change. Colours are the theme's accent
+  (`input_snapshot.home.accent`) and the ring's black and white.
+- **Brush:** strokes are a stack (undo, redo until a new stroke, clear); an erase dab takes back what
+  earlier dabs painted, in the mask and in what Enhance is handed (`remove_brush::handoff`). Put
+  down, the strokes stay dimmed for Remove later; a geometry change or another item clears them.
+- **Red-eye:** with People on, the photo's eyes are read once per item on the pool (`mv_eyes_json`
+  on Windows, `ai_eyes_json` on the Mac); the ring **snaps** to an eye within 1.5 ring radii and
+  takes 1.1× its iris. A click lands a fix (one undo step) with a 300 ms pulse; each fix shows a
+  ring and a check, and the one under the pointer a cross: **a click on a fix takes it off** (one
+  step). **Find eyes** fixes every detected eye at least 12 % red as **one** undo step
+  (`find_red_eyes`, on the pool); without People it says how to turn it on.
+- **Presents:** the overlay animates only to its deadlines (the label, the pulse): the labs draw
+  until then and once more to clear. An armed tool with the pointer still presents nothing.
 
 ### Width classes
 
@@ -273,7 +322,10 @@ The behaviour it pins:
    original while held and changes nothing.
 4. Keyboard only: `Enter`, `Shift+C`, `A` until 3:2, `Enter`, `Ctrl+S`.
 
-Tests: `test_edit_workspace` (tab 5 routing, the rail's fold), `test_auto_tone` (`[auto_enhance]`:
+Tests: `test_canvas_tool` (`mv_tests "[canvas-tool]"`: home tabs, sizes, spots, snap, Find eyes,
+the overlay's deadlines), `test_key_router` (`[tool]`: tool mode's keys, refusals and `Esc` order),
+`test_remove_brush` (redo, erase, the hand-off), `test_adjust` (`[canvas-tool]`: a fix taken off and
+Find eyes are one step each), `test_edit_workspace` (tab 5 routing, the rail's fold), `test_auto_tone` (`[auto_enhance]`:
 one result, one token, the take-back mark), `test_pane_width` (`mv_tests "[pane-width]"`: the clamp, the
 rail-only collapse, the 60 % cap, snaps, steps, the drag soak's frame log), and the workspace cases
 in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag's pacing is
@@ -282,6 +334,9 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
 ## Not built
 
 - On-canvas crop handles (drag corners, edges, inside).
-- Redo (`Ctrl+Shift+Z`) and a named history list for stills; a split-screen before/after.
+- Redo (`Ctrl+Shift+Z`) and a named history list for a still's edit stack (the brush has its own
+  redo); a split-screen before/after.
+- The brush's committed strokes as a tint texture, `[` `]` sized dabs on a 6000 px photo at 400 %,
+  the 64-stroke cap and Alt+wheel sizing (S4a); Faces and Extend as canvas tools (S8, S6).
 - Persisting a still's stack across sessions.
 - Editor add-on panes docking as extra tabs.

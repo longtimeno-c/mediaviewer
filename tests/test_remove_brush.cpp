@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #include "shell/remove_brush.h"
@@ -55,4 +56,40 @@ TEST_CASE("remove brush: strokes spaced evenly, undone one at a time, and a mask
   b.clear();
   CHECK(b.empty());
   CHECK(b.strokes() == 0);
+}
+
+TEST_CASE("remove brush: redo, erase dabs and the hand-off", "[remove-brush]") {
+  remove_brush b;
+  b.set_frame(1000, 1000);
+  REQUIRE(b.begin(0.2f, 0.5f, 0.05f));
+  REQUIRE(b.drag(0.8f, 0.5f));
+  b.end();
+  const std::size_t painted = b.dabs().size();
+  CHECK_FALSE(b.can_redo());
+  REQUIRE(b.undo_stroke());
+  CHECK(b.can_redo());
+  REQUIRE(b.redo_stroke());
+  CHECK(b.dabs().size() == painted);
+  CHECK(b.strokes() == 1);
+  CHECK_FALSE(b.redo_stroke());
+
+  // An erase stroke over the middle takes it out of the mask and the hand-off.
+  REQUIRE(b.begin(0.5f, 0.5f, 0.08f, /*erase=*/true));
+  b.end();
+  CHECK(b.dabs().back().erase == 1);
+  const auto m = b.mask(1000, 1000);
+  CHECK(m[500 * 1000 + 500] == 0);
+  CHECK(m[500 * 1000 + 250] == 255);
+  const auto flat = b.handoff();
+  REQUIRE(flat.size() % 3 == 0);
+  CHECK(flat.size() / 3 < painted);
+  for (std::size_t i = 0; i < flat.size(); i += 3) CHECK(std::abs(flat[i] - 0.5f) > 0.07f);
+
+  // A new stroke ends the redo chain; clear forgets it too.
+  REQUIRE(b.undo_stroke());
+  REQUIRE(b.begin(0.1f, 0.1f, 0.01f));
+  b.end();
+  CHECK_FALSE(b.can_redo());
+  b.clear();
+  CHECK_FALSE(b.redo_stroke());
 }

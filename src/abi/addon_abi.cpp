@@ -302,6 +302,16 @@ MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out,
   }));
 }
 
+MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_eyes_json", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    const std::string readable = mv::addon::media::readable_path(path_utf8, nullptr).value_or(path_utf8);
+    auto pack = mv::addon::ai_eyes_json(readable, "");
+    if (!pack) return pack.error();
+    return write_out(*pack, out, cap, needed);
+  }));
+}
+
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
 }

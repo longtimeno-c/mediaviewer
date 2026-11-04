@@ -173,6 +173,15 @@ the canvas drops under 320. The preference is kept (Mac defaults `MVRightPaneWid
 snaps to it; a double-click on the edge resets it. `pane_wider` / `pane_narrower` (±40) have no
 default key. The panes still float except the Edit workspace, which docks as before.
 
+**The transport's slot holds the canvas tool bar on a still (2026-11-04, owner call A).** A
+still has no transport, so while a canvas tool is armed (the Remove brush, red-eye, the
+white-balance picker; `shell/canvas_tool.h`) its context bar takes that slot: a 44 pt capsule
+centred on the canvas above the filmstrip (the Mac's `toolBarHost`; on Windows the transport's own
+island holds `IslandHost.ToolBar.cs`). Unlike the clip transport it does not float: the canvas
+leaves a 56 pt band for it (`kToolBarBand` in `chrome_bottom_px`, a `refit_seq` refit), so the bar
+never covers the photo and nothing new is drawn over the picture but the tool's own overlay
+(docs/plans/edit-refresh.md S3).
+
 **The clip transport floats and auto-hides (2026-09-26).** Issue #38: one layout on both hosts,
 over the video rather than a reserved strip (auto-hiding a strip would refit the video on every
 wake). One portable rule, `shell/transport_autohide.h`: hide after 2.5 s idle while playing; held
@@ -828,6 +837,16 @@ manifest key at the next launch ("keybinds aren't saved between sessions"). A co
 index moves as add-ons come and go, so its remap is kept by `<add-on id>/<command id>`
 (`live_addon_key_remaps`; Windows `settings.ini [addon_keys]`, Mac `mv.addonKeys`), kept while its
 add-on is away, and put back when the add-on's rows are appended. Reset and a keymap pack clear it.
+
+**Tool mode: `[` `]` size the tool, `A` / `D` wait for the strokes (2026-11-04, owner calls D
+and G).** A canvas tool armed on a still is a key mode (`mode::tool`) that layers over browse.
+In it `[` `]` size the ring instead of rotating, `Backspace` / `Delete` clear strokes instead of
+trashing the photo, `Enter` applies, `Space` held pans instead of walking, and `Ctrl+Z` is one
+stroke or fix. Rotate, flip, crop and the Bin are refused while a tool is armed, so strokes are
+never silently wiped; while strokes are pending, walking away (`A` `D`, `←` `→`, `Home` `End`, the
+folder walks) is refused too and says so, once per press (`blocked_in_tool`). Plain `B` arms the
+brush; `Ctrl+B` stays the clip split. `Esc` puts the tool down after crop and before the pane,
+keeping the strokes (docs/plans/edit-refresh.md S3).
 
 ---
 

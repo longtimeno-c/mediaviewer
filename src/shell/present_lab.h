@@ -354,6 +354,9 @@ class present_lab {
   bool nav_have_ready_ = false;
   edit_view edit_slots_[2];   // copied from the snapshot each iteration
   edit_view applied_edit_{};  // what the current still was last fitted with
+  // docs/plans/edit-refresh.md S3: a tool's label or pulse was drawn while live;
+  // one more frame clears it once its deadline passes.
+  bool tool_hud_drawn_ = false;
   std::atomic<std::uint64_t> shown_key_{0};
   std::atomic<std::uint32_t> shown_w_{0};
   std::atomic<std::uint32_t> shown_h_{0};

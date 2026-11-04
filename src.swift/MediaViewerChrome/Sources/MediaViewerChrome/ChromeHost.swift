@@ -58,6 +58,12 @@ public final class MVChromeHost: NSObject {
     lazyHost { TransportView() }
   }
 
+  /// docs/plans/edit-refresh.md S3: the canvas tools' context bar, in the
+  /// transport's slot below the photo. main_mac.mm shows, hides and places it.
+  @objc public static func makeToolBarView() -> NSView {
+    lazyHost { ToolBarView() }
+  }
+
   /// #345: the AI-generated badge, bottom-right of the canvas. main_mac.mm shows,
   /// hides and places it; `setAIBadge` gives it its text.
   @objc public static func makeAIBadgeView() -> NSView {

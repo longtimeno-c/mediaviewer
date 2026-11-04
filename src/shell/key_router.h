@@ -50,6 +50,12 @@ struct view_state {
   // the filmstrip is hidden; with the strip up they walk the folder, playing or
   // paused. The default keeps a bare view_state walking: strip up.
   bool filmstrip_visible = true;
+  // docs/plans/edit-refresh.md S3: a canvas tool is armed on the still
+  // (shell/canvas_tool.h), and whether it holds strokes not yet applied. Tool
+  // mode layers over browse; `tool_pending` makes walking away a refusal
+  // (owner call G: A/D are dead while strokes are pending).
+  bool tool = false;
+  bool tool_pending = false;
 };
 
 [[nodiscard]] mode resolve_mode(const view_state& s) noexcept;
@@ -72,7 +78,18 @@ enum class back_target : std::uint8_t {
   game,  // leave the empty-window runner (dino_game.h)
   result_list,  // Milestone H: back from a result list to its folder ("Back to folder")
   text_selection,  // text in images: clear the selected words (shell/text_select.h)
+  // docs/plans/edit-refresh.md S3: put the canvas tool down (strokes kept,
+  // dimmed). Appended: after crop, before the pane.
+  tool,
 };
+
+// docs/plans/edit-refresh.md S3: what tool mode refuses of the browse rows it
+// layers over. Always the geometry (rotate, flip, crop) and the Bin, so strokes
+// are never silently wiped and Delete never trashes the photo being brushed;
+// while strokes are pending (`pending`), also walking away (next / prev /
+// first / last / the folder walks, page skips). The host says why
+// ("Remove or clear the strokes first").
+[[nodiscard]] bool blocked_in_tool(command_id id, bool pending) noexcept;
 
 [[nodiscard]] back_target resolve_back(const view_state& s) noexcept;
 
@@ -102,6 +119,9 @@ struct route {
   // (a tap/hold's key-up after a tap, a momentary key's typematic repeat).
   // False sends the key on to the island.
   bool handled = false;
+  // S3: tool mode refused the key's command (blocked_in_tool). `command` is
+  // none and `handled` true: the host shows why instead of beeping.
+  bool blocked = false;
 };
 
 class key_router {

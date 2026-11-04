@@ -212,7 +212,15 @@ enum chrome_command : int {
   // state, arg 0 idle, 1 hot (the pointer is on it), 2 dragged. The pane on
   // top turns its left border to the accent at 2 px (the Mac's MvPaneEdgeView).
   chrome_cmd_pane_edge_state = 1095,
-  // 1096-1098 are S3's (the canvas tool). inspector_min: the narrowest
+  // docs/plans/edit-refresh.md S3: the canvas tools (shell/canvas_tool.h).
+  // canvas_tool: arg >= 0 arms a tool, tool x 1000 + size in DIP (size 0
+  // keeps the tool's own; tool 0 puts it down, the bar's Done); arg < 0 is one
+  // of the context bar's buttons, -(shell::tool_bar_action + 1). tool_size_set:
+  // the bar's size slider, DIP. tool_erase_set: the Paint / Erase toggle, 1 / 0.
+  chrome_cmd_canvas_tool = 1096,
+  chrome_cmd_tool_size_set = 1097,
+  chrome_cmd_tool_erase_set = 1098,
+  // inspector_min: the narrowest
   // inspector the island lays out unclipped, in DIPs (300 x the theme's type
   // scale; shell/pane_width.h theme_min). Sent with the theme; native re-clamps.
   chrome_cmd_inspector_min = 1099,
@@ -409,6 +417,14 @@ static_assert(static_cast<int>(command_id::print) == 184);
 static_assert(static_cast<int>(command_id::pane_wider) == 212 &&
               static_cast<int>(command_id::pane_narrower) == 213 &&
               static_cast<int>(command_id::auto_enhance) == 214);
+// docs/plans/edit-refresh.md S3 (IslandHost.cs Command.ToolSmaller .. ToolFaces).
+static_assert(static_cast<int>(command_id::tool_smaller) == 215 && static_cast<int>(command_id::tool_bigger) == 216 &&
+              static_cast<int>(command_id::tool_undo) == 217 && static_cast<int>(command_id::tool_redo) == 218 &&
+              static_cast<int>(command_id::tool_clear) == 219 && static_cast<int>(command_id::tool_apply) == 220 &&
+              static_cast<int>(command_id::tool_pan) == 221 && static_cast<int>(command_id::tool_pan_release) == 222 &&
+              static_cast<int>(command_id::tool_brush) == 223 && static_cast<int>(command_id::tool_red_eye) == 224 &&
+              static_cast<int>(command_id::tool_extend) == 225 && static_cast<int>(command_id::tool_faces) == 226);
+static_assert(chrome_cmd_canvas_tool >= kCommandCount && chrome_cmd_tool_erase_set >= kCommandCount);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -447,7 +463,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
       chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range,
-      chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state, chrome_cmd_inspector_min};
+      chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state, chrome_cmd_inspector_min,
+      chrome_cmd_canvas_tool, chrome_cmd_tool_size_set, chrome_cmd_tool_erase_set};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -671,6 +688,35 @@ struct chrome_notify_args {
 };
 
 static_assert(sizeof(chrome_notify_args) == 8, "keep in sync with IslandHost.Notify");
+
+// docs/plans/edit-refresh.md S3: the canvas tool's context bar, a capsule in the
+// transport's island (a still has no transport) in the band the canvas leaves
+// below the photo (shell/canvas_tool.h kToolBarBand). Field for field
+// shell::tool_bar (main.cpp static_asserts it) and the Mac's mv_tool_bar_view.
+struct chrome_tool_bar_args {
+  std::int32_t visible;
+  std::int32_t tool;     // shell::canvas_tool: 1 Remove brush, 2 red-eye, 3 white-balance picker
+  float size_px;         // the ring's diameter, DIP
+  std::int32_t erase;    // the Paint / Erase toggle
+  std::int32_t strokes;  // the brush's strokes
+  std::int32_t spots;    // red-eye fixes on the photo
+  std::int32_t can_apply;  // Remove / Find eyes can run
+  std::int32_t busy;       // Find eyes is reading the photo
+  std::int32_t progress_permille;
+  std::int32_t extend_w;  // S6
+  std::int32_t extend_h;
+  std::int32_t full;      // the brush holds all it can
+  std::int32_t can_redo;
+  std::int32_t eyes;      // red-eye: eyes the AI pack found (People on)
+};
+
+static_assert(sizeof(chrome_tool_bar_args) == 56, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
+
+// The bar's geometry (ToolBarView.swift): 44 DIP high, at most 640 wide,
+// centred on the canvas, 8 above the filmstrip or the bottom edge.
+inline constexpr int kToolBarDip = 44;
+inline constexpr int kToolBarMaxWidthDip = 640;
+inline constexpr int kToolBarMarginDip = 8;
 
 // PR 30 (docs/design/21): the Video Editor window. Its timeline is an island on the
 // editor's own top-level window; the card that says where the picture went is
@@ -1050,6 +1096,14 @@ class chrome_host {
   // Compare, Done). It reads set_edit_view. Optional like the panes.
   void show_edit_rail(bool visible, int x, int y, int width, int height) noexcept;
   [[nodiscard]] bool edit_rail_visible() const noexcept { return panels_attached_ && rail_visible_; }
+  // docs/plans/edit-refresh.md S3: the canvas tool's context bar, in the
+  // transport's island while a tool is armed on a still. set_tool_bar
+  // refreshes its content in place; show_tool_bar shows it at (x, y, w, h) or
+  // parks it (visible 0). Optional (SetToolBar): an older chrome has no bar.
+  void set_tool_bar(const chrome_tool_bar_args& args) noexcept;
+  void show_tool_bar(const chrome_tool_bar_args& args, int x, int y, int width, int height,
+                     int client_height) noexcept;
+  [[nodiscard]] bool tool_bar_visible() const noexcept { return tool_bar_visible_; }
   // A notification to the islands (chrome_notify_args). Optional: an older
   // chrome ignores it.
   void notify(chrome_command id, float value) noexcept;
@@ -1280,6 +1334,7 @@ class chrome_host {
   chrome_entry_fn set_edit_view_ = nullptr;   // PR 29
   chrome_entry_fn show_edit_rail_ = nullptr;  // docs/plans/edit-refresh.md S2
   chrome_entry_fn notify_ = nullptr;          // S2
+  chrome_entry_fn set_tool_bar_ = nullptr;    // S3
   chrome_entry_fn attach_editor_ = nullptr;   // PR 30
   chrome_entry_fn layout_editor_ = nullptr;
   chrome_entry_fn set_editor_view_ = nullptr;
@@ -1307,6 +1362,7 @@ class chrome_host {
   bool jobs_visible_ = false;
   bool edit_visible_ = false;
   bool rail_visible_ = false;  // S2
+  bool tool_bar_visible_ = false;  // S3: the transport's island holds the tool bar
   chrome_entry_fn island_window_ = nullptr;
   chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
   chrome_entry_fn shutdown_for_exit_ = nullptr;

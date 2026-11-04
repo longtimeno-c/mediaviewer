@@ -33,8 +33,10 @@ struct EditRailView: View {
           // The rail's Remove arms or puts down the brush (the card runs Remove).
           if store.brushOn { store.setBrush(false, size: 0) } else { store.tool(.remove) }
         }
+        // S3: Red-eye is a canvas tool; a second click puts it down.
         RailButton(symbol: "eye", label: "Red-eye",
-                   help: "Red-eye: click each red pupil on the photo") { store.tool(.redEye) }
+                   help: "Red-eye: click each red pupil on the photo",
+                   selected: store.toolBar.tool == .redEye) { store.tool(.redEye) }
         RailButton(symbol: "face.smiling", label: "Faces",
                    help: "Faces: open closed eyes, improve faces from your photos") { store.tool(.faces) }
         RailButton(symbol: "arrow.up.left.and.arrow.down.right", label: "Extend",

@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "core/json.h"
@@ -54,7 +55,8 @@ TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]"
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
                b.command == command_id::kind_filter_next || b.command == command_id::pane_wider ||
                b.command == command_id::pane_narrower ||
-               b.command == command_id::auto_enhance));
+               b.command == command_id::auto_enhance || b.command == command_id::tool_red_eye ||
+               b.command == command_id::tool_extend || b.command == command_id::tool_faces));
       continue;
     }
     for (int m = 0; m < kModeCount; ++m) {
@@ -298,13 +300,14 @@ TEST_CASE("visible gallery owns row navigation and Enter before focus moves", "[
   // No default Enter binding can start fullscreen or a slideshow in any mode.
   // PR 10: Enter also commits a crop, in crop mode only. PR 13: and saves a
   // keyframe trim, in trim mode only. PR 29: and opens the Edit workspace in
-  // browse and video.
+  // browse and video. S3 (docs/plans/edit-refresh.md): and applies a canvas tool.
   for (const auto& b : default_bindings()) {
     if (b.k != key::enter || b.mods != mod_none) continue;
     REQUIRE((b.command == command_id::gallery_open_selected ||
              (b.command == command_id::crop_commit && b.modes == kCrop) ||
              (b.command == command_id::trim_keyframe && b.modes == kTrim) ||
-             (b.command == command_id::edit_workspace && b.modes == (kBrowse | kVideo))));
+             (b.command == command_id::edit_workspace && b.modes == (kBrowse | kVideo)) ||
+             (b.command == command_id::tool_apply && b.modes == kTool)));
   }
 }
 
@@ -1845,4 +1848,111 @@ TEST_CASE("the adjust sliders and crop presets are island-only: keyless, unbound
   CHECK(routed(r, char_key('A'), mod_shift, still()) == command_id::adjust_pane);
   CHECK(routed(r, char_key('A'), mod_none, cropping()) == command_id::crop_aspect_cycle);
   CHECK(routed(r, char_key('X'), mod_none, cropping()) == command_id::crop_aspect_swap);
+}
+
+// docs/plans/edit-refresh.md S3 (verify line): tool mode on a still.
+TEST_CASE("tool mode: sizes, never rotates or trashes, walks only when nothing is pending", "[shell][router][tool]") {
+  key_router r;
+  view_state s = still();
+  s.tool = true;
+  CHECK(resolve_mode(s) == mode::tool);
+  // Only on a still, and crop wins.
+  view_state c = clip();
+  c.tool = true;
+  CHECK(resolve_mode(c) != mode::tool);
+  view_state cropping = s;
+  cropping.crop = true;
+  CHECK(resolve_mode(cropping) == mode::crop);
+
+  // [ ] size the tool, with repeat, and never rotate.
+  CHECK(r.on_key(down(char_key('[')), s).command == command_id::tool_smaller);
+  CHECK(r.on_key(rep(char_key('[')), s).command == command_id::tool_smaller);
+  (void)r.on_key(up(char_key('[')), s);
+  CHECK(r.on_key(down(char_key(']')), s).command == command_id::tool_bigger);
+  (void)r.on_key(up(char_key(']')), s);
+  // Without a tool they still rotate.
+  CHECK(r.on_key(down(char_key('[')), still()).command == command_id::rotate_ccw);
+  (void)r.on_key(up(char_key('[')), still());
+
+  // Delete / Backspace clear strokes; never the Bin, never the previous photo.
+  CHECK(r.on_key(down(key::del), s).command == command_id::tool_clear);
+  CHECK(r.on_key(down(key::backspace), s).command == command_id::tool_clear);
+  s.tool_pending = true;
+  CHECK(r.on_key(down(key::del), s).command == command_id::tool_clear);
+  s.tool_pending = false;
+  CHECK(r.on_key(down(key::del), still()).command == command_id::delete_to_recycle_bin);
+
+  // The geometry is refused, and says so.
+  for (const auto& [k, mods] : {std::pair{char_key('H'), mod_none}, std::pair{char_key('V'), mod_none},
+                                std::pair{char_key('C'), mod_shift}}) {
+    const route blocked = r.on_key(down(k, static_cast<std::uint8_t>(mods)), s);
+    CHECK(blocked.command == command_id::none);
+    CHECK(blocked.handled);
+    CHECK(blocked.blocked);
+  }
+
+  // A / D walk while nothing is pending, and are dead while something is.
+  CHECK(r.on_key(down(char_key('D')), s).command == command_id::next);
+  (void)r.on_key(up(char_key('D')), s);
+  CHECK(r.on_key(down(char_key('A')), s).command == command_id::prev);
+  (void)r.on_key(up(char_key('A')), s);
+  s.tool_pending = true;
+  for (const key k : {char_key('A'), char_key('D'), key::left, key::right, key::home, key::end, key::page_down}) {
+    const route dead = r.on_key(down(k), s);
+    INFO("key " << static_cast<int>(k));
+    CHECK(dead.command == command_id::none);
+    CHECK(dead.handled);
+    CHECK(dead.blocked);
+    (void)r.on_key(up(k), s);
+  }
+  CHECK(r.on_key(down(key::up, mod_ctrl), s).blocked);  // up a folder
+  // A held key says why once, not per repeat.
+  CHECK_FALSE(r.on_key(rep(char_key('D')), s).blocked);
+  s.tool_pending = false;
+
+  // Space pans (momentary), and is never next.
+  const route pan = r.on_key(down(key::space), s);
+  CHECK(pan.command == command_id::tool_pan);
+  CHECK(r.on_key(rep(key::space), s).command == command_id::none);
+  CHECK(r.on_key(up(key::space), s).command == command_id::tool_pan_release);
+  CHECK(r.on_key(down(key::space), still()).command == command_id::next);
+  (void)r.on_key(up(key::space), still());
+
+  // Undo / redo are one stroke or spot; Enter applies; B arms the brush.
+  CHECK(r.on_key(down(char_key('Z'), mod_ctrl), s).command == command_id::tool_undo);
+  CHECK(r.on_key(down(char_key('Z'), mod_ctrl | mod_shift), s).command == command_id::tool_redo);
+  CHECK(r.on_key(down(char_key('Z'), mod_ctrl), still()).command == command_id::undo_edit);
+  CHECK(r.on_key(down(key::enter), s).command == command_id::tool_apply);
+  CHECK(r.on_key(down(key::enter), still()).command == command_id::edit_workspace);
+  CHECK(r.on_key(down(char_key('B')), still()).command == command_id::tool_brush);
+  CHECK(r.on_key(down(char_key('B')), s).command == command_id::tool_brush);
+  CHECK(r.on_key(down(char_key('B')), clip()).command == command_id::none);
+  // Browse keys the tool does not touch keep working underneath.
+  CHECK(r.on_key(down(char_key('0')), s).command == command_id::fit);
+  CHECK(r.on_key(down(char_key('S'), mod_ctrl), s).command == command_id::export_image);
+}
+
+TEST_CASE("tool mode: Esc puts the tool down after crop and before the pane", "[shell][router][tool]") {
+  key_router r;
+  view_state s = still();
+  s.tool = true;
+  s.pane_open = true;
+  CHECK(resolve_back(s) == back_target::tool);
+  CHECK(r.on_key(down(key::escape), s).back == back_target::tool);
+  view_state t = s;
+  t.focus = focus_kind::text;
+  CHECK(resolve_back(t) == back_target::blur_text);
+  view_state p = s;
+  p.popup_open = true;
+  CHECK(resolve_back(p) == back_target::popup);
+  view_state c = s;
+  c.crop = true;
+  CHECK(resolve_back(c) == back_target::crop);
+  s.tool = false;
+  CHECK(resolve_back(s) == back_target::pane);
+  CHECK(blocked_in_tool(command_id::rotate_cw, false));
+  CHECK(blocked_in_tool(command_id::delete_to_recycle_bin, false));
+  CHECK_FALSE(blocked_in_tool(command_id::next, false));
+  CHECK(blocked_in_tool(command_id::next, true));
+  CHECK_FALSE(blocked_in_tool(command_id::fit, true));
 }

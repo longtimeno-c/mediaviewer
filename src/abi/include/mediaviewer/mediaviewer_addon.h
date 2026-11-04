@@ -1240,6 +1240,13 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
  * moment or their other photos in People, turned the same way, in this
  * photo's light; a new file beside the photo. As mv_open_closed_eyes. */
 MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out, uint32_t cap, uint32_t* needed);
+/* docs/plans/edit-refresh.md S3: the faces and eye landmarks of the still at
+ * `path_utf8`, the AI pack's eyes_json answer with no candidates
+ * (mediaviewer_ai.h: {"faces":[{"x","y","w","h","lm":[10 numbers]}]}, 0..1 of
+ * the upright still), for the red-eye ring's snap and Find eyes.
+ * MV_ERR_NOT_FOUND without the pack, MV_ERR_INVALID_ARG while People is off.
+ * Runs the pack's face model: [worker-thread]. */
+MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t cap, uint32_t* needed);
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file

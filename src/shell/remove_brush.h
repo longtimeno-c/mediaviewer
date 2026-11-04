@@ -25,6 +25,9 @@ inline constexpr float kBrushDefaultRadius = 0.025f;
 struct brush_dab {
   float u = 0.0f, v = 0.0f;  // the shown image's uv
   float r = 0.0f;            // a fraction of its long side
+  // docs/plans/edit-refresh.md S3: an erase dab takes back what earlier dabs
+  // painted (the mask is built in order).
+  std::uint8_t erase = 0;
 };
 
 class remove_brush {
@@ -35,18 +38,27 @@ class remove_brush {
   // A press, a move with the button down, and the release. A move adds dabs
   // every few tenths of a radius along the way; false once the brushing is
   // full (kBrushDabs).
-  bool begin(float u, float v, float r);
+  bool begin(float u, float v, float r, bool erase = false);
   bool drag(float u, float v);
   void end() noexcept { stroking_ = false; }
 
   // The last stroke off (one undo step a stroke). False when there is none.
   bool undo_stroke();
+  // S3: the last stroke undone back on (until a new stroke starts). False
+  // when there is none.
+  bool redo_stroke();
+  [[nodiscard]] bool can_redo() const noexcept { return !undone_.empty(); }
   void clear() noexcept;
 
   [[nodiscard]] bool empty() const noexcept { return dabs_.empty(); }
   [[nodiscard]] bool full() const noexcept { return dabs_.size() >= kBrushDabs; }
   [[nodiscard]] std::size_t strokes() const noexcept { return starts_.size(); }
   [[nodiscard]] std::span<const brush_dab> dabs() const noexcept { return dabs_; }
+
+  // What Enhance's still_mask row is handed (u, v, r per dab): the painted
+  // dabs, minus any whose centre a later erase dab covers (the row has no
+  // erase; the mask below is exact).
+  [[nodiscard]] std::vector<float> handoff() const;
 
   // The mask at `width` x `height` (255 brushed, 0 not), for Enhance.
   [[nodiscard]] std::vector<std::uint8_t> mask(std::uint32_t width, std::uint32_t height) const;
@@ -56,8 +68,10 @@ class remove_brush {
 
   std::vector<brush_dab> dabs_;
   std::vector<std::size_t> starts_;  // the first dab of each stroke
+  std::vector<std::vector<brush_dab>> undone_;  // S3: undone strokes, last on top
   float aspect_w_ = 1.0f, aspect_h_ = 1.0f;  // width and height over the long side
   bool stroking_ = false;
+  bool erasing_ = false;  // the stroke in progress erases
 };
 
 }  // namespace mv::shell

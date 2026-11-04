@@ -3,7 +3,7 @@
 #include "shell/present_lab.h"
 #include "core/boot_timeline.h"
 #include "shell/video_report.h"
-#include "shell/brush_overlay.h"
+#include "shell/tool_overlay.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
 #include "shell/af_focus.h"
@@ -1190,6 +1190,19 @@ void present_lab::render_thread_main() noexcept {
       ground_tick_ = ground_.step(ground_every_, elapsed);
       if (ground_tick_) redraw = true;
     }
+    // S3: the tool's size label and red-eye pulse fade on their own: draw
+    // until the deadline, then once more to clear, then idle again.
+    if (current_image_ && !current_video_.texture) {
+      const edit_view* tv = edit_for(*current_image_);
+      const std::uint64_t until = tv ? tool_hud_until(*tv) : 0;
+      if (until > steady_ms()) {
+        redraw = true;
+        tool_hud_drawn_ = true;
+      } else if (tool_hud_drawn_) {
+        redraw = true;
+        tool_hud_drawn_ = false;
+      }
+    }
     if (redraw) last_input_time_ = elapsed;
     const bool pan_tail = current_image_ && last_input_time_ >= 0.0 &&
                           (elapsed - last_input_time_) < 0.5;
@@ -1687,15 +1700,17 @@ void present_lab::note_still_landed() noexcept {
 void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || current_video_.texture || snapshot.blackout) return;
   const edit_view* v = edit_for(*current_image_);
-  // Slice 7: the Remove brush, the same body as the Mac's (brush_overlay.h).
-  if (v && (v->brush_on || v->brush_cursor[2] > 0.0f) && !v->crop_overlay) {
+  // docs/plans/edit-refresh.md S3: the canvas tools, the same body as the
+  // Mac's (tool_overlay.h).
+  if (v && tool_overlay_wanted(*v)) {
     const float pw = media_width(), ph = media_height(), zoom = camera_.zoom();
     const auto view = usable_canvas(snapshot);
     const float cx = view.x + view.w * 0.5f, cy = view.y + view.h * 0.5f;
-    draw_brush_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
-                       [&](float ix, float iy) {
-                         return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
-                       });
+    draw_tool_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
+                      snapshot.home.accent, steady_ms(),
+                      [&](float ix, float iy) {
+                        return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
+                      });
     return;
   }
   if (!v || !v->crop_overlay) return;

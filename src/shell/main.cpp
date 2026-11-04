@@ -59,6 +59,7 @@
 #include "canvas/document_scroll.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
+#include "shell/canvas_tool.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
@@ -177,6 +178,9 @@ constexpr UINT kMsgPrintDone = WM_APP + 0x83;
 // reading a cloud placeholder (OneDrive, iCloud for Windows), which comes
 // down with that read. The status line says so meanwhile.
 constexpr UINT kMsgCloudFetch = WM_APP + 0x84;
+// docs/plans/edit-refresh.md S3: a canvas-tool job finished, the eyes of a
+// still or Find eyes' fixes (LPARAM: a tool_job_result the handler owns).
+constexpr UINT kMsgToolJob = WM_APP + 0x85;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
@@ -315,13 +319,28 @@ struct app_state {
   // finishes for a photo no longer on screen.
   mv::shell::adjust_pane adjust;
   std::shared_ptr<const mv::image::linear_image> working;
-  float red_eye_size = 0.0f;  // slice 3: the red-eye tool's size, −100..+100
-  // Slice 7: the Remove brush's strokes over the shown still, its size
-  // (−100..+100 about kBrushDefaultRadius), the ring under the pointer, a
-  // count of changes the canvas redraws on, and whether a stroke is down.
+  // Slice 7: the Remove brush's strokes over the shown still, the ring under
+  // the pointer, a count of changes the canvas redraws on, and whether a
+  // stroke is down.
   mv::shell::remove_brush brush;
-  float brush_size = 0.0f;
   float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
+  // docs/plans/edit-refresh.md S3: the canvas tool armed (shell/canvas_tool.h),
+  // the twin of main_mac.mm's _tool: the brush, red-eye or the white-balance
+  // picker, their sizes in DIP, Space / Alt held, the Erase toggle and the
+  // size label's deadline. The context bar's band is reserved below the photo
+  // while `tool_band`. The red-eye fix under the pointer (+ 1, 0 none), the
+  // ring snapped to an eye (shown uv, r over the long side; r 0 none) and a fix
+  // just made (its pulse). The eyes the AI pack found on `eyes_item`.
+  mv::shell::tool_state tool;
+  bool tool_band = false;
+  int tool_hover_plus1 = 0;
+  float tool_snap[3] = {0.0f, 0.0f, 0.0f};
+  float tool_pulse[3] = {-1.0f, -1.0f, 0.0f};
+  std::uint64_t tool_pulse_until = 0;
+  std::vector<mv::shell::eye_point> eyes;
+  std::uint64_t eyes_item = 0;
+  bool eyes_fetching = false;
+  bool find_eyes_busy = false;
   std::uint32_t brush_rev = 0;
   bool brush_stroke = false;
   // docs/plans/edit-refresh.md §2.4: the right column's edge. Its preferred
@@ -2232,6 +2251,10 @@ struct sibling_job_result {
   int index = -1;
 };
 
+// docs/plans/edit-refresh.md S3 (the canvas tools, below).
+bool brush_active(app_state* app) noexcept;
+void tool_apply_view(app_state* app) noexcept;
+
 void publish_edit(app_state* app) noexcept {
   if (app->show_original && app->edits.has_item() && app->edit_key != 0) {
     // PR 29 Show original (Y held, the strip's toggle): the item with no
@@ -2250,8 +2273,8 @@ void publish_edit(app_state* app) noexcept {
       app->brush.clear();
       (void)mv_edit_still_mask(nullptr, nullptr, 0);
     }
-    const bool brush_on = app->adjust.pick() == mv::shell::adjust_pick::remove && !app->edits.crop_active();
-    mv::shell::apply_brush(app->input.edit[0], app->brush, brush_on, ++app->brush_rev, app->brush_cursor);
+    mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
+    tool_apply_view(app);  // S3: the tool's ring and red-eye fixes survive the new view
   }
   // Slice 5: Enhance's copy of the photo being edited carries its edit. The
   // add-on media layer is in mediaviewer_core.dll: through its C entry, the
@@ -2570,6 +2593,9 @@ std::uint64_t adjust_item_id(app_state* app) noexcept {
 void push_adjust_pane(app_state* app) noexcept {
   if (!app->chrome.adjust_pane_visible()) return;
   mv::shell::adjust_view v = app->adjust.view(app->edits.colour());
+  // docs/plans/edit-refresh.md S3: the armed canvas tool is what a click on the
+  // photo does (the pane's Pick / Fix red eyes / Brush chips light from it).
+  v.picking = static_cast<std::int32_t>(mv::shell::pick_of_tool(app->tool.tool));
   v.brush_strokes = static_cast<std::int32_t>(app->brush.strokes());
   v.brush_full = app->brush.full() ? 1 : 0;
   app->chrome.set_adjust_view(v);
@@ -2782,34 +2808,226 @@ void set_curve_from_pane(app_state* app) {
   schedule_detail(app);
 }
 
-// Slice 3: what the next click on the photo does. The island's argument is
-// mode * 1000 + (size + 100): mode a shell::adjust_pick, size the red-eye
-// tool's −100..+100 about its default radius.
+// ---- docs/plans/edit-refresh.md S3: canvas tools (the twin of main_mac.mm's) -------
+//
+// shell/canvas_tool.h holds the shared maths; this is the host: what a press on
+// the photo does while a tool is armed, the ring under the pointer (the cursor
+// over the canvas), the red-eye fixes and their snap, Find eyes, the tool keys
+// and the context bar in the transport's island.
+
+static_assert(sizeof(mv::shell::chrome_tool_bar_args) == sizeof(mv::shell::tool_bar),
+              "chrome_tool_bar_args mirrors shell::tool_bar");
+static_assert(offsetof(mv::shell::chrome_tool_bar_args, size_px) == offsetof(mv::shell::tool_bar, size_px));
+static_assert(offsetof(mv::shell::chrome_tool_bar_args, eyes) == offsetof(mv::shell::tool_bar, eyes));
+
+void brush_move(app_state* app, int x, int y);
+void sync_workspace(app_state* app);
+void edit_select_tab(app_state* app, int tab);
+mv::shell::edit_subject edit_subject_of(app_state* app) noexcept;
+
+// What a tool job posts back (kMsgToolJob's LPARAM, owned by the handler):
+// the eyes the AI pack found on `item`, or Find eyes' spots.
+struct tool_job_result {
+  bool found = false;  // Find eyes finished; else the eyes landed
+  std::uint64_t item = 0;
+  std::vector<mv::shell::eye_point> eyes;
+  std::vector<mv::edit::red_eye_spot> spots;
+};
+
+// The tool a press on the photo uses now: armed, on a still, not cropping.
+mv::shell::canvas_tool active_tool(app_state* app) noexcept {
+  if (app->tool.tool == mv::shell::canvas_tool::none || !adjust_still(app) || app->edits.crop_active()) {
+    return mv::shell::canvas_tool::none;
+  }
+  return app->tool.tool;
+}
+bool tool_armed(app_state* app) noexcept { return active_tool(app) != mv::shell::canvas_tool::none; }
+// Strokes not yet applied: A / D, Space and the walks are refused (owner call G).
+bool tool_pending(app_state* app) noexcept {
+  return active_tool(app) == mv::shell::canvas_tool::remove_brush && !app->brush.empty();
+}
+bool brush_active(app_state* app) noexcept { return active_tool(app) == mv::shell::canvas_tool::remove_brush; }
+
+// The ring's radius in physical pixels (half the size, at the window's scale).
+float tool_ring_px(const app_state* app) noexcept {
+  return mv::shell::ring_radius_px(mv::shell::tool_px(app->tool), app->input.dpi_scale);
+}
+
+// The pointer is over the picture's rect: not the bar, the filmstrip, the tool
+// bar's band, a docked pane or the page sidebar.
+bool pointer_over_canvas(const app_state* app) noexcept {
+  const auto& in = app->input;
+  return in.mouse_in_client && in.mouse_x >= static_cast<float>(in.chrome_left_px) &&
+         in.mouse_x < static_cast<float>(in.width) - static_cast<float>(in.chrome_right_px) &&
+         in.mouse_y >= static_cast<float>(in.chrome_height_px) &&
+         in.mouse_y < static_cast<float>(in.height) - static_cast<float>(in.chrome_bottom_px);
+}
+
+// The armed tool onto the canvas's edit view (shell/canvas_tool.h apply_tool):
+// the ring in screen pixels, the red-eye fixes, the one under the pointer, the
+// pulse and the size label's deadline.
+void tool_apply_view(app_state* app) noexcept {
+  const mv::shell::canvas_tool active = active_tool(app);
+  mv::shell::tool_view_in in;
+  in.tool = active;
+  in.erase = active == mv::shell::canvas_tool::remove_brush && mv::shell::erasing(app->tool);
+  in.dim = active != mv::shell::canvas_tool::remove_brush && !app->brush.empty();
+  if (app->brush_cursor[0] > -1.0f && mv::shell::sized(active) && !app->tool.pan_held) {
+    in.ring_px = tool_ring_px(app);
+    if (active == mv::shell::canvas_tool::red_eye && app->tool_snap[2] > 0.0f) {
+      in.ring_px = app->tool_snap[2] * app->lab.still_map().screen_long_px();
+    }
+  }
+  in.label_px = mv::shell::tool_px(app->tool);
+  in.label_until_ms = app->tool.hud_until_ms;
+  in.hover_spot = app->tool_hover_plus1 - 1;
+  in.pulse = {app->tool_pulse[0], app->tool_pulse[1], app->tool_pulse[2]};
+  in.pulse_until_ms = app->tool_pulse_until;
+  mv::shell::apply_tool(app->input.edit[0], in, app->edits.preview_placement(), app->edits.colour());
+}
+
+// The strokes, the ring, the red-eye fixes and the pulse onto the canvas's
+// edit view (a redraw, no decode).
+void brush_publish(app_state* app) noexcept {
+  if (app->input.edit[0].item != app->edit_key) return;
+  mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
+  tool_apply_view(app);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// What the bar below the photo shows (IslandHost.ToolBar.cs).
+mv::shell::tool_bar tool_bar_of(app_state* app) noexcept {
+  mv::shell::tool_bar b;
+  const mv::shell::canvas_tool active = active_tool(app);
+  b.visible = active != mv::shell::canvas_tool::none ? 1 : 0;
+  b.tool = static_cast<std::int32_t>(active);
+  b.size_px = mv::shell::tool_px(app->tool);
+  b.erase = app->tool.erase ? 1 : 0;
+  b.strokes = static_cast<std::int32_t>(app->brush.strokes());
+  b.spots = app->edits.has_item() ? app->edits.colour().spot_count : 0;
+  b.full = app->brush.full() ? 1 : 0;
+  b.can_redo = app->brush.can_redo() ? 1 : 0;
+  b.busy = app->find_eyes_busy ? 1 : 0;
+  b.eyes = app->eyes_item == app->edit_key ? static_cast<std::int32_t>(app->eyes.size()) : 0;
+  if (active == mv::shell::canvas_tool::remove_brush) {
+    b.can_apply = !app->brush.empty() && mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none;
+  } else if (active == mv::shell::canvas_tool::red_eye) {
+    b.can_apply = b.eyes > 0 && !app->find_eyes_busy;
+  }
+  return b;
+}
+
+mv::shell::chrome_tool_bar_args tool_bar_args_of(app_state* app) noexcept {
+  const mv::shell::tool_bar b = tool_bar_of(app);
+  mv::shell::chrome_tool_bar_args a{};
+  std::memcpy(&a, &b, sizeof(a));
+  return a;
+}
+
+// The bar's content changed (a stroke, a size, a fix): refreshed in place.
+void push_tool_bar(app_state* app) noexcept {
+  if (app->chrome.tool_bar_visible()) app->chrome.set_tool_bar(tool_bar_args_of(app));
+}
+
+// The bar shows and the band is reserved while a tool is armed on a still and
+// nothing covers the canvas. A change of the band refits the picture
+// (apply_view_state: refit_seq, never a swapchain resize).
+bool tool_bar_wanted(app_state* app) noexcept {
+  return tool_armed(app) && !app->gallery_visible && !app->settings_open && !app->editor.open;
+}
+void sync_tool_bar(app_state* app) noexcept {
+  if (tool_bar_wanted(app) == app->tool_band) {
+    push_tool_bar(app);
+    return;
+  }
+  apply_view_state(app);  // sets tool_band, places the bar, refits the picture
+}
+
+// layout_panels' part: the bar in the transport's island, centred on the canvas
+// between `left` and `right` (client x), 8 above the filmstrip or the bottom edge.
+void layout_tool_bar(app_state* app, int width, int height, int bottom, int left, int right, UINT dpi) noexcept {
+  const mv::shell::chrome_tool_bar_args args = tool_bar_args_of(app);
+  if (!app->tool_band || args.visible == 0) {
+    mv::shell::chrome_tool_bar_args none{};
+    app->chrome.show_tool_bar(none, 0, 0, 1, 1, height);
+    return;
+  }
+  const auto px = [dpi](int dip) { return ::MulDiv(dip, static_cast<int>(dpi), 96); };
+  const int canvas_w = std::max(right - left, 1);
+  const int w = std::max(1, std::min(px(mv::shell::kToolBarMaxWidthDip), canvas_w - 2 * px(mv::shell::kToolBarMarginDip)));
+  const int h = px(mv::shell::kToolBarDip);
+  const int x = left + (canvas_w - w) / 2;
+  const int y = std::max(0, height - bottom - px(mv::shell::kToolBarMarginDip) - h);
+  (void)width;
+  app->chrome.show_tool_bar(args, x, y, w, h, height);
+}
+
+// After any change of the armed tool: the pane's picker state, the bar, the
+// band, the overlay and the ring where the pointer already is.
+void tool_changed(app_state* app) noexcept {
+  app->brush_cursor[0] = -1.0f;
+  sync_tool_bar(app);
+  push_tool_bar(app);
+  if (tool_armed(app) && pointer_over_canvas(app)) {
+    brush_move(app, static_cast<int>(app->input.mouse_x), static_cast<int>(app->input.mouse_y));
+  } else {
+    brush_publish(app);
+  }
+  push_adjust_pane(app);
+  push_edit_view(app);  // the rail's Remove / Red-eye, the Enhance tab's card
+}
+
+// Esc, Done, a second click on the armed tool: the tool goes down; the
+// brush's strokes stay, dimmed, for Remove later (a walk away clears them).
+void tool_down(app_state* app) noexcept {
+  if (app->tool.tool == mv::shell::canvas_tool::none) return;
+  (void)mv::shell::arm_tool(app->tool, app->ws, mv::shell::canvas_tool::none);
+  app->tool_hover_plus1 = 0;
+  app->tool_snap[2] = 0.0f;
+  tool_changed(app);
+}
+
+void tool_fetch_eyes(app_state* app);
+
+// Arms `t`: the workspace opens on its home tab (Remove on Enhance, red-eye on
+// Adjust), a crop draft is applied first (a tool and crop are exclusive), the
+// context bar takes the band below the photo, and the OS cursor gives way to
+// the ring over the canvas.
+void arm_tool(app_state* app, mv::shell::canvas_tool t) {
+  if (t == mv::shell::canvas_tool::none) {
+    tool_down(app);
+    return;
+  }
+  if (!adjust_still(app)) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+  const bool changed = mv::shell::arm_tool(app->tool, app->ws, t);
+  app->tool_hover_plus1 = 0;
+  app->tool_snap[2] = 0.0f;
+  if (changed) sync_workspace(app);
+  if (t == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
+  tool_changed(app);
+}
+
+// The island's adjust pick (chrome_cmd adjust_pick): mode * 1000 + (size + 100),
+// mode a shell::adjust_pick. The pick is a canvas tool now; the size travels
+// apart (the bar, `[` `]`), so it is ignored. None puts the tool down.
 void set_adjust_pick(app_state* app, float arg) {
   const int packed = static_cast<int>(std::lround(arg));
   const int mode = packed / 1000;
   if (mode < 0 || mode > static_cast<int>(mv::shell::adjust_pick::remove)) return;
-  const float size = std::clamp(static_cast<float>(packed % 1000 - 100), -100.0f, 100.0f);
-  if (mode == static_cast<int>(mv::shell::adjust_pick::remove)) {
-    app->brush_size = size;
-  } else {
-    app->red_eye_size = size;
-  }
-  app->adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
-  app->brush_cursor[0] = -1.0f;
-  publish_edit(app);  // the brush shows or goes
-  publish(app);
-  push_adjust_pane(app);
-  push_edit_view(app);  // S2: the rail's Remove and the Enhance tab's card
+  arm_tool(app, mv::shell::tool_of_pick(static_cast<mv::shell::adjust_pick>(mode)));
 }
 
-bool adjust_picking(app_state* app) noexcept {
-  return app->adjust.pick() != mv::shell::adjust_pick::none && adjust_still(app) && app->working;
-}
-
-// A click on the photo while picking: client pixel → the shown (edited)
-// image's uv → the source's uv through the edit's map → the working image.
-// A 5 x 5 read of memory already decoded: fine on the UI thread.
+// A click on the photo with a tool that clicks: the white-balance picker (one
+// click: client pixel → the shown image's uv → the source's uv through the
+// edit's map → the working image; a 5 x 5 read of memory already decoded,
+// fine on the UI thread), or red-eye: a click on a fix takes it off, else a fix
+// lands there (at the ring, or snapped to the eye) with a short pulse. Each is
+// one undo step.
 void adjust_pick_at(app_state* app, int x, int y) {
   float u = 0, v = 0;
   if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v) || u < 0 || u > 1 ||
@@ -2817,10 +3035,15 @@ void adjust_pick_at(app_state* app, int x, int y) {
     return;
   }
   const mv::edit::placement p = app->edits.preview_placement();
-  const float* m = p.map.m;
-  const float su = m[0] * u + m[1] * v + m[2], sv = m[3] * u + m[4] * v + m[5];
   mv::shell::edit_effect e = mv::shell::edit_effect::none;
-  if (app->adjust.pick() == mv::shell::adjust_pick::white_balance) {
+  const mv::shell::canvas_tool tool = active_tool(app);
+  if (tool == mv::shell::canvas_tool::wb_pick) {
+    if (!app->working) {
+      notice_show(app, "Preparing the photo — click again in a moment");
+      return;
+    }
+    const float* m = p.map.m;
+    const float su = m[0] * u + m[1] * v + m[2], sv = m[3] * u + m[4] * v + m[5];
     const auto mean = mv::edit::sample_mean(*app->working, su, sv);
     if (!mean) return;
     const std::array<float, 2> wb = mv::edit::neutral_balance(*mean);
@@ -2828,10 +3051,34 @@ void adjust_pick_at(app_state* app, int x, int y) {
     c.v[static_cast<std::size_t>(mv::edit::adjust_param::temperature)] = wb[0];
     c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
     e = app->edits.set_colour(c);
-    app->adjust.set_pick(mv::shell::adjust_pick::none);  // one click
+    tool_down(app);  // one click
+  } else if (tool == mv::shell::canvas_tool::red_eye) {
+    const float ring = mv::shell::radius_over_long(tool_ring_px(app), app->lab.still_map());
+    const int hit = mv::shell::spot_at(p, app->edits.colour(), u, v, ring * 0.5f);
+    if (hit >= 0) {
+      e = app->edits.remove_red_eye(hit);
+      app->tool_hover_plus1 = 0;
+    } else {
+      float cu = u, cv = v, r = ring;
+      if (app->tool_snap[2] > 0.0f) {
+        cu = app->tool_snap[0];
+        cv = app->tool_snap[1];
+        r = app->tool_snap[2];
+      }
+      mv::edit::red_eye_spot spot;
+      if (!mv::shell::shown_to_spot(p, cu, cv, r, spot)) return;
+      e = app->edits.add_red_eye(spot);
+      if (e == mv::shell::edit_effect::refused) {
+        notice_show(app, "Eight fixes is the most a photo holds");
+        return;
+      }
+      app->tool_pulse[0] = cu;
+      app->tool_pulse[1] = cv;
+      app->tool_pulse[2] = r;
+      app->tool_pulse_until = mv::shell::steady_ms() + mv::shell::kToolPulseMs;
+    }
   } else {
-    const float r = mv::edit::kRedEyeDefaultRadius * std::exp2(app->red_eye_size / 100.0f);
-    e = app->edits.add_red_eye({su, sv, r});
+    return;
   }
   if (e == mv::shell::edit_effect::redraw) {
     publish_edit(app);
@@ -2839,24 +3086,8 @@ void adjust_pick_at(app_state* app, int x, int y) {
     publish(app);
   }
   adjust_colour_changed(app);
-}
-
-// ---- Slice 7: the Remove brush (the twin of main_mac.mm's brush methods) ----
-
-bool brush_active(app_state* app) noexcept {
-  return app->adjust.pick() == mv::shell::adjust_pick::remove && adjust_still(app) && !app->edits.crop_active();
-}
-
-float brush_radius(const app_state* app) noexcept {
-  return mv::shell::kBrushDefaultRadius * std::exp2(app->brush_size / 100.0f);
-}
-
-// The strokes and the ring onto the canvas's edit view (a redraw, no decode).
-void brush_publish(app_state* app) noexcept {
-  if (app->input.edit[0].item != app->edit_key) return;
-  mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
-  ++app->input.activity_seq;
-  publish(app);
+  brush_publish(app);
+  push_tool_bar(app);
 }
 
 bool brush_press(app_state* app, int x, int y) {
@@ -2867,33 +3098,64 @@ bool brush_press(app_state* app, int x, int y) {
   }
   const mv::edit::placement p = app->edits.preview_placement();
   app->brush.set_frame(p.cropped.w, p.cropped.h);
-  if (!app->brush.begin(u, v, brush_radius(app))) {
-    ::MessageBeep(MB_OK);  // full
+  // Alt held at the press erases this stroke.
+  app->tool.erase_held = (::GetKeyState(VK_MENU) & 0x8000) != 0;
+  // The size is in screen pixels: the dab's radius over the shown long side.
+  const float r = mv::shell::radius_over_long(tool_ring_px(app), app->lab.still_map());
+  if (app->brush.full()) {
+    notice_show(app, "Brush full: Remove, then brush more");  // says why, instead of a beep
     return false;
   }
+  if (!app->brush.begin(u, v, r, mv::shell::erasing(app->tool))) return false;
   app->brush_cursor[0] = u;
   app->brush_cursor[1] = v;
-  app->brush_cursor[2] = brush_radius(app);
+  app->brush_cursor[2] = r;
   brush_publish(app);
   push_adjust_pane(app);
   return true;
 }
 
-// A move: paints while a stroke is down, else moves the ring.
+// A move: paints while a stroke is down, else moves the ring (it is the cursor
+// over the canvas). The red-eye ring snaps to an eye the pack found, and a fix
+// under it shows the cross a click acts on. The Windows twin of Mac
+// -brushHoverX:y: (the ring follows whatever tool is armed).
 void brush_move(app_state* app, int x, int y) {
   float u = 0, v = 0;
   const bool on = app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v);
+  // Alt held erases while it is down (the ring dashes).
+  app->tool.erase_held = (::GetKeyState(VK_MENU) & 0x8000) != 0;
   if (app->brush_stroke) {
     if (!on) return;
     (void)app->brush.drag(u, v);
-  } else {
-    const bool inside = on && u >= 0 && u <= 1 && v >= 0 && v <= 1;
-    if (!inside && app->brush_cursor[0] < 0.0f) return;
-    if (!inside) u = -1.0f;
+    app->brush_cursor[0] = u;
+    app->brush_cursor[1] = v;
+    brush_publish(app);
+    return;
   }
-  app->brush_cursor[0] = u;
+  const bool inside = on && pointer_over_canvas(app);
+  if (!inside && app->brush_cursor[0] <= -1.0f) return;
+  app->brush_cursor[0] = inside ? u : -1.0f;
   app->brush_cursor[1] = v;
-  app->brush_cursor[2] = brush_radius(app);
+  if (active_tool(app) == mv::shell::canvas_tool::red_eye && inside) {
+    const mv::edit::placement p = app->edits.preview_placement();
+    const float ring = mv::shell::radius_over_long(tool_ring_px(app), app->lab.still_map());
+    app->tool_hover_plus1 = mv::shell::spot_at(p, app->edits.colour(), u, v, ring * 0.5f) + 1;
+    app->tool_snap[2] = 0.0f;
+    if (app->tool_hover_plus1 == 0 && !app->eyes.empty() && app->eyes_item == app->edit_key) {
+      std::vector<std::array<float, 3>> shown;
+      shown.reserve(app->eyes.size());
+      for (const mv::shell::eye_point& e : app->eyes) shown.push_back(mv::shell::spot_to_shown(p, {e.x, e.y, e.r}));
+      const float aspect =
+          p.cropped.h > 0 ? static_cast<float>(p.cropped.w) / static_cast<float>(p.cropped.h) : 1.0f;
+      if (auto snapped = mv::shell::snap_eye(shown, u, v, ring, aspect)) {
+        app->brush_cursor[0] = (*snapped)[0];
+        app->brush_cursor[1] = (*snapped)[1];
+        app->tool_snap[0] = (*snapped)[0];
+        app->tool_snap[1] = (*snapped)[1];
+        app->tool_snap[2] = (*snapped)[2];
+      }
+    }
+  }
   brush_publish(app);
 }
 
@@ -2903,20 +3165,19 @@ void adjust_brush(app_state* app, int action) {
     (void)app->brush.undo_stroke();
   } else if (action == 1) {
     app->brush.clear();
+    (void)mv_edit_still_mask(nullptr, nullptr, 0);
   } else if (action == 2) {
     if (app->brush.empty() || app->edit_path.empty()) {
-      ::MessageBeep(MB_OK);
+      notice_show(app, "Brush over what to remove first");
       return;
     }
-    const auto dabs = app->brush.dabs();
-    std::vector<float> flat;
-    flat.reserve(dabs.size() * 3);
-    for (const mv::shell::brush_dab& d : dabs) flat.insert(flat.end(), {d.u, d.v, d.r});
+    // The painted dabs, minus any a later erase dab took back (the row has no erase).
+    const std::vector<float> flat = app->brush.handoff();
     // The add-on media layer is in mediaviewer_core.dll: through its C entry.
-    (void)mv_edit_still_mask(app->edit_path.c_str(), flat.data(), static_cast<std::uint32_t>(dabs.size()));
+    (void)mv_edit_still_mask(app->edit_path.c_str(), flat.data(), static_cast<std::uint32_t>(flat.size() / 3));
     const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
     if (id == mv::shell::command_id::none) {
-      app->adjust.set_prompt_note("Remove needs the Enhance add-on (Settings → Add-ons).");
+      notice_show(app, "Remove needs the Enhance add-on (Settings → Add-ons).");
     } else {
       (void)run_command(app, id);
     }
@@ -2924,6 +3185,250 @@ void adjust_brush(app_state* app, int action) {
   brush_publish(app);
   push_adjust_pane(app);
   push_edit_view(app);  // S2: the Enhance tab's card counts strokes too
+  push_tool_bar(app);
+}
+
+// The eyes of the photo on screen, once per item, on the pool: the ring snaps
+// to them and Find eyes reads them. Nothing without the AI pack or with People
+// off (the pack says so; the ring then stays where the pointer is). The pack is
+// in mediaviewer_core.dll: through mv_eyes_json.
+void tool_fetch_eyes(app_state* app) {
+  if (app->eyes_item == app->edit_key || app->eyes_fetching || app->edit_path.empty() || !app->window) return;
+  app->eyes_fetching = true;
+  float w = 0, h = 0;
+  if (app->working) {
+    w = static_cast<float>(app->working->width);
+    h = static_cast<float>(app->working->height);
+  } else {
+    const mv::edit::placement p = app->edits.preview_placement();
+    w = static_cast<float>(p.oriented.w);
+    h = static_cast<float>(p.oriented.h);
+  }
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [path = app->edit_path, item = app->edit_key, w, h,
+                                                  hwnd](const mv::job_context& ctx) -> mv::status {
+    auto* r = new (std::nothrow) tool_job_result{};
+    if (!r) return mv::status::out_of_memory;
+    r->item = item;
+    if (!ctx.cancelled()) {
+      std::uint32_t needed = 0;
+      std::string json(4096, '\0');
+      mv_status st = mv_eyes_json(path.c_str(), json.data(), static_cast<std::uint32_t>(json.size()), &needed);
+      if (st != MV_OK && needed > json.size()) {  // too small: `needed` says how much
+        json.assign(needed, '\0');
+        st = mv_eyes_json(path.c_str(), json.data(), static_cast<std::uint32_t>(json.size()), &needed);
+      }
+      if (st == MV_OK) {
+        json.resize(std::strlen(json.c_str()));
+        r->eyes = mv::shell::parse_eyes(json, w, h);
+      }
+    }
+    if (!::PostMessageW(hwnd, kMsgToolJob, 0, reinterpret_cast<LPARAM>(r))) delete r;
+    return mv::status::ok;
+  });
+}
+
+// Find eyes: every detected eye red enough is fixed, as one undo step.
+void tool_find_eyes(app_state* app) {
+  if (active_tool(app) != mv::shell::canvas_tool::red_eye || app->find_eyes_busy || !app->window) return;
+  if (app->eyes_item != app->edit_key || app->eyes.empty()) {
+    notice_show(app, app->eyes_fetching ? "Looking for eyes…"
+                                        : "Find eyes needs People in Local search (Settings → Add-ons)");
+    return;
+  }
+  if (!app->working) {
+    notice_show(app, "Preparing the photo — try again in a moment");
+    return;
+  }
+  app->find_eyes_busy = true;
+  push_tool_bar(app);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [working = app->working, eyes = app->eyes, item = app->edit_key,
+                                                  hwnd](const mv::job_context&) -> mv::status {
+    auto* r = new (std::nothrow) tool_job_result{};
+    if (!r) return mv::status::out_of_memory;
+    r->found = true;
+    r->item = item;
+    r->spots = mv::shell::find_red_eyes(*working, eyes);
+    if (!::PostMessageW(hwnd, kMsgToolJob, 0, reinterpret_cast<LPARAM>(r))) delete r;
+    return mv::status::ok;
+  });
+}
+
+void on_tool_job(app_state* app, std::unique_ptr<tool_job_result> r) {
+  if (!r) return;
+  if (!r->found) {
+    app->eyes_fetching = false;
+    if (r->item != app->edit_key) return;
+    app->eyes_item = r->item;
+    app->eyes = std::move(r->eyes);
+    push_tool_bar(app);  // "2 eyes found", Find eyes enabled
+    return;
+  }
+  app->find_eyes_busy = false;
+  push_tool_bar(app);
+  if (r->item != app->edit_key) return;
+  if (r->spots.empty()) {
+    notice_show(app, "No red eyes found");
+    return;
+  }
+  const mv::edit::colour now = app->edits.colour();
+  const mv::edit::colour with = mv::shell::with_spots(now, r->spots);
+  const int added = static_cast<int>(with.spot_count) - static_cast<int>(now.spot_count);
+  if (added <= 0 || app->edits.set_colour(with) != mv::shell::edit_effect::redraw) {
+    notice_show(app, "Those eyes are already fixed");
+    return;
+  }
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+  adjust_colour_changed(app);
+  brush_publish(app);
+  push_tool_bar(app);
+  notice_show(app, added == 1 ? std::string("Fixed 1 red eye") : "Fixed " + std::to_string(added) + " red eyes");
+}
+
+// What tool mode refused (key_router.h blocked_in_tool): say why.
+void tool_blocked(app_state* app) {
+  notice_show(app, tool_pending(app) ? "Remove or clear the strokes first" : "Put the tool down first (Esc)");
+}
+
+// The tool keys (docs/design/16, shell/canvas_tool.h), routed in tool mode.
+bool run_tool_command(app_state* app, mv::shell::command_id command) {
+  using enum mv::shell::command_id;
+  using mv::shell::canvas_tool;
+  switch (command) {
+    case tool_brush:
+      if (!adjust_still(app)) return false;
+      if (app->tool.tool != canvas_tool::remove_brush) arm_tool(app, canvas_tool::remove_brush);
+      return true;
+    case tool_red_eye:
+      if (!adjust_still(app)) return false;
+      if (app->tool.tool == canvas_tool::red_eye) tool_down(app);
+      else arm_tool(app, canvas_tool::red_eye);
+      return true;
+    case tool_faces:
+      // S8 makes Faces a canvas tool; today it is the Enhance tab's card.
+      if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
+      edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
+      return true;
+    case tool_extend: {
+      // S6 makes Extend a canvas tool; today Enhance's sheet offers it (its
+      // photo choice has Extend the picture), else the Enhance tab's card.
+      if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
+      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+      if (id == mv::shell::command_id::none) edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
+      else (void)run_command(app, id);
+      return true;
+    }
+    default:
+      break;
+  }
+  const canvas_tool active = active_tool(app);
+  if (active == canvas_tool::none) return false;
+  switch (command) {
+    case tool_smaller:
+    case tool_bigger:
+      if (!mv::shell::sized(active)) return false;
+      (void)mv::shell::set_tool_px(app->tool,
+                                   mv::shell::step_tool_px(mv::shell::tool_px(app->tool), command == tool_bigger ? 1 : -1),
+                                   mv::shell::steady_ms());
+      brush_publish(app);
+      push_tool_bar(app);
+      return true;
+    case tool_undo:
+      if (active == canvas_tool::remove_brush) {
+        if (!app->brush.undo_stroke()) return false;
+        brush_publish(app);
+        push_adjust_pane(app);
+        push_tool_bar(app);
+        push_edit_view(app);
+        return true;
+      }
+      // A red-eye fix (or its removal) is one op on the stack.
+      return run_edit_command(app, undo_edit);
+    case tool_redo:
+      if (active != canvas_tool::remove_brush || !app->brush.redo_stroke()) return false;
+      brush_publish(app);
+      push_adjust_pane(app);
+      push_tool_bar(app);
+      push_edit_view(app);
+      return true;
+    case tool_clear:
+      if (active == canvas_tool::remove_brush) {
+        if (!app->brush.empty()) adjust_brush(app, 1);
+        return true;
+      }
+      if (active == canvas_tool::red_eye && app->edits.colour().spot_count > 0) {
+        // Every fix off, one op (r 0 clears them all).
+        if (app->edits.add_red_eye({0.0f, 0.0f, 0.0f}) == mv::shell::edit_effect::redraw) {
+          publish_edit(app);
+          ++app->input.activity_seq;
+          publish(app);
+          adjust_colour_changed(app);
+          brush_publish(app);
+          push_tool_bar(app);
+        }
+      }
+      return true;
+    case tool_apply:
+      if (active == canvas_tool::remove_brush) adjust_brush(app, 2);
+      else tool_down(app);
+      return true;
+    case tool_pan:
+    case tool_pan_release:
+      app->tool.pan_held = command == tool_pan;
+      brush_publish(app);  // the ring hides while panning
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The bar's buttons and controls (chrome_cmd_canvas_tool, _tool_size_set,
+// _tool_erase_set).
+void tool_from_island(app_state* app, int command, float arg) {
+  using mv::shell::tool_bar_action;
+  using enum mv::shell::command_id;
+  if (command == mv::shell::chrome_cmd_tool_size_set) {
+    if (mv::shell::set_tool_px(app->tool, arg, mv::shell::steady_ms())) {
+      brush_publish(app);
+      push_tool_bar(app);
+    }
+    return;
+  }
+  if (command == mv::shell::chrome_cmd_tool_erase_set) {
+    app->tool.erase = arg != 0.0f;
+    brush_publish(app);
+    push_tool_bar(app);
+    return;
+  }
+  const int packed = static_cast<int>(std::lround(arg));
+  if (packed < 0) {
+    switch (static_cast<tool_bar_action>(-packed - 1)) {
+      case tool_bar_action::done: tool_down(app); break;
+      case tool_bar_action::undo: (void)run_tool_command(app, tool_undo); break;
+      case tool_bar_action::redo: (void)run_tool_command(app, tool_redo); break;
+      case tool_bar_action::clear: (void)run_tool_command(app, tool_clear); break;
+      case tool_bar_action::apply: (void)run_tool_command(app, tool_apply); break;
+      case tool_bar_action::find_eyes: tool_find_eyes(app); break;
+    }
+    return;
+  }
+  const int t = packed / 1000;
+  if (t < 0 || t > static_cast<int>(mv::shell::canvas_tool::extend)) return;
+  const auto tool = static_cast<mv::shell::canvas_tool>(t);
+  if (tool == mv::shell::canvas_tool::none) {
+    tool_down(app);
+    return;
+  }
+  if (packed % 1000 > 0) {
+    float* px = nullptr;
+    if (tool == mv::shell::canvas_tool::remove_brush) px = &app->tool.brush_px;
+    if (tool == mv::shell::canvas_tool::red_eye) px = &app->tool.redeye_px;
+    if (px) *px = mv::shell::clamp_tool_px(static_cast<float>(packed % 1000));
+  }
+  arm_tool(app, tool);
 }
 
 // Slice 3: a parameter from the island as parked "param\tvalue" (selective
@@ -4028,9 +4533,9 @@ void push_edit_view(app_state* app) noexcept {
     std::string apps;
     a.enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
     // The wand (adjust_pane.h kWand*): the Remove brush, what Enhance offers,
-    // the faces, and docs/plans/edit-refresh.md S2's ✦ Auto. The Windows brush is
-    // the adjust pane's pick (S3/S4a give it a tool of its own).
-    a.wand = (app->adjust.pick() == mv::shell::adjust_pick::remove ? mv::shell::kWandBrushOn : 0) |
+    // the faces, and docs/plans/edit-refresh.md S2's ✦ Auto. S3: the brush is a
+    // canvas tool of its own (shell/canvas_tool.h), not the adjust pane's pick.
+    a.wand = (app->tool.tool == mv::shell::canvas_tool::remove_brush ? mv::shell::kWandBrushOn : 0) |
              (app->brush.empty() ? 0 : mv::shell::kWandBrushStrokes) |
              (app->brush.full() ? mv::shell::kWandBrushFull : 0) |
              (mv::shell::find_addon_command("enhance", "restyle") != mv::shell::command_id::none
@@ -4087,6 +4592,12 @@ void sync_workspace(app_state* app) {
     if (jobs) set_jobs_pane(app, true, false);
   }
   app->ws_shown = open;
+  // A canvas tool belongs to Edit: closing it puts the tool down (S3).
+  if (!open && app->tool.tool != mv::shell::canvas_tool::none) {
+    (void)mv::shell::arm_tool(app->tool, app->ws, mv::shell::canvas_tool::none);
+    app->brush_cursor[0] = -1.0f;
+    brush_publish(app);
+  }
   // The strip and its pane move in, and the canvas refits into the rect beside
   // them (or back): one layout, one resize_seq, the same swapchain.
   apply_view_state(app);
@@ -4124,6 +4635,12 @@ void workspace_item_changed(app_state* app) noexcept {
     if (app->window) ::KillTimer(app->window, kWorkspaceFollowTimerId);
     if (mv::shell::follow_subject(app->ws, subject)) sync_workspace(app);
     else push_edit_view(app);
+    // docs/plans/edit-refresh.md S3: an armed tool stays armed on the next still
+    // (the bar and its band go on a clip); red-eye reads the new photo's eyes.
+    if (app->tool.tool == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
+    app->tool_hover_plus1 = 0;
+    app->tool_snap[2] = 0.0f;
+    sync_tool_bar(app);
   } catch (...) {
   }
 }
@@ -4224,29 +4741,23 @@ void run_edit_action(app_state* app, int action) {
       if (id != mv::shell::command_id::none) (void)run_command(app, id);
       return;
     }
-    case mv::shell::chrome_edit_action::arm_brush: {
-      // docs/plans/edit-refresh.md S2: the Remove card and the wand's Remove row.
-      // On Windows the brush is the adjust pane's pick, so Adjust shows (its
-      // Remove section) with the brush on; S3/S4a make it a tool of its own.
+    case mv::shell::chrome_edit_action::arm_brush:
+    case mv::shell::chrome_edit_action::arm_red_eye: {
+      // docs/plans/edit-refresh.md S2 / S3: the Remove and Red-eye cards, the
+      // rail and the wand. Canvas tools of their own (shell/canvas_tool.h), not
+      // the Colour pane's pick: the brush opens on Enhance, red-eye on Adjust,
+      // and a second click on the armed one puts it down (the Mac's -editTool:).
       if (edit_subject_of(app) != mv::shell::edit_subject::still) {
         ::MessageBeep(MB_ICONWARNING);
         return;
       }
-      edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::colour));
-      set_adjust_pick(app, static_cast<float>(static_cast<int>(mv::shell::adjust_pick::remove) * 1000 +
-                                              static_cast<int>(std::lround(app->brush_size)) + 100));
-      push_edit_view(app);
+      const mv::shell::canvas_tool t = action == static_cast<int>(mv::shell::chrome_edit_action::arm_brush)
+                                           ? mv::shell::canvas_tool::remove_brush
+                                           : mv::shell::canvas_tool::red_eye;
+      if (app->tool.tool == t) tool_down(app);
+      else arm_tool(app, t);
       return;
     }
-    case mv::shell::chrome_edit_action::arm_red_eye:
-      if (edit_subject_of(app) != mv::shell::edit_subject::still) {
-        ::MessageBeep(MB_ICONWARNING);
-        return;
-      }
-      edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::colour));
-      set_adjust_pick(app, static_cast<float>(static_cast<int>(mv::shell::adjust_pick::red_eye) * 1000 +
-                                              static_cast<int>(std::lround(app->red_eye_size)) + 100));
-      return;
     case mv::shell::chrome_edit_action::show_enhance:
       edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
       return;
@@ -5917,6 +6428,12 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
     case mv::shell::chrome_cmd_adjust_brush:
       adjust_brush(app, static_cast<int>(arg));
       return true;
+    // docs/plans/edit-refresh.md S3: the context bar (IslandHost.ToolBar.cs).
+    case mv::shell::chrome_cmd_canvas_tool:
+    case mv::shell::chrome_cmd_tool_size_set:
+    case mv::shell::chrome_cmd_tool_erase_set:
+      tool_from_island(app, command, arg);
+      return true;
     case static_cast<int>(mv::shell::command_id::adjust_auto):
       start_adjust_auto(app, static_cast<int>(arg));
       return true;
@@ -6243,6 +6760,9 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   // (leave_result_list's own condition, so the key is never swallowed).
   s.list_open = !app->list_title.empty();
   s.text_selected = app->text.has_selection();
+  // docs/plans/edit-refresh.md S3: a canvas tool layers over browse.
+  s.tool = tool_armed(app);
+  s.tool_pending = tool_pending(app);
   return s;
 }
 
@@ -6916,6 +7436,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       return;
     case back_target::trim:
       (void)set_trim_mode(app, false);
+      return;
+    case back_target::tool:  // S3: the tool goes down, its strokes kept
+      tool_down(app);
       return;
     case back_target::game:
       app->game_on = false;
@@ -8934,6 +9457,12 @@ bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexce
       if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return false;
       set_show_original(app, command == show_original);
       return true;
+    // docs/plans/edit-refresh.md S3: the canvas tools (shell/canvas_tool.h).
+    case tool_smaller: case tool_bigger: case tool_undo: case tool_redo: case tool_clear:
+    case tool_apply: case tool_pan: case tool_pan_release: case tool_brush: case tool_red_eye:
+    case tool_extend: case tool_faces:
+      if (video_mode(app) || app->lab.animation() != mv::shell::animation_state::none) return false;
+      return run_tool_command(app, command);
     case crop_aspect_set: case crop_straighten_set: case kind_filter_set:
       return false;  // island-only: they carry a value (chrome_on_command)
     case kind_filter_next:
@@ -9216,6 +9745,13 @@ void run_pending_task(app_state* app) {
 
 bool run_command(app_state* app, mv::shell::command_id command) noexcept {
   using enum mv::shell::command_id;
+  // docs/plans/edit-refresh.md S3: what tool mode refuses on a key it refuses
+  // from the island's menus and buttons too (Rotate, Flip, Crop, the Bin; and
+  // walking away while strokes are pending), so strokes are never wiped.
+  if (tool_armed(app) && mv::shell::blocked_in_tool(command, tool_pending(app))) {
+    tool_blocked(app);
+    return true;
+  }
   // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
   if (command == edit_workspace && !app->ws.open && !app->editor.open &&
       mv::io::is_document_name(app->edit_path)) {
@@ -9354,6 +9890,11 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   if (handle_folder_find(app, event, is_down)) return true;
   const auto routed = app->router.on_key(event, view_state_of(app));
   if (!routed.handled) return false;
+  // S3: tool mode refused the key (blocked_in_tool): say why, once.
+  if (routed.blocked) {
+    tool_blocked(app);
+    return true;
+  }
   // Issue #38: a transport key also wakes the controls. The key still runs
   // exactly its own command; waking is never a second action.
   if (is_down && mv::shell::is_transport_command(routed.command)) transport_activity(app);
@@ -9806,6 +10347,11 @@ void layout_panels(app_state* app) noexcept {
     if (want_meta && !want_adjust && !want_jobs) push_meta_pane(app);
     if (want_adjust) push_adjust_pane(app);
   }
+  // docs/plans/edit-refresh.md S3: the canvas tool's bar, centred on the canvas
+  // left of the column, in the band update_client_metrics reserved.
+  const int canvas_right =
+      width - (app->chrome.edit_pane_visible() || app->chrome.edit_rail_visible() ? right_pane_px(*app, width, dpi) : 0);
+  layout_tool_bar(app, width, height, bottom, sidebar_w, canvas_right, dpi);
   layout_editor(app);  // PR 30: the card beside whatever pane is up
   layout_ai_badge(app);  // #345: clear of the panes, the strip and the transport
 }
@@ -9923,6 +10469,9 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   // it never refits the canvas.
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
+  // docs/plans/edit-refresh.md S3: the context bar's band below the photo while
+  // a tool is armed (the transport's slot; nothing over the picture).
+  if (app->tool_band) bottom += ::MulDiv(static_cast<int>(mv::shell::kToolBarBand), static_cast<int>(dpi), 96);
   app->input.chrome_bottom_px = static_cast<std::uint32_t>(bottom);
   // Issue #429: the page sidebar reserves the left edge the same way.
   app->input.chrome_left_px =
@@ -9966,6 +10515,9 @@ void apply_view_state(app_state* app) noexcept {
   const bool have_media = folder_count(app) > 1;
   if (app->mode == open_mode::none) app->gallery_visible = false;
   sync_video_hold(app);
+  // docs/plans/edit-refresh.md S3: the context bar's band (update_client_metrics)
+  // and the bar itself (layout_panels) follow the armed tool.
+  app->tool_band = tool_bar_wanted(app);
 
   // Fullscreen hides chrome (docs/design/16) unless ↓ or the hot-edge revealed it.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
@@ -10682,10 +11234,13 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
                          app->input.mouse_x != static_cast<float>(GET_X_LPARAM(lparam)) ||
                          app->input.mouse_y != static_cast<float>(GET_Y_LPARAM(lparam));
       if (moved) ++app->input.activity_seq;
-      if (moved && brush_active(app)) brush_move(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
       app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
       app->input.mouse_in_client = true;
+      // Slice 7 / docs/plans/edit-refresh.md S3: the armed tool's ring follows the
+      // pointer (it is the cursor over the canvas); a drag paints; the red-eye
+      // ring snaps to an eye (the twin of the Mac's -mouseMoved:).
+      if (moved && tool_armed(app)) brush_move(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       // A recent folder under the pointer: highlighted, with the hand cursor
       // (WM_SETCURSOR). The move above already redraws.
       if (app->input.recents.count != 0) update_welcome_hover(app);
@@ -10743,6 +11298,11 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       app->tracking_mouse = false;
       if (!app->pane_edge_drag) set_pane_edge_state(app, 0);
       app->input.mouse_in_client = false;
+      // S3: the ring goes with the pointer.
+      if (app->brush_cursor[0] > -1.0f && !app->brush_stroke) {
+        app->brush_cursor[0] = -1.0f;
+        brush_publish(app);
+      }
       app->text_beam = false;
       app->input.recents.hover = -1;
       app->input.recents.hover_remove = false;
@@ -10760,6 +11320,16 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
           ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEWE));
           return TRUE;
         }
+      }
+      // docs/plans/edit-refresh.md S3: an armed tool over the canvas. The brush and
+      // red-eye ring is the cursor (drawn in the present, sized in screen
+      // pixels); the white-balance picker is a cross; Space held, the open hand.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT && tool_armed(app) &&
+          pointer_over_canvas(app)) {
+        if (app->tool.pan_held) ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        else if (mv::shell::sized(active_tool(app))) ::SetCursor(nullptr);
+        else ::SetCursor(::LoadCursorW(nullptr, IDC_CROSS));
+        return TRUE;
       }
       // Issue #38: fullscreen, playing, idle, over the video. Anything else is
       // the class cursor, so the windowed pointer is never touched.
@@ -10795,11 +11365,18 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         pane_edge_end(app);
         return 0;
       }
-      // Slice 3: the adjust pane's white-balance picker or red-eye tool takes
-      // the click on the photo; nothing pans.
-      if (msg == WM_LBUTTONDOWN && adjust_picking(app)) {
+      // docs/plans/edit-refresh.md S3: an armed canvas tool takes the press on
+      // the photo (the brush strokes while the button is down; red-eye and the
+      // white-balance picker click); nothing pans. Space held pans instead, as
+      // a middle or right drag always does.
+      if (msg == WM_LBUTTONDOWN && tool_armed(app)) {
+        app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+        app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+        app->input.mouse_in_client = true;
+      }
+      if (msg == WM_LBUTTONDOWN && tool_armed(app) && !app->tool.pan_held &&
+          pointer_over_canvas(app)) {
         ::SetFocus(hwnd);
-        // Slice 7: the Remove brush strokes while the button is down.
         if (brush_active(app)) {
           app->brush_stroke = brush_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
           if (app->brush_stroke) ::SetCapture(hwnd);
@@ -10814,6 +11391,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         ::ReleaseCapture();
         push_adjust_pane(app);
         push_edit_view(app);  // S2: "Brushed" on the Enhance tab's Remove card
+        push_tool_bar(app);   // S3: the bar's stroke count, Undo / Remove enabled
         return 0;
       }
       const int index = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)   ? 0
@@ -10832,10 +11410,13 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         // Text in images: a press on a word selects (published with the
         // press, so the render thread never pans for it) and is never a
         // file drag.
+        // S3: with a tool armed a press is a pan (Space held), never a word
+        // selection or a file drag.
         if (msg == WM_LBUTTONDOWN) {
-          app->input.text_press = text_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+          app->input.text_press =
+              !tool_armed(app) && text_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
         }
-        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted() && !app->input.text_press) {
+        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted() && !app->input.text_press && !tool_armed(app)) {
           app->file_drag_armed = true;
           app->file_drag_x = GET_X_LPARAM(lparam);
           app->file_drag_y = GET_Y_LPARAM(lparam);
@@ -10920,7 +11501,22 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       return 0;
     }
 
+    case WM_SYSCOMMAND:
+      // docs/plans/edit-refresh.md S3: Alt is the brush's erase modifier while a
+      // tool is armed; its release must not open the window menu.
+      if ((wparam & 0xFFF0) == SC_KEYMENU && tool_armed(app)) return 0;
+      break;
+
     case WM_MOUSEWHEEL: {
+      // docs/plans/edit-refresh.md S3: Alt + wheel sizes the armed tool's ring
+      // (×1.2 a notch), with the size label.
+      if ((::GetKeyState(VK_MENU) & 0x8000) != 0 && tool_armed(app) && mv::shell::sized(active_tool(app))) {
+        const float units = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<float>(WHEEL_DELTA);
+        const float px = mv::shell::tool_px(app->tool) * std::pow(mv::shell::kToolStep, units);
+        if (mv::shell::set_tool_px(app->tool, px, mv::shell::steady_ms())) push_tool_bar(app);
+        brush_publish(app);
+        return 0;
+      }
       // A vertical scroll is travel the sideways swipe weighs against, so a
       // zoom with some drift never turns the item. Ctrl+wheel (a touchpad
       // pinch, which zooms below like any wheel) is not a scroll.
@@ -11031,6 +11627,10 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgCloudFetch:
       on_cloud_fetch(app, wparam != 0);
+      return 0;
+
+    case kMsgToolJob:
+      on_tool_job(app, std::unique_ptr<tool_job_result>(reinterpret_cast<tool_job_result*>(lparam)));
       return 0;
 
     case kMsgTextRead:

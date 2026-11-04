@@ -51,6 +51,8 @@ enum MvMenuCmd : int32_t {
   kMenuPaneWider, kMenuPaneNarrower,
   // S2: Edit > Auto Enhance.
   kMenuAutoEnhance,
+  // S3: Edit > the canvas tools (tool_brush, tool_red_eye, tool_extend, tool_faces).
+  kMenuToolBrush, kMenuToolRedEye, kMenuToolExtend, kMenuToolFaces,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -1102,6 +1104,38 @@ void mv_chrome_edit_save_copy(void);
 // Slice 5: Enhance… from the strip: Enhance's own sheet for the photo, whose
 // copy carries the crop, colour and detail being edited.
 void mv_chrome_edit_enhance(void);
+
+// ---- docs/plans/edit-refresh.md S3: the canvas tools' context bar ------------------
+//
+// The capsule below the photo while a canvas tool is armed on a still: it takes
+// the transport's slot (a still has no transport) and a band the canvas leaves
+// for it, so nothing covers the picture. Field for field shell::tool_bar
+// (shell/canvas_tool.h; main_mac.mm static_asserts the layout); Windows'
+// chrome_tool_bar_args is the same. Re-read when mv_chrome_edit_generation moves.
+typedef struct mv_tool_bar_view {
+  int32_t visible;
+  int32_t tool;             // shell::canvas_tool: 1 Remove brush, 2 red-eye, 3 white-balance picker
+  float size_px;            // the ring's diameter in points (4-400)
+  int32_t erase;            // the Erase toggle (Option held is not shown here)
+  int32_t strokes;          // the brush's strokes
+  int32_t spots;            // red-eye fixes on the photo
+  int32_t can_apply;        // Remove (brush) / Find eyes (red-eye) can run
+  int32_t busy;             // Find eyes is reading the photo
+  int32_t progress_permille;
+  int32_t extend_w;         // S6: the extended frame, pixels
+  int32_t extend_h;
+  int32_t full;             // the brush holds all it can
+  int32_t can_redo;
+  int32_t eyes;             // red-eye: eyes the AI pack found (People on); 0 none or not known
+} mv_tool_bar_view;
+bool mv_chrome_tool_bar(mv_tool_bar_view* out);
+// The bar's buttons (shell::tool_bar_action): 0 Done (the tool goes down, the
+// strokes stay), 1 Undo, 2 Redo, 3 Clear, 4 Remove / apply, 5 Find eyes.
+void mv_chrome_tool_action(int32_t action);
+// The size slider, in points (the label fades in beside the ring).
+void mv_chrome_tool_set_size(float px);
+// The Paint / Erase toggle.
+void mv_chrome_tool_set_erase(int32_t on);
 // A document's "Open in <app>" (docs/design/20): opens the file on the canvas in
 // the app at `app_path_utf8`, or in its default app (never this one) when NULL
 // or "". Asynchronous; never blocks the caller. [main-thread]

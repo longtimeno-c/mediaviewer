@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cmath>
@@ -685,6 +686,30 @@ TEST_CASE("red-eye: a fix pulls red down inside its spot only, placed through th
   CHECK(es.add_red_eye({0, 0, 0}) == mv::shell::edit_effect::redraw);
   CHECK(es.colour().spot_count == 0);
   CHECK(es.colour().identity());
+}
+
+TEST_CASE("red-eye: a fix taken off and Find eyes are one undo step each", "[adjust][red_eye][canvas-tool]") {
+  mv::shell::edit_session es;
+  es.set_item({"/p/a.jpg", 100, 5, 400, 300, true});
+  REQUIRE(es.add_red_eye({0.2f, 0.2f, 0.01f}) == mv::shell::edit_effect::redraw);
+  REQUIRE(es.add_red_eye({0.4f, 0.2f, 0.01f}) == mv::shell::edit_effect::redraw);
+  REQUIRE(es.add_red_eye({0.6f, 0.2f, 0.01f}) == mv::shell::edit_effect::redraw);
+  const std::size_t ops = es.edit_count();
+  CHECK(es.remove_red_eye(1) == mv::shell::edit_effect::redraw);
+  CHECK(es.edit_count() == ops + 1);
+  REQUIRE(es.colour().spot_count == 2);
+  CHECK(es.colour().spots[1].x == Approx(0.6f));
+  CHECK(es.remove_red_eye(5) == mv::shell::edit_effect::none);
+  CHECK(es.remove_red_eye(-1) == mv::shell::edit_effect::none);
+  // Undo puts it back (the stack pops the one op).
+  REQUIRE(es.stack() != nullptr);
+  const std::array<edit::red_eye_spot, 2> found{{{0.3f, 0.6f, 0.012f}, {0.5f, 0.6f, 0.012f}}};
+  CHECK(es.add_red_eyes(found) == mv::shell::edit_effect::redraw);
+  CHECK(es.colour().spot_count == 4);
+  CHECK(es.edit_count() == ops + 2);
+  CHECK(es.add_red_eyes({}) == mv::shell::edit_effect::none);
+  mv::shell::edit_session empty;
+  CHECK(empty.remove_red_eye(0) == mv::shell::edit_effect::refused);
 }
 
 TEST_CASE("white-balance picker: the picked pixel comes out neutral", "[adjust][picker]") {
