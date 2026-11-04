@@ -383,7 +383,11 @@ error check_props(node& n, std::size_t& items) {
             // (never with Reduce Motion / animations off), "still" holds it.
             ok = (key == "surface" && v.k == json::kind::string && id_text(v.s)) ||
                  (key == "width" && int_in(v, 0, 4096)) || (key == "height" && int_in(v, 16, 1024)) ||
-                 (key == "pin_label" && str_max(v, kMaxLabel)) || (key == "glow" && one_of(v, {"moving", "still"}));
+                 (key == "pin_label" && str_max(v, kMaxLabel)) || (key == "glow" && one_of(v, {"moving", "still"})) ||
+                 // "fill" (contribution API 12, the Places world map): the surface
+                 // takes the room its parent gives on both axes; the chrome reports
+                 // that size (MV_SLOT_EVENT_RESIZE) and width / height are ignored.
+                 (key == "fill" && v.k == json::kind::boolean);
           }
           break;
       }
@@ -424,7 +428,7 @@ error check_props(node& n, std::size_t& items) {
       }
       break;
     case node_type::surface:
-      if (!has("surface") || !has("height")) return error::bad_prop;
+      if (!has("surface") || (!has("height") && !p.boolean("fill").value_or(false))) return error::bad_prop;
       break;
     case node_type::link:
       if (!has("via") || !has("state")) return error::bad_prop;
@@ -753,6 +757,19 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
   const bool live_surface =
       n->type == node_type::surface && n->props.find("interactive") &&
       (n->props.find("interactive")->k == json::kind::object || n->props.boolean("interactive").value_or(false));
+  // A surface that fills reports its laid-out size (API 12), interactive or not.
+  const bool fill_surface = n->type == node_type::surface && n->props.boolean("fill").value_or(false);
+  if (fill_surface && kind == ev_resize) {
+    if (value.empty()) return error::bad_value;
+    const auto r = json::parse(value, 4);
+    if (!r || r->k != json::kind::object || r->o.size() != 3) return error::bad_value;
+    const json::value* w = r->find("width");
+    const json::value* h = r->find("height");
+    const json::value* s = r->find("scale");
+    return w && h && s && num_in(*w, 1.0, 20000.0) && num_in(*h, 1.0, 20000.0) && num_in(*s, 0.5, 8.0)
+               ? error::none
+               : error::bad_value;
+  }
   if (!interactive(n->type) && !live_surface) return error::not_interactive;
   if (const auto d = n->props.boolean("disabled"); d && *d) return error::not_interactive;
   if (n->type == node_type::tiles && n->props.boolean("static").value_or(false)) return error::not_interactive;

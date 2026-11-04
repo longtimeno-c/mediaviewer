@@ -82,6 +82,12 @@ MV_API mv_status MV_CALL mv_slots_screens_json(char* out, uint32_t cap, uint32_t
   }));
 }
 
+MV_API mv_status MV_CALL mv_slots_open_list_json(char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_open_list_json", [&] {
+    return write_out(mv::addon::default_slots().open_list_json(), out, cap, needed);
+  }));
+}
+
 MV_API mv_status MV_CALL mv_slots_search_json(uint32_t scope, char* out, uint32_t cap, uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_slots_search_json", [&] {
     return write_out(mv::addon::default_slots().search_json(scope), out, cap, needed);

@@ -36,7 +36,7 @@ struct projection {
     cy = v.height / 2.0;
     lon0 = wrap180(v.lon);
     m0 = merc(lat0);
-    k = v.height * std::cos(lat0 * kDeg) / (clamp_span(v.span_deg) * kDeg);
+    k = v.height * std::cos(lat0 * kDeg) / (clamp_span(v) * kDeg);
   }
   void pixel(double lat, double lon, double& x, double& y) const noexcept {
     x = cx + wrap180(lon - lon0) * kDeg * k;
@@ -104,8 +104,15 @@ dot_palette dot_palette_for(const theme_tokens& t) noexcept {
   return p;
 }
 
-void cluster_dots(const map_view& v, std::span<const folder_item> items, std::size_t skip, std::vector<map_dot>& out) {
+namespace {
+
+// cluster_dots and cluster_points: `n` items, `at(i, lat, lon)` reads one
+// (false skips it). With `item_dot`, item i's final dot index (or k_no_dot).
+template <typename At>
+void cluster_impl(const map_view& v, std::size_t n, At&& at, std::size_t skip, std::vector<map_dot>& out,
+                  std::vector<std::uint32_t>* item_dot) {
   out.clear();
+  if (item_dot) item_dot->assign(n, k_no_dot);
   if (v.width == 0 || v.height == 0 || v.width > 4096 || v.height > 4096 || !std::isfinite(v.lat) ||
       !std::isfinite(v.lon)) {
     return;
@@ -128,24 +135,31 @@ void cluster_dots(const map_view& v, std::span<const folder_item> items, std::si
     std::uint32_t first = 0;
   };
   std::vector<acc> grid(cols * rows);
-  const std::size_t n = std::min(items.size(), k_max_folder_items);
+  std::vector<std::uint32_t> cell_of;
+  if (item_dot) cell_of.assign(n, k_no_dot);
   for (std::size_t i = 0; i < n; ++i) {
     if (i == skip) continue;
-    const folder_item& it = items[i];
-    if (!std::isfinite(it.lat) || !std::isfinite(it.lon)) continue;
+    double lat = 0, lon = 0;
+    if (!at(i, lat, lon) || !std::isfinite(lat) || !std::isfinite(lon)) continue;
     double x = 0, y = 0;
-    pr.pixel(it.lat, it.lon, x, y);
+    pr.pixel(lat, lon, x, y);
     if (x < -margin || y < -margin || x >= v.width + margin || y >= v.height + margin) continue;
     const double gc = std::floor((x - ox) / cell) - c0;
     const double gr = std::floor((y - oy) / cell) - r0;
     if (gc < 0 || gr < 0 || gc >= static_cast<double>(cols) || gr >= static_cast<double>(rows)) continue;
-    acc& a = grid[static_cast<std::size_t>(gr) * cols + static_cast<std::size_t>(gc)];
-    if (a.count == 0) a.first = static_cast<std::uint32_t>(i);  // items arrive in folder order
+    const std::size_t gi = static_cast<std::size_t>(gr) * cols + static_cast<std::size_t>(gc);
+    acc& a = grid[gi];
+    if (a.count == 0) a.first = static_cast<std::uint32_t>(i);  // items arrive in the walk's order
     a.sx += x;
     a.sy += y;
     ++a.count;
+    if (item_dot) cell_of[i] = static_cast<std::uint32_t>(gi);
   }
-  for (const acc& a : grid) {
+  std::vector<std::uint32_t> dot_of_cell;
+  if (item_dot) dot_of_cell.assign(grid.size(), k_no_dot);
+  std::vector<map_dot> dots;
+  for (std::size_t gi = 0; gi < grid.size(); ++gi) {
+    const acc& a = grid[gi];
     if (a.count == 0) continue;
     map_dot d;
     d.x = a.sx / a.count;
@@ -153,21 +167,26 @@ void cluster_dots(const map_view& v, std::span<const folder_item> items, std::si
     d.count = a.count;
     d.first = a.first;
     d.r = radius_of(a.count, scale);
-    out.push_back(d);
+    if (item_dot) dot_of_cell[gi] = static_cast<std::uint32_t>(dots.size());
+    dots.push_back(d);
   }
   // Neighbouring cells can put two dots on top of each other: merge them,
   // the bigger taking the smaller, once.
-  std::sort(out.begin(), out.end(), [](const map_dot& a, const map_dot& b) {
-    return a.count != b.count ? a.count > b.count : a.first < b.first;
+  std::vector<std::uint32_t> order(dots.size());
+  for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<std::uint32_t>(i);
+  std::sort(order.begin(), order.end(), [&dots](std::uint32_t a, std::uint32_t b) {
+    return dots[a].count != dots[b].count ? dots[a].count > dots[b].count : dots[a].first < dots[b].first;
   });
   const double gap = 1.5 * scale;
-  std::vector<std::uint8_t> gone(out.size(), 0);
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    if (gone[i]) continue;
-    for (std::size_t j = i + 1; j < out.size(); ++j) {
-      if (gone[j]) continue;
-      map_dot& a = out[i];
-      const map_dot& b = out[j];
+  std::vector<std::uint32_t> into(dots.size(), k_no_dot);  // the dot a merged one went into
+  for (std::size_t oi = 0; oi < order.size(); ++oi) {
+    const std::uint32_t i = order[oi];
+    if (into[i] != k_no_dot) continue;
+    for (std::size_t oj = oi + 1; oj < order.size(); ++oj) {
+      const std::uint32_t j = order[oj];
+      if (into[j] != k_no_dot) continue;
+      map_dot& a = dots[i];
+      const map_dot& b = dots[j];
       const double reach = a.r + b.r + gap;
       const double dx = a.x - b.x, dy = a.y - b.y;
       if (dx * dx + dy * dy >= reach * reach) continue;
@@ -177,15 +196,57 @@ void cluster_dots(const map_view& v, std::span<const folder_item> items, std::si
       a.count += b.count;
       a.first = std::min(a.first, b.first);
       a.r = radius_of(a.count, scale);
-      gone[j] = 1;
+      into[j] = i;
     }
   }
-  std::size_t kept = 0;
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    if (!gone[i]) out[kept++] = out[i];
+  // The survivors, in merge order, then largest count first (stable).
+  std::vector<std::uint32_t> kept;
+  for (const std::uint32_t i : order) {
+    if (into[i] == k_no_dot) kept.push_back(i);
   }
-  out.resize(kept);
-  std::stable_sort(out.begin(), out.end(), [](const map_dot& a, const map_dot& b) { return a.count > b.count; });
+  std::stable_sort(kept.begin(), kept.end(),
+                   [&dots](std::uint32_t a, std::uint32_t b) { return dots[a].count > dots[b].count; });
+  out.reserve(kept.size());
+  std::vector<std::uint32_t> final_of;
+  if (item_dot) final_of.assign(dots.size(), k_no_dot);
+  for (std::size_t k = 0; k < kept.size(); ++k) {
+    out.push_back(dots[kept[k]]);
+    if (item_dot) final_of[kept[k]] = static_cast<std::uint32_t>(k);
+  }
+  if (item_dot) {
+    for (std::size_t i = 0; i < n; ++i) {
+      if (cell_of[i] == k_no_dot) continue;
+      std::uint32_t d = dot_of_cell[cell_of[i]];
+      if (into[d] != k_no_dot) d = into[d];  // merged once, into a survivor
+      (*item_dot)[i] = final_of[d];
+    }
+  }
+}
+
+}  // namespace
+
+void cluster_dots(const map_view& v, std::span<const folder_item> items, std::size_t skip, std::vector<map_dot>& out) {
+  const std::size_t n = std::min(items.size(), k_max_folder_items);
+  cluster_impl(
+      v, n,
+      [&items](std::size_t i, double& lat, double& lon) {
+        lat = items[i].lat;
+        lon = items[i].lon;
+        return true;
+      },
+      skip, out, nullptr);
+}
+
+void cluster_points(const map_view& v, std::span<const route_point> points, std::size_t skip, std::vector<map_dot>& out,
+                    std::vector<std::uint32_t>* item_dot) {
+  cluster_impl(
+      v, points.size(),
+      [&points](std::size_t i, double& lat, double& lon) {
+        lat = points[i].lat;
+        lon = points[i].lon;
+        return true;
+      },
+      skip, out, item_dot);
 }
 
 bool draw_dots(const map_view& v, const dot_palette& p, std::span<const map_dot> dots, std::span<std::uint8_t> bgra) {

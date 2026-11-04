@@ -245,6 +245,10 @@ section_result engine::section(double lat, double lon, std::string_view location
       w.begin_object().key("type").string("toggle").key("id").string("folder");
       w.key("label").string(k_folder_toggle).key("value").boolean(folder_layer_).end_object();
     }
+    // The world map's window (docs/plans/places-world-map.md): the library on
+    // the same map, filling a window that can go full screen.
+    w.begin_object().key("type").string("button").key("id").string("open_world");
+    w.key("label").string(k_open_world).end_object();
   }
   w.end_array().end_object();
   out.tree_json = w.take();

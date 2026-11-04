@@ -843,7 +843,10 @@ status slot_registry::send_event(const std::string& addon_id, const std::string&
   if (!st) return status::not_found;
   if (st->tree.check_event(node_id, kind, value_json) != screen::error::none) return status::invalid_arg;
   const std::uint64_t g = st->generation;
-  enqueue(*it->second, {}, [g, screen_id, node_id, kind, value_json](slot_client& c) {
+  // A run of resizes (a window dragged, then let go twice) costs one answer:
+  // the newest replaces one still queued.
+  std::string key = kind == screen::ev_resize ? "resize:" + screen_id + "/" + node_id : std::string{};
+  enqueue(*it->second, std::move(key), [g, screen_id, node_id, kind, value_json](slot_client& c) {
     mv_slot_event e{};
     e.struct_size = sizeof e;
     e.kind = kind;
@@ -1571,6 +1574,74 @@ status slot_registry::open_item(const std::string& addon_id, const std::string& 
   }
   notify(slot_changed_info);
   return status::ok;
+}
+
+// ---- 0.38: show files as a list (the Places world map) -------------------------------
+
+namespace {
+// An absolute file path (POSIX "/..." or Windows "X:\\..." / "\\\\server\\...") or a
+// Photos library key; never a relative step.
+bool list_path_ok(const std::string& p) {
+  if (p.empty() || p.size() > 4096 || p.find('\0') != std::string::npos || !json::detail::valid_utf8(p)) {
+    return false;
+  }
+  if (p.rfind("photos:", 0) == 0) return p.size() > 7;
+  const bool posix = p[0] == '/';
+  const bool drive = p.size() >= 3 && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) &&
+                     p[1] == ':' && (p[2] == '\\' || p[2] == '/');
+  const bool unc = p.size() > 2 && p[0] == '\\' && p[1] == '\\';
+  if (!posix && !drive && !unc) return false;
+  // No "." or ".." segment.
+  std::size_t i = 0;
+  while (i <= p.size()) {
+    std::size_t j = p.find_first_of("/\\", i);
+    if (j == std::string::npos) j = p.size();
+    const std::string_view seg(p.data() + i, j - i);
+    if (seg == "." || seg == "..") return false;
+    i = j + 1;
+  }
+  return true;
+}
+}  // namespace
+
+status slot_registry::open_list(const std::string& addon_id, const std::string& screen_id, std::uint64_t generation,
+                                std::string title, std::vector<std::string> paths, std::uint32_t select) {
+  if (paths.empty() || paths.size() > 10000 || select >= paths.size() || title.size() > 200 ||
+      !json::detail::valid_utf8(title) || title.find('\0') != std::string::npos) {
+    return status::invalid_arg;
+  }
+  for (const std::string& p : paths) {
+    if (!list_path_ok(p)) return status::invalid_arg;
+  }
+  {
+    std::lock_guard lock(m_);
+    status why = status::ok;
+    screen_state* st = addressed(addon_id, screen_id, generation, why);
+    if (!st) return why;
+    if (st->place == screen_place::info_section || st->place == screen_place::settings) return status::invalid_arg;
+    ++open_list_.revision;
+    open_list_.addon = addon_id;
+    open_list_.title = std::move(title);
+    open_list_.paths = std::move(paths);
+    open_list_.select = select;
+  }
+  notify(slot_changed_screens);
+  return status::ok;
+}
+
+std::string slot_registry::open_list_json() const {
+  std::lock_guard lock(m_);
+  json::writer w;
+  w.begin_object().key("revision").integer(static_cast<std::int64_t>(open_list_.revision));
+  if (open_list_.revision != 0) {
+    w.key("addon").string(open_list_.addon).key("title").string(open_list_.title);
+    w.key("paths").begin_array();
+    for (const std::string& p : open_list_.paths) w.string(p);
+    w.end_array();
+    w.key("select").integer(open_list_.select);
+  }
+  w.end_object();
+  return w.take();
 }
 
 // ---- #452: notices and keep-alive ---------------------------------------------------

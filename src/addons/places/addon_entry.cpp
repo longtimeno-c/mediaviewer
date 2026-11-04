@@ -16,6 +16,13 @@
 // cache) are dots on the same map, and a click on one asks the host to show
 // that file (open_item). Read-only.
 //
+// The world map (docs/plans/places-world-map.md): the window "world", opened
+// from the section's Open map button or the command bar, draws every
+// geotagged item of the Local search index (locations_of_index; the open
+// folder without one) on the same map, filling the window, from the whole
+// world to a town; a click on a dot shows its items in the viewer as a list
+// (open_list).
+//
 // Every thunk is the ABI boundary: no exception crosses it (docs/design/14),
 // and nothing here logs a path, a place or a coordinate (rule 6).
 #include <mediaviewer/mediaviewer_addon.h>
@@ -33,6 +40,7 @@
 
 #include "addons/places/places.h"
 #include "addons/places/self_dir.h"
+#include "addons/places/world_map.h"
 #include "core/json.h"
 #include "geo/open.h"
 
@@ -70,6 +78,12 @@ struct addon_state {
   std::string section_id;
   uint64_t section_generation = 0;
   mv::places::section_state section;
+
+  // The world map's window while it is open (generation 0: closed).
+  std::unique_ptr<mv::places::world_map> world;
+  std::mutex world_m;
+  uint64_t world_generation = 0;
+  mv::places::world_state world_state;
 };
 
 addon_state* g = nullptr;
@@ -256,10 +270,163 @@ double num(const mv::json::value* v, double fallback) {
   return v->is_integer ? static_cast<double>(v->i) : v->d;
 }
 
+// ---- the world map (docs/plans/places-world-map.md) ---------------------------------
+
+bool has_locations_of_index(const mv_host_api* host);
+
+const char* const kWorld = "world";
+
+// 0.38: appended after still_mask; an older host's table stops before it.
+bool has_open_list(const mv_host_api* host) {
+  return host->struct_size >= offsetof(mv_host_api, open_list) + sizeof(host->open_list) && host->open_list != nullptr;
+}
+
+// The world's pixels, then its tree (whole) or a diff: the chrome re-reads a
+// surface when the screen's revision moves. Under world_m.
+void post_world(uint64_t generation, bool whole) {
+  const auto img = g->world->picture(g->world_state);
+  if (whole) {
+    if (g->host->screen_post(g->host->host, kWorld, generation, g->world->tree(g->world_state, img.get()).c_str()) !=
+        MV_OK) {
+      return;
+    }
+  }
+  if (img) {
+    (void)g->host->surface_post(g->host->host, kWorld, "map", generation, img->bgra.data(), img->width, img->height,
+                                img->width * 4);
+  }
+  if (!whole) (void)g->host->screen_diff(g->host->host, kWorld, generation, g->world->diff(g->world_state, img.get()).c_str());
+}
+
+int32_t MV_CALL visit_world(void* user, const mv_addon_location_entry* e) {
+  auto& out = *static_cast<mv::places::world_points*>(user);
+  try {
+    // A clip is one dot at its first fix: the rest of its route is not.
+    if (e && e->path_utf8 && *e->path_utf8 && e->location.has &&
+        (e->location.has & MV_ADDON_LOCATION_ROUTE_POINT) == 0 && std::isfinite(e->location.lat) &&
+        std::isfinite(e->location.lon) && std::fabs(e->location.lat) <= 90 && std::fabs(e->location.lon) <= 180) {
+      out.add(e->path_utf8, e->location.lat, e->location.lon);
+    }
+    return out.size() < mv::places::k_max_world_items ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+// Every geotagged item of the library (the index), else of `path`'s folder.
+// nullptr when the window closed or went stale meanwhile.
+std::shared_ptr<mv::places::world_points> read_world(uint64_t generation, const std::string& path) {
+  auto points = std::make_shared<mv::places::world_points>();
+  if (has_locations_of_index(g->host)) {
+    const mv_status st = g->host->locations_of_index(g->host->host, generation, &visit_world, points.get());
+    if (st == MV_ERR_CANCELLED) return nullptr;
+    // No index (no AI pack), or nothing in it has a place yet: the folder.
+    if (st == MV_OK && points->size() != 0) {
+      points->whole_index = true;
+      return points;
+    }
+  }
+  points = std::make_shared<mv::places::world_points>();
+  const std::string_view dir = mv::places::folder_of(path);
+  if (dir.empty()) return points;
+  const std::string folder(dir);
+  if (g->host->locations_in(g->host->host, folder.c_str(), generation, &visit_world, points.get()) == MV_ERR_CANCELLED) {
+    return nullptr;
+  }
+  return points;
+}
+
+mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
+  return guard([&] {
+    if (!r || !r->screen_id || std::strcmp(r->screen_id, kWorld) != 0) return MV_ERR_INVALID_ARG;
+    const std::string path = r->path_utf8 ? r->path_utf8 : "";
+    // The file on screen is the pin, when it has a place.
+    std::optional<mv::places::route_point> pin;
+    if (!path.empty()) {
+      mv_addon_location loc{};
+      if (g->host->location_of(g->host->host, path.c_str(), &loc) == MV_OK && loc.has) pin = mv::places::route_point{loc.lat, loc.lon};
+    }
+    {
+      std::lock_guard lock(g->world_m);
+      g->world_generation = r->generation;
+      g->world->open(g->world_state, tokens(r->theme), r->width_pt, r->height_pt, r->scale, path, pin);
+      post_world(r->generation, true);
+    }
+    // The window is up first; the dots follow once the library is read.
+    auto points = read_world(r->generation, path);
+    if (!points) return MV_OK;
+    std::lock_guard lock(g->world_m);
+    if (g->world_generation != r->generation) return MV_OK;
+    g->world->set_points(g->world_state, std::move(points));
+    post_world(r->generation, false);
+    return MV_OK;
+  });
+}
+
+void world_event(const mv_slot_event* e) {
+  std::lock_guard lock(g->world_m);
+  if (e->kind == MV_SLOT_EVENT_CLOSE) {
+    g->world_generation = 0;
+    g->world_state = mv::places::world_state{};  // the library's points go with the window
+    g->world->cache().clear();
+    return;
+  }
+  if (g->world_generation == 0 || e->generation != g->world_generation) return;
+  const std::string node = e->node_id;
+  auto& s = g->world_state;
+  const auto v = mv::json::parse(e->value_json ? e->value_json : "");
+  const auto obj = v && v->k == mv::json::kind::object;
+  bool changed = false;
+  if (e->kind == MV_SLOT_EVENT_CLICK) {
+    const int delta = node == "zoom_in" ? 1 : node == "zoom_out" ? -1 : 0;
+    changed = delta != 0 && g->world->zoom(s, delta);
+  } else if (node != "map" || !obj) {
+    return;
+  } else if (e->kind == MV_SLOT_EVENT_RESIZE) {
+    changed = g->world->resize(s, static_cast<float>(num(v->find("width"), 0)), static_cast<float>(num(v->find("height"), 0)),
+                               static_cast<float>(num(v->find("scale"), 1)));
+  } else if (e->kind == MV_SLOT_EVENT_ZOOM) {
+    changed = g->world->gesture(s, num(v->find("scale"), 1.0), num(v->find("x"), 0.5), num(v->find("y"), 0.5), 0, 0);
+  } else if (e->kind == MV_SLOT_EVENT_PAN) {
+    changed = g->world->gesture(s, 1.0, 0.5, 0.5, num(v->find("dx"), 0), num(v->find("dy"), 0));
+  } else if (e->kind == MV_SLOT_EVENT_DOUBLE) {
+    changed = g->world->gesture(s, 2.0, num(v->find("x"), 0.5), num(v->find("y"), 0.5), 0, 0);
+  } else if (e->kind == MV_SLOT_EVENT_TAP) {
+    // A dot's items, shown in the viewer as a list titled by its place.
+    const auto hit = g->world->tap(s, num(v->find("x"), -1), num(v->find("y"), -1));
+    if (hit.items.empty() || !has_open_list(g->host) || !s.points) return;
+    std::vector<std::string> paths;
+    paths.reserve(hit.items.size());
+    for (const std::uint32_t i : hit.items) paths.emplace_back(s.points->path(i));
+    std::vector<const char*> ptrs;
+    ptrs.reserve(paths.size());
+    for (const std::string& p : paths) ptrs.push_back(p.c_str());
+    const std::string title = g->world->title_of(s, hit, read_settings().lookup());
+    (void)g->host->open_list(g->host->host, kWorld, e->generation, title.c_str(), ptrs.data(),
+                             static_cast<uint32_t>(ptrs.size()), 0);
+    return;
+  }
+  if (changed) post_world(e->generation, false);
+}
+
 void MV_CALL on_event(void*, const mv_slot_event* e) {
   (void)guard([&] {
     if (!e || !e->node_id || !e->screen_id) return MV_OK;
     const std::string node = e->node_id;
+    // The command bar's World Map: the window (screen_open draws it).
+    if (e->kind == MV_SLOT_EVENT_COMMAND) {
+      if (node == kWorld) (void)g->host->screen_show(g->host->host, kWorld, 1);
+      return MV_OK;
+    }
+    if (std::strcmp(e->screen_id, kWorld) == 0) {
+      world_event(e);
+      return MV_OK;
+    }
+    // The section's Open map button.
+    if (e->kind == MV_SLOT_EVENT_CLICK && node == "open_world") {
+      (void)g->host->screen_show(g->host->host, kWorld, 1);
+      return MV_OK;
+    }
     std::lock_guard lock(g->section_m);
     if (g->section_id != e->screen_id || g->section_generation != e->generation) return MV_OK;
     // Fresh on every request, never cached across a change (docs/design/27
@@ -432,7 +599,7 @@ mv_status MV_CALL search(void*, const mv_slot_search_request* r) {
   });
 }
 
-const mv_addon_slots kSlots{sizeof(mv_addon_slots), 0, &info_section, &search, nullptr, nullptr, &on_event};
+const mv_addon_slots kSlots{sizeof(mv_addon_slots), 0, &info_section, &search, &screen_open, nullptr, &on_event};
 
 const void* MV_CALL query(void*, const char* id) {
   if (id && std::strcmp(id, MV_SLOTS_INTERFACE) == 0) return &kSlots;
@@ -457,6 +624,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     auto state = std::make_unique<addon_state>();
     state->host = host;
     state->eng = std::make_unique<engine>([] { return database(); });
+    state->world = std::make_unique<mv::places::world_map>([] { return database(); });
     g = state.release();
     std::memset(out, 0, sizeof *out);
     out->struct_size = sizeof *out;

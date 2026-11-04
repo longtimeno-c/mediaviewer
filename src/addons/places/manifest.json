@@ -1,8 +1,10 @@
 {
  "description": "Place names and a small map for geotagged photos and clips, and search by place. Offline: the place data ships with the add-on and nothing is sent anywhere.",
  "contributes": {
-  "api": {"min": 5, "max": 5},
+  "api": {"min": 12, "max": 12},
   "info_sections": [{"id": "place", "title": "Place", "when": "location", "order": 0}],
+  "screens": [{"id": "world", "title": "Places", "place": "window", "width": 1100, "height": 720}],
+  "commands": [{"id": "world", "name": "World Map", "modes": "all", "payload": "none"}],
   "search_providers": [{"id": "place", "name": "Places", "prefixes": ["place:", "in:"], "scope": ["files", "local"]}],
   "settings": {"title": "Places", "sections": [{"title": "Place", "help": "How a photo's place is named.", "items": [
    {"type": "toggle", "key": "show_map", "label": "Show the map", "default": true},

@@ -81,6 +81,11 @@ public static unsafe partial class SlotNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_badges_json(byte* output, uint cap, uint* needed);
 
+    // ABI 0.38 (docs/plans/places-world-map.md): the last list an add-on asked the viewer to show.
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_open_list_json(byte* output, uint cap, uint* needed);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_status_json(byte* output, uint cap, uint* needed);
@@ -218,6 +223,9 @@ public static unsafe partial class SlotNative
     public static string InfoJson() => Json(mv_slots_info_json);
     public static string ScreensJson() => Json(mv_slots_screens_json);
     public static string BadgesJson() => Json(mv_slots_badges_json);
+    /// <summary>ABI 0.38: {"revision","addon","title","paths":[...],"select"} or {"revision":0};
+    /// "" on an older core. The revision only grows; act on each once.</summary>
+    public static string OpenListJson() => Json(mv_slots_open_list_json);
     public static string StatusJson() => Json(mv_slots_status_json);
     /// <summary>#452: {"ask","keep":[...],"notices":[...]} (slot_registry::notices_json); "" on an older core.</summary>
     public static string NoticesJson() => Json(mv_slots_notices_json);

@@ -413,6 +413,51 @@ TEST_CASE("an info section asks the viewer to show a file of the same folder (#6
   r.clear_info();
 }
 
+TEST_CASE("a window asks the viewer to show files as a list (0.38)", "[addon][slots]") {
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  const auto theme = test_theme();
+  CHECK(*mv::json::parse(r.open_list_json())->integer("revision") == 0);
+  r.request_info("/f/sintra.jpg", "", theme, 280, 2);
+  REQUIRE(r.open_screen("slotstest", "explorer", "/f/sintra.jpg", theme, 0, 0, 2) == status::ok);
+  r.drain();
+  const auto screens = mv::json::parse(r.screens_json());
+  REQUIRE(screens);
+  const auto g = static_cast<std::uint64_t>(*screens->a[0].integer("generation"));
+  const auto info_g = static_cast<std::uint64_t>(*mv::json::parse(r.info_json())->integer("generation"));
+  using paths = std::vector<std::string>;
+  // Never from an info section; never a stale or unknown window.
+  CHECK(r.open_list("slotstest", "always", info_g, "Sintra", paths{"/f/a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g + 1000, "Sintra", paths{"/f/a.jpg"}, 0) == status::cancelled);
+  // Absolute paths or Photos keys only, 1..10 000, select within them.
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"/f/../etc/a"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"/f/./a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"photos:"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"/f/a.jpg"}, 1) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, std::string(201, 'x'), paths{"/f/a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths(10001, "/f/a.jpg"), 0) == status::invalid_arg);
+  CHECK(*mv::json::parse(r.open_list_json())->integer("revision") == 0);
+  // Any folder, either separator, and the Photos library.
+  REQUIRE(r.open_list("slotstest", "explorer", g, "Sintra, Lisbon, Portugal (3)",
+                      paths{"/f/a.jpg", "/elsewhere/b.mov", "C:\\Photos\\c.heic", "photos:ABC/L0/001"},
+                      1) == status::ok);
+  auto doc = mv::json::parse(r.open_list_json());
+  REQUIRE(doc);
+  const auto first = *doc->integer("revision");
+  CHECK(first > 0);
+  CHECK(*doc->str("addon") == "slotstest");
+  CHECK(*doc->str("title") == "Sintra, Lisbon, Portugal (3)");
+  REQUIRE(doc->find("paths")->a.size() == 4);
+  CHECK(doc->find("paths")->a[2].s == "C:\\Photos\\c.heic");
+  CHECK(*doc->integer("select") == 1);
+  REQUIRE(r.open_list("slotstest", "explorer", g, "Lisbon", paths{"/f/a.jpg"}, 0) == status::ok);
+  CHECK(*mv::json::parse(r.open_list_json())->integer("revision") > first);
+  r.clear_info();
+}
+
 TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[addon][slots]") {
   slot_registry r;
   auto client = std::make_unique<fake_client>(r, "slotstest");
@@ -1175,7 +1220,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
-  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 12, "max": 13)")) == rejection::needs_update);
+  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 13, "max": 14)")) == rejection::needs_update);
   // editor_items (API 11): a labelled button with no symbol, target or opens,
   // and only under a range that reaches 11.
   {
@@ -1254,7 +1299,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 11);
+  REQUIRE(mv::addon::kContributionApi == 12);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);

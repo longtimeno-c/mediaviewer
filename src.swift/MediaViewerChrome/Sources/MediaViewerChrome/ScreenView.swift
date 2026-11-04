@@ -705,6 +705,17 @@ private struct SurfaceNode: View {
   // Wheel steps shown but not reported yet: one zoom about one anchor.
   @State private var wheelStep: CGFloat = 1
   @State private var wheelAnchor: CGPoint = .zero
+  // A surface that fills (contribution API 12, the Places world map): a
+  // two-finger trackpad scroll pans it (nothing else scrolls there), shown at
+  // once and reported 150 ms after the last; and its laid-out size goes to
+  // the add-on once a resize settles.
+  @State private var scrollPan: CGSize = .zero
+  @State private var scrollFlush: DispatchWorkItem?
+  @State private var resizeFlush: DispatchWorkItem?
+  @State private var reported: CGSize = .zero
+  @State private var reportedScale: Float = 0
+
+  private var fills: Bool { node.bool("fill") }
 
   private var live: Bool {
     (node.props["interactive"] is [String: Any] || node.bool("interactive")) && !node.disabled
@@ -787,17 +798,24 @@ private struct SurfaceNode: View {
       .onChange(of: pixels?.revision ?? 0) { _, now in
         // The add-on's answer: its pixels replace what was reported. Revisions
         // only grow (registry-wide), so an older one never resets. A gesture
-        // still under the fingers keeps going; wheel steps not reported yet
-        // are not in these pixels, so they stay shown.
+        // still under the fingers keeps going; wheel steps and a scroll pan
+        // not reported yet are not in these pixels, so they stay shown.
         guard now > shownRevision else { return }
         shownRevision = now
-        committed = wheelStep != 1 ? Self.zoom(wheelStep, about: point(wheelAnchor)) : .identity
+        committed = (wheelStep != 1 ? Self.zoom(wheelStep, about: point(wheelAnchor)) : .identity)
+          .concatenating(CGAffineTransform(translationX: scrollPan.width, y: scrollPan.height))
       }
-      .onAppear { size = geo.size }
-      .onChange(of: geo.size) { _, now in size = now }
+      .onAppear {
+        size = geo.size
+        reportSize(geo.size)
+      }
+      .onChange(of: geo.size) { _, now in
+        size = now
+        reportSize(now)
+      }
     }
-    .frame(width: width > 0 ? width : nil, height: height)
-    .frame(maxWidth: width > 0 ? nil : .infinity)
+    .frame(width: !fills && width > 0 ? width : nil, height: fills ? nil : height)
+    .frame(maxWidth: fills || width <= 0 ? .infinity : nil, maxHeight: fills ? .infinity : nil)
     .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
     .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(MVTheme.hairline, lineWidth: 1))
     .modifier(GlowEdge(state: node.string("glow"), radius: MVTheme.radius(6)))
@@ -865,7 +883,14 @@ private struct SurfaceNode: View {
   private func installWheel() {
     guard wheelMonitor == nil else { return }
     wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-      guard !event.hasPreciseScrollingDeltas, let at = hover else { return event }
+      guard let at = hover else { return event }
+      if event.hasPreciseScrollingDeltas {
+        // A trackpad's two-finger scroll: the pane's own in a section, a pan
+        // over a surface that fills its window.
+        guard fills else { return event }
+        MainActor.assumeIsolated { scrollBy(event.scrollingDeltaX, event.scrollingDeltaY) }
+        return nil
+      }
       MainActor.assumeIsolated {
         if wheelStep != 1 && at != wheelAnchor { flushWheel() }
         let s = step(pow(1.1, event.scrollingDeltaY))
@@ -893,6 +918,45 @@ private struct SurfaceNode: View {
   private func removeWheel() {
     if let m = wheelMonitor { NSEvent.removeMonitor(m) }
     wheelMonitor = nil
+  }
+
+  private func scrollBy(_ dx: CGFloat, _ dy: CGFloat) {
+    committed = committed.concatenating(CGAffineTransform(translationX: dx, y: dy))
+    scrollPan.width += dx
+    scrollPan.height += dy
+    scrollFlush?.cancel()
+    let work = DispatchWorkItem { MainActor.assumeIsolated { flushScroll() } }
+    scrollFlush = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+  }
+
+  private func flushScroll() {
+    scrollFlush?.cancel()
+    scrollFlush = nil
+    guard scrollPan != .zero, size.width > 0, size.height > 0 else { return }
+    send(11, ["dx": Double(max(-10, min(10, scrollPan.width / size.width))),
+              "dy": Double(max(-10, min(10, scrollPan.height / size.height)))])
+    scrollPan = .zero
+  }
+
+  // MV_SLOT_EVENT_RESIZE, for a surface that fills: once at first layout and
+  // 150 ms after a resize stops, never per frame of a drag.
+  private func reportSize(_ now: CGSize) {
+    guard fills, now.width >= 1, now.height >= 1 else { return }
+    resizeFlush?.cancel()
+    let work = DispatchWorkItem {
+      MainActor.assumeIsolated {
+        let scale = SlotStore.scale
+        guard abs(size.width - reported.width) >= 0.5 || abs(size.height - reported.height) >= 0.5 ||
+                scale != reportedScale else { return }
+        reported = size
+        reportedScale = scale
+        send(15, ["width": Double(min(20000, size.width.rounded())), "height": Double(min(20000, size.height.rounded())),
+                  "scale": Double(min(8, max(0.5, scale)))])
+      }
+    }
+    resizeFlush = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + (reported == .zero ? 0 : 0.15), execute: work)
   }
 }
 
@@ -1461,10 +1525,21 @@ final class SlotWindows: NSObject, NSWindowDelegate {
       w.contentView = host
       w.isReleasedWhenClosed = false
       w.delegate = self
+      // Its own full-screen Space (the Places world map); never taken for a
+      // viewer window (viewerWindow skips the windows held here).
+      w.collectionBehavior.insert(.fullScreenPrimary)
       w.center()
       windows[address] = w
       w.makeKeyAndOrderFront(nil)
     }
+  }
+
+  /// 0.38: brings a viewer window forward (an add-on window showed files in
+  /// it as a list), leaving the add-on's window open behind it.
+  func showViewer() {
+    guard let viewer = Self.viewerWindow(preferring: NSApp.mainWindow) else { return }
+    viewer.makeKeyAndOrderFront(nil)
+    NSApp.activate()
   }
 
   // MARK: the docked pane
@@ -1475,7 +1550,7 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   /// add-on window or a panel: `preferring` if it is one, else the main or first visible one.
   private static func viewerWindow(preferring w: NSWindow?) -> NSWindow? {
     func isViewer(_ w: NSWindow) -> Bool {
-      !(w is NSPanel) && w.isVisible && w.sheetParent == nil &&
+      !(w is NSPanel) && w.isVisible && w.sheetParent == nil && !shared.windows.values.contains(w) &&
         w.collectionBehavior.contains(.fullScreenPrimary)
     }
     if let w, isViewer(w) { return w }

@@ -33,6 +33,8 @@ add_library(mv_places_engine STATIC
   ${_P}/map.h
   ${_P}/places.cpp
   ${_P}/places.h
+  ${_P}/world_map.cpp
+  ${_P}/world_map.h
 )
 target_include_directories(mv_places_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
 target_link_libraries(mv_places_engine PUBLIC mv_project_options mv_geo)

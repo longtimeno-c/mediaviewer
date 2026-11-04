@@ -181,6 +181,8 @@ final class SlotStore: ObservableObject {
   private var infoKey = ""
   /// #601: the last info "open" request acted on.
   private var openRevision: Int64 = 0
+  /// 0.38: the last list an add-on window asked for (open_list) acted on.
+  private var listRevision: Int64 = 0
 
   private init() {
     mv_chrome_slots_set_callback { bits in
@@ -300,6 +302,26 @@ final class SlotStore: ObservableObject {
                         revision: $0["revision"] as? Int ?? 0, tree: ScreenNode($0["tree"]))
     }
     SlotWindows.shared.sync(screens)
+    readOpenList()
+  }
+
+  /// 0.38: an add-on window (the Places world map) asked the viewer to show
+  /// files as a result list: once per revision (the core's only grows), as
+  /// Local search's results open, and the viewer comes forward.
+  private func readOpenList() {
+    guard let doc = Self.read({ mv_chrome_slots_open_list($0, $1) }) as? [String: Any],
+          let revision = (doc["revision"] as? NSNumber)?.int64Value, revision > listRevision else { return }
+    listRevision = revision
+    guard let paths = doc["paths"] as? [String], !paths.isEmpty else { return }
+    let title = doc["title"] as? String ?? ""
+    let select = min(max(0, (doc["select"] as? NSNumber)?.intValue ?? 0), paths.count - 1)
+    let c = paths.map { strdup($0) }
+    defer { c.forEach { free($0) } }
+    let ptrs: [UnsafePointer<CChar>?] = c.map { UnsafePointer($0) }
+    _ = title.withCString { t in
+      ptrs.withUnsafeBufferPointer { mv_chrome_open_list(t, $0.baseAddress, nil, Int32(paths.count), Int32(select), false) }
+    }
+    SlotWindows.shared.showViewer()
   }
 
   private func readSearch(_ scope: UInt32) -> SlotSearchState {

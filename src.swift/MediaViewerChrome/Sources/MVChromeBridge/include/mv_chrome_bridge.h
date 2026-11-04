@@ -605,6 +605,9 @@ void mv_chrome_slots_set_callback(mv_chrome_slots_changed_fn fn);
 int32_t mv_chrome_slots_contributions(char* buf, int32_t size);
 int32_t mv_chrome_slots_info(char* buf, int32_t size);
 int32_t mv_chrome_slots_screens(char* buf, int32_t size);
+// 0.38: {"revision","addon","title","paths":[..],"select"} or {"revision":0}: the
+// last list an add-on window asked the viewer to show (the Places world map).
+int32_t mv_chrome_slots_open_list(char* buf, int32_t size);
 int32_t mv_chrome_slots_search_results(uint32_t scope, char* buf, int32_t size);  // 1 files, 2 local
 int32_t mv_chrome_slots_badges(char* buf, int32_t size);
 int32_t mv_chrome_slots_status(char* buf, int32_t size);

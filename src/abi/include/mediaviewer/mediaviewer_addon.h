@@ -494,6 +494,13 @@ typedef struct mv_slot_badges_request {
  * its top-left, as MV_SLOT_EVENT_DOUBLE. An add-on that does not use it
  * ignores it. */
 #define MV_SLOT_EVENT_TAP 14u
+/* 0.38 (contribution API 12, docs/plans/places-world-map.md): a surface with
+ * "fill" was laid out at a new size: {"width", "height"} in points (1..20000)
+ * and "scale", the backing scale (0.5..8). Sent once at first layout and again
+ * when a resize settles (a live resize ended; never per frame of a drag). The
+ * add-on draws for that size, at a scale it lowers to keep each side within
+ * 4096 px. */
+#define MV_SLOT_EVENT_RESIZE 15u
 
 /* 0.33 (#452): a system notification an add-on asks for (notice_post). The
  * host shows it unless the screen it is about is the window in front of an
@@ -972,6 +979,20 @@ typedef struct mv_host_api {
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* still_mask)(void* host, const char* path_utf8, float* out_dabs, uint32_t capacity,
                                  uint32_t* out_count);
+  /* ---- show files as a list (0.38, docs/plans/places-world-map.md) --------------- */
+  /* [any-thread][no-block] Asks the viewer to show `count` files (1..10 000) as
+   * a result list titled `title_utf8` (at most 200 bytes), as Local search's
+   * results open: item `select` on the canvas, the viewer window brought
+   * forward. From one of the add-on's open windows, panes or sheets
+   * (`screen_id`, under its `generation`), never an info section. Each path is
+   * an absolute file path or a "photos:" key, valid UTF-8, at most 4096 bytes.
+   * It opens and selects only; a file that is gone is skipped as a search
+   * result's would be. MV_ERR_CANCELLED for a stale generation;
+   * MV_ERR_INVALID_ARG for a bad path, count, title or screen. Appended after
+   * still_mask: read it only when `struct_size` covers it and the pointer is
+   * non-NULL. */
+  mv_status(MV_CALL* open_list)(void* host, const char* screen_id, uint64_t generation, const char* title_utf8,
+                                const char* const* paths_utf8, uint32_t count, uint32_t select);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1192,6 +1213,12 @@ MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command
  * item it does not have. */
 MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* item, const char* path_utf8,
                                               const int64_t* ranges_ns, uint32_t range_count);
+/* 0.38: the last list an add-on asked the viewer to show (host table
+ * open_list): {"revision": n, "addon", "title", "paths": [...], "select": i},
+ * or {"revision": 0} before any. The revision only grows; a chrome acts on
+ * each once (Mac mv_chrome_open_list, Windows mv_folder_open_list) and brings
+ * the viewer forward. Buffer rule as mv_slots_info_json. */
+MV_API mv_status MV_CALL mv_slots_open_list_json(char* out, uint32_t cap, uint32_t* needed);
 /* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
  * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
 MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
@@ -1258,8 +1285,9 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
  * 8  a screen in place "settings", MV_SLOT_PLACE_SETTINGS (2026-10-21);
  * 9  `reveal` on a screen stack (2026-10-28);
  * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28);
- * 11 `editor_items`, the Video Editor's bar (2026-11-02). */
-#define MV_ADDON_CONTRIBUTION_API 11
+ * 11 `editor_items`, the Video Editor's bar (2026-11-02);
+ * 12 a `surface` with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04). */
+#define MV_ADDON_CONTRIBUTION_API 12
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:
