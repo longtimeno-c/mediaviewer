@@ -267,6 +267,9 @@ enum class chrome_edit_action : std::int32_t {
   arm_brush = 6,
   arm_red_eye = 7,   // the rail's Red-eye: Adjust, with the red-eye picker on
   show_enhance = 8,  // the rail's Faces, the flyout's last row: the Enhance tab
+  // docs/plans/edit-refresh.md S10: the Faces card's and the flyout's Restore
+  // faces: Enhance's sheet started on Restore faces (its "faces" command).
+  restore_faces = 9,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);

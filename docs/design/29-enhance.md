@@ -59,6 +59,7 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | still | the same file, pinned again under `still/` (each kind downloads its own) | 4.9 MB | BSD-3-Clause |
 | remove | LaMa (Suvorov et al.), ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx` | 208 MB | Apache-2.0 |
 | restyle | InstructPix2Pix (Brooks et al., `timbrooks/instruct-pix2pix` @ `31519b5c`), exported by `tools/package/restyle-export.py`: fp32 text encoder and VAE, fp16 UNet | about 2.5 GB | CreativeML OpenRAIL-M (owner, 2026-11-03); its use restrictions are shown with the credit |
+| face | RestoreFormer++ (Wang et al., `wzhouxiff/RestoreFormerPlusPlus`), the ONNX export `facefusion/models-3.0.0` @ `728b9659`, `restoreformer_plus_plus.onnx`; and GFPGAN v1.4 (Wang et al.), `neurobytemind/GFPGANv1.4.onnx` @ `e3fd467e`, `GFPGANv1.4.onnx` | 294 + 340 MB (both are the kind's files) | Apache-2.0 (owner call C, 2026-11-04) |
 
 Restyle is **not pinned yet**: its files must be hosted at a fixed revision before
 `remote.json` lists them, and until then no kind offers it.
@@ -252,6 +253,65 @@ Measured 2026-11-03 (M-series, CPU, the hidden `[.remove-model]` case): an 832 �
 filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
 is filled at that size and scaled up, so a large fill is softer than the photo around it.
 
+## Restore faces (docs/plans/edit-refresh.md S10, owner call C)
+
+A sharper, clearer face for each person in a photo, from a face model, guarded by People so it
+stays the same person. Edit → Enhance tab → Faces card → **Restore faces…** (both hosts; also the ✦
+popover / `Flyout` and the palette's *Restore faces…*, Enhance's `faces` command) opens the sheet
+on it. Knobs: **Look** — *Faithful* (RestoreFormer++, the default: the best identity of the methods
+compared in PMRF, ICLR 2025) or *Natural* (GFPGAN v1.4, smoother skin) — and **Strength** (default
+0.7). The run (`face_restore.h`, `io.runner: face`; CPU fp32 for quality, the performance level's threads):
+
+1. **The faces and their five landmarks from the AI pack** (People's YuNet), through the host
+   table's `still_faces` row (appended after `still_mask`; the pack's `mv_ai_api faces_json`,
+   appended after `eyes_json`). Pixels go in, JSON comes out; no path, nothing kept. The whole
+   photo is asked at most 2048 px on its long side and, from 2048 px on its short side, also in
+   overlapping half-size tiles, so a small face in a group is found; a face found twice is kept once.
+   Without Local search the sheet says to add it; with People off, to turn it on.
+2. **Alignment**: a least-squares similarity (rotation, uniform scale, shift; never a reflection)
+   from the landmarks to the FFHQ 5-point template at 512, the frame both models were trained in.
+   The crop is sampled with up to 8 × 8 averaging where it shrinks the photo. The pack is asked
+   again on that crop and the alignment refitted once from the finer landmarks. A face with fewer
+   than 10 px between the eyes is left alone.
+3. **The model** restores the 512 crop (RGB scaled to -1..1; RestoreFormer++'s output 0 only —
+   `infer::session::run_named` with an output list, so its 14 other heads are not computed; GFPGAN's
+   `1288`, clipped).
+4. **The People guard**: the crop as it will be pasted (the original plus Strength × mask × the
+   change) against the original crop, through the pack's embedding (`still_faces` with `other`:
+   each face's cosine to the face at the same place). Under **`kFaceGuard` = 0.55** the face
+   keeps its own pixels, as does a face the pack no longer finds.
+5. **The paste back** through the inverse warp under a feathered ellipse (forehead to chin, cheek to
+   cheek; whole inside 75 % of its radius, falling smoothly to 0, never the crop's edge), at
+   Strength. A face larger in the photo than 512 keeps its own detail: only the model's change is
+   added, never its lower resolution.
+
+Every pixel outside the faces' masks is the photo's own (tested to the bit with a stand-in model).
+The result is `<stem>-restored.jpg` beside the original, or a new Photos-library photo; when no face
+changed (all kept by the guard, too small, or none found) nothing is written and the sheet says why.
+
+**The guard's threshold** (`tools/enhance/face_guard.py`, LFW through the People model, AdaFace
+IR-50, on this Mac 2026-11-05; 240 LFW faces, one per person, every other one degraded as the
+plan's test crop is: 2× up, blurred, noisy, JPEG 35):
+
+| Cosine to the original face | min | 1st pct | median |
+|---|---|---|---|
+| RestoreFormer++, Strength 0.7 | 0.822 | 0.886 | 0.953 |
+| RestoreFormer++, Strength 1 | 0.795 | 0.852 | 0.931 |
+| GFPGAN, Strength 0.7 | 0.726 | 0.836 | 0.942 |
+| GFPGAN, Strength 1 | 0.685 | 0.783 | 0.909 |
+| Another person's restored face blended in at 0.7 (478 cases), max | 0.322 | | 0.08 |
+| Different people (17.7 M LFW pairs) at a false accept of 1e-5 / 1e-6 | 0.384 / 0.678 | | |
+
+0.55 is above every other-person blend and the 1e-5 impostor point, and below every one of the 960
+real restorations (none was kept). The pack lost no original face.
+
+**Speed** (M-series CPU, fp32, the hidden `[.face-model]` case, warm, on a machine shared with
+other builds): a face aligned, refitted, restored, blended and pasted in **1.1 s with RestoreFormer++**
+and **0.6 s with GFPGAN** (the model alone 1.3 s / 0.6 s on the first run). The pack's own calls
+(three per face: the photo once, the crop, the guard) are not in those numbers. Under heavy load
+(load average 40) the Python guard run took a median 4.4 s / 2.2 s for the model alone. Windows is
+not measured.
+
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |
@@ -283,6 +343,10 @@ Not measured: Windows (Restyle is refused there without a GPU provider), a long 
 installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
+
+- Restore faces: Core ML / a GPU provider (it runs on CPU fp32 by the quality call); downloading
+  only the chosen Look's file (the kind fetches both, 634 MB); the guard against the person's
+  People references rather than the face itself (it compares the face before and after).
 
 - Hosting Restyle's weights and pinning them in `remote.json` (the owner's upload).
 - Restyle on Windows: needs a DirectML or CUDA ONNX Runtime piece; measure before offering it.

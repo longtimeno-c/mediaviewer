@@ -7,6 +7,7 @@
   "context_menu": [{"id": "enhance", "label": "Enhance…", "target": "file"}],
   "editor_items": [{"id": "edit", "label": "Enhance…"}],
   "commands": [{"id": "open", "name": "Enhance…", "modes": "viewing", "payload": "marked_or_current"},
-               {"id": "restyle", "name": "Restyle with words…", "modes": "viewing", "payload": "marked_or_current"}]
+               {"id": "restyle", "name": "Restyle with words…", "modes": "viewing", "payload": "marked_or_current"},
+               {"id": "faces", "name": "Restore faces…", "modes": "viewing", "payload": "marked_or_current"}]
  }
 }

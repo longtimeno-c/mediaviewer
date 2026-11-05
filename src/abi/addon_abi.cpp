@@ -768,6 +768,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
     svc.route = &mv::addon::media::route;              // #606
     svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
+    svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);
@@ -793,6 +794,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       const auto* ai = static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE));
       mv::addon::publish_index_locations(mv::addon::ai_index_locations(ai));
       mv::addon::publish_ai_eyes(mv::addon::ai_eyes(ai));  // edit-adjust slice 6
+      mv::addon::publish_ai_faces(mv::addon::ai_faces(ai));  // edit-refresh S10: Restore faces
     }
   }
   const void* iface = it->second.addon->query(interface_id);

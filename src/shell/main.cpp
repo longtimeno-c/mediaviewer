@@ -4545,7 +4545,9 @@ void push_edit_view(app_state* app) noexcept {
              (mv::shell::addon_commands_available(mv::shell::addon_family::ai) ? mv::shell::kWandFacesReady : 0) |
              (app->adjust.auto_enhance_on(app->edits.edit_count(), app->edits.colour()) ? mv::shell::kWandAutoOn
                                                                                        : 0) |
-             (app->auto_enhance_token != 0 || app->auto_enhance_pending ? mv::shell::kWandAutoBusy : 0);
+             (app->auto_enhance_token != 0 || app->auto_enhance_pending ? mv::shell::kWandAutoBusy : 0) |
+             (mv::shell::find_addon_command("enhance", "faces") != mv::shell::command_id::none
+                  ? mv::shell::kWandRestoreFaces : 0);  // S10
     a.chips = app->cloud_fetches > 0 ? mv::shell::kEditChipCloud : 0;
     if (app->window) {
       RECT rc{};
@@ -4729,15 +4731,21 @@ void run_edit_action(app_state* app, int action) {
       (void)run_edit_command(app, mv::shell::command_id::export_image);
       return;
     case mv::shell::chrome_edit_action::enhance:
-    case mv::shell::chrome_edit_action::restyle: {
+    case mv::shell::chrome_edit_action::restyle:
+    case mv::shell::chrome_edit_action::restore_faces: {
       // Slice 5: Enhance's own "open" row (or, from the wand and the Enhance
       // tab's Restyle card, "restyle": the sheet started on Restyle with
       // words); its copy carries the edit (addon_media's still edit, set by
       // publish_edit).
       if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+      // S10: "faces", the sheet started on Restore faces.
       const bool restyle = action == static_cast<int>(mv::shell::chrome_edit_action::restyle);
-      mv::shell::command_id id = mv::shell::find_addon_command("enhance", restyle ? "restyle" : "open");
-      if (id == mv::shell::command_id::none && restyle) id = mv::shell::find_addon_command("enhance", "open");
+      const bool faces = action == static_cast<int>(mv::shell::chrome_edit_action::restore_faces);
+      mv::shell::command_id id =
+          mv::shell::find_addon_command("enhance", restyle ? "restyle" : faces ? "faces" : "open");
+      if (id == mv::shell::command_id::none && (restyle || faces)) {
+        id = mv::shell::find_addon_command("enhance", "open");
+      }
       if (id != mv::shell::command_id::none) (void)run_command(app, id);
       return;
     }

@@ -20,6 +20,9 @@ namespace mv::enhance {
 // The photo rows (slice 3), appended after the picture rows.
 [[nodiscard]] bool has_still_rows(const mv_host_api* h);
 
+// Restore faces' row (docs/plans/edit-refresh.md S10), appended after still_mask.
+[[nodiscard]] bool has_faces_row(const mv_host_api* h);
+
 // The picture rows (slice 5), appended after the sound rows.
 [[nodiscard]] bool has_picture_rows(const mv_host_api* h);
 

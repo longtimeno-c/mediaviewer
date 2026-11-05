@@ -522,6 +522,14 @@ nothing of the core and reaches it only through the host function table.
   `mv_eyes_json` (`mediaviewer_addon.h`, worker thread) hands the Windows exe the same answer
   with no candidates, for the red-eye ring's snap and Find eyes; `MV_ERR_NOT_FOUND` without the
   pack, `MV_ERR_INVALID_ARG` while People is off or when `cap` is short (`needed` says how much).
+- **Restore faces** (docs/plans/edit-refresh.md S10, [29](29-enhance.md)). `mv_ai_api` appends
+  `faces_json` (after `eyes_json`): the faces and five landmarks in pixels handed over (8-bit RGB,
+  no path), and with `other_rgb` (the same picture changed) each face's People cosine to the face
+  at the same place, `sim`. The host table appends `still_faces` last (after `still_mask`, version
+  not bumped) answering it from the published source (`index_locations.h` `ai_faces_json`,
+  published and retracted with the eyes): `MV_ERR_NOT_FOUND` without the pack,
+  `MV_ERR_PERMISSION_DENIED` while People is off. Both hosts set it (`addon_abi.cpp`,
+  `addons_mac.mm`).
 - **`mv_addon_api`**: `id`, `version`, `shutdown` (`[ui-thread]`), and `query(interface_id)`
   returning a named interface — `"mv.import.1"` (`mv_import_api`, `mediaviewer_import.h`) or
   `"mv.ai.1"` (`mv_ai_api`, `mediaviewer_ai.h`, [17-local-ai-search.md](17-local-ai-search.md)).

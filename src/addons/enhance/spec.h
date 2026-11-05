@@ -28,12 +28,15 @@ namespace mv::enhance {
 // `restyle` (docs/plans/edit-adjust.md slice 5b) changes a photo as a typed
 // request asks; a photo offers it beside `still`.
 // `remove` (slice 7) fills in what the person brushed over in Edit.
-enum class model_kind : std::uint8_t { still = 0, video = 1, audio = 2, restyle = 3, remove = 4 };
-inline constexpr std::array<model_kind, 5> kModelKinds{model_kind::still, model_kind::video, model_kind::audio,
-                                                       model_kind::restyle, model_kind::remove};
+// `face` (docs/plans/edit-refresh.md S10, owner call C) restores each face
+// of a photo (face_restore.h). Appended: kinds are stored by index.
+enum class model_kind : std::uint8_t { still = 0, video = 1, audio = 2, restyle = 3, remove = 4, face = 5 };
+inline constexpr std::array<model_kind, 6> kModelKinds{model_kind::still,   model_kind::video,  model_kind::audio,
+                                                       model_kind::restyle, model_kind::remove, model_kind::face};
 inline constexpr std::size_t kKindCount = kModelKinds.size();
 
-[[nodiscard]] const char* kind_name(model_kind k) noexcept;  // "still" | "video" | "audio" | "restyle" | "remove"
+// "still" | "video" | "audio" | "restyle" | "remove" | "face"
+[[nodiscard]] const char* kind_name(model_kind k) noexcept;
 [[nodiscard]] std::optional<model_kind> kind_from(std::string_view name) noexcept;
 
 // One weights file is at most this (#297, owner 2026-10-10): a pin over it is

@@ -68,6 +68,7 @@ struct sheet_view {
   bool offers_restyle = false;
   bool offers_remove = false;  // slice 7: something is brushed and Remove has a model
   bool offers_extend = false;  // Remove's model, extending the picture's edges
+  bool offers_faces = false;   // S10: Restore faces has a model
   photo_target photo = photo_target::detail;
   std::vector<sheet_section> sections;
   std::string note;          // why Enhance cannot run on this item, or ""

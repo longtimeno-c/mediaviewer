@@ -208,10 +208,23 @@ bool job_runner::supports(model_kind k, item_kind item) const {
     return item == item_kind::still && port_.open_still && port_.write_still && port_.load_inpaint &&
            port_.still_mask;
   }
+  if (k == model_kind::face) {
+    return item == item_kind::still && port_.open_still && (port_.write_still_as || port_.write_still) &&
+           port_.load_face && port_.still_faces;
+  }
   return false;
 }
 
 std::string job_runner::check(const job_request& r) const {
+  if (const job_request::part* face = part_of(r, model_kind::face)) {
+    if (port_.free_memory) {
+      if (const auto free = port_.free_memory(); free && *free < face->spec->run_bytes) {
+        return "Needs " + size_text(face->spec->run_bytes) + " of free memory to run; " + size_text(*free) +
+               " is free. Close something and try again.";
+      }
+    }
+    return {};
+  }
   if (const job_request::part* remove = part_of(r, model_kind::remove)) {
     const auto mode = remove->values.find("mode");
     const bool extending = mode != remove->values.end() && mode->second.k == json::kind::string &&
@@ -302,7 +315,9 @@ void job_runner::cancel() {
 }
 
 void job_runner::run(job_request r, job_events ev) {
-  if (part_of(r, model_kind::remove)) {
+  if (part_of(r, model_kind::face)) {
+    run_faces(std::move(r), std::move(ev));
+  } else if (part_of(r, model_kind::remove)) {
     run_remove(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::restyle)) {
     run_restyle(std::move(r), std::move(ev));
@@ -769,6 +784,78 @@ void job_runner::run_extend(job_request r, job_events ev) {
   still.height = out.height;
   still.rgb = std::move(out.rgb);
   auto path = port_.write_still(r.path, still);
+  if (!path) return fail(why(path.error()));
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// docs/plans/edit-refresh.md S10 (owner call C): every face the AI pack finds
+// restored by the face model, guarded by People, pasted back at Strength
+// (face_restore.h). Pixels away from the faces are the photo's own; the
+// original is never written. "<stem>-restored.jpg" (doc 29).
+void job_runner::run_faces(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::face);
+  std::string choice = choice_of(part, "model");
+  if (choice.empty()) choice = "restoreformer";
+  face_options o;
+  // Strength as chosen, else the spec's default (0.7), never a full replace by omission.
+  if (const auto it = part.values.find("strength"); it != part.values.end() && it->second.k == json::kind::number) {
+    o.strength = static_cast<float>(strength_of(part));
+  } else if (const knob* k = part.spec->find("strength")) {
+    o.strength = static_cast<float>(std::clamp(k->def, 0.0, 1.0));
+  }
+  if (ev.progress) ev.progress(-1);
+  auto pic = port_.open_still(r.path);
+  if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  if (cancel_.load()) return fail(why(status::cancelled));
+  rgb8 full;
+  full.width = pic->width;
+  full.height = pic->height;
+  full.rgb = std::move(pic->rgb);
+  const preview_image before = shrink(full.rgb, full.width, full.height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
+  const auto pack_why = [](status s) -> std::string {
+    if (s == status::not_found) return "Restore faces finds faces with Local search. Add it in Settings → Add-ons.";
+    if (s == status::permission_denied) {
+      return "Turn on People in Local search: Restore faces finds the faces with it, and checks each restored face "
+             "still looks like the same person.";
+    }
+    return "Enhance could not look for faces in this photo.";
+  };
+  auto found = find_faces(full, port_.still_faces);
+  if (!found) return fail(pack_why(found.error()));
+  if (found->empty()) return fail("No faces were found in this photo.");
+  if (cancel_.load()) return fail(why(status::cancelled));
+  auto model = port_.load_face(*part.spec, part.models_dir, choice, r.policy.threads);
+  if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  o.progress = [&](std::size_t done, std::size_t total) {
+    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / std::max<std::size_t>(total, 1));
+    return !cancel_.load();
+  };
+  auto out = restore_faces(full, *found, **model, port_.still_faces, o);
+  if (!out) {
+    if (out.error() == status::not_found || out.error() == status::permission_denied) {
+      return fail(pack_why(out.error()));
+    }
+    return fail(why(out.error()));
+  }
+  if (out->restored == 0) {
+    if (out->kept > 0) {
+      return fail("No face was changed: restored, each one stopped looking like the same person, so the photo was "
+                  "left as it was.");
+    }
+    return fail("The faces in this photo are too small to restore.");
+  }
+  if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  run_port::still still;
+  still.width = full.width;
+  still.height = full.height;
+  still.rgb = std::move(full.rgb);
+  auto path =
+      port_.write_still_as ? port_.write_still_as(r.path, still, "restored") : port_.write_still(r.path, still);
   if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");
 }

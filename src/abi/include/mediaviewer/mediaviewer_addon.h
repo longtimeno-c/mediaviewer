@@ -972,6 +972,24 @@ typedef struct mv_host_api {
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* still_mask)(void* host, const char* path_utf8, float* out_dabs, uint32_t capacity,
                                  uint32_t* out_count);
+  /* ---- faces of a picture (docs/plans/edit-refresh.md S10, Restore faces) --------- */
+  /* [worker-thread] The faces the AI pack's People model finds in `rgb`
+   * (width x height, 8-bit RGB, `stride` bytes a row; at most 16384 a side
+   * and 100 megapixels) and, when `other_rgb` is given (the same size and
+   * stride: that picture changed, a restored face), each face's cosine to the
+   * face of `other_rgb` at the same place. UTF-8 JSON into `out_json`,
+   * NUL-terminated (mediaviewer_ai.h faces_json):
+   *   {"faces":[{"x":,"y":,"w":,"h":,"score":,"lm":[10 numbers],"sim":}, …]}
+   * boxes and the five landmarks (right eye, left eye, nose, mouth corners;
+   * x, y) 0..1 of the picture, "sim" only with `other_rgb` (-1: no face
+   * there). `*out_needed` is the size with its NUL; MV_ERR_INVALID_ARG when
+   * `capacity` is short. MV_ERR_NOT_FOUND without Local search (or an older
+   * pack), MV_ERR_PERMISSION_DENIED while People is off. The pixels are only
+   * read; nothing is kept or written. Appended after still_mask (and the
+   * plan's still_extend, when present): read only when `struct_size` covers
+   * it and the pointer is non-NULL. */
+  mv_status(MV_CALL* still_faces)(void* host, const uint8_t* rgb, uint32_t width, uint32_t height, uint32_t stride,
+                                  const uint8_t* other_rgb, char* out_json, uint32_t capacity, uint32_t* out_needed);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u

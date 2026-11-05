@@ -52,6 +52,8 @@ public static partial class IslandHost
         public const int ArmBrush = 6;
         public const int ArmRedEye = 7;
         public const int ShowEnhance = 8;
+        // docs/plans/edit-refresh.md S10: Enhance's sheet started on Restore faces.
+        public const int RestoreFaces = 9;
     }
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).

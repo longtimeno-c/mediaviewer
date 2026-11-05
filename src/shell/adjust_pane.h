@@ -49,6 +49,8 @@ inline constexpr std::int32_t kWandDetail = 64;       // Enhance offers "more de
 inline constexpr std::int32_t kWandFacesReady = 128;  // the AI pack is there: Open eyes / Improve faces can run
 inline constexpr std::int32_t kWandAutoOn = 256;      // ✦ Auto is the last edit: a second click takes it back
 inline constexpr std::int32_t kWandAutoBusy = 512;    // ✦ Auto is reading the photo
+// docs/plans/edit-refresh.md S10: Enhance has its "faces" command (Restore faces).
+inline constexpr std::int32_t kWandRestoreFaces = 1024;
 
 enum class adjust_readiness : std::int32_t {
   none = 0,       // no still on the canvas (or a clip): the pane says so

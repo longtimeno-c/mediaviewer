@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "addons/enhance/diffusion.h"
+#include "addons/enhance/face_restore.h"
 #include "addons/enhance/remove.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
@@ -92,6 +93,19 @@ struct run_port {
       load_inpaint;
   // [any thread] The brush over the photo at `path` (u, v, r triples); empty none.
   std::function<std::vector<float>(const std::string& path)> still_mask;
+
+  // ---- Restore faces (docs/plans/edit-refresh.md S10) ----
+  // [job thread] The AI pack's faces in a picture (the host table's
+  // still_faces): status::not_found without Local search,
+  // status::permission_denied while People is off.
+  faces_fn still_faces;
+  // [job thread] The face model `choice` names in the spec's io.models.
+  std::function<result<std::unique_ptr<face_restorer>>(const model_spec& spec, const std::string& models_dir,
+                                                       const std::string& choice, int threads)>
+      load_face;
+  // [job thread] write_still with its own name: "<stem>-<suffix>.jpg" (doc 29).
+  std::function<result<std::string>(const std::string& source, const still& pixels, const std::string& suffix)>
+      write_still_as;
 };
 
 // The largest photo Enhance writes: 100 megapixels (a 4x of a 25 MP photo is
@@ -124,6 +138,7 @@ class job_runner final : public runner {
   void run_restyle(job_request r, job_events events);
   void run_remove(job_request r, job_events events);
   void run_extend(job_request r, job_events events);
+  void run_faces(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

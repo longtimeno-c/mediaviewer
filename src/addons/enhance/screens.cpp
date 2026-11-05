@@ -16,6 +16,7 @@ const char* card_title(model_kind k) {
     case model_kind::audio: return "Audio";
     case model_kind::restyle: return "Restyle (photos)";
     case model_kind::remove: return "Remove (photos)";
+    case model_kind::face: return "Restore faces (photos)";
   }
   return "";
 }
@@ -27,6 +28,7 @@ const char* model_noun(model_kind k) {
     case model_kind::audio: return "audio model";
     case model_kind::restyle: return "restyle model";
     case model_kind::remove: return "remove model";
+    case model_kind::face: return "face model";
   }
   return "model";
 }
@@ -181,6 +183,7 @@ const char* section_title(const sheet_view& v, model_kind k) {
     case model_kind::audio: return "Sound";
     case model_kind::restyle: return "Restyle";
     case model_kind::remove: return v.photo == photo_target::extend ? "Extend the picture" : "Remove what you brushed";
+    case model_kind::face: return "Restore faces";
   }
   return "";
 }
@@ -293,7 +296,7 @@ std::string sheet_tree(const sheet_view& v) {
       w.end_object();
     }
   }
-  if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove || v.offers_extend)) {
+  if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove || v.offers_extend || v.offers_faces)) {
     w.begin_object().key("type").string("choice").key("id").string("photo").key("label").string("Enhance");
     w.key("options").begin_array();
     w.begin_object().key("id").string(photo_target_name(photo_target::detail)).key("text").string("More detail").end_object();
@@ -305,6 +308,9 @@ std::string sheet_tree(const sheet_view& v) {
     }
     if (v.offers_extend) {
       w.begin_object().key("id").string(photo_target_name(photo_target::extend)).key("text").string("Extend the picture").end_object();
+    }
+    if (v.offers_faces) {
+      w.begin_object().key("id").string(photo_target_name(photo_target::faces)).key("text").string("Restore faces").end_object();
     }
     w.end_array();
     w.key("value").string(photo_target_name(v.photo));

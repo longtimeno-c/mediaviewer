@@ -8892,7 +8892,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
               (enhance_loaded ? mv::shell::kWandExtend | mv::shell::kWandDetail : 0) |
               (mv::shell::addon_commands_available(mv::shell::addon_family::ai) ? mv::shell::kWandFacesReady : 0) |
               (_adjust.auto_enhance_on(_edits.edit_count(), _edits.colour()) ? mv::shell::kWandAutoOn : 0) |
-              (_autoEnhanceToken != 0 || _autoEnhancePending ? mv::shell::kWandAutoBusy : 0);
+              (_autoEnhanceToken != 0 || _autoEnhancePending ? mv::shell::kWandAutoBusy : 0) |
+              (mv::shell::find_addon_command("enhance", "faces") != mv::shell::command_id::none
+                   ? mv::shell::kWandRestoreFaces : 0);  // S10
   out->collapsed = [self inspectorFolded] ? 1 : 0;
   // The header's chip: a Photos-library item, or an iCloud original being fetched.
   if (!_items.empty() && _index.current() < _items.size()) {

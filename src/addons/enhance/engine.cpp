@@ -56,6 +56,7 @@ const char* model_noun(model_kind k) {
     case model_kind::audio: return "audio model";
     case model_kind::restyle: return "restyle model";
     case model_kind::remove: return "remove model";
+    case model_kind::face: return "face model";
   }
   return "model";
 }
@@ -189,6 +190,9 @@ std::vector<model_kind> engine::kinds_for_locked() const {
       if (prefs_.photo == photo_target::extend && specs_[static_cast<int>(model_kind::remove)]) {
         return {model_kind::remove};  // Remove's model, in its extend mode
       }
+      if (prefs_.photo == photo_target::faces && specs_[static_cast<int>(model_kind::face)]) {
+        return {model_kind::face};  // S10: Restore faces
+      }
       return specs_[static_cast<int>(model_kind::restyle)] && files_[static_cast<int>(model_kind::restyle)].usable() &&
                      prefs_.photo == photo_target::restyle
                  ? std::vector{model_kind::restyle}
@@ -223,9 +227,10 @@ sheet_view engine::sheet_locked() const {
   // downloaded shows as not installed, as any kind does.
   v.offers_remove = brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
+  v.offers_faces = specs_[static_cast<int>(model_kind::face)].has_value();
   v.photo = prefs_.photo;
   if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove) ||
-      (v.photo == photo_target::extend && !v.offers_extend)) {
+      (v.photo == photo_target::extend && !v.offers_extend) || (v.photo == photo_target::faces && !v.offers_faces)) {
     v.photo = photo_target::detail;
   }
   if (v.item == item_kind::media && !(facts_.picture && facts_.sound)) {

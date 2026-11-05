@@ -2306,6 +2306,22 @@ MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-genera
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, and the run with a
 stand-in model). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
 
+**Restore faces** (RestoreFormer++ / GFPGAN v1.4, docs/plans/edit-refresh.md S10):
+`build/bin/mv_import_tests "[faces]"` (the FFHQ alignment, the warp, the feathered mask, the paste
+back, the pack's answer, and the pipeline and runner with a stand-in model and pack: only the faces
+change, the People guard keeps a drifted face, `<stem>-restored.jpg`). With local copies of the two
+pinned files (never fetched by a test) and a raw RGB picture with its five landmarks in pixels:
+
+```bash
+MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_FACE_MODEL_DIR=<dir with restoreformer_plus_plus.onnx, GFPGANv1.4.onnx> \
+  MV_FACE_RGB=<raw rgb8> MV_FACE_W=500 MV_FACE_H=500 MV_FACE_LM="<10 numbers>" [MV_FACE_OUT=<prefix>] \
+  build/bin/mv_import_tests "[.face-model]"
+```
+
+The guard's threshold (`face_restore.h` `kFaceGuard`) is measured on LFW with the People eval
+folder (`~/Dev/.mv-toolchain/faceeval`, its venv): `<faceeval>/venv/bin/python -I
+tools/enhance/face_guard.py --faceeval <faceeval> --restoreformer <file> --gfpgan <file>`.
+
 **Restyle** (InstructPix2Pix, 2026-11-03) is not pinned yet. Export its files with
 `tools/package/restyle-export.py --out <dir>` (requirements-export.txt, about 2 GB download and
 16 GB of memory while exporting). It prints each file's size and SHA-256 for `remote.json` once

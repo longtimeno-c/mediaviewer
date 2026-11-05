@@ -324,6 +324,17 @@ ideal width no longer includes the whole file name, so a long name does not drop
 | **Enhance image** (sharpen, de-noise, upscale) | **Upscale** ×1 / ×2 / ×4 (the `scale` knob; ×1 means restore at the same size, i.e. sharpen) · **De-noise** slider (new) · **Strength** (existing) · 1:1 before/after split on the preview surface | none | `models/still/model.json`: add the `denoise` knob and `realesr-general-wdn-x4v3` as a second file. `picture_job.cpp`: Real-ESRGAN's two-weight interpolation, `w = (1-d)·x4v3 + d·wdn`, built once per run, plus the ×1 path (downscale the ×4 output with the existing `shrink`). | Real-ESRGAN x4v3 plus wdn (BSD-3; **the download needs the owner's OK**) | `<stem>-enhance.jpg` |
 | **Extend edges** | Card: **Set the new frame** opens Crop in Extend mode (§4.4). The add-on's existing presets appear as chips. Readout "+18 % · 6048×4032". | §4.4: draft, overlay, `set_still_extend` | `run_extend` reads the host's margins when set, otherwise the preset. New: `extend_from_fractions(l,t,r,b,w,h)` in remove.cpp, clamped by `extend_preset`'s caps (2×, 16384, 100 MP). | LaMa (Remove's files) | `<stem>-extended.jpg` |
 
+**S10 built (2026-11-05):** Restore faces, as [docs/design/29](../design/29-enhance.md) "Restore
+faces" describes: the `face` kind (appended to `model_kind`), `models/face/model.json`
+(RestoreFormer++ default, GFPGAN v1.4 "Natural", Strength 0.7), both pinned in `remote.json`;
+`face_restore.{h,cpp}` (FFHQ alignment, warp, feathered mask, paste back, the People guard); the
+pack's `faces_json` row and the host table's `still_faces` row (appended last); Enhance's `faces`
+command; the Faces card's **Restore faces…** and a ✦ popover / `Flyout` row on both hosts
+(`kWandRestoreFaces` = 1024, Windows `chrome_edit_action::restore_faces` = 9). The guard is 0.55,
+measured on LFW (`tools/enhance/face_guard.py`). It runs in Enhance's sheet (S5 docks it). Not
+verified here: the Windows native half (compile-checked by mirroring only; C# compiled), an in-app
+run on either host, Windows timings.
+
 **Owner call C, later slice S10:** a *generative* "improve whole face" restorer. GFPGAN v1.4 is Apache-2.0 (the weights' and the ONNX export's licences still to check). It would run with a People-embedding identity guard: a restored face whose embedding drifts from the person's references keeps the original. CodeFormer is excluded (S-Lab non-commercial licence). Until the owner rules, "Improve face" means the existing `improve_faces`.
 
 ### 3.3 Performance level (landed; finish the surfaces)
