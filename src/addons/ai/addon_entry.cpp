@@ -25,6 +25,7 @@
 namespace {
 
 using mv::ai::engine;
+using mv::ai::rgb_frame;
 
 // Host table 2 carries the pixels (mediaviewer_addon.h "Negotiation").
 constexpr uint32_t kHostApiMin = 2;
