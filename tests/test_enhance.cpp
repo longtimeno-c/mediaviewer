@@ -2230,21 +2230,22 @@ TEST_CASE("remove: a large box is filled again at full resolution on model-side 
   CHECK(std::abs(filled.rgb[ring] - ramp(600, 296)) <= 2);
 
   // A hole 400 x 300 under 64-px tiles: the tiles deep in it would see
-  // nothing, so they are not run (none under a tenth known), and there the
-  // first pass stays exactly.
+  // nothing, so they are not among the tiles (none a tenth known or less, so
+  // the run's progress counts only fills), and there the first pass stays
+  // exactly.
   mask8 hole = blank_mask(1200, 900);
   brush_rect(hole, 400, 300, 400, 300);
   const remove_plan hp = remove_boxes(hole);
   REQUIRE(hp.boxes.size() == 1);
   const pixel_box hb = hp.boxes[0];
   const std::vector<pixel_box> ht = refine_tiles(hole, hp, 0, 64);
-  REQUIRE(ht.size() > 50);
+  REQUIRE(ht.size() > 20);  // the ring around the hole
   offset_fill model(64);
   rgb8 deep = flat_picture(hb.width, hb.height, 200);
   REQUIRE(refine_fill(photo, hole, hp, 0, ht, model, deep, nullptr));
-  CHECK(model.calls > 0);
-  CHECK(model.calls < static_cast<int>(ht.size()));
-  CHECK(model.least_known >= 0.1);
+  CHECK(model.calls == static_cast<int>(ht.size()));
+  CHECK(model.least_known > 0.1);
+  for (const pixel_box& t : ht) CHECK_FALSE(inside(t, 600, 450));
   CHECK(deep.rgb[(std::size_t{450 - hb.y} * hb.width + (600 - hb.x)) * 3] == 200);
 
   // Cancelled before a tile: nothing more is filled.

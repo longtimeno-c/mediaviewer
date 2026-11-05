@@ -370,6 +370,31 @@ std::vector<pixel_box> refine_tiles(const mask8& mask, const remove_plan& plan, 
       out.push_back({x, y, tw, th});
     }
   }
+  if (out.empty()) return out;
+  // Only the tiles refine_fill runs: some hole (box i's open mask) and more
+  // than a tenth known, so progress counts fills and the time left is the
+  // work left. An integral image of the holes over the tiles' union.
+  pixel_box u = out[0];
+  for (const pixel_box& t : out) u = union_of(u, t);
+  const auto me = static_cast<std::uint8_t>(i + 1);
+  std::vector<std::uint32_t> holes(std::size_t{u.width + 1} * (u.height + 1), 0);
+  for (std::uint32_t y = 0; y < u.height; ++y) {
+    const std::uint8_t* row = mask.a.data() + std::size_t{u.y + y} * w + u.x;
+    std::uint32_t run = 0;
+    for (std::uint32_t x = 0; x < u.width; ++x) {
+      if (row[x] > 127) {
+        const std::uint8_t who = plan.owner_at(u.x + x, u.y + y);
+        run += who == 0 || who >= me ? 1u : 0u;
+      }
+      holes[std::size_t{y + 1} * (u.width + 1) + x + 1] = holes[std::size_t{y} * (u.width + 1) + x + 1] + run;
+    }
+  }
+  std::erase_if(out, [&](const pixel_box& t) {
+    const std::size_t x0 = t.x - u.x, y0 = t.y - u.y, x1 = x0 + t.width, y1 = y0 + t.height, s = u.width + 1;
+    const std::uint32_t n = holes[y1 * s + x1] - holes[y0 * s + x1] - holes[y1 * s + x0] + holes[y0 * s + x0];
+    const double area = static_cast<double>(t.width) * t.height;
+    return n == 0 || known_weight(1.0 - static_cast<double>(n) / area) <= 0.0f;
+  });
   return out;
 }
 

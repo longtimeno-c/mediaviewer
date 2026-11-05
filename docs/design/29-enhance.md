@@ -253,12 +253,13 @@ brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`
    model's side (`needs_refine`, 768 px at 512) is filled again at full resolution
    (`refine_tiles`, `refine_fill`). Tiles of the model's side (smaller only where the photo is),
    half overlapping, cover the box's own brushed pixels and their feather's reach plus a quarter
-   tile of context; a tile whose brushed pixels are all filled by earlier boxes is skipped. Each
+   tile of context; a tile whose brushed pixels are all filled by earlier boxes, or that is a
+   tenth known or less (deep in a large hole), is left out before the run, so every tile counted
+   is a fill. Each
    tile is filled against the photo (its holes the box's open mask), and what it has **above the
    first pass's scale** (the fill less the fill shrunk by the box-to-512 ratio and grown back) is
    added to the first pass, the weighted mean over the tiles (a tent, highest in a tile's middle,
-   times how much of the tile was known: no weight under a tenth known, where the tile is not
-   run, full from two fifths). The first pass keeps the shape and colour, since it saw the whole
+   times how much of the tile was known: rising from a tenth known, full from two fifths). The first pass keeps the shape and colour, since it saw the whole
    box; the tiles give the grain the 512-px fill lost. Filling the tiles' whole result in was
    tried and dropped (2026-11-05): a 512-px tile deep in a large hole sees only what is near it,
    and on a 770 × 500 hole it smeared the next rock's texture over a horizon the first pass had

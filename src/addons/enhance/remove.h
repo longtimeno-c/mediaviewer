@@ -93,7 +93,9 @@ struct remove_plan {
 [[nodiscard]] bool needs_refine(const pixel_box& box, std::uint32_t side) noexcept;
 // The second pass's tiles for box `i` of `plan`: side x side (smaller only
 // where the photo is), inside the photo, each holding some of the pixels the
-// box pastes back or their feather; none when the box does not need it.
+// box pastes back or their feather, and only those refine_fill runs (some of
+// box i's open mask, more than a tenth known), so a run's progress counts
+// fills; none when the box does not need it.
 [[nodiscard]] std::vector<pixel_box> refine_tiles(const mask8& mask, const remove_plan& plan, std::size_t i,
                                                   std::uint32_t side);
 // `filled` (box `i`'s size, the first pass's fill scaled back) given the

@@ -652,7 +652,10 @@ cancel is checked between fills and tiles on both. Measured on a busy machine (d
 Remove 4–14 s → 19–45 s, Extend 47–121 s → 158–170 s on a 3840 × 2160 photo. Extend's margins
 lose their colour fringes and dark corners but are softer than before (more 768-px tiles filled at
 512 and averaged); the detail transfer could serve Extend too (not built). Not run: either app,
-Windows (add-on C++ mirrors existing patterns, not compiled there).
+Windows (add-on C++ mirrors existing patterns, not compiled there). Review (2026-11-05):
+`refine_tiles` now leaves out the tiles `refine_fill` would skip (no hole, or a tenth known or
+less), so Remove's progress counts only real fills and the time left no longer jumps; the output
+is unchanged (those tiles had no weight).
 
 ## Models (owner OK 2026-11-04; downloaded and checked here, `~/Dev/.mv-toolchain/enhance-models/`)
 
