@@ -312,6 +312,30 @@ MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t
   }));
 }
 
+MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                         char* note_out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_adjust_faces", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    MV_REQUIRE(fix >= -1 && fix <= 1, "fix: -1 do all, 0 open eyes, 1 improve");
+    MV_REQUIRE(count == 0 || boxes, "boxes required");
+    MV_REQUIRE(count <= 64, "at most 64 faces");
+    using mv::addon::media::face_fix;
+    const auto f = static_cast<face_fix>(fix);
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
+    if (pack) {
+      // The faces the canvas chose, found again in this answer; NULL: every face.
+      const std::uint64_t mask =
+          boxes ? mv::addon::media::faces_mask_of(*pack, std::span<const float>(boxes, std::size_t{count} * 4))
+                : mv::addon::media::kAllFaces;
+      r = mv::addon::media::fix_faces(path_utf8, *pack, f, mask);
+    }
+    return write_out(mv::addon::media::fix_note(f, pack ? status::ok : pack.error(), r), note_out, cap, needed);
+  }));
+}
+
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
 }

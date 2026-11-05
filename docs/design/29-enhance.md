@@ -260,6 +260,19 @@ is filled at that size and scaled up, so a large fill is softer than the photo a
 brushed far apart are each filled at the model's detail in their own box (one model run each, so
 two spots take about twice as long as one), not in one photo-sized box.
 
+## Faces in the Enhance tab (edit-refresh S8)
+
+The Enhance tab's **Faces** card is not this add-on: it arms the host's Faces tool
+([20](20-edit-workspace.md) "Canvas tools"), whose fixes are the host's own pixel work on real
+photos (`edit/eyes.h` through `addon::media::fix_faces`, with donors from the AI pack's People),
+never a generated face. A box per face on the canvas, a click chooses which faces change, and the
+Faces panel lists each face (thumbnail, People's name, "from 37 photos of Anna") with **Open eyes**
+(only where they look shut), **Improve face** and **Do all**. Only the chosen faces change: every
+pixel outside their boxes is the original's (`mv_ai_tests "[faces-mask]"`). Results are
+`<stem>-eyes.jpg` / `<stem>-faces.jpg`, new files like every Enhance result. The fixes are a table
+(`addon::media::face_fix`, `shell::kFaceActions`), so a model-based **Restore faces** (S10, GFPGAN
+with a People guard, owner call C) is one more row.
+
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |

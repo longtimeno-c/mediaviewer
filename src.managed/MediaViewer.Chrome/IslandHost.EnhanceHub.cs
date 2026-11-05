@@ -14,7 +14,8 @@ namespace MediaViewer.Chrome;
 /// whether it can run now (its chip) and has one primary button. They launch
 /// what exists: the Remove brush, Enhance's own sheet started on the right
 /// choice (its "open" and "restyle" commands; Extend through the sheet's photo
-/// choice) and Open closed eyes. Every result is a new file; the original
+/// choice) and the Faces tool (S8: a box per face on the photo and the Faces
+/// panel here, IslandHost.Faces.cs). Every result is a new file; the original
 /// never changes. Running inside the pane is S5's. The Mac twin is EnhanceHubView.swift.
 /// </summary>
 /// <remarks>
@@ -36,7 +37,8 @@ public static partial class IslandHost
         new(EnhanceToolKind.Restyle, "Restyle",
             "Describe a new look in words: a snowy day, golden hour.", ""),  // Color
         new(EnhanceToolKind.Faces, "Faces",
-            "Open closed eyes from another photo of the same person.", RailGlyph.Faces),
+            "Choose faces on the photo: open closed eyes, or a better face of the same person from your photos.",
+            RailGlyph.Faces),
         new(EnhanceToolKind.Detail, "Enhance image",
             "Sharper detail and less noise, restored by a model on this PC.", RailGlyph.Enhance),
         new(EnhanceToolKind.Extend, "Extend edges",
@@ -65,10 +67,12 @@ public static partial class IslandHost
                 ? new("Ready", true, false, "Restyle…", true, false)
                 : new("Not offered", false, false, "Restyle…", false, false),
             EnhanceToolKind.Faces when (_editWand & WandEyesBusy) != 0 =>
-                new("Working…", false, true, "Open closed eyes", false, false),
+                new("Working…", false, true, "Choose faces", false, false),
+            // S8: the card arms the Faces tool; the panel takes over while it is.
+            EnhanceToolKind.Faces when _facesArmed => new("Choosing", true, false, "Done", true, false),
             EnhanceToolKind.Faces => (_editWand & WandFacesReady) != 0
-                ? new("Ready", true, false, "Open closed eyes", true, false)
-                : new("Needs People", false, false, "Open closed eyes", true, false),
+                ? new("Ready", true, false, "Choose faces", true, false)
+                : new("Needs People", false, false, "Choose faces", true, false),
             EnhanceToolKind.Detail => new("Ready", true, false, "Enhance…", (_editWand & WandDetail) != 0, false),
             _ => new("Ready", true, false, "Extend…", (_editWand & WandExtend) != 0, false),
         };
@@ -90,7 +94,8 @@ public static partial class IslandHost
                 else Send(Command.EditAction, EditActions.ArmBrush);
                 break;
             case EnhanceToolKind.Restyle: Send(Command.EditAction, EditActions.Restyle); break;
-            case EnhanceToolKind.Faces: Send(Command.AdjustOpenEyes); break;
+            // S8: the Faces tool (a second press puts it down).
+            case EnhanceToolKind.Faces: Send(Command.CanvasTool, CanvasTools.Faces * 1000); break;
             case EnhanceToolKind.Detail:
             case EnhanceToolKind.Extend: Send(Command.EditAction, EditActions.Enhance); break;
         }
@@ -125,6 +130,7 @@ public static partial class IslandHost
         _enhanceBrushNote = null;
         _enhanceUndoStroke = null;
         _enhanceClearStrokes = null;
+        _facesHost = null;
     }
 
     private static void BuildEnhanceHub(StackPanel pane)
@@ -154,6 +160,10 @@ public static partial class IslandHost
                 Background = Brush(ChromeColour.SelectionWash),
             });
         }
+        // S8: the Faces panel, first while the Faces tool is armed.
+        _facesHost = new StackPanel { Visibility = Visibility.Collapsed };
+        pane.Children.Add(_facesHost);
+        RenderFaces();
         // Two columns from 560 DIP (ApplyEditWidthClass reparents nothing here:
         // the hub is rebuilt with the tab, and its columns are its own).
         var grid = new Grid { ColumnSpacing = Space(10), RowSpacing = Space(10) };
@@ -281,7 +291,8 @@ public static partial class IslandHost
             if (action.Content is TextBlock t) t.Text = st.Action;
             AutomationProperties_SetName(action, st.Action);
             action.IsEnabled = st.Enabled;
-            bool armed = kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0;
+            bool armed = (kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0) ||
+                         (kind == EnhanceToolKind.Faces && _facesArmed);
             card.BorderBrush = armed ? Brush(ChromeColour.Accent) : Brush(Hairline);
             card.BorderThickness = new Thickness(armed ? 1.5 : 0.5);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(card, st.Chip);

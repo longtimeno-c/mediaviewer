@@ -254,7 +254,11 @@ struct ToolBarState: Equatable {
   /// shell::canvas_tool.
   enum Tool: Int32 { case none = 0, brush = 1, redEye = 2, whiteBalance = 3, faces = 4, extend = 5 }
   /// shell::tool_bar_action.
-  enum Action: Int32 { case done = 0, undo = 1, redo = 2, clear = 3, apply = 4, findEyes = 5 }
+  enum Action: Int32 {
+    case done = 0, undo = 1, redo = 2, clear = 3, apply = 4, findEyes = 5
+    // docs/plans/edit-refresh.md S8: the Faces bar, on the chosen faces.
+    case facesOpenEyes = 6, facesImprove = 7, facesDoAll = 8
+  }
 
   var visible = false
   var tool: Tool = .none

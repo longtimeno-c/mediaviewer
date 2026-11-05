@@ -77,6 +77,7 @@
 #endif
 #include "shell/adjust_pane.h"
 #include "shell/canvas_tool.h"
+#include "shell/faces_tool.h"
 #include "shell/brush_mask.h"
 #include "shell/remove_brush.h"
 #include "shell/ai_badge.h"
@@ -887,6 +888,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)toolSetErase:(BOOL)on;
 - (BOOL)toolWheel:(CGFloat)dy precise:(BOOL)precise;
 - (mv::shell::tool_bar)toolBar;
+// docs/plans/edit-refresh.md S8: the Faces tool's panel (FacesPanelView.swift).
+- (const mv::shell::faces_tool&)facesTool;
+- (void)facesOp:(int32_t)packed;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -1969,6 +1973,56 @@ extern "C" void mv_chrome_tool_action(int32_t action) {
 }
 extern "C" void mv_chrome_tool_set_size(float px) {
   if (g_chrome_app) [g_chrome_app toolSetSize:px];
+}
+// docs/plans/edit-refresh.md S8: the Faces panel (FacesPanelView.swift).
+static_assert(static_cast<int>(mv::shell::tool_bar_action::faces_do_all) == 8);
+static_assert(static_cast<int>(mv::shell::faces_status::failed) == 5);
+static_assert(static_cast<int>(mv::shell::face_action::improve) == 1 && mv::shell::kFaceDoAll == -1);
+static_assert(static_cast<int>(mv::addon::media::face_fix::improve) == static_cast<int>(mv::shell::face_action::improve) &&
+              static_cast<int>(mv::addon::media::face_fix::do_all) == mv::shell::kFaceDoAll);
+extern "C" bool mv_chrome_faces_panel(mv_faces_panel_view* out) {
+  if (!g_chrome_app || !out) return false;
+  const mv::shell::faces_tool& f = [g_chrome_app facesTool];
+  *out = {};
+  out->armed = [g_chrome_app toolBar].tool == static_cast<std::int32_t>(mv::shell::canvas_tool::faces) ? 1 : 0;
+  out->status = static_cast<std::int32_t>(f.status);
+  out->count = f.count();
+  out->chosen = static_cast<std::int32_t>(f.chosen);
+  out->running = f.running ? 1 : 0;
+  out->running_face = f.running_face;
+  out->running_action = f.running_action;
+  out->revision = f.revision;
+  return true;
+}
+extern "C" bool mv_chrome_face_card(int32_t index, mv_face_card_view* out, char* name, int32_t name_cap, char* source,
+                                    int32_t source_cap, uint8_t* rgba, int32_t rgba_cap) {
+  if (!g_chrome_app || !out) return false;
+  const mv::shell::faces_tool& f = [g_chrome_app facesTool];
+  if (index < 0 || index >= f.count()) return false;
+  const mv::shell::face_card& c = f.faces[static_cast<std::size_t>(index)];
+  *out = {};
+  out->person = c.person;
+  out->photos = static_cast<std::int32_t>(c.photos);
+  out->actions = static_cast<std::int32_t>(mv::shell::actions_of(c));
+  out->shut = c.shut ? 1 : 0;
+  out->thumb_w = static_cast<std::int32_t>(c.thumb_w);
+  out->thumb_h = static_cast<std::int32_t>(c.thumb_h);
+  auto copy = [](const std::string& text, char* dst, int32_t cap) {
+    if (!dst || cap <= 0) return;
+    const std::size_t n = std::min(text.size(), static_cast<std::size_t>(cap - 1));
+    std::memcpy(dst, text.data(), n);
+    dst[n] = '\0';
+  };
+  copy(c.name, name, name_cap);
+  copy(mv::shell::face_source_line(c), source, source_cap);
+  if (rgba && rgba_cap > 0 && !c.thumb.empty() && static_cast<std::size_t>(rgba_cap) >= c.thumb.size()) {
+    std::memcpy(rgba, c.thumb.data(), c.thumb.size());
+  }
+  return true;
+}
+extern "C" void mv_chrome_faces_op(int32_t packed) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app facesOp:packed];
 }
 extern "C" void mv_chrome_tool_set_erase(int32_t on) {
   if (g_chrome_app) [g_chrome_app toolSetErase:on != 0];
@@ -3653,6 +3707,10 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   std::uint32_t _brushRev;
   std::vector<mv::edit::adjust_section> _pendingAutos;  // slice 5b: a typed request's Autos still to run
   BOOL _eyesRunning;  // slice 6: Open closed eyes is on the pool
+  // docs/plans/edit-refresh.md S8: the Faces tool's faces of the photo on
+  // screen (read once per item when the tool is armed), which are chosen, the
+  // one under the pointer and the fix running (shell/faces_tool.h).
+  mv::shell::faces_tool _faces;
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -8536,8 +8594,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
   // S3: an armed tool stays armed on the next still (the bar and its band go
-  // on a clip); red-eye reads the new photo's eyes.
+  // on a clip); red-eye reads the new photo's eyes, Faces its faces (S8).
   if (_tool.tool == mv::shell::canvas_tool::red_eye) [self toolFetchEyes];
+  if (_tool.tool == mv::shell::canvas_tool::faces && [self adjustStill]) [self facesFetch];
   [self syncToolBar];
   [self toolCursor];
   // A document or a clip arriving under the filmstrip: say what T changes.
@@ -8960,7 +9019,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // 0 Remove (the brush, on the Enhance tab), 1 Red-eye (on Adjust), 2 Faces
 // (the Enhance tab), 3 Extend (Enhance's sheet; its photo choice offers
 // Extend the picture). S3: Remove and Red-eye are canvas tools
-// (shell/canvas_tool.h); a second click on the armed one puts it down.
+// (shell/canvas_tool.h), S8 Faces too; a second click on the armed one puts
+// it down.
 - (void)editTool:(int32_t)tool {
   if ([self editSubject] != mv::shell::edit_subject::still) {
     NSBeep();
@@ -8969,16 +9029,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   using mv::shell::edit_tab;
   switch (tool) {
     case 0:
-    case 1: {
-      const mv::shell::canvas_tool t =
-          tool == 0 ? mv::shell::canvas_tool::remove_brush : mv::shell::canvas_tool::red_eye;
+    case 1:
+    case 2: {
+      // S8: Faces is a canvas tool too (a box per face, the Faces panel).
+      const mv::shell::canvas_tool t = tool == 0   ? mv::shell::canvas_tool::remove_brush
+                                       : tool == 1 ? mv::shell::canvas_tool::red_eye
+                                                   : mv::shell::canvas_tool::faces;
       if (_tool.tool == t) [self toolDown];
       else [self armTool:t];
       break;
     }
-    case 2:
-      [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];
-      break;
     case 3: {
       const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
       if (id == mv::shell::command_id::none) {
@@ -11660,6 +11720,7 @@ static double mv_wall_seconds() {
   _toolSnap[2] = 0.0f;
   if (changed) [self syncWorkspace];
   if (t == mv::shell::canvas_tool::red_eye) [self toolFetchEyes];
+  if (t == mv::shell::canvas_tool::faces) [self facesFetch];
   [self toolChanged];
 }
 
@@ -11706,6 +11767,11 @@ static double mv_wall_seconds() {
   _toolCursorSet = YES;
   if (_tool.pan_held) {
     [NSCursor.openHandCursor set];
+    return;
+  }
+  if ([self activeTool] == mv::shell::canvas_tool::faces) {
+    // S8: a hand over a face's box (a click chooses it), the arrow elsewhere.
+    [(_faces.hover >= 0 ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
     return;
   }
   if (!mv::shell::sized([self activeTool])) {
@@ -11840,7 +11906,11 @@ static double mv_wall_seconds() {
   in.hover_spot = _toolHoverPlus1 - 1;
   in.pulse = {_toolPulse[0], _toolPulse[1], _toolPulse[2]};
   in.pulse_until_ms = _toolPulseUntil;
-  mv::shell::apply_tool(_snap.edit[0], in, _edits.preview_placement(), _edits.colour());
+  const mv::edit::placement p = _edits.preview_placement();
+  mv::shell::apply_tool(_snap.edit[0], in, p, _edits.colour());
+  // S8: the faces' boxes (only for the photo they were read from).
+  if (_faces.item == _itemId) mv::shell::apply_faces(_snap.edit[0], _faces, p);
+  else mv::shell::apply_faces(_snap.edit[0], mv::shell::faces_tool{}, p);
 }
 
 - (BOOL)brushPressX:(float)x y:(float)y {
@@ -11881,6 +11951,12 @@ static double mv_wall_seconds() {
   if (!on && _brushCursor[0] <= -1.0f) return;
   _brushCursor[0] = on ? u : -1.0f;
   _brushCursor[1] = v;
+  if ([self activeTool] == mv::shell::canvas_tool::faces) {
+    // S8: the box under the pointer lights up (a redraw only when it changes).
+    const int face = on && _faces.item == _itemId ? mv::shell::face_at(_faces, _edits.preview_placement(), u, v) : -1;
+    if (_faces.set_hover(face)) [self brushPublish];
+    return;
+  }
   if ([self activeTool] == mv::shell::canvas_tool::red_eye && on) {
     const mv::edit::placement p = _edits.preview_placement();
     const float ring = mv::shell::radius_over_long([self toolRingPx], _lab.still_map());
@@ -11964,6 +12040,15 @@ static double mv_wall_seconds() {
     c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
     e = _edits.set_colour(c);
     [self toolDown];  // one click
+  } else if (tool == mv::shell::canvas_tool::faces) {
+    // S8: a click on a box chooses that face or leaves it out.
+    if (_faces.item != _itemId) return;
+    const int face = mv::shell::face_at(_faces, p, u, v);
+    if (face < 0 || _faces.running) return;
+    (void)_faces.toggle(face);
+    [self brushPublish];
+    ++_editGeneration;  // the bar's "2 chosen", the panel's checks
+    return;
   } else if (tool == mv::shell::canvas_tool::red_eye) {
     const float ring = mv::shell::radius_over_long([self toolRingPx], _lab.still_map());
     const int hit = mv::shell::spot_at(p, _edits.colour(), u, v, ring * 0.5f);
@@ -12187,6 +12272,13 @@ static double mv_wall_seconds() {
     case tool_bar_action::clear: (void)[self runToolCommand:tool_clear]; break;
     case tool_bar_action::apply: (void)[self runToolCommand:tool_apply]; break;
     case tool_bar_action::find_eyes: [self toolFindEyes]; break;
+    case tool_bar_action::faces_open_eyes:
+      [self facesRun:-1 action:static_cast<int>(mv::shell::face_action::open_eyes)];
+      break;
+    case tool_bar_action::faces_improve:
+      [self facesRun:-1 action:static_cast<int>(mv::shell::face_action::improve)];
+      break;
+    case tool_bar_action::faces_do_all: [self facesRun:-1 action:mv::shell::kFaceDoAll]; break;
   }
 }
 - (void)toolSetSize:(float)px {
@@ -12234,7 +12326,140 @@ static double mv_wall_seconds() {
   b.can_apply = active == mv::shell::canvas_tool::remove_brush
                     ? (!_brush.empty() && mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none)
                     : active == mv::shell::canvas_tool::red_eye ? b.eyes > 0 && !_findEyesBusy : 0;
+  if (active == mv::shell::canvas_tool::faces) {
+    // S8: `eyes` the faces found, `spots` the chosen, `busy` a read or a fix
+    // on the pool (shell/canvas_tool.h tool_bar).
+    const bool mine = _faces.item == _itemId;
+    b.eyes = mine ? _faces.count() : 0;
+    b.spots = mine ? _faces.chosen_count() : 0;
+    b.busy = mine && (_faces.running || _faces.status == mv::shell::faces_status::looking) ? 1 : 0;
+    b.can_apply = mine && _faces.status == mv::shell::faces_status::ready && b.spots > 0 && !_faces.running &&
+                          !_eyesRunning
+                      ? 1
+                      : 0;
+  }
   return b;
+}
+
+// ---- docs/plans/edit-refresh.md S8: the Faces tool ----------------------------------
+
+- (const mv::shell::faces_tool&)facesTool {
+  static const mv::shell::faces_tool none;
+  return _faces.item == _itemId ? _faces : none;
+}
+
+// The faces of the photo on screen, once per item, on the pool: the pack's
+// answer (People's names and counts with it), then the still for each face's
+// thumbnail and whether its eyes look shut. Without the pack, or with People
+// off, the panel says so (and offers to turn People on).
+- (void)facesFetch {
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  if (_faces.item == _itemId && _faces.status != mv::shell::faces_status::idle &&
+      _faces.status != mv::shell::faces_status::failed) {
+    return;  // read (or reading) already
+  }
+  const std::uint64_t item = _itemId;
+  _faces.looking(item);
+  ++_editGeneration;
+  const std::string path = _items[_index.current()].path_utf8;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, item, weakSelf](const mv::job_context& ctx) -> mv::status {
+    if (ctx.cancelled()) return mv::status::cancelled;
+    const std::string readable = mv::addon::media::readable_path(path, &ctx).value_or(path);
+    auto json = mv::addon::ai_eyes_json(readable, "");
+    std::optional<mv::image::linear_image> still;
+    if (json && json->find("\"lm\"") != std::string::npos && !ctx.cancelled()) {
+      if (auto bytes = mv::io::read_all(readable)) {
+        if (auto img = mv::image::decode_linear(*bytes, &ctx)) still = std::move(*img);
+      }
+    }
+    auto scan = std::make_shared<mv::shell::faces_scan>(mv::shell::read_faces(
+        json ? mv::status::ok : json.error(), json ? std::string_view(*json) : std::string_view(), still ? &*still : nullptr));
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* app = weakSelf;
+      if (app) [app facesLanded:item scan:scan];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)facesLanded:(std::uint64_t)item scan:(std::shared_ptr<mv::shell::faces_scan>)scan {
+  if (!_faces.landed(item, std::move(*scan))) return;  // another photo's
+  [self brushPublish];
+  ++_editGeneration;  // the panel, the bar
+}
+
+// A fix from the panel or the bar: `action` (shell::face_action, or
+// kFaceDoAll) on `face`, or on the chosen faces for -1. On the pool: the same
+// moment's frames and the pack's donors (People), matched to the boxes the
+// canvas chose (media::faces_mask_of), then a new file beside the photo.
+- (void)facesRun:(int)face action:(int)action {
+  if (_eyesRunning || _faces.running || _faces.item != _itemId || ![self adjustStill] || _items.empty() ||
+      _index.current() >= _items.size()) {
+    return;
+  }
+  if (action < mv::shell::kFaceDoAll || action >= mv::shell::kFaceActionCount) return;
+  std::vector<float> boxes = _faces.run_boxes(face);
+  if (boxes.empty()) {
+    [self noticeShow:"Choose a face first: click its box on the photo"];
+    return;
+  }
+  _faces.running = true;
+  _faces.running_face = face;
+  _faces.running_action = action;
+  ++_faces.revision;
+  _eyesRunning = YES;
+  ++_editGeneration;
+  [self brushPublish];
+  const std::string path = _items[_index.current()].path_utf8;
+  const auto fix = static_cast<mv::addon::media::face_fix>(action);
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, fix, boxes, weakSelf](const mv::job_context& ctx) -> mv::status {
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
+    if (pack) r = mv::addon::media::fix_faces(path, *pack, fix, mv::addon::media::faces_mask_of(*pack, boxes), &ctx);
+    const std::string note = mv::addon::media::fix_note(fix, pack ? mv::status::ok : pack.error(), r);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf facesRunLanded:note];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)facesRunLanded:(const std::string&)note {
+  _faces.running = false;
+  ++_faces.revision;
+  [self brushPublish];
+  [self eyesLanded:note];  // the wand's busy flag, the note, the notice
+}
+
+// The panel's and the bar's controls (mv_chrome_faces_op, shell::pack_faces_op).
+- (void)facesOp:(int32_t)packed {
+  const std::optional<mv::shell::faces_op_args> a = mv::shell::unpack_faces_op(packed);
+  if (!a) return;
+  switch (a->op) {
+    case mv::shell::faces_op::run: [self facesRun:a->face action:a->action]; return;
+    case mv::shell::faces_op::toggle:
+      if (_faces.running || !_faces.toggle(a->face)) return;
+      break;
+    case mv::shell::faces_op::choose_all:
+      if (_faces.running) return;
+      _faces.choose_all();
+      break;
+    case mv::shell::faces_op::choose_none:
+      if (_faces.running) return;
+      _faces.choose_none();
+      break;
+    case mv::shell::faces_op::people:
+      // The chrome opens People's settings (AddonNav); a read after it is
+      // turned on happens on the next arm.
+      _faces.clear();
+      break;
+  }
+  [self brushPublish];
+  ++_editGeneration;
 }
 
 // What tool mode refused: say why (docs/plans/edit-refresh.md §4.1).

@@ -61,6 +61,7 @@
 #include "shell/adjust_pane.h"
 #include "shell/brush_mask.h"
 #include "shell/canvas_tool.h"
+#include "shell/faces_tool.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
@@ -347,6 +348,11 @@ struct app_state {
   std::vector<mv::shell::eye_point> eyes;
   std::uint64_t eyes_item = 0;
   bool eyes_fetching = false;
+  // docs/plans/edit-refresh.md S8: the Faces tool's faces of the photo on
+  // screen (shell/faces_tool.h), and what the Faces panel was last sent.
+  mv::shell::faces_tool faces;
+  std::uint32_t faces_pushed_rev = ~0u;
+  bool faces_pushed_armed = false;
   bool find_eyes_busy = false;
   std::uint32_t brush_rev = 0;
   bool brush_stroke = false;
@@ -2574,6 +2580,7 @@ struct adjust_job_result {
   bool auto_section = false;  // a section's Auto: `value` is its result
   bool detail = false;        // slice 4: a detail pass; `working` is its result
   bool eyes = false;          // slice 6: Open closed eyes finished; `note` says how
+  bool faces_run = false;     // S8: with `eyes`, the Faces tool's fix finished
   std::string note;
   mv::edit::detail_params params;
   std::uint64_t token = 0;
@@ -2851,6 +2858,9 @@ struct tool_job_result {
   std::uint64_t item = 0;
   std::vector<mv::shell::eye_point> eyes;
   std::vector<mv::edit::red_eye_spot> spots;
+  // S8: the Faces tool's read of `item` landed.
+  bool faces = false;
+  mv::shell::faces_scan scan;
 };
 
 // The tool a press on the photo uses now: armed, on a still, not cropping.
@@ -2902,7 +2912,11 @@ void tool_apply_view(app_state* app) noexcept {
   in.hover_spot = app->tool_hover_plus1 - 1;
   in.pulse = {app->tool_pulse[0], app->tool_pulse[1], app->tool_pulse[2]};
   in.pulse_until_ms = app->tool_pulse_until;
-  mv::shell::apply_tool(app->input.edit[0], in, app->edits.preview_placement(), app->edits.colour());
+  const mv::edit::placement p = app->edits.preview_placement();
+  mv::shell::apply_tool(app->input.edit[0], in, p, app->edits.colour());
+  // S8: the faces' boxes (only for the photo they were read from).
+  if (app->faces.item == app->edit_key) mv::shell::apply_faces(app->input.edit[0], app->faces, p);
+  else mv::shell::apply_faces(app->input.edit[0], mv::shell::faces_tool{}, p);
 }
 
 // The strokes, the ring, the red-eye fixes and the pulse onto the canvas's
@@ -2936,8 +2950,62 @@ mv::shell::tool_bar tool_bar_of(app_state* app) noexcept {
     b.can_apply = !app->brush.empty() && mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none;
   } else if (active == mv::shell::canvas_tool::red_eye) {
     b.can_apply = b.eyes > 0 && !app->find_eyes_busy;
+  } else if (active == mv::shell::canvas_tool::faces) {
+    // S8: `eyes` the faces found, `spots` the chosen, `busy` a read or a fix
+    // on the pool (shell/canvas_tool.h tool_bar).
+    const bool mine = app->faces.item == app->edit_key;
+    b.eyes = mine ? app->faces.count() : 0;
+    b.spots = mine ? app->faces.chosen_count() : 0;
+    b.busy = mine && (app->faces.running || app->faces.status == mv::shell::faces_status::looking) ? 1 : 0;
+    b.can_apply = mine && app->faces.status == mv::shell::faces_status::ready && b.spots > 0 &&
+                          !app->faces.running && !app->eyes_running
+                      ? 1
+                      : 0;
   }
   return b;
+}
+
+// S8: the Faces panel (IslandHost.Faces.cs), sent when what it shows changed:
+// the faces' revision, or the tool armed or put down.
+void sync_faces_panel(app_state* app) noexcept {
+  const bool armed = active_tool(app) == mv::shell::canvas_tool::faces;
+  const bool mine = app->faces.item == app->edit_key;
+  const std::uint32_t rev = mine ? app->faces.revision : 0u;
+  if (rev == app->faces_pushed_rev && armed == app->faces_pushed_armed) return;
+  try {
+    static const mv::shell::faces_tool none;
+    const mv::shell::faces_tool& f = mine ? app->faces : none;
+    std::vector<std::string> sources;
+    sources.reserve(f.faces.size());
+    for (const mv::shell::face_card& c : f.faces) sources.push_back(mv::shell::face_source_line(c));
+    std::vector<mv::shell::chrome_face_card_args> cards(f.faces.size());
+    for (std::size_t i = 0; i < f.faces.size(); ++i) {
+      const mv::shell::face_card& c = f.faces[i];
+      cards[i].rgba = c.thumb.empty() ? nullptr : c.thumb.data();
+      cards[i].name = c.name.c_str();
+      cards[i].source = sources[i].c_str();
+      cards[i].person = c.person;
+      cards[i].thumb_w = static_cast<std::int32_t>(c.thumb_w);
+      cards[i].thumb_h = static_cast<std::int32_t>(c.thumb_h);
+      cards[i].actions = static_cast<std::int32_t>(mv::shell::actions_of(c));
+      cards[i].shut = c.shut ? 1 : 0;
+    }
+    mv::shell::chrome_faces_args a{};
+    a.cards = cards.empty() ? nullptr : cards.data();
+    a.count = static_cast<std::int32_t>(cards.size());
+    a.armed = armed ? 1 : 0;
+    a.status = static_cast<std::int32_t>(f.status);
+    a.chosen = static_cast<std::int32_t>(f.chosen);
+    a.running = f.running ? 1 : 0;
+    a.running_face = f.running_face;
+    a.running_action = f.running_action;
+    a.revision = rev;
+    app->chrome.set_faces_panel(a);
+    app->faces_pushed_rev = rev;
+    app->faces_pushed_armed = armed;
+  } catch (...) {
+    // Out of memory: the panel keeps what it showed; the canvas still works.
+  }
 }
 
 mv::shell::chrome_tool_bar_args tool_bar_args_of(app_state* app) noexcept {
@@ -2998,6 +3066,7 @@ void tool_changed(app_state* app) noexcept {
   }
   push_adjust_pane(app);
   push_edit_view(app);  // the rail's Remove / Red-eye, the Enhance tab's card
+  sync_faces_panel(app);  // S8: the Faces panel follows the tool
 }
 
 // Esc, Done, a second click on the armed tool: the tool goes down; the
@@ -3011,6 +3080,7 @@ void tool_down(app_state* app) noexcept {
 }
 
 void tool_fetch_eyes(app_state* app);
+void faces_fetch(app_state* app);
 
 // Arms `t`: the workspace opens on its home tab (Remove on Enhance, red-eye on
 // Adjust), a crop draft is applied first (a tool and crop are exclusive), the
@@ -3031,6 +3101,7 @@ void arm_tool(app_state* app, mv::shell::canvas_tool t) {
   app->tool_snap[2] = 0.0f;
   if (changed) sync_workspace(app);
   if (t == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
+  if (t == mv::shell::canvas_tool::faces) faces_fetch(app);
   tool_changed(app);
 }
 
@@ -3074,6 +3145,14 @@ void adjust_pick_at(app_state* app, int x, int y) {
     c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
     e = app->edits.set_colour(c);
     tool_down(app);  // one click
+  } else if (tool == mv::shell::canvas_tool::faces) {
+    // S8: a click on a box chooses that face or leaves it out.
+    if (app->faces.item != app->edit_key || app->faces.running) return;
+    if (!app->faces.toggle(mv::shell::face_at(app->faces, p, u, v))) return;
+    brush_publish(app);
+    push_tool_bar(app);  // "2 chosen"
+    sync_faces_panel(app);
+    return;
   } else if (tool == mv::shell::canvas_tool::red_eye) {
     const float ring = mv::shell::radius_over_long(tool_ring_px(app), app->lab.still_map());
     const int hit = mv::shell::spot_at(p, app->edits.colour(), u, v, ring * 0.5f);
@@ -3155,6 +3234,14 @@ void brush_move(app_state* app, int x, int y) {
     return;
   }
   const bool inside = on && pointer_over_canvas(app);
+  if (active_tool(app) == mv::shell::canvas_tool::faces) {
+    // S8: the box under the pointer lights up (a redraw only when it changes).
+    const int face = inside && app->faces.item == app->edit_key
+                         ? mv::shell::face_at(app->faces, app->edits.preview_placement(), u, v)
+                         : -1;
+    if (app->faces.set_hover(face)) brush_publish(app);
+    return;
+  }
   if (!inside && app->brush_cursor[0] <= -1.0f) return;
   app->brush_cursor[0] = inside ? u : -1.0f;
   app->brush_cursor[1] = v;
@@ -3250,6 +3337,138 @@ void tool_fetch_eyes(app_state* app) {
   });
 }
 
+// docs/plans/edit-refresh.md S8: the faces of the photo on screen, once per
+// item, on the pool (the twin of Mac -facesFetch): the pack's answer through
+// mv_eyes_json (People's names and counts with it), then the still for each
+// face's thumbnail and whether its eyes look shut. Without the pack, or with
+// People off, the panel says so (and offers to turn People on).
+void faces_fetch(app_state* app) {
+  if (app->edit_path.empty() || !app->window) return;
+  if (app->faces.item == app->edit_key && app->faces.status != mv::shell::faces_status::idle &&
+      app->faces.status != mv::shell::faces_status::failed) {
+    return;  // read (or reading) already
+  }
+  app->faces.looking(app->edit_key);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [path = app->edit_path, item = app->edit_key,
+                                                  hwnd](const mv::job_context& ctx) -> mv::status {
+    auto* r = new (std::nothrow) tool_job_result{};
+    if (!r) return mv::status::out_of_memory;
+    r->faces = true;
+    r->item = item;
+    try {
+      std::uint32_t needed = 0;
+      std::string json(16 * 1024, '\0');
+      mv_status st = mv_eyes_json(path.c_str(), json.data(), static_cast<std::uint32_t>(json.size()), &needed);
+      if (st != MV_OK && needed > json.size()) {  // too small: `needed` says how much
+        json.assign(needed, '\0');
+        st = mv_eyes_json(path.c_str(), json.data(), static_cast<std::uint32_t>(json.size()), &needed);
+      }
+      if (st == MV_OK) json.resize(std::strlen(json.c_str()));
+      std::optional<mv::image::linear_image> still;
+      if (st == MV_OK && json.find("\"lm\"") != std::string::npos && !ctx.cancelled()) {
+        if (auto bytes = mv::io::read_all(path)) {
+          if (auto img = mv::image::decode_linear(*bytes, &ctx)) still = std::move(*img);
+        }
+      }
+      r->scan = mv::shell::read_faces(static_cast<mv::status>(st), json, still ? &*still : nullptr);
+    } catch (...) {
+      r->scan = {};  // failed: the panel offers to try again
+    }
+    if (!::PostMessageW(hwnd, kMsgToolJob, 0, reinterpret_cast<LPARAM>(r))) delete r;
+    return mv::status::ok;
+  });
+}
+
+// The Faces tool's fixes and the wand's (the twin of Mac -adjustFaces: and
+// -facesRun:action:): `fix` (shell::face_action, or kFaceDoAll) on `face`, on
+// the chosen faces for -1, or on every face for `all` (the wand: Open closed
+// eyes, Improve faces). On the pool through mediaviewer_core's mv_adjust_faces:
+// the same moment's frames and the pack's donors (People), matched to the boxes
+// the canvas chose, then "<stem>-eyes.jpg" / "<stem>-faces.jpg" beside the
+// photo. The note says what happened.
+void adjust_faces(app_state* app, int face, int fix, bool all) {
+  if (app->eyes_running || app->faces.running || !adjust_still(app) || app->edit_path.empty() || !app->window) return;
+  if (fix < mv::shell::kFaceDoAll || fix >= mv::shell::kFaceActionCount) return;
+  std::vector<float> boxes;
+  if (!all) {
+    if (app->faces.item != app->edit_key) return;
+    boxes = app->faces.run_boxes(face);
+    if (boxes.empty()) {
+      notice_show(app, "Choose a face first: click its box on the photo");
+      return;
+    }
+    app->faces.running = true;
+    app->faces.running_face = face;
+    app->faces.running_action = fix;
+    ++app->faces.revision;
+    brush_publish(app);
+  }
+  app->eyes_running = true;
+  app->adjust.set_prompt_note(fix == static_cast<int>(mv::shell::face_action::open_eyes)
+                                  ? "Looking for open eyes in this person's photos…"
+                                  : "Looking through this person's photos for a better face…");
+  push_adjust_pane(app);
+  push_edit_view(app);
+  push_tool_bar(app);
+  sync_faces_panel(app);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [path = app->edit_path, fix, all, boxes = std::move(boxes),
+                                                  hwnd](const mv::job_context&) -> mv::status {
+    auto* r = new (std::nothrow) adjust_job_result{};
+    if (!r) return mv::status::out_of_memory;
+    r->eyes = true;
+    r->faces_run = !all;
+    try {
+      std::uint32_t needed = 0;
+      std::string note(512, '\0');
+      const float* b = all ? nullptr : boxes.data();
+      const auto count = static_cast<std::uint32_t>(all ? 0 : boxes.size() / 4);
+      mv_status st = mv_adjust_faces(path.c_str(), fix, b, count, note.data(), static_cast<std::uint32_t>(note.size()),
+                                     &needed);
+      if (st != MV_OK && needed > note.size()) {
+        note.assign(needed, '\0');
+        st = mv_adjust_faces(path.c_str(), fix, b, count, note.data(), static_cast<std::uint32_t>(note.size()), &needed);
+      }
+      if (st == MV_OK) note.resize(std::strlen(note.c_str()));
+      else note = "Could not fix the faces of this photo";
+      r->note = std::move(note);
+    } catch (...) {
+      r->note = "Could not fix the faces of this photo";
+    }
+    post_adjust_result(hwnd, r);
+    return mv::status::ok;
+  });
+}
+
+// The Faces panel's controls (chrome_cmd_faces, shell::pack_faces_op).
+void faces_from_island(app_state* app, float arg) {
+  const std::optional<mv::shell::faces_op_args> a = mv::shell::unpack_faces_op(static_cast<std::int32_t>(std::lround(arg)));
+  if (!a) return;
+  switch (a->op) {
+    case mv::shell::faces_op::run: adjust_faces(app, a->face, a->action, false); return;
+    case mv::shell::faces_op::toggle:
+      if (app->faces.running || !app->faces.toggle(a->face)) return;
+      break;
+    case mv::shell::faces_op::choose_all:
+      if (app->faces.running) return;
+      app->faces.choose_all();
+      break;
+    case mv::shell::faces_op::choose_none:
+      if (app->faces.running) return;
+      app->faces.choose_none();
+      break;
+    case mv::shell::faces_op::people:
+      // The island opens Local search's settings; the faces are read again
+      // on the next arm, once People is on.
+      app->faces.clear();
+      break;
+  }
+  brush_publish(app);
+  push_tool_bar(app);
+  sync_faces_panel(app);
+}
+
 // Find eyes: every detected eye red enough is fixed, as one undo step.
 void tool_find_eyes(app_state* app) {
   if (active_tool(app) != mv::shell::canvas_tool::red_eye || app->find_eyes_busy || !app->window) return;
@@ -3338,6 +3557,15 @@ void on_tool_job(app_state* app, std::unique_ptr<tool_job_result> r) {
     brush_publish(app);  // the live tail shrinks; the next build, if one is owed, starts
     return;
   }
+  if (r->faces) {
+    // S8: dropped when it is another photo's (a walk while it was read).
+    if (app->faces.landed(r->item, std::move(r->scan))) {
+      brush_publish(app);
+      push_tool_bar(app);
+      sync_faces_panel(app);
+    }
+    return;
+  }
   if (!r->found) {
     app->eyes_fetching = false;
     if (r->item != app->edit_key) {
@@ -3394,9 +3622,10 @@ bool run_tool_command(app_state* app, mv::shell::command_id command) {
       else arm_tool(app, canvas_tool::red_eye);
       return true;
     case tool_faces:
-      // S8 makes Faces a canvas tool; today it is the Enhance tab's card.
-      if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
-      edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
+      // S8: Faces is a canvas tool (a box per face, the Faces panel).
+      if (!adjust_still(app)) return false;
+      if (app->tool.tool == canvas_tool::faces) tool_down(app);
+      else arm_tool(app, canvas_tool::faces);
       return true;
     case tool_extend: {
       // S6 makes Extend a canvas tool; today Enhance's sheet offers it (its
@@ -3500,6 +3729,14 @@ void tool_from_island(app_state* app, int command, float arg) {
       case tool_bar_action::clear: (void)run_tool_command(app, tool_clear); break;
       case tool_bar_action::apply: (void)run_tool_command(app, tool_apply); break;
       case tool_bar_action::find_eyes: tool_find_eyes(app); break;
+      // S8: the Faces bar, on the chosen faces.
+      case tool_bar_action::faces_open_eyes:
+        adjust_faces(app, -1, static_cast<int>(mv::shell::face_action::open_eyes), false);
+        break;
+      case tool_bar_action::faces_improve:
+        adjust_faces(app, -1, static_cast<int>(mv::shell::face_action::improve), false);
+        break;
+      case tool_bar_action::faces_do_all: adjust_faces(app, -1, mv::shell::kFaceDoAll, false); break;
     }
     return;
   }
@@ -3515,6 +3752,11 @@ void tool_from_island(app_state* app, int command, float arg) {
     if (tool == mv::shell::canvas_tool::remove_brush) px = &app->tool.brush_px;
     if (tool == mv::shell::canvas_tool::red_eye) px = &app->tool.redeye_px;
     if (px) *px = mv::shell::clamp_tool_px(static_cast<float>(packed % 1000));
+  }
+  // S8: the Faces card and the rail toggle the tool (the Mac's -editTool:).
+  if (tool == mv::shell::canvas_tool::faces && app->tool.tool == tool) {
+    tool_down(app);
+    return;
   }
   arm_tool(app, tool);
 }
@@ -3532,30 +3774,10 @@ void set_param_from_pane(app_state* app) {
                        static_cast<float>(std::atof(parked.c_str() + tab + 1)));
 }
 
-// Slice 6: Open closed eyes, on the pool through mediaviewer_core
-// (mv_open_closed_eyes: the frames of the same moment, the AI pack's
-// same-person faces, the transfer, a new file). The note says what happened.
+// Slice 6: Open closed eyes (the pane's and the wand's), on every face: the
+// Faces tool's path (adjust_faces) with no boxes.
 void start_open_eyes(app_state* app) {
-  if (app->eyes_running || !adjust_still(app) || app->edit_path.empty() || !app->window) return;
-  app->eyes_running = true;
-  app->adjust.set_prompt_note("Looking for open eyes in the same moment…");
-  push_adjust_pane(app);
-  const HWND hwnd = app->window;
-  app->jobs.submit_at(mv::background_generation, [path = app->edit_path, hwnd](const mv::job_context&) -> mv::status {
-    auto* r = new (std::nothrow) adjust_job_result{};
-    if (!r) return mv::status::out_of_memory;
-    r->eyes = true;
-    std::uint32_t needed = 0;
-    std::string note(512, '\0');
-    if (mv_open_closed_eyes(path.c_str(), note.data(), static_cast<std::uint32_t>(note.size()), &needed) == MV_OK) {
-      note.resize(std::strlen(note.c_str()));
-    } else {
-      note = "Could not look for open eyes in this photo";
-    }
-    r->note = std::move(note);
-    post_adjust_result(hwnd, r);
-    return mv::status::ok;
-  });
+  adjust_faces(app, -1, static_cast<int>(mv::shell::face_action::open_eyes), true);
 }
 
 void next_pending_auto(app_state* app) {
@@ -3651,6 +3873,15 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
     app->eyes_running = false;
     app->adjust.set_prompt_note(r->note);
     push_adjust_pane(app);
+    push_edit_view(app);  // the wand's busy chip
+    if (r->faces_run) {
+      app->faces.running = false;
+      ++app->faces.revision;
+      brush_publish(app);
+      push_tool_bar(app);
+      sync_faces_panel(app);
+    }
+    notice_show(app, r->note);  // seen on any tab (the bar or the wand ran it)
     return;
   }
   if (r->detail) {
@@ -4726,6 +4957,9 @@ void workspace_item_changed(app_state* app) noexcept {
     // docs/plans/edit-refresh.md S3: an armed tool stays armed on the next still
     // (the bar and its band go on a clip); red-eye reads the new photo's eyes.
     if (app->tool.tool == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
+    // S8: Faces reads the new photo's faces; the panel follows.
+    if (app->tool.tool == mv::shell::canvas_tool::faces && adjust_still(app)) faces_fetch(app);
+    sync_faces_panel(app);
     app->tool_hover_plus1 = 0;
     app->tool_snap[2] = 0.0f;
     sync_tool_bar(app);
@@ -6521,6 +6755,9 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
     case mv::shell::chrome_cmd_tool_size_set:
     case mv::shell::chrome_cmd_tool_erase_set:
       tool_from_island(app, command, arg);
+      return true;
+    case mv::shell::chrome_cmd_faces:  // S8: the Faces panel (IslandHost.Faces.cs)
+      faces_from_island(app, arg);
       return true;
     case static_cast<int>(mv::shell::command_id::adjust_auto):
       start_adjust_auto(app, static_cast<int>(arg));
@@ -11432,6 +11669,9 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT && tool_armed(app) &&
           pointer_over_canvas(app)) {
         if (app->tool.pan_held) ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        // S8: a hand over a face's box (a click chooses it), the arrow elsewhere.
+        else if (active_tool(app) == mv::shell::canvas_tool::faces)
+          ::SetCursor(::LoadCursorW(nullptr, app->faces.hover >= 0 ? IDC_HAND : IDC_ARROW));
         else if (mv::shell::sized(active_tool(app))) ::SetCursor(nullptr);
         else ::SetCursor(::LoadCursorW(nullptr, IDC_CROSS));
         return TRUE;

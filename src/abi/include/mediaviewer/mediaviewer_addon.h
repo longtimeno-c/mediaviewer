@@ -1247,6 +1247,16 @@ MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out,
  * MV_ERR_NOT_FOUND without the pack, MV_ERR_INVALID_ARG while People is off.
  * Runs the pack's face model: [worker-thread]. */
 MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t cap, uint32_t* needed);
+/* docs/plans/edit-refresh.md S8: the Faces tool's fix for the still at
+ * `path_utf8`: `fix` -1 Do all (each face's best fix), 0 Open eyes, 1 Improve
+ * face (addon_media.h face_fix; appended values follow). Only the faces whose
+ * boxes the canvas chose change: `boxes` holds `count` x, y, w, h quads (0..1
+ * of the upright still, as mv_eyes_json gave them), matched to this run's
+ * answer; NULL means every face. The same moment's frames and People's
+ * donors as mv_open_closed_eyes, a new file beside the photo ("-eyes.jpg" for
+ * Open eyes, else "-faces.jpg"), `note_out` what happened. [worker-thread] */
+MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                         char* note_out, uint32_t cap, uint32_t* needed);
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file

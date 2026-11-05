@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // docs/plans/edit-refresh.md S3: canvas tools. What a click or drag on the photo
-// does while a tool is armed (the Remove brush, the red-eye tool; Faces and
-// Extend arrive with S8 / S6), its size in screen pixels, and the pure maths
+// does while a tool is armed (the Remove brush, the red-eye tool, Faces
+// (shell/faces_tool.h); Extend arrives with S6), its size in screen pixels, and the pure maths
 // both hosts share: the home tab a tool opens, the size steps, the spot under
 // the pointer, the eye the red-eye ring snaps to, and Find eyes' test.
 //
@@ -378,7 +378,10 @@ struct tool_bar {
   std::int32_t extend_h = 0;
   std::int32_t full = 0;      // the brush holds all it can: "Brush full: Remove, then brush more"
   std::int32_t can_redo = 0;
-  std::int32_t eyes = 0;      // red-eye: eyes found on the photo (People on), 0 none / not known
+  // red-eye: eyes found on the photo (People on), 0 none / not known. S8:
+  // with Faces armed, `eyes` is the faces found, `spots` the chosen ones and
+  // `busy` a read or a fix on the pool.
+  std::int32_t eyes = 0;
   std::int32_t can_undo = 0;  // S4a: a stroke or a Clear to undo (a cleared brush still undoes)
 };
 static_assert(sizeof(tool_bar) == 60);
@@ -392,6 +395,10 @@ enum class tool_bar_action : std::int32_t {
   clear = 3,      // tool_clear
   apply = 4,      // Remove ↵ (tool_apply)
   find_eyes = 5,  // red-eye: fix every red eye found, one undo step
+  // docs/plans/edit-refresh.md S8: the Faces bar, on the chosen faces.
+  faces_open_eyes = 6,
+  faces_improve = 7,
+  faces_do_all = 8,
 };
 
 // ---- Onto the canvas -------------------------------------------------------------------

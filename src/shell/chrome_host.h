@@ -224,6 +224,9 @@ enum chrome_command : int {
   // inspector the island lays out unclipped, in DIPs (300 x the theme's type
   // scale; shell/pane_width.h theme_min). Sent with the theme; native re-clamps.
   chrome_cmd_inspector_min = 1099,
+  // docs/plans/edit-refresh.md S8: the Faces panel's controls (IslandHost.Faces.cs),
+  // arg = shell::pack_faces_op (op x 100000 + (face + 1) x 100 + (action + 1)).
+  chrome_cmd_faces = 1100,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -425,6 +428,7 @@ static_assert(static_cast<int>(command_id::tool_smaller) == 215 && static_cast<i
               static_cast<int>(command_id::tool_brush) == 223 && static_cast<int>(command_id::tool_red_eye) == 224 &&
               static_cast<int>(command_id::tool_extend) == 225 && static_cast<int>(command_id::tool_faces) == 226);
 static_assert(chrome_cmd_canvas_tool >= kCommandCount && chrome_cmd_tool_erase_set >= kCommandCount);
+static_assert(chrome_cmd_faces >= kCommandCount);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -464,7 +468,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
       chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range,
       chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state, chrome_cmd_inspector_min,
-      chrome_cmd_canvas_tool, chrome_cmd_tool_size_set, chrome_cmd_tool_erase_set};
+      chrome_cmd_canvas_tool, chrome_cmd_tool_size_set, chrome_cmd_tool_erase_set,
+      chrome_cmd_faces};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -712,6 +717,35 @@ struct chrome_tool_bar_args {
 };
 
 static_assert(sizeof(chrome_tool_bar_args) == 60, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
+
+// docs/plans/edit-refresh.md S8: the Faces tool's panel in the Enhance tab
+// (IslandHost.Faces.cs; the Mac's FacesPanelView), pushed with SetFacesPanel
+// whenever shell::faces_tool's revision moves. The pointers live for the call
+// only: the island copies what it keeps.
+struct chrome_face_card_args {
+  const std::uint8_t* rgba;  // thumb_w x thumb_h RGBA8 sRGB (null: none)
+  const char* name;          // UTF-8, NUL-terminated; "" unnamed
+  const char* source;        // "from 37 photos of Anna", "" none
+  std::int64_t person;       // People's cluster, 0 none
+  std::int32_t thumb_w;
+  std::int32_t thumb_h;
+  std::int32_t actions;  // bit per shell::face_action the face offers
+  std::int32_t shut;     // the eyes look shut
+};
+static_assert(sizeof(chrome_face_card_args) == 48, "keep in sync with IslandHost.Faces FaceCardSize");
+
+struct chrome_faces_args {
+  const chrome_face_card_args* cards;
+  std::int32_t count;
+  std::int32_t armed;           // the Faces tool is armed on a still
+  std::int32_t status;          // shell::faces_status
+  std::int32_t chosen;          // bit i: face i chosen
+  std::int32_t running;         // a fix is on the pool
+  std::int32_t running_face;    // -1 the chosen faces
+  std::int32_t running_action;  // shell::face_action, -1 Do all
+  std::uint32_t revision;
+};
+static_assert(sizeof(chrome_faces_args) == 40, "keep in sync with IslandHost.Faces FacesArgsSize");
 
 // The bar's geometry (ToolBarView.swift): 44 DIP high, at most 640 wide,
 // centred on the canvas, 8 above the filmstrip or the bottom edge.
@@ -1105,6 +1139,9 @@ class chrome_host {
   void show_tool_bar(const chrome_tool_bar_args& args, int x, int y, int width, int height,
                      int client_height) noexcept;
   [[nodiscard]] bool tool_bar_visible() const noexcept { return tool_bar_visible_; }
+  // docs/plans/edit-refresh.md S8: the Faces panel's content (SetFacesPanel).
+  // Optional: an older chrome shows the Enhance tab without it.
+  void set_faces_panel(const chrome_faces_args& args) noexcept;
   // A notification to the islands (chrome_notify_args). Optional: an older
   // chrome ignores it.
   void notify(chrome_command id, float value) noexcept;
@@ -1336,6 +1373,7 @@ class chrome_host {
   chrome_entry_fn show_edit_rail_ = nullptr;  // docs/plans/edit-refresh.md S2
   chrome_entry_fn notify_ = nullptr;          // S2
   chrome_entry_fn set_tool_bar_ = nullptr;    // S3
+  chrome_entry_fn set_faces_panel_ = nullptr; // S8
   chrome_entry_fn attach_editor_ = nullptr;   // PR 30
   chrome_entry_fn layout_editor_ = nullptr;
   chrome_entry_fn set_editor_view_ = nullptr;

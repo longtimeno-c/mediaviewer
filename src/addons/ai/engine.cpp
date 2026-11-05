@@ -7314,6 +7314,44 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
     for (const float v : f.landmarks) w.number(v);
     w.end_array();
   };
+  // docs/plans/edit-refresh.md S8: who each face is, for the Faces panel's
+  // "from 37 photos of Anna": People's name ("" unnamed) and how many other
+  // photos (stills; not this one) People holds of them. Once a person.
+  struct who {
+    std::int64_t person = 0;
+    std::string name;
+    std::uint32_t photos = 0;
+  };
+  std::vector<who> known;
+  std::vector<std::pair<std::int64_t, std::string>> names;
+  bool names_read = false;
+  auto who_is = [&](std::int64_t person) -> const who& {
+    for (const who& k : known) {
+      if (k.person == person) return k;
+    }
+    who k;
+    k.person = person;
+    std::vector<face_row> rows;
+    {
+      std::lock_guard lock(models_m_);
+      if (faces_) {
+        if (!names_read) names = faces_->names();
+        rows = faces_->faces_of(person);
+      }
+    }
+    names_read = true;
+    for (const auto& [id, name] : names) {
+      if (id == person) k.name = name;
+    }
+    std::vector<std::string> seen;
+    for (const face_row& r : rows) {
+      if (r.pts_ms >= 0 || r.path == path || std::find(seen.begin(), seen.end(), r.path) != seen.end()) continue;
+      seen.push_back(r.path);
+    }
+    k.photos = static_cast<std::uint32_t>(seen.size());
+    known.push_back(std::move(k));
+    return known.back();
+  };
   json::writer w;
   w.begin_object().key("faces").begin_array();
   for (const face_in& f : found) {
@@ -7386,6 +7424,11 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
     landmarks(w, f);
     if (f.quality >= 0) w.key("quality").number(f.quality);
     w.key("person").integer(person);
+    if (person != 0) {
+      const who k = who_is(person);  // a copy: `known` may grow
+      if (!k.name.empty()) w.key("name").string(k.name);
+      w.key("photos").integer(k.photos);
+    }
     w.key("donors").begin_array();
     for (const donor& d : donors) {
       // The host reads the donor's pixels: a Photos key goes as its file.

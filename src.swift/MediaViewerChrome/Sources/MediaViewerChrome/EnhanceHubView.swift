@@ -5,8 +5,9 @@
 // whether it can run now (its chip) and has one primary button. They launch
 // what exists: the Remove brush on the photo, Enhance's own sheet started on
 // the right choice (its "open" and "restyle" commands; Extend through the
-// sheet's photo choice), and Open closed eyes / Improve faces. Every result
-// is a new file (or a new Photos-library photo); the original never changes.
+// sheet's photo choice), and the Faces tool (S8: a box per face on the photo
+// and FacesPanelView here). Every result is a new file (or a new
+// Photos-library photo); the original never changes.
 // Running inside the pane is S5's. The Windows twin is IslandHost.EnhanceHub.cs.
 import MVChromeBridge
 import SwiftUI
@@ -31,7 +32,7 @@ struct EnhanceTool: Identifiable {
     switch kind {
     case .remove: return "Brush over what to take out; it is filled in from around it."
     case .restyle: return "Describe a new look in words: a snowy day, golden hour."
-    case .faces: return "Open closed eyes, or a better face of the same person from your photos."
+    case .faces: return "Choose faces on the photo: open closed eyes, or a better face of the same person from your photos."
     case .detail: return "Sharper detail and less noise, restored by a model on this Mac."
     case .extend: return "More picture around the edges, to a wider or taller frame."
     }
@@ -78,9 +79,12 @@ struct EnhanceToolState {
       else if store.offersRestyle { (chip, chipText, action, enabled) = (.ready, "Ready", "Restyle…", true) }
       else { (chip, chipText, action, enabled) = (.needsAddon, "Not offered", "Restyle…", false) }
     case .faces:
-      if store.eyesBusy { (chip, chipText, action, enabled) = (.busy, "Working…", "Open closed eyes", false) }
-      else if store.facesReady { (chip, chipText, action, enabled) = (.ready, "Ready", "Open closed eyes", true) }
-      else { (chip, chipText, action, enabled) = (.needsPeople, "Needs People", "Open closed eyes", true) }
+      // S8: the card arms the Faces tool; FacesPanelView takes over while it is.
+      let armed = FacesStore.shared.armed
+      if store.eyesBusy { (chip, chipText, action, enabled) = (.busy, "Working…", "Choose faces", false) }
+      else if armed { (chip, chipText, action, enabled) = (.brushing, "Choosing", "Done", true) }
+      else if store.facesReady { (chip, chipText, action, enabled) = (.ready, "Ready", "Choose faces", true) }
+      else { (chip, chipText, action, enabled) = (.needsPeople, "Needs People", "Choose faces", true) }
     case .detail:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
       else { (chip, chipText, action, enabled) = (.ready, "Ready", "Enhance…", store.offersDetail) }
@@ -103,7 +107,7 @@ struct EnhanceToolState {
       else if store.brushOn { store.setBrush(false, size: 0) }
       else { store.tool(.remove) }
     case .restyle: store.restylePhoto()
-    case .faces: store.openClosedEyes()
+    case .faces: store.tool(.faces)  // a second press puts it down
     case .detail: store.enhancePhoto()
     case .extend: store.tool(.extend)
     }
@@ -113,6 +117,7 @@ struct EnhanceToolState {
 /// The Enhance tab: five cards, two columns from 560 pt.
 struct EnhanceHubView: View {
   @ObservedObject private var store = EditStore.shared
+  @ObservedObject private var faces = FacesStore.shared
   @Environment(\.paneWidthClass) private var cls
 
   var body: some View {
@@ -126,6 +131,11 @@ struct EnhanceHubView: View {
       }
       if !store.enhance {
         InstallBanner()
+      }
+      // S8: the Faces tool's panel, first while the tool is armed.
+      if faces.armed {
+        FacesPanelView()
+          .transition(.opacity.combined(with: .move(edge: .top)))
       }
       if cls.twoColumns {
         let tools = EnhanceTool.all
@@ -144,6 +154,7 @@ struct EnhanceHubView: View {
       }
     }
     .disabled(!store.canEdit || store.isClip)
+    .animation(.easeOut(duration: 0.18), value: faces.armed)
   }
 }
 
@@ -205,12 +216,6 @@ struct EnhanceCard: View {
           Button("Clear") { store.brushAction(1) }
             .buttonStyle(FlatButtonStyle(compact: true))
             .disabled(!store.brushed)
-        }
-        if tool.kind == .faces {
-          Button("Improve faces") { store.improveFaces() }
-            .buttonStyle(FlatButtonStyle(compact: true))
-            .disabled(store.eyesBusy)
-            .help("Each face replaced by a clearly better one of the same person from your photos (People in Local search). Saves a new file.")
         }
         Spacer(minLength: 0)
       }

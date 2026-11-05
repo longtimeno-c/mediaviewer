@@ -724,6 +724,15 @@ are pending; rotate and flip stay refused while strokes are kept with the tool d
 `mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
 People on.
 
+Faces (S8): the rail's Faces, the Enhance tab's Faces card or (Mac) Edit ▸ Faces arm the Faces
+tool: a box per face on the photo (a click chooses it or leaves it out) and the Faces panel first
+in the Enhance tab (each face's thumbnail, People's name, its Open eyes / Improve face, Do all).
+It needs the AI pack with People on; without them the panel says what to turn on. Results are new
+files beside the photo (`-eyes.jpg`, `-faces.jpg`). Tests: `mv_tests "[faces-tool],[eyes]"` (the
+cards, choosing, the boxes, shut-eye detection, the edit region) and `mv_ai_tests "[faces-mask]"`
+(only the chosen faces change: 0 pixels differ outside their boxes; the canvas's boxes matched
+to the run's answer) and `mv_ai_tests "[eyes]"` (the pack's names and counts).
+
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
 springs back to centre. Drop a file on the window. A pinch (touchscreen,

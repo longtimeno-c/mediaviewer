@@ -612,6 +612,9 @@ add_library(mv_shell STATIC
   # docs/plans/edit-refresh.md S4a: the brush's committed strokes as a tint texture.
   src/shell/brush_mask.cpp
   src/shell/brush_mask.h
+  # docs/plans/edit-refresh.md S8: the Faces tool's cards and boxes.
+  src/shell/faces_tool.cpp
+  src/shell/faces_tool.h
   # PR 13 / 14: trim mode and the clip tools (shared with Windows), and the
   # clip job queue + keyframe index behind the Windows ABI, reused as is.
   src/shell/trim_state.cpp
@@ -980,6 +983,7 @@ if(MV_BUILD_TESTS)
     tests/test_adjust.cpp
     tests/test_canvas_tool.cpp
     tests/test_remove_brush.cpp
+    tests/test_faces_tool.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp

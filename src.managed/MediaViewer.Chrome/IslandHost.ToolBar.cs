@@ -52,6 +52,7 @@ public static partial class IslandHost
         public const int Brush = 1;
         public const int RedEye = 2;
         public const int WhiteBalance = 3;
+        public const int Faces = 4;  // docs/plans/edit-refresh.md S8
     }
     private static class ToolBarAction
     {
@@ -61,6 +62,10 @@ public static partial class IslandHost
         public const int Clear = 3;
         public const int Apply = 4;
         public const int FindEyes = 5;
+        // S8: the Faces bar, on the chosen faces.
+        public const int FacesOpenEyes = 6;
+        public const int FacesImprove = 7;
+        public const int FacesDoAll = 8;
     }
 
     private static ChromeToolBarArgs _toolBar;
@@ -69,6 +74,7 @@ public static partial class IslandHost
     private static Border? _toolBarRoot;
     private static int _toolBarBuiltFor;
     private static Button? _toolPaint, _toolErase, _toolUndo, _toolRedo, _toolClear, _toolApply, _toolFind;
+    private static Button? _toolFacesEyes, _toolFacesImprove;
     private static Slider? _toolSize;
     private static TextBlock? _toolSizeText, _toolStatus;
     private static Spinner? _toolSpinner;
@@ -112,6 +118,7 @@ public static partial class IslandHost
     {
         _toolBarRoot = null;
         _toolPaint = _toolErase = _toolUndo = _toolRedo = _toolClear = _toolApply = _toolFind = null;
+        _toolFacesEyes = _toolFacesImprove = null;
         _toolSize = null;
         _toolSizeText = _toolStatus = null;
         _toolSpinner = null;
@@ -176,6 +183,22 @@ public static partial class IslandHost
                                        () => SendToolAction(ToolBarAction.Undo));
                 row.Children.Add(_toolUndo);
                 break;
+            case CanvasTools.Faces:
+                // S8: "3 faces · 2 chosen" · Open eyes · Improve · Do all · Done, on
+                // the chosen faces (the Faces panel has each face's own).
+                _toolSpinner = new Spinner(16);
+                row.Children.Add(_toolSpinner.Root);
+                row.Children.Add(_toolStatus);
+                _toolFacesEyes = ToolModeButton("\uE7B3", "Open eyes", () => SendToolAction(ToolBarAction.FacesOpenEyes));
+                ToolTipService.SetToolTip(_toolFacesEyes, "Open the chosen faces' closed eyes from another photo of them (a new file)");
+                _toolFacesImprove = ToolModeButton("\uE734", "Improve", () => SendToolAction(ToolBarAction.FacesImprove));
+                ToolTipService.SetToolTip(_toolFacesImprove, "A clearly better photo of each chosen face, from your photos (a new file)");
+                row.Children.Add(_toolFacesEyes);
+                row.Children.Add(_toolFacesImprove);
+                _toolApply = AccentButton("Do all", () => SendToolAction(ToolBarAction.FacesDoAll));
+                ToolTipService.SetToolTip(_toolApply, "Each chosen face's best fix, in one new file");
+                row.Children.Add(_toolApply);
+                break;
             default:
                 // The white-balance picker: one click, then it puts itself down.
                 _toolStatus.Text = "Click something that should be neutral grey";
@@ -203,6 +226,7 @@ public static partial class IslandHost
         {
             CanvasTools.Brush => "Remove brush",
             CanvasTools.RedEye => "Red-eye tool",
+            CanvasTools.Faces => "Faces tool",
             _ => "White balance picker",
         });
         ToolTipService.SetToolTip(_toolBarRoot, ToolHints());
@@ -289,6 +313,8 @@ public static partial class IslandHost
             if (_toolRedo is not null) _toolRedo.IsEnabled = b.CanRedo != 0;
             if (_toolClear is not null) _toolClear.IsEnabled = b.Strokes > 0;
             if (_toolApply is not null) _toolApply.IsEnabled = b.CanApply != 0;
+            if (_toolFacesEyes is not null) _toolFacesEyes.IsEnabled = b.CanApply != 0;
+            if (_toolFacesImprove is not null) _toolFacesImprove.IsEnabled = b.CanApply != 0;
             if (_toolFind is not null)
             {
                 _toolFind.IsEnabled = b.CanApply != 0 && b.Busy == 0;
@@ -311,6 +337,12 @@ public static partial class IslandHost
                         _toolStatus.Text = b.Busy != 0 ? "Looking for red eyes…"
                                          : b.Spots == 0 ? "Click a red pupil" : $"Click a red pupil · {b.Spots} fixed";
                         break;
+                    case CanvasTools.Faces:
+                        // Eyes: the faces found; Spots: the chosen (shell/canvas_tool.h).
+                        _toolStatus.Text = b.Eyes > 0
+                            ? $"{(b.Eyes == 1 ? "1 face" : $"{b.Eyes} faces")} · {b.Spots} chosen"
+                            : FacesSummary();
+                        break;
                 }
             }
         }
@@ -328,6 +360,7 @@ public static partial class IslandHost
         var parts = new List<string>();
         string? smaller = KeyOf(Command.ToolSmaller), bigger = KeyOf(Command.ToolBigger);
         if (smaller is not null || bigger is not null) parts.Add($"{smaller} {bigger} size");
+        if (_toolBar.Tool == CanvasTools.Faces) return "Click a face to choose it · Esc done";
         if (_toolBar.Tool == CanvasTools.Brush) parts.Add("Alt erase");
         parts.Add($"{KeyOf(Command.ToolPan) ?? "Space"} pan");
         if (_toolBar.Tool == CanvasTools.Brush && KeyOf(Command.ToolApply) is string apply) parts.Add($"{apply} remove");

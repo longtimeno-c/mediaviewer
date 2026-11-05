@@ -38,6 +38,7 @@ struct ToolBarView: View {
       switch bar.tool {
       case .brush: brushRow(compact: compact)
       case .redEye: redEyeRow(compact: compact)
+      case .faces: facesRow(compact: compact)
       default: pickerRow
       }
     }
@@ -107,6 +108,39 @@ struct ToolBarView: View {
     doneButton
   }
 
+  // docs/plans/edit-refresh.md S8, Faces: "3 faces · 2 chosen" · Open eyes ·
+  // Improve · Do all · Done, on the chosen faces (the panel has each face's own).
+  @ViewBuilder
+  private func facesRow(compact: Bool) -> some View {
+    if bar.busy {
+      ProgressView().controlSize(.small)
+    }
+    Text(facesStatus).lineLimit(1)
+    Button { store.toolAction(.facesOpenEyes) } label: {
+      HStack(spacing: MVTheme.space(4)) {
+        Image(systemName: "eye")
+        if !compact { Text("Open eyes") }
+      }
+    }
+    .buttonStyle(FlatButtonStyle(compact: true))
+    .disabled(!bar.canApply)
+    .help("Open the chosen faces' closed eyes from another photo of them (a new file)")
+    Button { store.toolAction(.facesImprove) } label: {
+      HStack(spacing: MVTheme.space(4)) {
+        Image(systemName: "wand.and.stars")
+        if !compact { Text("Improve") }
+      }
+    }
+    .buttonStyle(FlatButtonStyle(compact: true))
+    .disabled(!bar.canApply)
+    .help("A clearly better photo of each chosen face, from your photos (a new file)")
+    Button { store.toolAction(.facesDoAll) } label: { Text("Do all") }
+      .buttonStyle(AccentButtonStyle())
+      .disabled(!bar.canApply)
+      .help("Each chosen face's best fix, in one new file")
+    doneButton
+  }
+
   // The white-balance picker: one click, then it puts itself down.
   @ViewBuilder
   private var pickerRow: some View {
@@ -160,6 +194,15 @@ struct ToolBarView: View {
     }
   }
 
+  /// "3 faces · 2 chosen" from the bar (eyes: faces, spots: chosen), else
+  /// the panel's own words (no pack, People off).
+  private var facesStatus: String {
+    if bar.eyes > 0 {
+      return "\(bar.eyes == 1 ? "1 face" : "\(bar.eyes) faces") · \(bar.spots) chosen"
+    }
+    return FacesStore.shared.summary
+  }
+
   private var sizeHelp: String {
     let smaller = liveKey("Smaller brush"), bigger = liveKey("Bigger brush")
     return smaller.isEmpty && bigger.isEmpty ? "Size" : "Size (\(smaller) \(bigger))"
@@ -175,6 +218,7 @@ struct ToolBarView: View {
     parts.append("\(pan.isEmpty ? "Space" : pan) pan")
     let apply = liveKey("Apply tool")
     if bar.tool == .brush, !apply.isEmpty { parts.append("\(apply) remove") }
+    if bar.tool == .faces { parts = ["Click a face to choose it"] }
     parts.append("Esc done")
     return parts.joined(separator: " · ")
   }
@@ -183,6 +227,7 @@ struct ToolBarView: View {
     switch bar.tool {
     case .brush: return "Remove brush"
     case .redEye: return "Red-eye tool"
+    case .faces: return "Faces tool"
     case .whiteBalance: return "White balance picker"
     default: return "Canvas tool"
     }
