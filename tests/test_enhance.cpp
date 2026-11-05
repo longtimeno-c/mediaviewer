@@ -3478,7 +3478,7 @@ TEST_CASE("extend: tiles of the model's side or more, half overlapping, every ma
     return tiles;
   };
   for (const char* preset : {"wider", "taller", "all", "square", "16x9", "4x5"}) {
-    for (const auto [pw, ph] : {std::pair{400u, 300u}, std::pair{1200u, 800u}, std::pair{2000u, 1500u},
+    for (const auto& [pw, ph] : {std::pair{400u, 300u}, std::pair{1200u, 800u}, std::pair{2000u, 1500u},
                                 std::pair{900u, 1600u}, std::pair{2400u, 300u}, std::pair{300u, 2000u}}) {
       const extend_margins m = extend_preset(preset, pw, ph);
       if (!m.empty()) (void)check(pw, ph, m);
@@ -4609,6 +4609,7 @@ double lap_var(const std::vector<std::uint8_t>& rgb, std::uint32_t w, std::uint3
       ++n;
     }
   }
+  if (n == 0) return 0.0;
   const double count = static_cast<double>(n);
   const double m = s / count;
   return s2 / count - m * m;
@@ -4795,7 +4796,7 @@ TEST_CASE("enhance image: the shrink plan and Lanczos resize", "[enhance][still]
   CHECK(plan_shrink(1000, 800, 1, 1, 4.0).shrink == 1.0);  // a same-size model is never shrunk
   // Lanczos keeps a flat colour flat both ways, and lands on the size asked.
   const std::vector<std::uint8_t> flat(std::size_t{37} * 23 * 3, 77);
-  for (const auto [nw, nh] : {std::pair{11u, 7u}, std::pair{100u, 61u}, std::pair{37u, 23u}}) {
+  for (const auto& [nw, nh] : {std::pair{11u, 7u}, std::pair{100u, 61u}, std::pair{37u, 23u}}) {
     const auto r = resize_lanczos(flat, 37, 23, nw, nh);
     REQUIRE(r.size() == std::size_t{nw} * nh * 3);
     CHECK(std::all_of(r.begin(), r.end(), [](std::uint8_t v) { return v == 77; }));

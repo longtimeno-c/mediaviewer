@@ -272,8 +272,8 @@ void paste_region(image::linear_image& target, const image::linear_image& donor,
         px3 sum{0, 0, 0};
         for (int oy = -1; oy <= 1; ++oy) {
           for (int ox = -1; ox <= 1; ++ox) {
-            const px3 q = bilinear(donor, dx + ox * scale, dy + oy * scale);
-            sum.r += q.r, sum.g += q.g, sum.b += q.b;
+            const px3 nb = bilinear(donor, dx + ox * scale, dy + oy * scale);
+            sum.r += nb.r, sum.g += nb.g, sum.b += nb.b;
           }
         }
         dp.r += (sum.r / 9.0f - dp.r) * soften;

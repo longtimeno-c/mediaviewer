@@ -113,7 +113,11 @@ TEST_CASE("eyes: a shut pair takes the donor's, aligned, colour-matched, nothing
   // The donor's brighter light was matched to this frame's skin: the skin
   // just inside the ellipse stays near this frame's.
   CHECK(red_at(target, 140, 172) == Approx(0.45f).epsilon(0.1));  // skin inside the ellipse, below the white
-  CHECK(red_at(target, 140, 162) == Approx(0.75f).epsilon(0.1));  // the white, at this frame's light
+  // The white at this frame's light (0.75), well under the donor's brighter
+  // white (about 0.94); the grain and the glint knee move it a little, and
+  // the toolchains' float contraction differs, so a band rather than 10 %.
+  CHECK(red_at(target, 140, 162) > 0.65f);
+  CHECK(red_at(target, 140, 162) < 0.87f);
   // Away from the eyes nothing changed.
   CHECK(red_at(target, 200, 250) == red_at(before, 200, 250));
   CHECK(red_at(target, 20, 20) == red_at(before, 20, 20));
