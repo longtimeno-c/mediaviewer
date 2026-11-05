@@ -149,12 +149,46 @@ private struct AdjustPane: View {
   /// another way (VoiceOver, an accessibility client, dictation's last
   /// phrase) reached the field but not `request`, and Return sent "" ("the
   /// box recognises nothing", 2026-11-05).
+  /// Where AppKit has the text: the field editor while it edits the field;
+  /// else (Return already ended the editing, so the window is the responder)
+  /// the field itself, found by its placeholder. Read on Return only.
   static func submittedText(_ bound: String) -> String {
-    if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor {
-      let live = editor.string
-      if !live.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return live }
-    }
+    let live = liveText()
+    if let live, !live.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return live }
     return bound
+  }
+
+  /// Empties what AppKit shows: `request = ""` alone does not when the binding
+  /// was already "" (the text never reached it).
+  static func clearSubmitted() {
+    if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor {
+      editor.string = ""
+    } else if let field = describeField() {
+      field.stringValue = ""
+    }
+  }
+
+  private static let placeholder = "Describe a change — a bit warmer, less noise…"
+
+  private static func liveText() -> String? {
+    guard let window = NSApp.keyWindow else { return nil }
+    if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor { return editor.string }
+    return describeField()?.stringValue
+  }
+
+  private static func describeField() -> NSTextField? {
+    guard let root = NSApp.keyWindow?.contentView else { return nil }
+    func walk(_ v: NSView) -> NSTextField? {
+      if let f = v as? NSTextField, f.isEditable,
+         f.placeholderString == placeholder || f.placeholderAttributedString?.string == placeholder {
+        return f
+      }
+      for s in v.subviews {
+        if let f = walk(s) { return f }
+      }
+      return nil
+    }
+    return walk(root)
   }
 
   var body: some View {
@@ -178,13 +212,14 @@ private struct AdjustPane: View {
       // at any width or height.
       HStack(spacing: MVTheme.space(6)) {
         Image(systemName: "text.bubble").foregroundStyle(MVTheme.body)
-        TextField("Describe a change — a bit warmer, less noise…", text: $request)
+        TextField(Self.placeholder, text: $request)
           .textFieldStyle(.plain)
           .font(MVTheme.font(14))
           .disabled(!store.ready)
           .focused($typing)
           .onSubmit {
             store.prompt(Self.submittedText(request))
+            Self.clearSubmitted()
             request = ""
           }
           .accessibilityLabel("Describe a change")
@@ -877,6 +912,9 @@ struct CurveEditor: View {
   }
 
   var body: some View {
+    // Read here, not in the Canvas, as HistogramPlot does: the two plots of
+    // one store show the same bins (or the same blank) after any change.
+    let bins: [Double] = store.histogramValid ? store.histogram[channel == 0 ? 3 : channel - 1] : []
     GeometryReader { geo in
       let size = geo.size
       Canvas { ctx, sz in
@@ -885,8 +923,7 @@ struct CurveEditor: View {
         let shape = RoundedRectangle(cornerRadius: MVTheme.radius(4))
         ctx.fill(shape.path(in: frame), with: .color(Color(nsColor: .textBackgroundColor)))
         func at(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: r.minX + x * r.width, y: r.minY + (1 - y) * r.height) }
-        if store.histogramValid {
-          let bins = store.histogram[channel == 0 ? 3 : channel - 1]
+        if !bins.isEmpty {
           var h = Path()
           h.move(to: at(0, 0))
           for (i, v) in bins.enumerated() {

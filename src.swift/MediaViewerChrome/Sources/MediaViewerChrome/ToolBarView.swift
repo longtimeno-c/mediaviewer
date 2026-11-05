@@ -85,15 +85,16 @@ struct ToolBarView: View {
     Button {
       store.toolAction(.findEyes)
     } label: {
-      // One width busy or not: the spinner takes the label's place.
+      // One width busy or not: both labels are always laid out (the ZStack
+      // takes the wider), only one is seen.
       ZStack {
         Text("Find eyes").opacity(bar.busy ? 0 : 1)
-        if bar.busy {
-          HStack(spacing: MVTheme.space(4)) {
-            ProgressView().controlSize(.mini)
-            Text("Looking…")
-          }
+        HStack(spacing: MVTheme.space(4)) {
+          ProgressView().controlSize(.mini)
+          Text("Looking…")
         }
+        .opacity(bar.busy ? 1 : 0)
+        .accessibilityHidden(!bar.busy)
       }
     }
     .buttonStyle(AccentButtonStyle(filled: bar.canApply))

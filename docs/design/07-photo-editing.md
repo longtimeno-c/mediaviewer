@@ -176,9 +176,10 @@ adjective it is an echo ("cool it down"); "noise reduction" is the denoise slide
 "darker corners") moves the region's slider; a few looks move several ("punchy", "dramatic",
 "film", "matte", "soft"); "fix the white balance" and "auto" run the matching Autos one after
 another. Moves add to where each slider is, land on its steps and clamp. Words it does not know are
-listed back under the field ("not understood: …"), never guessed at. Return commits the field
-editor's own text on the Mac, so a value set by VoiceOver or another accessibility client is sent,
-not the binding's last typed copy (2026-11-05).
+listed back under the field ("not understood: …"), never guessed at. Return commits the text AppKit
+shows on the Mac (the field editor's, or the field's once editing has ended), so a value set by
+VoiceOver or another accessibility client is sent, not the binding's last typed copy, and the field
+is emptied after (2026-11-05).
 
 **Auto** (`edit/auto_adjust.h`): each section's AUTO button runs `compute_auto` on a worker
 from the preview working image and lands as one `adjust_all` op. Each returns absolute values for
