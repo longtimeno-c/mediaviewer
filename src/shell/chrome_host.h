@@ -267,6 +267,18 @@ enum class chrome_edit_action : std::int32_t {
   arm_brush = 6,
   arm_red_eye = 7,   // the rail's Red-eye: Adjust, with the red-eye picker on
   show_enhance = 8,  // the rail's Faces, the flyout's last row: the Enhance tab
+  // docs/plans/edit-refresh.md S5 (owner call B): Enhance's docked panel
+  // (place "edit") on a tool, under its card on the Enhance tab; the sheet
+  // when the Enhance installed has no docked panel.
+  enhance_remove = 9,
+  enhance_restyle = 10,
+  enhance_detail = 11,
+  enhance_extend = 12,
+  // The docked panel's result row: Show (Edit closes) and Keep editing (Edit
+  // stays on the Enhance tab). Native pulls the new file's path with
+  // take_tree_path, as for chrome_cmd_open_path.
+  enhance_result_show = 13,
+  enhance_result_keep = 14,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);

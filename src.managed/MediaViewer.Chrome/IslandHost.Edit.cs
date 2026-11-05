@@ -52,6 +52,14 @@ public static partial class IslandHost
         public const int ArmBrush = 6;
         public const int ArmRedEye = 7;
         public const int ShowEnhance = 8;
+        // docs/plans/edit-refresh.md S5: Enhance's docked panel on a tool, and its
+        // result row (the new file parked in _treePending, as OpenPath's is).
+        public const int EnhanceRemove = 9;
+        public const int EnhanceRestyle = 10;
+        public const int EnhanceDetail = 11;
+        public const int EnhanceExtend = 12;
+        public const int EnhanceResultShow = 13;
+        public const int EnhanceResultKeep = 14;
     }
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).

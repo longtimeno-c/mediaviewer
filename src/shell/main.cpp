@@ -387,6 +387,9 @@ struct app_state {
   // the Mac host) and Show original. `ws_shown` is what the panes were last
   // synced to, so closing the workspace closes only the panes it opened.
   mv::shell::edit_workspace ws;
+  // docs/plans/edit-refresh.md S5: the photo Enhance's docked panel (place
+  // "edit") was opened on; "" while it is closed.
+  std::string enhance_dock_path;
   bool ws_shown = false;
   bool show_original = false;
   // PR 30 (docs/design/21): the Video Editor window. While it is open it owns the
@@ -953,6 +956,8 @@ void stop_motion(app_state* app) noexcept;
 // PR 29 (docs/design/20): the Edit workspace.
 void push_edit_view(app_state* app) noexcept;
 void workspace_item_changed(app_state* app) noexcept;
+void enhance_dock_close(app_state* app) noexcept;
+void enhance_tool(app_state* app, std::string_view photo, bool run);
 void set_editor_open(app_state* app, bool open);  // PR 30
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index);
@@ -2315,6 +2320,7 @@ void edit_item_opened(app_state* app) {
     if (app->edits.has_item()) {
       app->edits.clear_item();
       app->input.edit[1] = app->input.edit[0];
+      enhance_dock_close(app);
       app->edit_path.clear();
       app->edit_key = 0;
       app->show_original = false;
@@ -2331,6 +2337,8 @@ void edit_item_opened(app_state* app) {
     return;  // the same bytes, the same select: nothing moved
   }
   app->input.edit[1] = app->input.edit[0];
+  // S5: Enhance's docked panel stays with the photo it was opened on.
+  if (!app->enhance_dock_path.empty() && app->enhance_dock_path != entry.path_utf8) enhance_dock_close(app);
   app->edit_path = entry.path_utf8;
   app->edit_size = entry.size;
   app->edit_mtime = entry.mtime_unix;
@@ -3171,16 +3179,9 @@ void adjust_brush(app_state* app, int action) {
       notice_show(app, "Brush over what to remove first");
       return;
     }
-    // The painted dabs, minus any a later erase dab took back (the row has no erase).
-    const std::vector<float> flat = app->brush.handoff();
-    // The add-on media layer is in mediaviewer_core.dll: through its C entry.
-    (void)mv_edit_still_mask(app->edit_path.c_str(), flat.data(), static_cast<std::uint32_t>(flat.size() / 3));
-    const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
-    if (id == mv::shell::command_id::none) {
-      notice_show(app, "Remove needs the Enhance add-on (Settings → Add-ons).");
-    } else {
-      (void)run_command(app, id);
-    }
+    // S5: Enhance's docked panel runs it with the dabs handed over (its sheet
+    // when the Enhance installed has no docked panel).
+    enhance_tool(app, "remove", true);
   }
   brush_publish(app);
   push_adjust_pane(app);
@@ -4592,6 +4593,8 @@ void sync_workspace(app_state* app) {
     if (jobs) set_jobs_pane(app, true, false);
   }
   app->ws_shown = open;
+  // Enhance's docked panel goes with Edit (S5): a run still going stops.
+  if (!open) enhance_dock_close(app);
   // A canvas tool belongs to Edit: closing it puts the tool down (S3).
   if (!open && app->tool.tool != mv::shell::canvas_tool::none) {
     (void)mv::shell::arm_tool(app->tool, app->ws, mv::shell::canvas_tool::none);
@@ -4709,6 +4712,97 @@ void set_show_original(app_state* app, bool on) noexcept {
   publish(app);
 }
 
+// docs/plans/edit-refresh.md S5 (owner call B): an Enhance tool inside the
+// Edit pane, the Mac's -enhanceTool:run:. Enhance's docked panel (place
+// "edit") opens on the photo under the tool's card on the Enhance tab and gets
+// the workspace's enhance/tool command; `run` starts it (Remove hands the
+// brushed dabs over first, as the sheet's Remove did). An Enhance without the
+// panel opens its sheet instead. The slots registry is in
+// mediaviewer_core.dll: through mv_slots_screen_command / _close_screen.
+std::uint32_t folder_count(app_state* app) noexcept;
+
+void enhance_tool(app_state* app, std::string_view photo, bool run) {
+  if (edit_subject_of(app) != mv::shell::edit_subject::still || app->edit_path.empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  const std::string path = app->edit_path;
+  if (photo == "remove" && run) {
+    if (app->brush.empty()) {
+      notice_show(app, "Brush over what to remove first");
+      return;
+    }
+    // The painted dabs, minus any a later erase dab took back.
+    const std::vector<float> flat = app->brush.handoff();
+    (void)mv_edit_still_mask(path.c_str(), flat.data(), static_cast<std::uint32_t>(flat.size() / 3));
+  }
+  // A crop draft goes into the copy, as Enhance… applies it.
+  if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+  std::string command = "{\"photo\":\"";
+  command.append(photo);
+  command += run ? "\",\"run\":true}" : "\"}";
+  // The panel's content width in DIPs: the column less the rail, the pane's
+  // and the card's margins (the preview is drawn at it).
+  const std::uint32_t dpi = app->window ? ::GetDpiForWindow(app->window) : 96u;
+  const float scale = dpi > 0 ? static_cast<float>(dpi) / 96.0f : 1.0f;
+  const int column = right_pane_px(*app, static_cast<int>(app->input.width), dpi);
+  const float width = std::max(200.0f, static_cast<float>(column) / scale - 44.0f - 2 * 14.0f - 2 * 12.0f);
+  const mv_status st = mv_slots_screen_command("enhance", "tool", path.c_str(), command.c_str(), width, scale);
+  if (st == MV_OK) {
+    app->enhance_dock_path = path;
+    const mv::shell::workspace_action a =
+        app->ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
+    if (mv::shell::apply_step(app->ws, {a, mv::shell::edit_tab::enhance})) sync_workspace(app);
+    push_edit_view(app);
+    return;
+  }
+  // The sheet, started on the tool where its commands can say so.
+  mv::shell::command_id id = mv::shell::find_addon_command("enhance", photo == "restyle" ? "restyle" : "open");
+  if (id == mv::shell::command_id::none) id = mv::shell::find_addon_command("enhance", "open");
+  if (id == mv::shell::command_id::none) {
+    notice_show(app, "This needs the Enhance add-on (Settings → Add-ons).");
+    return;
+  }
+  (void)run_command(app, id);
+}
+
+// The docked panel belongs to the photo it opened on: another photo, or Edit
+// closing, closes it (a run still going stops, as the sheet's does).
+void enhance_dock_close(app_state* app) noexcept {
+  if (!app || app->enhance_dock_path.empty()) return;
+  app->enhance_dock_path.clear();
+  (void)mv_slots_close_screen("enhance", "tool");
+}
+
+// The result row: Show leaves Edit and shows the new file; Keep editing shows
+// it with Edit still open on the Enhance tab. Every result is a file beside
+// the original (no Photos library on Windows); one the listing has not caught
+// yet opens through its folder, selected.
+void enhance_show_result(app_state* app, bool keep) {
+  const std::string path = app->chrome.take_tree_path();
+  if (path.empty()) return;
+  if (!keep) close_workspace(app);
+  enhance_dock_close(app);
+  bool found = false;
+  const std::uint32_t n = folder_count(app);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    if (item_path_at(app, i) != path) continue;
+    folder_select(app, i);
+    found = true;
+    break;
+  }
+  if (!found) {
+    const std::wstring wide = wide_from_utf8(path);
+    if (wide.empty()) return;
+    open_path(app, wide);
+  }
+  if (keep) {
+    const mv::shell::workspace_action a =
+        app->ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
+    if (mv::shell::apply_step(app->ws, {a, mv::shell::edit_tab::enhance})) sync_workspace(app);
+  }
+}
+
 void run_edit_action(app_state* app, int action) {
   switch (static_cast<mv::shell::chrome_edit_action>(action)) {
     case mv::shell::chrome_edit_action::cancel_crop:
@@ -4761,6 +4855,13 @@ void run_edit_action(app_state* app, int action) {
     case mv::shell::chrome_edit_action::show_enhance:
       edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
       return;
+    // S5: the Enhance tab's cards, the docked panel and its result row.
+    case mv::shell::chrome_edit_action::enhance_remove: enhance_tool(app, "remove", false); return;
+    case mv::shell::chrome_edit_action::enhance_restyle: enhance_tool(app, "restyle", false); return;
+    case mv::shell::chrome_edit_action::enhance_detail: enhance_tool(app, "detail", false); return;
+    case mv::shell::chrome_edit_action::enhance_extend: enhance_tool(app, "extend", false); return;
+    case mv::shell::chrome_edit_action::enhance_result_show: enhance_show_result(app, false); return;
+    case mv::shell::chrome_edit_action::enhance_result_keep: enhance_show_result(app, true); return;
   }
 }
 
