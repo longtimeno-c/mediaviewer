@@ -227,11 +227,12 @@ said nothing. Now (`shell/compare_source.h`, one model on both hosts):
 ### The Enhance tab
 
 Tab 5, any still. Five cards: **Remove objects · Restyle · Faces · Enhance image · Extend edges**,
-each an icon, a one-line purpose and a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
-*Needs Enhance*, *Needs People*, *Working…*, *Update Enhance*). The host's own buttons are the
-brush's (*Start brushing* / *Remove*, Undo stroke, Clear), the frame's (*Set the new frame*, arming
-Extend, "Extend" below) and the Faces tool's (*Choose faces*, S8: its chip reads *Choosing* and the
-button *Done* while armed, and the Faces panel leads the tab); Restyle, Enhance image and Restore
+each one surface ("Craft rules"): an icon, the title, a one-line purpose, and a chip only when
+something is needed (*Needs Enhance*, *Update Enhance*, *Needs People*, *Opening…*, *Working…*;
+no *Ready*). The card being worked on (brushing, choosing faces, running) lifts to a lighter
+surface rather than taking a ring. The host's own buttons are the brush's (*Start brushing* /
+*Remove*, Undo stroke, Clear), the frame's (*Set the new frame*, arming Extend, "Extend" below)
+and the Faces tool's (*Choose faces*, S8: *Done* while armed, and the Faces panel leads the tab); Restyle, Enhance image and Restore
 faces (S10, under Choose faces on the Faces card) run from the add-on's stack inside their card
 (below). *Enhance image* offers four models: Sharpen & restore, Natural, Remove noise and Remove
 blur, each downloaded when first run ([29](29-enhance.md) "Enhance image"). Without the Enhance
@@ -481,7 +482,7 @@ sits under the line in its tint.
 | Core, shared | `shell/commands.h`, `command_table.cpp` | `edit_workspace` (`Enter` in browse and video), `crop_aspect_cycle` (`A` in crop), `crop_aspect_swap` (`X` in crop), `show_original` / `show_original_release` (`Y` held, stills), and the island-only, keyless `crop_aspect_set` (argument = preset, +16 for portrait) and `crop_straighten_set` (argument = degrees) |
 | Core, shared | `meta/write` | `write_fields::tags` (any Exif / Iptc / Xmp key, set or remove) and `date_taken`; `access_of()`; a whole-metadata snapshot that `revert` splices back |
 | Core, shared | `meta/tables` | `editable_properties_table`: the properties table plus each tag's raw value and access |
-| Mac host | `main_mac.mm`, SwiftUI | `EditView.swift` (the header, `CropPane`, `TrimPane`), `EditRailView.swift` (the rail, `railHost`), `EnhanceHubView.swift` (the Enhance tab and the ✦ popover), `EditStore` (polls one POD view by generation; the wand bits, chips and fold every pulse), the Edit menu, the command-bar button, `MetadataView`'s tag editor. Right-edge panes hang under the header while it shows (`metaTopUnder` …) and the canvas docks beside them and the rail |
+| Mac host | `main_mac.mm`, SwiftUI | `EditView.swift` (the header, `CropPane`, `TrimPane`), `EditRailView.swift` (the rail, `railHost`), `EnhanceHubView.swift` (the Enhance tab), `EditStore` (polls one POD view by generation; the wand bits, chips and fold every pulse), the Edit menu, the command-bar button, `MetadataView`'s tag editor. Right-edge panes hang under the header while it shows (`metaTopUnder` …) and the canvas docks beside them and the rail |
 | Windows host | `main.cpp`, WinUI | A fifth panel island (`IslandHost.Edit.cs`): the header and, under it, the Crop, Trim or Enhance pane (`IslandHost.EnhanceHub.cs`); on Adjust / Info / Jobs the island is the header alone and native places that pane under it. A sixth, the rail (`IslandHost.Rail.cs`, `ShowEditRail`, pane island id 11). One blittable `SetEditView` entry (`chrome_edit_args`, 104 bytes) feeds the header, the rail, the panes and the button. The island sends keyed command ids plus the notifications `edit_tab` (a rail click), `edit_action`, `edit_strip_height`, `inspector_min`, `meta_tags`, `meta_date`; native sends `Notify` (`pane_edge_state`). The canvas docks through `chrome_right_px` (`present_lab.cpp` `usable_canvas`). The metadata editor is in `IslandHost.Panels.cs` |
 
 Nothing here blocks the UI thread (the view is POD; the work is the existing edit, export, metadata
