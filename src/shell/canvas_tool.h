@@ -379,8 +379,9 @@ struct tool_bar {
   std::int32_t full = 0;      // the brush holds all it can: "Brush full: Remove, then brush more"
   std::int32_t can_redo = 0;
   std::int32_t eyes = 0;      // red-eye: eyes found on the photo (People on), 0 none / not known
+  std::int32_t can_undo = 0;  // S4a: a stroke or a Clear to undo (a cleared brush still undoes)
 };
-static_assert(sizeof(tool_bar) == 56);
+static_assert(sizeof(tool_bar) == 60);
 
 // The bar's buttons, as both chromes send them back (mv_chrome_tool_action,
 // chrome_cmd_canvas_tool's actions are commands; these are the bar's own).

@@ -60,7 +60,7 @@ struct ToolBarView: View {
     .help("Paint or erase (hold ⌥ to erase while you brush)")
     sizeControl(compact: compact)
     BarIcon(symbol: "arrow.uturn.backward", label: withKey("Undo stroke", "Undo stroke")) { store.toolAction(.undo) }
-      .disabled(bar.strokes == 0)
+      .disabled(!bar.canUndo)
     BarIcon(symbol: "arrow.uturn.forward", label: withKey("Redo stroke", "Redo stroke")) { store.toolAction(.redo) }
       .disabled(!bar.canRedo)
     BarIcon(symbol: "trash", label: withKey("Clear strokes", "Clear strokes")) { store.toolAction(.clear) }

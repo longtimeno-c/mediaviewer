@@ -77,6 +77,18 @@ back_target resolve_back(const view_state& s) noexcept {
   return back_target::none;
 }
 
+bool blocked_by_strokes(command_id id) noexcept {
+  switch (id) {
+    case command_id::rotate_ccw:
+    case command_id::rotate_cw:
+    case command_id::flip_horizontal:
+    case command_id::flip_vertical:
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool blocked_in_tool(command_id id, bool pending) noexcept {
   switch (id) {
     case command_id::rotate_ccw:

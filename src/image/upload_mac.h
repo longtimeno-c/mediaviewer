@@ -27,4 +27,11 @@ namespace mv::image {
 // R16G16B16A16_FLOAT upload. The blit samples linear light from it directly.
 [[nodiscard]] result<gpu_image_mac> upload_linear(void* mtl_device, const linear_image& src);
 
+// docs/plans/edit-refresh.md S4a: an overlay drawn by ImGui (the Remove brush's
+// tint, shell/brush_mask.h) as an immutable MTLPixelFormatRGBA8Unorm texture,
+// one level, straight alpha; `rgba` is width * height * 4. The twin of
+// gfx::create_overlay_texture on Windows. Any thread.
+[[nodiscard]] result<gpu_image_mac> upload_overlay(void* mtl_device, const std::uint8_t* rgba, std::uint32_t width,
+                                                   std::uint32_t height);
+
 }  // namespace mv::image

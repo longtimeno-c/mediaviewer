@@ -59,6 +59,7 @@
 #include "canvas/document_scroll.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
+#include "shell/brush_mask.h"
 #include "shell/canvas_tool.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
@@ -324,6 +325,12 @@ struct app_state {
   // stroke is down.
   mv::shell::remove_brush brush;
   float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
+  // docs/plans/edit-refresh.md S4a: what the canvas's tint texture of the
+  // committed strokes holds, the worker-side builder (one build at a time),
+  // and whether the lab may hold a texture (dropped when the brush empties).
+  mv::shell::brush_mask_sync brush_mask;
+  std::shared_ptr<mv::shell::brush_mask_builder> brush_mask_builder;
+  bool brush_mask_held = false;
   // docs/plans/edit-refresh.md S3: the canvas tool armed (shell/canvas_tool.h),
   // the twin of main_mac.mm's _tool: the brush, red-eye or the white-balance
   // picker, their sizes in DIP, Space / Alt held, the Erase toggle and the
@@ -2253,6 +2260,7 @@ struct sibling_job_result {
 
 // docs/plans/edit-refresh.md S3 (the canvas tools, below).
 bool brush_active(app_state* app) noexcept;
+void sync_brush_mask(app_state* app);
 void tool_apply_view(app_state* app) noexcept;
 void push_tool_bar(app_state* app) noexcept;
 
@@ -2269,12 +2277,16 @@ void publish_edit(app_state* app) noexcept {
     app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
     // Slice 7: strokes lie over what was brushed only while the item and its
     // geometry stay; otherwise they go (and Enhance's copy of them).
-    if (!app->brush.empty() && (before.item != app->edit_key || !mv::shell::same_geometry(before, app->input.edit[0]) ||
-                                app->edits.crop_active())) {
-      app->brush.clear();
+    if (!app->brush.pristine() &&
+        (before.item != app->edit_key || !mv::shell::same_geometry(before, app->input.edit[0]) ||
+         app->edits.crop_active())) {
+      app->brush.reset();       // S4a: forgotten with its history, not an undoable Clear
+      app->brush_mask.reset();  // whatever the lab holds or builds is stale
       (void)mv_edit_still_mask(nullptr, nullptr, 0);
     }
-    mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
+    sync_brush_mask(app);
+    mv::shell::apply_brush(app->input.edit[0], app->brush, app->brush_mask, brush_active(app), ++app->brush_rev,
+                           app->brush_cursor);
     tool_apply_view(app);  // S3: the tool's ring and red-eye fixes survive the new view
     push_tool_bar(app);    // the bar's "2 fixed" follows any undo, from any control
   }
@@ -2821,6 +2833,7 @@ static_assert(sizeof(mv::shell::chrome_tool_bar_args) == sizeof(mv::shell::tool_
               "chrome_tool_bar_args mirrors shell::tool_bar");
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, size_px) == offsetof(mv::shell::tool_bar, size_px));
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, eyes) == offsetof(mv::shell::tool_bar, eyes));
+static_assert(offsetof(mv::shell::chrome_tool_bar_args, can_undo) == offsetof(mv::shell::tool_bar, can_undo));  // S4a
 
 void brush_move(app_state* app, int x, int y);
 void sync_workspace(app_state* app);
@@ -2831,6 +2844,10 @@ mv::shell::edit_subject edit_subject_of(app_state* app) noexcept;
 // the eyes the AI pack found on `item`, or Find eyes' spots.
 struct tool_job_result {
   bool found = false;  // Find eyes finished; else the eyes landed
+  // S4a: a brush tint build finished (`mask_ok`: the lab took its texture).
+  bool mask = false;
+  bool mask_ok = false;
+  mv::shell::brush_mask_tag mask_tag;
   std::uint64_t item = 0;
   std::vector<mv::shell::eye_point> eyes;
   std::vector<mv::edit::red_eye_spot> spots;
@@ -2892,7 +2909,9 @@ void tool_apply_view(app_state* app) noexcept {
 // edit view (a redraw, no decode).
 void brush_publish(app_state* app) noexcept {
   if (app->input.edit[0].item != app->edit_key) return;
-  mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
+  sync_brush_mask(app);
+  mv::shell::apply_brush(app->input.edit[0], app->brush, app->brush_mask, brush_active(app), ++app->brush_rev,
+                         app->brush_cursor);
   tool_apply_view(app);
   ++app->input.activity_seq;
   publish(app);
@@ -2910,6 +2929,7 @@ mv::shell::tool_bar tool_bar_of(app_state* app) noexcept {
   b.spots = app->edits.has_item() ? app->edits.colour().spot_count : 0;
   b.full = app->brush.full() ? 1 : 0;
   b.can_redo = app->brush.can_redo() ? 1 : 0;
+  b.can_undo = app->brush.can_undo() ? 1 : 0;
   b.busy = app->find_eyes_busy ? 1 : 0;
   b.eyes = app->eyes_item == app->edit_key ? static_cast<std::int32_t>(app->eyes.size()) : 0;
   if (active == mv::shell::canvas_tool::remove_brush) {
@@ -3257,8 +3277,67 @@ void tool_find_eyes(app_state* app) {
   });
 }
 
+// S4a: the committed strokes onto the canvas's tint texture
+// (shell/brush_mask.h), the twin of Mac -brushMaskSync. Nothing brushed drops
+// it; otherwise the build the sync asks for starts on the pool (one at a
+// time): the worker rasterises the dabs at 1024 on the long side, the lab
+// creates one immutable texture from them, and kMsgToolJob brings the tag
+// back so the live tail shrinks to what the texture lacks.
+void sync_brush_mask(app_state* app) {
+  if (app->brush.empty()) {
+    if (app->brush_mask_held) {
+      app->brush_mask_held = false;
+      app->lab.drop_brush_mask();
+      app->brush_mask.dropped();
+    }
+    return;
+  }
+  if (!app->window) return;
+  const mv::edit::placement p = app->edits.preview_placement();
+  std::optional<mv::shell::brush_mask_tag> started;
+  try {
+    std::optional<mv::shell::brush_mask_job> job =
+        app->brush_mask.next(app->brush, app->edit_key, p.cropped.w, p.cropped.h, app->input.home.accent);
+    if (!job) return;
+    started = job->tag;
+    if (!app->brush_mask_builder) app->brush_mask_builder = std::make_shared<mv::shell::brush_mask_builder>();
+    auto shared_job = std::make_shared<const mv::shell::brush_mask_job>(std::move(*job));
+    app->brush_mask_held = true;
+    const HWND hwnd = app->window;
+    const mv::job_id id = app->jobs.submit_at(mv::background_generation, [builder = app->brush_mask_builder, shared_job,
+                                                                           hwnd, app](const mv::job_context&) -> mv::status {
+      auto* r = new (std::nothrow) tool_job_result{};
+      if (!r) return mv::status::out_of_memory;
+      r->mask = true;
+      r->mask_tag = shared_job->tag;
+      try {
+        mv::shell::brush_mask_pixels px;
+        if (builder->build(*shared_job, px)) {
+          r->mask_ok = app->lab.upload_brush_mask(px.rgba.data(), px.width, px.height, shared_job->tag.item,
+                                                  shared_job->tag.epoch);
+        }
+      } catch (...) {
+        r->mask_ok = false;
+      }
+      const bool ok = r->mask_ok;
+      if (!::PostMessageW(hwnd, kMsgToolJob, 0, reinterpret_cast<LPARAM>(r))) delete r;
+      return ok ? mv::status::ok : mv::status::internal;
+    });
+    if (id == mv::invalid_job) app->brush_mask.landed(*started, false);  // the pool is not running
+  } catch (...) {
+    // Out of memory: the dabs stay drawn live (the newest kBrushDabs).
+    if (started) app->brush_mask.landed(*started, false);
+  }
+}
+
 void on_tool_job(app_state* app, std::unique_ptr<tool_job_result> r) {
   if (!r) return;
+  if (r->mask) {
+    app->brush_mask.landed(r->mask_tag, r->mask_ok);
+    if (r->mask_ok) app->brush_mask_held = true;  // even a stale one: the next empty sync drops it
+    brush_publish(app);  // the live tail shrinks; the next build, if one is owed, starts
+    return;
+  }
   if (!r->found) {
     app->eyes_fetching = false;
     if (r->item != app->edit_key) {
@@ -9763,6 +9842,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     tool_blocked(app);
     return true;
   }
+  // S4a: strokes kept with the tool put down refuse a turn or a flip too.
+  if (!app->brush.empty() && mv::shell::blocked_by_strokes(command)) {
+    notice_show(app, "Remove or clear the strokes first");
+    return true;
+  }
   // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
   if (command == edit_workspace && !app->ws.open && !app->editor.open &&
       mv::io::is_document_name(app->edit_path)) {
@@ -11410,6 +11494,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         app->brush_stroke = false;
         app->brush.end();
         ::ReleaseCapture();
+        brush_publish(app);  // S4a: the stroke goes to the tint texture's next build
         push_adjust_pane(app);
         push_edit_view(app);  // S2: "Brushed" on the Enhance tab's Remove card
         push_tool_bar(app);   // S3: the bar's stroke count, Undo / Remove enabled

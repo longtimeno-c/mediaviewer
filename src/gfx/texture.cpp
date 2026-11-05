@@ -46,4 +46,35 @@ status create_srgb_texture(ID3D11Device* device, std::span<const rgba8_level> le
   return status::ok;
 }
 
+status create_overlay_texture(ID3D11Device* device, const rgba8_level& level,
+                              com_ptr<ID3D11Texture2D>& texture,
+                              com_ptr<ID3D11ShaderResourceView>& srv) noexcept {
+  if (!device || !level.rgba || level.width == 0 || level.height == 0 || level.width > k_max_texture_dimension ||
+      level.height > k_max_texture_dimension) {
+    return status::invalid_arg;
+  }
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = level.width;
+  desc.Height = level.height;
+  desc.MipLevels = 1;
+  desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.SampleDesc = {1, 0};
+  desc.Usage = D3D11_USAGE_IMMUTABLE;
+  desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA sub{};
+  sub.pSysMem = level.rgba;
+  sub.SysMemPitch = level.width * 4;
+  texture.Reset();
+  srv.Reset();
+  HRESULT hr = device->CreateTexture2D(&desc, &sub, texture.GetAddressOf());
+  if (FAILED(hr)) return hr == E_OUTOFMEMORY ? status::out_of_memory : status::internal;
+  hr = device->CreateShaderResourceView(texture.Get(), nullptr, srv.GetAddressOf());
+  if (FAILED(hr)) {
+    texture.Reset();
+    return status::internal;
+  }
+  return status::ok;
+}
+
 }  // namespace mv::gfx

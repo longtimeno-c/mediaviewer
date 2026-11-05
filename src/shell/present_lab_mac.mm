@@ -691,8 +691,14 @@ void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept
     const float origin_x = canvas_origin_x(snapshot);
     const float origin_y = static_cast<float>(snapshot.chrome_height_px);
     const float zoom = camera_.zoom();
+    // S4a: the brush's tint, when it was built for this view.
+    ImTextureID mask = 0;
+    if (brush_mask_ && brush_mask_->image.valid() && brush_mask_->item == v->item &&
+        brush_mask_->epoch == v->brush_mask_epoch) {
+      mask = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(brush_mask_->image.texture));
+    }
     draw_tool_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
-                      snapshot.home.accent, steady_ms(),
+                      snapshot.home.accent, steady_ms(), mask,
                       [&](float ix, float iy) {
                         return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
                                       origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
@@ -1043,6 +1049,43 @@ bool present_lab_mac::take_working() noexcept {
   }
   if (working_texture_mac* w = pending_working_.exchange(nullptr)) {
     working_.reset(w);
+    changed = true;
+  }
+  return changed;
+}
+
+bool present_lab_mac::upload_brush_mask(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                        std::uint64_t item, std::uint32_t epoch) noexcept {
+  if (item == 0 || !rgba) return false;
+  void* mtl_device = device_.native_device();
+  if (!mtl_device) return false;
+  auto up = image::upload_overlay(mtl_device, rgba, width, height);
+  if (!up) return false;
+  auto* made = new (std::nothrow) brush_mask_texture_mac{};
+  if (!made) return false;
+  made->image = std::move(up).value();
+  made->item = item;
+  made->epoch = epoch;
+  drop_brush_mask_.store(false, std::memory_order_release);
+  delete pending_brush_mask_.exchange(made);
+  wake();
+  return true;
+}
+
+void present_lab_mac::drop_brush_mask() noexcept {
+  delete pending_brush_mask_.exchange(nullptr);
+  drop_brush_mask_.store(true, std::memory_order_release);
+  wake();
+}
+
+bool present_lab_mac::take_brush_mask() noexcept {
+  bool changed = false;
+  if (drop_brush_mask_.exchange(false, std::memory_order_acq_rel)) {
+    changed = brush_mask_ != nullptr;
+    brush_mask_.reset();
+  }
+  if (brush_mask_texture_mac* m = pending_brush_mask_.exchange(nullptr)) {
+    brush_mask_.reset(m);
     changed = true;
   }
   return changed;
@@ -1603,6 +1646,10 @@ void present_lab_mac::render_thread_main() noexcept {
 
         // PR 11: a working texture handed over (or dropped) is one more frame.
         if (take_working()) redraw = true;
+        // S4a: so is the brush's tint texture. Taken after the snapshot: the
+        // worker hands it over before the host publishes the view that stops
+        // drawing its dabs live, so no frame shows neither.
+        if (take_brush_mask()) redraw = true;
         // PR 10: the edit geometry of the still on screen changed (a turn, a
         // committed crop, crop mode's draft). A new picture size refits, as a
         // new item would; an overlay-only change just redraws — and so does a
@@ -2437,6 +2484,8 @@ void present_lab_mac::render_thread_main() noexcept {
     delete pending_image_.exchange(nullptr);
     working_.reset();  // PR 11: before device_.destroy()
     delete pending_working_.exchange(nullptr);
+    brush_mask_.reset();  // S4a, likewise
+    delete pending_brush_mask_.exchange(nullptr);
     // Joins the animation decode thread before device_.destroy() below, the
     // same ordering reason submit_image_load's job must finish first: its
     // make_texture_fn closure holds the raw MTLDevice pointer.

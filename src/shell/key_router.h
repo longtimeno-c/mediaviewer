@@ -91,6 +91,12 @@ enum class back_target : std::uint8_t {
 // ("Remove or clear the strokes first").
 [[nodiscard]] bool blocked_in_tool(command_id id, bool pending) noexcept;
 
+// docs/plans/edit-refresh.md S4a: what strokes refuse in any mode, the tool
+// armed or put down with them kept: a turn or a flip, which would move the
+// photo out from under them. The host shows "Remove or clear the strokes
+// first" and greys the menu items.
+[[nodiscard]] bool blocked_by_strokes(command_id id) noexcept;
+
 [[nodiscard]] back_target resolve_back(const view_state& s) noexcept;
 
 struct key_event {

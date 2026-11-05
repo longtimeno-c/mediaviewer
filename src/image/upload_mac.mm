@@ -358,4 +358,32 @@ result<gpu_image_mac> upload_linear(void* mtl_device, const linear_image& src) {
   return out;
 }
 
+result<gpu_image_mac> upload_overlay(void* mtl_device, const std::uint8_t* rgba, std::uint32_t width,
+                                     std::uint32_t height) {
+  if (!mtl_device || !rgba || width == 0 || height == 0 || width > 16384 || height > 16384) {
+    return err(status::invalid_arg);
+  }
+  id<MTLDevice> device = (__bridge id<MTLDevice>)mtl_device;
+  MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                  width:width
+                                                                                 height:height
+                                                                              mipmapped:NO];
+  desc.usage = MTLTextureUsageShaderRead;
+  desc.storageMode = MTLStorageModeShared;
+  id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+  if (!texture) return err(status::device_lost);
+  [texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
+             mipmapLevel:0
+               withBytes:rgba
+             bytesPerRow:static_cast<NSUInteger>(width) * 4];
+  gpu_image_mac out;
+  out.texture = (__bridge_retained void*)texture;
+  out.width = width;
+  out.height = height;
+  out.texture_width = width;
+  out.texture_height = height;
+  out.mip_levels = 1;
+  return out;
+}
+
 }  // namespace mv::image

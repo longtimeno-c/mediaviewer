@@ -30,4 +30,12 @@ struct rgba8_level {
                                          com_ptr<ID3D11Texture2D>& texture,
                                          com_ptr<ID3D11ShaderResourceView>& srv) noexcept;
 
+// docs/plans/edit-refresh.md S4a: an overlay ImGui draws (the Remove brush's
+// tint, shell/brush_mask.h): one level, R8G8B8A8_UNORM (not sRGB: ImGui's
+// colours are not linearised, as its own font atlas is not), straight alpha,
+// IMMUTABLE with D3D11_SUBRESOURCE_DATA. Any thread (free-threaded device).
+[[nodiscard]] status create_overlay_texture(ID3D11Device* device, const rgba8_level& level,
+                                            com_ptr<ID3D11Texture2D>& texture,
+                                            com_ptr<ID3D11ShaderResourceView>& srv) noexcept;
+
 }  // namespace mv::gfx

@@ -708,9 +708,10 @@ struct chrome_tool_bar_args {
   std::int32_t full;      // the brush holds all it can
   std::int32_t can_redo;
   std::int32_t eyes;      // red-eye: eyes the AI pack found (People on)
+  std::int32_t can_undo;  // S4a: a stroke or a Clear to undo
 };
 
-static_assert(sizeof(chrome_tool_bar_args) == 56, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
+static_assert(sizeof(chrome_tool_bar_args) == 60, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
 
 // The bar's geometry (ToolBarView.swift): 44 DIP high, at most 640 wide,
 // centred on the canvas, 8 above the filmstrip or the bottom edge.

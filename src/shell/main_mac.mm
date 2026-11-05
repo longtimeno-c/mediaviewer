@@ -77,6 +77,7 @@
 #endif
 #include "shell/adjust_pane.h"
 #include "shell/canvas_tool.h"
+#include "shell/brush_mask.h"
 #include "shell/remove_brush.h"
 #include "shell/ai_badge.h"
 #include "abi/addon_media.h"
@@ -868,6 +869,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (BOOL)redEyeRing;
 - (void)adjustBrush:(int32_t)action;
 - (void)brushPublish;
+- (void)brushMaskSync;
+- (void)brushMaskLanded:(mv::shell::brush_mask_tag)tag ok:(BOOL)ok;
 - (BOOL)brushPressX:(float)x y:(float)y;
 - (void)brushDragX:(float)x y:(float)y;
 - (void)brushHoverX:(float)x y:(float)y;
@@ -1952,6 +1955,7 @@ extern "C" void mv_chrome_edit_auto(void) {
 static_assert(sizeof(mv_tool_bar_view) == sizeof(mv::shell::tool_bar), "mv_tool_bar_view mirrors shell::tool_bar");
 static_assert(offsetof(mv_tool_bar_view, size_px) == offsetof(mv::shell::tool_bar, size_px));
 static_assert(offsetof(mv_tool_bar_view, eyes) == offsetof(mv::shell::tool_bar, eyes));
+static_assert(offsetof(mv_tool_bar_view, can_undo) == offsetof(mv::shell::tool_bar, can_undo));  // S4a
 static_assert(static_cast<int>(mv::shell::tool_bar_action::find_eyes) == 5);
 extern "C" bool mv_chrome_tool_bar(mv_tool_bar_view* out) {
   if (!g_chrome_app || !out) return false;
@@ -3622,6 +3626,12 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // Slice 7: the Remove brush's strokes over the shown still, the ring under
   // the pointer, and a count of changes the canvas redraws on.
   mv::shell::remove_brush _brush;
+  // docs/plans/edit-refresh.md S4a: what the canvas's tint texture of the
+  // committed strokes holds, the worker-side builder (one build at a time),
+  // and whether the lab may hold a texture (dropped when the brush empties).
+  mv::shell::brush_mask_sync _brushMask;
+  std::shared_ptr<mv::shell::brush_mask_builder> _brushMaskBuilder;
+  BOOL _brushMaskHeld;
   // docs/plans/edit-refresh.md S3: the canvas tool armed (shell/canvas_tool.h):
   // the brush, red-eye or the white-balance picker, their sizes in points,
   // Space / Option held, the Erase toggle and the size label's deadline.
@@ -7081,6 +7091,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   const mv::shell::command_id command = MvMenuCommand(cmd);
   if (command == mv::shell::command_id::none) return NO;
   if (cmd == kMenuSettings && _settingsVisible) return NO;
+  if (!_brush.empty() && mv::shell::blocked_by_strokes(command)) return YES;  // S4a
   const mv::shell::view_state vs = [self currentViewState];
   const mv::shell::mode m = mv::shell::resolve_mode(vs);
   // S3: what tool mode refuses on a key it refuses from the menu too.
@@ -8447,6 +8458,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     [self toolBlocked];
     return YES;
   }
+  // S4a: strokes kept with the tool put down refuse a turn or a flip too.
+  if (!_brush.empty() && mv::shell::blocked_by_strokes(command)) {
+    [self noticeShow:"Remove or clear the strokes first"];
+    return YES;
+  }
   // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
   // workspace decides the tab; crop_mode and trim_mode then do their own work.
   // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
@@ -8539,14 +8555,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
     // Slice 7: strokes lie over what was brushed only while the item and its
     // geometry stay; otherwise they go (and Enhance's copy of them).
-    if (!_brush.empty() &&
+    if (!_brush.pristine() &&
         (before.item != _itemId || !mv::shell::same_geometry(before, _snap.edit[0]) || _edits.crop_active())) {
-      _brush.clear();
+      _brush.reset();     // S4a: forgotten with its history, not an undoable Clear
+      _brushMask.reset();  // whatever the lab holds or builds is stale
       mv::addon::media::set_still_mask({}, {});
       [self bumpAdjustView];
     }
+    [self brushMaskSync];
     ++_brushRev;
-    mv::shell::apply_brush(_snap.edit[0], _brush, [self brushActive] == YES, _brushRev, _brushCursor);
+    mv::shell::apply_brush(_snap.edit[0], _brush, _brushMask, [self brushActive] == YES, _brushRev, _brushCursor);
     [self toolApplyView];  // S3: the tool's ring and red-eye fixes survive the new view
   }
   ++_editGeneration;  // the strip's edit count, the Crop pane's draft
@@ -11747,10 +11765,59 @@ static double mv_wall_seconds() {
   if (_snap.edit[0].item != _itemId) return;
   ++_brushRev;
   const mv::shell::canvas_tool active = [self activeTool];
-  mv::shell::apply_brush(_snap.edit[0], _brush, active == mv::shell::canvas_tool::remove_brush, _brushRev,
+  [self brushMaskSync];
+  mv::shell::apply_brush(_snap.edit[0], _brush, _brushMask, active == mv::shell::canvas_tool::remove_brush, _brushRev,
                          _brushCursor);
   [self toolApplyView];
   [self pokeSnapshot];
+}
+
+// S4a: the committed strokes onto the canvas's tint texture
+// (shell/brush_mask.h). Nothing brushed drops it; otherwise the build the
+// sync asks for starts on the pool (one at a time): the worker rasterises the
+// dabs at 1024 on the long side and the lab creates one immutable texture
+// from them, then -brushMaskLanded: shrinks the live tail to what it lacks.
+- (void)brushMaskSync {
+  if (_brush.empty()) {
+    if (_brushMaskHeld) {
+      _brushMaskHeld = NO;
+      _lab.drop_brush_mask();
+      _brushMask.dropped();
+    }
+    return;
+  }
+  const mv::edit::placement p = _edits.preview_placement();
+  std::optional<mv::shell::brush_mask_job> job =
+      _brushMask.next(_brush, _itemId, p.cropped.w, p.cropped.h, _snap.home.accent);
+  if (!job) return;
+  if (!_brushMaskBuilder) _brushMaskBuilder = std::make_shared<mv::shell::brush_mask_builder>();
+  _brushMaskHeld = YES;
+  const std::shared_ptr<mv::shell::brush_mask_builder> builder = _brushMaskBuilder;
+  const auto shared_job = std::make_shared<const mv::shell::brush_mask_job>(std::move(*job));
+  mv::shell::present_lab_mac* lab = &_lab;
+  __weak MvLabApp* weakSelf = self;
+  const mv::shell::brush_mask_tag started = shared_job->tag;
+  const mv::job_id id = _jobs.submit_at(mv::background_generation, [builder, shared_job, lab,
+                                                                     weakSelf](const mv::job_context&) -> mv::status {
+    mv::shell::brush_mask_pixels px;
+    bool ok = false;
+    if (builder->build(*shared_job, px)) {
+      ok = lab->upload_brush_mask(px.rgba.data(), px.width, px.height, shared_job->tag.item, shared_job->tag.epoch);
+    }
+    const mv::shell::brush_mask_tag tag = shared_job->tag;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* app = weakSelf;
+      if (app) [app brushMaskLanded:tag ok:ok ? YES : NO];
+    });
+    return ok ? mv::status::ok : mv::status::internal;
+  });
+  if (id == mv::invalid_job) _brushMask.landed(started, false);  // the pool is not running
+}
+
+- (void)brushMaskLanded:(mv::shell::brush_mask_tag)tag ok:(BOOL)ok {
+  _brushMask.landed(tag, ok == YES);
+  if (ok) _brushMaskHeld = YES;  // even a stale one: the next empty sync drops it
+  [self brushPublish];          // the live tail shrinks; the next build, if one is owed, starts
 }
 
 // The armed tool onto the canvas's edit view (shell/canvas_tool.h apply_tool):
@@ -11838,6 +11905,7 @@ static double mv_wall_seconds() {
 
 - (void)brushRelease {
   _brush.end();
+  [self brushPublish];  // S4a: the stroke goes to the tint texture's next build
   [self bumpAdjustView];
   ++_editGeneration;  // the bar's stroke count, Undo / Remove enabled
 }
@@ -12160,6 +12228,7 @@ static double mv_wall_seconds() {
   b.spots = _edits.has_item() ? _edits.colour().spot_count : 0;
   b.full = _brush.full() ? 1 : 0;
   b.can_redo = _brush.can_redo() ? 1 : 0;
+  b.can_undo = _brush.can_undo() ? 1 : 0;
   b.busy = _findEyesBusy ? 1 : 0;
   b.eyes = _eyesItem == _itemId ? static_cast<std::int32_t>(_eyes.size()) : 0;
   b.can_apply = active == mv::shell::canvas_tool::remove_brush

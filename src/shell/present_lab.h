@@ -166,6 +166,17 @@ class present_lab {
   // [any-thread][no-block] Releases it: the item changed, or nothing needs it.
   void drop_working() noexcept;
 
+  // [worker thread] docs/plans/edit-refresh.md S4a: the Remove brush's committed
+  // strokes (shell/brush_mask.h) for the still `item` (its item_key), built
+  // for mask `epoch`, as an immutable R8G8B8A8_UNORM texture
+  // (gfx::create_overlay_texture, D3D11_SUBRESOURCE_DATA on the free-threaded
+  // device), handed to the render thread by an atomic exchange, never a lock
+  // it waits on. False when there is no device or the create failed.
+  [[nodiscard]] bool upload_brush_mask(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                       std::uint64_t item, std::uint32_t epoch) noexcept;
+  // [any-thread] Releases it (the brush was cleared or forgotten).
+  void drop_brush_mask() noexcept;
+
   // [any-thread][no-block] PR 30: the input_snapshot::canvas_window the
   // swapchain is in now (0 = the viewer's window). The host waits for this to
   // leave the Video Editor's window before it destroys that window.
@@ -326,6 +337,19 @@ class present_lab {
   std::unique_ptr<working_texture> working_incoming_;
   bool working_drop_ = false;
   bool take_working() noexcept;  // render thread: true when what it draws changed
+  // S4a brush tint. `brush_mask_` is render-thread only; the pending pointer
+  // is exchanged, so a worker handing one over never makes the render thread
+  // skip it for a frame.
+  struct brush_mask_texture {
+    gfx::com_ptr<ID3D11ShaderResourceView> srv;
+    ID3D11Device* device = nullptr;  // identity only: a rebuilt device drops it
+    std::uint64_t item = 0;
+    std::uint32_t epoch = 0;
+  };
+  std::atomic<brush_mask_texture*> pending_brush_mask_{nullptr};
+  std::atomic<bool> drop_brush_mask_{false};
+  std::unique_ptr<brush_mask_texture> brush_mask_;
+  bool take_brush_mask() noexcept;  // render thread: true when what it draws changed
   // The working texture if it belongs to `ev` (the shown still's slot).
   [[nodiscard]] const working_texture* working_for(const edit_view* ev) const noexcept {
     if (!working_ || !ev || ev->item == 0) return nullptr;

@@ -30,6 +30,7 @@
 #include "codec/format.h"
 #include "core/trace.h"
 #include "gfx/present_policy.h"
+#include "gfx/texture.h"
 
 namespace mv::shell {
 
@@ -167,6 +168,7 @@ void present_lab::stop() noexcept {
   running_.store(false, std::memory_order_release);
   wake();
   if (render_thread_.joinable()) render_thread_.join();
+  delete pending_brush_mask_.exchange(nullptr);  // S4a: a hand-off the thread never took
   if (wake_event_) {
     ::CloseHandle(wake_event_);
     wake_event_ = nullptr;
@@ -267,6 +269,48 @@ void present_lab::drop_working() noexcept {
   wake();
 }
 
+bool present_lab::upload_brush_mask(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                    std::uint64_t item, std::uint32_t epoch) noexcept {
+  if (!rgba || item == 0) return false;
+  gfx::com_ptr<ID3D11Device> device;
+  {
+    std::lock_guard<std::mutex> lock(upload_device_mutex_);
+    device = upload_device_;
+  }
+  if (!device) return false;
+  auto made = std::unique_ptr<brush_mask_texture>(new (std::nothrow) brush_mask_texture{});
+  if (!made) return false;
+  gfx::com_ptr<ID3D11Texture2D> tex;
+  const gfx::rgba8_level level{rgba, width, height};
+  if (gfx::create_overlay_texture(device.Get(), level, tex, made->srv) != status::ok) return false;
+  made->device = device.Get();
+  made->item = item;
+  made->epoch = epoch;
+  drop_brush_mask_.store(false, std::memory_order_release);
+  delete pending_brush_mask_.exchange(made.release());
+  wake();
+  return true;
+}
+
+void present_lab::drop_brush_mask() noexcept {
+  delete pending_brush_mask_.exchange(nullptr);
+  drop_brush_mask_.store(true, std::memory_order_release);
+  wake();
+}
+
+bool present_lab::take_brush_mask() noexcept {
+  bool changed = false;
+  if (drop_brush_mask_.exchange(false, std::memory_order_acq_rel)) {
+    changed = brush_mask_ != nullptr;
+    brush_mask_.reset();
+  }
+  if (brush_mask_texture* m = pending_brush_mask_.exchange(nullptr)) {
+    brush_mask_.reset(m);
+    changed = true;
+  }
+  return changed;
+}
+
 bool present_lab::take_working() noexcept {
   std::unique_lock<std::mutex> lock(working_mutex_, std::try_to_lock);
   if (!lock.owns_lock()) return false;  // a worker is handing one over: next frame
@@ -286,6 +330,8 @@ bool present_lab::take_working() noexcept {
 expected present_lab::rebuild_device() noexcept {
   if (warmed_up_) measurement_valid_ = false;
   working_.reset();  // PR 11: textures of the old device
+  brush_mask_.reset();  // S4a, likewise
+  delete pending_brush_mask_.exchange(nullptr);
   {
     std::lock_guard<std::mutex> lock(upload_device_mutex_);
     upload_device_.Reset();
@@ -737,6 +783,10 @@ void present_lab::render_thread_main() noexcept {
     }
     // PR 11: a working texture handed over (or dropped) is one more frame.
     if (take_working()) redraw = true;
+    // S4a: so is the brush's tint texture. Taken after the snapshot: the
+    // worker hands it over before the host publishes the view that stops
+    // drawing its dabs live, so no frame shows neither.
+    if (take_brush_mask()) redraw = true;
     // PR 10: the edit geometry of the still on screen changed (a turn, a
     // committed crop, crop mode's draft). A new picture size refits, as a new
     // item would; an overlay-only change just redraws — and so does a colour
@@ -1706,8 +1756,14 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
     const float pw = media_width(), ph = media_height(), zoom = camera_.zoom();
     const auto view = usable_canvas(snapshot);
     const float cx = view.x + view.w * 0.5f, cy = view.y + view.h * 0.5f;
+    // S4a: the brush's tint, when it was built for this view on this device.
+    ImTextureID mask = 0;
+    if (brush_mask_ && brush_mask_->srv && brush_mask_->device == device_.d3d() && brush_mask_->item == v->item &&
+        brush_mask_->epoch == v->brush_mask_epoch) {
+      mask = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(brush_mask_->srv.Get()));
+    }
     draw_tool_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
-                      snapshot.home.accent, steady_ms(),
+                      snapshot.home.accent, steady_ms(), mask,
                       [&](float ix, float iy) {
                         return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
                       });

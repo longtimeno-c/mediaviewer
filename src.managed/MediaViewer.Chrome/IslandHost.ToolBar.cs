@@ -42,8 +42,9 @@ public static partial class IslandHost
         public int Full;
         public int CanRedo;
         public int Eyes;
+        public int CanUndo;  // S4a: a stroke or a Clear to undo
     }
-    private const int ToolBarArgsSize = 56;
+    private const int ToolBarArgsSize = 60;
 
     // shell::canvas_tool and shell::tool_bar_action (canvas_tool.h).
     private static class CanvasTools
@@ -284,7 +285,7 @@ public static partial class IslandHost
                 _toolErase.Foreground = Brush(erase ? ChromeColour.Accent : Body);
             }
             if (_toolUndo is not null)
-                _toolUndo.IsEnabled = b.Tool == CanvasTools.Brush ? b.Strokes > 0 : b.Spots > 0 || _editCount > 0;
+                _toolUndo.IsEnabled = b.Tool == CanvasTools.Brush ? b.CanUndo != 0 : b.Spots > 0 || _editCount > 0;
             if (_toolRedo is not null) _toolRedo.IsEnabled = b.CanRedo != 0;
             if (_toolClear is not null) _toolClear.IsEnabled = b.Strokes > 0;
             if (_toolApply is not null) _toolApply.IsEnabled = b.CanApply != 0;

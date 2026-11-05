@@ -717,9 +717,11 @@ Canvas tools (docs/plans/edit-refresh.md S3, [docs/design/20](design/20-edit-wor
 "Canvas tools"): `B` on a still arms the Remove brush; red-eye is on the Edit rail, the Adjust
 pane and (Mac) Edit ▸ Red-Eye. While one is armed a bar below the photo shows its controls, `[`
 `]` size the ring (Alt / ⌥ + wheel too), Alt / ⌥ held erases, `Space` held pans, `Ctrl/⌘+Z`
-undoes a stroke or fix, `Enter` removes, `Esc` puts the tool down. Rotate, flip, crop and Delete
-are refused meanwhile, and `A` / `D` while strokes are pending. Tests: `mv_tests
-"[canvas-tool],[remove-brush],[tool]"`. Red-eye's snap and Find eyes need the AI pack with
+undoes a stroke or fix (`Ctrl/⌘+Shift+Z` redoes; Clear is undoable too), `Enter` removes, `Esc`
+puts the tool down. Rotate, flip, crop and Delete are refused meanwhile, and `A` / `D` while strokes
+are pending; rotate and flip stay refused while strokes are kept with the tool down. Tests: `mv_tests
+"[canvas-tool],[remove-brush],[tool]"`; the brush's snapshot publish and tint build time:
+`mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
 People on.
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can

@@ -203,9 +203,26 @@ animation or with the workspace closed it goes down.
   body for both labs): a 1.5 px dark ring outside a 1 px light one and a 2 px centre dot, dashed while
   erasing; the size label for 800 ms after a change. Colours are the theme's accent
   (`input_snapshot.home.accent`) and the ring's black and white.
-- **Brush:** strokes are a stack (undo, redo until a new stroke, clear); an erase dab takes back what
-  earlier dabs painted, in the mask and in what Enhance is handed (`remove_brush::handoff`). Put
-  down, the strokes stay dimmed for Remove later; a geometry change or another item clears them.
+- **Brush:** strokes are a stack of at most 64 strokes and 8192 dabs (`remove_brush`, dabs half a
+  radius apart): `Ctrl/⌘+Z` takes one stroke off, `Ctrl/⌘+Shift+Z` puts it back until a new stroke
+  starts, and **Clear is one more undo step** (undo puts every stroke back; the newest 8 Clears stay
+  undoable). An erase dab takes back what earlier dabs painted, in the mask and in what Enhance is
+  handed (`remove_brush::handoff`). Full, a press says "Brush full: Remove, then brush more". Put
+  down, the strokes stay dimmed for Remove later; another item or a new geometry forgets them and
+  their history (`reset`, not undoable). While strokes exist, rotate and flip are refused with
+  "Remove or clear the strokes first" from any key, menu or button, the tool armed or put down
+  (`blocked_by_strokes`); the Mac menu items grey.
+- **The committed strokes are one texture** (`shell/brush_mask.{h,cpp}`, S4a), not a circle per
+  dab: after a stroke ends, an undo, a redo or a Clear (and every 256 dabs of a long stroke, 32
+  while erasing), one pool job at a time rasterises the dabs at 1024 px on the long side into an
+  RGBA8 tint (the accent at 40 %, a darker 1 px edge, erase writes 0), stamping only the new dabs
+  when the build extends the last one. The worker creates the texture **immutable**
+  (`gfx::create_overlay_texture`, `D3D11_SUBRESOURCE_DATA`; `image::upload_overlay`,
+  `MTLTexture` at creation) and hands it to the render thread by an atomic exchange; the overlay
+  draws it as one ImGui image. It is at most 4 MB and made off the render thread, so the render
+  thread uploads nothing. Only the dabs a **landed** build lacks travel in the snapshot (the
+  newest `kBrushDabs` = 512 at most), so a finished stroke never vanishes while its build runs.
+  An undo shows the old texture for the build's few milliseconds.
 - **Red-eye:** with People on, the photo's eyes are read once per item on the pool (`mv_eyes_json`
   on Windows, `ai_eyes_json` on the Mac); the ring **snaps** to an eye within 1.5 ring radii and
   takes 1.1× its iris. A click lands a fix (one undo step) with a 300 ms pulse; each fix shows a
@@ -325,7 +342,10 @@ The behaviour it pins:
 
 Tests: `test_canvas_tool` (`mv_tests "[canvas-tool]"`: home tabs, sizes, spots, snap, Find eyes,
 the overlay's deadlines), `test_key_router` (`[tool]`: tool mode's keys, refusals and `Esc` order),
-`test_remove_brush` (redo, erase, the hand-off), `test_adjust` (`[canvas-tool]`: a fix taken off and
+`test_remove_brush` (`mv_tests "[remove-brush]"`: undo, redo, erase, the caps, Clear undoable, a
+4 px brush on a 6000 px photo at 400 %, the tint's stamp and edge, the builder's incremental build,
+the sync's one-at-a-time builds and the snapshot's tail; the hidden `[.perf-bench]` case times the
+snapshot publish, under 0.1 ms, and the tint build), `test_adjust` (`[canvas-tool]`: a fix taken off and
 Find eyes are one step each), `test_edit_workspace` (tab 5 routing, the rail's fold), `test_auto_tone` (`[auto_enhance]`:
 one result, one token, the take-back mark), `test_pane_width` (`mv_tests "[pane-width]"`: the clamp, the
 rail-only collapse, the 60 % cap, snaps, steps, the drag soak's frame log), and the workspace cases
@@ -337,7 +357,10 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
 - On-canvas crop handles (drag corners, edges, inside).
 - Redo (`Ctrl+Shift+Z`) and a named history list for a still's edit stack (the brush has its own
   redo); a split-screen before/after.
-- The brush's committed strokes as a tint texture, `[` `]` sized dabs on a 6000 px photo at 400 %,
-  the 64-stroke cap and Alt+wheel sizing (S4a); Faces and Extend as canvas tools (S8, S6).
+- Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's
+  "Discard 3 strokes?" in the bar is not built); Undo of an earlier rotate or Reset with strokes
+  kept also forgets them. Faces and Extend as canvas tools (S8, S6).
+- Windows: a rebuilt D3D11 device drops the brush texture; the strokes reappear at the next brush
+  change (the host is not told).
 - Persisting a still's stack across sessions.
 - Editor add-on panes docking as extra tabs.

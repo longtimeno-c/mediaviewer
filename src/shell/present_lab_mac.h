@@ -215,6 +215,16 @@ class present_lab_mac {
   // [any-thread] Releases it: the item changed, or nothing needs it.
   void drop_working() noexcept;
 
+  // [worker thread] docs/plans/edit-refresh.md S4a: the Remove brush's committed
+  // strokes (shell/brush_mask.h) for the open `item`, built for mask `epoch`,
+  // as an immutable RGBA8Unorm MTLTexture (image::upload_overlay), handed to
+  // the render thread by an atomic exchange like the working texture. False
+  // when there is no device or the texture could not be made.
+  [[nodiscard]] bool upload_brush_mask(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                       std::uint64_t item, std::uint32_t epoch) noexcept;
+  // [any-thread] Releases it (the brush was cleared or forgotten).
+  void drop_brush_mask() noexcept;
+
   // [any-thread] What the SwiftUI transport strip shows. Published by the render
   // thread through atomics; `active` is false when no clip is on screen.
   struct video_status {
@@ -360,6 +370,16 @@ class present_lab_mac {
   std::atomic<bool> drop_working_{false};
   std::unique_ptr<working_texture_mac> working_;
   bool take_working() noexcept;  // render thread: true when what it draws changed
+  // S4a brush tint: the same one-way hand-off; `brush_mask_` is render-thread only.
+  struct brush_mask_texture_mac {
+    image::gpu_image_mac image;
+    std::uint64_t item = 0;
+    std::uint32_t epoch = 0;
+  };
+  std::atomic<brush_mask_texture_mac*> pending_brush_mask_{nullptr};
+  std::atomic<bool> drop_brush_mask_{false};
+  std::unique_ptr<brush_mask_texture_mac> brush_mask_;
+  bool take_brush_mask() noexcept;  // render thread: true when what it draws changed
   edit_view edit_slots_[2];      // copied from the snapshot each iteration
   edit_view applied_edit_{};     // what the current still was last fitted with
   // docs/plans/edit-refresh.md S3: a tool's label or pulse was drawn while live;

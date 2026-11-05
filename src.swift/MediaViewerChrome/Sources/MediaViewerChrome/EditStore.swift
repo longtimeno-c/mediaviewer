@@ -267,6 +267,7 @@ struct ToolBarState: Equatable {
   var progress = 0
   var full = false
   var canRedo = false
+  var canUndo = false  // S4a: a stroke or a Clear to undo
   var eyes = 0
 
   init() {}
@@ -282,6 +283,7 @@ struct ToolBarState: Equatable {
     progress = Int(v.progress_permille)
     full = v.full != 0
     canRedo = v.can_redo != 0
+    canUndo = v.can_undo != 0
     eyes = Int(v.eyes)
   }
 }

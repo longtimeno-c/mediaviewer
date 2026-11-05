@@ -115,13 +115,20 @@ struct edit_view {
   gfx::adjust_vectors adjust_u;
   gfx::adjust_table adjust_t;  // slices 2-3: read when gfx::reads_table(adjust_u)
   // Slice 7: the Remove brush, drawn over the photo. `brush_rev` changes with
-  // every dab added or stroke undone; the cursor ring is at brush_cursor
+  // every dab added or stroke undone (and every mask build landing); the cursor ring is at brush_cursor
   // (the shown image's u, v, and the radius over its long side; u < 0 none).
   bool brush_on = false;
   std::uint32_t brush_rev = 0;
   std::uint32_t brush_count = 0;
   float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
   brush_dab brush[kBrushDabs] = {};
+  // docs/plans/edit-refresh.md S4a: `brush` holds only the dabs the lab's tint
+  // texture lacks (the stroke in progress, a build still in flight). The
+  // texture (shell/brush_mask.h, built on a worker, created immutable) holds
+  // the rest; it is drawn when `brush_mask` is set and it was built for this
+  // item and `brush_mask_epoch`.
+  std::uint8_t brush_mask = 0;
+  std::uint32_t brush_mask_epoch = 0;
   // docs/plans/edit-refresh.md S3: the canvas tool's overlay (shell/tool_overlay.h).
   // `tool` is shell::canvas_tool. The ring under the pointer is brush_cursor's
   // u, v drawn at `tool_ring_px` (physical pixels, sized on screen, not in

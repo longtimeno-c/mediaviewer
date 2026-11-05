@@ -11,6 +11,7 @@
 
 #include "edit/adjust.h"
 #include "edit/edit_stack.h"
+#include "shell/brush_mask.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -119,21 +120,28 @@ inline void apply_adjust(const edit_view* v, BlitParams& bp) noexcept {
          a.overlay[1] == b.overlay[1] && a.overlay[2] == b.overlay[2] &&
          a.overlay[3] == b.overlay[3] && a.brush_on == b.brush_on && a.brush_rev == b.brush_rev &&
          a.brush_cursor[0] == b.brush_cursor[0] && a.brush_cursor[1] == b.brush_cursor[1] &&
-         a.brush_cursor[2] == b.brush_cursor[2];
+         a.brush_cursor[2] == b.brush_cursor[2] && a.brush_mask == b.brush_mask &&
+         a.brush_mask_epoch == b.brush_mask_epoch;
 }
 
 // Slice 7: the Remove brush onto a published view. `rev` is the host's count
 // of brush changes; `cursor` the ring under the pointer (u < 0 for none).
-inline void apply_brush(edit_view& v, const remove_brush& b, bool on, std::uint32_t rev,
-                        const float (&cursor)[3]) noexcept {
+// S4a: the committed strokes are the lab's tint texture (`mask` says what it
+// holds); only the dabs it lacks travel here, the newest kBrushDabs of them.
+inline void apply_brush(edit_view& v, const remove_brush& b, const brush_mask_sync& mask, bool on,
+                        std::uint32_t rev, const float (&cursor)[3]) noexcept {
   v.brush_on = on;
   v.brush_rev = rev;
   v.brush_cursor[0] = cursor[0];
   v.brush_cursor[1] = cursor[1];
   v.brush_cursor[2] = cursor[2];
+  v.brush_mask = mask.mask_on(b) ? 1 : 0;
+  v.brush_mask_epoch = mask.epoch();
   const auto dabs = b.dabs();
-  v.brush_count = static_cast<std::uint32_t>(std::min(dabs.size(), kBrushDabs));
-  for (std::uint32_t i = 0; i < v.brush_count; ++i) v.brush[i] = dabs[i];
+  std::size_t from = std::min(mask.tail_from(b), dabs.size());
+  if (dabs.size() - from > kBrushDabs) from = dabs.size() - kBrushDabs;
+  v.brush_count = static_cast<std::uint32_t>(dabs.size() - from);
+  std::copy(dabs.begin() + static_cast<std::ptrdiff_t>(from), dabs.end(), v.brush);
 }
 
 // The edit_view the UI publishes for a session's current item.

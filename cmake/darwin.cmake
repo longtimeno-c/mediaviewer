@@ -609,6 +609,9 @@ add_library(mv_shell STATIC
   # Slice 7: the Remove brush's strokes and mask, shared.
   src/shell/remove_brush.cpp
   src/shell/remove_brush.h
+  # docs/plans/edit-refresh.md S4a: the brush's committed strokes as a tint texture.
+  src/shell/brush_mask.cpp
+  src/shell/brush_mask.h
   # PR 13 / 14: trim mode and the clip tools (shared with Windows), and the
   # clip job queue + keyframe index behind the Windows ABI, reused as is.
   src/shell/trim_state.cpp

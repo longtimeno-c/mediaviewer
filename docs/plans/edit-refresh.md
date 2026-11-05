@@ -363,6 +363,19 @@ left behind reads the one on screen, the Windows bar refreshes on every edit pub
 here: the app on either host, both PR 1 gates, the 0-presents check with a tool armed; the Windows
 native C++ is not compiled (C# compiles).
 
+**S4a built (2026-11-05):** brush v2 on both hosts. `remove_brush` is a stack of 64 strokes /
+8192 dabs at 0.5 r spacing with undo, redo, an undoable Clear (8 kept) and `reset` for a forgotten
+brushing; `shell/brush_mask.{h,cpp}` builds the committed strokes' tint on the pool (1024 px,
+incremental, one job at a time) and both labs take an immutable texture from the worker by atomic
+exchange (`gfx::create_overlay_texture`, `image::upload_overlay`) and draw it with `AddImage` in
+`draw_tool_overlay`; `edit_view` carries only the dabs a landed build lacks. Rotate and flip are
+refused while strokes exist in any mode (`blocked_by_strokes`, Mac menu items grey); the bar's Undo
+follows `can_undo` (a Clear undoes), `tool_bar` / `chrome_tool_bar_args` 60 bytes on both chromes.
+`mv_tests "[remove-brush]"` covers the verify list; the hidden publish bench gives 0.0001 ms
+(8192 dabs, 512 live) and a 2.1–2.3 ms cold tint build on the worker (2.8 MB, M-series Mac, three
+runs). Not run: either app, both PR 1 gates, the 0-presents check with strokes; the Windows native
+C++ is not compiled here (C# compiles). Not built: the crop "Discard N strokes?" question.
+
 ### 4.1 Tool mode (shared, portable)
 
 **`src/shell/commands.h`.**

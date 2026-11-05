@@ -6,7 +6,9 @@
 // passes its camera's image → screen mapping. Replaces slice 7's
 // brush_overlay.h.
 //
-//   * the brush's dabs (the committed tint texture is S4a's);
+//   * S4a: the brush's committed strokes, one tint texture a worker built
+//     (shell/brush_mask.h), drawn as one ImGui image over the picture;
+//   * the dabs that texture lacks yet (the stroke in progress);
 //   * the ring under the pointer, sized in screen pixels: a 1.5 px dark
 //     ring outside a 1 px light one and a 2 px centre dot, dashed while the
 //     brush erases (two-tone so it reads on any photo);
@@ -37,7 +39,8 @@ namespace mv::shell {
 
 // Whether the overlay has anything to draw.
 [[nodiscard]] inline bool tool_overlay_wanted(const edit_view& v) noexcept {
-  return (v.brush_on || v.brush_count > 0 || v.tool != 0 || v.tool_ring_px > 0.0f) && !v.crop_overlay;
+  return (v.brush_on || v.brush_count > 0 || v.brush_mask != 0 || v.tool != 0 || v.tool_ring_px > 0.0f) &&
+         !v.crop_overlay;
 }
 
 namespace detail {
@@ -61,15 +64,23 @@ inline void dashed_circle(ImDrawList* fg, ImVec2 c, float r, ImU32 col, float th
 
 // `pw` x `ph` the shown picture, `zoom` screen pixels per picture pixel,
 // `scale` the display's (physical pixels per point), `now_ms` steady_ms().
+// `mask` the lab's brush tint texture when it belongs to this view (the
+// backend's ImTextureID: an SRV on Windows, an MTLTexture on the Mac), else 0.
 template <class ToScreen>
 void draw_tool_overlay(const edit_view& v, float pw, float ph, float zoom, float scale, std::uint32_t accent,
-                       std::uint64_t now_ms, ToScreen to_screen) {
+                       std::uint64_t now_ms, ImTextureID mask, ToScreen to_screen) {
   if (pw <= 0.0f || ph <= 0.0f || zoom <= 0.0f) return;
   ImDrawList* fg = ImGui::GetForegroundDrawList();
   const float long_side = std::max(pw, ph);
   const float dim = v.tool_dim ? 0.5f : 1.0f;
-  // Overlapping dabs build up toward solid, as a soft brush would; an erase
-  // dab is a dark hole until S4a's tint texture replaces this.
+  // S4a: the committed strokes, one textured quad over the whole picture
+  // (dimmed with the tool put down).
+  if (mask != 0 && v.brush_mask) {
+    fg->AddImage(ImTextureRef(mask), to_screen(0.0f, 0.0f), to_screen(pw, ph), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                 IM_COL32(255, 255, 255, static_cast<int>(255 * dim)));
+  }
+  // The live dabs: overlapping dabs build up toward solid, as a soft brush
+  // would; an erase dab is a dark hole until the next build takes it in.
   const ImU32 paint = detail::rgba(accent, 0.18f * dim);
   const ImU32 hole = IM_COL32(0, 0, 0, static_cast<int>(70 * dim));
   for (std::uint32_t i = 0; i < v.brush_count && i < kBrushDabs; ++i) {

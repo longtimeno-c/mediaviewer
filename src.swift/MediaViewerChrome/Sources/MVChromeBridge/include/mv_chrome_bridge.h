@@ -1127,6 +1127,7 @@ typedef struct mv_tool_bar_view {
   int32_t full;             // the brush holds all it can
   int32_t can_redo;
   int32_t eyes;             // red-eye: eyes the AI pack found (People on); 0 none or not known
+  int32_t can_undo;         // S4a: a stroke or a Clear to undo (Clear is undoable)
 } mv_tool_bar_view;
 bool mv_chrome_tool_bar(mv_tool_bar_view* out);
 // The bar's buttons (shell::tool_bar_action): 0 Done (the tool goes down, the
