@@ -681,8 +681,19 @@ public static partial class IslandHost
             ProtectedCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Hand);
     }
 
-    private static void InvokeSlotItem(SlotItem item, FolderItemVm? tile = null) =>
+    private static void InvokeSlotItem(SlotItem item, FolderItemVm? tile = null)
+    {
+        // One-click Enhance (owner 2026-11-05): Enhance's context entry on the
+        // file on screen goes through native, which opens the Edit pane's Enhance
+        // tab for a photo (its cards run each tool) and Enhance's sheet for a clip
+        // or an audio file.
+        if (item.Addon == "enhance" && item.Id == "enhance" && tile is null)
+        {
+            Send(Command.EditAction, EditActions.Enhance);
+            return;
+        }
         SlotNative.Invoke(item.Addon, item.Id, JsonList(SlotTargetPaths(item, tile)));
+    }
 
     // The add-ons' command-bar buttons and status text, after the chrome's own.
     private static UIElement BuildSlotBarItems()

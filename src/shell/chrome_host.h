@@ -286,6 +286,11 @@ enum class chrome_edit_action : std::int32_t {
   // faces: Enhance's docked panel on Restore faces (its tool "faces"), else its
   // sheet started on Restore faces (its "faces" command).
   restore_faces = 15,
+  // One-click Enhance (docs/design/29 "One click"): the cards' run node as the
+  // chrome read it, parked as a tree path "<state>\t<id>\t<result>"
+  // (shell/enhance_run.h parse_enhance_run): the glow, the tool bar's band,
+  // the result opened once.
+  enhance_run = 16,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);

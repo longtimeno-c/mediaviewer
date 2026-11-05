@@ -80,6 +80,9 @@ TEST_CASE("enhance run: a result is opened once, only for a run seen working", "
   (void)f.update(at(enhance_run_state::running, 7), 90);
   s = f.update(at(enhance_run_state::done, 7, "photos:ABC"), 100);
   CHECK(s.open == "photos:ABC");
+  // Opening it moves to it: its line stays ("Saved as …"), another photo's goes.
+  CHECK_FALSE(f.reset(105, "photos:ABC"));
+  CHECK(f.band);
   // The photo went away under a run: no glow, no band, and its result is
   // not opened later.
   (void)f.update(at(enhance_run_state::running, 8), 110);

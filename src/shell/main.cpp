@@ -72,6 +72,7 @@
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/compare_source.h"
+#include "shell/enhance_run.h"
 #include "shell/pane_width.h"
 #include "shell/video_timeline.h"
 #include "edit/auto_adjust.h"
@@ -423,6 +424,11 @@ struct app_state {
   // docs/plans/edit-refresh.md S5: the photo Enhance's docked panel (place
   // "edit") was opened on; "" while it is closed.
   std::string enhance_dock_path;
+  // One-click Enhance (docs/design/29 "One click"): the run the cards' "run"
+  // node describes (the glow, the tool bar's band, the result opened once),
+  // and the photo it works on.
+  mv::shell::enhance_run_follow enhance_run;
+  std::string enhance_run_path;
   bool ws_shown = false;
   bool show_original = false;  // Y held: the before alone (docs/design/20 "Compare")
   // docs/design/20 "Compare" (shell/compare_source.h), the Mac's _compare*: the
@@ -1005,6 +1011,12 @@ void push_edit_view(app_state* app) noexcept;
 void workspace_item_changed(app_state* app) noexcept;
 void enhance_dock_close(app_state* app) noexcept;
 void enhance_tool(app_state* app, std::string_view photo, bool run, const std::vector<float>& faces = {});
+// One-click Enhance: the Enhance tab's cards on the photo on screen, and
+// Enhance's palette rows / strip entry on a photo landing on that tab.
+void enhance_cards_sync(app_state* app) noexcept;
+void enhance_cards_follow(app_state* app, const std::string& path) noexcept;
+bool enhance_open_tab_for(app_state* app, const std::vector<std::string>& paths);
+void enhance_open_result(app_state* app, const std::string& path, bool keep = true);
 void set_editor_open(app_state* app, bool open);  // PR 30
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index);
@@ -2392,9 +2404,10 @@ void edit_item_opened(app_state* app) {
     return;  // the same bytes, the same select: nothing moved
   }
   app->input.edit[1] = app->input.edit[0];
-  // S5: Enhance's docked panel stays with the photo it was opened on.
-  if (!app->enhance_dock_path.empty() && app->enhance_dock_path != entry.path_utf8) enhance_dock_close(app);
   app->edit_path = entry.path_utf8;
+  // One-click: the Enhance tab's cards follow the photo (a run on the last
+  // one stops, as leaving it always did).
+  enhance_cards_follow(app, entry.path_utf8);
   app->edit_size = entry.size;
   app->edit_mtime = entry.mtime_unix;
   app->edit_key = mv::canvas::item_key_for(entry.path_utf8.data(), entry.path_utf8.size());
@@ -2961,6 +2974,11 @@ void tool_apply_view(app_state* app) noexcept {
   in.pulse_until_ms = app->tool_pulse_until;
   in.extend = app->extend;
   in.extend_handle = app->extend_grab != 0 ? app->extend_grab : app->extend_hover;
+  // One-click Enhance: the working glow, on the photo the run works on only.
+  if (!app->enhance_run_path.empty() && app->edit_path == app->enhance_run_path) {
+    in.work_glow_on_ms = app->enhance_run.glow_on_ms;
+    in.work_glow_off_ms = app->enhance_run.glow_off_ms;
+  }
   const mv::edit::placement p = app->edits.preview_placement();
   mv::shell::apply_tool(app->input.edit[0], in, p, app->edits.colour());
   // S8: the faces' boxes (only for the photo they were read from).
@@ -3069,6 +3087,9 @@ mv::shell::chrome_tool_bar_args tool_bar_args_of(app_state* app) noexcept {
   const mv::shell::tool_bar b = tool_bar_of(app);
   mv::shell::chrome_tool_bar_args a{};
   std::memcpy(&a, &b, sizeof(a));
+  // One-click Enhance: the bar also shows a run's line (the chrome draws it
+  // from the cards' run node, IslandHost.EnhanceRun.cs).
+  if (app->enhance_run.band && !app->gallery_visible && !app->settings_open && !app->editor.open) a.visible = 1;
   return a;
 }
 
@@ -3081,7 +3102,8 @@ void push_tool_bar(app_state* app) noexcept {
 // nothing covers the canvas. A change of the band refits the picture
 // (apply_view_state: refit_seq, never a swapchain resize).
 bool tool_bar_wanted(app_state* app) noexcept {
-  return tool_armed(app) && !app->gallery_visible && !app->settings_open && !app->editor.open;
+  return (tool_armed(app) || app->enhance_run.band) && !app->gallery_visible && !app->settings_open &&
+         !app->editor.open;
 }
 void sync_tool_bar(app_state* app) noexcept {
   if (tool_bar_wanted(app) == app->tool_band) {
@@ -5226,8 +5248,10 @@ void sync_workspace(app_state* app) {
     if (jobs) set_jobs_pane(app, true, false);
   }
   app->ws_shown = open;
-  // Enhance's docked panel goes with Edit (S5): a run still going stops.
+  // Enhance's cards go with Edit: a run still going stops.
   if (!open) enhance_dock_close(app);
+  // One-click: the Enhance tab shows its cards on the photo on screen.
+  if (open && tab == edit_tab::enhance) enhance_cards_sync(app);
   // A canvas tool belongs to Edit: closing it puts the tool down (S3).
   if (!open && app->tool.tool != mv::shell::canvas_tool::none) {
     (void)mv::shell::arm_tool(app->tool, app->ws, mv::shell::canvas_tool::none);
@@ -5593,17 +5617,86 @@ void enhance_tool(app_state* app, std::string_view photo, bool run, const std::v
     push_edit_view(app);
     return;
   }
-  // The sheet, started on the tool where its commands can say so.
-  mv::shell::command_id id = mv::shell::find_addon_command(
-      "enhance", photo == "restyle" ? "restyle" : photo == "faces" ? "faces" : "open");
-  if (id == mv::shell::command_id::none) id = mv::shell::find_addon_command("enhance", "open");
-  if (id == mv::shell::command_id::none) {
-    notice_show(app, "This needs the Enhance add-on (Settings → Add-ons).");
+  // One-click (owner 2026-11-05): never the sheet for a photo. An Enhance
+  // without the cards screen is one to update.
+  notice_show(app, mv::shell::find_addon_command("enhance", "open") == mv::shell::command_id::none
+                       ? "This needs the Enhance add-on (Settings → Add-ons)."
+                       : "Update Enhance (Settings → Add-ons) to run its tools here.");
+}
+
+// One-click: the Enhance tab's cards (Enhance's "tool" screen) on the photo
+// on screen, opened while the tab shows; the Mac's -enhanceCardsSync.
+void enhance_cards_sync(app_state* app) noexcept {
+  if (!app || !app->ws.open || app->ws.tab != mv::shell::edit_tab::enhance ||
+      edit_subject_of(app) != mv::shell::edit_subject::still || app->edit_path.empty()) {
     return;
   }
-  // An Enhance without the docked panel has no way to take the chosen faces.
-  if (!faces.empty()) notice_show(app, "This Enhance restores every face in the photo");
-  (void)run_command(app, id);
+  if (mv::shell::find_addon_command("enhance", "open") == mv::shell::command_id::none) return;
+  if (app->edit_path == app->enhance_dock_path) return;
+  try {
+    mv::json::writer w;
+    w.begin_object().key("path").string(app->edit_path).end_object();
+    const std::uint32_t dpi = app->window ? ::GetDpiForWindow(app->window) : 96u;
+    const float scale = dpi > 0 ? static_cast<float>(dpi) / 96.0f : 1.0f;
+    const int column = right_pane_px(*app, static_cast<int>(app->input.width), dpi);
+    const float width = std::max(200.0f, static_cast<float>(column) / scale - 44.0f - 2 * 14.0f - 2 * 12.0f);
+    if (mv_slots_screen_command("enhance", "tool", app->edit_path.c_str(), w.str().c_str(), width, scale) == MV_OK) {
+      app->enhance_dock_path = app->edit_path;
+    }
+  } catch (...) {
+  }
+}
+
+// Another photo: on the Enhance tab the cards follow it (Enhance stops a run
+// on the last one); elsewhere they close (a run stops the same way).
+void enhance_cards_follow(app_state* app, const std::string& path) noexcept {
+  if (!app || app->enhance_dock_path.empty() || app->enhance_dock_path == path) return;
+  if (app->enhance_run.reset(mv::shell::steady_ms(), path)) {
+    sync_tool_bar(app);
+    brush_publish(app);
+  }
+  if (app->ws.open && app->ws.tab == mv::shell::edit_tab::enhance) {
+    enhance_cards_sync(app);  // edit_path is the new photo by now
+  } else {
+    enhance_dock_close(app);
+  }
+}
+
+// The cards' run, as the chrome read it ("<state>\t<id>\t<result>",
+// IslandHost.EnhanceRun.cs): the glow over the photo while it works, the tool
+// bar's band while it has a line, and its result opened once with Edit kept
+// on the Enhance tab. The Mac's -enhanceRunState:run:result:.
+void enhance_run_state(app_state* app) {
+  mv::shell::enhance_run_report r;
+  if (!mv::shell::parse_enhance_run(app->chrome.take_tree_path(), r)) return;
+  if ((r.state == mv::shell::enhance_run_state::running && app->enhance_run.glow_on_ms == 0) ||
+      (r.state == mv::shell::enhance_run_state::downloading && r.id != app->enhance_run.seen_running)) {
+    app->enhance_run_path = app->enhance_dock_path;
+  }
+  const mv::shell::enhance_run_follow::step step = app->enhance_run.update(r, mv::shell::steady_ms());
+  if (step.changed) {
+    sync_tool_bar(app);
+    brush_publish(app);
+  }
+  if (!step.open.empty()) {
+    // docs/design/20 "Compare": the result compares with the photo it was made from.
+    if (!app->enhance_run_path.empty()) mv::shell::note_result(step.open, app->enhance_run_path);
+    enhance_open_result(app, step.open);
+  }
+}
+
+// Enhance's palette rows and the strip's Enhance… on the photo on screen: the
+// Edit pane opens on its Enhance tab. false for anything else (a clip, an
+// audio file, several files): Enhance's sheet takes those.
+bool enhance_open_tab_for(app_state* app, const std::vector<std::string>& paths) {
+  if (!app || edit_subject_of(app) != mv::shell::edit_subject::still || app->edit_path.empty()) return false;
+  if (paths.size() > 1 || (paths.size() == 1 && paths.front() != app->edit_path)) return false;
+  const mv::shell::workspace_action a =
+      app->ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
+  if (mv::shell::apply_step(app->ws, {a, mv::shell::edit_tab::enhance})) sync_workspace(app);
+  else enhance_cards_sync(app);
+  push_edit_view(app);
+  return true;
 }
 
 // The docked panel belongs to the photo it opened on: another photo, or Edit
@@ -5618,11 +5711,15 @@ void enhance_dock_close(app_state* app) noexcept {
 // it with Edit still open on the Enhance tab. Every result is a file beside
 // the original (no Photos library on Windows); one the listing has not caught
 // yet opens through its folder, selected.
-void enhance_show_result(app_state* app, bool keep) {
-  const std::string path = app->chrome.take_tree_path();
+// The result row's Show / Keep editing (S5), and one-click's result opened:
+// the new file (or folder listing) selected; kept editing, Edit stays on the
+// Enhance tab.
+void enhance_open_result(app_state* app, const std::string& path, bool keep) {
   if (path.empty()) return;
   if (!keep) close_workspace(app);
-  enhance_dock_close(app);
+  // Kept editing, the cards follow the new photo when it shows (its notice
+  // stays: "Saved as …").
+  if (!keep) enhance_dock_close(app);
   bool found = false;
   const std::uint32_t n = folder_count(app);
   for (std::uint32_t i = 0; i < n; ++i) {
@@ -5642,6 +5739,8 @@ void enhance_show_result(app_state* app, bool keep) {
     if (mv::shell::apply_step(app->ws, {a, mv::shell::edit_tab::enhance})) sync_workspace(app);
   }
 }
+
+void enhance_show_result(app_state* app, bool keep) { enhance_open_result(app, app->chrome.take_tree_path(), keep); }
 
 void run_edit_action(app_state* app, int action) {
   switch (static_cast<mv::shell::chrome_edit_action>(action)) {
@@ -5665,18 +5764,17 @@ void run_edit_action(app_state* app, int action) {
       (void)run_edit_command(app, mv::shell::command_id::export_image);
       return;
     case mv::shell::chrome_edit_action::enhance:
-    case mv::shell::chrome_edit_action::restyle: {
-      // Slice 5: Enhance's own "open" row (or, from the wand and the Enhance
-      // tab's Restyle card, "restyle": the sheet started on Restyle with
-      // words); its copy carries the edit (addon_media's still edit, set by
-      // publish_edit).
-      if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
-      const bool restyle = action == static_cast<int>(mv::shell::chrome_edit_action::restyle);
-      mv::shell::command_id id = mv::shell::find_addon_command("enhance", restyle ? "restyle" : "open");
-      if (id == mv::shell::command_id::none && restyle) id = mv::shell::find_addon_command("enhance", "open");
-      if (id != mv::shell::command_id::none) (void)run_command(app, id);
+    case mv::shell::chrome_edit_action::restyle:
+      // One-click (owner 2026-11-05): the strip's Enhance…, the wand's rows
+      // and the viewer's context entry open the Enhance tab for a photo,
+      // whose cards run each tool; never the sheet. A clip or an audio file
+      // (no Edit pane for it) keeps Enhance's sheet.
+      if (!enhance_open_tab_for(app, {})) {
+        const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+        if (id != mv::shell::command_id::none) (void)run_command(app, id);
+      }
       return;
-    }
+    case mv::shell::chrome_edit_action::enhance_run: enhance_run_state(app); return;
     case mv::shell::chrome_edit_action::arm_brush:
     case mv::shell::chrome_edit_action::arm_red_eye: {
       // docs/plans/edit-refresh.md S2 / S3: the Remove and Red-eye cards, the
@@ -5700,10 +5798,12 @@ void run_edit_action(app_state* app, int action) {
     // S5: the Enhance tab's cards, the docked panel and its result row.
     case mv::shell::chrome_edit_action::enhance_remove: enhance_tool(app, "remove", false); return;
     case mv::shell::chrome_edit_action::enhance_restyle: enhance_tool(app, "restyle", false); return;
-    case mv::shell::chrome_edit_action::enhance_detail: enhance_tool(app, "detail", false); return;
+    // One-click: the flyout's Enhance image and Restore faces run at once
+    // with the cards' choices (downloading first when the model is not here).
+    case mv::shell::chrome_edit_action::enhance_detail: enhance_tool(app, "detail", true); return;
     case mv::shell::chrome_edit_action::enhance_extend: enhance_tool(app, "extend", false); return;
     // S10: Restore faces, docked under the Faces card (the sheet on "faces" without it).
-    case mv::shell::chrome_edit_action::restore_faces: enhance_tool(app, "faces", false); return;
+    case mv::shell::chrome_edit_action::restore_faces: enhance_tool(app, "faces", true); return;
     case mv::shell::chrome_edit_action::enhance_result_show: enhance_show_result(app, false); return;
     case mv::shell::chrome_edit_action::enhance_result_keep: enhance_show_result(app, true); return;
   }
@@ -10460,6 +10560,13 @@ bool run_session_command(app_state* app, mv::shell::command_id command) noexcept
     case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7: {
       const mv::shell::addon_command_row* row = mv::shell::addon_command(command);
       if (!row) return false;
+      // One-click (owner 2026-11-05): Enhance's palette rows on the photo on
+      // screen open the Edit pane's Enhance tab, never the sheet (a clip or an
+      // audio file keeps the sheet: there is no Edit pane for it).
+      if (row->addon == "enhance" && (row->id == "open" || row->id == "restyle" || row->id == "faces") &&
+          enhance_open_tab_for(app, expand_pair_targets(app, selection_targets(app)))) {
+        return true;
+      }
       mv::json::writer w;
       if (row->payload == "marks") {
         w.begin_array();

@@ -83,6 +83,7 @@ struct enhance_run_follow {
   bool band = false;
   std::uint64_t seen_running = 0;  // the newest run seen working (or downloading)
   std::uint64_t opened = 0;        // the newest run whose result was opened
+  std::string opened_path;         // ... and that result
 
   struct step {
     bool changed = false;  // the glow or the band moved: publish
@@ -111,14 +112,17 @@ struct enhance_run_follow {
     if (r.state == enhance_run_state::done && !r.result.empty() && r.id != 0 && r.id == seen_running &&
         r.id != opened) {
       opened = r.id;
+      opened_path = r.result;
       s.open = r.result;
     }
     return s;
   }
 
   // The photo went away under a run (another item, Edit closed, the add-on
-  // gone): no glow and no band, and nothing opens.
-  bool reset(std::uint64_t now_ms) {
+  // gone): no glow and no band, and nothing opens. `next` the photo now on
+  // screen: the result just opened keeps its line ("Saved as …").
+  bool reset(std::uint64_t now_ms, const std::string& next = {}) {
+    if (!next.empty() && next == opened_path) return false;
     const bool was = glow_on_ms != 0 || band;
     if (glow_on_ms != 0) glow_off_ms = now_ms == 0 ? 1 : now_ms;
     glow_on_ms = 0;

@@ -63,6 +63,9 @@ public static partial class IslandHost
         // docs/plans/edit-refresh.md S10: Restore faces (Enhance's docked panel on
         // its "faces" tool, else its sheet started on Restore faces).
         public const int RestoreFaces = 15;
+        // One-click Enhance: the cards' run node as read, parked in _treePending
+        // as "<state>\t<id>\t<result>" (IslandHost.EnhanceDock.cs ReadEnhanceRun).
+        public const int EnhanceRun = 16;
     }
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).

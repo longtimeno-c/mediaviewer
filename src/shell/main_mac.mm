@@ -9388,7 +9388,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // on the last one); elsewhere they close (a run stops the same way).
 - (void)enhanceCardsFollow:(const std::string&)path {
   if (_enhanceDockPath.empty() || _enhanceDockPath == path) return;
-  if (_enhanceRun.reset(mv::shell::steady_ms())) {
+  if (_enhanceRun.reset(mv::shell::steady_ms(), path)) {
     [self syncToolBar];
     [self brushPublish];
   }
