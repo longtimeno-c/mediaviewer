@@ -847,6 +847,14 @@ Two more (2026-10-28, Enhance; contribution API **10**):
 Both are the window's own drawing, never the canvas: 30 fps at most, only while the node is in the
 tree, and still with Reduce Motion (Mac) or animations off (Windows).
 
+One more (2026-11-04, Enhance's performance level). Not yet behind a contribution API step of its
+own: an older core refuses a tree that uses it, so the step is taken with this round's other
+additions (the Edit pane's `place "edit"`) when its number is chosen:
+
+- **A `choice` option's `"disabled": true`**: listed, never chosen. The core refuses a change to
+  it (`"[screens]"`); the Mac's Picker marks the item `.disabled` and ignores a choice of it, Windows' `ComboBoxItem` is
+  not enabled. The option's text says why (Enhance: *Best (needs Maxxed level)*).
+
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
 

@@ -181,6 +181,30 @@ bool rows(const json::value& v, std::initializer_list<std::string_view> required
   return true;
 }
 
+// A choice's options: id and text required, "disabled" (a boolean) optional;
+// the text keys checked as rows() checks them, ids unique.
+bool choice_rows(const json::value& v, std::size_t& items) {
+  if (v.k != json::kind::array) return false;
+  items += v.a.size();
+  if (items > kMaxItems) return false;
+  std::set<std::string_view> seen;
+  for (const json::value& r : v.a) {
+    if (r.k != json::kind::object) return false;
+    for (const auto& [key, value] : r.o) {
+      if (key == "disabled") {
+        if (value.k != json::kind::boolean) return false;
+      } else if (key != "id" && key != "text") {
+        return false;
+      } else if (!str_max(value, key == "id" ? 256 : kMaxLabel)) {
+        return false;
+      }
+    }
+    const std::string* id = r.str("id");
+    if (!id || !r.find("text") || !seen.insert(*id).second) return false;
+  }
+  return true;
+}
+
 // A tiles node's items (#442): id and text required; detail, initials (a
 // short monogram the host draws in the circle), progress (-1 none, else 0..1,
 // drawn as a ring) and mark ("done" / "failed") optional. Ids unique.
@@ -305,9 +329,11 @@ error check_props(node& n, std::size_t& items) {
           break;
         case node_type::choice:
           if (key == "options") {
+            // An option may be "disabled": true (2026-11-04, Enhance's quality
+            // above the performance level): shown, never chosen.
             std::size_t ignored = 0;
             ok = v.k == json::kind::array && !v.a.empty() && v.a.size() <= 256 &&
-                 rows(v, {"id", "text"}, {}, "id", ignored);
+                 choice_rows(v, ignored);
           } else {
             ok = key == "value" && str_max(v, 256);
           }
@@ -555,6 +581,16 @@ bool item_has(const json::value* items, std::string_view key, std::string_view v
   });
 }
 
+// A choice's option that is shown but may not be chosen.
+bool option_disabled(const json::value* options, std::string_view id) {
+  if (!options || options->k != json::kind::array) return false;
+  return std::any_of(options->a.begin(), options->a.end(), [&](const json::value& r) {
+    const std::string* s = r.str("id");
+    const json::value* d = r.find("disabled");
+    return s && *s == id && d && d->k == json::kind::boolean && d->b;
+  });
+}
+
 }  // namespace
 
 const char* type_name(node_type t) noexcept {
@@ -792,7 +828,7 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
       return error::none;
     case node_type::choice:
       if (kind != ev_change || !v || v->k != json::kind::string ||
-          !item_has(n->props.find("options"), "id", v->s)) {
+          !item_has(n->props.find("options"), "id", v->s) || option_disabled(n->props.find("options"), v->s)) {
         return error::bad_value;
       }
       set_prop(n->props, "value", *v);

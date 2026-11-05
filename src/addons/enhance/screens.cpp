@@ -146,7 +146,11 @@ void model_card_body(json::writer& w, const model_card& c) {
   }
 }
 
-void knob_node(json::writer& w, model_kind k, const knob& kb, const json::value& v) {
+// Restyle's quality is bounded by the performance level: an option above it is
+// shown, disabled, with the level it needs (owner 2026-11-04).
+bool level_gated(model_kind k, const knob& kb) { return k == model_kind::restyle && kb.id == "quality"; }
+
+void knob_node(json::writer& w, model_kind k, const knob& kb, const json::value& v, tier level) {
   const std::string id = "k." + std::string(kind_name(k)) + "." + kb.id;
   w.begin_object().key("id").string(id).key("label").string(kb.label);
   if (!kb.help.empty()) w.key("help").string(kb.help);
@@ -158,7 +162,16 @@ void knob_node(json::writer& w, model_kind k, const knob& kb, const json::value&
       break;
     case knob::type::choice:
       w.key("type").string("choice").key("options").begin_array();
-      for (const knob_option& o : kb.options) w.begin_object().key("id").string(o.id).key("text").string(o.text).end_object();
+      for (const knob_option& o : kb.options) {
+        const int rank = quality_rank(o.id);
+        if (level_gated(k, kb) && rank > policy_of(level).max_quality) {
+          w.begin_object().key("id").string(o.id);
+          w.key("text").string(o.text + " (needs " + level_words(tier_for_quality(rank)) + ")");
+          w.key("disabled").boolean(true).end_object();
+        } else {
+          w.begin_object().key("id").string(o.id).key("text").string(o.text).end_object();
+        }
+      }
       w.end_array();
       w.key("value").string(v.k == json::kind::string ? v.s : kb.def_choice);
       break;
@@ -237,9 +250,14 @@ std::string settings_tree(std::span<const model_card> cards, const tier_view& ti
   w.end_array();
   w.key("value").string(tiers.chosen);
   w.end_object();
+  // The level in effect, as the Edit pane's Enhance tab names it in its chip.
+  begin_stack(w, "tiernow", "horizontal", 4);
+  text(w, "tierinuse", "In use:", "caption");
+  text(w, "tierlevel", level_words(tiers.effective()), "caption");
+  end_stack(w);
   text(w, "tierhelp",
        "Potato and Intel use fewer cores and fewer steps, and keep Restyle at Standard quality. Default allows High; "
-       "Maxxed uses every core, more steps and allows Best.",
+       "Maxxed uses every core, the most steps and allows Best. Restyle starts at the best quality the level allows.",
        "caption");
   end_stack(w);
   for (const model_card& c : cards) {
@@ -254,6 +272,26 @@ std::string settings_tree(std::span<const model_card> cards, const tier_view& ti
        "caption");
   end_stack(w);
   return w.take();
+}
+
+void level_quality(std::map<std::string, json::value>& values, const model_spec& spec, tier level) {
+  if (spec.kind != model_kind::restyle) return;
+  const knob* kb = spec.find("quality");
+  if (!kb || kb->t != knob::type::choice) return;
+  const int top = policy_of(level).max_quality;
+  if (const auto it = values.find(kb->id); it != values.end()) {
+    if (const auto ok = check_knob_value(*kb, it->second); ok && quality_rank(ok->s) <= top) return;
+  }
+  const knob_option* pick = nullptr;
+  for (const knob_option& o : kb->options) {
+    const int rank = quality_rank(o.id);
+    if (rank <= top && (!pick || rank > quality_rank(pick->id))) pick = &o;
+  }
+  if (!pick) return;
+  json::value v;
+  v.k = json::kind::string;
+  v.s = pick->id;
+  values[kb->id] = std::move(v);
 }
 
 std::string edit_text(std::span<const std::int64_t> keep_ns) {
@@ -321,7 +359,7 @@ std::string sheet_tree(const sheet_view& v) {
         // Remove's "extend" choice is for extending only.
         if (kb.id == "extend" && v.photo != photo_target::extend) continue;
         const auto it = s.values.find(kb.id);
-        knob_node(w, s.kind, kb, knob_value(kb, it == s.values.end() ? nullptr : &it->second));
+        knob_node(w, s.kind, kb, knob_value(kb, it == s.values.end() ? nullptr : &it->second), v.level);
         ++shown;
       }
       if (shown == 0) text(w, id_of("plain", s.kind), s.spec->name + " has nothing to set.", "secondary");

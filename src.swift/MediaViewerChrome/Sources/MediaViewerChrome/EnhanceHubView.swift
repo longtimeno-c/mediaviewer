@@ -8,6 +8,7 @@
 // sheet's photo choice), and Open closed eyes / Improve faces. Every result
 // is a new file (or a new Photos-library photo); the original never changes.
 // Running inside the pane is S5's. The Windows twin is IslandHost.EnhanceHub.cs.
+import Combine
 import MVChromeBridge
 import SwiftUI
 
@@ -110,6 +111,98 @@ struct EnhanceToolState {
   }
 }
 
+/// docs/plans/edit-refresh.md S9 (§3.3): the performance level Enhance runs at,
+/// as its settings page names it ("Default level", the "tierlevel" node). That
+/// page's screen is open while it shows in Settings; the Enhance tab opens it
+/// too while it shows and keeps the last text read between (the level changes
+/// only in Settings, whose tree passes through here). The Windows twin is
+/// NoteEnhanceLevel in IslandHost.EnhanceHub.cs.
+@MainActor
+final class EnhanceLevel: ObservableObject {
+  static let shared = EnhanceLevel()
+  static let addon = "enhance"
+  @Published private(set) var text = ""
+  private var shown = 0  // Enhance tabs on screen
+  private var opened = false  // the tab opened the screen
+  private var watch: [AnyCancellable] = []
+
+  private init() {
+    watch.append(SlotStore.shared.$screens.sink { [weak self] in self?.read($0) })
+    // Enhance loaded (or again) while the tab shows: ask for its page.
+    watch.append(SlotStore.shared.$settingsScreens.sink { [weak self] screens in
+      guard let self, self.shown > 0, let id = screens[Self.addon] else { return }
+      DispatchQueue.main.async { self.open(ScreenAddress(addon: Self.addon, screen: id)) }
+    })
+  }
+
+  private var address: ScreenAddress? {
+    SlotStore.shared.settingsScreens[Self.addon].map { ScreenAddress(addon: Self.addon, screen: $0) }
+  }
+
+  private func read(_ screens: [SlotScreen]) {
+    guard let at = address,
+          let tree = screens.first(where: { $0.addon == at.addon && $0.screen == at.screen })?.tree,
+          let t = Self.node("tierlevel", in: tree)?.string("text"), !t.isEmpty, t != text else { return }
+    text = t
+  }
+
+  private static func node(_ id: String, in n: ScreenNode) -> ScreenNode? {
+    if n.id == id { return n }
+    for c in n.children { if let hit = node(id, in: c) { return hit } }
+    return nil
+  }
+
+  private func open(_ at: ScreenAddress) {
+    SlotStore.shared.openSettingsScreen(at)  // a no-op in the core while it is open
+    opened = true
+  }
+
+  func appeared() {
+    shown += 1
+    if let at = address { open(at) }
+  }
+
+  func disappeared() {
+    shown = max(0, shown - 1)
+    guard shown == 0, opened, let at = address else { return }
+    opened = false
+    // Settings drawing Enhance's page keeps it (and closes it itself).
+    if SettingsStore.shared.visible && AddonNav.shared.page == Self.addon { return }
+    SlotStore.shared.close(at)
+  }
+}
+
+/// The header's chip: the level, a click away from changing it.
+private struct LevelChip: View {
+  @ObservedObject private var level = EnhanceLevel.shared
+  @State private var hover = false
+
+  var body: some View {
+    if !level.text.isEmpty {
+      Button { AddonNav.shared.show(EnhanceLevel.addon) } label: {
+        HStack(spacing: MVTheme.space(4)) {
+          Image(systemName: "gauge.with.dots.needle.67percent")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(MVTheme.accent)
+          Text(level.text).font(MVTheme.font(11)).lineLimit(1)
+        }
+        .foregroundStyle(MVTheme.title)
+        .padding(.horizontal, MVTheme.space(7))
+        .padding(.vertical, MVTheme.space(2))
+        .background(Capsule().fill(hover ? MVTheme.hoverWash : MVTheme.surface2))
+        .overlay(Capsule().stroke(MVTheme.hairline, lineWidth: 0.5))
+        .contentShape(Capsule())
+      }
+      .buttonStyle(.plain)
+      .fixedSize()
+      .onHover { hover = $0 }
+      .help("Enhance's performance level. Change it in Settings → Add-ons → Enhance.")
+      .accessibilityLabel("Performance level: \(level.text)")
+      .accessibilityHint("Opens Enhance's settings")
+    }
+  }
+}
+
 /// The Enhance tab: five cards, two columns from 560 pt.
 struct EnhanceHubView: View {
   @ObservedObject private var store = EditStore.shared
@@ -118,8 +211,12 @@ struct EnhanceHubView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(12)) {
       VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-        Text("Enhance").font(MVTheme.font(17)).foregroundStyle(MVTheme.title)
-          .accessibilityAddTraits(.isHeader)
+        HStack(alignment: .center, spacing: MVTheme.space(8)) {
+          Text("Enhance").font(MVTheme.font(17)).foregroundStyle(MVTheme.title)
+            .accessibilityAddTraits(.isHeader)
+          Spacer(minLength: 0)
+          if store.enhance { LevelChip() }
+        }
         Text("Each tool writes a new file; the original is never changed.")
           .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
@@ -144,6 +241,8 @@ struct EnhanceHubView: View {
       }
     }
     .disabled(!store.canEdit || store.isClip)
+    .onAppear { EnhanceLevel.shared.appeared() }
+    .onDisappear { EnhanceLevel.shared.disappeared() }
   }
 }
 

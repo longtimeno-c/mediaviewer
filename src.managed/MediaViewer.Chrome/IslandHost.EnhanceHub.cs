@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+using System.Text.Json;
+using MediaViewer.Interop;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -125,16 +127,31 @@ public static partial class IslandHost
         _enhanceBrushNote = null;
         _enhanceUndoStroke = null;
         _enhanceClearStrokes = null;
+        _enhanceLevelChip = null;
+        _enhanceLevelText = null;
+        ReleaseEnhanceLevel();
     }
 
     private static void BuildEnhanceHub(StackPanel pane)
     {
         DropEnhanceUi();
         var head = new StackPanel { Spacing = Space(4) };
+        var titleRow = new Grid { ColumnSpacing = Space(8) };
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         TextBlock title = Text("Enhance", Title, UiFontSize + 1);
+        title.VerticalAlignment = VerticalAlignment.Center;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHeadingLevel(
             title, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
-        head.Children.Add(title);
+        titleRow.Children.Add(title);
+        if (_editEnhance)
+        {
+            Button chip = BuildEnhanceLevelChip();
+            Grid.SetColumn(chip, 1);
+            titleRow.Children.Add(chip);
+            OpenEnhanceLevel();
+        }
+        head.Children.Add(titleRow);
         head.Children.Add(Hint("Each tool writes a new file; the original is never changed."));
         pane.Children.Add(head);
         if (!_editEnhance)
@@ -299,6 +316,108 @@ public static partial class IslandHost
         }
         if (_enhanceBrushNote is not null)
             _enhanceBrushNote.Visibility = (_editWand & WandBrushFull) != 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ---- the performance level's chip (docs/plans/edit-refresh.md S9, §3.3) ---------
+    // "Default level" in the tab's header: the level Enhance runs at, as its
+    // settings page names it (the "tierlevel" node). That page's screen is open
+    // while it shows in Settings; this tab opens it too while it shows and keeps
+    // the last text read between (the level changes only in Settings, which the
+    // list carries here). A click opens Settings → Add-ons → Enhance, whose
+    // first card is Performance. The Mac twin is EnhanceLevel in EnhanceHubView.swift.
+
+    private const string EnhanceAddonId = "enhance";
+    private static string _enhanceLevel = "";
+    private static Button? _enhanceLevelChip;
+    private static TextBlock? _enhanceLevelText;
+    private static bool _enhanceLevelOpen;  // this tab opened Enhance's settings screen
+
+    private static Button BuildEnhanceLevelChip()
+    {
+        _enhanceLevelText = Text(_enhanceLevel, Body, UiFontSize - 5, maxLines: 1);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
+        row.Children.Add(new FontIcon
+        {
+            Glyph = "\uEC4A", FontFamily = IconFont, FontSize = TypeSize(11),  // Speed high
+            Foreground = Brush(ChromeColour.Accent), VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(_enhanceLevelText);
+        var pill = new Border
+        {
+            Child = row,
+            Padding = Pad(7, 2, 7, 2),
+            CornerRadius = new CornerRadius(999),
+            Background = Brush(ChromeColour.Surface2),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(0.5),
+        };
+        _enhanceLevelChip = ChromeButton(pill, Pad(0), OpenEnhanceSettings,
+            tip: "Enhance's performance level. Change it in Settings → Add-ons → Enhance.");
+        RenderEnhanceLevel();
+        return _enhanceLevelChip;
+    }
+
+    private static void RenderEnhanceLevel()
+    {
+        if (_enhanceLevelChip is null || _enhanceLevelText is null) return;
+        _enhanceLevelText.Text = _enhanceLevel;
+        _enhanceLevelChip.Visibility = _enhanceLevel.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties_SetName(_enhanceLevelChip, $"Performance level: {_enhanceLevel}. Opens Enhance's settings");
+    }
+
+    private static ScreenAt? EnhanceSettingsAt() =>
+        SlotSettingsScreens.TryGetValue(EnhanceAddonId, out string? id) ? new ScreenAt(EnhanceAddonId, id) : null;
+
+    private static void OpenEnhanceLevel()
+    {
+        if (EnhanceSettingsAt() is not { } at) return;
+        // A no-op in the core while it is open (Settings showing it, or a rebuild).
+        SlotNative.OpenScreen(at.Addon, at.Screen, "", SlotTheme(), 0, 0, (float)SlotScale());
+        _enhanceLevelOpen = true;
+    }
+
+    // The tab's UI dropped: closed a hop later unless the tab was built again
+    // (a rebuild drops and builds in one go), or Settings is showing it.
+    private static void ReleaseEnhanceLevel()
+    {
+        if (!_enhanceLevelOpen) return;
+        DispatcherQueueControllerTryEnqueue(() =>
+        {
+            if (!_enhanceLevelOpen || _enhanceLevelChip is not null) return;
+            _enhanceLevelOpen = false;
+            if (EnhanceSettingsAt() is { } at && _settingsScreenAt != at) SlotNative.CloseScreen(at.Addon, at.Screen);
+        });
+    }
+
+    // SyncScreenWindows: the level Enhance's settings screen names, kept.
+    private static void NoteEnhanceLevel(JsonElement list)
+    {
+        if (EnhanceSettingsAt() is not { } at) return;
+        foreach (JsonElement s in list.EnumerateArray())
+        {
+            if (JStr(s, "addon") != at.Addon || JStr(s, "id") != at.Screen) continue;
+            if (s.TryGetProperty("tree", out JsonElement tree) && FindTreeNode(tree, "tierlevel") is { } n)
+            {
+                string text = JStr(n, "text");
+                if (text.Length > 0 && text != _enhanceLevel)
+                {
+                    _enhanceLevel = text;
+                    RenderEnhanceLevel();
+                }
+            }
+            return;
+        }
+    }
+
+    private static JsonElement? FindTreeNode(JsonElement node, string id)
+    {
+        if (node.ValueKind != JsonValueKind.Object) return null;
+        if (JStr(node, "id") == id) return node;
+        foreach (JsonElement child in JArr(node, "children"))
+        {
+            if (FindTreeNode(child, id) is { } hit) return hit;
+        }
+        return null;
     }
 
     // ---- the header's ✦ chevron: the five tools in a flyout ----------------------

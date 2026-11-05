@@ -939,12 +939,18 @@ private struct ChoiceNode: View {
   @State private var value = ""
 
   var body: some View {
+    let options = node.rows("options")
+    // "disabled" (2026-11-04): shown, never chosen (Enhance's quality above the
+    // performance level says what it needs).
+    let off = Set(options.filter { ($0["disabled"] as? Bool) == true }.compactMap { $0["id"] as? String })
     Picker(node.label, selection: Binding(get: { value }, set: { v in
+      guard !off.contains(v) else { return }
       value = v
       SlotStore.shared.send(address, node: node.id, kind: 2, value: v)
     })) {
-      ForEach(node.rows("options").compactMap { $0["id"] as? String }, id: \.self) { id in
-        Text(node.rows("options").first { ($0["id"] as? String) == id }?["text"] as? String ?? id).tag(id)
+      ForEach(options.compactMap { $0["id"] as? String }, id: \.self) { id in
+        Text(options.first { ($0["id"] as? String) == id }?["text"] as? String ?? id).tag(id)
+          .disabled(off.contains(id))
       }
     }
     .font(screenFont(14, window: window))

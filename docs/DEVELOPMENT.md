@@ -2294,7 +2294,9 @@ on the edit's kept pieces, which the host applies as it reads (`frames_keep` / `
 the video model's sheet has **Brighten dark scenes** (`brighten.h`; no model of its own).
 
 Tests: `build/bin/mv_import_tests "[enhance]"` (the engine and runner over fakes: downloads, the
-sheet, the sound pipeline's alignment and mix, the run gate, the editor's cut and Brighten), `build/bin/mv_ai_tests "[enhance],[still]"`
+sheet, the sound pipeline's alignment and mix, the run gate, the editor's cut and Brighten;
+`"[enhance][tier]"` the performance level: Restyle's steps and default quality by level, the
+qualities it gates and the `tierlevel` text the Edit pane's chip shows), `build/bin/mv_ai_tests "[enhance],[still]"`
 (end to end through the host table's rows and FFmpeg, the editor's cut included), `build/bin/mv_tests "[sound],[picture]"`
 (the reader's channels, `sound_writer`, `frame_reader`, `picture_writer`), `python3 -m unittest test_addon_pack.EnhancePackTest
 test_github_release` in `tools/package`. With the model downloaded (from its pinned URL), the

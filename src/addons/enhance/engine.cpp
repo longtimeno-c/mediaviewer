@@ -224,6 +224,7 @@ sheet_view engine::sheet_locked() const {
   v.offers_remove = brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
   v.photo = prefs_.photo;
+  v.level = effective_tier();
   if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove) ||
       (v.photo == photo_target::extend && !v.offers_extend)) {
     v.photo = photo_target::detail;
@@ -257,6 +258,7 @@ sheet_view engine::sheet_locked() const {
     const dl_status st = sp ? dl_->status(k, files_[static_cast<int>(k)]) : dl_status{};
     if (sp && st.state == dl_state::ready) {
       s.spec = sp;
+      level_quality(s.values, *sp, v.level);  // Restyle: the best the level allows
     } else if (!sp) {
       s.missing = "This version of Enhance has no " + std::string(model_noun(k)) + " yet.";
     } else if (st.state == dl_state::downloading || st.state == dl_state::waiting) {
@@ -533,6 +535,9 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
         save_locked();
       }
       post_settings_locked();
+      // An open sheet's Restyle quality follows the level (S9): the options it
+      // gates and the quality it shows and runs.
+      post_sheet_locked();
       return;
     }
     if (kind != MV_SLOT_EVENT_CLICK) return;
@@ -584,6 +589,11 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   const model_spec* sp = spec(id->first);
   const knob* kb = sp ? sp->find(id->second) : nullptr;
   if (!kb) return;
+  if (id->first == model_kind::restyle && kb->id == "quality" && v->k == json::kind::string &&
+      quality_rank(v->s) > policy_of(effective_tier()).max_quality) {
+    post_sheet_locked();  // above the level: not kept, and the sheet shows what is
+    return;
+  }
   if (auto ok = check_knob_value(*kb, *v)) {
     // Remembered for that kind of target; the host already shows the value.
     prefs_.of(id->first)[kb->id] = std::move(*ok);

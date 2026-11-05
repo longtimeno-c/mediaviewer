@@ -1734,6 +1734,169 @@ TEST_CASE("enhance: the performance level is chosen in Settings and kept", "[enh
   CHECK(mv::enhance::recommend_tier(12, 32 * GiB, true) == mv::enhance::tier::maxxed);
 }
 
+// docs/plans/edit-refresh.md S9: quality over speed by level, the level's
+// chip text, and Restyle's qualities above the level shown disabled with the
+// level they need.
+TEST_CASE("enhance: each level's Restyle steps, its best quality, and the qualities it gates", "[enhance][tier]") {
+  using mv::enhance::tier;
+  // Steps by level (owner 2026-11-04): Potato 20, Intel 25, Default 40, Maxxed 50.
+  CHECK(policy_of(tier::potato).restyle_steps == 20);
+  CHECK(policy_of(tier::intel).restyle_steps == 25);
+  CHECK(policy_of(tier::standard).restyle_steps == 40);
+  CHECK(policy_of(tier::maxxed).restyle_steps == 50);
+  CHECK(policy_of(tier::potato).max_quality == 0);
+  CHECK(policy_of(tier::intel).max_quality == 0);
+  CHECK(policy_of(tier::standard).max_quality == 1);
+  CHECK(policy_of(tier::maxxed).max_quality == 2);
+  CHECK(restyle_params{}.text_guidance == 7.5f);  // the words' guidance does not move with the level
+  CHECK(job_request{}.policy.restyle_steps == 40);  // a request with no level runs as Default
+  CHECK(tier_for_quality(quality_rank("standard")) == tier::potato);
+  CHECK(tier_for_quality(quality_rank("high")) == tier::standard);
+  CHECK(tier_for_quality(quality_rank("best")) == tier::maxxed);
+  CHECK(level_words(tier::standard) == "Default level");
+
+  // The quality a section starts at: the best the level allows, unless the
+  // person chose one it allows.
+  const auto text = mv::test::read_bytes(MV_ENHANCE_RESTYLE_SPEC);
+  const auto spec = parse_spec(std::string_view(reinterpret_cast<const char*>(text.data()), text.size()),
+                               model_kind::restyle);
+  REQUIRE(spec);
+  const auto start = [&](tier t, const char* chosen) {
+    std::map<std::string, mv::json::value> values;
+    if (chosen) values["quality"] = *mv::json::parse(std::string("\"") + chosen + "\"");
+    level_quality(values, *spec, t);
+    return values.at("quality").s;
+  };
+  CHECK(start(tier::potato, nullptr) == "standard");
+  CHECK(start(tier::intel, nullptr) == "standard");
+  CHECK(start(tier::standard, nullptr) == "high");  // Default -> High
+  CHECK(start(tier::maxxed, nullptr) == "best");
+  CHECK(start(tier::maxxed, "standard") == "standard");  // a choice the level allows is kept
+  CHECK(start(tier::standard, "best") == "high");        // one above it is the level's best
+  CHECK(start(tier::potato, "high") == "standard");
+  CHECK(start(tier::standard, "nonsense") == "high");
+  {
+    std::map<std::string, mv::json::value> values;  // another kind is left alone
+    model_spec still = *spec;
+    still.kind = model_kind::still;
+    level_quality(values, still, tier::maxxed);
+    CHECK(values.empty());
+  }
+
+  // The sheet: options above the level are there, disabled, with the level they need.
+  const auto options = [&](tier t) {
+    sheet_view v;
+    v.item = item_kind::still;
+    v.offers_restyle = true;
+    v.photo = photo_target::restyle;
+    v.level = t;
+    sheet_section sec;
+    sec.kind = model_kind::restyle;
+    sec.spec = &*spec;
+    level_quality(sec.values, *spec, t);
+    v.sections.push_back(sec);
+    parsed tree(sheet_tree(v));
+    const mv::json::value* q = tree.node("k.restyle.quality");
+    REQUIRE(q);
+    std::vector<std::string> out;
+    for (const mv::json::value& o : q->find("options")->a) {
+      const mv::json::value* d = o.find("disabled");
+      out.push_back(*o.str("text") + (d && d->b ? " [off]" : ""));
+    }
+    out.push_back("= " + *q->str("value"));
+    return out;
+  };
+  CHECK(options(tier::potato) == std::vector<std::string>{"Standard", "High (needs Default level) [off]",
+                                                          "Best (needs Maxxed level) [off]", "= standard"});
+  CHECK(options(tier::intel) == options(tier::potato));
+  CHECK(options(tier::standard) ==
+        std::vector<std::string>{"Standard", "High", "Best (needs Maxxed level) [off]", "= high"});
+  CHECK(options(tier::maxxed) == std::vector<std::string>{"Standard", "High", "Best", "= best"});
+
+  // Settings names the level in effect, as the Edit pane's chip shows it.
+  tier_view tv;
+  tv.recommended = tier::maxxed;
+  CHECK(parsed(settings_tree({}, tv)).text("tierlevel") == "Maxxed level");  // Automatic
+  tv.chosen = "potato";
+  CHECK(parsed(settings_tree({}, tv)).text("tierlevel") == "Potato level");
+  tv.chosen = "default";
+  CHECK(parsed(settings_tree({}, tv)).text("tierlevel") == "Default level");
+}
+
+TEST_CASE("enhance: the sheet's Restyle quality follows the level", "[enhance][tier]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0003.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/restyle/model.json", R"json({
+    "kind": "restyle", "name": "Restyle", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": false,
+    "knobs": [{"id": "prompt", "label": "Change", "type": "text", "default": ""},
+              {"id": "quality", "label": "Quality", "type": "choice", "default": "standard",
+               "options": [{"id": "standard", "text": "Standard"}, {"id": "high", "text": "High"},
+                           {"id": "best", "text": "Best"}]}],
+    "io": {"runner": "diffusion", "edge": 512, "steps": 20}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "restyle/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "CreativeML OpenRAIL-M"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  f.eng->event(kSettingsScreen, "install.restyle", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::restyle).state == dl_state::ready; }));
+  f.eng->settings_opened(1);
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"potato\"");
+  CHECK(parsed(f.host.tree(kSettingsScreen)).text("tierlevel") == "Potato level");
+  f.eng->sheet_opened(2, utf8(photo));
+  f.eng->event(kSheetScreen, "photo", MV_SLOT_EVENT_CHANGE, "\"restyle\"");
+  const auto quality = [&] {
+    const parsed t(f.host.tree(kSheetScreen));
+    const mv::json::value* q = t.node("k.restyle.quality");
+    return q ? *q->str("value") : std::string();
+  };
+  CHECK(quality() == "standard");  // Potato shows Restyle with Standard only
+  // Best above the level is not kept.
+  f.eng->event(kSheetScreen, "k.restyle.quality", MV_SLOT_EVENT_CHANGE, "\"best\"");
+  CHECK(f.eng->current_prefs().of(model_kind::restyle).count("quality") == 0);
+  CHECK(quality() == "standard");
+  // Default starts at High; a quality the person chose is theirs while the level allows it.
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"default\"");
+  f.eng->sheet_opened(3, utf8(photo));
+  CHECK(quality() == "high");
+  f.eng->event(kSheetScreen, "k.restyle.quality", MV_SLOT_EVENT_CHANGE, "\"standard\"");
+  f.eng->sheet_opened(4, utf8(photo));
+  CHECK(quality() == "standard");
+  f.eng->event(kSheetScreen, "k.restyle.quality", MV_SLOT_EVENT_CHANGE, "\"best\"");
+  CHECK(f.eng->current_prefs().of(model_kind::restyle).at("quality").s == "standard");
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"maxxed\"");
+  f.eng->event(kSheetScreen, "k.restyle.quality", MV_SLOT_EVENT_CHANGE, "\"best\"");
+  f.eng->sheet_opened(5, utf8(photo));
+  CHECK(quality() == "best");
+  // Back down to Potato: the kept Best shows as the level's best, and stays kept.
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"potato\"");
+  f.eng->sheet_opened(6, utf8(photo));
+  CHECK(quality() == "standard");
+  CHECK(f.eng->current_prefs().of(model_kind::restyle).at("quality").s == "best");
+  // The level changed in Settings while the sheet is open: the sheet follows
+  // at once, its options and the quality it shows (and runs).
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"maxxed\"");
+  CHECK(quality() == "best");
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"intel\"");
+  CHECK(quality() == "standard");
+  {
+    const parsed t(f.host.tree(kSheetScreen));
+    const mv::json::value* best = nullptr;
+    for (const mv::json::value& o : t.node("k.restyle.quality")->find("options")->a) {
+      if (*o.str("id") == "best") best = &o;
+    }
+    REQUIRE(best);
+    REQUIRE(best->find("disabled"));
+    CHECK(best->find("disabled")->b);
+  }
+}
+
 TEST_CASE("restyle: the shipped model's qualities", "[enhance][restyle]") {
   const auto text = mv::test::read_bytes(MV_ENHANCE_RESTYLE_SPEC);
   const auto spec = parse_spec(std::string_view(reinterpret_cast<const char*>(text.data()), text.size()),
