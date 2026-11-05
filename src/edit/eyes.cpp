@@ -46,7 +46,15 @@ eye_pts eyes_of(const image::linear_image& img, const face_landmarks& lm) noexce
   return e;
 }
 
-float one_eye(const image::linear_image& img, float cx, float cy, float d) noexcept {
+// One eye's patch about (cx, cy), sized by the eye distance `d`: the spread of
+// lightness (10th to 90th percentile) and the share of its rows with a dark
+// pixel in the middle third (the iris, or a line of lashes).
+struct eye_read {
+  float spread = 0.0f;
+  float rows = 0.0f;
+};
+
+eye_read read_eye(const image::linear_image& img, float cx, float cy, float d) noexcept {
   const int hw = std::max(2, static_cast<int>(0.28f * d)), hh = std::max(2, static_cast<int>(0.16f * d));
   std::vector<float> v;
   v.reserve(static_cast<std::size_t>((2 * hw + 1) * (2 * hh + 1)));
@@ -59,7 +67,7 @@ float one_eye(const image::linear_image& img, float cx, float cy, float d) noexc
   std::sort(sorted.begin(), sorted.end());
   const float lo = sorted[sorted.size() / 10], hi = sorted[sorted.size() * 9 / 10];
   const float spread = hi - lo;
-  if (spread <= 1e-4f) return 0.0f;
+  if (spread <= 1e-4f) return {};
   const float dark = lo + 0.3f * spread;
   // How many rows have a dark pixel near the middle third (the iris), of all.
   int rows = 0;
@@ -71,7 +79,12 @@ float one_eye(const image::linear_image& img, float cx, float cy, float d) noexc
       }
     }
   }
-  return spread * static_cast<float>(rows) / static_cast<float>(2 * hh + 1);
+  return {spread, static_cast<float>(rows) / static_cast<float>(2 * hh + 1)};
+}
+
+float one_eye(const image::linear_image& img, float cx, float cy, float d) noexcept {
+  const eye_read r = read_eye(img, cx, cy, d);
+  return r.spread * r.rows;
 }
 
 }  // namespace
@@ -81,6 +94,74 @@ float eye_openness(const image::linear_image& img, const face_landmarks& lm) noe
   const eye_pts e = eyes_of(img, lm);
   if (e.d < 4.0f) return 0.0f;
   return std::min(one_eye(img, e.rx, e.ry, e.d), one_eye(img, e.lx, e.ly, e.d));
+}
+
+namespace {
+// The share of an eye patch's rows (one_eye's patch) with a pixel in the
+// middle third darker than 55 % of the patch's median lightness (its skin): the
+// iris and lids of an open eye, a line of lashes of a shut one. -1 when the
+// patch has nothing dark at all (nothing to read).
+float dark_rows(const image::linear_image& img, float cx, float cy, float d) {
+  const int hw = std::max(2, static_cast<int>(0.28f * d)), hh = std::max(2, static_cast<int>(0.16f * d));
+  std::vector<float> v;
+  v.reserve(static_cast<std::size_t>((2 * hw + 1) * (2 * hh + 1)));
+  for (int y = -hh; y <= hh; ++y) {
+    for (int x = -hw; x <= hw; ++x) {
+      v.push_back(lightness(at(img, static_cast<int>(cx) + x, static_cast<int>(cy) + y)));
+    }
+  }
+  std::vector<float> sorted = v;
+  std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
+  const float dark = 0.55f * sorted[sorted.size() / 2];
+  int rows = 0;
+  for (int y = 0; y <= 2 * hh; ++y) {
+    for (int x = hw - hw / 3; x <= hw + hw / 3; ++x) {
+      if (v[static_cast<std::size_t>(y * (2 * hw + 1) + x)] < dark) {
+        ++rows;
+        break;
+      }
+    }
+  }
+  if (rows == 0) return -1.0f;
+  return static_cast<float>(rows) / static_cast<float>(2 * hh + 1);
+}
+}  // namespace
+
+bool eyes_look_shut(const image::linear_image& img, const face_landmarks& lm) noexcept {
+  if (!img.valid()) return false;
+  const eye_pts e = eyes_of(img, lm);
+  if (e.d < 8.0f) return false;  // too small to tell
+  try {
+    const float r = dark_rows(img, e.rx, e.ry, e.d), l = dark_rows(img, e.lx, e.ly, e.d);
+    // A patch with nothing dark is not read as shut (no eye there to read).
+    auto shut = [](float rows) { return rows >= 0.0f && rows < kShutRows; };
+    return shut(r) || shut(l);
+  } catch (...) {
+    return false;  // out of memory: no guess
+  }
+}
+
+std::array<float, 4> face_region(const std::array<float, 4>& box, const face_landmarks& lm, float w,
+                                 float h) noexcept {
+  float x0 = box[0] - kFaceRegionGrow * box[2], y0 = box[1] - kFaceRegionGrow * box[3];
+  float x1 = box[0] + box[2] * (1.0f + kFaceRegionGrow), y1 = box[1] + box[3] * (1.0f + kFaceRegionGrow);
+  if (w > 0.0f && h > 0.0f) {
+    // transfer_face's ellipse: about the nose nudged toward the eyes, half
+    // axes 1.05 and 1.25 eye distances, turned with the eye line.
+    const float rx = lm[0] * w, ry = lm[1] * h, lx = lm[2] * w, ly = lm[3] * h;
+    const float vx = lx - rx, vy = ly - ry, d = std::sqrt(vx * vx + vy * vy);
+    if (d > 0.0f && std::isfinite(d)) {
+      const float c = vx / d, s = vy / d, a = 1.05f * d, b = 1.25f * d;
+      const float ex = (rx + lx) * 0.5f, ey = (ry + ly) * 0.5f;
+      const float cx = lm[4] * w + (ex - lm[4] * w) * 0.1f, cy = lm[5] * h + (ey - lm[5] * h) * 0.1f;
+      const float hx = std::sqrt(a * a * c * c + b * b * s * s), hy = std::sqrt(a * a * s * s + b * b * c * c);
+      x0 = std::min(x0, (cx - hx) / w), x1 = std::max(x1, (cx + hx) / w);
+      y0 = std::min(y0, (cy - hy) / h), y1 = std::max(y1, (cy + hy) / h);
+    }
+  }
+  x0 = std::clamp(x0, 0.0f, 1.0f), y0 = std::clamp(y0, 0.0f, 1.0f);
+  x1 = std::clamp(x1, 0.0f, 1.0f), y1 = std::clamp(y1, 0.0f, 1.0f);
+  return {x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
 }
 
 namespace {

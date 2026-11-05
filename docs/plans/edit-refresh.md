@@ -446,6 +446,35 @@ run: the real LaMa on a two-blob photo (the hidden `[.remove-model]` case still 
 stroke); the "Quality over speed" second pass for large boxes is not part of this slice (Q built
 it, below).
 
+**S8 built (2026-11-05):** Faces on the canvas, both hosts. Portable: `shell/faces_tool.{h,cpp}`
+(+ `test_faces_tool`): the cards from the pack's answer and the decoded still (thumbnails,
+`edit::eyes_look_shut`), choosing (every face starts chosen), `face_at`, `apply_faces` onto
+`edit_view` (`tool_face_*`, appended), `kFaceActions` (the per-face fixes as data: Open eyes only
+where shut, Improve face; S10 appends Restore), `pack_faces_op`. `edit::face_region` is a face's
+edit region (the drawn box). `addon::media::fix_faces` / `fix_faces_in` take a `faces_mask`
+(`open_closed_eyes` / `improve_faces` gained it too) and fix each chosen face on a crop written
+back inside its region, faded at its edge: `mv_ai_tests "[faces-mask]"` checks 0 pixels differ
+outside the chosen boxes for Open eyes, Improve and Do all, and `faces_mask_of` matches the
+canvas's boxes to the run's answer. The pack's `eyes_json` gains `"name"` and `"photos"`. Overlay:
+brackets, numbered badge, wash, name pill, dashed while busy. Bar: `tool_bar_action` 6–8 (Open
+eyes, Improve, Do all on the chosen faces); `eyes` / `spots` carry faces / chosen. Mac:
+`FacesPanelView.swift` (`FacesStore`, `mv_chrome_faces_panel` / `_face_card` / `_faces_op`),
+`-facesFetch`, `-facesRun:action:`, the hub's card and the rail arm the tool. Windows:
+`IslandHost.Faces.cs` (`SetFacesPanel`, `chrome_faces_args` 40 / `chrome_face_card_args` 48
+bytes), `chrome_cmd_faces` = **1100** (not reserved by this plan; renumber on a collision),
+`main.cpp` `faces_fetch` / `adjust_faces` (the twin of the Mac's `adjustFaces:`, through the new
+`mv_adjust_faces`, writing the same `-eyes.jpg` / `-faces.jpg`). Not run here: either app, both PR 1
+gates, the 0-presents check with Faces armed, the real pack on a real photo (the shut-eye guess is
+tested on drawn faces only), and "the Windows adjust_faces gives the same -eyes.jpg as the Mac on a
+shared fixture" (both call the same `fix_faces`; the Windows native C++ is not compiled here, C#
+is). S8 review: "Try again" re-armed the tool (a toggle: it put it down) and
+"Turn on People…" left the panel spinning on "Looking for faces…" with nothing reading; both now
+send the appended `faces_op::retry` (and the refused states offer *Check again*), a refused or
+failed read is read again on re-arm (`needs_read`), a cancelled Mac read still lands (failed), a
+fix left running on another photo no longer marks the next photo's faces busy (`run_item`), the
+panel's rows light their boxes (`faces_op::hover`), and the Mac's per-pass panel poll no longer
+builds a whole `tool_bar`.
+
 ### 4.1 Tool mode (shared, portable)
 
 **`src/shell/commands.h`.**

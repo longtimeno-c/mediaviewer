@@ -14,7 +14,10 @@
 //     brush erases (two-tone so it reads on any photo);
 //   * the size label ("48 px") for kToolLabelMs after a change;
 //   * the red-eye fixes (a ring with a check; a cross on the one a click
-//     would remove) and a kToolPulseMs pulse where a fix just landed.
+//     would remove) and a kToolPulseMs pulse where a fix just landed;
+//   * S8: the Faces tool's boxes, one per face (corner brackets, a numbered
+//     badge the panel's list shares, a wash and the accent when chosen, the
+//     person's name below, a dashed edge while a fix runs on it).
 //
 // Colours come from the theme (input_snapshot::home.accent) or are the ring's
 // black and white. Nothing here presents on its own: the lab keeps drawing
@@ -48,6 +51,32 @@ namespace detail {
 [[nodiscard]] inline ImU32 rgba(std::uint32_t c, float alpha_scale = 1.0f) noexcept {
   const auto a = static_cast<int>(std::clamp(static_cast<float>(c & 0xFFu) * alpha_scale, 0.0f, 255.0f));
   return IM_COL32((c >> 24) & 0xFFu, (c >> 16) & 0xFFu, (c >> 8) & 0xFFu, a);
+}
+
+// The four corners of a box as brackets, each `len` along both sides.
+inline void corner_brackets(ImDrawList* fg, ImVec2 a, ImVec2 b, float len, ImU32 col, float thick) noexcept {
+  const ImVec2 pts[4][3] = {
+      {ImVec2(a.x, a.y + len), a, ImVec2(a.x + len, a.y)},
+      {ImVec2(b.x - len, a.y), ImVec2(b.x, a.y), ImVec2(b.x, a.y + len)},
+      {ImVec2(b.x, b.y - len), b, ImVec2(b.x - len, b.y)},
+      {ImVec2(a.x + len, b.y), ImVec2(a.x, b.y), ImVec2(a.x, b.y - len)},
+  };
+  for (const auto& p : pts) fg->AddPolyline(p, 3, col, 0, thick);
+}
+
+// A dashed rectangle (a fix running on the face).
+inline void dashed_rect(ImDrawList* fg, ImVec2 a, ImVec2 b, float dash, ImU32 col, float thick) noexcept {
+  const ImVec2 corners[5] = {a, ImVec2(b.x, a.y), b, ImVec2(a.x, b.y), a};
+  for (int s = 0; s < 4; ++s) {
+    const ImVec2 p = corners[s], q = corners[s + 1];
+    const float len = std::hypot(q.x - p.x, q.y - p.y);
+    if (len <= 0.0f) continue;
+    const float dx = (q.x - p.x) / len, dy = (q.y - p.y) / len;
+    for (float t = 0.0f; t < len; t += 2.0f * dash) {
+      const float e = std::min(t + dash, len);
+      fg->AddLine(ImVec2(p.x + dx * t, p.y + dy * t), ImVec2(p.x + dx * e, p.y + dy * e), col, thick);
+    }
+  }
 }
 
 inline void dashed_circle(ImDrawList* fg, ImVec2 c, float r, ImU32 col, float thick) noexcept {
@@ -119,6 +148,48 @@ void draw_tool_overlay(const edit_view& v, float pw, float ph, float zoom, float
     const ImVec2 c = to_screen(v.tool_pulse[0] * pw, v.tool_pulse[1] * ph);
     const float r = std::max(v.tool_pulse[2] * long_side * zoom, 4.0f * scale) * (1.0f + 0.6f * t);
     fg->AddCircle(c, r, detail::rgba(accent, 1.0f - t), 0, 2.0f * scale);
+  }
+  // S8: the Faces tool's boxes. Chosen faces wear the accent and a faint
+  // wash; the rest white brackets, so the photo stays readable. The badge's
+  // number is the panel's.
+  for (std::uint32_t i = 0; i < v.tool_face_count && i < static_cast<std::uint32_t>(kToolFaces); ++i) {
+    const ImVec2 p0 = to_screen(v.tool_faces[i][0] * pw, v.tool_faces[i][1] * ph);
+    const ImVec2 p1 = to_screen((v.tool_faces[i][0] + v.tool_faces[i][2]) * pw,
+                                (v.tool_faces[i][1] + v.tool_faces[i][3]) * ph);
+    const ImVec2 a(std::min(p0.x, p1.x), std::min(p0.y, p1.y)), b(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
+    if (b.x - a.x < 2.0f || b.y - a.y < 2.0f) continue;
+    const bool chosen = ((v.tool_face_chosen >> i) & 1u) != 0u;
+    const bool hover = v.tool_face_hover == static_cast<std::int8_t>(i);
+    const bool busy = ((v.tool_face_busy >> i) & 1u) != 0u;
+    const float round = 6.0f * scale;
+    if (chosen) fg->AddRectFilled(a, b, detail::rgba(accent, 0.10f), round);
+    if (hover) fg->AddRect(a, b, IM_COL32(255, 255, 255, chosen ? 90 : 130), round, 0, 1.0f * scale);
+    const float len = std::clamp(std::min(b.x - a.x, b.y - a.y) * 0.24f, 6.0f * scale, 28.0f * scale);
+    const float thick = (hover ? 3.0f : 2.0f) * scale;
+    detail::corner_brackets(fg, a, b, len, dark, thick + 1.5f * scale);
+    detail::corner_brackets(fg, a, b, len, chosen ? accent_full : IM_COL32(255, 255, 255, hover ? 255 : 200), thick);
+    if (busy) detail::dashed_rect(fg, a, b, 5.0f * scale, accent_full, 1.5f * scale);
+    // The badge on the top-left corner: the face's number.
+    const float br = 9.0f * scale;
+    const ImVec2 bc(a.x + br * 0.35f, a.y + br * 0.35f);
+    fg->AddCircleFilled(bc, br + 1.5f * scale, dark);
+    fg->AddCircleFilled(bc, br, chosen ? accent_full : IM_COL32(30, 30, 30, 220));
+    if (!chosen) fg->AddCircle(bc, br, light, 0, 1.0f * scale);
+    char num[4];
+    std::snprintf(num, sizeof(num), "%u", i + 1);
+    const ImVec2 ns = ImGui::CalcTextSize(num);
+    fg->AddText(ImVec2(bc.x - ns.x * 0.5f, bc.y - ns.y * 0.5f), IM_COL32(255, 255, 255, 255), num);
+    // The person's name in a pill under the box.
+    if (v.tool_face_names[i][0] != '\0') {
+      const char* name = v.tool_face_names[i];
+      const ImVec2 ts = ImGui::CalcTextSize(name);
+      const float pad = 6.0f * scale;
+      const float cx = (a.x + b.x) * 0.5f;
+      const ImVec2 pa(cx - ts.x * 0.5f - pad, b.y + 4.0f * scale);
+      const ImVec2 pb(cx + ts.x * 0.5f + pad, b.y + 4.0f * scale + ts.y + pad * 0.6f);
+      fg->AddRectFilled(pa, pb, IM_COL32(0, 0, 0, 170), (pb.y - pa.y) * 0.5f);
+      fg->AddText(ImVec2(pa.x + pad, pa.y + pad * 0.3f), chosen ? accent_full : light, name);
+    }
   }
   // The ring under the pointer, in screen pixels.
   if (v.tool_ring_px > 0.0f && !v.tool_dim) {

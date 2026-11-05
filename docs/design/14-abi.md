@@ -522,6 +522,11 @@ nothing of the core and reaches it only through the host function table.
   `mv_eyes_json` (`mediaviewer_addon.h`, worker thread) hands the Windows exe the same answer
   with no candidates, for the red-eye ring's snap and Find eyes; `MV_ERR_NOT_FOUND` without the
   pack, `MV_ERR_INVALID_ARG` while People is off or when `cap` is short (`needed` says how much).
+  S8: `mv_adjust_faces(path, fix, boxes, count, note…)` runs the Faces tool's fix (`fix` -1 Do
+  all, 0 Open eyes, 1 Improve face; appended values follow `addon::media::face_fix`) on only the
+  faces whose boxes the canvas chose (x, y, w, h quads, matched to this run's answer; NULL every
+  face), worker thread, and returns the note. The pack's `eyes_json` answer gains `"name"` and
+  `"photos"` per face (appended keys).
 - **Restore faces** (docs/plans/edit-refresh.md S10, [29](29-enhance.md)). `mv_ai_api` appends
   `faces_json` (after `eyes_json`): the faces and five landmarks in pixels handed over (8-bit RGB,
   no path), and with `other_rgb` (the same picture changed) each face's People cosine to the face

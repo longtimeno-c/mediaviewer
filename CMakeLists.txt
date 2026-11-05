@@ -907,6 +907,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/remove_brush.h
   src/shell/brush_mask.cpp
   src/shell/brush_mask.h
+  src/shell/faces_tool.cpp
+  src/shell/faces_tool.h
   src/shell/trim_state.cpp
   src/shell/trim_state.h
   src/shell/open_request.cpp
@@ -1226,6 +1228,8 @@ if(MV_BUILD_TESTS)
     tests/test_remove_brush.cpp
     src/shell/remove_brush.cpp
     src/shell/brush_mask.cpp
+    tests/test_faces_tool.cpp
+    src/shell/faces_tool.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp

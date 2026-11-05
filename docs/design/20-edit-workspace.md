@@ -131,10 +131,10 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
   `rail_pick`). A window too narrow for any inspector beside the canvas (`clamp_inspector`
   returns 0) folds it too, and unfolds when it is wide enough again. A tab's own key unfolds a
   folded inspector rather than closing it. Closing forgets the fold.
-- **Tools:** Remove and Red-eye are canvas tools ("Canvas tools" below): a click arms one (Remove
-  on the Enhance tab, Red-eye on Adjust), a second click puts it down, and the armed one wears the
-  selection. Faces opens the Enhance tab and Extend Enhance's docked panel on Extend (S5) until
-  S8 / S6 make them canvas tools too.
+- **Tools:** Remove, Red-eye and Faces are canvas tools ("Canvas tools" below): a click arms one
+  (Remove and Faces on the Enhance tab, Red-eye on Adjust), a second click puts it down, and the
+  armed one wears the selection. Extend opens Enhance's docked panel on Extend (S5) until S6
+  makes it a canvas tool too.
 - **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
   keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
@@ -159,10 +159,10 @@ each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, 
 *Needs Enhance*, *Needs People*, *Working…*) from the edit view's wand bits
 (`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
 the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Choose a
-frame* (Extend), *Open closed eyes* and *Improve faces* (the Mac; Windows has Open closed eyes, its
-Improve faces twin is S8's). The Faces card also has **Restore faces…** on a row of its own
-(docs/plans/edit-refresh.md S10; both hosts): Enhance's docked panel on its `faces` tool, drawn under
-the Faces card (the card keeps Open closed eyes), or without it Enhance's `faces` command, its sheet
+frame* (Extend), *Choose faces* (S8: arms the Faces tool; its chip reads *Choosing* and the
+button *Done* while it is armed, and the Faces panel leads the tab). The Faces card also has
+**Restore faces…** on a row of its own (docs/plans/edit-refresh.md S10; both hosts): Enhance's
+docked panel on its `faces` tool, drawn under the Faces card (the card keeps Choose faces), or without it Enhance's `faces` command, its sheet
 started on Restore faces ([29](29-enhance.md) "Restore faces"); enabled by `kWandRestoreFaces`
 (1024: Enhance has that command); the ✦ popover / `Flyout` lists it as a row after Faces while
 Enhance is installed. *Enhance image* offers its five models: Sharpen & restore, Natural,
@@ -200,7 +200,7 @@ overlapping tiles; quality over speed) is in
 
 docs/plans/edit-refresh.md S3. A **canvas tool** is what a press on the photo does while it is armed
 (`shell/canvas_tool.h`, one model on both hosts): the **Remove brush**, **red-eye** and the
-**white-balance picker** today (Faces and Extend are S8's and S6's). The Adjust pane's picks, the
+**white-balance picker**, and **Faces** (S8; Extend is S6's). The Adjust pane's picks, the
 rail, the Enhance tab's cards, the ✦ popover / Windows `Flyout`, `B` and the Edit menu all arm the
 same state; it is the host's, not the Colour pane's, so the brush and the red-eye ring work on any
 tab and before the working image is built (the white-balance picker alone needs it, and says so).
@@ -264,6 +264,35 @@ animation or with the workspace closed it goes down.
   ring and a check, and the one under the pointer a cross: **a click on a fix takes it off** (one
   step). **Find eyes** fixes every detected eye at least 12 % red as **one** undo step
   (`find_red_eyes`, on the pool); without People it says how to turn it on.
+- **Faces** (docs/plans/edit-refresh.md S8, `shell/faces_tool.h`): armed, the photo's faces are
+  read once per item on the pool (the pack's `eyes_json` with no candidates, then the still
+  decoded for each face's thumbnail and `edit::eyes_look_shut`). The canvas draws one box per
+  face: its **edit region** (`edit::face_region`: the detector's box grown 12 % a side, joined
+  with the whole-face ellipse), corner brackets, a numbered badge the panel shares, the person's
+  People name in a pill below, the accent and a faint wash when chosen, a dashed edge while a fix
+  runs on it. Every face starts chosen; **a click on a box chooses it or leaves it out** (the
+  pointer is a hand over a box). The bar reads "3 faces · 2 chosen" · Open eyes · Improve ·
+  **Do all** · Done, on the chosen faces. The **Faces panel** (Mac `FacesPanelView.swift`,
+  Windows `IslandHost.Faces.cs`) sits first in the Enhance tab while the tool is armed: each
+  face's thumbnail (a click toggles it), its name from People (or *Unnamed person* / *Not in
+  People yet*), "from 37 photos of Anna" (People's other stills of them), an *Eyes closed* tag,
+  and its own fixes, **Open eyes** (only where the eyes look shut) and **Improve face**; then
+  **Do all** (each chosen face's best fix in one file: a clearly better face of the same person,
+  else open eyes where they are shut), All / None. Without Local search it offers **Get Local
+  search…**; with People off, **Turn on People…** (Settings → Add-ons → Local search, where People
+  is turned on), each with **Check again**; a failed read offers **Try again**. A refused or failed
+  read is read again on the next arm, a walk, or those buttons (`faces_tool::needs_read`). Hovering
+  a face's row lights its box on the photo. A fix left running when the photo changes stays marked
+  on its own photo only (`faces_tool::run_item`). The fixes are a table (`shell::kFaceActions`, `addon::media::face_fix`): a
+  fix is one more row there and in the chromes' tables (S10's Restore faces). A fix changes
+  **only the chosen faces**: the run asks the pack again with the same moment's frames, matches
+  the chosen boxes to that answer (`faces_mask_of`, intersection over union ≥ 0.3) and passes a
+  `faces_mask`; each face is fixed on a crop and written back inside its edit region only, faded
+  to nothing at its edge, so **every pixel outside the chosen boxes is bit for bit the
+  original's** (`mv_ai_tests "[faces-mask]"`). Results are `<stem>-eyes.jpg` (Open eyes) or
+  `<stem>-faces.jpg` (Improve, Do all), beside the photo, never over it. Windows reaches it all
+  through `mv_eyes_json` and `mv_adjust_faces` (`main.cpp` `faces_fetch`, `adjust_faces`, the twin
+  of the Mac's `-facesFetch` / `-adjustFaces:` / `-facesRun:action:`).
 - **Presents:** the overlay animates only to its deadlines (the label, the pulse): the labs draw
   until then and once more to clear. An armed tool with the pointer still presents nothing.
 
@@ -396,7 +425,10 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
   redo); a split-screen before/after.
 - Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's
   "Discard 3 strokes?" in the bar is not built); Undo of an earlier rotate or Reset with strokes
-  kept also forgets them. Faces and Extend as canvas tools (S8, S6).
+  kept also forgets them. Extend as a canvas tool (S6).
+- Faces: the panel cannot
+  rename a person (People's own screen does); *Turn on People…* opens the settings rather than
+  turning People on in place.
 - Windows: a rebuilt D3D11 device drops the brush texture; the strokes reappear at the next brush
   change (the host is not told).
 - Persisting a still's stack across sessions.

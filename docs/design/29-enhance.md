@@ -477,6 +477,19 @@ and **0.6 s with GFPGAN** (the model alone 1.3 s / 0.6 s on the first run). The 
 (load average 40) the Python guard run took a median 4.4 s / 2.2 s for the model alone. Windows is
 not measured.
 
+## Faces in the Enhance tab (edit-refresh S8)
+
+The Enhance tab's **Faces** card is not this add-on: it arms the host's Faces tool
+([20](20-edit-workspace.md) "Canvas tools"), whose fixes are the host's own pixel work on real
+photos (`edit/eyes.h` through `addon::media::fix_faces`, with donors from the AI pack's People),
+never a generated face. A box per face on the canvas, a click chooses which faces change, and the
+Faces panel lists each face (thumbnail, People's name, "from 37 photos of Anna") with **Open eyes**
+(only where they look shut), **Improve face** and **Do all**. Only the chosen faces change: every
+pixel outside their boxes is the original's (`mv_ai_tests "[faces-mask]"`). Results are
+`<stem>-eyes.jpg` / `<stem>-faces.jpg`, new files like every Enhance result. The fixes are a table
+(`addon::media::face_fix`, `shell::kFaceActions`), so a model-based **Restore faces** (S10, GFPGAN
+with a People guard, owner call C) is one more row.
+
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |

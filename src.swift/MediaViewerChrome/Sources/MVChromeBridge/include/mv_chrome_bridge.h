@@ -1141,12 +1141,53 @@ typedef struct mv_tool_bar_view {
 } mv_tool_bar_view;
 bool mv_chrome_tool_bar(mv_tool_bar_view* out);
 // The bar's buttons (shell::tool_bar_action): 0 Done (the tool goes down, the
-// strokes stay), 1 Undo, 2 Redo, 3 Clear, 4 Remove / apply, 5 Find eyes.
+// strokes stay), 1 Undo, 2 Redo, 3 Clear, 4 Remove / apply, 5 Find eyes;
+// S8, on the chosen faces: 6 Open eyes, 7 Improve, 8 Do all.
 void mv_chrome_tool_action(int32_t action);
 // The size slider, in points (the label fades in beside the ring).
 void mv_chrome_tool_set_size(float px);
 // The Paint / Erase toggle.
 void mv_chrome_tool_set_erase(int32_t on);
+
+// ---- docs/plans/edit-refresh.md S8: the Faces tool's panel (FacesPanelView) -------
+//
+// While the Faces tool is armed the canvas draws a box per face and the
+// Enhance tab lists them (shell/faces_tool.h): a thumbnail, the person's name
+// from People and "from 37 photos of Anna", each face's fixes (Open eyes only
+// where the eyes look shut), Do all. Re-read the cards when `revision` moves.
+typedef struct mv_faces_panel_view {
+  int32_t armed;           // the Faces tool is armed on a still
+  int32_t status;          // shell::faces_status: 0 idle, 1 looking, 2 ready, 3 no Local search,
+                           // 4 People off, 5 failed
+  int32_t count;           // faces (at most 16)
+  int32_t chosen;          // bit i: face i is chosen
+  int32_t running;         // a fix is on the pool
+  int32_t running_face;    // the face it runs on, -1 the chosen faces
+  int32_t running_action;  // shell::face_action, -1 Do all
+  uint32_t revision;       // moves with every change the panel shows
+} mv_faces_panel_view;
+bool mv_chrome_faces_panel(mv_faces_panel_view* out);
+typedef struct mv_face_card_view {
+  int64_t person;   // People's cluster, 0 none
+  int32_t photos;   // People's other photos of them
+  int32_t actions;  // bit per shell::face_action the face offers (0 Open eyes, 1 Improve face)
+  int32_t shut;     // the eyes look shut
+  int32_t thumb_w;  // the thumbnail, RGBA8 sRGB
+  int32_t thumb_h;
+  int32_t reserved;
+} mv_face_card_view;
+// Face `index`'s card; its name ("" unnamed) and "from 37 photos of Anna"
+// ("" none) as UTF-8 into `name` / `source` (`*_cap` bytes, NUL-terminated);
+// its thumbnail into `rgba` when `rgba_cap` holds thumb_w * thumb_h * 4. False
+// out of range. [main-thread]
+bool mv_chrome_face_card(int32_t index, mv_face_card_view* out, char* name, int32_t name_cap, char* source,
+                         int32_t source_cap, uint8_t* rgba, int32_t rgba_cap);
+// The panel's controls, packed as shell::pack_faces_op: op × 100000 +
+// (face + 1) × 100 + (action + 1). Ops: 0 run `action` (-1 Do all) on `face`
+// (-1 the chosen faces), 1 toggle `face`, 2 choose all, 3 choose none,
+// 4 People is being turned on (nothing changes until a read), 5 read the faces
+// again, 6 the panel's row under the pointer (`face`, -1 none) lights its box.
+void mv_chrome_faces_op(int32_t packed);
 // A document's "Open in <app>" (docs/design/20): opens the file on the canvas in
 // the app at `app_path_utf8`, or in its default app (never this one) when NULL
 // or "". Asynchronous; never blocks the caller. [main-thread]

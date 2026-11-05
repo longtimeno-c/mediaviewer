@@ -214,6 +214,9 @@ public static partial class IslandHost
         public const int EditStripHeight = 1094;
         public const int PaneEdgeState = 1095;
         public const int InspectorMin = 1099;
+        // docs/plans/edit-refresh.md S8: the Faces panel's controls
+        // (IslandHost.Faces.cs), arg = shell::pack_faces_op.
+        public const int Faces = 1100;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
@@ -320,6 +323,7 @@ public static partial class IslandHost
                 Rename, GalleryRange,
                 EditStripHeight, PaneEdgeState, InspectorMin,
                 CanvasTool, ToolSizeSet, ToolEraseSet,
+                Faces,
             };
             unchecked
             {
