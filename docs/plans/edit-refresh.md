@@ -650,7 +650,18 @@ Measured on a blurred, noisy, JPEG-35 crop (192 px, M-series CPU):
 | Remove blur (focus, JPEG) | NAFNet-REDS-width64 | the same repo @ 77885239…, NAFNet-REDS-width64.onnx | 275,371,113, fb5b264996d26cb1f7399a0af4e25cd26dbd5241910e58f7a4f1275734f76ea1 | MIT | as SCUNet | 0.1 s a 192 tile |
 | Remove motion blur | NAFNet-GoPro-width64 | the same repo @ 77885239…, NAFNet-GoPro-width64.onnx | 275,371,113, 00c07294585512d162bc2313a2a12cd8d9cd532d0981d0d01f444bd48c4330cd | MIT | as SCUNet | — |
 
-Enhance image offers: **Sharpen & restore** (HAT; at the same size, ×4 then a high-quality downscale)
+**Same size means "shrink to the detail, then ×4" (measured 2026-11-05, owner report "it doesn't look any
+sharper").** Running a ×4 model on a soft photo and downscaling the result back changes nothing: on a soft
+1500 px face (a 250 px photo blown up), the 4×-then-downscale path scored a Laplacian variance of 2.3 (x4v3)
+and 3.1 (HAT) against 2.4 for the original, and HAT took 2,597 s for a 768 px crop on a loaded Mac. Shrinking
+the photo first to where its detail lives (÷4 here), then running the ×4 model back to the original size,
+scored 7.4 (x4v3) and **17.6 (HAT)** in **9.5 s**. So the same-size path picks a shrink factor d in 2…4 from
+the photo's own detail (the largest d whose downscale-then-upscale round trip loses almost no
+high-frequency energy, so sharp photos get d = 2 or are left as they are), resizes to 1/d, runs the ×4 model,
+and resizes to the exact source size; ×2 and ×4 sizes use the same shrink before the model when the photo
+is soft. Applies to HAT, RealWebPhoto and x4v3 alike.
+
+Enhance image offers: **Sharpen & restore** (HAT; at the same size, shrink to the detail then ×4, as above)
 as the default, **Natural** (RealWebPhoto), **Remove noise**, **Remove blur**, **Remove motion blur**;
 and the size (same, ×2, ×4) where the model upscales. Every tiled model blends overlapping tiles by
 weight, as Extend does. Restore faces offers RestoreFormer++ (default) or GFPGAN ("natural"), aligned to
