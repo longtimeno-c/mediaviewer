@@ -8615,6 +8615,9 @@ void refresh_contributed_commands(app_state* app) noexcept {
   const std::size_t n = app->router.cancel_holds(released);
   for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
   app->router.rebuild(mv::shell::live_bindings());
+  // Enhance loaded after the Enhance tab showed: its cards were never asked
+  // for, and the cards said "Opening…" until the photo changed.
+  if (app->enhance_dock_path.empty()) enhance_cards_sync(app);
 }
 
 void set_settings_open(app_state* app, bool on) noexcept {

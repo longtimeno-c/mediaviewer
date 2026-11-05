@@ -16009,6 +16009,9 @@ static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #
   [self cancelKeyHolds];
   [self rebuildKeys];
   ++_keysGeneration;
+  // Enhance loaded after the Enhance tab showed: its cards were never asked
+  // for, and the cards said "Opening…" until the photo changed.
+  if (_enhanceDockPath.empty()) [self enhanceCardsSync];
 }
 
 - (void)cancelKeyCapture {
