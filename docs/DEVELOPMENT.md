@@ -2302,6 +2302,18 @@ hidden cases run it for real:
 MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
 ```
 
+**Enhance image** (S7, docs/design/29 "Enhance image"): `build/bin/mv_import_tests "[enhance][still]"`
+runs the tiling, blending, sizes, cancel, the blow-up guard and the sheet's per-model download over
+fakes, and checks `remote.json`'s five pins. With the five files downloaded (laid out as
+`hat/model.onnx`, `realwebphoto/`, `scunet/`, `nafnet-reds/`, `nafnet-gopro/`), the hidden case runs
+them for real and prints seconds per megapixel; `MV_ENHANCE_IMAGE_RGB` (raw rgb8) and
+`MV_ENHANCE_IMAGE_SIZE` swap the synthetic scene for a real crop, `MV_ENHANCE_IMAGE_ONLY=<kind>`
+runs one:
+
+```bash
+MV_ENHANCE_IMAGE_MODELS=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_import_tests "[.enhance-image-model]"
+```
+
 **Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, and the run with a
 stand-in model). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.

@@ -15,6 +15,8 @@
 
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/sound_job.h"
@@ -41,11 +43,23 @@ struct stream_shape {
 //   {"runner": "tiles", "scale": 4, "tile": 256, "overlap": 16, "dims": ["h", "w"]}
 // `dims` names the graph's free height and width, pinned to `tile` so Core ML
 // compiles it.
+//
+// Enhance image's models (S7) add, all optional:
+//   "dims": [] for a graph with no free dimension (Real-HAT-GAN's 192 -> 768);
+//   "fixed": {"batch_size": 1}: other free dimensions, pinned;
+//   "output": the output tensor by name (else the first);
+//   "backend": "cpu": never Core ML (fp32 kept: measured, Core ML's fp16 on
+//   the GPU / Neural Engine moved these restorers' pixels, or ran slower).
+// For a photo, `overlap` is what neighbouring tiles share (restore_picture);
+// for a clip's frame, the context each side of a tile's centre.
 struct tile_shape {
   std::uint32_t scale = 0;
   std::uint32_t tile = 0;
   std::uint32_t overlap = 0;
-  std::string dim_h, dim_w;
+  std::string dim_h, dim_w;  // empty: no free size
+  std::vector<std::pair<std::string, std::int64_t>> fixed;
+  std::string output;
+  bool cpu_only = false;
 };
 [[nodiscard]] std::optional<tile_shape> tile_shape_of(const model_spec& spec);
 

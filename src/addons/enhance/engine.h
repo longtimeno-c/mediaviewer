@@ -147,6 +147,8 @@ class engine {
   void post_sheet_locked();
   [[nodiscard]] sheet_view sheet_locked() const;
   [[nodiscard]] std::vector<model_kind> kinds_for_locked() const;
+  [[nodiscard]] bool detail_offered(model_kind k) const;
+  [[nodiscard]] model_kind detail_locked() const;
   void save_locked();
   void install(model_kind k);
   void stop(model_kind k);

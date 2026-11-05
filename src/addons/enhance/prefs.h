@@ -34,6 +34,8 @@ struct prefs {
   std::array<std::map<std::string, json::value>, kKindCount> values;
   clip_target target = clip_target::picture;
   photo_target photo = photo_target::detail;
+  // Enhance image's model (S7): one of kStillKinds; Sharpen & restore by default.
+  model_kind detail = model_kind::still;
   // The performance level (tier.h tier_name), or "auto": the recommendation.
   std::string tier = "auto";
   // The person clicked Install for that kind's model (and did not Remove it).

@@ -32,7 +32,7 @@ struct EnhanceTool: Identifiable {
     case .remove: return "Brush over what to take out; it is filled in from around it."
     case .restyle: return "Describe a new look in words: a snowy day, golden hour."
     case .faces: return "Open closed eyes, or a better face of the same person from your photos."
-    case .detail: return "Sharper detail and less noise, restored by a model on this Mac."
+    case .detail: return "Sharpen and restore, remove noise or blur, or enlarge, with a model on this Mac."
     case .extend: return "More picture around the edges, to a wider or taller frame."
     }
   }

@@ -160,7 +160,9 @@ each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, 
 (`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
 Enhance's sheet on what is brushed), *Restyle…* (Enhance's `restyle` command), *Open closed eyes*
 and *Improve faces* (the Mac; Windows has Open closed eyes, its Improve faces twin is S8's),
-*Enhance…* and *Extend…* (Enhance's `open`; Extend is the sheet's photo choice). Without the
+*Enhance…* and *Extend…* (Enhance's `open`; Extend is the sheet's photo choice). *Enhance image*
+opens the sheet on its five models: Sharpen & restore, Natural, Remove noise, Remove blur and
+Remove motion blur, each downloaded when first chosen ([29](29-enhance.md) "Enhance image"). Without the
 Enhance add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance).
 Cards are one column, two from 560. Running inside the pane (`place "edit"`) and the result row are
 S5's; every result is a new file today, as before.

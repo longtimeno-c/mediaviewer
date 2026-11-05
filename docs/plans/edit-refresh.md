@@ -548,7 +548,7 @@ Command and row append order is persisted (remaps go by row index), so these sli
 | **S4b** | Per-blob LaMa (add-on only) | `src/addons/enhance/remove.{h,cpp}`, `runner.cpp` `run_remove`, `tests/test_enhance.cpp` | none | **Yes, any time** |
 | **S5** | Docked Enhance panel (`place "edit"`, `tool_tree`, `enhance/tool`, result row); **owner call B** | `src/addon/manifest.cpp`, `screens.{h,cpp}`, `engine.cpp`, enhance `manifest.json`, `ScreenView.swift`, `IslandHost.Screens.cs` | `EnhanceHubView.swift` / `IslandHost.EnhanceHub.cs` (from S2), `IslandHost.Edit.cs` row 2 | Add-on part in parallel with S3/S4a; host part after S2 |
 | **S6** | Extend on the canvas | `remove.cpp` `extend_from_fractions`, `runner.cpp` `run_extend` margins source | `edit_workspace.h` (`extend_draft`), `input_state.h` (`fit_rect_uv`), both present labs (overlay past the frame), `addon_media.{h,cpp}` + `mediaviewer_addon.h` + `addon_abi.cpp` (`still_extend`), `main*.{cpp,mm}` | After S4a |
-| **S7** | Enhance image knobs (de-noise blend, ×1); **owner download OK for wdn** | `models/still/model.json`, `picture_job.cpp`, `spec.cpp`, `tests/test_enhance.cpp` | none | **Yes, any time** |
+| **S7** | Enhance image: the five models of "Models" (supersedes the wdn x4v3 row of §3.2) | `models/still/model.json`, `picture_job.cpp`, `spec.cpp`, `tests/test_enhance.cpp` | none | **Yes, any time** |
 | **S8** | Faces on the canvas + host Faces panel + Windows `adjust_faces` twin | `FacesPanelView.swift`, `IslandHost.Faces.cs`, pack request `faces_mask` | `main*.{cpp,mm}`, `tool_overlay.h` (boxes) | After S3 |
 | **S9** | Level surfaces: hub chip, quality gating; optional per-level files (owner OK) | `screens.cpp` (settings/hub chip data), `engine.cpp`, `tier.h` (`still_file`), `downloads.cpp` | none on the host beyond the chip, which reads existing slot JSON | **Yes, any time** |
 | **S10** | Generative face restore; **owner call C**, spike first | new `face` kind (appended to `model_kind`, spec.h:31), `models/face/` | `addon_media` faces request (`still_faces` row) | Last |
@@ -580,7 +580,7 @@ Each slice updates the docs it changes:
 | S4b | `mv_import_tests "[enhance][remove]"`: two far-apart blobs give two boxes, each ≤ 2× its blob's grown box; pixels outside both boxes decode equal to the source's same encode; cancel works between boxes. |
 | S5 | Remove, Restyle, Detail and Extend each run inside the pane on both hosts and show the result row. Discard puts the file in the Bin (never a hard delete). Keep editing reopens on tab 5. The original's SHA-1 is unchanged. `test_addon_manifest`: `place "edit"` is accepted, and unknown placements are refused. With B declined, the sheet opens preselected. |
 | S6 | `"[enhance][extend]"` + new host-margins case: 3:2 → 16:9 via a drag writes `<stem>-extended.jpg` at the previewed size, with the photo rect bit-exact (feather 0). The overlay past the frame is pan-gate neutral (PR 1 soak with Extend armed). The crop part of a mixed rect lands as a normal stack crop. |
-| S7 | A golden image per knob (denoise 0, 0.5, 1). ×1 keeps the source dimensions. The hidden `[.realesr-model]` case scores PSNR on a noisy crop above the x4v3-only score. |
+| S7 | `mv_import_tests "[enhance][still]"`: tile starts, tent cross-fade, sizes ×1/×2/×4, progress and cancel per tile, the blow-up guard, the sheet's choice and per-model download, the shipped pins. Hidden `[.enhance-image-model]` on the downloaded files: size, range, a blurred crop sharper, SCUNet's PSNR up. |
 | S8 | Only selected faces change (pixel diff outside the boxes is 0). Donors come from People. The Windows `adjust_faces` produces the same `-eyes.jpg` as the Mac on a shared fixture. |
 | S9 | `"[enhance][tier]"` still passes. The hub chip shows the effective level. Quality above the level is disabled with its reason. With per-level files: switching level fetches only the delta, the old files answer until the new ones verify, and choosing the same level again means Retry. |
 | S10 | Spike report: licence check and identity-guard drift threshold on LFW pairs (`~/Dev/.mv-toolchain/faceeval`). Nothing is merged without owner call C. |
@@ -616,6 +616,13 @@ Measured on a blurred, noisy, JPEG-35 crop (192 px, M-series CPU):
 | Remove noise | SCUNet real-PSNR | deepghs/image_restoration @ 77885239ff28876d6b37dd080ab86aa1de2c49cc, SCUNet-PSNR.onnx | 91,264,256, b0f8c12f1575bb49e39a85924152f1c6d4b527a4aae0432c9e5c7397123465e3 | Apache-2.0 (KAIR MIT) | `input` → `output`, dynamic, same size, RGB 0..1 | 0.4 s a 192 tile |
 | Remove blur (focus, JPEG) | NAFNet-REDS-width64 | the same repo @ 77885239…, NAFNet-REDS-width64.onnx | 275,371,113, fb5b264996d26cb1f7399a0af4e25cd26dbd5241910e58f7a4f1275734f76ea1 | MIT | as SCUNet | 0.1 s a 192 tile |
 | Remove motion blur | NAFNet-GoPro-width64 | the same repo @ 77885239…, NAFNet-GoPro-width64.onnx | 275,371,113, 00c07294585512d162bc2313a2a12cd8d9cd532d0981d0d01f444bd48c4330cd | MIT | as SCUNet | — |
+
+**S7 built (2026-11-05):** the five Enhance image models below, each its own kind
+(`natural`, `denoise`, `deblur`, `motion` appended to `model_kind` after `remove`), downloaded
+from the sheet when chosen; tiles blended by tent weight (`restore_picture`); a guard for tiles a
+model blows up (NAFNet's exports do, GoPro on about a third of photo crops). See
+[29](../design/29-enhance.md) "Enhance image". Not built here: the app's own noise reduction
+before the upscalers (Remove noise is its own choice instead); Core ML for these (fp32 CPU).
 
 Enhance image offers: **Sharpen & restore** (HAT; at the same size, ×4 then a high-quality downscale)
 as the default, **Natural** (RealWebPhoto), **Remove noise**, **Remove blur**, **Remove motion blur**;

@@ -56,6 +56,10 @@ const char* model_noun(model_kind k) {
     case model_kind::audio: return "audio model";
     case model_kind::restyle: return "restyle model";
     case model_kind::remove: return "remove model";
+    case model_kind::natural: return "natural model";
+    case model_kind::denoise: return "noise model";
+    case model_kind::deblur: return "blur model";
+    case model_kind::motion: return "motion-blur model";
   }
   return "model";
 }
@@ -178,6 +182,16 @@ void engine::post_settings_locked() {
   if (!port_.post(kSettingsScreen, settings_gen_, settings_tree(cards, tv))) settings_gen_ = 0;
 }
 
+// S7: Enhance image's chosen model when this build offers it, else Sharpen
+// & restore (the kind a photo always had).
+bool engine::detail_offered(model_kind k) const {
+  return still_family(k) && specs_[static_cast<int>(k)].has_value() && files_[static_cast<int>(k)].usable();
+}
+
+model_kind engine::detail_locked() const {
+  return detail_offered(prefs_.detail) ? prefs_.detail : model_kind::still;
+}
+
 std::vector<model_kind> engine::kinds_for_locked() const {
   switch (item_) {
     case item_kind::still:
@@ -189,10 +203,11 @@ std::vector<model_kind> engine::kinds_for_locked() const {
       if (prefs_.photo == photo_target::extend && specs_[static_cast<int>(model_kind::remove)]) {
         return {model_kind::remove};  // Remove's model, in its extend mode
       }
-      return specs_[static_cast<int>(model_kind::restyle)] && files_[static_cast<int>(model_kind::restyle)].usable() &&
-                     prefs_.photo == photo_target::restyle
-                 ? std::vector{model_kind::restyle}
-                 : std::vector{model_kind::still};
+      if (specs_[static_cast<int>(model_kind::restyle)] && files_[static_cast<int>(model_kind::restyle)].usable() &&
+          prefs_.photo == photo_target::restyle) {
+        return {model_kind::restyle};
+      }
+      return {detail_locked()};
     case item_kind::audio: return facts_.sound ? std::vector{model_kind::audio} : std::vector<model_kind>{};
     case item_kind::media:
       if (facts_.picture && facts_.sound) {
@@ -224,6 +239,10 @@ sheet_view engine::sheet_locked() const {
   v.offers_remove = brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
   v.photo = prefs_.photo;
+  for (const model_kind k : kStillKinds) {
+    if (detail_offered(k)) v.details.push_back(k);
+  }
+  v.detail = detail_locked();
   if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove) ||
       (v.photo == photo_target::extend && !v.offers_extend)) {
     v.photo = photo_target::detail;
@@ -261,6 +280,28 @@ sheet_view engine::sheet_locked() const {
       s.missing = "This version of Enhance has no " + std::string(model_noun(k)) + " yet.";
     } else if (st.state == dl_state::downloading || st.state == dl_state::waiting) {
       s.missing = "The " + std::string(model_noun(k)) + " is still downloading.";
+      if (still_family(k)) {
+        s.downloading = true;
+        if (st.total_bytes > 0) {
+          s.missing = "Downloading the " + std::string(model_noun(k)) + "… " + size_text(st.done_bytes) + " of " +
+                      size_text(st.total_bytes) + ".";
+        }
+      }
+    } else if (still_family(k) && files_[static_cast<int>(k)].usable() && st.state != dl_state::gone &&
+               st.state != dl_state::refused) {
+      // S7: each of Enhance image's models is fetched only when chosen, from
+      // the sheet itself.
+      s.missing = std::string(detail_text(k)) + " needs its model, downloaded from Hugging Face once (" +
+                  size_text(files_[static_cast<int>(k)].bytes) + "). It runs on this computer.";
+      if (st.state == dl_state::no_space) {
+        s.missing = "Not enough free disk for the " + std::string(model_noun(k)) + ": it needs " +
+                    size_text(st.need_bytes) + ", and " + size_text(st.free_bytes) + " is free.";
+      } else if (st.state == dl_state::failed) {
+        s.missing = "The download never matched the model's checksum, so it was not kept.";
+      }
+      s.install = st.state == dl_state::stopped ? std::string("Resume the download")
+                  : st.state == dl_state::absent ? "Download (" + size_text(files_[static_cast<int>(k)].bytes) + ")"
+                                                 : std::string("Try again");
     } else {
       s.missing = "The " + std::string(model_noun(k)) + " is not installed. Download it in Settings → Add-ons → Enhance.";
     }
@@ -277,7 +318,7 @@ sheet_view engine::sheet_locked() const {
       for (const sheet_section& s : v.sections) {
         if (runner_->supports(s.kind, item_)) continue;
         v.status = s.kind == model_kind::video ? "This version of Enhance cannot enhance a clip's picture yet."
-                   : s.kind == model_kind::still ? "This version of Enhance cannot enhance photos yet."
+                   : still_family(s.kind) ? "This version of Enhance cannot enhance photos yet."
                                                   : "This version of Enhance cannot run this model.";
         break;
       }
@@ -505,6 +546,7 @@ void engine::run() {
     status_ = !ok                  ? message
               : library_key(output) ? std::string("Added to your Photos library as a new photo.")
                                     : "Saved as " + output + ".";
+    if (ok && !message.empty()) status_ += " " + message;  // S7: parts a restorer left as they were
     post_sheet_locked();
   };
   run->start(std::move(r), std::move(ev));
@@ -547,6 +589,20 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   }
   if (screen != kSheetScreen) return;
   if (kind == MV_SLOT_EVENT_CLICK) {
+    // S7: Enhance image's model, fetched from the sheet when chosen.
+    if (const auto k = action_kind(node, "install"); k && still_family(*k)) {
+      {
+        std::lock_guard lock(m_);
+        if (running_) return;
+      }
+      install(*k);
+      on_changed(*k);
+      return;
+    }
+    if (const auto k = action_kind(node, "stop"); k && still_family(*k)) {
+      stop(*k);
+      return;
+    }
     if (node == "close") {
       if (port_.show) port_.show(kSheetScreen, false);
     } else if (node == "run") {
@@ -566,6 +622,13 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
     for (const photo_target t : kPhotoTargets) {
       if (v->s == photo_target_name(t)) prefs_.photo = t;
     }
+    save_locked();
+    post_sheet_locked();
+    return;
+  }
+  if (node == "detail") {
+    if (v->k != json::kind::string) return;
+    if (const auto k = kind_from(v->s); k && detail_offered(*k)) prefs_.detail = *k;
     save_locked();
     post_sheet_locked();
     return;

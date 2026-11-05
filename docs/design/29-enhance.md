@@ -56,7 +56,11 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 |---|---|---|---|
 | audio | DeepFilterNet3 (Schröter et al.), streaming ONNX export (`kimtos-labs/denoiser-dfn3` @ `888f33c4`) | 16.1 MB | MIT (dual MIT / Apache-2.0) |
 | video | Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
-| still | the same file, pinned again under `still/` (each kind downloads its own) | 4.9 MB | BSD-3-Clause |
+| still | **Sharpen & restore**: Real-HAT-GAN SRx4 "sharper" (HAT, Chen et al., XPixelGroup), ONNX export `MahoCommerce/Real_HAT_GAN_sharper-ONNX` @ `f0c8c3a4`, `onnx/model.onnx` saved as `Real_HAT_GAN_sharper.onnx` | 161 MB | Apache-2.0 |
+| natural | **Natural**: 4xRealWebPhoto v4 (DAT-2) by Philip Hofmann, `Phips/4xRealWebPhoto_v4_dat2` @ `95e9cd50` | 48.8 MB | CC-BY-4.0 (credited in the spec and the notices) |
+| denoise | **Remove noise**: SCUNet real-PSNR (Zhang et al., KAIR), `deepghs/image_restoration` @ `77885239` | 91.3 MB | Apache-2.0 |
+| deblur | **Remove blur**: NAFNet-REDS-width64 (Chen et al., MEGVII), the same repo and revision | 275 MB | MIT |
+| motion | **Remove motion blur**: NAFNet-GoPro-width64, the same repo and revision | 275 MB | MIT |
 | remove | LaMa (Suvorov et al.), ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx` | 208 MB | Apache-2.0 |
 | restyle | InstructPix2Pix (Brooks et al., `timbrooks/instruct-pix2pix` @ `31519b5c`), exported by `tools/package/restyle-export.py`: fp32 text encoder and VAE, fp16 UNet | about 2.5 GB | CreativeML OpenRAIL-M (owner, 2026-11-03); its use restrictions are shown with the credit |
 
@@ -71,7 +75,7 @@ Built from the installed models, never a fixed form. What the item is comes from
 
 - **An audio file**: the audio model's knobs.
 - **A clip**: picture, sound or both (only what it holds); each from its own model.
-- **A still**: the photo model's (none yet).
+- **A still**: *Enhance image*'s chosen model (below), or Restyle, Remove, Extend.
 - **A document, an animation, a file it cannot read**: greyed, saying why.
 
 A kind with no installed model is named ("not installed — Download it in Settings → Add-ons →
@@ -156,10 +160,44 @@ through a bounded queue (five seconds), so neither is held whole. With no hardwa
 that size the sheet says so and nothing is written. The sheet shows the time left once a run is
 a few percent in.
 
+## Enhance image: a photo restored (S7, owner 2026-11-04)
+
+The photo's **Enhance image** offers five models, each its own kind (`spec.h` `kStillKinds`), so
+each is downloaded only when it is chosen: **Sharpen & restore** (`still`, the default), **Natural**
+(`natural`), **Remove noise** (`denoise`), **Remove blur** (`deblur`) and **Remove motion blur**
+(`motion`). The sheet's *Do* choice (`"detail"`, kept in `enhance.json`) lists those this build
+has a spec and a pin for; one not downloaded yet shows its size and a **Download** button in the
+sheet itself (`install.<kind>`, then progress and *Stop the download*), and Settings → Add-ons →
+Enhance lists all five too. The two upscalers have a **Size** (the same size, twice, four times);
+the same size is the model's 4× brought back down, so it is restored detail, not a resample. The
+three restorers keep the size and have no Size. Each has **Strength** (the model's picture mixed
+with the photo, or with its plain bilinear enlargement) and shows its credit line.
+
+The run (`picture_job.h` `restore_picture`): tiles of the model's side (Real-HAT-GAN is fixed at
+192 → 768; RealWebPhoto runs at 256, SCUNet and NAFNet at 512) start inside the photo, the last
+in a row or column moved back to end at its edge, so a model only ever sees the photo's own
+pixels (a photo smaller than one tile is mirrored out to it). Neighbours share a third of a tile
+for HAT and a quarter for the rest (`io.overlap`: quality over speed). Each tile's result is
+brought to the size asked for by a Lanczos-3 downscale of the model's own pixels (built once a
+run), then blended by a **tent weight**: 1 in the tile's middle, falling linearly to 0 across the
+overlap toward a neighbour, flat at the photo's edges, so two tiles cross-fade and a seam never
+shows. Rows are written as soon as no later tile reaches them; only a band of float sums one tile
+high is held. Progress is per tile (the sheet's time left), and Cancel is honoured between tiles.
+The models run in fp32 on the CPU (`io.backend: "cpu"`): measured, they are not worth Core ML's
+fp16.
+
+**A tile the model blows up.** NAFNet's ONNX exports (GoPro worst, REDS sometimes) return values
+in the thousands on some tiles of ordinary photos (11 of 30 COCO crops for GoPro, 4 of 30 for
+REDS; SCUNet none). A result outside −1…2, or not finite, is asked again with the tile mirrored
+left to right, upside down and transposed (each answer turned back); if every view fails, that
+tile is the photo itself, cross-faded like any other. The sheet then says how many parts were
+left as they were ("…could not restore 3 of 40 parts…", or that the photo is unchanged). Pixels
+from a blown-up tile never reach the file.
+
 ## Restyle: a typed request on a photo
 
-With Restyle's model downloaded, the sheet's **Photo** choice offers *More detail* (the still
-model) or *Restyle with words*, which adds a text field ("make it a snowy winter day"). An empty
+With Restyle's model downloaded, the sheet's **Photo** choice offers *Enhance image* (above)
+or *Restyle with words*, which adds a text field ("make it a snowy winter day"). An empty
 request is refused before a run. The run (`diffusion.h`, `io.runner: diffusion`):
 
 1. The edited still is scaled to the long edge its **Quality** names (`io.qualities`: Standard
