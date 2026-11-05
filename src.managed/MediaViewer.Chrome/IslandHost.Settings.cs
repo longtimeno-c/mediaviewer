@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -167,7 +168,8 @@ public static partial class IslandHost
         // #510: Add-ons is a list of rows; each add-on's install, update,
         // remove and settings are on its own page (IslandHost.AddonList.cs).
         // The pages are built here, with the rest, and refreshed in place.
-        var addons = new StackPanel { Spacing = Space(8), Margin = Pad(0, 20, 0, 0) };
+        // A group like the others: its heading is a section's (BuildAddonsList).
+        var addons = new StackPanel { Spacing = Space(8) };
         var importPage = new StackPanel { Spacing = Space(8) };
         var slotsPage = new StackPanel { Spacing = Space(8) };
         AddAddonsSettingsRow(importPage, slotsPage);
@@ -260,19 +262,78 @@ public static partial class IslandHost
         var title = Heading("Settings");
         title.FontSize = TypeSize(24);
         header.Children.Add(title);
-        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
-        var generalTab = new ToggleButton { Content = "General", FontFamily = UiFont, FontSize = UiFontSize };
-        var keysTab = new ToggleButton { Content = "Keyboard shortcuts", FontFamily = UiFont, FontSize = UiFontSize };
+        // General | Keyboard shortcuts: a segmented control, the Mac's segmented
+        // Picker. The chosen segment's highlight slides to it (150 ms, at once
+        // with animations off; docs/design/20 "Craft rules"); the segments stay
+        // toggle buttons for the screen reader.
+        var tabs = new Grid
+        {
+            Width = TypeSize(320),
+            Padding = Pad(2),
+            CornerRadius = Corner(RadiusSettingsButton + 2),
+            Background = Brush(ChromeColour.SettingsFill),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        tabs.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        tabs.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var slide = new TranslateTransform();
+        var thumb = new Border
+        {
+            CornerRadius = Corner(RadiusSettingsButton),
+            Background = Brush(ChromeColour.Surface),
+            BorderBrush = Brush(Hairline),
+            RenderTransform = slide,
+        };
+        SettingsCard(thumb);
+        tabs.Children.Add(thumb);
+        ToggleButton generalTab = SettingsTab("General");
+        ToggleButton keysTab = SettingsTab("Keyboard shortcuts");
+        Grid.SetColumn(keysTab, 1);
         tabs.Children.Add(generalTab);
         tabs.Children.Add(keysTab);
         Grid.SetColumn(tabs, 1);
         header.Children.Add(tabs);
+        Storyboard? slideMove = null;
+        double slideAt = 0;
+        void SlideThumb(bool animate)
+        {
+            double to = _settingsKeyboard ? tabs.ColumnDefinitions[0].ActualWidth : 0;
+            double from = slideAt;
+            slideAt = to;
+            slideMove?.Stop();
+            slideMove = null;
+            slide.X = to;
+            if (!animate || from == to || tabs.ActualWidth <= 0 || !HostAnimationsEnabled()) return;
+            try
+            {
+                var move = new DoubleAnimation
+                {
+                    From = from,
+                    To = to,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                };
+                Storyboard.SetTarget(move, slide);
+                Storyboard.SetTargetProperty(move, "X");
+                slideMove = new Storyboard();
+                slideMove.Children.Add(move);
+                slideMove.Begin();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                slideMove = null;
+            }
+        }
+        // A resize (text scale, the window) puts the highlight on its segment at once.
+        tabs.SizeChanged += (_, _) => SlideThumb(animate: false);
         void SelectCategory(bool keyboard, bool focus)
         {
             CancelKeyCapture(restoreFocus: false);
             _settingsKeyboard = keyboard;
             generalTab.IsChecked = !keyboard;
             keysTab.IsChecked = keyboard;
+            SlideThumb(animate: focus);
             viewScroll.Visibility = keyboard ? Visibility.Collapsed : Visibility.Visible;
             keysCol.Visibility = keyboard ? Visibility.Visible : Visibility.Collapsed;
             SetCaptureHint(keyboard ? CaptureInstructions : "Changes are saved automatically.");
@@ -336,6 +397,41 @@ public static partial class IslandHost
         return root;
     }
 
+    // A segment of the Settings tabs: no fill or border of its own (the sliding
+    // highlight under it is the selection), a wash under the pointer. Lightweight
+    // resources only, never a template (a loaded template fail-fasts these islands).
+    private static ToggleButton SettingsTab(string text)
+    {
+        var tab = new ToggleButton
+        {
+            Content = ButtonLabel(text, UiFontSize),
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            Padding = Pad(12, 5, 12, 5),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            BorderThickness = new Thickness(0),
+            CornerRadius = Corner(RadiusSettingsButton),
+            AllowFocusOnInteraction = true,
+        };
+        SolidColorBrush clear = Brush(Colors.Transparent), wash = Brush(ChromeColour.HoverWash),
+            pressed = Brush(ChromeColour.PressedWash), ink = Brush(Title);
+        foreach (string state in new[] { "", "Checked" })
+        {
+            tab.Resources[$"ToggleButtonBackground{state}"] = clear;
+            tab.Resources[$"ToggleButtonBackground{state}PointerOver"] = wash;
+            tab.Resources[$"ToggleButtonBackground{state}Pressed"] = pressed;
+            foreach (string pointer in new[] { "", "PointerOver", "Pressed" })
+            {
+                tab.Resources[$"ToggleButtonForeground{state}{pointer}"] = ink;
+                tab.Resources[$"ToggleButtonBorderBrush{state}{pointer}"] = clear;
+            }
+        }
+        AutomationProperties.SetName(tab, text);
+        return tab;
+    }
+
     private static TextBlock Heading(string text) => new()
     {
         Text = text,
@@ -364,11 +460,59 @@ public static partial class IslandHost
         return heading;
     }
 
-    private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control)
+    // docs/design/20 "Craft rules": a fill marks a card, no hairline around it,
+    // as add-on screen cards. In a high-contrast theme a card is the window
+    // colour, so there its outline carries it (the Mac's SettingsCardOutline,
+    // under Increase Contrast).
+    private static Thickness CardOutline => SettingsHighContrast() ? new Thickness(1) : new Thickness(0);
+
+    private static bool SettingsHighContrast()
     {
-        var row = new Grid { Padding = Pad(14), ColumnSpacing = Space(24),
-            Background = Brush(ChromeColour.Surface), CornerRadius = Corner(RadiusCard),
-            BorderBrush = Brush(Hairline), BorderThickness = new Thickness(1) };
+        try { return (_accessibilitySettings ?? new Windows.UI.ViewManagement.AccessibilitySettings()).HighContrast; }
+        catch (Exception) { return false; }
+    }
+
+    // Settings is built once and a theme refresh recolours brushes in place, so
+    // the outline's thickness is set again each time Settings opens
+    // (PresentSettings): a contrast theme turned on meanwhile gets its outlines.
+    private static readonly List<WeakReference<FrameworkElement>> SettingsCards = new();
+
+    private static void SettingsCard(FrameworkElement card)
+    {
+        SetCardOutline(card, CardOutline);
+        SettingsCards.RemoveAll(w => !w.TryGetTarget(out _));
+        SettingsCards.Add(new WeakReference<FrameworkElement>(card));
+    }
+
+    private static void SetCardOutline(FrameworkElement card, Thickness t)
+    {
+        if (card is Border b) b.BorderThickness = t;
+        else if (card is Grid g) g.BorderThickness = t;
+    }
+
+    private static void RefreshCardOutlines()
+    {
+        Thickness t = CardOutline;
+        foreach (WeakReference<FrameworkElement> w in SettingsCards)
+        {
+            if (w.TryGetTarget(out FrameworkElement? card)) SetCardOutline(card, t);
+        }
+    }
+
+    // One surface (SettingsView.swift SettingsRow): the fill, words 12 from its
+    // edge. `card` false: the same row inside a surface that is already a card
+    // (an add-on's page), with no surface of its own.
+    private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control, bool card = true)
+    {
+        var row = new Grid { ColumnSpacing = Space(24) };
+        if (card)
+        {
+            row.Padding = Pad(12);
+            row.Background = Brush(ChromeColour.Surface);
+            row.CornerRadius = Corner(RadiusCard);
+            row.BorderBrush = Brush(Hairline);
+            SettingsCard(row);
+        }
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var labels = new StackPanel { Spacing = Space(4), VerticalAlignment = VerticalAlignment.Center };
@@ -444,6 +588,7 @@ public static partial class IslandHost
                 _chromeRoot.Children.Add(_settingsHost);
             }
             RefreshSettingsScreen();
+            RefreshCardOutlines();  // a contrast theme turned on since it was built
             ShowWantedAddonPage();  // #510: the list, or the page something asked for
             // docs/design/25: what is installed from others may have changed on disk.
             RefreshOpenAddons();

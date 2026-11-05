@@ -130,8 +130,12 @@ struct DriftwireOffer: View {
   var paths: [String]? = nil
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text("Driftwire").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+      // The name heads the share icon's popover; in Settings the page's heading
+      // names it, so it is not said twice (Windows' BuildDriftwireOffer `titled`).
+      if paths != nil {
+        Text("Driftwire").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+      }
       Text("Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. You type the code the other screen shows, and nothing moves until the other person accepts.")
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
@@ -157,6 +161,8 @@ struct DriftwireOffer: View {
         if !store.message.isEmpty { note(store.message) }
       }
     }
+    // The install button and the bar take the same slot in turn, with a short fade.
+    .animation(.easeOut(duration: 0.15), value: store.phase == nil)
     .onAppear { if store.offer == .unknown || store.offer == .unreachable { store.probe() } }
   }
 

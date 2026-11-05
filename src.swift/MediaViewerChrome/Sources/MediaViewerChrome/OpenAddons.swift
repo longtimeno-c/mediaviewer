@@ -527,11 +527,14 @@ struct OpenAddonsSection: View {
         }
       }
       if let phase = store.progress {
-        AddonProgressView(phase: phase)
+        AddonProgressView(phase: phase).transition(.opacity)
       } else if !store.message.isEmpty {
-        note(store.message)
+        note(store.message).transition(.opacity)
       }
     }
+    // The question, the bar and the outcome come and go with a short fade.
+    .animation(.easeOut(duration: 0.15), value: store.offer == nil)
+    .animation(.easeOut(duration: 0.15), value: store.progress == nil)
     .onAppear { if settings.visible { store.refresh() } }
     .onChange(of: settings.visible) { _, visible in if visible { store.refresh() } }
     // A script that stops on its own changes the command table: re-read its state.
@@ -636,7 +639,8 @@ struct OpenAddonSheet: View {
           Text(a.description).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
             .fixedSize(horizontal: false, vertical: true)
         }
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 4) {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: MVTheme.space(12),
+             verticalSpacing: MVTheme.space(4)) {
           line("From", a.publisherHost.isEmpty ? a.publisher : "\(a.publisher) · \(a.publisherHost)")
           line("Key", a.fingerprint)
           line("Adds", a.adds)
@@ -660,10 +664,10 @@ struct OpenAddonSheet: View {
         Button("Close") { store.cancel() }.keyboardShortcut(.defaultAction)
       }
     }
-    .padding(MVTheme.space(14))
+    // In place of the page's list, inside the page's card: no box of its own
+    // (docs/design/20 "Craft rules", one surface per thing).
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+    .transition(.opacity)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(title)
     .id(Self.anchor)

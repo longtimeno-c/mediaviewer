@@ -92,7 +92,7 @@ public static partial class IslandHost
             return;
         }
         if (anchor?.XamlRoot is null) return;
-        var panel = new StackPanel { Spacing = 8, MaxWidth = 340 };
+        var panel = new StackPanel { Spacing = Space(8), MaxWidth = 340 };
         BuildDriftwireOffer(panel, paths);
         _shareFlyout = new Flyout { Content = panel, Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
         _shareFlyout.Closed += (_, _) => _shareFlyout = null;

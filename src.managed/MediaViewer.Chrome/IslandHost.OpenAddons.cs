@@ -392,8 +392,9 @@ public static partial class IslandHost
                     Foreground = Brush(Title),
                 };
                 keep.Toggled += (_, _) => _openKeepSettings = keep.IsOn;
+                // Inside the page's card: a plain row, not a card in it.
                 entry.Children.Add(SettingsRow("Keep its settings",
-                    "Installing it again brings back what you chose on its page.", keep));
+                    "Installing it again brings back what you chose on its page.", keep, card: false));
             }
             // Remove is the default (accent), Esc or Cancel keeps it.
             Button remove = SettingsButton($"Remove {addon.Name}", () => RemoveOpenAddon(addon), accent: true);
@@ -442,6 +443,9 @@ public static partial class IslandHost
     // What a package is, and the question (docs/design/25 "Identity and trust"). Every
     // line but the description comes from the core. Cancel is first and takes
     // the focus: Enter does not install.
+    // The question that last faded in (BuildOpenSheet).
+    private static OpenOffer? _openSheetFaded;
+
     private static FrameworkElement BuildOpenSheet(OpenOffer offer)
     {
         OpenAddon? a = offer.Addon;
@@ -457,7 +461,7 @@ public static partial class IslandHost
         if (a is not null)
         {
             if (a.Description.Length > 0) sheet.Children.Add(Note(a.Description));
-            var lines = new Grid { ColumnSpacing = Space(16), RowSpacing = Space(4) };
+            var lines = new Grid { ColumnSpacing = Space(12), RowSpacing = Space(4) };
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             void Line(string label, string value)
@@ -506,15 +510,15 @@ public static partial class IslandHost
             buttons.Children.Add(SettingsButton("Close", CancelOpenOffer, accent: true));
         }
         sheet.Children.Add(buttons);
-        var card = new Border
+        // In place of the page's list, inside the page's card: no box of its
+        // own (docs/design/20 "Craft rules", one surface per thing). It fades in
+        // once, when the question is first asked, not at every refresh.
+        var card = new Border { Child = sheet };
+        if (!ReferenceEquals(_openSheetFaded, offer))
         {
-            Child = sheet,
-            Padding = Pad(14),
-            Background = Brush(ChromeColour.Surface),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(1),
-            CornerRadius = Corner(8),
-        };
+            _openSheetFaded = offer;
+            card.Loaded += (_, _) => SettingsFadeIn(card);
+        }
         AutomationProperties.SetName(card, title);
         // The question is at the foot of Settings: bring it into view.
         card.Loaded += (_, _) =>

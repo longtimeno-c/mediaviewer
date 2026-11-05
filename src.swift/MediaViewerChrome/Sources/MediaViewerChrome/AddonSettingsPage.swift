@@ -203,12 +203,13 @@ struct AddonSettingsPage: View {
         }
       }
     }
-    .padding(MVTheme.space(12))
+    // A part of its add-on's page card, never a card in it (docs/design/20
+    // "Craft rules"): set off by space, not a box. It fades in once read.
+    .padding(.top, model.loaded && !model.sections.isEmpty ? MVTheme.space(4) : 0)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
     .opacity(model.loaded && !model.sections.isEmpty ? 1 : 0)
     .frame(height: model.loaded && !model.sections.isEmpty ? nil : 0)
+    .animation(.easeOut(duration: 0.15), value: model.loaded)
     .onAppear { model.load() }
   }
 
@@ -216,16 +217,21 @@ struct AddonSettingsPage: View {
     let enabled = model.enabled(item)
     VStack(alignment: .leading, spacing: MVTheme.space(4)) {
       HStack(spacing: MVTheme.space(16)) {
+        // A label dims with its control, eased, when its switch turns it off.
         Text(item.label).font(MVTheme.font(13)).foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
           .frame(maxWidth: .infinity, alignment: .leading)
         control(item).disabled(!enabled).accessibilityLabel(item.label)
       }
       if !item.help.isEmpty { note(item.help) }
       if let why = model.refusals[item.key] {
-        Text(why).font(MVTheme.font(12)).foregroundStyle(MVTheme.accent)
+        // The accent is not a status colour: the title's, as on Windows.
+        Text(why).font(MVTheme.font(12)).foregroundStyle(MVTheme.title)
           .fixedSize(horizontal: false, vertical: true)
+          .transition(.opacity)
       }
     }
+    .animation(.easeOut(duration: 0.15), value: enabled)
+    .animation(.easeOut(duration: 0.15), value: model.refusals[item.key])
   }
 
   @ViewBuilder private func control(_ item: AddonSettingItem) -> some View {
