@@ -21,6 +21,8 @@ struct ExportView: View {
   @State private var policy: Int
   @State private var row = 0
   @FocusState private var focused: Bool
+  @State private var shown = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init() {
     let last = mv_chrome_export_last_choice()
@@ -58,28 +60,33 @@ struct ExportView: View {
       Color.black.opacity(0.35)
         .ignoresSafeArea()
         .onTapGesture { mv_chrome_export_cancel() }
+        .opacity(shown ? 1 : 0)
       VStack(alignment: .leading, spacing: MVTheme.space(10)) {
-        Text("Export a copy").font(.title3.bold())
+        // The theme's family throughout (docs/design/20 "Craft rules").
+        Text("Export a copy").font(MVTheme.font(15).weight(.semibold)).foregroundStyle(MVTheme.title)
         Text("Beside the original as name-edit; never overwrites.")
-          .foregroundStyle(.secondary)
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+          .font(MVTheme.font(13))
+          .foregroundStyle(MVTheme.body)
+        Grid(alignment: .leading, horizontalSpacing: MVTheme.space(16), verticalSpacing: MVTheme.space(6)) {
           ForEach(0..<4, id: \.self) { r in
             GridRow {
-              Text(Self.names[r]).foregroundStyle(.secondary)
+              Text(Self.names[r]).foregroundStyle(MVTheme.body)
               Button {
                 row = r
                 step(r, 1)
               } label: {
                 Text(r == row ? "◀  \(value(r))  ▶" : "    \(value(r))")
-                  .foregroundStyle(r == row ? .primary : .secondary)
+                  .foregroundStyle(r == row ? MVTheme.title : MVTheme.body)
+                  .monospacedDigit()
               }
               .buttonStyle(.plain)
             }
           }
         }
+        .font(MVTheme.font(14))
         Text("↑ ↓ choose   ← → change   Return export   Esc cancel")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
         HStack {
           Spacer()
           Button("Cancel") { mv_chrome_export_cancel() }
@@ -90,14 +97,24 @@ struct ExportView: View {
       }
       .padding(MVTheme.space(20))
       .frame(width: 380)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: MVTheme.radius(12)))
+      // An opaque sheet over the scrim (nothing translucent over something
+      // translucent): the canvas with a hairline, as Windows' sheet presenter.
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(12)).fill(MVTheme.canvas))
+      .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(12)).strokeBorder(MVTheme.hairline, lineWidth: 1))
+      .opacity(shown ? 1 : 0)
+      .offset(y: shown ? 0 : 8)
       .focusable()
       .focused($focused)
       .onKeyPress(.upArrow) { row = (row + 3) % 4; return .handled }
       .onKeyPress(.downArrow) { row = (row + 1) % 4; return .handled }
       .onKeyPress(.leftArrow) { step(row, -1); return .handled }
       .onKeyPress(.rightArrow) { step(row, 1); return .handled }
-      .onAppear { focused = true }
+      .onAppear {
+        focused = true
+        // The sheet arrives (a short fade and a few points of rise), it
+        // does not pop; Reduce Motion shows it at once.
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { shown = true }
+      }
     }
   }
 }

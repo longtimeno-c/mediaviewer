@@ -242,21 +242,91 @@ public static partial class IslandHost
 
     private static UIElement BuildClipTools(int flags, out UIElement focusTarget)
     {
-        var panel = new StackPanel { Spacing = Space(2), IsTabStop = true, Width = 400 };
-        panel.Children.Add(Label("Clip tools", UiFontSize + 2));
-        panel.Children.Add(Label("New files beside the clip; the original is never changed.", UiFontSize, mute: true));
+        var panel = new StackPanel { Spacing = Space(4), IsTabStop = true, Width = 400 };
+        // The Mac sheet's type (ClipToolsView.swift): a 15 DIP title one weight
+        // step up, a 13 DIP line under it.
+        TextBlock title = Label("Clip tools", TypeSize(15));
+        title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        panel.Children.Add(title);
+        TextBlock lead = Label("New files beside the clip; the original is never changed.", TypeSize(13), mute: true);
+        lead.Margin = Pad(0, 0, 0, 6);
+        panel.Children.Add(lead);
         var rows = new TextBlock[ClipTools.Length];
+        var buttons = new Button[ClipTools.Length];
         bool Enabled(int i) => (ClipTools[i].Needs & flags) == ClipTools[i].Needs;
         int row = 0;
         while (row < ClipTools.Length && !Enabled(row)) ++row;
+
+        // docs/design/20 "Craft rules": the chosen row is a lifted surface (the
+        // pressed wash) that slides as Up and Down move it, not a ▶ typed in
+        // front of its name. One mark under the rows, moved by a transform.
+        var slide = new TranslateTransform();
+        var mark = new Border
+        {
+            Background = Brush(ChromeColour.PressedWash),
+            CornerRadius = Corner(RadiusButton),
+            VerticalAlignment = VerticalAlignment.Top,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            IsHitTestVisible = false,
+            RenderTransform = slide,
+            Height = 0,
+        };
+        var list = new StackPanel { Spacing = Space(2) };
+        var listHost = new Grid
+        {
+            // The rows' words on the title's edge; their surface reaches past it.
+            Margin = new Thickness(-Space(8), 0, -Space(8), 0),
+        };
+        listHost.Children.Add(mark);
+        listHost.Children.Add(list);
+        Storyboard? glide = null;
+        void PlaceMark(bool animate)
+        {
+            if (row >= buttons.Length || buttons[row] is not { } b || b.ActualHeight <= 0) return;
+            double y = b.TransformToVisual(list).TransformPoint(new Windows.Foundation.Point(0, 0)).Y;
+            mark.Height = b.ActualHeight;
+            glide?.Stop();
+            glide = null;
+            double from = slide.Y;
+            slide.Y = y;
+            if (!animate || !HostAnimationsEnabled() || Math.Abs(from - y) < 0.5) return;
+            try
+            {
+                var travel = new DoubleAnimation
+                {
+                    From = from,
+                    To = y,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                };
+                Storyboard.SetTarget(travel, slide);
+                Storyboard.SetTargetProperty(travel, "Y");
+                var board = new Storyboard();
+                board.Children.Add(travel);
+                board.Completed += (_, _) =>
+                {
+                    if (glide != board) return;
+                    glide = null;
+                    board.Stop();  // the local value is the end
+                };
+                glide = board;
+                board.Begin();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                glide = null;
+            }
+        }
+        list.SizeChanged += (_, _) => PlaceMark(animate: false);
 
         void Refresh()
         {
             for (int i = 0; i < rows.Length; ++i)
             {
-                rows[i].Text = (i == row ? "▶ " : "  ") + ClipTools[i].Name;
+                rows[i].Text = ClipTools[i].Name;
                 // A tool the clip cannot use is the Disabled colour, not a
-                // dimmer copy of an enabled row (the Mac's .tertiary).
+                // dimmer copy of an enabled row (the Mac's MVTheme.disabled).
                 rows[i].Foreground = Brush(!Enabled(i) ? ChromeColour.Disabled : i == row ? Title : Body);
                 AutomationProperties_SetName(rows[i], ClipTools[i].Name + (Enabled(i) ? "" : ", unavailable"));
             }
@@ -269,6 +339,7 @@ public static partial class IslandHost
                 if (Enabled(row)) break;
             }
             Refresh();
+            PlaceMark(animate: true);
             RaiseLive(rows[row]);  // the panel keeps focus: speak the row (issue #223)
         }
         void Run(int i)
@@ -281,15 +352,20 @@ public static partial class IslandHost
 
         for (int i = 0; i < ClipTools.Length; ++i)
         {
-            rows[i] = Label("", UiFontSize);
+            rows[i] = Label("", TypeBody);
             MarkLive(rows[i]);
             int captured = i;
-            var b = FlatButton(rows[i], Pad(0, 1, 0, 1), tabStop: false);
+            var b = FlatButton(rows[i], Pad(8, 3, 8, 3), tabStop: false);
+            b.HorizontalAlignment = HorizontalAlignment.Stretch;
             b.IsEnabled = Enabled(i);
             b.Click += (_, _) => Run(captured);
-            panel.Children.Add(b);
+            buttons[i] = b;
+            list.Children.Add(b);
         }
-        panel.Children.Add(Label("↑ ↓ choose   Enter run   Esc cancel   ·   jobs: Ctrl+J", UiFontSize, mute: true));
+        panel.Children.Add(listHost);
+        TextBlock keys = Label("↑ ↓ choose   Enter run   Esc cancel   ·   jobs: Ctrl+J", TypeCaption, mute: true);
+        keys.Margin = Pad(0, 6, 0, 0);
+        panel.Children.Add(keys);
         // Cancel (Esc) and Run (Enter) for the mouse (ClipToolsView.swift).
         Button cancel = TextButton("Cancel", ClosePopup);
         cancel.IsTabStop = false;
@@ -323,14 +399,22 @@ public static partial class IslandHost
     private static DispatcherTimer? _jobsTimer;
     private static StackPanel? _jobsList;
     private static TextBlock? _jobsEmpty;
+    private static Button? _jobsClear;
     private static readonly List<JobRow> _jobRows = new();
     private static int _jobCursor;
+    // The keyboard is in the pane: only then does the cursor's outline show
+    // (an accent outline means keyboard focus; JobsView.swift's `focused`).
+    private static bool _jobsFocused;
 
     private sealed class JobRow
     {
         public ulong Id;
         public MvClipJobState State;
-        public Border Root = null!;
+        public bool Drawn;     // a state has been shown, so a new one crossfades
+        public bool BarShown = true;
+        public bool Cursor;
+        public Grid Root = null!;
+        public Border Outline = null!;
         public TextBlock Title = null!;
         public TextBlock Status = null!;
         public JobBar Bar = null!;
@@ -572,6 +656,8 @@ public static partial class IslandHost
     {
         _jobsList = null;
         _jobsEmpty = null;
+        _jobsClear = null;
+        _jobsFocused = false;
         _jobRows.Clear();
     }
 
@@ -579,9 +665,9 @@ public static partial class IslandHost
     {
         Grid root = PanelShell("Jobs", Command.JobsPane, out Grid body);
         var col = new StackPanel { Spacing = Space(8), Padding = Pad(14, 4, 14, 14), IsTabStop = true };
-        _jobsEmpty = Text("No clip jobs. On a clip: Ctrl+T trims, Ctrl+S opens the clip tools.", Body);
+        _jobsEmpty = Text("No clip jobs. On a clip: Ctrl+T trims, Ctrl+S opens the clip tools.", Body, TypeBody);
         col.Children.Add(_jobsEmpty);
-        _jobsList = new StackPanel { Spacing = Space(6) };
+        _jobsList = new StackPanel { Spacing = Space(8) };
         col.Children.Add(_jobsList);
         Button clear = EditButton("Clear finished", () =>
         {
@@ -589,12 +675,66 @@ public static partial class IslandHost
             RefreshJobs();
         });
         clear.IsTabStop = false;
+        // Its words on the list's edge, not its wash's (no surface at rest).
+        clear.Margin = new Thickness(-Space(8), 0, 0, 0);
+        _jobsClear = clear;
         col.Children.Add(clear);
         col.Children.Add(Text("↑ ↓ choose · Delete cancel · R retry · Enter show in Explorer · Esc back",
-                              Body, UiFontSize - 3));
+                              Body, TypeCaption));
         col.KeyDown += OnJobsKey;
+        col.GotFocus += (_, _) => SetJobsFocused(true);
+        col.LostFocus += (_, _) => SetJobsFocused(false);
         body.Children.Add(new ScrollViewer { Content = col, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         return root;
+    }
+
+    private static void SetJobsFocused(bool focused)
+    {
+        try
+        {
+            if (focused == _jobsFocused) return;
+            _jobsFocused = focused;
+            RefreshJobs();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);  // never out of a XAML event
+        }
+    }
+
+    // A job row's state crossfades in its slot, its bar fades out when it
+    // ends (the slot stays, so the row does not jump) and the cursor's
+    // outline fades in and out: 150 ms, cut with Windows' animations off.
+    private static void FadeJobPart(UIElement e, double to, double ms = 150)
+    {
+        if (!HostAnimationsEnabled() || !_jobsPaneVisible)
+        {
+            e.Opacity = to;
+            return;
+        }
+        try
+        {
+            double from = e.Opacity;
+            e.Opacity = to;
+            var fade = new DoubleAnimation
+            {
+                From = from,
+                To = to,
+                Duration = new Duration(TimeSpan.FromMilliseconds(ms)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            Storyboard.SetTarget(fade, e);
+            Storyboard.SetTargetProperty(fade, "Opacity");
+            var board = new Storyboard();
+            board.Children.Add(fade);
+            board.Completed += (_, _) => board.Stop();  // the local value is the end
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            e.Opacity = to;
+        }
     }
 
     private static void OnJobsKey(object sender, KeyRoutedEventArgs e)
@@ -710,52 +850,97 @@ public static partial class IslandHost
         }
         if (_jobsEmpty is not null) _jobsEmpty.Visibility = ids.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         _jobCursor = Math.Clamp(_jobCursor, 0, Math.Max(0, _jobRows.Count - 1));
+        bool anyFinished = false;
         for (int i = 0; i < _jobRows.Count; ++i)
         {
             JobRow row = _jobRows[i];
             if (!_folderSession.TryClipProgress(row.Id, out MvClipProgress p)) continue;
+            bool first = !row.Drawn;
+            bool stateChanged = !first && row.State != p.State;
             row.State = p.State;
+            row.Drawn = true;
             row.Title.Text = $"{p.TitleText} — {p.SourceNameText}";
             row.Status.Text = StatusOf(p);
+            // A new state (Waiting, a percentage, Done) crossfades in its slot;
+            // the numbers ticking while it runs do not.
+            if (stateChanged) Refade(row.Status);
             row.Bar.Value = p.Fraction;
-            row.Bar.IsIndeterminate = p.State == MvClipJobState.Running && p.Fraction <= 0;
-            row.Bar.Visibility = p.State is MvClipJobState.Running or MvClipJobState.Queued
-                ? Visibility.Visible : Visibility.Collapsed;
-            row.Root.BorderBrush = Brush(i == _jobCursor ? TrimAccent : Hairline);
             bool running = p.State is MvClipJobState.Running or MvClipJobState.Queued;
+            if (!running) anyFinished = true;
+            row.Bar.IsIndeterminate = p.State == MvClipJobState.Running && p.Fraction <= 0;
+            // A finished job keeps the bar's slot with the bar faded out (the
+            // Mac's ProgressTrack faded), so the row does not jump.
+            if (running != row.BarShown)
+            {
+                row.BarShown = running;
+                if (first) row.Bar.Root.Opacity = running ? 1 : 0;
+                else FadeJobPart(row.Bar.Root, running ? 1 : 0, 250);
+            }
+            bool cursor = i == _jobCursor && _jobsFocused;
+            if (cursor != row.Cursor)
+            {
+                row.Cursor = cursor;
+                FadeJobPart(row.Outline, cursor ? 1 : 0);
+            }
             row.Cancel.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
             row.Retry.Visibility = p.State is MvClipJobState.Failed or MvClipJobState.Cancelled
                 ? Visibility.Visible : Visibility.Collapsed;
             row.Reveal.Visibility = p.State == MvClipJobState.Done ? Visibility.Visible : Visibility.Collapsed;
         }
+        // Nothing to clear: the button says so by being off, as on the Mac.
+        if (_jobsClear is not null) _jobsClear.IsEnabled = anyFinished;
     }
 
     private static JobRow MakeJobRow(ulong id)
     {
         var row = new JobRow { Id = id };
-        row.Title = Text("", Title, UiFontSize - 2, maxLines: 2);
-        row.Status = Text("", Body, UiFontSize - 3);
+        row.Title = Text("", Title, TypeBody, maxLines: 2);
+        row.Status = Text("", Body, TypeSize(12), maxLines: 1);
+        row.Status.TextWrapping = TextWrapping.NoWrap;
+        row.Status.TextTrimming = TextTrimming.CharacterEllipsis;
+        row.Status.VerticalAlignment = VerticalAlignment.Center;
         row.Bar = new JobBar();
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
-        row.Cancel = EditButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); });
-        row.Retry = EditButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); });
-        row.Reveal = EditButton("Show in Explorer", () => RevealJob(id));
-        buttons.Children.Add(row.Cancel);
-        buttons.Children.Add(row.Retry);
-        buttons.Children.Add(row.Reveal);
-        var inner = new StackPanel { Spacing = Space(3) };
+        // The one line under the bar (ProgressLine's): the job's state, and at
+        // its end the one action that state has, quiet (Cancel, Retry or Show
+        // in Explorer), not a row of buttons of its own.
+        var line = new Grid { ColumnSpacing = Space(8), MinHeight = 22 };
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        line.Children.Add(row.Status);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Cancel = QuietButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); });
+        row.Retry = QuietButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); });
+        row.Reveal = QuietButton("Show in Explorer", () => RevealJob(id));
+        actions.Children.Add(row.Cancel);
+        actions.Children.Add(row.Retry);
+        actions.Children.Add(row.Reveal);
+        Grid.SetColumn(actions, 1);
+        line.Children.Add(actions);
+        var inner = new StackPanel { Spacing = Space(6) };
         inner.Children.Add(row.Title);
         inner.Children.Add(row.Bar.Root);
-        inner.Children.Add(row.Status);
-        inner.Children.Add(buttons);
-        row.Root = new Border
+        inner.Children.Add(line);
+        // One surface per job: a fill, no outline at rest (the Mac's surface2
+        // card). The accent outline over it is the keyboard's cursor.
+        var card = new Border
         {
             Child = inner,
-            BorderThickness = new Thickness(1),
-            BorderBrush = Brush(Hairline),
-            Padding = Pad(8, 6, 8, 6),
-            CornerRadius = Corner(6),
+            Background = Brush(ChromeColour.Surface2),
+            Padding = Pad(12),
+            CornerRadius = Corner(RadiusCard),
         };
+        row.Outline = new Border
+        {
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush(ChromeColour.Accent),
+            CornerRadius = Corner(RadiusCard),
+            IsHitTestVisible = false,
+            Opacity = 0,
+        };
+        row.Root = new Grid();
+        row.Root.Children.Add(card);
+        row.Root.Children.Add(row.Outline);
+        Appear(row.Root);  // a new job arrives; one rebuilt in the list does not
         return row;
     }
 }
