@@ -56,6 +56,10 @@ struct engine_port {
   // [worker] Slice 7: how many brush dabs the host holds over the photo at
   // `path` (Edit → Adjust → Remove); 0 none.
   std::function<std::uint32_t(const std::string& path)> brushed;
+  // [worker] S5's Discard: the host table's recycle_file. 0 moved to the
+  // Bin / Trash, 1 refused (the place has no bin: nothing was removed), -1
+  // failed. Never a permanent delete.
+  std::function<int(const std::string& path)> recycle;
   std::function<std::optional<std::uint64_t>(const std::string& dir)> free_disk;
   std::function<std::unique_ptr<ai::http_transport>()> transport;
   // Never a path or a name (rule 6).
@@ -126,6 +130,12 @@ class engine {
   // `width_pt` / `scale`: the sheet's content width and backing scale, for
   // the preview's pixels.
   void sheet_opened(std::uint64_t generation, const std::string& path, float width_pt = 420, float scale = 2);
+  // S5: the docked panel (place "edit") opened on `path`, `width_pt` wide.
+  void tool_opened(std::uint64_t generation, const std::string& path, float width_pt = 340, float scale = 2);
+  // S5: the Edit workspace's command to it, enhance/tool:
+  // {"photo": "remove|restyle|detail|extend", "run": true?}. Chooses the tool
+  // (Remove reads the brushed dabs again) and, with "run", starts it.
+  void tool_command(const std::string& value_json);
   void closed(const std::string& screen);
   // The command or the context entry: these files (the first is enhanced),
   // then the sheet. From the Video Editor, `keep_ns` is the edit (job_request).
@@ -144,14 +154,26 @@ class engine {
  private:
   void on_changed(model_kind k);
   void post_settings_locked();
+  // Posts the sheet and the docked panel, whichever are open.
   void post_sheet_locked();
-  [[nodiscard]] sheet_view sheet_locked() const;
-  [[nodiscard]] std::vector<model_kind> kinds_for_locked() const;
+  // `docked`: the panel's view (Remove stays Remove with nothing brushed yet).
+  [[nodiscard]] sheet_view sheet_locked(bool docked = false) const;
+  [[nodiscard]] std::vector<model_kind> kinds_for_locked(bool docked = false) const;
+  // A screen opened on `path`: what it is, read before the lock.
+  struct item_facts {
+    item_kind item = item_kind::unknown;
+    media_facts facts;
+    std::uint32_t brushed = 0;
+  };
+  [[nodiscard]] item_facts read_item(const std::string& path) const;
+  void adopt_locked(const std::string& path, const item_facts& f, std::vector<std::int64_t> keep);
+  void discard();
+  void forget_result_locked();
   void save_locked();
   void install(model_kind k);
   void stop(model_kind k);
   void remove(model_kind k);
-  void run();
+  void run(bool docked = false);
   void cancel();
 
   engine_port port_;
@@ -167,6 +189,7 @@ class engine {
   prefs prefs_;
   std::uint64_t settings_gen_ = 0;
   std::uint64_t sheet_gen_ = 0;
+  std::uint64_t tool_gen_ = 0;  // S5: the docked panel's generation, 0 closed
   std::string pending_path_;  // from a command, for the sheet it opens
   std::vector<std::int64_t> pending_keep_;
   std::string path_;          // the item the sheet is about
@@ -182,7 +205,14 @@ class engine {
   bool preview_ = false;  // the sheet shows a preview surface
   float sheet_width_pt_ = 420;
   float sheet_scale_ = 2;
+  float tool_width_pt_ = 340;
+  float tool_scale_ = 2;
   std::string status_;
+  // S5: the file the last run wrote (absolute, or a library key), for the
+  // docked panel's result row; "" none or discarded.
+  std::string result_path_;
+  std::string result_name_;
+  std::string result_note_;  // Discard refused or failed: why, under the row
 };
 
 }  // namespace mv::enhance

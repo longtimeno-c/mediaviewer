@@ -186,6 +186,16 @@ class slot_registry {
   // the current file). not_found for an add-on or command it does not have.
   status run_command(const std::string& addon_id, const std::string& command_id,
                      const std::string& paths_json);
+  // docs/plans/edit-refresh.md S5: the Edit workspace hands a docked screen
+  // (place "edit", contribution API 12) a command: opened first when it is
+  // not open (on `path`, the file on screen, with the last theme a chrome
+  // gave), then the add-on gets a command event (screen = node = `screen_id`,
+  // value = `value_json`, one JSON object of at most kMaxScreenCommand bytes:
+  // Enhance's {"photo": "remove", "run": true}). not_found for an add-on
+  // without such a screen; invalid_arg for a value that is not an object.
+  static constexpr std::size_t kMaxScreenCommand = 4096;
+  status screen_command(const std::string& addon_id, const std::string& screen_id, const std::string& path,
+                        const std::string& value_json, float width_pt, float scale);
 
   // ---- the chrome reads (any thread; copies) -----------------------------------
   // {"addons":[{"id","name","dir"}],"sections":[{"addon","id","title","location"}],

@@ -247,6 +247,17 @@ private struct ScreenRootInsetKey: EnvironmentKey {
   static let defaultValue: EdgeInsets? = nil
 }
 
+/// docs/plans/edit-refresh.md S5: a host that draws a screen inside its own
+/// page (Enhance's docked panel) answers some buttons itself: navigating is the
+/// viewer's. True when it took the click; the add-on then never hears of it.
+struct ScreenButtonHook {
+  var take: @MainActor (ScreenAddress, String) -> Bool = { _, _ in false }
+}
+
+private struct ScreenButtonHookKey: EnvironmentKey {
+  static let defaultValue = ScreenButtonHook()
+}
+
 /// The nearest scroller's way to bring a node into view, by its id.
 struct ScreenScrollTo {
   var go: @MainActor (String) -> Void = { _ in }
@@ -274,6 +285,12 @@ extension EnvironmentValues {
   var screenRootInset: EdgeInsets? {
     get { self[ScreenRootInsetKey.self] }
     set { self[ScreenRootInsetKey.self] = newValue }
+  }
+
+  /// S5: the docked panel's host buttons (Show, Keep editing).
+  var screenButtonHook: ScreenButtonHook {
+    get { self[ScreenButtonHookKey.self] }
+    set { self[ScreenButtonHookKey.self] = newValue }
   }
 
   /// "reveal": the enclosing scroller, to bring a stack into view.
@@ -1401,8 +1418,9 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   }
 
   func sync(_ screens: [SlotScreen]) {
-    // A settings page is drawn in Settings (AddonSettingsScreen), not here.
-    let screens = screens.filter { $0.place != "settings" }
+    // A settings page is drawn in Settings (AddonSettingsScreen), a docked Edit
+    // screen in the Enhance tab (EnhanceHubView, S5): not here.
+    let screens = screens.filter { $0.place != "settings" && $0.place != "edit" }
     let wanted = Set(screens.map { ScreenAddress(addon: $0.addon, screen: $0.screen) })
     for (address, window) in windows where !wanted.contains(address) {
       closingFromCore.insert(address)
@@ -1578,9 +1596,11 @@ private struct ButtonNode: View {
   let address: ScreenAddress
   @State private var copied = false
   @Environment(\.screenWindow) private var window
+  @Environment(\.screenButtonHook) private var hook
 
   var body: some View {
     Button {
+      if hook.take(address, node.id) { return }
       if let text = node.string("copy") {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)

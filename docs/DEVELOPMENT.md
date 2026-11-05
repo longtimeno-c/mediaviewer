@@ -2306,6 +2306,13 @@ hidden cases run it for real:
 MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
 ```
 
+**Docked in Edit** (docs/plans/edit-refresh.md S5): Remove, Restyle, Enhance image and Extend run
+inside the Edit workspace's Enhance tab (Enhance's screen in place `"edit"`, under the chosen
+card), with the result row Show / Keep editing / Move to Trash (Recycle Bin on Windows). Tests:
+`build/bin/mv_import_tests "[enhance][tool]"` (the panel, its commands, the row and Discard over
+fakes), `"[addon][slots][screens]"` (a docked screen opens only by the workspace's command) and
+`"a screen's place may be*"` (`test_addon_manifest`: `"edit"` accepted, unknown places refused).
+
 **Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob
 apart with merging and the 8-box fallback, and the run with a stand-in model, including a cancel

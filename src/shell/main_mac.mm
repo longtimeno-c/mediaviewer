@@ -945,6 +945,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editSelectTab:(int32_t)tab;
 - (void)editRailPick:(int32_t)tab;
 - (void)editTool:(int32_t)tool;
+- (void)enhanceTool:(const std::string&)photo run:(BOOL)run;
+- (void)enhanceShowResult:(const std::string&)path keep:(BOOL)keep;
+- (void)enhanceDockClose;
 - (void)autoEnhance;
 - (void)autoEnhanceSettle;
 - (void)editClose;
@@ -1995,6 +1998,16 @@ extern "C" void mv_chrome_edit_enhance_command(const char* command) {
   if (!g_chrome_app || !command) return;
   const mv::shell::command_id id = mv::shell::find_addon_command("enhance", command);
   if (id != mv::shell::command_id::none) (void)[g_chrome_app runCommand:id back:mv::shell::back_target::none];
+}
+extern "C" void mv_chrome_edit_enhance_tool(const char* photo, int32_t run) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || !photo) return;
+  [g_chrome_app enhanceTool:photo run:run != 0];
+}
+extern "C" void mv_chrome_edit_enhance_result(const char* path, int32_t keep) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || !path || !*path) return;
+  [g_chrome_app enhanceShowResult:path keep:keep != 0];
 }
 extern "C" void mv_chrome_edit_save_copy(void) {
   (void)mv::shell::crash::note_native_call();
@@ -3669,6 +3682,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // last sync; ✦ Auto waiting for the working image, and its job's token.
   BOOL _wsFolded;
   BOOL _autoEnhancePending;
+  // docs/plans/edit-refresh.md S5: the photo Enhance's docked panel (place
+  // "edit") was opened on, "" while it is closed.
+  std::string _enhanceDockPath;
   std::uint64_t _autoEnhanceItem;  // the adjust item the waiting click was for
   std::uint64_t _autoEnhanceToken;
   int _selfTestEditsBeforeAuto;  // MV_EDIT_SELFTEST's ✦ Auto line
@@ -8542,6 +8558,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self publishEdit];
   if (carried_turn) [self scheduleRotationWrite];
   [self adjustItemChanged:mv::shell::is_video_name(entry.name_utf8) ? 0 : item];
+  // S5: Enhance's docked panel stays with the photo it was opened on.
+  if (!_enhanceDockPath.empty() && _enhanceDockPath != entry.path_utf8) [self enhanceDockClose];
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
   // S3: an armed tool stays armed on the next still (the bar and its band go
@@ -8656,8 +8674,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _wsSyncing = YES;
   const BOOL open = _ws.open ? YES : NO;
   const edit_tab tab = _ws.tab;
-  // A canvas tool belongs to Edit: closing it puts the tool down (S3).
+  // A canvas tool belongs to Edit: closing it puts the tool down (S3), and
+  // Enhance's docked panel goes with it (S5).
   if (!open && _tool.tool != mv::shell::canvas_tool::none) [self toolDown];
+  if (!open) [self enhanceDockClose];
   // A crop draft belongs to the Crop tab: leaving it applies the draft
   // (Lightroom's rule), so no crop is lost to a tab click.
   if (_edits.crop_active() && !(open && tab == edit_tab::crop)) {
@@ -8967,8 +8987,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 // The rail's and the Enhance tab's tools (EditRailView / EnhanceHubView):
 // 0 Remove (the brush, on the Enhance tab), 1 Red-eye (on Adjust), 2 Faces
-// (the Enhance tab), 3 Extend (Enhance's sheet; its photo choice offers
-// Extend the picture). S3: Remove and Red-eye are canvas tools
+// (the Enhance tab), 3 Extend (Enhance's docked panel on Extend, S5; the
+// sheet with an Enhance that has none). S3: Remove and Red-eye are canvas tools
 // (shell/canvas_tool.h); a second click on the armed one puts it down.
 - (void)editTool:(int32_t)tool {
   if ([self editSubject] != mv::shell::edit_subject::still) {
@@ -8988,15 +9008,14 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case 2:
       [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];
       break;
-    case 3: {
-      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
-      if (id == mv::shell::command_id::none) {
+    case 3:
+      // S5: Enhance's docked panel on Extend (its sheet without one).
+      if (mv::shell::find_addon_command("enhance", "open") == mv::shell::command_id::none) {
         [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];  // its card offers the add-on
       } else {
-        (void)[self runCommand:id back:mv::shell::back_target::none];
+        [self enhanceTool:"extend" run:NO];
       }
       break;
-    }
     default: break;
   }
 }
@@ -9070,6 +9089,97 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (!_ws.open) return;
   _ws.open = false;
   [self syncWorkspace];
+}
+
+// docs/plans/edit-refresh.md S5 (owner call B): an Enhance tool inside the Edit
+// pane. Enhance's docked panel (place "edit") opens on the photo under the
+// tool's card on the Enhance tab and gets the workspace's enhance/tool
+// command; `run` starts it (Remove hands the brushed dabs over first, as the
+// sheet's Remove did). An Enhance without the panel opens its sheet instead.
+- (void)enhanceTool:(const std::string&)photo run:(BOOL)run {
+  if ([self editSubject] != mv::shell::edit_subject::still || _items.empty() || _index.current() >= _items.size()) {
+    NSBeep();
+    return;
+  }
+  const std::string path = _items[_index.current()].path_utf8;
+  if (photo == "remove" && run) {
+    if (_brush.empty()) {
+      [self noticeShow:"Brush over what to remove first"];
+      return;
+    }
+    mv::addon::media::set_still_mask(path, _brush.handoff());
+  }
+  // A crop draft goes into the copy, as Enhance… applies it.
+  if (_edits.crop_active()) (void)[self runEditCommand:mv::shell::command_id::crop_commit];
+  mv::json::writer w;
+  w.begin_object().key("photo").string(photo);
+  if (run) w.key("run").boolean(true);
+  w.end_object();
+  // The panel's content width: the column less the pane's and the card's margins.
+  const CGFloat column = self.rightColumnWidth ? self.rightColumnWidth.constant : kInspectorDefaultPoints;
+  const CGFloat width = std::max<CGFloat>(200.0, column - 2 * 14.0 - 2 * 12.0);
+  const CGFloat scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 2.0;
+  const mv::status st = mv::addon::default_slots().screen_command("enhance", "tool", path, w.str(),
+                                                                  static_cast<float>(width), static_cast<float>(scale));
+  if (st == mv::status::ok) {
+    _enhanceDockPath = path;
+    const mv::shell::workspace_action a = _ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
+    if (mv::shell::apply_step(_ws, {a, mv::shell::edit_tab::enhance})) [self syncWorkspace];
+    ++_editGeneration;
+    return;
+  }
+  // The sheet, started on the tool where its commands can say so.
+  mv::shell::command_id id = mv::shell::find_addon_command("enhance", photo == "restyle" ? "restyle" : "open");
+  if (id == mv::shell::command_id::none) id = mv::shell::find_addon_command("enhance", "open");
+  if (id == mv::shell::command_id::none) {
+    [self noticeShow:"This needs the Enhance add-on (Settings → Add-ons)."];
+    return;
+  }
+  (void)[self runCommand:id back:mv::shell::back_target::none];
+}
+
+// The docked panel belongs to the photo it opened on: another photo, or Edit
+// closing, closes it (a run still going stops, as the sheet's does).
+- (void)enhanceDockClose {
+  if (_enhanceDockPath.empty()) return;
+  _enhanceDockPath.clear();
+  (void)mv::addon::default_slots().close_screen("enhance", "tool");
+}
+
+// The result row: Show leaves Edit and shows the new file (or library photo);
+// Keep editing shows it with Edit still open on the Enhance tab. One not
+// listed yet is selected by the relist that lists it (`_wantSelectedPath`):
+// a new library photo is inserted beside its source once PhotoKit describes
+// it (-photosAdded:source:), a file beside the original arrives with the
+// folder's relist, asked for here in case the watch is slow.
+- (void)enhanceShowResult:(const std::string&)path keep:(BOOL)keep {
+  if (!keep) [self editClose];
+  [self enhanceDockClose];
+  const bool library = mv::shell::photos::is_key(path);
+  bool found = false;
+  for (std::size_t i = 0; i < _items.size(); ++i) {
+    if (_items[i].path_utf8 != path) continue;
+    if (i != _index.current()) [self selectIndex:i];
+    found = true;
+    break;
+  }
+  if (!found) {
+    const std::size_t slash = path.find_last_of('/');
+    const std::string dir = slash == std::string::npos ? std::string() : path.substr(0, slash);
+    if (library) {
+      if (_listOpen) _wantSelectedPath = path;  // the insert's relist selects it
+      [self noticeShow:std::string(mv::shell::photos::kAddedBesideNotice)];
+    } else if (!_listOpen && !dir.empty() && dir == _currentDir) {
+      _wantSelectedPath = path;
+      _folder.relist();
+    } else if (!dir.empty()) {
+      [self openDir:dir select:path navigation:YES];
+    }
+  }
+  if (keep) {
+    const mv::shell::workspace_action a = _ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
+    if (mv::shell::apply_step(_ws, {a, mv::shell::edit_tab::enhance})) [self syncWorkspace];
+  }
 }
 
 // The Crop pane's buttons and slider: stills only, once the pixels are known.
@@ -11930,13 +12040,8 @@ static double mv_wall_seconds() {
       [self noticeShow:"Brush over what to remove first"];
       return;
     }
-    mv::addon::media::set_still_mask(_items[_index.current()].path_utf8, _brush.handoff());
-    const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
-    if (id == mv::shell::command_id::none) {
-      [self noticeShow:"Remove needs the Enhance add-on (Settings → Add-ons)."];
-    } else {
-      (void)[self runCommand:id back:mv::shell::back_target::none];
-    }
+    // S5: the docked panel runs it (the sheet when there is none).
+    [self enhanceTool:"remove" run:YES];
   }
   [self brushPublish];
   [self bumpAdjustView];

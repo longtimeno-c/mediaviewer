@@ -725,6 +725,15 @@ How it works:
   remembered devices) where a manifest `settings` page (contribution API 2, values kept by the
   host) would keep a second copy. Schema 1 manifests only; other makers' scripts do not have it.
   Mac `AddonSettingsScreen` (`AddonListView.swift`), Windows `IslandHost.AddonSettingsScreen.cs`.
+- **A screen docked in Edit** (2026-11-05, contribution API **12**; `MV_SLOT_PLACE_EDIT`): a
+  screen in place `"edit"` is drawn inside the Edit workspace's Enhance tab, under the tool's card,
+  by the same renderer, never in a window. Only the workspace opens it, with a command
+  (`mv_slots_screen_command`: opened on the file on screen if it is not open, then a command
+  event carrying one small JSON object); `screen_show` refuses it, an item's `"opens"` may not name
+  it and a status item's "only screen" skips it. At most one per add-on. The host may answer some
+  of its buttons itself (Enhance's Show and Keep editing navigate). Enhance's tool panel is the
+  only one ([29](29-enhance.md) "Docked in Edit"). Mac `DockedToolPanel` (`EnhanceHubView.swift`),
+  Windows `IslandHost.EnhanceDock.cs`.
 - **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
   is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
   side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
@@ -847,9 +856,9 @@ Two more (2026-10-28, Enhance; contribution API **10**):
 Both are the window's own drawing, never the canvas: 30 fps at most, only while the node is in the
 tree, and still with Reduce Motion (Mac) or animations off (Windows).
 
-One more (2026-11-04, Enhance's performance level). Not yet behind a contribution API step of its
-own: an older core refuses a tree that uses it, so the step is taken with this round's other
-additions (the Edit pane's `place "edit"`) when its number is chosen:
+One more (2026-11-04, Enhance's performance level; contribution API **12**, the same step as the
+Edit pane's `place "edit"` above: an older core refuses a tree that uses it, and Enhance's manifest
+asks for 12 for both):
 
 - **A `choice` option's `"disabled": true`**: listed, never chosen. The core refuses a change to
   it (`"[screens]"`); the Mac's Picker marks the item `.disabled` and ignores a choice of it, Windows' `ComboBoxItem` is

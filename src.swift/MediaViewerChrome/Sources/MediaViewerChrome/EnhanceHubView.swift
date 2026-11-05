@@ -7,7 +7,15 @@
 // the right choice (its "open" and "restyle" commands; Extend through the
 // sheet's photo choice), and Open closed eyes / Improve faces. Every result
 // is a new file (or a new Photos-library photo); the original never changes.
-// Running inside the pane is S5's. The Windows twin is IslandHost.EnhanceHub.cs.
+// The Windows twin is IslandHost.EnhanceHub.cs.
+//
+// S5 (owner call B): Remove, Restyle, Enhance image and Extend run inside the
+// pane. A card asks Enhance for its docked screen (place "edit", the
+// workspace's enhance/tool command), which is drawn under that card
+// (DockedToolPanel): the tool's knobs, the preview, the glowing progress with
+// the time left, Cancel, and the result row. The row's Show and Keep editing
+// are the viewer's (ScreenButtonHook); Move to Trash is Enhance's (the host
+// table's recycle_file). An Enhance without the docked screen opens its sheet.
 import Combine
 import MVChromeBridge
 import SwiftUI
@@ -17,6 +25,18 @@ struct EnhanceTool: Identifiable {
   enum Kind { case remove, restyle, faces, detail, extend }
   let kind: Kind
   var id: Kind { kind }
+
+  /// Enhance's word for the tool (its enhance/tool "photo"; the docked tree's
+  /// root is "tool.<word>"). Faces is the host's own.
+  var photo: String? {
+    switch kind {
+    case .remove: return "remove"
+    case .restyle: return "restyle"
+    case .detail: return "detail"
+    case .extend: return "extend"
+    case .faces: return nil
+    }
+  }
 
   var title: String {
     switch kind {
@@ -76,18 +96,18 @@ struct EnhanceToolState {
       }
     case .restyle:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else if store.offersRestyle { (chip, chipText, action, enabled) = (.ready, "Ready", "Restyle…", true) }
-      else { (chip, chipText, action, enabled) = (.needsAddon, "Not offered", "Restyle…", false) }
+      else if store.offersRestyle { (chip, chipText, action, enabled) = (.ready, "Ready", "Set up Restyle", true) }
+      else { (chip, chipText, action, enabled) = (.needsAddon, "Not offered", "Set up Restyle", false) }
     case .faces:
       if store.eyesBusy { (chip, chipText, action, enabled) = (.busy, "Working…", "Open closed eyes", false) }
       else if store.facesReady { (chip, chipText, action, enabled) = (.ready, "Ready", "Open closed eyes", true) }
       else { (chip, chipText, action, enabled) = (.needsPeople, "Needs People", "Open closed eyes", true) }
     case .detail:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Enhance…", store.offersDetail) }
+      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Set up", store.offersDetail) }
     case .extend:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Extend…", store.offersExtend) }
+      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Choose a frame", store.offersExtend) }
     }
   }
 
@@ -100,13 +120,16 @@ struct EnhanceToolState {
     }
     switch tool.kind {
     case .remove:
+      // Remove hands the strokes to the docked panel and runs (S5).
       if store.brushOn && store.brushed { store.brushAction(2) }
       else if store.brushOn { store.setBrush(false, size: 0) }
-      else { store.tool(.remove) }
-    case .restyle: store.restylePhoto()
+      else {
+        store.tool(.remove)
+        store.enhanceTool("remove")  // its knobs and, later, its result under the card
+      }
     case .faces: store.openClosedEyes()
-    case .detail: store.enhancePhoto()
-    case .extend: store.tool(.extend)
+    case .restyle, .detail, .extend:
+      if let photo = tool.photo { store.enhanceTool(photo) }
     }
   }
 }
@@ -271,10 +294,22 @@ private struct InstallBanner: View {
 struct EnhanceCard: View {
   let tool: EnhanceTool
   @ObservedObject private var store = EditStore.shared
+  @ObservedObject private var slots = SlotStore.shared
   @State private var hover = false
+
+  /// Enhance's docked screen when it is open on this card's tool.
+  private var docked: SlotScreen? {
+    guard let photo = tool.photo,
+          let screen = slots.screens.first(where: { $0.place == "edit" && $0.addon == "enhance" }),
+          let root = screen.tree?.id, root == "tool." + photo
+    else { return nil }
+    return screen
+  }
 
   var body: some View {
     let state = EnhanceToolState(tool, store)
+    let docked = self.docked
+    let chosen = docked != nil || state.chip == .brushing || state.chip == .brushed
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       HStack(alignment: .center, spacing: MVTheme.space(10)) {
         Image(systemName: tool.symbol)
@@ -294,9 +329,12 @@ struct EnhanceCard: View {
         .foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: MVTheme.space(6)) {
-        Button(state.action) { EnhanceToolState.run(tool, store) }
-          .buttonStyle(AccentButtonStyle(filled: state.chip != .needsAddon && state.chip != .needsPeople))
-          .disabled(!state.enabled)
+        // Docked, the panel below carries the run (Remove keeps its brush buttons).
+        if docked == nil || tool.kind == .remove {
+          Button(state.action) { EnhanceToolState.run(tool, store) }
+            .buttonStyle(AccentButtonStyle(filled: state.chip != .needsAddon && state.chip != .needsPeople))
+            .disabled(!state.enabled)
+        }
         if tool.kind == .remove && store.brushOn {
           Button("Undo stroke") { store.brushAction(0) }
             .buttonStyle(FlatButtonStyle(compact: true))
@@ -313,25 +351,83 @@ struct EnhanceCard: View {
         }
         Spacer(minLength: 0)
       }
-      if tool.kind == .extend && store.enhance {
-        Text("In the sheet, choose Extend the picture and a frame.")
-          .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
-      }
       if tool.kind == .remove && store.brushFull {
         Text("Brush full: Remove, then brush more.")
           .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
       }
+      if let docked {
+        DockedToolPanel(screen: docked)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
     }
     .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(hover ? MVTheme.hoverWash : MVTheme.surface2))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(10))
+      .fill(hover && docked == nil ? MVTheme.hoverWash : MVTheme.surface2))
     .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10))
-      .stroke(state.chip == .brushing || state.chip == .brushed ? MVTheme.accent : MVTheme.hairline.opacity(0.6),
-              lineWidth: state.chip == .brushing || state.chip == .brushed ? 1.5 : 0.5))
+      .stroke(chosen ? MVTheme.accent : MVTheme.hairline.opacity(0.6), lineWidth: chosen ? 1.5 : 0.5))
     .onHover { hover = $0 }
     .animation(.easeOut(duration: 0.12), value: hover)
+    .animation(.easeOut(duration: 0.18), value: docked?.revision != nil)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(tool.title), \(state.chipText)")
+  }
+}
+
+/// S5: Enhance's docked screen (place "edit") under the chosen card, drawn
+/// with the add-on screens' renderer. Show and Keep editing are the viewer's:
+/// they navigate to the new file (or Photos-library photo) the row's
+/// thumbnail names. Remove has no run button of its own here: the card's
+/// Remove (or Return in the brush) hands the strokes over and runs it.
+struct DockedToolPanel: View {
+  let screen: SlotScreen
+  @ObservedObject private var slots = SlotStore.shared
+  @ObservedObject private var store = EditStore.shared
+
+  var body: some View {
+    let address = ScreenAddress(addon: screen.addon, screen: screen.screen)
+    VStack(alignment: .leading, spacing: MVTheme.space(10)) {
+      HStack(spacing: MVTheme.space(6)) {
+        Rectangle().fill(MVTheme.hairline).frame(height: 0.5)
+        Button { slots.close(address) } label: {
+          Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+        }
+        .buttonStyle(FlatButtonStyle(compact: true))
+        .help("Close (a run in progress stops)")
+        .accessibilityLabel("Close the tool panel")
+      }
+      if let tree = screen.tree {
+        ScreenNodeView(node: tree, address: address, revision: screen.revision)
+          .environment(\.screenWindow, true)
+          .environment(\.screenButtonHook, ScreenButtonHook { _, id in take(id, tree) })
+      } else {
+        HStack(spacing: MVTheme.space(8)) {
+          ProgressView().controlSize(.small)
+          Text("Opening…").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// The host's buttons: true when the click was the viewer's.
+  private func take(_ id: String, _ tree: ScreenNode) -> Bool {
+    switch id {
+    case "result.show", "result.keep":
+      guard let path = Self.find("result.thumb", in: tree)?.string("path"), !path.isEmpty else { return true }
+      store.enhanceResult(path: path, keep: id == "result.keep")
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func find(_ id: String, in node: ScreenNode) -> ScreenNode? {
+    if node.id == id { return node }
+    for child in node.children {
+      if let hit = find(id, in: child) { return hit }
+    }
+    return nil
   }
 }
 

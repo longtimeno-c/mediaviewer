@@ -17,7 +17,9 @@ namespace MediaViewer.Chrome;
 /// what exists: the Remove brush, Enhance's own sheet started on the right
 /// choice (its "open" and "restyle" commands; Extend through the sheet's photo
 /// choice) and Open closed eyes. Every result is a new file; the original
-/// never changes. Running inside the pane is S5's. The Mac twin is EnhanceHubView.swift.
+/// never changes. S5 (owner call B): Remove, Restyle, Enhance image and Extend
+/// run inside the pane, Enhance's docked screen drawn under the card
+/// (IslandHost.EnhanceDock.cs). The Mac twin is EnhanceHubView.swift.
 /// </summary>
 /// <remarks>
 /// Only Button, TextBlock, Border, Grid and StackPanel, and a plain Flyout of
@@ -64,15 +66,15 @@ public static partial class IslandHost
             EnhanceToolKind.Remove when brushOn => new("Brushing", true, false, "Done brushing", true, false),
             EnhanceToolKind.Remove => new("Ready", true, false, "Start brushing", true, false),
             EnhanceToolKind.Restyle => (_editWand & WandRestyle) != 0
-                ? new("Ready", true, false, "Restyle…", true, false)
-                : new("Not offered", false, false, "Restyle…", false, false),
+                ? new("Ready", true, false, "Set up Restyle", true, false)
+                : new("Not offered", false, false, "Set up Restyle", false, false),
             EnhanceToolKind.Faces when (_editWand & WandEyesBusy) != 0 =>
                 new("Working…", false, true, "Open closed eyes", false, false),
             EnhanceToolKind.Faces => (_editWand & WandFacesReady) != 0
                 ? new("Ready", true, false, "Open closed eyes", true, false)
                 : new("Needs People", false, false, "Open closed eyes", true, false),
-            EnhanceToolKind.Detail => new("Ready", true, false, "Enhance…", (_editWand & WandDetail) != 0, false),
-            _ => new("Ready", true, false, "Extend…", (_editWand & WandExtend) != 0, false),
+            EnhanceToolKind.Detail => new("Ready", true, false, "Set up", (_editWand & WandDetail) != 0, false),
+            _ => new("Ready", true, false, "Choose a frame", (_editWand & WandExtend) != 0, false),
         };
     }
 
@@ -87,14 +89,19 @@ public static partial class IslandHost
         switch (kind)
         {
             case EnhanceToolKind.Remove:
-                if (brushOn && brushed) Send(Command.AdjustBrush, 2);   // Enhance's sheet takes what is brushed
+                // S5: Remove hands the strokes to the docked panel and runs.
+                if (brushOn && brushed) Send(Command.AdjustBrush, 2);
                 else if (brushOn) Send(Command.AdjustPick, 100f);      // the brush down (pick 0)
-                else Send(Command.EditAction, EditActions.ArmBrush);
+                else
+                {
+                    Send(Command.EditAction, EditActions.ArmBrush);
+                    Send(Command.EditAction, EditActions.EnhanceRemove);  // its knobs, later its result, under the card
+                }
                 break;
-            case EnhanceToolKind.Restyle: Send(Command.EditAction, EditActions.Restyle); break;
+            case EnhanceToolKind.Restyle: Send(Command.EditAction, EditActions.EnhanceRestyle); break;
             case EnhanceToolKind.Faces: Send(Command.AdjustOpenEyes); break;
-            case EnhanceToolKind.Detail:
-            case EnhanceToolKind.Extend: Send(Command.EditAction, EditActions.Enhance); break;
+            case EnhanceToolKind.Detail: Send(Command.EditAction, EditActions.EnhanceDetail); break;
+            case EnhanceToolKind.Extend: Send(Command.EditAction, EditActions.EnhanceExtend); break;
         }
     }
 
@@ -124,6 +131,7 @@ public static partial class IslandHost
     private static void DropEnhanceUi()
     {
         EnhanceCards.Clear();
+        EnhanceDockHosts.Clear();
         _enhanceBrushNote = null;
         _enhanceUndoStroke = null;
         _enhanceClearStrokes = null;
@@ -178,6 +186,7 @@ public static partial class IslandHost
         foreach (EnhanceToolInfo tool in EnhanceTools) grid.Children.Add(BuildEnhanceCard(tool));
         LayEnhanceGrid();
         pane.Children.Add(grid);
+        DrawEnhanceDock(force: true);  // S5: a docked panel already open goes under its card
         RenderEnhanceInPlace();
     }
 
@@ -263,13 +272,12 @@ public static partial class IslandHost
             actions.Children.Add(_enhanceClearStrokes);
         }
         col.Children.Add(actions);
-        if (kind == EnhanceToolKind.Extend && _editEnhance)
-            col.Children.Add(Hint("In the sheet, choose Extend the picture and a frame."));
         if (kind == EnhanceToolKind.Remove)
         {
             _enhanceBrushNote = Hint("Brush full: Remove, then brush more.");
             col.Children.Add(_enhanceBrushNote);
         }
+        if (EnhancePhotoOf(kind) is not null) col.Children.Add(BuildEnhanceDockHost(kind));
         var card = new Border
         {
             Child = col,
@@ -279,7 +287,11 @@ public static partial class IslandHost
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(0.5),
         };
-        card.PointerEntered += (_, _) => card.Background = Brush(ChromeColour.HoverWash);
+        // No hover wash while the docked panel is on it: it is a page, not a button.
+        card.PointerEntered += (_, _) =>
+        {
+            if (!EnhanceDockedOn(kind)) card.Background = Brush(ChromeColour.HoverWash);
+        };
         card.PointerExited += (_, _) => card.Background = Brush(ChromeColour.Surface2);
         AutomationProperties_SetName(card, tool.Title);
         EnhanceCards.Add((kind, chipText, dot, action, card));
@@ -298,7 +310,10 @@ public static partial class IslandHost
             if (action.Content is TextBlock t) t.Text = st.Action;
             AutomationProperties_SetName(action, st.Action);
             action.IsEnabled = st.Enabled;
-            bool armed = kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0;
+            // Docked, the panel under the card carries the run (Remove keeps its brush buttons).
+            bool docked = EnhanceDockedOn(kind);
+            action.Visibility = docked && kind != EnhanceToolKind.Remove ? Visibility.Collapsed : Visibility.Visible;
+            bool armed = docked || (kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0);
             card.BorderBrush = armed ? Brush(ChromeColour.Accent) : Brush(Hairline);
             card.BorderThickness = new Thickness(armed ? 1.5 : 0.5);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(card, st.Chip);

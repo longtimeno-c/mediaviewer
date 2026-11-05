@@ -133,8 +133,8 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
   folded inspector rather than closing it. Closing forgets the fold.
 - **Tools:** Remove and Red-eye are canvas tools ("Canvas tools" below): a click arms one (Remove
   on the Enhance tab, Red-eye on Adjust), a second click puts it down, and the armed one wears the
-  selection. Faces opens the Enhance tab and Extend Enhance's sheet (whose photo choice offers
-  *Extend the picture*) until S8 / S6 make them canvas tools too.
+  selection. Faces opens the Enhance tab and Extend Enhance's docked panel on Extend (S5) until
+  S8 / S6 make them canvas tools too.
 - **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
   keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
@@ -158,12 +158,23 @@ Tab 5, any still. Five cards: **Remove objects · Restyle · Faces · Enhance im
 each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
 *Needs Enhance*, *Needs People*, *Working…*) from the edit view's wand bits
 (`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
-Enhance's sheet on what is brushed), *Restyle…* (Enhance's `restyle` command), *Open closed eyes*
-and *Improve faces* (the Mac; Windows has Open closed eyes, its Improve faces twin is S8's),
-*Enhance…* and *Extend…* (Enhance's `open`; Extend is the sheet's photo choice). Without the
-Enhance add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance).
-Cards are one column, two from 560. Running inside the pane (`place "edit"`) and the result row are
-S5's; every result is a new file today, as before.
+the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Choose a
+frame* (Extend), *Open closed eyes* and *Improve faces* (the Mac; Windows has Open closed eyes, its
+Improve faces twin is S8's). Without the Enhance add-on a banner and each card offer **Get
+Enhance…** (Settings → Add-ons → Enhance). Cards are one column, two from 560.
+
+**Running inside the pane** (S5, owner call B). Remove, Restyle, Enhance image and Extend ask
+Enhance for its docked screen (place `edit`, [29](29-enhance.md) "Docked in Edit"), drawn under the
+chosen card with the add-on screens' renderer: the tool's knobs, the preview, the glowing progress
+with the time left, Cancel, and the **result row** — **Show** (Edit closes, the new file or new
+Photos-library photo is selected), **Keep editing** (the same with Edit reopened on this tab) and
+**Move to Trash / Recycle Bin** (Enhance's, through `recycle_file`; never a hard delete, never the
+original). The chosen card wears the accent outline and its own button gives way to the panel's
+(Remove keeps Start brushing / Remove / Undo stroke / Clear). A crop draft is applied first, as
+Save copy does. The panel closes with Edit, on another photo, or with its ×. Without a docked
+screen (an older Enhance) each card opens Enhance's sheet instead. Hosts: Mac `enhanceTool:run:` /
+`enhanceShowResult:keep:` (`mv_chrome_edit_enhance_tool` / `_result`); Windows `enhance_tool` /
+`enhance_show_result` (`chrome_edit_action` 9–14).
 
 The tab's header carries Enhance's **performance level** as a chip (*Default level*; docs/plans/
 edit-refresh.md S9), a click away from Settings → Add-ons → Enhance, whose first card is

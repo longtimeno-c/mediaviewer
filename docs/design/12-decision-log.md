@@ -191,6 +191,15 @@ leaves a 56 pt band for it (`kToolBarBand` in `chrome_bottom_px`, a `refit_seq` 
 never covers the photo and nothing new is drawn over the picture but the tool's own overlay
 (docs/plans/edit-refresh.md S3).
 
+**An add-on screen may dock inside the Edit pane (2026-11-05, owner call B).** Enhance's tools
+ran in a sheet over the viewer, which covered the photo being edited and lost the Edit context. A
+screen may now be in place `"edit"` (contribution API 12): drawn by the add-on screens' renderer
+inside the Edit workspace's Enhance tab, under the tool's card, never a window. Only the workspace
+opens it, with a command (`mv_slots_screen_command`): never `screen_show`, an item or a status
+click, so an add-on cannot put UI into the inspector on its own. Navigating (Show, Keep editing)
+stays the host's; the add-on's tree names the file, the host decides. The sheet is kept as the
+fallback for an add-on without one ([29](29-enhance.md) "Docked in Edit"; docs/plans/edit-refresh.md S5).
+
 **The clip transport floats and auto-hides (2026-09-26).** Issue #38: one layout on both hosts,
 over the video rather than a reserved strip (auto-hiding a strip would refit the video on every
 wake). One portable rule, `shell/transport_autohide.h`: hide after 2.5 s idle while playing; held

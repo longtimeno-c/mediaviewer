@@ -299,6 +299,9 @@ public static partial class IslandHost
                 Button? self = null;
                 Button b = ScreenButton(label, () =>
                 {
+                    // S5: a host that draws the screen in its own page answers
+                    // some buttons itself (Enhance's docked Show / Keep editing).
+                    if (TakeScreenButton(at, id)) return;
                     if (copy.Length > 0 && self != null) CopyToClipboard(self, copy, label);
                     SendScreenEvent(at, id, SlotNative.EventClick, "");
                 }, JStr(n, "style"));
@@ -1666,10 +1669,11 @@ public static partial class IslandHost
         var wanted = new HashSet<ScreenAt>();
         SyncSettingsScreen(list);  // a settings page is drawn in Settings, never a window
         NoteEnhanceLevel(list);    // the Enhance tab's level chip reads Enhance's settings page
+        SyncEnhanceDock(list);     // S5: a docked Edit screen, in the Enhance tab
         foreach (JsonElement s in list.EnumerateArray())
         {
             string place = JStr(s, "place");
-            if (place == "settings") continue;
+            if (place == "settings" || place == "edit") continue;
             var at = new ScreenAt(JStr(s, "addon"), JStr(s, "id"));
             wanted.Add(at);
             long revision = (long)JNum(s, "revision", 0);
