@@ -48,7 +48,9 @@ The weights are never in the zip or a release asset. The signed manifest pins ea
 remote.json` is the list `addon-pack.py` signs in). A click on a kind's Download fetches only that
 kind's files, with the AI pack's downloader (`mv_model_fetch`, [17](17-local-ai-search.md) "Model
 tiers"), into the add-on's data folder: a plain GET with no query, cookies or token, resumed with
-Range (also after a restart: the click is remembered in `enhance.json`), kept only when the SHA-256
+Range (also after a restart: the click is remembered in `enhance.json`, and a start resumes a
+kind only when part of its download is here, so a kind whose pin changed since, as `still`'s did
+in S7, waits for a new click), kept only when the SHA-256
 matches. Refused before any request: a pin over **5 GB**, and a disk without room for what is
 still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 
@@ -111,12 +113,12 @@ comes from the add-on, and its picture is copied, never encoded.
 
 **A photo.** The host decodes it at full resolution as an export does (`edit::full_picture`: a
 RAW's own develop, ICC to sRGB, upright; never the first-pixel preview), the add-on runs it through
-the same tiles as a clip's frame (below), reporting each tile, and the host writes
+the chosen Enhance image model (`restore_picture`, "Enhance image" below), reporting each tile, and the host writes
 `<stem>-enhance.jpg` (quality 92; `.png` for a PNG) with the source's metadata carried as an
 export carries it (`edit::export_pixels`: Orientation 1, the written size, no stale thumbnail;
 Exiv2 for HEIC, TIFF, RAW and WebP), under the first free name. Same size, twice or four times, at
-most 100 megapixels (16384 on the long edge); the run gate adds the picture in and out to the
-model's `run_bytes`. **The photo being edited carries its edit** ([plan](../plans/edit-adjust.md)
+most 100 megapixels (16384 on the long edge); the run gate adds the picture in and out, and a
+tile-high band of float sums, to the model's `run_bytes`. **The photo being edited carries its edit** ([plan](../plans/edit-adjust.md)
 slice 5): the UI thread hands the edit of the item on screen to `addon_media::set_still_edit`
 whenever it changes (a copy of a few hundred bytes under a mutex, never held across a decode), and
 `full_still` for that path returns `edit::edited_picture` (detail, geometry, colour, as an export
@@ -165,7 +167,7 @@ a few percent in.
 The photo's **Enhance image** offers five models, each its own kind (`spec.h` `kStillKinds`), so
 each is downloaded only when it is chosen: **Sharpen & restore** (`still`, the default), **Natural**
 (`natural`), **Remove noise** (`denoise`), **Remove blur** (`deblur`) and **Remove motion blur**
-(`motion`). The sheet's *Do* choice (`"detail"`, kept in `enhance.json`) lists those this build
+(`motion`). The sheet's *Improve* choice (`"detail"`, kept in `enhance.json`) lists those this build
 has a spec and a pin for; one not downloaded yet shows its size and a **Download** button in the
 sheet itself (`install.<kind>`, then progress and *Stop the download*), and Settings → Add-ons →
 Enhance lists all five too. The two upscalers have a **Size** (the same size, twice, four times);
@@ -188,7 +190,10 @@ fp16.
 
 **A tile the model blows up.** NAFNet's ONNX exports (GoPro worst, REDS sometimes) return values
 in the thousands on some tiles of ordinary photos (11 of 30 COCO crops for GoPro, 4 of 30 for
-REDS; SCUNet none). A result outside −1…2, or not finite, is asked again with the tile mirrored
+REDS; SCUNet none), and half-broken tiles stay in range but speckle. A result outside −1…2,
+not finite, or with more than 0.1 % of its samples past −0.15…1.15 (on 40 tiles of 20 COCO
+photos, sound results reached at most 0.01 %: HAT 0.004 %, SCUNet and RealWebPhoto none; GoPro
+failed 17 of the 40, REDS 5) is asked again with the tile mirrored
 left to right, upside down and transposed (each answer turned back); if every view fails, that
 tile is the photo itself, cross-faded like any other. The sheet then says how many parts were
 left as they were ("…could not restore 3 of 40 parts…", or that the photo is unchanged). Pixels
@@ -338,6 +343,8 @@ installed (it loads no runtime until a run, and runs nothing at launch).
 - Enhance image on Core ML or a GPU: fp32 on the CPU only; Sharpen & restore takes about an hour
   for 12 MP. Remove motion blur's NAFNet-GoPro export is unstable on many photos (the guard keeps
   those parts as they were); a sounder export or another model wants an owner call.
+  A file a changed pin no longer names (the earlier `still/realesr-general-x4v3.onnx`, 4.9 MB)
+  stays in the data folder until Remove; nothing sweeps unpinned files yet.
 
 - Hosting Restyle's weights and pinning them in `remote.json` (the owner's upload).
 - Restyle on Windows: needs a DirectML or CUDA ONNX Runtime piece; measure before offering it.

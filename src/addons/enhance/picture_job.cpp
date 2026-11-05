@@ -173,13 +173,22 @@ void downscale_planes(const std::vector<float>& src, std::uint32_t in, std::uint
   }
 }
 
-// A tile's result a picture can be made of: finite and near 0..1 (a sound
-// restorer overshoots a little at edges; one that has blown up is far off).
+// A tile's result a picture can be made of: finite, never far off 0..1, and
+// hardly ever past it. A sound restorer overshoots a little at edges: on 40
+// 192-px tiles (20 COCO photos, centre and corner) Real-HAT-GAN reached
+// -0.18..1.22 with at most 0.004 % of its samples past -0.15..1.15,
+// NAFNet-REDS (when sound) 0.01 %, SCUNet and RealWebPhoto none. A
+// half-broken tile stays in range but speckles: NAFNet-GoPro gave -0.34..1.38
+// with 0.3 % of samples past 0.1 of the range and 1 % of pixels moved by more
+// than 0.2 on a sharp crop; REDS 1.9 % past. Past 0.1 % is not a picture
+// (GoPro: 17 of the 40 tiles; REDS: 5).
 bool tile_sane(const std::vector<float>& v) {
+  std::size_t off = 0;
   for (const float f : v) {
     if (!(f >= -1.0f && f <= 2.0f)) return false;  // also NaN
+    if (f < -0.15f || f > 1.15f) ++off;
   }
-  return true;
+  return off * 1000 <= v.size();
 }
 
 // 3 square planes of side `n` seen another way: 1 mirrored left to right,

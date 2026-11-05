@@ -134,7 +134,13 @@ void engine::resume_wanted() {
         std::lock_guard lock(m_);
         want = prefs_.want(k) && specs_[static_cast<int>(k)].has_value();
       }
-      if (want && !dl_->ready(files_[static_cast<int>(k)])) dl_->start(k, files_[static_cast<int>(k)]);
+      // Only a download this person started and a quit cut short (its part
+      // is here): a kind whose pin changed since (S7: still's 4.9 MB
+      // Real-ESRGAN became Real-HAT-GAN's 161 MB) has nothing here and
+      // waits for a click, never fetched unasked.
+      if (want && dl_->status(k, files_[static_cast<int>(k)]).state == dl_state::stopped) {
+        dl_->start(k, files_[static_cast<int>(k)]);
+      }
     }
   });
 }

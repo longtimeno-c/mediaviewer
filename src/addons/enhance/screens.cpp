@@ -338,7 +338,7 @@ std::string sheet_tree(const sheet_view& v) {
     text(w, id_of("head", s.kind), section_title(v, s.kind), "heading");
     // S7: Enhance image's five models, each its own download.
     if (still_family(s.kind) && v.details.size() > 1) {
-      w.begin_object().key("type").string("choice").key("id").string("detail").key("label").string("Do");
+      w.begin_object().key("type").string("choice").key("id").string("detail").key("label").string("Improve");
       w.key("options").begin_array();
       for (const model_kind k : v.details) {
         w.begin_object().key("id").string(kind_name(k)).key("text").string(detail_text(k)).end_object();

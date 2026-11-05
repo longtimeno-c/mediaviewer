@@ -617,7 +617,7 @@ Measured on a blurred, noisy, JPEG-35 crop (192 px, M-series CPU):
 | Remove blur (focus, JPEG) | NAFNet-REDS-width64 | the same repo @ 77885239…, NAFNet-REDS-width64.onnx | 275,371,113, fb5b264996d26cb1f7399a0af4e25cd26dbd5241910e58f7a4f1275734f76ea1 | MIT | as SCUNet | 0.1 s a 192 tile |
 | Remove motion blur | NAFNet-GoPro-width64 | the same repo @ 77885239…, NAFNet-GoPro-width64.onnx | 275,371,113, 00c07294585512d162bc2313a2a12cd8d9cd532d0981d0d01f444bd48c4330cd | MIT | as SCUNet | — |
 
-**S7 built (2026-11-05):** the five Enhance image models below, each its own kind
+**S7 built (2026-11-05):** the five Enhance image models above, each its own kind
 (`natural`, `denoise`, `deblur`, `motion` appended to `model_kind` after `remove`), downloaded
 from the sheet when chosen; tiles blended by tent weight (`restore_picture`); a guard for tiles a
 model blows up (NAFNet's exports do, GoPro on about a third of photo crops). See

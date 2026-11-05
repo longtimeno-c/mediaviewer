@@ -436,6 +436,22 @@ TEST_CASE("enhance: a cut download resumes with Range, also after a restart", "[
   CHECK(mv::test::read_bytes(g.data / "models/video/up.onnx") == g.video_weights);
 }
 
+TEST_CASE("enhance: a restart never fetches a wanted kind with nothing here (a changed pin)", "[enhance]") {
+  // S7 moved still's pin from a 4.9 MB file to a 161 MB one: someone who
+  // installed the old file must click again, never get the new one unasked.
+  fixture f;
+  f.eng->event(kSettingsScreen, "install.audio", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::audio).state == dl_state::ready; }));
+  const std::size_t calls = f.net->count();
+  f.restart();
+  fs::remove(f.data / "models/audio/denoise.onnx");  // the pinned file is not the one here
+  REQUIRE(f.eng->current_prefs().want(model_kind::audio));
+  f.eng->resume_wanted();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(f.net->count() == calls);
+  CHECK(f.eng->download_status(model_kind::audio).state == dl_state::absent);
+}
+
 TEST_CASE("enhance: a body that misses its hash is never kept", "[enhance]") {
   fixture f(0, std::string(64, 'a'));
   f.eng->settings_opened(1);
@@ -2373,6 +2389,48 @@ TEST_CASE("enhance image: a tile the model blows up is asked again, else left as
   CHECK(out == rgb);
   CHECK(unstable == tiles);
   CHECK(static_cast<std::uint64_t>(never.calls) == 4 * tiles);
+}
+
+namespace {
+
+// The photo back with `every`-th sample pushed to 1.4: in range, but past a
+// sound restorer's overshoot (a half-broken tile speckles like this).
+struct speckle1 final : tile_model {
+  std::uint32_t t;
+  std::size_t every;
+  int calls = 0;
+  speckle1(std::uint32_t tile_, std::size_t every_) : t(tile_), every(every_) {}
+  std::uint32_t tile() const noexcept override { return t; }
+  std::uint32_t scale() const noexcept override { return 1; }
+  mv::expected run(std::span<const float> in, std::vector<float>& out) override {
+    ++calls;
+    out.assign(in.begin(), in.end());
+    for (std::size_t i = 0; i < out.size(); i += every) out[i] = 1.4f;
+    return {};
+  }
+};
+
+}  // namespace
+
+TEST_CASE("enhance image: a speckled tile is not a picture, an edge's overshoot is", "[enhance][still]") {
+  const auto rgb = noise_rgb(90, 50);
+  const std::uint64_t tiles = restore_tiles(90, 50, 32, 12);
+  restore_options o;
+  o.overlap = 12;
+  std::size_t unstable = 99;
+  o.unstable = &unstable;
+  std::vector<std::uint8_t> out;
+  // 1 % of samples past the range (NAFNet-GoPro's half-broken tiles): given up.
+  speckle1 speckled(32, 100);
+  REQUIRE(restore_picture(rgb, 90, 50, speckled, o, out));
+  CHECK(out == rgb);
+  CHECK(unstable == tiles);
+  CHECK(static_cast<std::uint64_t>(speckled.calls) == 4 * tiles);
+  // One sample a tile (0.03 %), as a sharpener's ringing: kept, asked once.
+  speckle1 ringing(32, 32 * 32 * 3);
+  REQUIRE(restore_picture(rgb, 90, 50, ringing, o, out));
+  CHECK(unstable == 0);
+  CHECK(static_cast<std::uint64_t>(ringing.calls) == tiles);
 }
 
 TEST_CASE("enhance image: five choices, each model fetched only when chosen", "[enhance][still]") {
