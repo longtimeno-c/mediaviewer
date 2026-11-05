@@ -11,11 +11,15 @@ namespace {
 
 const char* card_title(model_kind k) {
   switch (k) {
-    case model_kind::still: return "Photos";
+    case model_kind::still: return "Sharpen & restore (photos)";
     case model_kind::video: return "Video";
     case model_kind::audio: return "Audio";
     case model_kind::restyle: return "Restyle (photos)";
     case model_kind::remove: return "Remove (photos)";
+    case model_kind::natural: return "Natural enlargement (photos)";
+    case model_kind::denoise: return "Remove noise (photos)";
+    case model_kind::deblur: return "Remove blur (photos)";
+    case model_kind::motion: return "Remove motion blur (photos)";
   }
   return "";
 }
@@ -27,6 +31,10 @@ const char* model_noun(model_kind k) {
     case model_kind::audio: return "audio model";
     case model_kind::restyle: return "restyle model";
     case model_kind::remove: return "remove model";
+    case model_kind::natural: return "natural model";
+    case model_kind::denoise: return "noise model";
+    case model_kind::deblur: return "blur model";
+    case model_kind::motion: return "motion-blur model";
   }
   return "model";
 }
@@ -194,6 +202,10 @@ const char* section_title(const sheet_view& v, model_kind k) {
     case model_kind::audio: return "Sound";
     case model_kind::restyle: return "Restyle";
     case model_kind::remove: return v.photo == photo_target::extend ? "Extend the picture" : "Remove what you brushed";
+    case model_kind::natural:
+    case model_kind::denoise:
+    case model_kind::deblur:
+    case model_kind::motion: return "Photo";
   }
   return "";
 }
@@ -203,6 +215,18 @@ void section_cards(json::writer& w, const sheet_view& v) {
   for (const sheet_section& s : v.sections) {
     begin_stack(w, id_of("sec", s.kind), "vertical", 8, "card");
     text(w, id_of("head", s.kind), section_title(v, s.kind), "heading");
+    // S7: Enhance image's five models, each its own download.
+    if (still_family(s.kind) && v.details.size() > 1) {
+      w.begin_object().key("type").string("choice").key("id").string("detail").key("label").string("Improve");
+      w.key("options").begin_array();
+      for (const model_kind k : v.details) {
+        w.begin_object().key("id").string(kind_name(k)).key("text").string(detail_text(k)).end_object();
+      }
+      w.end_array();
+      w.key("value").string(kind_name(v.detail));
+      if (v.running) w.key("disabled").boolean(true);
+      w.end_object();
+    }
     if (s.spec) {
       std::size_t shown = 0;
       for (const knob& kb : s.spec->knobs) {
@@ -216,6 +240,14 @@ void section_cards(json::writer& w, const sheet_view& v) {
       if (shown == 0) text(w, id_of("plain", s.kind), s.spec->name + " has nothing to set.", "secondary");
     } else {
       text(w, id_of("missing", s.kind), s.missing, "secondary");
+      if (s.downloading) {
+        button(w, id_of("stop", s.kind), "Stop the download");
+      } else if (!s.install.empty()) {
+        button(w, id_of("install", s.kind), s.install, "primary", v.running);
+      }
+    }
+    if (s.spec && still_family(s.kind) && !s.spec->credit.empty()) {
+      text(w, id_of("credit", s.kind), s.spec->credit, "caption");
     }
     end_stack(w);
   }
@@ -279,6 +311,16 @@ const char* run_label(photo_target t) {
 }
 
 }  // namespace
+
+const char* detail_text(model_kind k) noexcept {
+  switch (k) {
+    case model_kind::natural: return "Natural (enlarge faithfully)";
+    case model_kind::denoise: return "Remove noise";
+    case model_kind::deblur: return "Remove blur";
+    case model_kind::motion: return "Remove motion blur";
+    default: return "Sharpen & restore";
+  }
+}
 
 std::string size_text(std::uint64_t bytes) {
   char buf[32];
@@ -414,7 +456,7 @@ std::string sheet_tree(const sheet_view& v) {
   if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove || v.offers_extend)) {
     w.begin_object().key("type").string("choice").key("id").string("photo").key("label").string("Enhance");
     w.key("options").begin_array();
-    w.begin_object().key("id").string(photo_target_name(photo_target::detail)).key("text").string("More detail").end_object();
+    w.begin_object().key("id").string(photo_target_name(photo_target::detail)).key("text").string("Enhance image").end_object();
     if (v.offers_restyle) {
       w.begin_object().key("id").string(photo_target_name(photo_target::restyle)).key("text").string("Restyle with words").end_object();
     }

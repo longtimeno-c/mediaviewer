@@ -9,7 +9,8 @@
 // Node ids: "install.<kind>", "stop.<kind>", "remove.<kind>" on the page,
 // "tier" (the level's choice) and "tierlevel" (the level in effect, "Default
 // level": the text the Edit pane's Enhance tab shows in its chip);
-// "target", "k.<kind>.<knob>", "run", "cancel", "close" on the sheet.
+// "target", "photo", "detail" (S7: Enhance image's model), "k.<kind>.<knob>",
+// "install.<kind>", "stop.<kind>", "run", "cancel", "close" on the sheet.
 //
 // docs/plans/edit-refresh.md S5 (owner call B): the third screen, "tool",
 // docked in the Edit workspace's Enhance tab (place "edit") under the tool the
@@ -47,6 +48,9 @@ inline constexpr std::uint32_t kPreviewHeight = 220;
 // "63 MB", "4.2 GB".
 [[nodiscard]] std::string size_text(std::uint64_t bytes);
 
+// Enhance image's choices as the sheet names them ("Sharpen & restore", …).
+[[nodiscard]] const char* detail_text(model_kind k) noexcept;
+
 struct model_card {
   model_kind kind = model_kind::still;
   const model_spec* spec = nullptr;  // null: this build of Enhance has no model of that kind
@@ -74,6 +78,11 @@ struct sheet_section {
   // this build has none of that kind.
   std::string missing;
   std::map<std::string, json::value> values;  // last-used, per kind of target
+  // S7: the model is not here yet and may be fetched from the sheet itself
+  // ("install.<kind>", the label says what and how big); "stop.<kind>" while
+  // it downloads. Empty: no button.
+  std::string install;
+  bool downloading = false;
 };
 
 struct sheet_view {
@@ -92,6 +101,10 @@ struct sheet_view {
   // The performance level in effect: Restyle's qualities above what it allows
   // are shown disabled with the level they need (docs/plans/edit-refresh.md S9).
   tier level = tier::standard;
+  // S7: Enhance image's models this build offers (kStillKinds with a spec and
+  // pins), and the chosen one; the "detail" choice when more than one.
+  std::vector<model_kind> details;
+  model_kind detail = model_kind::still;
   std::vector<sheet_section> sections;
   std::string note;          // why Enhance cannot run on this item, or ""
   bool can_run = false;

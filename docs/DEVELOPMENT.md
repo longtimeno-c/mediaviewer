@@ -2272,7 +2272,7 @@ the clip with its picture stream-copied. The video model (Real-ESRGAN general x4
 picture in 256-pixel tiles (Core ML on Apple silicon, CPU elsewhere) and the host encodes it on a
 hardware encoder. New host rows `sound_open` … `sound_write_close` and `frames_open` …
 `clip_write_close` (`src/addon/host.cpp`, `abi/addon_media`, `edit/sound_writer.h`,
-`edit/picture_io.h`). Photos use the same tiles: decoded and written through the export path
+`edit/picture_io.h`). Photos run Enhance image's five models (tiles blended by tent weight, docs/design/29 "Enhance image"), decoded and written through the export path
 (`still_open` … `still_write`, `edit::full_picture`, `edit::export_pixels`); a crop or colour change
 made on screen is not in the copy yet. While a clip's picture or a photo runs, the sheet shows a
 before/after preview with a glowing edge and progress bar (contribution API 10: a `surface`'s
@@ -2312,6 +2312,18 @@ card), with the result row Show / Keep editing / Move to Trash (Recycle Bin on W
 `build/bin/mv_import_tests "[enhance][tool]"` (the panel, its commands, the row and Discard over
 fakes), `"[addon][slots][screens]"` (a docked screen opens only by the workspace's command) and
 `"a screen's place may be*"` (`test_addon_manifest`: `"edit"` accepted, unknown places refused).
+
+**Enhance image** (S7, docs/design/29 "Enhance image"): `build/bin/mv_import_tests "[enhance][still]"`
+runs the tiling, blending, sizes, cancel, the blow-up guard and the sheet's per-model download over
+fakes, and checks `remote.json`'s five pins. With the five files downloaded (laid out as
+`hat/model.onnx`, `realwebphoto/`, `scunet/`, `nafnet-reds/`, `nafnet-gopro/`), the hidden case runs
+them for real and prints seconds per megapixel; `MV_ENHANCE_IMAGE_RGB` (raw rgb8) and
+`MV_ENHANCE_IMAGE_SIZE` swap the synthetic scene for a real crop, `MV_ENHANCE_IMAGE_ONLY=<kind>`
+runs one:
+
+```bash
+MV_ENHANCE_IMAGE_MODELS=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_import_tests "[.enhance-image-model]"
+```
 
 **Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob

@@ -160,8 +160,11 @@ each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, 
 (`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
 the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Choose a
 frame* (Extend), *Open closed eyes* and *Improve faces* (the Mac; Windows has Open closed eyes, its
-Improve faces twin is S8's). Without the Enhance add-on a banner and each card offer **Get
-Enhance…** (Settings → Add-ons → Enhance). Cards are one column, two from 560.
+Improve faces twin is S8's). *Enhance image* offers its five models: Sharpen & restore, Natural,
+Remove noise, Remove blur and Remove motion blur, each downloaded when first chosen (the docked
+panel's and the sheet's *Improve* choice, [29](29-enhance.md) "Enhance image"). Without the Enhance
+add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance). Cards are one
+column, two from 560.
 
 **Running inside the pane** (S5, owner call B). Remove, Restyle, Enhance image and Extend ask
 Enhance for its docked screen (place `edit`, [29](29-enhance.md) "Docked in Edit"), drawn under the

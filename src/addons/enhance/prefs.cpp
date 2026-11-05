@@ -54,6 +54,7 @@ std::string prefs_json(const prefs& p) {
   w.end_object();
   w.key("target").string(target_name(p.target));
   w.key("photo").string(photo_target_name(p.photo));
+  w.key("detail").string(kind_name(p.detail));
   w.key("tier").string(p.tier);
   w.key("wanted").begin_array();
   for (const model_kind k : kModelKinds) {
@@ -89,6 +90,9 @@ prefs prefs_from(std::string_view json_text) {
     for (const photo_target c : kPhotoTargets) {
       if (*t == photo_target_name(c)) p.photo = c;
     }
+  }
+  if (const std::string* t = doc->str("detail")) {
+    if (const auto k = kind_from(*t); k && still_family(*k)) p.detail = *k;
   }
   if (const json::value* wanted = doc->find("wanted"); wanted && wanted->k == json::kind::array) {
     for (const json::value& v : wanted->a) {

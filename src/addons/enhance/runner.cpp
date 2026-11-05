@@ -72,6 +72,14 @@ const job_request::part* part_of(const job_request& r, model_kind k) {
   return nullptr;
 }
 
+// Enhance image's part: any of the photo's five models (spec.h kStillKinds).
+const job_request::part* still_part(const job_request& r) {
+  for (const auto& p : r.parts) {
+    if (still_family(p.kind) && p.spec) return &p;
+  }
+  return nullptr;
+}
+
 // Sound made on one thread for a writer on another: at most `cap` frames
 // waiting, so a long clip's sound is never all in memory.
 class sound_queue {
@@ -198,7 +206,7 @@ bool job_runner::supports(model_kind k, item_kind item) const {
   if (k == model_kind::video) {
     return item == item_kind::media && port_.open_frames && port_.create_clip && port_.load_tiles;
   }
-  if (k == model_kind::still) {
+  if (still_family(k)) {
     return item == item_kind::still && port_.open_still && port_.write_still && port_.load_tiles;
   }
   if (k == model_kind::restyle) {
@@ -258,10 +266,10 @@ std::string job_runner::check(const job_request& r) const {
   }
   const job_request::part* video = part_of(r, model_kind::video);
   const job_request::part* audio = part_of(r, model_kind::audio);
-  const job_request::part* still = part_of(r, model_kind::still);
+  const job_request::part* still = still_part(r);
   if (still) {
     if (!tile_shape_of(*still->spec)) return "This photo model is not one this version of Enhance can run.";
-    video = still;  // the same runner, and its memory below
+    video = still;  // its memory below
   }
   if (!video && !audio) return "There is nothing for Enhance to run.";
   if (!r.keep_ns.empty() && (!port_.open_frames || !port_.create_clip)) {
@@ -306,7 +314,7 @@ void job_runner::run(job_request r, job_events ev) {
     run_remove(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::restyle)) {
     run_restyle(std::move(r), std::move(ev));
-  } else if (part_of(r, model_kind::still)) {
+  } else if (still_part(r)) {
     run_still(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::video) || !r.keep_ns.empty()) {
     // A cut clip's sound alone goes through here too: its picture is cut
@@ -561,10 +569,12 @@ void job_runner::run_still(job_request r, job_events ev) {
   const auto fail = [&](const std::string& message) {
     if (ev.done) ev.done(false, "", message);
   };
-  const job_request::part& part = *part_of(r, model_kind::still);
+  const job_request::part& part = *still_part(r);
   const auto shape = tile_shape_of(*part.spec);
   if (!shape) return fail(why(status::unsupported_format));
-  const std::uint32_t scale = std::min(scale_of(part), shape->scale);
+  // A model that keeps the size (noise, blur) has no Size knob: 1.
+  const std::uint32_t scale = part.spec->find("scale") ? std::min(scale_of(part), shape->scale) : 1;
+  if (scale == 0 || shape->scale % scale != 0) return fail(why(status::unsupported_format));
   if (ev.progress) ev.progress(-1);  // a RAW's develop takes a while, and says nothing
   auto pic = port_.open_still(r.path);
   if (!pic) {
@@ -579,8 +589,11 @@ void job_runner::run_still(job_request r, job_events ev) {
     return fail("At this size the new photo would be " + std::to_string(ow * oh / 1'000'000) +
                 " megapixels, more than Enhance writes (100). Choose a smaller size.");
   }
-  // The picture in and out, both whole, on top of the model.
-  const std::uint64_t need = part.spec->run_bytes + std::uint64_t{pic->width} * pic->height * 3 + ow * oh * 3;
+  // The picture in and out, both whole, and one tile-high band of float
+  // sums (restore_picture), on top of the model.
+  const std::uint64_t band = std::uint64_t{shape->tile} * scale * ow * 16;
+  const std::uint64_t need =
+      part.spec->run_bytes + std::uint64_t{pic->width} * pic->height * 3 + ow * oh * 3 + band;
   if (port_.free_memory) {
     if (const auto free = port_.free_memory(); free && *free < need) {
       return fail("This photo needs " + size_text(need) + " of free memory at this size; " + size_text(*free) +
@@ -589,25 +602,38 @@ void job_runner::run_still(job_request r, job_events ev) {
   }
   auto tiles = port_.load_tiles(*part.spec, part.models_dir);
   if (!tiles) return fail(why(tiles.error() == status::out_of_memory ? status::out_of_memory : status::internal));
-  picture_options po;
+  // Tiles overlapping and blended by weight (restore_picture), progress per
+  // tile and a cancel between them: quality over speed (owner 2026-11-04).
+  restore_options po;
   po.out_scale = scale;
   po.overlap = shape->overlap;
   po.strength = strength_of(part);
   po.cancel = &cancel_;
-  po.progress = [&](double f) {
-    if (ev.progress) ev.progress(std::min(0.99, f));
+  po.progress = [&](std::size_t done, std::size_t total) {
+    if (ev.progress && total > 0) {
+      ev.progress(std::min(0.99, static_cast<double>(done) / static_cast<double>(total)));
+    }
   };
   run_port::still out;
   out.width = static_cast<std::uint32_t>(ow);
   out.height = static_cast<std::uint32_t>(oh);
-  const expected ok = enhance_picture(pic->rgb, pic->width, pic->height, **tiles, po, out.rgb);
+  std::size_t unstable = 0;
+  po.unstable = &unstable;
+  const expected ok = restore_picture(pic->rgb, pic->width, pic->height, **tiles, po, out.rgb);
   pic->rgb = {};  // the original's pixels go before the encode needs its own
   if (!ok) return fail(why(ok.error()));
   if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
   if (cancel_.load()) return fail(why(status::cancelled));
   auto path = port_.write_still(r.path, out);
   if (!path) return fail(why(path.error()));
-  if (ev.done) ev.done(true, name_of(*path), "");
+  // Said, not hidden: parts the model could not restore are the photo's own.
+  const std::size_t total = restore_tiles(pic->width, pic->height, shape->tile, shape->overlap);
+  const std::string note = unstable == 0 ? std::string()
+                           : unstable >= total
+                               ? std::string("The model could not restore this photo, so it is unchanged; try another choice.")
+                               : "The model could not restore " + std::to_string(unstable) + " of " +
+                                     std::to_string(total) + " parts, so those are as they were.";
+  if (ev.done) ev.done(true, name_of(*path), note);
 }
 
 // Slice 5b: the photo small, restyled by the words, the change carried back

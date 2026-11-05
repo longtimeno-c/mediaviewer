@@ -183,6 +183,11 @@ ADDONS = {
                    "Its models are not in this package: each is downloaded from Hugging Face, at the\n"
                    "pinned revision and checked against its SHA-256, only when the person asks for it.\n"
                    "Each model's licence is listed with it in the signed manifest.\n"
+                   "Enhance image's models, credited: Real-HAT-GAN SRx4 sharper (HAT, Xiangyu Chen et al.,\n"
+                   "XPixelGroup; ONNX by MahoCommerce; Apache-2.0); 4xRealWebPhoto v4 (DAT-2) by Philip Hofmann\n"
+                   "(CC-BY-4.0, https://huggingface.co/Phips/4xRealWebPhoto_v4_dat2, unmodified);\n"
+                   "SCUNet real-PSNR (Kai Zhang et al., KAIR; ONNX by deepghs; Apache-2.0);\n"
+                   "NAFNet-REDS-width64 and NAFNet-GoPro-width64 (Liangyu Chen et al., MEGVII; ONNX by deepghs; MIT).\n"
                    "Files are enhanced on this computer; nothing about them is sent anywhere.\n"),
     },
     "ai": {

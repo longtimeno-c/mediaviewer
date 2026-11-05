@@ -169,6 +169,8 @@ class engine {
   void adopt_locked(const std::string& path, const item_facts& f, std::vector<std::int64_t> keep);
   void discard();
   void forget_result_locked();
+  [[nodiscard]] bool detail_offered(model_kind k) const;
+  [[nodiscard]] model_kind detail_locked() const;
   void save_locked();
   void install(model_kind k);
   void stop(model_kind k);

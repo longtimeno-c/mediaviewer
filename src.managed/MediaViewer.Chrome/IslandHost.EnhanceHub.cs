@@ -42,7 +42,7 @@ public static partial class IslandHost
         new(EnhanceToolKind.Faces, "Faces",
             "Open closed eyes from another photo of the same person.", RailGlyph.Faces),
         new(EnhanceToolKind.Detail, "Enhance image",
-            "Sharper detail and less noise, restored by a model on this PC.", RailGlyph.Enhance),
+            "Sharpen and restore, remove noise or blur, or enlarge, with a model on this PC.", RailGlyph.Enhance),
         new(EnhanceToolKind.Extend, "Extend edges",
             "More picture around the edges, to a wider or taller frame.", RailGlyph.Extend),
     };
