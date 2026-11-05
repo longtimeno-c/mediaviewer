@@ -436,8 +436,9 @@ edit** ([07](07-photo-editing.md)).
   just a crop and needs no add-on; past the edges without Enhance, Fill says it needs the add-on.
   **Cancel** (`Esc`, the bar) drops the frame. `Backspace` / `Delete` set it back to Original.
 - **Keys:** a frame not filled is pending (owner call G): walking away is refused with "Fill or
-  cancel the new frame first". `A`, `X` and the arrows do not have their crop meanings in Extend
-  (not built).
+  cancel the new frame first". `X` turns the ratio portrait / landscape, as in Crop (the
+  tool-mode row of `crop_aspect_swap`; in the other tools `X` is still Reject). `A` and the arrows
+  do not have their crop meanings in Extend (not built).
 
 ### Width classes
 
@@ -626,8 +627,7 @@ surfaces in the pane, the rail, the tool bar and Enhance's cards keep to them on
 - Faces: the panel cannot
   rename a person (People's own screen does); *Turn on People…* opens the settings rather than
   turning People on in place.
-- Extend: `A` / `X` / arrows with their crop meanings (the ratio and its swap are the bar's only;
-  in tool mode `X` is still the browse key underneath).
+- Extend: `A` / arrows with their crop meanings (the ratio is the bar's only).
 - Windows: a rebuilt D3D11 device drops the brush texture; the strokes reappear at the next brush
   change (the host is not told).
 - Persisting a still's stack across sessions.

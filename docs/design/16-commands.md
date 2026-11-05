@@ -501,7 +501,7 @@ mode **tool**; everything else is the browse row underneath, minus what `blocked
 | `Shift` + arrows | Move its bottom-right corner (narrower / wider / shorter / taller) |
 | `,` `.` | Straighten −0.5° / +0.5° (±45°); an untouched rectangle follows the angle as its largest fit |
 | `[` `]` `H` `V` | Turn / flip with the draft carried along (no file write while cropping) |
-| `A` / `X` | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap portrait and landscape |
+| `A` / `X` | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap portrait and landscape (`X` also turns Extend's ratio; in the other canvas tools it stays Reject) |
 | `Enter` | Apply: the draft joins the edit stack |
 | `Esc` | Cancel the draft |
 

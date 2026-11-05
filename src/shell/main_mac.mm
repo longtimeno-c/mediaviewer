@@ -8589,7 +8589,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
     case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
     case undo_edit: case reset_edits:
-    case crop_aspect_cycle: case crop_aspect_swap:
+    case crop_aspect_cycle:
+      return [self runEditCommand:command];
+    // X: Crop's turn, and Extend's with a ratio held (its tool-mode row);
+    // in any other tool X is still Reject, as it was before that row.
+    case crop_aspect_swap:
+      if (!_edits.crop_active() && _extend.on) {
+        [self extendAspect:0 turn:YES];
+        return YES;
+      }
+      if (!_edits.crop_active()) return [self rejectCurrentItem];
       return [self runEditCommand:command];
     // PR 29: Y held shows the original pixels; the stack is untouched.
     case show_original: case show_original_release:

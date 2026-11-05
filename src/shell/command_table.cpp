@@ -358,6 +358,8 @@ constexpr binding kBindings[] = {
     row(key::backspace, mod_none, kTool, edge, tool_clear),
     row(key::del, mod_none, kTool, edge, tool_clear),
     row(key::enter, mod_none, kTool, edge, tool_apply),
+    // Extend's portrait / landscape turn, as X is in Crop (other tools: Reject).
+    row(C('X'), mod_none, kTool, edge, crop_aspect_swap),
     row(key::space, mod_none, kTool, momentary, tool_pan, none, tool_pan_release),
     row(C('B'), mod_none, kBrowse | kTool, edge, tool_brush),
     row(key::none, mod_none, kBrowse, edge, tool_red_eye),

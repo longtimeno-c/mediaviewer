@@ -10770,7 +10770,16 @@ bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexce
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
     case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
     case undo_edit: case reset_edits:
-    case crop_aspect_cycle: case crop_aspect_swap:  // PR 29: A / X in crop
+    case crop_aspect_cycle:  // PR 29: A in crop
+      return run_edit_command(app, command);
+    // X: Crop's turn, and Extend's with a ratio held (its tool-mode row);
+    // in any other tool X is still Reject, as it was before that row.
+    case crop_aspect_swap:
+      if (!app->edits.crop_active() && app->extend.on) {
+        extend_aspect(app, 0, true);
+        return true;
+      }
+      if (!app->edits.crop_active()) return reject_current_item(app);
       return run_edit_command(app, command);
     // PR 29: Y held shows the original pixels; the stack is untouched.
     case show_original:
