@@ -202,9 +202,11 @@ pixel_box paste_face(rgb8& photo, const similarity& to_face, const rgb8& aligned
   // The photo pixels the crop covers: its corners back through the inverse.
   const similarity back = to_face.inverse();
   double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
-  for (const auto& [u, v] : {std::pair{0.0, 0.0}, {double(side), 0.0}, {0.0, double(side)}, {double(side), double(side)}}) {
+  const double edge = side;
+  const double corners[4][2] = {{0.0, 0.0}, {edge, 0.0}, {0.0, edge}, {edge, edge}};
+  for (const auto& corner : corners) {
     double px = 0, py = 0;
-    back.apply(u, v, px, py);
+    back.apply(corner[0], corner[1], px, py);
     x0 = std::min(x0, px);
     y0 = std::min(y0, py);
     x1 = std::max(x1, px);
@@ -380,7 +382,8 @@ result<face_outcome> restore_faces(rgb8& photo, const std::vector<face_found>& f
         to = fit_similarity(lm, tpl);
         aligned = warp_rgb(photo, to, side, side);
       }
-    } else if (again.error() == status::not_found || again.error() == status::permission_denied) {
+    } else if (again.error() == status::not_found || again.error() == status::permission_denied ||
+               again.error() == status::cancelled) {
       return err(again.error());
     }
     MV_TRY(rgb8 restored, model.restore(aligned));
@@ -399,7 +402,9 @@ result<face_outcome> restore_faces(rgb8& photo, const std::vector<face_found>& f
       continue;
     }
     const pixel_box changed = paste_face(photo, to, aligned, restored, mask, o.strength);
-    if (changed.width > 0) r.changed.push_back(changed);
+    // Counted only when a pixel changed (Strength 0 pastes nothing).
+    if (changed.width == 0) continue;
+    r.changed.push_back(changed);
     ++r.restored;
   }
   if (o.progress && !o.progress(found.size(), found.size())) return err(status::cancelled);
@@ -440,9 +445,9 @@ result<rgb8> face_model::restore(const rgb8& face) {
   for (std::size_t i = 0; i < px; ++i) {
     for (std::size_t c = 0; c < 3; ++c) in[c * px + i] = face.rgb[i * 3 + c] / 127.5f - 1.0f;
   }
-  const std::int64_t side = n;
+  const std::int64_t extent = n;  // not `side`: face_model::side() (MSVC C4458)
   const infer::session::named_input input[1] = {
-      {p_->io.input, {1, 3, side, side}, infer::session::element::f32, in.data(), nullptr, nullptr, in.size()}};
+      {p_->io.input, {1, 3, extent, extent}, infer::session::element::f32, in.data(), nullptr, nullptr, in.size()}};
   const std::string wanted[1] = {p_->out_name};
   MV_TRY(auto outs, p_->s->run_named(std::span(input, 1), std::span(wanted, 1)));
   if (outs.size() != 1 || outs.front().data.size() != 3 * px) return err(status::internal);

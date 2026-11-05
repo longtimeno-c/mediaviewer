@@ -287,7 +287,9 @@ compared in PMRF, ICLR 2025) or *Natural* (GFPGAN v1.4, smoother skin) — and *
 
 Every pixel outside the faces' masks is the photo's own (tested to the bit with a stand-in model).
 The result is `<stem>-restored.jpg` beside the original, or a new Photos-library photo; when no face
-changed (all kept by the guard, too small, or none found) nothing is written and the sheet says why.
+changed (all kept by the guard, too small, or none found) nothing is written and the sheet says why;
+Strength 0 is refused before the photo is read. Cancel is checked before every call to the pack
+(the photo's tiles, each crop, each guard) and between faces, so it waits at most for one face's model.
 
 **The guard's threshold** (`tools/enhance/face_guard.py`, LFW through the People model, AdaFace
 IR-50, on this Mac 2026-11-05; 240 LFW faces, one per person, every other one degraded as the

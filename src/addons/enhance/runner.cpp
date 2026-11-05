@@ -806,6 +806,8 @@ void job_runner::run_faces(job_request r, job_events ev) {
   } else if (const knob* k = part.spec->find("strength")) {
     o.strength = static_cast<float>(std::clamp(k->def, 0.0, 1.0));
   }
+  // At Strength 0 nothing would change: said before the photo is read.
+  if (o.strength <= 0.0f) return fail("At Strength 0 the faces stay as they are. Raise Strength and try again.");
   if (ev.progress) ev.progress(-1);
   auto pic = port_.open_still(r.path);
   if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
@@ -824,8 +826,14 @@ void job_runner::run_faces(job_request r, job_events ev) {
     }
     return "Enhance could not look for faces in this photo.";
   };
-  auto found = find_faces(full, port_.still_faces);
-  if (!found) return fail(pack_why(found.error()));
+  // Every pack call (the photo's tiles, each crop, each guard) checks Cancel
+  // first, so a cancel never waits for the whole search.
+  const faces_fn faces = [this](const rgb8& img, const rgb8* other) -> result<std::vector<face_found>> {
+    if (cancel_.load()) return err(status::cancelled);
+    return port_.still_faces(img, other);
+  };
+  auto found = find_faces(full, faces);
+  if (!found) return fail(found.error() == status::cancelled ? why(status::cancelled) : pack_why(found.error()));
   if (found->empty()) return fail("No faces were found in this photo.");
   if (cancel_.load()) return fail(why(status::cancelled));
   auto model = port_.load_face(*part.spec, part.models_dir, choice, r.policy.threads);
@@ -834,7 +842,7 @@ void job_runner::run_faces(job_request r, job_events ev) {
     if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / std::max<std::size_t>(total, 1));
     return !cancel_.load();
   };
-  auto out = restore_faces(full, *found, **model, port_.still_faces, o);
+  auto out = restore_faces(full, *found, **model, faces, o);
   if (!out) {
     if (out.error() == status::not_found || out.error() == status::permission_denied) {
       return fail(pack_why(out.error()));
@@ -846,7 +854,8 @@ void job_runner::run_faces(job_request r, job_events ev) {
       return fail("No face was changed: restored, each one stopped looking like the same person, so the photo was "
                   "left as it was.");
     }
-    return fail("The faces in this photo are too small to restore.");
+    if (out->small > 0) return fail("The faces in this photo are too small to restore.");
+    return fail("No face in this photo could be restored.");
   }
   if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
   if (cancel_.load()) return fail(why(status::cancelled));

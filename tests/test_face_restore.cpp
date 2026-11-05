@@ -464,8 +464,18 @@ TEST_CASE("faces: with a stand-in model only the faces change, and the guard kee
   CHECK(out->restored == 0);
   CHECK(photo.rgb == original.rgb);
 
-  // Cancelled between faces.
+  // Strength 0 pastes nothing, so no face counts as restored.
   pack.sim = 0.9f;
+  {
+    face_options none = o;
+    none.strength = 0.0f;
+    out = restore_faces(photo, *found, model, faces, none);
+    REQUIRE(out);
+    CHECK(out->restored == 0);
+    CHECK(out->changed.empty());
+    CHECK(photo.rgb == original.rgb);
+  }
+  // Cancelled between faces.
   o.progress = [](std::size_t d, std::size_t) { return d < 1; };
   CHECK(restore_faces(photo, *found, model, faces, o).error() == mv::status::cancelled);
 
@@ -672,6 +682,21 @@ TEST_CASE("faces: the runner writes <stem>-restored.jpg and says why when it can
     [[maybe_unused]] const auto [ok, name, message] = run(jr, {{"model", g}});
     CHECK(ok);
     CHECK(choice_seen == "gfpgan");
+  }
+  // Strength 0 would change nothing: said, the model never loaded, nothing written.
+  {
+    mv::json::value zero;
+    zero.k = mv::json::kind::number;
+    zero.is_integer = true;
+    zero.i = 0;
+    zero.d = 0;
+    choice_seen.clear();
+    written.clear();
+    [[maybe_unused]] const auto [ok, name, message] = run(jr, {{"strength", zero}});
+    CHECK_FALSE(ok);
+    CHECK(message.find("Strength") != std::string::npos);
+    CHECK(choice_seen.empty());
+    CHECK(written.empty());
   }
   // People off: said so, nothing written.
   written.clear();
