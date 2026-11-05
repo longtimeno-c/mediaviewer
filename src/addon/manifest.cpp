@@ -159,19 +159,23 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
       if (!only_keys(e, {"id", "title", "place", "width", "height"})) return false;
       const std::string* title = required_text(e, "title", 48);
       const std::string* place = e.str("place");
-      if (!title || !place || !one_of(*place, {"window", "pane", "sheet", "settings"})) return false;
+      if (!title || !place || !one_of(*place, {"window", "pane", "sheet", "settings", "edit"})) return false;
       screen_contrib s;
       s.id = *id;
       s.title = *title;
-      s.place = *place == "window"   ? screen_place::window
-                : *place == "pane"   ? screen_place::pane
-                : *place == "sheet"  ? screen_place::sheet
-                                     : screen_place::settings;
-      // A settings page asks for contribution API 8, and an add-on has one.
-      if (s.place == screen_place::settings &&
-          (c.api_min < kSettingsScreenApi ||
-           std::any_of(c.screens.begin(), c.screens.end(),
-                       [](const screen_contrib& o) { return o.place == screen_place::settings; }))) {
+      s.place = *place == "window"     ? screen_place::window
+                : *place == "pane"     ? screen_place::pane
+                : *place == "sheet"    ? screen_place::sheet
+                : *place == "settings" ? screen_place::settings
+                                       : screen_place::edit;
+      // A settings page asks for contribution API 8, a docked Edit screen for
+      // 12 (docs/plans/edit-refresh.md S5); an add-on has at most one of each.
+      const std::uint32_t needs = s.place == screen_place::settings ? kSettingsScreenApi
+                                  : s.place == screen_place::edit   ? kEditScreenApi
+                                                                    : 0;
+      if (needs != 0 && (c.api_min < needs || std::any_of(c.screens.begin(), c.screens.end(), [&](const screen_contrib& o) {
+                           return o.place == s.place;
+                         }))) {
         return false;
       }
       std::int64_t w = 0;
@@ -383,10 +387,11 @@ bool read_contributions(const json::value& doc, manifest& m) {
   }
   if (m.slots.api_max != 0 && !any) return false;  // a range with nothing under it is a typo
   // An item that opens a screen names one of this add-on's own, never its
-  // settings page (only Settings opens that).
+  // settings page (only Settings opens that) nor a docked Edit screen (only
+  // the Edit workspace does).
   for (const item_contrib& i : m.slots.items) {
     if (!i.opens.empty() && std::none_of(m.slots.screens.begin(), m.slots.screens.end(), [&](const screen_contrib& s) {
-          return s.id == i.opens && s.place != screen_place::settings;
+          return s.id == i.opens && s.place != screen_place::settings && s.place != screen_place::edit;
         })) {
       return false;
     }

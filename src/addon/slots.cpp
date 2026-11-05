@@ -28,6 +28,7 @@ const char* place_name(screen_place p) noexcept {
     case screen_place::pane: return "pane";
     case screen_place::sheet: return "sheet";
     case screen_place::settings: return "settings";
+    case screen_place::edit: return "edit";
   }
   return "window";
 }
@@ -39,6 +40,7 @@ std::uint32_t place_code(screen_place p) noexcept {
     case screen_place::pane: return MV_SLOT_PLACE_PANE;
     case screen_place::sheet: return MV_SLOT_PLACE_SHEET;
     case screen_place::settings: return MV_SLOT_PLACE_SETTINGS;
+    case screen_place::edit: return MV_SLOT_PLACE_EDIT;
   }
   return MV_SLOT_PLACE_WINDOW;
 }
@@ -883,6 +885,48 @@ status slot_registry::run_command(const std::string& addon_id, const std::string
   return status::ok;
 }
 
+status slot_registry::screen_command(const std::string& addon_id, const std::string& screen_id,
+                                     const std::string& path, const std::string& value_json, float width_pt,
+                                     float scale) {
+  // The chrome's own words, but checked before an add-on sees them: one JSON
+  // object, small and shallow.
+  if (value_json.size() > kMaxScreenCommand) return status::invalid_arg;
+  const auto v = json::parse(value_json, 4);
+  if (!v || v->k != json::kind::object) return status::invalid_arg;
+  bool opened = false;
+  {
+    std::lock_guard lock(m_);
+    auto it = addons_.find(addon_id);
+    if (it == addons_.end()) return status::not_found;
+    addon_entry& e = *it->second;
+    const screen_contrib* def = nullptr;
+    for (const screen_contrib& s : e.c.screens) {
+      if (s.id == screen_id && s.place == screen_place::edit) def = &s;
+    }
+    if (!def) return status::not_found;
+    if (!screens_.count(std::make_pair(addon_id, screen_id))) {
+      const status st = open_screen_locked(e, *def, path, last_theme_, width_pt, 0, scale > 0 ? scale : last_scale_);
+      if (st != status::ok) return st;
+      opened = true;
+    }
+    const std::uint64_t g = screens_.at(std::make_pair(addon_id, screen_id)).generation;
+    // After the open on the same worker: the add-on has its item when the
+    // command arrives.
+    enqueue(e, {}, [g, screen_id, value_json](slot_client& c) {
+      mv_slot_event ev{};
+      ev.struct_size = sizeof ev;
+      ev.kind = MV_SLOT_EVENT_COMMAND;
+      ev.generation = g;
+      ev.screen_id = screen_id.c_str();
+      ev.node_id = screen_id.c_str();
+      ev.value_json = value_json.c_str();
+      c.event(ev);
+    });
+  }
+  if (opened) notify(slot_changed_screens);
+  return status::ok;
+}
+
 status slot_registry::invoke_editor_item(const std::string& addon_id, const std::string& item_id,
                                          const std::string& path, std::span<const std::int64_t> ranges_ns) {
   if (path.empty() || ranges_ns.size() % 2 != 0 || ranges_ns.size() / 2 > kMaxEditorRanges) {
@@ -1261,7 +1305,10 @@ std::string status_opens(const contributions& c, const item_contrib& item) {
   if (!item.opens.empty()) return item.opens;
   const screen_contrib* only = nullptr;
   for (const screen_contrib& s : c.screens) {
-    if (s.place == screen_place::info_section || s.place == screen_place::settings) continue;
+    if (s.place == screen_place::info_section || s.place == screen_place::settings ||
+        s.place == screen_place::edit) {
+      continue;
+    }
     if (only) return {};
     only = &s;
   }
@@ -1519,8 +1566,11 @@ status slot_registry::show_screen(const std::string& addon_id, const std::string
     auto it = addons_.find(addon_id);
     if (it == addons_.end()) return status::not_found;
     for (const screen_contrib& s : it->second->c.screens) {
-      // A settings page shows only while its page in Settings does.
-      if (s.id == screen_id && s.place == screen_place::settings) return status::invalid_arg;
+      // A settings page shows only while its page in Settings does; a docked
+      // Edit screen only when the Edit workspace asks (screen_command).
+      if (s.id == screen_id && (s.place == screen_place::settings || s.place == screen_place::edit)) {
+        return status::invalid_arg;
+      }
       if (s.id == screen_id) {
         st = open_screen_locked(*it->second, s, info_path_, last_theme_, 0, 0, last_scale_);
       }

@@ -185,6 +185,86 @@ const char* section_title(const sheet_view& v, model_kind k) {
   return "";
 }
 
+// Each model's card of knobs (the sheet's and the docked panel's).
+void section_cards(json::writer& w, const sheet_view& v) {
+  for (const sheet_section& s : v.sections) {
+    begin_stack(w, id_of("sec", s.kind), "vertical", 8, "card");
+    text(w, id_of("head", s.kind), section_title(v, s.kind), "heading");
+    if (s.spec) {
+      std::size_t shown = 0;
+      for (const knob& kb : s.spec->knobs) {
+        if (std::find(kb.kinds.begin(), kb.kinds.end(), s.kind) == kb.kinds.end()) continue;
+        // Remove's "extend" choice is for extending only.
+        if (kb.id == "extend" && v.photo != photo_target::extend) continue;
+        const auto it = s.values.find(kb.id);
+        knob_node(w, s.kind, kb, knob_value(kb, it == s.values.end() ? nullptr : &it->second));
+        ++shown;
+      }
+      if (shown == 0) text(w, id_of("plain", s.kind), s.spec->name + " has nothing to set.", "secondary");
+    } else {
+      text(w, id_of("missing", s.kind), s.missing, "secondary");
+    }
+    end_stack(w);
+  }
+}
+
+// The note, the preview, and a run's glowing progress and time left.
+void run_nodes(json::writer& w, const sheet_view& v) {
+  if (!v.note.empty()) text(w, "note", v.note, "secondary");
+  if (v.preview) preview_node(w, v.running);
+  if (v.running) {
+    progress(w, "progress", "Enhancing", v.progress, "glow");
+    text(w, "eta", v.eta.empty() ? std::string("Working…") : v.eta, "secondary");
+  }
+}
+
+bool library_result(const std::string& path) { return path.rfind("photos:", 0) == 0; }
+
+#if defined(_WIN32)
+constexpr const char* kBin = "Recycle Bin";
+#else
+constexpr const char* kBin = "Trash";
+#endif
+
+// S5: what the run wrote, with Show, Keep editing and Discard. The thumbnail
+// carries the new file's path for the host's Show (hidden for a library
+// photo, whose key the viewer's thumbnails do not read).
+void result_row(json::writer& w, const sheet_view& v) {
+  const bool library = library_result(v.result_path);
+  begin_stack(w, "result", "vertical", 10, "card");
+  begin_stack(w, "result.head", "horizontal", 10);
+  w.begin_object().key("type").string("thumbnail").key("id").string("result.thumb");
+  w.key("path").string(v.result_path).key("size").integer(56);
+  w.key("label").string(library ? std::string("The new photo") : v.result_name);
+  if (library) w.key("hidden").boolean(true);
+  w.end_object();
+  begin_stack(w, "result.words", "vertical", 2);
+  text(w, "result.title", library ? std::string("Added to your Photos library") : "Saved as " + v.result_name);
+  text(w, "result.where",
+       library ? std::string("A new photo beside this one. The original is not changed.")
+               : std::string("A new file beside the original. The original is not changed."),
+       "caption");
+  end_stack(w);
+  end_stack(w);
+  if (!v.result_note.empty()) text(w, "result.note", v.result_note, "secondary");
+  begin_stack(w, "result.buttons", "horizontal", 8);
+  button(w, "result.show", "Show", "primary");
+  button(w, "result.keep", "Keep editing");
+  if (!library) button(w, "result.discard", std::string("Move to ") + kBin, "destructive");
+  end_stack(w);
+  end_stack(w);
+}
+
+const char* run_label(photo_target t) {
+  switch (t) {
+    case photo_target::remove: return "Remove";
+    case photo_target::restyle: return "Restyle";
+    case photo_target::extend: return "Extend";
+    case photo_target::detail: break;
+  }
+  return "Enhance";
+}
+
 }  // namespace
 
 std::string size_text(std::uint64_t bytes) {
@@ -311,31 +391,8 @@ std::string sheet_tree(const sheet_view& v) {
     if (v.running) w.key("disabled").boolean(true);
     w.end_object();
   }
-  for (const sheet_section& s : v.sections) {
-    begin_stack(w, id_of("sec", s.kind), "vertical", 8, "card");
-    text(w, id_of("head", s.kind), section_title(v, s.kind), "heading");
-    if (s.spec) {
-      std::size_t shown = 0;
-      for (const knob& kb : s.spec->knobs) {
-        if (std::find(kb.kinds.begin(), kb.kinds.end(), s.kind) == kb.kinds.end()) continue;
-        // Remove's "extend" choice is for extending only.
-        if (kb.id == "extend" && v.photo != photo_target::extend) continue;
-        const auto it = s.values.find(kb.id);
-        knob_node(w, s.kind, kb, knob_value(kb, it == s.values.end() ? nullptr : &it->second));
-        ++shown;
-      }
-      if (shown == 0) text(w, id_of("plain", s.kind), s.spec->name + " has nothing to set.", "secondary");
-    } else {
-      text(w, id_of("missing", s.kind), s.missing, "secondary");
-    }
-    end_stack(w);
-  }
-  if (!v.note.empty()) text(w, "note", v.note, "secondary");
-  if (v.preview) preview_node(w, v.running);
-  if (v.running) {
-    progress(w, "progress", "Enhancing", v.progress, "glow");
-    text(w, "eta", v.eta.empty() ? std::string("Working…") : v.eta, "secondary");
-  }
+  section_cards(w, v);
+  run_nodes(w, v);
   if (!v.status.empty()) text(w, "status", v.status, "secondary");
   text(w, "where", "Enhance writes a new file beside the original. The original is not changed.", "caption");
   begin_stack(w, "buttons", "horizontal", 8);
@@ -346,6 +403,40 @@ std::string sheet_tree(const sheet_view& v) {
     button(w, "run", "Enhance", "primary", !v.can_run);
   }
   end_stack(w);
+  end_stack(w);
+  return w.take();
+}
+
+std::string tool_tree(const sheet_view& v) {
+  json::writer w;
+  begin_stack(w, std::string("tool.") + photo_target_name(v.photo), "vertical", 12);
+  section_cards(w, v);
+  run_nodes(w, v);
+  const bool result = !v.running && !v.result_path.empty();
+  if (result) {
+    result_row(w, v);
+  } else if (!v.status.empty()) {
+    text(w, "status", v.status, "secondary");
+  }
+  begin_stack(w, "buttons", "horizontal", 8);
+  if (v.running) {
+    button(w, "cancel", "Cancel", "destructive");
+  } else if (v.brush_needed && !result) {
+    // Remove before anything is brushed: the card's own Remove (or Return in
+    // the brush) runs it, once the strokes are there. No second, dead button.
+  } else if (result) {
+    // Another go with other values: a second new file, the first one kept.
+    button(w, "run", std::string(run_label(v.photo)) + " again", "plain", !v.can_run);
+  } else {
+    button(w, "run", run_label(v.photo), "primary", !v.can_run);
+  }
+  end_stack(w);
+  if (!result && !v.running) {
+    text(w, "where",
+         v.library ? std::string("Adds a new photo to your Photos library. The original is not changed.")
+                   : std::string("Writes a new file beside the original. The original is not changed."),
+         "caption");
+  }
   end_stack(w);
   return w.take();
 }

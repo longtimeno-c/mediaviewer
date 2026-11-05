@@ -178,12 +178,14 @@ void engine::post_settings_locked() {
   if (!port_.post(kSettingsScreen, settings_gen_, settings_tree(cards, tv))) settings_gen_ = 0;
 }
 
-std::vector<model_kind> engine::kinds_for_locked() const {
+std::vector<model_kind> engine::kinds_for_locked(bool docked) const {
   switch (item_) {
     case item_kind::still:
       // Offered only once its weights are pinned (a model.json alone is not a
-      // model anyone can download).
-      if (prefs_.photo == photo_target::remove && brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)]) {
+      // model anyone can download). Docked (S5), Remove is the card the
+      // person chose: its knobs show before anything is brushed.
+      if (prefs_.photo == photo_target::remove && (brushed_ > 0 || docked) &&
+          specs_[static_cast<int>(model_kind::remove)]) {
         return {model_kind::remove};
       }
       if (prefs_.photo == photo_target::extend && specs_[static_cast<int>(model_kind::remove)]) {
@@ -209,9 +211,10 @@ std::vector<model_kind> engine::kinds_for_locked() const {
   }
 }
 
-sheet_view engine::sheet_locked() const {
+sheet_view engine::sheet_locked(bool docked) const {
   sheet_view v;
   v.file_name = name_of(path_);
+  v.library = library_key(path_);
   v.edit = edit_text(keep_);
   v.item = item_;
   v.has_picture = facts_.picture;
@@ -221,7 +224,7 @@ sheet_view engine::sheet_locked() const {
                      files_[static_cast<int>(model_kind::restyle)].usable();
   // Remove is offered whenever something is brushed: a model not yet
   // downloaded shows as not installed, as any kind does.
-  v.offers_remove = brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)].has_value();
+  v.offers_remove = (brushed_ > 0 || docked) && specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
   v.photo = prefs_.photo;
   if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove) ||
@@ -249,7 +252,7 @@ sheet_view engine::sheet_locked() const {
     case item_kind::still: break;
   }
   bool all_ready = true;
-  for (const model_kind k : kinds_for_locked()) {
+  for (const model_kind k : kinds_for_locked(docked)) {
     sheet_section s;
     s.kind = k;
     s.values = prefs_.of(k);
@@ -268,6 +271,17 @@ sheet_view engine::sheet_locked() const {
     v.sections.push_back(std::move(s));
   }
   if (v.sections.empty()) all_ready = false;
+  if (docked) {
+    v.result_path = result_path_;
+    v.result_name = result_name_;
+    v.result_note = result_note_;
+    // Remove with nothing brushed: the brush first (the card arms it).
+    if (v.item == item_kind::still && v.photo == photo_target::remove && brushed_ == 0) {
+      v.brush_needed = true;
+      all_ready = false;
+      if (v.note.empty()) v.note = "Brush over what to remove, then press Remove (or Return).";
+    }
+  }
   v.can_run = all_ready && v.note.empty() && !running_;
   if (!running_ && v.note.empty() && status_.empty() && !v.sections.empty()) {
     const bool models = std::all_of(v.sections.begin(), v.sections.end(), [](const sheet_section& s) { return s.spec; });
@@ -287,8 +301,39 @@ sheet_view engine::sheet_locked() const {
 }
 
 void engine::post_sheet_locked() {
-  if (sheet_gen_ == 0 || !port_.post) return;
-  if (!port_.post(kSheetScreen, sheet_gen_, sheet_tree(sheet_locked()))) sheet_gen_ = 0;
+  if (!port_.post) return;
+  if (sheet_gen_ != 0 && !port_.post(kSheetScreen, sheet_gen_, sheet_tree(sheet_locked()))) sheet_gen_ = 0;
+  if (tool_gen_ != 0 && !port_.post(kToolScreen, tool_gen_, tool_tree(sheet_locked(true)))) tool_gen_ = 0;
+}
+
+engine::item_facts engine::read_item(const std::string& path) const {
+  // A Photos-library item ("photos:<id>", docs/design/26) is not a file the
+  // add-on can read: the host's still rows resolve it, so it is a photo here
+  // (owner 2026-11-04: edits of library photos). A library video fails at
+  // its read with the photo's message.
+  item_facts f;
+  f.item = path.empty() ? item_kind::unknown : library_key(path) ? item_kind::still : sniff(head_of(path));
+  if ((f.item == item_kind::media || f.item == item_kind::audio) && port_.probe) f.facts = port_.probe(path);
+  f.brushed = f.item == item_kind::still && port_.brushed ? port_.brushed(path) : 0;
+  return f;
+}
+
+void engine::adopt_locked(const std::string& path, const item_facts& f, std::vector<std::int64_t> keep) {
+  if (path != path_) {
+    status_.clear();
+    forget_result_locked();  // a result belongs to the item it was made from
+  }
+  preview_ = false;  // a preview belongs to the run that drew it
+  path_ = path;
+  keep_ = f.item == item_kind::media ? std::move(keep) : std::vector<std::int64_t>{};
+  item_ = f.item;
+  facts_ = f.facts;
+}
+
+void engine::forget_result_locked() {
+  result_path_.clear();
+  result_name_.clear();
+  result_note_.clear();
 }
 
 void engine::settings_opened(std::uint64_t generation) {
@@ -314,32 +359,79 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     if (running_ && path != path_) path = path_;  // a run keeps its item
   }
   // Read outside the lock: a slow disk delays only this sheet.
-  // A Photos-library item ("photos:<id>", docs/design/26) is not a file the
-  // add-on can read: the host's still rows resolve it, so it is a photo here
-  // (owner 2026-11-04: edits of library photos). A library video fails at
-  // its read with the photo's message.
-  const bool library = library_key(path);
-  const item_kind item = path.empty() ? item_kind::unknown : library ? item_kind::still : sniff(head_of(path));
-  media_facts facts;
-  if ((item == item_kind::media || item == item_kind::audio) && port_.probe) facts = port_.probe(path);
-  const std::uint32_t brushed = item == item_kind::still && port_.brushed ? port_.brushed(path) : 0;
+  const item_facts f = read_item(path);
   std::lock_guard lock(m_);
   sheet_gen_ = generation;
   if (width_pt >= 100 && width_pt <= 2000) sheet_width_pt_ = width_pt;
   if (scale >= 1 && scale <= 4) sheet_scale_ = scale;
   if (!running_) {
-    if (path != path_) status_.clear();
-    preview_ = false;  // a preview belongs to the run that drew it
-    path_ = path;
-    keep_ = item == item_kind::media ? std::move(keep) : std::vector<std::int64_t>{};
-    item_ = item;
-    facts_ = facts;
+    adopt_locked(path, f, std::move(keep));
     // Remove… in Edit opened this sheet: it starts on Remove (not saved as
     // the photo's choice: it is offered only while something is brushed).
-    if (brushed > 0 && brushed_ == 0) prefs_.photo = photo_target::remove;
-    brushed_ = brushed;
+    if (f.brushed > 0 && brushed_ == 0) prefs_.photo = photo_target::remove;
+    brushed_ = f.brushed;
   }
   post_sheet_locked();
+}
+
+void engine::tool_opened(std::uint64_t generation, const std::string& request_path, float width_pt, float scale) {
+  std::string path = request_path;
+  {
+    std::lock_guard lock(m_);
+    if (running_ && path != path_) path = path_;  // a run keeps its item
+  }
+  const item_facts f = read_item(path);
+  std::lock_guard lock(m_);
+  tool_gen_ = generation;
+  if (width_pt >= 100 && width_pt <= 2000) tool_width_pt_ = width_pt;
+  if (scale >= 1 && scale <= 4) tool_scale_ = scale;
+  if (!running_) {
+    adopt_locked(path, f, {});
+    brushed_ = f.brushed;
+  }
+  post_sheet_locked();
+}
+
+void engine::tool_command(const std::string& value_json) {
+  const auto v = json::parse(value_json, 4);
+  if (!v || v->k != json::kind::object) return;
+  std::optional<photo_target> chosen;
+  if (const std::string* p = v->str("photo")) {
+    for (const photo_target t : kPhotoTargets) {
+      if (*p == photo_target_name(t)) chosen = t;
+    }
+  }
+  const json::value* go = v->find("run");
+  const bool start = go && go->k == json::kind::boolean && go->b;
+  // Remove reads the brush again: the host hands its dabs over (still_mask)
+  // just before it asks for a run.
+  std::string path;
+  bool still = false;
+  {
+    std::lock_guard lock(m_);
+    if (tool_gen_ == 0) return;
+    path = path_;
+    still = item_ == item_kind::still;
+  }
+  const bool reread = still && !path.empty() && port_.brushed &&
+                      (chosen == photo_target::remove || (!chosen && current_prefs().photo == photo_target::remove));
+  const std::uint32_t brushed = reread ? port_.brushed(path) : 0;
+  {
+    std::lock_guard lock(m_);
+    if (tool_gen_ == 0) return;
+    if (!running_) {
+      if (chosen && *chosen != prefs_.photo) {
+        prefs_.photo = *chosen;
+        status_.clear();
+        forget_result_locked();  // the last result was another tool's
+        preview_ = false;
+        save_locked();
+      }
+      if (reread && path == path_) brushed_ = brushed;
+    }
+    post_sheet_locked();
+  }
+  if (start) run(true);
 }
 
 void engine::closed(const std::string& screen) {
@@ -347,12 +439,15 @@ void engine::closed(const std::string& screen) {
   {
     std::lock_guard lock(m_);
     if (screen == kSettingsScreen) settings_gen_ = 0;
-    if (screen == kSheetScreen) {
-      sheet_gen_ = 0;
+    if (screen == kSheetScreen || screen == kToolScreen) {
+      (screen == kSheetScreen ? sheet_gen_ : tool_gen_) = 0;
       status_.clear();
-      // Leaving the sheet is leaving the item: its job stops (#297 "Navigation
-      // away cancels the job"). The runner reports the cancel as usual.
-      cancel_run = running_;
+      if (screen == kToolScreen) forget_result_locked();
+      // Leaving the sheet (or the docked panel: the host closes it when the
+      // item changes or Edit closes) is leaving the item: its job stops (#297
+      // "Navigation away cancels the job"), unless the other still shows it.
+      // The runner reports the cancel as usual.
+      cancel_run = running_ && sheet_gen_ == 0 && tool_gen_ == 0;
     }
   }
   if (cancel_run) cancel();
@@ -415,12 +510,12 @@ tier engine::effective_tier() const {
   return t;
 }
 
-void engine::run() {
+void engine::run(bool docked) {
   job_request r;
   runner* run = nullptr;
   {
     std::lock_guard lock(m_);
-    const sheet_view v = sheet_locked();
+    const sheet_view v = sheet_locked(docked);
     if (!v.can_run || !runner_) return;
     r.path = path_;
     r.keep_ns = keep_;
@@ -452,6 +547,7 @@ void engine::run() {
     preview_ = false;
     run_started_ = std::chrono::steady_clock::now();
     status_.clear();
+    forget_result_locked();
     post_sheet_locked();
     run = runner_.get();
   }
@@ -465,7 +561,7 @@ void engine::run() {
     progress_ = f;
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - run_started_).count();
     eta_ = time_left(f, elapsed);
-    if (sheet_gen_ == 0) return;
+    if (sheet_gen_ == 0 && tool_gen_ == 0) return;
     json::writer w;
     w.begin_array().begin_object().key("op").string("set").key("id").string("progress");
     w.key("props").begin_object().key("value").number(f < 0 ? -1.0 : std::min(1.0, f)).end_object();
@@ -473,28 +569,35 @@ void engine::run() {
     w.begin_object().key("op").string("set").key("id").string("eta");
     w.key("props").begin_object().key("text").string(eta_.empty() ? std::string("Working…") : eta_).end_object();
     w.end_object().end_array();
-    if (!port_.diff || !port_.diff(kSheetScreen, sheet_gen_, w.str())) post_sheet_locked();
+    // Each open screen gets the two nodes alone; a refused diff re-posts it whole.
+    bool whole = false;
+    for (const auto& [screen, gen] : {std::pair{kSheetScreen, sheet_gen_}, std::pair{kToolScreen, tool_gen_}}) {
+      if (gen != 0 && (!port_.diff || !port_.diff(screen, gen, w.str()))) whole = true;
+    }
+    if (whole) post_sheet_locked();
   };
   ev.preview = [this](preview_image before, preview_image after) {
-    // Composed off the lock: a letterbox at the sheet's pixel size.
+    // Composed off the lock: a letterbox at the docked panel's pixel size
+    // when it shows, else the sheet's.
     float w_pt = 420, sc = 2;
     {
       std::lock_guard lock(m_);
-      if (!running_ || sheet_gen_ == 0) return;
-      w_pt = sheet_width_pt_;
-      sc = sheet_scale_;
+      if (!running_ || (sheet_gen_ == 0 && tool_gen_ == 0)) return;
+      w_pt = tool_gen_ != 0 ? tool_width_pt_ : sheet_width_pt_;
+      sc = tool_gen_ != 0 ? tool_scale_ : sheet_scale_;
     }
     const auto ow = static_cast<std::uint32_t>(std::min(2048.0f, w_pt * sc));
     const auto oh = static_cast<std::uint32_t>(std::min(1024.0f, static_cast<float>(kPreviewHeight) * sc));
     const std::vector<std::uint8_t> bgra = compose_preview(before, after, ow, oh);
     std::lock_guard lock(m_);
-    if (!running_ || sheet_gen_ == 0 || !port_.surface) return;
+    if (!running_ || (sheet_gen_ == 0 && tool_gen_ == 0) || !port_.surface) return;
     if (!preview_) {
       // The node first: pixels for a surface the tree does not show are dropped.
       preview_ = true;
       post_sheet_locked();
     }
-    (void)port_.surface(kSheetScreen, "preview", sheet_gen_, bgra, ow, oh);
+    if (sheet_gen_ != 0) (void)port_.surface(kSheetScreen, "preview", sheet_gen_, bgra, ow, oh);
+    if (tool_gen_ != 0) (void)port_.surface(kToolScreen, "preview", tool_gen_, bgra, ow, oh);
   };
   ev.done = [this](bool ok, const std::string& output, const std::string& message) {
     std::lock_guard lock(m_);
@@ -505,6 +608,21 @@ void engine::run() {
     status_ = !ok                  ? message
               : library_key(output) ? std::string("Added to your Photos library as a new photo.")
                                     : "Saved as " + output + ".";
+    // S5: the docked panel's result row. Every writer puts the new file
+    // beside the original (doc 29 naming), so its path is the original's
+    // folder and the name the runner reports.
+    forget_result_locked();
+    if (ok && !output.empty()) {
+      if (library_key(output)) {
+        result_path_ = output;
+      } else if (!library_key(path_)) {
+        const std::size_t slash = path_.find_last_of("/\\");
+        if (slash != std::string::npos) result_path_ = path_.substr(0, slash + 1) + output;
+      }
+      result_name_ = library_key(output) ? std::string() : output;
+      // status_ keeps "Saved as …" for the sheet; the docked panel's row
+      // says it in its own words (tool_tree hides the status while it shows).
+    }
     post_sheet_locked();
   };
   run->start(std::move(r), std::move(ev));
@@ -518,6 +636,38 @@ void engine::cancel() {
     r = runner_.get();
   }
   r->cancel();
+}
+
+void engine::discard() {
+  // Only the file this run wrote, never the original nor a library photo
+  // (Photos asks before it deletes; the person does that in Photos).
+  std::string target;
+  {
+    std::lock_guard lock(m_);
+    if (running_ || result_path_.empty() || library_key(result_path_) || result_path_ == path_) return;
+    target = result_path_;
+  }
+  // The host table's recycle_file: to the Bin / Trash, never a permanent
+  // delete. Off the lock: it is a disk operation.
+  const int r = port_.recycle ? port_.recycle(target) : -1;
+#if defined(_WIN32)
+  const char* bin = "the Recycle Bin";
+#else
+  const char* bin = "the Trash";
+#endif
+  std::lock_guard lock(m_);
+  if (result_path_ != target) return;  // another run since
+  const std::string name = result_name_.empty() ? std::string("the copy") : result_name_;
+  if (r == 0) {
+    forget_result_locked();
+    preview_ = false;
+    status_ = "Moved " + name + " to " + bin + ".";
+  } else if (r == 1) {
+    result_note_ = "This folder has no " + std::string(bin + 4) + ", so " + name + " was kept.";
+  } else {
+    result_note_ = name + " could not be moved to " + bin + ".";
+  }
+  post_sheet_locked();
 }
 
 void engine::event(const std::string& screen, const std::string& node, std::uint32_t kind,
@@ -545,15 +695,19 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
     }
     return;
   }
-  if (screen != kSheetScreen) return;
+  if (screen != kSheetScreen && screen != kToolScreen) return;
+  const bool docked = screen == kToolScreen;
   if (kind == MV_SLOT_EVENT_CLICK) {
-    if (node == "close") {
+    if (node == "close" && !docked) {
       if (port_.show) port_.show(kSheetScreen, false);
     } else if (node == "run") {
-      run();
+      run(docked);
     } else if (node == "cancel") {
       cancel();
+    } else if (node == "result.discard" && docked) {
+      discard();
     }
+    // "result.show" / "result.keep" are the host's (it navigates).
     return;
   }
   if (kind != MV_SLOT_EVENT_CHANGE) return;

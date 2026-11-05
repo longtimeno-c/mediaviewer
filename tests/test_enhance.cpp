@@ -34,6 +34,7 @@
 #include "addons/enhance/diffusion.h"
 #include "addons/enhance/remove.h"
 #include "addon/keep_ranges.h"
+#include "addon/screen.h"
 #include "addons/enhance/brighten.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
@@ -133,6 +134,8 @@ struct fake_host {
   std::uint64_t free = 1ull << 40;
   mv::enhance::media_facts facts{true, true};
   std::vector<float> brush;  // slice 7: the dabs the host holds over a photo
+  std::vector<std::string> recycled;  // S5's Discard: what went to the Bin
+  int recycle_answer = 0;             // 0 moved, 1 refused (no bin), -1 failed
   // The preview's last pixels and how many were posted.
   std::uint32_t surface_w = 0, surface_h = 0;
   int surfaces = 0;
@@ -207,7 +210,7 @@ struct fixture {
     p.surface = [this](const char* screen, const char* surface, std::uint64_t, const std::vector<std::uint8_t>& bgra,
                        std::uint32_t w, std::uint32_t h) {
       std::lock_guard lock(host.m);
-      CHECK(std::string(screen) == kSheetScreen);
+      CHECK((std::string(screen) == kSheetScreen || std::string(screen) == kToolScreen));
       CHECK(std::string(surface) == "preview");
       CHECK(bgra.size() == std::size_t{w} * h * 4);
       // The node is in the tree before its pixels (else the host drops them).
@@ -225,6 +228,11 @@ struct fixture {
     p.brushed = [this](const std::string&) {
       std::lock_guard lock(host.m);
       return static_cast<std::uint32_t>(host.brush.size() / 3);
+    };
+    p.recycle = [this](const std::string& path) {
+      std::lock_guard lock(host.m);
+      host.recycled.push_back(path);
+      return host.recycle_answer;
     };
     p.free_disk = [this](const std::string&) -> std::optional<std::uint64_t> { return host.free; };
     auto shared = net;
@@ -1403,6 +1411,177 @@ TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the r
   part.spec = f.eng->spec(model_kind::remove);
   req.parts.push_back(part);
   CHECK(jr.check(req).find("Nothing is brushed") != std::string::npos);
+}
+
+// docs/plans/edit-refresh.md S5 (owner call B): the tool panel docked in
+// Edit's Enhance tab. One tool, no photo choice; Remove reads the brush again
+// when the workspace asks it to run; the result row names the new file beside
+// the original, and Discard sends only that file to the Bin.
+TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", "[enhance][tool]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0007.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true, "knobs": [],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+
+  // A command before the panel is open does nothing.
+  f.eng->tool_command(R"({"photo": "remove"})");
+  CHECK(f.host.tree(kToolScreen).empty());
+
+  // The workspace opens it on the photo and chooses Remove: nothing brushed
+  // yet, so the panel says to brush and its Remove is greyed. No photo choice.
+  f.eng->tool_opened(5, utf8(photo), 340, 2);
+  f.eng->tool_command(R"({"photo": "remove"})");
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    REQUIRE(t.has("tool.remove"));
+    CHECK_FALSE(t.has("photo"));
+    CHECK_FALSE(t.has("close"));
+    CHECK(t.has("sec.remove"));
+    CHECK(t.text("note").find("Brush over what to remove") != std::string::npos);
+    // The card's Remove (or Return in the brush) runs it: no dead button here.
+    CHECK_FALSE(t.has("run"));
+    CHECK_FALSE(t.has("result"));
+  }
+  CHECK(f.eng->current_prefs().photo == photo_target::remove);
+  // Another tool: its own root, its own run label.
+  f.eng->tool_command(R"({"photo": "extend"})");
+  CHECK(parsed(f.host.tree(kToolScreen)).has("tool.extend"));
+  CHECK(*parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "Extend");
+  // Malformed commands change nothing.
+  f.eng->tool_command("[\"remove\"]");
+  f.eng->tool_command(R"({"photo": "sharpen"})");
+  CHECK(parsed(f.host.tree(kToolScreen)).has("tool.extend"));
+
+  const std::uint32_t w = 120, h = 90;
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [&](const std::string&) {
+    std::lock_guard lock(f.host.m);
+    return f.host.brush;
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = noise_rgb(w, h);
+    return s;
+  };
+  const fs::path made = f.dir / "IMG_0007-removed.jpg";
+  port.write_still = [&](const std::string&, const run_port::still&) -> mv::result<std::string> {
+    write_bytes(made, bytes({0xFF, 0xD8, 0xFF, 0xE0}));
+    return utf8(made);
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+
+  // Brushed in Edit, then Return: the host hands the dabs over and asks for a
+  // run in one command. Remove reads the brush again before it runs.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.brush = {0.5f, 0.5f, 0.05f};
+  }
+  f.eng->tool_command(R"({"photo": "remove", "run": true})");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kToolScreen)).has("result"); }));
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    REQUIRE(t.has("result.thumb"));
+    CHECK(*t.node("result.thumb")->str("path") == utf8(made));
+    CHECK(t.node("result.thumb")->find("hidden") == nullptr);
+    CHECK(t.text("result.title") == "Saved as IMG_0007-removed.jpg");
+    CHECK(t.has("result.show"));
+    CHECK(t.has("result.keep"));
+    CHECK(t.has("result.discard"));
+    CHECK(*t.node("run")->str("label") == "Remove again");
+    CHECK_FALSE(t.has("cancel"));
+  }
+  // The sheet was never open: nothing posted there. The panel's row says
+  // what was written; no second "Saved as" line under it.
+  CHECK(f.host.tree(kSheetScreen).empty());
+  CHECK_FALSE(parsed(f.host.tree(kToolScreen)).has("status"));
+  // A sheet opened now on the same photo still says where the copy went.
+  f.eng->sheet_opened(6, utf8(photo), 420, 2);
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as IMG_0007-removed.jpg") != std::string::npos);
+  f.eng->closed(kSheetScreen);
+
+  // Show and Keep editing are the host's: the add-on leaves the row alone.
+  f.eng->event(kToolScreen, "result.show", MV_SLOT_EVENT_CLICK, "");
+  CHECK(parsed(f.host.tree(kToolScreen)).has("result"));
+
+  // A place with no Bin: nothing is removed and the row stays.
+  f.host.recycle_answer = 1;
+  f.eng->event(kToolScreen, "result.discard", MV_SLOT_EVENT_CLICK, "");
+  CHECK(parsed(f.host.tree(kToolScreen)).has("result"));
+  CHECK(parsed(f.host.tree(kToolScreen)).text("result.note").find("was kept") != std::string::npos);
+  // Discard: the new file only, never the original.
+  f.host.recycle_answer = 0;
+  f.eng->event(kToolScreen, "result.discard", MV_SLOT_EVENT_CLICK, "");
+  {
+    std::lock_guard lock(f.host.m);
+    REQUIRE(f.host.recycled.size() == 2);
+    CHECK(f.host.recycled[0] == utf8(made));
+    CHECK(f.host.recycled[1] == utf8(made));
+  }
+  {
+    parsed t(f.host.tree(kToolScreen));
+    CHECK_FALSE(t.has("result"));
+    CHECK(t.text("status").find("Moved IMG_0007-removed.jpg to") != std::string::npos);
+  }
+  // A second Discard has nothing to send.
+  f.eng->event(kToolScreen, "result.discard", MV_SLOT_EVENT_CLICK, "");
+  {
+    std::lock_guard lock(f.host.m);
+    CHECK(f.host.recycled.size() == 2);
+  }
+
+  // Closing the panel forgets it: later commands post nothing.
+  f.eng->closed(kToolScreen);
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.trees.erase(kToolScreen);
+  }
+  f.eng->tool_command(R"({"photo": "detail"})");
+  CHECK(f.host.tree(kToolScreen).empty());
+}
+
+TEST_CASE("enhance: a library photo's result row has no Discard and no visible tile", "[enhance][tool]") {
+  sheet_view v;
+  v.item = item_kind::still;
+  v.photo = photo_target::detail;
+  v.library = true;
+  v.result_path = "photos:ABC-123";
+  const std::string tree = tool_tree(v);
+  parsed t(tree);
+  INFO(tree);
+  REQUIRE(t.has("tool.detail"));
+  REQUIRE(t.has("result.thumb"));
+  CHECK(*t.node("result.thumb")->str("path") == "photos:ABC-123");
+  CHECK(t.node("result.thumb")->find("hidden") != nullptr);
+  CHECK(t.text("result.title") == "Added to your Photos library");
+  CHECK(t.has("result.show"));
+  CHECK_FALSE(t.has("result.discard"));
+  // Its key is never shown as text (rule 6).
+  CHECK(tree.find("\"text\":\"photos:") == std::string::npos);
+  // The tree is one the hosts accept.
+  mv::addon::screen::tree st;
+  CHECK(st.set(tree) == mv::addon::screen::error::none);
 }
 
 TEST_CASE("extend: new edges filled tile by tile, the photo's own pixels kept", "[enhance][extend]") {

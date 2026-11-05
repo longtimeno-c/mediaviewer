@@ -8,6 +8,16 @@
 //
 // Node ids: "install.<kind>", "stop.<kind>", "remove.<kind>" on the page;
 // "target", "k.<kind>.<knob>", "run", "cancel", "close" on the sheet.
+//
+// docs/plans/edit-refresh.md S5 (owner call B): the third screen, "tool",
+// docked in the Edit workspace's Enhance tab (place "edit") under the tool the
+// person chose: the sheet's knobs for that one tool (no photo choice), the
+// preview, the glowing progress, the time left, Cancel, and the result row.
+// Its root is "tool.<remove|restyle|detail|extend>", so the host knows which
+// card it belongs under; the result row is "result" with "result.thumb" (a
+// thumbnail of the new file, its path the host's for Show), "result.show",
+// "result.keep" (the host's: navigating is the viewer's) and
+// "result.discard" (Enhance's: the host table's recycle_file, to the Bin).
 #pragma once
 
 #include <cstdint>
@@ -27,6 +37,8 @@ namespace mv::enhance {
 
 inline constexpr const char* kSheetScreen = "enhance";
 inline constexpr const char* kSettingsScreen = "settings";
+// S5: the docked tool panel (manifest place "edit", contribution API 12).
+inline constexpr const char* kToolScreen = "tool";
 // The preview surface's height, in points (its width is the sheet's).
 inline constexpr std::uint32_t kPreviewHeight = 220;
 
@@ -78,8 +90,19 @@ struct sheet_view {
   std::string eta;           // "About 12 minutes left", or "" while it cannot tell
   bool preview = false;      // a picture run has posted its first preview
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
+  // S5, the docked panel: the file the last run wrote (absolute, or the
+  // "photos:<id>" key of a new Photos-library photo), "" when there is none
+  // or it was discarded; its name as shown; Remove with nothing brushed yet.
+  std::string result_path;
+  std::string result_name;
+  std::string result_note;  // why Discard kept the file, under the row
+  bool brush_needed = false;
+  bool library = false;  // the item is a Photos-library photo (docs/design/26)
 };
 [[nodiscard]] std::string sheet_tree(const sheet_view& v);
+// S5: the docked panel for v.photo's tool (no photo choice, no Close: the
+// card's own close button closes it).
+[[nodiscard]] std::string tool_tree(const sheet_view& v);
 
 // The Video Editor's cut, in the sheet's words ("The edit from the Video
 // Editor: 3 pieces, 1:24 in all. …"); "" for the whole clip.

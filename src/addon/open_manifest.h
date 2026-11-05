@@ -54,7 +54,9 @@ inline constexpr int kOpenManifestSchema = 2;
 //      (Enhance's sheet). No new point: a tree that uses them asks for 10.
 //  11  2026-11-02: `editor_items`, buttons in the Video Editor's bar that hand
 //      the add-on the clip and the edit's kept ranges (Enhance).
-inline constexpr std::uint32_t kContributionApi = 11;
+//  12  2026-11-04: a screen in place "edit", docked in the Edit workspace's
+//      Enhance tab (Enhance's tools, docs/plans/edit-refresh.md S5). No new point.
+inline constexpr std::uint32_t kContributionApi = 12;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

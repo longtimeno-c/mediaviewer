@@ -443,8 +443,13 @@ typedef struct mv_slot_search_row {
 /* Contribution API 8: on the add-on's own page in Settings -> Add-ons, opened
  * while that page shows (never by screen_show: MV_ERR_INVALID_ARG). */
 #define MV_SLOT_PLACE_SETTINGS 4u
+/* Contribution API 12 (docs/plans/edit-refresh.md S5): docked in the Edit
+ * workspace's Enhance tab, opened only by the Edit workspace with a command
+ * (mv_slots_screen_command); never by screen_show (MV_ERR_INVALID_ARG) or an item. */
+#define MV_SLOT_PLACE_EDIT 5u
 
-/* A window, pane, sheet or settings page of the add-on's opened (manifest screens[]). */
+/* A window, pane, sheet, settings page or docked Edit screen of the add-on's
+ * opened (manifest screens[]). */
 typedef struct mv_slot_screen_request {
   uint32_t struct_size;
   uint32_t place;               /* MV_SLOT_PLACE_* */
@@ -1192,6 +1197,16 @@ MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command
  * item it does not have. */
 MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* item, const char* path_utf8,
                                               const int64_t* ranges_ns, uint32_t range_count);
+/* 0.36 (docs/plans/edit-refresh.md S5): the Edit workspace's command to a
+ * docked screen (place "edit", MV_SLOT_PLACE_EDIT): the screen opens first
+ * when it is not open (on `path_utf8`, the file on screen, `width_pt` wide),
+ * then the add-on gets MV_SLOT_EVENT_COMMAND with screen_id = node_id =
+ * `screen` and value `value_json`, one JSON object of at most 4096 bytes
+ * (Enhance's {"photo": "remove|restyle|detail|extend", "run": true}).
+ * MV_ERR_NOT_FOUND for an add-on without such a screen; MV_ERR_INVALID_ARG for
+ * a value that is not an object. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_slots_screen_command(const char* addon, const char* screen, const char* path_utf8,
+                                                 const char* value_json, float width_pt, float scale);
 /* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
  * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
 MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
@@ -1270,8 +1285,9 @@ MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t
  * 8  a screen in place "settings", MV_SLOT_PLACE_SETTINGS (2026-10-21);
  * 9  `reveal` on a screen stack (2026-10-28);
  * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28);
- * 11 `editor_items`, the Video Editor's bar (2026-11-02). */
-#define MV_ADDON_CONTRIBUTION_API 11
+ * 11 `editor_items`, the Video Editor's bar (2026-11-02);
+ * 12 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04). */
+#define MV_ADDON_CONTRIBUTION_API 12
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

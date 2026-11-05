@@ -24,10 +24,12 @@ namespace mv::addon {
 // the add-on's own page in Settings -> Add-ons, 9 = `reveal` on a screen stack
 // (2026-10-28): the host scrolls it into view and marks it, 10 = a surface's
 // `glow` and a progress bar's "glow" look (2026-10-28, Enhance), 11 =
-// `editor_items`, the Video Editor's bar (2026-11-02, Enhance). Points of an
+// `editor_items`, the Video Editor's bar (2026-11-02, Enhance), 12 = a
+// screen in place "edit" (2026-11-04, docs/plans/edit-refresh.md S5): docked
+// in the Edit workspace's Enhance tab. Points of an
 // API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 11;
+inline constexpr std::uint32_t kSlotsContributionApi = 12;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".
@@ -36,6 +38,8 @@ inline constexpr std::uint32_t kScreensApi = 4;
 inline constexpr std::uint32_t kSlotsApi = 5;
 // The contribution API that introduces `editor_items`.
 inline constexpr std::uint32_t kEditorItemsApi = 11;
+// The contribution API from which a screen may be in place "edit".
+inline constexpr std::uint32_t kEditScreenApi = 12;
 // The host function table version that carries the screen / slot calls
 // (mediaviewer_addon.h, v3). A manifest naming a point needs host_api.min >= this.
 inline constexpr std::uint32_t kSlotsHostApi = 3;
@@ -43,8 +47,12 @@ inline constexpr std::uint32_t kSlotsHostApi = 3;
 // Where a screen shows (§10 "Places"). `settings`: on the add-on's own page in
 // Settings -> Add-ons, under its card, opened while that page shows and closed
 // when it goes. Only the chrome opens one: never an item, a status click or
-// the add-on's screen_show. At most one per add-on.
-enum class screen_place : std::uint8_t { info_section, window, pane, sheet, settings };
+// the add-on's screen_show. At most one per add-on. `edit` (API 12,
+// docs/plans/edit-refresh.md S5): docked in the Edit workspace's Enhance tab
+// under the tool the person chose; only the chrome opens it, with a command
+// (slot_registry::screen_command), never the add-on's screen_show or an item.
+// At most one per add-on.
+enum class screen_place : std::uint8_t { info_section, window, pane, sheet, settings, edit };
 
 // The glyphs a chrome item or badge may name: each host maps them to its own
 // symbol set (SF Symbols / Segoe Fluent Icons). An add-on ships no icon file
