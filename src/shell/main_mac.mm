@@ -99,6 +99,7 @@
 #include "shell/text_recognition_mac.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "shell/compare_source.h"
 #include "shell/pane_width.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
@@ -971,6 +972,13 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editSetStraighten:(float)degrees;
 - (void)editCancelCrop;
 - (void)editShowOriginal:(BOOL)on;
+// docs/design/20 "Compare": the header's and the rail's Compare (the split),
+// and the divider under the pointer (the canvas view's mouse handlers).
+- (void)compareSet:(BOOL)on;
+- (BOOL)compareGrabX:(float)x y:(float)y;
+- (void)compareDragX:(float)x;
+- (void)compareReleaseX:(float)x y:(float)y;
+- (BOOL)compareHoverX:(float)x y:(float)y;
 - (void)editSaveCopy;
 - (BOOL)currentItemIsDocument;
 - (void)openDocumentInApp:(NSURL*)app;
@@ -1920,7 +1928,7 @@ extern "C" void mv_chrome_adjust_blur(void) {
 static_assert(static_cast<int>(mv::shell::command_id::edit_workspace) == 150);
 static_assert(static_cast<int>(mv::shell::edit_tab::jobs) == 4);
 static_assert(static_cast<int>(mv::shell::edit_tab::enhance) == 5);
-static_assert(sizeof(mv_edit_view) == 4 * 16, "mv_edit_view: 16 words (EditStore.swift reads them)");
+static_assert(sizeof(mv_edit_view) == 4 * 17, "mv_edit_view: 17 words (EditStore.swift reads them)");
 static_assert(static_cast<int>(mv::shell::crop_aspect::r5_4) == 6);
 extern "C" uint64_t mv_chrome_edit_generation(void) {
   return g_chrome_app ? [g_chrome_app editGeneration] : 0;
@@ -2053,7 +2061,9 @@ extern "C" void mv_chrome_edit_cancel_crop(void) {
   if (g_chrome_app) [g_chrome_app editCancelCrop];
 }
 extern "C" void mv_chrome_edit_show_original(int32_t on) {
-  if (g_chrome_app) [g_chrome_app editShowOriginal:on != 0];
+  // docs/design/20 "Compare": the header's and the rail's Compare put the
+  // before/after split up or down (Y held is the before alone).
+  if (g_chrome_app) [g_chrome_app compareSet:on != 0];
 }
 extern "C" void mv_chrome_edit_enhance(void) {
   (void)mv::shell::crash::note_native_call();
@@ -2587,6 +2597,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
   BOOL _brushStroke;  // slice 7: the left press is a Remove brush stroke
   BOOL _cropDrag;     // docs/design/20: the left press holds a crop handle
+  BOOL _compareDrag;  // docs/design/20 "Compare": the left press holds the split's divider
+  BOOL _compareCursor;  // the left-right cursor is up over the divider
   BOOL _textBeam;            // the I-beam is up over text in a still
   // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
   // two-finger sideways swipe that steps one item.
@@ -2790,6 +2802,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     }
   }
   [self trackPointer:event];
+  // docs/design/20 "Compare": a press on the split's divider drags it; nothing
+  // pans (mouse_down is never published for it).
+  if (self.app && [self.app compareGrabX:self.snap->mouse_x y:self.snap->mouse_y]) {
+    _compareDrag = YES;
+    return;
+  }
   // docs/design/20 Behaviour 4: in crop mode a press on the draft's edge or
   // corner resizes it and one inside moves it; anywhere else pans as before.
   if (self.app && [self.app cropPressX:self.snap->mouse_x y:self.snap->mouse_y]) {
@@ -2826,6 +2844,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
+  if (_compareDrag) {
+    _compareDrag = NO;
+    [self trackPointer:event];
+    if (self.app) [self.app compareReleaseX:self.snap->mouse_x y:self.snap->mouse_y];
+    return;
+  }
   if (_cropDrag) {
     _cropDrag = NO;
     if (self.app) [self.app cropRelease];
@@ -2970,6 +2994,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.snap->mouse_in_client = false;
   if (self.app) [self.app toolCursorRestore];  // S3: the ring goes, the arrow comes back
   if (self.app && !_cropDrag) [self.app cropHoverX:self.snap->mouse_x y:self.snap->mouse_y];  // off the canvas: the arrow
+  if (self.app && !_compareDrag) (void)[self.app compareHoverX:-1.0e9f y:-1.0e9f];
+  _compareCursor = NO;
   if (_textBeam) {
     _textBeam = NO;
     [NSCursor.arrowCursor set];
@@ -2992,6 +3018,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseMoved:(NSEvent*)event {
   [self trackPointer:event];
+  // docs/design/20 "Compare": dragging the split's divider, or over it (the
+  // left-right cursor, the divider in the accent).
+  if (self.app && _compareDrag) {
+    [self.app compareDragX:self.snap->mouse_x];
+    return;
+  }
+  const BOOL overDivider =
+      self.app && self.snap->mouse_in_client && [self.app compareHoverX:self.snap->mouse_x y:self.snap->mouse_y];
   // Slice 7 / S3: the tool's ring follows the pointer (it is the cursor over
   // the canvas); a drag paints. The red-eye ring snaps to an eye.
   if (self.app && [self.app toolArmed]) {
@@ -3014,6 +3048,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     if (beam || _textBeam) [(beam ? NSCursor.IBeamCursor : NSCursor.arrowCursor) set];
     _textBeam = beam;
   }
+  // docs/design/20 "Compare": the left-right cursor over the split's divider,
+  // set last so it wins over the ring and the I-beam.
+  if (overDivider) {
+    [NSCursor.resizeLeftRightCursor set];
+    _compareCursor = YES;
+  } else if (_compareCursor) {
+    _compareCursor = NO;
+    [NSCursor.arrowCursor set];
+    if (self.app && [self.app toolArmed]) [self.app toolCursor];
+  }
   if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
   if ((self.snap->eyedropper || self.snap->loupe) && self.lab) self.lab->wake();
@@ -3025,6 +3069,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseDragged:(NSEvent*)event {
   [self mouseMoved:event];
+  if (_compareDrag) return;
   if (self.snap->text_press && self.app) [self.app textDragX:self.snap->mouse_x y:self.snap->mouse_y];
   ++self.snap->activity_seq;
   [self publish];
@@ -3798,7 +3843,20 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   std::uint64_t _autoEnhanceItem;  // the adjust item the waiting click was for
   std::uint64_t _autoEnhanceToken;
   int _selfTestEditsBeforeAuto;  // MV_EDIT_SELFTEST's ✦ Auto line
-  BOOL _showOriginal;
+  BOOL _showOriginal;  // Y held: the before alone (docs/design/20 "Compare")
+  // docs/design/20 "Compare" (shell/compare_source.h): the split is up (the
+  // header's or the rail's Compare); for an Enhance result, what its source is
+  // (source, missing, looking; none for any other photo), the source as noted
+  // or listed (a path or a photos: key), the file to decode once known, its
+  // place in the result, the lab's side-still token, and the lookup's seq.
+  BOOL _compareOn;
+  BOOL _compareDragging;
+  mv::shell::compare_kind _compareResult;
+  std::string _compareSourceKey;
+  std::string _compareSourcePath;
+  mv::shell::compare_rect _compareRect;
+  std::uint64_t _compareToken;
+  std::uint64_t _compareSeq;
   std::uint64_t _editGeneration;
   // PR 30 (docs/design/21): the Video Editor. _editorToken bumps on open and close, so
   // a strip job that lands for an older clip is dropped.
@@ -8666,6 +8724,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   e.jpeg = [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] || [ext isEqualToString:@"jpe"];
   const bool carried_turn = _edits.set_item(e);
   _showOriginal = NO;
+  [self compareItemChanged:entry.path_utf8];
   [self publishEdit];
   if (carried_turn) [self scheduleRotationWrite];
   [self adjustItemChanged:mv::shell::is_video_name(entry.name_utf8) ? 0 : item];
@@ -8685,12 +8744,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 }
 
 - (void)publishEdit {
-  if (_showOriginal && _edits.has_item() && _itemId != 0) {
-    // Show original (PR 29): the item with no geometry and no colour.
-    mv::shell::edit_view v;
-    v.item = _itemId;
-    _snap.edit[0] = v;
-  } else {
+  // docs/design/20 "Compare": the before (Y held, or the split) is the lab's
+  // second draw (input_snapshot::before_after); the edit view stays the edit.
+  {
     const mv::shell::edit_view before = _snap.edit[0];
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
     // Slice 7: strokes lie over what was brushed only while the item and its
@@ -8718,6 +8774,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   // A new item, a turn or a crop: words read before no longer line up.
   [self textSync];
+  [self comparePublish];
 }
 
 - (BOOL)runEditCommand:(mv::shell::command_id)command {
@@ -8791,6 +8848,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // Enhance's docked panel goes with it (S5).
   if (!open && _tool.tool != mv::shell::canvas_tool::none) [self toolDown];
   if (!open) [self enhanceDockClose];
+  // docs/design/20 "Compare": the split belongs to Edit; closing takes it down.
+  if (!open && _compareOn) {
+    [self comparePublish];
+    [self pokeSnapshot];
+  }
   // A crop draft belongs to the Crop tab: leaving it applies the draft
   // (Lightroom's rule), so no crop is lost to a tab click.
   if (_edits.crop_active() && !(open && tab == edit_tab::crop)) {
@@ -9038,7 +9100,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->portrait = _edits.aspect_portrait() ? 1 : 0;
   out->straighten = _edits.crop_active() ? _edits.crop_angle() : _edits.export_geometry().straighten;
   out->edit_count = static_cast<int32_t>(_edits.edit_count());
-  out->show_original = _showOriginal ? 1 : 0;
+  out->show_original = _compareOn || _showOriginal ? 1 : 0;
+  out->compare = static_cast<int32_t>([self compareKind]);
   out->enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
   const bool enhance_loaded = out->enhance != 0;
   out->wand = (_tool.tool == mv::shell::canvas_tool::remove_brush ? mv::shell::kWandBrushOn : 0) | (_brush.empty() ? 0 : mv::shell::kWandBrushStrokes) |
@@ -9352,11 +9415,222 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self pokeSnapshot];
 }
 
+// Y held (and MV_EDIT_SELFTEST): the before alone while held.
 - (void)editShowOriginal:(BOOL)on {
+  if (on && !mv::shell::can_compare([self compareKind])) {
+    // Nothing to compare: say why instead of showing the same picture.
+    if (!_showOriginal) [self noticeShow:mv::shell::compare_unavailable_reason([self compareKind])];
+    return;
+  }
   if (_showOriginal == on) return;
   _showOriginal = on;
+  ++_editGeneration;
   [self publishEdit];
   [self pokeSnapshot];
+}
+
+// ---- Compare (docs/design/20 "Compare", shell/compare_source.h) -------------
+
+// What the photo on screen compares with: an Enhance result's source, else its
+// edits, else why not.
+- (mv::shell::compare_kind)compareKind {
+  using mv::shell::compare_kind;
+  if ([self editSubject] != mv::shell::edit_subject::still) return compare_kind::none;
+  if (_compareResult != compare_kind::source && !_items.empty() && _index.current() < _items.size()) {
+    // note_result may come after the open (the one-click flow): a few strings.
+    mv::shell::compare_rect where;
+    std::string noted = mv::shell::noted_source(_items[_index.current()].path_utf8, &where);
+    if (!noted.empty()) [self compareFound:std::move(noted) rect:where];
+  }
+  if (_compareResult == compare_kind::source) return compare_kind::source;
+  if (_edits.has_item() && _edits.edit_count() > 0) return compare_kind::edits;
+  return _compareResult;
+}
+
+- (void)compareFound:(std::string)key rect:(mv::shell::compare_rect)where {
+  _compareResult = mv::shell::compare_kind::source;
+  _compareSourceKey = std::move(key);
+  _compareSourcePath = mv::shell::photos::is_key(_compareSourceKey) ? std::string() : _compareSourceKey;
+  if (_compareSourcePath.empty()) {
+    const auto hit = _photosResolved.find(_compareSourceKey);
+    if (hit != _photosResolved.end() && !hit->second.preview) _compareSourcePath = hit->second.path;
+  }
+  _compareRect = where;
+  _compareToken = 0;
+  ++_editGeneration;
+}
+
+// A new photo: the split goes down, and an Enhance result's source is looked
+// for: the noted one, else the folder listing (no I/O: a result sorts beside
+// its photo), else a stat of each candidate on a worker (a result list).
+- (void)compareItemChanged:(const std::string&)path {
+  using mv::shell::compare_kind;
+  _compareOn = NO;
+  _compareDragging = NO;
+  _snap.before_split = 0.5f;
+  _snap.before_hot = false;
+  _snap.before_layout = static_cast<std::uint8_t>(mv::shell::result_layout(path));
+  const std::uint64_t seq = ++_compareSeq;
+  _compareResult = compare_kind::none;
+  _compareSourceKey.clear();
+  _compareSourcePath.clear();
+  _compareRect = {};
+  _compareToken = 0;
+  mv::shell::compare_rect where;
+  std::string noted = mv::shell::noted_source(path, &where);
+  if (!noted.empty()) {
+    [self compareFound:std::move(noted) rect:where];
+    return;
+  }
+  if (!mv::shell::looks_like_result(path)) return;
+  const std::size_t n = _items.size();
+  const std::size_t at = _index.current();
+  for (std::size_t d = 1; d < n; ++d) {
+    // Outward from the result, so its neighbour is found first.
+    const std::size_t picks[2] = {at >= d ? at - d : n, at + d};
+    for (const std::size_t i : picks) {
+      if (i >= n || !mv::shell::is_source_name(path, _items[i].path_utf8)) continue;
+      [self compareFound:_items[i].path_utf8 rect:mv::shell::compare_rect{}];
+      return;
+    }
+    if (at < d && at + d >= n) break;
+  }
+  _compareResult = compare_kind::looking;
+  __weak MvLabApp* weakSelf = self;
+  const std::string result = path;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    std::string found = mv::shell::source_of(result, [](const std::string& p) {
+      struct stat st{};
+      return ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    });
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf || seq != strongSelf->_compareSeq) return;  // the user has moved on
+      if (found.empty()) {
+        strongSelf->_compareResult = compare_kind::source_missing;
+        ++strongSelf->_editGeneration;
+      } else {
+        [strongSelf compareFound:found rect:mv::shell::compare_rect{}];
+      }
+      [strongSelf comparePublish];
+      [strongSelf pokeSnapshot];
+    });
+  });
+}
+
+// The side still for the split's before: decoded on the lab's pool (a
+// Photos-library source is resolved to its file on a worker first).
+- (void)compareLoadSource {
+  if (_compareToken != 0 || _compareSourceKey.empty()) return;
+  if (!_compareSourcePath.empty()) {
+    _compareToken = _lab.load_side_still(_compareSourcePath);
+    return;
+  }
+  if (!mv::shell::photos::is_key(_compareSourceKey)) return;
+  _compareToken = ~0ull;  // asked; the resolve answers
+  __weak MvLabApp* weakSelf = self;
+  const std::string key = _compareSourceKey;
+  const std::uint64_t seq = _compareSeq;
+  _jobs.submit_at(mv::background_generation, [weakSelf, key, seq](const mv::job_context&) -> mv::status {
+    auto got = mv::shell::photos::resolve(key, false);
+    auto resolved = std::make_shared<std::optional<mv::shell::photos::resolved>>();
+    if (got) *resolved = std::move(got).value();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      if (*resolved) strongSelf->_photosResolved[key] = **resolved;
+      if (seq != strongSelf->_compareSeq || strongSelf->_compareSourceKey != key) return;
+      strongSelf->_compareToken = 0;
+      if (!*resolved) {
+        strongSelf->_compareResult = mv::shell::compare_kind::source_missing;
+        strongSelf->_compareSourceKey.clear();
+        strongSelf->_compareOn = NO;
+        strongSelf->_showOriginal = NO;
+        ++strongSelf->_editGeneration;
+        [strongSelf noticeShow:"Compare: the original photo could not be read from Photos"];
+      } else {
+        strongSelf->_compareSourcePath = (*resolved)->path;
+      }
+      [strongSelf comparePublish];
+      [strongSelf pokeSnapshot];
+    });
+    return mv::status::ok;
+  });
+}
+
+// The split as the snapshot says it: the before's kind, Y held, the divider.
+- (void)comparePublish {
+  const mv::shell::compare_kind kind = [self compareKind];
+  if (!mv::shell::can_compare(kind) || !_ws.open) _compareOn = NO;
+  if (!mv::shell::can_compare(kind)) _showOriginal = NO;
+  const bool show = (_compareOn || _showOriginal) && !_edits.crop_active();
+  const bool by_source = kind == mv::shell::compare_kind::source;
+  if (show && by_source) [self compareLoadSource];
+  _snap.before_after = show ? (by_source ? 2 : 1) : 0;
+  _snap.before_whole = _showOriginal;
+  _snap.before_token = _compareToken;
+  _snap.before_rect[0] = _compareRect.x;
+  _snap.before_rect[1] = _compareRect.y;
+  _snap.before_rect[2] = _compareRect.w;
+  _snap.before_rect[3] = _compareRect.h;
+  if (!show || _showOriginal) {
+    _snap.before_hot = false;
+    _compareDragging = NO;
+  }
+}
+
+// The header's and the rail's Compare: the split on or off.
+- (void)compareSet:(BOOL)on {
+  if (on && !mv::shell::can_compare([self compareKind])) {
+    [self noticeShow:mv::shell::compare_unavailable_reason([self compareKind])];
+    return;
+  }
+  if (_compareOn == on) return;
+  _compareOn = on;
+  if (on) _snap.before_split = 0.5f;
+  ++_editGeneration;
+  [self comparePublish];
+  [self pokeSnapshot];
+}
+
+- (BOOL)compareGrabX:(float)x y:(float)y {
+  if (_snap.before_after == 0 || _snap.before_whole) return NO;
+  if (!mv::shell::divider_hit(_lab.compare_frame_now(), x, y, _snap.dpi_scale)) return NO;
+  _compareDragging = YES;
+  _snap.before_hot = true;
+  [self pokeSnapshot];
+  return YES;
+}
+
+- (void)compareDragX:(float)x {
+  if (!_compareDragging) return;
+  const mv::shell::compare_frame f = _lab.compare_frame_now();
+  if (!f.valid) return;
+  const float split = mv::shell::split_at(f, x);
+  if (split == _snap.before_split) return;
+  _snap.before_split = split;
+  [self pokeSnapshot];
+}
+
+- (void)compareReleaseX:(float)x y:(float)y {
+  _compareDragging = NO;
+  const bool over = _snap.before_after != 0 &&
+                    mv::shell::divider_hit(_lab.compare_frame_now(), x, y, _snap.dpi_scale);
+  if (_snap.before_hot != over) {
+    _snap.before_hot = over;
+    [self pokeSnapshot];
+  }
+}
+
+- (BOOL)compareHoverX:(float)x y:(float)y {
+  if (_compareDragging) return YES;
+  const bool over = _snap.before_after != 0 && !_snap.before_whole &&
+                    mv::shell::divider_hit(_lab.compare_frame_now(), x, y, _snap.dpi_scale);
+  if (_snap.before_hot != over) {
+    _snap.before_hot = over;
+    [self pokeSnapshot];
+  }
+  return over ? YES : NO;
 }
 
 - (void)editSaveCopy {
@@ -14970,7 +15244,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (mv::shell::text_select::source)textSource {
   mv::shell::text_select::source src;
   if ([self editSubject] != mv::shell::edit_subject::still || _galleryVisible || _ws.open ||
-      _edits.crop_active() || _showOriginal) {
+      _edits.crop_active() || _showOriginal || _compareOn) {
     return src;
   }
   src.item = _itemId;

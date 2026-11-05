@@ -726,7 +726,11 @@ People on. **Extend** (S6; the Enhance tab's card, Edit ▸ Extend Edges): drag 
 edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's presets, `Enter`
 fills (the part over the photo is a crop; Enhance's docked panel under the Extend card fills the
 rest, its sheet with an Enhance that has none), `Esc`
-cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`.
+cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`. **Compare** (the Edit header's
+and rail's; [docs/design/20](design/20-edit-workspace.md) "Compare"): a before/after split with a
+draggable divider, the before being the photo with no edit or, on an Enhance result, its source
+photo; `Y` held shows the before alone; disabled, with the reason, when there is nothing to compare.
+Tests: `mv_tests "[compare-source]"`.
 
 Faces (S8): the rail's Faces, the Enhance tab's Faces card or (Mac) Edit ▸ Faces arm the Faces
 tool: a box per face on the photo (a click chooses it or leaves it out) and the Faces panel first

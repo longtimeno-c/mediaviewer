@@ -153,10 +153,10 @@ public static partial class IslandHost
                                        () => Send(Command.UndoEdit));
             _railUndo = undo.Button;
             foot.Children.Add(Holder(undo));
-            string? hold = KeyOf(Command.ShowOriginal);
-            _railCompare = RailButton(RailGlyph.Compare, "Compare with the original",
-                hold is null ? "Compare with the original" : $"Compare with the original  (or hold {hold})",
+            // docs/design/20 "Compare": the before/after split (Y held: the before alone).
+            _railCompare = RailButton(RailGlyph.Compare, "Compare before and after", CompareTipWithKey,
                 () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn));
+            if (Holder(_railCompare) is Panel compareHolder) compareHolder.Background = Brush(Colors.Transparent);
             foot.Children.Add(Holder(_railCompare));
         }
         string? enter = KeyOf(Command.EditWorkspace);
@@ -240,7 +240,14 @@ public static partial class IslandHost
                                       : active ? $"{label}: click again to hide the panel" : WithTabKey(label, tab));
         }
         if (_railRemove is not null) SetRailSelected(_railRemove, (_editWand & WandBrushOn) != 0, false);
-        if (_railCompare is not null) SetRailSelected(_railCompare, _editOriginal, false);
+        if (_railCompare is not null)
+        {
+            SetRailSelected(_railCompare, _editOriginal, false);
+            // A disabled Button shows no tooltip: its holder says why then.
+            _railCompare.Button.IsEnabled = CanCompare;
+            ToolTipService.SetToolTip(_railCompare.Button, CompareTipWithKey);
+            ToolTipService.SetToolTip(Holder(_railCompare), CanCompare ? null : CompareTip);
+        }
         if (_railUndo is not null) _railUndo.IsEnabled = _editCount > 0;
     }
 
