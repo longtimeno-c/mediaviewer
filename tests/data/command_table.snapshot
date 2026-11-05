@@ -584,5 +584,6 @@ Ctrl+Shift+Z	Redo stroke	218	1
 Backspace	Clear strokes	219	1
 Delete	Clear strokes	219	1
 Enter	Apply tool	220	1
+X	Crop: portrait / landscape	152	1
 hold Space	Pan while brushing	221	0
 B	Remove brush	223	1
