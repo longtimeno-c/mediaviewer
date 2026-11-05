@@ -890,6 +890,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (mv::shell::tool_bar)toolBar;
 // docs/plans/edit-refresh.md S8: the Faces tool's panel (FacesPanelView.swift).
 - (const mv::shell::faces_tool&)facesTool;
+- (BOOL)facesArmed;
 - (void)facesOp:(int32_t)packed;
 - (void)adjustBlur;
 // PR 12
@@ -1984,11 +1985,11 @@ extern "C" bool mv_chrome_faces_panel(mv_faces_panel_view* out) {
   if (!g_chrome_app || !out) return false;
   const mv::shell::faces_tool& f = [g_chrome_app facesTool];
   *out = {};
-  out->armed = [g_chrome_app toolBar].tool == static_cast<std::int32_t>(mv::shell::canvas_tool::faces) ? 1 : 0;
+  out->armed = [g_chrome_app facesArmed] ? 1 : 0;  // polled every pass: no tool_bar built here
   out->status = static_cast<std::int32_t>(f.status);
   out->count = f.count();
   out->chosen = static_cast<std::int32_t>(f.chosen);
-  out->running = f.running ? 1 : 0;
+  out->running = f.running_here() ? 1 : 0;  // not a fix left running on another photo
   out->running_face = f.running_face;
   out->running_action = f.running_action;
   out->revision = f.revision;
@@ -12332,7 +12333,7 @@ static double mv_wall_seconds() {
     const bool mine = _faces.item == _itemId;
     b.eyes = mine ? _faces.count() : 0;
     b.spots = mine ? _faces.chosen_count() : 0;
-    b.busy = mine && (_faces.running || _faces.status == mv::shell::faces_status::looking) ? 1 : 0;
+    b.busy = mine && (_faces.running_here() || _faces.status == mv::shell::faces_status::looking) ? 1 : 0;
     b.can_apply = mine && _faces.status == mv::shell::faces_status::ready && b.spots > 0 && !_faces.running &&
                           !_eyesRunning
                       ? 1
@@ -12347,6 +12348,7 @@ static double mv_wall_seconds() {
   static const mv::shell::faces_tool none;
   return _faces.item == _itemId ? _faces : none;
 }
+- (BOOL)facesArmed { return [self activeTool] == mv::shell::canvas_tool::faces ? YES : NO; }
 
 // The faces of the photo on screen, once per item, on the pool: the pack's
 // answer (People's names and counts with it), then the still for each face's
@@ -12354,27 +12356,33 @@ static double mv_wall_seconds() {
 // off, the panel says so (and offers to turn People on).
 - (void)facesFetch {
   if (_items.empty() || _index.current() >= _items.size()) return;
-  if (_faces.item == _itemId && _faces.status != mv::shell::faces_status::idle &&
-      _faces.status != mv::shell::faces_status::failed) {
-    return;  // read (or reading) already
-  }
+  // Read (or reading) already; a failure or a refusal (People off) reads again.
+  if (!_faces.needs_read(_itemId)) return;
   const std::uint64_t item = _itemId;
   _faces.looking(item);
   ++_editGeneration;
   const std::string path = _items[_index.current()].path_utf8;
   __weak MvLabApp* weakSelf = self;
   _jobs.submit_at(mv::background_generation, [path, item, weakSelf](const mv::job_context& ctx) -> mv::status {
-    if (ctx.cancelled()) return mv::status::cancelled;
-    const std::string readable = mv::addon::media::readable_path(path, &ctx).value_or(path);
-    auto json = mv::addon::ai_eyes_json(readable, "");
-    std::optional<mv::image::linear_image> still;
-    if (json && json->find("\"lm\"") != std::string::npos && !ctx.cancelled()) {
-      if (auto bytes = mv::io::read_all(readable)) {
-        if (auto img = mv::image::decode_linear(*bytes, &ctx)) still = std::move(*img);
+    // Always lands (a cancelled read as failed, so "Try again" can read it
+    // again): the panel never waits on a read that is not coming.
+    auto scan = std::make_shared<mv::shell::faces_scan>();
+    if (!ctx.cancelled()) {
+      try {
+        const std::string readable = mv::addon::media::readable_path(path, &ctx).value_or(path);
+        auto json = mv::addon::ai_eyes_json(readable, "");
+        std::optional<mv::image::linear_image> still;
+        if (json && json->find("\"lm\"") != std::string::npos && !ctx.cancelled()) {
+          if (auto bytes = mv::io::read_all(readable)) {
+            if (auto img = mv::image::decode_linear(*bytes, &ctx)) still = std::move(*img);
+          }
+        }
+        *scan = mv::shell::read_faces(json ? mv::status::ok : json.error(),
+                                      json ? std::string_view(*json) : std::string_view(), still ? &*still : nullptr);
+      } catch (...) {
+        *scan = {};  // out of memory: failed
       }
     }
-    auto scan = std::make_shared<mv::shell::faces_scan>(mv::shell::read_faces(
-        json ? mv::status::ok : json.error(), json ? std::string_view(*json) : std::string_view(), still ? &*still : nullptr));
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* app = weakSelf;
       if (app) [app facesLanded:item scan:scan];
@@ -12404,10 +12412,7 @@ static double mv_wall_seconds() {
     [self noticeShow:"Choose a face first: click its box on the photo"];
     return;
   }
-  _faces.running = true;
-  _faces.running_face = face;
-  _faces.running_action = action;
-  ++_faces.revision;
+  _faces.start_run(face, action);
   _eyesRunning = YES;
   ++_editGeneration;
   [self brushPublish];
@@ -12429,8 +12434,7 @@ static double mv_wall_seconds() {
 }
 
 - (void)facesRunLanded:(const std::string&)note {
-  _faces.running = false;
-  ++_faces.revision;
+  _faces.run_done();
   [self brushPublish];
   [self eyesLanded:note];  // the wand's busy flag, the note, the notice
 }
@@ -12453,10 +12457,18 @@ static double mv_wall_seconds() {
       _faces.choose_none();
       break;
     case mv::shell::faces_op::people:
-      // The chrome opens People's settings (AddonNav); a read after it is
-      // turned on happens on the next arm.
-      _faces.clear();
-      break;
+      // The chrome opens People's settings (AddonNav). The panel keeps
+      // saying People is off until a read says otherwise: the next arm, a
+      // walk, or Check again (retry) reads again.
+      return;
+    case mv::shell::faces_op::retry:
+      if ([self facesArmed] && [self adjustStill]) [self facesFetch];
+      return;
+    case mv::shell::faces_op::hover:
+      // The panel's row under the pointer lights its box on the photo.
+      if (_faces.item != _itemId || !_faces.set_hover(a->face)) return;
+      [self brushPublish];
+      return;
   }
   [self brushPublish];
   ++_editGeneration;

@@ -62,7 +62,10 @@ enum class faces_op : std::uint8_t {
   toggle = 1,      // choose `face` or leave it out
   choose_all = 2,  // every face chosen
   choose_none = 3,
-  people = 4,      // turn People on (the chrome opens its settings)
+  people = 4,      // People is being turned on (the chrome opens its settings; the read stays)
+  // Appended in the S8 review:
+  retry = 5,  // read the faces again (after a failure, or once People is on)
+  hover = 6,  // the panel's row under the pointer lights `face`'s box (-1 none)
 };
 struct faces_op_args {
   faces_op op = faces_op::run;
@@ -76,7 +79,7 @@ struct faces_op_args {
 [[nodiscard]] constexpr std::optional<faces_op_args> unpack_faces_op(std::int32_t v) noexcept {
   if (v < 0) return std::nullopt;
   const int op = v / 100000, face = (v / 100) % 1000 - 1, action = v % 100 - 1;
-  if (op > static_cast<int>(faces_op::people) || face < -1 || face >= kToolFaces || action < kFaceDoAll ||
+  if (op > static_cast<int>(faces_op::hover) || face < -1 || face >= kToolFaces || action < kFaceDoAll ||
       action >= kFaceActionCount) {
     return std::nullopt;
   }
@@ -131,6 +134,7 @@ struct faces_tool {
   bool running = false;      // a fix is on the pool
   int running_face = -1;     // -1: the chosen faces
   int running_action = 0;    // face_action, or kFaceDoAll
+  std::uint64_t run_item = 0;  // the photo the fix runs on (a walk leaves it running there)
   std::uint32_t revision = 0;  // bumps with every change the panel shows
 
   // A read starts for `photo`: what was there goes.
@@ -140,6 +144,18 @@ struct faces_tool {
   bool landed(std::uint64_t photo, faces_scan scan);
   // Forget everything (the tool went down on another photo, a walk).
   void clear() noexcept;
+  // Whether `photo`'s faces must be read (again): not read, or the read
+  // failed or was refused (no pack, People off: it may be on by now). A read
+  // in flight or landed is kept.
+  [[nodiscard]] bool needs_read(std::uint64_t photo) const noexcept;
+  // A fix starts on this photo (`face`, or -1 the chosen; `action` a
+  // face_action or kFaceDoAll), and lands.
+  void start_run(int face, int action) noexcept;
+  void run_done() noexcept;
+  // A fix is running on this photo's face `i` (one asked for, or a chosen one).
+  [[nodiscard]] bool busy_on(int i) const noexcept;
+  // A fix is running on the photo `faces` belong to (not one left behind).
+  [[nodiscard]] bool running_here() const noexcept { return running && run_item == item; }
   [[nodiscard]] int count() const noexcept { return static_cast<int>(faces.size()); }
   [[nodiscard]] int chosen_count() const noexcept;
   [[nodiscard]] bool is_chosen(int i) const noexcept { return i >= 0 && i < 32 && ((chosen >> i) & 1u) != 0u; }

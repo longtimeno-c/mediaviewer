@@ -414,7 +414,13 @@ bytes), `chrome_cmd_faces` = **1100** (not reserved by this plan; renumber on a 
 gates, the 0-presents check with Faces armed, the real pack on a real photo (the shut-eye guess is
 tested on drawn faces only), and "the Windows adjust_faces gives the same -eyes.jpg as the Mac on a
 shared fixture" (both call the same `fix_faces`; the Windows native C++ is not compiled here, C#
-is).
+is). S8 review: "Try again" re-armed the tool (a toggle: it put it down) and
+"Turn on People…" left the panel spinning on "Looking for faces…" with nothing reading; both now
+send the appended `faces_op::retry` (and the refused states offer *Check again*), a refused or
+failed read is read again on re-arm (`needs_read`), a cancelled Mac read still lands (failed), a
+fix left running on another photo no longer marks the next photo's faces busy (`run_item`), the
+panel's rows light their boxes (`faces_op::hover`), and the Mac's per-pass panel poll no longer
+builds a whole `tool_bar`.
 
 ### 4.1 Tool mode (shared, portable)
 

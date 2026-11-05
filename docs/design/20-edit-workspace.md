@@ -245,7 +245,10 @@ animation or with the workspace closed it goes down.
   **Do all** (each chosen face's best fix in one file: a clearly better face of the same person,
   else open eyes where they are shut), All / None. Without Local search it offers **Get Local
   search…**; with People off, **Turn on People…** (Settings → Add-ons → Local search, where People
-  is turned on). The fixes are a table (`shell::kFaceActions`, `addon::media::face_fix`): a
+  is turned on), each with **Check again**; a failed read offers **Try again**. A refused or failed
+  read is read again on the next arm, a walk, or those buttons (`faces_tool::needs_read`). Hovering
+  a face's row lights its box on the photo. A fix left running when the photo changes stays marked
+  on its own photo only (`faces_tool::run_item`). The fixes are a table (`shell::kFaceActions`, `addon::media::face_fix`): a
   fix is one more row there and in the chromes' tables (S10's Restore faces). A fix changes
   **only the chosen faces**: the run asks the pack again with the same moment's frames, matches
   the chosen boxes to that answer (`faces_mask_of`, intersection over union ≥ 0.3) and passes a
@@ -386,7 +389,7 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
 - Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's
   "Discard 3 strokes?" in the bar is not built); Undo of an earlier rotate or Reset with strokes
   kept also forgets them. Extend as a canvas tool (S6).
-- Faces: hovering a row in the panel does not light its box on the canvas; the panel cannot
+- Faces: the panel cannot
   rename a person (People's own screen does); *Turn on People…* opens the settings rather than
   turning People on in place.
 - Windows: a rebuilt D3D11 device drops the brush texture; the strokes reappear at the next brush

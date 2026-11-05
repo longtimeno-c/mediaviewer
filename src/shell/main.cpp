@@ -2956,7 +2956,7 @@ mv::shell::tool_bar tool_bar_of(app_state* app) noexcept {
     const bool mine = app->faces.item == app->edit_key;
     b.eyes = mine ? app->faces.count() : 0;
     b.spots = mine ? app->faces.chosen_count() : 0;
-    b.busy = mine && (app->faces.running || app->faces.status == mv::shell::faces_status::looking) ? 1 : 0;
+    b.busy = mine && (app->faces.running_here() || app->faces.status == mv::shell::faces_status::looking) ? 1 : 0;
     b.can_apply = mine && app->faces.status == mv::shell::faces_status::ready && b.spots > 0 &&
                           !app->faces.running && !app->eyes_running
                       ? 1
@@ -2996,7 +2996,7 @@ void sync_faces_panel(app_state* app) noexcept {
     a.armed = armed ? 1 : 0;
     a.status = static_cast<std::int32_t>(f.status);
     a.chosen = static_cast<std::int32_t>(f.chosen);
-    a.running = f.running ? 1 : 0;
+    a.running = f.running_here() ? 1 : 0;  // not a fix left running on another photo
     a.running_face = f.running_face;
     a.running_action = f.running_action;
     a.revision = rev;
@@ -3344,10 +3344,8 @@ void tool_fetch_eyes(app_state* app) {
 // People off, the panel says so (and offers to turn People on).
 void faces_fetch(app_state* app) {
   if (app->edit_path.empty() || !app->window) return;
-  if (app->faces.item == app->edit_key && app->faces.status != mv::shell::faces_status::idle &&
-      app->faces.status != mv::shell::faces_status::failed) {
-    return;  // read (or reading) already
-  }
+  // Read (or reading) already; a failure or a refusal (People off) reads again.
+  if (!app->faces.needs_read(app->edit_key)) return;
   app->faces.looking(app->edit_key);
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation, [path = app->edit_path, item = app->edit_key,
@@ -3398,10 +3396,7 @@ void adjust_faces(app_state* app, int face, int fix, bool all) {
       notice_show(app, "Choose a face first: click its box on the photo");
       return;
     }
-    app->faces.running = true;
-    app->faces.running_face = face;
-    app->faces.running_action = fix;
-    ++app->faces.revision;
+    app->faces.start_run(face, fix);
     brush_publish(app);
   }
   app->eyes_running = true;
@@ -3459,10 +3454,20 @@ void faces_from_island(app_state* app, float arg) {
       app->faces.choose_none();
       break;
     case mv::shell::faces_op::people:
-      // The island opens Local search's settings; the faces are read again
-      // on the next arm, once People is on.
-      app->faces.clear();
-      break;
+      // The island opens Local search's settings. The panel keeps saying
+      // People is off until a read says otherwise: the next arm, a walk, or
+      // Check again (retry) reads again.
+      return;
+    case mv::shell::faces_op::retry:
+      if (active_tool(app) == mv::shell::canvas_tool::faces) {
+        faces_fetch(app);
+        sync_faces_panel(app);
+      }
+      return;
+    case mv::shell::faces_op::hover:
+      // The panel's row under the pointer lights its box on the photo.
+      if (app->faces.item == app->edit_key && app->faces.set_hover(a->face)) brush_publish(app);
+      return;
   }
   brush_publish(app);
   push_tool_bar(app);
@@ -3875,8 +3880,7 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
     push_adjust_pane(app);
     push_edit_view(app);  // the wand's busy chip
     if (r->faces_run) {
-      app->faces.running = false;
-      ++app->faces.revision;
+      app->faces.run_done();
       brush_publish(app);
       push_tool_bar(app);
       sync_faces_panel(app);

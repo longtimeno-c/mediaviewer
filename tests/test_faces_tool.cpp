@@ -198,8 +198,7 @@ TEST_CASE("faces tool: the boxes onto the edit view, with names cut whole", "[fa
   scan.faces[1].name = "Zoë Ångström-Øverlândéèê";  // 28 bytes: cut before a 2-byte letter
   REQUIRE(t.landed(1, std::move(scan)));
   (void)t.toggle(0);
-  t.running = true;
-  t.running_face = -1;
+  t.start_run(-1, 0);
   (void)t.set_hover(1);
   mv::shell::edit_view v;
   v.tool = static_cast<std::uint8_t>(canvas_tool::faces);
@@ -214,6 +213,15 @@ TEST_CASE("faces tool: the boxes onto the edit view, with names cut whole", "[fa
   CHECK(cut.size() < static_cast<std::size_t>(kToolFaceName));
   CHECK(std::string("Zoë Ångström-Øverlândéèê").rfind(cut, 0) == 0);
   CHECK((static_cast<unsigned char>(cut.back()) & 0xC0u) != 0xC0u);  // not a lead byte left alone
+  // A walk while the fix runs: the next photo's faces are not marked busy.
+  t.looking(2);
+  REQUIRE(t.landed(2, read_faces(mv::status::ok, answer(800, 400, 80), nullptr)));
+  CHECK(t.running);
+  CHECK_FALSE(t.running_here());
+  apply_faces(v, t, plain(800, 400));
+  CHECK(v.tool_face_busy == 0u);
+  t.run_done();
+  CHECK_FALSE(t.running);
   // Another tool: no boxes.
   v.tool = static_cast<std::uint8_t>(canvas_tool::red_eye);
   apply_faces(v, t, plain(800, 400));
@@ -222,7 +230,7 @@ TEST_CASE("faces tool: the boxes onto the edit view, with names cut whole", "[fa
 
 TEST_CASE("faces tool: the panel's controls pack into one number and back", "[faces-tool]") {
   for (const faces_op op : {faces_op::run, faces_op::toggle, faces_op::choose_all, faces_op::choose_none,
-                            faces_op::people}) {
+                            faces_op::people, faces_op::retry, faces_op::hover}) {
     for (int face : {-1, 0, 7, kToolFaces - 1}) {
       for (int action : {kFaceDoAll, 0, kFaceActionCount - 1}) {
         const std::int32_t v = pack_faces_op(op, face, action);
@@ -241,4 +249,29 @@ TEST_CASE("faces tool: the panel's controls pack into one number and back", "[fa
   CHECK_FALSE(unpack_faces_op(9 * 100000));
   // The action table is the wire order.
   for (int i = 0; i < kFaceActionCount; ++i) CHECK(static_cast<int>(kFaceActions[static_cast<std::size_t>(i)].id) == i);
+}
+
+// S8 review: a refused or failed read is read again (People may be on by
+// now; "Try again"); one in flight or landed is kept.
+TEST_CASE("faces tool: which reads are made again", "[faces-tool]") {
+  faces_tool t;
+  CHECK(t.needs_read(3));
+  t.looking(3);
+  CHECK_FALSE(t.needs_read(3));  // in flight
+  CHECK(t.needs_read(4));        // another photo
+  REQUIRE(t.landed(3, read_faces(mv::status::invalid_arg, "", nullptr)));
+  CHECK(t.status == faces_status::people_off);
+  CHECK(t.needs_read(3));
+  t.looking(3);
+  REQUIRE(t.landed(3, read_faces(mv::status::not_found, "", nullptr)));
+  CHECK(t.needs_read(3));
+  t.looking(3);
+  REQUIRE(t.landed(3, read_faces(mv::status::io, "", nullptr)));
+  CHECK(t.status == faces_status::failed);
+  CHECK(t.needs_read(3));
+  t.looking(3);
+  REQUIRE(t.landed(3, read_faces(mv::status::ok, answer(800, 400, 80), nullptr)));
+  CHECK_FALSE(t.needs_read(3));
+  t.clear();
+  CHECK(t.needs_read(3));
 }

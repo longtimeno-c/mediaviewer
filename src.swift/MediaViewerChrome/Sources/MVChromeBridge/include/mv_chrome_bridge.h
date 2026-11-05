@@ -1175,7 +1175,8 @@ bool mv_chrome_face_card(int32_t index, mv_face_card_view* out, char* name, int3
 // The panel's controls, packed as shell::pack_faces_op: op × 100000 +
 // (face + 1) × 100 + (action + 1). Ops: 0 run `action` (-1 Do all) on `face`
 // (-1 the chosen faces), 1 toggle `face`, 2 choose all, 3 choose none,
-// 4 People is being turned on (read again on the next arm).
+// 4 People is being turned on (nothing changes until a read), 5 read the faces
+// again, 6 the panel's row under the pointer (`face`, -1 none) lights its box.
 void mv_chrome_faces_op(int32_t packed);
 // A document's "Open in <app>" (docs/design/20): opens the file on the canvas in
 // the app at `app_path_utf8`, or in its default app (never this one) when NULL

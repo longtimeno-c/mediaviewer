@@ -143,6 +143,28 @@ void faces_tool::clear() noexcept {
   ++revision;
 }
 
+bool faces_tool::needs_read(std::uint64_t photo) const noexcept {
+  return item != photo || (status != faces_status::looking && status != faces_status::ready);
+}
+
+void faces_tool::start_run(int face, int action) noexcept {
+  running = true;
+  running_face = face;
+  running_action = action;
+  run_item = item;
+  ++revision;
+}
+
+void faces_tool::run_done() noexcept {
+  running = false;
+  run_item = 0;
+  ++revision;
+}
+
+bool faces_tool::busy_on(int i) const noexcept {
+  return running_here() && (running_face == i || (running_face < 0 && is_chosen(i)));
+}
+
 int faces_tool::chosen_count() const noexcept {
   const std::uint32_t live = faces.size() >= 32 ? ~0u : (1u << faces.size()) - 1u;
   return std::popcount(chosen & live);
@@ -156,7 +178,7 @@ bool faces_tool::toggle(int i) noexcept {
 }
 
 void faces_tool::choose_all() noexcept {
-  chosen = faces.empty() ? 0u : (1u << faces.size()) - 1u;
+  chosen = faces.empty() ? 0u : (faces.size() >= 32 ? ~0u : (1u << faces.size()) - 1u);
   ++revision;
 }
 
@@ -232,9 +254,7 @@ void apply_faces(edit_view& v, const faces_tool& t, const edit::placement& p) no
     std::memcpy(v.tool_face_names[i], f.name.data(), len);
     v.tool_face_names[i][len] = '\0';
     if (t.is_chosen(i)) v.tool_face_chosen |= 1u << static_cast<unsigned>(i);
-    if (t.running && (t.running_face == i || (t.running_face < 0 && t.is_chosen(i)))) {
-      v.tool_face_busy |= 1u << static_cast<unsigned>(i);
-    }
+    if (t.busy_on(i)) v.tool_face_busy |= 1u << static_cast<unsigned>(i);
   }
   v.tool_face_count = static_cast<std::uint32_t>(n);
   v.tool_face_hover = static_cast<std::int8_t>(t.hover >= 0 && t.hover < n ? t.hover : -1);

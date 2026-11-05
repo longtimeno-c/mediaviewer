@@ -76,7 +76,7 @@ final class FacesStore: ObservableObject {
   /// shell::faces_status.
   enum Status: Int32 { case idle = 0, looking, ready, noPack, peopleOff, failed }
   /// shell::faces_op.
-  enum Op: Int32 { case run = 0, toggle, chooseAll, chooseNone, people }
+  enum Op: Int32 { case run = 0, toggle, chooseAll, chooseNone, people, retry, hover }
 
   @Published private(set) var armed = false
   @Published private(set) var status: Status = .idle
@@ -174,7 +174,10 @@ final class FacesStore: ObservableObject {
     send(.people)
     AddonNav.shared.show(AddonNav.localSearchPage)
   }
-  func arm() { EditStore.shared.tool(.faces) }
+  /// Read the faces again (after a failure, or once People is on).
+  func retry() { send(.retry) }
+  /// The row under the pointer lights its box on the photo (-1 none).
+  func hover(_ face: Int) { send(.hover, face: face) }
   func done() { EditStore.shared.toolAction(.done) }
 }
 
@@ -191,14 +194,16 @@ struct FacesPanelView: View {
       case .noPack:
         EmptyFaces(symbol: "magnifyingglass", title: "Faces uses Local search",
                    text: "Local search's People finds who is who, and their other photos give the open eyes and better faces. Everything runs on this Mac.",
-                   action: "Get Local search…") { AddonNav.shared.show(AddonNav.localSearchPage) }
+                   action: "Get Local search…", recheck: { store.retry() }) {
+          AddonNav.shared.show(AddonNav.localSearchPage)
+        }
       case .peopleOff:
         EmptyFaces(symbol: "person.crop.circle.badge.plus", title: "Turn on People",
                    text: "People in Local search finds each face's other photos on this Mac, so a fix can borrow their open eyes or a clearer face.",
-                   action: "Turn on People…") { store.turnOnPeople() }
+                   action: "Turn on People…", recheck: { store.retry() }) { store.turnOnPeople() }
       case .failed:
         EmptyFaces(symbol: "exclamationmark.triangle", title: "Could not read this photo's faces",
-                   text: "Try again, or check the photo opens.", action: "Try again") { store.arm() }
+                   text: "Try again, or check the photo opens.", action: "Try again") { store.retry() }
       case .ready:
         if store.faces.isEmpty {
           EmptyFaces(symbol: "face.dashed", title: "No faces found",
@@ -341,7 +346,10 @@ private struct FaceRow: View {
     .padding(MVTheme.space(8))
     .background(RoundedRectangle(cornerRadius: MVTheme.radius(8))
       .fill(chosen ? MVTheme.selectionWash.opacity(0.55) : (hover ? MVTheme.hoverWash : Color.clear)))
-    .onHover { hover = $0 }
+    .onHover { inside in
+      hover = inside
+      store.hover(inside ? face.id : -1)  // its box on the photo lights up
+    }
     .animation(.easeOut(duration: 0.12), value: chosen)
     .accessibilityElement(children: .contain)
   }
@@ -397,6 +405,8 @@ private struct EmptyFaces: View {
   let title: String
   let text: String
   let action: String?
+  /// "Check again": a new read, once what was missing is fixed elsewhere.
+  var recheck: (() -> Void)? = nil
   let run: () -> Void
 
   var body: some View {
@@ -407,7 +417,14 @@ private struct EmptyFaces: View {
         Text(text).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
         if let action {
-          Button(action, action: run).buttonStyle(AccentButtonStyle())
+          HStack(spacing: MVTheme.space(6)) {
+            Button(action, action: run).buttonStyle(AccentButtonStyle())
+            if let recheck {
+              Button("Check again", action: recheck)
+                .buttonStyle(FlatButtonStyle(compact: true))
+                .help("Read this photo's faces again")
+            }
+          }
         }
       }
     }

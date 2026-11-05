@@ -42,6 +42,8 @@ public static partial class IslandHost
     private static class FacesOp
     {
         public const int Run = 0, Toggle = 1, ChooseAll = 2, ChooseNone = 3, People = 4;
+        // Appended in the S8 review: read again; the panel's row lights its box.
+        public const int Retry = 5, Hover = 6;
     }
     private const int FaceDoAll = -1;
 
@@ -214,7 +216,8 @@ public static partial class IslandHost
             case FacesStatus.NoPack:
                 col.Children.Add(FacesEmpty("Faces uses Local search",
                     "Local search's People finds who is who, and their other photos give the open eyes and better " +
-                    "faces. Everything runs on this PC.", "Get Local search…", () => OpenAddonSettings(LocalSearchPageId)));
+                    "faces. Everything runs on this PC.", "Get Local search…", () => OpenAddonSettings(LocalSearchPageId),
+                    "Check again"));
                 break;
             case FacesStatus.PeopleOff:
                 col.Children.Add(FacesEmpty("Turn on People",
@@ -223,11 +226,11 @@ public static partial class IslandHost
                     {
                         SendFaces(FacesOp.People);
                         OpenAddonSettings(LocalSearchPageId);
-                    }));
+                    }, "Check again"));
                 break;
             case FacesStatus.Failed:
                 col.Children.Add(FacesEmpty("Could not read this photo's faces", "Try again, or check the photo opens.",
-                    "Try again", () => Send(Command.CanvasTool, CanvasTools.Faces * 1000)));
+                    "Try again", () => SendFaces(FacesOp.Retry)));
                 break;
             case FacesStatus.Ready when FaceCards.Count == 0:
                 col.Children.Add(FacesEmpty("No faces found",
@@ -303,7 +306,8 @@ public static partial class IslandHost
             {
                 Text = (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
                 FontFamily = UiFont, FontSize = TypeSize(10), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = Brush(ChromeColour.OnAccent),
+                // White on the dark disc (the canvas badge's), the accent's ink when chosen.
+                Foreground = chosen ? Brush(ChromeColour.OnAccent) : new SolidColorBrush(Colors.White),
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             },
         });
@@ -369,11 +373,17 @@ public static partial class IslandHost
             CornerRadius = Corner(8),
             Background = chosen ? Brush(ChromeColour.SelectionWash) : Brush(Colors.Transparent),
         };
-        if (!chosen)
+        // The row under the pointer lights its face's box on the photo.
+        card.PointerEntered += (_, _) =>
         {
-            card.PointerEntered += (_, _) => card.Background = Brush(ChromeColour.HoverWash);
-            card.PointerExited += (_, _) => card.Background = Brush(Colors.Transparent);
-        }
+            if (!chosen) card.Background = Brush(ChromeColour.HoverWash);
+            SendFaces(FacesOp.Hover, face);
+        };
+        card.PointerExited += (_, _) =>
+        {
+            if (!chosen) card.Background = Brush(Colors.Transparent);
+            SendFaces(FacesOp.Hover, -1);
+        };
         return card;
     }
 
@@ -406,8 +416,9 @@ public static partial class IslandHost
         return col;
     }
 
-    // An empty state: what is missing and the one button that fixes it.
-    private static Grid FacesEmpty(string title, string text, string? action, Action? run)
+    // An empty state: what is missing, the one button that fixes it and, when
+    // it was fixed elsewhere (People turned on), "Check again" (a new read).
+    private static Grid FacesEmpty(string title, string text, string? action, Action? run, string? recheck = null)
     {
         var grid = new Grid { ColumnSpacing = Space(10) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -423,8 +434,19 @@ public static partial class IslandHost
         if (action is not null && run is not null)
         {
             Button b = AccentButton(action, run);
-            b.HorizontalAlignment = HorizontalAlignment.Left;
-            col.Children.Add(b);
+            if (recheck is null)
+            {
+                b.HorizontalAlignment = HorizontalAlignment.Left;
+                col.Children.Add(b);
+            }
+            else
+            {
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+                buttons.Children.Add(b);
+                buttons.Children.Add(EditButton(recheck, () => SendFaces(FacesOp.Retry),
+                                                tip: "Read this photo's faces again"));
+                col.Children.Add(buttons);
+            }
         }
         Grid.SetColumn(col, 1);
         grid.Children.Add(col);
