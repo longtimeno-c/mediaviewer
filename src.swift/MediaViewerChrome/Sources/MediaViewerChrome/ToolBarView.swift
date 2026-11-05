@@ -65,10 +65,8 @@ struct ToolBarView: View {
       .disabled(!bar.canRedo)
     BarIcon(symbol: "trash", label: withKey("Clear strokes", "Clear strokes")) { store.toolAction(.clear) }
       .disabled(bar.strokes == 0)
-    Text(status)
+    statusSlot(compact: compact)
       .foregroundStyle(bar.full ? MVTheme.accent : MVTheme.body)
-      .lineLimit(1)
-      .frame(minWidth: compact ? 0 : 70, alignment: .leading)
     Button { store.toolAction(.apply) } label: {
       Text(compact ? "Remove" : "Remove ↵")
     }
@@ -82,18 +80,20 @@ struct ToolBarView: View {
   // Red-eye: "Click a red pupil · 2 fixed" · Size · Find eyes · Undo · Done.
   @ViewBuilder
   private func redEyeRow(compact: Bool) -> some View {
-    Text(status).lineLimit(1)
+    statusSlot(compact: compact)
     sizeControl(compact: compact)
     Button {
       store.toolAction(.findEyes)
     } label: {
-      if bar.busy {
-        HStack(spacing: MVTheme.space(6)) {
-          ProgressView().controlSize(.small)
-          Text("Looking…")
+      // One width busy or not: the spinner takes the label's place.
+      ZStack {
+        Text("Find eyes").opacity(bar.busy ? 0 : 1)
+        if bar.busy {
+          HStack(spacing: MVTheme.space(4)) {
+            ProgressView().controlSize(.mini)
+            Text("Looking…")
+          }
         }
-      } else {
-        Text("Find eyes")
       }
     }
     .buttonStyle(AccentButtonStyle(filled: bar.canApply))
@@ -141,18 +141,45 @@ struct ToolBarView: View {
       .accessibilityValue("\(Int(px)) pixels")
       Text("\(Int(px)) px")
         .monospacedDigit()
-        .frame(minWidth: 44, alignment: .leading)
+        .lineLimit(1)
+        .frame(width: 48, alignment: .leading)
     }
     .help(sizeHelp)
   }
 
-  private var status: String {
+  /// The status (the stroke count, the hint) in a slot of one width per tool
+  /// and size class, so the bar never reflows when its text changes: before,
+  /// "Brush over what to remove" → "1 stroke" and back resized the row,
+  /// ViewThatFits flipped between labels and icons, every button moved and
+  /// their accessibility frames went stale (2026-11-05). The full text is the
+  /// tooltip and the accessibility value.
+  private func statusSlot(compact: Bool) -> some View {
+    Text(status(compact: compact))
+      .lineLimit(1)
+      .truncationMode(.tail)
+      .minimumScaleFactor(0.85)
+      .frame(width: Self.statusWidth(bar.tool, compact: compact), alignment: .leading)
+      .help(status(compact: false))
+      .accessibilityLabel("Status")
+      .accessibilityValue(status(compact: false))
+  }
+
+  static func statusWidth(_ tool: ToolBarState.Tool, compact: Bool) -> CGFloat {
+    switch tool {
+    case .brush: return compact ? 100 : 168
+    case .redEye: return compact ? 96 : 160
+    default: return 0
+    }
+  }
+
+  private func status(compact: Bool) -> String {
     switch bar.tool {
     case .brush:
-      if bar.full { return "Brush full: Remove, then brush more" }
-      if bar.strokes == 0 { return "Brush over what to remove" }
+      if bar.full { return compact ? "Brush full" : "Brush full: Remove, then brush more" }
+      if bar.strokes == 0 { return compact ? "Brush to remove" : "Brush over what to remove" }
       return bar.strokes == 1 ? "1 stroke" : "\(bar.strokes) strokes"
     case .redEye:
+      if compact { return bar.spots == 0 ? "Click a pupil" : "\(bar.spots) fixed" }
       let fixed = bar.spots == 0 ? "" : " · \(bar.spots) fixed"
       return "Click a red pupil\(fixed)"
     default:

@@ -25,6 +25,7 @@
 // section (the left column, then the right), ← → step it (⇧ for ten steps),
 // 0 sets it back to zero, A runs its section's Auto, R resets every slider,
 // Esc returns the keyboard to the photo. ⇧A closes the pane.
+import AppKit
 import MVChromeBridge
 import SwiftUI
 
@@ -143,6 +144,19 @@ private struct AdjustPane: View {
 
   private var histogramHeight: CGFloat { cls == .compact ? 72 : 96 }
 
+  /// What Return commits: the field editor's text while it edits the field.
+  /// The binding only follows edits AppKit reports as typing; a value set
+  /// another way (VoiceOver, an accessibility client, dictation's last
+  /// phrase) reached the field but not `request`, and Return sent "" ("the
+  /// box recognises nothing", 2026-11-05).
+  static func submittedText(_ bound: String) -> String {
+    if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor {
+      let live = editor.string
+      if !live.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return live }
+    }
+    return bound
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(10)) {
       HStack(spacing: MVTheme.space(8)) {
@@ -170,7 +184,7 @@ private struct AdjustPane: View {
           .disabled(!store.ready)
           .focused($typing)
           .onSubmit {
-            store.prompt(request)
+            store.prompt(Self.submittedText(request))
             request = ""
           }
           .accessibilityLabel("Describe a change")
@@ -532,34 +546,47 @@ private struct AdjustPane: View {
   }
 
   private var histogramPlot: some View {
+    HistogramPlot(store: store)
+  }
+}
+
+/// The histogram: R, G, B and luma as four translucent filled paths. Its own
+/// view observing the store, as CurveEditor is, with the bins read in `body`:
+/// a Canvas drawn from the pane's body kept the blank it drew while the pane
+/// was hidden (the working image rebuilt on reopen) after the bins came back,
+/// while Curves beside it redrew (2026-11-05).
+struct HistogramPlot: View {
+  @ObservedObject var store: AdjustStore
+
+  private static let colours: [Color] = [
+    Color(red: 0.92, green: 0.31, blue: 0.31).opacity(0.45),
+    Color(red: 0.35, green: 0.82, blue: 0.43).opacity(0.45),
+    Color(red: 0.35, green: 0.55, blue: 0.94).opacity(0.45),
+    Color.primary.opacity(0.6),
+  ]
+
+  var body: some View {
+    let bins = store.histogramValid ? store.histogram : []
     Canvas { ctx, size in
       let frame = RoundedRectangle(cornerRadius: MVTheme.radius(6)).path(in: CGRect(origin: .zero, size: size))
       ctx.fill(frame, with: .color(Color(nsColor: .textBackgroundColor)))
-      if store.histogramValid {
-        let colours: [Color] = [
-          Color(red: 0.92, green: 0.31, blue: 0.31).opacity(0.45),
-          Color(red: 0.35, green: 0.82, blue: 0.43).opacity(0.45),
-          Color(red: 0.35, green: 0.55, blue: 0.94).opacity(0.45),
-          Color.primary.opacity(0.6),
-        ]
-        for c in 0..<4 {
-          let bins = store.histogram[c]
-          guard !bins.isEmpty else { continue }
-          var path = Path()
-          path.move(to: CGPoint(x: 0, y: size.height))
-          for (i, v) in bins.enumerated() {
-            let x = size.width * (Double(i) + 0.5) / Double(bins.count)
-            path.addLine(to: CGPoint(x: x, y: size.height * (1 - v)))
-          }
-          path.addLine(to: CGPoint(x: size.width, y: size.height))
-          path.closeSubpath()
-          ctx.fill(path, with: .color(colours[c]))
+      for (c, channel) in bins.enumerated() where c < Self.colours.count && !channel.isEmpty {
+        var path = Path()
+        path.move(to: CGPoint(x: 0, y: size.height))
+        for (i, v) in channel.enumerated() {
+          let x = size.width * (Double(i) + 0.5) / Double(channel.count)
+          path.addLine(to: CGPoint(x: x, y: size.height * (1 - v)))
         }
+        path.addLine(to: CGPoint(x: size.width, y: size.height))
+        path.closeSubpath()
+        ctx.fill(path, with: .color(Self.colours[c]))
       }
       ctx.stroke(RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .path(in: CGRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)),
                  with: .color(MVTheme.hairline), lineWidth: 1)
     }
+    // The bins are the Canvas's identity: new bins, a new drawing.
+    .id(store.histogramStamp)
     .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
     .accessibilityLabel("Histogram")
   }
@@ -653,6 +680,7 @@ struct IconButton: View {
     .buttonStyle(.plain)
     .onHover { hover = $0 }
     .help(help)
+    .accessibilityLabel(help)  // not the symbol's name
   }
 }
 

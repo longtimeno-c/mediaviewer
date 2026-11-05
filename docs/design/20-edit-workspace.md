@@ -190,6 +190,10 @@ animation or with the workspace closed it goes down.
   "48 px") · Undo · Redo · Clear · "3 strokes" · **Remove ↵** · Done. Red-eye: "Click a red pupil ·
   2 fixed" · Size · **Find eyes** · Undo · Done. The picker: a line and Done. When the brush is full
   it says "Brush full: Remove, then brush more" instead of beeping. Its tooltip lists the live keys.
+  The layout is fixed per tool: the status sits in a slot of one width (168 brush, 160 red-eye;
+  shorter words when the bar is compact; the full text is its tooltip), the size readout is 48
+  wide and Find eyes keeps its width while busy, so a stroke count appearing or going never
+  moves a button.
   Mac: `ToolBarView.swift` in `toolBarHost` (`mv_tool_bar_view`, `mv_chrome_tool_*`); Windows: the
   transport's island holds `IslandHost.ToolBar.cs` (`SetToolBar`, `chrome_tool_bar_args`, 56 bytes;
   `chrome_cmd_canvas_tool` / `tool_size_set` / `tool_erase_set`, 1096–1098), Button, Slider and
@@ -263,7 +267,9 @@ Wider / Narrower side pane step 40 (`pane_wider` / `pane_narrower`, no default k
 The width is kept across launches (Mac defaults `MVRightPaneWidth`; Windows `[view]
 right_pane_dip`), saved when the edge is let go. While the workspace is docked the picture tracks
 the edge exactly and springs into place on release; nothing resizes the swapchain
-(`input_snapshot.refit_seq`).
+(`input_snapshot.refit_seq`). Nor the window: the transport's and the tool bar's preferred widths
+sit just under `NSLayoutPriorityWindowSizeStayPut` on the Mac, so a narrow canvas narrows them
+instead of growing the window.
 
 - **Mac:** `NSLayoutGuide rightColumn` with one width constraint; every pane pins its leading edge
   to it. `MvPaneEdgeView` (6 pt, centred on the column's edge, above the panes, below the transport)

@@ -43,13 +43,16 @@ constexpr word kWords[] = {
     {"flat", {{{P::contrast, -20.0f}}}, 1},     {"flatter", {{{P::contrast, -20.0f}}}, 1},
     // Regions: the adjective before them says which way.
     {"shadows", {{{P::shadows, 30.0f}}}, 1, true},   {"shadow", {{{P::shadows, 30.0f}}}, 1, true},
-    {"highlights", {{{P::highlights, 30.0f}}}, 1, true}, {"sky", {{{P::highlights, 30.0f}}}, 1, true},
+    {"highlights", {{{P::highlights, 30.0f}}}, 1, true}, {"highlight", {{{P::highlights, 30.0f}}}, 1, true},
+    {"sky", {{{P::highlights, 30.0f}}}, 1, true},
     {"skies", {{{P::highlights, 30.0f}}}, 1, true},  {"clouds", {{{P::highlights, 30.0f}}}, 1, true},
     {"whites", {{{P::whites, 20.0f}}}, 1, true},     {"blacks", {{{P::blacks, 20.0f}}}, 1, true},
     {"edges", {{{P::vignette, -30.0f}}}, 1, true},   {"corners", {{{P::vignette, -30.0f}}}, 1, true},
     {"blown", {{{P::highlights, -30.0f}}}, 1},
     // Colour.
     {"saturated", {{{P::saturation, 20.0f}}}, 1}, {"saturation", {{{P::saturation, 20.0f}}}, 1},
+    {"saturate", {{{P::saturation, 20.0f}}}, 1},  {"desaturate", {{{P::saturation, -20.0f}}}, 1},
+    {"vibrancy", {{{P::vibrance, 25.0f}}}, 1},    {"temperature", {{{P::temperature, 15.0f}}}, 1},
     {"colourful", {{{P::vibrance, 25.0f}}}, 1},   {"colorful", {{{P::vibrance, 25.0f}}}, 1},
     {"colour", {{{P::vibrance, 25.0f}}}, 1},      {"color", {{{P::vibrance, 25.0f}}}, 1},
     {"vivid", {{{P::vibrance, 25.0f}}}, 1},       {"vibrant", {{{P::vibrance, 25.0f}}}, 1},
@@ -70,11 +73,14 @@ constexpr word kWords[] = {
     // Detail.
     {"sharper", {{{P::sharpen, 30.0f}}}, 1},     {"sharpen", {{{P::sharpen, 30.0f}}}, 1},
     {"sharp", {{{P::sharpen, 30.0f}}}, 1},       {"crisp", {{{P::sharpen, 30.0f}}}, 1},
+    {"sharpness", {{{P::sharpen, 30.0f}}}, 1},   {"sharpening", {{{P::sharpen, 30.0f}}}, 1},
     {"crisper", {{{P::sharpen, 30.0f}}}, 1},     {"blurry", {{{P::sharpen, -30.0f}}}, 1},
     {"noise", {{{P::noise, -30.0f}}}, 1},        {"noisy", {{{P::noise, -30.0f}}}, 1},
     {"grain", {{{P::noise, -30.0f}}}, 1},        {"grainy", {{{P::noise, -30.0f}}}, 1},
     {"denoise", {{{P::noise, 30.0f}}}, 1},       {"clean", {{{P::noise, 30.0f}}}, 1},
     {"cleaner", {{{P::noise, 30.0f}}}, 1},       {"smoother", {{{P::noise, 30.0f}}}, 1},
+    {"smooth", {{{P::noise, 30.0f}}}, 1},        {"smoothen", {{{P::noise, 30.0f}}}, 1},
+    {"denoising", {{{P::noise, 30.0f}}}, 1},
     {"detail", {{{P::definition, 25.0f}}}, 1},   {"details", {{{P::definition, 25.0f}}}, 1},
     {"definition", {{{P::definition, 25.0f}}}, 1}, {"clarity", {{{P::definition, 25.0f}}}, 1},
     {"texture", {{{P::definition, 25.0f}}}, 1},  {"brilliance", {{{P::brilliance, 25.0f}}}, 1},
@@ -82,6 +88,7 @@ constexpr word kWords[] = {
     // Looks: several sliders at once.
     {"punchy", {{{P::contrast, 15.0f}, {P::vibrance, 25.0f}}}, 2},
     {"pop", {{{P::contrast, 15.0f}, {P::vibrance, 25.0f}}}, 2},
+    {"punch", {{{P::contrast, 15.0f}, {P::vibrance, 25.0f}}}, 2},
     {"dramatic", {{{P::contrast, 25.0f}, {P::highlights, -20.0f}, {P::shadows, -15.0f}, {P::vignette, 25.0f}}}, 4},
     {"moody", {{{P::contrast, 20.0f}, {P::exposure, -0.2f}, {P::saturation, -15.0f}, {P::vignette, 25.0f}}}, 4},
     {"film", {{{P::contrast, -10.0f}, {P::blacks, 20.0f}, {P::saturation, -15.0f}, {P::temperature, 10.0f}}}, 4},
@@ -98,8 +105,18 @@ constexpr word kWords[] = {
 // "deeper blacks", "crush the shadows": down, as "less" is.
 constexpr std::string_view kFlip[] = {"less", "reduce", "lower", "decrease", "remove", "fewer", "too",
                                       "tame", "recover", "not", "without", "lose", "deeper", "crush", "deepen"};
-constexpr std::string_view kKeep[] = {"more", "increase", "boost", "add", "raise", "lift", "open",
-                                      "extra", "higher", "stronger"};
+constexpr std::string_view kKeep[] = {"more", "increase", "boost", "add", "raise", "lift", "open", "extra",
+                                      "higher", "stronger", "enhance", "improve", "turn", "bump", "crank",
+                                      "pump", "push", "amp", "up"};
+// A slider named as a thing ("exposure", "noise"): "down" right after it
+// turns it the other way ("exposure down", "noise down"). After an adjective
+// it is only an echo ("cool it down" is cooler, not warmer); before a mover
+// it says which way ("turn down the contrast", "bring down the highlights").
+constexpr std::string_view kNouns[] = {
+    "exposure",   "brightness", "contrast",   "saturation", "vibrance",   "vibrancy",   "warmth",
+    "temperature", "noise",     "grain",      "sharpness",  "clarity",    "definition", "detail",
+    "details",    "texture",    "vignette",   "vignetting", "highlights", "highlight",  "shadows",
+    "shadow",     "whites",     "blacks",     "brilliance"};
 constexpr std::string_view kSmall[] = {"bit", "slightly", "little", "touch", "tad", "subtle", "subtly"};
 constexpr std::string_view kBig[] = {"much", "lot", "lots", "very", "way", "really", "far", "loads"};
 constexpr std::string_view kSkip[] = {
@@ -107,7 +124,9 @@ constexpr std::string_view kSkip[] = {
     "me", "with", "look", "looks", "like", "some", "but", "can", "you", "i", "want", "should", "be", "so",
     "is", "of", "to", "in", "up", "down", "bring", "back", "give", "feel", "slight", "just", "my", "are",
     "out", "for", "on", "at", "or", "abit", "id", "would", "could", "get", "rid", "white", "black", "balance",
-    "fix", "auto", "correct", "colours", "colors", "tone", "tones", "old", "overall", "whole", "now"};
+    "fix", "auto", "correct", "colours", "colors", "tone", "tones", "old", "overall", "whole", "now",
+    // The tails of "it's", "photo's": the tokenizer splits at the apostrophe.
+    "s", "t", "level", "amount"};
 
 template <std::size_t N>
 bool in(const std::string_view (&set)[N], std::string_view w) {
@@ -170,6 +189,31 @@ prompt_result parse_prompt(std::string_view text, const colour& current) {
     moved[i] += after - before;
     touched[i] = true;
   };
+  // The last mover, to turn it round on a "down" right after it.
+  struct last_mover {
+    const word* w = nullptr;
+    std::size_t at = 0;
+    float factor = 0.0f;
+    colour before;
+    std::array<float, kAdjustParamCount> moved{};
+    std::array<bool, kAdjustParamCount> touched{};
+  } last;
+  auto apply_word = [&](const word& k, std::size_t at, float factor) {
+    last.w = &k;
+    last.at = at;
+    last.factor = factor;
+    last.before = r.value;
+    last.moved = moved;
+    last.touched = touched;
+    for (int m = 0; m < k.count; ++m) {
+      const move& mv = k.moves[static_cast<std::size_t>(m)];
+      if (k.set && m == 0) {
+        apply(mv.param, factor < 0 ? 0.0f : mv.amount, true);
+      } else {
+        apply(mv.param, mv.amount * factor, false);
+      }
+    }
+  };
   auto want_auto = [&](adjust_section s) {
     if (std::find(r.autos.begin(), r.autos.end(), s) == r.autos.end()) r.autos.push_back(s);
   };
@@ -202,6 +246,32 @@ prompt_result parse_prompt(std::string_view text, const colour& current) {
     }
     if (w == "keep" || w == "except") {
       keep_next = true;
+      continue;
+    }
+    if (w == "noise" && (next == "reduction" || next == "removal")) {
+      // "noise reduction": the denoise slider, the way the words around it say.
+      if (!keep_next) apply_word(*find("denoise"), i + 1, sign * scale);
+      keep_next = false;
+      ++i;
+      sign = 1.0f;
+      scale = 1.0f;
+      continue;
+    }
+    if (w == "down") {
+      // Right after the last mover (filler words aside), or before the next.
+      bool follows = last.w != nullptr;
+      for (std::size_t j = follows ? last.at + 1 : i; j < i; ++j) follows = follows && in(kSkip, t[j]);
+      if (follows && in(kNouns, last.w->text)) {
+        // "exposure down": the mover just made, the other way.
+        r.value = last.before;
+        moved = last.moved;
+        touched = last.touched;
+        const word& again = *last.w;
+        apply_word(again, last.at, -last.factor);
+      } else if (!follows) {
+        sign = -sign;  // "turn down the contrast"
+      }
+      // After an adjective it is an echo: "cool it down".
       continue;
     }
     if (in(kFlip, w)) {
@@ -248,14 +318,7 @@ prompt_result parse_prompt(std::string_view text, const colour& current) {
       keep_next = false;
       continue;
     }
-    for (int m = 0; m < k->count; ++m) {
-      const move& mv = k->moves[static_cast<std::size_t>(m)];
-      if (k->set && m == 0) {
-        apply(mv.param, sign < 0 ? 0.0f : mv.amount, true);
-      } else {
-        apply(mv.param, mv.amount * sign * scale, false);
-      }
-    }
+    apply_word(*k, i, sign * scale);
     sign = 1.0f;
     scale = 1.0f;
   }

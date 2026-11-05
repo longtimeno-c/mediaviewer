@@ -79,6 +79,53 @@ TEST_CASE("prompt: looks move several sliders; autos and unknown words are repor
   CHECK(get(keep, adjust_param::highlights) == 0.0f);
 }
 
+TEST_CASE("prompt: the owner's sentence and other common phrasings", "[prompt]") {
+  const edit::colour none;
+  // 2026-11-05: typed into Describe a change, nothing moved (the field sent
+  // "", not the parser: this sentence always parsed).
+  const auto owner = edit::parse_prompt("warmer and brighter, reduce noise", none);
+  CHECK(get(owner, adjust_param::temperature) == 15.0f);
+  CHECK(get(owner, adjust_param::exposure) == Approx(0.3f));
+  CHECK(get(owner, adjust_param::noise) == 30.0f);
+  CHECK(owner.unknown.empty());
+  CHECK(edit::prompt_summary(owner) == "Exposure +0.3 EV, Temperature +15, Noise reduction +30");
+
+  CHECK(get(edit::parse_prompt("more noise reduction", none), adjust_param::noise) == 30.0f);
+  CHECK(get(edit::parse_prompt("less noise reduction", edit::parse_prompt("denoise", none).value),
+            adjust_param::noise) == 0.0f);
+  CHECK(get(edit::parse_prompt("smooth", none), adjust_param::noise) == 30.0f);
+  CHECK(get(edit::parse_prompt("add some sharpness", none), adjust_param::sharpen) == 30.0f);
+  CHECK(get(edit::parse_prompt("desaturate", none), adjust_param::saturation) == -20.0f);
+  CHECK(get(edit::parse_prompt("enhance the vibrancy", none), adjust_param::vibrance) == 25.0f);
+  CHECK(get(edit::parse_prompt("boost the highlight", none), adjust_param::highlights) == 30.0f);
+  // Apostrophes split words; their tails are not "not understood".
+  const auto its = edit::parse_prompt("it's a bit dark", none);
+  CHECK(get(its, adjust_param::exposure) == Approx(-0.2f));  // -0.15 onto the 0.1 steps
+  CHECK(its.unknown.empty());
+}
+
+TEST_CASE("prompt: up and down", "[prompt]") {
+  const edit::colour none;
+  // Before a mover, "down" says which way it goes.
+  CHECK(get(edit::parse_prompt("turn down the contrast", none), adjust_param::contrast) == -20.0f);
+  CHECK(get(edit::parse_prompt("bring down the highlights", none), adjust_param::highlights) == -30.0f);
+  CHECK(get(edit::parse_prompt("tone down the saturation", none), adjust_param::saturation) == -20.0f);
+  CHECK(get(edit::parse_prompt("turn up the contrast", none), adjust_param::contrast) == 20.0f);
+  // Right after a slider's name, it turns that slider round.
+  CHECK(get(edit::parse_prompt("exposure down", none), adjust_param::exposure) == Approx(-0.3f));
+  CHECK(get(edit::parse_prompt("noise down", none), adjust_param::noise) == 30.0f);
+  const auto two = edit::parse_prompt("contrast down, warmth up", none);
+  CHECK(get(two, adjust_param::contrast) == -20.0f);
+  CHECK(get(two, adjust_param::temperature) == 15.0f);
+  REQUIRE(two.applied.size() == 2);
+  CHECK(two.applied[0] == "Contrast -20");
+  // After an adjective it is only an echo, and turns nothing that follows.
+  const auto cool = edit::parse_prompt("cool it down and add contrast", none);
+  CHECK(get(cool, adjust_param::temperature) == -15.0f);
+  CHECK(get(cool, adjust_param::contrast) == 20.0f);
+  CHECK(get(edit::parse_prompt("warm it up", none), adjust_param::temperature) == 15.0f);
+}
+
 TEST_CASE("adjust pane: the request's note fits its field, cut between characters", "[prompt][pane]") {
   mv::shell::adjust_pane pane;
   pane.set_prompt_note("Exposure +0.3 EV");

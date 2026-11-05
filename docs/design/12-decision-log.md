@@ -151,7 +151,16 @@ re-run only the fit or fill on it; `resize_seq` means a real window, DPI or back
 the right column's edge is dragged (`chrome_live_resize`) the refit is immediate, so the picture
 tracks the edge; on release it springs (ω = 18, ζ = 1). The Mac `metal_layer::resize` also
 returns early when the size and scale are unchanged. `--pane-drag-soak` measures the drag
-(docs/plans/edit-refresh.md S1).
+(docs/plans/edit-refresh.md S1). *Amended 2026-11-05:* the early return compares the layer's own
+`drawableSize` and `contentsScale`, not the values last set, and the Mac lab checks them on every
+frame it draws (`metal_layer::drifted`, two property reads; idle draws nothing) and re-sets them
+when they no longer match the canvas, with a warning in the log. Before the early return every
+chrome move re-set both, which hid any change made under the lab; after it, a layer that drifted
+stayed so (driving the app: the photo drawn larger than the canvas and cut off, Fit to Window not
+fixing it, brush dabs off the pointer). The same day: dragging the column's edge wide grew the
+window, because the transport's 720 and the tool bar's 640 preferred widths were
+`NSLayoutPriorityDefaultHigh`, above `NSLayoutPriorityWindowSizeStayPut`; they are now just under
+it.
 
 **The Edit tabs move to a 44 pt icon rail; the strip becomes a header (2026-11-04).** The tab
 row and Done left the strip for a rail at the window's right edge, beside the inspector, while
