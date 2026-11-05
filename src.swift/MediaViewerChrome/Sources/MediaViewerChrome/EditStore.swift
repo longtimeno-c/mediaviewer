@@ -150,6 +150,10 @@ final class EditStore: ObservableObject {
   @Published var straighten: Double = 0
   @Published private(set) var editCount = 0
   @Published private(set) var showOriginal = false
+  /// docs/design/20 "Compare" (shell::compare_kind): 0 no edits, 1 the edits,
+  /// 2 an Enhance result and its photo, 3 that photo is not beside it, 4 it is
+  /// being looked for.
+  @Published private(set) var compare: Int32 = 0
   @Published private(set) var cropWidth = 0
   @Published private(set) var cropHeight = 0
   @Published private(set) var name = ""
@@ -162,6 +166,22 @@ final class EditStore: ObservableObject {
   var draggingToolSize = false
 
   var isClip: Bool { subject == 2 }
+  /// Compare has something to show: the edits, or an Enhance result's photo.
+  var canCompare: Bool { compare == 1 || compare == 2 }
+  /// Compare's tooltip: what it compares, or why it is off.
+  var compareHelp: String {
+    switch compare {
+    case 1: return "Compare before and after your edits: drag the line on the photo"
+    case 2: return "Compare with the photo this was made from: drag the line on the photo"
+    case 3: return "Nothing to compare: the original photo is not beside this one"
+    case 4: return "Looking for the original photo…"
+    default: return "No edits yet to compare"
+    }
+  }
+  /// The split's words, under the header while it is up ("Before | After").
+  var compareBefore: String { compare == 2 ? "Before: the original photo" : "Before: no edits" }
+  var compareAfter: String { compare == 2 ? "After: Enhance" : "After: your edits" }
+
   var canEdit: Bool { subject != 0 }
   /// The bar button shows only over media: not on the empty start, not over the gallery.
   var showsBarButton: Bool { open || (canEdit && !galleryVisible) }
@@ -203,6 +223,7 @@ final class EditStore: ObservableObject {
     if !draggingStraighten { straighten = Double(v.straighten) }
     editCount = Int(v.edit_count)
     showOriginal = v.show_original != 0
+    compare = v.compare
     cropWidth = Int(v.crop_width)
     cropHeight = Int(v.crop_height)
     let need = mv_chrome_edit_name(nil, 0)

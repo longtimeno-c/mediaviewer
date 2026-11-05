@@ -692,9 +692,15 @@ struct chrome_edit_args {
   // inspector folded to the rail (edit_workspace::collapsed).
   std::int32_t chips;
   std::int32_t collapsed;
+  // docs/design/20 "Compare" (shell::compare_kind): 0 nothing to compare (no
+  // edits), 1 the edits, 2 an Enhance result and the photo it was made from,
+  // 3 a result whose photo is not beside it, 4 that photo being looked for.
+  // Compare is enabled on 1 and 2; show_original is the split up or Y held.
+  std::int32_t compare;
+  std::int32_t reserved;
 };
 
-static_assert(sizeof(chrome_edit_args) == 104, "keep in sync with IslandHost.Edit EditArgsSize");
+static_assert(sizeof(chrome_edit_args) == 112, "keep in sync with IslandHost.Edit EditArgsSize");
 
 // docs/plans/edit-refresh.md S2: what the Edit header's chip says about the item
 // (the Mac bridge's mv_edit_view.chips too).

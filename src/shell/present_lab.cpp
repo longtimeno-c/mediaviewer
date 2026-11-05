@@ -4,6 +4,7 @@
 #include "core/boot_timeline.h"
 #include "shell/video_report.h"
 #include "shell/tool_overlay.h"
+#include "shell/compare_overlay.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
 #include "shell/af_focus.h"
@@ -18,6 +19,7 @@
 #include <avrt.h>
 
 #include <algorithm>
+#include <iterator>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -345,6 +347,7 @@ expected present_lab::rebuild_device() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  side_image_.reset();      // docs/design/20 "Compare": so does the split's before
   fade_from_.reset();
   refine_base_.reset();
   fade_.cancel();
@@ -792,6 +795,17 @@ void present_lab::render_thread_main() noexcept {
     // worker hands it over before the host publishes the view that stops
     // drawing its dabs live, so no frame shows neither.
     if (take_brush_mask()) redraw = true;
+    // docs/design/20 "Compare": the side still landing, or the split changing
+    // (a toggle, a drag of the divider, Y), is one frame each.
+    if (session_) {
+      std::uint64_t side_token = 0;
+      if (image::gpu_image* side = mv::abi::take_side_still(session_, &side_token)) {
+        side_image_.reset(side);
+        side_token_ = side_token;
+        if (snapshot.before_after == 2) redraw = true;
+      }
+    }
+    if (before_changed(snapshot)) redraw = true;
     // PR 10: the edit geometry of the still on screen changed (a turn, a
     // committed crop, crop mode's draft). A new picture size refits, as a new
     // item would; an overlay-only change just redraws — and so does a colour
@@ -1394,6 +1408,19 @@ void present_lab::render_thread_main() noexcept {
     draw_view_overlays(snapshot);
     draw_crop_overlay(snapshot);
     if (overlay_visible_) draw_overlay(snapshot);
+    // docs/design/20 "Compare": the split this frame draws (none while hold `\`
+    // shows the previous still); the host hit-tests the divider against it.
+    const bool holding_previous = snapshot.hold_previous && !compare_split_.valid && previous_image_ &&
+                                  previous_image_->srv && current_image_;
+    const compare_frame before = holding_previous ? compare_frame{} : before_frame(snapshot);
+    {
+      std::lock_guard<std::mutex> lock(eye_mutex_);
+      compare_frame_ = before;
+    }
+    if (before.valid && !snapshot.before_whole) {
+      draw_compare_divider(ImGui::GetForegroundDrawList(), before, snapshot.dpi_scale, snapshot.home.accent,
+                           snapshot.before_hot);
+    }
 
     ImGui::Render();
 
@@ -1549,6 +1576,8 @@ void present_lab::render_thread_main() noexcept {
         if (tiles_on) blitter_.draw_tiles(device_.context(), tile_draws_, cp);
       };
       draw_still(bp, true);
+      // docs/design/20 "Compare": the before over the after's left part.
+      if (before.valid && !show_previous) draw_before(snapshot, before, elapsed, theme_rgb);
 
       // Hold Z: the same texture again, through a second viewport — a camera
       // change, not a decode. 100 %, or twice the zoom when already past it.
@@ -1660,6 +1689,7 @@ void present_lab::render_thread_main() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  side_image_.reset();      // docs/design/20 "Compare": so does the split's before
   fade_from_.reset();
   refine_base_.reset();
   fade_.cancel();
@@ -1889,6 +1919,101 @@ void present_lab::draw_compare_left(const input_snapshot& snapshot, double elaps
   bp.clipping = snapshot.clipping;
   bp.time_seconds = static_cast<float>(elapsed);
   blitter_.draw(device_.context(), prev->srv.Get(), bp);
+}
+
+bool present_lab::before_changed(const input_snapshot& s) noexcept {
+  before_seen now;
+  now.mode = s.before_after;
+  now.layout = s.before_layout;
+  now.whole = s.before_whole;
+  now.hot = s.before_hot;
+  now.split = s.before_split;
+  now.token = s.before_token;
+  for (int i = 0; i < 4; ++i) now.rect[i] = s.before_rect[i];
+  const bool same = now.mode == seen_before_.mode && now.layout == seen_before_.layout &&
+                    now.whole == seen_before_.whole && now.hot == seen_before_.hot &&
+                    now.split == seen_before_.split && now.token == seen_before_.token &&
+                    std::equal(std::begin(now.rect), std::end(now.rect), std::begin(seen_before_.rect));
+  seen_before_ = now;
+  return !same;
+}
+
+compare_frame present_lab::before_frame(const input_snapshot& s) const noexcept {
+  if (s.before_after == 0 || !current_image_ || !current_image_->srv || current_video_.texture ||
+      video_open_ || anim_frame_ || s.blackout || compare_split_.valid || s.edit[0].crop_overlay) {
+    return {};
+  }
+  if (s.before_after == 2 && (!side_image_ || !side_image_->srv || side_token_ != s.before_token)) return {};
+  const canvas_view view = usable_canvas(s);
+  const float z = camera_.zoom();
+  const float cx = view.x + view.w * 0.5f - camera_.pan_x() * z;
+  const float cy = view.y + view.h * 0.5f - camera_.pan_y() * z;
+  return compare_frame_of(view.x, view.y, view.w, view.h, cx, cy, cx + media_width() * z,
+                          cy + media_height() * z, s.before_whole ? 1.0f : s.before_split);
+}
+
+// The before: this still's own texture through an identity placement and no
+// colour (the photo with no edit), or the side still laid onto the after's
+// frame (an Enhance result's source, shell/compare_source.h source_map), under
+// the after's camera. Clipped by the viewport, not the camera: the blit
+// places pixels by SV_Position against the full view's origin and size, so a
+// narrower viewport only cuts it off at the divider. The overview of a tiled
+// still stands in for its tiles.
+void present_lab::draw_before(const input_snapshot& snapshot, const compare_frame& f, double elapsed,
+                              const float theme_rgb[3]) noexcept {
+  const bool by_source = snapshot.before_after == 2;
+  const image::gpu_image* b = by_source ? side_image_.get() : current_image_.get();
+  if (!f.valid || !b || !b->srv) return;
+  const canvas_view view = usable_canvas(snapshot);
+  const float right = snapshot.before_whole ? view.x + view.w : std::min(f.divider_x, view.x + view.w);
+  if (right - view.x < 1.0f) return;
+  const D3D11_VIEWPORT vp{view.x, view.y, right - view.x, view.h, 0.0f, 1.0f};
+  device_.context()->RSSetViewports(1, &vp);
+  const float after_w = media_width();
+  const float after_h = media_height();
+  gfx::blit_params bp{};
+  bp.pan_x = camera_.pan_x();
+  bp.pan_y = camera_.pan_y();
+  bp.zoom = camera_.zoom();
+  bp.window_w = view.w;
+  bp.window_h = view.h;
+  bp.origin_x = view.x;
+  bp.origin_y = view.y;
+  bp.texture_w = static_cast<float>(b->texture_width);
+  bp.texture_h = static_cast<float>(b->texture_height);
+  bp.source_w = static_cast<float>(b->width);
+  bp.source_h = static_cast<float>(b->height);
+  edit::affine map;
+  if (by_source) {
+    const compare_rect where{snapshot.before_rect[0], snapshot.before_rect[1], snapshot.before_rect[2],
+                             snapshot.before_rect[3]};
+    const compare_map m = source_map(after_w, after_h, static_cast<float>(b->width), static_cast<float>(b->height),
+                                     static_cast<compare_layout>(snapshot.before_layout), where);
+    for (int i = 0; i < 6; ++i) map.m[i] = m.m[i];
+    bp.clip_to_source = m.clip;
+    bp.image_w = after_w;
+    bp.image_h = after_h;
+  } else {
+    const edit::placement ip = place_through(nullptr, b->width, b->height);
+    map = ip.map;
+    bp.clip_to_source = false;
+    bp.image_w = static_cast<float>(ip.cropped.w);
+    bp.image_h = static_cast<float>(ip.cropped.h);
+    // A crop or a turn changed the frame: the same region, as the two-up
+    // links its halves.
+    const compare_camera cam = linked_camera(bp.pan_x, bp.pan_y, bp.zoom, after_w, after_h, bp.image_w,
+                                             bp.image_h, view.w, view.h);
+    bp.pan_x = cam.pan_x;
+    bp.pan_y = cam.pan_y;
+    bp.zoom = cam.zoom;
+  }
+  for (int i = 0; i < 6; ++i) bp.uv_map[i] = map.m[i];
+  const edit::affine inverse = edit::invert(map);
+  for (int i = 0; i < 6; ++i) bp.uv_inverse[i] = inverse.m[i];
+  for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
+  bp.clipping = snapshot.clipping;
+  bp.time_seconds = static_cast<float>(elapsed);
+  blitter_.draw(device_.context(), b->srv.Get(), bp);
 }
 
 // Text in images (docs/design/16): publish where the still is for the host's

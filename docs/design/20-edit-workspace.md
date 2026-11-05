@@ -58,8 +58,10 @@ in the core (`edit/`, `shell/edit_session`).
    draft; `Shift`+arrows resize keeping the ratio; a straighten shrinks it evenly. Straighten is a
    ±45° slider (`,` `.` step 0.5°). Rotate, flip, Apply and Cancel are buttons; the arrows move
    the rect (1 % of the frame per press).
-5. **Show original** is `Y`, held (and the header's and the rail's Compare). It publishes an
-   identity edit view on the same blit and never touches the stack.
+5. **Compare** (the header's and the rail's Compare) puts a **before/after split** on the canvas;
+   `Y` held shows the before alone. Neither touches the stack. With edits, the before is the photo
+   with no edit; on an Enhance result, the photo it was made from. With nothing to compare the
+   buttons are disabled and say why, and `Y` shows the reason as a notice ("Compare" below).
 6. **Originals stay protected.** Everything goes through `edit_session`: the stack is
    non-destructive, *Save copy…* is the export ([07](07-photo-editing.md) "Export", a new file),
    and the lossless viewer rotate is the same debounced write as before.
@@ -135,7 +137,7 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
   arms one (Remove and Faces on the Enhance tab, Red-eye on Adjust, Extend on Crop; with Enhance,
   Extend also opens Enhance's docked panel under the Extend card), a second click puts it down, and
   the armed one wears the selection.
-- **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
+- **Foot:** Undo, Compare (the split; "Compare" below), Done. Tooltips and screen-reader names carry the live
   keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
 The **header** is as tall as its content (the Mac hosts it with an intrinsic height; Windows
@@ -151,6 +153,65 @@ one undo step ([07](07-photo-editing.md) "✦ Auto"). It fills with the accent w
 edit, and a click then takes it back. The chevron opens the five Enhance tools (a popover on the
 Mac, a `Flyout` of buttons on Windows: the Windows wand twin) with each one's state, and *Show the
 Enhance tab*.
+
+### Compare
+
+The owner's report (2026-11-05): Compare "doesn't seem to do anything". It published an identity
+edit view, which on a photo with no edits (an Enhance result, say) changed nothing on screen and
+said nothing. Now (`shell/compare_source.h`, one model on both hosts):
+
+- **What is compared** (`compare_kind`, sent as `mv_edit_view.compare` / `chrome_edit_args.compare`):
+  - an **Enhance result** — a file Enhance writes beside its photo (`<stem>-enhance.jpg` / `.png`,
+    `-restored`, `-extended`, `-removed`, `-eyes`, `-faces`, each also as the free name
+    `"… (2).jpg"`, [29](29-enhance.md)), or one the app was told is a result (`note_result(result,
+    source[, where])`, any thread, the newest 64 of the run; a Photos-library key on the Mac): the
+    before is the **source photo**, the after the result as it is shown (its own edits too);
+  - else a photo **with edits**: the before is the photo with no edit (its own texture, an
+    identity placement, no colour), the after the edited view;
+  - else nothing: Compare is **disabled** with a tooltip saying why (*No edits yet to compare*; *the
+    original photo is not beside this one*; *Looking for the original photo…*), on the Mac's
+    `.help` and on Windows' holder of the disabled button (a disabled `Button` shows no tooltip). `Y`
+    then shows the same words as a notice and nothing else.
+- **Finding a result's source** never does I/O on the UI thread: the noted source first; else the
+  folder listing the host already holds (`is_source_name`: the same stem, a still extension, case
+  ignored — the Mac scans `_items` outward from the result, Windows its ±8 neighbours through the
+  ABI); else `source_of(path, exists)` on a worker with a stat per candidate (a result list), which
+  answers by message (Windows `kMsgCompareSource`) or the main queue (Mac). A `photos:` source is
+  resolved to its file on a worker (`photos::resolve`).
+- **The source's pixels** come through the viewer's own pipeline, off the UI and render threads:
+  the Mac lab's `load_side_still` (the still cache's entry at its stamp, else a decode on the
+  lab's pool at the current view generation) and Windows' `mv::abi::request_side_still` (a clone
+  from the viewer LRU, else one decode job at the current generation; the result enters the LRU).
+  Each hands one immutable texture to the render thread by an atomic exchange
+  (`take_side_still`), named by a token the snapshot carries (`before_token`). Asked only when the
+  split or `Y` first wants it; a navigation abandons it. A still past one texture (tiled, > ~64 MP)
+  is not served on Windows: the split then shows no before.
+- **On the canvas** (both labs, the same present): the after is drawn as always; the before is a
+  second blit of its texture over the after's left part, cut at the divider by a scissor (Metal)
+  or a narrower viewport (D3D11: the blit places pixels by `SV_Position` against the full view, so
+  the viewport only clips). It shares the after's camera. A source is laid onto the result's frame
+  by `source_map`: the same picture at 2× or 4× (or a face fix, Remove) fills it; an
+  **Extend** result's source sits inside the bigger frame at its own scale, where `note_result`'s
+  `where` says, else centred (Extend's presets grow evenly; a dragged, uneven frame is placed
+  centred until the writer passes `where`); any other aspect is fitted inside, centred. With edits
+  that change the frame (a crop, a turn), the before is the whole original under the camera linked
+  as the `|` two-up links its halves (`linked_camera`), so the two sides do not line up across the
+  divider; colour-only edits line up pixel for pixel.
+- **The divider** (`shell/compare_overlay.h`, ImGui's foreground list in both labs): a 2 px light
+  line with dark edges down the picture's visible span and a 28 DIP round handle with ◀ ▶ at its
+  middle; the accent while hovered or held. It starts at the middle of the picture's visible span
+  (`before_split` 0.5) and is dragged anywhere on the line (a 14 DIP band either side): the host
+  hit-tests it against where the lab last drew it (`compare_frame_now()`), takes the press (no pan,
+  no brush), shows the left-right cursor (Mac `resizeLeftRightCursor`, Windows `IDC_SIZEWE` in
+  `WM_SETCURSOR`) and publishes the new split. Nothing else floats over the photo (owner call A):
+  **Before | After** — "Before: no edits | After: your edits", or "Before: the original photo |
+  After: Enhance" — is a row of the Edit header while the split is up (Mac `EditView`
+  `compareLabels`, Windows `BuildCompareLabels`).
+- **When:** stills only, not over the `|` two-up, not in crop mode (a crop draft hides it until
+  applied). The split belongs to Edit: closing the workspace, or a new photo, takes it down; `Y`
+  works with the workspace closed. **Presents:** a toggle, a drag step, a hover change of the
+  divider or the side still landing is one frame each (`before_changed`); a still split with the
+  pointer at rest presents nothing.
 
 ### The Enhance tab
 
@@ -419,8 +480,8 @@ sits under the line in its tint.
 | Windows host | `main.cpp`, WinUI | A fifth panel island (`IslandHost.Edit.cs`): the header and, under it, the Crop, Trim or Enhance pane (`IslandHost.EnhanceHub.cs`); on Adjust / Info / Jobs the island is the header alone and native places that pane under it. A sixth, the rail (`IslandHost.Rail.cs`, `ShowEditRail`, pane island id 11). One blittable `SetEditView` entry (`chrome_edit_args`, 104 bytes) feeds the header, the rail, the panes and the button. The island sends keyed command ids plus the notifications `edit_tab` (a rail click), `edit_action`, `edit_strip_height`, `inspector_min`, `meta_tags`, `meta_date`; native sends `Notify` (`pane_edge_state`). The canvas docks through `chrome_right_px` (`present_lab.cpp` `usable_canvas`). The metadata editor is in `IslandHost.Panels.cs` |
 
 Nothing here blocks the UI thread (the view is POD; the work is the existing edit, export, metadata
-and clip jobs), and no canvas path is added (Show original publishes an identity `edit_view` on
-the existing blit).
+and clip jobs), and no present path is added (Compare's before is a second draw on the existing
+blit, in the same present; "Compare" above).
 
 ## Accessibility and platforms
 
@@ -452,7 +513,8 @@ The behaviour it pins:
    original's bytes are unchanged.
 2. `Enter` on a still opens the workspace; `Esc` cancels a crop draft first, then closes.
 3. Undo steps back through the crop, Reset returns to the original, and holding `Y` shows the
-   original while held and changes nothing.
+   original while held and changes nothing; Compare splits the photo before | after, and with no
+   edits it is disabled and says why.
 4. Keyboard only: `Enter`, `Shift+C`, `A` until 3:2, `Enter`, `Ctrl+S`.
 
 Tests: `test_canvas_tool` (`mv_tests "[canvas-tool]"`: home tabs, sizes, spots, snap, Find eyes,
@@ -461,7 +523,10 @@ the overlay's deadlines), `test_key_router` (`[tool]`: tool mode's keys, refusal
 4 px brush on a 6000 px photo at 400 %, the tint's stamp and edge, the builder's incremental build,
 the sync's one-at-a-time builds and the snapshot's tail; the hidden `[.perf-bench]` case times the
 snapshot publish, under 0.1 ms, and the tint build), `test_adjust` (`[canvas-tool]`: a fix taken off and
-Find eyes are one step each), `test_edit_workspace` (tab 5 routing, the rail's fold), `test_auto_tone` (`[auto_enhance]`:
+Find eyes are one step each), `test_edit_workspace` (tab 5 routing, the rail's fold),
+`test_compare_source` (`mv_tests "[compare-source]"`: the Enhance naming rule and its free names,
+the listing match, `source_of` through the caller's check, `note_result`, the source's place in the
+result, the divider's span, grab and drag), `test_auto_tone` (`[auto_enhance]`:
 one result, one token, the take-back mark), `test_pane_width` (`mv_tests "[pane-width]"`: the clamp, the
 rail-only collapse, the 60 % cap, snaps, steps, the drag soak's frame log), and the workspace cases
 in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag's pacing is
@@ -471,7 +536,9 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
 
 - On-canvas crop handles (drag corners, edges, inside).
 - Redo (`Ctrl+Shift+Z`) and a named history list for a still's edit stack (the brush has its own
-  redo); a split-screen before/after.
+  redo).
+- Compare: a before that keeps the after's crop (to compare colour only through a crop); the
+  divider by keyboard; the split on a clip.
 - Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's
   "Discard 3 strokes?" in the bar is not built); Undo of an earlier rotate or Reset with strokes
   kept also forgets them.

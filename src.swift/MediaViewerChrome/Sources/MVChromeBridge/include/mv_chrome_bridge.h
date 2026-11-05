@@ -1071,6 +1071,11 @@ typedef struct mv_edit_view {
   // being fetched from iCloud. And the inspector folded to the rail.
   int32_t chips;
   int32_t collapsed;
+  // docs/design/20 "Compare" (shell::compare_kind): 0 nothing to compare (no
+  // edits), 1 the edits (before = the photo with none), 2 an Enhance result
+  // and the photo it was made from, 3 a result whose photo is not beside it,
+  // 4 that photo still being looked for. Compare is enabled on 1 and 2.
+  int32_t compare;
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -1094,7 +1099,8 @@ void mv_chrome_edit_close(void);
 void mv_chrome_edit_set_aspect(int32_t aspect, int32_t portrait);
 void mv_chrome_edit_set_straighten(float degrees);
 void mv_chrome_edit_cancel_crop(void);
-// The strip's Original toggle (the same state Y holds).
+// The header's and the rail's Compare: the before/after split on the canvas
+// (docs/design/20 "Compare"); Y held shows the before alone.
 void mv_chrome_edit_show_original(int32_t on);
 // The wand menu: one of Enhance's commands ("open", "restyle") for the photo,
 // its copy carrying the edit; a crop draft is applied first.
