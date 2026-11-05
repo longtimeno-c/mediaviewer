@@ -120,7 +120,17 @@ struct ProgressLine: View {
           words(ProgressWords.parts(verb, fraction: shown, detail: detail))
         }
         Spacer(minLength: 0)
-        if outcome == nil, let onCancel {
+        // The end of the line: Cancel while it runs, the outcome's action after.
+        if let outcome {
+          switch outcome {
+          case .done(_, let action?) where onAction != nil:
+            QuietButton(title: action, action: onAction!)
+          case .failed(_, true) where onRetry != nil:
+            QuietButton(title: "Try again", action: onRetry!)
+          default:
+            EmptyView()
+          }
+        } else if let onCancel {
           QuietButton(title: cancelTitle, action: onCancel)
             .modifier(EscCancels(on: escCancels))
         }
@@ -144,23 +154,16 @@ struct ProgressLine: View {
   @ViewBuilder
   private func outcomeRow(_ o: ProgressOutcome) -> some View {
     switch o {
-    case .done(let text, let action):
+    case .done(let text, _):
       Image(systemName: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(MVTheme.accent)
         .accessibilityHidden(true)
       Text(text).font(MVTheme.font(12)).foregroundStyle(MVTheme.title).lineLimit(1).truncationMode(.middle)
-      if let action, let onAction {
-        Spacer(minLength: 0)
-        QuietButton(title: action, action: onAction)
-      }
-    case .failed(let reason, let retry):
+        .help(text)
+    case .failed(let reason, _):
       Image(systemName: "exclamationmark.circle.fill").font(.system(size: 12)).foregroundStyle(MVTheme.warm)
         .accessibilityHidden(true)
       Text(reason).font(MVTheme.font(12)).foregroundStyle(MVTheme.title).lineLimit(1).truncationMode(.tail)
         .help(reason)
-      if retry, let onRetry {
-        Spacer(minLength: 0)
-        QuietButton(title: "Try again", action: onRetry)
-      }
     }
   }
 }

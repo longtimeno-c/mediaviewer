@@ -121,7 +121,9 @@ void model_card_body(json::writer& w, const model_card& c) {
       // 48 of 161 MB · about 25 seconds left", or why it waits.
       const bool waiting = c.st.state == dl_state::waiting;
       begin_stack(w, id_of("downloading", k), "horizontal", 8);
-      progress(w, id_of("progress", k), "Downloading the " + std::string(model_noun(k)),
+      // The card names the model, so the line's verb is short enough for
+      // the narrowest pane: "Downloading · 48 of 161 MB · about 25 seconds left".
+      progress(w, id_of("progress", k), "Downloading",
                c.st.total_bytes ? static_cast<double>(c.st.done_bytes) / static_cast<double>(c.st.total_bytes) : -1,
                nullptr,
                waiting ? std::string("waiting for Hugging Face, it resumes by itself")

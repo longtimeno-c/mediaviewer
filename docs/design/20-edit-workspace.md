@@ -25,16 +25,16 @@ in the core (`edit/`, `shell/edit_session`).
      Windows: `shell/open_with_win.cpp` (Explorer's recommended Open with handlers, on a thread
      of its own), pushed through `chrome_edit_args.open_apps`, run by `chrome_cmd_open_in_app`.
 2. **A rail, a header, one pane, docked.** The workspace is a 44 pt icon **rail** at the window's
-   right edge (the tabs, the tools, Undo, Compare, Done; "The rail and the header" below) and,
-   beside it, the **inspector**: a header (file name, edit count, a Photos / cloud chip, ✦ Auto;
-   Undo / Reset / Compare / Save copy…) over one tab's pane. It docks: the canvas frames the
+   right edge (the tabs, Red-eye, Undo and Compare while folded, Done; "The rail and the header"
+   below) and, beside it, the **inspector**: a header (file name, edit count, a Photos / cloud
+   mark; Auto / Undo / Reset / Compare / Save copy…) over one tab's pane. It docks: the canvas frames the
    picture in the rect beside it (`input_snapshot.chrome_right_px`, the blit's `origin_x`), so
    the pane never covers the image; the header starts under the path row. Docking is a refit,
    not a swapchain resize. The Adjust, Info and Jobs tabs *are* the existing Adjust, Metadata and
    Jobs panes; Crop, Trim and Enhance are panes that drive existing commands. The Adjust tab
    (`edit_tab::colour`, labelled Adjust since docs/plans/edit-refresh.md S2) is the full Adjust list: Light, Colour, Black &
    White and Vignette sections, each collapsible with its own reset (↺, shown once a slider in it
-   moved) and, but the vignette and curves, an AUTO; above them, a field takes a typed request and
+   moved) and, but the vignette and curves, an Auto; above them, a field takes a typed request and
    says what it changed ([07](07-photo-editing.md) "Typed requests"); Black & White has an on switch; Levels and
    Curves pick a channel (Image, Red, Green, Blue), and Curves has a point editor over the histogram
    (drag the line to add a point, drag a point off the square to remove it); Selective Colour picks
@@ -131,26 +131,31 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
   `rail_pick`). A window too narrow for any inspector beside the canvas (`clamp_inspector`
   returns 0) folds it too, and unfolds when it is wide enough again. A tab's own key unfolds a
   folded inspector rather than closing it. Closing forgets the fold.
-- **Tools:** Remove, Red-eye, Faces and Extend are canvas tools ("Canvas tools" below): a click
-  arms one (Remove and Faces on the Enhance tab, Red-eye on Adjust, Extend on Crop; with Enhance,
-  Extend also opens Enhance's docked panel under the Extend card), a second click puts it down, and
-  the armed one wears the selection.
-- **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
-  keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
+- **Tools:** Red-eye, the one canvas tool with no Enhance card (a pupil in its iris on the Mac,
+  Segoe's RedEye on Windows): a click arms it, a second puts it down, and the armed one wears the
+  selection. Remove, Faces and Extend are armed from their Enhance cards (2026-11-05, "Craft
+  rules": the rail does not repeat the cards).
+- **Foot:** Undo and Compare (Show original) while the inspector is folded (open, the header has
+  them), and Done. Tooltips and screen-reader names carry the live keys
+  (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
 The **header** is as tall as its content (the Mac hosts it with an intrinsic height; Windows
 measures it and sends `chrome_cmd_edit_strip_height`, clamped to 72–220 DIP, re-laid only on a
-change of more than 1 DIP), so the panes start right under it at any type scale. Row 1: the file
-name (truncated), an edit-count pill, a chip (*Photos* for a Photos-library item, *iCloud* while
-its original downloads; on Windows *Cloud* while a placeholder hydrates), and **✦ Auto** with a
-chevron. Row 2: Undo · Reset · Compare, and **Save copy…** filled with the accent. Below 340 both
-rows are icons only (Mac `ViewThatFits`; Windows hides the labels in place).
+change of more than 1 DIP), so the panes start right under it at any type scale. Row 1 is the
+file name with the pane's width (truncated in the middle on the Mac, at the end on Windows), an
+edit-count pill, and a mark where the photo lives (the Mac: a Photos or iCloud icon, its words the
+tooltip; Windows: a *Cloud* chip while a placeholder hydrates). Row 2: **Auto** · Undo · Reset ·
+Compare, and **Save copy…** filled with the accent and always labelled. Where the labels do not
+fit, Undo, Reset and Compare go to icons first, then Auto (Mac `ViewThatFits`; Windows hides the
+labels below 340 in place). The icons' inset is pulled back so the first icon lines up with the
+name (2026-11-05, "Craft rules"; until then Auto and a tools chevron shared row 1 and squeezed
+the name).
 
-**✦ Auto** (`auto_enhance`, unbound, Edit ▸ Auto Enhance on the Mac): tone, then white balance,
-one undo step ([07](07-photo-editing.md) "✦ Auto"). It fills with the accent while it is the last
-edit, and a click then takes it back. The chevron opens the five Enhance tools (a popover on the
-Mac, a `Flyout` of buttons on Windows: the Windows wand twin) with each one's state, and *Show the
-Enhance tab*.
+**Auto** (`auto_enhance`, unbound, Edit ▸ Auto Enhance on the Mac; a sun, not a sparkle): tone,
+then white balance, one undo step ([07](07-photo-editing.md) "✦ Auto"). It wears the selection
+while it is the last edit, and a click then takes it back; while it works a small spinner takes
+its icon's slot. The Enhance tools are the Enhance tab's cards; the header has no chevron for them
+(the Mac's `EnhanceToolsPopover` and Windows' `OpenEnhanceFlyout` are no longer reached from it).
 
 ### The Enhance tab
 
@@ -359,7 +364,7 @@ root and handed down only when the class changes, so a drag of the edge rebuilds
 
 `↑` `↓` walk the left column, then the right. Windows moves the same section cards, histogram and
 Curves square between panels (never rebuilt, so slider state and focus survive). Each section is a
-card with a chevron, a changed dot, an AUTO pill and ↺; a slider's value is a button that becomes a
+card (a fill, no border, a 12 pt inset) with a chevron, a changed dot, an Auto pill and ↺; a slider's value is a button that becomes a
 field to type a number into (Return sets it, Esc leaves it; Windows uses `FakeInput`), and a
 double-click on a slider (or its row) sets it back to 0. Exposure, saturation, vibrance,
 temperature, tint and a selective band's hue draw their track as a gradient of what they do (Mac:
@@ -466,6 +471,47 @@ one result, one token, the take-back mark), `test_pane_width` (`mv_tests "[pane-
 rail-only collapse, the 60 % cap, snaps, steps, the drag soak's frame log), and the workspace cases
 in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag's pacing is
 `--pane-drag-soak` ([DEVELOPMENT](../DEVELOPMENT.md)).
+
+## Craft rules
+
+The Edit workspace's look follows a short set of rules (2026-11-05, from the craft rules of Benji
+Taylor's Stageshow skill, read for the owner's "the progress bar for enhance etc… all ugly"). New
+surfaces in the pane, the rail, the tool bar and Enhance's cards keep to them on both hosts.
+
+- **One surface per thing.** A card is icon + title, one short line, its controls and one primary
+  button, never a bordered box inside another. A fill alone marks a surface; a hairline only where
+  two surfaces would otherwise meet. Nested corners: outer radius = inner radius + padding.
+- **Say it once.** "The original isn't changed" is said by the result notice, not by every card
+  and header. A status chip shows only when something is needed (a download size, "Turn on
+  People"); "Ready" is not a state worth a chip.
+- **Lift, don't ring.** The active card takes a lighter surface (on dark, depth is a lighter
+  surface, not a shadow); an accent ring means keyboard focus and nothing else.
+- **Type.** The theme's family (Cozette by default, else the system's), 11–15 pt, sentence case
+  ("Auto", never "AUTO"), hierarchy from spacing and one weight step. Numbers that change use
+  tabular digits; a slider's value sits right of its label, as a percentage of its range or a count,
+  never "1.50" (`SliderWords` / `ProgressWords.SliderValue`).
+- **Spacing.** Words keep a 12 pt inset from a card or pane edge; a button sits 8–12 pt from what it
+  acts on; padding is even all round; controls hug their content; edges either line up or sit at
+  least 8 pt apart. A row of icon buttons pulls back by its buttons' inset, so the first icon's
+  ink lines up with the text above (the header's row 2).
+- **Icons.** SF Symbols on the Mac, Segoe Fluent on Windows, one family, 13–16 pt, filled at
+  14 pt and under; every icon-only control has a tooltip and an accessibility name. They show what
+  the tool does: no sparkle, wand or star for "AI" (Auto is a sun, Enhance image a magnifier,
+  Improve a stack of the same person, the Enhance tab a chip). The exception is the working glow
+  over the photo, which the owner asked for.
+- **One progress language.** Every bar is the shared component (Mac `ProgressTrack` /
+  `ProgressLine` in `ProgressLine.swift`, Windows `JobBar` / `ProgressLine` in
+  `IslandHost.Clip.cs` and `IslandHost.Progress.cs`): a 3 pt rounded track, an accent fill that
+  eases forward (350 ms) and never back, a calm 1.8 s sweep when there is no fraction (still with
+  Reduce Motion / animations off), and one line under it: "Enhancing · 40 % · about 1 min left",
+  "Downloading · 48 of 161 MB · about 25 seconds left". The time left is smoothed (Driftwire's
+  meter: no estimate before 3 s and 2 %, "Estimating…" until then) and rounded to friendly words;
+  the verb shortens before the numbers do. A quiet Cancel ends the line; success or failure
+  replaces the line in its slot (the result and its action, or a one-line reason and Try again).
+  Spinners are only for waits under a second (Auto, Find eyes).
+- **Say each control once.** The header carries Undo, Reset and Compare; the rail repeats Undo and
+  Compare only while the panel is folded away. The Enhance tools are the Enhance tab's cards, so
+  the rail keeps only Red-eye, the canvas tool without a card, and the header has no tools chevron.
 
 ## Not built
 

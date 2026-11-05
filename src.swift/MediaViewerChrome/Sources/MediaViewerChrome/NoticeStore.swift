@@ -35,4 +35,17 @@ final class NoticeStore: ObservableObject {
     _ = buf.withUnsafeMutableBufferPointer { mv_chrome_notice_text($0.baseAddress, Int32($0.count)) }
     text = String(cString: buf)
   }
+
+  /// An iCloud fetch's notice (shell/photos_items_mac.mm fetch_notice:
+  /// "Downloading from iCloud… 40 %"): its fraction, nil while it has none
+  /// yet; nil-nil (no fetch) for any other notice.
+  var fetch: Double?? {
+    let prefix = "Downloading from iCloud"
+    // shell/edit_session.h kCloudFetchNotice: a file's own fetch, no fraction.
+    if text.hasPrefix("Downloading this file from the cloud") { return .some(nil) }
+    guard text.hasPrefix(prefix) else { return nil }
+    let digits = text.dropFirst(prefix.count).filter(\.isNumber)
+    guard let pct = Int(digits) else { return .some(nil) }
+    return .some(Double(min(100, pct)) / 100)
+  }
 }

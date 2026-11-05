@@ -850,11 +850,25 @@ Two more (2026-10-28, Enhance; contribution API **10**):
   every six seconds; `still` holds them. Mac `GlowEdge`, Windows `WithGlow`
   (`IslandHost.Glow.cs`); the colours and timings are one table (`GlowMath.cs`, checked against
   `ScreenView.swift` by the C# tests).
-- **`progress` `"look": "glow"`**: a bar in the same colours with a highlight sweeping along it
-  every 2.4 s (not started: the whole bar, dimmed). Mac `GlowBar`, Windows `BuildGlowBar`.
+- **`progress` `"look": "glow"`**: accepted; since 2026-11-05 drawn as every bar, the one
+  progress line below (it was a bar in the glow's colours with a sweeping highlight).
 
 Both are the window's own drawing, never the canvas: 30 fps at most, only while the node is in the
 tree, and still with Reduce Motion (Mac) or animations off (Windows).
+
+One more (2026-11-05, the one progress language; contribution API **13**, docs/design/20
+"Craft rules"):
+
+- **`progress` `detail` and `timed`.** Every `progress` bar (`"bar"` or `"glow"`) is drawn as one
+  line: a 3-point track whose fill eases forward and never back (a smaller value is held unless it
+  falls by more than a quarter, a new run), a calm sweep while the value is −1, and one line under it,
+  `label` first as the verb: "Enhancing · 40 % · about 1 min left". `detail` (at most a label's
+  length) takes the percentage's place ("48 of 161 MB"); `timed: true` has the host estimate the
+  time left from how the value moves (by node id, so it survives rebuilds) and say it in
+  Driftwire's words, "Estimating…" until it can. Mac `ProgressLine`, Windows `ProgressLine`
+  (`IslandHost.Progress.cs`); the words and meter are `ProgressWords.swift` and
+  `src.managed/Shared/ProgressWords.cs`, the C# tests reading the Swift twin. A `slider` shows its
+  value right of its label as a percentage of its range, or a count when its step is a whole number.
 
 One more (2026-11-04, Enhance's performance level; contribution API **12**, the same step as the
 Edit pane's `place "edit"` above: an older core refuses a tree that uses it, and Enhance's manifest

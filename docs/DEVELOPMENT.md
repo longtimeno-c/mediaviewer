@@ -2288,9 +2288,11 @@ hardware encoder. New host rows `sound_open` … `sound_write_close` and `frames
 `edit/picture_io.h`). Photos run Enhance image's five models (tiles blended by tent weight, docs/design/29 "Enhance image"), decoded and written through the export path
 (`still_open` … `still_write`, `edit::full_picture`, `edit::export_pixels`); a crop or colour change
 made on screen is not in the copy yet. While a clip's picture or a photo runs, the sheet shows a
-before/after preview with a glowing edge and progress bar (contribution API 10: a `surface`'s
-`"glow"`, `progress` `"look": "glow"`; `src/addons/enhance/preview.h`, Mac `GlowEdge`/`GlowBar`,
-Windows `IslandHost.Glow.cs`). A stable release packs Enhance as a preferred add-on, like Places:
+before/after preview with a glowing edge (contribution API 10: a `surface`'s `"glow"`;
+`src/addons/enhance/preview.h`, Mac `GlowEdge`, Windows `IslandHost.Glow.cs`) and the one progress
+line, which says the time left (API 13: `"timed"`; Mac `ProgressLine.swift`, Windows
+`IslandHost.Progress.cs`, words in `src.managed/Shared/ProgressWords.cs`, tested by
+`dotnet test src.managed/MediaViewer.Chrome.Tests` against the Swift twin). A stable release packs Enhance as a preferred add-on, like Places:
 `mediaviewer-addon-enhance-{win-x64,macos}.{zip,json,json.sig}` (the Mac pack arm64 only, signed
 and notarized by `macpack.py addon`) when that platform's pack is complete; a packing failure warns
 and the release publishes without it.

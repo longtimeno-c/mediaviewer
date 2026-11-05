@@ -2987,6 +2987,20 @@ preview's copies are made on Enhance's runner thread from frames it already deco
 Enhance that asks for 10 needs this MediaViewer or later ("needs a newer MediaViewer" on an older
 one). Not measured: the glow's own CPU on either chrome.
 
+**One progress language; the glow bar goes (2026-11-05, contribution API 13).** Partly reverses
+the progress half of the entry above. The owner, of the Edit pane: "improve the UI using lessons
+learned from Stageshow — like the progress bar for enhance etc… all ugly". Every bar the chromes
+draw is now one component per host (Mac `ProgressTrack` / `ProgressLine`, Windows `JobBar` /
+`ProgressLine`): a 3 pt track, an accent fill that eases forward and never back, a calm sweep when
+nothing is known, and one line under it ("Enhancing · 40 % · about 1 min left") with a quiet
+Cancel. A multicolour bar beside accent bars elsewhere was a second language, so a `progress`
+`"look": "glow"` is drawn as every bar; the glow round a `surface` stays, as does the working glow
+over the photo the owner asked for. API 13 adds a bar's `detail` (amounts in place of the
+percentage) and `timed` (the host estimates and says the time left, Driftwire's meter and words,
+`src.managed/Shared/ProgressWords.cs` and `ProgressWords.swift`), so the add-on's separate "time
+left" and "Downloading… 48 of 161 MB" text nodes went. The cost: Enhance asks for 13. The rest of
+the pass (header, rail, cards, Adjust) is in [20 "Craft rules"](20-edit-workspace.md#craft-rules).
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.
