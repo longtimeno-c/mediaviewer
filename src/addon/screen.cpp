@@ -358,9 +358,13 @@ error check_props(node& n, std::size_t& items) {
         case node_type::progress:
           // "look": "ring" (#442): a circle that fills, `size` points across.
           // "look": "glow" (contribution API 10, 2026-10-28): a bar in the
-          // host's glow colours, with a shimmer while it moves.
+          // host's glow colours, with a shimmer while it moves; from API 13
+          // the hosts draw it as every bar (docs/design/20 "Craft rules").
+          // "detail" (API 13): a few words in place of the percentage on the
+          // bar's line ("48 of 161 MB"); "timed": the host says the time left.
           ok = (key == "value" && num_in(v, -1.0, 1.0)) || (key == "look" && one_of(v, {"bar", "ring", "glow"})) ||
-               (key == "size" && int_in(v, 16, 256));
+               (key == "size" && int_in(v, 16, 256)) || (key == "detail" && str_max(v, kMaxLabel)) ||
+               (key == "timed" && v.k == json::kind::boolean);
           break;
         case node_type::tiles:
           // "static": shown, not chosen (a sender's avatar on an offer): no

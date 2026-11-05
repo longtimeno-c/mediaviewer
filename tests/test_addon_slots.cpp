@@ -1337,7 +1337,7 @@ TEST_CASE("a docked Edit screen opens only by the workspace's command, which fol
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 12);
+  REQUIRE(mv::addon::kContributionApi == 13);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);

@@ -244,7 +244,7 @@ struct PhotosBackupSection: View {
             Spacer(minLength: 0)
           }
           if store.running {
-            ProgressView(value: progressFraction).progressViewStyle(.linear)
+            ActivityBar(fraction: progressFraction)  // the one progress track (ProgressLine.swift)
             Text(progressLine).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
               .lineLimit(1).truncationMode(.middle)
           } else if store.run.state >= 3 {

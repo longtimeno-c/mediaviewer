@@ -42,7 +42,7 @@ enum FaceAction: Int32, CaseIterable, Identifiable {
   var symbol: String {
     switch self {
     case .openEyes: return "eye"
-    case .improve: return "wand.and.stars"
+    case .improve: return "person.2.crop.square.stack"  // another photo of the same person
     case .restore: return "person.crop.circle.badge.checkmark"
     }
   }
@@ -283,7 +283,6 @@ struct FacesPanelView: View {
               ProgressView().controlSize(.small)
               Text("Working…")
             } else {
-              Image(systemName: "sparkles")
               Text(store.chosenCount == store.faces.count ? "Do all" : "Do all \(store.chosenCount) chosen")
             }
           }

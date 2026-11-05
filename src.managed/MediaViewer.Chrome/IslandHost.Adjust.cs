@@ -674,12 +674,13 @@ public static partial class IslandHost
 
         if (section.HasAuto)
         {
-            // A small capsule (the Mac's AutoPill), its outline the hairline.
-            Button auto = ChromeButton(ButtonLabel("AUTO", UiFontSize - 5), Pad(7, 2, 7, 2),
+            // A small capsule (the Mac's AutoPill): sentence case, a quiet fill
+            // at rest, no outline (docs/design/20 "Craft rules").
+            Button auto = ChromeButton(ButtonLabel("Auto", UiFontSize - 4), Pad(8, 2, 8, 2),
                                        () => Send(Command.AdjustAuto, index), tip: $"Auto {section.Name}: one undo step");
             auto.CornerRadius = new CornerRadius(999);
-            auto.BorderBrush = Brush(Hairline);
-            auto.BorderThickness = new Thickness(1);
+            auto.MinWidth = 40;
+            auto.Background = Brush(ChromeColour.HoverWash);
             AutomationProperties_SetName(auto, $"Auto {section.Name}");
             auto.TabIndex = tab++;
             Grid.SetColumn(auto, 2);
@@ -855,15 +856,14 @@ public static partial class IslandHost
         foreach (int p in section.Params) bodyStack.Children.Add(BuildAdjustRow(p, tab++));
         _sectionBodies![s] = bodyStack;
         outer.Children.Add(bodyStack);
-        // The section's card (the Mac's: a raised surface, radius 9).
+        // The section's card (the Mac's: a raised surface, radius 10, 12 DIP
+        // inset, no tonal border: docs/design/20 "Craft rules").
         var card = new Border
         {
             Child = outer,
-            Padding = Pad(10, 6, 8, 8),
-            CornerRadius = Corner(9),
+            Padding = Pad(12, 8, 12, 8),
+            CornerRadius = Corner(10),
             Background = Brush(ChromeColour.Surface2),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(0.5),
         };
         return card;
     }
@@ -1412,7 +1412,7 @@ public static partial class IslandHost
                 // While a section's Auto runs it reads "…" and no Auto takes a
                 // second click (the Mac shows a spinner).
                 auto.IsEnabled = ready && _autoSection < 0;
-                auto.Content = ButtonLabel(_autoSection == s ? "…" : "AUTO", UiFontSize - 5);
+                auto.Content = ButtonLabel(_autoSection == s ? "…" : "Auto", UiFontSize - 4);
             }
         }
         if (_adjustResetButton is not null) _adjustResetButton.IsEnabled = ready;

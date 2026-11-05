@@ -31,7 +31,7 @@ enum EditTab: Int32, CaseIterable {
     case .info: return "info.circle"
     case .trim: return "timeline.selection"
     case .jobs: return "list.bullet.rectangle"
-    case .enhance: return "sparkles"
+    case .enhance: return "cpu"  // a model on this Mac; never a sparkle (docs/design/20 "Craft rules")
     }
   }
 

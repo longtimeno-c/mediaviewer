@@ -67,11 +67,8 @@ struct JobsView: View {
     VStack(alignment: .leading, spacing: MVTheme.space(4)) {
       Text("\(row.title) — \(row.source)").lineLimit(2)
       if row.running {
-        if row.state == 2 && row.fraction <= 0 {
-          ProgressView().progressViewStyle(.linear)
-        } else {
-          ProgressView(value: row.fraction).progressViewStyle(.linear)
-        }
+        // The one progress track (ProgressLine.swift); the row's status line says the rest.
+        ActivityBar(fraction: row.state == 2 && row.fraction <= 0 ? nil : row.fraction)
       }
       Text(row.status).font(MVTheme.font(12)).foregroundStyle(.secondary)
       HStack(spacing: MVTheme.space(8)) {

@@ -76,7 +76,7 @@ struct EnhanceTool: Identifiable {
     case .remove: return "eraser"
     case .restyle: return "paintpalette"
     case .faces: return "face.smiling"
-    case .detail: return "sparkles"
+    case .detail: return "plus.magnifyingglass"  // more detail; never a sparkle
     case .extend: return "arrow.up.left.and.arrow.down.right"
     case .restoreFaces: return "person.crop.circle.badge.checkmark"
     }

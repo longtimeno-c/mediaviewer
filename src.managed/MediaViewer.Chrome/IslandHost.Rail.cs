@@ -12,8 +12,10 @@ namespace MediaViewer.Chrome;
 /// docs/plans/edit-refresh.md S2: the Edit workspace's 44 DIP icon rail, its own
 /// island at the window's right edge while the workspace is open (native
 /// places it, layout_panels). Top: the tabs (Crop, Adjust, Enhance, Info; Trim
-/// and Jobs on a clip). Then a hairline and the tools (Remove, Red-eye, Faces,
-/// Extend). At the foot: Undo, Compare and Done. The Mac twin is EditRailView.swift.
+/// and Jobs on a clip). Then a hairline and Red-eye, the one canvas tool with
+/// no card (2026-11-05, docs/design/20 "Craft rules": Remove, Faces and Extend
+/// are the Enhance tab's cards). At the foot: Undo and Compare while the panel
+/// is folded (open, the header has them), and Done. The Mac twin is EditRailView.swift.
 /// </summary>
 /// <remarks>
 /// A tab icon sends <c>chrome_cmd_edit_tab</c>, which native reads as a rail
@@ -50,7 +52,6 @@ public static partial class IslandHost
 
     private sealed record RailItem(Button Button, Border Bar);
     private static readonly List<(RailItem Item, int Tab)> RailTabs = new();
-    private static RailItem? _railRemove;
     private static RailItem? _railCompare;
     private static Button? _railUndo;
 
@@ -58,7 +59,6 @@ public static partial class IslandHost
     {
         _railShape = "";
         RailTabs.Clear();
-        _railRemove = null;
         _railCompare = null;
         _railUndo = null;
     }
@@ -128,25 +128,8 @@ public static partial class IslandHost
                 Height = 1, Width = 24, Background = Brush(Hairline), Margin = Pad(0, 6, 0, 6),
                 HorizontalAlignment = HorizontalAlignment.Center,
             });
-            _railRemove = RailButton(RailGlyph.Remove, "Remove",
-                _editEnhance ? "Remove objects: brush over what to take out"
-                             : "Remove objects (needs the Enhance add-on)",
-                () =>
-                {
-                    // The rail's Remove arms or puts down the brush (the card runs Remove).
-                    if ((_editWand & WandBrushOn) != 0) Send(Command.AdjustPick, 100f);
-                    else if (!_editEnhance) OpenEnhanceSettings();
-                    else Send(Command.EditAction, EditActions.ArmBrush);
-                });
-            top.Children.Add(Holder(_railRemove));
             top.Children.Add(Holder(RailButton(RailGlyph.RedEye, "Red-eye", "Red-eye: click each red pupil on the photo",
                 () => Send(Command.EditAction, EditActions.ArmRedEye))));
-            top.Children.Add(Holder(RailButton(RailGlyph.Faces, "Faces", "Faces: choose faces on the photo to fix",
-                () => Send(Command.CanvasTool, CanvasTools.Faces * 1000))));
-            top.Children.Add(Holder(RailButton(RailGlyph.Extend, "Extend",
-                _editEnhance ? "Extend edges: more picture around the photo (Enhance)"
-                             : "Extend edges (needs the Enhance add-on)",
-                () => RunEnhanceTool(EnhanceToolKind.Extend))));
         }
         root.Children.Add(top);
 
@@ -243,9 +226,17 @@ public static partial class IslandHost
             ToolTipService.SetToolTip(item.Button, _editCollapsed ? $"Show {label}"
                                       : active ? $"{label}: click again to hide the panel" : WithTabKey(label, tab));
         }
-        if (_railRemove is not null) SetRailSelected(_railRemove, (_editWand & WandBrushOn) != 0, false);
-        if (_railCompare is not null) SetRailSelected(_railCompare, _editOriginal, false);
-        if (_railUndo is not null) _railUndo.IsEnabled = _editCount > 0;
+        if (_railCompare is not null)
+        {
+            SetRailSelected(_railCompare, _editOriginal, false);
+            Holder(_railCompare).Visibility = _editCollapsed ? Visibility.Visible : Visibility.Collapsed;
+        }
+        if (_railUndo is not null)
+        {
+            _railUndo.IsEnabled = _editCount > 0;
+            if (_railUndo.Parent is UIElement holder)
+                holder.Visibility = _editCollapsed ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
 
     private static string AutomationNameOf(Button b) =>
