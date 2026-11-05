@@ -5686,6 +5686,10 @@ void enhance_run_state(app_state* app) {
   if (!step.open.empty()) {
     // docs/design/20 "Compare": the result compares with the photo it was made from.
     if (!app->enhance_run_path.empty()) mv::shell::note_result(step.open, app->enhance_run_path);
+    // The payoff (docs/design/20 "Craft rules"): the new photo cross-fades in
+    // over this one as the glow fades, in the render thread (canvas/refinement.h).
+    app->input.result_fade_ms = mv::shell::steady_ms();
+    publish(app);
     enhance_open_result(app, step.open);
   }
 }

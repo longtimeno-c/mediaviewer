@@ -2,9 +2,10 @@
 // docs/plans/edit-refresh.md S2: the Edit workspace's 44 pt icon rail, docked at
 // the window's right edge while the workspace is open (main_mac.mm railHost).
 // Top: the tabs (Crop, Adjust, Enhance, Info; Trim and Jobs on a clip). Then a
-// hairline and the tools (Remove, Red-eye, Faces; Extend is the Enhance tab's
-// card only, owner 2026-11-05). At the foot: Undo,
-// Compare and Done. The active tab's icon folds the inspector to the rail
+// hairline and Red-eye, the one canvas tool with no card (2026-11-05, docs/
+// design/20 "Craft rules": Remove, Faces and Extend are the Enhance tab's
+// cards, so the rail does not say them twice). At the foot: Undo and Compare
+// while the panel is folded (open, the header has them), and Done. The active tab's icon folds the inspector to the rail
 // (shell/edit_workspace.h rail_pick); any icon of a folded rail unfolds it.
 // The Windows twin is IslandHost.Rail.cs.
 import MVChromeBridge
@@ -26,23 +27,14 @@ struct EditRailView: View {
       }
       if !store.isClip {
         Rectangle().fill(MVTheme.hairline).frame(width: 24, height: 1).padding(.vertical, MVTheme.space(6))
-        RailButton(symbol: store.brushOn ? "paintbrush.pointed.fill" : "eraser",
-                   label: "Remove",
-                   help: store.enhance ? "Remove objects: brush over what to take out"
-                                       : "Remove objects (needs the Enhance add-on)",
-                   selected: store.brushOn) {
-          // The rail's Remove arms or puts down the brush (the card runs Remove).
-          if store.brushOn { store.setBrush(false, size: 0) } else { store.tool(.remove) }
-        }
         // S3: Red-eye is a canvas tool; a second click puts it down.
-        RailButton(symbol: "eye", label: "Red-eye",
+        // A pupil in its iris: the tool's target, not an eye that views.
+        RailButton(symbol: "smallcircle.filled.circle", label: "Red-eye",
                    help: "Red-eye: click each red pupil on the photo",
                    selected: store.toolBar.tool == .redEye) { store.tool(.redEye) }
-        RailButton(symbol: "face.smiling", label: "Faces",
-                   help: "Faces: open closed eyes, improve faces from your photos") { store.tool(.faces) }
       }
       Spacer(minLength: MVTheme.space(8))
-      if !store.isClip {
+      if !store.isClip && store.collapsed {
         RailButton(symbol: "arrow.uturn.backward", label: "Undo",
                    help: withKey("Undo the last edit", "Undo edit")) { store.run(EditCommand.undo) }
           .disabled(store.editCount == 0)

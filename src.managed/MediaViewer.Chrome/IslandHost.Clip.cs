@@ -347,10 +347,17 @@ public static partial class IslandHost
     // tools/check-winui-controls.ps1 keeps that whole family out of src.managed
     // (shared/FlatBar.cs is this bar for the add-ons). The status line under it
     // carries the same percentage as text for screen readers.
+    // docs/design/20 "Craft rules" (2026-11-05): the chrome's one progress
+    // track (the Mac's ProgressTrack): 3 DIP, rounded, an accent fill that
+    // eases forward over 350 ms, a calm sweep when there is no fraction.
+    // ProgressLine (IslandHost.Progress.cs) puts its one line under it.
     private sealed class JobBar
     {
         public readonly Grid Root;
         private readonly Border _fill;
+        private readonly ScaleTransform _fillScale = new();
+        private Storyboard? _ease;
+        private double _drawn = -1;
         // Indeterminate: a soft accent pulse sweeps across, off the left edge to
         // off the right, eased, as the Mac's ActivityBar (AddonsView.swift). A
         // Storyboard on a TranslateTransform, as the load bar's sweep
@@ -366,8 +373,10 @@ public static partial class IslandHost
         private bool _indeterminate;
         private bool _loaded;
 
-        private const double SweepPeriodMs = 1400;
-        private const double PulseFraction = 0.35;
+        private const double SweepPeriodMs = 1800;
+        private const double PulseFraction = 0.3;
+        private const double EaseMs = 350;
+        public const double Height = 3;
 
         public JobBar()
         {
@@ -375,7 +384,8 @@ public static partial class IslandHost
             {
                 Background = Brush(TrimAccent),
                 HorizontalAlignment = HorizontalAlignment.Left,
-                CornerRadius = new CornerRadius(2),  // the bar's pill ends: half its height
+                CornerRadius = new CornerRadius(Height / 2),  // the bar's pill ends: half its height
+                RenderTransform = _fillScale,
             };
             _pulseBrush = new LinearGradientBrush
             {
@@ -389,7 +399,7 @@ public static partial class IslandHost
                 RenderTransform = _slide,
                 Visibility = Visibility.Collapsed,
             };
-            Root = new Grid { Height = 4, Background = Brush(Hairline), CornerRadius = new CornerRadius(2) };  // a pill: half its height
+            Root = new Grid { Height = Height, Background = Brush(ChromeColour.PressedWash), CornerRadius = new CornerRadius(Height / 2) };  // a pill: half its height
             Root.Children.Add(_fill);
             Root.Children.Add(_pulse);
             Root.SizeChanged += (_, e) =>
@@ -440,11 +450,53 @@ public static partial class IslandHost
             double width = Root.ActualWidth;
             bool still = _indeterminate && !HostAnimationsEnabled();
             bool sweep = _indeterminate && !still;
-            _fill.Opacity = still ? 0.45 : 1;
-            _fill.Width = Math.Max(0, (still ? 1 : _indeterminate ? 0 : _value) * width);
+            _fill.Opacity = still ? 0.35 : 1;
+            _fill.Width = Math.Max(0, width);
+            EaseFill(still ? 1 : _indeterminate ? 0 : _value);
             _pulse.Visibility = sweep ? Visibility.Visible : Visibility.Collapsed;
             if (sweep && _loaded && width > 0 && Root.Visibility == Visibility.Visible) StartSweep(width);
             else StopSweep();
+        }
+
+        // The fill's scale eases to `to` from where it was drawn last; the
+        // first draw, a hidden bar and animations off set it at once.
+        private void EaseFill(double to)
+        {
+            if (to == _drawn) return;
+            double from = _drawn;
+            _drawn = to;
+            _ease?.Stop();
+            _ease = null;
+            _fillScale.ScaleX = to;
+            if (from < 0 || !_loaded || Root.Visibility != Visibility.Visible || !HostAnimationsEnabled()) return;
+            try
+            {
+                var grow = new DoubleAnimation
+                {
+                    From = from,
+                    To = to,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(EaseMs)),
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                };
+                Storyboard.SetTarget(grow, _fillScale);
+                Storyboard.SetTargetProperty(grow, "ScaleX");
+                _ease = new Storyboard();
+                _ease.Children.Add(grow);
+                _ease.Begin();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                _ease = null;
+            }
+        }
+
+        /// <summary>Draws the fill at `value` at once (a rebuilt bar picking up where the last left off).</summary>
+        public void Seed(double value)
+        {
+            _value = Math.Clamp(value, 0, 1);
+            _drawn = _value;
+            _fillScale.ScaleX = _value;
         }
 
         private void StartSweep(double width)

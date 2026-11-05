@@ -292,7 +292,22 @@ public struct CommandBarView: View {
         SlotBarItems()
         Spacer()
         // PR 12: what a rating key or a metadata write just did.
-        if !notice.text.isEmpty {
+        if let fetch = notice.fetch {
+          // An iCloud fetch in flight: the one progress track and its line
+          // (docs/design/20 "Craft rules"), not a percentage in the words.
+          HStack(spacing: MVTheme.space(8)) {
+            ProgressTrack(fraction: fetch)
+              .frame(width: 90)
+            Text(ProgressWords.line("Downloading from iCloud", fraction: fetch))
+              .font(MVTheme.font(13).monospacedDigit())
+              .foregroundStyle(MVTheme.body)
+              .lineLimit(1)
+          }
+          .padding(.trailing, MVTheme.space(10))
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel("Downloading from iCloud")
+          .accessibilityValue(fetch.map { ProgressWords.percent($0) } ?? "In progress")
+        } else if !notice.text.isEmpty {
           Text(notice.text)
             .font(MVTheme.font())
             .foregroundStyle(MVTheme.title)
@@ -352,9 +367,7 @@ private struct UpdateBarItem: View {
       HStack(spacing: 0) {
         status(version.map { "Downloading update \($0)…" } ?? "Downloading update…",
                help: "Downloading in the background. This does not interrupt anything.")
-        ProgressView()
-          .progressViewStyle(.linear)
-          .controlSize(.small)
+        ActivityBar(fraction: nil)  // the one progress track (ProgressLine.swift)
           .frame(width: 90)
           .padding(.trailing, MVTheme.space(10))
           .accessibilityLabel("Update download progress")

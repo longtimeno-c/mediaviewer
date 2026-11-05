@@ -18,7 +18,7 @@
 // independent columns (Light, Colour, B&W, Vignette, Detail | Levels, Curves,
 // Selective Colour, Red-Eye). xwide (≥ 720): wide plus a scopes row, the
 // histogram and a square Curves side by side. Each section is a card with a
-// chevron, a changed dot, an AUTO pill and ↺; a value readout is clickable
+// chevron, a changed dot, an Auto pill and ↺; a value readout is clickable
 // to type a number, and a double-click on a slider sets it back to 0.
 //
 // Keyboard-complete without Full Keyboard Access: ↑ ↓ pick a slider of an open
@@ -407,7 +407,7 @@ private struct AdjustPane: View {
     .controlSize(.small)
   }
 
-  // A section's card: its header (chevron, icon, name, the changed dot, AUTO,
+  // A section's card: its header (chevron, icon, name, the changed dot, Auto,
   // reset; Black & White's on switch) and, when open, its sliders.
   private func sectionView(_ i: Int) -> some View {
     let section = AdjustStore.sections[i]
@@ -424,7 +424,7 @@ private struct AdjustPane: View {
         Spacer(minLength: MVTheme.space(4))
         if section.hasAuto {
           if store.autoSection == i {
-            ProgressView().controlSize(.small).frame(width: 38)
+            ProgressView().controlSize(.mini).frame(width: 40)
           } else {
             AutoPill(enabled: store.ready && store.autoSection < 0) { store.auto(i) }
               .help("Auto \(section.name): one undo step")
@@ -458,10 +458,10 @@ private struct AdjustPane: View {
         .transition(.opacity)
       }
     }
-    .padding(.horizontal, MVTheme.space(10))
+    .padding(.horizontal, MVTheme.space(12))
     .padding(.vertical, MVTheme.space(8))
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(9)).fill(MVTheme.surface2))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(9)).stroke(MVTheme.hairline.opacity(0.6), lineWidth: 0.5))
+    // One surface, no tonal border (docs/design/20 "Craft rules").
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(MVTheme.surface2))
   }
 
   // What a section shows above its sliders: channel and band pickers, the
@@ -709,7 +709,8 @@ private struct SectionHeaderButton: View {
   }
 }
 
-/// A section's AUTO: a small capsule that fills on hover.
+/// A section's Auto: a small capsule, a quiet fill at rest that takes the
+/// accent on hover (docs/design/20 "Craft rules": sentence case, no outline).
 private struct AutoPill: View {
   let enabled: Bool
   let action: () -> Void
@@ -717,13 +718,13 @@ private struct AutoPill: View {
 
   var body: some View {
     Button(action: action) {
-      Text("AUTO")
-        .font(MVTheme.font(11))
-        .foregroundStyle(enabled ? (hover ? MVTheme.accent : MVTheme.body) : MVTheme.disabled)
-        .padding(.horizontal, MVTheme.space(7))
+      Text("Auto")
+        .font(MVTheme.font(12))
+        .foregroundStyle(enabled ? (hover ? MVTheme.accent : MVTheme.title) : MVTheme.disabled)
+        .padding(.horizontal, MVTheme.space(8))
         .padding(.vertical, MVTheme.space(2))
-        .background(Capsule().fill(hover && enabled ? MVTheme.selectionWash : .clear))
-        .overlay(Capsule().stroke(hover && enabled ? MVTheme.accent : MVTheme.hairline, lineWidth: 1))
+        .frame(minWidth: 40)
+        .background(Capsule().fill(hover && enabled ? MVTheme.selectionWash : MVTheme.surface2))
         .contentShape(Capsule())
     }
     .buttonStyle(.plain)

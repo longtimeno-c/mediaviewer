@@ -10,24 +10,22 @@ import MVChromeBridge
 import SwiftUI
 
 // ---- the header -------------------------------------------------------------------
-// docs/plans/edit-refresh.md S2 (§2.5): the strip is the inspector's header, as
-// tall as its content (main_mac.mm hosts it with an intrinsic height). Row 1:
-// the file name (truncated in the middle), the edit count, a Photos / iCloud
-// chip and ✦ Auto with the tools popover. Row 2: Undo · Reset · Compare, and
-// Save copy… filled with the accent. Below 340 pt both rows are icons only
-// (ViewThatFits); tooltips and the screen reader carry the live keys. The tabs
-// moved to the rail (EditRailView), and so did Done.
+// docs/plans/edit-refresh.md S2 (§2.5), restyled 2026-11-05 (docs/design/20
+// "Craft rules"): the strip is the inspector's header, as tall as its content
+// (main_mac.mm hosts it with an intrinsic height). Row 1 is the file's name,
+// alone but for its edit count and a Photos / iCloud mark, so it has the
+// pane's width. Row 2: Auto · Undo · Reset · Compare, and Save copy… filled
+// with the accent, always labelled. Where the labels do not fit, Undo, Reset
+// and Compare go to icons first, then Auto (ViewThatFits); tooltips and the
+// screen reader carry the live keys. The Enhance tools live in the rail's
+// Enhance tab, not behind a chevron here; the tabs and Done are the rail's.
 
 struct EditStripView: View {
   @ObservedObject private var store = EditStore.shared
-  @State private var toolsShown = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      ViewThatFits(in: .horizontal) {
-        titleRow(labels: true)
-        titleRow(labels: false)
-      }
+      titleRow
       if store.isClip {
         HStack(spacing: MVTheme.space(6)) {
           Button("Clip tools…") { store.run(EditCommand.clipTools) }
@@ -37,17 +35,16 @@ struct EditStripView: View {
         }
       } else {
         ViewThatFits(in: .horizontal) {
-          actionRow(labels: true)
-          actionRow(labels: false)
+          actionRow(labels: true, autoLabel: true)
+          actionRow(labels: false, autoLabel: true)
+          actionRow(labels: false, autoLabel: false)
         }
         // docs/design/20 "Compare" (owner call A): the split's words are the
         // chrome's; only the divider and its handle lie over the photo.
         if store.showOriginal && store.canCompare { compareLabels }
       }
     }
-    .padding(.horizontal, MVTheme.space(12))
-    .padding(.top, MVTheme.space(10))
-    .padding(.bottom, MVTheme.space(10))
+    .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .topLeading)
     .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
@@ -79,109 +76,57 @@ struct EditStripView: View {
     store.editCount == 1 ? "1 edit" : "\(store.editCount) edits"
   }
 
-  @ViewBuilder
-  private func titleRow(labels: Bool) -> some View {
-    HStack(spacing: MVTheme.space(6)) {
-      // The name, its count and chip take what Auto leaves. Their ideal width
-      // is small on purpose: ViewThatFits measures ideal widths, and a long
-      // file name (it truncates in the middle anyway) must not cost ✦ Auto
-      // its label.
-      HStack(spacing: MVTheme.space(6)) {
-        Text(store.name.isEmpty ? store.title : store.name)
-          .font(MVTheme.font(15))
-          .foregroundStyle(MVTheme.title)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .layoutPriority(-1)
-          .help(store.name)
-          .accessibilityLabel("\(store.title): \(store.name)")
-        if store.editCount > 0 && !store.isClip {
-          Text(labels ? countText : "\(store.editCount)")
-            .font(MVTheme.font(11).monospacedDigit())
-            .foregroundStyle(MVTheme.body)
-            .padding(.horizontal, MVTheme.space(6))
-            .padding(.vertical, MVTheme.space(1))
-            .background(Capsule().fill(MVTheme.surface2))
-            .overlay(Capsule().stroke(MVTheme.hairline, lineWidth: 0.5))
-            .fixedSize()
-            .help("\(countText) on this photo; the original is never changed")
-            .accessibilityLabel(countText)
-        }
-        if store.chips & 2 != 0 {
-          chip(labels ? "iCloud" : nil, symbol: "icloud.and.arrow.down",
-               help: "Downloading the original from iCloud…")
-        } else if store.chips & 1 != 0 {
-          chip(labels ? "Photos" : nil, symbol: "photo.on.rectangle",
-               help: "A photo in your Photos library: results are added as new photos")
-        }
+  private var titleRow: some View {
+    HStack(spacing: MVTheme.space(8)) {
+      Text(store.name.isEmpty ? store.title : store.name)
+        .font(MVTheme.font(15))
+        .foregroundStyle(MVTheme.title)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(store.name)
+        .accessibilityLabel("\(store.title): \(store.name)")
+      if store.editCount > 0 && !store.isClip {
+        Text(countText)
+          .font(MVTheme.font(11).monospacedDigit())
+          .foregroundStyle(MVTheme.body)
+          .padding(.horizontal, MVTheme.space(7))
+          .padding(.vertical, MVTheme.space(2))
+          .background(Capsule().fill(MVTheme.surface2))
+          .fixedSize()
+          .help("\(countText) on this photo; the original is never changed")
+          .accessibilityLabel(countText)
       }
-      .frame(minWidth: 0, idealWidth: 96, maxWidth: .infinity, alignment: .leading)
-      if !store.isClip {
-        autoButton(labels: labels)
+      if store.chips & 2 != 0 {
+        mark("icloud.and.arrow.down", help: "Downloading the original from iCloud…")
+      } else if store.chips & 1 != 0 {
+        mark("photo.on.rectangle", help: "A photo in your Photos library: results are added as new photos")
       }
     }
   }
 
-  private func chip(_ text: String?, symbol: String, help: String) -> some View {
-    HStack(spacing: MVTheme.space(3)) {
-      Image(systemName: symbol).font(.system(size: 10))
-      if let text { Text(text).font(MVTheme.font(11)) }
-    }
-    .foregroundStyle(MVTheme.body)
-    .padding(.horizontal, MVTheme.space(6))
-    .padding(.vertical, MVTheme.space(2))
-    .background(Capsule().fill(MVTheme.surface2))
-    .fixedSize()
-    .help(help)
-    .accessibilityLabel(help)
-  }
-
-  /// ✦ Auto (one undo step; filled while it is the last edit, and a click then
-  /// takes it back) beside the chevron that opens the tools popover.
-  private func autoButton(labels: Bool) -> some View {
-    HStack(spacing: 0) {
-      Button { store.autoEnhance() } label: {
-        HStack(spacing: MVTheme.space(4)) {
-          if store.autoBusy {
-            ProgressView().controlSize(.mini)
-          } else {
-            Image(systemName: store.autoOn ? "checkmark" : "sparkles").font(.system(size: 11, weight: .semibold))
-          }
-          if labels { Text("Auto").font(MVTheme.font(13)) }
-        }
-        .padding(.leading, MVTheme.space(9))
-        .padding(.trailing, MVTheme.space(6))
-        .padding(.vertical, MVTheme.space(4))
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .disabled(!store.canEdit || store.autoBusy)
-      .help(store.autoOn ? withKey("Auto is on: click to take it back", "Auto enhance")
-                         : withKey("Auto: better light and colour in one click (one undo step)", "Auto enhance"))
-      .accessibilityLabel(store.autoOn ? "Auto enhance, on" : "Auto enhance")
-      Rectangle().fill(store.autoOn ? MVTheme.onAccent.opacity(0.4) : MVTheme.hairline).frame(width: 1, height: 16)
-      Button { toolsShown.toggle() } label: {
-        Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
-          .padding(.horizontal, MVTheme.space(6))
-          .padding(.vertical, MVTheme.space(6))
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .help("Enhance tools: Remove, Restyle, Faces, Enhance image, Extend")
-      .accessibilityLabel("Enhance tools")
-      .popover(isPresented: $toolsShown, arrowEdge: .bottom) {
-        EnhanceToolsPopover { toolsShown = false }
-      }
-    }
-    .foregroundStyle(store.autoOn ? MVTheme.onAccent : MVTheme.accent)
-    .background(Capsule().fill(store.autoOn ? MVTheme.accent : MVTheme.selectionWash))
-    .overlay(Capsule().stroke(MVTheme.accent.opacity(store.autoOn ? 0 : 0.5), lineWidth: 1))
-    .fixedSize()
+  /// Where the photo lives, as an icon (its words are the tooltip).
+  private func mark(_ symbol: String, help: String) -> some View {
+    Image(systemName: symbol)
+      .font(.system(size: 12))
+      .foregroundStyle(MVTheme.body)
+      .frame(width: 16, height: 16)
+      .help(help)
+      .accessibilityLabel(help)
   }
 
   @ViewBuilder
-  private func actionRow(labels: Bool) -> some View {
-    HStack(spacing: MVTheme.space(4)) {
+  private func actionRow(labels: Bool, autoLabel: Bool) -> some View {
+    HStack(spacing: MVTheme.space(2)) {
+      // Auto: one undo step; selected while it is the last edit, when a click
+      // takes it back. Busy, the spinner takes the icon's slot.
+      HeaderButton(title: "Auto", symbol: store.autoOn ? "checkmark" : "sun.max.fill", labels: autoLabel,
+                   help: store.autoOn ? withKey("Auto is on: click to take it back", "Auto enhance")
+                                      : withKey("Auto: better light and colour in one click (one undo step)",
+                                                "Auto enhance"),
+                   name: store.autoOn ? "Auto enhance, on" : "Auto enhance",
+                   selected: store.autoOn, busy: store.autoBusy) { store.autoEnhance() }
+        .disabled(!store.canEdit || store.autoBusy)
       HeaderButton(title: "Undo", symbol: "arrow.uturn.backward", labels: labels,
                    help: withKey("Undo the last edit", "Undo edit"), name: "Undo edit") { store.run(EditCommand.undo) }
         .disabled(store.editCount == 0)
@@ -195,21 +140,23 @@ struct EditStripView: View {
                    selected: store.showOriginal) { store.setShowOriginal(!store.showOriginal) }
         .disabled(!store.canCompare)
         .accessibilityAddTraits(store.showOriginal ? [.isSelected] : [])
-      Spacer(minLength: MVTheme.space(6))
-      Button { store.saveCopy() } label: {
-        if labels { Text("Save copy…") } else { Image(systemName: "square.and.arrow.down") }
-      }
-      .buttonStyle(AccentButtonStyle())
-      .help(withKey("Write a new file with these edits; the original is never changed", "Export…"))
-      .accessibilityLabel("Save copy")
-      .fixedSize()
+      Spacer(minLength: MVTheme.space(8))
+      Button("Save copy…") { store.saveCopy() }
+        .buttonStyle(AccentButtonStyle())
+        .help(withKey("Write a new file with these edits; the original is never changed", "Export…"))
+        .accessibilityLabel("Save copy")
+        .fixedSize()
     }
+    .padding(.leading, -HeaderButton.inset)
   }
 }
 
-/// A header action: an icon and its name (or the icon alone below 340 pt),
-/// a wash on hover, the selected wash while on.
+/// A header action: an icon and its name (or the icon alone where the
+/// labels do not fit), a wash on hover, the selected wash while on.
 private struct HeaderButton: View {
+  /// The wash's inset round the icon; the row pulls in by it, so the first
+  /// icon's ink lines up with the name above it.
+  static let inset = MVTheme.space(7)
   let title: String
   let symbol: String
   let labels: Bool
@@ -218,19 +165,28 @@ private struct HeaderButton: View {
   /// which is what an icon-only button (below 340 pt) read before 2026-11-05.
   var name: String? = nil
   var selected = false
+  /// A wait under a second: a small spinner in the icon's slot.
+  var busy = false
   let action: () -> Void
   @State private var hover = false
   @Environment(\.isEnabled) private var enabled
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: MVTheme.space(4)) {
-        Image(systemName: symbol).font(.system(size: 12, weight: .medium))
-          .accessibilityHidden(true)
+      HStack(spacing: MVTheme.space(5)) {
+        ZStack {
+          if busy {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: symbol).font(.system(size: 13, weight: .medium))
+          }
+        }
+        .frame(width: 16, height: 16)
+        .accessibilityHidden(true)
         if labels { Text(title).font(MVTheme.font(13)).lineLimit(1) }
       }
       .foregroundStyle(!enabled ? MVTheme.disabled : (selected ? MVTheme.accent : MVTheme.title))
-      .padding(.horizontal, MVTheme.space(labels ? 8 : 7))
+      .padding(.horizontal, HeaderButton.inset)
       .padding(.vertical, MVTheme.space(5))
       .background(RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .fill(selected ? MVTheme.selectionWash : (hover && enabled ? MVTheme.hoverWash : .clear)))
@@ -273,8 +229,8 @@ struct EditPaneView: View {
 private struct SectionTitle: View {
   let text: String
   var body: some View {
-    Text(text.uppercased()).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-      .tracking(0.6)
+    // Sentence case and one weight step, never capitals (docs/design/20 "Craft rules").
+    Text(text).font(MVTheme.font(12).weight(.semibold)).foregroundStyle(MVTheme.body)
       .accessibilityAddTraits(.isHeader)
       .accessibilityLabel(text)
   }

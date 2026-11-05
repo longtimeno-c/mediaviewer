@@ -255,6 +255,11 @@ struct input_snapshot {
   // render thread, which restarts the ground's five seconds.
   bool reduce_motion = false;
   std::uint32_t pointer_seq = 0;
+  // One-click Enhance: the host opened a run's result at this steady_ms (0
+  // never). The next new still to land within canvas::k_result_fade_window_ms
+  // cross-fades in over the one it replaces (canvas/refinement.h), once per
+  // stamp; nothing with reduce_motion.
+  std::uint64_t result_fade_ms = 0;
   // The welcome card's recent folders (labels only; the host keeps the paths
   // and hit-tests the rows). count 0 once anything is open. A change bumps
   // activity_seq for its one redraw.

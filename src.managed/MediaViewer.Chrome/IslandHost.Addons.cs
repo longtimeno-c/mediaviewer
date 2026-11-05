@@ -130,54 +130,40 @@ public static partial class IslandHost
         };
     }
 
-    /// <summary>An install's bar: "412 MB of 1.08 GB" and the percentage
-    /// under it while downloading, an indeterminate bar after.</summary>
+    /// <summary>An install's bar, in the one progress language (ProgressLine):
+    /// "Downloading · 412 of 1080 MB · about 2 min left" while downloading, then
+    /// the checking and installing steps over a sweeping bar.</summary>
     private sealed class AddonProgressView
     {
-        // A JobBar, not a ProgressBar: WinUI's has no default style in this
-        // island app, and entering the tree fail-fasts (IslandHost.Clip.cs).
-        private readonly JobBar _bar;
-        private readonly TextBlock _text;
-        private readonly TextBlock _percent;
+        // A JobBar under the line, not a ProgressBar: WinUI's has no default
+        // style in this island app, and entering the tree fail-fasts (IslandHost.Clip.cs).
+        private readonly ProgressLine _line = new();
 
         public AddonProgressView(double width)
         {
-            _bar = new JobBar();
-            _text = Label("");
-            _text.FontSize = TypeSize(12);
-            _percent = Label("");
-            _percent.FontSize = TypeSize(12);
-            _percent.HorizontalAlignment = HorizontalAlignment.Right;
-            var lines = new Grid();
-            lines.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            lines.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            lines.Children.Add(_text);
-            Grid.SetColumn(_percent, 1);
-            lines.Children.Add(_percent);
-            Root = new StackPanel { Spacing = Space(4), Width = width, HorizontalAlignment = HorizontalAlignment.Left };
-            Root.Children.Add(_bar.Root);
-            Root.Children.Add(lines);
+            Root = _line.Root;
+            Root.Width = width;
+            Root.HorizontalAlignment = HorizontalAlignment.Left;
         }
 
         public StackPanel Root { get; }
 
-        public void Show(AddonPhase p) => Show(p.Fraction, p.Text);
+        public void Show(AddonPhase p)
+        {
+            bool downloading = p.Kind == AddonPhaseKind.Downloading;
+            string verb = !downloading ? p.Text.TrimEnd('…') : p.Done <= 0 ? "Connecting" : "Downloading";
+            string? detail = downloading && p.Done > 0
+                ? p.Total > 0 ? MediaViewer.Shared.ProgressWords.Amounts(p.Done, p.Total) : MediaViewer.Shared.ByteSize.Text(p.Done)
+                : null;
+            // One download's meter: its size names it.
+            string? key = downloading && p.Total > 0 ? $"addon-download-{p.Total}" : null;
+            _line.Show(verb, p.Fraction, detail, key, key is not null);
+        }
 
         /// <summary>The bar at <paramref name="fraction"/> (null: indeterminate)
-        /// over <paramref name="text"/>; open add-on downloads use this with
-        /// their own sizes (IslandHost.OpenAddons.cs).</summary>
-        public void Show(double? f, string text)
-        {
-            // Whatever the phase the bar shows activity: indeterminate (the
-            // sweep) while no fraction is known, during checking and
-            // installing too (owner report, 2026-09-28). With animations off
-            // in Windows the JobBar is a still, dimmed full bar instead.
-            _bar.IsIndeterminate = f is null;
-            if (f is double v) _bar.Value = v;
-            _text.Text = text;
-            _percent.Text = f is double pct ? $"{Math.Floor(pct * 100):0} %" : "";
-            AutomationProperties.SetName(Root, f is double a ? $"{text}, {Math.Floor(a * 100):0} percent" : text);
-        }
+        /// with <paramref name="text"/> as its line; open add-on downloads use
+        /// this with their own sizes (IslandHost.OpenAddons.cs).</summary>
+        public void Show(double? f, string text) => _line.Show(text, f);
     }
 
     // A new bar for the row being built, showing the slot's current phase;

@@ -80,7 +80,7 @@ std::string eta_words(double s) {
   if (s < 10) return "A few seconds";
   char buf[48];
   if (s < 55) {
-    std::snprintf(buf, sizeof buf, "About %d s", static_cast<int>(std::lround(s / 5.0) * 5));
+    std::snprintf(buf, sizeof buf, "About %d seconds", static_cast<int>(std::lround(s / 5.0) * 5));
     return buf;
   }
   const auto minutes = static_cast<long long>(std::lround(s / 60.0));

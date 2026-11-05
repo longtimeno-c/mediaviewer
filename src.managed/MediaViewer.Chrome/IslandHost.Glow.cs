@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Contribution API 10 (2026-10-28, Enhance): a surface's "glow" and a progress
-// bar's "glow" look. The Mac twins are GlowEdge and GlowBar in ScreenView.swift;
-// the colours are the same.
+// Contribution API 10 (2026-10-28, Enhance): a surface's "glow". The Mac twin
+// is GlowEdge in ScreenView.swift; the colours are the same. A progress bar's
+// "glow" look is drawn as every bar since 2026-11-05 (ProgressLine, docs/design/20
+// "Craft rules": one progress language).
 //
 // Both are the window's own drawing, never the canvas: plain Borders with
 // gradient brushes (they load in the islands), stepped on the window's frames
@@ -103,55 +104,5 @@ public static partial class IslandHost
             OnGlowFrames(root, t => turn.Angle = GlowMath.Turn(t));
         }
         return root;
-    }
-
-    /// <summary>
-    /// A progress bar in the glow's colours: a highlight sweeps along it while
-    /// it moves; not started (value &lt; 0), the whole bar shows dimmed.
-    /// </summary>
-    private static FrameworkElement BuildGlowBar(double v)
-    {
-        var track = new Grid { Height = 6, MinWidth = 120, Background = Brush(Hairline), CornerRadius = new CornerRadius(3) };  // a pill
-        var fill = new Border
-        {
-            CornerRadius = new CornerRadius(3),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Opacity = v < 0 ? 0.55 : 1,
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0.5),
-                EndPoint = new Windows.Foundation.Point(1, 0.5),
-                GradientStops = GlowStops(),
-            },
-        };
-        var clear = Windows.UI.Color.FromArgb(0, 255, 255, 255);
-        var lit = Windows.UI.Color.FromArgb(128, 255, 255, 255);
-        var a = new GradientStop { Color = clear, Offset = 0 };
-        var b = new GradientStop { Color = lit, Offset = 0 };
-        var c = new GradientStop { Color = clear, Offset = 0 };
-        var sheen = new Border
-        {
-            CornerRadius = new CornerRadius(3),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0.5),
-                EndPoint = new Windows.Foundation.Point(1, 0.5),
-                GradientStops = { a, b, c },
-            },
-        };
-        track.Children.Add(fill);
-        track.Children.Add(sheen);
-        track.SizeChanged += (_, _) => fill.Width = sheen.Width = track.ActualWidth * (v < 0 ? 1 : Math.Clamp(v, 0, 1));
-        if (GlowAnimates())
-        {
-            OnGlowFrames(track, t =>
-            {
-                // A band 30 % of the bar wide, from just off its left end to just off its right.
-                (a.Offset, b.Offset, c.Offset) = GlowMath.Band(t);
-            });
-        }
-        AutomationProperties.SetHelpText(track, v < 0 ? "In progress" : $"{Math.Round(v * 100)} percent");
-        return track;
     }
 }

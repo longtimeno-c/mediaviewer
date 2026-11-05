@@ -490,6 +490,10 @@ class present_lab_mac {
   // and refits a fitted / filled camera when it moves. True when it changed.
   bool apply_compare_split(input_snapshot& snapshot, std::uint32_t host_chrome_left) noexcept;
   canvas::crossfade fade_;
+  // One-click Enhance's result cross-fading in over previous_image_ (render
+  // thread), and the host's last request it has taken (input_snapshot.result_fade_ms).
+  canvas::crossfade result_fade_;
+  std::uint64_t seen_result_fade_ms_ = 0;
   std::atomic<std::uint32_t> stills_shown_{0};
 
   // PR 19 video. The render thread owns `media_` and `video_frame_`; a worker

@@ -150,12 +150,9 @@ public static partial class IslandHost
     private static Border? _editCompareLabels;
     private static TextBlock? _editCompareBefore;
     private static TextBlock? _editCompareAfter;
-    private static Border? _editAuto;
     private static Button? _editAutoMain;
     private static FontIcon? _editAutoIcon;
-    private static TextBlock? _editAutoLabel;
     private static Spinner? _editAutoSpinner;
-    private static Button? _editAutoMore;
     private static Button? _editSave;
     // Labels hidden below 340 DIP (the icons stay): ApplyEditWidthClass.
     private static readonly List<UIElement> EditCompactHidden = new();
@@ -184,12 +181,9 @@ public static partial class IslandHost
         _editCompareLabels = null;
         _editCompareBefore = null;
         _editCompareAfter = null;
-        _editAuto = null;
         _editAutoMain = null;
         _editAutoIcon = null;
-        _editAutoLabel = null;
         _editAutoSpinner = null;
-        _editAutoMore = null;
         _editSave = null;
         EditCompactHidden.Clear();
         _editStraightenTurn = null;
@@ -394,7 +388,8 @@ public static partial class IslandHost
 
     private static TextBlock SectionTitle(string text)
     {
-        TextBlock t = Text(text, Body, UiFontSize - 2);
+        // Sentence case and one weight step (docs/design/20 "Craft rules").
+        TextBlock t = Text(text, Body, UiFontSize - 3, bold: true);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHeadingLevel(
             t, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         return t;
@@ -511,36 +506,44 @@ public static partial class IslandHost
         return new Border
         {
             Child = child,
-            Padding = Pad(6, 1, 6, 1),
+            Padding = Pad(7, 2, 7, 2),
             CornerRadius = new CornerRadius(999),
-            Background = Brush(fill),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(0.5),
+            Background = Brush(fill),  // a fill alone: no tonal border (docs/design/20 "Craft rules")
             VerticalAlignment = VerticalAlignment.Center,
         };
     }
 
     // A header action: an icon and its name (the name hidden below 340 DIP).
+    // The 7 DIP inset round the icon is pulled back by the row (BuildEditStrip),
+    // so the first icon's ink lines up with the name above it.
+    private const double HeaderInset = 7;
+
     private static Button HeaderButton(string glyph, string label, string tip, Action click)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(5) };
-        row.Children.Add(new FontIcon { Glyph = glyph, FontFamily = IconFont, FontSize = TypeSize(13) });
+        var slot = new Grid { Width = 16, Height = 16, VerticalAlignment = VerticalAlignment.Center };
+        slot.Children.Add(new FontIcon { Glyph = glyph, FontFamily = IconFont, FontSize = TypeSize(13) });
+        row.Children.Add(slot);
         TextBlock text = ButtonLabel(label, UiFontSize - 3);
         text.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(text);
         EditCompactHidden.Add(text);
-        return ChromeButton(row, Pad(8, 5, 8, 5), click, align: HorizontalAlignment.Left, name: label, tip: tip);
+        return ChromeButton(row, Pad(HeaderInset, 5, HeaderInset, 5), click, align: HorizontalAlignment.Left,
+                            name: label, tip: tip);
     }
 
+    // docs/design/20 "Craft rules" (2026-11-05): row 1 is the file's name with
+    // its edit count and a cloud chip, so the name has the pane's width; row 2
+    // is Auto · Undo · Reset · Compare and Save copy…, always labelled. The
+    // Enhance tools live in the rail's Enhance tab, not behind a chevron here.
+    // The Mac twin is EditStripView (EditView.swift).
     private static FrameworkElement BuildEditStrip()
     {
-        var col = new StackPanel { Spacing = Space(8), Padding = Pad(12, 10, 10, 10) };
+        var col = new StackPanel { Spacing = Space(8), Padding = Pad(12, 12, 12, 12) };
 
-        // Row 1: the name (truncated in the middle is not a WinUI trimming; the
-        // end is), the edit count, a cloud chip, and ✦ Auto with its chevron.
-        var head = new Grid { ColumnSpacing = Space(6) };
+        // Row 1: the name (WinUI trims the end, not the middle), the count, the chip.
+        var head = new Grid { ColumnSpacing = Space(8) };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _editNameText = Text("", Title, UiFontSize - 1, maxLines: 1);
@@ -556,12 +559,6 @@ public static partial class IslandHost
         _editChip = (Border)Capsule(_editChipText, ChromeColour.Surface2);
         Grid.SetColumn(_editChip, 2);
         head.Children.Add(_editChip);
-        if (!EditIsClip)
-        {
-            UIElement auto = BuildAutoButton();
-            Grid.SetColumn((FrameworkElement)auto, 3);
-            head.Children.Add(auto);
-        }
         col.Children.Add(head);
 
         if (EditIsClip)
@@ -572,7 +569,8 @@ public static partial class IslandHost
         }
         else
         {
-            // Row 2: Undo · Reset · Compare, then Save copy… filled with the accent.
+            // Row 2: Auto · Undo · Reset · Compare, then Save copy… filled with the accent.
+            Button auto = BuildAutoButton();
             _editUndo = HeaderButton("\uE7A7", "Undo", WithKey("Undo the last edit", Command.UndoEdit),
                                      () => Send(Command.UndoEdit));
             AutomationProperties_SetName(_editUndo, "Undo edit");
@@ -590,10 +588,11 @@ public static partial class IslandHost
             ToolTipService.SetToolTip(_editSave, WithKey("Write a new file with these edits; the original is never changed",
                                                          Command.ExportImage));
             AutomationProperties_SetName(_editSave, "Save copy");
-            var actions = new Grid { ColumnSpacing = Space(4) };
+            var actions = new Grid { ColumnSpacing = Space(8), Margin = new Thickness(-HeaderInset, 0, 0, 0) };
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var left = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2) };
+            left.Children.Add(auto);
             left.Children.Add(_editUndo);
             left.Children.Add(_editReset);
             left.Children.Add(_editCompareHolder);
@@ -641,63 +640,35 @@ public static partial class IslandHost
         return _editCompareLabels;
     }
 
-    // ✦ Auto (one undo step; filled while it is the last edit, a click then takes
-    // it back) and its chevron, which opens the five tools (the Mac's popover).
-    private static UIElement BuildAutoButton()
+    // Auto (one undo step; selected while it is the last edit, when a click
+    // takes it back): a header action with a sun (Brightness), never a
+    // sparkle; busy, the spinner takes the icon's slot.
+    private const string AutoGlyph = "\uE706";  // Brightness
+
+    private static Button BuildAutoButton()
     {
-        _editAutoIcon = new FontIcon { Glyph = RailGlyph.Enhance, FontFamily = IconFont, FontSize = TypeSize(12) };
+        _editAutoMain = HeaderButton(AutoGlyph, "Auto", "", () => Send(Command.AutoEnhance));
+        AutomationProperties_SetName(_editAutoMain, "Auto enhance");
+        var slot = (Grid)((StackPanel)_editAutoMain.Content).Children[0];
+        _editAutoIcon = (FontIcon)slot.Children[0];
         _editAutoSpinner = new Spinner(12);
-        _editAutoSpinner.Root.Visibility = Visibility.Collapsed;
-        _editAutoLabel = ButtonLabel("Auto", UiFontSize - 3);
-        _editAutoLabel.VerticalAlignment = VerticalAlignment.Center;
-        EditCompactHidden.Add(_editAutoLabel);
-        var face = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
-        face.Children.Add(_editAutoIcon);
-        face.Children.Add(_editAutoSpinner.Root);
-        face.Children.Add(_editAutoLabel);
-        _editAutoMain = ChromeButton(face, Pad(9, 4, 6, 4), () => Send(Command.AutoEnhance), name: "Auto enhance");
-        _editAutoMain.CornerRadius = new CornerRadius(999, 0, 0, 999);
-        _editAutoMore = ChromeButton(new FontIcon { Glyph = "\uE70D", FontFamily = IconFont, FontSize = TypeSize(9) },
-                                     Pad(6, 4, 8, 4), name: "Enhance tools",
-                                     tip: "Enhance tools: Remove, Restyle, Faces, Enhance image, Extend");
-        _editAutoMore.CornerRadius = new CornerRadius(0, 999, 999, 0);
-        Button more = _editAutoMore;
-        _editAutoMore.Click += (_, _) => Guarded(() => OpenEnhanceFlyout(more));
-        var pair = new StackPanel { Orientation = Orientation.Horizontal };
-        pair.Children.Add(_editAutoMain);
-        pair.Children.Add(new Border { Width = 1, Height = 16, Background = Brush(Hairline), VerticalAlignment = VerticalAlignment.Center });
-        pair.Children.Add(_editAutoMore);
-        _editAuto = new Border
-        {
-            Child = pair,
-            CornerRadius = new CornerRadius(999),
-            BorderThickness = new Thickness(1),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        return _editAuto;
+        _editAutoSpinner.Root.HorizontalAlignment = HorizontalAlignment.Center;
+        slot.Children.Add(_editAutoSpinner.Root);
+        return _editAutoMain;
     }
 
     private static void RenderAutoButton()
     {
-        if (_editAuto is null || _editAutoMain is null || _editAutoMore is null) return;
+        if (_editAutoMain is null) return;
         bool on = (_editWand & WandAutoOn) != 0;
         bool busy = (_editWand & WandAutoBusy) != 0;
-        _editAuto.Background = on ? Brush(ChromeColour.ControlAccent) : Brush(ChromeColour.SelectionWash);
-        _editAuto.BorderBrush = on ? Brush(ChromeColour.ControlAccent) : Brush(ChromeColour.Accent);
-        SolidColorBrush ink = on ? Brush(ChromeColour.OnAccent) : Brush(ChromeColour.Accent);
-        _editAutoMain.Foreground = ink;
-        _editAutoMore.Foreground = ink;
-        if (_editAutoLabel is not null) _editAutoLabel.Foreground = ink;
+        SetSelected(_editAutoMain, on);
         if (_editAutoIcon is not null)
         {
-            _editAutoIcon.Glyph = on ? "\uE73E" : RailGlyph.Enhance;  // CheckMark while it is on
+            _editAutoIcon.Glyph = on ? "\uE73E" : AutoGlyph;  // CheckMark while it is on
             _editAutoIcon.Visibility = busy ? Visibility.Collapsed : Visibility.Visible;
         }
-        if (_editAutoSpinner is not null)
-        {
-            _editAutoSpinner.Root.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-            _editAutoSpinner.Active = busy;
-        }
+        if (_editAutoSpinner is not null) _editAutoSpinner.Active = busy;
         _editAutoMain.IsEnabled = !busy && _editSubject != SubjectNone;
         string tip = on ? "Auto is on: click to take it back" : "Auto: better light and colour in one click (one undo step)";
         ToolTipService.SetToolTip(_editAutoMain, WithKey(tip, Command.AutoEnhance));
@@ -933,7 +904,7 @@ public static partial class IslandHost
         if (_editCountText is not null && _editCountPill is not null)
         {
             string count = _editCount == 1 ? "1 edit" : $"{_editCount} edits";
-            _editCountText.Text = _editWidthClass == WidthCompact ? $"{_editCount}" : count;
+            _editCountText.Text = count;
             _editCountPill.Visibility = _editCount > 0 && !EditIsClip ? Visibility.Visible : Visibility.Collapsed;
             ToolTipService.SetToolTip(_editCountPill, count + " on this photo; the original is never changed");
             AutomationProperties_SetName(_editCountPill, count);

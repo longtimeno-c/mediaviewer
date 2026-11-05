@@ -56,7 +56,9 @@ inline constexpr int kOpenManifestSchema = 2;
 //      the add-on the clip and the edit's kept ranges (Enhance).
 //  12  2026-11-04: a screen in place "edit", docked in the Edit workspace's
 //      Enhance tab (Enhance's tools, docs/plans/edit-refresh.md S5). No new point.
-inline constexpr std::uint32_t kContributionApi = 12;
+//  13  2026-11-05: a progress bar's `detail` ("48 of 161 MB") and `timed` (the
+//      host says the time left), the one progress line (docs/design/20). No new point.
+inline constexpr std::uint32_t kContributionApi = 13;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

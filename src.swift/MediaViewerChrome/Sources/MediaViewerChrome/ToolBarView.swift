@@ -38,7 +38,7 @@ struct ToolBarView: View {
   private func row(compact: Bool) -> some View {
     HStack(spacing: MVTheme.space(compact ? 6 : 10)) {
       if run.active {
-        EnhanceRunRow()
+        EnhanceRunRow(compact: compact)
       } else {
       switch bar.tool {
       case .brush: brushRow(compact: compact)
@@ -135,7 +135,7 @@ struct ToolBarView: View {
     .help("Open the chosen faces' closed eyes from another photo of them (a new file)")
     Button { store.toolAction(.facesImprove) } label: {
       HStack(spacing: MVTheme.space(4)) {
-        Image(systemName: "wand.and.stars")
+        Image(systemName: "person.2.crop.square.stack")
         if !compact { Text("Improve") }
       }
     }

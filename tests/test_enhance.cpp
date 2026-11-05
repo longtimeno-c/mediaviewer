@@ -1844,7 +1844,7 @@ TEST_CASE("one click: the estimate scales with the pixels the model sees", "[enh
   // The words a person says.
   CHECK(eta_words(-1).empty());
   CHECK(eta_words(4) == "A few seconds");
-  CHECK(eta_words(22) == "About 20 s");
+  CHECK(eta_words(22) == "About 20 seconds");  // the progress line's words
   CHECK(eta_words(130) == "About 2 min");
   CHECK(eta_words(3600) == "About 1 h");
   CHECK(eta_words(4300) == "About 1 h 10 min");

@@ -399,6 +399,10 @@ class present_lab {
   // under the incoming one while `fade_` runs, then released.
   mv::abi::gpu_image_ptr fade_from_;
   canvas::crossfade fade_;
+  // One-click Enhance's result cross-fading in over previous_image_, and the
+  // host's last request taken (input_snapshot.result_fade_ms).
+  canvas::crossfade result_fade_;
+  std::uint64_t seen_result_fade_ms_ = 0;
   // A preview sharper than a tiled image's overview stays under its tiles until
   // the item changes, so the swap to the tiled pyramid never blurs first.
   mv::abi::gpu_image_ptr refine_base_;

@@ -1175,7 +1175,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
-  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 13, "max": 14)")) == rejection::needs_update);
+  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 14, "max": 15)")) == rejection::needs_update);
   // editor_items (API 11): a labelled button with no symbol, target or opens,
   // and only under a range that reaches 11.
   {
@@ -1337,7 +1337,7 @@ TEST_CASE("a docked Edit screen opens only by the workspace's command, which fol
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 12);
+  REQUIRE(mv::addon::kContributionApi == 13);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);

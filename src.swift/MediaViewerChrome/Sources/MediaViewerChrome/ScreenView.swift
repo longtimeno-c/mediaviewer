@@ -172,17 +172,18 @@ struct ScreenNodeView: View {
         if node.string("look") == "ring" {
           // #442: a ring that fills, its percentage in the middle.
           ScreenRing(value: value, size: CGFloat(node.int("size") ?? 64))
-        } else if node.string("look") == "glow" {
-          // Contribution API 10: the glow colours, a shimmer while it moves.
-          GlowBar(value: value)
-        } else if value < 0 {
-          ProgressView().controlSize(.small)
         } else {
-          ProgressView(value: value).tint(MVTheme.accent)
+          // docs/design/20 "Craft rules": a bar ("bar" or API 10's "glow")
+          // is the one progress line, its label the verb. API 13: `detail`
+          // ("48 of 161 MB") in place of the percentage, and `timed` for the
+          // time left, estimated here from how the value moves (by node id,
+          // so it survives the tree's rebuilds).
+          ProgressLine(verb: node.label, fraction: value < 0 ? nil : value, detail: node.string("detail"),
+                       key: "\(address.addon)/\(address.screen)/\(node.id)", timed: node.bool("timed"))
         }
       }
       .accessibilityLabel(node.label)
-      .accessibilityValue(value < 0 ? "In progress" : "\(Int((value * 100).rounded())) percent")
+      .accessibilityValue(value < 0 ? "In progress" : ProgressWords.percent(value))
     case "separator":
       Rectangle().fill(MVTheme.hairline).frame(height: 1).accessibilityHidden(true)
     case "surface":
@@ -986,8 +987,16 @@ private struct SliderNode: View {
   var body: some View {
     let lo = node.double("min") ?? 0
     let hi = max(lo + 1e-9, node.double("max") ?? 1)
-    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
-      Text("\(node.label): \(format(value))").font(screenFont(13, window: window)).foregroundStyle(MVTheme.body)
+    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+      // docs/design/20 "Craft rules": the label left, the value right, in
+      // tabular digits (SliderWords: a percentage of the range, or a count).
+      HStack(spacing: MVTheme.space(8)) {
+        Text(node.label).foregroundStyle(MVTheme.title)
+        Spacer(minLength: MVTheme.space(8))
+        Text(format(value)).monospacedDigit().foregroundStyle(MVTheme.body)
+      }
+      .font(screenFont(13, window: window))
+      .lineLimit(1)
       Group {
         if let step = node.double("step"), step > 0 {
           Slider(value: $value, in: lo...hi, step: step) { Text(node.label) } onEditingChanged: { editing in
@@ -1008,7 +1017,9 @@ private struct SliderNode: View {
     .onChange(of: revision) { _, _ in value = node.double("value") ?? lo }
   }
 
-  private func format(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.2f", v) }
+  private func format(_ v: Double) -> String {
+    SliderWords.value(v, min: node.double("min") ?? 0, max: node.double("max") ?? 1, step: node.double("step"))
+  }
 }
 
 private struct NumberNode: View {
@@ -1872,44 +1883,3 @@ private struct GlowEdge: ViewModifier {
   }
 }
 
-/// A progress bar in the glow's colours. A soft highlight sweeps along it
-/// while it moves (never with Reduce Motion); not started (value < 0), the
-/// whole bar shows dimmed.
-private struct GlowBar: View {
-  let value: Double
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  var body: some View {
-    GeometryReader { geo in
-      let filled = value < 0 ? geo.size.width : geo.size.width * min(1, max(0, value))
-      ZStack(alignment: .leading) {
-        Capsule().fill(MVTheme.hairline)
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { t in
-          let phase = reduceMotion ? -1 : t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.4) / 2.4
-          Capsule()
-            .fill(LinearGradient(colors: GlowPalette.colors, startPoint: .leading, endPoint: .trailing))
-            .overlay(shimmer(at: phase))
-            .clipShape(Capsule())
-            .frame(width: max(0, filled))
-            .opacity(value < 0 ? 0.55 : 1)
-        }
-      }
-    }
-    .frame(height: 6)
-    .frame(minWidth: 120)
-  }
-
-  @ViewBuilder private func shimmer(at phase: Double) -> some View {
-    if phase >= 0 {
-      // A band 30 % of the bar wide, from just off its left end to just off its right.
-      let centre = -0.15 + phase * 1.3
-      LinearGradient(stops: [
-        .init(color: .clear, location: 0),
-        .init(color: .clear, location: min(1, max(0, centre - 0.15))),
-        .init(color: .white.opacity(0.5), location: min(1, max(0, centre))),
-        .init(color: .clear, location: min(1, max(0, centre + 0.15))),
-        .init(color: .clear, location: 1),
-      ], startPoint: .leading, endPoint: .trailing)
-    }
-  }
-}

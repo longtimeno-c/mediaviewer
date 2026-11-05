@@ -1330,8 +1330,9 @@ MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, con
  * 9  `reveal` on a screen stack (2026-10-28);
  * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28);
  * 11 `editor_items`, the Video Editor's bar (2026-11-02);
- * 12 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04). */
-#define MV_ADDON_CONTRIBUTION_API 12
+ * 12 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04);
+ * 13 a progress bar's "detail" and "timed" (2026-11-05). */
+#define MV_ADDON_CONTRIBUTION_API 13
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

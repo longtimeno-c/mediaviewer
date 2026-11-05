@@ -127,9 +127,9 @@ public static partial class IslandHost
     // ("Enhancing… 40 % · 1 min left · Cancel"), whatever tool is armed.
     private const int EnhanceRunBar = -1;
     private static int ToolBarKind => EnhanceRunActive ? EnhanceRunBar : _toolBar.Tool;
-    private static TextBlock? _runLine;
-    private static JobBar? _runBar;
-    private static Button? _runCancel, _runDiscard, _runDismiss;
+    // The run's line: the one progress language (IslandHost.Progress.cs).
+    private static ProgressLine? _runProgress;
+    private static Button? _runDismiss;
 
     // The run node changed: the bar follows, rebuilt when it turns into or out
     // of the run's line, else refreshed in place.
@@ -140,37 +140,28 @@ public static partial class IslandHost
         else if (ToolBarKind == EnhanceRunBar) UpdateEnhanceRunBar();
     }
 
+    // docs/design/20 "Craft rules": the bar and "Enhancing · 40 % · about 1
+    // min left" with Cancel (Esc too); then, in the same slot, the result
+    // with Move to Recycle Bin, or why it stopped with Try again, and a quiet ×.
+    // A fixed width, so the bar never reflows as the words change. The Mac
+    // twin is EnhanceRunRow (EnhanceRun.swift).
     private static UIElement BuildEnhanceRunBar()
     {
         DropToolBarUi();
         _toolBarBuiltFor = EnhanceRunBar;
-        var row = new StackPanel
+        var row = new Grid
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = Space(10),
+            ColumnSpacing = Space(4),
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
+            Width = 380,
         };
-        _runBar = new JobBar();
-        _runBar.Root.Width = 120;
-        _runBar.Root.VerticalAlignment = VerticalAlignment.Center;
-        row.Children.Add(_runBar.Root);
-        _runLine = new TextBlock
-        {
-            FontFamily = UiFont,
-            FontSize = TypeSmall,
-            Foreground = Brush(Body),
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            TextWrapping = TextWrapping.NoWrap,
-            MaxWidth = 420,
-        };
-        row.Children.Add(_runLine);
-        _runCancel = EditButton("Cancel", EnhanceRunCancel, tip: "Stop the run; the photo stays as it is  Esc");
-        _runDiscard = EditButton(" ", EnhanceRunDiscard, tip: "Moves the new file to the Recycle Bin. The original is never touched.");
-        _runDismiss = EditButton("Dismiss", EnhanceRunDismiss);
-        row.Children.Add(_runCancel);
-        row.Children.Add(_runDiscard);
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _runProgress = new ProgressLine(("Cancel", EnhanceRunCancel));
+        row.Children.Add(_runProgress.Root);
+        _runDismiss = PaneIconButton(Glyph.Close, "Dismiss", null, EnhanceRunDismiss);
+        Grid.SetColumn(_runDismiss, 1);
         row.Children.Add(_runDismiss);
         _toolBarRoot = new Border
         {
@@ -179,7 +170,7 @@ public static partial class IslandHost
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
             Height = TransportDip,
-            Padding = new Thickness(Space(10), 0, Space(10), 0),
+            Padding = new Thickness(Space(12), 0, Space(12), 0),
             Child = row,
         };
         AutomationProperties.SetName(_toolBarRoot, "Enhance");
@@ -189,26 +180,29 @@ public static partial class IslandHost
 
     private static void UpdateEnhanceRunBar()
     {
+        if (_runProgress is null) return;
         bool working = EnhanceRunWorking;
-        if (_runLine is not null)
+        string verb = _enhanceRunVerb.Length > 0 ? _enhanceRunVerb
+                    : _enhanceRunLine.Split('…', '·')[0].Trim() is { Length: > 0 } first ? first : "Working";
+        switch (_enhanceRunState)
         {
-            _runLine.Text = _enhanceRunLine.Length > 0 ? _enhanceRunLine : "Working…";
-            _runLine.Foreground = _enhanceRunState == "failed" ? Brush(TrackWarm) : Brush(Body);
-            ToolTipService.SetToolTip(_runLine, _enhanceRunLine);
-            AutomationProperties.SetName(_runLine, _enhanceRunLine);
-        }
-        if (_runBar is not null)
-        {
-            _runBar.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
-            _runBar.IsIndeterminate = _enhanceRunFraction < 0;
-            if (_enhanceRunFraction >= 0) _runBar.Value = Math.Clamp(_enhanceRunFraction, 0, 1);
-        }
-        if (_runCancel is not null) _runCancel.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
-        if (_runDiscard is not null)
-        {
-            _runDiscard.Visibility = !working && _enhanceRunDiscard.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-            if (_runDiscard.Content is TextBlock t) t.Text = _enhanceRunDiscard;
-            AutomationProperties.SetName(_runDiscard, _enhanceRunDiscard);
+            case "done":
+                _runProgress.ShowOutcome(true, _enhanceRunLine,
+                                         _enhanceRunDiscard.Length > 0 ? _enhanceRunDiscard : null,
+                                         _enhanceRunDiscard.Length > 0 ? EnhanceRunDiscard : null);
+                break;
+            case "failed":
+                bool retry = _enhanceRunTool is not ("" or "remove" or "extend");  // those run from the bar
+                _runProgress.ShowOutcome(false, _enhanceRunLine.Length > 0 ? _enhanceRunLine : "It did not finish.",
+                                         retry ? "Try again" : null, retry ? EnhanceRunRetry : null);
+                break;
+            case "cancelled":
+                _runProgress.ShowOutcome(null, _enhanceRunLine.Length > 0 ? _enhanceRunLine : "Cancelled. The photo is unchanged.");
+                break;
+            default:
+                _runProgress.Show(verb, _enhanceRunFraction >= 0 ? Math.Min(1, _enhanceRunFraction) : null,
+                                  key: "enhance-run-" + _enhanceRunId, timed: working);
+                break;
         }
         if (_runDismiss is not null) _runDismiss.Visibility = working ? Visibility.Collapsed : Visibility.Visible;
     }
@@ -216,9 +210,8 @@ public static partial class IslandHost
     private static void DropToolBarUi()
     {
         _toolBarRoot = null;
-        _runLine = null;
-        _runBar = null;
-        _runCancel = _runDiscard = _runDismiss = null;
+        _runProgress = null;
+        _runDismiss = null;
         _toolPaint = _toolErase = _toolUndo = _toolRedo = _toolClear = _toolApply = _toolFind = null;
         _toolFacesEyes = _toolFacesImprove = null;
         _toolSize = null;

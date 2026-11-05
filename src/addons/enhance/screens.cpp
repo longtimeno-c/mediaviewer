@@ -57,11 +57,16 @@ void button(json::writer& w, const std::string& id, const std::string& label, co
   w.end_object();
 }
 
+// The one progress line (contribution API 13, docs/design/20 "Craft rules"):
+// the label is the verb, `detail` stands in for the percentage ("48 of 161
+// MB"), and a `timed` bar's time left is the host's to estimate and say.
 void progress(json::writer& w, const std::string& id, const std::string& label, double value,
-              const char* look = nullptr) {
+              const char* look = nullptr, const std::string& detail = {}, bool timed = false) {
   w.begin_object().key("type").string("progress").key("id").string(id).key("label").string(label);
   w.key("value").number(value < 0 ? -1.0 : std::min(1.0, value));
   if (look) w.key("look").string(look);
+  if (!detail.empty()) w.key("detail").string(detail);
+  if (timed) w.key("timed").boolean(true);
   w.end_object();
 }
 
@@ -111,17 +116,23 @@ void model_card_body(json::writer& w, const model_card& c) {
       button(w, id_of("install", k), "Download the " + std::string(model_noun(k)) + " (" + size + ")", "primary");
       break;
     case dl_state::downloading:
-      progress(w, id_of("progress", k), "Downloading the " + std::string(model_noun(k)),
-               c.st.total_bytes ? static_cast<double>(c.st.done_bytes) / static_cast<double>(c.st.total_bytes) : -1);
-      text(w, id_of("state", k), "Downloading… " + of_text(c.st.done_bytes, c.st.total_bytes), "secondary");
+    case dl_state::waiting: {
+      // One line and a quiet Stop at its end: "Downloading the detail model ·
+      // 48 of 161 MB · about 25 seconds left", or why it waits.
+      const bool waiting = c.st.state == dl_state::waiting;
+      begin_stack(w, id_of("downloading", k), "horizontal", 8);
+      // The card names the model, so the line's verb is short enough for
+      // the narrowest pane: "Downloading · 48 of 161 MB · about 25 seconds left".
+      progress(w, id_of("progress", k), "Downloading",
+               c.st.total_bytes ? static_cast<double>(c.st.done_bytes) / static_cast<double>(c.st.total_bytes) : -1,
+               nullptr,
+               waiting ? std::string("waiting for Hugging Face, it resumes by itself")
+                       : (c.st.total_bytes ? of_text(c.st.done_bytes, c.st.total_bytes) : std::string()),
+               !waiting);
       button(w, id_of("stop", k), "Stop");
+      end_stack(w);
       break;
-    case dl_state::waiting:
-      progress(w, id_of("progress", k), "Downloading the " + std::string(model_noun(k)),
-               c.st.total_bytes ? static_cast<double>(c.st.done_bytes) / static_cast<double>(c.st.total_bytes) : -1);
-      text(w, id_of("state", k), "Waiting for Hugging Face… downloads resume automatically.", "secondary");
-      button(w, id_of("stop", k), "Stop");
-      break;
+    }
     case dl_state::stopped:
       text(w, id_of("state", k),
            "The model did not finish downloading (" + of_text(c.st.done_bytes, c.st.total_bytes) + ").", "secondary");
@@ -267,8 +278,8 @@ void run_nodes(json::writer& w, const sheet_view& v) {
   if (!v.note.empty()) text(w, "note", v.note, "secondary");
   if (v.preview) preview_node(w, v.running);
   if (v.running) {
-    progress(w, "progress", "Enhancing", v.progress, "glow");
-    text(w, "eta", v.eta.empty() ? std::string("Working…") : v.eta, "secondary");
+    // The host says the time left (`timed`), in the same words as every bar.
+    progress(w, "progress", "Enhancing", v.progress, "glow", {}, true);
   }
 }
 
@@ -664,10 +675,9 @@ void card_tree(json::writer& w, const card_view& c, bool busy) {
     }
   }
   if (c.downloading) {
-    progress(w, "dl." + word, "Downloading the model", c.download_fraction);
-    std::string what = "Downloading the model";
-    if (!c.download_text.empty()) what += "… " + c.download_text;
-    text(w, "dltext." + word, what, "secondary");
+    // The one progress line (API 13): "Downloading the model · 48 MB of
+    // 161 MB · about 25 seconds left", the host saying the time left.
+    progress(w, "dl." + word, "Downloading the model", c.download_fraction, nullptr, c.download_text, true);
   }
   if (!c.eta.empty() && c.tool != photo_target::remove && c.tool != photo_target::extend) {
     text(w, "eta." + word, c.eta, "secondary");
@@ -706,6 +716,15 @@ std::string cards_tree(std::span<const card_view> cards, const run_view& run) {
   progress(w, "run.progress", run_line(run).empty() ? std::string("Idle") : run_line(run),
            run.state == run_state::running ? run.fraction : (run.state == run_state::done ? 1.0 : -1.0));
   text(w, "run.line", run_line(run));
+  // The verb alone, for the host's own progress line (docs/design/20 "Craft
+  // rules": "Enhancing · 40 % · about 1 min left", the time left its own).
+  if (run.state == run_state::running) {
+    std::string verb = run.downloading
+                           ? "Downloading " + (run.model_name.empty() ? std::string("the model") : run.model_name)
+                           : std::string(run_verb(run.tool));
+    if (verb.size() >= 3 && verb.compare(verb.size() - 3, 3, "\u2026") == 0) verb.resize(verb.size() - 3);
+    text(w, "run.verb", verb);
+  }
   text(w, "run.id", std::to_string(run.id));
   text(w, "run.tool", photo_target_name(run.tool));
   if (run.state == run_state::done && !run.result_path.empty()) {

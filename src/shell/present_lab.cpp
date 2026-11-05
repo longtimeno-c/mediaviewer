@@ -347,6 +347,7 @@ expected present_lab::rebuild_device() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  result_fade_.cancel();
   side_image_.reset();      // docs/design/20 "Compare": so does the split's before
   fade_from_.reset();
   refine_base_.reset();
@@ -614,6 +615,7 @@ void present_lab::render_thread_main() noexcept {
       open_error_ = false;
       current_image_.reset();
       previous_image_.reset();
+      result_fade_.cancel();
       fade_from_.reset();
       refine_base_.reset();
       fade_.cancel();
@@ -747,6 +749,21 @@ void present_lab::render_thread_main() noexcept {
             boot_full_due_ = ready->quality == image::gpu_quality::full;
             tiles_complete_seconds_ = -1.0;
             current_video_ = {};
+            // One-click Enhance: the host just opened a run's result. Fade it
+            // in over the photo it was made from (docs/design/20 "Craft
+            // rules"); any other new still cuts, and ends a fade still running.
+            {
+              const bool asked =
+                  snapshot.result_fade_ms != 0 && snapshot.result_fade_ms != seen_result_fade_ms_;
+              if (asked) seen_result_fade_ms_ = snapshot.result_fade_ms;
+              if (asked && current_image_ && current_image_->srv && !current_video_.texture &&
+                  !snapshot.reduce_motion &&
+                  steady_ms() - snapshot.result_fade_ms < canvas::k_result_fade_window_ms) {
+                result_fade_.begin(elapsed, canvas::k_result_fade_seconds);
+              } else {
+                result_fade_.cancel();
+              }
+            }
             // Hold-previous keeps the last *different* still; a re-publish of
             // the same texture is not an advance.
             if (current_image_ && current_image_->texture.Get() != ready->texture.Get()) {
@@ -855,7 +872,7 @@ void present_lab::render_thread_main() noexcept {
         open_error_status_ = why;
         if (current_video_.texture && current_video_.generation != generation) current_video_ = {};
         if (current_image_ && current_image_->view_generation != generation) {
-          current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
+          current_image_.reset(); previous_image_.reset(); anim_frame_.reset(); result_fade_.cancel();
           fade_from_.reset(); refine_base_.reset(); fade_.cancel(); refine_fade_abandoned();
         }
         redraw = true;
@@ -1283,7 +1300,7 @@ void present_lab::render_thread_main() noexcept {
     // docs/design/03 rule 4's one labelled exception: blinkies animate, so a still with
     // them on presents until C turns them off. Everything else here idles.
     const bool blinkies = snapshot.clipping && current_image_ != nullptr;
-    const bool fading = fade_from_ && fade_.active(elapsed);
+    const bool fading = (fade_from_ && fade_.active(elapsed)) || result_fade_.active(elapsed);
     const bool live = video_active_ || video_loading || animating_ || camera_.moving() ||
                       pan_tail || blinkies || anim_live_ || fading;
     live_presenting_ = live;
@@ -1381,7 +1398,7 @@ void present_lab::render_thread_main() noexcept {
       const bool first_video = !current_video_.texture;
       if (mv::abi::poll_video(session_, static_cast<player::time_ns>(swapchain_.refresh_interval_seconds() * 1'000'000'000.0), frame, video_active_)) {
         // A clip is not a burst: do not keep a 4K still pinned behind it.
-        current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
+        current_image_.reset(); previous_image_.reset(); anim_frame_.reset(); result_fade_.cancel();
         fade_from_.reset(); refine_base_.reset(); fade_.cancel(); refine_fade_abandoned();
         current_video_ = std::move(frame);
         if (first_video) {
@@ -1515,7 +1532,12 @@ void present_lab::render_thread_main() noexcept {
       const bool is_current = !show_previous && shown == current_image_.get();
       if (fade_from_ && !fade_.active(elapsed)) fade_from_.reset();
       const bool fade_now = is_current && fade_from_ && fade_from_->srv;
-      const float fade_alpha = fade_now ? fade_.alpha(elapsed) : 1.0f;
+      // One-click Enhance's result fading in over the photo it was made from:
+      // the old one under, everything new at the fade's alpha.
+      const bool result_now = is_current && !compare_split_.valid && shown != anim_frame_.get() &&
+                              result_fade_.active(elapsed) && previous_image_ && previous_image_->srv;
+      const float result_alpha = result_now ? result_fade_.alpha(elapsed) : 1.0f;
+      const float fade_alpha = (fade_now ? fade_.alpha(elapsed) : 1.0f) * result_alpha;
       const bool tiled = is_current && shown->tiles && !working;
       if (tiled) {
         // Tiles live in the source's pixels. The camera looks at the edited
@@ -1541,11 +1563,39 @@ void present_lab::render_thread_main() noexcept {
       // a tiled image), a sharper preview kept under the tiles, then tiles
       // coarse to fine. Every layer maps the same full-resolution rect.
       const auto draw_still = [&](const gfx::blit_params& p, bool with_tiles) {
+        if (result_now) {
+          // The photo it was made from, through its own placement; fitted
+          // when its size differs (an enlarged or extended result).
+          const image::gpu_image& prev = *previous_image_;
+          const edit_view* prev_edit = edit_for(prev);
+          const edit::placement pp = place_through(prev_edit, prev.width, prev.height);
+          gfx::blit_params op = p;
+          const auto prev_w = static_cast<float>(pp.cropped.w);
+          const auto prev_h = static_cast<float>(pp.cropped.h);
+          for (int i = 0; i < 6; ++i) op.uv_map[i] = pp.map.m[i];
+          const edit::affine prev_inverse = edit::invert(pp.map);
+          for (int i = 0; i < 6; ++i) op.uv_inverse[i] = prev_inverse.m[i];
+          op.clip_to_source = prev_edit && prev_edit->keep_frame;
+          op.source_w = static_cast<float>(prev.width);
+          op.source_h = static_cast<float>(prev.height);
+          apply_adjust(prev_edit, op);
+          if (prev_w != p.image_w || prev_h != p.image_h) {
+            op.zoom = canvas::camera::fit_zoom(prev_w, prev_h, p.window_w, p.window_h);
+            op.pan_x = prev_w * 0.5f;
+            op.pan_y = prev_h * 0.5f;
+          }
+          op.image_w = prev_w;
+          op.image_h = prev_h;
+          op.texture_w = static_cast<float>(prev.texture_width);
+          op.texture_h = static_cast<float>(prev.texture_height);
+          op.opacity = 1.0f;
+          blitter_.draw(device_.context(), prev.srv.Get(), op);
+        }
         if (fade_now) {
           gfx::blit_params fp = p;
           fp.texture_w = static_cast<float>(fade_from_->texture_width);
           fp.texture_h = static_cast<float>(fade_from_->texture_height);
-          fp.opacity = 1.0f;
+          fp.opacity = result_alpha;
           blitter_.draw(device_.context(), fade_from_->srv.Get(), fp);
         }
         gfx::blit_params cp = p;
@@ -1559,7 +1609,7 @@ void present_lab::render_thread_main() noexcept {
         }
         // Tiles join once the fade is over (80-250 ms); before that the
         // overview is what fades in.
-        const bool tiles_on = with_tiles && tiled && !fade_now && !tile_draws_.empty();
+        const bool tiles_on = with_tiles && tiled && !fade_now && !result_now && !tile_draws_.empty();
         if (tiles_on && shown->tiles->covers_view()) {
           // Issue #164: the drawn level's tiles cover every image pixel in
           // view, so the overview and any kept preview would be overdrawn.
@@ -1691,6 +1741,7 @@ void present_lab::render_thread_main() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  result_fade_.cancel();
   side_image_.reset();      // docs/design/20 "Compare": so does the split's before
   fade_from_.reset();
   refine_base_.reset();
