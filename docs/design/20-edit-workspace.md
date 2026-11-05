@@ -575,6 +575,13 @@ surfaces in the pane, the rail, the tool bar and Enhance's cards keep to them on
   the verb shortens before the numbers do. A quiet Cancel ends the line; success or failure
   replaces the line in its slot (the result and its action, or a one-line reason and Try again).
   Spinners are only for waits under a second (Auto, Find eyes).
+- **The payoff.** When a one-click run opens its result, the new photo cross-fades in over the
+  one it was made from (250 ms, smoothstep) as the working glow fades, in the native present path
+  on both hosts: the host stamps `input_snapshot.result_fade_ms` as it opens the result, and the
+  next new still to land within 5 s draws over `previous_image_` at the fade's alpha
+  (`canvas/refinement.h` `k_result_fade_seconds`; `present_lab_mac.mm`, `present_lab.cpp`). Any
+  other navigation cuts as before; Reduce Motion / animations off cut too. The canvas presents
+  only for those 250 ms, then idles.
 - **Say each control once.** The header carries Undo, Reset and Compare; the rail repeats Undo and
   Compare only while the panel is folded away. The Enhance tools are the Enhance tab's cards, so
   the rail keeps only Red-eye, the canvas tool without a card, and the header has no tools chevron.

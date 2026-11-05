@@ -9424,6 +9424,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (!step.open.empty()) {
     // docs/design/20 "Compare": the result compares with the photo it was made from.
     if (!_enhanceRunPath.empty()) mv::shell::note_result(step.open, _enhanceRunPath);
+    // The payoff (docs/design/20 "Craft rules"): the new photo cross-fades in
+    // over this one as the glow fades, in the render thread (canvas/refinement.h).
+    _snap.result_fade_ms = mv::shell::steady_ms();
+    [self publish];
     [self enhanceShowResult:step.open keep:YES];
   }
 }

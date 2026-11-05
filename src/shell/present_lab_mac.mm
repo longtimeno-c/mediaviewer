@@ -1640,6 +1640,7 @@ void present_lab_mac::render_thread_main() noexcept {
           previous_image_.reset();
           fade_from_.reset();
           fade_.cancel();
+          result_fade_.cancel();
           camera_.reset();
           redraw = true;
         }
@@ -1702,6 +1703,19 @@ void present_lab_mac::render_thread_main() noexcept {
           }
           // Hold `\` (docs/design/16): the still just left stays as the
           // previous one; a re-publish of the same item is not an advance.
+          // One-click Enhance: the host just opened a run's result. Fade it
+          // in over the photo it was made from (docs/design/20 "Craft rules");
+          // any other new still cuts, and ends a fade still running.
+          if (!refinement) {
+            const bool asked = snapshot.result_fade_ms != 0 && snapshot.result_fade_ms != seen_result_fade_ms_;
+            if (asked) seen_result_fade_ms_ = snapshot.result_fade_ms;
+            if (asked && current_image_ && !video_frame_ && !clip_placeholder && !snapshot.reduce_motion &&
+                steady_ms() - snapshot.result_fade_ms < canvas::k_result_fade_window_ms) {
+              result_fade_.begin(elapsed, canvas::k_result_fade_seconds);
+            } else {
+              result_fade_.cancel();
+            }
+          }
           if (!refinement && current_image_) previous_image_ = std::move(current_image_);
           current_image_.reset(loaded);
           {
@@ -2065,7 +2079,7 @@ void present_lab_mac::render_thread_main() noexcept {
         }
         req.video_active = (media_ && media_->needs_present()) || anim_live_;
         req.video_loading = video_opening_.load(std::memory_order_acquire) != 0;
-        req.redraw = redraw || redraw_owed_ || fade_.active(elapsed);
+        req.redraw = redraw || redraw_owed_ || fade_.active(elapsed) || result_fade_.active(elapsed);
         req.painted_static = painted_static_;
         req.elapsed_seconds = elapsed;
         req.last_input_time = last_input_time_;
@@ -2170,6 +2184,7 @@ void present_lab_mac::render_thread_main() noexcept {
               current_image_.reset();
               fade_from_.reset();
               fade_.cancel();
+              result_fade_.cancel();
               camera_.reset();
               // Fit the picture as displayed, not the coded frame: an iPhone
               // portrait clip is coded landscape with a 90 degree matrix, and
@@ -2442,11 +2457,10 @@ void present_lab_mac::render_thread_main() noexcept {
             bp.texture_w = static_cast<float>(working_->image.texture_width);
             bp.texture_h = static_cast<float>(working_->image.texture_height);
           }
-          if (show_previous) {
-            // Hold `\`: the previous still through its own placement. A
-            // same-size burst keeps the camera so the pick is like for like; a
-            // different frame is shown whole rather than at the wrong crop.
-            const image::gpu_image_mac& prev = *previous_image_;
+          // The previous still through its own placement. A same-size burst
+          // keeps the camera so the pick is like for like; a different frame
+          // is shown whole rather than at the wrong crop.
+          const auto previous_params = [&](const image::gpu_image_mac& prev) {
             const edit::placement pp = place_image(prev);
             const edit_view* pev = edit_for(prev.item_id);
             gfx::blit_params_mac pb = bp;
@@ -2462,17 +2476,30 @@ void present_lab_mac::render_thread_main() noexcept {
               pb.pan_x = pb.image_w * 0.5f;
               pb.pan_y = pb.image_h * 0.5f;
             }
-            blitter_.draw((__bridge void*)enc, prev.texture, pb);
+            return pb;
+          };
+          if (show_previous) {
+            // Hold `\`.
+            blitter_.draw((__bridge void*)enc, previous_image_->texture, previous_params(*previous_image_));
           } else {
+            // One-click Enhance's result fading in over the photo it was made
+            // from: the old one under, everything new at the fade's alpha.
+            float result_alpha = 1.0f;
+            if (result_fade_.active(elapsed) && previous_image_ && !anim_frame_ && !split) {
+              blitter_.draw((__bridge void*)enc, previous_image_->texture, previous_params(*previous_image_));
+              result_alpha = result_fade_.alpha(elapsed);
+            }
             if (fade_from_ && !anim_frame_) {
               auto base = bp;
               // The preview covers the full image's output rectangle and uses
               // the same normalized edit map, even if its raster size differs.
               base.texture_w = static_cast<float>(fade_from_->width);
               base.texture_h = static_cast<float>(fade_from_->height);
+              base.opacity = result_alpha;
               blitter_.draw((__bridge void*)enc, fade_from_->texture, base);
               bp.opacity = fade_.alpha(elapsed);
             }
+            bp.opacity *= result_alpha;
             void* const shown =
                 use_working ? working_->image.texture
                             : (anim_frame_ ? anim_frame_->texture : current_image_->texture);
@@ -2663,6 +2690,7 @@ void present_lab_mac::render_thread_main() noexcept {
     previous_image_.reset();
     fade_from_.reset();
     fade_.cancel();
+    result_fade_.cancel();
     delete pending_image_.exchange(nullptr);
     working_.reset();  // PR 11: before device_.destroy()
     delete pending_working_.exchange(nullptr);
