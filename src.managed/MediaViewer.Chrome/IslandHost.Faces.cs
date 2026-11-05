@@ -19,13 +19,14 @@ namespace MediaViewer.Chrome;
 /// While the Faces tool is armed the canvas draws a numbered box per face (a
 /// click chooses it or leaves it out); here each face has its thumbnail, the
 /// person's name from People and "from 37 photos of Anna", and its fixes:
-/// Open eyes (only where the eyes look shut) and Improve face. Do all runs
+/// Open eyes (only where the eyes look shut), Improve face and, with Enhance,
+/// Restore face. Do all runs
 /// each chosen face's best fix into one new file. With People off, a button
 /// opens Local search to turn it on. Native owns the state (shell/faces_tool.h)
 /// and pushes it with <see cref="SetFacesPanel"/> (chrome_faces_args); the
 /// panel sends Command.Faces with shell::pack_faces_op. The fixes are a table
-/// (<see cref="FaceActions"/>, shell::kFaceActions): S10's Restore faces is one
-/// more row. Button, TextBlock, Border, Grid, StackPanel and Image only
+/// (<see cref="FaceActions"/>, shell::kFaceActions): S10's Restore face is the
+/// third row, run by Enhance's docked panel on the chosen faces. Button, TextBlock, Border, Grid, StackPanel and Image only
 /// (tools/check-winui-controls.ps1).
 /// </remarks>
 public static partial class IslandHost
@@ -55,6 +56,9 @@ public static partial class IslandHost
             "This person's open eyes from a photo of the same moment or from People, matched to this light. Saves a new file."),
         new(1, "Improve face", "Finding a better face…", "",
             "A clearly better face of the same person from your photos, turned the same way, in this photo's light. Saves a new file."),
+        // S10's model through Enhance's docked panel, on this face (offered while Enhance has it).
+        new(2, "Restore face", "Restoring in Enhance…", "\uE77B",
+            "Enhance's face model makes this face sharper and clearer, checked by People to still look like the same person. Saves a new file."),
     };
 
     private sealed class FaceCardModel

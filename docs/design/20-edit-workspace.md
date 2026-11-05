@@ -278,7 +278,12 @@ animation or with the workspace closed it goes down.
   Windows `IslandHost.Faces.cs`) sits first in the Enhance tab while the tool is armed: each
   face's thumbnail (a click toggles it), its name from People (or *Unnamed person* / *Not in
   People yet*), "from 37 photos of Anna" (People's other stills of them), an *Eyes closed* tag,
-  and its own fixes, **Open eyes** (only where the eyes look shut) and **Improve face**; then
+  and its own fixes, **Open eyes** (only where the eyes look shut), **Improve face** and, while
+  Enhance has its `faces` command, **Restore face** (S10's model: Enhance's docked panel opens
+  under the Faces card and runs on that face's box, or on the chosen faces' boxes, sent in the
+  `enhance/tool` command as `"faces": [x, y, w, h, …]`; Enhance matches them to its own read of the
+  faces by the same intersection-over-union rule and restores only those; an Enhance without the
+  docked panel restores every face in its sheet, and the notice says so); then
   **Do all** (each chosen face's best fix in one file: a clearly better face of the same person,
   else open eyes where they are shut), All / None. Without Local search it offers **Get Local
   search…**; with People off, **Turn on People…** (Settings → Add-ons → Local search, where People
@@ -286,7 +291,8 @@ animation or with the workspace closed it goes down.
   read is read again on the next arm, a walk, or those buttons (`faces_tool::needs_read`). Hovering
   a face's row lights its box on the photo. A fix left running when the photo changes stays marked
   on its own photo only (`faces_tool::run_item`). The fixes are a table (`shell::kFaceActions`, `addon::media::face_fix`): a
-  fix is one more row there and in the chromes' tables (S10's Restore faces). A fix changes
+  fix is one more row there and in the chromes' tables; Restore face is the third, an Enhance row
+  (`face_action_row::enhance`) that is never a `face_fix` and never reaches `mv_adjust_faces`. A host fix changes
   **only the chosen faces**: the run asks the pack again with the same moment's frames, matches
   the chosen boxes to that answer (`faces_mask_of`, intersection over union ≥ 0.3) and passes a
   `faces_mask`; each face is fixed on a crop and written back inside its edit region only, faded
@@ -329,7 +335,10 @@ edit** ([07](07-photo-editing.md)).
   crop on the stack (`edit_session::crop_inside`, composed with the committed crop, one undo
   step); the overhang becomes margins of that cropped picture, handed to Enhance through the host
   table's `still_extend` (`addon_media::set_still_extend`; Windows `mv_edit_still_extend`), and
-  Enhance's sheet opens on Extend ([29](29-enhance.md) "Extend"). A frame only inside the photo is
+  Enhance's docked panel under the Extend card runs Extend on it (`enhance/tool
+  {"photo":"extend","run":true}`; the panel opened when Extend was armed), or, with an Enhance that
+  has no docked screen, its sheet opens on Extend ([29](29-enhance.md) "Extend"). The frame wins
+  over the panel's preset. A frame only inside the photo is
   just a crop and needs no add-on; past the edges without Enhance, Fill says it needs the add-on.
   **Cancel** (`Esc`, the bar) drops the frame. `Backspace` / `Delete` set it back to Original.
 - **Keys:** a frame not filled is pending (owner call G): walking away is refused with "Fill or

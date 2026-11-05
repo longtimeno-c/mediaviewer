@@ -724,7 +724,8 @@ are pending; rotate and flip stay refused while strokes are kept with the tool d
 `mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
 People on. **Extend** (S6; the rail, the Enhance tab, Edit ▸ Extend Edges): drag the frame's
 edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's presets, `Enter`
-fills (the part over the photo is a crop; the rest opens Enhance's sheet on Extend), `Esc`
+fills (the part over the photo is a crop; Enhance's docked panel under the Extend card fills the
+rest, its sheet with an Enhance that has none), `Esc`
 cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`.
 
 Faces (S8): the rail's Faces, the Enhance tab's Faces card or (Mac) Edit ▸ Faces arm the Faces

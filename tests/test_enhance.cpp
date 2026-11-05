@@ -1868,6 +1868,96 @@ TEST_CASE("extend: a canvas frame opens the sheet on Extend, with no preset to p
   }
 }
 
+// The S5 + S6 merge: the canvas's Fill hands its frame over (still_extend) and
+// runs Extend in the docked panel (enhance/tool {"photo":"extend","run":true});
+// the panel reads the frame again then, so it shows the frame, not a preset,
+// and the run fills the frame's margins.
+TEST_CASE("extend: Fill on a canvas frame runs in the docked panel, the frame over the preset", "[enhance][extend][tool]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0005.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "extend", "label": "Extend", "type": "choice", "default": "wider",
+               "options": [{"id": "wider", "text": "Wider"}, {"id": "taller", "text": "Taller"}]}],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+
+  // Extend armed: the panel opens under the card before any frame is dragged,
+  // on the preset.
+  f.eng->tool_opened(3, utf8(photo), 340, 2);
+  f.eng->tool_command(R"({"photo": "extend"})");
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    REQUIRE(t.has("tool.extend"));
+    CHECK(t.has("k.remove.extend"));
+    CHECK_FALSE(t.has("frame.remove"));
+  }
+
+  const std::uint32_t w = 96, h = 64;
+  const std::array<float, 4> frame{0.25f, 0.0f, 0.25f, 0.0f};  // a quarter each side, the host's fractions
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [](const std::string&) { return std::vector<float>{}; };
+  port.still_extend = [&](const std::string&) {
+    std::lock_guard lock(f.host.m);
+    return f.host.framed ? frame : std::array<float, 4>{};
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = noise_rgb(w, h);
+    return s;
+  };
+  std::mutex wm;
+  run_port::still written;
+  const fs::path made = f.dir / "IMG_0005-extended.jpg";
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    std::lock_guard lock(wm);
+    written = pic;
+    write_bytes(made, bytes({0xFF, 0xD8, 0xFF, 0xE0}));
+    return utf8(made);
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+
+  // Fill: the host sets the frame, then asks for the run in one command.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = true;
+  }
+  f.eng->tool_command(R"({"photo": "extend", "run": true})");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kToolScreen)).has("result"); }));
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    CHECK(t.has("frame.remove"));  // the frame won: no preset to pick
+    CHECK_FALSE(t.has("k.remove.extend"));
+    CHECK(t.text("result.title") == "Saved as IMG_0005-extended.jpg");
+  }
+  CHECK(f.host.tree(kSheetScreen).empty());  // never the sheet
+  {
+    std::lock_guard lock(wm);
+    CHECK(written.width == w + 2 * 24);  // the frame's margins, not Wider's eighth
+    CHECK(written.height == h);
+  }
+}
+
 TEST_CASE("extend: the host's readout and presets are the add-on's own sums", "[enhance][extend]") {
   // shell/edit_workspace.h repeats extend_from_fractions and extend_preset so
   // the bar reads the size the file is: the two must never drift.

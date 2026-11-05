@@ -487,8 +487,13 @@ Faces panel lists each face (thumbnail, People's name, "from 37 photos of Anna")
 (only where they look shut), **Improve face** and **Do all**. Only the chosen faces change: every
 pixel outside their boxes is the original's (`mv_ai_tests "[faces-mask]"`). Results are
 `<stem>-eyes.jpg` / `<stem>-faces.jpg`, new files like every Enhance result. The fixes are a table
-(`addon::media::face_fix`, `shell::kFaceActions`), so a model-based **Restore faces** (S10, GFPGAN
-with a People guard, owner call C) is one more row.
+(`addon::media::face_fix`, `shell::kFaceActions`); the model-based **Restore face** (S10, owner
+call C) is the third row, and it is this add-on's: the panel's per-face button opens the docked
+panel on `faces` and runs it with the chosen boxes (`"faces"` in the `enhance/tool` command, 0..1
+quads). The run reads the faces itself as below and keeps only those each box overlaps most
+(`chosen_faces`, intersection over union ≥ 0.3, each face once); a box that matches no face says
+"The chosen faces were not found again". The palette's Restore faces… and the Faces card's row
+still restore every face.
 
 ## Extend: new edges around the photo
 

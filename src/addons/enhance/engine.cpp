@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/enhance/engine.h"
+#include "addons/enhance/face_restore.h"
 
 #include "addons/enhance/memory.h"
 
@@ -463,6 +464,18 @@ void engine::tool_command(const std::string& value_json) {
   }
   const json::value* go = v->find("run");
   const bool start = go && go->k == json::kind::boolean && go->b;
+  // edit-refresh S8: Restore face from the Faces panel names the chosen
+  // faces' boxes; any other command runs on every face.
+  std::vector<float> boxes;
+  if (const json::value* fb = v->find("faces"); fb && fb->k == json::kind::array) {
+    for (const json::value& n : fb->a) {
+      if (n.k != json::kind::number || boxes.size() >= 4 * kMaxChosenFaces) return;
+      const double d = n.is_integer ? static_cast<double>(n.i) : n.d;
+      if (!(d >= -1.0 && d <= 2.0)) return;
+      boxes.push_back(static_cast<float>(d));
+    }
+    if (boxes.size() % 4 != 0) return;
+  }
   // Remove reads the brush again: the host hands its dabs over (still_mask)
   // just before it asks for a run.
   std::string path;
@@ -476,6 +489,11 @@ void engine::tool_command(const std::string& value_json) {
   const bool reread = still && !path.empty() && port_.brushed &&
                       (chosen == photo_target::remove || (!chosen && current_prefs().photo == photo_target::remove));
   const std::uint32_t brushed = reread ? port_.brushed(path) : 0;
+  // S6: Fill on the canvas hands its frame over (still_extend) just before it
+  // asks for an Extend run: the panel says the frame wins over the preset.
+  const bool extend = chosen == photo_target::extend || (!chosen && current_prefs().photo == photo_target::extend);
+  const bool reframe = still && !path.empty() && port_.framed && extend;
+  const bool framed = reframe && port_.framed(path);
   {
     std::lock_guard lock(m_);
     if (tool_gen_ == 0) return;
@@ -488,6 +506,8 @@ void engine::tool_command(const std::string& value_json) {
         save_locked();
       }
       if (reread && path == path_) brushed_ = brushed;
+      if (reframe && path == path_) framed_ = framed;
+      face_boxes_ = std::move(boxes);
     }
     post_sheet_locked();
   }
@@ -591,6 +611,16 @@ void engine::run(bool docked) {
       for (const knob& kb : s.spec->knobs) {
         const auto it = s.values.find(kb.id);
         p.values[kb.id] = knob_value(kb, it == s.values.end() ? nullptr : &it->second);
+      }
+      if (s.kind == model_kind::face && docked && !face_boxes_.empty()) {
+        json::value& faces = p.values["faces"];
+        faces.k = json::kind::array;
+        for (const float b : face_boxes_) {
+          json::value n;
+          n.k = json::kind::number;
+          n.d = b;
+          faces.a.push_back(std::move(n));
+        }
       }
       if (s.kind == model_kind::remove) p.values["mode"].k = json::kind::string;
       if (s.kind == model_kind::remove) p.values["mode"].s = v.photo == photo_target::extend ? "extend" : "remove";

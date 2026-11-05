@@ -67,10 +67,11 @@ void make_thumb(face_card& c, const image::linear_image& img, std::uint32_t px) 
 
 }  // namespace
 
-std::uint32_t actions_of(const face_card& f) noexcept {
+std::uint32_t actions_of(const face_card& f, bool enhance) noexcept {
   std::uint32_t bits = 0;
   for (const face_action_row& row : kFaceActions) {
     if (row.needs_shut && !f.shut) continue;
+    if (row.enhance && !enhance) continue;
     bits |= 1u << static_cast<unsigned>(row.id);
   }
   return bits;

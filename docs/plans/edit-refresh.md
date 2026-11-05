@@ -498,7 +498,8 @@ fit, 3:2 → 16:9 size, caps; camera fit frame; `crop_inside` composes and undoe
 `<stem>-extended.jpg` at the size the readout showed, the photo's rect bit-exact; no frame → the
 preset; the host's sums equal the add-on's on a grid and for every preset), `mv_ai_tests
 "[photos]"` (the frame through the real host table's `still_extend`, a library photo added once).
-Fill opens Enhance's sheet (S5's in-pane `enhance/tool` run is not wired here). Not built: `A` /
+Fill runs Extend in Enhance's docked panel (`enhance/tool {"photo":"extend","run":true}`, wired in
+the merge of S5, S6 and S8; the sheet without a docked screen). Not built: `A` /
 `X` / arrows with crop meanings in Extend, the 768-px three-deep tiling of "Quality over speed".
 Not run: either app, both PR 1 gates and the PR 1 soak with Extend armed (the pan-gate check),
 the 0-presents check with Extend armed, the real LaMa on a dragged frame; the Windows native C++

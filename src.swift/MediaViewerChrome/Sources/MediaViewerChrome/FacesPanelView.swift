@@ -3,12 +3,14 @@
 // Enhance tab. While the tool is armed the canvas draws a numbered box per
 // face (a click chooses it or leaves it out); here each face has its
 // thumbnail, the person's name from People and "from 37 photos of Anna", and
-// its fixes: Open eyes (only where the eyes look shut) and Improve face. Do
-// all runs each chosen face's best fix into one new file. With People off, a
-// button opens Local search to turn it on. The host owns the state
-// (shell/faces_tool.h through mv_chrome_faces_panel / mv_chrome_face_card).
-// The fixes are a table (FaceAction, shell::kFaceActions): S10's Restore faces
-// is one more case. The Windows twin is IslandHost.Faces.cs.
+// its fixes: Open eyes (only where the eyes look shut), Improve face and,
+// with Enhance, Restore face. Do all runs each chosen face's best fix into
+// one new file. With People off, a button opens Local search to turn it on.
+// The host owns the state (shell/faces_tool.h through mv_chrome_faces_panel /
+// mv_chrome_face_card). The fixes are a table (FaceAction,
+// shell::kFaceActions): S10's Restore face is the third case, run by
+// Enhance's docked panel on the chosen faces. The Windows twin is
+// IslandHost.Faces.cs.
 import AppKit
 import MVChromeBridge
 import SwiftUI
@@ -16,12 +18,16 @@ import SwiftUI
 /// shell::face_action, in wire order (append only, with shell/faces_tool.h).
 enum FaceAction: Int32, CaseIterable, Identifiable {
   case openEyes = 0, improve = 1
+  /// S10's model through Enhance's docked panel, on this face (offered while
+  /// Enhance has its "faces" command; never mv_adjust_faces).
+  case restore = 2
   var id: Int32 { rawValue }
 
   var label: String {
     switch self {
     case .openEyes: return "Open eyes"
     case .improve: return "Improve face"
+    case .restore: return "Restore face"
     }
   }
 
@@ -29,6 +35,7 @@ enum FaceAction: Int32, CaseIterable, Identifiable {
     switch self {
     case .openEyes: return "Opening eyes…"
     case .improve: return "Finding a better face…"
+    case .restore: return "Restoring in Enhance…"
     }
   }
 
@@ -36,6 +43,7 @@ enum FaceAction: Int32, CaseIterable, Identifiable {
     switch self {
     case .openEyes: return "eye"
     case .improve: return "wand.and.stars"
+    case .restore: return "person.crop.circle.badge.checkmark"
     }
   }
 
@@ -45,6 +53,8 @@ enum FaceAction: Int32, CaseIterable, Identifiable {
       return "This person's open eyes from a photo of the same moment or from People, matched to this light. Saves a new file."
     case .improve:
       return "A clearly better face of the same person from your photos, turned the same way, in this photo's light. Saves a new file."
+    case .restore:
+      return "Enhance's face model makes this face sharper and clearer, checked by People to still look like the same person. Saves a new file."
     }
   }
 }

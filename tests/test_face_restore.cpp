@@ -571,6 +571,33 @@ TEST_CASE("faces: the shipped model.json and its pins", "[enhance][faces]") {
   }
 }
 
+// edit-refresh S8 + S10: the Faces panel's Restore face names the faces the
+// canvas chose; each box takes the face it overlaps most, each face once.
+TEST_CASE("faces: the canvas's chosen boxes pick the faces Restore face runs on", "[enhance][faces]") {
+  const std::uint32_t w = 1000, h = 500;
+  std::vector<face_found> found(3);
+  found[0].x = 100, found[0].y = 100, found[0].w = 100, found[0].h = 120;
+  found[1].x = 500, found[1].y = 120, found[1].w = 90, found[1].h = 110;
+  found[2].x = 800, found[2].y = 100, found[2].w = 100, found[2].h = 120;
+  // No boxes: every face.
+  CHECK(chosen_faces(found, w, h, {}).size() == 3);
+  // The host's box for the middle face, a little off (a different read of the same face).
+  const std::vector<float> middle{0.505f, 0.25f, 0.09f, 0.22f};
+  auto one = chosen_faces(found, w, h, middle);
+  REQUIRE(one.size() == 1);
+  CHECK(one[0].x == 500);
+  // Two boxes, given out of order: the faces come back in the pack's order.
+  const std::vector<float> two{0.8f, 0.2f, 0.1f, 0.24f, 0.1f, 0.2f, 0.1f, 0.24f};
+  auto both = chosen_faces(found, w, h, two);
+  REQUIRE(both.size() == 2);
+  CHECK(both[0].x == 100);
+  CHECK(both[1].x == 800);
+  // A box over no face (under 0.3 overlap) picks nothing; the same box twice, one face.
+  CHECK(chosen_faces(found, w, h, std::vector<float>{0.3f, 0.6f, 0.1f, 0.2f}).empty());
+  CHECK(chosen_faces(found, w, h, std::vector<float>{0.505f, 0.25f, 0.09f, 0.22f, 0.505f, 0.25f, 0.09f, 0.22f}).size() ==
+        1);
+}
+
 TEST_CASE("faces: the runner writes <stem>-restored.jpg and says why when it cannot", "[enhance][faces]") {
   const auto text = mv::test::read_bytes(MV_ENHANCE_FACE_SPEC);
   const auto spec =
@@ -682,6 +709,30 @@ TEST_CASE("faces: the runner writes <stem>-restored.jpg and says why when it can
     [[maybe_unused]] const auto [ok, name, message] = run(jr, {{"model", g}});
     CHECK(ok);
     CHECK(choice_seen == "gfpgan");
+  }
+  // S8's Restore face: only the chosen faces. A box elsewhere finds none, and says so.
+  {
+    const auto boxes = [](std::initializer_list<double> v) {
+      mv::json::value a;
+      a.k = mv::json::kind::array;
+      for (const double d : v) {
+        mv::json::value n;
+        n.k = mv::json::kind::number;
+        n.d = d;
+        a.a.push_back(n);
+      }
+      return a;
+    };
+    written.clear();
+    [[maybe_unused]] const auto [ok, name, message] = run(jr, {{"faces", boxes({0.05, 0.05, 0.1, 0.1})}});
+    CHECK_FALSE(ok);
+    CHECK(message.find("chosen faces") != std::string::npos);
+    CHECK(written.empty());
+    // The face's own box (as the host drew it, 0..1 of the photo): restored.
+    [[maybe_unused]] const auto [ok2, name2, message2] =
+        run(jr, {{"faces", boxes({330.0 / 900, 240.0 / 700, 90.0 / 900, 110.0 / 700})}});
+    CHECK(ok2);
+    CHECK(written.size() == original.rgb.size());
   }
   // Strength 0 would change nothing: said, the model never loaded, nothing written.
   {

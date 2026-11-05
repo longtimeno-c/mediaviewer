@@ -954,6 +954,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editRailPick:(int32_t)tab;
 - (void)editTool:(int32_t)tool;
 - (void)enhanceTool:(const std::string&)photo run:(BOOL)run;
+- (void)enhanceTool:(const std::string&)photo run:(BOOL)run faces:(const std::vector<float>&)faces;
 - (void)enhanceShowResult:(const std::string&)path keep:(BOOL)keep;
 - (void)enhanceDockClose;
 - (void)autoEnhance;
@@ -2016,7 +2017,8 @@ extern "C" bool mv_chrome_face_card(int32_t index, mv_face_card_view* out, char*
   *out = {};
   out->person = c.person;
   out->photos = static_cast<std::int32_t>(c.photos);
-  out->actions = static_cast<std::int32_t>(mv::shell::actions_of(c));
+  out->actions = static_cast<std::int32_t>(mv::shell::actions_of(
+      c, mv::shell::find_addon_command("enhance", "faces") != mv::shell::command_id::none));
   out->shut = c.shut ? 1 : 0;
   out->thumb_w = static_cast<std::int32_t>(c.thumb_w);
   out->thumb_h = static_cast<std::int32_t>(c.thumb_h);
@@ -9185,6 +9187,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // command; `run` starts it (Remove hands the brushed dabs over first, as the
 // sheet's Remove did). An Enhance without the panel opens its sheet instead.
 - (void)enhanceTool:(const std::string&)photo run:(BOOL)run {
+  [self enhanceTool:photo run:run faces:{}];
+}
+
+// `faces` (S8's Faces panel, Restore face): the chosen faces' boxes, x, y, w,
+// h quads 0..1 of the upright photo; Enhance restores only those. Empty: every face.
+- (void)enhanceTool:(const std::string&)photo run:(BOOL)run faces:(const std::vector<float>&)faces {
   if ([self editSubject] != mv::shell::edit_subject::still || _items.empty() || _index.current() >= _items.size()) {
     NSBeep();
     return;
@@ -9202,6 +9210,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   mv::json::writer w;
   w.begin_object().key("photo").string(photo);
   if (run) w.key("run").boolean(true);
+  if (!faces.empty()) {
+    w.key("faces").begin_array();
+    for (const float v : faces) w.number(static_cast<double>(v));
+    w.end_array();
+  }
   w.end_object();
   // The panel's content width: the column less the pane's and the card's margins.
   const CGFloat column = self.rightColumnWidth ? self.rightColumnWidth.constant : kInspectorDefaultPoints;
@@ -9224,6 +9237,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     [self noticeShow:"This needs the Enhance add-on (Settings → Add-ons)."];
     return;
   }
+  // An Enhance without the docked panel has no way to take the chosen faces.
+  if (!faces.empty()) [self noticeShow:"This Enhance restores every face in the photo"];
   (void)[self runCommand:id back:mv::shell::back_target::none];
 }
 
@@ -12617,6 +12632,12 @@ static double mv_wall_seconds() {
     [self noticeShow:"Choose a face first: click its box on the photo"];
     return;
   }
+  if (action == static_cast<int>(mv::shell::face_action::restore)) {
+    // S10's model through Enhance's docked panel (its progress and result
+    // row), on these faces only; the host's own fixes stay free meanwhile.
+    [self enhanceTool:"faces" run:YES faces:boxes];
+    return;
+  }
   _faces.start_run(face, action);
   _eyesRunning = YES;
   ++_editGeneration;
@@ -12791,7 +12812,8 @@ static double mv_wall_seconds() {
 
 // Fill ↵: the part of the frame over the photo lands as an ordinary crop (one
 // undo step); the rest is margins Enhance fills, from the edited picture
-// (still_extend), in its sheet, which opens on Extend.
+// (still_extend), in its docked panel on the Enhance tab (S5), or in its
+// sheet, which opens on Extend, with an Enhance that has no panel.
 - (void)extendFill {
   if ([self activeTool] != mv::shell::canvas_tool::extend) return;
   if (mv::shell::extend_empty(_extend)) {
@@ -12817,7 +12839,9 @@ static double mv_wall_seconds() {
   [self toolDown];  // the frame goes; the camera frames the picture again
   if (!over) return;
   mv::addon::media::set_still_extend(path, mv::shell::extend_overhang(d));
-  (void)[self runCommand:enhance back:mv::shell::back_target::none];
+  // Enhance's docked panel under the Extend card runs it on the frame (S5's
+  // enhance/tool); an Enhance without the panel opens its sheet on Extend.
+  [self enhanceTool:"extend" run:YES];
 }
 
 // A section's Reset: its sliders back to 0, one undo step.

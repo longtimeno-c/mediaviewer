@@ -12,7 +12,9 @@
 //
 // The per-face fixes are data (kFaceActions): a fix is appended there with
 // its addon::media::face_fix value, and the chromes list what a face's
-// `actions` bits offer. S10's "Restore faces" is the next row.
+// `actions` bits offer. S10's Restore face is the third row: Enhance's face
+// model, run in its docked panel on the chosen faces' boxes (the host's
+// enhance/tool command), offered while Enhance has its "faces" command.
 //
 // Portable (both hosts link it; the Windows exe reaches the pack and the fix
 // through mediaviewer_core's C entries). faces_tool is UI-thread state;
@@ -37,9 +39,10 @@ namespace mv::shell {
 inline constexpr std::uint32_t kFaceThumbPx = 128;
 
 // The per-face fixes, by wire value (addon::media::face_fix, mv_adjust_faces'
-// `fix`). Appended only.
-enum class face_action : std::uint8_t { open_eyes = 0, improve = 1 };
-inline constexpr int kFaceActionCount = 2;
+// `fix`, for the host's own). Appended only. `restore` (S10) is not a face_fix:
+// it is Enhance's, through its docked panel, never mv_adjust_faces.
+enum class face_action : std::uint8_t { open_eyes = 0, improve = 1, restore = 2 };
+inline constexpr int kFaceActionCount = 3;
 // "Do all" (mv_adjust_faces' -1): each chosen face's best fix, one file.
 inline constexpr int kFaceDoAll = -1;
 
@@ -48,10 +51,12 @@ struct face_action_row {
   std::string_view label;  // the panel's button
   std::string_view busy;   // the panel's note while it runs
   bool needs_shut;         // offered only on a face whose eyes look shut
+  bool enhance = false;    // Enhance's (its docked panel runs it), offered only with Enhance's "faces"
 };
 inline constexpr std::array<face_action_row, kFaceActionCount> kFaceActions{{
     {face_action::open_eyes, "Open eyes", "Opening eyes from another photo…", true},
     {face_action::improve, "Improve face", "Looking for a better photo of this face…", false},
+    {face_action::restore, "Restore face", "Restoring in Enhance…", false, true},
 }};
 
 // What the panel's and the bar's controls send (chrome_cmd_faces' argument,
@@ -99,8 +104,9 @@ struct face_card {
   std::vector<std::uint8_t> thumb;  // sRGB RGBA8, opaque
 };
 
-// The fixes a face offers, a bit per face_action (kFaceActions' rule).
-[[nodiscard]] std::uint32_t actions_of(const face_card& f) noexcept;
+// The fixes a face offers, a bit per face_action (kFaceActions' rule);
+// Enhance's rows only when `enhance` (it has its "faces" command).
+[[nodiscard]] std::uint32_t actions_of(const face_card& f, bool enhance = false) noexcept;
 
 // Where the read stands (the panel's empty states; wire values for both chromes).
 enum class faces_status : std::uint8_t {

@@ -901,6 +901,19 @@ void job_runner::run_faces(job_request r, job_events ev) {
   auto found = find_faces(full, faces);
   if (!found) return fail(found.error() == status::cancelled ? why(status::cancelled) : pack_why(found.error()));
   if (found->empty()) return fail("No faces were found in this photo.");
+  // edit-refresh S8: the Faces panel's Restore face runs on the faces chosen
+  // on the canvas only ("faces": x, y, w, h quads, 0..1 of the photo).
+  if (const auto it = part.values.find("faces"); it != part.values.end() && it->second.k == json::kind::array) {
+    std::vector<float> boxes;
+    for (const json::value& n : it->second.a) {
+      if (n.k != json::kind::number) return fail(why(status::invalid_arg));
+      boxes.push_back(static_cast<float>(n.is_integer ? static_cast<double>(n.i) : n.d));
+    }
+    if (!boxes.empty()) {
+      *found = chosen_faces(*found, full.width, full.height, boxes);
+      if (found->empty()) return fail("The chosen faces were not found again in this photo.");
+    }
+  }
   if (cancel_.load()) return fail(why(status::cancelled));
   auto model = port_.load_face(*part.spec, part.models_dir, choice, r.policy.threads);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));

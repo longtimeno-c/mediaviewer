@@ -978,7 +978,7 @@ void stop_motion(app_state* app) noexcept;
 void push_edit_view(app_state* app) noexcept;
 void workspace_item_changed(app_state* app) noexcept;
 void enhance_dock_close(app_state* app) noexcept;
-void enhance_tool(app_state* app, std::string_view photo, bool run);
+void enhance_tool(app_state* app, std::string_view photo, bool run, const std::vector<float>& faces = {});
 void set_editor_open(app_state* app, bool open);  // PR 30
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index);
@@ -3005,6 +3005,8 @@ void sync_faces_panel(app_state* app) noexcept {
     std::vector<std::string> sources;
     sources.reserve(f.faces.size());
     for (const mv::shell::face_card& c : f.faces) sources.push_back(mv::shell::face_source_line(c));
+    // S10's Restore face, a row while Enhance has its "faces" command.
+    const bool restore = mv::shell::find_addon_command("enhance", "faces") != mv::shell::command_id::none;
     std::vector<mv::shell::chrome_face_card_args> cards(f.faces.size());
     for (std::size_t i = 0; i < f.faces.size(); ++i) {
       const mv::shell::face_card& c = f.faces[i];
@@ -3014,7 +3016,7 @@ void sync_faces_panel(app_state* app) noexcept {
       cards[i].person = c.person;
       cards[i].thumb_w = static_cast<std::int32_t>(c.thumb_w);
       cards[i].thumb_h = static_cast<std::int32_t>(c.thumb_h);
-      cards[i].actions = static_cast<std::int32_t>(mv::shell::actions_of(c));
+      cards[i].actions = static_cast<std::int32_t>(mv::shell::actions_of(c, restore));
       cards[i].shut = c.shut ? 1 : 0;
     }
     mv::shell::chrome_faces_args a{};
@@ -3435,6 +3437,18 @@ void faces_fetch(app_state* app) {
 void adjust_faces(app_state* app, int face, int fix, bool all) {
   if (app->eyes_running || app->faces.running || !adjust_still(app) || app->edit_path.empty() || !app->window) return;
   if (fix < mv::shell::kFaceDoAll || fix >= mv::shell::kFaceActionCount) return;
+  if (fix == static_cast<int>(mv::shell::face_action::restore)) {
+    // S10's model through Enhance's docked panel (its progress and result
+    // row), on these faces only; never mv_adjust_faces. The Mac's -facesRun:.
+    if (all || app->faces.item != app->edit_key) return;
+    const std::vector<float> chosen = app->faces.run_boxes(face);
+    if (chosen.empty()) {
+      notice_show(app, "Choose a face first: click its box on the photo");
+      return;
+    }
+    enhance_tool(app, "faces", true, chosen);
+    return;
+  }
   std::vector<float> boxes;
   if (!all) {
     if (app->faces.item != app->edit_key) return;
@@ -3759,7 +3773,8 @@ void extend_preset(app_state* app, int i) {
 
 // Fill (Enter): the part of the frame over the photo lands as an ordinary crop
 // (one undo step); the rest is margins Enhance fills from the edited picture
-// (still_extend), in its sheet, which opens on Extend.
+// (still_extend), in its docked panel on the Enhance tab (S5), or in its sheet,
+// which opens on Extend, with an Enhance that has no panel.
 void extend_fill(app_state* app) {
   if (active_tool(app) != mv::shell::canvas_tool::extend) return;
   if (mv::shell::extend_empty(app->extend)) {
@@ -3787,7 +3802,9 @@ void extend_fill(app_state* app) {
   const std::array<float, 4> o = mv::shell::extend_overhang(d);
   // The add-on media layer is in mediaviewer_core.dll: through its C entry.
   (void)mv_edit_still_extend(path.c_str(), o.data());
-  (void)run_command(app, enhance);
+  // Enhance's docked panel under the Extend card runs it on the frame (S5's
+  // enhance/tool); an Enhance without the panel opens its sheet on Extend.
+  enhance_tool(app, "extend", true);
 }
 
 // The tool keys (docs/design/16, shell/canvas_tool.h), routed in tool mode.
@@ -5247,7 +5264,9 @@ void set_show_original(app_state* app, bool on) noexcept {
 // mediaviewer_core.dll: through mv_slots_screen_command / _close_screen.
 std::uint32_t folder_count(app_state* app) noexcept;
 
-void enhance_tool(app_state* app, std::string_view photo, bool run) {
+// `faces` (S8's Faces panel, Restore face): the chosen faces' boxes, x, y, w,
+// h quads 0..1 of the upright photo; Enhance restores only those. Empty: every face.
+void enhance_tool(app_state* app, std::string_view photo, bool run, const std::vector<float>& faces) {
   if (edit_subject_of(app) != mv::shell::edit_subject::still || app->edit_path.empty()) {
     ::MessageBeep(MB_ICONWARNING);
     return;
@@ -5266,7 +5285,17 @@ void enhance_tool(app_state* app, std::string_view photo, bool run) {
   if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
   std::string command = "{\"photo\":\"";
   command.append(photo);
-  command += run ? "\",\"run\":true}" : "\"}";
+  command += run ? "\",\"run\":true" : "\"";
+  if (!faces.empty()) {
+    command += ",\"faces\":[";
+    char num[32];
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+      std::snprintf(num, sizeof(num), "%s%.6g", i ? "," : "", static_cast<double>(faces[i]));
+      command += num;
+    }
+    command += "]";
+  }
+  command += "}";
   // The panel's content width in DIPs: the column less the rail, the pane's
   // and the card's margins (the preview is drawn at it).
   const std::uint32_t dpi = app->window ? ::GetDpiForWindow(app->window) : 96u;
@@ -5290,6 +5319,8 @@ void enhance_tool(app_state* app, std::string_view photo, bool run) {
     notice_show(app, "This needs the Enhance add-on (Settings → Add-ons).");
     return;
   }
+  // An Enhance without the docked panel has no way to take the chosen faces.
+  if (!faces.empty()) notice_show(app, "This Enhance restores every face in the photo");
   (void)run_command(app, id);
 }
 

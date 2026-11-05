@@ -95,6 +95,10 @@ TEST_CASE("faces tool: cards from the pack's answer and the still", "[faces-tool
   CHECK(actions_of(anna) == (1u << static_cast<unsigned>(face_action::improve)));
   CHECK(actions_of(other) == ((1u << static_cast<unsigned>(face_action::improve)) |
                               (1u << static_cast<unsigned>(face_action::open_eyes))));
+  // S10's Restore face is Enhance's: offered on every face while Enhance has it.
+  CHECK(actions_of(anna, true) == ((1u << static_cast<unsigned>(face_action::improve)) |
+                                   (1u << static_cast<unsigned>(face_action::restore))));
+  CHECK((actions_of(other, true) & (1u << static_cast<unsigned>(face_action::restore))) != 0u);
   // A thumbnail a face, opaque sRGB, the skin's colour about its edge.
   REQUIRE(anna.thumb_w == kFaceThumbPx);
   REQUIRE(anna.thumb.size() == std::size_t{kFaceThumbPx} * kFaceThumbPx * 4);
