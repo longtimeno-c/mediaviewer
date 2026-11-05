@@ -736,6 +736,18 @@ void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept
     fg->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), line, scale);
   }
   fg->AddRect(a, b, IM_COL32(255, 255, 255, 235), 0.0f, 0, 1.5f * scale);
+  // docs/design/20 Behaviour 4: handles at the corners and the middles of the
+  // edges, as Extend's frame draws them (a drag there resizes, inside moves).
+  {
+    const float k = 4.0f * scale;
+    const float mx = (a.x + b.x) * 0.5f, my = (a.y + b.y) * 0.5f;
+    for (const ImVec2 c : {a, ImVec2(mx, a.y), ImVec2(b.x, a.y), ImVec2(b.x, my), b, ImVec2(mx, b.y),
+                           ImVec2(a.x, b.y), ImVec2(a.x, my)}) {
+      fg->AddRectFilled(ImVec2(c.x - k - scale, c.y - k - scale), ImVec2(c.x + k + scale, c.y + k + scale),
+                        IM_COL32(0, 0, 0, 170));
+      fg->AddRectFilled(ImVec2(c.x - k, c.y - k), ImVec2(c.x + k, c.y + k), IM_COL32(255, 255, 255, 235));
+    }
+  }
   char label[96];
   std::snprintf(label, sizeof(label), "%u x %u   %+.1f\xC2\xB0   Enter apply   Esc cancel",
                 static_cast<unsigned>(std::lround(v->overlay[2] * pw)),

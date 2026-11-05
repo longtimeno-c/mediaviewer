@@ -971,6 +971,7 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_crop_drag.cpp
     # Issue #614: ⌘P's paper layout.
     tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp

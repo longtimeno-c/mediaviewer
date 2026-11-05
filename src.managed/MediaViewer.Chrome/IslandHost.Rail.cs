@@ -12,8 +12,8 @@ namespace MediaViewer.Chrome;
 /// docs/plans/edit-refresh.md S2: the Edit workspace's 44 DIP icon rail, its own
 /// island at the window's right edge while the workspace is open (native
 /// places it, layout_panels). Top: the tabs (Crop, Adjust, Enhance, Info; Trim
-/// and Jobs on a clip). Then a hairline and the tools (Remove, Red-eye, Faces,
-/// Extend). At the foot: Undo, Compare and Done. The Mac twin is EditRailView.swift.
+/// and Jobs on a clip). Then a hairline and the tools (Remove, Red-eye, Faces;
+/// Extend is the Enhance tab's card only, owner 2026-11-05). At the foot: Undo, Compare and Done. The Mac twin is EditRailView.swift.
 /// </summary>
 /// <remarks>
 /// A tab icon sends <c>chrome_cmd_edit_tab</c>, which native reads as a rail
@@ -143,10 +143,6 @@ public static partial class IslandHost
                 () => Send(Command.EditAction, EditActions.ArmRedEye))));
             top.Children.Add(Holder(RailButton(RailGlyph.Faces, "Faces", "Faces: choose faces on the photo to fix",
                 () => Send(Command.CanvasTool, CanvasTools.Faces * 1000))));
-            top.Children.Add(Holder(RailButton(RailGlyph.Extend, "Extend",
-                _editEnhance ? "Extend edges: more picture around the photo (Enhance)"
-                             : "Extend edges (needs the Enhance add-on)",
-                () => RunEnhanceTool(EnhanceToolKind.Extend))));
         }
         root.Children.Add(top);
 

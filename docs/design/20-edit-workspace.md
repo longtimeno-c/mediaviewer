@@ -57,7 +57,13 @@ in the core (`edit/`, `shell/edit_session`).
    and `X` swaps orientation. A locked preset fits the largest rect of that ratio centred on the
    draft; `Shift`+arrows resize keeping the ratio; a straighten shrinks it evenly. Straighten is a
    ±45° slider (`,` `.` step 0.5°). Rotate, flip, Apply and Cancel are buttons; the arrows move
-   the rect (1 % of the frame per press).
+   the rect (1 % of the frame per press). **On the canvas** the rect has eight handles: a press
+   within 12 px (Extend's grab distance) of an edge or corner drags it, one inside moves the rect,
+   anywhere else pans or drags the file out as before (`shell/crop_drag.h` `crop_hit` /
+   `crop_drag_rect`, `edit_session::drag_crop`). A locked preset keeps its ratio (a corner keeps
+   the opposite corner and follows the pointer projected onto the diagonal; an edge resizes the
+   other side about its centre); with an angle the rect stops where a corner of the rotated
+   source would show. The edge under the pointer picks the cursor, as Extend's does.
 5. **Show original** is `Y`, held (and the header's and the rail's Compare). It publishes an
    identity edit view on the same blit and never touches the stack.
 6. **Originals stay protected.** Everything goes through `edit_session`: the stack is
@@ -89,7 +95,7 @@ Still, Crop tab, a 3:2 preset locked (regular width):
 │         5472 × 3648  +1.5°                      │ Free Orig 1:1 4:3 [3:2]          │ ⌫  │ Remove
 │                                                 │ 16:9 5:4   ▭ Landscape           │ ◉  │ Red-eye
 │                                                 │ STRAIGHTEN  ──●──  +1.5°  ↺      │ ☺  │ Faces
-│                                                 │ ROTATE AND FLIP ⟲ ⟳ ⇋ ⇵          │ ⤢  │ Extend
+│                                                 │ ROTATE AND FLIP ⟲ ⟳ ⇋ ⇵          │    │
 │                                                 │ ←→↑↓ move · ⇧ resize · ⏎ apply   │    │
 │                                                 │                                  │ ↶  │ Undo
 │                                                 │                                  │ ◐  │ Compare
@@ -131,10 +137,10 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
   `rail_pick`). A window too narrow for any inspector beside the canvas (`clamp_inspector`
   returns 0) folds it too, and unfolds when it is wide enough again. A tab's own key unfolds a
   folded inspector rather than closing it. Closing forgets the fold.
-- **Tools:** Remove, Red-eye, Faces and Extend are canvas tools ("Canvas tools" below): a click
-  arms one (Remove and Faces on the Enhance tab, Red-eye on Adjust, Extend on Crop; with Enhance,
-  Extend also opens Enhance's docked panel under the Extend card), a second click puts it down, and
-  the armed one wears the selection.
+- **Tools:** Remove, Red-eye and Faces are canvas tools ("Canvas tools" below): a click
+  arms one (Remove and Faces on the Enhance tab, Red-eye on Adjust), a second click puts it down,
+  and the armed one wears the selection. Extend has no rail icon (owner, 2026-11-05): its one door
+  in the workspace is the Enhance tab's *Extend edges* card (and Edit ▸ Extend Edges on the Mac).
 - **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
   keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
@@ -306,8 +312,8 @@ animation or with the workspace closed it goes down.
 
 #### Extend
 
-docs/plans/edit-refresh.md S6. **Extend** (`canvas_tool::extend`; the rail's icon, the Enhance
-tab's *Set the new frame*, Edit ▸ Extend Edges, `tool_extend`) puts a frame over the picture whose
+docs/plans/edit-refresh.md S6. **Extend** (`canvas_tool::extend`; the Enhance tab's *Set the new
+frame*, Edit ▸ Extend Edges, `tool_extend`; its home tab is Enhance) puts a frame over the picture whose
 edges and corners are **dragged past the photo's edges** (a press inside moves it, its size kept).
 The frame is shell state, `extend_draft` in `shell/edit_workspace.h` (each side's distance past
 the edge as a fraction of the picture's width or height; negative is inside, a crop), **never an
@@ -455,7 +461,8 @@ The behaviour it pins:
    original while held and changes nothing.
 4. Keyboard only: `Enter`, `Shift+C`, `A` until 3:2, `Enter`, `Ctrl+S`.
 
-Tests: `test_canvas_tool` (`mv_tests "[canvas-tool]"`: home tabs, sizes, spots, snap, Find eyes,
+Tests: `test_crop_drag` (`mv_tests "[crop-drag]"`: the handles' hit-test, a free and a locked
+drag, the straightened stop), `test_canvas_tool` (`mv_tests "[canvas-tool]"`: home tabs, sizes, spots, snap, Find eyes,
 the overlay's deadlines), `test_key_router` (`[tool]`: tool mode's keys, refusals and `Esc` order),
 `test_remove_brush` (`mv_tests "[remove-brush]"`: undo, redo, erase, the caps, Clear undoable, a
 4 px brush on a 6000 px photo at 400 %, the tint's stamp and edge, the builder's incremental build,
@@ -469,7 +476,6 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
 
 ## Not built
 
-- On-canvas crop handles (drag corners, edges, inside).
 - Redo (`Ctrl+Shift+Z`) and a named history list for a still's edit stack (the brush has its own
   redo); a split-screen before/after.
 - Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's

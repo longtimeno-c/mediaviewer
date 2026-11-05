@@ -491,7 +491,7 @@ mode **tool**; everything else is the browse row underneath, minus what `blocked
 | hold `Space` | tool | **Pan while brushing** (`tool_pan` / `tool_pan_release`): a drag pans, the open hand shows. Never next |
 | `Alt` / `⌥` held | tool | The brush erases while it is down (the ring dashes); no row, read at the press |
 | `Esc` | tool | The tool goes down (strokes kept, dimmed) |
-| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): the rail, the Enhance tab's cards, Edit ▸ on the Mac, Settings. Faces arms the Faces tool (S8: a box per face, a click chooses it; the Faces panel's controls are `chrome_cmd_faces` on Windows, `mv_chrome_faces_op` on the Mac); Extend opens Enhance's sheet until S6 makes it a canvas tool |
+| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): the rail (Red-eye, Faces; Extend has no rail icon since 2026-11-05), the Enhance tab's cards, Edit ▸ on the Mac, Settings. Faces arms the Faces tool (S8: a box per face, a click chooses it; the Faces panel's controls are `chrome_cmd_faces` on Windows, `mv_chrome_faces_op` on the Mac); Extend opens Enhance's sheet until S6 makes it a canvas tool |
 
 ### Crop
 
@@ -504,6 +504,10 @@ mode **tool**; everything else is the browse row underneath, minus what `blocked
 | `A` / `X` | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap portrait and landscape |
 | `Enter` | Apply: the draft joins the edit stack |
 | `Esc` | Cancel the draft |
+
+With the mouse, a press on the rectangle's edge or corner drags it and one inside moves it
+(a locked preset keeps its ratio); a press elsewhere pans as before
+([20](20-edit-workspace.md) Behaviour 4, `shell/crop_drag.h`).
 
 ### Rate
 

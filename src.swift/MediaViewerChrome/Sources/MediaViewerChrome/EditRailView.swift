@@ -2,7 +2,8 @@
 // docs/plans/edit-refresh.md S2: the Edit workspace's 44 pt icon rail, docked at
 // the window's right edge while the workspace is open (main_mac.mm railHost).
 // Top: the tabs (Crop, Adjust, Enhance, Info; Trim and Jobs on a clip). Then a
-// hairline and the tools (Remove, Red-eye, Faces, Extend). At the foot: Undo,
+// hairline and the tools (Remove, Red-eye, Faces; Extend is the Enhance tab's
+// card only, owner 2026-11-05). At the foot: Undo,
 // Compare and Done. The active tab's icon folds the inspector to the rail
 // (shell/edit_workspace.h rail_pick); any icon of a folded rail unfolds it.
 // The Windows twin is IslandHost.Rail.cs.
@@ -39,9 +40,6 @@ struct EditRailView: View {
                    selected: store.toolBar.tool == .redEye) { store.tool(.redEye) }
         RailButton(symbol: "face.smiling", label: "Faces",
                    help: "Faces: open closed eyes, improve faces from your photos") { store.tool(.faces) }
-        RailButton(symbol: "arrow.up.left.and.arrow.down.right", label: "Extend",
-                   help: store.enhance ? "Extend edges: more picture around the photo (Enhance)"
-                                       : "Extend edges (needs the Enhance add-on)") { store.tool(.extend) }
       }
       Spacer(minLength: MVTheme.space(8))
       if !store.isClip {

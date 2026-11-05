@@ -77,6 +77,7 @@
 #endif
 #include "shell/adjust_pane.h"
 #include "shell/canvas_tool.h"
+#include "shell/crop_drag.h"
 #include "shell/faces_tool.h"
 #include "shell/brush_mask.h"
 #include "shell/remove_brush.h"
@@ -884,6 +885,12 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // docs/plans/edit-refresh.md S6: Extend's frame.
 - (BOOL)extendActive;
 - (BOOL)extendPressX:(float)x y:(float)y;
+// docs/design/20 Behaviour 4: crop mode's handles on the canvas.
+- (BOOL)cropHandles;
+- (BOOL)cropPressX:(float)x y:(float)y;
+- (void)cropDragX:(float)x y:(float)y;
+- (void)cropHoverX:(float)x y:(float)y;
+- (void)cropRelease;
 // docs/plans/edit-refresh.md S3: canvas tools.
 - (BOOL)toolArmed;
 - (BOOL)toolPanHeld;
@@ -2579,6 +2586,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
   BOOL _brushStroke;  // slice 7: the left press is a Remove brush stroke
+  BOOL _cropDrag;     // docs/design/20: the left press holds a crop handle
   BOOL _textBeam;            // the I-beam is up over text in a still
   // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
   // two-finger sideways swipe that steps one item.
@@ -2782,6 +2790,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     }
   }
   [self trackPointer:event];
+  // docs/design/20 Behaviour 4: in crop mode a press on the draft's edge or
+  // corner resizes it and one inside moves it; anywhere else pans as before.
+  if (self.app && [self.app cropPressX:self.snap->mouse_x y:self.snap->mouse_y]) {
+    _cropDrag = YES;
+    return;
+  }
   // docs/plans/edit-refresh.md S3: an armed canvas tool takes the press on the
   // photo (the brush strokes while the button is down; red-eye and the
   // white-balance picker click); nothing pans. Space held pans instead.
@@ -2812,6 +2826,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
+  if (_cropDrag) {
+    _cropDrag = NO;
+    if (self.app) [self.app cropRelease];
+    return;
+  }
   if (_brushStroke) {
     _brushStroke = NO;
     if (self.app) [self.app brushRelease];
@@ -2950,6 +2969,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   (void)event;
   self.snap->mouse_in_client = false;
   if (self.app) [self.app toolCursorRestore];  // S3: the ring goes, the arrow comes back
+  if (self.app && !_cropDrag) [self.app cropHoverX:self.snap->mouse_x y:self.snap->mouse_y];  // off the canvas: the arrow
   if (_textBeam) {
     _textBeam = NO;
     [NSCursor.arrowCursor set];
@@ -2979,11 +2999,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     else [self.app brushHoverX:self.snap->mouse_x y:self.snap->mouse_y];
     [self.app toolCursor];
   }
+  // docs/design/20 Behaviour 4: a held crop handle drags the draft; the one
+  // under the pointer picks the cursor (and gives it back once crop mode ends).
+  const BOOL cropping = self.app && [self.app cropHandles];
+  if (cropping && _cropDrag) [self.app cropDragX:self.snap->mouse_x y:self.snap->mouse_y];
+  else if (self.app) [self.app cropHoverX:self.snap->mouse_x y:self.snap->mouse_y];
   // A recent folder under the pointer reads as a link. Only a change of row
   // redraws (the app bumps the snapshot); an empty welcome stays idle.
   if (self.app && self.snap->recents.count > 0) {
     [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
-  } else if (self.app && (event.type == NSEventTypeMouseMoved || self.snap->text_press)) {
+  } else if (self.app && !cropping && (event.type == NSEventTypeMouseMoved || self.snap->text_press)) {
     // Text in images: the I-beam over words in a still.
     const BOOL beam = self.snap->mouse_in_client && [self.app textHoverX:self.snap->mouse_x y:self.snap->mouse_y];
     if (beam || _textBeam) [(beam ? NSCursor.IBeamCursor : NSCursor.arrowCursor) set];
@@ -3730,6 +3755,14 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   float _extendPress[2];
   std::uint8_t _extendGrab;
   std::uint8_t _extendHover;
+  // docs/design/20 Behaviour 4: crop mode's handles (shell/crop_drag.h): the
+  // edges a press holds, the draft and point it started from, the edges
+  // under the pointer, and whether their cursor is up.
+  mv::edit::rect _cropStart;
+  float _cropPress[2];
+  std::uint8_t _cropGrab;
+  std::uint8_t _cropHover;
+  BOOL _cropCursorSet;
   float _toolPulse[3];      // a fix just made (shown uv, r over long)
   std::uint64_t _toolPulseUntil;
   // The eyes the AI pack found on the photo (People on): the ring snaps to
@@ -9069,7 +9102,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 // The rail's and the Enhance tab's tools (EditRailView / EnhanceHubView):
 // 0 Remove (the brush, on the Enhance tab), 1 Red-eye (on Adjust), 2 Faces
-// (the Enhance tab), 3 Extend (S6: Extend's frame on the canvas, and with
+// (the Enhance tab), 3 Extend (the Enhance tab's card and Edit ▸ Extend Edges,
+// not the rail; S6: Extend's frame on the canvas, and with
 // Enhance its docked panel on Extend, S5, where Fill runs). S3: Remove and
 // Red-eye are canvas tools (shell/canvas_tool.h), S8 Faces too; a second
 // click on the armed one puts it down.
@@ -12802,6 +12836,86 @@ static double mv_wall_seconds() {
   if (hover == _extendHover) return;
   _extendHover = hover;
   [self brushPublish];  // the edge lights under the pointer
+}
+
+// ---- docs/design/20 Behaviour 4: crop mode's handles on the canvas ---------------
+//
+// A press on the draft's edge or corner (shell/crop_drag.h crop_hit, Extend's
+// grab distance) resizes it, one inside moves it; edit_session::drag_crop keeps
+// a locked ratio and the straightened source's covered area. Crop mode shows
+// the whole frame, so the shown picture's uv is the draft's. The Windows twin
+// is main.cpp crop_press / crop_drag_to / crop_hover_at / crop_release.
+
+// Crop mode on a still on screen: the handles take presses.
+- (BOOL)cropHandles {
+  return _edits.crop_active() && !_showOriginal && [self editSubject] == mv::shell::edit_subject::still ? YES : NO;
+}
+
+// The edges a press grabs: resize arrows for one edge, the open hand for a
+// corner (AppKit has no public diagonal resize cursor before macOS 15) or a move.
+- (void)cropCursor:(std::uint8_t)handle {
+  NSCursor* c = nil;
+  switch (mv::shell::extend_cursor_of(handle)) {
+    case mv::shell::extend_cursor::left_right: c = NSCursor.resizeLeftRightCursor; break;
+    case mv::shell::extend_cursor::up_down: c = NSCursor.resizeUpDownCursor; break;
+    case mv::shell::extend_cursor::nw_se:
+    case mv::shell::extend_cursor::ne_sw:
+    case mv::shell::extend_cursor::move: c = NSCursor.openHandCursor; break;
+    case mv::shell::extend_cursor::cross: break;
+  }
+  if (c) {
+    [c set];
+    _cropCursorSet = YES;
+  } else if (_cropCursorSet) {
+    _cropCursorSet = NO;
+    [NSCursor.arrowCursor set];
+  }
+}
+
+- (std::uint8_t)cropHitX:(float)x y:(float)y {
+  float u = 0, v = 0, ru = 0, rv = 0;
+  if (![self cropHandles] || ![self pointerOverCanvas] || ![self brushUV:x y:y u:&u v:&v]) return 0;
+  [self extendReachU:&ru v:&rv];
+  return mv::shell::crop_hit(_edits.crop_overlay(), u, v, ru, rv);
+}
+
+- (BOOL)cropPressX:(float)x y:(float)y {
+  const std::uint8_t grab = [self cropHitX:x y:y];
+  if (grab == mv::shell::extend_none) return NO;
+  float u = 0, v = 0;
+  (void)[self brushUV:x y:y u:&u v:&v];
+  std::uint32_t w = 0, h = 0;
+  if (_lab.still_size(_itemId, &w, &h)) _edits.set_size(w, h);
+  _cropGrab = grab;
+  _cropStart = _edits.crop_overlay();
+  _cropPress[0] = u;
+  _cropPress[1] = v;
+  [self cropCursor:grab];
+  return YES;
+}
+
+- (void)cropDragX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (_cropGrab == 0 || ![self brushUV:x y:y u:&u v:&v]) return;
+  // Only the draft moves: the overlay redraws, the Crop pane's size follows.
+  if (_edits.drag_crop(_cropStart, _cropGrab, u - _cropPress[0], v - _cropPress[1]) ==
+      mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+  }
+}
+
+- (void)cropRelease {
+  _cropGrab = 0;
+  _cropHover = 0xff;  // the next move picks the cursor again
+  [self cropHoverX:_snap.mouse_x y:_snap.mouse_y];
+}
+
+- (void)cropHoverX:(float)x y:(float)y {
+  const std::uint8_t hover = [self cropHitX:x y:y];
+  if (hover == _cropHover && (hover == 0 || _cropCursorSet)) return;
+  _cropHover = hover;
+  [self cropCursor:hover];
 }
 
 // A chip on the bar: the add-on's preset as a frame (0 Original: none).
