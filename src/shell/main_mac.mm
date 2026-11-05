@@ -9387,7 +9387,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // Another photo: on the Enhance tab the cards follow it (Enhance stops a run
 // on the last one); elsewhere they close (a run stops the same way).
 - (void)enhanceCardsFollow:(const std::string&)path {
-  if (_enhanceDockPath.empty() || _enhanceDockPath == path) return;
+  if (_enhanceDockPath.empty()) {
+    [self enhanceCardsSync];  // the tab showing with nothing open yet (no add-on then)
+    return;
+  }
+  if (_enhanceDockPath == path) return;
   if (_enhanceRun.reset(mv::shell::steady_ms(), path)) {
     [self syncToolBar];
     [self brushPublish];

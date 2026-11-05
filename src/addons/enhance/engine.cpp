@@ -1186,6 +1186,12 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
     // One-click (owner 2026-11-05): a card's one button, its download's Stop,
     // and the tool bar's Cancel and Dismiss.
     if (const auto t = tool_of_node(node, "go")) {
+      {
+        // The card's Restore faces is every face (the Faces panel's per-face
+        // Restore face names its boxes in its own command).
+        std::lock_guard lock(m_);
+        if (!running_) face_boxes_.clear();
+      }
       go(*t);
       return;
     }

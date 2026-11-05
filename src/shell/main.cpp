@@ -5650,7 +5650,12 @@ void enhance_cards_sync(app_state* app) noexcept {
 // Another photo: on the Enhance tab the cards follow it (Enhance stops a run
 // on the last one); elsewhere they close (a run stops the same way).
 void enhance_cards_follow(app_state* app, const std::string& path) noexcept {
-  if (!app || app->enhance_dock_path.empty() || app->enhance_dock_path == path) return;
+  if (!app) return;
+  if (app->enhance_dock_path.empty()) {
+    enhance_cards_sync(app);  // the tab showing with nothing open yet (no add-on then)
+    return;
+  }
+  if (app->enhance_dock_path == path) return;
   if (app->enhance_run.reset(mv::shell::steady_ms(), path)) {
     sync_tool_bar(app);
     brush_publish(app);
