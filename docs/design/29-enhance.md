@@ -400,10 +400,16 @@ extrapolated). Restore faces: 1.6 s (RestoreFormer++) or 1 s (GFPGAN) a face, sc
 Fill ↵) runs as before. The tree's hidden `run` node (`idle | running | downloading | done |
 failed | cancelled`, `run.id`, `run.progress`, `run.verb`, `run.line`, `run.result`) is what the host follows (`shell/enhance_run.h`, `[enhance-run]`):
 
-- **The glow over the photo** while it works (not while only downloading): soft blue, purple,
-  pink and orange flowing round the photo's edges with a sheen sweeping across, in the present
-  path on both labs (`tool_overlay.h` `draw_work_glow`, Metal and D3D11 through the same ImGui
-  body). The labs present each frame only while it moves, then once to clear; it fades out in
+- **The glow over the photo** while it works (not while only downloading), after Apple
+  Intelligence's edge light (owner 2026-11-05: "more natural"): light bleeding in from the
+  photo's edges (a fine core a little toward white, a bloom and a faint wash, exponential
+  falloffs, a little spill outside), each edge casting its own so the corners round off and
+  brighten; coloured by six soft blobs (violet, pink, blue, coral, amber, sky) drifting round the
+  edge at unrelated speeds and swelling on their own periods, the strongest blob setting the
+  colour so it never averages to grey; it grows in from the edges as it comes (700 ms ease-out).
+  No sweep across the picture. In the present path on both labs (`tool_overlay.h`
+  `draw_work_glow`, Metal and D3D11 through the same ImGui body); the Mac lab's `--work-glow`
+  holds it on to look at it or soak with it up. The labs present each frame only while it moves, then once to clear; it fades out in
   300 ms the moment the run ends; Reduce Motion draws it still and presents nothing for it.
 - **The tool bar under the photo** (the canvas tool bar's slot and band, shown for the run even
   with no tool armed), the one progress line ([20](20-edit-workspace.md) "Craft rules"): the bar

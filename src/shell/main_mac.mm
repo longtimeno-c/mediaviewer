@@ -219,6 +219,11 @@ bool g_start_compare = false;
 // --edit-tab N (with --browse-soak): walk the folder with the Edit workspace open
 // on that tab (5 = Enhance, whose cards measure each photo for their estimate).
 int g_browse_edit_tab = -1;
+// --work-glow: open the Edit workspace on the first still and hold one-click
+// Enhance's working glow on it (to look at it, and to soak the present loop
+// with it up: --soak 60 --gate --work-glow).
+bool g_work_glow = false;
+std::uint64_t g_work_glow_on_ms = 0;
 // #452: started as a login item (SMAppService.mainApp, keyAELaunchedAsLogInItem) or
 // with `--background`: the viewer window is never shown and only the menu-bar
 // item appears, once an add-on keeps the process (docs/design/28 "In the background").
@@ -4750,6 +4755,17 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                                                     userInfo:nil
                                                      repeats:YES];
   }
+  if (g_work_glow) {
+    // --work-glow: once a still shows, Edit opens and the glow comes on.
+    __weak MvLabApp* weakSelf = self;
+    [NSTimer scheduledTimerWithTimeInterval:0.05
+                                    repeats:YES
+                                      block:^(NSTimer* timer) {
+                                        MvLabApp* strongSelf = weakSelf;
+                                        if (!strongSelf) return [timer invalidate];
+                                        [strongSelf workGlowStart:timer];
+                                      }];
+  }
   if (g_mac_browse.enabled) {
     _browseTimer = [NSTimer scheduledTimerWithTimeInterval:0.01
                                                     target:self
@@ -5128,6 +5144,15 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     std::fclose(f);
   }
   [NSApp terminate:nil];
+}
+
+- (void)workGlowStart:(NSTimer*)timer {
+  if (!_lab.showing_still()) return;
+  [timer invalidate];
+  if (!_ws.open) (void)[self runCommand:mv::shell::command_id::edit_workspace back:mv::shell::back_target::none];
+  g_work_glow_on_ms = mv::shell::steady_ms();
+  [self toolApplyView];
+  [self.view syncChrome];
 }
 
 - (void)browseTick {
@@ -12725,6 +12750,10 @@ static double mv_wall_seconds() {
     in.work_glow_on_ms = _enhanceRun.glow_on_ms;
     in.work_glow_off_ms = _enhanceRun.glow_off_ms;
   }
+  if (g_work_glow && g_work_glow_on_ms != 0) {
+    in.work_glow_on_ms = g_work_glow_on_ms;
+    in.work_glow_off_ms = 0;
+  }
   const mv::edit::placement p = _edits.preview_placement();
   mv::shell::apply_tool(_snap.edit[0], in, p, _edits.colour());
   // S8: the faces' boxes (only for the photo they were read from).
@@ -16653,6 +16682,7 @@ void usage() {
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
                "  --edit-tab N                       with --browse-soak: Edit open on tab N (5 = Enhance)\n"
+               "  --work-glow                        Edit open, Enhance's working glow held on\n"
                "  --pane-drag-soak --json PATH STILL drag the right column 280<->720 for 20 s\n"
                "  --page-soak PATH DOCUMENT          fling the page sidebar, time page jumps\n"
                "  --compare     start with the two-up compare on (`|`)\n"
@@ -16720,6 +16750,8 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(arg, "--page-soak") == 0) {
       g_mac_pages.enabled = true;
       g_mac_pages.json_path = next();
+    } else if (std::strcmp(arg, "--work-glow") == 0) {
+      g_work_glow = true;
     } else if (std::strcmp(arg, "--edit-tab") == 0) {
       g_browse_edit_tab = std::atoi(next());
     } else if (std::strcmp(arg, "--compare") == 0) {

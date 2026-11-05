@@ -763,7 +763,8 @@ the process; it quits after 60 s if nothing does),
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
 past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too, and takes
 `--edit-tab N` to walk with the Edit workspace open on tab N, 5 being Enhance, whose cards measure
-each photo for their time estimate. The
+each photo for their time estimate. `--work-glow` (macOS lab): open the Edit workspace on the first still and hold
+one-click Enhance's working glow on, to look at it or to run `--soak 60 --gate` with it up. The
 Windows lab adds `quick` steps — Right as soon as the last photo is on screen — and one
 `held` run — a Right every 50 ms, then the last photo timed to full resolution, with the
 run's decode job counts under `"held"`; every step carries `full_ms`. Those are the cases
