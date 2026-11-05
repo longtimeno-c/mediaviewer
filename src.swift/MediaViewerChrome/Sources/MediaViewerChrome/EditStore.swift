@@ -87,6 +87,20 @@ enum CropAspect: Int32, CaseIterable {
 
   /// Free has no orientation and a square's is itself.
   var hasOrientation: Bool { self != .free && self != .square }
+
+  /// The ratio as it reads turned or not: "5:4", or "4:5" turned portrait.
+  /// Original is the photo's own ratio ("Original ratio": Extend's bar also
+  /// has an Original chip, the photo's own frame).
+  func turnedLabel(_ portrait: Bool) -> String {
+    switch self {
+    case .free: return "Free"
+    case .original: return "Original ratio"
+    default:
+      guard portrait, hasOrientation else { return label }
+      let sides = label.split(separator: ":")
+      return sides.count == 2 ? "\(sides[1]):\(sides[0])" : label
+    }
+  }
 }
 
 /// commands.h ids the strip and panes run (as their keys would).
@@ -276,6 +290,10 @@ final class EditStore: ObservableObject {
   func toolAction(_ a: ToolBarState.Action) { mv_chrome_tool_action(a.rawValue) }
   /// S6: a chip on Extend's bar (0 Original).
   func extendPreset(_ i: Int) { mv_chrome_tool_action(ToolBarState.extendPresetAction + Int32(i)) }
+  /// Extend's Ratio menu: Crop's ratio (Free lets drags go free), and its
+  /// Landscape / Portrait swap.
+  func extendAspect(_ a: CropAspect) { mv_chrome_tool_action(ToolBarState.extendAspectAction + a.rawValue) }
+  func extendTurn() { toolAction(.extendAspectSwap) }
   func setToolSize(_ px: Double) { mv_chrome_tool_set_size(Float(px)) }
   func setToolErase(_ on: Bool) { mv_chrome_tool_set_erase(on ? 1 : 0) }
   func openClosedEyes() { mv_chrome_edit_faces(0) }
@@ -292,11 +310,15 @@ struct ToolBarState: Equatable {
     case done = 0, undo = 1, redo = 2, clear = 3, apply = 4, findEyes = 5
     // docs/plans/edit-refresh.md S8: the Faces bar, on the chosen faces.
     case facesOpenEyes = 6, facesImprove = 7, facesDoAll = 8
+    case extendAspectSwap = 9  // Extend's ratio: Landscape <-> Portrait
   }
-  /// S6: Extend's preset chips (shell::extend_preset_label, the add-on's
-  /// presets after Original); chip i is the bar action 16 + i.
-  static let extendPresets = ["Original", "Wider", "Taller", "All round", "1:1", "16:9", "4:5"]
+  /// S6: Extend's preset chips (shell::extend_preset_label, kExtendChipCount:
+  /// the add-on's frames after Original); chip i is the bar action 16 + i.
+  /// The add-on's 1:1, 16:9 and 4:5 are in the Ratio menu with Crop's ratios.
+  static let extendPresets = ["Original", "Wider", "Taller", "All round"]
   static let extendPresetAction: Int32 = 16
+  /// Extend's ratio i (CropAspect) is the bar action 32 + i.
+  static let extendAspectAction: Int32 = 32
 
   var visible = false
   var tool: Tool = .none
@@ -316,7 +338,10 @@ struct ToolBarState: Equatable {
   var extendH = 0
   var extendGrowth = 0  // permille
   var extendWarn = false
-  var extendPreset = 0  // -1 a frame of the person's own
+  var extendPreset = 0  // -1 a frame of the person's own (or one a ratio holds)
+  var extendAspect: CropAspect = .free  // the ratio held
+  var extendPortrait = false
+  var extendShort = false  // the frame falls short of it (the 50 % stop, Enhance's caps)
 
   init() {}
   init(_ v: mv_tool_bar_view) {
@@ -338,6 +363,18 @@ struct ToolBarState: Equatable {
     extendGrowth = Int(v.extend_growth)
     extendWarn = v.extend_warn != 0
     extendPreset = Int(v.extend_preset)
+    extendAspect = CropAspect(rawValue: v.extend_aspect) ?? .free
+    extendPortrait = v.extend_portrait != 0
+    extendShort = v.extend_short != 0
+  }
+
+  /// The Ratio menu's label: "Ratio" when Free, else the ratio held ("4:5").
+  var extendRatioLabel: String {
+    extendAspect == .free ? "Ratio" : extendAspect.turnedLabel(extendPortrait)
+  }
+  /// Why the frame is not at the ratio, when it is not.
+  var extendShortWhy: String {
+    "\(extendAspect.turnedLabel(extendPortrait)) is out of reach: Extend grows a photo at most twice each way (and to 100 MP), so the frame stops short"
   }
 
   /// "+18 % · 6048×4032".

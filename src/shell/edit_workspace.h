@@ -17,6 +17,7 @@
 #include <span>
 
 #include "shell/commands.h"
+#include "shell/crop_aspect.h"
 
 namespace mv::shell {
 
@@ -328,6 +329,11 @@ struct extend_size_t {
 // same sums as fractions of the shown picture), after Original (no frame).
 // Indices are the bar's wire values (tool_bar_action::extend_preset + i).
 inline constexpr int kExtendPresetCount = 7;
+// The bar shows the first four as chips (Original, Wider, Taller, All round);
+// since 2026-11-05 the add-on's 1:1, 16:9 and 4:5 are in its Ratio menu with
+// the rest of Crop's ratios (extend_lock below). The host hands Enhance
+// margins, never a preset's name, so a ratio needs nothing of the add-on.
+inline constexpr int kExtendChipCount = 4;
 [[nodiscard]] constexpr const char* extend_preset_label(int i) noexcept {
   constexpr const char* kLabels[kExtendPresetCount] = {"Original", "Wider", "Taller", "All round", "1:1", "16:9", "4:5"};
   return i >= 0 && i < kExtendPresetCount ? kLabels[i] : "";
@@ -393,6 +399,238 @@ inline constexpr int kExtendPresetCount = 7;
     }
   }
   return -1;
+}
+
+// ---- Extend's aspect (owner, 2026-11-05: "allow to set aspect ratios") --------
+//
+// While the bar's ratio is set (Crop's list and words, shell/crop_aspect.h:
+// Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4, landscape or portrait), the frame
+// is held to it: choosing one grows the frame to it (extend_to_aspect), and
+// an edge or corner drag keeps it (extend_drag_aspect). Free is the free frame
+// as before. `ratio` below is the result's width over height in pixels
+// (crop_aspect_pixels over the shown picture; 0 is Free) and `w` x `h` the
+// shown picture's pixels.
+
+// The result's size is the ratio, to the pixel (extend_size's rounding: half a
+// pixel a margin, so one either way).
+[[nodiscard]] inline bool extend_at_aspect(const extend_draft& d, std::uint32_t w, std::uint32_t h,
+                                           double ratio) noexcept {
+  if (!(ratio > 0.0) || !std::isfinite(ratio) || w == 0 || h == 0) return true;
+  const extend_size_t s = extend_size(d, w, h);
+  if (s.width == 0 || s.height == 0) return false;
+  return std::fabs(static_cast<double>(s.width) - ratio * static_cast<double>(s.height)) <= 1.0 + ratio;
+}
+
+struct extend_aspect_fit {
+  extend_draft draft;
+  // The result is at the ratio. False when the 50 % stop (or Enhance's
+  // 16384 / 100 MP caps) is in the way: the frame then goes as far as it can
+  // and the bar says the ratio is out of reach, never a wrong ratio unsaid.
+  bool reached = true;
+};
+
+// `d` grown to `ratio`: only ever bigger. The short axis gains what it lacks,
+// half on each side, so the frame keeps its centre; a side the stop holds
+// passes the rest to the side opposite. Free (0) gives `d` back.
+[[nodiscard]] inline extend_aspect_fit extend_to_aspect(const extend_draft& d, std::uint32_t w, std::uint32_t h,
+                                                        double ratio) noexcept {
+  extend_aspect_fit out{clamp_extend(d), true};
+  out.draft.on = d.on;
+  if (!(ratio > 0.0) || !std::isfinite(ratio) || w == 0 || h == 0) return out;
+  // In the picture's fractions the frame is X = 1 + l + r wide and Y = 1 + t + b
+  // high; at the ratio X = k Y.
+  const double k = ratio * static_cast<double>(h) / static_cast<double>(w);
+  extend_draft& f = out.draft;
+  const double x = 1.0 + f.l + f.r, y = 1.0 + f.t + f.b;
+  const auto grow = [](float& a, float& c, double extra) {
+    const double room_a = std::max(0.0, static_cast<double>(kExtendMax) - a);
+    const double room_c = std::max(0.0, static_cast<double>(kExtendMax) - c);
+    double ea = extra * 0.5, ec = extra * 0.5;
+    if (ea > room_a) {
+      ec += ea - room_a;
+      ea = room_a;
+    }
+    if (ec > room_c) {
+      ea = std::min(room_a, ea + (ec - room_c));
+      ec = room_c;
+    }
+    a = static_cast<float>(a + ea);
+    c = static_cast<float>(c + ec);
+    return ea + ec >= extra - 1e-6;
+  };
+  constexpr double eps = 1e-6;
+  if (x < k * y - eps) {
+    out.reached = grow(f.l, f.r, k * y - x);
+  } else if (x > k * y + eps) {
+    out.reached = grow(f.t, f.b, x / k - y);
+  }
+  f = clamp_extend(f);
+  f.on = d.on;
+  // Enhance's caps shrink the margins (extend_size): the result says so.
+  if (out.reached) out.reached = extend_at_aspect(f, w, h, ratio);
+  return out;
+}
+
+// The draft a drag of `handle` by (du, dv) makes of `start` with the ratio
+// held. An edge moves as the pointer does and the other axis follows, its two
+// sides evenly (the frame's centre that way kept); a corner keeps the opposite
+// corner and follows the pointer projected onto the ratio's diagonal, so a
+// pull along one axis still resizes (Crop's locked corner, crop_drag.h). The
+// stops hold the whole frame, so it stops at the ratio, never off it; with no
+// frame at the ratio inside the stops from this press, `start` is kept. A move
+// and Free (ratio 0) are extend_drag.
+[[nodiscard]] inline extend_draft extend_drag_aspect(const extend_draft& start, std::uint8_t handle, float du,
+                                                     float dv, std::uint32_t w, std::uint32_t h,
+                                                     double ratio) noexcept {
+  if (!(ratio > 0.0) || !std::isfinite(ratio) || w == 0 || h == 0 || (handle & extend_move) != 0) {
+    return extend_drag(start, handle, du, dv);
+  }
+  if (!std::isfinite(du)) du = 0.0f;
+  if (!std::isfinite(dv)) dv = 0.0f;
+  const bool hl = (handle & extend_left) != 0, hr = (handle & extend_right) != 0;
+  const bool ht = (handle & extend_top) != 0, hb = (handle & extend_bottom) != 0;
+  const bool horiz = hl || hr, vert = ht || hb;
+  if (!horiz && !vert) return start;
+  const double k = ratio * static_cast<double>(h) / static_cast<double>(w);  // X = k Y
+  const double stop = kExtendMax, keep = kExtendMinKeep;
+  // The least a side may be with `other` the far side of its axis (clamp_extend's keep).
+  const auto least = [&](double other) { return keep - std::min(1.0, 1.0 + other); };
+  // The least `e` both sides (a0, c0) of an axis may move by together and
+  // still keep 5 % of the photo: the span only grows with e.
+  const auto least_even = [&](double a0, double c0) {
+    const auto keeps = [&](double e) {
+      return std::min(1.0, 1.0 + c0 + e) - std::max(0.0, -(a0 + e)) >= keep - 1e-6;
+    };
+    if (keeps(-2.0)) return -2.0;
+    if (!keeps(0.0)) return 0.0;
+    double lo = -2.0, hi = 0.0;
+    for (int i = 0; i < 48; ++i) {
+      const double mid = (lo + hi) * 0.5;
+      (keeps(mid) ? hi : lo) = mid;
+    }
+    return hi;
+  };
+  extend_draft d = start;
+  const double l0 = start.l, t0 = start.t, r0 = start.r, b0 = start.b;
+  if (horiz && vert) {
+    // The fixed corner's sides (c: across, e: down) and where the held one went.
+    const double c0 = hl ? r0 : l0, e0 = ht ? b0 : t0;
+    const double a = hl ? l0 - du : r0 + du, bv = ht ? t0 - dv : b0 + dv;
+    const double xp = 1.0 + a + c0, yp = 1.0 + bv + e0;
+    // (X w, Y h) projected onto (ratio, 1) in pixels: the height.
+    double y = (xp * w * ratio + yp * h) / (ratio * ratio + 1.0) / h;
+    const double lo = std::max((1.0 + c0 + least(c0)) / k, 1.0 + e0 + least(e0));
+    const double hi = std::min((1.0 + c0 + stop) / k, 1.0 + e0 + stop);
+    if (lo > hi + 1e-9) return start;
+    y = std::clamp(y, lo, std::max(lo, hi));
+    const double x = k * y;
+    (hl ? d.l : d.r) = static_cast<float>(x - 1.0 - c0);
+    (ht ? d.t : d.b) = static_cast<float>(y - 1.0 - e0);
+  } else if (horiz) {
+    const double c0 = hl ? r0 : l0;
+    const double y0 = 1.0 + t0 + b0;
+    double x = 1.0 + (hl ? l0 - du : r0 + du) + c0;
+    // The held side's keep and stop; the other axis' two sides' stop and keep.
+    const double lo = std::max(1.0 + c0 + least(c0), k * (y0 + 2.0 * least_even(t0, b0)));
+    const double hi = std::min(1.0 + c0 + stop, k * (y0 + 2.0 * (stop - std::max(t0, b0))));
+    if (lo > hi + 1e-9) return start;
+    x = std::clamp(x, lo, std::max(lo, hi));
+    const double e = (x / k - y0) * 0.5;
+    (hl ? d.l : d.r) = static_cast<float>(x - 1.0 - c0);
+    d.t = static_cast<float>(t0 + e);
+    d.b = static_cast<float>(b0 + e);
+  } else {
+    const double c0 = ht ? b0 : t0;
+    const double x0 = 1.0 + l0 + r0;
+    double y = 1.0 + (ht ? t0 - dv : b0 + dv) + c0;
+    const double lo = std::max(1.0 + c0 + least(c0), (x0 + 2.0 * least_even(l0, r0)) / k);
+    const double hi = std::min(1.0 + c0 + stop, (x0 + 2.0 * (stop - std::max(l0, r0))) / k);
+    if (lo > hi + 1e-9) return start;
+    y = std::clamp(y, lo, std::max(lo, hi));
+    const double e = (k * y - x0) * 0.5;
+    (ht ? d.t : d.b) = static_cast<float>(y - 1.0 - c0);
+    d.l = static_cast<float>(l0 + e);
+    d.r = static_cast<float>(r0 + e);
+  }
+  d = clamp_extend(d);  // float rounding only: the bounds above are its stops
+  d.on = start.on;
+  return d;
+}
+
+// The ratio held while Extend is armed, and what the last choice of it grew:
+// choosing another ratio (or turning this one) starts again from the frame
+// the last choice grew from while the frame is still what it made, so trying
+// 16:9 then 1:1 does not pile one growth on the other. Once the frame is
+// dragged or set by a chip, the next choice grows that frame.
+struct extend_lock {
+  crop_aspect aspect = crop_aspect::free;
+  bool portrait = false;  // kept across Free, like Crop's, for the next ratio
+  extend_draft from;      // the frame the last choice grew
+  extend_draft grown;     // what it grew it to
+};
+
+[[nodiscard]] inline bool extend_same_frame(const extend_draft& a, const extend_draft& b) noexcept {
+  return a.l == b.l && a.t == b.t && a.r == b.r && a.b == b.b;
+}
+
+// The ratio held now over a w x h picture (0 Free).
+[[nodiscard]] inline double extend_lock_ratio(const extend_lock& lock, std::uint32_t w, std::uint32_t h) noexcept {
+  return crop_aspect_pixels(lock.aspect, lock.portrait, w, h);
+}
+
+// The bar's ratio `a` (turned when `portrait`): Free leaves the frame as it is
+// and lets drags go free; a ratio grows the frame to it (extend_to_aspect).
+// Returns whether the frame is at the ratio (Free: true).
+inline bool extend_choose_aspect(extend_lock& lock, extend_draft& frame, crop_aspect a, bool portrait,
+                                 std::uint32_t w, std::uint32_t h) noexcept {
+  if (a >= crop_aspect::count) return extend_at_aspect(frame, w, h, extend_lock_ratio(lock, w, h));
+  const bool again = lock.aspect != crop_aspect::free && extend_same_frame(frame, lock.grown);
+  const extend_draft from = again ? lock.from : frame;
+  lock.aspect = a;
+  lock.portrait = portrait;
+  if (a == crop_aspect::free) return true;
+  const extend_aspect_fit fit = extend_to_aspect(from, w, h, crop_aspect_pixels(a, portrait, w, h));
+  const bool on = frame.on;
+  lock.from = from;
+  lock.grown = fit.draft;
+  frame = fit.draft;
+  frame.on = on;
+  return fit.reached;
+}
+
+// Landscape <-> portrait on the held ratio (Crop's X): nothing on Free or 1:1.
+inline bool extend_turn_aspect(extend_lock& lock, extend_draft& frame, std::uint32_t w, std::uint32_t h) noexcept {
+  if (!crop_aspect_turns(lock.aspect)) return false;
+  (void)extend_choose_aspect(lock, frame, lock.aspect, !lock.portrait, w, h);
+  return true;
+}
+
+// The ratio an add-on chip is (1:1, 16:9, 4:5 hold the frame to it; Original,
+// Wider, Taller and All round set it Free, `portrait` kept). False for a free chip.
+[[nodiscard]] constexpr bool extend_preset_aspect(int i, crop_aspect& a, bool& portrait) noexcept {
+  switch (i) {
+    case 4: a = crop_aspect::square; portrait = false; return true;
+    case 5: a = crop_aspect::r16_9; portrait = false; return true;
+    case 6: a = crop_aspect::r5_4; portrait = true; return true;  // 4:5 is 5:4 turned
+    default: a = crop_aspect::free; return false;  // the swap stays for the next ratio
+  }
+}
+
+// Chip `i`: the add-on's frame, and the ratio it holds (a free chip: Free).
+inline void extend_choose_preset(extend_lock& lock, extend_draft& frame, int i, std::uint32_t w,
+                                 std::uint32_t h) noexcept {
+  const bool on = frame.on;
+  frame = extend_preset_draft(i, w, h);
+  frame.on = on;
+  crop_aspect a = crop_aspect::free;
+  bool portrait = lock.portrait;
+  if (extend_preset_aspect(i, a, portrait)) {
+    lock.portrait = portrait;
+    lock.from = extend_draft{};
+    lock.from.on = on;
+    lock.grown = frame;
+  }
+  lock.aspect = a;
 }
 
 }  // namespace mv::shell

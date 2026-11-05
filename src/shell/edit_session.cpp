@@ -357,33 +357,11 @@ void edit_session::begin_crop() {
   crop_ = true;
 }
 
-const char* crop_aspect_label(crop_aspect a) noexcept {
-  switch (a) {
-    case crop_aspect::free: return "Free";
-    case crop_aspect::original: return "Original";
-    case crop_aspect::square: return "1:1";
-    case crop_aspect::r4_3: return "4:3";
-    case crop_aspect::r3_2: return "3:2";
-    case crop_aspect::r16_9: return "16:9";
-    case crop_aspect::r5_4: return "5:4";
-    default: return "";
-  }
-}
-
 float edit_session::locked_ratio() const noexcept {
   const edit::size2 f = frame();
-  if (aspect_ == crop_aspect::free || f.w == 0 || f.h == 0) return 0.0f;
-  double pixels = 1.0;  // width / height, landscape spelling
-  switch (aspect_) {
-    case crop_aspect::original: pixels = static_cast<double>(f.w) / f.h; break;
-    case crop_aspect::r4_3: pixels = 4.0 / 3.0; break;
-    case crop_aspect::r3_2: pixels = 3.0 / 2.0; break;
-    case crop_aspect::r16_9: pixels = 16.0 / 9.0; break;
-    case crop_aspect::r5_4: pixels = 5.0 / 4.0; break;
-    default: break;  // square
-  }
-  if (aspect_ != crop_aspect::original && pixels < 1.0) pixels = 1.0 / pixels;
-  if (portrait_) pixels = 1.0 / pixels;
+  // Width over height in pixels (shell/crop_aspect.h), 0 for Free.
+  const double pixels = crop_aspect_pixels(aspect_, portrait_, f.w, f.h);
+  if (pixels <= 0.0) return 0.0f;
   // Normalised to the frame: w_n / h_n = (w_px / fw) / (h_px / fh).
   return static_cast<float>(pixels * f.h / f.w);
 }
