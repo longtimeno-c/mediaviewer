@@ -761,7 +761,9 @@ taking the keyboard, as the soaks do; see "Performance suite"), `--background` (
 the sign-in start: the window is never shown, only the tray / menu-bar icon once Driftwire keeps
 the process; it quits after 60 s if nothing does),
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
-past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too. The
+past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too, and takes
+`--edit-tab N` to walk with the Edit workspace open on tab N, 5 being Enhance, whose cards measure
+each photo for their time estimate. The
 Windows lab adds `quick` steps — Right as soon as the last photo is on screen — and one
 `held` run — a Right every 50 ms, then the last photo timed to full resolution, with the
 run's decode job counts under `"held"`; every step carries `full_ms`. Those are the cases

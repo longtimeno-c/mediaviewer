@@ -216,6 +216,9 @@ static std::atomic<bool> g_tag_refresh_posted{false};
 bool g_new_window = false;
 // `--compare` (issue #208): start with the two-up compare on, as `|` turns it on.
 bool g_start_compare = false;
+// --edit-tab N (with --browse-soak): walk the folder with the Edit workspace open
+// on that tab (5 = Enhance, whose cards measure each photo for their estimate).
+int g_browse_edit_tab = -1;
 // #452: started as a login item (SMAppService.mainApp, keyAELaunchedAsLogInItem) or
 // with `--background`: the viewer window is never shown and only the menu-bar
 // item appears, once an add-on keeps the process (docs/design/28 "In the background").
@@ -4188,10 +4191,12 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [container addSubview:self.filmstripHost];
   [NSLayoutConstraint activateConstraints:@[
     [self.filmstripHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-    [self.filmstripHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.filmstripHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
     [self.filmstripHost.heightAnchor constraintEqualToConstant:kFilmstripHeightPoints],
   ]];
+  // Its trailing edge is the canvas's (below, once canvasGuide exists): the
+  // docked Edit column pushes the strip over and runs to the window's foot
+  // (owner 2026-11-05).
 
   // Clip transport (PR 19): bottom-centre, floating above the filmstrip. Hidden
   // until a clip is on screen (-pollTransport flips it).
@@ -4221,6 +4226,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     [self.canvasGuide.topAnchor constraintEqualToAnchor:container.topAnchor],
     [self.canvasGuide.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
+  [self.filmstripHost.trailingAnchor constraintEqualToAnchor:self.canvasGuide.trailingAnchor].active = YES;
   [NSLayoutConstraint activateConstraints:@[
     [self.transportHost.centerXAnchor constraintEqualToAnchor:self.canvasGuide.centerXAnchor],
     [self.transportHost.widthAnchor constraintLessThanOrEqualToConstant:720.0],
@@ -5103,8 +5109,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [_browseTimer invalidate];
   _browseTimer = nil;
   if (FILE* f = std::fopen(g_mac_browse.json_path.c_str(), "wb")) {
-    std::fprintf(f, "{\n  \"schema\": 1,\n  \"dwell_s\": %.1f,\n  \"count\": %zu,\n  \"error\": ",
-                 kMacBrowseDwell, g_mac_browse.count);
+    std::fprintf(f, "{\n  \"schema\": 1,\n  \"dwell_s\": %.1f,\n  \"count\": %zu,\n  \"edit_tab\": %d,\n  \"error\": ",
+                 kMacBrowseDwell, g_mac_browse.count, g_browse_edit_tab);
     if (error) browse_json_string(f, error);
     else std::fputs("null", f);
     std::fputs(",\n  \"steps\": [\n", f);
@@ -5139,6 +5145,11 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
       if (_lab.showing_still() && !_items.empty()) {
         b.count = _items.size();
         if (b.count < 2) return [self browseFinish:"fewer than 2 items"];
+        if (g_browse_edit_tab >= 0) {
+          if (!_ws.open) (void)[self runCommand:mv::shell::command_id::edit_workspace back:mv::shell::back_target::none];
+          if (!_ws.open) return [self browseFinish:"the Edit workspace did not open"];
+          [self editSelectTab:g_browse_edit_tab];
+        }
         b.cold_n = 0;
         for (std::size_t i = 3; i < b.count && b.cold_n < 6; ++i) b.cold_targets[b.cold_n++] = static_cast<int>(i);
         b.warm_left = static_cast<int>(std::min<std::size_t>(b.count - 1, 12));
@@ -6451,11 +6462,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   self.transportBottom.constant = -(shown ? kFilmstripHeightPoints + 10.0 : 10.0);
   self.toolBarBottom.constant = -(shown ? kFilmstripHeightPoints + 8.0 : 8.0);  // S3
   const CGFloat pane_bottom = -(shown ? kFilmstripHeightPoints : 0.0);
-  self.metaBottom.constant = pane_bottom;
   self.treeBottom.constant = pane_bottom;
-  self.adjustBottom.constant = pane_bottom;
-  self.jobsBottom.constant = pane_bottom;
   self.resumeBottom.constant = pane_bottom - 8.0;
+  [self syncColumnBottom];
   [self layoutHintNotice];
   [self layoutAIBadge];  // #345
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
@@ -9093,7 +9102,18 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 // The canvas guide follows what the canvas frames the picture in: right of the
 // page sidebar, left of the docked workspace (dockedRightPoints).
+// The right panes stop above the filmstrip, except docked: the Edit column
+// (strip, rail, its tab's pane) runs to the window's foot and the filmstrip
+// stops at the canvas's edge (owner 2026-11-05).
+- (void)syncColumnBottom {
+  const CGFloat bottom = (!self.filmstripHost.hidden && !_ws.open) ? -kFilmstripHeightPoints : 0.0;
+  if (self.metaBottom.constant != bottom) self.metaBottom.constant = bottom;
+  if (self.adjustBottom.constant != bottom) self.adjustBottom.constant = bottom;
+  if (self.jobsBottom.constant != bottom) self.jobsBottom.constant = bottom;
+}
+
 - (void)syncCanvasGuide {
+  [self syncColumnBottom];
   if (!self.canvasGuide) return;
   const CGFloat lead = _pageSidebarShown ? kPageSidebarWidthPoints : 0.0;
   if (self.canvasLeading.constant != lead) self.canvasLeading.constant = lead;
@@ -16629,6 +16649,7 @@ void usage() {
                "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
+               "  --edit-tab N                       with --browse-soak: Edit open on tab N (5 = Enhance)\n"
                "  --pane-drag-soak --json PATH STILL drag the right column 280<->720 for 20 s\n"
                "  --page-soak PATH DOCUMENT          fling the page sidebar, time page jumps\n"
                "  --compare     start with the two-up compare on (`|`)\n"
@@ -16696,6 +16717,8 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(arg, "--page-soak") == 0) {
       g_mac_pages.enabled = true;
       g_mac_pages.json_path = next();
+    } else if (std::strcmp(arg, "--edit-tab") == 0) {
+      g_browse_edit_tab = std::atoi(next());
     } else if (std::strcmp(arg, "--compare") == 0) {
       g_start_compare = true;
     } else if (std::strcmp(arg, "--background") == 0) {

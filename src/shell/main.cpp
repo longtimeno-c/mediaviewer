@@ -1506,6 +1506,7 @@ int right_pane_px(const app_state& app, int client_width, std::uint32_t dpi) noe
 // docs/plans/edit-refresh.md S2: the rail and the folded inspector (defined with
 // the right column, below).
 bool inspector_folded(const app_state& app, int client_width, std::uint32_t dpi) noexcept;
+int filmstrip_width_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept;
 void layout_panels(app_state* app) noexcept;
 void pane_relayout(app_state* app) noexcept;
 
@@ -11546,6 +11547,14 @@ bool inspector_folded(const app_state& app, int client_width, std::uint32_t dpi)
   return app.ws.open && (app.ws.collapsed || pane_shown_dip(app, client_width, dpi) <= 0.0f);
 }
 
+// The filmstrip spans the canvas, not the window: with the Edit workspace
+// docked it stops at the right column (owner 2026-11-05), whose panes then run
+// to the window's foot (layout_panels).
+int filmstrip_width_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
+  const int column = app.ws.open ? right_pane_px(app, client_width, dpi) : 0;
+  return std::max(client_width - column, 1);
+}
+
 // The right column's width in pixels: the inspector and the rail beside it
 // (the rail alone when folded); a floating pane's own width otherwise.
 int right_pane_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
@@ -11612,16 +11621,20 @@ void layout_panels(app_state* app) noexcept {
     app->folded_sent = folded;
     push_edit_view(app);
   }
-  app->chrome.show_edit_rail(want_rail, width - std::max(rail, 1), top, std::max(rail, 1), span);
+  // Docked, the column runs to the window's foot and the filmstrip stops at
+  // the canvas's edge (owner 2026-11-05; layout_filmstrip): the Edit column
+  // pushes the strip over as it does the photo.
+  const int column = want_rail ? std::max(height - bar, 1) : span;
+  app->chrome.show_edit_rail(want_rail, width - std::max(rail, 1), top, std::max(rail, 1), column);
   int pane_top = top;
-  int pane_span = span;
+  int pane_span = want_rail ? column : span;
   if (want_edit) {
-    const int strip_h = std::min(::MulDiv(app->edit_strip_dip, static_cast<int>(dpi), 96), span);
+    const int strip_h = std::min(::MulDiv(app->edit_strip_dip, static_cast<int>(dpi), 96), column);
     const bool own_pane = app->ws.tab == mv::shell::edit_tab::crop || app->ws.tab == mv::shell::edit_tab::trim ||
                           app->ws.tab == mv::shell::edit_tab::enhance;
-    app->chrome.show_edit_pane(true, pane_x, top, side, own_pane ? span : strip_h);
+    app->chrome.show_edit_pane(true, pane_x, top, side, own_pane ? column : strip_h);
     pane_top = top + strip_h;
-    pane_span = std::max(span - strip_h, 1);
+    pane_span = std::max(column - strip_h, 1);
   } else {
     app->chrome.show_edit_pane(false, pane_x, top, side, span);
   }
@@ -11656,6 +11669,7 @@ void layout_panels(app_state* app) noexcept {
   const int canvas_right =
       width - (app->chrome.edit_pane_visible() || app->chrome.edit_rail_visible() ? right_pane_px(*app, width, dpi) : 0);
   layout_tool_bar(app, width, height, bottom, sidebar_w, canvas_right, dpi);
+  if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(filmstrip_width_px(*app, width, dpi), height, dpi);
   layout_editor(app);  // PR 30: the card beside whatever pane is up
   layout_ai_badge(app);  // #345: clear of the panes, the strip and the transport
 }
@@ -11673,7 +11687,7 @@ void layout_chrome(app_state* app) noexcept {
   if (app->settings_open) app->chrome.resize(width, height, dpi);
   else if (app->fullscreen && !app->popup_open) app->chrome.park_bar(height);
   else app->chrome.resize(width, bar, dpi);
-  if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(width, height, dpi);
+  if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(filmstrip_width_px(*app, width, dpi), height, dpi);
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (app->chrome.transport_attached()) app->chrome.resize_transport(width, height, strip, dpi);
   if (app->chrome.gallery_attached()) app->chrome.resize_gallery(width, height, dpi);
@@ -11834,7 +11848,7 @@ void apply_view_state(app_state* app) noexcept {
        : app->mode == open_mode::folder ? app->settings.filmstrip_for_folder
                                         : false);
   if (want_filmstrip != app->chrome.filmstrip_visible()) {
-    app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
+    app->chrome.show_filmstrip(want_filmstrip, filmstrip_width_px(*app, width, dpi), height, dpi);
     // The strip here is the shown state, not the wish (the Mac's
     // -filmstripVisible is the wish): a clip or document that opened before
     // its folder had a strip was not due then, so ask again now.

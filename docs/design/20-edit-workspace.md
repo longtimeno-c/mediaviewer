@@ -130,7 +130,9 @@ wash, a held wash when selected) throughout the workspace and the metadata pane;
 ### The rail and the header
 
 docs/plans/edit-refresh.md S2. While the workspace is open a **44 pt rail** docks at the window's
-right edge, from the command bar to the filmstrip; the column (the inspector) sits left of it.
+right edge, from the command bar to the window's foot; the column (the inspector) sits left of it.
+The column pushes the filmstrip over as it does the photo: the strip spans the canvas, not the
+window, while the workspace is open (owner 2026-11-05; both hosts).
 
 - **Tabs:** Crop, Adjust, Enhance, Info on a still; Trim, Jobs on a clip. The selected icon wears
   the accent wash and a 2 pt accent bar on its leading edge. A click on another tab selects it;
