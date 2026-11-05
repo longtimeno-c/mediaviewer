@@ -7,6 +7,8 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Windows.Foundation;
 
 namespace MediaViewer.Chrome;
@@ -35,6 +37,8 @@ public static partial class IslandHost
 
     private static DesktopWindowXamlSource? _hintNotice;
     private static FrameworkElement? _hintNoticeCard;
+    // The card's words and button: what fades in and out (NoticeCard below).
+    private static FrameworkElement? _hintNoticeContent;
     private static TextBlock? _hintNoticeText;
     private static DispatcherQueueTimer? _hintNoticeTimer;
     // The card is up (placed in the corner), not parked.
@@ -86,8 +90,10 @@ public static partial class IslandHost
             _hintNoticeText.Text = text;
             AutomationProperties.SetName(_hintNoticeCard!, text);
         }
+        bool wasShown = _hintNoticeShown;
         _hintNoticeShown = true;
         PlaceHintNotice();
+        if (!wasShown && _hintNoticeContent is not null) FadeNoticeContent(_hintNoticeContent, show: true);
         if (fresh)
         {
             // Said once as it appears, not only when focused.
@@ -110,37 +116,156 @@ public static partial class IslandHost
 
     private static FrameworkElement BuildHintNoticeCard(string text)
     {
-        var grid = new Grid { ColumnSpacing = 8 };
+        // The corner cards' look (NoticeCard below): the words and the button
+        // 12 apart, even padding all round.
+        var grid = new Grid { ColumnSpacing = Space(12) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _hintNoticeText = new TextBlock
         {
             Text = text,
             FontFamily = UiFont,
-            FontSize = UiFontSize,
+            FontSize = TypeSize(TypeSmall),
+            LineHeight = Math.Round(TypeSize(TypeSmall) * 1.35),
             Foreground = Brush(Title),
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center,
         };
         grid.Children.Add(_hintNoticeText);
-        Button gotIt = TextButton("Got it", HintNoticeLearned);
+        Button gotIt = NoticeButton("Got it", HintNoticeLearned);
         ToolTipService.SetToolTip(gotIt, "Don't show this again");
-        gotIt.IsTabStop = true;
-        gotIt.AllowFocusOnInteraction = true;
         Grid.SetColumn(gotIt, 1);
         grid.Children.Add(gotIt);
-        var card = new Border
-        {
-            Width = HintNoticeWidth,
-            Padding = new Thickness(14, 8, 6, 8),
-            CornerRadius = new CornerRadius(8),
-            BorderThickness = new Thickness(1),
-            BorderBrush = Brush(Hairline),
-            Background = Brush(ChromeColour.Surface),
-            Child = grid,
-        };
+        _hintNoticeContent = grid;
+        Border card = NoticeCardBorder(HintNoticeWidth, grid);
         AutomationProperties.SetName(card, text);
         return card;
+    }
+
+    // ---- the corner cards' one look ------------------------------------------------
+    // The hint, resume and restart cards, after docs/design/20 "Craft rules", the
+    // twin of the Mac's NoticeCard (NoticeStore.swift): one surface with a hairline
+    // where it meets the photo, words 12 in from every edge, a title 4 over its
+    // line, the buttons 12 under it (one neutral, the action filled with the
+    // accent), and a short entrance and exit instead of a pop. The island is a
+    // rectangle of the canvas colour and cannot fade over the swapchain, so
+    // what moves is the card's content: its words and buttons fade in with 6 DIP
+    // of rise as it appears, and out before it is parked (150 ms). Animations off
+    // cut. Nothing runs once a card has settled.
+
+    private const double NoticeFadeMs = 150;
+    private const double NoticeRise = 6;
+    private static readonly Dictionary<FrameworkElement, Storyboard> NoticeFades = new();
+
+    private static Border NoticeCardBorder(double width, UIElement content) => new()
+    {
+        Width = width,
+        Padding = Pad(12),
+        CornerRadius = Corner(RadiusFloating),
+        BorderThickness = new Thickness(1),
+        BorderBrush = Brush(Hairline),
+        Background = Brush(ChromeColour.Surface),
+        Child = content,
+    };
+
+    /// <summary>A card's title over its line: 14 and 12, 4 apart.</summary>
+    private static StackPanel NoticeWords(TextBlock title, TextBlock line)
+    {
+        title.FontFamily = UiFont;
+        title.FontSize = TypeSize(TypeBody);
+        title.Foreground = Brush(Title);
+        title.TextWrapping = TextWrapping.Wrap;
+        line.FontFamily = UiFont;
+        line.FontSize = TypeSize(TypeCaption);
+        line.LineHeight = Math.Round(TypeSize(TypeCaption) * 1.35);  // small text: at least 1.3
+        line.Foreground = Brush(Body);
+        line.TextWrapping = TextWrapping.Wrap;
+        var words = new StackPanel { Spacing = Space(4) };
+        words.Children.Add(title);
+        words.Children.Add(line);
+        return words;
+    }
+
+    /// <summary>A card's buttons, right-aligned 8 apart.</summary>
+    private static StackPanel NoticeButtons(params Button[] buttons)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Space(8),
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        foreach (Button b in buttons) row.Children.Add(b);
+        return row;
+    }
+
+    /// <summary>A card's button: a surface at rest (Settings' fill); the
+    /// action is filled with the accent. 13 pt, the Mac's NoticeButtonStyle.</summary>
+    private static Button NoticeButton(string label, Action click, bool primary = false)
+    {
+        double size = TypeSize(TypeSmall);
+        Button b = ChromeButton(ButtonLabel(label, size), Pad(12, 5, 12, 5), click, fontSize: size);
+        b.IsTabStop = true;
+        b.AllowFocusOnInteraction = true;
+        FillSettingsButton(b, primary);
+        b.Padding = Pad(12, 5, 12, 5);
+        return b;
+    }
+
+    /// <summary>Fades a card's content in (from 6 DIP below) or out, then runs
+    /// <paramref name="done"/>; at once with animations off. A fade already
+    /// running carries on from where it is.</summary>
+    private static void FadeNoticeContent(FrameworkElement content, bool show, Action? done = null)
+    {
+        if (content.RenderTransform is not TranslateTransform rise)
+        {
+            rise = new TranslateTransform();
+            content.RenderTransform = rise;
+        }
+        if (NoticeFades.Remove(content, out Storyboard? running))
+        {
+            // Hold where it got to: the stopped board would put the old values back.
+            double opacity = content.Opacity, y = rise.Y;
+            running.Stop();
+            content.Opacity = opacity;
+            rise.Y = y;
+        }
+        else if (show && content.Opacity >= 1)
+        {
+            content.Opacity = 0;  // a fresh card: from nothing
+            rise.Y = NoticeRise;
+        }
+        double toOpacity = show ? 1 : 0, toY = show ? 0 : NoticeRise;
+        if (!HostAnimationsEnabled())
+        {
+            content.Opacity = toOpacity;
+            rise.Y = 0;
+            if (done is not null) Guarded(done);
+            return;
+        }
+        var duration = new Duration(TimeSpan.FromMilliseconds(NoticeFadeMs));
+        var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        var fade = new DoubleAnimation { To = toOpacity, Duration = duration, EasingFunction = ease };
+        Storyboard.SetTarget(fade, content);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+        var slide = new DoubleAnimation { To = toY, Duration = duration, EasingFunction = ease };
+        Storyboard.SetTarget(slide, rise);
+        Storyboard.SetTargetProperty(slide, "Y");
+        var board = new Storyboard();
+        board.Children.Add(fade);
+        board.Children.Add(slide);
+        board.Completed += (_, _) =>
+        {
+            if (!NoticeFades.TryGetValue(content, out Storyboard? current) || !ReferenceEquals(current, board)) return;
+            NoticeFades.Remove(content);
+            // Settled: the end values become the element's own, and nothing holds an animation.
+            board.Stop();
+            content.Opacity = toOpacity;
+            rise.Y = toY;
+            if (done is not null) Guarded(done);
+        };
+        NoticeFades[content] = board;
+        board.Begin();
     }
 
     /// <summary>The card's bottom-right corner on the window's, above the
@@ -186,9 +311,19 @@ public static partial class IslandHost
         _hintNoticeTimer?.Stop();
         if (!_hintNoticeShown) return;
         _hintNoticeShown = false;
-        try { if (_hintNotice is not null) MoveAt(_hintNotice, 0, ClientHeightPx(), 1, 1); }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
         if (restoreFocus) RestoreCanvasFocus();
+        DesktopWindowXamlSource? island = _hintNotice;
+        void Park()
+        {
+            // Shown again meanwhile, or the window went: leave it.
+            if (_hintNoticeShown || island is null || !ReferenceEquals(island, _hintNotice)) return;
+            try { MoveAt(island, 0, ClientHeightPx(), 1, 1); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        }
+        // Its words fade out, then the card is parked (the top of the corner's
+        // stack: nothing moves for it).
+        if (_hintNoticeContent is not null) FadeNoticeContent(_hintNoticeContent, show: false, Park);
+        else Park();
     }
 
     /// <summary>Detach (the window is going): no island outlives it.</summary>
@@ -197,7 +332,9 @@ public static partial class IslandHost
         _hintNoticeTimer?.Stop();
         _hintNoticeShown = false;
         _hintNoticeCard = null;
+        _hintNoticeContent = null;
         _hintNoticeText = null;
+        NoticeFades.Clear();
         if (_hintNotice is not null) _hintNotice.TakeFocusRequested -= OnTakeFocusRequested;
         DisposeSource(ref _hintNotice);
     }

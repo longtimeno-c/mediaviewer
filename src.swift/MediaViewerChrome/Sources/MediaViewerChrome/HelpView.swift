@@ -63,18 +63,21 @@ struct HelpView: View {
 
   var body: some View {
     VStack(spacing: MVTheme.space(16)) {
-      Text("Keyboard shortcuts").font(MVTheme.font(20))
+      Text("Keyboard shortcuts").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
       ScrollView {
         LazyVGrid(
           columns: [GridItem(.adaptive(minimum: 340), spacing: MVTheme.space(24), alignment: .top)],
           alignment: .leading, spacing: MVTheme.space(6)
         ) {
+          // One grid with fixed tracks, Windows' (IslandHost.Commands.cs
+          // BuildHelp): the keys in a 160 pt column, the name 8 pt after it.
           ForEach(store.entries) { entry in
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(8)) {
               Text(entry.keys)
                 .font(MVTheme.font(14))
-                .frame(width: 150, alignment: .leading)
-              Text(entry.name).foregroundStyle(.secondary)
+                .foregroundStyle(MVTheme.title)
+                .frame(width: HelpView.keysWidth, alignment: .leading)
+              Text(entry.name).foregroundStyle(MVTheme.body)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
           }
@@ -82,7 +85,7 @@ struct HelpView: View {
         .padding(.horizontal, MVTheme.space(32))
       }
       Text("Wheel zooms toward the cursor, drag pans. Keys change in Settings (⌘,). ? or Esc to close.")
-        .font(MVTheme.font(12)).foregroundStyle(.secondary)
+        .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
     }
     .font(MVTheme.font(14))  // the entries follow a theme's font
     .padding(.top, MVTheme.space(56))
@@ -91,4 +94,6 @@ struct HelpView: View {
     .background(.regularMaterial)
     .onAppear { store.reload() }
   }
+
+  static let keysWidth: CGFloat = 160
 }

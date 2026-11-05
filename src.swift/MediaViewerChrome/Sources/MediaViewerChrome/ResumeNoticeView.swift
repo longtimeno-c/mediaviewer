@@ -19,6 +19,8 @@ final class ResumeNoticeStore: ObservableObject {
   static let shared = ResumeNoticeStore()
 
   @Published private(set) var question = ""
+  /// Resume or Dismiss was clicked: the card fades out, then goes (NoticeCard).
+  @Published private(set) var leaving = false
   /// The hosting view main_mac.mm pinned to the window's bottom-right corner:
   /// shown only while there is a question, so it never takes a click otherwise.
   weak var host: NSView?
@@ -50,6 +52,7 @@ final class ResumeNoticeStore: ObservableObject {
   }
 
   private func show(_ text: String) {
+    leaving = false
     if text != question { question = text }
     syncHost()
     if !text.isEmpty {
@@ -70,13 +73,23 @@ final class ResumeNoticeStore: ObservableObject {
 
   func resume() {
     let started = mv_addon2_ai_resume()
-    show("")
+    leave()
     if started { LocalSearchStore.shared.resumeStarted() }
   }
 
   func dismiss() {
     mv_addon2_ai_resume_dismiss()
-    show("")
+    leave()
+  }
+
+  /// Fades the card out, then takes it down (the corner below it closes up then).
+  private func leave() {
+    guard !question.isEmpty, !leaving else { return }
+    withAnimation(NoticeCard.animation) { leaving = true }
+    NoticeCard.afterFade { [weak self] in
+      guard let self, self.leaving else { return }
+      self.show("")
+    }
   }
 }
 
@@ -94,28 +107,21 @@ struct ResumeNoticeView: View {
     .fixedSize()
   }
 
+  // The corner cards' look (NoticeCard, NoticeStore.swift).
   private var resumeCard: some View {
-    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      Text(store.question)
-        .font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
-        .fixedSize(horizontal: false, vertical: true)
-      Text("Local search stopped part-way last time. It stays paused until you resume it.")
-        .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-        .fixedSize(horizontal: false, vertical: true)
+    VStack(alignment: .leading, spacing: MVTheme.space(12)) {
+      NoticeWords(title: store.question,
+                  line: "Local search stopped part-way last time. It stays paused until you resume it.")
       HStack(spacing: MVTheme.space(8)) {
         Spacer(minLength: 0)
         Button("Dismiss") { store.dismiss() }
+          .buttonStyle(NoticeButtonStyle())
           .help("Leave it paused. You can resume it from Settings → Add-ons → Local search.")
         Button("Resume") { store.resume() }
+          .buttonStyle(NoticeButtonStyle(primary: true))
       }
     }
-    .padding(MVTheme.space(14))
-    .frame(width: ResumeNoticeView.width, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1))
-    .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
-    .padding(MVTheme.space(8))  // room for the shadow inside the hosting view
-    .fixedSize()
+    .noticeCard(width: ResumeNoticeView.width, visible: !store.leaving)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(store.question)
   }

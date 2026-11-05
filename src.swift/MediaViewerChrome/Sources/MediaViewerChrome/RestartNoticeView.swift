@@ -92,6 +92,8 @@ final class RestartNoticeStore: ObservableObject {
 
   /// The card is up.
   @Published private(set) var shown = false
+  /// Later was clicked: the card fades out, then goes (NoticeCard).
+  @Published private(set) var leaving = false
   /// Restart now is waiting for these to finish; empty when it is not.
   @Published private(set) var waitingFor: [String] = []
   /// busy_post: add-on id -> what it is doing (AddonNotices.read).
@@ -116,6 +118,7 @@ final class RestartNoticeStore: ObservableObject {
   func show() {
     let pending = AddonRestart.shared.pending
     guard !pending.isEmpty else { return hide() }
+    leaving = false
     shown = true
     ResumeNoticeStore.shared.syncHost()
     // Said once as it appears, not only when focused.
@@ -124,10 +127,19 @@ final class RestartNoticeStore: ObservableObject {
                                     .priority: NSAccessibilityPriorityLevel.medium.rawValue])
   }
 
-  func later() { hide() }
+  func later() {
+    stopWaiting()
+    guard shown, !leaving else { return }
+    withAnimation(NoticeCard.animation) { leaving = true }
+    NoticeCard.afterFade { [weak self] in
+      guard let self, self.leaving else { return }
+      self.hide()
+    }
+  }
 
   private func hide() {
     stopWaiting()
+    leaving = false
     guard shown else { return }
     shown = false
     ResumeNoticeStore.shared.syncHost()
@@ -302,37 +314,38 @@ struct RestartNoticeCard: View {
   @ObservedObject private var store = RestartNoticeStore.shared
   @ObservedObject private var restart = AddonRestart.shared
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var body: some View {
     let waiting = !store.waitingFor.isEmpty
     let title = waiting ? RestartWords.waitingTitle(store.waitingFor) : RestartWords.title(restart.pending)
-    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      Text(title)
-        .font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
-        .fixedSize(horizontal: false, vertical: true)
-      Text(waiting ? RestartWords.waitingBody : RestartWords.body(restart.pending.count))
-        .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-        .fixedSize(horizontal: false, vertical: true)
+    // The corner cards' look (NoticeCard, NoticeStore.swift). Waiting changes
+    // the words in place and the two buttons' labels on themselves: Later
+    // becomes Cancel, Restart now becomes Restart anyway (the same controls).
+    VStack(alignment: .leading, spacing: MVTheme.space(12)) {
+      NoticeWords(title: title,
+                  line: waiting ? RestartWords.waitingBody : RestartWords.body(restart.pending.count))
       HStack(spacing: MVTheme.space(8)) {
         Spacer(minLength: 0)
-        if waiting {
-          Button(RestartWords.cancel) { store.cancelWait() }
-            .help(RestartWords.cancelTip)
-          Button(RestartWords.restartAnyway) { store.restartAnyway() }
-            .help(RestartWords.anywayTip(store.waitingFor))
-        } else {
-          Button(RestartWords.later) { store.later() }
-            .help(RestartWords.laterTip)
-          Button(RestartWords.restartNow) { store.restartWhenIdle() }
+        Button {
+          if waiting { store.cancelWait() } else { store.later() }
+        } label: {
+          Text(waiting ? RestartWords.cancel : RestartWords.later).contentTransition(.opacity)
         }
+        .buttonStyle(NoticeButtonStyle())
+        .help(waiting ? RestartWords.cancelTip : RestartWords.laterTip)
+        Button {
+          if waiting { store.restartAnyway() } else { store.restartWhenIdle() }
+        } label: {
+          Text(waiting ? RestartWords.restartAnyway : RestartWords.restartNow).contentTransition(.opacity)
+        }
+        .buttonStyle(NoticeButtonStyle(primary: true))
+        .help(waiting ? RestartWords.anywayTip(store.waitingFor) : "")
       }
     }
-    .padding(MVTheme.space(14))
-    .frame(width: ResumeNoticeView.width, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1))
-    .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
-    .padding(MVTheme.space(8))  // room for the shadow inside the hosting view
-    .fixedSize()
+    .animation(reduceMotion ? nil : .easeOut(duration: NoticeCard.fade), value: waiting)
+    .animation(reduceMotion ? nil : .easeOut(duration: NoticeCard.fade), value: title)
+    .noticeCard(width: ResumeNoticeView.width, visible: !store.leaving)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(title)
   }

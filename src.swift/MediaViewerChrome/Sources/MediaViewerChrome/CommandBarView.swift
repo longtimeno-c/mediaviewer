@@ -22,20 +22,29 @@ struct FlatButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     FlatButtonBody(configuration: configuration, selected: selected, compact: compact)
   }
+  /// The label's horizontal inset: a column of these buttons under text pulls
+  /// back by it, so the label's ink lines up with the text above.
+  static func inset(compact: Bool = false) -> CGFloat { MVTheme.space(compact ? 8 : 14) }
   private struct FlatButtonBody: View {
     let configuration: Configuration
     let selected: Bool
     let compact: Bool
     @State private var hover = false
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
       configuration.label
         .font(MVTheme.font(compact ? 14 : 16))
         .foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
-        .padding(.horizontal, MVTheme.space(compact ? 8 : 14)).padding(.vertical, MVTheme.space(compact ? 5 : 7))
+        .padding(.horizontal, FlatButtonStyle.inset(compact: compact)).padding(.vertical, MVTheme.space(compact ? 5 : 7))
         .background(
           RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(
             configuration.isPressed || selected ? 0.11 : (hover && enabled ? 0.06 : 0))))
+        // The hover wash and a chosen tab ease in and out (docs/design/20
+        // "Craft rules": a state a click sets fades, ~150 ms); a press shows at
+        // once. Reduce Motion cuts.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hover)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: selected)
         .contentShape(Rectangle())
         .onHover { hover = $0 }
     }
@@ -45,6 +54,9 @@ struct FlatButtonStyle: ButtonStyle {
 private struct FlyoutItem: View {
   let title: String
   var shortcut: String? = nil
+  /// The chosen one of a set (View > Show): a checkmark in the shortcut's
+  /// column, the icon set's, never a "●" text glyph.
+  var checked = false
   var enabled = true
   let action: () -> Void
   var body: some View {
@@ -52,12 +64,29 @@ private struct FlyoutItem: View {
       HStack(spacing: MVTheme.space(24)) {
         Text(title)
         Spacer(minLength: 0)
-        if let shortcut { Text(shortcut).foregroundStyle(MVTheme.body) }
+        if checked {
+          Image(systemName: "checkmark").font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(MVTheme.title)
+            .accessibilityLabel("Chosen")
+        } else if let shortcut {
+          Text(shortcut).foregroundStyle(MVTheme.body)
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .buttonStyle(FlatButtonStyle())
     .disabled(!enabled)
+  }
+}
+
+/// An About link: a compact flat button at the flyout's 13 pt, so its words
+/// line up with the lines above once the column pulls back by its inset.
+private struct AboutLink: View {
+  let title: String
+  let action: () -> Void
+  var body: some View {
+    Button(action: action) { Text(title).font(MVTheme.font(13)) }
+      .buttonStyle(FlatButtonStyle(compact: true))
   }
 }
 
@@ -88,14 +117,24 @@ private func openLegalFile(_ name: String, github: String) {
   }
 }
 
-/// A bar button that opens a system-themed flyout beneath it.
+/// A bar button that opens a system-themed flyout beneath it: its title, or
+/// an SF Symbol (`symbol`) with the title as its tooltip and name.
 private struct BarFlyout<Content: View>: View {
   let title: String
+  var symbol: String? = nil
   @ViewBuilder var content: (_ close: @escaping () -> Void) -> Content
   @State private var shown = false
   var body: some View {
-    Button(title) { shown.toggle() }
+    Button { shown.toggle() } label: {
+      if let symbol {
+        Image(systemName: symbol).font(.system(size: 13, weight: .semibold))
+      } else {
+        Text(title)
+      }
+    }
       .buttonStyle(FlatButtonStyle())
+      .help(symbol == nil ? "" : title)
+      .accessibilityLabel(title)
       .popover(isPresented: $shown, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: 0) { content { shown = false } }
           .padding(MVTheme.space(4))
@@ -117,12 +156,12 @@ private struct OpenInBarItem: View {
         .help(first.map { "Open this document in \($0.name) (Return)" } ?? "Open this document in its app (Return)")
         .accessibilityHint("Key Return")
       if store.apps.count > 1 {
-        BarFlyout(title: "▾") { close in
+        // A chevron from the icon set, not a "▾" text glyph.
+        BarFlyout(title: "Open with another app", symbol: "chevron.down") { close in
           ForEach(store.apps) { app in
             FlyoutItem(title: "Open in " + app.name) { close(); store.open(app) }
           }
         }
-        .accessibilityLabel("Open with another app")
       }
     }
   }
@@ -152,6 +191,7 @@ public struct CommandBarView: View {
   /// The store no longer publishes the selection (issue #179); the Open
   /// flyout names the current file.
   @ObservedObject private var selection = FolderStore.shared.current
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   public init() {}
 
@@ -203,11 +243,11 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Wider side pane", shortcut: key("Wider side pane")) { close(); mv_chrome_menu(kMenuPaneWider) }
             FlyoutItem(title: "Narrower side pane", shortcut: key("Narrower side pane")) { close(); mv_chrome_menu(kMenuPaneNarrower) }
             FlyoutRule()
-            // Issue #206: View > Show, as on the Windows bar. The dot is the
-            // filter native applied, read when the flyout opens.
+            // Issue #206: View > Show, as on the Windows bar. The checkmark is
+            // the filter native applied, read when the flyout opens.
             let shown = mv_chrome_kind_filter()
             ForEach(Array(KindFilter.names.enumerated()), id: \.offset) { item in
-              FlyoutItem(title: "Show " + item.element, shortcut: shown == Int32(item.offset) ? "●" : nil,
+              FlyoutItem(title: "Show " + item.element, checked: shown == Int32(item.offset),
                          enabled: hasFolder || item.offset == 0) {
                 close(); _ = mv_chrome_set_kind_filter(Int32(item.offset))
               }
@@ -216,7 +256,7 @@ public struct CommandBarView: View {
             // Issue #207: on rating and colour label.
             ForEach(Array(KindFilter.cullNames.enumerated()), id: \.offset) { item in
               let filter = Int32(KindFilter.firstCull + item.offset)
-              FlyoutItem(title: "Show " + item.element, shortcut: shown == filter ? "●" : nil,
+              FlyoutItem(title: "Show " + item.element, checked: shown == filter,
                          enabled: hasFolder) {
                 close(); _ = mv_chrome_set_kind_filter(filter)
               }
@@ -243,39 +283,49 @@ public struct CommandBarView: View {
           }
           Button("Settings") { mv_chrome_menu(kMenuSettings) }.buttonStyle(FlatButtonStyle())
           BarFlyout(title: "About") { _ in
+            // The Windows flyout's order and type (IslandHost.About.cs): the
+            // name at the bar's size, the rest at 13 in the body colour, groups
+            // 12 apart, and the links pulled back by their button inset so their
+            // words line up with the lines above (docs/design/20 "Craft rules").
             VStack(alignment: .leading, spacing: 0) {
               Text("MediaViewer")
                 .font(MVTheme.font())
                 .foregroundStyle(MVTheme.title)
               Text(aboutVersionLine())
-                .font(MVTheme.font())
+                .font(MVTheme.font(13).monospacedDigit())
                 .foregroundStyle(MVTheme.body)
-              Text("Copyright (C) 2026 longtimeno-c")
-                .font(MVTheme.font())
-                .foregroundStyle(MVTheme.body)
-                .padding(.top, MVTheme.space(6))
-              Text("Licensed under GNU GPL v3 or later")
-                .font(MVTheme.font())
-                .foregroundStyle(MVTheme.body)
-              // CC-BY 4.0 attribution for the Places add-on's place names (docs/design/27).
-              Text("Place names from GeoNames (geonames.org), CC BY 4.0. Borders from Natural Earth.")
-                .font(MVTheme.font())
-                .foregroundStyle(MVTheme.body)
-                .padding(.top, MVTheme.space(6))
-                .fixedSize(horizontal: false, vertical: true)
-              FlyoutItem(title: "Licence (GPL-3.0-or-later)") {
-                openLegalFile("LICENSE.txt", github: "LICENSE")
+                .padding(.top, MVTheme.space(4))
+              Group {
+                Text("Copyright (C) 2026 longtimeno-c")
+                  .padding(.top, MVTheme.space(12))
+                Text("Licensed under GNU GPL v3 or later")
+                  .padding(.top, MVTheme.space(2))
+                // CC-BY 4.0 attribution for the Places add-on's place names (docs/design/27).
+                Text("Place names from GeoNames (geonames.org), CC BY 4.0. Borders from Natural Earth.")
+                  .padding(.top, MVTheme.space(12))
               }
-              FlyoutItem(title: "Notice") {
-                openLegalFile("NOTICE.txt", github: "NOTICE")
+              .font(MVTheme.font(13))
+              .foregroundStyle(MVTheme.body)
+              .lineSpacing(3)
+              .fixedSize(horizontal: false, vertical: true)
+              VStack(alignment: .leading, spacing: 0) {
+                AboutLink(title: "Licence (GPL-3.0-or-later)") {
+                  openLegalFile("LICENSE.txt", github: "LICENSE")
+                }
+                AboutLink(title: "Notice") {
+                  openLegalFile("NOTICE.txt", github: "NOTICE")
+                }
+                AboutLink(title: "Third-party notices") {
+                  openLegalFile("THIRD-PARTY.md", github: "THIRD-PARTY.md")
+                }
               }
-              FlyoutItem(title: "Third-party notices") {
-                openLegalFile("THIRD-PARTY.md", github: "THIRD-PARTY.md")
-              }
+              .padding(.top, MVTheme.space(8))
+              .padding(.leading, -FlatButtonStyle.inset(compact: true))
               Text("Everything works from the keyboard. Press ? for the shortcuts of what you are doing.")
-                .font(MVTheme.font())
-                .foregroundStyle(MVTheme.title)
-                .padding(.top, MVTheme.space(10))
+                .font(MVTheme.font(13))
+                .foregroundStyle(MVTheme.body)
+                .lineSpacing(3)
+                .padding(.top, MVTheme.space(12))
                 .fixedSize(horizontal: false, vertical: true)
             }
             .padding(MVTheme.space(12))
@@ -308,20 +358,26 @@ public struct CommandBarView: View {
           .accessibilityLabel("Downloading from iCloud")
           .accessibilityValue(fetch.map { ProgressWords.percent($0) } ?? "In progress")
         } else if !notice.text.isEmpty {
+          // One slot: a new notice crossfades over the last in place, and the
+          // line fades in and out rather than popping (docs/design/20 "Craft rules").
           Text(notice.text)
             .font(MVTheme.font())
             .foregroundStyle(MVTheme.title)
+            .contentTransition(.opacity)
             .padding(.trailing, MVTheme.space(10))
             .lineLimit(1)
             .accessibilityLabel(notice.text)
+            .transition(.opacity)
         }
         // What F7 / F8 / Delete will act on (docs/design/16): the marks if any, else
-        // the current item.
+        // the current item. The count rolls in its slot as marks change.
         if store.markedCount > 0 {
           Text("\(store.markedCount) marked")
-            .font(MVTheme.font())
+            .font(MVTheme.font().monospacedDigit())
             .foregroundStyle(MVTheme.body)
+            .contentTransition(.numericText())
             .padding(.trailing, MVTheme.space(6))
+            .transition(.opacity)
         }
         // The folder trail sits beside `?` rather than in a row of its own, so
         // opening a folder does not push the canvas down.
@@ -335,6 +391,8 @@ public struct CommandBarView: View {
       }
       .padding(.horizontal, MVTheme.space(6))
       .frame(maxHeight: .infinity)
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: notice.text)
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.markedCount)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
