@@ -301,14 +301,13 @@ public static partial class IslandHost
         };
         _openInFlyout.Opening += (_, _) => RefreshOpenInMenu();
         Button? more = null;
-        more = TextButton("▾", () =>
+        // The icon set's chevron, not a typed "▾" (docs/design/20 "Craft rules"); the
+        // tooltip is its accessible name, as the Mac's chevron.down.
+        more = IconButton("\uE70D", "Open with another app", () =>
         {
             if (more is not null) FlyoutBase.ShowAttachedFlyout(more);
         });
-        FlattenButton(more);
         AttachBarFlyout(more, _openInFlyout);
-        ToolTipService.SetToolTip(more, "Open with another app");
-        AutomationProperties_SetName(more, "Open with another app");
         _openInMore = more;
         _openInBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
         _openInBar.Children.Add(_openInButton);
