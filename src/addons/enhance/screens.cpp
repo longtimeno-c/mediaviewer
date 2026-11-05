@@ -537,4 +537,188 @@ std::string tool_tree(const sheet_view& v) {
   return w.take();
 }
 
+
+// ---- One-click (owner 2026-11-05) ------------------------------------------------
+
+const char* run_state_name(run_state s) noexcept {
+  switch (s) {
+    case run_state::running: return "running";
+    case run_state::done: return "done";
+    case run_state::failed: return "failed";
+    case run_state::cancelled: return "cancelled";
+    case run_state::idle: break;
+  }
+  return "idle";
+}
+
+const char* run_verb(photo_target t) noexcept {
+  switch (t) {
+    case photo_target::restyle: return "Restyling…";
+    case photo_target::remove: return "Removing…";
+    case photo_target::extend: return "Extending…";
+    case photo_target::faces: return "Restoring faces…";
+    case photo_target::detail: break;
+  }
+  return "Enhancing…";
+}
+
+std::string time_left_short(double fraction, double elapsed_s) {
+  if (fraction < 0.02 || fraction >= 1 || elapsed_s < 3) return {};
+  const double left = elapsed_s * (1 - fraction) / fraction;
+  if (left < 60) return "less than a minute left";
+  const auto minutes = static_cast<long long>(std::lround(left / 60));
+  if (minutes < 90) return std::to_string(minutes) + " min left";
+  char buf[48];
+  std::snprintf(buf, sizeof buf, "about %.1f h left", left / 3600);
+  return buf;
+}
+
+std::string run_line(const run_view& r) {
+  switch (r.state) {
+    case run_state::idle: return {};
+    case run_state::running: {
+      if (r.downloading) {
+        std::string line = "Downloading " + (r.model_name.empty() ? std::string("the model") : r.model_name) + "…";
+        if (r.fraction >= 0) line += " " + std::to_string(static_cast<int>(std::floor(std::min(1.0, r.fraction) * 100))) + " %";
+        return line;
+      }
+      std::string line = run_verb(r.tool);
+      if (r.fraction >= 0) line += " " + std::to_string(static_cast<int>(std::floor(std::min(1.0, r.fraction) * 100))) + " %";
+      if (!r.eta.empty()) line += " · " + r.eta;
+      return line;
+    }
+    case run_state::done: {
+      std::string line = r.result_path.rfind("photos:", 0) == 0 ? std::string("Added to your Photos library")
+                         : "Saved as " + r.result_name;
+      if (!r.message.empty()) line += ". " + r.message;
+      return line;
+    }
+    case run_state::failed: return r.message.empty() ? std::string("It did not finish.") : r.message;
+    case run_state::cancelled: return "Cancelled. The photo is unchanged.";
+  }
+  return {};
+}
+
+namespace {
+
+// The knobs a card shows, compactly: the rest keep their remembered values.
+bool card_knob(photo_target t, const std::string& id) {
+  switch (t) {
+    case photo_target::detail: return id == "scale";
+    case photo_target::restyle: return id == "prompt" || id == "quality";
+    case photo_target::faces: return id == "model" || id == "strength";
+    case photo_target::remove:
+    case photo_target::extend: return false;
+  }
+  return false;
+}
+
+const char* card_knob_label(photo_target t, const knob& kb) {
+  if (t == photo_target::detail && kb.id == "scale") return "Size";
+  if (t == photo_target::faces && kb.id == "model") return "Look";
+  return kb.label.c_str();
+}
+
+// The one button's verb after a download: "Download (161 MB) and enhance".
+const char* go_verb(photo_target t) {
+  switch (t) {
+    case photo_target::restyle: return "Restyle";
+    case photo_target::faces: return "Restore faces";
+    case photo_target::remove: return "Remove";
+    case photo_target::extend: return "Extend";
+    case photo_target::detail: break;
+  }
+  return "Enhance";
+}
+
+std::string lower_first(std::string s) {
+  if (!s.empty() && s[0] >= 'A' && s[0] <= 'Z') s[0] = static_cast<char>(s[0] - 'A' + 'a');
+  return s;
+}
+
+void card_tree(json::writer& w, const card_view& c, bool busy) {
+  const std::string word = photo_target_name(c.tool);
+  const sheet_view& v = c.v;
+  begin_stack(w, "card." + word, "vertical", 8);
+  // Enhance image's quality: its models, each its own download.
+  if (c.tool == photo_target::detail && v.details.size() > 1) {
+    w.begin_object().key("type").string("choice").key("id").string("detail").key("label").string("Quality");
+    w.key("options").begin_array();
+    for (const model_kind k : v.details) {
+      w.begin_object().key("id").string(kind_name(k)).key("text").string(detail_text(k)).end_object();
+    }
+    w.end_array();
+    w.key("value").string(kind_name(v.detail));
+    if (busy) w.key("disabled").boolean(true);
+    w.end_object();
+  }
+  const sheet_section* s = v.sections.empty() ? nullptr : &v.sections.front();
+  if (c.spec && s) {
+    for (const knob& kb : c.spec->knobs) {
+      if (!card_knob(c.tool, kb.id)) continue;
+      if (std::find(kb.kinds.begin(), kb.kinds.end(), s->kind) == kb.kinds.end()) continue;
+      knob kc = kb;
+      kc.label = card_knob_label(c.tool, kb);
+      const auto it = s->values.find(kb.id);
+      knob_node(w, s->kind, kc, knob_value(kb, it == s->values.end() ? nullptr : &it->second), v.level);
+    }
+  }
+  if (c.downloading) {
+    progress(w, "dl." + word, "Downloading the model", c.download_fraction);
+    std::string what = "Downloading the model";
+    if (!c.download_text.empty()) what += "… " + c.download_text;
+    text(w, "dltext." + word, what, "secondary");
+  }
+  if (!c.eta.empty() && c.tool != photo_target::remove && c.tool != photo_target::extend) {
+    text(w, "eta." + word, c.eta, "secondary");
+  }
+  if (!v.note.empty()) text(w, "note." + word, v.note, "secondary");
+  const bool ready = s && s->spec;
+  if (c.downloading) {
+    button(w, "dlstop." + word, "Stop the download");
+  } else if (!ready && !c.install.empty()) {
+    // Remove and Extend run from the tool bar under the photo; here they only
+    // fetch their model. The others download, then run, on one click.
+    const bool bar_runs = c.tool == photo_target::remove || c.tool == photo_target::extend;
+    const std::string label = bar_runs ? c.install : c.install + " and " + lower_first(go_verb(c.tool));
+    button(w, "go." + word, label, "primary", busy);
+  } else if (!ready && s && !s->missing.empty()) {
+    text(w, "missing." + word, s->missing, "secondary");
+  } else if (c.tool != photo_target::remove && c.tool != photo_target::extend) {
+    button(w, "go." + word, go_verb(c.tool), "primary", busy || !v.can_run);
+  }
+  end_stack(w);
+}
+
+}  // namespace
+
+std::string cards_tree(std::span<const card_view> cards, const run_view& run) {
+  json::writer w;
+  begin_stack(w, kCardsRoot, "vertical", 12);
+  const bool busy = run.state == run_state::running;
+  for (const card_view& c : cards) card_tree(w, c, busy);
+  // What the run is doing, for the host (never drawn as it is).
+  w.begin_object().key("type").string("stack").key("id").string("run").key("hidden").boolean(true);
+  w.key("label").string(run_state_name(run.state)).key("axis").string("vertical");
+  w.key("children").begin_array();
+  progress(w, "run.progress", run_line(run).empty() ? std::string("Idle") : run_line(run),
+           run.state == run_state::running ? run.fraction : (run.state == run_state::done ? 1.0 : -1.0));
+  text(w, "run.line", run_line(run));
+  text(w, "run.id", std::to_string(run.id));
+  text(w, "run.tool", photo_target_name(run.tool));
+  if (run.state == run_state::done && !run.result_path.empty()) {
+    const bool library = run.result_path.rfind("photos:", 0) == 0;
+    w.begin_object().key("type").string("thumbnail").key("id").string("run.result");
+    w.key("path").string(run.result_path).key("size").integer(32);
+    w.key("label").string(library ? std::string("The new photo") : run.result_name);
+    w.end_object();
+    if (!library) button(w, "result.discard", std::string("Move to ") + kBin);
+  }
+  if (run.state == run_state::running) button(w, "cancel", "Cancel");
+  if (run.state != run_state::idle && run.state != run_state::running) button(w, "run.dismiss", "Dismiss");
+  w.end_array().end_object();
+  end_stack(w);
+  return w.take();
+}
+
 }  // namespace mv::enhance

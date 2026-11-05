@@ -978,4 +978,17 @@ void job_runner::run_faces(job_request r, job_events ev) {
   if (ev.done) ev.done(true, name_of(*path), "");
 }
 
+// One-click: the card's estimate reads the photo as a run would (the edited
+// picture, upright) and its detail shrink; nothing is kept.
+std::optional<photo_size> job_runner::measure(const std::string& path) {
+  if (!port_.open_still) return std::nullopt;
+  auto pic = port_.open_still(path);
+  if (!pic || pic->width == 0 || pic->height == 0) return std::nullopt;
+  photo_size out;
+  out.width = pic->width;
+  out.height = pic->height;
+  out.detail = detail_shrink(pic->rgb, pic->width, pic->height);
+  return out;
+}
+
 }  // namespace mv::enhance

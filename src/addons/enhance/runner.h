@@ -139,6 +139,7 @@ class job_runner final : public runner {
   [[nodiscard]] std::string check(const job_request& r) const override;
   void start(job_request r, job_events events) override;
   void cancel() override;
+  [[nodiscard]] std::optional<photo_size> measure(const std::string& path) override;
 
  private:
   void run(job_request r, job_events events);
