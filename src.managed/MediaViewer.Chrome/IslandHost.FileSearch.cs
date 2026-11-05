@@ -187,6 +187,24 @@ public static partial class IslandHost
         if (_gallery is null || _gsField is null || _gsBar is null) return;
         _gsOpenPending = false;
         _gsOpen = true;
+        // Fades in over the grid (docs/design/20 "Craft rules": nothing pops),
+        // as the Mac's bar does; a cut with animations off. Set to 1 a turn
+        // later, once the bar is in the tree, so the transition has a start.
+        if (_gsBar.Visibility != Visibility.Visible)
+        {
+            bool animate = HostAnimationsEnabled();
+            _gsBar.OpacityTransition = animate ? _tileFadeTransition ??= new ScalarTransition
+            {
+                Duration = TimeSpan.FromMilliseconds(150),
+            } : null;
+            _gsBar.Opacity = animate ? 0 : 1;
+            FrameworkElement bar = _gsBar;
+            if (animate)
+            {
+                _dispatcher?.DispatcherQueue.TryEnqueue(
+                    Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => bar.Opacity = 1);
+            }
+        }
         _gsBar.Visibility = Visibility.Visible;
         // The island takes the Win32 focus first; the field is its first stop.
         _gallery.NavigateFocus(new XamlSourceFocusNavigationRequest(XamlSourceFocusNavigationReason.First));
@@ -294,6 +312,8 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Center,
             Margin = Pad(6, 0, 4, 0),
         };
+        // "12 of 2,000" changes with each key: the digits keep their width.
+        Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(_gsCount, FontNumeralAlignment.Tabular);
         Button close = EditButton("", () =>
         {
             CloseFileSearch();
@@ -369,7 +389,9 @@ public static partial class IslandHost
         if (_gsPill is null || _gsField is null) return;
         bool focused = _gsField.FocusState != FocusState.Unfocused;
         // Same thickness either way: the grid under it must not move a pixel.
-        _gsPill.BorderBrush = Brush(focused ? Title : Hairline);
+        // The accent ring is keyboard focus (docs/design/20 "Craft rules"), as
+        // on the Mac's FileSearchBar.
+        _gsPill.BorderBrush = Brush(focused ? ChromeColour.Accent : Hairline);
     }
 
     // The gallery closed (its tree is rebuilt on every show): so does file
@@ -412,7 +434,7 @@ public static partial class IslandHost
         {
             Text = title,
             FontFamily = UiFont,
-            FontSize = UiFontSize,
+            FontSize = TypeSize(TypeBody),  // the Mac's FileSearchNotice, 14
             Foreground = Brush(Body),
             TextWrapping = TextWrapping.Wrap,
             TextAlignment = TextAlignment.Center,

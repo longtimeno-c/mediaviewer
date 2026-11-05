@@ -40,6 +40,7 @@ public static partial class IslandHost
     private static TextBlock? _galleryCount;
     private static StackPanel? _galleryStack;
     private static TextBlock? _photosHeader;
+    private static Grid? _photosRow;
     private static Button? _galleryShare;  // #413
     private static TextBlock? _galleryEmpty;
     private static TextBlock? _folderFindLabel;
@@ -137,9 +138,26 @@ public static partial class IslandHost
             if (box is not null) box.Width = box.Height = GalleryTile;
             if (box is Image image && image.Source is BitmapImage bitmap)
                 bitmap.DecodePixelWidth = GalleryDecodeWidth;
-            if (col.Children.Count > 1 && col.Children[1] is TextBlock name) name.MaxWidth = GalleryTile;
+            // The names are cut again for the new width (SetMiddleTrimmed keeps
+            // the full name as the accessible name), so a grown tile does not
+            // keep a name cut for the smaller one.
+            if (col.Children.Count > 1 && col.Children[1] is TextBlock name)
+            {
+                name.MaxWidth = GalleryTile;
+                string full = AutomationProperties.GetName(name);
+                if (full.Length > 0) SetMiddleTrimmed(name, full, GalleryTile);
+            }
+            if (col.Children.Count > 2 && col.Children[2] is TextBlock why) why.MaxWidth = GalleryTile;
             if (col.Children.Count > 1 && col.Children[1] is StackPanel caption)
-                caption.Width = GalleryTile;
+            {
+                caption.MaxWidth = GalleryTile;
+                if (caption.Children.Count > 1 && caption.Children[1] is TextBlock folderName)
+                {
+                    folderName.MaxWidth = GalleryTile - 20;
+                    string full = AutomationProperties.GetName(folderName);
+                    if (full.Length > 0) SetMiddleTrimmed(folderName, full, GalleryTile - 20);
+                }
+            }
         }
     }
 
@@ -294,6 +312,7 @@ public static partial class IslandHost
             _galleryCount = null;
             _galleryStack = null;
             _photosHeader = null;
+            _photosRow = null;
             _galleryEmpty = null;
             _folderFindLabel = null;
             _folderStrip = null;
@@ -473,6 +492,7 @@ public static partial class IslandHost
 
     private static UIElement BuildGallery()
     {
+        ReadGalleryFade();  // the tiles' fade, or none with animations off
         ReleaseRepeater(ref _galleryRepeater);
         ReleaseRepeater(ref _folderRepeater);
         ReleaseRepeater(ref _folderChipRepeater);
@@ -498,7 +518,7 @@ public static partial class IslandHost
             FontSize = 13,
             FontWeight = Microsoft.UI.Text.FontWeights.Medium,
             Foreground = Brush(Title),
-            Margin = Pad(2, 8, 2, 4),
+            Margin = Pad(0, 8, 0, 4),  // on the tiles' edge, not 2 DIP off it
             Visibility = Visibility.Collapsed,
         };
         _folderStrip = new ScrollViewer
@@ -517,7 +537,7 @@ public static partial class IslandHost
         {
             Text = "No supported photos or videos in this folder",
             FontFamily = UiFont,
-            FontSize = UiFontSize,
+            FontSize = TypeSize(TypeBody),  // the Mac's 14: one quiet line
             Foreground = Brush(Body),
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin = Pad(0, 60, 0, 0),
@@ -531,11 +551,19 @@ public static partial class IslandHost
         _galleryStack.Children.Add(_folderRepeater);
         // Issue #413: the photos' header, and one share icon for the grid's
         // selection. Issue #444: it opens the share menu (Driftwire, then
-        // Windows Share), the one share command's.
-        var photosRow = new Grid();
+        // Windows Share), the one share command's. The Mac's row over its grid
+        // (GalleryView): the count of a range is said once, by Share. 12 DIP
+        // over the first row of tiles, never touching it; collapsed when empty.
+        var photosRow = new Grid
+        {
+            ColumnSpacing = Space(8),
+            Margin = Pad(0, 0, 0, 12),
+            Visibility = Visibility.Collapsed,
+        };
         photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         photosRow.Children.Add(_photosHeader);
+        _photosRow = photosRow;
         _galleryShare = BuildGalleryShareButton();
         Grid.SetColumn(_galleryShare, 1);
         photosRow.Children.Add(_galleryShare);
@@ -597,16 +625,31 @@ public static partial class IslandHost
         return root;
     }
 
-    private static TextBlock SectionLabel(string text) => new()
+    // On the tiles' edge (no 2 DIP near-tangent) and centred on Share beside it.
+    private static TextBlock SectionLabel(string text)
     {
-        Text = text,
-        FontFamily = UiFont,
-        FontSize = 12,
-        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-        Foreground = Brush(Body),
-        Margin = Pad(2, 6, 2, 4),
-        Visibility = Visibility.Collapsed,
-    };
+        var t = new TextBlock
+        {
+            Text = text,
+            FontFamily = UiFont,
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Visibility = Visibility.Collapsed,
+        };
+        Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(t, FontNumeralAlignment.Tabular);
+        return t;
+    }
+
+    // The photos' row shows while its header or Share does.
+    private static void SyncPhotosRow()
+    {
+        if (_photosRow is null) return;
+        bool any = _photosHeader?.Visibility == Visibility.Visible || _galleryShare?.Visibility == Visibility.Visible;
+        _photosRow.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     // The folder trail, in the command bar just left of `?` (Mac PathBar in
     // CommandBarView.swift). Up and Root are icons outside the scrolling
@@ -967,6 +1010,7 @@ public static partial class IslandHost
             _photosHeader.Text = $"Photos and videos  {GalleryItems.Count}";
             _photosHeader.Visibility = mixed ? Visibility.Visible : Visibility.Collapsed;
         }
+        SyncPhotosRow();
         if (_galleryRepeater is not null)
             _galleryRepeater.Visibility = photos ? Visibility.Visible : Visibility.Collapsed;
         if (_galleryEmpty is not null)
@@ -1098,12 +1142,15 @@ public static partial class IslandHost
                 Height = GalleryTile,
                 Stretch = Stretch.Uniform,
             };
+            // Centred under the thumbnail in the title colour, as the Mac's
+            // GalleryCell: the name is the tile's content, its tag line the quiet one.
             var name = new TextBlock
             {
                 FontFamily = UiFont,
                 FontSize = 12,
-                Foreground = Brush(Body),
+                Foreground = Brush(Title),
                 TextTrimming = TextTrimming.CharacterEllipsis,
+                TextAlignment = TextAlignment.Center,
                 MaxWidth = GalleryTile,
                 Margin = new Thickness(0, 2, 0, 0),
             };
@@ -1126,6 +1173,8 @@ public static partial class IslandHost
             Border placeholder = TilePlaceholder();
             var wash = new Border { Background = Brush(ChromeColour.RangeWash) };
             Grid box = ThumbBox(GalleryTile, 6, badged, placeholder, out Border outline, wash);
+            FadingLayer(wash, vm.InRange);
+            FadingOutline(outline, TileRinged(vm));
             col.Children.Add(box);
             col.Children.Add(name);
             // #291: why a file search showed this tile when its name did not match.
@@ -1136,6 +1185,7 @@ public static partial class IslandHost
                 FontSize = 11,
                 Foreground = Brush(Body),
                 TextTrimming = TextTrimming.CharacterEllipsis,
+                TextAlignment = TextAlignment.Center,
                 MaxWidth = GalleryTile,
                 Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
             };
@@ -1150,13 +1200,14 @@ public static partial class IslandHost
             void SetThumb() => ShowTileImage(image, vm.ThumbPath, GalleryDecodeWidth, placeholder);
             SetThumb();
 
-            // Issue #413: the shift-click range is tinted and outlined.
+            // Issue #413: the shift-click range is tinted; the accent ring is
+            // the keyboard's tile alone (docs/design/20 "Craft rules": lift,
+            // don't ring). Both fade on the change, never on scroll.
             void PaintRange()
             {
-                wash.Visibility = vm.InRange ? Visibility.Visible : Visibility.Collapsed;
-                SetOutline(outline, (vm.Selected && _folderCursor < 0) || vm.InRange);
+                ShowLayer(wash, vm.InRange);
+                ShowLayer(outline, TileRinged(vm));
             }
-            PaintRange();
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
@@ -1239,13 +1290,24 @@ public static partial class IslandHost
             overlay.Children.Add(box);
             overlay.Children.Add(count);
 
-            var caption = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4), Width = GalleryTile };
-            caption.Children.Add(new FontIcon { Glyph = "\uE8B7", FontSize = 12, Foreground = Brush(Body) });
+            // Centred under the cover like a photo's name (the Mac's FolderTile).
+            var caption = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = Space(4),
+                MaxWidth = GalleryTile,
+                HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            caption.Children.Add(new FontIcon
+            {
+                Glyph = "\uE8B7", FontSize = 12, Foreground = Brush(Body),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
             var captionName = new TextBlock
             {
                 FontFamily = UiFont,
                 FontSize = 12,
-                Foreground = Brush(Body),
+                Foreground = Brush(Title),
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = GalleryTile - 20,
             };
@@ -1255,7 +1317,7 @@ public static partial class IslandHost
             var col = new StackPanel { Spacing = 4 };  // the tile's height (MinItemHeight): grid geometry
             // The outline wraps the cover only, as on the Mac's FolderTile.
             Grid clipped = ThumbBox(GalleryTile, 6, overlay, new Grid(), out Border outline);
-            SetOutline(outline, vm.Cursor);
+            FadingOutline(outline, vm.Cursor);
             col.Children.Add(clipped);
             col.Children.Add(caption);
             var border = new Border
@@ -1280,7 +1342,7 @@ public static partial class IslandHost
                     or nameof(FolderCardVm.SubfolderCount) or nameof(FolderCardVm.PhotosInside)
                     or nameof(FolderCardVm.SearchStopped) or nameof(FolderCardVm.Status) or null)
                     SetCount();
-                if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) SetOutline(outline, vm.Cursor);
+                if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) ShowLayer(outline, vm.Cursor);
             }
             BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
@@ -1334,21 +1396,32 @@ public static partial class IslandHost
                 Foreground = Brush(Body),
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
-            var text = new StackPanel { Spacing = Space(1), Width = 120 };
+            var text = new StackPanel { Spacing = Space(2), Width = 120, VerticalAlignment = VerticalAlignment.Center };
             text.Children.Add(name);
             text.Children.Add(status);
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
             row.Children.Add(clipped);
             row.Children.Add(text);
-            var border = new Border
+            // One surface (docs/design/20 "Craft rules"), the Mac's FolderChip:
+            // the chip's own fill at rest, and the keyboard's chip takes the
+            // accent ring alone, faded, drawn over the chip so nothing in it
+            // moves. The cover pads 4 on three sides, so the chip's corner is
+            // the cover's plus 4; the words keep 10 from its end.
+            var surface = new Border
             {
-                Padding = Pad(4),
-                CornerRadius = Corner(6),
-                BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
-                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
-                Background = Brush(vm.Cursor ? ChromeColour.Selection : ChromeColour.Surface),
+                Padding = Pad(4, 4, 10, 4),
+                CornerRadius = Corner(8),
+                Background = Brush(ChromeColour.Surface2),
                 Child = row,
             };
+            var ring = new Border
+            {
+                CornerRadius = Corner(8),
+                BorderBrush = Brush(ChromeColour.Accent),
+                IsHitTestVisible = false,
+            };
+            FadingOutline(ring, vm.Cursor);
+            var border = new Border { Child = new Grid { Children = { surface, ring } } };
 
             void SetCover() => ShowTileImage(cover, vm.CoverPath, 72, placeholder);
             void SetText()
@@ -1357,14 +1430,8 @@ public static partial class IslandHost
                 status.Text = vm.Status;
                 status.Visibility = vm.Loaded ? Visibility.Visible : Visibility.Collapsed;
             }
-            void SetCursor()
-            {
-                border.BorderThickness = new Thickness(vm.Cursor ? 2 : 0);
-                border.Background = Brush(vm.Cursor ? ChromeColour.Selection : ChromeColour.Surface);
-            }
             SetCover();
             SetText();
-            SetCursor();
 
             void OnChanged(object? _, PropertyChangedEventArgs e)
             {
@@ -1374,7 +1441,7 @@ public static partial class IslandHost
                     or nameof(FolderCardVm.PhotosInside) or nameof(FolderCardVm.SearchStopped)
                     or nameof(FolderCardVm.Status) or null)
                     SetText();
-                if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) SetCursor();
+                if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) ShowLayer(ring, vm.Cursor);
             }
             BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);

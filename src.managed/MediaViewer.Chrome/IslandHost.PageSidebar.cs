@@ -186,15 +186,20 @@ public static partial class IslandHost
         {
             var vm = (PageVm)args.Data;
             var image = new Image { Width = 104, Height = 136, Stretch = Stretch.Uniform };
+            // The page on screen lifts onto a lighter surface, as Preview's and
+            // the Mac's PageSidebarCell do; an accent ring would read as keyboard
+            // focus, which the strip never takes (docs/design/20 "Craft rules").
+            // The lift fades as the page changes; a cut with animations off.
             var paper = new Border
             {
                 Width = 112,
                 Height = 144,
                 Padding = new Thickness(4),
                 CornerRadius = Corner(RadiusButton),
-                BorderThickness = new Thickness(2),
                 Child = image,
             };
+            if (HostAnimationsEnabled())
+                paper.BackgroundTransition = new BrushTransition { Duration = TimeSpan.FromMilliseconds(150) };
             var number = new TextBlock
             {
                 Text = (vm.Page + 1).ToString(System.Globalization.CultureInfo.CurrentCulture),
@@ -202,6 +207,7 @@ public static partial class IslandHost
                 FontSize = 11,
                 HorizontalAlignment = HorizontalAlignment.Center,
             };
+            Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(number, FontNumeralAlignment.Tabular);
             var row = new StackPanel
             {
                 Height = PageRowDip,
@@ -226,7 +232,7 @@ public static partial class IslandHost
             }
             void SetCurrent()
             {
-                paper.BorderBrush = vm.Current ? Brush(ChromeColour.Accent) : Brush(Microsoft.UI.Colors.Transparent);
+                paper.Background = LiftBrush(vm.Current);
                 number.Foreground = Brush(vm.Current ? Title : Body);
             }
             SetThumb();

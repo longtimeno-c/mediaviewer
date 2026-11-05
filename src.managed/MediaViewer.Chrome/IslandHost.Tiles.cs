@@ -3,6 +3,7 @@
 using System.ComponentModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Foundation;
 
@@ -114,6 +115,55 @@ public static partial class IslandHost
 
     private static void SetOutline(Border outline, bool on) =>
         outline.BorderThickness = new Thickness(on ? 2 : 0);
+
+    // The gallery's selection states fade in and out (docs/design/20 "Craft
+    // rules": a state a click or key sets fades in ~150 ms, never in one
+    // frame); the Mac's .animation(.easeOut(duration: 0.15)) on its cells. One
+    // transition for every tile (a ScalarTransition is a plain object, not a
+    // DependencyObject, so tiles can share it), read once per gallery build:
+    // with animations off there is none and the state cuts. Nothing runs on
+    // scroll: a transition plays only when a tile's opacity is set.
+    private static ScalarTransition? _tileFadeTransition;
+    private static ScalarTransition? _galleryFade;
+
+    private static void ReadGalleryFade() =>
+        _galleryFade = HostAnimationsEnabled()
+            ? _tileFadeTransition ??= new ScalarTransition { Duration = TimeSpan.FromMilliseconds(150) }
+            : null;
+
+    /// <summary>
+    /// Makes <paramref name="layer"/> (an outline, a wash) a fading one: shown
+    /// by opacity (<see cref="ShowLayer"/>) rather than by thickness or
+    /// visibility, so the change can fade and nothing under it moves. The
+    /// opacity is set before the transition, so a tile realised while
+    /// scrolling does not fade in.
+    /// </summary>
+    private static void FadingLayer(UIElement layer, bool on)
+    {
+        layer.Opacity = on ? 1 : 0;
+        layer.OpacityTransition = _galleryFade;
+    }
+
+    /// <summary><see cref="ThumbBox"/>'s outline, lit at full thickness and faded.</summary>
+    private static void FadingOutline(Border outline, bool on)
+    {
+        outline.BorderThickness = new Thickness(2);
+        FadingLayer(outline, on);
+    }
+
+    private static void ShowLayer(UIElement layer, bool on) => layer.Opacity = on ? 1 : 0;
+
+    /// <summary>
+    /// The Mac's MVTheme.raised: the page on screen, lifted (docs/design/20
+    /// "Craft rules"), the title colour at 0.12 as the Edit pane's lifted card.
+    /// Off, the same colour at nothing, so a fade between them never passes
+    /// through another hue.
+    /// </summary>
+    private static SolidColorBrush LiftBrush(bool on)
+    {
+        Windows.UI.Color t = Brush(Title).Color;
+        return new SolidColorBrush(Windows.UI.Color.FromArgb(on ? (byte)31 : (byte)0, t.R, t.G, t.B));
+    }
 
     /// <summary>
     /// The Mac's <c>.truncationMode(.middle)</c>: "IMG_20…_0042.JPG" keeps the

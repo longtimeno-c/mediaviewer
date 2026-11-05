@@ -84,6 +84,7 @@ struct GalleryView: View {
   // Whether any add-on fills tile badges / context entries (changes only when one
   // attaches or goes): the cells carry those wrappers only then.
   @ObservedObject private var tileFlags = SlotTileFlags.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   // The photo grid keeps its sizes under a theme's density (docs/ADDONS.md
   // "A theme's shape"): the gutter, the inset and the tiles are geometry.
   private let spacing: CGFloat = 8
@@ -128,38 +129,59 @@ struct GalleryView: View {
       let shownItems = search.items.map { $0.filter { $0 < store.names.count } } ?? store.itemIndices
       let shownFolders = search.folders.map { $0.filter { $0 < store.folders.count } } ?? store.folderIndices
       let filteredEmpty = search.items != nil && shownItems.isEmpty && shownFolders.isEmpty
+      // Issue #413: one share icon for the grid's selection; issue #444: it
+      // opens the share menu (Driftwire, then the system's targets).
+      let shareShown = !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty)
+      let photosHeader = mixed && !shownItems.isEmpty
       VStack(spacing: 0) {
-        if search.isOpen {
-          FileSearchBar()
-            .padding(.horizontal, inset)
-            .padding(.top, MVTheme.space(10))
+        // Fades in and out over the grid (docs/design/20 "Craft rules": nothing
+        // pops); the grid takes its new place at once, as on Windows.
+        VStack(spacing: 0) {
+          if search.isOpen {
+            FileSearchBar()
+              .padding(.horizontal, inset)
+              .padding(.top, MVTheme.space(10))
+              .transition(.opacity)
+          }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: search.isOpen)
         if (mixed || foldersOnly), let query = store.folderQuery {
           Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
-            .font(MVTheme.font(14))
+            .font(MVTheme.font(13))
+            .fontWeight(.medium)
+            .foregroundStyle(MVTheme.title)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, inset)
             .padding(.top, MVTheme.space(8))
-        }
-        // Issue #413: one share icon for the grid's selection; issue #444: it
-        // opens the share menu (Driftwire, then the system's targets).
-        if !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty) {
-          HStack {
-            if store.range.count > 1 {
-              Text("\(store.range.count) selected")
-                .font(MVTheme.font(13))
-                .foregroundStyle(MVTheme.body)
-            }
-            Spacer()
-            GalleryShareButton()
-          }
-          .padding(.horizontal, inset)
-          .padding(.top, 8)
         }
         if mixed && !shownFolders.isEmpty {
           FolderStrip(cell: 44, shown: shownFolders)
             .padding(.horizontal, inset)
             .padding(.vertical, MVTheme.space(8))
+        }
+        // The photos' row, right over them (Windows' photosRow): the section's
+        // name in a mixed folder, and Share. The count of a range is said once,
+        // by Share ("Share 12"), not again beside it.
+        if shareShown || photosHeader {
+          HStack(spacing: MVTheme.space(8)) {
+            if photosHeader {
+              Text("Photos and videos  \(shownItems.count)")
+                .font(MVTheme.font(12))
+                .fontWeight(.semibold)
+                .foregroundStyle(MVTheme.body)
+                .monospacedDigit()
+                .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if shareShown {
+              // A control has a surface at rest; the bar's flat style adds its
+              // hover and press washes over it.
+              GalleryShareButton()
+                .background(RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(MVTheme.surface2))
+            }
+          }
+          .padding(.horizontal, inset)
+          .padding(.top, MVTheme.space(8))
         }
         ScrollViewReader { proxy in
           ScrollView {
@@ -225,7 +247,8 @@ struct GalleryView: View {
               FileSearchNotice()
             } else if store.folders.isEmpty && store.names.isEmpty {
               Text("No supported photos or videos in this folder")
-                .foregroundStyle(.secondary)
+                .font(MVTheme.font(14))
+                .foregroundStyle(MVTheme.body)
                 .frame(maxWidth: .infinity)
                 .padding(.top, MVTheme.space(60))
             }
@@ -306,6 +329,7 @@ private struct FolderTile: View {
   let size: CGFloat
   let isCursor: Bool
   @ObservedObject var card: FolderCard
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(spacing: 4) {  // the tile's height: grid geometry
@@ -321,7 +345,7 @@ private struct FolderTile: View {
               Rectangle().fill(.quaternary)
               Image(systemName: "folder.fill")
                 .font(.system(size: size * 0.32))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MVTheme.body)
             }
           }
         }
@@ -330,20 +354,26 @@ private struct FolderTile: View {
           if card.loaded {
             Text(card.status)
               .font(MVTheme.font(11))
+              .foregroundStyle(MVTheme.title)
               .padding(.horizontal, MVTheme.space(6))
               .padding(.vertical, MVTheme.space(2))
               .background(.ultraThinMaterial, in: Capsule())
               .padding(MVTheme.space(6))
           }
         }
+        // The keyboard's tile (arrows on the folder row): the one ring.
         .overlay(
           RoundedRectangle(cornerRadius: MVTheme.radius(6))
             .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
         )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isCursor)
+      // Filled at this size (docs/design/20 "Craft rules"), centred under
+      // the cover like a photo's name.
       HStack(spacing: MVTheme.space(4)) {
-        Image(systemName: "folder").font(MVTheme.font(12)).foregroundStyle(.secondary)
+        Image(systemName: "folder.fill").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         Text(FolderStore.shared.folderName(path))
           .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.title)
           .lineLimit(1)
           .truncationMode(.middle)
       }
@@ -360,41 +390,47 @@ private struct FolderChip: View {
   let path: String
   let isCursor: Bool
   @ObservedObject var card: FolderCard
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  // One surface (docs/design/20 "Craft rules"): the chip's own fill at rest,
+  // and the keyboard's chip takes the accent ring alone, as a photo tile does
+  // (no accent fill under it too). The cover pads 4 on three sides, so the
+  // chip's corner is the cover's plus 4; the words keep 10 from its end.
   var body: some View {
-    HStack(spacing: MVTheme.space(6)) {
+    HStack(spacing: MVTheme.space(8)) {
       Color.clear
         .frame(width: 36, height: 36)
         .overlay {
           if let cover = card.cover {
             Image(decorative: cover, scale: 1).resizable().aspectRatio(contentMode: .fill)
           } else {
-            Image(systemName: "folder.fill").foregroundStyle(.secondary)
+            Image(systemName: "folder.fill").foregroundStyle(MVTheme.body)
           }
         }
         .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
-      VStack(alignment: .leading, spacing: MVTheme.space(1)) {
+      VStack(alignment: .leading, spacing: MVTheme.space(2)) {
         Text(FolderStore.shared.folderName(path))
           .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.title)
           .lineLimit(1)
         if card.loaded {
           Text(card.status)
             .font(MVTheme.font(11))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(MVTheme.body)
             .lineLimit(1)
         }
       }
       .frame(width: 120, alignment: .leading)
     }
-    .padding(MVTheme.space(4))
-    .background(
-      RoundedRectangle(cornerRadius: MVTheme.radius(6))
-        .fill(isCursor ? MVTheme.accent.opacity(0.18) : Color.primary.opacity(0.04))
-    )
+    .padding(.leading, MVTheme.space(4))
+    .padding(.vertical, MVTheme.space(4))
+    .padding(.trailing, MVTheme.space(10))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface2))
     .overlay(
-      RoundedRectangle(cornerRadius: MVTheme.radius(6))
+      RoundedRectangle(cornerRadius: MVTheme.radius(8))
         .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
     )
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isCursor)
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
   }
 }
@@ -435,8 +471,13 @@ private struct GalleryCell: View {
   var slotBadges = false
   /// #291: the tag a file search matched on ("Canon EOS R5"), under the name.
   var why: String? = nil
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
+    // Lift, don't ring (docs/design/20 "Craft rules"): the range is a wash
+    // over its thumbnails; the accent ring is the keyboard's cell alone. Both
+    // fade in 150 ms on the change (a cut with Reduce Motion), nothing on scroll.
+    let fade: Animation? = reduceMotion ? nil : .easeOut(duration: 0.15)
     VStack(spacing: 4) {  // the tile's height: grid geometry
       // Always a square: the placeholder and the loaded image must occupy the
       // same box, or rows go ragged as thumbnails arrive.
@@ -452,16 +493,18 @@ private struct GalleryCell: View {
           }
         }
         .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
-        // Issue #413: the shift-click range is tinted and outlined.
+        // Issue #413: the shift-click range is tinted.
         .overlay {
           if highlight.inRange {
             RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.accent.opacity(0.22))
+              .transition(.opacity)
           }
         }
+        .animation(fade, value: highlight.inRange)
         .overlay(
           RoundedRectangle(cornerRadius: MVTheme.radius(6))
-            .strokeBorder((highlight.isCurrent && !onFolders) || highlight.inRange ? MVTheme.accent : .clear,
-                          lineWidth: 2)
+            .strokeBorder(highlight.isCurrent && !onFolders ? MVTheme.accent : .clear, lineWidth: 2)
+            .animation(fade, value: highlight.isCurrent && !onFolders)
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
@@ -470,13 +513,14 @@ private struct GalleryCell: View {
         .modifier(SlotBadgesOverlay(on: slotBadges, name: name))
       Text(name)
         .font(MVTheme.font(12))
+        .foregroundStyle(MVTheme.title)
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(width: size)
       if let why {
         Text(why)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
+          .font(MVTheme.font(11))
+          .foregroundStyle(MVTheme.body)
           .lineLimit(1)
           .truncationMode(.tail)
           .frame(width: size)
