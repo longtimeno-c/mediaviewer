@@ -317,10 +317,27 @@ GPU. A first request at a size compiled for 14–18 minutes while the machine wa
 (12 and 18 GB) are those peaks. **Best is not measured**: extrapolated to 25–30 GB, it would swap
 this machine, so its 32 GB gate is an estimate, and machines like this one are refused it.
 
+Enhance image (2026-11-05, the same M-series Mac, CPU fp32 with 8 threads, the hidden
+`[.enhance-image-model]` case; **the machine was shared with four other builds**, load average
+30–100, so these are upper bounds). Per tile, from the least loaded run (320 × 240): Real-HAT-GAN
+5.4 s a 192 tile, RealWebPhoto 10 s a 256 tile, SCUNet 3.3–4.6 s and NAFNet 0.9–1.6 s a 512 tile.
+With the overlaps above that is, per input megapixel at steady state, about **330 s** (Sharpen &
+restore), **280 s** (Natural), **25 s** (Remove noise) and **6–11 s** (Remove blur, motion blur):
+a 12 MP photo is 744 HAT tiles, about an hour. One whole 1024 × 768 run of Sharpen & restore took
+1601 s (48 tiles) at load 30–90. Results on two COCO crops and a synthetic scene: HAT took
+Laplacian variance 16 → 231 and PSNR to the sharp original 30.5 → 33.6 dB on a blurred crop;
+SCUNet took a σ = 15 noisy crop from 24.5 to 36.5 dB; NAFNet-REDS doubled to quadrupled the
+Laplacian variance (PSNR −0.4 to −1 dB: it sharpens past the original); NAFNet-GoPro blew up on
+the synthetic scene in every view (kept as the photo) and on 11 of 30 COCO crops in Python.
+
 Not measured: Windows (Restyle is refused there without a GPU provider), a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
+
+- Enhance image on Core ML or a GPU: fp32 on the CPU only; Sharpen & restore takes about an hour
+  for 12 MP. Remove motion blur's NAFNet-GoPro export is unstable on many photos (the guard keeps
+  those parts as they were); a sounder export or another model wants an owner call.
 
 - Hosting Restyle's weights and pinning them in `remote.json` (the owner's upload).
 - Restyle on Windows: needs a DirectML or CUDA ONNX Runtime piece; measure before offering it.
