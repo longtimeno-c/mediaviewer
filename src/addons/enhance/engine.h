@@ -179,6 +179,7 @@ class engine {
   media_facts facts_;
   tier recommended_ = tier::standard;  // this computer's, by Local search's rule
   std::uint32_t brushed_ = 0;  // slice 7: dabs brushed over the photo, when the sheet opened
+  bool framed_ = false;        // edit-refresh S6: a canvas frame over the photo, when the sheet opened
   bool running_ = false;
   double progress_ = -1;
   std::chrono::steady_clock::time_point run_started_{};

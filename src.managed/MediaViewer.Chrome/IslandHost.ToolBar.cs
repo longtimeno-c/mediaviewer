@@ -353,12 +353,14 @@ public static partial class IslandHost
                                          : b.Spots == 0 ? "Click a red pupil" : $"Click a red pupil · {b.Spots} fixed";
                         break;
                     case CanvasTools.Extend:
-                        // "+18 % · 6048×4032", in the accent past the 25 % warning.
+                        // "+18 % · 6048×4032"; past the 25 % warning in the
+                        // overlay's caution amber (the Mac's MVTheme.warm), saying why.
                         int pct = (Math.Abs(b.ExtendGrowth) + 5) / 10;
                         _toolStatus.Text = b.ExtendW > 0
-                            ? $"{(b.ExtendGrowth < 0 ? "−" : "+")}{pct} % · {b.ExtendW}×{b.ExtendH}"
+                            ? $"{(b.ExtendGrowth < 0 ? "−" : "+")}{pct} % · {b.ExtendW}×{b.ExtendH}" +
+                              (b.ExtendWarn != 0 ? " · may smear" : "")
                             : "Drag the edges past the photo";
-                        _toolStatus.Foreground = Brush(b.ExtendWarn != 0 ? ChromeColour.Accent : Body);
+                        _toolStatus.Foreground = b.ExtendWarn != 0 ? Brush(TrackWarm) : Brush(Body);
                         ToolTipService.SetToolTip(_toolStatus, b.ExtendWarn != 0 ? "Past 25 % a side, fills may smear"
                                                                                   : "The new picture's size");
                         break;

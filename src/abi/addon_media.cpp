@@ -350,11 +350,24 @@ struct still_edit {
   std::vector<float> mask;
   std::string extend_path;  // edit-refresh S6
   std::array<float, 4> extend{};
+  // The geometry of the edit the frame was measured against (identity when
+  // the photo had none): an undo of Fill's crop, or any later turn or crop,
+  // leaves fractions of another picture, so the frame stops answering.
+  edit::geometry extend_g;
 };
 
 still_edit& edit_slot() {
   static still_edit s;
   return s;
+}
+
+// The edit's geometry still_open applies to `path` now (s.m held).
+edit::geometry geometry_now(const still_edit& s, const std::string& path) {
+  return !s.path.empty() && s.path == path ? s.g : edit::geometry{};
+}
+
+bool same_geometry(const edit::geometry& a, const edit::geometry& b) {
+  return a.orient == b.orient && a.straighten == b.straighten && a.crop == b.crop && a.resize == b.resize;
 }
 
 }  // namespace
@@ -464,6 +477,7 @@ void set_still_extend(const std::string& path, const std::array<float, 4>& ltrb)
   const std::lock_guard<std::mutex> lock(s.m);
   s.extend_path = path;
   s.extend = {};
+  s.extend_g = geometry_now(s, path);
   if (path.empty()) return;
   for (std::size_t i = 0; i < 4; ++i) {
     const float f = ltrb[i];
@@ -475,6 +489,7 @@ std::array<float, 4> still_extend(const std::string& path) {
   still_edit& s = edit_slot();
   const std::lock_guard<std::mutex> lock(s.m);
   if (path.empty() || s.extend_path != path) return {};
+  if (!same_geometry(s.extend_g, geometry_now(s, path))) return {};
   return s.extend;
 }
 

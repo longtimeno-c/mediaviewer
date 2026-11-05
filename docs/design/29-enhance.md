@@ -270,7 +270,10 @@ no second download (`remove` in its `mode: extend`). The margins come from one o
   being edited: left, top, right and bottom, each a fraction of the edited picture `still_open`
   returns (the part of the frame inside the photo is already a crop on the edit). A sheet opened on
   a photo with a frame starts on Extend (not saved as the photo's choice), and the frame wins over
-  the preset. `extend_from_fractions` (`remove.h`) rounds each to whole pixels and holds them to
+  the preset: the sheet then shows "The new frame you dragged…" instead of the preset choice. The
+  frame is measured against the edit it was set over (`addon_media` keeps that geometry): an undo
+  of Fill's crop, or any later turn or crop, and it answers all 0 again (the presets come back).
+  Cancel, a new Extend and a new item clear it. `extend_from_fractions` (`remove.h`) rounds each to whole pixels and holds them to
   the caps below, shrinking the margins evenly to fit 100 MP rather than refusing.
 - **A preset** otherwise: Wider and Taller (an eighth each side), All round (a tenth), Square,
   16:9 and 4:5 (grown on one axis only, centred).
@@ -317,10 +320,7 @@ installed (it loads no runtime until a run, and runs nothing at launch).
 - Hosting Restyle's weights and pinning them in `remote.json` (the owner's upload).
 - Restyle on Windows: needs a DirectML or CUDA ONNX Runtime piece; measure before offering it.
 
-- Extend: the sheet still shows its preset while a canvas frame is set (the frame wins); a frame
-  is cleared by Cancel, a new Extend or the next Fill, so a later preset run on the same photo
-  after a Fill uses that Fill's frame. An undo of Fill's crop leaves the frame's fractions to the
-  uncropped picture. The "Quality over speed" tiling (768 px tiles, three-deep overlap) is not
+- Extend: the "Quality over speed" tiling (768 px tiles, three-deep overlap) is not
   built; the tiles are as before.
 - HDR clips: the picture would come back SDR; refused for now.
 - A GPU on Windows: the bundled ONNX Runtime is the CPU build, so a clip's picture there runs on

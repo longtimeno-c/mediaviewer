@@ -242,17 +242,20 @@ The frame is shell state, `extend_draft` in `shell/edit_workspace.h` (each side'
 the edge as a fraction of the picture's width or height; negative is inside, a crop), **never an
 edit** ([07](07-photo-editing.md)).
 
-- **Limits (owner call E):** past 25 % a side the bar's readout and that side's band turn the
-  caution tint ("fills may smear past 25 %"); 50 % a side is a hard stop (Enhance grows a
+- **Limits (owner call E):** past 25 % a side the bar's readout (adding "· may smear") and that
+  side's band turn the caution amber (`MVTheme.warm` / `TrackWarm`); 50 % a side is a hard stop (Enhance grows a
   picture at most twice each way). At least 5 % of the photo stays inside the frame.
 - **On the canvas** (`tool_overlay.h` `draw_extend_frame`, both labs): the new area hatched in the
   accent, the part of the photo the frame leaves out dimmed as crop mode dims it, the frame with
-  eight handles (the held or hovered edge in the accent), and the readout above it. The edge under
+  eight handles (the held or hovered edge in the accent). The readout is the bar's only: nothing
+  floats over the photo (owner call A). The edge under
   the pointer picks the cursor (resize arrows; Windows `IDC_SIZE*`, the Mac's left-right and
   up-down cursors and the open hand for corners and moves). The camera frames the photo and the
   frame with 8 % around them (`extend_fit` → `input_snapshot::fit_rect_uv`, a `refit_seq` refit,
   `camera::set_fit_frame`) when a drag ends, a chip is chosen or the tool is armed, never during a
-  drag, so the held edge stays under the pointer. Changes redraw through `brush_rev`; nothing
+  drag, so the held edge stays under the pointer. Arming also fits (`fit_seq`), so a zoomed-in
+  view shows the room past the edges; another tool taking over, a new item and a clip under the
+  armed tool all drop the frame and fit the picture as itself. Changes redraw through `brush_rev`; nothing
   presents while the pointer is still.
 - **Readout:** "+18 % · 6048×4032": the result's pixels through Enhance's own sums
   (`extend_size`: the crop part rounded as `place()` rounds it, then `extend_from_fractions`'
@@ -396,8 +399,7 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
 - Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's
   "Discard 3 strokes?" in the bar is not built); Undo of an earlier rotate or Reset with strokes
   kept also forgets them. Faces as a canvas tool (S8).
-- Extend: `A` / `X` / arrows with their crop meanings, the 25 % warning as a note in the bar
-  beyond the tint, and running the fill inside the pane (S5's `enhance/tool`): Fill opens Enhance's
+- Extend: `A` / `X` / arrows with their crop meanings, and running the fill inside the pane (S5's `enhance/tool`): Fill opens Enhance's
   sheet on Extend.
 - Windows: a rebuilt D3D11 device drops the brush texture; the strokes reappear at the next brush
   change (the host is not told).

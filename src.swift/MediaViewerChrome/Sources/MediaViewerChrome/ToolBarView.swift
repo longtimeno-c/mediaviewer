@@ -128,9 +128,11 @@ struct ToolBarView: View {
         }
       }
     }
-    Text(bar.extendW > 0 ? bar.extendReadout : "Drag the edges past the photo")
+    // Past the 25 % warning: the overlay's caution amber, and it says why.
+    Text(bar.extendW > 0 ? bar.extendReadout + (bar.extendWarn && !compact ? " · may smear" : "")
+                         : "Drag the edges past the photo")
       .monospacedDigit()
-      .foregroundStyle(bar.extendWarn ? MVTheme.accent : MVTheme.body)
+      .foregroundStyle(bar.extendWarn ? MVTheme.warm : MVTheme.body)
       .lineLimit(1)
       .help(bar.extendWarn ? "Past 25 % a side, fills may smear" : "The new picture's size")
     Button { store.toolAction(.apply) } label: {

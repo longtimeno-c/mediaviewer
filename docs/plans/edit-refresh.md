@@ -421,6 +421,14 @@ Fill opens Enhance's sheet (S5's in-pane `enhance/tool` run is not wired here). 
 Not run: either app, both PR 1 gates and the PR 1 soak with Extend armed (the pan-gate check),
 the 0-presents check with Extend armed, the real LaMa on a dragged frame; the Windows native C++
 is not compiled here (C# compiles).
+S6 review: another tool armed over Extend now drops its frame and the room (both hosts); the Mac
+resets the frame on a new item as Windows did; the fit frame applies only while Extend is active on
+a still (a clip under the armed tool fits as itself); arming fits (`fit_seq`) so a zoomed view shows
+the room; the frame in `addon_media` is tagged with the edit's geometry, so an undo of Fill's crop
+or a later turn or crop makes it answer 0 (no stale fractions); a sheet opened with a frame hides
+the preset choice and says the frame is used (`sheet_view::framed`); the canvas readout is gone
+(the bar's, owner call A) and the bar adds "· may smear" in the overlay's amber past 25 %; the
+hatch no longer crawls as a band grows; Windows releases the drag before `ReleaseCapture`.
 
 ### 4.1 Tool mode (shared, portable)
 

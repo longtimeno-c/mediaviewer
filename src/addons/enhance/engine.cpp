@@ -223,6 +223,7 @@ sheet_view engine::sheet_locked() const {
   // downloaded shows as not installed, as any kind does.
   v.offers_remove = brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
+  v.framed = framed_ && item_ == item_kind::still;
   v.photo = prefs_.photo;
   if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove) ||
       (v.photo == photo_target::extend && !v.offers_extend)) {
@@ -342,6 +343,7 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     // S6: Fill on Edit's Extend frame opened it: it starts on Extend (not
     // saved either; the frame overrides the preset).
     if (framed && specs_[static_cast<int>(model_kind::remove)]) prefs_.photo = photo_target::extend;
+    framed_ = framed;
   }
   post_sheet_locked();
 }

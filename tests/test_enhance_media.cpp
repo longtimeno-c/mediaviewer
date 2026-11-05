@@ -1054,6 +1054,23 @@ TEST_CASE("photos: every writer of a library photo adds it once and writes nothi
     audit("extend frame", "extended");
     mv::addon::media::set_still_extend("", {});
     CHECK(mv::addon::media::still_extend(kShut)[0] == 0.0f);
+
+    // The frame is measured against the edit it was set over: Fill's crop
+    // undone (or any other turn or crop) and it no longer answers; a colour
+    // change keeps it.
+    mv::edit::geometry cropped;
+    cropped.crop = {0.1f, 0.0f, 0.8f, 1.0f};
+    mv::addon::media::set_still_edit(kShut, cropped, {});
+    mv::addon::media::set_still_extend(kShut, {0.1f, 0.0f, 0.2f, 0.0f});
+    CHECK(mv::addon::media::still_extend(kShut)[0] == 0.1f);
+    mv::edit::colour warmer;
+    warmer.v[static_cast<std::size_t>(mv::edit::adjust_param::mono)] = 100.0f;
+    mv::addon::media::set_still_edit(kShut, cropped, warmer);
+    CHECK(mv::addon::media::still_extend(kShut)[2] == 0.2f);
+    mv::addon::media::clear_still_edit();  // the crop undone: nothing left to edit
+    CHECK(mv::addon::media::still_extend(kShut)[0] == 0.0f);
+    CHECK(mv::addon::media::still_extend(kShut)[2] == 0.0f);
+    mv::addon::media::set_still_extend("", {});
   }
 
   // Open closed eyes and Improve faces: the target and the donor both by key.

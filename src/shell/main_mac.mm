@@ -8555,6 +8555,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // S3: an armed tool stays armed on the next still (the bar and its band go
   // on a clip); red-eye reads the new photo's eyes.
   if (_tool.tool == mv::shell::canvas_tool::red_eye) [self toolFetchEyes];
+  if (_tool.tool == mv::shell::canvas_tool::extend) [self extendReset];  // S6: a frame is the photo's own
   [self syncToolBar];
   [self toolCursor];
   // A document or a clip arriving under the filmstrip: say what T changes.
@@ -11671,12 +11672,20 @@ static double mv_wall_seconds() {
     return;
   }
   if (_edits.crop_active()) [self runEditCommand:mv::shell::command_id::crop_commit];
+  const BOOL wasExtend = _tool.tool == mv::shell::canvas_tool::extend ? YES : NO;
   const BOOL changed = mv::shell::arm_tool(_tool, _ws, t) ? YES : NO;
   _toolHoverPlus1 = 0;
   _toolSnap[2] = 0.0f;
   if (changed) [self syncWorkspace];
   if (t == mv::shell::canvas_tool::red_eye) [self toolFetchEyes];
-  if (t == mv::shell::canvas_tool::extend) [self extendReset];  // S6: a new frame, the camera framing room past the edges
+  // S6: a new frame, the camera framing room past the edges; another tool
+  // taking over from Extend drops its frame and the room with it.
+  if (t == mv::shell::canvas_tool::extend || wasExtend) [self extendReset];
+  if (t == mv::shell::canvas_tool::extend) {
+    // Zoomed in, the room past the edges would be off screen: Fit (0) at once.
+    ++_snap.fit_seq;
+    [self pokeSnapshot];
+  }
   [self toolChanged];
 }
 
@@ -12341,8 +12350,9 @@ static double mv_wall_seconds() {
 
 // The camera frames the photo and the frame (a refit, never a resize).
 - (void)extendRefit {
+  // Only while Extend is active on a still: a clip under an armed tool fits as itself.
   std::array<float, 4> f{0.0f, 0.0f, 1.0f, 1.0f};
-  if (_tool.tool == mv::shell::canvas_tool::extend) f = mv::shell::extend_fit(_extend);
+  if ([self extendActive]) f = mv::shell::extend_fit(_extend);
   if (std::equal(f.begin(), f.end(), _snap.fit_rect_uv)) return;
   std::copy(f.begin(), f.end(), _snap.fit_rect_uv);
   ++_snap.refit_seq;

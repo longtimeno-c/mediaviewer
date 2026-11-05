@@ -68,6 +68,9 @@ struct sheet_view {
   bool offers_restyle = false;
   bool offers_remove = false;  // slice 7: something is brushed and Remove has a model
   bool offers_extend = false;  // Remove's model, extending the picture's edges
+  // edit-refresh S6: the host holds a frame dragged past this photo's edges
+  // (still_extend); Extend uses it, so the preset choice is not shown.
+  bool framed = false;
   photo_target photo = photo_target::detail;
   std::vector<sheet_section> sections;
   std::string note;          // why Enhance cannot run on this item, or ""

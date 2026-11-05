@@ -136,6 +136,7 @@ struct fake_host {
   std::uint64_t free = 1ull << 40;
   mv::enhance::media_facts facts{true, true};
   std::vector<float> brush;  // slice 7: the dabs the host holds over a photo
+  bool framed = false;       // edit-refresh S6: a canvas frame over the photo (still_extend)
   // The preview's last pixels and how many were posted.
   std::uint32_t surface_w = 0, surface_h = 0;
   int surfaces = 0;
@@ -228,6 +229,10 @@ struct fixture {
     p.brushed = [this](const std::string&) {
       std::lock_guard lock(host.m);
       return static_cast<std::uint32_t>(host.brush.size() / 3);
+    };
+    p.framed = [this](const std::string&) {
+      std::lock_guard lock(host.m);
+      return host.framed;
     };
     p.free_disk = [this](const std::string&) -> std::optional<std::uint64_t> { return host.free; };
     auto shared = net;
@@ -1583,6 +1588,56 @@ TEST_CASE("extend: the host's frame, 3:2 to 16:9, is written at the size the hos
   REQUIRE(ok);
   CHECK(written.width == w);
   CHECK(written.height == h + 2 * (h / 8));
+}
+
+TEST_CASE("extend: a canvas frame opens the sheet on Extend, with no preset to pick", "[enhance][extend]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0004.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "extend", "label": "Extend", "type": "choice", "default": "wider",
+               "options": [{"id": "wider", "text": "Wider"}, {"id": "taller", "text": "Taller"}]}],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  // The knobs show once Remove's model is installed.
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = true;
+  }
+  f.eng->sheet_opened(1, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(*t.node("photo")->str("value") == "extend");  // Fill opened it
+    // The frame wins over a preset, so the sheet says so instead of offering one.
+    CHECK(t.has("frame.remove"));
+    CHECK_FALSE(t.has("k.remove.extend"));
+  }
+  // No frame (Cancel, or the edit moved on): the presets again.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = false;
+  }
+  f.eng->sheet_opened(2, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(*t.node("photo")->str("value") == "extend");
+    CHECK_FALSE(t.has("frame.remove"));
+    CHECK(t.has("k.remove.extend"));
+  }
 }
 
 TEST_CASE("extend: the host's readout and presets are the add-on's own sums", "[enhance][extend]") {

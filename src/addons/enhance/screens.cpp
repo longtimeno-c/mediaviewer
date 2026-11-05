@@ -320,6 +320,12 @@ std::string sheet_tree(const sheet_view& v) {
         if (std::find(kb.kinds.begin(), kb.kinds.end(), s.kind) == kb.kinds.end()) continue;
         // Remove's "extend" choice is for extending only.
         if (kb.id == "extend" && v.photo != photo_target::extend) continue;
+        // edit-refresh S6: the frame dragged on the canvas wins over a preset.
+        if (kb.id == "extend" && v.framed) {
+          text(w, id_of("frame", s.kind), "The new frame you dragged past the photo's edges in Edit.", "secondary");
+          ++shown;
+          continue;
+        }
         const auto it = s.values.find(kb.id);
         knob_node(w, s.kind, kb, knob_value(kb, it == s.values.end() ? nullptr : &it->second));
         ++shown;

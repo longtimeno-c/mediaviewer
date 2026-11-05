@@ -17,8 +17,9 @@
 //     would remove) and a kToolPulseMs pulse where a fix just landed;
 //   * S6: Extend's frame past the photo's edges: the new area hatched (a
 //     side past 25 % in the caution tint), the part of the photo it crops
-//     dimmed as crop mode dims it, the frame with its handles and the
-//     readout "+18 % · 6048 × 4032".
+//     dimmed as crop mode dims it, and the frame with its handles. The
+//     readout "+18 % · 6048×4032" is the context bar's (owner call A:
+//     nothing floats over the photo).
 //
 // Colours come from the theme (input_snapshot::home.accent) or are the ring's
 // black and white. Nothing here presents on its own: the lab keeps drawing
@@ -30,7 +31,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 
 #include "imgui.h"
 #include "shell/edit_workspace.h"
@@ -53,8 +53,9 @@ namespace mv::shell {
 // does not include canvas_tool.h, which the labs need not).
 inline constexpr std::uint8_t kToolExtendWire = 5;
 // The caution tint of a side past Extend's 25 % warning (fills may smear
-// there). The theme has no caution token; this is the system's amber.
-inline constexpr std::uint32_t kExtendCautionRgba = 0xF5A623FFu;
+// there). The theme has no caution token; this is the chromes' picture amber
+// (MVTheme.warm, IslandHost TrackWarm), which their bars' readout uses too.
+inline constexpr std::uint32_t kExtendCautionRgba = 0xFAB84DFFu;
 
 namespace detail {
 
@@ -79,9 +80,10 @@ inline void hatch(ImDrawList* fg, ImVec2 a, ImVec2 b, ImU32 wash, ImU32 line, fl
   fg->AddRectFilled(a, b, wash);
   fg->PushClipRect(a, b, true);
   const float h = b.y - a.y;
-  // Lines anchored to the screen (x + y constant), so a band that grows does
-  // not crawl.
-  const float start = std::floor((a.x - h + a.y) / step) * step - a.y;
+  // Lines anchored to the screen (x + y a multiple of `step` along each), so
+  // a band that grows or moves does not crawl: the line through (x, b.y) has
+  // x + b.y = k * step, and the first that reaches the band starts past a.x - h.
+  const float start = std::floor((a.x - h + b.y) / step) * step - b.y;
   for (float x = start; x < b.x; x += step) {
     fg->AddLine(ImVec2(x, b.y), ImVec2(x + h, a.y), line, thick);
   }
@@ -141,23 +143,6 @@ void draw_extend_frame(const edit_view& v, float pw, float ph, float scale, std:
                          ImVec2(f0.x, f1.y), ImVec2(f0.x, my)}) {
     fg->AddRectFilled(ImVec2(c.x - k - scale, c.y - k - scale), ImVec2(c.x + k + scale, c.y + k + scale), dark);
     fg->AddRectFilled(ImVec2(c.x - k, c.y - k), ImVec2(c.x + k, c.y + k), light);
-  }
-  // The readout above the frame (below it when the frame reaches the top).
-  if (v.tool_extend_w > 0 && v.tool_extend_h > 0) {
-    char label[128];
-    const int g = v.tool_extend_growth;
-    std::snprintf(label, sizeof(label), "%c%d %%  \xC2\xB7  %u \xC3\x97 %u%s", g < 0 ? '-' : '+', std::abs(g + (g < 0 ? -5 : 5)) / 10,
-                  static_cast<unsigned>(v.tool_extend_w), static_cast<unsigned>(v.tool_extend_h),
-                  v.tool_extend_warn ? "  \xC2\xB7  fills may smear past 25 %" : "");
-    const float fs = 16.0f * scale;
-    const ImVec2 size = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.0f, label);
-    float y = f0.y - fs - 6.0f * scale;
-    if (y < 0.0f) y = f0.y + 6.0f * scale;
-    const ImVec2 at(f0.x, y);
-    const float pad = 4.0f * scale;
-    fg->AddRectFilled(ImVec2(at.x - pad, at.y - pad * 0.5f), ImVec2(at.x + size.x + pad, at.y + size.y + pad * 0.5f),
-                      IM_COL32(0, 0, 0, 170), 4.0f * scale);
-    fg->AddText(ImGui::GetFont(), fs, at, v.tool_extend_warn ? detail::rgba(kExtendCautionRgba) : light, label);
   }
 }
 

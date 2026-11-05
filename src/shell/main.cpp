@@ -3050,12 +3050,21 @@ void arm_tool(app_state* app, mv::shell::canvas_tool t) {
     return;
   }
   if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+  const bool was_extend = app->tool.tool == mv::shell::canvas_tool::extend;
   const bool changed = mv::shell::arm_tool(app->tool, app->ws, t);
   app->tool_hover_plus1 = 0;
   app->tool_snap[2] = 0.0f;
   if (changed) sync_workspace(app);
   if (t == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
-  if (t == mv::shell::canvas_tool::extend) extend_reset(app);  // S6: a new frame, room past the edges
+  // S6: a new frame, room past the edges; another tool taking over from
+  // Extend drops its frame and the room with it.
+  if (t == mv::shell::canvas_tool::extend || was_extend) extend_reset(app);
+  if (t == mv::shell::canvas_tool::extend) {
+    // Zoomed in, the room past the edges would be off screen: Fit (0) at once.
+    ++app->input.fit_seq;
+    ++app->input.activity_seq;
+    publish(app);
+  }
   tool_changed(app);
 }
 
@@ -3430,8 +3439,9 @@ void tool_blocked(app_state* app) {
 
 // The camera frames the photo and the frame (a refit, never a resize).
 void extend_refit(app_state* app) noexcept {
+  // Only while Extend is active on a still: a clip under an armed tool fits as itself.
   std::array<float, 4> f{0.0f, 0.0f, 1.0f, 1.0f};
-  if (app->tool.tool == mv::shell::canvas_tool::extend) f = mv::shell::extend_fit(app->extend);
+  if (active_tool(app) == mv::shell::canvas_tool::extend) f = mv::shell::extend_fit(app->extend);
   if (std::equal(f.begin(), f.end(), app->input.fit_rect_uv)) return;
   std::copy(f.begin(), f.end(), app->input.fit_rect_uv);
   ++app->input.refit_seq;
@@ -11684,8 +11694,9 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         return 0;
       }
       if (msg == WM_LBUTTONUP && app->extend_grab != 0) {
-        ::ReleaseCapture();
+        // Released before the capture goes, so WM_CAPTURECHANGED finds nothing held.
         extend_release(app);
+        ::ReleaseCapture();
         return 0;
       }
       if (msg == WM_LBUTTONUP && app->brush_stroke) {
