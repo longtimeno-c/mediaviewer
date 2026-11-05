@@ -179,8 +179,10 @@ final class AdjustStore: ObservableObject {
   }
 
   func reset() { mv_chrome_adjust_reset() }
-  /// Slice 5b: a typed request; the host moves the sliders it names.
-  func prompt(_ text: String) { if ready { mv_chrome_adjust_prompt(text) } }
+  /// Slice 5b: a typed request; the host moves the sliders it names. Always
+  /// sent: the host decides (adjust_pane::prompt) and its note says what it
+  /// did, or why not now, so a request is never dropped without a word.
+  func prompt(_ text: String) { mv_chrome_adjust_prompt(text) }
   func openEyes() { if ready { mv_chrome_adjust_open_eyes() } }
   /// Slice 7: 0 the last stroke off, 1 every stroke off, 2 Remove (Enhance's sheet).
   func brush(_ action: Int32) { if ready { mv_chrome_adjust_brush(action) } }

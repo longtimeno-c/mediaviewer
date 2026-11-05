@@ -99,7 +99,12 @@ private struct AdjustPane: View {
   private static let rightSections = [4, 5, 6, 7]
   private static let oneColumn = [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
-  private var keysOff: Bool { typing || editingValue != nil }
+  /// The pane's own keys step aside while any text is being edited: the
+  /// request field (by SwiftUI's focus, or by AppKit's when the field took
+  /// the keyboard another way and `typing` never heard), or a value readout.
+  /// Without the AppKit check, "warmer" typed while `typing` was false lost
+  /// its r (Reset) and a (Auto) to the pane's keys (owner 2026-11-05).
+  private var keysOff: Bool { typing || editingValue != nil || Self.editingText() }
 
   private var status: String {
     switch store.readiness {
@@ -170,6 +175,34 @@ private struct AdjustPane: View {
 
   private static let placeholder = "Describe a change — a bit warmer, less noise…"
 
+  /// A field editor has the keyboard in the key window (any text field).
+  static func editingText() -> Bool {
+    guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return false }
+    return editor.isFieldEditor
+  }
+
+  /// The field editor is editing the request field itself.
+  private static func editingDescribeField() -> Bool {
+    guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor,
+          let field = editor.delegate as? NSTextField else { return false }
+    return field.placeholderString == placeholder || field.placeholderAttributedString?.string == placeholder
+  }
+
+  /// Return in the request field: one path whether the field's own submit
+  /// or the pane's Return key hears it first. Blank does nothing (a second
+  /// submit after the field was emptied must not replace the note). The
+  /// host says in the note what it did, or why not now; the text stays in
+  /// the field while the photo is still being prepared, so Return again runs it.
+  private func submit() {
+    let text = Self.submittedText(request)
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let ready = store.ready
+    store.prompt(text)
+    guard ready else { return }
+    Self.clearSubmitted()
+    request = ""
+  }
+
   private static func liveText() -> String? {
     guard let window = NSApp.keyWindow else { return nil }
     if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor { return editor.string }
@@ -217,11 +250,7 @@ private struct AdjustPane: View {
           .font(MVTheme.font(14))
           .disabled(!store.ready)
           .focused($typing)
-          .onSubmit {
-            store.prompt(Self.submittedText(request))
-            Self.clearSubmitted()
-            request = ""
-          }
+          .onSubmit { submit() }
           .accessibilityLabel("Describe a change")
       }
       .padding(.horizontal, MVTheme.space(10))
@@ -289,6 +318,14 @@ private struct AdjustPane: View {
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .focusable()
     .focused($focused)
+    // Return while the request field has the keyboard is its submit, taken
+    // here as well as by onSubmit: the pane's key handlers see a key before
+    // the field does, and a Return the field never reports must not be lost.
+    .onKeyPress(.return) {
+      guard editingValue == nil, typing || Self.editingDescribeField() else { return .ignored }
+      submit()
+      return .handled
+    }
     .onKeyPress(.upArrow) {
       if keysOff { return .ignored }
       let n = rows.count

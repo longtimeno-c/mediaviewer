@@ -175,11 +175,19 @@ down the contrast") and right after a slider's name reverses it ("exposure down"
 adjective it is an echo ("cool it down"); "noise reduction" is the denoise slider; an adjective before a region ("brighter shadows",
 "darker corners") moves the region's slider; a few looks move several ("punchy", "dramatic",
 "film", "matte", "soft"); "fix the white balance" and "auto" run the matching Autos one after
-another. Moves add to where each slider is, land on its steps and clamp. Words it does not know are
-listed back under the field ("not understood: …"), never guessed at. Return commits the text AppKit
-shows on the Mac (the field editor's, or the field's once editing has ended), so a value set by
-VoiceOver or another accessibility client is sent, not the binding's last typed copy, and the field
-is emptied after (2026-11-05).
+another. Moves add to where each slider is, land on its steps and clamp. The note under the field
+always says what happened: what moved ("Exposure +0.3 EV · Temperature +15 · Noise reduction +30"),
+words it does not know ("· not understood: …", never guessed at), "Didn't recognise that — try
+'warmer', 'brighter', 'less noise'" when no word was recognised, or why not now (no still, "Still
+preparing the photo — press Return again in a moment", or a photo that could not be prepared).
+Both hosts take the request through `adjust_pane::prompt`, which decides; before 2026-11-05 a
+request the host could not run was dropped without a word. Return commits the text AppKit shows on
+the Mac (the field editor's, or the field's once editing has ended), so a value set by VoiceOver or
+another accessibility client is sent, not the binding's last typed copy; the pane's own Return
+handler submits it too (whichever hears Return first; blank text is no request), and the field is
+emptied once it ran (kept while the photo is still being prepared). While any field editor has the
+keyboard the pane's keys (0, A, R, arrows) step aside even if SwiftUI's focus never heard: "warmer"
+typed then lost its r and a to Reset and Auto (2026-11-05).
 
 **Auto** (`edit/auto_adjust.h`): each section's AUTO button runs `compute_auto` on a worker
 from the preview working image and lands as one `adjust_all` op. Each returns absolute values for

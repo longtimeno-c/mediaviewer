@@ -22,9 +22,11 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "edit/adjust.h"
 #include "edit/histogram.h"
+#include "edit/prompt.h"
 
 namespace mv::shell {
 
@@ -160,6 +162,16 @@ class adjust_pane {
 
   // Slice 5b: the note under the request field; cleared with the item.
   void set_prompt_note(std::string note) { prompt_note_ = std::move(note); }
+
+  // Slice 5b: a typed request (edit/prompt.h) read against `current`, as
+  // both hosts take it from the field. The parse when the host should set
+  // its value (one op, if r.changed) and run its Autos; nullopt when it
+  // cannot run now. Either way the note says what happened, never nothing:
+  // what moved, the words not recognised, or why not now (no still on the
+  // canvas, the working image still being prepared, or failed). Blank text
+  // is no request: nullopt, and the note stays as it was.
+  [[nodiscard]] std::optional<edit::prompt_result> prompt(std::string_view text, const edit::colour& current,
+                                                          bool still);
 
   // The POD the chrome draws, with the current slider values.
   [[nodiscard]] adjust_view view(const edit::colour& c) const noexcept;

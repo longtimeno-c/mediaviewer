@@ -3570,16 +3570,21 @@ void next_pending_auto(app_state* app) {
 
 // Slice 5b (edit/prompt.h): a typed request, parked by the island. Its slider
 // moves land as one op; the Autos it asked for run one after another.
+// adjust_pane::prompt decides, as on the Mac: a request it cannot run now (no
+// still, the working image still building) is said in the note, never dropped
+// without a word (owner 2026-11-05).
 void run_adjust_prompt(app_state* app, const std::string& text) {
-  if (!app->adjust.working_ready() || !adjust_still(app)) return;
-  const mv::edit::prompt_result r = mv::edit::parse_prompt(text, app->edits.colour());
-  app->adjust.set_prompt_note(mv::edit::prompt_summary(r));
-  if (r.changed(app->edits.colour()) && app->edits.set_colour(r.value) == mv::shell::edit_effect::redraw) {
+  const std::optional<mv::edit::prompt_result> r = app->adjust.prompt(text, app->edits.colour(), adjust_still(app));
+  if (!r) {
+    push_adjust_pane(app);  // the note
+    return;
+  }
+  if (r->changed(app->edits.colour()) && app->edits.set_colour(r->value) == mv::shell::edit_effect::redraw) {
     publish_edit(app);
     ++app->input.activity_seq;
     publish(app);
   }
-  app->pending_autos.assign(r.autos.begin(), r.autos.end());
+  app->pending_autos.assign(r->autos.begin(), r->autos.end());
   adjust_colour_changed(app);
   next_pending_auto(app);
 }

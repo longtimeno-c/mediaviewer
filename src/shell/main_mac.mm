@@ -11672,15 +11672,20 @@ static double mv_wall_seconds() {
 
 // Slice 5b (edit/prompt.h): a typed request. Its slider moves land as one
 // op; the Autos it asked for run one after another (autoLanded starts the next).
+// adjust_pane::prompt decides, as on Windows: a request it cannot run now
+// (no still, the working image still building) is said in the note, never
+// dropped without a word (owner 2026-11-05).
 - (void)adjustPrompt:(const std::string&)text {
-  if (!_adjust.working_ready() || ![self adjustStill]) return;
-  const mv::edit::prompt_result r = mv::edit::parse_prompt(text, _edits.colour());
-  _adjust.set_prompt_note(mv::edit::prompt_summary(r));
-  if (r.changed(_edits.colour()) && _edits.set_colour(r.value) == mv::shell::edit_effect::redraw) {
+  const std::optional<mv::edit::prompt_result> r = _adjust.prompt(text, _edits.colour(), [self adjustStill]);
+  if (!r) {
+    [self bumpAdjustView];  // the note
+    return;
+  }
+  if (r->changed(_edits.colour()) && _edits.set_colour(r->value) == mv::shell::edit_effect::redraw) {
     [self publishEdit];
     [self pokeSnapshot];
   }
-  _pendingAutos.assign(r.autos.begin(), r.autos.end());
+  _pendingAutos.assign(r->autos.begin(), r->autos.end());
   [self adjustColourChanged];
   [self nextPendingAuto];
 }

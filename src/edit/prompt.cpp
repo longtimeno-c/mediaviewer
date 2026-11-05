@@ -325,29 +325,31 @@ prompt_result parse_prompt(std::string_view text, const colour& current) {
   for (int i = 0; i < kAdjustParamCount; ++i) {
     const auto k = static_cast<std::size_t>(i);
     if (touched[k] && moved[k] != 0.0f) r.applied.push_back(format_move(static_cast<P>(i), moved[k]));
+    if (touched[k]) r.recognised = true;
   }
+  if (!r.autos.empty()) r.recognised = true;
   return r;
 }
 
 std::string prompt_summary(const prompt_result& r) {
   std::string s;
   for (const std::string& a : r.applied) {
-    if (!s.empty()) s += ", ";
+    if (!s.empty()) s += " · ";
     s += a;
   }
   for (const adjust_section sec : r.autos) {
-    if (!s.empty()) s += ", ";
+    if (!s.empty()) s += " · ";
     s += sec == adjust_section::light ? "Auto light" : sec == adjust_section::colour ? "Auto colour" : "Auto levels";
   }
+  if (s.empty() && !r.recognised) return kPromptNotRecognised;
   if (!r.unknown.empty()) {
-    if (!s.empty()) s += " · ";
-    s += "not understood: ";
+    s += s.empty() ? "Not understood: " : " · not understood: ";
     for (std::size_t i = 0; i < r.unknown.size(); ++i) {
       if (i) s += ", ";
       s += r.unknown[i];
     }
   }
-  if (s.empty()) s = "Nothing to change";
+  if (s.empty()) s = "Nothing to change: the sliders are already there";
   return s;
 }
 

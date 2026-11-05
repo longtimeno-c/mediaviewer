@@ -135,6 +135,30 @@ bool adjust_pane::auto_tone_landed(std::uint64_t token) noexcept {
   return true;
 }
 
+std::optional<edit::prompt_result> adjust_pane::prompt(std::string_view text, const edit::colour& current,
+                                                      bool still) {
+  if (std::all_of(text.begin(), text.end(), [](char ch) {
+        return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+      })) {
+    return std::nullopt;
+  }
+  if (!still || item_ == 0) {
+    prompt_note_ = "Open a photo to adjust it.";
+    return std::nullopt;
+  }
+  if (readiness_ == adjust_readiness::failed) {
+    prompt_note_ = "This photo could not be prepared for editing.";
+    return std::nullopt;
+  }
+  if (readiness_ != adjust_readiness::ready) {
+    prompt_note_ = "Still preparing the photo — press Return again in a moment.";
+    return std::nullopt;
+  }
+  edit::prompt_result r = edit::parse_prompt(text, current);
+  prompt_note_ = edit::prompt_summary(r);
+  return r;
+}
+
 adjust_view adjust_pane::view(const edit::colour& c) const noexcept {
   adjust_view v;
   v.readiness = static_cast<std::int32_t>(readiness_);
