@@ -170,11 +170,16 @@ of the Adjust pane takes a sentence ("a bit brighter and warmer", "less noisy", 
 "like an old film", "fix the white balance") and moves the sliders it names, as one op. A fixed
 vocabulary, no model: each word names a slider and a step (exposure 0.3 EV, contrast 20,
 temperature 15, shadows 30, noise reduction 30…); "less", "too", "reduce", "deeper" turn it
-around, "a bit" halves and "much" doubles it; an adjective before a region ("brighter shadows",
+around, "a bit" halves and "much" doubles it; "down" before a slider turns it around too ("turn
+down the contrast") and right after a slider's name reverses it ("exposure down"), but after an
+adjective it is an echo ("cool it down"); "noise reduction" is the denoise slider; an adjective before a region ("brighter shadows",
 "darker corners") moves the region's slider; a few looks move several ("punchy", "dramatic",
 "film", "matte", "soft"); "fix the white balance" and "auto" run the matching Autos one after
 another. Moves add to where each slider is, land on its steps and clamp. Words it does not know are
-listed back under the field ("not understood: …"), never guessed at.
+listed back under the field ("not understood: …"), never guessed at. Return commits the text AppKit
+shows on the Mac (the field editor's, or the field's once editing has ended), so a value set by
+VoiceOver or another accessibility client is sent, not the binding's last typed copy, and the field
+is emptied after (2026-11-05).
 
 **Auto** (`edit/auto_adjust.h`): each section's AUTO button runs `compute_auto` on a worker
 from the preview working image and lands as one `adjust_all` op. Each returns absolute values for

@@ -109,6 +109,8 @@ final class AdjustStore: ObservableObject {
   @Published var curves: [[CGPoint]] = Array(repeating: [], count: 4)
   @Published private(set) var histogramValid = false
   @Published private(set) var histogram: [[Double]] = Array(repeating: [], count: 4)  // R, G, B, luma; 0..1
+  /// Bumped when the histogram's bins or validity change (HistogramPlot's identity).
+  @Published private(set) var histogramStamp = 0
   @Published private(set) var clipHigh: Double = 0
   @Published private(set) var clipLow: Double = 0
 
@@ -140,6 +142,7 @@ final class AdjustStore: ObservableObject {
     readiness = v.readiness
     fromRaw = v.from_raw != 0
     values = withUnsafeBytes(of: v.values) { raw in raw.bindMemory(to: Float.self).map { Double($0) } }
+    let validBefore = histogramValid
     histogramValid = v.histogram_valid != 0
     autoSection = Int(v.auto_section)
     picking = v.picking
@@ -158,9 +161,11 @@ final class AdjustStore: ObservableObject {
     clipHigh = Double(v.clip_high)
     clipLow = Double(v.clip_low)
     let flat: [UInt16] = withUnsafeBytes(of: v.bins) { raw in Array(raw.bindMemory(to: UInt16.self)) }
-    histogram = (0..<4).map { c in
+    let bins = (0..<4).map { c in
       (0..<Self.bins).map { i in Double(min(flat[c * Self.bins + i], 1000)) / 1000.0 }
     }
+    if bins != histogram || validBefore != histogramValid { histogramStamp &+= 1 }
+    histogram = bins
   }
 
   /// A slider (or an arrow key) moved `index` to `value`, clamped and snapped.

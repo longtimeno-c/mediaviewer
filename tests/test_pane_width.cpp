@@ -101,6 +101,27 @@ TEST_CASE("width classes and the Curves square", "[pane-width]") {
   CHECK(curve_side(720.0f) == 340.0f);
 }
 
+TEST_CASE("a drag of the edge sizes the column from the pointer in a fixed client", "[pane-width]") {
+  // 2026-11-05: in a 1280 pt window the edge at 876 dragged to 560. The
+  // column is the client less the rail less the pointer, clamped; the client
+  // (the window) never changes for it, so the canvas left is the pointer.
+  const float client = 1280.0f;
+  const pane_width_limits l{};
+  const auto at = [&](float leading) { return shown_inspector(client - l.rail - leading, client, 0.0f, l); };
+  CHECK(at(876.0f) == 360.0f);
+  CHECK(at(560.0f) == 676.0f);  // under 720 and 60 % (724): the pointer wins
+  CHECK(client - l.rail - at(560.0f) == 560.0f);
+  // Past the caps the column stops and the canvas keeps the rest.
+  CHECK(at(300.0f) == 720.0f);
+  CHECK(client - l.rail - at(300.0f) >= l.canvas_min);
+  // The canvas left beside a column dragged as far as it goes is never under
+  // 320, whatever the client.
+  for (float c = 644.0f; c <= 3000.0f; c += 37.0f) {
+    const float w = shown_inspector(1.0e6f, c, 0.0f, l);
+    CHECK(c - l.rail - w >= l.canvas_min);
+  }
+}
+
 TEST_CASE("the drag log counts intervals only between two live presents", "[pane-width][pane-drag-soak]") {
   drag_frame_log log;
   log.on_present(0.0, true, 1.0 / 60.0);  // not armed: counted, nothing logged

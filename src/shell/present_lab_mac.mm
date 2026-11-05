@@ -1999,6 +1999,23 @@ void present_lab_mac::render_thread_main() noexcept {
           continue;
         }
 
+        // The layer's drawable must be the canvas the frame is laid out in
+        // (snapshot.width x height, the fit, the brush and the overlays):
+        // re-set it when AppKit or Core Animation moved it (metal_layer::
+        // drifted). Two property reads on a drawn frame; idle never gets here.
+        if (const double sc = snapshot.dpi_scale > 0.0f ? static_cast<double>(snapshot.dpi_scale) : 1.0;
+            layer_.drifted(snapshot.width, snapshot.height, sc)) {
+          static int warned = 0;  // render thread only; a live resize may race it a few times
+          if (warned < 8) {
+            ++warned;
+            MV_LOG_WARN("present_lab_mac: the layer's drawable no longer matched the canvas (%ux%u @%.2f); re-set",
+                        snapshot.width, snapshot.height, sc);
+          }
+          if (auto r = layer_.resize(snapshot.width, snapshot.height, sc); !r) measurement_valid_ = false;
+          drawable_sets_.store(layer_.drawable_sets(), std::memory_order_relaxed);
+          pacer_.set_refresh(layer_.refresh_interval_seconds());
+        }
+
         if (!was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
         was_presenting_ = true;
         live_link.paused = NO;

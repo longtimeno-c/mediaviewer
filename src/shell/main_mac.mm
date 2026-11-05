@@ -451,6 +451,11 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 // right pane (Info, Adjust, Jobs, the Edit workspace) shares one width, the
 // user's, dragged by its edge and kept in the defaults (MVRightPaneWidth).
 constexpr CGFloat kInspectorDefaultPoints = 360.0;
+// A chrome view's preferred size over the canvas (the transport's 720, the
+// tool bar's 640): one below NSLayoutPriorityWindowSizeStayPut, so Auto Layout
+// gives it up before it would resize the window to keep it.
+const NSLayoutPriority kChromeWishPriority = NSLayoutPriorityWindowSizeStayPut - 1;
+
 // The floating panes (Info, Adjust, Jobs with the workspace closed) have no
 // rail; the docked workspace has the 44 pt icon rail at the window's edge
 // (docs/plans/edit-refresh.md S2, -paneLimits).
@@ -3982,7 +3987,11 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                      constant:-10.0];
   NSLayoutConstraint* preferredWidth =
       [self.transportHost.widthAnchor constraintEqualToConstant:720.0];
-  preferredWidth.priority = NSLayoutPriorityDefaultHigh;
+  // Below NSLayoutPriorityWindowSizeStayPut: a wish, never a reason to resize
+  // the window. At DefaultHigh (750) it outranked the window's own size, so a
+  // canvas narrower than 752 pt (the docked column dragged wide) grew the
+  // window instead of shrinking the transport (S1 review, 2026-11-05).
+  preferredWidth.priority = kChromeWishPriority;
   // Centred on the canvas, not the window (docs/plans/edit-refresh.md §2.3):
   // the right column's guide pins the docked edge (-syncCanvasGuide).
   self.canvasGuide = [[NSLayoutGuide alloc] init];
@@ -4017,7 +4026,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   self.toolBarBottom = [self.toolBarHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                                      constant:-8.0];
   NSLayoutConstraint* toolBarWidth = [self.toolBarHost.widthAnchor constraintEqualToConstant:640.0];
-  toolBarWidth.priority = NSLayoutPriorityDefaultHigh;
+  toolBarWidth.priority = kChromeWishPriority;  // as the transport's: never grows the window
   [NSLayoutConstraint activateConstraints:@[
     [self.toolBarHost.centerXAnchor constraintEqualToAnchor:self.canvasGuide.centerXAnchor],
     [self.toolBarHost.widthAnchor constraintLessThanOrEqualToConstant:640.0],

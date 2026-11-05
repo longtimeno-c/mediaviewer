@@ -136,7 +136,17 @@ public static partial class IslandHost
             Foreground = Brush(Body),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxWidth = 260,
+            TextWrapping = TextWrapping.NoWrap,
+            // One width per tool, whatever it says: "Brush over what to remove"
+            // -> "1 stroke" must not re-centre the row and move every button
+            // (the Mac's ToolBarView.statusSlot; 2026-11-05). The full text is
+            // the tooltip.
+            Width = _toolBar.Tool switch
+            {
+                CanvasTools.Brush => 168,
+                CanvasTools.RedEye => 160,
+                _ => double.NaN,
+            },
         };
         Button done = EditButton("Done", () => SendToolAction(ToolBarAction.Done), tip: "Put the tool down  Esc");
 
@@ -169,7 +179,10 @@ public static partial class IslandHost
                 row.Children.Add(_toolStatus);
                 row.Children.Add(BuildToolSize());
                 _toolSpinner = new Spinner(16);
-                row.Children.Add(_toolSpinner.Root);
+                // A fixed slot: the spinner collapses when idle, the row does not.
+                var spinSlot = new Grid { Width = 16, VerticalAlignment = VerticalAlignment.Center };
+                spinSlot.Children.Add(_toolSpinner.Root);
+                row.Children.Add(spinSlot);
                 _toolFind = AccentButton("Find eyes", () => SendToolAction(ToolBarAction.FindEyes));
                 row.Children.Add(_toolFind);
                 _toolUndo = IconButton(GlyphUndo, WithKey("Undo the last fix", Command.ToolUndo),
@@ -240,7 +253,7 @@ public static partial class IslandHost
             FontSize = TypeSmall,
             Foreground = Brush(Body),
             VerticalAlignment = VerticalAlignment.Center,
-            MinWidth = 48,
+            Width = 48,  // "4 px" .. "400 px" in one width: the row never reflows
         };
         var size = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         size.Children.Add(_toolSize);
@@ -306,10 +319,12 @@ public static partial class IslandHost
                                          : b.Strokes == 0 ? "Brush over what to remove"
                                          : b.Strokes == 1 ? "1 stroke" : $"{b.Strokes} strokes";
                         _toolStatus.Foreground = Brush(b.Full != 0 ? ChromeColour.Accent : Body);
+                        ToolTipService.SetToolTip(_toolStatus, _toolStatus.Text);
                         break;
                     case CanvasTools.RedEye:
                         _toolStatus.Text = b.Busy != 0 ? "Looking for red eyes…"
                                          : b.Spots == 0 ? "Click a red pupil" : $"Click a red pupil · {b.Spots} fixed";
+                        ToolTipService.SetToolTip(_toolStatus, _toolStatus.Text);
                         break;
                 }
             }

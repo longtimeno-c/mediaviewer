@@ -26,8 +26,17 @@ class metal_layer {
   void destroy() noexcept;
 
   [[nodiscard]] bool valid() const noexcept { return layer_ != nullptr; }
+  // Sets the drawable size and scale, only when the layer's own differ.
   [[nodiscard]] expected resize(std::uint32_t width, std::uint32_t height,
                                 double contents_scale) noexcept;
+  // The layer's drawable size or contents scale is not `width` x `height` at
+  // `contents_scale`: something other than resize() changed them. Before
+  // 2026-11-04 every chrome move re-set both and hid such a change; once
+  // resize() skipped unchanged sizes, a layer that no longer matched the
+  // canvas stayed so (2026-11-05: the photo drawn larger than the canvas and
+  // cut off, Fit not fixing it, brush dabs off the pointer). Two property
+  // reads; the lab checks every frame it draws.
+  [[nodiscard]] bool drifted(std::uint32_t width, std::uint32_t height, double contents_scale) const noexcept;
 
   [[nodiscard]] void* native_layer() const noexcept { return layer_; }
   [[nodiscard]] std::uint32_t width() const noexcept { return width_; }

@@ -74,8 +74,15 @@ expected metal_layer::resize(std::uint32_t width, std::uint32_t height,
   const double scale = contents_scale > 0.0 ? contents_scale : 1.0;
   // docs/design/12 2026-11-04 (refit_seq): the same size at the same scale is
   // no change. Reassigning drawableSize anyway costs the next drawable and
-  // re-probed the refresh on every chrome-only move.
-  if (width == width_ && height == height_ && scale == scale_) return {};
+  // re-probed the refresh on every chrome-only move. The layer's own values
+  // are compared, not the ones last set here: AppKit / Core Animation can
+  // change them under us (2026-11-05, drifted() below).
+  if (!drifted(width, height, scale)) {
+    width_ = width;
+    height_ = height;
+    scale_ = scale;
+    return {};
+  }
   CAMetalLayer* layer = (__bridge CAMetalLayer*)layer_;
   layer.contentsScale = scale;
   layer.drawableSize = CGSizeMake(static_cast<CGFloat>(width), static_cast<CGFloat>(height));
@@ -85,6 +92,15 @@ expected metal_layer::resize(std::uint32_t width, std::uint32_t height,
   scale_ = scale;
   refresh_output_info();
   return {};
+}
+
+bool metal_layer::drifted(std::uint32_t width, std::uint32_t height, double contents_scale) const noexcept {
+  if (!layer_ || width == 0 || height == 0) return false;
+  const double scale = contents_scale > 0.0 ? contents_scale : 1.0;
+  CAMetalLayer* layer = (__bridge CAMetalLayer*)layer_;
+  const CGSize now = layer.drawableSize;
+  return static_cast<std::uint32_t>(now.width) != width || static_cast<std::uint32_t>(now.height) != height ||
+         layer.contentsScale != scale;
 }
 
 void metal_layer::refresh_output_info() noexcept {

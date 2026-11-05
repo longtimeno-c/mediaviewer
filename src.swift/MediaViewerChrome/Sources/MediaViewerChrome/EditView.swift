@@ -161,13 +161,12 @@ struct EditStripView: View {
   private func actionRow(labels: Bool) -> some View {
     HStack(spacing: MVTheme.space(4)) {
       HeaderButton(title: "Undo", symbol: "arrow.uturn.backward", labels: labels,
-                   help: withKey("Undo the last edit", "Undo edit")) { store.run(EditCommand.undo) }
+                   help: withKey("Undo the last edit", "Undo edit"), name: "Undo edit") { store.run(EditCommand.undo) }
         .disabled(store.editCount == 0)
-        .accessibilityLabel("Undo edit")
       HeaderButton(title: "Reset", symbol: "arrow.counterclockwise", labels: labels,
-                   help: withKey("Reset to the original, exactly", "Reset edits")) { store.run(EditCommand.reset) }
+                   help: withKey("Reset to the original, exactly", "Reset edits"),
+                   name: "Reset to original") { store.run(EditCommand.reset) }
         .disabled(store.editCount == 0 && !store.cropActive)
-        .accessibilityLabel("Reset to original")
       HeaderButton(title: "Compare", symbol: "square.split.2x1", labels: labels,
                    help: withKey("Show the original while on (or hold the key); nothing is changed",
                                  "Show original (hold)"),
@@ -192,6 +191,9 @@ private struct HeaderButton: View {
   let symbol: String
   let labels: Bool
   let help: String
+  /// The screen reader's name; the title when nil. Never the symbol's name,
+  /// which is what an icon-only button (below 340 pt) read before 2026-11-05.
+  var name: String? = nil
   var selected = false
   let action: () -> Void
   @State private var hover = false
@@ -201,6 +203,7 @@ private struct HeaderButton: View {
     Button(action: action) {
       HStack(spacing: MVTheme.space(4)) {
         Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+          .accessibilityHidden(true)
         if labels { Text(title).font(MVTheme.font(13)).lineLimit(1) }
       }
       .foregroundStyle(!enabled ? MVTheme.disabled : (selected ? MVTheme.accent : MVTheme.title))
@@ -213,6 +216,7 @@ private struct HeaderButton: View {
     .buttonStyle(.plain)
     .onHover { hover = $0 }
     .help(help)
+    .accessibilityLabel(name ?? title)
     .fixedSize()
   }
 }
