@@ -53,6 +53,8 @@ public static partial class IslandHost
         private string? _detail;
         private double? _fraction;
         private bool _timed;
+        private Action? _outcomeClick;
+        private readonly string _cancelLabel = "Cancel";
 
         /// <param name="cancel">The quiet Cancel's label and work, or null for none.</param>
         public ProgressLine((string Label, Action Click)? cancel = null)
@@ -76,7 +78,9 @@ public static partial class IslandHost
             line.Children.Add(_tail);
             if (cancel is { } c)
             {
-                _cancel = QuietButton(c.Label, c.Click);
+                // After an outcome the same slot carries its action (ShowOutcome).
+                _cancelLabel = c.Label;
+                _cancel = QuietButton(c.Label, () => (_outcomeClick ?? c.Click)());
                 Grid.SetColumn(_cancel, 3);
                 line.Children.Add(_cancel);
             }
@@ -103,6 +107,16 @@ public static partial class IslandHost
         /// </summary>
         public void Show(string verb, double? fraction, string? detail = null, string? key = null, bool timed = false)
         {
+            if (_cancel is not null && _cancel.Visibility != Visibility.Visible || _outcomeClick is not null)
+            {
+                // Back from an outcome: the slot is Cancel again.
+                if (_cancel!.Content is TextBlock t) t.Text = _cancelLabel;
+                AutomationProperties.SetName(_cancel, _cancelLabel);
+                _cancel.Visibility = Visibility.Visible;
+            }
+            _outcomeClick = null;
+            _bar.Root.Opacity = 1;
+            _head.Foreground = Brush(Body);
             _verb = verb;
             _detail = detail;
             _timed = timed && key is not null;
@@ -128,6 +142,33 @@ public static partial class IslandHost
             if (_tail.Text != tail) _tail.Text = tail;
             // Counts down once a second between updates, only while it runs and shows.
             if (_timed && _fraction is < 1 && Root.IsLoaded) StartTick(); else StopTick();
+        }
+
+        /// <summary>
+        /// The work ended: the bar fades out of its slot and the line becomes
+        /// the outcome, a check and the result with its action (Move to
+        /// Recycle Bin), or a mark and a one-line reason with Try again.
+        /// </summary>
+        public void ShowOutcome(bool ok, string text, string? action = null, Action? click = null)
+        {
+            StopTick();
+            _bar.Root.Opacity = 0;
+            _head.Text = (ok ? "\u2713 " : "! ") + text;
+            _head.Foreground = Brush(Title);
+            _tail.Text = "";
+            ToolTipService.SetToolTip(_head, text);
+            if (_cancel is not null)
+            {
+                bool has = action is not null && click is not null;
+                _cancel.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+                if (has)
+                {
+                    if (_cancel.Content is TextBlock t) t.Text = action!;
+                    AutomationProperties.SetName(_cancel, action!);
+                    _outcomeClick = click;
+                }
+            }
+            AutomationProperties.SetName(Root, text);
         }
 
         private void StartTick()
