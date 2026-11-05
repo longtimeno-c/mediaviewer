@@ -675,10 +675,9 @@ void card_tree(json::writer& w, const card_view& c, bool busy) {
     }
   }
   if (c.downloading) {
-    progress(w, "dl." + word, "Downloading the model", c.download_fraction);
-    std::string what = "Downloading the model";
-    if (!c.download_text.empty()) what += "… " + c.download_text;
-    text(w, "dltext." + word, what, "secondary");
+    // The one progress line (API 13): "Downloading the model · 48 MB of
+    // 161 MB · about 25 seconds left", the host saying the time left.
+    progress(w, "dl." + word, "Downloading the model", c.download_fraction, nullptr, c.download_text, true);
   }
   if (!c.eta.empty() && c.tool != photo_target::remove && c.tool != photo_target::extend) {
     text(w, "eta." + word, c.eta, "secondary");
@@ -717,6 +716,15 @@ std::string cards_tree(std::span<const card_view> cards, const run_view& run) {
   progress(w, "run.progress", run_line(run).empty() ? std::string("Idle") : run_line(run),
            run.state == run_state::running ? run.fraction : (run.state == run_state::done ? 1.0 : -1.0));
   text(w, "run.line", run_line(run));
+  // The verb alone, for the host's own progress line (docs/design/20 "Craft
+  // rules": "Enhancing · 40 % · about 1 min left", the time left its own).
+  if (run.state == run_state::running) {
+    std::string verb = run.downloading
+                           ? "Downloading " + (run.model_name.empty() ? std::string("the model") : run.model_name)
+                           : std::string(run_verb(run.tool));
+    if (verb.size() >= 3 && verb.compare(verb.size() - 3, 3, "\u2026") == 0) verb.resize(verb.size() - 3);
+    text(w, "run.verb", verb);
+  }
   text(w, "run.id", std::to_string(run.id));
   text(w, "run.tool", photo_target_name(run.tool));
   if (run.state == run_state::done && !run.result_path.empty()) {

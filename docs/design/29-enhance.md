@@ -348,8 +348,8 @@ tab shows, on the photo on screen, and pointed at each photo after it (`enhance/
 | Card | Choices | Estimate | Button |
 |---|---|---|---|
 | Enhance image (`detail`) | Quality (the four models), Size (×1/×2/×4 for the upscalers) | "About 2 min · 6048 × 8064" | *Enhance* |
-| Restyle | the words (Return runs), Quality | "About 40 s", ", more the first time" above Standard | *Restyle* |
-| Restore faces (under Faces) | Look (RestoreFormer++ / Natural), Strength | "About 2 s a face" | *Restore faces* |
+| Restyle | the words (Return runs), Quality | "About 40 seconds", ", more the first time" above Standard | *Restyle* |
+| Restore faces (under Faces) | Look (RestoreFormer++ / Natural), Strength | "About 2 seconds a face" | *Restore faces* |
 | Remove, Extend | none (the tool bar's Remove ↵ / Fill ↵ runs them) | the run's own | only *Download (208 MB)* |
 
 A model not here yet makes the button *Download (161 MB) and enhance*: one click fetches it, the

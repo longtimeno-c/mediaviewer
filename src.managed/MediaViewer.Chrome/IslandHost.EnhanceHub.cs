@@ -40,16 +40,15 @@ public static partial class IslandHost
     private static readonly EnhanceToolInfo[] EnhanceTools =
     {
         new(EnhanceToolKind.Remove, "Remove objects",
-            "Brush over what to take out; it is filled in from around it.", RailGlyph.Remove),
+            "Brush over something to take it out.", RailGlyph.Remove),
         new(EnhanceToolKind.Restyle, "Restyle",
-            "Describe a new look in words: a snowy day, golden hour.", ""),  // Color
+            "Describe a new look: a snowy day, golden hour.", ""),  // Color
         new(EnhanceToolKind.Faces, "Faces",
-            "Choose faces on the photo: open closed eyes, a better face of the same person, or restore blurred faces.",
-            RailGlyph.Faces),
+            "Open closed eyes, or a better face of the same person.", RailGlyph.Faces),
         new(EnhanceToolKind.Detail, "Enhance image",
-            "Sharpen and restore, remove noise or blur, or enlarge, with a model on this PC.", RailGlyph.Enhance),
+            "Sharpen, clean up noise or blur, or enlarge.", "\uE71E"),  // Zoom: more detail, never a sparkle
         new(EnhanceToolKind.Extend, "Extend edges",
-            "More picture around the edges, to a wider or taller frame.", RailGlyph.Extend),
+            "Add more picture around the edges.", RailGlyph.Extend),
     };
 
     // S10: Restore faces, in the flyout after Faces.
@@ -162,7 +161,7 @@ public static partial class IslandHost
 
     // ---- the tab ------------------------------------------------------------------
 
-    private static readonly List<(EnhanceToolKind Kind, TextBlock Chip, Border ChipDot, Button Action, Border Card)>
+    private static readonly List<(EnhanceToolKind Kind, TextBlock Chip, Border ChipPill, Button Action, Border Card)>
         EnhanceCards = new();
     private static TextBlock? _enhanceBrushNote;
     private static Button? _enhanceUndoStroke;
@@ -203,7 +202,7 @@ public static partial class IslandHost
             OpenEnhanceLevel();
         }
         head.Children.Add(titleRow);
-        head.Children.Add(Hint("Each tool writes a new file; the original is never changed."));
+        // "The original is not changed" is the result's to say, once (docs/design/20 "Craft rules").
         pane.Children.Add(head);
         if (!_editEnhance)
         {
@@ -264,40 +263,30 @@ public static partial class IslandHost
     private static Border BuildEnhanceCard(EnhanceToolInfo tool)
     {
         var col = new StackPanel { Spacing = Space(8) };
-        var head = new Grid { ColumnSpacing = Space(10) };
+        // docs/design/20 "Craft rules": icon and title, one short line, the
+        // controls, one primary button; a chip only when something is needed.
+        var head = new Grid { ColumnSpacing = Space(8) };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.Children.Add(new Border
+        head.Children.Add(new FontIcon
         {
-            Width = 30,
-            Height = 30,
-            CornerRadius = Corner(8),
-            Background = Brush(ChromeColour.SelectionWash),
-            Child = new FontIcon
-            {
-                Glyph = tool.Glyph, FontFamily = IconFont, FontSize = TypeSize(15),
-                Foreground = Brush(ChromeColour.Accent),
-            },
+            Glyph = tool.Glyph, FontFamily = IconFont, FontSize = TypeSize(15), Width = 20,
+            Foreground = Brush(ChromeColour.Accent), VerticalAlignment = VerticalAlignment.Center,
         });
         TextBlock name = Text(tool.Title, Title, UiFontSize - 1, maxLines: 1);
         name.TextTrimming = TextTrimming.CharacterEllipsis;
         name.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(name, 1);
         head.Children.Add(name);
-        var dot = new Border { Width = 6, Height = 6, CornerRadius = new CornerRadius(3), VerticalAlignment = VerticalAlignment.Center };
         TextBlock chipText = Text("", Body, UiFontSize - 5, maxLines: 1);
-        var chipRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
-        chipRow.Children.Add(dot);
-        chipRow.Children.Add(chipText);
+        // What is needed, in words on a quiet fill: no dot, no outline.
         var chip = new Border
         {
-            Child = chipRow,
+            Child = chipText,
             Padding = Pad(7, 2, 7, 2),
             CornerRadius = new CornerRadius(999),
             Background = Brush(ChromeColour.Surface2),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(0.5),
             VerticalAlignment = VerticalAlignment.Center,
         };
         Grid.SetColumn(chip, 2);
@@ -323,7 +312,8 @@ public static partial class IslandHost
         {
             // S10: Enhance's face model under Choose faces: its Look, Strength, the
             // time a face takes and its one button (the add-on's card stack below).
-            _enhanceRestoreFacesHead = Text("Restore faces", Title, UiFontSize - 2, maxLines: 1);
+            _enhanceRestoreFacesHead = Text("Restore faces", Body, UiFontSize - 3, bold: true, maxLines: 1);
+            _enhanceRestoreFacesHead.Margin = Pad(0, 4, 0, 0);
             ToolTipService.SetToolTip(_enhanceRestoreFacesHead, RestoreFacesTool.Purpose);
             col.Children.Add(_enhanceRestoreFacesHead);
         }
@@ -335,35 +325,34 @@ public static partial class IslandHost
             col.Children.Add(_enhanceBrushNote);
         }
         if (EnhanceDockWordOf(kind) is not null) col.Children.Add(BuildEnhanceDockHost(kind));
+        // One surface, no border; the active card lifts (RenderEnhanceInPlace).
         var card = new Border
         {
             Child = col,
             Padding = Pad(12),
             CornerRadius = Corner(10),
             Background = Brush(ChromeColour.Surface2),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(0.5),
         };
-        // No hover wash while the docked panel is on it: it is a page, not a button.
+        // No hover wash on a card with choices on it: it is a page, not a button.
         card.PointerEntered += (_, _) =>
         {
-            if (!EnhanceDockedOn(kind)) card.Background = Brush(ChromeColour.HoverWash);  // a card with choices is a page
+            if (!EnhanceDockedOn(kind) && !EnhanceCardLifted(kind)) card.Background = Brush(ChromeColour.HoverWash);
         };
-        card.PointerExited += (_, _) => card.Background = Brush(ChromeColour.Surface2);
+        card.PointerExited += (_, _) => card.Background = EnhanceCardLifted(kind) ? EnhanceLiftBrush() : Brush(ChromeColour.Surface2);
         AutomationProperties_SetName(card, tool.Title);
-        EnhanceCards.Add((kind, chipText, dot, action, card));
+        EnhanceCards.Add((kind, chipText, chip, action, card));
         return card;
     }
 
     // The chips, the buttons' words and enabled states, the armed outline.
     private static void RenderEnhanceInPlace()
     {
-        foreach ((EnhanceToolKind kind, TextBlock chip, Border dot, Button action, Border card) in EnhanceCards)
+        foreach ((EnhanceToolKind kind, TextBlock chip, Border pill, Button action, Border card) in EnhanceCards)
         {
             EnhanceToolState st = EnhanceStateOf(kind);
             chip.Text = st.Chip;
-            chip.Foreground = st.Ready ? Brush(Title) : Brush(Body);
-            dot.Background = st.Ready ? new SolidColorBrush(ColorHelper.FromArgb(255, 70, 190, 90)) : Brush(Body);
+            // Only when something is needed (Enhance, People) or under way: "Ready" is no chip.
+            pill.Visibility = !st.Ready || st.Busy ? Visibility.Visible : Visibility.Collapsed;
             if (action.Content is TextBlock t) t.Text = st.Action;
             AutomationProperties_SetName(action, st.Action);
             action.IsEnabled = st.Enabled;
@@ -372,11 +361,9 @@ public static partial class IslandHost
             // button is the brush's, the frame's, the Faces tool's, or Get / Update Enhance.
             bool cardsTool = kind is EnhanceToolKind.Restyle or EnhanceToolKind.Detail;
             action.Visibility = cardsTool && !st.NeedsAddon ? Visibility.Collapsed : Visibility.Visible;
-            bool armed = (kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0) ||
-                         (kind == EnhanceToolKind.Faces && _facesArmed) ||
-                         (EnhanceRunWorking && EnhanceDockWordOf(kind) == _enhanceRunTool);
-            card.BorderBrush = armed ? Brush(ChromeColour.Accent) : Brush(Hairline);
-            card.BorderThickness = new Thickness(armed ? 1.5 : 0.5);
+            // The active card lifts to a lighter step of the surface; a ring is
+            // keyboard focus's (docs/design/20 "Craft rules").
+            card.Background = EnhanceCardLifted(kind) ? EnhanceLiftBrush() : Brush(ChromeColour.Surface2);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(card, st.Chip);
         }
         bool brushOn = (_editWand & WandBrushOn) != 0, brushed = (_editWand & WandBrushStrokes) != 0;
@@ -398,6 +385,19 @@ public static partial class IslandHost
         }
         if (_enhanceBrushNote is not null)
             _enhanceBrushNote.Visibility = (_editWand & WandBrushFull) != 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // Brushing, choosing faces, or running: the card the work is on.
+    private static bool EnhanceCardLifted(EnhanceToolKind kind) =>
+        (kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0) ||
+        (kind == EnhanceToolKind.Faces && _facesArmed) ||
+        (EnhanceRunWorking && EnhanceDockWordOf(kind) == _enhanceRunTool);
+
+    // The Mac's MVTheme.raised: the title colour at 0.12, a solid step.
+    private static SolidColorBrush EnhanceLiftBrush()
+    {
+        Windows.UI.Color t = Brush(Title).Color;
+        return new SolidColorBrush(Windows.UI.Color.FromArgb(31, t.R, t.G, t.B));
     }
 
     // ---- the performance level's chip (docs/plans/edit-refresh.md S9, §3.3) ---------
@@ -500,74 +500,5 @@ public static partial class IslandHost
             if (FindTreeNode(child, id) is { } hit) return hit;
         }
         return null;
-    }
-
-    // ---- the header's ✦ chevron: the five tools in a flyout ----------------------
-    // This closes the Windows wand twin (the Mac's popover). A plain Flyout of
-    // buttons, built fresh per open as the add-on alert's is.
-
-    private static Flyout? _enhanceFlyout;
-
-    private static void OpenEnhanceFlyout(FrameworkElement anchor)
-    {
-        try
-        {
-            _enhanceFlyout?.Hide();
-            var rows = new StackPanel { Spacing = Space(2), Width = 300 };
-            rows.Children.Add(Hint("Enhance tools"));
-            var flyoutTools = new List<EnhanceToolInfo>(EnhanceTools);
-            if (_editEnhance)
-                flyoutTools.Insert(Array.FindIndex(EnhanceTools, t => t.Kind == EnhanceToolKind.Faces) + 1,
-                                   RestoreFacesTool);
-            foreach (EnhanceToolInfo tool in flyoutTools)
-            {
-                EnhanceToolState st = EnhanceStateOf(tool.Kind);
-                var line = new Grid { ColumnSpacing = Space(10) };
-                line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                line.Children.Add(new Border
-                {
-                    Width = 26, Height = 26, CornerRadius = Corner(6),
-                    Background = Brush(ChromeColour.SelectionWash),
-                    Child = new FontIcon
-                    {
-                        Glyph = tool.Glyph, FontFamily = IconFont, FontSize = TypeSize(14),
-                        Foreground = Brush(ChromeColour.Accent),
-                    },
-                });
-                var words = new StackPanel();
-                words.Children.Add(Text(tool.Title, Title, UiFontSize - 2, maxLines: 1));
-                words.Children.Add(Text(st.Ready ? st.Action : st.Chip, Body, UiFontSize - 5, maxLines: 1));
-                Grid.SetColumn(words, 1);
-                line.Children.Add(words);
-                EnhanceToolKind kind = tool.Kind;
-                Button row = ChromeButton(line, Pad(6, 4, 6, 4), () =>
-                {
-                    _enhanceFlyout?.Hide();
-                    RunEnhanceTool(kind);
-                }, align: HorizontalAlignment.Stretch, contentAlign: HorizontalAlignment.Left,
-                    name: tool.Title, tip: tool.Purpose, enabled: st.Enabled);
-                rows.Children.Add(row);
-            }
-            rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) });
-            rows.Children.Add(ChromeButton(ButtonLabel("Show the Enhance tab", UiFontSize - 2), CompactButtonPadding, () =>
-            {
-                _enhanceFlyout?.Hide();
-                Send(Command.EditAction, EditActions.ShowEnhance);
-            }, align: HorizontalAlignment.Stretch, contentAlign: HorizontalAlignment.Left));
-            _enhanceFlyout = new Flyout
-            {
-                ShouldConstrainToRootBounds = false,
-                FlyoutPresenterStyle = FlyoutPresenterStyle(),
-                Content = rows,
-                Placement = FlyoutPlacementMode.BottomEdgeAlignedRight,
-            };
-            _enhanceFlyout.Closed += (_, _) => RestoreCanvasFocus();
-            _enhanceFlyout.ShowAt(anchor);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex);
-        }
     }
 }

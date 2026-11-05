@@ -502,7 +502,7 @@ std::string engine::card_eta_locked(photo_target t, const sheet_view& v) const {
   if (t == photo_target::faces) {
     const json::value m = value("model");
     const double per = seconds_per_face(m.k == json::kind::string ? m.s : "") * thread_factor(pol.threads);
-    return per < 1.5 ? "About 1 s a face" : "About " + std::to_string(static_cast<int>(std::lround(per))) + " s a face";
+    return per < 1.5 ? "About 1 second a face" : "About " + std::to_string(static_cast<int>(std::lround(per))) + " seconds a face";
   }
   eta_in in;
   in.kind = s.kind;

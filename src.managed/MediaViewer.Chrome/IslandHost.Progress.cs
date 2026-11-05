@@ -149,12 +149,13 @@ public static partial class IslandHost
         /// the outcome, a check and the result with its action (Move to
         /// Recycle Bin), or a mark and a one-line reason with Try again.
         /// </summary>
-        public void ShowOutcome(bool ok, string text, string? action = null, Action? click = null)
+        /// <param name="ok">true a check, false a mark, null neither (a cancel).</param>
+        public void ShowOutcome(bool? ok, string text, string? action = null, Action? click = null)
         {
             StopTick();
             _bar.Root.Opacity = 0;
-            _head.Text = (ok ? "\u2713 " : "! ") + text;
-            _head.Foreground = Brush(Title);
+            _head.Text = (ok switch { true => "\u2713 ", false => "! ", null => "" }) + text;
+            _head.Foreground = ok is null ? Brush(Body) : Brush(Title);
             _tail.Text = "";
             ToolTipService.SetToolTip(_head, text);
             if (_cancel is not null)

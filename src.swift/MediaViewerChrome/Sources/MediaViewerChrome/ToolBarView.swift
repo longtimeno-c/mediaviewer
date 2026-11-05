@@ -38,7 +38,7 @@ struct ToolBarView: View {
   private func row(compact: Bool) -> some View {
     HStack(spacing: MVTheme.space(compact ? 6 : 10)) {
       if run.active {
-        EnhanceRunRow()
+        EnhanceRunRow(compact: compact)
       } else {
       switch bar.tool {
       case .brush: brushRow(compact: compact)

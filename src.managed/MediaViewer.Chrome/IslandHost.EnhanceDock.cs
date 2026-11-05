@@ -40,6 +40,8 @@ public static partial class IslandHost
     private static string _enhanceRunTool = "";
     private static string _enhanceRunDiscard = "";  // Move to Recycle Bin's label, "" none
     private static string _enhanceRunReported = "";
+    private static string _enhanceRunVerb = "";  // "Enhancing", for the progress line (API 13)
+    private static string _enhanceRunId = "0";
 
     private static bool EnhanceRunActive => _enhanceRunState != "idle";
     private static bool EnhanceRunWorking => _enhanceRunState is "running" or "downloading";
@@ -179,6 +181,7 @@ public static partial class IslandHost
             state = JStr(run, "label");
             line = FindScreenNode(t, "run.line") is { } l ? JStr(l, "text") : "";
             tool = FindScreenNode(t, "run.tool") is { } tl ? JStr(tl, "text") : "";
+            _enhanceRunVerb = FindScreenNode(t, "run.verb") is { } vb ? JStr(vb, "text") : "";
             id = FindScreenNode(t, "run.id") is { } i ? JStr(i, "text") : "0";
             fraction = FindScreenNode(t, "run.progress") is { } p ? JNum(p, "value", -1) : -1;
             if (state == "done" && FindScreenNode(t, "run.result") is { } r) result = JStr(r, "path");
@@ -191,6 +194,7 @@ public static partial class IslandHost
         _enhanceRunLine = line;
         _enhanceRunFraction = fraction;
         _enhanceRunTool = tool;
+        _enhanceRunId = id;
         _enhanceRunDiscard = discard;
         if (changed) RefreshEnhanceRunBar();
         int code = state switch
@@ -213,6 +217,8 @@ public static partial class IslandHost
     private static void EnhanceRunCancel() => SendScreenEvent(EnhanceCardsAt, "cancel", 1, "");
     private static void EnhanceRunDismiss() => SendScreenEvent(EnhanceCardsAt, "run.dismiss", 1, "");
     private static void EnhanceRunDiscard() => SendScreenEvent(EnhanceCardsAt, "result.discard", 1, "");
+    // Try again: the card's own button for the tool that ran.
+    private static void EnhanceRunRetry() => SendScreenEvent(EnhanceCardsAt, "go." + _enhanceRunTool, 1, "");
 
     /// <summary>
     /// The screens' renderer asks before a button tells its add-on: true when

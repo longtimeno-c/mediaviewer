@@ -64,6 +64,8 @@ enum ProgressOutcome: Equatable {
   case done(String, action: String?)
   /// "Enhance stopped: out of memory", with Try again.
   case failed(String, retry: Bool)
+  /// Neither: "Cancelled. The photo is unchanged."
+  case info(String)
 }
 
 /// Remembers each keyed bar's meter across rebuilds (an add-on's tree is
@@ -164,6 +166,9 @@ struct ProgressLine: View {
         .accessibilityHidden(true)
       Text(reason).font(MVTheme.font(12)).foregroundStyle(MVTheme.title).lineLimit(1).truncationMode(.tail)
         .help(reason)
+    case .info(let text):
+      Text(text).font(MVTheme.font(12)).foregroundStyle(MVTheme.body).lineLimit(1).truncationMode(.tail)
+        .help(text)
     }
   }
 }

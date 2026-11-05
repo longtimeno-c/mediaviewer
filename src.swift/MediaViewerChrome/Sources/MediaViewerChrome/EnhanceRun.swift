@@ -27,6 +27,10 @@ final class EnhanceRun: ObservableObject {
   @Published private(set) var line = ""
   @Published private(set) var fraction: Double = -1
   @Published private(set) var tool = ""
+  /// The run's verb alone ("Enhancing", "Downloading Sharpen & restore"), for
+  /// the one progress line; "" from an Enhance before API 13.
+  @Published private(set) var verb = ""
+  @Published private(set) var runID: UInt64 = 0
   @Published private(set) var canDiscard = false
   @Published private(set) var discardLabel = ""
   private var reported: (String, UInt64, String) = ("idle", 0, "")
@@ -48,6 +52,8 @@ final class EnhanceRun: ObservableObject {
   func cancel() { SlotStore.shared.send(Self.address, node: "cancel", kind: 1, value: nil) }
   func dismiss() { SlotStore.shared.send(Self.address, node: "run.dismiss", kind: 1, value: nil) }
   func discard() { SlotStore.shared.send(Self.address, node: "result.discard", kind: 1, value: nil) }
+  /// Try again: the card's own button for the tool that ran.
+  func retry() { SlotStore.shared.send(Self.address, node: "go." + tool, kind: 1, value: nil) }
 
   private func read(_ screens: [SlotScreen]) {
     let screen = screens.first { $0.addon == Self.address.addon && $0.screen == Self.address.screen && $0.place == "edit" }
@@ -69,6 +75,9 @@ final class EnhanceRun: ObservableObject {
     let state = run?.label ?? "idle"
     let id = UInt64(Self.find("run.id", in: tree)?.string("text") ?? "") ?? 0
     let result = Self.find("run.result", in: tree)?.string("path") ?? ""
+    let verb = Self.find("run.verb", in: tree)?.string("text") ?? ""
+    if self.verb != verb { self.verb = verb }
+    if runID != id { runID = id }
     apply(state: state, id: id, result: state == "done" ? result : "",
           line: Self.find("run.line", in: tree)?.string("text") ?? "",
           fraction: Self.find("run.progress", in: tree)?.double("value") ?? -1,
@@ -107,45 +116,45 @@ final class EnhanceRun: ObservableObject {
   }
 }
 
-/// The tool bar's line while a run shows: what it is doing and how far, with
-/// Cancel; then its result (Move to Trash) or why it stopped (Dismiss).
+/// The tool bar's line while a run shows, in the one progress language
+/// (ProgressLine.swift, docs/design/20 "Craft rules"): the bar and "Enhancing ·
+/// 40 % · about 1 min left" with Cancel (Esc too); then, in the same slot, the
+/// result with Move to Trash, or why it stopped with Try again, and a quiet ×.
+/// Its width is fixed, so the bar under the photo never reflows as the words change.
 struct EnhanceRunRow: View {
+  var compact = false
   @ObservedObject private var run = EnhanceRun.shared
 
+  private var verb: String {
+    if !run.verb.isEmpty { return run.verb }
+    // An Enhance from before API 13: its line's first words.
+    let first = run.line.components(separatedBy: CharacterSet(charactersIn: "…·")).first ?? ""
+    return first.trimmingCharacters(in: .whitespaces).isEmpty ? "Working" : first.trimmingCharacters(in: .whitespaces)
+  }
+
+  private var outcome: ProgressOutcome? {
+    switch run.state {
+    case "done": return .done(run.line, action: run.canDiscard ? run.discardLabel : nil)
+    case "failed": return .failed(run.line.isEmpty ? "It did not finish." : run.line, retry: !["", "remove", "extend"].contains(run.tool))  // those two run from the bar, not a card's button
+    case "cancelled": return .info(run.line.isEmpty ? "Cancelled. The photo is unchanged." : run.line)
+    default: return nil
+    }
+  }
+
   var body: some View {
-    HStack(spacing: MVTheme.space(10)) {
-      if run.working {
-        if run.fraction >= 0 {
-          ProgressView(value: min(1, max(0, run.fraction)))
-            .progressViewStyle(.linear)
-            .frame(width: 120)
-        } else {
-          ProgressView().controlSize(.small)
-        }
-      }
-      Text(run.line.isEmpty ? "Working…" : run.line)
-        .font(MVTheme.font(13).monospacedDigit())
-        .foregroundStyle(run.state == "failed" ? MVTheme.warm : MVTheme.body)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .help(run.line)
-      if run.working {
-        Button("Cancel") { run.cancel() }
-          .buttonStyle(FlatButtonStyle(compact: true))
-          .keyboardShortcut(.cancelAction)
-      } else {
-        if run.canDiscard {
-          Button(run.discardLabel) { run.discard() }
-            .buttonStyle(FlatButtonStyle(compact: true))
-            .help("Moves the new file to the Trash. The original is never touched.")
-        }
-        Button { run.dismiss() } label: { Image(systemName: "xmark") }
-          .buttonStyle(FlatButtonStyle(compact: true))
-          .help("Dismiss")
+    HStack(spacing: MVTheme.space(4)) {
+      ProgressLine(verb: verb, fraction: run.fraction >= 0 ? min(1, run.fraction) : nil,
+                   key: "enhance-run-\(run.runID)", timed: run.working, outcome: outcome,
+                   escCancels: true,
+                   onCancel: run.working ? { run.cancel() } : nil,
+                   onAction: { run.discard() },
+                   onRetry: { run.retry() })
+      if !run.working {
+        IconButton(symbol: "xmark", help: "Dismiss") { run.dismiss() }
           .accessibilityLabel("Dismiss")
       }
     }
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel(run.line)
+    .frame(width: compact ? 260 : 380)
+    .padding(.top, MVTheme.space(2))
   }
 }

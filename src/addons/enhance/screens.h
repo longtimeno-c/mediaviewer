@@ -165,7 +165,7 @@ struct card_view {
   // That tool's view: its sections (knobs, the model's download state), the
   // note when it cannot run, can_run.
   sheet_view v;
-  std::string eta;  // "About 2 min", "Estimating…", "About 2 s a face", or ""
+  std::string eta;  // "About 2 min", "Estimating…", "About 2 seconds a face", or ""
 };
 
 enum class run_state : std::uint8_t { idle, running, done, failed, cancelled };

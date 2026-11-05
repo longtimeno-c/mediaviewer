@@ -56,7 +56,8 @@ struct eta_in {
 // has no measurement for).
 [[nodiscard]] double estimate_seconds(const eta_in& in);
 
-// "A few seconds", "About 20 s", "About 2 min", "About 1 h 10 min".
+// "A few seconds", "About 20 seconds", "About 2 min", "About 1 h 10 min" (the
+// progress line's time-left words, docs/design/20 "Craft rules").
 [[nodiscard]] std::string eta_words(double seconds);
 
 }  // namespace mv::enhance

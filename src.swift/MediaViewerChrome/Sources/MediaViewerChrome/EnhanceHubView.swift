@@ -59,12 +59,12 @@ struct EnhanceTool: Identifiable {
 
   var purpose: String {
     switch kind {
-    case .remove: return "Brush over what to take out; it is filled in from around it."
-    case .restyle: return "Describe a new look in words: a snowy day, golden hour."
-    case .faces:
-      return "Choose faces on the photo: open closed eyes, a better face of the same person, or restore blurred faces."
-    case .detail: return "Sharpen and restore, remove noise or blur, or enlarge, with a model on this Mac."
-    case .extend: return "More picture around the edges, to a wider or taller frame."
+    // One short line each (docs/design/20 "Craft rules": one surface, one line).
+    case .remove: return "Brush over something to take it out."
+    case .restyle: return "Describe a new look: a snowy day, golden hour."
+    case .faces: return "Open closed eyes, or a better face of the same person."
+    case .detail: return "Sharpen, clean up noise or blur, or enlarge."
+    case .extend: return "Add more picture around the edges."
     case .restoreFaces:
       return "Sharper, clearer faces, each checked by People to still look like the same person. Saves a new file."
     }
@@ -83,15 +83,6 @@ struct EnhanceTool: Identifiable {
 
   static let all: [EnhanceTool] = [.init(kind: .remove), .init(kind: .restyle), .init(kind: .faces),
                                    .init(kind: .detail), .init(kind: .extend)]
-  /// The ✦ popover's rows: the cards, with Restore faces after Faces while
-  /// Enhance is there.
-  @MainActor static func popover(_ store: EditStore) -> [EnhanceTool] {
-    var rows = all
-    if store.enhance, let i = rows.firstIndex(where: { $0.kind == .faces }) {
-      rows.insert(.init(kind: .restoreFaces), at: i + 1)
-    }
-    return rows
-  }
 }
 
 /// What a card's chip and button say for the photo on screen, from the edit
@@ -291,9 +282,8 @@ struct EnhanceHubView: View {
           Spacer(minLength: 0)
           if store.enhance { LevelChip() }
         }
-        Text("Each tool writes a new file; the original is never changed.")
-          .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-          .fixedSize(horizontal: false, vertical: true)
+        // "The original is not changed" is the result's to say, once
+        // (docs/design/20 "Craft rules"), not every card's and header's.
       }
       if !store.enhance {
         InstallBanner()
@@ -377,18 +367,21 @@ struct EnhanceCard: View {
     let cardTree = self.cardTree
     let chosen = state.chip == .brushing || state.chip == .brushed || (run.working && run.tool == tool.cardWord)
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      HStack(alignment: .center, spacing: MVTheme.space(10)) {
+      HStack(alignment: .center, spacing: MVTheme.space(8)) {
         Image(systemName: tool.symbol)
           .font(.system(size: 15, weight: .medium))
           .foregroundStyle(MVTheme.accent)
-          .frame(width: 30, height: 30)
-          .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.selectionWash))
+          .frame(width: 20, height: 20)
+          .accessibilityHidden(true)
         Text(tool.title)
           .font(MVTheme.font(15))
           .foregroundStyle(MVTheme.title)
           .lineLimit(1)
-        Spacer(minLength: MVTheme.space(4))
-        StateChip(state: state)
+        Spacer(minLength: MVTheme.space(8))
+        // Only when something is needed: "Ready" is not worth a chip.
+        if state.chip == .needsAddon || state.chip == .needsPeople || state.chip == .busy {
+          StateChip(state: state)
+        }
       }
       Text(tool.purpose)
         .font(MVTheme.font(12))
@@ -413,17 +406,18 @@ struct EnhanceCard: View {
       if tool.kind == .faces && store.enhance && cardTree != nil {
         // S10: Enhance's face model, guarded by People: its Look, Strength,
         // the time a face takes and its one button, below Choose faces.
-        Text("Restore faces").font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+        Text("Restore faces").font(MVTheme.font(12).weight(.semibold)).foregroundStyle(MVTheme.body)
           .padding(.top, MVTheme.space(4))
+          .accessibilityAddTraits(.isHeader)
           .help(EnhanceTool(kind: .restoreFaces).purpose)
       }
       if tool.kind == .extend && store.enhance {
         Text("Drag the frame's edges past the photo, then Fill (↩).")
-          .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
+          .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
       }
       if tool.kind == .remove && store.brushFull {
         Text("Brush full: Remove, then brush more.")
-          .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
+          .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
       }
       if let cardTree {
         ScreenNodeView(node: cardTree, address: EnhanceRun.address, revision: run.revision)
@@ -432,12 +426,14 @@ struct EnhanceCard: View {
     }
     .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .leading)
+    // One surface, no ring: the active card (brushing, choosing, running)
+    // lifts to a lighter step of the surface; a ring is keyboard focus's
+    // (docs/design/20 "Craft rules").
     .background(RoundedRectangle(cornerRadius: MVTheme.radius(10))
-      .fill(hover && cardTree == nil ? MVTheme.hoverWash : MVTheme.surface2))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10))
-      .stroke(chosen ? MVTheme.accent : MVTheme.hairline.opacity(0.6), lineWidth: chosen ? 1.5 : 0.5))
+      .fill(chosen ? MVTheme.raised : (hover && cardTree == nil ? MVTheme.hoverWash : MVTheme.surface2)))
     .onHover { hover = $0 }
     .animation(.easeOut(duration: 0.12), value: hover)
+    .animation(.easeOut(duration: 0.15), value: chosen)
     .animation(.easeOut(duration: 0.18), value: cardTree != nil)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(tool.title), \(state.chipText)")
@@ -448,21 +444,13 @@ private struct StateChip: View {
   let state: EnhanceToolState
 
   var body: some View {
-    let ready = state.chip == .ready || state.chip == .brushing || state.chip == .brushed
-    HStack(spacing: MVTheme.space(4)) {
-      if state.chip == .busy {
-        ProgressView().controlSize(.mini)
-      } else {
-        Circle().fill(ready ? Color.green : MVTheme.body.opacity(0.6)).frame(width: 6, height: 6)
-      }
-      Text(state.chipText).font(MVTheme.font(11)).lineLimit(1)
-    }
-    .foregroundStyle(ready ? MVTheme.title : MVTheme.body)
-    .padding(.horizontal, MVTheme.space(7))
-    .padding(.vertical, MVTheme.space(2))
-    .background(Capsule().fill(MVTheme.surface2))
-    .overlay(Capsule().stroke(MVTheme.hairline, lineWidth: 0.5))
-    .fixedSize()
+    // What is needed, in words on a quiet fill: no dot, no outline.
+    Text(state.chipText).font(MVTheme.font(11)).lineLimit(1)
+      .foregroundStyle(MVTheme.body)
+      .padding(.horizontal, MVTheme.space(7))
+      .padding(.vertical, MVTheme.space(2))
+      .background(Capsule().fill(MVTheme.surface2))
+      .fixedSize()
   }
 }
 
@@ -493,71 +481,5 @@ struct AccentButtonStyle: ButtonStyle {
         .contentShape(Rectangle())
         .onHover { hover = $0 }
     }
-  }
-}
-
-/// The header's ✦ chevron: the five tools in a popover (compact widths keep
-/// them a click away). The same rows the Enhance tab's cards run.
-struct EnhanceToolsPopover: View {
-  @ObservedObject private var store = EditStore.shared
-  let dismiss: () -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
-      Text("Enhance tools").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-        .padding(.horizontal, MVTheme.space(8)).padding(.bottom, MVTheme.space(4))
-      ForEach(EnhanceTool.popover(store)) { tool in
-        PopoverRow(tool: tool, state: EnhanceToolState(tool, store)) {
-          dismiss()
-          EnhanceToolState.run(tool, store)
-        }
-      }
-      Divider().padding(.vertical, MVTheme.space(4))
-      Button {
-        dismiss()
-        store.select(.enhance)
-      } label: {
-        Label("Show the Enhance tab", systemImage: "sidebar.right")
-          .font(MVTheme.font(13))
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      .buttonStyle(FlatButtonStyle(compact: true))
-    }
-    .padding(MVTheme.space(10))
-    .frame(width: 300)
-  }
-}
-
-private struct PopoverRow: View {
-  let tool: EnhanceTool
-  let state: EnhanceToolState
-  let action: () -> Void
-  @State private var hover = false
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: MVTheme.space(10)) {
-        Image(systemName: tool.symbol)
-          .font(.system(size: 14))
-          .foregroundStyle(MVTheme.accent)
-          .frame(width: 26, height: 26)
-          .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.selectionWash))
-        VStack(alignment: .leading, spacing: 1) {
-          Text(tool.title).font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
-          Text(state.chip == .ready ? state.action : state.chipText)
-            .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
-        }
-        Spacer(minLength: 0)
-      }
-      .padding(.horizontal, MVTheme.space(6))
-      .padding(.vertical, MVTheme.space(4))
-      .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(hover ? MVTheme.hoverWash : .clear))
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .disabled(!state.enabled)
-    .onHover { hover = $0 }
-    .help(tool.purpose)
-    .accessibilityLabel("\(tool.title), \(state.chipText)")
   }
 }

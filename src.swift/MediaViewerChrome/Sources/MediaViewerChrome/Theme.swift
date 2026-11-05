@@ -39,6 +39,9 @@ enum MVTheme {
   static var surface2: Color { title.opacity(0.055) }
   /// Hover over a row or an icon.
   static var hoverWash: Color { title.opacity(0.07) }
+  /// A lifted card (the active Enhance card): a solid step lighter on dark,
+  /// a step deeper on light, instead of an outline (docs/design/20 "Craft rules").
+  static var raised: Color { title.opacity(0.12) }
   /// The selected rail icon, an armed tool, the focused slider row.
   static var selectionWash: Color { accent.opacity(0.16) }
   /// Text on an accent fill (Save copy…, ✦ Auto while on).
