@@ -1099,6 +1099,16 @@ void mv_chrome_edit_show_original(int32_t on);
 // The wand menu: one of Enhance's commands ("open", "restyle") for the photo,
 // its copy carrying the edit; a crop draft is applied first.
 void mv_chrome_edit_enhance_command(const char* command);
+// docs/plans/edit-refresh.md S5 (owner call B): an Enhance tool run inside the
+// Edit pane. `photo` is "remove", "restyle", "detail" or "extend"; the
+// workspace shows the Enhance tab and Enhance's docked panel (place "edit")
+// opens under that tool's card; `run` != 0 also starts it (Remove hands the
+// brushed dabs over first). Without a docked panel, Enhance's sheet opens on it.
+void mv_chrome_edit_enhance_tool(const char* photo, int32_t run);
+// The docked panel's result row: Show (`keep` 0: leave Edit and show the new
+// file or Photos-library photo) or Keep editing (`keep` 1: show it with Edit
+// still open on the Enhance tab). `path` is the panel's result.thumb path.
+void mv_chrome_edit_enhance_result(const char* path, int32_t keep);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
 // Slice 5: Enhance… from the strip: Enhance's own sheet for the photo, whose
