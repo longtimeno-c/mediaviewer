@@ -293,26 +293,30 @@ func editorRulerLabel(_ ns: Int64) -> String {
 struct VideoEditorView: View {
   @ObservedObject private var store = VideoEditorStore.shared
   @FocusState private var focused: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(spacing: 0) {
+      // The one hairline: where the preview meets the timeline. The bar and
+      // the tracks share a surface, so spacing (not a rule) parts them.
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
+      // The bar pulls back by its buttons' inset, so the first icon's ink
+      // lines up with the tracks and the key line (12 from the edge).
       toolbar
-        .padding(.horizontal, MVTheme.space(10))
+        .padding(.horizontal, MVTheme.space(12) - MVTheme.space(8))
         .padding(.vertical, MVTheme.space(6))
-      Rectangle().fill(MVTheme.hairline).frame(height: 1)
-      if store.ready {
-        TimelineArea()
-          .padding(.horizontal, MVTheme.space(12))
-          .padding(.vertical, MVTheme.space(10))
-      } else {
-        VStack {
-          Spacer()
-          ProgressView("Reading the clip…").font(MVTheme.font(14))
-          Spacer()
+      // Reading the clip (its strip and envelope) can take seconds: a quiet
+      // skeleton at the timeline's own geometry, not a spinner, so nothing
+      // moves when the tracks cross-fade in.
+      ZStack(alignment: .topLeading) {
+        if store.ready {
+          TimelineArea().transition(fade)
+        } else {
+          TimelineSkeleton().transition(fade)
         }
-        .frame(maxWidth: .infinity)
       }
+      .padding(.horizontal, MVTheme.space(12))
+      .padding(.vertical, MVTheme.space(10))
       HStack {
         Text("Space play · ← → frame · J K L shuttle · I O mark · X clear · [ ] trim · ⌘B split · ⌫ delete · ⌘Z undo · ⇧⌘S save frame · ⌘E export")
           .font(MVTheme.font(12))
@@ -320,7 +324,7 @@ struct VideoEditorView: View {
         Spacer()
       }
       .padding(.horizontal, MVTheme.space(12))
-      .padding(.bottom, MVTheme.space(8))
+      .padding(.bottom, MVTheme.space(10))
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(ThemeField())
@@ -365,12 +369,16 @@ struct VideoEditorView: View {
     }
   }
 
+  private var fade: AnyTransition {
+    reduceMotion ? .identity : .opacity.animation(.easeOut(duration: 0.15))
+  }
+
   private var toolbar: some View {
     HStack(spacing: MVTheme.space(2)) {
-      Button { store.step(-1) } label: { Image(systemName: "backward.frame") }
+      Button { store.step(-1) } label: { Image(systemName: "backward.frame.fill") }
         .help("Previous frame (←)").accessibilityLabel("Previous frame")
       EditorPlayButton()
-      Button { store.step(1) } label: { Image(systemName: "forward.frame") }
+      Button { store.step(1) } label: { Image(systemName: "forward.frame.fill") }
         .help("Next frame (→)").accessibilityLabel("Next frame")
       EditorTimecode()
         .padding(.horizontal, MVTheme.space(10))
@@ -389,9 +397,9 @@ struct VideoEditorView: View {
       Button("Undo") { store.undo() }.disabled(!store.canUndo).help("Undo (⌘Z)")
       Button("Redo") { store.redo() }.disabled(!store.canRedo).help("Redo (⇧⌘Z)")
       divider
-      Button { store.turnLeft() } label: { Image(systemName: "rotate.left") }
+      Button { store.turnLeft() } label: { Image(systemName: "rotate.left.fill") }
         .help("Turn left").accessibilityLabel("Turn left")
-      Button { store.turnRight() } label: { Image(systemName: "rotate.right") }
+      Button { store.turnRight() } label: { Image(systemName: "rotate.right.fill") }
         .help("Turn right").accessibilityLabel("Turn right")
       Menu {
         Button("Mirror left to right") { store.mirrorLeftRight() }
@@ -436,7 +444,7 @@ struct VideoEditorView: View {
       .fixedSize()
       .help("Speed of the whole clip: playback and Export exact")
       .accessibilityLabel("Speed")
-      Button { store.saveFrame() } label: { Image(systemName: "camera") }
+      Button { store.saveFrame() } label: { Image(systemName: "camera.fill") }
         .help("Save this frame as a photo (⇧⌘S)").accessibilityLabel("Save frame")
       Spacer(minLength: MVTheme.space(8))
       EditorAddonItems(store: store)
@@ -471,8 +479,9 @@ struct EditorAddonItems: View {
       ForEach(items) { item in
         Button(item.label) { store.runAddon(item) }
           .disabled(!store.ready)
-          .help(store.edited ? "\(item.label.replacingOccurrences(of: "…", with: "")) the edit as a new clip; the original is not changed"
-                             : "\(item.label.replacingOccurrences(of: "…", with: "")) the clip as a new clip; the original is not changed")
+          // "The original is not changed" is the result notice's to say, once.
+          .help(store.edited ? "\(item.label.replacingOccurrences(of: "…", with: "")) the edit as a new clip"
+                             : "\(item.label.replacingOccurrences(of: "…", with: "")) the whole clip as a new clip")
       }
       Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, MVTheme.space(6))
     }
@@ -512,6 +521,7 @@ private struct EditorTimecode: View {
 /// edit changes; the playhead is its own layer that follows the clock.
 private struct TimelineArea: View {
   @ObservedObject private var store = VideoEditorStore.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var drag: Drag?
   @State private var overEdge = false
 
@@ -539,16 +549,45 @@ private struct TimelineArea: View {
         Canvas { ctx, size in
           drawRuler(ctx, width: size.width, length: length)
           var start: Int64 = 0
-          for (i, p) in store.pieces.enumerated() {
+          var quiet: CGRect?  // where "No audio" is said, once
+          for p in store.pieces {
             let len = p.outNs - p.inNs
             let rect = CGRect(x: x(start), y: Self.rulerH + Self.gap, width: max(1, x(start + len) - x(start)) - 2,
                               height: Self.videoH)
-            drawPiece(ctx, index: i, piece: p, rect: rect)
+            drawPiece(ctx, piece: p, rect: rect)
             let arect = CGRect(x: rect.minX, y: rect.maxY + Self.gap, width: rect.width, height: Self.audioH)
             drawWave(ctx, piece: p, rect: arect)
+            if quiet == nil, arect.width >= 88 { quiet = arect }
             start += len
           }
-          drawMarks(ctx, x: x, height: size.height)
+          if let quiet, store.peaks.isEmpty || store.sourceNs <= 0 {
+            ctx.draw(Text("No audio").font(MVTheme.font(11)).foregroundColor(MVTheme.body),
+                     at: CGPoint(x: quiet.minX + MVTheme.space(12), y: quiet.midY), anchor: .leading)
+          }
+        }
+        // Lift, don't ring: with a piece chosen (Delete's target), the others
+        // step back under a wash of the field, fading as the choice moves.
+        let spans = pieceSpans(x)
+        ForEach(spans, id: \.index) { span in
+          let x0 = span.x
+          let w = span.width
+          let back = spans.count > 1 && store.selected >= 0 && span.index != store.selected
+          VStack(spacing: Self.gap) {
+            RoundedRectangle(cornerRadius: MVTheme.radius(5)).frame(height: Self.videoH)
+            RoundedRectangle(cornerRadius: MVTheme.radius(4)).frame(height: Self.audioH)
+          }
+          .foregroundStyle(MVTheme.canvas.opacity(0.45))
+          .opacity(back ? 1 : 0)
+          .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.selected)
+          .frame(width: w)
+          .offset(x: x0, y: Self.rulerH + Self.gap)
+          .allowsHitTesting(false)
+        }
+        // Marks fade in and out (the transition carries its own animation, so
+        // an edit that clears them does not also slide the rest).
+        if let range = store.markedRange {
+          EditorMarks(range: range, markIn: store.markIn, markOut: store.markOut, width: width, length: length)
+            .transition(reduceMotion ? .identity : .opacity.animation(.easeOut(duration: 0.15)))
         }
         EditorPlayhead(width: width, length: length)
       }
@@ -597,6 +636,18 @@ private struct TimelineArea: View {
       }
     }
     .frame(height: Self.height)
+  }
+
+  private struct PieceSpan { let index: Int; let x: CGFloat; let width: CGFloat }
+
+  /// Where each piece sits across the track, as the canvas draws it.
+  private func pieceSpans(_ x: (Int64) -> CGFloat) -> [PieceSpan] {
+    var start: Int64 = 0
+    return store.pieces.enumerated().map { i, p in
+      let len = p.outNs - p.inNs
+      defer { start += len }
+      return PieceSpan(index: i, x: x(start), width: max(1, x(start + len) - x(start)) - 2)
+    }
   }
 
   private var accessibilityValue: String {
@@ -653,33 +704,18 @@ private struct TimelineArea: View {
       tick.addLine(to: CGPoint(x: xx, y: Self.rulerH))
       ctx.stroke(tick, with: .color(MVTheme.hairline), lineWidth: 1)
       ctx.draw(Text(editorRulerLabel(Int64(t * 1e9)))
-                 .font(MVTheme.font(10)).foregroundColor(MVTheme.body),
-               at: CGPoint(x: xx + 2, y: 1), anchor: .topLeading)
+                 .font(MVTheme.font(11)).monospacedDigit().foregroundColor(MVTheme.body),
+               at: CGPoint(x: xx + 3, y: 0), anchor: .topLeading)
       t += step
     }
   }
 
-  private func drawMarks(_ ctx: GraphicsContext, x: (Int64) -> CGFloat, height: CGFloat) {
-    guard let (a, b) = store.markedRange else { return }
-    let top = Self.rulerH + Self.gap
-    let band = CGRect(x: x(a), y: top, width: max(1, x(b) - x(a)), height: height - top)
-    ctx.fill(Path(band), with: .color(MVTheme.accent.opacity(0.18)))
-    // Brackets at the ends that are set: shape, not only colour, says "marked".
-    for (t, isIn) in [(store.markIn, true), (store.markOut, false)] where t >= 0 {
-      let xx = x(t)
-      let arm: CGFloat = isIn ? 6 : -6
-      var bracket = Path()
-      bracket.move(to: CGPoint(x: xx + arm, y: top))
-      bracket.addLine(to: CGPoint(x: xx, y: top))
-      bracket.addLine(to: CGPoint(x: xx, y: height - 2))
-      bracket.addLine(to: CGPoint(x: xx + arm, y: height - 2))
-      ctx.stroke(bracket, with: .color(MVTheme.accent), lineWidth: 2)
-    }
-  }
-
-  private func drawPiece(_ ctx: GraphicsContext, index: Int, piece: (inNs: Int64, outNs: Int64), rect: CGRect) {
+  // One surface per piece: its fill and its frames, no outline (the 2 pt
+  // join already parts it from the next). The chosen one is lifted by the
+  // wash over the others, not ringed in the accent.
+  private func drawPiece(_ ctx: GraphicsContext, piece: (inNs: Int64, outNs: Int64), rect: CGRect) {
     let shape = RoundedRectangle(cornerRadius: MVTheme.radius(5)).path(in: rect)
-    ctx.fill(shape, with: .color(Color.primary.opacity(0.08)))
+    ctx.fill(shape, with: .color(MVTheme.surface2))
     var inner = ctx
     inner.clip(to: shape)
     // Thumbnails of this piece, each at its own source time, tiled to fill it.
@@ -697,18 +733,13 @@ private struct TimelineArea: View {
         tx += tile
       }
     }
-    let selected = index == store.selected
-    ctx.stroke(shape, with: .color(selected ? MVTheme.accent : MVTheme.hairline), lineWidth: selected ? 3 : 1)
   }
 
+  // The envelope in the body ink: the accent is kept for what you marked.
   private func drawWave(_ ctx: GraphicsContext, piece: (inNs: Int64, outNs: Int64), rect: CGRect) {
     let shape = RoundedRectangle(cornerRadius: MVTheme.radius(4)).path(in: rect)
-    ctx.fill(shape, with: .color(Color.primary.opacity(0.05)))
-    guard !store.peaks.isEmpty, store.sourceNs > 0 else {
-      ctx.draw(Text("No audio").font(MVTheme.font(11)).foregroundColor(MVTheme.body),
-               at: CGPoint(x: rect.minX + 8, y: rect.midY), anchor: .leading)
-      return
-    }
+    ctx.fill(shape, with: .color(MVTheme.surface2))
+    guard !store.peaks.isEmpty, store.sourceNs > 0 else { return }
     let n = store.peaks.count
     let mid = rect.midY
     var wave = Path()
@@ -721,11 +752,69 @@ private struct TimelineArea: View {
       wave.move(to: CGPoint(x: xx, y: mid - h))
       wave.addLine(to: CGPoint(x: xx, y: mid + h))
     }
-    ctx.stroke(wave, with: .color(MVTheme.accent.opacity(0.75)), lineWidth: 1.2)
+    ctx.stroke(wave, with: .color(MVTheme.body), lineWidth: 1.2)
   }
 }
 
-/// The playhead: the one layer that follows the clock.
+/// The marked range: a band over both tracks and a bracket at each end that is
+/// set (shape, not only colour, says "marked"). Its own layer, so it fades in
+/// and out as a whole; it keeps the range it was given while it fades out.
+private struct EditorMarks: View {
+  let range: (Int64, Int64)
+  let markIn: Int64
+  let markOut: Int64
+  let width: CGFloat
+  let length: Int64
+
+  var body: some View {
+    Canvas { ctx, size in
+      let x = { (t: Int64) -> CGFloat in CGFloat(Double(t) / Double(max(1, length))) * width }
+      let top = TimelineArea.rulerH + TimelineArea.gap
+      let band = CGRect(x: x(range.0), y: top, width: max(1, x(range.1) - x(range.0)), height: size.height - top)
+      ctx.fill(Path(band), with: .color(MVTheme.accent.opacity(0.18)))
+      for (t, isIn) in [(markIn, true), (markOut, false)] where t >= 0 {
+        let xx = x(t)
+        let arm: CGFloat = isIn ? 6 : -6
+        var bracket = Path()
+        bracket.move(to: CGPoint(x: xx + arm, y: top))
+        bracket.addLine(to: CGPoint(x: xx, y: top))
+        bracket.addLine(to: CGPoint(x: xx, y: size.height - 2))
+        bracket.addLine(to: CGPoint(x: xx + arm, y: size.height - 2))
+        ctx.stroke(bracket, with: .color(MVTheme.accent), lineWidth: 2)
+      }
+    }
+    .allowsHitTesting(false)
+  }
+}
+
+/// While the clip is read: the timeline's tracks at their own size, quiet and
+/// still (nothing pulses), with one line saying what is happening.
+private struct TimelineSkeleton: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: TimelineArea.gap) {
+      Color.clear.frame(height: TimelineArea.rulerH)
+      RoundedRectangle(cornerRadius: MVTheme.radius(5))
+        .fill(MVTheme.surface2)
+        .frame(height: TimelineArea.videoH)
+        .overlay(alignment: .leading) {
+          Text("Reading the clip…")
+            .font(MVTheme.font(12))
+            .foregroundStyle(MVTheme.body)
+            .padding(.leading, MVTheme.space(12))
+        }
+      RoundedRectangle(cornerRadius: MVTheme.radius(4))
+        .fill(MVTheme.surface2)
+        .frame(height: TimelineArea.audioH)
+      Spacer(minLength: 0)
+    }
+    .frame(height: TimelineArea.height)
+    .accessibilityElement(children: .combine)
+  }
+}
+
+/// The playhead: the one layer that follows the clock. The title ink on a
+/// thin halo of the field, so it reads over any frame without borrowing a
+/// status colour.
 private struct EditorPlayhead: View {
   @ObservedObject private var clock = EditorClock.shared
   let width: CGFloat
@@ -737,13 +826,14 @@ private struct EditorPlayhead: View {
       var line = Path()
       line.move(to: CGPoint(x: px, y: 0))
       line.addLine(to: CGPoint(x: px, y: size.height))
-      ctx.stroke(line, with: .color(.red), lineWidth: 2)
+      ctx.stroke(line, with: .color(MVTheme.canvas), lineWidth: 4)
+      ctx.stroke(line, with: .color(MVTheme.title), lineWidth: 2)
       var head = Path()
       head.move(to: CGPoint(x: px - 6, y: 0))
       head.addLine(to: CGPoint(x: px + 6, y: 0))
       head.addLine(to: CGPoint(x: px, y: 8))
       head.closeSubpath()
-      ctx.fill(head, with: .color(.red))
+      ctx.fill(head, with: .color(MVTheme.title))
     }
     .allowsHitTesting(false)
   }
@@ -758,7 +848,7 @@ struct EditorLightButton: View {
   @State private var shown = false
 
   var body: some View {
-    Button { shown.toggle() } label: { Image(systemName: "sun.max") }
+    Button { shown.toggle() } label: { Image(systemName: "sun.max.fill") }
       .help("Light and colour for the whole clip").accessibilityLabel("Light and colour")
       .popover(isPresented: $shown, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: MVTheme.space(8)) {
@@ -768,8 +858,9 @@ struct EditorLightButton: View {
               HStack {
                 Text(spec.name).font(MVTheme.font(13))
                 Spacer()
-                Text(i == 0 ? String(format: "%+.1f", store.light[i]) : String(format: "%+.0f", store.light[i]))
-                  .font(MVTheme.font(12)).monospacedDigit()
+                // Edit's own words for the same sliders (AdjustStore): "+0.5 EV", "+25".
+                Text(i == 0 ? String(format: "%+.1f EV", store.light[i]) : String(format: "%+.0f", store.light[i]))
+                  .font(MVTheme.font(12)).monospacedDigit().foregroundStyle(.secondary)
               }
               Slider(value: Binding(get: { store.light[i] },
                                     set: { store.setLight(i, $0, phase: 1) }),
@@ -783,9 +874,11 @@ struct EditorLightButton: View {
             Button("Auto") { store.autoLight() }.help("Exposure and contrast from the frame on screen")
             Spacer()
             Button("Reset") { store.resetLight() }.disabled(store.light.allSatisfy { $0 == 0 })
+              .help("Every slider back to 0")
           }
+          .font(MVTheme.font(13))
         }
-        .padding(MVTheme.space(14))
+        .padding(MVTheme.space(12))
         .frame(width: 280)
       }
   }
@@ -804,7 +897,7 @@ struct EditorSoundButton: View {
       HStack {
         Text(name).font(MVTheme.font(13))
         Spacer()
-        Text(readout).font(MVTheme.font(12)).monospacedDigit()
+        Text(readout).font(MVTheme.font(12)).monospacedDigit().foregroundStyle(.secondary)
       }
       Slider(value: Binding(get: { value }, set: { store.setSound(param, $0, phase: 1) }),
              in: range, step: step) { editing in
@@ -816,12 +909,13 @@ struct EditorSoundButton: View {
 
   var body: some View {
     Button { shown.toggle() } label: {
-      Image(systemName: store.muted ? "speaker.slash" : "speaker.wave.2")
+      Image(systemName: store.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
     }
     .help("Sound for the whole clip").accessibilityLabel("Sound")
     .popover(isPresented: $shown, arrowEdge: .bottom) {
       VStack(alignment: .leading, spacing: MVTheme.space(8)) {
         Toggle("Mute", isOn: Binding(get: { store.muted }, set: { _ in store.toggleMute() }))
+          .font(MVTheme.font(13))
         row("Volume", String(format: "%.0f %%", store.volume * 100), store.volume, 0...2, 0.05, 0)
           .disabled(store.muted)
         row("Fade in", String(format: "%.1f s", store.fadeIn), store.fadeIn, 0...5, 0.1, 1)
@@ -829,7 +923,7 @@ struct EditorSoundButton: View {
         row("Fade out", String(format: "%.1f s", store.fadeOut), store.fadeOut, 0...5, 0.1, 2)
           .disabled(store.muted)
       }
-      .padding(MVTheme.space(14))
+      .padding(MVTheme.space(12))
       .frame(width: 260)
     }
   }
