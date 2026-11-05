@@ -1,7 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
-using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -103,22 +102,31 @@ public static partial class IslandHost
 
     private static UIElement BuildAiBadge()
     {
-        var label = new StackPanel
+        // The badge says what it is: the letters, no sparkle (docs/design/20
+        // "Craft rules": no sparkle, wand or star as AI decoration). The
+        // chrome's face, as the Mac's badge (AIBadgeView.swift).
+        var label = new TextBlock
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = Space(3),
+            Text = "AI",
+            FontFamily = UiFont,
+            FontSize = TypeSize(TypeSmall),
+            Foreground = Brush(Title),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        // U+2726 BLACK FOUR POINTED STAR: the sparkle, in any font.
-        label.Children.Add(new TextBlock { Text = "✦", FontSize = 10, Foreground = Brush(Title),
-            VerticalAlignment = VerticalAlignment.Center });
-        label.Children.Add(new TextBlock { Text = "AI", FontSize = 11, FontWeight = FontWeights.SemiBold,
-            Foreground = Brush(Title), VerticalAlignment = VerticalAlignment.Center });
 
-        _aiBadgeTipTitle = new TextBlock { FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
-        _aiBadgeTipEvidence = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
-        var tipBody = new StackPanel { Spacing = Space(4), MaxWidth = 320 };
+        _aiBadgeTipTitle = new TextBlock
+        {
+            FontFamily = UiFont, FontSize = TypeSize(TypeBody), TextWrapping = TextWrapping.Wrap,
+        };
+        // Small text keeps a line height of at least 1.3.
+        _aiBadgeTipEvidence = new TextBlock
+        {
+            FontFamily = UiFont, FontSize = TypeSize(TypeCaption), TextWrapping = TextWrapping.Wrap,
+            LineHeight = Math.Round(TypeSize(TypeCaption) * 1.35),
+        };
+        // The tooltip's own padding (about 8) plus 4: words 12 in from its edge, as the Mac's popover.
+        var tipBody = new StackPanel { Spacing = Space(4), MaxWidth = 320, Margin = Pad(4) };
         tipBody.Children.Add(_aiBadgeTipTitle);
         tipBody.Children.Add(_aiBadgeTipEvidence);
         _aiBadgeTip = new ToolTip { Content = tipBody };

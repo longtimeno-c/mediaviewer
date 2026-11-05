@@ -41,10 +41,12 @@ public static partial class IslandHost
     private static Border? _restartNoticeCard;
     private static TextBlock? _restartNoticeTitle;
     private static TextBlock? _restartNoticeBody;
+    // The card's words and buttons: what fades in and out (NoticeCard, IslandHost.HintNotice.cs).
+    private static FrameworkElement? _restartNoticeContent;
+    // Later / Cancel and Restart now / Restart anyway: two buttons whose labels
+    // change on themselves while Restart now waits (the Mac's card).
     private static Button? _restartNoticeLater;
     private static Button? _restartNoticeNow;
-    private static Button? _restartNoticeCancel;
-    private static Button? _restartNoticeAnyway;
     // The card is up (placed in the corner), not parked.
     private static bool _restartNoticeShown;
     // Restart now is waiting for these to finish; empty when it is not.
@@ -90,9 +92,11 @@ public static partial class IslandHost
                 // Behind the card's rounded corners, the canvas colour (the AI badge's).
                 _restartNotice.Content = new Grid { Background = Brush(Canvas), Children = { _restartNoticeCard } };
             }
+            bool wasShown = _restartNoticeShown;
             _restartNoticeShown = true;
             RenderRestartNotice();
             PlaceCornerCards();
+            if (!wasShown && _restartNoticeContent is not null) FadeNoticeContent(_restartNoticeContent, show: true);
             // Said once as it appears, not only when focused.
             FrameworkElementAutomationPeer.FromElement(_restartNoticeCard!)?.RaiseNotificationEvent(
                 AutomationNotificationKind.ActionCompleted, AutomationNotificationProcessing.ImportantMostRecent,
@@ -105,56 +109,30 @@ public static partial class IslandHost
         }
     }
 
+    // The corner cards' look (NoticeCard, IslandHost.HintNotice.cs).
     private static Border BuildRestartNoticeCard()
     {
-        var stack = new StackPanel { Spacing = Space(8) };
-        _restartNoticeTitle = new TextBlock
+        var stack = new StackPanel { Spacing = Space(12) };
+        _restartNoticeTitle = new TextBlock();
+        _restartNoticeBody = new TextBlock();
+        stack.Children.Add(NoticeWords(_restartNoticeTitle, _restartNoticeBody));
+        // Made once; while Restart now waits each changes its label on itself
+        // (Later → Cancel, Restart now → Restart anyway) rather than another
+        // button taking its place, and none leaves the tree inside its own
+        // Click (not safe in an island).
+        _restartNoticeLater = NoticeButton(RestartWords.Later, () =>
         {
-            FontFamily = UiFont,
-            FontSize = UiFontSize + 1,
-            Foreground = Brush(Title),
-            TextWrapping = TextWrapping.Wrap,
-        };
-        _restartNoticeBody = new TextBlock
+            if (RestartWaiting) CancelRestartWait();
+            else RestartNoticeLater();
+        });
+        _restartNoticeNow = NoticeButton(RestartWords.RestartNow, () =>
         {
-            FontFamily = UiFont,
-            FontSize = UiFontSize - 2,
-            Foreground = Brush(Body),
-            TextWrapping = TextWrapping.Wrap,
-        };
-        stack.Children.Add(_restartNoticeTitle);
-        stack.Children.Add(_restartNoticeBody);
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = Space(8),
-            HorizontalAlignment = HorizontalAlignment.Right,
-        };
-        // All four are made once and shown by mode: a button removed from the
-        // tree inside its own Click is not safe in an island.
-        _restartNoticeLater = TextButton(RestartWords.Later, RestartNoticeLater);
-        ToolTipService.SetToolTip(_restartNoticeLater, RestartWords.LaterTip);
-        _restartNoticeNow = TextButton(RestartWords.RestartNow, RestartWhenIdle);
-        _restartNoticeCancel = TextButton(RestartWords.Cancel, CancelRestartWait);
-        ToolTipService.SetToolTip(_restartNoticeCancel, RestartWords.CancelTip);
-        _restartNoticeAnyway = TextButton(RestartWords.RestartAnyway, RestartAnyway);
-        foreach (Button b in new[] { _restartNoticeLater, _restartNoticeNow, _restartNoticeCancel, _restartNoticeAnyway })
-        {
-            b.IsTabStop = true;
-            b.AllowFocusOnInteraction = true;
-            buttons.Children.Add(b);
-        }
-        stack.Children.Add(buttons);
-        return new Border
-        {
-            Width = RestartNoticeWidth,
-            Padding = Pad(14),
-            CornerRadius = Corner(8),
-            BorderThickness = new Thickness(1),
-            BorderBrush = Brush(Hairline),
-            Background = Brush(ChromeColour.Surface),
-            Child = stack,
-        };
+            if (RestartWaiting) RestartAnyway();
+            else RestartWhenIdle();
+        }, primary: true);
+        stack.Children.Add(NoticeButtons(_restartNoticeLater, _restartNoticeNow));
+        _restartNoticeContent = stack;
+        return NoticeCardBorder(RestartNoticeWidth, stack);
     }
 
     private static bool RestartWaiting => _restartWaitingFor.Count > 0;
@@ -167,15 +145,19 @@ public static partial class IslandHost
         _restartNoticeTitle.Text = title;
         _restartNoticeBody.Text = waiting ? RestartWords.WaitingBody : RestartWords.Body(_addonRestartFor.Count);
         AutomationProperties.SetName(_restartNoticeCard, title);
-        Visibility normal = waiting ? Visibility.Collapsed : Visibility.Visible;
-        Visibility wait = waiting ? Visibility.Visible : Visibility.Collapsed;
-        if (_restartNoticeLater is not null) _restartNoticeLater.Visibility = normal;
-        if (_restartNoticeNow is not null) _restartNoticeNow.Visibility = normal;
-        if (_restartNoticeCancel is not null) _restartNoticeCancel.Visibility = wait;
-        if (_restartNoticeAnyway is not null)
+        if (_restartNoticeLater is not null)
         {
-            _restartNoticeAnyway.Visibility = wait;
-            if (waiting) ToolTipService.SetToolTip(_restartNoticeAnyway, RestartWords.AnywayTip(_restartWaitingFor));
+            string label = waiting ? RestartWords.Cancel : RestartWords.Later;
+            SetButtonText(_restartNoticeLater, label);
+            AutomationProperties.SetName(_restartNoticeLater, label);
+            ToolTipService.SetToolTip(_restartNoticeLater, waiting ? RestartWords.CancelTip : RestartWords.LaterTip);
+        }
+        if (_restartNoticeNow is not null)
+        {
+            string label = waiting ? RestartWords.RestartAnyway : RestartWords.RestartNow;
+            SetButtonText(_restartNoticeNow, label);
+            AutomationProperties.SetName(_restartNoticeNow, label);
+            ToolTipService.SetToolTip(_restartNoticeNow, waiting ? RestartWords.AnywayTip(_restartWaitingFor) : null);
         }
     }
 
@@ -230,10 +212,19 @@ public static partial class IslandHost
         StopRestartWait();
         if (!_restartNoticeShown) return;
         _restartNoticeShown = false;
-        try { if (_restartNotice is not null) MoveAt(_restartNotice, 0, ClientHeightPx(), 1, 1); }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
         if (restoreFocus) RestoreCanvasFocus();
-        PlaceHintNotice();  // the hint card stacked above it comes down
+        DesktopWindowXamlSource? island = _restartNotice;
+        void Park()
+        {
+            // Shown again meanwhile, or the window went: leave it.
+            if (_restartNoticeShown || island is null || !ReferenceEquals(island, _restartNotice)) return;
+            try { MoveAt(island, 0, ClientHeightPx(), 1, 1); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            PlaceHintNotice();  // the hint card stacked above it comes down
+        }
+        // Its words fade out first (NoticeCard), then it is parked.
+        if (_restartNoticeContent is not null) FadeNoticeContent(_restartNoticeContent, show: false, Park);
+        else Park();
     }
 
     /// <summary>Detach (the window is going): no island outlives it.</summary>
@@ -244,7 +235,8 @@ public static partial class IslandHost
         _restartNoticeCard = null;
         _restartNoticeTitle = null;
         _restartNoticeBody = null;
-        _restartNoticeLater = _restartNoticeNow = _restartNoticeCancel = _restartNoticeAnyway = null;
+        _restartNoticeContent = null;
+        _restartNoticeLater = _restartNoticeNow = null;
         if (_restartNotice is not null) _restartNotice.TakeFocusRequested -= OnTakeFocusRequested;
         DisposeSource(ref _restartNotice);
     }
