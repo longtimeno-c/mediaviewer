@@ -699,7 +699,9 @@ std::string cards_tree(std::span<const card_view> cards, const run_view& run) {
   for (const card_view& c : cards) card_tree(w, c, busy);
   // What the run is doing, for the host (never drawn as it is).
   w.begin_object().key("type").string("stack").key("id").string("run").key("hidden").boolean(true);
-  w.key("label").string(run_state_name(run.state)).key("axis").string("vertical");
+  // "downloading": running, but only fetching the model (the host's glow waits).
+  w.key("label").string(run.state == run_state::running && run.downloading ? "downloading" : run_state_name(run.state));
+  w.key("axis").string("vertical");
   w.key("children").begin_array();
   progress(w, "run.progress", run_line(run).empty() ? std::string("Idle") : run_line(run),
            run.state == run_state::running ? run.fraction : (run.state == run_state::done ? 1.0 : -1.0));

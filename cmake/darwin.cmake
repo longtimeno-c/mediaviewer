@@ -973,6 +973,7 @@ if(MV_BUILD_TESTS)
     tests/test_edit.cpp
     tests/test_edit_session.cpp
     tests/test_crop_drag.cpp
+    tests/test_enhance_run.cpp
     # Issue #614: ⌘P's paper layout.
     tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp

@@ -1264,7 +1264,9 @@ void present_lab::render_thread_main() noexcept {
     if (current_image_ && !current_video_.texture) {
       const edit_view* tv = edit_for(*current_image_);
       const std::uint64_t until = tv ? tool_hud_until(*tv) : 0;
-      if (until > steady_ms()) {
+      // One-click Enhance: the working glow animates while the run goes (and
+      // fades), then once more to clear.
+      if (until > steady_ms() || (tv && work_glow_live(*tv, steady_ms(), snapshot.reduce_motion))) {
         redraw = true;
         tool_hud_drawn_ = true;
       } else if (tool_hud_drawn_) {
@@ -1801,7 +1803,8 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
                       snapshot.home.accent, steady_ms(), mask,
                       [&](float ix, float iy) {
                         return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
-                      });
+                      },
+                      ImVec4(view.x, view.y, view.x + view.w, view.y + view.h), snapshot.reduce_motion);
     return;
   }
   if (!v || !v->crop_overlay) return;

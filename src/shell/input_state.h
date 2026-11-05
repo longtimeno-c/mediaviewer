@@ -175,6 +175,11 @@ struct edit_view {
   std::uint32_t tool_extend_w = 0;
   std::uint32_t tool_extend_h = 0;
   std::int32_t tool_extend_growth = 0;
+  // One-click Enhance (docs/design/29 "One click"): the working glow over the
+  // photo (tool_overlay.h draw_work_glow), on since `work_glow_on_ms` (0 off),
+  // fading out from `work_glow_off_ms` (0 none). shell::steady_ms.
+  std::uint64_t work_glow_on_ms = 0;
+  std::uint64_t work_glow_off_ms = 0;
 };
 
 struct input_snapshot {

@@ -791,7 +791,8 @@ void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept
                       [&](float ix, float iy) {
                         return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
                                       origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
-                      });
+                      },
+                      ImVec4(origin_x, origin_y, origin_x + win_w, origin_y + win_h), snapshot.reduce_motion);
     return;
   }
   if (!v || !v->crop_overlay) return;
@@ -2028,7 +2029,9 @@ void present_lab_mac::render_thread_main() noexcept {
         if (current_image_ && !video_frame_) {
           const edit_view* tv = edit_for(current_image_->item_id);
           const std::uint64_t until = tv ? tool_hud_until(*tv) : 0;
-          if (until > steady_ms()) {
+          // One-click Enhance: the working glow animates while the run goes
+          // (and fades), then once more to clear.
+          if (until > steady_ms() || (tv && work_glow_live(*tv, steady_ms(), snapshot.reduce_motion))) {
             redraw = true;
             tool_hud_drawn_ = true;
           } else if (tool_hud_drawn_) {

@@ -456,6 +456,9 @@ struct tool_view_in {
   // S6: Extend's frame and the edge(s) under the pointer or held.
   extend_draft extend{};
   std::uint8_t extend_handle = 0;
+  // One-click Enhance: the working glow (shell/enhance_run.h).
+  std::uint64_t work_glow_on_ms = 0;
+  std::uint64_t work_glow_off_ms = 0;
 };
 
 // The red-eye tool shows the photo's fixes, so a click on one can take it off.
@@ -481,6 +484,8 @@ inline void apply_tool(edit_view& v, const tool_view_in& in, const edit::placeme
   v.tool_pulse[1] = in.pulse[1];
   v.tool_pulse[2] = in.pulse[2];
   v.tool_pulse_until_ms = in.pulse_until_ms;
+  v.work_glow_on_ms = in.work_glow_on_ms;
+  v.work_glow_off_ms = in.work_glow_off_ms;
   // S6: Extend's frame, its warning and its readout (the shown picture's
   // pixels through the add-on's sums: the file is the size it reads).
   if (in.tool == canvas_tool::extend) {

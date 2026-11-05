@@ -141,7 +141,7 @@ struct sheet_view {
 // stack "run" says what the run is doing for the host's glow over the photo,
 // its tool bar line and opening the result (docs/design/29 "One click").
 //
-//   run (hidden; label = idle | running | done | failed | cancelled)
+//   run (hidden; label = idle | running | downloading | done | failed | cancelled)
 //     run.progress   progress, value = the fraction (-1 while it cannot say)
 //     run.line       "Enhancing… 40 % · 1 min left", "Saved as IMG-enhance.jpg", the reason
 //     run.id         the run's number (a host opens a result once per run)

@@ -18,6 +18,12 @@
 //   * S8: the Faces tool's boxes, one per face (corner brackets, a numbered
 //     badge the panel's list shares, a wash and the accent when chosen, the
 //     person's name below, a dashed edge while a fix runs on it).
+//   * one-click Enhance (docs/design/29 "One click"): the working glow, soft
+//     blue, purple, pink and orange flowing round the photo's edges with a
+//     shimmer sweeping across it, while a run works on the photo; it fades
+//     out in kWorkGlowFadeMs when the run ends. With Reduce Motion it is a
+//     still, soft glow (no sweep, no flow, no fade). The labs present every
+//     frame only while work_glow_live() (0 presents once it has gone).
 //   * S6: Extend's frame past the photo's edges: the new area hatched (a
 //     side past 25 % in the caution tint), the part of the photo it crops
 //     dimmed as crop mode dims it, and the frame with its handles. The
@@ -48,8 +54,22 @@ namespace mv::shell {
 
 // Whether the overlay has anything to draw.
 [[nodiscard]] inline bool tool_overlay_wanted(const edit_view& v) noexcept {
-  return (v.brush_on || v.brush_count > 0 || v.brush_mask != 0 || v.tool != 0 || v.tool_ring_px > 0.0f) &&
+  return (v.brush_on || v.brush_count > 0 || v.brush_mask != 0 || v.tool != 0 || v.tool_ring_px > 0.0f ||
+          v.work_glow_on_ms != 0 || v.work_glow_off_ms != 0) &&
          !v.crop_overlay;
+}
+
+// One-click Enhance: the glow's fade once a run ends (shell/enhance_run.h's
+// kWorkGlowFadeMs; this header stays free of it).
+inline constexpr std::uint64_t kWorkGlowFade = 300;
+
+// Whether the working glow animates now: on (unless Reduce Motion holds it
+// still), or fading out. The labs present each frame while this holds, then
+// once more to clear, then idle.
+[[nodiscard]] inline bool work_glow_live(const edit_view& v, std::uint64_t now_ms, bool reduce_motion) noexcept {
+  if (reduce_motion) return false;
+  if (v.work_glow_on_ms != 0) return true;
+  return v.work_glow_off_ms != 0 && now_ms < v.work_glow_off_ms + kWorkGlowFade;
 }
 
 // canvas_tool::extend's wire value (canvas_tool.h asserts it; this header
@@ -65,6 +85,44 @@ namespace detail {
 [[nodiscard]] inline ImU32 rgba(std::uint32_t c, float alpha_scale = 1.0f) noexcept {
   const auto a = static_cast<int>(std::clamp(static_cast<float>(c & 0xFFu) * alpha_scale, 0.0f, 255.0f));
   return IM_COL32((c >> 24) & 0xFFu, (c >> 16) & 0xFFu, (c >> 8) & 0xFFu, a);
+}
+
+// One quad with a colour at each corner (p0..p3 in order round it).
+inline void quad4(ImDrawList* fg, ImVec2 p0, ImVec2 p1, ImVec2 p2, ImVec2 p3, ImU32 c0, ImU32 c1, ImU32 c2,
+                  ImU32 c3) noexcept {
+  const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+  fg->PrimReserve(6, 4);
+  const auto i = static_cast<ImDrawIdx>(fg->_VtxCurrentIdx);
+  fg->PrimWriteIdx(i);
+  fg->PrimWriteIdx(static_cast<ImDrawIdx>(i + 1));
+  fg->PrimWriteIdx(static_cast<ImDrawIdx>(i + 2));
+  fg->PrimWriteIdx(i);
+  fg->PrimWriteIdx(static_cast<ImDrawIdx>(i + 2));
+  fg->PrimWriteIdx(static_cast<ImDrawIdx>(i + 3));
+  fg->PrimWriteVtx(p0, uv, c0);
+  fg->PrimWriteVtx(p1, uv, c1);
+  fg->PrimWriteVtx(p2, uv, c2);
+  fg->PrimWriteVtx(p3, uv, c3);
+}
+
+// The glow's colours round the photo: blue, purple, pink, orange, and back.
+// `t` 0..1 along the perimeter (with the flow's phase added).
+[[nodiscard]] inline ImU32 glow_colour(float t, float alpha) noexcept {
+  static constexpr float kStops[4][3] = {
+      {0.27f, 0.56f, 1.00f},  // blue
+      {0.67f, 0.38f, 1.00f},  // purple
+      {1.00f, 0.38f, 0.70f},  // pink
+      {1.00f, 0.63f, 0.28f},  // orange
+  };
+  t -= std::floor(t);
+  const float x = t * 4.0f;
+  const int i = std::min(3, static_cast<int>(x));
+  float f = x - static_cast<float>(i);
+  f = f * f * (3.0f - 2.0f * f);
+  const float* a = kStops[i];
+  const float* b = kStops[(i + 1) % 4];
+  const auto ch = [&](int k) { return static_cast<int>(std::lround((a[k] + (b[k] - a[k]) * f) * 255.0f)); };
+  return IM_COL32(ch(0), ch(1), ch(2), static_cast<int>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f));
 }
 
 // The four corners of a box as brackets, each `len` along both sides.
@@ -175,15 +233,116 @@ void draw_extend_frame(const edit_view& v, float pw, float ph, float scale, std:
   }
 }
 
+// One-click Enhance's working glow over the photo shown from `a` to `b` on
+// screen, held to `clip` (the canvas; a zero-width clip is none): a band of
+// colour inside the photo's edges falling to nothing toward its middle, a
+// softer halo just outside them, a fine bright line on the edge, the colours
+// flowing round (one turn in 4 s) and breathing, and a slanted sheen sweeping
+// across the photo every 3.2 s. Reduce Motion: the same glow, still.
+inline void draw_work_glow(ImDrawList* fg, ImVec2 a, ImVec2 b, ImVec4 clip, float scale, std::uint64_t now_ms,
+                           std::uint64_t on_ms, std::uint64_t off_ms, bool reduce_motion) noexcept {
+  float k = 1.0f;  // the glow's strength: fading in, on, fading out
+  if (on_ms != 0) {
+    if (!reduce_motion && now_ms > on_ms) k = std::min(1.0f, static_cast<float>(now_ms - on_ms) / 400.0f);
+  } else if (off_ms != 0 && !reduce_motion && now_ms < off_ms + kWorkGlowFade) {
+    k = 1.0f - static_cast<float>(now_ms - std::min(now_ms, off_ms)) / static_cast<float>(kWorkGlowFade);
+  } else {
+    return;
+  }
+  if (k <= 0.0f) return;
+  ImVec2 ra = a, rb = b;
+  if (clip.z > clip.x && clip.w > clip.y) {
+    ra = ImVec2(std::max(a.x, clip.x), std::max(a.y, clip.y));
+    rb = ImVec2(std::min(b.x, clip.z), std::min(b.y, clip.w));
+    fg->PushClipRect(ImVec2(clip.x, clip.y), ImVec2(clip.z, clip.w), true);
+  } else {
+    fg->PushClipRect(ImVec2(-1e6f, -1e6f), ImVec2(1e6f, 1e6f), false);
+  }
+  const float w = rb.x - ra.x, h = rb.y - ra.y;
+  if (w < 8.0f || h < 8.0f) {
+    fg->PopClipRect();
+    return;
+  }
+  const double secs = static_cast<double>(now_ms) / 1000.0;
+  const float phase = reduce_motion ? 0.0f : static_cast<float>(std::fmod(secs / 4.0, 1.0));
+  const float breath = reduce_motion ? 0.9f : 0.82f + 0.18f * static_cast<float>(std::sin(secs * 6.2831853 / 2.6));
+  const float band = std::clamp(std::min(w, h) * 0.07f, 18.0f * scale, std::min(90.0f * scale, std::min(w, h) * 0.45f));
+  const float halo = band * 0.45f;
+  const float edge_a = 0.62f * k * breath, halo_a = 0.30f * k * breath;
+  // Corners clockwise from the top left, the inner (band) and outer (halo) ones.
+  const ImVec2 o[4] = {ra, ImVec2(rb.x, ra.y), rb, ImVec2(ra.x, rb.y)};
+  const ImVec2 in[4] = {ImVec2(ra.x + band, ra.y + band), ImVec2(rb.x - band, ra.y + band),
+                        ImVec2(rb.x - band, rb.y - band), ImVec2(ra.x + band, rb.y - band)};
+  const ImVec2 out[4] = {ImVec2(ra.x - halo, ra.y - halo), ImVec2(rb.x + halo, ra.y - halo),
+                         ImVec2(rb.x + halo, rb.y + halo), ImVec2(ra.x - halo, rb.y + halo)};
+  const float perimeter = 2.0f * (w + h);
+  const float side_len[4] = {w, h, w, h};
+  float along = 0.0f;
+  constexpr int kSegs = 32;
+  const auto lerp = [](ImVec2 p, ImVec2 q, float t) { return ImVec2(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t); };
+  for (int e = 0; e < 4; ++e) {
+    const int n = (e + 1) % 4;
+    for (int i = 0; i < kSegs; ++i) {
+      const float t0 = static_cast<float>(i) / kSegs, t1 = static_cast<float>(i + 1) / kSegs;
+      const float u0 = (along + side_len[e] * t0) / perimeter + phase;
+      const float u1 = (along + side_len[e] * t1) / perimeter + phase;
+      const ImVec2 p0 = lerp(o[e], o[n], t0), p1 = lerp(o[e], o[n], t1);
+      const ImU32 c0 = detail::glow_colour(u0, edge_a), c1 = detail::glow_colour(u1, edge_a);
+      const ImU32 z0 = detail::glow_colour(u0, 0.0f), z1 = detail::glow_colour(u1, 0.0f);
+      // Inside: the edge's colour falling to nothing a band in.
+      detail::quad4(fg, p0, p1, lerp(in[e], in[n], t1), lerp(in[e], in[n], t0), c0, c1, z1, z0);
+      // Outside: a softer halo.
+      detail::quad4(fg, lerp(out[e], out[n], t0), lerp(out[e], out[n], t1), p1, p0, z0, z1, detail::glow_colour(u1, halo_a),
+            detail::glow_colour(u0, halo_a));
+      // The edge itself, a fine bright line.
+      fg->AddLine(p0, p1, detail::glow_colour(u0, std::min(1.0f, 0.95f * k)), 1.5f * scale);
+    }
+    along += side_len[e];
+  }
+  fg->PopClipRect();
+  // The sheen: a slanted band of light crossing the photo, then a rest.
+  if (!reduce_motion && on_ms != 0) {
+    const double period = 3.2;
+    const float s = static_cast<float>(std::fmod(secs, period) / (period * 0.8));
+    if (s <= 1.0f) {
+      const float sw = std::max(w * 0.22f, 40.0f * scale);
+      const float slant = h * 0.35f;
+      const float x = ra.x - sw - slant + (w + 2.0f * sw + slant) * s;
+      fg->PushClipRect(ra, rb, true);
+      // The glow's colour of the moment, most of the way to white.
+      const ImU32 c = detail::glow_colour(phase + s * 0.5f, 1.0f);
+      const auto toward_white = [c](int shift) {
+        return static_cast<ImU32>(255 - ((255 - static_cast<int>((c >> shift) & 0xFFu)) * 2) / 5) << shift;
+      };
+      const ImU32 rgb = toward_white(IM_COL32_R_SHIFT) | toward_white(IM_COL32_G_SHIFT) | toward_white(IM_COL32_B_SHIFT);
+      const ImU32 edge = rgb;  // alpha 0
+      const ImU32 mid = rgb | (static_cast<ImU32>(0.16f * k * 255.0f) << IM_COL32_A_SHIFT);
+      const ImVec2 t0(x, ra.y), t1(x + sw * 0.5f, ra.y), t2(x + sw, ra.y);
+      const ImVec2 b0(x + slant, rb.y), b1(x + slant + sw * 0.5f, rb.y), b2(x + slant + sw, rb.y);
+      detail::quad4(fg, t0, t1, b1, b0, edge, mid, mid, edge);
+      detail::quad4(fg, t1, t2, b2, b1, mid, edge, edge, mid);
+      fg->PopClipRect();
+    }
+  }
+}
+
 // `pw` x `ph` the shown picture, `zoom` screen pixels per picture pixel,
 // `scale` the display's (physical pixels per point), `now_ms` steady_ms().
 // `mask` the lab's brush tint texture when it belongs to this view (the
 // backend's ImTextureID: an SRV on Windows, an MTLTexture on the Mac), else 0.
+// `clip` the canvas on screen (x0, y0, x1, y1) for the working glow, and
+// `reduce_motion` the system's setting.
 template <class ToScreen>
 void draw_tool_overlay(const edit_view& v, float pw, float ph, float zoom, float scale, std::uint32_t accent,
-                       std::uint64_t now_ms, ImTextureID mask, ToScreen to_screen) {
+                       std::uint64_t now_ms, ImTextureID mask, ToScreen to_screen, ImVec4 clip = ImVec4(0, 0, 0, 0),
+                       bool reduce_motion = false) {
   if (pw <= 0.0f || ph <= 0.0f || zoom <= 0.0f) return;
   ImDrawList* fg = ImGui::GetForegroundDrawList();
+  // One-click Enhance: the working glow, under the tool's own marks.
+  if (v.work_glow_on_ms != 0 || v.work_glow_off_ms != 0) {
+    draw_work_glow(fg, to_screen(0.0f, 0.0f), to_screen(pw, ph), clip, scale, now_ms, v.work_glow_on_ms,
+                   v.work_glow_off_ms, reduce_motion);
+  }
   const float long_side = std::max(pw, ph);
   const float dim = v.tool_dim ? 0.5f : 1.0f;
   // S4a: the committed strokes, one textured quad over the whole picture
