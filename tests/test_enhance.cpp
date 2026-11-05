@@ -1444,7 +1444,11 @@ TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the r
 // Edit's Enhance tab. One tool, no photo choice; Remove reads the brush again
 // when the workspace asks it to run; the result row names the new file beside
 // the original, and Discard sends only that file to the Bin.
-TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", "[enhance][tool]") {
+// One-click (owner 2026-11-05): the tool screen is the Enhance tab's cards.
+// Remove has no button on its card (the tool bar under the photo runs it,
+// handing the strokes over); its run is followed through the hidden "run"
+// node, the result's path in it, and Move to Bin takes only the new file.
+TEST_CASE("one click: the cards offer what Enhance has, and Remove runs on one command", "[enhance][tool]") {
   fixture f;
   const fs::path photo = f.dir / "IMG_0007.JPG";
   write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
@@ -1461,38 +1465,39 @@ TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", 
     write_text(f.self / "manifest.json", m);
   }
   f.restart();
-  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
-  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
 
-  // A command before the panel is open does nothing.
+  // A command before the cards are open does nothing.
   f.eng->tool_command(R"({"photo": "remove"})");
   CHECK(f.host.tree(kToolScreen).empty());
 
-  // The workspace opens it on the photo and chooses Remove: nothing brushed
-  // yet, so the panel says to brush and its Remove is greyed. No photo choice.
+  // Not downloaded yet: the card's one button fetches it (Remove runs from the
+  // bar, so the label is the download alone).
   f.eng->tool_opened(5, utf8(photo), 340, 2);
-  f.eng->tool_command(R"({"photo": "remove"})");
   {
     parsed t(f.host.tree(kToolScreen));
     INFO(f.host.tree(kToolScreen));
-    REQUIRE(t.has("tool.remove"));
-    CHECK_FALSE(t.has("photo"));
-    CHECK_FALSE(t.has("close"));
-    CHECK(t.has("sec.remove"));
-    CHECK(t.text("note").find("Brush over what to remove") != std::string::npos);
-    // The card's Remove (or Return in the brush) runs it: no dead button here.
-    CHECK_FALSE(t.has("run"));
-    CHECK_FALSE(t.has("result"));
+    REQUIRE(t.has(kCardsRoot));
+    REQUIRE(t.has("card.remove"));
+    CHECK(t.has("card.extend"));  // Remove's model, in its extend mode
+    CHECK_FALSE(t.has("card.restyle"));  // no restyle model in this Enhance
+    REQUIRE(t.has("go.remove"));
+    CHECK(t.node("go.remove")->str("label")->find("Download (") == 0);
+    CHECK(*t.node("run")->str("label") == "idle");
+    CHECK(t.node("run")->boolean("hidden").value_or(false));
+    // The tree is one the hosts accept.
+    mv::addon::screen::tree st;
+    CHECK(st.set(f.host.tree(kToolScreen)) == mv::addon::screen::error::none);
   }
-  CHECK(f.eng->current_prefs().photo == photo_target::remove);
-  // Another tool: its own root, its own run label.
-  f.eng->tool_command(R"({"photo": "extend"})");
-  CHECK(parsed(f.host.tree(kToolScreen)).has("tool.extend"));
-  CHECK(*parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "Extend");
-  // Malformed commands change nothing.
-  f.eng->tool_command("[\"remove\"]");
-  f.eng->tool_command(R"({"photo": "sharpen"})");
-  CHECK(parsed(f.host.tree(kToolScreen)).has("tool.extend"));
+  f.eng->event(kToolScreen, "go.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+  REQUIRE(eventually([&] { return !parsed(f.host.tree(kToolScreen)).has("go.remove"); }));
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    CHECK(t.text("note.remove").find("Brush over what to remove") != std::string::npos);
+    // Remove's download alone: its run is the bar's, on what is brushed.
+    CHECK(*t.node("run")->str("label") == "idle");
+  }
 
   const std::uint32_t w = 120, h = 90;
   run_port port;
@@ -1518,48 +1523,48 @@ TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", 
   };
   f.eng->set_runner(std::make_unique<job_runner>(port));
 
-  // Brushed in Edit, then Return: the host hands the dabs over and asks for a
-  // run in one command. Remove reads the brush again before it runs.
+  // Nothing brushed: the run says why in the tool bar's line.
+  f.eng->tool_command(R"({"photo": "remove", "run": true})");
+  {
+    parsed t(f.host.tree(kToolScreen));
+    CHECK(*t.node("run")->str("label") == "failed");
+    CHECK(t.text("run.line").find("Brush over what to remove") != std::string::npos);
+  }
+  // Brushed, then the bar's Remove: the host hands the dabs over and asks for
+  // the run in one command.
   {
     std::lock_guard lock(f.host.m);
     f.host.brush = {0.5f, 0.5f, 0.05f};
   }
   f.eng->tool_command(R"({"photo": "remove", "run": true})");
-  REQUIRE(eventually([&] { return parsed(f.host.tree(kToolScreen)).has("result"); }));
+  REQUIRE(eventually([&] { return *parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "done"; }));
+  std::string first_id;
   {
     parsed t(f.host.tree(kToolScreen));
     INFO(f.host.tree(kToolScreen));
-    REQUIRE(t.has("result.thumb"));
-    CHECK(*t.node("result.thumb")->str("path") == utf8(made));
-    CHECK(t.node("result.thumb")->find("hidden") == nullptr);
-    CHECK(t.text("result.title") == "Saved as IMG_0007-removed.jpg");
-    CHECK(t.has("result.show"));
-    CHECK(t.has("result.keep"));
+    REQUIRE(t.has("run.result"));
+    CHECK(*t.node("run.result")->str("path") == utf8(made));
+    CHECK(t.text("run.line") == "Saved as IMG_0007-removed.jpg");
+    CHECK(t.text("run.tool") == "remove");
     CHECK(t.has("result.discard"));
-    // The card above carries Remove (it hands the strokes on screen over):
-    // no second Remove in the panel, before or after a result.
-    CHECK_FALSE(t.has("run"));
     CHECK_FALSE(t.has("cancel"));
+    first_id = t.text("run.id");
+    CHECK_FALSE(first_id.empty());
   }
-  // The sheet was never open: nothing posted there. The panel's row says
-  // what was written; no second "Saved as" line under it.
-  CHECK(f.host.tree(kSheetScreen).empty());
-  CHECK_FALSE(parsed(f.host.tree(kToolScreen)).has("status"));
-  // A sheet opened now on the same photo still says where the copy went.
-  f.eng->sheet_opened(6, utf8(photo), 420, 2);
-  CHECK(parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as IMG_0007-removed.jpg") != std::string::npos);
-  f.eng->closed(kSheetScreen);
+  CHECK(f.host.tree(kSheetScreen).empty());  // never the sheet
 
-  // Show and Keep editing are the host's: the add-on leaves the row alone.
-  f.eng->event(kToolScreen, "result.show", MV_SLOT_EVENT_CLICK, "");
-  CHECK(parsed(f.host.tree(kToolScreen)).has("result"));
-
-  // A place with no Bin: nothing is removed and the row stays.
+  // The host opens the result: the cards follow it and keep the notice.
+  f.eng->tool_command("{\"path\": \"" + utf8(made) + "\"}");
+  {
+    parsed t(f.host.tree(kToolScreen));
+    CHECK(*t.node("run")->str("label") == "done");
+    CHECK(t.text("run.id") == first_id);
+  }
+  // A place with no Bin keeps it; then Move to Bin takes the new file only,
+  // never the original, though the result is the photo on screen now.
   f.host.recycle_answer = 1;
   f.eng->event(kToolScreen, "result.discard", MV_SLOT_EVENT_CLICK, "");
-  CHECK(parsed(f.host.tree(kToolScreen)).has("result"));
-  CHECK(parsed(f.host.tree(kToolScreen)).text("result.note").find("was kept") != std::string::npos);
-  // Discard: the new file only, never the original.
+  CHECK(*parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "done");
   f.host.recycle_answer = 0;
   f.eng->event(kToolScreen, "result.discard", MV_SLOT_EVENT_CLICK, "");
   {
@@ -1568,19 +1573,15 @@ TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", 
     CHECK(f.host.recycled[0] == utf8(made));
     CHECK(f.host.recycled[1] == utf8(made));
   }
-  {
-    parsed t(f.host.tree(kToolScreen));
-    CHECK_FALSE(t.has("result"));
-    CHECK(t.text("status").find("Moved IMG_0007-removed.jpg to") != std::string::npos);
-  }
-  // A second Discard has nothing to send.
-  f.eng->event(kToolScreen, "result.discard", MV_SLOT_EVENT_CLICK, "");
-  {
-    std::lock_guard lock(f.host.m);
-    CHECK(f.host.recycled.size() == 2);
-  }
+  CHECK(*parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "idle");
 
-  // Closing the panel forgets it: later commands post nothing.
+  // Another photo: the cards follow it, the run's notice goes.
+  const fs::path other = f.dir / "IMG_0008.JPG";
+  write_bytes(other, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  f.eng->tool_command("{\"path\": \"" + utf8(other) + "\"}");
+  CHECK(*parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "idle");
+
+  // Closing the cards forgets them: later commands post nothing.
   f.eng->closed(kToolScreen);
   {
     std::lock_guard lock(f.host.m);
@@ -1591,56 +1592,262 @@ TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", 
 }
 
 #ifdef MV_ENHANCE_FACE_SPEC
-// The S5 + S10 merge: Restore faces runs docked too, under the Faces card
-// (root "tool.faces"), with its own run label; without the face model's spec
-// the panel falls back to Enhance image, as the sheet does.
-TEST_CASE("enhance: Restore faces docks as the \"faces\" tool", "[enhance][tool][faces]") {
+// Restore faces is a card whenever the face model's spec is here: its Look,
+// its Strength, the time a face takes, and "Download (…) and restore faces".
+TEST_CASE("one click: Restore faces is a card with its Look, Strength and time", "[enhance][tool][faces]") {
   fixture f;
   const fs::path photo = f.dir / "IMG_0009.JPG";
   write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
   f.eng->tool_opened(7, utf8(photo), 340, 2);
-  f.eng->tool_command(R"({"photo": "faces"})");
-  CHECK(parsed(f.host.tree(kToolScreen)).has("tool.detail"));  // no face model here
+  CHECK_FALSE(parsed(f.host.tree(kToolScreen)).has("card.faces"));  // no face model here
 
   const auto spec = mv::test::read_bytes(MV_ENHANCE_FACE_SPEC);
   write_text(f.self / "models/face/model.json", std::string(spec.begin(), spec.end()));
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pins =
+        R"json({"url": "https://huggingface.co/mv-test/f/resolve/0123abcd/a.onnx", "path": "face/restoreformer_plus_plus.onnx",
+        "size": 1000, "sha256": ")json" + std::string(64, 'a') + R"json(", "licence": "Apache-2.0"},
+        {"url": "https://huggingface.co/mv-test/f/resolve/0123abcd/b.onnx", "path": "face/GFPGANv1.4.onnx",
+        "size": 2000, "sha256": ")json" + std::string(64, 'b') + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pins);
+    write_text(f.self / "manifest.json", m);
+  }
   f.restart();
   f.eng->tool_opened(8, utf8(photo), 340, 2);
-  f.eng->tool_command(R"({"photo": "faces"})");
   parsed t(f.host.tree(kToolScreen));
   INFO(f.host.tree(kToolScreen));
-  REQUIRE(t.has("tool.faces"));
-  CHECK(t.has("sec.face"));
-  CHECK_FALSE(t.has("photo"));
-  CHECK(*t.node("run")->str("label") == "Restore faces");
-  CHECK(f.eng->current_prefs().photo == photo_target::faces);
+  REQUIRE(t.has("card.faces"));
+  REQUIRE(t.has("k.face.model"));
+  CHECK(*t.node("k.face.model")->str("label") == "Look");
+  CHECK(t.has("k.face.strength"));
+  CHECK(t.text("eta.faces").find("a face") != std::string::npos);
+  REQUIRE(t.has("go.faces"));
+  CHECK(*t.node("go.faces")->str("label") == "Download (1 MB) and restore faces");
 }
 #endif
 
-TEST_CASE("enhance: a library photo's result row has no Discard and no visible tile", "[enhance][tool]") {
-  sheet_view v;
-  v.item = item_kind::still;
-  v.photo = photo_target::detail;
-  v.library = true;
-  v.result_path = "photos:ABC-123";
-  const std::string tree = tool_tree(v);
+TEST_CASE("one click: a library photo's result has no Move to Bin and its key is never text", "[enhance][tool]") {
+  run_view r;
+  r.state = run_state::done;
+  r.id = 4;
+  r.tool = photo_target::detail;
+  r.result_path = "photos:ABC-123";
+  const std::string tree = cards_tree({}, r);
   parsed t(tree);
   INFO(tree);
-  REQUIRE(t.has("tool.detail"));
-  REQUIRE(t.has("result.thumb"));
-  CHECK(*t.node("result.thumb")->str("path") == "photos:ABC-123");
-  CHECK(t.node("result.thumb")->find("hidden") != nullptr);
-  CHECK(t.text("result.title") == "Added to your Photos library");
-  CHECK(t.has("result.show"));
+  REQUIRE(t.has("run.result"));
+  CHECK(*t.node("run.result")->str("path") == "photos:ABC-123");
+  CHECK(t.text("run.line") == "Added to your Photos library");
   CHECK_FALSE(t.has("result.discard"));
-  // A tool other than Remove offers another go with other values.
-  REQUIRE(t.has("run"));
-  CHECK(*t.node("run")->str("label") == "Enhance again");
-  // Its key is never shown as text (rule 6).
+  CHECK(t.has("run.dismiss"));
   CHECK(tree.find("\"text\":\"photos:") == std::string::npos);
-  // The tree is one the hosts accept.
   mv::addon::screen::tree st;
   CHECK(st.set(tree) == mv::addon::screen::error::none);
+}
+
+TEST_CASE("one click: the tool bar's line says what runs, how far and how long", "[enhance][tool]") {
+  run_view r;
+  CHECK(run_line(r).empty());
+  r.state = run_state::running;
+  r.tool = photo_target::detail;
+  CHECK(run_line(r) == "Enhancing…");
+  r.fraction = 0.404;
+  r.eta = time_left_short(0.4, 40);  // 60 s more
+  CHECK(r.eta == "1 min left");
+  CHECK(run_line(r) == "Enhancing… 40 % · 1 min left");
+  r.tool = photo_target::faces;
+  r.eta.clear();
+  CHECK(run_line(r) == "Restoring faces… 40 %");
+  CHECK(std::string(run_verb(photo_target::remove)) == "Removing…");
+  CHECK(std::string(run_verb(photo_target::extend)) == "Extending…");
+  CHECK(std::string(run_verb(photo_target::restyle)) == "Restyling…");
+  r.downloading = true;
+  r.model_name = "Sharpen & restore";
+  r.fraction = 0.3;
+  CHECK(run_line(r) == "Downloading Sharpen & restore… 30 %");
+  r = run_view{};
+  r.state = run_state::cancelled;
+  CHECK(run_line(r) == "Cancelled. The photo is unchanged.");
+  r.state = run_state::failed;
+  r.message = "Needs 3.1 GB of free memory.";
+  CHECK(run_line(r) == "Needs 3.1 GB of free memory.");
+  CHECK(time_left_short(0.01, 100).empty());
+  CHECK(time_left_short(0.5, 20) == "less than a minute left");
+}
+
+// One-click: Enhance image's card estimates the run from the photo's size
+// (measured off the host's worker), and one click on a model not here yet
+// downloads it and then runs, with nothing else to press.
+TEST_CASE("one click: Enhance image downloads, then runs, on one click", "[enhance][tool][still]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0003.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/still/model.json", R"json({
+    "kind": "still", "name": "Sharpen & restore", "credit": "Test (Apache-2.0)", "weights": ["up.onnx"],
+    "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "scale", "label": "Size", "type": "choice",
+               "options": [{"id": "1", "text": "Same"}, {"id": "2", "text": "2x"}, {"id": "4", "text": "4x"}],
+               "default": "1"}],
+    "io": {"runner": "tiles", "scale": 4, "tile": 32, "overlap": 8, "dims": []}})json");
+  const std::string kStillUrl = "https://huggingface.co/mv-test/hat/resolve/0123abcd/up.onnx";
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pins = R"json({"url": ")json" + kStillUrl + R"json(", "path": "still/up.onnx", "size": )json" +
+                             std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                             hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pins);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.net->files[kStillUrl] = f.video_weights;
+  f.restart();
+
+  std::atomic<int> reads{0};
+  std::uint32_t written_w = 0;
+  run_port port;
+  port.free_memory = [&]() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_tiles = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<tile_model>> {
+    return std::unique_ptr<tile_model>(new nearest4(32));
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    ++reads;
+    run_port::still s;
+    s.width = 40;
+    s.height = 30;
+    s.rgb = noise_rgb(40, 30);
+    return s;
+  };
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    written_w = pic.width;
+    return utf8(f.dir / "IMG_0003-enhance.jpg");
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+
+  f.eng->tool_opened(2, utf8(photo), 340, 2);
+  // The estimate: measured once on the engine's own thread, then said with
+  // the size the file will be.
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kToolScreen)).text("eta.detail").find(" × ") != std::string::npos; }));
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    CHECK(t.text("eta.detail").find("40 × 30") != std::string::npos);
+    REQUIRE(t.has("k.still.scale"));
+    CHECK(*t.node("k.still.scale")->str("label") == "Size");
+    REQUIRE(t.has("go.detail"));
+    CHECK(*t.node("go.detail")->str("label") == "Download (1 MB) and enhance");
+  }
+  // ×2: the estimate says the bigger size.
+  f.eng->event(kToolScreen, "k.still.scale", MV_SLOT_EVENT_CHANGE, "\"2\"");
+  CHECK(parsed(f.host.tree(kToolScreen)).text("eta.detail").find("80 × 60") != std::string::npos);
+  CHECK(f.net->count() == 0);  // nothing fetched before the click
+
+  // One click: the download, then the run, then done with the result.
+  f.eng->event(kToolScreen, "go.detail", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return *parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "done"; }));
+  CHECK(f.eng->download_status(model_kind::still).state == dl_state::ready);
+  CHECK(written_w == 80u);
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    CHECK(t.text("run.line") == "Saved as IMG_0003-enhance.jpg");
+    CHECK(t.text("run.tool") == "detail");
+    // Ready now: the card's button runs it again.
+    CHECK(*t.node("go.detail")->str("label") == "Enhance");
+  }
+  CHECK(f.host.tree(kSheetScreen).empty());  // never the sheet
+  // Dismiss takes the notice down.
+  f.eng->event(kToolScreen, "run.dismiss", MV_SLOT_EVENT_CLICK, "");
+  CHECK(*parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "idle");
+  // The ✦ popover's row: the host's command runs it with the card's choices,
+  // a new run with a new id.
+  const std::string first = parsed(f.host.tree(kToolScreen)).text("run.id");
+  written_w = 0;
+  f.eng->tool_command(R"({"photo": "detail", "run": true})");
+  REQUIRE(eventually([&] { return *parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "done"; }));
+  CHECK(written_w == 80u);
+  CHECK(parsed(f.host.tree(kToolScreen)).text("run.id") != first);
+}
+
+// One-click: a download that cannot start ends the wait with a reason;
+// nothing is requested.
+TEST_CASE("one click: no room for the model ends the click with the reason", "[enhance][tool][still]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0004.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/still/model.json", R"json({
+    "kind": "still", "name": "Sharpen & restore", "weights": ["up.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [], "io": {"runner": "tiles", "scale": 4, "tile": 32, "overlap": 8, "dims": []}})json");
+  const std::string kStillUrl = "https://huggingface.co/mv-test/hat/resolve/0123abcd/up.onnx";
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pins = R"json({"url": ")json" + kStillUrl + R"json(", "path": "still/up.onnx", "size": )json" +
+                             std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                             hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pins);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.net->files[kStillUrl] = f.video_weights;
+  f.restart();
+  f.host.free = 10;  // no room
+  f.eng->tool_opened(2, utf8(photo), 340, 2);
+  f.eng->event(kToolScreen, "go.detail", MV_SLOT_EVENT_CLICK, "");
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    CHECK(*t.node("run")->str("label") == "failed");
+    CHECK(t.text("run.line").find("Not enough free disk") != std::string::npos);
+  }
+  CHECK(f.net->count() == 0);
+}
+
+TEST_CASE("one click: the estimate scales with the pixels the model sees", "[enhance][tool][eta]") {
+  model_spec hat;
+  hat.kind = model_kind::still;
+  hat.io = *mv::json::parse(R"({"runner": "tiles", "scale": 4, "tile": 192, "overlap": 64})");
+  eta_in in;
+  in.kind = model_kind::still;
+  in.spec = &hat;
+  in.threads = 8;
+  in.photo = {1500, 1500, 1.0};
+  const double sharp = estimate_seconds(in);
+  // 1500 px: tiles start every 128 px, the last moved back to end at the
+  // edge: 12 a side, 144 tiles at 5.4 s, and the photo read and written.
+  CHECK(sharp == Approx(144 * 5.4 + 1.0 + 1.5 * 1500.0 * 1500 / 12e6).margin(1));
+  // Shrunk to its detail by 4: 1/16 of the pixels (the owner's soft photo).
+  in.photo.detail = 4.0;
+  const double soft = estimate_seconds(in);
+  CHECK(soft < sharp / 8);
+  CHECK(soft > 5);
+  // Fewer threads, longer; more, shorter (held to the measured range).
+  in.threads = 2;
+  CHECK(estimate_seconds(in) > soft * 3);
+  CHECK(thread_factor(64) == Approx(0.5));
+  CHECK(thread_factor(0) == Approx(1.0));
+  // No size yet, or a kind with no measurement: it cannot say.
+  in.photo = {};
+  CHECK(estimate_seconds(in) < 0);
+  in.kind = model_kind::audio;
+  in.photo = {100, 100, 1.0};
+  CHECK(estimate_seconds(in) < 0);
+  // Restyle: steps at the quality.
+  eta_in rs;
+  rs.kind = model_kind::restyle;
+  rs.steps = 40;
+  rs.threads = 8;
+  rs.quality = "standard";
+  const double standard = estimate_seconds(rs);
+  rs.quality = "high";
+  CHECK(estimate_seconds(rs) > standard * 2);
+  // The words a person says.
+  CHECK(eta_words(-1).empty());
+  CHECK(eta_words(4) == "A few seconds");
+  CHECK(eta_words(22) == "About 20 s");
+  CHECK(eta_words(130) == "About 2 min");
+  CHECK(eta_words(3600) == "About 1 h");
+  CHECK(eta_words(4300) == "About 1 h 10 min");
 }
 
 TEST_CASE("extend: new edges filled tile by tile, the photo's own pixels kept", "[enhance][extend]") {
@@ -1874,7 +2081,7 @@ TEST_CASE("extend: a canvas frame opens the sheet on Extend, with no preset to p
 // runs Extend in the docked panel (enhance/tool {"photo":"extend","run":true});
 // the panel reads the frame again then, so it shows the frame, not a preset,
 // and the run fills the frame's margins.
-TEST_CASE("extend: Fill on a canvas frame runs in the docked panel, the frame over the preset", "[enhance][extend][tool]") {
+TEST_CASE("extend: Fill on a canvas frame runs on one command, the frame over the preset", "[enhance][extend][tool]") {
   fixture f;
   const fs::path photo = f.dir / "IMG_0005.JPG";
   write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
@@ -1896,16 +2103,16 @@ TEST_CASE("extend: Fill on a canvas frame runs in the docked panel, the frame ov
   f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
   REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
 
-  // Extend armed: the panel opens under the card before any frame is dragged,
-  // on the preset.
+  // The Enhance tab's cards: Extend's card has no button of its own (Fill on
+  // the bar runs it) and no preset (the bar's chips are the frame).
   f.eng->tool_opened(3, utf8(photo), 340, 2);
   f.eng->tool_command(R"({"photo": "extend"})");
   {
     parsed t(f.host.tree(kToolScreen));
     INFO(f.host.tree(kToolScreen));
-    REQUIRE(t.has("tool.extend"));
-    CHECK(t.has("k.remove.extend"));
-    CHECK_FALSE(t.has("frame.remove"));
+    REQUIRE(t.has("card.extend"));
+    CHECK_FALSE(t.has("go.extend"));
+    CHECK_FALSE(t.has("k.remove.extend"));
   }
 
   const std::uint32_t w = 96, h = 64;
@@ -1944,13 +2151,12 @@ TEST_CASE("extend: Fill on a canvas frame runs in the docked panel, the frame ov
     f.host.framed = true;
   }
   f.eng->tool_command(R"({"photo": "extend", "run": true})");
-  REQUIRE(eventually([&] { return parsed(f.host.tree(kToolScreen)).has("result"); }));
+  REQUIRE(eventually([&] { return *parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "done"; }));
   {
     parsed t(f.host.tree(kToolScreen));
     INFO(f.host.tree(kToolScreen));
-    CHECK(t.has("frame.remove"));  // the frame won: no preset to pick
-    CHECK_FALSE(t.has("k.remove.extend"));
-    CHECK(t.text("result.title") == "Saved as IMG_0005-extended.jpg");
+    CHECK(t.text("run.tool") == "extend");
+    CHECK(t.text("run.line") == "Saved as IMG_0005-extended.jpg");
   }
   CHECK(f.host.tree(kSheetScreen).empty());  // never the sheet
   {
@@ -3116,7 +3322,7 @@ struct stripe_fill final : inpaint_filler {
     rgb8 out = image;
     for (std::size_t i = 0; i < mask.a.size(); ++i) {
       if (mask.a[i] != 255) continue;
-      const std::uint8_t v = (i % 64) % 2 == 0 ? 96 : 160;
+      const auto v = static_cast<std::uint8_t>((i % 64) % 2 == 0 ? 96 : 160);
       out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = v;
     }
     return out;

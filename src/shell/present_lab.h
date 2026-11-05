@@ -38,6 +38,7 @@
 #include "shell/dino_game.h"
 #include "shell/edit_view.h"
 #include "shell/compare.h"
+#include "shell/compare_source.h"
 #include "shell/drag_frames.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
@@ -236,6 +237,13 @@ class present_lab {
     std::lock_guard<std::mutex> lock(eye_mutex_);
     return eye_text_;
   }
+  // [any-thread] docs/design/20 "Compare": where the before/after split was
+  // last drawn (shell/compare_source.h), for the host's divider hit-test and
+  // drag; !valid while none is drawn.
+  [[nodiscard]] compare_frame compare_frame_now() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return compare_frame_;
+  }
 
  private:
   // Eyedropper (PR 9). Image textures are immutable GPU memory, so one texel is
@@ -253,6 +261,7 @@ class present_lab {
   gfx::com_ptr<ID3D11Texture2D> eye_staging_;
   mutable std::mutex eye_mutex_;
   canvas_map still_map_;  // under eye_mutex_
+  compare_frame compare_frame_;  // under eye_mutex_
   std::string eye_text_;
   std::uint32_t seen_meta_seq_ = 0;
   std::uint8_t seen_view_flags2_ = 0;
@@ -475,6 +484,27 @@ class present_lab {
   // the current one, so the soak measures two full draws with one file).
   void draw_compare_left(const input_snapshot& snapshot, double elapsed,
                          const float theme_rgb[3]) noexcept;
+  // docs/design/20 "Compare": the before/after split. `side_image_` is the
+  // session's side still (mv::abi::take_side_still: an Enhance result's
+  // source) and the request it answers; `seen_before_` the split last drawn,
+  // so a change of it is one redraw and nothing else is. Render thread only.
+  mv::abi::gpu_image_ptr side_image_;
+  std::uint64_t side_token_ = 0;
+  struct before_seen {
+    std::uint8_t mode = 0, layout = 0;
+    bool whole = false, hot = false;
+    float split = 0.5f;
+    std::uint64_t token = 0;
+    float rect[4] = {};
+  };
+  before_seen seen_before_{};
+  [[nodiscard]] bool before_changed(const input_snapshot& s) noexcept;
+  // The split this frame draws, or none.
+  [[nodiscard]] compare_frame before_frame(const input_snapshot& s) const noexcept;
+  // The before, left of the divider (all of the view while Y is held), over
+  // the after in the current viewport.
+  void draw_before(const input_snapshot& snapshot, const compare_frame& f, double elapsed,
+                   const float theme_rgb[3]) noexcept;
   std::uint8_t seen_view_flags_ = 0;
   // Issue #408: the theme's tokens (one redraw when they change) and the
   // home's ground effect, which ticks at 10 Hz by its rest rule.

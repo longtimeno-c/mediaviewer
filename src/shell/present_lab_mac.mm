@@ -7,6 +7,7 @@
 #include "shell/edit_view.h"
 #include "shell/af_focus.h"
 #include "shell/compare.h"
+#include "shell/compare_overlay.h"
 #include "shell/loupe.h"
 #include "shell/dino_draw.h"
 #include "shell/home_ground.h"
@@ -377,6 +378,94 @@ void present_lab_mac::submit_prefetch(const std::vector<std::string>& paths_utf8
   }
 }
 
+// docs/design/20 "Compare": the before of an Enhance result's split. The still
+// cache's entry when it holds this file at its current stamp (the source is
+// usually the photo just left), else a decode on the pool like a neighbour's,
+// at the current view generation. The render thread takes it by exchange.
+std::uint64_t present_lab_mac::load_side_still(std::string path_utf8) noexcept {
+  const std::uint64_t token = side_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (path_utf8.empty() || !options_.jobs) return token;
+  void* mtl_device = device_.native_device();
+  options_.jobs->submit([this, path = std::move(path_utf8), mtl_device, token](const job_context& ctx) -> status {
+    std::int64_t mtime = 0;
+    std::uint64_t size = 0;
+    if (!stat_stamp(path, &mtime, &size)) return status::io;
+    side_still_mac* side = nullptr;
+    {
+      std::lock_guard lock(still_cache_mutex_);
+      for (const cached_still& c : still_cache_) {
+        if (c.path != path || c.mtime != mtime || c.size != size) continue;
+        side = new (std::nothrow) side_still_mac{c.image.share(), token};
+        break;
+      }
+    }
+    if (!side) {
+      auto bytes = io::read_all(path);
+      if (!bytes) return bytes.error();
+      if (ctx.cancelled()) return status::cancelled;
+      auto decoded = image::decode_bytes_mac(bytes.value(), &ctx, 0);
+      if (!decoded) return decoded.error();
+      if (ctx.cancelled()) return status::cancelled;
+      auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+      if (!uploaded) return uploaded.error();
+      if (cacheable_still(path)) cache_put(path, mtime, size, uploaded.value());
+      side = new (std::nothrow) side_still_mac{std::move(uploaded).value(), token};
+    }
+    if (!side) return status::out_of_memory;
+    if (ctx.cancelled()) {
+      delete side;
+      return status::cancelled;
+    }
+    delete pending_side_.exchange(side, std::memory_order_acq_rel);
+    wake();
+    return status::ok;
+  });
+  return token;
+}
+
+bool present_lab_mac::take_side_still() noexcept {
+  side_still_mac* p = pending_side_.exchange(nullptr, std::memory_order_acq_rel);
+  if (!p) return false;
+  side_.reset(p);
+  return true;
+}
+
+bool present_lab_mac::before_changed(const input_snapshot& s) noexcept {
+  before_seen now;
+  now.mode = s.before_after;
+  now.layout = s.before_layout;
+  now.whole = s.before_whole;
+  now.hot = s.before_hot;
+  now.split = s.before_split;
+  now.token = s.before_token;
+  for (int i = 0; i < 4; ++i) now.rect[i] = s.before_rect[i];
+  const bool same = now.mode == seen_before_.mode && now.layout == seen_before_.layout &&
+                    now.whole == seen_before_.whole && now.hot == seen_before_.hot &&
+                    now.split == seen_before_.split && now.token == seen_before_.token &&
+                    std::equal(std::begin(now.rect), std::end(now.rect), std::begin(seen_before_.rect));
+  seen_before_ = now;
+  return !same;
+}
+
+compare_frame present_lab_mac::before_frame(const input_snapshot& s) const noexcept {
+  if (s.before_after == 0 || !current_image_ || video_frame_ || anim_frame_ || s.blackout ||
+      compare_split_.valid || s.edit[0].crop_overlay) {
+    return {};
+  }
+  if (s.before_after == 2 && (!side_ || side_->token != s.before_token || !side_->image.valid())) return {};
+  float pw = 0.0f, ph = 0.0f;
+  if (!picture_size(&pw, &ph)) return {};
+  const float vx = canvas_origin_x(s);
+  const float vy = static_cast<float>(s.chrome_height_px);
+  const float vw = usable_window_w(s);
+  const float vh = usable_window_h(s);
+  const float z = camera_.zoom();
+  const float cx = vx + vw * 0.5f - camera_.pan_x() * z;
+  const float cy = vy + vh * 0.5f - camera_.pan_y() * z;
+  return compare_frame_of(vx, vy, vw, vh, cx, cy, cx + pw * z, cy + ph * z,
+                          s.before_whole ? 1.0f : s.before_split);
+}
+
 // [any-thread]. Runs on the job pool: reads and decodes a file, then uploads
 // an immutable MTLTexture. Never on the render thread (rule 1, CLAUDE.md /
 // docs/design/02) -- device_.native_device() is safe to use from any thread. The
@@ -702,7 +791,8 @@ void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept
                       [&](float ix, float iy) {
                         return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
                                       origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
-                      });
+                      },
+                      ImVec4(origin_x, origin_y, origin_x + win_w, origin_y + win_h), snapshot.reduce_motion);
     return;
   }
   if (!v || !v->crop_overlay) return;
@@ -736,6 +826,18 @@ void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept
     fg->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), line, scale);
   }
   fg->AddRect(a, b, IM_COL32(255, 255, 255, 235), 0.0f, 0, 1.5f * scale);
+  // docs/design/20 Behaviour 4: handles at the corners and the middles of the
+  // edges, as Extend's frame draws them (a drag there resizes, inside moves).
+  {
+    const float k = 4.0f * scale;
+    const float mx = (a.x + b.x) * 0.5f, my = (a.y + b.y) * 0.5f;
+    for (const ImVec2 c : {a, ImVec2(mx, a.y), ImVec2(b.x, a.y), ImVec2(b.x, my), b, ImVec2(mx, b.y),
+                           ImVec2(a.x, b.y), ImVec2(a.x, my)}) {
+      fg->AddRectFilled(ImVec2(c.x - k - scale, c.y - k - scale), ImVec2(c.x + k + scale, c.y + k + scale),
+                        IM_COL32(0, 0, 0, 170));
+      fg->AddRectFilled(ImVec2(c.x - k, c.y - k), ImVec2(c.x + k, c.y + k), IM_COL32(255, 255, 255, 235));
+    }
+  }
   char label[96];
   std::snprintf(label, sizeof(label), "%u x %u   %+.1f\xC2\xB0   Enter apply   Esc cancel",
                 static_cast<unsigned>(std::lround(v->overlay[2] * pw)),
@@ -1655,6 +1757,10 @@ void present_lab_mac::render_thread_main() noexcept {
         // worker hands it over before the host publishes the view that stops
         // drawing its dabs live, so no frame shows neither.
         if (take_brush_mask()) redraw = true;
+        // docs/design/20 "Compare": the side still landing, or the split
+        // changing (a toggle, a drag of the divider, Y), is one frame each.
+        if (take_side_still() && snapshot.before_after == 2) redraw = true;
+        if (before_changed(snapshot)) redraw = true;
         // PR 10: the edit geometry of the still on screen changed (a turn, a
         // committed crop, crop mode's draft). A new picture size refits, as a
         // new item would; an overlay-only change just redraws — and so does a
@@ -1923,7 +2029,9 @@ void present_lab_mac::render_thread_main() noexcept {
         if (current_image_ && !video_frame_) {
           const edit_view* tv = edit_for(current_image_->item_id);
           const std::uint64_t until = tv ? tool_hud_until(*tv) : 0;
-          if (until > steady_ms()) {
+          // One-click Enhance: the working glow animates while the run goes
+          // (and fades), then once more to clear.
+          if (until > steady_ms() || (tv && work_glow_live(*tv, steady_ms(), snapshot.reduce_motion))) {
             redraw = true;
             tool_hud_drawn_ = true;
           } else if (tool_hud_drawn_) {
@@ -2216,6 +2324,13 @@ void present_lab_mac::render_thread_main() noexcept {
         const float view_y = static_cast<float>(snapshot.chrome_height_px);
         const float view_w = usable_window_w(snapshot);
         const float view_h = usable_window_h(snapshot);
+        // docs/design/20 "Compare": the before/after split, when there is one
+        // to draw this frame; the host hit-tests the divider against it.
+        const compare_frame before = show_previous ? compare_frame{} : before_frame(snapshot);
+        {
+          std::lock_guard<std::mutex> lock(eye_mutex_);
+          compare_frame_ = before;
+        }
         if (!snapshot.blackout) {
           draw_text_overlay(snapshot);
           draw_photo_overlays(snapshot);
@@ -2245,6 +2360,9 @@ void present_lab_mac::render_thread_main() noexcept {
             fg->AddText(ImGui::GetFont(), fs, ImVec2(lx + scale, view_y + pad + scale),
                         IM_COL32(0, 0, 0, 200), label);
             fg->AddText(ImGui::GetFont(), fs, ImVec2(lx, view_y + pad), text, label);
+          }
+          if (before.valid && !snapshot.before_whole) {
+            draw_compare_divider(fg, before, scale, snapshot.home.accent, snapshot.before_hot);
           }
         }
 
@@ -2428,6 +2546,48 @@ void present_lab_mac::render_thread_main() noexcept {
             [enc setScissorRect:MTLScissorRect{0, 0, drawable.texture.width,
                                                drawable.texture.height}];
           }
+          if (before.valid) {
+            // docs/design/20 "Compare": the before, left of the divider (all of
+            // the view while Y is held), over the after through a scissor in
+            // this same present. Its own texture through an identity
+            // placement and no colour (the photo with no edit), or the side
+            // still laid onto the after's frame (an Enhance result's source,
+            // shell/compare_source.h source_map). The after's camera.
+            const bool by_source = snapshot.before_after == 2;
+            const image::gpu_image_mac& b = by_source ? side_->image : *current_image_;
+            gfx::blit_params_mac pb = bp;
+            pb.opacity = 1.0f;
+            apply_adjust(nullptr, pb);
+            pb.texture_w = static_cast<float>(b.texture_width ? b.texture_width : b.width);
+            pb.texture_h = static_cast<float>(b.texture_height ? b.texture_height : b.height);
+            if (by_source) {
+              const compare_rect where{snapshot.before_rect[0], snapshot.before_rect[1], snapshot.before_rect[2],
+                                       snapshot.before_rect[3]};
+              const compare_map m =
+                  source_map(bp.image_w, bp.image_h, static_cast<float>(b.width), static_cast<float>(b.height),
+                             static_cast<compare_layout>(snapshot.before_layout), where);
+              for (int i = 0; i < 6; ++i) pb.uv_map[i] = m.m[i];
+              pb.clip_to_source = m.clip;
+            } else {
+              const edit::placement ip = place_through(nullptr, b.width, b.height);
+              pb.image_w = static_cast<float>(ip.cropped.w);
+              pb.image_h = static_cast<float>(ip.cropped.h);
+              for (int i = 0; i < 6; ++i) pb.uv_map[i] = ip.map.m[i];
+              pb.clip_to_source = false;
+              // A crop or a turn changed the frame: the same region, as the
+              // two-up links its halves.
+              const compare_camera lc = linked_camera(bp.pan_x, bp.pan_y, bp.zoom, bp.image_w, bp.image_h,
+                                                      pb.image_w, pb.image_h, view_w, view_h);
+              pb.pan_x = lc.pan_x;
+              pb.pan_y = lc.pan_y;
+              pb.zoom = lc.zoom;
+            }
+            const float right = snapshot.before_whole ? view_x + view_w : before.divider_x;
+            if (scissor_to(view_x, view_y, right - view_x, view_h)) {
+              blitter_.draw((__bridge void*)enc, b.texture, pb);
+            }
+            [enc setScissorRect:MTLScissorRect{0, 0, drawable.texture.width, drawable.texture.height}];
+          }
         }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
         [enc endEncoding];
@@ -2508,6 +2668,8 @@ void present_lab_mac::render_thread_main() noexcept {
     delete pending_working_.exchange(nullptr);
     brush_mask_.reset();  // S4a, likewise
     delete pending_brush_mask_.exchange(nullptr);
+    side_.reset();  // docs/design/20 "Compare", likewise
+    delete pending_side_.exchange(nullptr);
     // Joins the animation decode thread before device_.destroy() below, the
     // same ordering reason submit_image_load's job must finish first: its
     // make_texture_fn closure holds the raw MTLDevice pointer.

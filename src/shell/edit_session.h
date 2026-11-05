@@ -112,6 +112,13 @@ class edit_session {
   [[nodiscard]] edit_effect set_crop_aspect(crop_aspect a, bool portrait);
   [[nodiscard]] crop_aspect aspect() const noexcept { return aspect_; }
   [[nodiscard]] bool aspect_portrait() const noexcept { return portrait_; }
+  // docs/design/20 Behaviour 4: a drag of the draft's handle on the canvas.
+  // `handle` the edge bits a press grabbed (shell/crop_drag.h crop_hit),
+  // (du, dv) the pointer's travel since the press in the frame's uv, `start`
+  // the draft at the press. A locked preset keeps its ratio; with an angle the
+  // rect stops where a corner of the rotated source would show. `redraw` when
+  // the draft changed; `none` outside crop mode.
+  [[nodiscard]] edit_effect drag_crop(const edit::rect& start, std::uint8_t handle, float du, float dv);
   // The Crop pane's slider: an absolute angle, clamped to ±kMaxStraighten.
   // Starts cropping when not already (the angle is part of the draft).
   [[nodiscard]] edit_effect set_straighten(float degrees);

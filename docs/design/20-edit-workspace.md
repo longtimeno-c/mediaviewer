@@ -57,9 +57,17 @@ in the core (`edit/`, `shell/edit_session`).
    and `X` swaps orientation. A locked preset fits the largest rect of that ratio centred on the
    draft; `Shift`+arrows resize keeping the ratio; a straighten shrinks it evenly. Straighten is a
    ±45° slider (`,` `.` step 0.5°). Rotate, flip, Apply and Cancel are buttons; the arrows move
-   the rect (1 % of the frame per press).
-5. **Show original** is `Y`, held (and the header's and the rail's Compare). It publishes an
-   identity edit view on the same blit and never touches the stack.
+   the rect (1 % of the frame per press). **On the canvas** the rect has eight handles: a press
+   within 12 px (Extend's grab distance) of an edge or corner drags it, one inside moves the rect,
+   anywhere else pans or drags the file out as before (`shell/crop_drag.h` `crop_hit` /
+   `crop_drag_rect`, `edit_session::drag_crop`). A locked preset keeps its ratio (a corner keeps
+   the opposite corner and follows the pointer projected onto the diagonal; an edge resizes the
+   other side about its centre); with an angle the rect stops where a corner of the rotated
+   source would show. The edge under the pointer picks the cursor, as Extend's does.
+5. **Compare** (the header's and the rail's Compare) puts a **before/after split** on the canvas;
+   `Y` held shows the before alone. Neither touches the stack. With edits, the before is the photo
+   with no edit; on an Enhance result, the photo it was made from. With nothing to compare the
+   buttons are disabled and say why, and `Y` shows the reason as a notice ("Compare" below).
 6. **Originals stay protected.** Everything goes through `edit_session`: the stack is
    non-destructive, *Save copy…* is the export ([07](07-photo-editing.md) "Export", a new file),
    and the lossless viewer rotate is the same debounced write as before.
@@ -89,7 +97,7 @@ Still, Crop tab, a 3:2 preset locked (regular width):
 │         5472 × 3648  +1.5°                      │ Free Orig 1:1 4:3 [3:2]          │ ⌫  │ Remove
 │                                                 │ 16:9 5:4   ▭ Landscape           │ ◉  │ Red-eye
 │                                                 │ STRAIGHTEN  ──●──  +1.5°  ↺      │ ☺  │ Faces
-│                                                 │ ROTATE AND FLIP ⟲ ⟳ ⇋ ⇵          │ ⤢  │ Extend
+│                                                 │ ROTATE AND FLIP ⟲ ⟳ ⇋ ⇵          │    │
 │                                                 │ ←→↑↓ move · ⇧ resize · ⏎ apply   │    │
 │                                                 │                                  │ ↶  │ Undo
 │                                                 │                                  │ ◐  │ Compare
@@ -134,9 +142,9 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
 - **Tools:** Red-eye, the one canvas tool with no Enhance card (a pupil in its iris on the Mac,
   Segoe's RedEye on Windows): a click arms it, a second puts it down, and the armed one wears the
   selection. Remove, Faces and Extend are armed from their Enhance cards (2026-11-05, "Craft
-  rules": the rail does not repeat the cards).
-- **Foot:** Undo and Compare (Show original) while the inspector is folded (open, the header has
-  them), and Done. Tooltips and screen-reader names carry the live keys
+  rules": the rail does not repeat the cards; Extend also from Edit ▸ Extend Edges on the Mac).
+- **Foot:** Undo and Compare (the split; "Compare" below) while the inspector is folded (open, the
+  header has them), and Done. Tooltips and screen-reader names carry the live keys
   (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
 The **header** is as tall as its content (the Mac hosts it with an intrinsic height; Windows
@@ -157,37 +165,92 @@ while it is the last edit, and a click then takes it back; while it works a smal
 its icon's slot. The Enhance tools are the Enhance tab's cards; the header has no chevron for them
 (the Mac's `EnhanceToolsPopover` and Windows' `OpenEnhanceFlyout` are no longer reached from it).
 
+### Compare
+
+The owner's report (2026-11-05): Compare "doesn't seem to do anything". It published an identity
+edit view, which on a photo with no edits (an Enhance result, say) changed nothing on screen and
+said nothing. Now (`shell/compare_source.h`, one model on both hosts):
+
+- **What is compared** (`compare_kind`, sent as `mv_edit_view.compare` / `chrome_edit_args.compare`):
+  - an **Enhance result** — a file Enhance writes beside its photo (`<stem>-enhance.jpg` / `.png`,
+    `-restored`, `-extended`, `-removed`, `-eyes`, `-faces`, each also as the free name
+    `"… (2).jpg"`, [29](29-enhance.md)), or one the app was told is a result (`note_result(result,
+    source[, where])`, any thread, the newest 64 of the run; a Photos-library key on the Mac): the
+    before is the **source photo**, the after the result as it is shown (its own edits too);
+  - else a photo **with edits**: the before is the photo with no edit (its own texture, an
+    identity placement, no colour), the after the edited view;
+  - else nothing: Compare is **disabled** with a tooltip saying why (*No edits yet to compare*; *the
+    original photo is not beside this one*; *Looking for the original photo…*), on the Mac's
+    `.help` and on Windows' holder of the disabled button (a disabled `Button` shows no tooltip). `Y`
+    then shows the same words as a notice and nothing else.
+- **Finding a result's source** never does I/O on the UI thread: the noted source first; else the
+  folder listing the host already holds (`is_source_name`: the same stem, a still extension, case
+  ignored — the Mac scans `_items` outward from the result, Windows its ±8 neighbours through the
+  ABI); else `source_of(path, exists)` on a worker with a stat per candidate (a result list), which
+  answers by message (Windows `kMsgCompareSource`) or the main queue (Mac). A `photos:` source is
+  resolved to its file on a worker (`photos::resolve`).
+- **The source's pixels** come through the viewer's own pipeline, off the UI and render threads:
+  the Mac lab's `load_side_still` (the still cache's entry at its stamp, else a decode on the
+  lab's pool at the current view generation) and Windows' `mv::abi::request_side_still` (a clone
+  from the viewer LRU, else one decode job at the current generation; the result enters the LRU).
+  Each hands one immutable texture to the render thread by an atomic exchange
+  (`take_side_still`), named by a token the snapshot carries (`before_token`). Asked only when the
+  split or `Y` first wants it; a navigation abandons it. A still past one texture (tiled, > ~64 MP)
+  is not served on Windows: the split then shows no before.
+- **On the canvas** (both labs, the same present): the after is drawn as always; the before is a
+  second blit of its texture over the after's left part, cut at the divider by a scissor (Metal)
+  or a narrower viewport (D3D11: the blit places pixels by `SV_Position` against the full view, so
+  the viewport only clips). It shares the after's camera. A source is laid onto the result's frame
+  by `source_map`: the same picture at 2× or 4× (or a face fix, Remove) fills it; an
+  **Extend** result's source sits inside the bigger frame at its own scale, where `note_result`'s
+  `where` says, else centred (Extend's presets grow evenly; a dragged, uneven frame is placed
+  centred until the writer passes `where`); any other aspect is fitted inside, centred. With edits
+  that change the frame (a crop, a turn), the before is the whole original under the camera linked
+  as the `|` two-up links its halves (`linked_camera`), so the two sides do not line up across the
+  divider; colour-only edits line up pixel for pixel.
+- **The divider** (`shell/compare_overlay.h`, ImGui's foreground list in both labs): a 2 px light
+  line with dark edges down the picture's visible span and a 28 DIP round handle with ◀ ▶ at its
+  middle; the accent while hovered or held. It starts at the middle of the picture's visible span
+  (`before_split` 0.5) and is dragged anywhere on the line (a 14 DIP band either side): the host
+  hit-tests it against where the lab last drew it (`compare_frame_now()`), takes the press (no pan,
+  no brush), shows the left-right cursor (Mac `resizeLeftRightCursor`, Windows `IDC_SIZEWE` in
+  `WM_SETCURSOR`) and publishes the new split. Nothing else floats over the photo (owner call A):
+  **Before | After** — "Before: no edits | After: your edits", or "Before: the original photo |
+  After: Enhance" — is a row of the Edit header while the split is up (Mac `EditView`
+  `compareLabels`, Windows `BuildCompareLabels`).
+- **When:** stills only, not over the `|` two-up, not in crop mode (a crop draft hides it until
+  applied). The split belongs to Edit: closing the workspace, or a new photo, takes it down; `Y`
+  works with the workspace closed. **Presents:** a toggle, a drag step, a hover change of the
+  divider or the side still landing is one frame each (`before_changed`); a still split with the
+  pointer at rest presents nothing.
+
 ### The Enhance tab
 
 Tab 5, any still. Five cards: **Remove objects · Restyle · Faces · Enhance image · Extend edges**,
-each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
-*Needs Enhance*, *Needs People*, *Working…*) from the edit view's wand bits
-(`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
-the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Set
-the new frame* (arms Extend, "Extend" below; with Enhance its docked panel opens under the card), *Choose faces* (S8: arms the Faces tool; its chip reads *Choosing* and the
-button *Done* while it is armed, and the Faces panel leads the tab). The Faces card also has
-**Restore faces…** on a row of its own (docs/plans/edit-refresh.md S10; both hosts): Enhance's
-docked panel on its `faces` tool, drawn under the Faces card (the card keeps Choose faces), or without it Enhance's `faces` command, its sheet
-started on Restore faces ([29](29-enhance.md) "Restore faces"); enabled by `kWandRestoreFaces`
-(1024: Enhance has that command); the ✦ popover / `Flyout` lists it as a row after Faces while
-Enhance is installed. *Enhance image* offers its five models: Sharpen & restore, Natural,
-Remove noise, Remove blur and Remove motion blur, each downloaded when first chosen (the docked
-panel's and the sheet's *Improve* choice, [29](29-enhance.md) "Enhance image"). Without the Enhance
+each an icon, a one-line purpose and a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
+*Needs Enhance*, *Needs People*, *Working…*, *Update Enhance*). The host's own buttons are the
+brush's (*Start brushing* / *Remove*, Undo stroke, Clear), the frame's (*Set the new frame*, arming
+Extend, "Extend" below) and the Faces tool's (*Choose faces*, S8: its chip reads *Choosing* and the
+button *Done* while armed, and the Faces panel leads the tab); Restyle, Enhance image and Restore
+faces (S10, under Choose faces on the Faces card) run from the add-on's stack inside their card
+(below). *Enhance image* offers four models: Sharpen & restore, Natural, Remove noise and Remove
+blur, each downloaded when first run ([29](29-enhance.md) "Enhance image"). Without the Enhance
 add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance). Cards are one
 column, two from 560.
 
-**Running inside the pane** (S5, owner call B). Remove, Restyle, Enhance image, Extend and Restore
-faces (S10) ask Enhance for its docked screen (place `edit`, [29](29-enhance.md) "Docked in Edit"),
-drawn under the chosen card with the add-on screens' renderer: the tool's knobs, the preview, the glowing progress
-with the time left, Cancel, and the **result row** — **Show** (Edit closes, the new file or new
-Photos-library photo is selected), **Keep editing** (the same with Edit reopened on this tab) and
-**Move to Trash / Recycle Bin** (Enhance's, through `recycle_file`; never a hard delete, never the
-original). The chosen card wears the accent outline and its own button gives way to the panel's
-(Remove keeps Start brushing / Remove / Undo stroke / Clear). A crop draft is applied first, as
-Save copy does. The panel closes with Edit, on another photo, or with its ×. Without a docked
-screen (an older Enhance) each card opens Enhance's sheet instead. Hosts: Mac `enhanceTool:run:` /
-`enhanceShowResult:keep:` (`mv_chrome_edit_enhance_tool` / `_result`); Windows `enhance_tool` /
-`enhance_show_result` (`chrome_edit_action` 9–14, and 15 for Restore faces).
+**One click** (owner 2026-11-05; [29](29-enhance.md) "One click"). No sheet and no panel: while
+the tab shows, Enhance's cards screen (place `edit`) is open on the photo on screen, and each card
+draws its tool's stack from it: Enhance image's Quality and Size, Restyle's words and Quality,
+Restore faces' Look and Strength (under Choose faces on the Faces card), the time the run will
+take, and one button (*Enhance*, *Restyle*, *Restore faces*, or *Download (161 MB) and enhance*).
+Remove (brush, then Remove ↵ in the tool bar) and Extend (the frame, then Fill ↵) run from the bar.
+A run glows over the photo, the tool bar shows its line with Cancel, and the new photo opens with
+Edit kept on this tab and "Saved as … · Move to Trash" in the bar. The card running wears the
+accent outline. A card is offered whenever the add-on's cards have it (never a palette command);
+an Enhance from before one-click says *Update Enhance*. The strip's Enhance…, the ✦ popover /
+`Flyout` (Enhance image and Restore faces run at once; Restyle shows the tab), Enhance's palette
+rows and its context entry on the photo open this tab. Hosts: Mac `EnhanceRun.swift`,
+`EnhanceHubView.swift`; Windows `IslandHost.EnhanceDock.cs`, `IslandHost.EnhanceHub.cs`.
 
 The tab's header carries Enhance's **performance level** as a chip (*Default level*; docs/plans/
 edit-refresh.md S9), a click away from Settings → Add-ons → Enhance, whose first card is
@@ -284,11 +347,10 @@ animation or with the workspace closed it goes down.
   face's thumbnail (a click toggles it), its name from People (or *Unnamed person* / *Not in
   People yet*), "from 37 photos of Anna" (People's other stills of them), an *Eyes closed* tag,
   and its own fixes, **Open eyes** (only where the eyes look shut), **Improve face** and, while
-  Enhance has its `faces` command, **Restore face** (S10's model: Enhance's docked panel opens
-  under the Faces card and runs on that face's box, or on the chosen faces' boxes, sent in the
-  `enhance/tool` command as `"faces": [x, y, w, h, …]`; Enhance matches them to its own read of the
-  faces by the same intersection-over-union rule and restores only those; an Enhance without the
-  docked panel restores every face in its sheet, and the notice says so); then
+  Enhance has its `faces` command, **Restore face** (S10's model, one click: it runs on that face's box, or on the chosen faces'
+  boxes, sent in the `enhance/tool` command as `"faces": [x, y, w, h, …]`, with the glow and the
+  tool bar's line as every one-click run; Enhance matches them to its own read of the faces by the
+  same intersection-over-union rule and restores only those); then
   **Do all** (each chosen face's best fix in one file: a clearly better face of the same person,
   else open eyes where they are shut), All / None. Without Local search it offers **Get Local
   search…**; with People off, **Turn on People…** (Settings → Add-ons → Local search, where People
@@ -311,8 +373,8 @@ animation or with the workspace closed it goes down.
 
 #### Extend
 
-docs/plans/edit-refresh.md S6. **Extend** (`canvas_tool::extend`; the rail's icon, the Enhance
-tab's *Set the new frame*, Edit ▸ Extend Edges, `tool_extend`) puts a frame over the picture whose
+docs/plans/edit-refresh.md S6. **Extend** (`canvas_tool::extend`; the Enhance tab's *Set the new
+frame*, Edit ▸ Extend Edges, `tool_extend`; its home tab is Enhance) puts a frame over the picture whose
 edges and corners are **dragged past the photo's edges** (a press inside moves it, its size kept).
 The frame is shell state, `extend_draft` in `shell/edit_workspace.h` (each side's distance past
 the edge as a fraction of the picture's width or height; negative is inside, a crop), **never an
@@ -340,10 +402,9 @@ edit** ([07](07-photo-editing.md)).
   crop on the stack (`edit_session::crop_inside`, composed with the committed crop, one undo
   step); the overhang becomes margins of that cropped picture, handed to Enhance through the host
   table's `still_extend` (`addon_media::set_still_extend`; Windows `mv_edit_still_extend`), and
-  Enhance's docked panel under the Extend card runs Extend on it (`enhance/tool
-  {"photo":"extend","run":true}`; the panel opened when Extend was armed), or, with an Enhance that
-  has no docked screen, its sheet opens on Extend ([29](29-enhance.md) "Extend"). The frame wins
-  over the panel's preset. A frame only inside the photo is
+  Enhance runs Extend on it at once (`enhance/tool {"photo":"extend","run":true}`; one click, the
+  glow, then the new photo opens: [29](29-enhance.md) "One click", "Extend"). The frame wins over
+  the add-on's preset. A frame only inside the photo is
   just a crop and needs no add-on; past the edges without Enhance, Fill says it needs the add-on.
   **Cancel** (`Esc`, the bar) drops the frame. `Backspace` / `Delete` set it back to Original.
 - **Keys:** a frame not filled is pending (owner call G): walking away is refused with "Fill or
@@ -424,8 +485,8 @@ sits under the line in its tint.
 | Windows host | `main.cpp`, WinUI | A fifth panel island (`IslandHost.Edit.cs`): the header and, under it, the Crop, Trim or Enhance pane (`IslandHost.EnhanceHub.cs`); on Adjust / Info / Jobs the island is the header alone and native places that pane under it. A sixth, the rail (`IslandHost.Rail.cs`, `ShowEditRail`, pane island id 11). One blittable `SetEditView` entry (`chrome_edit_args`, 104 bytes) feeds the header, the rail, the panes and the button. The island sends keyed command ids plus the notifications `edit_tab` (a rail click), `edit_action`, `edit_strip_height`, `inspector_min`, `meta_tags`, `meta_date`; native sends `Notify` (`pane_edge_state`). The canvas docks through `chrome_right_px` (`present_lab.cpp` `usable_canvas`). The metadata editor is in `IslandHost.Panels.cs` |
 
 Nothing here blocks the UI thread (the view is POD; the work is the existing edit, export, metadata
-and clip jobs), and no canvas path is added (Show original publishes an identity `edit_view` on
-the existing blit).
+and clip jobs), and no present path is added (Compare's before is a second draw on the existing
+blit, in the same present; "Compare" above).
 
 ## Accessibility and platforms
 
@@ -457,16 +518,21 @@ The behaviour it pins:
    original's bytes are unchanged.
 2. `Enter` on a still opens the workspace; `Esc` cancels a crop draft first, then closes.
 3. Undo steps back through the crop, Reset returns to the original, and holding `Y` shows the
-   original while held and changes nothing.
+   original while held and changes nothing; Compare splits the photo before | after, and with no
+   edits it is disabled and says why.
 4. Keyboard only: `Enter`, `Shift+C`, `A` until 3:2, `Enter`, `Ctrl+S`.
 
-Tests: `test_canvas_tool` (`mv_tests "[canvas-tool]"`: home tabs, sizes, spots, snap, Find eyes,
+Tests: `test_crop_drag` (`mv_tests "[crop-drag]"`: the handles' hit-test, a free and a locked
+drag, the straightened stop), `test_canvas_tool` (`mv_tests "[canvas-tool]"`: home tabs, sizes, spots, snap, Find eyes,
 the overlay's deadlines), `test_key_router` (`[tool]`: tool mode's keys, refusals and `Esc` order),
 `test_remove_brush` (`mv_tests "[remove-brush]"`: undo, redo, erase, the caps, Clear undoable, a
 4 px brush on a 6000 px photo at 400 %, the tint's stamp and edge, the builder's incremental build,
 the sync's one-at-a-time builds and the snapshot's tail; the hidden `[.perf-bench]` case times the
 snapshot publish, under 0.1 ms, and the tint build), `test_adjust` (`[canvas-tool]`: a fix taken off and
-Find eyes are one step each), `test_edit_workspace` (tab 5 routing, the rail's fold), `test_auto_tone` (`[auto_enhance]`:
+Find eyes are one step each), `test_edit_workspace` (tab 5 routing, the rail's fold),
+`test_compare_source` (`mv_tests "[compare-source]"`: the Enhance naming rule and its free names,
+the listing match, `source_of` through the caller's check, `note_result`, the source's place in the
+result, the divider's span, grab and drag), `test_auto_tone` (`[auto_enhance]`:
 one result, one token, the take-back mark), `test_pane_width` (`mv_tests "[pane-width]"`: the clamp, the
 rail-only collapse, the 60 % cap, snaps, steps, the drag soak's frame log), and the workspace cases
 in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag's pacing is
@@ -515,9 +581,10 @@ surfaces in the pane, the rail, the tool bar and Enhance's cards keep to them on
 
 ## Not built
 
-- On-canvas crop handles (drag corners, edges, inside).
 - Redo (`Ctrl+Shift+Z`) and a named history list for a still's edit stack (the brush has its own
-  redo); a split-screen before/after.
+  redo).
+- Compare: a before that keeps the after's crop (to compare colour only through a crop); the
+  divider by keyboard; the split on a clip.
 - Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's
   "Discard 3 strokes?" in the bar is not built); Undo of an earlier rotate or Reset with strokes
   kept also forgets them.

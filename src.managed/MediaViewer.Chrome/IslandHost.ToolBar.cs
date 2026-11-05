@@ -108,8 +108,8 @@ public static partial class IslandHost
             // ShowTransport that follows drops the content.
             if (_toolBar.Visible != 0 && _toolBarRoot is not null && _transport?.Content == _toolBarRoot)
             {
-                if (_toolBarBuiltFor != _toolBar.Tool) _transport.Content = BuildToolBar();
-                else UpdateToolBar();
+                if (_toolBarBuiltFor != ToolBarKind) _transport.Content = BuildToolBar();
+                else if (ToolBarKind != EnhanceRunBar) UpdateToolBar();
             }
             return 0;
         }
@@ -120,12 +120,105 @@ public static partial class IslandHost
         }
     }
 
-    // ShowTransport's visible branch while a tool is armed.
+    // ShowTransport's visible branch while a tool is armed (or a run shows its line).
     private static bool ToolBarWanted => _toolBar.Visible != 0;
+
+    // One-click Enhance: while a run shows its line, the bar is that line
+    // ("Enhancing… 40 % · 1 min left · Cancel"), whatever tool is armed.
+    private const int EnhanceRunBar = -1;
+    private static int ToolBarKind => EnhanceRunActive ? EnhanceRunBar : _toolBar.Tool;
+    private static TextBlock? _runLine;
+    private static JobBar? _runBar;
+    private static Button? _runCancel, _runDiscard, _runDismiss;
+
+    // The run node changed: the bar follows, rebuilt when it turns into or out
+    // of the run's line, else refreshed in place.
+    private static void RefreshEnhanceRunBar()
+    {
+        if (_toolBarRoot is null || _transport?.Content != _toolBarRoot) return;
+        if (_toolBarBuiltFor != ToolBarKind) _transport.Content = BuildToolBar();
+        else if (ToolBarKind == EnhanceRunBar) UpdateEnhanceRunBar();
+    }
+
+    private static UIElement BuildEnhanceRunBar()
+    {
+        DropToolBarUi();
+        _toolBarBuiltFor = EnhanceRunBar;
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Space(10),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _runBar = new JobBar();
+        _runBar.Root.Width = 120;
+        _runBar.Root.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(_runBar.Root);
+        _runLine = new TextBlock
+        {
+            FontFamily = UiFont,
+            FontSize = TypeSmall,
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap,
+            MaxWidth = 420,
+        };
+        row.Children.Add(_runLine);
+        _runCancel = EditButton("Cancel", EnhanceRunCancel, tip: "Stop the run; the photo stays as it is  Esc");
+        _runDiscard = EditButton(" ", EnhanceRunDiscard, tip: "Moves the new file to the Recycle Bin. The original is never touched.");
+        _runDismiss = EditButton("Dismiss", EnhanceRunDismiss);
+        row.Children.Add(_runCancel);
+        row.Children.Add(_runDiscard);
+        row.Children.Add(_runDismiss);
+        _toolBarRoot = new Border
+        {
+            RequestedTheme = IslandTheme,
+            Background = Brush(Canvas),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1),
+            Height = TransportDip,
+            Padding = new Thickness(Space(10), 0, Space(10), 0),
+            Child = row,
+        };
+        AutomationProperties.SetName(_toolBarRoot, "Enhance");
+        UpdateEnhanceRunBar();
+        return _toolBarRoot;
+    }
+
+    private static void UpdateEnhanceRunBar()
+    {
+        bool working = EnhanceRunWorking;
+        if (_runLine is not null)
+        {
+            _runLine.Text = _enhanceRunLine.Length > 0 ? _enhanceRunLine : "Working…";
+            _runLine.Foreground = _enhanceRunState == "failed" ? Brush(TrackWarm) : Brush(Body);
+            ToolTipService.SetToolTip(_runLine, _enhanceRunLine);
+            AutomationProperties.SetName(_runLine, _enhanceRunLine);
+        }
+        if (_runBar is not null)
+        {
+            _runBar.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
+            _runBar.IsIndeterminate = _enhanceRunFraction < 0;
+            if (_enhanceRunFraction >= 0) _runBar.Value = Math.Clamp(_enhanceRunFraction, 0, 1);
+        }
+        if (_runCancel is not null) _runCancel.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
+        if (_runDiscard is not null)
+        {
+            _runDiscard.Visibility = !working && _enhanceRunDiscard.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (_runDiscard.Content is TextBlock t) t.Text = _enhanceRunDiscard;
+            AutomationProperties.SetName(_runDiscard, _enhanceRunDiscard);
+        }
+        if (_runDismiss is not null) _runDismiss.Visibility = working ? Visibility.Collapsed : Visibility.Visible;
+    }
 
     private static void DropToolBarUi()
     {
         _toolBarRoot = null;
+        _runLine = null;
+        _runBar = null;
+        _runCancel = _runDiscard = _runDismiss = null;
         _toolPaint = _toolErase = _toolUndo = _toolRedo = _toolClear = _toolApply = _toolFind = null;
         _toolFacesEyes = _toolFacesImprove = null;
         _toolSize = null;
@@ -137,6 +230,7 @@ public static partial class IslandHost
 
     private static UIElement BuildToolBar()
     {
+        if (EnhanceRunActive) return BuildEnhanceRunBar();
         DropToolBarUi();
         _toolBarBuiltFor = _toolBar.Tool;
         var row = new StackPanel

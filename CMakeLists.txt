@@ -898,6 +898,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/text_select.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
+  src/shell/compare_source.h
   src/shell/video_timeline.cpp
   src/shell/video_timeline.h
   src/shell/edit_view.h
@@ -1201,6 +1202,8 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, and the hosts' edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_crop_drag.cpp
+    tests/test_enhance_run.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
     # Issue #614: Ctrl+P's paper layout (fit / fill, the contact sheet).
@@ -1215,6 +1218,8 @@ if(MV_BUILD_TESTS)
     # PR 29: the Edit workspace's tab model.
     tests/test_edit_workspace.cpp
     src/shell/edit_workspace.cpp
+    # docs/design/20 "Compare": what the still is compared with, the split's maths.
+    tests/test_compare_source.cpp
     # The right column's width (docs/plans/edit-refresh.md §2.1).
     tests/test_pane_width.cpp
     # PR 30: the Video Editor's timeline.

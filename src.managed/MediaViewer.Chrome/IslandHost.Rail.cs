@@ -140,10 +140,10 @@ public static partial class IslandHost
                                        () => Send(Command.UndoEdit));
             _railUndo = undo.Button;
             foot.Children.Add(Holder(undo));
-            string? hold = KeyOf(Command.ShowOriginal);
-            _railCompare = RailButton(RailGlyph.Compare, "Compare with the original",
-                hold is null ? "Compare with the original" : $"Compare with the original  (or hold {hold})",
+            // docs/design/20 "Compare": the before/after split (Y held: the before alone).
+            _railCompare = RailButton(RailGlyph.Compare, "Compare before and after", CompareTipWithKey,
                 () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn));
+            if (Holder(_railCompare) is Panel compareHolder) compareHolder.Background = Brush(Colors.Transparent);
             foot.Children.Add(Holder(_railCompare));
         }
         string? enter = KeyOf(Command.EditWorkspace);
@@ -229,6 +229,11 @@ public static partial class IslandHost
         if (_railCompare is not null)
         {
             SetRailSelected(_railCompare, _editOriginal, false);
+            // A disabled Button shows no tooltip: its holder says why then.
+            _railCompare.Button.IsEnabled = CanCompare;
+            ToolTipService.SetToolTip(_railCompare.Button, CompareTipWithKey);
+            ToolTipService.SetToolTip(Holder(_railCompare), CanCompare ? null : CompareTip);
+            // Folded only: open, the header carries Compare (docs/design/20 "Craft rules").
             Holder(_railCompare).Visibility = _editCollapsed ? Visibility.Visible : Visibility.Collapsed;
         }
         if (_railUndo is not null)

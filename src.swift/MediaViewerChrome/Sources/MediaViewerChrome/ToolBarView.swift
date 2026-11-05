@@ -12,6 +12,8 @@ import SwiftUI
 
 struct ToolBarView: View {
   @ObservedObject private var store = EditStore.shared
+  // One-click Enhance: while a run shows its line, the bar is that line.
+  @ObservedObject private var run = EnhanceRun.shared
   @State private var dragSize: Double?
 
   private var bar: ToolBarState { store.toolBar }
@@ -35,12 +37,16 @@ struct ToolBarView: View {
   @ViewBuilder
   private func row(compact: Bool) -> some View {
     HStack(spacing: MVTheme.space(compact ? 6 : 10)) {
+      if run.active {
+        EnhanceRunRow()
+      } else {
       switch bar.tool {
       case .brush: brushRow(compact: compact)
       case .redEye: redEyeRow(compact: compact)
       case .faces: facesRow(compact: compact)
       case .extend: extendRow(compact: compact)
       default: pickerRow
+      }
       }
     }
     .font(MVTheme.font(13))

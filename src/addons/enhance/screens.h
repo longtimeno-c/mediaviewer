@@ -132,6 +132,67 @@ struct sheet_view {
 // card's own close button closes it).
 [[nodiscard]] std::string tool_tree(const sheet_view& v);
 
+// ---- One-click (owner 2026-11-05) ------------------------------------------------
+// The "tool" screen (place "edit") is the Edit pane's Enhance tab: no panel
+// and no sheet. Its tree's root is "cards"; each tool the add-on has is a
+// stack "card.<detail|restyle|faces|remove|extend>" the host draws inside its
+// own card (the compact choices, the time it will take, the one button
+// "go.<word>": "Enhance", or "Download (161 MB) and enhance"), and one hidden
+// stack "run" says what the run is doing for the host's glow over the photo,
+// its tool bar line and opening the result (docs/design/29 "One click").
+//
+//   run (hidden; label = idle | running | downloading | done | failed | cancelled)
+//     run.progress   progress, value = the fraction (-1 while it cannot say)
+//     run.line       "Enhancing… 40 % · 1 min left", "Saved as IMG-enhance.jpg", the reason
+//     run.id         the run's number (a host opens a result once per run)
+//     run.tool       detail | restyle | faces | remove | extend
+//     run.result     thumbnail, the new file's path (or a library key): done only
+//     cancel, result.discard ("Move to Bin"), run.dismiss
+inline constexpr const char* kCardsRoot = "cards";
+
+struct card_view {
+  photo_target tool = photo_target::detail;
+  // The tool's model as this Enhance ships it (its knobs show before it is
+  // downloaded); null when it has none.
+  const model_spec* spec = nullptr;
+  // Its download: running (with a fraction, -1 unknown), and what the one
+  // button says when it is not here ("Download (161 MB)", "Resume the
+  // download", "Try again"; "" when it is ready or cannot be fetched).
+  bool downloading = false;
+  double download_fraction = -1;
+  std::string download_text;  // "48 MB of 161 MB"
+  std::string install;
+  // That tool's view: its sections (knobs, the model's download state), the
+  // note when it cannot run, can_run.
+  sheet_view v;
+  std::string eta;  // "About 2 min", "Estimating…", "About 2 s a face", or ""
+};
+
+enum class run_state : std::uint8_t { idle, running, done, failed, cancelled };
+[[nodiscard]] const char* run_state_name(run_state s) noexcept;
+
+struct run_view {
+  run_state state = run_state::idle;
+  std::uint64_t id = 0;
+  photo_target tool = photo_target::detail;
+  double fraction = -1;
+  std::string eta;          // "1 min left", or "" while it cannot tell
+  bool downloading = false;  // the run waits for its model (download, then run)
+  std::string model_name;   // "Sharpen & restore" while downloading
+  std::string result_path;  // done: the new file (absolute) or a library key
+  std::string result_name;  // done: its name as shown ("" for a library photo)
+  std::string message;      // failed / cancelled: why; done: a restorer's note
+};
+
+// "Enhancing…", "Restyling…", "Restoring faces…", "Removing…", "Extending…".
+[[nodiscard]] const char* run_verb(photo_target t) noexcept;
+// The tool bar's line for the run.
+[[nodiscard]] std::string run_line(const run_view& r);
+// "1 min left", "Less than a minute left", "About 2 h left"; "" until a few
+// percent are done.
+[[nodiscard]] std::string time_left_short(double fraction, double elapsed_s);
+[[nodiscard]] std::string cards_tree(std::span<const card_view> cards, const run_view& run);
+
 // Restyle's quality at a performance level (quality over speed, owner
 // 2026-11-04): the person's choice while the level allows it; with none
 // chosen, or one above the level, the highest the level allows (Default ->

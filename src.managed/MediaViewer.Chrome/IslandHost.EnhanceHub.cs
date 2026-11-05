@@ -76,9 +76,9 @@ public static partial class IslandHost
                 new((_editWand & WandBrushFull) != 0 ? "Brush full" : "Brushed", true, false, "Remove", true, false),
             EnhanceToolKind.Remove when brushOn => new("Brushing", true, false, "Done brushing", true, false),
             EnhanceToolKind.Remove => new("Ready", true, false, "Start brushing", true, false),
-            EnhanceToolKind.Restyle => (_editWand & WandRestyle) != 0
-                ? new("Ready", true, false, "Set up Restyle", true, false)
-                : new("Not offered", false, false, "Set up Restyle", false, false),
+            // One-click: offered whenever the add-on's cards have the tool (never a
+            // palette command: the owner's "Not offered", 2026-11-05).
+            EnhanceToolKind.Restyle or EnhanceToolKind.Detail => EnhanceOffered(kind),
             EnhanceToolKind.Faces when (_editWand & WandEyesBusy) != 0 =>
                 new("Working…", false, true, "Choose faces", false, false),
             // S8: the card arms the Faces tool; the panel takes over while it is.
@@ -86,20 +86,39 @@ public static partial class IslandHost
             EnhanceToolKind.Faces => (_editWand & WandFacesReady) != 0
                 ? new("Ready", true, false, "Choose faces", true, false)
                 : new("Needs People", false, false, "Choose faces", true, false),
-            EnhanceToolKind.Detail => new("Ready", true, false, "Set up", (_editWand & WandDetail) != 0, false),
-            EnhanceToolKind.RestoreFaces when (_editWand & WandRestoreFaces) == 0 =>
-                new("Not offered", false, false, "Restore faces…", false, false),
+            EnhanceToolKind.RestoreFaces when !EnhanceDockedOn(kind) => EnhanceOffered(kind),
             EnhanceToolKind.RestoreFaces => (_editWand & WandFacesReady) != 0
-                ? new("Ready", true, false, "Restore faces…", true, false)
-                : new("Needs People", false, false, "Restore faces…", true, false),
+                ? new("Ready", true, false, "Restore faces", true, false)
+                : new("Needs People", false, false, "Restore faces", true, false),
             _ => new("Ready", true, false, "Set the new frame", (_editWand & WandExtend) != 0, false),
         };
+    }
+
+    // A tool the cards draw: ready when the add-on's tree has its card, else why
+    // not (the cards still opening, an Enhance to update, or one without it).
+    private static EnhanceToolState EnhanceOffered(EnhanceToolKind kind)
+    {
+        string title = kind switch
+        {
+            EnhanceToolKind.Restyle => "Restyle",
+            EnhanceToolKind.Detail => "Enhance image",
+            _ => "Restore faces",
+        };
+        if (EnhanceDockedOn(kind))
+        {
+            bool working = EnhanceRunWorking && EnhanceDockWordOf(kind) == _enhanceRunTool;
+            return new(working ? "Working…" : "Ready", true, working, title, true, false);
+        }
+        if (_enhanceCardsOutdated) return new("Update Enhance", false, false, "Update Enhance…", true, true);
+        if (_enhanceDock is null) return new("Opening…", false, true, title, false, false);
+        return new("Not in this Enhance", false, false, title, false, false);
     }
 
     private static void RunEnhanceTool(EnhanceToolKind kind)
     {
         bool brushOn = (_editWand & WandBrushOn) != 0, brushed = (_editWand & WandBrushStrokes) != 0;
-        if (!_editEnhance && kind != EnhanceToolKind.Faces)
+        bool cardsTool = kind is EnhanceToolKind.Restyle or EnhanceToolKind.Detail or EnhanceToolKind.RestoreFaces;
+        if ((!_editEnhance && kind != EnhanceToolKind.Faces) || (cardsTool && _enhanceCardsOutdated))
         {
             OpenEnhanceSettings();
             return;
@@ -107,22 +126,21 @@ public static partial class IslandHost
         switch (kind)
         {
             case EnhanceToolKind.Remove:
-                // S5: Remove hands the strokes to the docked panel and runs.
+                // One-click: Remove hands the strokes over and runs (the glow, then
+                // the new photo); the tool bar's Remove does the same.
                 if (brushOn && brushed) Send(Command.AdjustBrush, 2);
                 else if (brushOn) Send(Command.AdjustPick, 100f);      // the brush down (pick 0)
-                else
-                {
-                    Send(Command.EditAction, EditActions.ArmBrush);
-                    Send(Command.EditAction, EditActions.EnhanceRemove);  // its knobs, later its result, under the card
-                }
+                else Send(Command.EditAction, EditActions.ArmBrush);
                 break;
-            case EnhanceToolKind.Restyle: Send(Command.EditAction, EditActions.EnhanceRestyle); break;
+            // Restyle needs its words: the tab, where its card takes them.
+            case EnhanceToolKind.Restyle: Send(Command.EditAction, EditActions.ShowEnhance); break;
+            // The flyout's Restore faces and Enhance image run at once with the
+            // cards' choices (native's enhance_tool, downloading first).
             case EnhanceToolKind.RestoreFaces: Send(Command.EditAction, EditActions.RestoreFaces); break;
             // S8: the Faces tool (a second press puts it down).
             case EnhanceToolKind.Faces: Send(Command.CanvasTool, CanvasTools.Faces * 1000); break;
             case EnhanceToolKind.Detail: Send(Command.EditAction, EditActions.EnhanceDetail); break;
-            // S6: Extend's frame on the canvas (canvas_tool 5; the context bar fills it). Armed,
-            // the host opens the docked panel under the card (S5), where Fill runs.
+            // S6: Extend's frame on the canvas (canvas_tool 5); Fill on the context bar runs it.
             case EnhanceToolKind.Extend: Send(Command.CanvasTool, CanvasTools.Extend * 1000); break;
         }
     }
@@ -149,13 +167,13 @@ public static partial class IslandHost
     private static TextBlock? _enhanceBrushNote;
     private static Button? _enhanceUndoStroke;
     private static Button? _enhanceClearStrokes;
-    private static Button? _enhanceRestoreFaces;  // S10: the Faces card's Restore faces
+    private static TextBlock? _enhanceRestoreFacesHead;  // S10: the Faces card's Restore faces heading
 
     private static void DropEnhanceUi()
     {
         EnhanceCards.Clear();
         EnhanceDockHosts.Clear();
-        _enhanceRestoreFaces = null;
+        _enhanceRestoreFacesHead = null;
         _enhanceBrushNote = null;
         _enhanceUndoStroke = null;
         _enhanceClearStrokes = null;
@@ -215,7 +233,7 @@ public static partial class IslandHost
         foreach (EnhanceToolInfo tool in EnhanceTools) grid.Children.Add(BuildEnhanceCard(tool));
         LayEnhanceGrid();
         pane.Children.Add(grid);
-        DrawEnhanceDock(force: true);  // S5: a docked panel already open goes under its card
+        DrawEnhanceDock(force: true);  // one-click: the cards' stacks, when the screen is open
         RenderEnhanceInPlace();
     }
 
@@ -303,11 +321,11 @@ public static partial class IslandHost
         col.Children.Add(actions);
         if (kind == EnhanceToolKind.Faces)
         {
-            // Its own row so the card fits the narrowest pane.
-            _enhanceRestoreFaces = EditButton("Restore faces…", () => RunEnhanceTool(EnhanceToolKind.RestoreFaces));
-            _enhanceRestoreFaces.HorizontalAlignment = HorizontalAlignment.Left;
-            ToolTipService.SetToolTip(_enhanceRestoreFaces, RestoreFacesTool.Purpose);
-            col.Children.Add(_enhanceRestoreFaces);
+            // S10: Enhance's face model under Choose faces: its Look, Strength, the
+            // time a face takes and its one button (the add-on's card stack below).
+            _enhanceRestoreFacesHead = Text("Restore faces", Title, UiFontSize - 2, maxLines: 1);
+            ToolTipService.SetToolTip(_enhanceRestoreFacesHead, RestoreFacesTool.Purpose);
+            col.Children.Add(_enhanceRestoreFacesHead);
         }
         if (kind == EnhanceToolKind.Extend && _editEnhance)
             col.Children.Add(Hint("Drag the frame's edges past the photo, then Fill (Enter)."));
@@ -329,7 +347,7 @@ public static partial class IslandHost
         // No hover wash while the docked panel is on it: it is a page, not a button.
         card.PointerEntered += (_, _) =>
         {
-            if (!EnhanceDockedOn(kind)) card.Background = Brush(ChromeColour.HoverWash);
+            if (!EnhanceDockedOn(kind)) card.Background = Brush(ChromeColour.HoverWash);  // a card with choices is a page
         };
         card.PointerExited += (_, _) => card.Background = Brush(ChromeColour.Surface2);
         AutomationProperties_SetName(card, tool.Title);
@@ -349,13 +367,14 @@ public static partial class IslandHost
             if (action.Content is TextBlock t) t.Text = st.Action;
             AutomationProperties_SetName(action, st.Action);
             action.IsEnabled = st.Enabled;
-            // Docked, the panel under the card carries the run (Remove keeps its brush
-            // buttons; Faces keeps Choose faces, the panel being Restore faces').
-            bool docked = EnhanceDockedOn(kind);
-            action.Visibility = docked && kind != EnhanceToolKind.Remove && kind != EnhanceToolKind.Faces
-                ? Visibility.Collapsed : Visibility.Visible;
-            bool armed = docked || (kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0) ||
-                         (kind == EnhanceToolKind.Faces && _facesArmed);
+            // One-click: Restyle, Enhance image (and the Faces card's Restore faces)
+            // run from the add-on's own button inside the card; the card's own
+            // button is the brush's, the frame's, the Faces tool's, or Get / Update Enhance.
+            bool cardsTool = kind is EnhanceToolKind.Restyle or EnhanceToolKind.Detail;
+            action.Visibility = cardsTool && !st.NeedsAddon ? Visibility.Collapsed : Visibility.Visible;
+            bool armed = (kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0) ||
+                         (kind == EnhanceToolKind.Faces && _facesArmed) ||
+                         (EnhanceRunWorking && EnhanceDockWordOf(kind) == _enhanceRunTool);
             card.BorderBrush = armed ? Brush(ChromeColour.Accent) : Brush(Hairline);
             card.BorderThickness = new Thickness(armed ? 1.5 : 0.5);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(card, st.Chip);
@@ -371,15 +390,11 @@ public static partial class IslandHost
             _enhanceClearStrokes.Visibility = brushOn ? Visibility.Visible : Visibility.Collapsed;
             _enhanceClearStrokes.IsEnabled = brushed;
         }
-        if (_enhanceRestoreFaces is not null)
+        if (_enhanceRestoreFacesHead is not null)
         {
-            // Shown with Enhance; enabled once it has the face model's command.
-            // Docked on the Faces card, the panel below carries its run.
-            EnhanceToolState rf = EnhanceStateOf(EnhanceToolKind.RestoreFaces);
-            _enhanceRestoreFaces.Visibility = _editEnhance && !EnhanceDockedOn(EnhanceToolKind.Faces)
+            // Shown while the cards have Restore faces (its stack follows it).
+            _enhanceRestoreFacesHead.Visibility = _editEnhance && EnhanceDockedOn(EnhanceToolKind.Faces)
                 ? Visibility.Visible : Visibility.Collapsed;
-            _enhanceRestoreFaces.IsEnabled = rf.Enabled;
-            AutomationProperties_SetName(_enhanceRestoreFaces, "Restore faces, " + rf.Chip);
         }
         if (_enhanceBrushNote is not null)
             _enhanceBrushNote.Visibility = (_editWand & WandBrushFull) != 0 ? Visibility.Visible : Visibility.Collapsed;

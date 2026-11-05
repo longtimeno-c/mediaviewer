@@ -39,6 +39,9 @@ struct EditStripView: View {
           actionRow(labels: false, autoLabel: true)
           actionRow(labels: false, autoLabel: false)
         }
+        // docs/design/20 "Compare" (owner call A): the split's words are the
+        // chrome's; only the divider and its handle lie over the photo.
+        if store.showOriginal && store.canCompare { compareLabels }
       }
     }
     .padding(MVTheme.space(12))
@@ -48,6 +51,25 @@ struct EditStripView: View {
     .overlay(alignment: .bottom) { Rectangle().fill(MVTheme.hairline).frame(height: 1) }
     .accessibilityElement(children: .contain)
     .accessibilityLabel(store.title)
+  }
+
+  /// "Before | After": which side of the line on the photo is which.
+  private var compareLabels: some View {
+    HStack(spacing: MVTheme.space(8)) {
+      Image(systemName: "square.split.2x1").font(.system(size: 11, weight: .medium))
+        .foregroundStyle(MVTheme.accent)
+        .accessibilityHidden(true)
+      Text(store.compareBefore).font(MVTheme.font(12)).foregroundStyle(MVTheme.title).lineLimit(1)
+      Rectangle().fill(MVTheme.accent).frame(width: 2, height: 14).accessibilityHidden(true)
+      Text(store.compareAfter).font(MVTheme.font(12)).foregroundStyle(MVTheme.title).lineLimit(1)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, MVTheme.space(8))
+    .padding(.vertical, MVTheme.space(4))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.selectionWash))
+    .help("Drag the line on the photo to move between before and after")
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(store.compareBefore), left of the line. \(store.compareAfter), right of the line.")
   }
 
   private var countText: String {
@@ -113,9 +135,10 @@ struct EditStripView: View {
                    name: "Reset to original") { store.run(EditCommand.reset) }
         .disabled(store.editCount == 0 && !store.cropActive)
       HeaderButton(title: "Compare", symbol: "square.split.2x1", labels: labels,
-                   help: withKey("Show the original while on (or hold the key); nothing is changed",
-                                 "Show original (hold)"),
+                   help: store.canCompare ? withKey(store.compareHelp, "Show original (hold)") : store.compareHelp,
+                   name: "Compare before and after",
                    selected: store.showOriginal) { store.setShowOriginal(!store.showOriginal) }
+        .disabled(!store.canCompare)
         .accessibilityAddTraits(store.showOriginal ? [.isSelected] : [])
       Spacer(minLength: MVTheme.space(8))
       Button("Save copy…") { store.saveCopy() }

@@ -46,6 +46,8 @@ add_library(mv_enhance_engine STATIC
   ${_E}/downloads.h
   ${_E}/engine.cpp
   ${_E}/engine.h
+  ${_E}/eta.cpp
+  ${_E}/eta.h
   ${_E}/face_restore.cpp
   ${_E}/face_restore.h
   ${_E}/prefs.cpp

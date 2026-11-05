@@ -61,6 +61,7 @@
 #include "shell/adjust_pane.h"
 #include "shell/brush_mask.h"
 #include "shell/canvas_tool.h"
+#include "shell/crop_drag.h"
 #include "shell/faces_tool.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
@@ -70,6 +71,8 @@
 #include "shell/text_select.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "shell/compare_source.h"
+#include "shell/enhance_run.h"
 #include "shell/pane_width.h"
 #include "shell/video_timeline.h"
 #include "edit/auto_adjust.h"
@@ -183,6 +186,9 @@ constexpr UINT kMsgCloudFetch = WM_APP + 0x84;
 // docs/plans/edit-refresh.md S3: a canvas-tool job finished, the eyes of a
 // still or Find eyes' fixes (LPARAM: a tool_job_result the handler owns).
 constexpr UINT kMsgToolJob = WM_APP + 0x85;
+// docs/design/20 "Compare": the stat of an Enhance result's possible sources
+// finished (LPARAM: a compare_source_result the handler owns; the pool posts).
+constexpr UINT kMsgCompareSource = WM_APP + 0x8C;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
@@ -364,6 +370,13 @@ struct app_state {
   float extend_press[2] = {0.0f, 0.0f};
   std::uint8_t extend_grab = 0;
   std::uint8_t extend_hover = 0;
+  // docs/design/20 Behaviour 4: crop mode's handles (shell/crop_drag.h): the
+  // edges a press holds with the draft and point it started from, and the
+  // edges under the pointer (WM_SETCURSOR picks their cursor).
+  mv::edit::rect crop_start{};
+  float crop_press[2] = {0.0f, 0.0f};
+  std::uint8_t crop_grab = 0;
+  std::uint8_t crop_hover = 0;
   // docs/plans/edit-refresh.md §2.4: the right column's edge. Its preferred
   // width is settings.right_pane_dip (0 = 360); while it is dragged that holds
   // the live width and is saved on release. The grab offset keeps the edge
@@ -411,8 +424,27 @@ struct app_state {
   // docs/plans/edit-refresh.md S5: the photo Enhance's docked panel (place
   // "edit") was opened on; "" while it is closed.
   std::string enhance_dock_path;
+  // One-click Enhance (docs/design/29 "One click"): the run the cards' "run"
+  // node describes (the glow, the tool bar's band, the result opened once),
+  // and the photo it works on.
+  mv::shell::enhance_run_follow enhance_run;
+  std::string enhance_run_path;
   bool ws_shown = false;
-  bool show_original = false;
+  bool show_original = false;  // Y held: the before alone (docs/design/20 "Compare")
+  // docs/design/20 "Compare" (shell/compare_source.h), the Mac's _compare*: the
+  // split is up (the header's or the rail's Compare); for an Enhance result,
+  // what its source is (source, missing, looking; none for any other photo),
+  // its path and place in the result, the side still's token (0 not asked),
+  // and the lookup's seq. The divider is held, or under the pointer.
+  bool compare_on = false;
+  bool compare_dragging = false;
+  bool compare_cursor = false;
+  mv::shell::compare_kind compare_result = mv::shell::compare_kind::none;
+  std::string compare_source;
+  mv::shell::compare_rect compare_rect;
+  std::uint64_t compare_token = 0;
+  std::uint64_t compare_tokens = 0;
+  std::uint64_t compare_seq = 0;
   // PR 30 (docs/design/21): the Video Editor window. While it is open it owns the
   // canvas (input.canvas_window) and the keys aimed at it. `token` bumps on
   // open and close, so a strip job that lands for an older clip is dropped;
@@ -979,6 +1011,12 @@ void push_edit_view(app_state* app) noexcept;
 void workspace_item_changed(app_state* app) noexcept;
 void enhance_dock_close(app_state* app) noexcept;
 void enhance_tool(app_state* app, std::string_view photo, bool run, const std::vector<float>& faces = {});
+// One-click Enhance: the Enhance tab's cards on the photo on screen, and
+// Enhance's palette rows / strip entry on a photo landing on that tab.
+void enhance_cards_sync(app_state* app) noexcept;
+void enhance_cards_follow(app_state* app, const std::string& path) noexcept;
+bool enhance_open_tab_for(app_state* app, const std::vector<std::string>& paths);
+void enhance_open_result(app_state* app, const std::string& path, bool keep = true);
 void set_editor_open(app_state* app, bool open);  // PR 30
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index);
@@ -2282,16 +2320,15 @@ bool brush_active(app_state* app) noexcept;
 void sync_brush_mask(app_state* app);
 void tool_apply_view(app_state* app) noexcept;
 void push_tool_bar(app_state* app) noexcept;
+// docs/design/20 "Compare" (below set_show_original).
+void compare_publish(app_state* app) noexcept;
+mv::shell::compare_kind compare_kind_of(app_state* app) noexcept;
+void compare_item_changed(app_state* app, const std::string& path) noexcept;
 
 void publish_edit(app_state* app) noexcept {
-  if (app->show_original && app->edits.has_item() && app->edit_key != 0) {
-    // PR 29 Show original (Y held, the strip's toggle): the item with no
-    // geometry and no colour, on the same blit. The stack is untouched.
-    mv::shell::edit_view v;
-    v.item = app->edit_key;
-    v.generation = app->edit_generation;
-    app->input.edit[0] = v;
-  } else {
+  // docs/design/20 "Compare": the before (Y held, or the split) is the lab's
+  // second draw (input_snapshot::before_after); the edit view stays the edit.
+  {
     const mv::shell::edit_view before = app->input.edit[0];
     app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
     // Slice 7: strokes lie over what was brushed only while the item and its
@@ -2322,6 +2359,7 @@ void publish_edit(app_state* app) noexcept {
   } else {
     (void)mv_edit_still_set(nullptr, nullptr, 0);
   }
+  compare_publish(app);
   push_edit_view(app);  // the strip's edit count, the Crop pane's draft
 }
 
@@ -2352,6 +2390,7 @@ void edit_item_opened(app_state* app) {
       app->edit_path.clear();
       app->edit_key = 0;
       app->show_original = false;
+      compare_item_changed(app, std::string());
       publish_edit(app);
       adjust_item_changed(app);
       workspace_item_changed(app);
@@ -2365,9 +2404,10 @@ void edit_item_opened(app_state* app) {
     return;  // the same bytes, the same select: nothing moved
   }
   app->input.edit[1] = app->input.edit[0];
-  // S5: Enhance's docked panel stays with the photo it was opened on.
-  if (!app->enhance_dock_path.empty() && app->enhance_dock_path != entry.path_utf8) enhance_dock_close(app);
   app->edit_path = entry.path_utf8;
+  // One-click: the Enhance tab's cards follow the photo (a run on the last
+  // one stops, as leaving it always did).
+  enhance_cards_follow(app, entry.path_utf8);
   app->edit_size = entry.size;
   app->edit_mtime = entry.mtime_unix;
   app->edit_key = mv::canvas::item_key_for(entry.path_utf8.data(), entry.path_utf8.size());
@@ -2390,6 +2430,7 @@ void edit_item_opened(app_state* app) {
   }
   const bool carried_turn = app->edits.set_item(e);
   app->show_original = false;
+  compare_item_changed(app, entry.path_utf8);
   publish_edit(app);
   if (carried_turn) schedule_rotation_write(app);
   adjust_item_changed(app);
@@ -2933,6 +2974,11 @@ void tool_apply_view(app_state* app) noexcept {
   in.pulse_until_ms = app->tool_pulse_until;
   in.extend = app->extend;
   in.extend_handle = app->extend_grab != 0 ? app->extend_grab : app->extend_hover;
+  // One-click Enhance: the working glow, on the photo the run works on only.
+  if (!app->enhance_run_path.empty() && app->edit_path == app->enhance_run_path) {
+    in.work_glow_on_ms = app->enhance_run.glow_on_ms;
+    in.work_glow_off_ms = app->enhance_run.glow_off_ms;
+  }
   const mv::edit::placement p = app->edits.preview_placement();
   mv::shell::apply_tool(app->input.edit[0], in, p, app->edits.colour());
   // S8: the faces' boxes (only for the photo they were read from).
@@ -3041,6 +3087,9 @@ mv::shell::chrome_tool_bar_args tool_bar_args_of(app_state* app) noexcept {
   const mv::shell::tool_bar b = tool_bar_of(app);
   mv::shell::chrome_tool_bar_args a{};
   std::memcpy(&a, &b, sizeof(a));
+  // One-click Enhance: the bar also shows a run's line (the chrome draws it
+  // from the cards' run node, IslandHost.EnhanceRun.cs).
+  if (app->enhance_run.band && !app->gallery_visible && !app->settings_open && !app->editor.open) a.visible = 1;
   return a;
 }
 
@@ -3053,7 +3102,8 @@ void push_tool_bar(app_state* app) noexcept {
 // nothing covers the canvas. A change of the band refits the picture
 // (apply_view_state: refit_seq, never a swapchain resize).
 bool tool_bar_wanted(app_state* app) noexcept {
-  return tool_armed(app) && !app->gallery_visible && !app->settings_open && !app->editor.open;
+  return (tool_armed(app) || app->enhance_run.band) && !app->gallery_visible && !app->settings_open &&
+         !app->editor.open;
 }
 void sync_tool_bar(app_state* app) noexcept {
   if (tool_bar_wanted(app) == app->tool_band) {
@@ -3760,6 +3810,60 @@ void extend_hover_at(app_state* app, int x, int y) {
   brush_publish(app);  // the edge lights under the pointer (WM_SETCURSOR picks its cursor)
 }
 
+// ---- docs/design/20 Behaviour 4: crop mode's handles on the canvas -------------
+//
+// The twin of the Mac's -crop* methods. A press on the draft's edge or corner
+// (shell/crop_drag.h crop_hit, Extend's grab distance) resizes it, one inside
+// moves it; edit_session::drag_crop keeps a locked ratio and the straightened
+// source's covered area. Anywhere else the press is the canvas's as before.
+
+// Crop mode on a still on screen: the handles take presses.
+bool crop_handles(app_state* app) noexcept {
+  return app->edits.crop_active() && !app->show_original &&
+         edit_subject_of(app) == mv::shell::edit_subject::still;
+}
+
+std::uint8_t crop_hit_at(app_state* app, int x, int y) noexcept {
+  float u = 0, v = 0, ru = 0, rv = 0;
+  if (!crop_handles(app) || !pointer_over_canvas(app) ||
+      !app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v)) {
+    return mv::shell::extend_none;
+  }
+  extend_reach(app, ru, rv);
+  return mv::shell::crop_hit(app->edits.crop_overlay(), u, v, ru, rv);
+}
+
+bool crop_press(app_state* app, int x, int y) {
+  const std::uint8_t grab = crop_hit_at(app, x, y);
+  if (grab == mv::shell::extend_none) return false;
+  float u = 0, v = 0;
+  (void)app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v);
+  app->crop_grab = grab;
+  app->crop_hover = grab;
+  app->crop_start = app->edits.crop_overlay();
+  app->crop_press[0] = u;
+  app->crop_press[1] = v;
+  return true;
+}
+
+void crop_drag_to(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  if (app->crop_grab == 0 ||
+      !app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v)) {
+    return;
+  }
+  // Only the draft moves: the overlay redraws, the Crop pane's size follows.
+  if (app->edits.drag_crop(app->crop_start, app->crop_grab, u - app->crop_press[0], v - app->crop_press[1]) ==
+      mv::shell::edit_effect::redraw) {
+    publish_edit(app);
+    ++app->input.activity_seq;
+  }
+}
+
+void crop_release(app_state* app) noexcept { app->crop_grab = 0; }
+
+void crop_hover_at(app_state* app, int x, int y) noexcept { app->crop_hover = crop_hit_at(app, x, y); }
+
 // A chip on the bar: the add-on's preset as a frame (0 Original: none).
 void extend_preset(app_state* app, int i) {
   if (active_tool(app) != mv::shell::canvas_tool::extend) return;
@@ -3973,7 +4077,7 @@ void tool_from_island(app_state* app, int command, float arg) {
     return;
   }
   // S6: the Extend card toggles its frame and, armed, opens Enhance's docked
-  // panel under the card (S5), the rail's tool_extend path.
+  // panel under the card (S5): tool_extend's path.
   if (tool == mv::shell::canvas_tool::extend) {
     (void)run_tool_command(app, tool_extend);
     return;
@@ -5043,7 +5147,8 @@ void push_edit_view(app_state* app) noexcept {
     a.portrait = app->edits.aspect_portrait() ? 1 : 0;
     a.straighten = app->edits.crop_active() ? app->edits.crop_angle() : app->edits.export_geometry().straighten;
     a.edit_count = static_cast<std::int32_t>(app->edits.edit_count());
-    a.show_original = app->show_original ? 1 : 0;
+    a.show_original = app->compare_on || app->show_original ? 1 : 0;
+    a.compare = static_cast<std::int32_t>(compare_kind_of(app));
     if (subject == mv::shell::edit_subject::still && app->edits.has_item()) {
       std::uint32_t w = 0, h = 0;
       if (app->lab.still_size(app->edit_key, &w, &h)) {
@@ -5119,6 +5224,12 @@ void sync_workspace(app_state* app) {
   using mv::shell::edit_tab;
   const bool open = app->ws.open;
   const edit_tab tab = app->ws.tab;
+  // docs/design/20 "Compare": the split belongs to Edit; closing takes it down.
+  if (!open && app->compare_on) {
+    compare_publish(app);
+    ++app->input.activity_seq;
+    publish(app);
+  }
   // A crop draft belongs to the Crop tab: leaving it applies the draft
   // (Lightroom's rule), so no crop is lost to a tab click.
   if (app->edits.crop_active() && !(open && tab == edit_tab::crop)) {
@@ -5137,8 +5248,10 @@ void sync_workspace(app_state* app) {
     if (jobs) set_jobs_pane(app, true, false);
   }
   app->ws_shown = open;
-  // Enhance's docked panel goes with Edit (S5): a run still going stops.
+  // Enhance's cards go with Edit: a run still going stops.
   if (!open) enhance_dock_close(app);
+  // One-click: the Enhance tab shows its cards on the photo on screen.
+  if (open && tab == edit_tab::enhance) enhance_cards_sync(app);
   // A canvas tool belongs to Edit: closing it puts the tool down (S3).
   if (!open && app->tool.tool != mv::shell::canvas_tool::none) {
     (void)mv::shell::arm_tool(app->tool, app->ws, mv::shell::canvas_tool::none);
@@ -5252,7 +5365,195 @@ void edit_set_straighten(app_state* app, float degrees) {
   apply_edit_effect(app, app->edits.set_straighten(degrees));
 }
 
+// ---- Compare (docs/design/20 "Compare", shell/compare_source.h) -------------
+
+// What a lookup of an Enhance result's source posts back (kMsgCompareSource).
+struct compare_source_result {
+  std::uint64_t seq = 0;
+  std::string source;  // "" when none of the candidates is on disk
+};
+
+void compare_found(app_state* app, std::string source, mv::shell::compare_rect where) noexcept {
+  app->compare_result = mv::shell::compare_kind::source;
+  app->compare_source = std::move(source);
+  app->compare_rect = where;
+  app->compare_token = 0;
+}
+
+// What the photo on screen compares with: an Enhance result's source, else its
+// edits, else why not.
+mv::shell::compare_kind compare_kind_of(app_state* app) noexcept {
+  using mv::shell::compare_kind;
+  if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return compare_kind::none;
+  if (app->compare_result != compare_kind::source && !app->edit_path.empty()) {
+    // note_result may come after the open (the one-click flow): a few strings.
+    try {
+      mv::shell::compare_rect where;
+      std::string noted = mv::shell::noted_source(app->edit_path, &where);
+      if (!noted.empty()) compare_found(app, std::move(noted), where);
+    } catch (...) {
+    }
+  }
+  if (app->compare_result == compare_kind::source) return compare_kind::source;
+  if (app->edits.edit_count() > 0) return compare_kind::edits;
+  return app->compare_result;
+}
+
+// A new photo: the split goes down, and an Enhance result's source is looked
+// for: the noted one, else the listing's neighbours (no I/O: a result sorts
+// beside its photo), else a stat of each candidate on the pool.
+void compare_item_changed(app_state* app, const std::string& path) noexcept {
+  using mv::shell::compare_kind;
+  app->compare_on = false;
+  app->compare_dragging = false;
+  app->input.before_split = 0.5f;
+  app->input.before_hot = false;
+  app->input.before_layout = static_cast<std::uint8_t>(mv::shell::result_layout(path));
+  const std::uint64_t seq = ++app->compare_seq;
+  app->compare_result = compare_kind::none;
+  app->compare_source.clear();
+  app->compare_rect = {};
+  app->compare_token = 0;
+  if (path.empty()) return;
+  try {
+    mv::shell::compare_rect where;
+    std::string noted = mv::shell::noted_source(path, &where);
+    if (!noted.empty()) {
+      compare_found(app, std::move(noted), where);
+      return;
+    }
+    if (!mv::shell::looks_like_result(path)) return;
+    std::uint32_t at = 0, count = 0;
+    if (selected_index(app, at) && mv_folder_count(app->session, &count) == MV_OK) {
+      constexpr std::uint32_t kNear = 8;  // each one an ABI read: the neighbours only
+      for (std::uint32_t d = 1; d <= kNear; ++d) {
+        const std::uint32_t picks[2] = {at >= d ? at - d : count, at + d};
+        for (const std::uint32_t i : picks) {
+          if (i >= count) continue;
+          std::string other = item_path_at(app, i);
+          if (!mv::shell::is_source_name(path, other)) continue;
+          compare_found(app, std::move(other), {});
+          return;
+        }
+      }
+    }
+    app->compare_result = compare_kind::looking;
+    const HWND hwnd = app->window;
+    app->jobs.submit_at(mv::background_generation, [path, seq, hwnd](const mv::job_context&) -> mv::status {
+      auto* r = new (std::nothrow) compare_source_result{};
+      if (!r) return mv::status::out_of_memory;
+      r->seq = seq;
+      r->source = mv::shell::source_of(path, [](const std::string& p) { return mv::io::file_exists(p); });
+      if (!hwnd || !::PostMessageW(hwnd, kMsgCompareSource, 0, reinterpret_cast<LPARAM>(r))) delete r;
+      return mv::status::ok;
+    });
+  } catch (...) {
+    app->compare_result = compare_kind::none;
+  }
+}
+
+void on_compare_source(app_state* app, std::unique_ptr<compare_source_result> r) {
+  if (!app || !r || r->seq != app->compare_seq) return;  // the user has moved on
+  if (r->source.empty()) {
+    app->compare_result = mv::shell::compare_kind::source_missing;
+  } else {
+    compare_found(app, std::move(r->source), {});
+  }
+  compare_publish(app);
+  push_edit_view(app);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// The split as the snapshot says it: the before's kind, Y held, the divider.
+// A result's source is asked of the session's pool once it is wanted.
+void compare_publish(app_state* app) noexcept {
+  const mv::shell::compare_kind kind = compare_kind_of(app);
+  if (!mv::shell::can_compare(kind) || !app->ws.open) app->compare_on = false;
+  if (!mv::shell::can_compare(kind)) app->show_original = false;
+  const bool show = (app->compare_on || app->show_original) && !app->edits.crop_active();
+  const bool by_source = kind == mv::shell::compare_kind::source;
+  if (show && by_source && app->compare_token == 0 && !app->compare_source.empty()) {
+    app->compare_token = ++app->compare_tokens;
+    mv::abi::request_side_still(app->session, app->compare_source.c_str(), app->compare_token);
+  }
+  app->input.before_after = static_cast<std::uint8_t>(show ? (by_source ? 2 : 1) : 0);
+  app->input.before_whole = app->show_original;
+  app->input.before_token = app->compare_token;
+  app->input.before_rect[0] = app->compare_rect.x;
+  app->input.before_rect[1] = app->compare_rect.y;
+  app->input.before_rect[2] = app->compare_rect.w;
+  app->input.before_rect[3] = app->compare_rect.h;
+  if (!show || app->show_original) {
+    app->input.before_hot = false;
+    app->compare_dragging = false;
+  }
+}
+
+// The header's and the rail's Compare: the split on or off.
+void compare_set(app_state* app, bool on) noexcept {
+  if (on && !mv::shell::can_compare(compare_kind_of(app))) {
+    notice_show(app, mv::shell::compare_unavailable_reason(compare_kind_of(app)));
+    push_edit_view(app);
+    return;
+  }
+  if (app->compare_on == on) return;
+  app->compare_on = on;
+  if (on) app->input.before_split = 0.5f;
+  compare_publish(app);
+  push_edit_view(app);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// The divider under the pointer (or held): the left-right cursor and the accent.
+bool compare_over_divider(app_state* app, int x, int y) noexcept {
+  if (app->input.before_after == 0 || app->input.before_whole) return false;
+  return mv::shell::divider_hit(app->lab.compare_frame_now(), static_cast<float>(x), static_cast<float>(y),
+                                app->input.dpi_scale);
+}
+
+void compare_hover(app_state* app, int x, int y) noexcept {
+  const bool over = app->compare_dragging || compare_over_divider(app, x, y);
+  app->compare_cursor = over;
+  if (app->input.before_hot == over) return;
+  app->input.before_hot = over;
+  ++app->input.activity_seq;
+}
+
+bool compare_press(app_state* app, int x, int y) noexcept {
+  if (!compare_over_divider(app, x, y)) return false;
+  app->compare_dragging = true;
+  app->compare_cursor = true;
+  app->input.before_hot = true;
+  ++app->input.activity_seq;
+  publish(app);
+  return true;
+}
+
+void compare_drag(app_state* app, int x) noexcept {
+  const mv::shell::compare_frame f = app->lab.compare_frame_now();
+  if (!f.valid) return;
+  const float split = mv::shell::split_at(f, static_cast<float>(x));
+  if (split == app->input.before_split) return;
+  app->input.before_split = split;
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+void compare_release(app_state* app, int x, int y) noexcept {
+  app->compare_dragging = false;
+  compare_hover(app, x, y);
+  publish(app);
+}
+
+// Y held (and MV_EDIT_SELFTEST): the before alone while held.
 void set_show_original(app_state* app, bool on) noexcept {
+  if (on && !mv::shell::can_compare(compare_kind_of(app))) {
+    // Nothing to compare: say why instead of showing the same picture.
+    if (!app->show_original) notice_show(app, mv::shell::compare_unavailable_reason(compare_kind_of(app)));
+    return;
+  }
   if (app->show_original == on) return;
   app->show_original = on;
   publish_edit(app);
@@ -5316,17 +5617,91 @@ void enhance_tool(app_state* app, std::string_view photo, bool run, const std::v
     push_edit_view(app);
     return;
   }
-  // The sheet, started on the tool where its commands can say so.
-  mv::shell::command_id id = mv::shell::find_addon_command(
-      "enhance", photo == "restyle" ? "restyle" : photo == "faces" ? "faces" : "open");
-  if (id == mv::shell::command_id::none) id = mv::shell::find_addon_command("enhance", "open");
-  if (id == mv::shell::command_id::none) {
-    notice_show(app, "This needs the Enhance add-on (Settings → Add-ons).");
+  // One-click (owner 2026-11-05): never the sheet for a photo. An Enhance
+  // without the cards screen is one to update.
+  notice_show(app, mv::shell::find_addon_command("enhance", "open") == mv::shell::command_id::none
+                       ? "This needs the Enhance add-on (Settings → Add-ons)."
+                       : "Update Enhance (Settings → Add-ons) to run its tools here.");
+}
+
+// One-click: the Enhance tab's cards (Enhance's "tool" screen) on the photo
+// on screen, opened while the tab shows; the Mac's -enhanceCardsSync.
+void enhance_cards_sync(app_state* app) noexcept {
+  if (!app || !app->ws.open || app->ws.tab != mv::shell::edit_tab::enhance ||
+      edit_subject_of(app) != mv::shell::edit_subject::still || app->edit_path.empty()) {
     return;
   }
-  // An Enhance without the docked panel has no way to take the chosen faces.
-  if (!faces.empty()) notice_show(app, "This Enhance restores every face in the photo");
-  (void)run_command(app, id);
+  if (mv::shell::find_addon_command("enhance", "open") == mv::shell::command_id::none) return;
+  if (app->edit_path == app->enhance_dock_path) return;
+  try {
+    mv::json::writer w;
+    w.begin_object().key("path").string(app->edit_path).end_object();
+    const std::uint32_t dpi = app->window ? ::GetDpiForWindow(app->window) : 96u;
+    const float scale = dpi > 0 ? static_cast<float>(dpi) / 96.0f : 1.0f;
+    const int column = right_pane_px(*app, static_cast<int>(app->input.width), dpi);
+    const float width = std::max(200.0f, static_cast<float>(column) / scale - 44.0f - 2 * 14.0f - 2 * 12.0f);
+    if (mv_slots_screen_command("enhance", "tool", app->edit_path.c_str(), w.str().c_str(), width, scale) == MV_OK) {
+      app->enhance_dock_path = app->edit_path;
+    }
+  } catch (...) {
+  }
+}
+
+// Another photo: on the Enhance tab the cards follow it (Enhance stops a run
+// on the last one); elsewhere they close (a run stops the same way).
+void enhance_cards_follow(app_state* app, const std::string& path) noexcept {
+  if (!app) return;
+  if (app->enhance_dock_path.empty()) {
+    enhance_cards_sync(app);  // the tab showing with nothing open yet (no add-on then)
+    return;
+  }
+  if (app->enhance_dock_path == path) return;
+  if (app->enhance_run.reset(mv::shell::steady_ms(), path)) {
+    sync_tool_bar(app);
+    brush_publish(app);
+  }
+  if (app->ws.open && app->ws.tab == mv::shell::edit_tab::enhance) {
+    enhance_cards_sync(app);  // edit_path is the new photo by now
+  } else {
+    enhance_dock_close(app);
+  }
+}
+
+// The cards' run, as the chrome read it ("<state>\t<id>\t<result>",
+// IslandHost.EnhanceRun.cs): the glow over the photo while it works, the tool
+// bar's band while it has a line, and its result opened once with Edit kept
+// on the Enhance tab. The Mac's -enhanceRunState:run:result:.
+void enhance_run_state(app_state* app) {
+  mv::shell::enhance_run_report r;
+  if (!mv::shell::parse_enhance_run(app->chrome.take_tree_path(), r)) return;
+  if ((r.state == mv::shell::enhance_run_state::running && app->enhance_run.glow_on_ms == 0) ||
+      (r.state == mv::shell::enhance_run_state::downloading && r.id != app->enhance_run.seen_running)) {
+    app->enhance_run_path = app->enhance_dock_path;
+  }
+  const mv::shell::enhance_run_follow::step step = app->enhance_run.update(r, mv::shell::steady_ms());
+  if (step.changed) {
+    sync_tool_bar(app);
+    brush_publish(app);
+  }
+  if (!step.open.empty()) {
+    // docs/design/20 "Compare": the result compares with the photo it was made from.
+    if (!app->enhance_run_path.empty()) mv::shell::note_result(step.open, app->enhance_run_path);
+    enhance_open_result(app, step.open);
+  }
+}
+
+// Enhance's palette rows and the strip's Enhance… on the photo on screen: the
+// Edit pane opens on its Enhance tab. false for anything else (a clip, an
+// audio file, several files): Enhance's sheet takes those.
+bool enhance_open_tab_for(app_state* app, const std::vector<std::string>& paths) {
+  if (!app || edit_subject_of(app) != mv::shell::edit_subject::still || app->edit_path.empty()) return false;
+  if (paths.size() > 1 || (paths.size() == 1 && paths.front() != app->edit_path)) return false;
+  const mv::shell::workspace_action a =
+      app->ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
+  if (mv::shell::apply_step(app->ws, {a, mv::shell::edit_tab::enhance})) sync_workspace(app);
+  else enhance_cards_sync(app);
+  push_edit_view(app);
+  return true;
 }
 
 // The docked panel belongs to the photo it opened on: another photo, or Edit
@@ -5341,11 +5716,15 @@ void enhance_dock_close(app_state* app) noexcept {
 // it with Edit still open on the Enhance tab. Every result is a file beside
 // the original (no Photos library on Windows); one the listing has not caught
 // yet opens through its folder, selected.
-void enhance_show_result(app_state* app, bool keep) {
-  const std::string path = app->chrome.take_tree_path();
+// The result row's Show / Keep editing (S5), and one-click's result opened:
+// the new file (or folder listing) selected; kept editing, Edit stays on the
+// Enhance tab.
+void enhance_open_result(app_state* app, const std::string& path, bool keep) {
   if (path.empty()) return;
   if (!keep) close_workspace(app);
-  enhance_dock_close(app);
+  // Kept editing, the cards follow the new photo when it shows (its notice
+  // stays: "Saved as …").
+  if (!keep) enhance_dock_close(app);
   bool found = false;
   const std::uint32_t n = folder_count(app);
   for (std::uint32_t i = 0; i < n; ++i) {
@@ -5366,6 +5745,8 @@ void enhance_show_result(app_state* app, bool keep) {
   }
 }
 
+void enhance_show_result(app_state* app, bool keep) { enhance_open_result(app, app->chrome.take_tree_path(), keep); }
+
 void run_edit_action(app_state* app, int action) {
   switch (static_cast<mv::shell::chrome_edit_action>(action)) {
     case mv::shell::chrome_edit_action::cancel_crop:
@@ -5377,8 +5758,10 @@ void run_edit_action(app_state* app, int action) {
       return;
     case mv::shell::chrome_edit_action::original_off:
     case mv::shell::chrome_edit_action::original_on:
+      // docs/design/20 "Compare": the header's and the rail's Compare put the
+      // before/after split up or down (Y held is the before alone).
       if (edit_subject_of(app) != mv::shell::edit_subject::still) return;
-      set_show_original(app, action == static_cast<int>(mv::shell::chrome_edit_action::original_on));
+      compare_set(app, action == static_cast<int>(mv::shell::chrome_edit_action::original_on));
       return;
     case mv::shell::chrome_edit_action::save_copy:
       // Save copy…: apply a crop draft, then PR 10's export (a new file).
@@ -5386,18 +5769,17 @@ void run_edit_action(app_state* app, int action) {
       (void)run_edit_command(app, mv::shell::command_id::export_image);
       return;
     case mv::shell::chrome_edit_action::enhance:
-    case mv::shell::chrome_edit_action::restyle: {
-      // Slice 5: Enhance's own "open" row (or, from the wand and the Enhance
-      // tab's Restyle card, "restyle": the sheet started on Restyle with
-      // words); its copy carries the edit (addon_media's still edit, set by
-      // publish_edit).
-      if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
-      const bool restyle = action == static_cast<int>(mv::shell::chrome_edit_action::restyle);
-      mv::shell::command_id id = mv::shell::find_addon_command("enhance", restyle ? "restyle" : "open");
-      if (id == mv::shell::command_id::none && restyle) id = mv::shell::find_addon_command("enhance", "open");
-      if (id != mv::shell::command_id::none) (void)run_command(app, id);
+    case mv::shell::chrome_edit_action::restyle:
+      // One-click (owner 2026-11-05): the strip's Enhance…, the wand's rows
+      // and the viewer's context entry open the Enhance tab for a photo,
+      // whose cards run each tool; never the sheet. A clip or an audio file
+      // (no Edit pane for it) keeps Enhance's sheet.
+      if (!enhance_open_tab_for(app, {})) {
+        const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+        if (id != mv::shell::command_id::none) (void)run_command(app, id);
+      }
       return;
-    }
+    case mv::shell::chrome_edit_action::enhance_run: enhance_run_state(app); return;
     case mv::shell::chrome_edit_action::arm_brush:
     case mv::shell::chrome_edit_action::arm_red_eye: {
       // docs/plans/edit-refresh.md S2 / S3: the Remove and Red-eye cards, the
@@ -5421,10 +5803,12 @@ void run_edit_action(app_state* app, int action) {
     // S5: the Enhance tab's cards, the docked panel and its result row.
     case mv::shell::chrome_edit_action::enhance_remove: enhance_tool(app, "remove", false); return;
     case mv::shell::chrome_edit_action::enhance_restyle: enhance_tool(app, "restyle", false); return;
-    case mv::shell::chrome_edit_action::enhance_detail: enhance_tool(app, "detail", false); return;
+    // One-click: the flyout's Enhance image and Restore faces run at once
+    // with the cards' choices (downloading first when the model is not here).
+    case mv::shell::chrome_edit_action::enhance_detail: enhance_tool(app, "detail", true); return;
     case mv::shell::chrome_edit_action::enhance_extend: enhance_tool(app, "extend", false); return;
     // S10: Restore faces, docked under the Faces card (the sheet on "faces" without it).
-    case mv::shell::chrome_edit_action::restore_faces: enhance_tool(app, "faces", false); return;
+    case mv::shell::chrome_edit_action::restore_faces: enhance_tool(app, "faces", true); return;
     case mv::shell::chrome_edit_action::enhance_result_show: enhance_show_result(app, false); return;
     case mv::shell::chrome_edit_action::enhance_result_keep: enhance_show_result(app, true); return;
   }
@@ -9013,7 +9397,7 @@ class chrome_text_recognizer final : public mv::shell::text_recognizer {
 mv::shell::text_select::source text_source(app_state* app) noexcept {
   mv::shell::text_select::source src;
   if (edit_subject_of(app) != mv::shell::edit_subject::still || app->gallery_visible || app->ws.open ||
-      app->edits.crop_active() || app->show_original || app->edit_key == 0) {
+      app->edits.crop_active() || app->show_original || app->compare_on || app->edit_key == 0) {
     return src;
   }
   // The path's key with the select's generation: a rewritten file is read again.
@@ -10181,6 +10565,13 @@ bool run_session_command(app_state* app, mv::shell::command_id command) noexcept
     case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7: {
       const mv::shell::addon_command_row* row = mv::shell::addon_command(command);
       if (!row) return false;
+      // One-click (owner 2026-11-05): Enhance's palette rows on the photo on
+      // screen open the Edit pane's Enhance tab, never the sheet (a clip or an
+      // audio file keeps the sheet: there is no Edit pane for it).
+      if (row->addon == "enhance" && (row->id == "open" || row->id == "restyle" || row->id == "faces") &&
+          enhance_open_tab_for(app, expand_pair_targets(app, selection_targets(app)))) {
+        return true;
+      }
       mv::json::writer w;
       if (row->payload == "marks") {
         w.begin_array();
@@ -11907,6 +12298,15 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         if (!g_pane_drag.enabled) pane_edge_move(app, GET_X_LPARAM(lparam));  // the soak drives its own
         return 0;
       }
+      // docs/design/20 "Compare": dragging the split's divider; nothing else
+      // (pan, brush, text, drag-out) sees these moves.
+      if (app->compare_dragging) {
+        app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+        app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+        compare_drag(app, GET_X_LPARAM(lparam));
+        return 0;
+      }
+      compare_hover(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       // S2: the edge lights under the pointer (the mouse-leave below puts it out).
       set_pane_edge_state(app, pane_edge_hit(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)) ? 1 : 0);
       // Fullscreen hot-edge: the bottom few pixels reveal the strips.
@@ -11927,6 +12327,14 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // pointer (it is the cursor over the canvas); a drag paints; the red-eye
       // ring snaps to an eye (the twin of the Mac's -mouseMoved:).
       if (moved && tool_armed(app)) brush_move(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      // docs/design/20 Behaviour 4: a held crop handle drags the draft (nothing
+      // else sees the move); the one under the pointer picks the cursor.
+      if (app->crop_grab != 0) {
+        if (moved) crop_drag_to(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        publish(app);
+        return 0;
+      }
+      if (moved) crop_hover_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       // A recent folder under the pointer: highlighted, with the hand cursor
       // (WM_SETCURSOR). The move above already redraws.
       if (app->input.recents.count != 0) update_welcome_hover(app);
@@ -11978,13 +12386,22 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // drag ends where it was.
       if (app->pane_edge_drag && reinterpret_cast<HWND>(lparam) != hwnd) pane_edge_end(app);
       if (app->extend_grab != 0 && reinterpret_cast<HWND>(lparam) != hwnd) extend_release(app);  // S6
+      if (app->crop_grab != 0 && reinterpret_cast<HWND>(lparam) != hwnd) crop_release(app);
+      if (app->compare_dragging && reinterpret_cast<HWND>(lparam) != hwnd) {
+        compare_release(app, static_cast<int>(app->input.mouse_x), static_cast<int>(app->input.mouse_y));
+      }
       break;
 
     case WM_MOUSELEAVE: {
       ++app->input.activity_seq;
       app->tracking_mouse = false;
       if (!app->pane_edge_drag) set_pane_edge_state(app, 0);
+      if (!app->compare_dragging) {
+        app->compare_cursor = false;
+        app->input.before_hot = false;
+      }
       app->input.mouse_in_client = false;
+      if (app->crop_grab == 0) app->crop_hover = 0;
       // S3: the ring goes with the pointer.
       if (app->brush_cursor[0] > -1.0f && !app->brush_stroke) {
         app->brush_cursor[0] = -1.0f;
@@ -12007,6 +12424,27 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
           ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEWE));
           return TRUE;
         }
+      }
+      // docs/design/20 "Compare": over (or holding) the split's divider.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT && app->compare_cursor) {
+        ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEWE));
+        return TRUE;
+      }
+      // docs/design/20 Behaviour 4: a crop handle under the pointer (or held)
+      // says which way it drags.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT && crop_handles(app) &&
+          (app->crop_grab != 0 || app->crop_hover != 0)) {
+        LPCWSTR c = IDC_ARROW;
+        switch (mv::shell::extend_cursor_of(app->crop_grab != 0 ? app->crop_grab : app->crop_hover)) {
+          case mv::shell::extend_cursor::left_right: c = IDC_SIZEWE; break;
+          case mv::shell::extend_cursor::up_down: c = IDC_SIZENS; break;
+          case mv::shell::extend_cursor::nw_se: c = IDC_SIZENWSE; break;
+          case mv::shell::extend_cursor::ne_sw: c = IDC_SIZENESW; break;
+          case mv::shell::extend_cursor::move: c = IDC_SIZEALL; break;
+          case mv::shell::extend_cursor::cross: break;
+        }
+        ::SetCursor(::LoadCursorW(nullptr, c));
+        return TRUE;
       }
       // docs/plans/edit-refresh.md S3: an armed tool over the canvas. The brush and
       // red-eye ring is the cursor (drawn in the present, sized in screen
@@ -12069,6 +12507,39 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         app->pane_pending_x = GET_X_LPARAM(lparam);
         app->pane_move_pending = true;
         pane_edge_end(app);
+        return 0;
+      }
+      // docs/design/20 "Compare": a press on the split's divider drags it;
+      // nothing pans (mouse_down is never published for it).
+      if (msg == WM_LBUTTONDOWN && compare_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam))) {
+        ::SetFocus(hwnd);
+        ::SetCapture(hwnd);
+        return 0;
+      }
+      if (msg == WM_LBUTTONUP && app->compare_dragging) {
+        compare_release(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        ::ReleaseCapture();
+        return 0;
+      }
+      // docs/design/20 Behaviour 4: in crop mode a press on the draft's edge or
+      // corner resizes it and one inside moves it (never a pan or a file drag);
+      // anywhere else the press is the canvas's as before.
+      if (msg == WM_LBUTTONDOWN && crop_handles(app)) {
+        app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+        app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+        app->input.mouse_in_client = true;
+        if (crop_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam))) {
+          ::SetFocus(hwnd);
+          app->island_focus = mv::shell::focus_kind::command_bar;
+          ::SetCapture(hwnd);
+          return 0;
+        }
+      }
+      if (msg == WM_LBUTTONUP && app->crop_grab != 0) {
+        // Released before the capture goes, so WM_CAPTURECHANGED finds nothing held.
+        crop_release(app);
+        ::ReleaseCapture();
+        crop_hover_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
         return 0;
       }
       // docs/plans/edit-refresh.md S3: an armed canvas tool takes the press on
@@ -12435,6 +12906,11 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
     case kMsgSiblingsReady:
       on_siblings_ready(app, std::unique_ptr<sibling_job_result>(
                                  reinterpret_cast<sibling_job_result*>(lparam)));
+      return 0;
+
+    case kMsgCompareSource:
+      on_compare_source(app, std::unique_ptr<compare_source_result>(
+                                 reinterpret_cast<compare_source_result*>(lparam)));
       return 0;
 
     case kMsgMetaWriteDone:

@@ -15,6 +15,7 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -26,6 +27,7 @@
 #include <vector>
 
 #include "addons/enhance/downloads.h"
+#include "addons/enhance/eta.h"
 #include "addons/enhance/prefs.h"
 #include "addons/enhance/preview.h"
 #include "addons/enhance/screens.h"
@@ -111,6 +113,13 @@ class runner {
   [[nodiscard]] virtual std::string check(const job_request& r) const = 0;
   virtual void start(job_request r, job_events events) = 0;
   virtual void cancel() = 0;
+  // One-click: the photo's size after its edit and how far it shrinks without
+  // losing detail, for the card's time estimate. On the engine's own estimate
+  // thread, never while a job runs; nullopt when it cannot read it.
+  [[nodiscard]] virtual std::optional<photo_size> measure(const std::string& path) {
+    (void)path;
+    return std::nullopt;
+  }
 };
 
 class engine {
@@ -137,8 +146,12 @@ class engine {
   // S5: the docked panel (place "edit") opened on `path`, `width_pt` wide.
   void tool_opened(std::uint64_t generation, const std::string& path, float width_pt = 340, float scale = 2);
   // S5: the Edit workspace's command to it, enhance/tool:
-  // {"photo": "remove|restyle|detail|extend", "run": true?}. Chooses the tool
-  // (Remove reads the brushed dabs again) and, with "run", starts it.
+  // {"photo": "remove|restyle|detail|extend|faces", "run": true?, "path": ?}.
+  // Chooses the tool (Remove reads the brushed dabs again) and, with "run",
+  // starts it (one-click: downloading its model first when it is not here).
+  // "path" (one-click): the photo now on screen; the cards follow it (a run
+  // on another photo stops, as leaving it does; the result it opened keeps
+  // its notice).
   void tool_command(const std::string& value_json);
   void closed(const std::string& screen);
   // The command or the context entry: these files (the first is enhanced),
@@ -161,8 +174,18 @@ class engine {
   // Posts the sheet and the docked panel, whichever are open.
   void post_sheet_locked();
   // `docked`: the panel's view (Remove stays Remove with nothing brushed yet).
-  [[nodiscard]] sheet_view sheet_locked(bool docked = false) const;
-  [[nodiscard]] std::vector<model_kind> kinds_for_locked(bool docked = false) const;
+  // `as`: that tool's view rather than the chosen one (one-click's cards).
+  [[nodiscard]] sheet_view sheet_locked(bool docked = false, std::optional<photo_target> as = std::nullopt) const;
+  [[nodiscard]] std::vector<model_kind> kinds_for_locked(bool docked = false,
+                                                        std::optional<photo_target> as = std::nullopt) const;
+  // One-click: the Enhance tab's cards and what the run is doing.
+  [[nodiscard]] std::vector<card_view> cards_locked() const;
+  [[nodiscard]] run_view run_view_locked() const;
+  [[nodiscard]] std::string card_eta_locked(photo_target t, const sheet_view& v) const;
+  // A card's one button: the model first when it is not here, then the run.
+  void go(photo_target t);
+  void measure_loop();
+  void want_measure_locked();
   // A screen opened on `path`: what it is, read before the lock.
   struct item_facts {
     item_kind item = item_kind::unknown;
@@ -182,6 +205,7 @@ class engine {
   void remove(model_kind k);
   void run(bool docked = false);
   void cancel();
+  void end_pending_locked(run_state st, std::string message);
 
   engine_port port_;
   std::string self_dir_;
@@ -224,6 +248,27 @@ class engine {
   std::string result_path_;
   std::string result_name_;
   std::string result_note_;  // Discard refused or failed: why, under the row
+  // One-click (owner 2026-11-05): the run the cards' host follows. Every run,
+  // and every download a click started to run after, has a new id.
+  run_state run_state_ = run_state::idle;
+  std::uint64_t run_id_ = 0;
+  photo_target run_tool_ = photo_target::detail;
+  std::string run_message_;
+  std::string run_eta_;
+  std::string source_path_;  // the photo the last run was made from
+  // The photo the cards were pointed at while a run went on another: the
+  // run stops, and the cards follow once it has.
+  std::string follow_path_;
+  // Download, then run: the tool waiting for its model, and which model.
+  std::optional<photo_target> pending_tool_;
+  model_kind pending_kind_ = model_kind::still;
+  // The card's estimate: each photo's size and detail, measured on a thread
+  // of the engine's own (never the host's worker), the newest few kept.
+  std::map<std::string, std::optional<photo_size>> measured_;
+  std::string measure_want_;
+  bool measure_quit_ = false;
+  std::condition_variable measure_cv_;
+  std::thread measure_t_;
 };
 
 }  // namespace mv::enhance

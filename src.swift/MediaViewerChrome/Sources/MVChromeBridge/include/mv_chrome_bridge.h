@@ -1071,6 +1071,11 @@ typedef struct mv_edit_view {
   // being fetched from iCloud. And the inspector folded to the rail.
   int32_t chips;
   int32_t collapsed;
+  // docs/design/20 "Compare" (shell::compare_kind): 0 nothing to compare (no
+  // edits), 1 the edits (before = the photo with none), 2 an Enhance result
+  // and the photo it was made from, 3 a result whose photo is not beside it,
+  // 4 that photo still being looked for. Compare is enabled on 1 and 2.
+  int32_t compare;
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -1094,10 +1099,11 @@ void mv_chrome_edit_close(void);
 void mv_chrome_edit_set_aspect(int32_t aspect, int32_t portrait);
 void mv_chrome_edit_set_straighten(float degrees);
 void mv_chrome_edit_cancel_crop(void);
-// The strip's Original toggle (the same state Y holds).
+// The header's and the rail's Compare: the before/after split on the canvas
+// (docs/design/20 "Compare"); Y held shows the before alone.
 void mv_chrome_edit_show_original(int32_t on);
-// The wand menu: one of Enhance's commands ("open", "restyle") for the photo,
-// its copy carrying the edit; a crop draft is applied first.
+// The wand menu's Enhance rows: the Edit pane's Enhance tab for the photo
+// (one-click: its cards run each tool; never the sheet).
 void mv_chrome_edit_enhance_command(const char* command);
 // docs/plans/edit-refresh.md S5 (owner call B): an Enhance tool run inside the
 // Edit pane. `photo` is "remove", "restyle", "detail" or "extend"; the
@@ -1111,9 +1117,15 @@ void mv_chrome_edit_enhance_tool(const char* photo, int32_t run);
 void mv_chrome_edit_enhance_result(const char* path, int32_t keep);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
-// Slice 5: Enhance… from the strip: Enhance's own sheet for the photo, whose
-// copy carries the crop, colour and detail being edited.
+// Enhance… from the strip: the Edit pane's Enhance tab for the photo
+// (one-click, owner 2026-11-05: no sheet for a photo).
 void mv_chrome_edit_enhance(void);
+// One-click Enhance (docs/design/29 "One click"): the run node of Enhance's
+// cards as the chrome read it: `state` (shell::enhance_run_state: 0 idle,
+// 1 running, 2 done, 3 failed, 4 cancelled, 5 downloading), the run's id, and
+// the new file (or Photos-library key) when done, else "". Native keeps the
+// glow over the photo, the tool bar's band, and opens the result once.
+void mv_chrome_edit_enhance_run(int32_t state, uint64_t run, const char* result);
 
 // ---- docs/plans/edit-refresh.md S3: the canvas tools' context bar ------------------
 //

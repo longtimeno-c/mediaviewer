@@ -33,7 +33,7 @@ public static partial class IslandHost
     // chrome_host.h chrome_edit_args: 12 int/float words, two pointers, two lengths,
     // then the document's app list (pointer, length) and its flag, Enhance, the
     // wand bits, and (S2) the header's chips and the folded inspector.
-    internal const int EditArgsSize = 104;
+    internal const int EditArgsSize = 112;
 
     private static DesktopWindowXamlSource? _editPane;
     private static bool _editPaneVisible;
@@ -63,6 +63,9 @@ public static partial class IslandHost
         // docs/plans/edit-refresh.md S10: Restore faces (Enhance's docked panel on
         // its "faces" tool, else its sheet started on Restore faces).
         public const int RestoreFaces = 15;
+        // One-click Enhance: the cards' run node as read, parked in _treePending
+        // as "<state>\t<id>\t<result>" (IslandHost.EnhanceDock.cs ReadEnhanceRun).
+        public const int EnhanceRun = 16;
     }
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).
@@ -85,6 +88,29 @@ public static partial class IslandHost
     private static float _editStraighten;
     private static int _editCount;
     private static bool _editOriginal;
+    // docs/design/20 "Compare" (shell::compare_kind): 0 no edits, 1 the edits,
+    // 2 an Enhance result and its photo, 3 that photo is not beside it, 4 it is
+    // being looked for. Compare is enabled on 1 and 2.
+    private static int _editCompare;
+    private static bool CanCompare => _editCompare == 1 || _editCompare == 2;
+    // Compare's tooltip: what it compares, or why it is off.
+    private static string CompareTip => _editCompare switch
+    {
+        1 => "Compare before and after your edits: drag the line on the photo",
+        2 => "Compare with the photo this was made from: drag the line on the photo",
+        3 => "Nothing to compare: the original photo is not beside this one",
+        4 => "Looking for the original photo…",
+        _ => "No edits yet to compare",
+    };
+    private static string CompareTipWithKey
+    {
+        get
+        {
+            if (!CanCompare) return CompareTip;
+            string? hold = KeyOf(Command.ShowOriginal);
+            return hold is null ? CompareTip : $"{CompareTip}  (or hold {hold})";
+        }
+    }
     private static int _editCropW;
     private static int _editCropH;
     private static int _editTrimFlags;
@@ -117,6 +143,13 @@ public static partial class IslandHost
     private static Button? _editUndo;
     private static Button? _editReset;
     private static Button? _editOriginalButton;
+    // A disabled Button shows no tooltip: its holder carries it then.
+    private static Border? _editCompareHolder;
+    // "Before | After" under the header while the split is up (owner call A:
+    // only the divider lies over the photo).
+    private static Border? _editCompareLabels;
+    private static TextBlock? _editCompareBefore;
+    private static TextBlock? _editCompareAfter;
     private static Button? _editAutoMain;
     private static FontIcon? _editAutoIcon;
     private static Spinner? _editAutoSpinner;
@@ -144,6 +177,10 @@ public static partial class IslandHost
         _editUndo = null;
         _editReset = null;
         _editOriginalButton = null;
+        _editCompareHolder = null;
+        _editCompareLabels = null;
+        _editCompareBefore = null;
+        _editCompareAfter = null;
         _editAutoMain = null;
         _editAutoIcon = null;
         _editAutoSpinner = null;
@@ -204,6 +241,7 @@ public static partial class IslandHost
             _editWand = Marshal.ReadInt32(arg, 92);
             _editChips = Marshal.ReadInt32(arg, 96);
             _editCollapsed = Marshal.ReadInt32(arg, 100) != 0;
+            _editCompare = Marshal.ReadInt32(arg, 104);
             RenderEditBarButton();
             if (_editPaneVisible) RenderEdit();
             RenderRail();
@@ -539,13 +577,11 @@ public static partial class IslandHost
             _editReset = HeaderButton("\uE72C", "Reset", WithKey("Reset to the original, exactly", Command.ResetEdits),
                                       () => Send(Command.ResetEdits));
             AutomationProperties_SetName(_editReset, "Reset to original");
-            // The Y row is momentary, so its label already reads "hold Y".
-            string? hold = KeyOf(Command.ShowOriginal);
-            _editOriginalButton = HeaderButton(RailGlyph.Compare, "Compare",
-                hold is null ? "Compare with the original while on; nothing is changed"
-                             : $"Compare with the original while on (or {hold}); nothing is changed",
+            // docs/design/20 "Compare": the before/after split; Y held shows the before alone.
+            _editOriginalButton = HeaderButton(RailGlyph.Compare, "Compare", CompareTipWithKey,
                 () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn));
-            AutomationProperties_SetName(_editOriginalButton, "Compare with the original");
+            AutomationProperties_SetName(_editOriginalButton, "Compare before and after");
+            _editCompareHolder = new Border { Background = Brush(Colors.Transparent), Child = _editOriginalButton };
             _editSave = AccentButton("Save copy…", () => Send(Command.EditAction, EditActions.SaveCopy));
             _editSave.Padding = Pad(12, 5, 12, 5);
             if (_editSave.Content is TextBlock saveText) saveText.FontSize = UiFontSize - 2;
@@ -559,16 +595,49 @@ public static partial class IslandHost
             left.Children.Add(auto);
             left.Children.Add(_editUndo);
             left.Children.Add(_editReset);
-            left.Children.Add(_editOriginalButton);
+            left.Children.Add(_editCompareHolder);
             actions.Children.Add(left);
             Grid.SetColumn(_editSave, 1);
             actions.Children.Add(_editSave);
             col.Children.Add(actions);
+            col.Children.Add(BuildCompareLabels());
         }
         // Applied once built: the class may already be compact.
         Visibility labels = _editWidthClass == WidthCompact ? Visibility.Collapsed : Visibility.Visible;
         foreach (UIElement e in EditCompactHidden) e.Visibility = labels;
         return col;
+    }
+
+    // "Before | After": which side of the line on the photo is which.
+    private static Border BuildCompareLabels()
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+        row.Children.Add(new FontIcon
+        {
+            Glyph = RailGlyph.Compare, FontFamily = IconFont, FontSize = TypeSize(11),
+            Foreground = Brush(ChromeColour.Accent), VerticalAlignment = VerticalAlignment.Center,
+        });
+        _editCompareBefore = Text("", Title, UiFontSize - 4, maxLines: 1);
+        _editCompareBefore.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(_editCompareBefore);
+        row.Children.Add(new Border
+        {
+            Width = 2, Height = 14, Background = Brush(ChromeColour.Accent),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        _editCompareAfter = Text("", Title, UiFontSize - 4, maxLines: 1);
+        _editCompareAfter.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(_editCompareAfter);
+        _editCompareLabels = new Border
+        {
+            Child = row,
+            Padding = Pad(8, 4, 8, 4),
+            CornerRadius = Corner(6),
+            Background = Brush(ChromeColour.SelectionWash),
+            Visibility = Visibility.Collapsed,
+        };
+        ToolTipService.SetToolTip(_editCompareLabels, "Drag the line on the photo to move between before and after");
+        return _editCompareLabels;
     }
 
     // Auto (one undo step; selected while it is the last edit, when a click
@@ -855,7 +924,19 @@ public static partial class IslandHost
         if (_editOriginalButton is not null)
         {
             SetSelected(_editOriginalButton, _editOriginal);
-            _editOriginalButton.IsEnabled = canEdit;
+            _editOriginalButton.IsEnabled = canEdit && CanCompare;
+            ToolTipService.SetToolTip(_editOriginalButton, CompareTipWithKey);
+            if (_editCompareHolder is not null)
+                ToolTipService.SetToolTip(_editCompareHolder, _editOriginalButton.IsEnabled ? null : CompareTip);
+        }
+        if (_editCompareLabels is not null && _editCompareBefore is not null && _editCompareAfter is not null)
+        {
+            bool shown = _editOriginal && CanCompare;
+            _editCompareLabels.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+            _editCompareBefore.Text = _editCompare == 2 ? "Before: the original photo" : "Before: no edits";
+            _editCompareAfter.Text = _editCompare == 2 ? "After: Enhance" : "After: your edits";
+            AutomationProperties_SetName(_editCompareLabels,
+                $"{_editCompareBefore.Text}, left of the line. {_editCompareAfter.Text}, right of the line.");
         }
         if (_editCropSize is not null)
         {

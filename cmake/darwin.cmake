@@ -600,6 +600,7 @@ add_library(mv_shell STATIC
   src/shell/text_select.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
+  src/shell/compare_source.h
   src/shell/video_timeline.cpp
   src/shell/video_timeline.h
   src/shell/edit_view.h
@@ -971,9 +972,12 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_crop_drag.cpp
+    tests/test_enhance_run.cpp
     # Issue #614: ⌘P's paper layout.
     tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp
+    tests/test_compare_source.cpp
     tests/test_pane_width.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp

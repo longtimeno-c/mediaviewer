@@ -39,8 +39,9 @@ struct EditRailView: View {
                    help: withKey("Undo the last edit", "Undo edit")) { store.run(EditCommand.undo) }
           .disabled(store.editCount == 0)
         RailButton(symbol: "square.split.2x1", label: "Compare",
-                   help: withKey("Compare with the original (or hold the key)", "Show original (hold)"),
+                   help: store.canCompare ? withKey(store.compareHelp, "Show original (hold)") : store.compareHelp,
                    selected: store.showOriginal) { store.setShowOriginal(!store.showOriginal) }
+          .disabled(!store.canCompare)
       }
       RailButton(symbol: "checkmark", label: "Done",
                  help: withKey("Done: close the editor", "Edit image / Edit video"),

@@ -35,6 +35,7 @@
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
 #include "shell/compare.h"
+#include "shell/compare_source.h"
 #include "shell/drag_frames.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
@@ -225,6 +226,20 @@ class present_lab_mac {
   // [any-thread] Releases it (the brush was cleared or forgotten).
   void drop_brush_mask() noexcept;
 
+  // [any-thread] docs/design/20 "Compare": a second still for the canvas, the
+  // before of an Enhance result's split (its source). Decoded on a job_system
+  // worker at the current view generation (a navigation abandons it), or
+  // shared from the still cache when it is there; never on the render or UI
+  // thread. Returns the token input_snapshot::before_token names it by; a
+  // later call replaces it.
+  std::uint64_t load_side_still(std::string path_utf8) noexcept;
+  // [any-thread] Where the split was last drawn (shell/compare_source.h), for
+  // the host's divider hit-test and drag; !valid while none is drawn.
+  [[nodiscard]] compare_frame compare_frame_now() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return compare_frame_;
+  }
+
   // [any-thread] What the SwiftUI transport strip shows. Published by the render
   // thread through atomics; `active` is false when no clip is on screen.
   struct video_status {
@@ -380,6 +395,28 @@ class present_lab_mac {
   std::atomic<bool> drop_brush_mask_{false};
   std::unique_ptr<brush_mask_texture_mac> brush_mask_;
   bool take_brush_mask() noexcept;  // render thread: true when what it draws changed
+  // docs/design/20 "Compare": the side still, the same one-way hand-off;
+  // `side_` is render-thread only. `seen_before_` is the split last drawn,
+  // so a change of it is one redraw and nothing else is.
+  struct side_still_mac {
+    image::gpu_image_mac image;
+    std::uint64_t token = 0;
+  };
+  std::atomic<side_still_mac*> pending_side_{nullptr};
+  std::atomic<std::uint64_t> side_counter_{0};
+  std::unique_ptr<side_still_mac> side_;
+  bool take_side_still() noexcept;  // render thread: true when it changed
+  struct before_seen {
+    std::uint8_t mode = 0, layout = 0;
+    bool whole = false, hot = false;
+    float split = 0.5f;
+    std::uint64_t token = 0;
+    float rect[4] = {};
+  };
+  before_seen seen_before_{};
+  [[nodiscard]] bool before_changed(const input_snapshot& s) noexcept;
+  // The split this frame draws, or none (render thread).
+  [[nodiscard]] compare_frame before_frame(const input_snapshot& s) const noexcept;
   edit_view edit_slots_[2];      // copied from the snapshot each iteration
   edit_view applied_edit_{};     // what the current still was last fitted with
   // docs/plans/edit-refresh.md S3: a tool's label or pulse was drawn while live;
@@ -414,6 +451,7 @@ class present_lab_mac {
   eyedropper_sample eye_;
   mutable std::mutex eye_mutex_;
   canvas_map still_map_;  // under eye_mutex_
+  compare_frame compare_frame_;  // under eye_mutex_
   std::string eye_text_;  // "#RRGGBB  rgb(r, g, b)  x, y" for the texel under the cursor
 
   void* view_ = nullptr;

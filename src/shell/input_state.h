@@ -175,6 +175,11 @@ struct edit_view {
   std::uint32_t tool_extend_w = 0;
   std::uint32_t tool_extend_h = 0;
   std::int32_t tool_extend_growth = 0;
+  // One-click Enhance (docs/design/29 "One click"): the working glow over the
+  // photo (tool_overlay.h draw_work_glow), on since `work_glow_on_ms` (0 off),
+  // fading out from `work_glow_off_ms` (0 none). shell::steady_ms.
+  std::uint64_t work_glow_on_ms = 0;
+  std::uint64_t work_glow_off_ms = 0;
 };
 
 struct input_snapshot {
@@ -264,6 +269,23 @@ struct input_snapshot {
   // `|` (issue #208, shell/compare.h): the previous still beside the current
   // one under one camera. A level; the render thread splits only over a still.
   bool compare = false;
+  // docs/design/20 "Compare" (shell/compare_source.h): the before/after split
+  // of the still on screen. `before_after` 0 off; 1 the before is this item
+  // with no edit (its own texture, an identity placement, no colour); 2 the
+  // before is the lab's side still `before_token` (an Enhance result's
+  // source), laid onto the picture's frame by `before_layout`
+  // (compare_layout) and `before_rect` (its place in the picture's uv, w 0 =
+  // by size). The divider sits `before_split` across the picture's visible
+  // span; `before_whole` (Y held) shows the before alone, with no divider;
+  // `before_hot`: the divider is hovered or held (the accent). Not over the
+  // `|` two-up or crop mode. A change is one redraw, never a refit.
+  std::uint8_t before_after = 0;
+  std::uint8_t before_layout = 0;
+  bool before_whole = false;
+  bool before_hot = false;
+  float before_split = 0.5f;
+  std::uint64_t before_token = 0;
+  float before_rect[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   bool info_overlay = false;    // O
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor

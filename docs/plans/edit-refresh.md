@@ -831,6 +831,28 @@ weight, as Extend does. Restore faces offers RestoreFormer++ (default) or GFPGAN
 the FFHQ 5-point template, pasted back with a feathered mask, at a Strength (default 0.7), with the
 People guard. CC-BY-4.0 credit lines go in each kind's model.json credit and the add-on's notices.
 
+## One click (owner 2026-11-05; built on `claude/edit-oneclick`)
+
+"Why does 'enhance' open this window? It should just show quality / ETA and when clicked use an
+Apple Intelligence pattern over the image while it works, then open the new image", and "don't
+keep that sheet as a backup, remove it". Supersedes S5's docked panel and the sheet as its
+fallback for photos ([29](../design/29-enhance.md) "One click", [12](../design/12-decision-log.md)
+2026-11-05).
+
+Built, both hosts: the add-on's `edit` screen is the Enhance tab's cards (`cards_tree`, a hidden
+`run` node); the card estimate (`eta.h`: tiles on the photo shrunk to its detail × measured seconds
+a tile × the level's threads); one click, downloading first; the working glow in both present labs
+(`draw_work_glow`, presents only while it moves, Reduce Motion still); the tool bar's run line with
+Cancel, then "Saved as … · Move to Trash"; the result opened once with Edit kept on the tab
+(`shell/enhance_run.h`); Enhance's palette rows, context entry and the strip's Enhance… on a photo
+open the tab. Same branch: crop handles on the canvas (`shell/crop_drag.h`), Compare as a
+before/after split (`shell/compare_source.h`), Extend off the rail.
+
+Not built: the cross-fade from the old photo to the new one; an estimate for Remove and Extend
+before the run (their run shows its own time left); a face count for Restore faces' estimate
+(it says "a face"); per-surface styling (a separate design pass); the add-on's own sheet code for
+photos is unreachable but not yet deleted; Windows native is compile-unchecked (CI only).
+
 ## Owner calls
 
 Resolved 2026-11-04 by the owner's brief ("the UI should be unreal… get it done"): **A** yes (the tool
