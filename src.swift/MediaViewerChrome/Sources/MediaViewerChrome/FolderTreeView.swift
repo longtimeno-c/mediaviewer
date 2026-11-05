@@ -200,15 +200,18 @@ private struct TreeRow: View {
           Text(node.name).lineLimit(1).truncationMode(.middle)
           Spacer(minLength: 0)
         }
+        // The keyboard row's wash is inset round its contents: the icon keeps
+        // 6 from its edge rather than touching it (docs/design/20 "Craft rules").
+        .padding(.horizontal, MVTheme.space(6))
+        .padding(.vertical, MVTheme.space(2))
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .fontWeight(node.path == current ? .semibold : .regular)
-      .foregroundStyle(node.path == current ? MVTheme.accent : Color.primary)
+      .foregroundStyle(node.path == current ? MVTheme.accent : MVTheme.title)
       .background(
         RoundedRectangle(cornerRadius: MVTheme.radius(4))
-          .fill(node.path == cursor ? Color.primary.opacity(0.1) : .clear)
-          .padding(-2)  // the highlight's outset past the row, not spacing
+          .fill(node.path == cursor ? MVTheme.title.opacity(0.1) : .clear)  // the theme's ink, as before
       )
       .accessibilityAddTraits(node.path == cursor ? [.isSelected] : [])
     }
@@ -299,7 +302,7 @@ struct FolderTreeView: View {
     }
     .buttonStyle(.plain)
     .fontWeight(store.photosOpen ? .semibold : .regular)
-    .foregroundStyle(store.photosOpen ? Color.accentColor : Color.primary)
+    .foregroundStyle(store.photosOpen ? MVTheme.accent : MVTheme.title)
     .help("Your Photos library, iCloud Photos included, as a folder. Read-only: nothing in it is changed.")
     .padding(.horizontal, MVTheme.space(10))
     .padding(.vertical, MVTheme.space(8))
@@ -307,7 +310,7 @@ struct FolderTreeView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("Folders").font(MVTheme.font()).padding(.horizontal, MVTheme.space(14)).padding(.top, MVTheme.space(12)).padding(.bottom, MVTheme.space(8))
+      Text("Folders").font(MVTheme.font()).fontWeight(.semibold).foregroundStyle(MVTheme.title).padding(.horizontal, MVTheme.space(14)).padding(.top, MVTheme.space(12)).padding(.bottom, MVTheme.space(8))
       Divider()
       if store.photosAvailable {
         photosRow
@@ -323,7 +326,7 @@ struct FolderTreeView: View {
                 } label: {
                   Label("Up to \((parent as NSString).lastPathComponent.isEmpty ? "/" : (parent as NSString).lastPathComponent)",
                         systemImage: "arrow.up.left")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MVTheme.body)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -343,7 +346,7 @@ struct FolderTreeView: View {
           }
         }
       } else if !store.photosOpen {
-        Text("No folder open").foregroundStyle(.secondary).padding(MVTheme.space(14))
+        Text("No folder open").foregroundStyle(MVTheme.body).padding(MVTheme.space(14))
         Spacer()
       } else {
         Spacer()
@@ -352,7 +355,7 @@ struct FolderTreeView: View {
     .font(MVTheme.font(14))  // rows and the Up button follow a theme's font
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(.regularMaterial)
-    .overlay(alignment: .trailing) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
+    .overlay(alignment: .trailing) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .focusable()
     .focusEffectDisabled()
     .focused($focused)
