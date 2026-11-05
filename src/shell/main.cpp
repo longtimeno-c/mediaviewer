@@ -3313,15 +3313,17 @@ bool run_tool_command(app_state* app, mv::shell::command_id command) {
       if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
       edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
       return true;
-    case tool_extend: {
-      // S6 makes Extend a canvas tool; today Enhance's sheet offers it (its
-      // photo choice has Extend the picture), else the Enhance tab's card.
+    case tool_extend:
+      // S6 makes Extend a canvas tool; today Enhance's docked panel on Extend
+      // (S5; its sheet with an Enhance that has none), else the Enhance tab's
+      // card offers the add-on. The Mac's -editTool:3.
       if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
-      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
-      if (id == mv::shell::command_id::none) edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
-      else (void)run_command(app, id);
+      if (mv::shell::find_addon_command("enhance", "open") == mv::shell::command_id::none) {
+        edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
+      } else {
+        enhance_tool(app, "extend", false);
+      }
       return true;
-    }
     default:
       break;
   }

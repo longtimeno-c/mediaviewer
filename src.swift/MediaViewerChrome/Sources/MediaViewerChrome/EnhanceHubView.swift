@@ -278,8 +278,8 @@ struct EnhanceCard: View {
 /// S5: Enhance's docked screen (place "edit") under the chosen card, drawn
 /// with the add-on screens' renderer. Show and Keep editing are the viewer's:
 /// they navigate to the new file (or Photos-library photo) the row's
-/// thumbnail names. On Remove, its Remove again with fresh strokes hands them
-/// over first, as the card's Remove does.
+/// thumbnail names. Remove has no run button of its own here: the card's
+/// Remove (or Return in the brush) hands the strokes over and runs it.
 struct DockedToolPanel: View {
   let screen: SlotScreen
   @ObservedObject private var slots = SlotStore.shared
@@ -317,9 +317,6 @@ struct DockedToolPanel: View {
     case "result.show", "result.keep":
       guard let path = Self.find("result.thumb", in: tree)?.string("path"), !path.isEmpty else { return true }
       store.enhanceResult(path: path, keep: id == "result.keep")
-      return true
-    case "run" where tree.id == "tool.remove" && store.brushOn && store.brushed:
-      store.brushAction(2)
       return true
     default:
       return false

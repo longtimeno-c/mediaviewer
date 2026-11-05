@@ -1509,7 +1509,9 @@ TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", 
     CHECK(t.has("result.show"));
     CHECK(t.has("result.keep"));
     CHECK(t.has("result.discard"));
-    CHECK(*t.node("run")->str("label") == "Remove again");
+    // The card above carries Remove (it hands the strokes on screen over):
+    // no second Remove in the panel, before or after a result.
+    CHECK_FALSE(t.has("run"));
     CHECK_FALSE(t.has("cancel"));
   }
   // The sheet was never open: nothing posted there. The panel's row says
@@ -1577,6 +1579,9 @@ TEST_CASE("enhance: a library photo's result row has no Discard and no visible t
   CHECK(t.text("result.title") == "Added to your Photos library");
   CHECK(t.has("result.show"));
   CHECK_FALSE(t.has("result.discard"));
+  // A tool other than Remove offers another go with other values.
+  REQUIRE(t.has("run"));
+  CHECK(*t.node("run")->str("label") == "Enhance again");
   // Its key is never shown as text (rule 6).
   CHECK(tree.find("\"text\":\"photos:") == std::string::npos);
   // The tree is one the hosts accept.

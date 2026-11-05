@@ -320,7 +320,7 @@ ideal width no longer includes the whole file name, so a long name does not drop
 `tool` screen (`tool_tree`: the knob cards without the photo choice, preview, glow progress, time
 left, Cancel, the result row), `engine::tool_command` for `enhance/tool {"photo", "run"?}`, Discard
 through `recycle_file` (the sheet keeps its status). Mac: `DockedToolPanel` under the chosen card
-(`ScreenButtonHook` for Show / Keep editing / Remove again), `enhanceTool:run:`,
+(`ScreenButtonHook` for Show / Keep editing), `enhanceTool:run:`,
 `enhanceShowResult:keep:` (a library result selected by the key the add returned once listed);
 the rail's Extend and the brush's Remove go to the panel. Windows: `IslandHost.EnhanceDock.cs`
 (row 2 of the Edit pane on tab 5, `TakeScreenButton`), `main.cpp` `enhance_tool` /
@@ -328,6 +328,13 @@ the rail's Extend and the brush's Remove go to the panel. Windows: `IslandHost.E
 `"[addon][slots][screens]"`, `test_addon_manifest`'s place case. Not run here: the app on either
 host (the in-pane runs, Discard to the Bin, Keep editing on tab 5 and the SHA-1 check of the
 verify line), both PR 1 gates; the Windows native C++ is not compiled on the Mac (C# compiles).
+S5 review (2026-11-05): Windows' `tool_extend` command (menu, remapped key) still opened the sheet
+while the Mac's went to the docked panel; it now calls `enhance_tool(app, "extend", false)` as
+the rail does. Remove no longer has a run button inside the panel, before or after a result: the
+card above already shows *Remove* (Return in the brush), which hands the strokes on screen over,
+so a second one showed two Removes in one card and could run on dabs handed over earlier. The
+hosts' hooks for it are gone. "With B declined, the sheet opens preselected" holds only for
+Restyle (an Enhance without the docked screen has no "open on tool X" command).
 
 ### 3.2 The five tools
 

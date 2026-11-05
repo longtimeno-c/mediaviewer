@@ -247,10 +247,12 @@ the host hands its dabs over (`still_mask`) in the same click, as the sheet's Re
 
 `tool_tree` is the sheet's `sheet_tree` without the photo choice or Close: the tool's knob cards,
 the note, the preview surface (as wide as the inspector's column, at its backing scale), the glowing
-progress and the time left, **Cancel**, and the run button (*Remove*, *Restyle*, *Enhance*,
-*Extend*). Its root is `tool.<word>`, which is how the host knows the card to draw it under. Remove
-with nothing brushed shows only its knobs and *Brush over what to remove, then press Remove (or
-Return).*: the card's own Remove (or Return in the brush) runs it.
+progress and the time left, **Cancel**, and the run button (*Restyle*, *Enhance*, *Extend*; after a
+result, *… again*). Its root is `tool.<word>`, which is how the host knows the card to draw it
+under. Remove has no run button in the panel, before or after a result: the card above it already
+has *Remove* (and Return in the brush runs it), which hands the strokes on screen over first, so a
+second button could only run on dabs handed over earlier. Remove shows its knobs and *Brush over
+what to remove, then press Remove (or Return).*
 
 A finished run shows the **result row**: a thumbnail of the new file, *Saved as
 IMG_0007-removed.jpg* (or *Added to your Photos library* for a library photo, whose key is never

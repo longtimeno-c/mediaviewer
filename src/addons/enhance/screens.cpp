@@ -418,19 +418,22 @@ std::string tool_tree(const sheet_view& v) {
   } else if (!v.status.empty()) {
     text(w, "status", v.status, "secondary");
   }
-  begin_stack(w, "buttons", "horizontal", 8);
-  if (v.running) {
-    button(w, "cancel", "Cancel", "destructive");
-  } else if (v.brush_needed && !result) {
-    // Remove before anything is brushed: the card's own Remove (or Return in
-    // the brush) runs it, once the strokes are there. No second, dead button.
-  } else if (result) {
-    // Another go with other values: a second new file, the first one kept.
-    button(w, "run", std::string(run_label(v.photo)) + " again", "plain", !v.can_run);
-  } else {
-    button(w, "run", run_label(v.photo), "primary", !v.can_run);
+  // Remove runs from the card above it (its Remove, or Return in the brush),
+  // which hands the strokes on screen over first: the panel adds no second
+  // Remove beside it, before or after a result.
+  const bool own_run = v.photo != photo_target::remove;
+  if (v.running || own_run) {
+    begin_stack(w, "buttons", "horizontal", 8);
+    if (v.running) {
+      button(w, "cancel", "Cancel", "destructive");
+    } else if (result) {
+      // Another go with other values: a second new file, the first one kept.
+      button(w, "run", std::string(run_label(v.photo)) + " again", "plain", !v.can_run);
+    } else {
+      button(w, "run", run_label(v.photo), "primary", !v.can_run);
+    }
+    end_stack(w);
   }
-  end_stack(w);
   if (!result && !v.running) {
     text(w, "where",
          v.library ? std::string("Adds a new photo to your Photos library. The original is not changed.")

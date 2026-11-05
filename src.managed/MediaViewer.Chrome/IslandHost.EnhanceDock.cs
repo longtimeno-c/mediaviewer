@@ -151,8 +151,8 @@ public static partial class IslandHost
     /// <summary>
     /// The screens' renderer asks before a button tells its add-on: true when
     /// the host took the click. Enhance's docked row: Show and Keep editing
-    /// navigate (the viewer's); on Remove, Remove again with fresh strokes hands
-    /// them over first, as the card's Remove does.
+    /// navigate (the viewer's). Remove has no run button of its own in the
+    /// panel: the card's Remove (or Return in the brush) hands the strokes over.
     /// </summary>
     private static bool TakeScreenButton(ScreenAt at, string id)
     {
@@ -164,10 +164,6 @@ public static partial class IslandHost
                 if (_enhanceDockResult.Length == 0) return true;
                 _treePending = _enhanceDockResult;
                 Send(Command.EditAction, id == "result.keep" ? EditActions.EnhanceResultKeep : EditActions.EnhanceResultShow);
-                return true;
-            case "run" when _enhanceDockTool == "remove" &&
-                            (_editWand & WandBrushOn) != 0 && (_editWand & WandBrushStrokes) != 0:
-                Send(Command.AdjustBrush, 2);
                 return true;
             default:
                 return false;
