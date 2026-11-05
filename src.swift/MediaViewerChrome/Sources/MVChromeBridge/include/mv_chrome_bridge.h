@@ -1152,13 +1152,17 @@ typedef struct mv_tool_bar_view {
   int32_t can_undo;         // S4a: a stroke or a Clear to undo (Clear is undoable)
   int32_t extend_growth;    // S6: Extend's readout, the growth in permille (+180 reads "+18 %")
   int32_t extend_warn;      // S6: a side is past the 25 % warning
-  int32_t extend_preset;    // S6: the preset chip the frame is (0 Original ... 6 4:5), -1 the person's own
+  int32_t extend_preset;    // S6: the chip the frame is (0 Original ... 3 All round), -1 none
+  int32_t extend_aspect;    // Extend's ratio held (shell::crop_aspect: 0 Free, 1 Original, 2 1:1 ... 6 5:4)
+  int32_t extend_portrait;  // ... turned portrait (4:5 is 5:4 turned)
+  int32_t extend_short;     // the frame falls short of the ratio (the 50 % stop or Enhance's caps)
 } mv_tool_bar_view;
 bool mv_chrome_tool_bar(mv_tool_bar_view* out);
 // The bar's buttons (shell::tool_bar_action): 0 Done (the tool goes down, the
 // strokes stay; Extend's Cancel), 1 Undo, 2 Redo, 3 Clear, 4 Remove / apply
 // (Extend's Fill), 5 Find eyes; S8, on the chosen faces: 6 Open eyes,
-// 7 Improve, 8 Do all; S6: 16 + i Extend's preset chip i.
+// 7 Improve, 8 Do all; S6: 16 + i Extend's preset chip i; Extend's ratio:
+// 32 + i Crop's ratio i (0 Free), 9 Landscape / Portrait.
 void mv_chrome_tool_action(int32_t action);
 // The size slider, in points (the label fades in beside the ring).
 void mv_chrome_tool_set_size(float px);

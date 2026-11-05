@@ -45,9 +45,12 @@ public static partial class IslandHost
         public int CanUndo;  // S4a: a stroke or a Clear to undo
         public int ExtendGrowth;  // S6: Extend's readout, the growth in permille
         public int ExtendWarn;    // S6: a side past the 25 % warning
-        public int ExtendPreset;  // S6: the chip the frame is (0 Original .. 6), -1 the person's own
+        public int ExtendPreset;  // S6: the chip the frame is (0 Original .. 3 All round), -1 none
+        public int ExtendAspect;    // Extend's ratio held (shell::crop_aspect, 0 Free; AspectLabels)
+        public int ExtendPortrait;  // ... turned portrait (4:5 is 5:4 turned)
+        public int ExtendShort;     // the frame falls short of it (the 50 % stop, Enhance's caps)
     }
-    private const int ToolBarArgsSize = 72;
+    private const int ToolBarArgsSize = 84;
 
     // shell::canvas_tool and shell::tool_bar_action (canvas_tool.h).
     private static class CanvasTools
@@ -70,11 +73,14 @@ public static partial class IslandHost
         public const int FacesOpenEyes = 6;
         public const int FacesImprove = 7;
         public const int FacesDoAll = 8;
+        public const int ExtendAspectSwap = 9;  // Extend's ratio: Landscape <-> Portrait
         public const int ExtendPreset = 16;  // S6: chip i is ExtendPreset + i
+        public const int ExtendAspect = 32;  // Extend's ratio i (AspectLabels) is ExtendAspect + i
     }
-    // S6: Extend's chips (shell::extend_preset_label: the Enhance add-on's
-    // presets after Original).
-    private static readonly string[] ExtendPresets = { "Original", "Wider", "Taller", "All round", "1:1", "16:9", "4:5" };
+    // S6: Extend's chips (shell::extend_preset_label, kExtendChipCount: the
+    // Enhance add-on's frames after Original). Its 1:1, 16:9 and 4:5 are in the
+    // Ratio menu with the rest of Crop's ratios (AspectLabels).
+    private static readonly string[] ExtendPresets = { "Original", "Wider", "Taller", "All round" };
 
     private static ChromeToolBarArgs _toolBar;
     // The bar as built, for an update in place; null while the island holds
@@ -88,6 +94,7 @@ public static partial class IslandHost
     private static Spinner? _toolSpinner;
     private static bool _updatingToolBar;
     private static Button[]? _toolChips;  // S6: Extend's presets
+    private static Button? _toolRatio, _toolTurn;  // Extend's Ratio menu chip and its swap
 
     // Segoe Fluent Icons / MDL2 Assets code points.
     private const string GlyphBrush = "";
@@ -218,6 +225,7 @@ public static partial class IslandHost
         _toolSizeText = _toolStatus = null;
         _toolSpinner = null;
         _toolChips = null;
+        _toolRatio = _toolTurn = null;
         _toolBarBuiltFor = 0;
     }
 
@@ -310,7 +318,8 @@ public static partial class IslandHost
                 row.Children.Add(_toolApply);
                 break;
             case CanvasTools.Extend:
-                // S6: preset chips · "+18 % · 6048×4032" · Fill ↵ · Cancel.
+                // S6: preset chips · Ratio ▾ · swap · "+18 % · 6048×4032" · Fill ↵ ·
+                // Cancel. The ratios are Crop's, in one menu chip so the row fits.
                 _toolChips = new Button[ExtendPresets.Length];
                 var chips = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2) };
                 for (int i = 0; i < ExtendPresets.Length; i++)
@@ -321,7 +330,10 @@ public static partial class IslandHost
                     _toolChips[i] = b;
                     chips.Children.Add(b);
                 }
+                chips.Children.Add(BuildExtendRatio());
                 row.Children.Add(chips);
+                _toolTurn = IconButton(GlyphLandscape, "Swap portrait / landscape", () => SendToolAction(ToolBarAction.ExtendAspectSwap));
+                row.Children.Add(_toolTurn);
                 row.Children.Add(_toolStatus);
                 _toolApply = AccentButton("Fill ↵", () => SendToolAction(ToolBarAction.Apply));
                 ToolTipService.SetToolTip(_toolApply, WithKey("Fill the new edges (a frame inside the photo crops it)",
@@ -464,6 +476,29 @@ public static partial class IslandHost
                     _toolChips[i].Foreground = Brush(on ? ChromeColour.Accent : Body);
                 }
             }
+            if (_toolRatio is not null)
+            {
+                // The ratio held lights like a chip; short of it, the caution amber says why.
+                bool held = b.ExtendAspect > 0;
+                string label = held ? ExtendRatioLabel(b.ExtendAspect, b.ExtendPortrait != 0) : "Ratio";
+                SetButtonText(_toolRatio, label + " ▾");
+                _toolRatio.Background = held ? Brush(ChromeColour.SelectionWash) : Brush(Microsoft.UI.Colors.Transparent);
+                _toolRatio.Foreground = b.ExtendShort != 0 ? Brush(TrackWarm) : Brush(held ? ChromeColour.Accent : Body);
+                if (_toolRatio.Content is TextBlock ratioText) ratioText.Foreground = _toolRatio.Foreground;
+                ToolTipService.SetToolTip(_toolRatio, b.ExtendShort != 0
+                    ? $"{label} is out of reach: Extend grows a photo at most twice each way (and to 100 MP), so the frame stops short"
+                    : held ? $"Drags keep {label}; Free lets them go" : "Hold the frame to a ratio");
+                AutomationProperties.SetName(_toolRatio, "Ratio");
+                AutomationProperties.SetItemStatus(_toolRatio, b.ExtendShort != 0 ? $"{label}, out of reach" : label);
+            }
+            if (_toolTurn is not null)
+            {
+                bool turns = b.ExtendAspect > 0 && b.ExtendAspect != AspectSquare;
+                _toolTurn.IsEnabled = turns;
+                bool portrait = b.ExtendPortrait != 0;
+                SetIcon(_toolTurn, portrait ? GlyphPortrait : GlyphLandscape,
+                        portrait ? "Portrait: swap to landscape" : "Landscape: swap to portrait");
+            }
             if (_toolStatus is not null)
             {
                 switch (b.Tool)
@@ -508,6 +543,65 @@ public static partial class IslandHost
     }
 
     private static void SendToolAction(int action) => Send(Command.CanvasTool, -(action + 1));
+
+    // ---- Extend's ratio (2026-11-05) -------------------------------------------------
+    //
+    // Crop's ratios (AspectLabels, shell::crop_aspect) in one menu chip beside the
+    // add-on's chips; while one is held native keeps drags at it. The Mac twin is
+    // ToolBarView.ratioMenu.
+
+    private const int AspectSquare = 2;  // shell::crop_aspect::square: no orientation
+    private const string GlyphLandscape = "\uE7F4";  // TVMonitor: a wide frame
+    private const string GlyphPortrait = "\uE8EA";   // CellPhone: a tall frame
+
+    // "5:4", "4:5" turned; Original is the photo's own ratio (the bar also has
+    // an Original chip, the photo's own frame).
+    private static string ExtendRatioLabel(int aspect, bool portrait)
+    {
+        if (aspect <= 0 || aspect >= AspectLabels.Length) return "Free";
+        if (aspect == 1) return "Original ratio";
+        string label = AspectLabels[aspect];
+        if (!portrait || aspect == AspectSquare) return label;
+        string[] sides = label.Split(':');
+        return sides.Length == 2 ? $"{sides[1]}:{sides[0]}" : label;
+    }
+
+    private static Button BuildExtendRatio()
+    {
+        Button? ratio = null;
+        ratio = EditButton("Ratio ▾", () =>
+        {
+            if (ratio is not null) FlyoutBase.ShowAttachedFlyout(ratio);
+        });
+        var menu = new MenuFlyout
+        {
+            ShouldConstrainToRootBounds = false,
+            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
+        };
+        menu.Opening += (_, _) =>
+        {
+            // The ratios, the one held ticked, then the swap.
+            menu.Items.Clear();
+            bool portrait = _toolBar.ExtendPortrait != 0;
+            for (int i = 0; i < AspectLabels.Length; i++)
+            {
+                int aspect = i;
+                MenuFlyoutItem item = Item(ExtendRatioLabel(i, portrait), null,
+                                           () => SendToolAction(ToolBarAction.ExtendAspect + aspect));
+                if (_toolBar.ExtendAspect == i)
+                    item.Icon = new FontIcon { Glyph = "\uE73E", FontFamily = IconFont };  // CheckMark
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new MenuFlyoutSeparator());
+            MenuFlyoutItem turn = Item(portrait ? "Landscape" : "Portrait", null,
+                                       () => SendToolAction(ToolBarAction.ExtendAspectSwap));
+            turn.IsEnabled = _toolBar.ExtendAspect > 0 && _toolBar.ExtendAspect != AspectSquare;
+            menu.Items.Add(turn);
+        };
+        AttachBarFlyout(ratio, menu);
+        _toolRatio = ratio;
+        return ratio;
+    }
 
     // "[ ] size · Alt erase · Space pan · Enter remove · Esc done", from the live table.
     private static string ToolHints()

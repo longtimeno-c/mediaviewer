@@ -149,24 +149,31 @@ struct ToolBarView: View {
     doneButton
   }
 
-  // S6, Extend: preset chips · "+18 % · 6048×4032" · Fill ↵ · Cancel.
+  // S6, Extend: preset chips · Ratio ▾ · turn · "+18 % · 6048×4032" · Fill ↵ · Cancel.
+  // The ratios are Crop's (one menu chip, so the row fits the 640 pt bar);
+  // while one is held, drags keep the frame at it.
   @ViewBuilder
   private func extendRow(compact: Bool) -> some View {
     if compact {
-      // A narrow canvas: the chips fold into a menu.
-      Menu(bar.extendPreset >= 0 ? ToolBarState.extendPresets[bar.extendPreset] : "Frame") {
+      // A narrow canvas: the chips and the ratios fold into one menu.
+      Menu(bar.extendAspect != .free ? bar.extendRatioLabel
+           : bar.extendPreset >= 0 ? ToolBarState.extendPresets[bar.extendPreset] : "Frame") {
         ForEach(Array(ToolBarState.extendPresets.enumerated()), id: \.offset) { i, label in
           Button(label) { store.extendPreset(i) }
         }
+        Divider()
+        ratioItems
       }
       .menuStyle(.borderlessButton)
       .fixedSize()
-      .help("The Enhance add-on's frames")
+      .foregroundStyle(bar.extendShort ? MVTheme.warm : MVTheme.body)
+      .help(bar.extendShort ? bar.extendShortWhy : "The Enhance add-on's frames and the ratio the frame keeps")
     } else {
       HStack(spacing: MVTheme.space(2)) {
         ForEach(Array(ToolBarState.extendPresets.enumerated()), id: \.offset) { i, label in
           ChipButton(label: label, selected: bar.extendPreset == i) { store.extendPreset(i) }
         }
+        ratioMenu
       }
     }
     // Past the 25 % warning: the overlay's caution amber, and it says why.
@@ -186,6 +193,50 @@ struct ToolBarView: View {
     Button { store.toolAction(.done) } label: { Text("Cancel") }
       .buttonStyle(AccentButtonStyle(filled: false))
       .help("Drop the new frame (Esc)")
+  }
+
+  // Extend's Ratio chip: a menu of Crop's ratios, lit (accent on its wash)
+  // while one is held, in the caution amber when the frame falls short of it;
+  // beside it the Landscape / Portrait swap (Crop's X).
+  @ViewBuilder
+  private var ratioMenu: some View {
+    let held = bar.extendAspect != .free
+    Menu {
+      ratioItems
+    } label: {
+      Text(bar.extendRatioLabel)
+    }
+    .menuStyle(.borderlessButton)
+    .fixedSize()
+    .padding(.horizontal, MVTheme.space(6)).padding(.vertical, MVTheme.space(3))
+    .foregroundStyle(bar.extendShort ? MVTheme.warm : held ? MVTheme.accent : MVTheme.body)
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(6))
+      .fill(held ? MVTheme.selectionWash : Color.clear))
+    .help(bar.extendShort ? bar.extendShortWhy
+          : held ? "Drags keep \(bar.extendRatioLabel); Free lets them go" : "Hold the frame to a ratio")
+    .accessibilityLabel("Ratio")
+    .accessibilityValue(bar.extendShort ? "\(bar.extendRatioLabel), out of reach" : bar.extendRatioLabel)
+    BarIcon(symbol: bar.extendPortrait ? "rectangle.portrait" : "rectangle",
+            label: bar.extendPortrait ? "Portrait: swap to landscape" : "Landscape: swap to portrait") {
+      store.extendTurn()
+    }
+    .disabled(!bar.extendAspect.hasOrientation)
+  }
+
+  // The ratios, the one held ticked, then the swap.
+  @ViewBuilder
+  private var ratioItems: some View {
+    ForEach(CropAspect.allCases, id: \.rawValue) { a in
+      Button {
+        store.extendAspect(a)
+      } label: {
+        let text = a.turnedLabel(bar.extendPortrait)
+        if bar.extendAspect == a { Label(text, systemImage: "checkmark") } else { Text(text) }
+      }
+    }
+    Divider()
+    Button(bar.extendPortrait ? "Landscape" : "Portrait") { store.extendTurn() }
+      .disabled(!bar.extendAspect.hasOrientation)
   }
 
   // The white-balance picker: one click, then it puts itself down.

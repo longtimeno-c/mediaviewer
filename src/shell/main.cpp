@@ -373,6 +373,9 @@ struct app_state {
   float extend_press[2] = {0.0f, 0.0f};
   std::uint8_t extend_grab = 0;
   std::uint8_t extend_hover = 0;
+  // Extend's ratio (2026-11-05): the one the bar's Ratio menu or a ratio chip
+  // holds, and what the last choice grew (shell/edit_workspace.h extend_lock).
+  mv::shell::extend_lock extend_lock;
   // docs/design/20 Behaviour 4: crop mode's handles (shell/crop_drag.h): the
   // edges a press holds with the draft and point it started from, and the
   // edges under the pointer (WM_SETCURSOR picks their cursor).
@@ -2903,6 +2906,7 @@ static_assert(offsetof(mv::shell::chrome_tool_bar_args, size_px) == offsetof(mv:
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, eyes) == offsetof(mv::shell::tool_bar, eyes));
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, can_undo) == offsetof(mv::shell::tool_bar, can_undo));  // S4a
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, extend_preset) == offsetof(mv::shell::tool_bar, extend_preset));  // S6
+static_assert(offsetof(mv::shell::chrome_tool_bar_args, extend_short) == offsetof(mv::shell::tool_bar, extend_short));  // the ratio
 
 void brush_move(app_state* app, int x, int y);
 void sync_workspace(app_state* app);
@@ -3034,7 +3038,7 @@ mv::shell::tool_bar tool_bar_of(app_state* app) noexcept {
                       : 0;
   } else if (active == mv::shell::canvas_tool::extend) {
     // S6: the readout, the chip, and Fill: any frame; past the edges only with Enhance.
-    mv::shell::apply_extend_bar(b, app->extend, app->edits.preview_placement());
+    mv::shell::apply_extend_bar(b, app->extend, app->edits.preview_placement(), app->extend_lock);
     b.can_apply = !mv::shell::extend_empty(app->extend) &&
                   (!mv::shell::extend_overhangs(app->extend) ||
                    mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none);
@@ -3757,6 +3761,7 @@ void extend_reset(app_state* app) noexcept {
   app->extend.on = app->tool.tool == mv::shell::canvas_tool::extend;
   app->extend_grab = 0;
   app->extend_hover = 0;
+  app->extend_lock.aspect = mv::shell::crop_aspect::free;  // each frame starts free; the turn is kept
   (void)mv_edit_still_extend(nullptr, nullptr);  // a frame not filled is not Enhance's
   extend_refit(app);
 }
@@ -3786,8 +3791,11 @@ bool extend_press(app_state* app, int x, int y) {
 void extend_drag_to(app_state* app, int x, int y) {
   float u = 0, v = 0;
   if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v)) return;
-  const mv::shell::extend_draft d = mv::shell::extend_drag(app->extend_start, app->extend_grab,
-                                                           u - app->extend_press[0], v - app->extend_press[1]);
+  // A ratio held keeps the frame at it (Free: the free drag).
+  const mv::edit::placement p = app->edits.preview_placement();
+  const mv::shell::extend_draft d = mv::shell::extend_drag_aspect(
+      app->extend_start, app->extend_grab, u - app->extend_press[0], v - app->extend_press[1], p.cropped.w,
+      p.cropped.h, mv::shell::extend_lock_ratio(app->extend_lock, p.cropped.w, p.cropped.h));
   if (d.l == app->extend.l && d.t == app->extend.t && d.r == app->extend.r && d.b == app->extend.b) return;
   app->extend = d;
   app->extend.on = true;
@@ -3868,11 +3876,34 @@ void crop_release(app_state* app) noexcept { app->crop_grab = 0; }
 
 void crop_hover_at(app_state* app, int x, int y) noexcept { app->crop_hover = crop_hit_at(app, x, y); }
 
-// A chip on the bar: the add-on's preset as a frame (0 Original: none).
+// A chip on the bar: the add-on's preset as a frame (0 Original: none), and
+// the ratio it holds (Free for Original, Wider, Taller and All round).
 void extend_preset(app_state* app, int i) {
   if (active_tool(app) != mv::shell::canvas_tool::extend) return;
   const mv::edit::placement p = app->edits.preview_placement();
-  app->extend = mv::shell::extend_preset_draft(i, p.cropped.w, p.cropped.h);
+  app->extend.on = true;
+  mv::shell::extend_choose_preset(app->extend_lock, app->extend, i, p.cropped.w, p.cropped.h);
+  app->extend_grab = 0;
+  extend_refit(app);
+  brush_publish(app);
+  push_tool_bar(app);
+}
+
+// The bar's Ratio menu (the twin of the Mac's -extendAspect:turn:): Crop's
+// ratios (Free lets drags go free), the frame grown to the one chosen; `turn`
+// is its Landscape / Portrait swap. Out of reach past the 50 % stop, the bar
+// says so (tool_bar::extend_short).
+void extend_aspect(app_state* app, int aspect, bool turn) {
+  if (active_tool(app) != mv::shell::canvas_tool::extend) return;
+  const mv::edit::placement p = app->edits.preview_placement();
+  app->extend.on = true;
+  if (turn) {
+    if (!mv::shell::extend_turn_aspect(app->extend_lock, app->extend, p.cropped.w, p.cropped.h)) return;
+  } else {
+    if (aspect < 0 || aspect >= mv::shell::kCropAspectCount) return;
+    (void)mv::shell::extend_choose_aspect(app->extend_lock, app->extend, static_cast<mv::shell::crop_aspect>(aspect),
+                                          app->extend_lock.portrait, p.cropped.w, p.cropped.h);
+  }
   app->extend_grab = 0;
   extend_refit(app);
   brush_publish(app);
@@ -4042,6 +4073,10 @@ void tool_from_island(app_state* app, int command, float arg) {
     extend_preset(app, mv::shell::extend_preset_of_action(-packed - 1));  // S6: a chip on Extend's bar
     return;
   }
+  if (packed < 0 && mv::shell::extend_aspect_of_action(-packed - 1) >= 0) {
+    extend_aspect(app, mv::shell::extend_aspect_of_action(-packed - 1), false);  // the Ratio menu
+    return;
+  }
   if (packed < 0) {
     switch (static_cast<tool_bar_action>(-packed - 1)) {
       case tool_bar_action::done: tool_down(app); break;
@@ -4058,7 +4093,9 @@ void tool_from_island(app_state* app, int command, float arg) {
         adjust_faces(app, -1, static_cast<int>(mv::shell::face_action::improve), false);
         break;
       case tool_bar_action::faces_do_all: adjust_faces(app, -1, mv::shell::kFaceDoAll, false); break;
+      case tool_bar_action::extend_aspect_swap: extend_aspect(app, 0, true); break;
       case tool_bar_action::extend_preset: break;  // handled above
+      case tool_bar_action::extend_aspect: break;
     }
     return;
   }

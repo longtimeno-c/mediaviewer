@@ -776,10 +776,13 @@ struct chrome_tool_bar_args {
   std::int32_t can_undo;  // S4a: a stroke or a Clear to undo
   std::int32_t extend_growth;  // S6: Extend's readout, the growth in permille
   std::int32_t extend_warn;    // S6: a side past the 25 % warning
-  std::int32_t extend_preset;  // S6: the chip the frame is (0 Original .. 6), -1 the person's own
+  std::int32_t extend_preset;  // S6: the chip the frame is (0 Original .. 3 All round), -1 none
+  std::int32_t extend_aspect;    // Extend's ratio held (shell::crop_aspect, 0 Free)
+  std::int32_t extend_portrait;  // ... turned portrait
+  std::int32_t extend_short;     // the frame falls short of it (the 50 % stop, Enhance's caps)
 };
 
-static_assert(sizeof(chrome_tool_bar_args) == 72, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
+static_assert(sizeof(chrome_tool_bar_args) == 84, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
 
 // docs/plans/edit-refresh.md S8: the Faces tool's panel in the Enhance tab
 // (IslandHost.Faces.cs; the Mac's FacesPanelView), pushed with SetFacesPanel

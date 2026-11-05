@@ -386,12 +386,19 @@ struct tool_bar {
   std::int32_t can_undo = 0;  // S4a: a stroke or a Clear to undo (a cleared brush still undoes)
   // S6: Extend's readout "+18 % · 6048×4032" (extend_w x extend_h above),
   // the growth in permille, a side past the 25 % warning, and the preset chip
-  // the frame is (shell::extend_preset_label; -1 a frame of the person's own).
+  // the frame is (shell::extend_preset_label, 0 .. kExtendChipCount - 1; -1 a
+  // frame of the person's own or one a ratio holds).
   std::int32_t extend_growth = 0;
   std::int32_t extend_warn = 0;
   std::int32_t extend_preset = 0;
+  // Extend's ratio (2026-11-05): the bar's choice (shell::crop_aspect, 0
+  // Free), turned portrait, and whether the frame falls short of it (the 50 %
+  // stop or Enhance's caps are in the way: the bar says so).
+  std::int32_t extend_aspect = 0;
+  std::int32_t extend_portrait = 0;
+  std::int32_t extend_short = 0;
 };
-static_assert(sizeof(tool_bar) == 72);
+static_assert(sizeof(tool_bar) == 84);
 
 // The bar's buttons, as both chromes send them back (mv_chrome_tool_action,
 // chrome_cmd_canvas_tool's actions are commands; these are the bar's own).
@@ -406,9 +413,13 @@ enum class tool_bar_action : std::int32_t {
   faces_open_eyes = 6,
   faces_improve = 7,
   faces_do_all = 8,
+  // Extend's ratio: landscape <-> portrait (Crop's X), on the chosen ratio.
+  extend_aspect_swap = 9,
   // S6: Extend's preset chip i is extend_preset + i (shell/edit_workspace.h
   // kExtendPresetCount; 0 Original). Its Fill is apply, its Cancel done.
   extend_preset = 16,
+  // Extend's ratio i (shell::crop_aspect; 0 Free) is extend_aspect + i.
+  extend_aspect = 32,
 };
 // The bar's action for Extend's preset chip `i`, and back (-1 not one).
 [[nodiscard]] constexpr std::int32_t extend_preset_action(int i) noexcept {
@@ -418,6 +429,16 @@ enum class tool_bar_action : std::int32_t {
   const int i = action - static_cast<std::int32_t>(tool_bar_action::extend_preset);
   return i >= 0 && i < kExtendPresetCount ? i : -1;
 }
+// The bar's action for Extend's ratio `i` (crop_aspect), and back (-1 not one).
+[[nodiscard]] constexpr std::int32_t extend_aspect_action(int i) noexcept {
+  return static_cast<std::int32_t>(tool_bar_action::extend_aspect) + i;
+}
+[[nodiscard]] constexpr int extend_aspect_of_action(std::int32_t action) noexcept {
+  const int i = action - static_cast<std::int32_t>(tool_bar_action::extend_aspect);
+  return i >= 0 && i < kCropAspectCount ? i : -1;
+}
+static_assert(kExtendPresetCount <= static_cast<int>(tool_bar_action::extend_aspect) -
+                                        static_cast<int>(tool_bar_action::extend_preset));
 
 // The pointer over Extend's frame: what its cursor says (both hosts map these
 // to their own resize cursors).
@@ -508,14 +529,24 @@ inline void apply_tool(edit_view& v, const tool_view_in& in, const edit::placeme
   }
 }
 
-// S6: Extend's part of the bar: the readout and the chip the frame is.
-inline void apply_extend_bar(tool_bar& b, const extend_draft& d, const edit::placement& p) noexcept {
+// S6: Extend's part of the bar: the readout, the chip the frame is, and the
+// ratio held (whether the frame is at it).
+inline void apply_extend_bar(tool_bar& b, const extend_draft& d, const edit::placement& p,
+                             const extend_lock& lock) noexcept {
+  const crop_aspect aspect = lock.aspect;
   const extend_size_t sz = extend_size(d, p.cropped.w, p.cropped.h);
   b.extend_w = static_cast<std::int32_t>(sz.width);
   b.extend_h = static_cast<std::int32_t>(sz.height);
   b.extend_growth = sz.growth_permille;
   b.extend_warn = extend_warns(d) ? 1 : 0;
-  b.extend_preset = extend_preset_of(d, p.cropped.w, p.cropped.h);
+  // A chip lights only for its own frame with no ratio held (the Ratio menu
+  // lights instead).
+  const int chip = extend_preset_of(d, p.cropped.w, p.cropped.h);
+  b.extend_preset = aspect == crop_aspect::free && chip < kExtendChipCount ? chip : -1;
+  b.extend_aspect = static_cast<std::int32_t>(aspect);
+  b.extend_portrait = lock.portrait ? 1 : 0;
+  const double ratio = extend_lock_ratio(lock, p.cropped.w, p.cropped.h);
+  b.extend_short = ratio > 0.0 && !extend_at_aspect(d, p.cropped.w, p.cropped.h, ratio) ? 1 : 0;
 }
 
 }  // namespace mv::shell

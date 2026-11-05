@@ -727,7 +727,8 @@ are pending; rotate and flip stay refused while strokes are kept with the tool d
 "[canvas-tool],[remove-brush],[tool]"`; the brush's snapshot publish and tint build time:
 `mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
 People on. **Extend** (S6; the Enhance tab's card, Edit ▸ Extend Edges): drag the frame's
-edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's presets, `Enter`
+edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's frames and a
+Ratio menu with Crop's ratios and its portrait swap (drags then keep the ratio), `Enter`
 fills (the part over the photo is a crop; Enhance fills the rest at once, one click), `Esc`
 cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`. **Compare** (the Edit header's
 and rail's; [docs/design/20](design/20-edit-workspace.md) "Compare"): a before/after split with a

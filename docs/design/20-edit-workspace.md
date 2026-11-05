@@ -290,9 +290,10 @@ animation or with the workspace closed it goes down.
   56 pt band for it (`kToolBarBand` added to `chrome_bottom_px`; a `refit_seq` refit, never a
   swapchain resize), so the bar never covers the picture. Brush: Paint / Erase · Size (a log slider,
   "48 px") · Undo · Redo · Clear · "3 strokes" · **Remove ↵** · Done. Red-eye: "Click a red pupil ·
-  2 fixed" · Size · **Find eyes** · Undo · Done. Extend: the Enhance add-on's presets as chips
-  (Original · Wider · Taller · All round · 1:1 · 16:9 · 4:5; a menu when narrow) · "+18 % ·
-  6048×4032" · **Fill ↵** · Cancel. The picker: a line and Done. When the brush is full
+  2 fixed" · Size · **Find eyes** · Undo · Done. Extend: the Enhance add-on's frames as chips
+  (Original · Wider · Taller · All round) · a **Ratio** menu chip (Crop's ratios) and its
+  Landscape / Portrait swap · "+18 % · 6048×4032" · **Fill ↵** · Cancel; narrow, the chips and
+  the ratios fold into one menu. The picker: a line and Done. When the brush is full
   it says "Brush full: Remove, then brush more" instead of beeping. Its tooltip lists the live keys.
   The layout is fixed per tool: the status sits in a slot of one width (168 brush, 160 red-eye;
   shorter words when the bar is compact; the full text is its tooltip), the size readout is 48
@@ -398,6 +399,30 @@ edit** ([07](07-photo-editing.md)).
   view shows the room past the edges; another tool taking over, a new item and a clip under the
   armed tool all drop the frame and fit the picture as itself. Changes redraw through `brush_rev`; nothing
   presents while the pointer is still.
+- **Ratio (owner, 2026-11-05: "allow to set aspect ratios"):** the bar's **Ratio** menu chip holds
+  Crop's list and words (`shell/crop_aspect.h`, shared with `edit_session`): Free, Original (the
+  photo's own ratio, "Original ratio" on the bar beside the Original chip), 1:1, 4:3, 3:2, 16:9,
+  5:4, and Crop's Landscape / Portrait swap beside it (the chip reads the turned ratio, "4:5").
+  The add-on's 1:1, 16:9 and 4:5 left the chip row for this menu (the row fits the 640 pt bar);
+  its 1:1 / 16:9 / 4:5 frames still exist and hold their ratio (`extend_choose_preset`). Choosing a
+  ratio grows the frame to it, never shrinks it (`extend_to_aspect`): the short axis gains what it
+  lacks, half on each side, so the frame keeps its centre; a side at the 50 % stop passes the rest
+  to the other side. While the frame is still what the last choice made, another ratio or the
+  swap starts again from the frame before it (`extend_lock`), so 16:9 then 1:1 do not pile up.
+  While a ratio is held, an edge drag moves the other axis evenly on both sides and a corner keeps
+  the opposite corner, following the pointer on the ratio's diagonal (Crop's locked corner); the
+  stops hold the whole frame, so it stops at the ratio, never off it (`extend_drag_aspect`).
+  When the stop or Enhance's 16384 / 100 MP caps put a ratio out of reach, the frame goes as far
+  as it can and the Ratio chip turns the caution amber with the reason as its tooltip and
+  accessibility value (`tool_bar::extend_short`, from `extend_at_aspect`, the result's pixels
+  through Enhance's sums); a later drag lands on the ratio as soon as it can (by cropping the
+  other axis). Free, and the Original, Wider, Taller and All round chips, let drags go free as
+  before; every new frame (arming, Cancel, a new item) starts Free with the swap kept. The host
+  hands Enhance margins, never a preset's name, so the ratios needed nothing of the add-on.
+  Wire: `tool_bar` 84 bytes (`extend_aspect`, `extend_portrait`, `extend_short`), mirrored by
+  `chrome_tool_bar_args`, `mv_tool_bar_view` and `ChromeToolBarArgs`; `tool_bar_action::
+  extend_aspect + i` (32 + `crop_aspect`) and `extend_aspect_swap` (9). Tests: `mv_tests
+  "[extend]"`.
 - **Readout:** "+18 % · 6048×4032": the result's pixels through Enhance's own sums
   (`extend_size`: the crop part rounded as `place()` rounds it, then `extend_from_fractions`'
   margins and caps), and its area over the photo's.
@@ -601,7 +626,8 @@ surfaces in the pane, the rail, the tool bar and Enhance's cards keep to them on
 - Faces: the panel cannot
   rename a person (People's own screen does); *Turn on People…* opens the settings rather than
   turning People on in place.
-- Extend: `A` / `X` / arrows with their crop meanings.
+- Extend: `A` / `X` / arrows with their crop meanings (the ratio and its swap are the bar's only;
+  in tool mode `X` is still the browse key underneath).
 - Windows: a rebuilt D3D11 device drops the brush texture; the strokes reappear at the next brush
   change (the host is not told).
 - Persisting a still's stack across sessions.

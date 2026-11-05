@@ -354,3 +354,232 @@ TEST_CASE("extend_size: Enhance's caps, 16384 a side and 100 MP", "[edit_workspa
   CHECK(s.width == 10000u);
   CHECK(s.height == 10000u);
 }
+
+// ---- Extend's ratio (owner, 2026-11-05: "allow to set aspect ratios") -----------
+
+namespace {
+// The result's pixels for a draft over a 3000 x 2000 (3:2) picture.
+std::array<std::uint32_t, 2> extend_px(const mv::shell::extend_draft& d, std::uint32_t w = 3000,
+                                       std::uint32_t h = 2000) {
+  const mv::shell::extend_size_t s = mv::shell::extend_size(d, w, h);
+  return {s.width, s.height};
+}
+}  // namespace
+
+TEST_CASE("extend_to_aspect: each of Crop's ratios grows a 3:2 photo evenly", "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  const std::uint32_t w = 3000, h = 2000;
+  extend_draft none;
+  none.on = true;
+  const auto grown = [&](crop_aspect a, bool portrait = false) {
+    return extend_to_aspect(none, w, h, crop_aspect_pixels(a, portrait, w, h));
+  };
+  // Free gives the frame back; Original and 3:2 are already the photo's.
+  for (crop_aspect a : {crop_aspect::free, crop_aspect::original, crop_aspect::r3_2}) {
+    const extend_aspect_fit f = grown(a);
+    CHECK(f.reached);
+    CHECK(extend_empty(f.draft));
+    CHECK(f.draft.on);
+  }
+  // 1:1 grows the short axis, half above and half below.
+  extend_aspect_fit f = grown(crop_aspect::square);
+  CHECK(f.reached);
+  CHECK(f.draft.t == Catch::Approx(0.25f));
+  CHECK(f.draft.b == Catch::Approx(0.25f));
+  CHECK(f.draft.l == 0.0f);
+  CHECK(f.draft.r == 0.0f);
+  CHECK(extend_px(f.draft) == std::array<std::uint32_t, 2>{3000, 3000});
+  // 4:3 and 5:4 are taller than 3:2: they grow down and up.
+  f = grown(crop_aspect::r4_3);
+  CHECK(f.reached);
+  CHECK(f.draft.t == Catch::Approx(0.0625f));
+  CHECK(extend_px(f.draft) == std::array<std::uint32_t, 2>{3000, 2250});
+  f = grown(crop_aspect::r5_4);
+  CHECK(f.reached);
+  CHECK(extend_px(f.draft) == std::array<std::uint32_t, 2>{3000, 2400});
+  // 16:9 is wider: left and right, the chip's sums to the pixel.
+  f = grown(crop_aspect::r16_9);
+  CHECK(f.reached);
+  CHECK(f.draft.l == Catch::Approx(f.draft.r));
+  CHECK(f.draft.t == 0.0f);
+  CHECK(extend_px(f.draft)[1] == 2000u);
+  CHECK(extend_px(f.draft)[0] >= 3555u);
+  CHECK(extend_px(f.draft)[0] <= 3556u);
+  CHECK(extend_at_aspect(f.draft, w, h, 16.0 / 9.0));
+  CHECK_FALSE(extend_at_aspect(f.draft, w, h, 1.5));
+  // Only ever bigger: a frame already wider than 1:1 asks for more height.
+  extend_draft wide = none;
+  wide.l = wide.r = 0.1f;  // 3600 x 2000
+  f = extend_to_aspect(wide, w, h, 1.0);
+  CHECK(f.draft.l == Catch::Approx(0.1f));
+  CHECK(f.draft.t == Catch::Approx(0.4f));  // 3600 high: (3600 - 2000) / 2 / 2000
+  CHECK(f.reached);
+  // The words are Crop's.
+  CHECK(std::string(crop_aspect_label(crop_aspect::r5_4)) == "5:4");
+  CHECK(crop_aspect_turns(crop_aspect::r4_3));
+  CHECK_FALSE(crop_aspect_turns(crop_aspect::square));
+  CHECK_FALSE(crop_aspect_turns(crop_aspect::free));
+}
+
+TEST_CASE("extend_to_aspect: the swap turns it; a stop or a cap says the ratio is out of reach",
+          "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  const std::uint32_t w = 3000, h = 2000;
+  extend_lock lock;
+  extend_draft frame;
+  frame.on = true;
+  // 5:4, then turned (Crop's X): 4:5 grows from the photo, not from 5:4's frame.
+  CHECK(extend_choose_aspect(lock, frame, crop_aspect::r5_4, false, w, h));
+  CHECK(extend_px(frame) == std::array<std::uint32_t, 2>{3000, 2400});
+  CHECK(extend_turn_aspect(lock, frame, w, h));
+  CHECK(lock.portrait);
+  CHECK(lock.aspect == crop_aspect::r5_4);
+  CHECK(frame.t == Catch::Approx(0.4375f));
+  CHECK(extend_px(frame) == std::array<std::uint32_t, 2>{3000, 3750});  // 4:5
+  CHECK(frame.on);
+  // Trying 16:9 after 4:5 does not pile one on the other either.
+  CHECK(extend_choose_aspect(lock, frame, crop_aspect::r16_9, false, w, h));
+  CHECK(frame.t == 0.0f);
+  CHECK(extend_px(frame)[1] == 2000u);
+  // 9:16 needs 5333 px of height from 2000: past the 50 % stop. The frame
+  // goes as far as it can and says it fell short; it never claims the ratio.
+  CHECK_FALSE(extend_choose_aspect(lock, frame, crop_aspect::r16_9, true, w, h));
+  CHECK(frame.t == Catch::Approx(kExtendMax));
+  CHECK(frame.b == Catch::Approx(kExtendMax));
+  CHECK_FALSE(extend_at_aspect(frame, w, h, extend_lock_ratio(lock, w, h)));
+  // Free and 1:1 do not turn.
+  extend_lock sq;
+  extend_draft f2;
+  CHECK(extend_choose_aspect(sq, f2, crop_aspect::square, false, w, h));
+  CHECK_FALSE(extend_turn_aspect(sq, f2, w, h));
+  CHECK(extend_choose_aspect(sq, f2, crop_aspect::free, false, w, h));
+  CHECK(sq.aspect == crop_aspect::free);
+  CHECK(extend_px(f2) == std::array<std::uint32_t, 2>{3000, 3000});  // Free keeps the frame
+  CHECK_FALSE(extend_turn_aspect(sq, f2, w, h));
+  // A side the stop holds passes the rest to the other: the ratio is still met.
+  extend_draft lop;
+  lop.l = 0.45f;
+  lop.t = lop.b = 0.2f;  // 4350 x 2800
+  const extend_aspect_fit spill = extend_to_aspect(lop, w, h, 16.0 / 9.0);
+  CHECK(spill.reached);
+  CHECK(spill.draft.l == Catch::Approx(kExtendMax));
+  CHECK(1.0f + spill.draft.l + spill.draft.r == Catch::Approx(16.0f / 9.0f * 2800.0f / 3000.0f));
+  // Enhance's 100 MP cap: 9000 x 9000 to 4:3 wants 12000 x 9000 (108 MP),
+  // which Enhance would shrink off the ratio. Said, not hidden.
+  const extend_aspect_fit capped = extend_to_aspect(extend_draft{}, 9000, 9000, 4.0 / 3.0);
+  CHECK(capped.draft.l == Catch::Approx(1.0f / 6.0f));
+  CHECK_FALSE(capped.reached);
+}
+
+TEST_CASE("extend_drag_aspect: edges and corners keep the ratio; Free is the free drag",
+          "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  const std::uint32_t w = 3000, h = 2000;
+  const double original = crop_aspect_pixels(crop_aspect::original, false, w, h);
+  CHECK(original == Catch::Approx(1.5));
+  extend_draft d;
+  d.on = true;
+  // The right edge out by 20 %: the height follows, half above, half below.
+  extend_draft a = extend_drag_aspect(d, extend_right, 0.2f, 0.0f, w, h, original);
+  CHECK(a.r == Catch::Approx(0.2f));
+  CHECK(a.l == 0.0f);
+  CHECK(a.t == Catch::Approx(0.1f));
+  CHECK(a.b == Catch::Approx(0.1f));
+  CHECK(a.on);
+  CHECK(extend_at_aspect(a, w, h, original));
+  // The bottom edge: the width follows on both sides.
+  a = extend_drag_aspect(d, extend_bottom, 0.0f, 0.3f, w, h, original);
+  CHECK(a.b == Catch::Approx(0.3f));
+  CHECK(a.l == Catch::Approx(0.15f));
+  CHECK(a.r == Catch::Approx(0.15f));
+  // A corner keeps the opposite corner and follows the pointer on the
+  // ratio's diagonal, so a pull along one axis still resizes.
+  a = extend_drag_aspect(d, extend_right | extend_bottom, 0.3f, 0.0f, w, h, original);
+  CHECK(a.l == 0.0f);
+  CHECK(a.t == 0.0f);
+  CHECK(a.r == Catch::Approx(a.b));
+  CHECK(a.r > 0.15f);
+  CHECK(extend_at_aspect(a, w, h, original));
+  // Held to 1:1 from the square frame, the right edge dragged far: the frame
+  // stops where the top and bottom reach the 50 % stop, still square.
+  extend_lock lock;
+  extend_draft sq = d;
+  REQUIRE(extend_choose_aspect(lock, sq, crop_aspect::square, false, w, h));
+  a = extend_drag_aspect(sq, extend_right, 0.9f, 0.0f, w, h, extend_lock_ratio(lock, w, h));
+  CHECK(a.t == Catch::Approx(kExtendMax));
+  CHECK(a.b == Catch::Approx(kExtendMax));
+  CHECK(a.r == Catch::Approx(1.0f / 3.0f));
+  CHECK(extend_px(a) == std::array<std::uint32_t, 2>{4000, 4000});
+  // Inward too: the corner crops, still square.
+  a = extend_drag_aspect(sq, extend_left | extend_top, 0.3f, 0.3f, w, h, 1.0);
+  CHECK(a.l < 0.0f);
+  CHECK(a.t < 0.0f);
+  CHECK(a.r == 0.0f);
+  CHECK(a.b == Catch::Approx(0.25f));
+  CHECK(extend_at_aspect(a, w, h, 1.0));
+  // Never past keeping 5 % of the photo either way.
+  a = extend_drag_aspect(sq, extend_left | extend_top, 3.0f, 3.0f, w, h, 1.0);
+  CHECK(extend_crop(a)[2] >= kExtendMinKeep - 1e-5f);
+  CHECK(extend_crop(a)[3] >= kExtendMinKeep - 1e-5f);
+  CHECK((1.0f + a.l + a.r) * w == Catch::Approx((1.0f + a.t + a.b) * h));
+  // From a frame short of its ratio (9:16 past the stop), a drag lands on the
+  // ratio as soon as it can: here the sides come in.
+  extend_draft tall = d;
+  tall.t = tall.b = kExtendMax;
+  a = extend_drag_aspect(tall, extend_bottom, 0.0f, 0.1f, w, h, 9.0 / 16.0);
+  CHECK(a.b == Catch::Approx(kExtendMax));
+  CHECK(a.l == Catch::Approx(-0.125f));
+  CHECK(a.r == Catch::Approx(-0.125f));
+  CHECK(extend_at_aspect(a, w, h, 9.0 / 16.0));
+  // A move keeps the size; Free (0) is exactly the free drag.
+  const extend_draft moved = extend_drag_aspect(sq, extend_move, 0.1f, 0.0f, w, h, 1.0);
+  CHECK(1.0f + moved.l + moved.r == Catch::Approx(1.0f + sq.l + sq.r));
+  for (std::uint8_t handle : {std::uint8_t{extend_left}, std::uint8_t{extend_bottom},
+                              std::uint8_t{extend_right | extend_top}, std::uint8_t{extend_move}}) {
+    const extend_draft free_a = extend_drag_aspect(sq, handle, 0.13f, -0.07f, w, h, 0.0);
+    const extend_draft free_b = extend_drag(sq, handle, 0.13f, -0.07f);
+    CHECK(extend_same_frame(free_a, free_b));
+  }
+  // NaN from a degenerate map leaves the frame where it was.
+  CHECK(extend_same_frame(extend_drag_aspect(sq, extend_right, std::nanf(""), 0.0f, w, h, 1.0), sq));
+}
+
+TEST_CASE("extend_lock: the chips set the ratio held; a dragged frame grows from itself",
+          "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  const std::uint32_t w = 3000, h = 2000;
+  extend_lock lock;
+  extend_draft frame;
+  frame.on = true;
+  // The add-on's 16:9 chip holds 16:9: its frame, and drags keep it.
+  extend_choose_preset(lock, frame, 5, w, h);
+  CHECK(lock.aspect == crop_aspect::r16_9);
+  CHECK_FALSE(lock.portrait);
+  CHECK(extend_preset_of(frame, w, h) == 5);
+  CHECK(frame.on);
+  // 4:5 is 5:4 turned.
+  extend_choose_preset(lock, frame, 6, w, h);
+  CHECK(lock.aspect == crop_aspect::r5_4);
+  CHECK(lock.portrait);
+  // Then 1:1 from the menu starts from the photo, not on top of 4:5.
+  CHECK(extend_choose_aspect(lock, frame, crop_aspect::square, false, w, h));
+  CHECK(extend_px(frame) == std::array<std::uint32_t, 2>{3000, 3000});
+  // Wider is free again, the swap kept for the next ratio.
+  lock.portrait = true;
+  extend_choose_preset(lock, frame, 1, w, h);
+  CHECK(lock.aspect == crop_aspect::free);
+  CHECK(lock.portrait);
+  CHECK(extend_preset_of(frame, w, h) == 1);
+  // Held to 3:2 after a drag, a new ratio grows the dragged frame.
+  CHECK(extend_choose_aspect(lock, frame, crop_aspect::r3_2, false, w, h));
+  const extend_draft dragged =
+      extend_drag_aspect(frame, extend_right, 0.05f, 0.0f, w, h, extend_lock_ratio(lock, w, h));
+  frame = dragged;
+  CHECK(extend_choose_aspect(lock, frame, crop_aspect::square, false, w, h));
+  CHECK(frame.l == Catch::Approx(dragged.l));
+  CHECK(frame.r == Catch::Approx(dragged.r));
+  CHECK(frame.t > dragged.t);
+  CHECK(extend_at_aspect(frame, w, h, 1.0));
+  // The bar's wire values for the chips and the ratios do not meet.
+  static_assert(kExtendChipCount <= kExtendPresetCount);
+}

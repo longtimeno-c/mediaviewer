@@ -32,6 +32,7 @@
 #include "edit/edit_stack.h"
 #include "edit/export.h"
 #include "shell/commands.h"
+#include "shell/crop_aspect.h"
 
 namespace mv::shell {
 
@@ -52,21 +53,8 @@ enum class edit_effect : std::uint8_t {
   export_image,    // run an export of `export_geometry()` for the current item
 };
 
-// PR 29 (docs/design/20): the Crop pane's aspect presets. `original` is the frame's
-// own ratio (after the stack's turns). Values are stable: the chromes send them.
-enum class crop_aspect : std::uint8_t {
-  free = 0,
-  original = 1,
-  square = 2,
-  r4_3 = 3,
-  r3_2 = 4,
-  r16_9 = 5,
-  r5_4 = 6,
-  count
-};
-inline constexpr int kCropAspectCount = static_cast<int>(crop_aspect::count);
-// "Free", "Original", "1:1", "4:3", ... (landscape spelling).
-[[nodiscard]] const char* crop_aspect_label(crop_aspect a) noexcept;
+// PR 29 (docs/design/20): the Crop pane's aspect presets, crop_aspect, are in
+// shell/crop_aspect.h (Extend's frame locks to the same list).
 
 struct rotation_write {
   std::string path;
