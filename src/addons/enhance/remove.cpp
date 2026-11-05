@@ -56,9 +56,9 @@ pixel_box grown_box(const bounds& r, std::uint32_t width, std::uint32_t height) 
   const std::uint32_t margin = std::max((std::max(r.x1 - r.x0, r.y1 - r.y0) + 1) / 2, kRemoveMinContext);
   // One axis: [lo, hi) grown by `margin`, then to `side` where the photo
   // allows, shifted back inside it at an edge.
-  const auto grow = [](std::uint32_t lo, std::uint32_t hi, std::uint32_t margin, std::uint32_t limit,
+  const auto grow = [](std::uint32_t lo, std::uint32_t hi, std::uint32_t by, std::uint32_t limit,
                        std::uint32_t side) {
-    std::int64_t a = static_cast<std::int64_t>(lo) - margin, b = static_cast<std::int64_t>(hi) + 1 + margin;
+    std::int64_t a = static_cast<std::int64_t>(lo) - by, b = static_cast<std::int64_t>(hi) + 1 + by;
     if (side > b - a) {
       const std::int64_t extra = side - (b - a);
       a -= extra / 2;
@@ -205,7 +205,9 @@ remove_plan remove_boxes(const mask8& mask) {
   plan.grid_w = gw;
   plan.grid_h = gh;
   plan.owner.resize(label.size());
-  for (std::size_t i = 0; i < label.size(); ++i) plan.owner[i] = label[i] ? box_of[label[i] - 1] : 0;
+  for (std::size_t i = 0; i < label.size(); ++i) {
+    plan.owner[i] = label[i] ? box_of[label[i] - 1] : std::uint8_t{0};
+  }
   return plan;
 }
 

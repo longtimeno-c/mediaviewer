@@ -387,7 +387,8 @@ cancel check before and after each fill; a box's model mask holds its own pixels
 boxes' (never shown what is being taken out), and only its own are pasted back
 (`paste_back_box`), feathered `clamp(box.w/256, 2, 16)`. `mv_import_tests "[enhance][remove]"`
 covers the verify line (two far blobs give two boxes each within 2x its blob's own grown box, near
-blobs merge, nine far blobs fall back, a run fills twice with every pixel outside both boxes the
+blobs merge, nine far blobs fall back, on random dabs every brushed pixel is pasted by exactly one
+box, the one around it, a run fills twice with every pixel outside both boxes the
 source's own, a cancel during the first fill never starts the second and writes nothing). Not
 run: the real LaMa on a two-blob photo (the hidden `[.remove-model]` case still brushes one
 stroke); the "Quality over speed" second pass for large boxes is not part of this slice.

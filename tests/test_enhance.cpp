@@ -1939,6 +1939,51 @@ TEST_CASE("remove: things brushed apart are filled in their own boxes", "[enhanc
   CHECK(fallback.boxes[0].height == whole->height);
   CHECK(fallback.owner_at(510, 510) == 1);
 
+  // Random dabs: every brushed pixel is filled by exactly one box, the one
+  // around it, and the boxes are inside the photo (a brushed pixel no box
+  // owns would be left in the result).
+  std::uint32_t seed = 12345;
+  const auto next = [&seed] {
+    seed = seed * 1664525u + 1013904223u;
+    return static_cast<float>(seed >> 8) / static_cast<float>(1u << 24);
+  };
+  for (int trial = 0; trial < 40; ++trial) {
+    const std::uint32_t tw = 300 + static_cast<std::uint32_t>(next() * 1700.0f);
+    const std::uint32_t th = 200 + static_cast<std::uint32_t>(next() * 1300.0f);
+    std::vector<float> random_dabs;
+    const int count = 1 + static_cast<int>(next() * 12.0f);
+    for (int k = 0; k < count; ++k) {
+      random_dabs.push_back(next());
+      random_dabs.push_back(next());
+      random_dabs.push_back(0.002f + next() * 0.02f);
+    }
+    const mask8 m = mask_from_dabs(random_dabs, tw, th);
+    const remove_plan rp = remove_boxes(m);
+    REQUIRE(!rp.boxes.empty());
+    REQUIRE(rp.boxes.size() <= kRemoveMaxBoxes);
+    for (const pixel_box& pb2 : rp.boxes) {
+      CHECK(pb2.width > 0);
+      CHECK(pb2.height > 0);
+      CHECK(pb2.x + pb2.width <= tw);
+      CHECK(pb2.y + pb2.height <= th);
+    }
+    std::size_t orphans = 0, brushed = 0, owned = 0;
+    for (std::uint32_t y = 0; y < th; ++y) {
+      for (std::uint32_t x = 0; x < tw; ++x) {
+        if (m.a[std::size_t{y} * tw + x] <= 127) continue;
+        ++brushed;
+        const std::uint8_t who = rp.owner_at(x, y);
+        if (who == 0 || std::size_t{who} > rp.boxes.size() || !inside(rp.boxes[who - 1u], x, y)) ++orphans;
+      }
+    }
+    for (std::size_t k = 0; k < rp.boxes.size(); ++k) {
+      const mask8 own_k = box_mask(m, rp, k, false);
+      owned += static_cast<std::size_t>(std::count(own_k.a.begin(), own_k.a.end(), 255));
+    }
+    CHECK(orphans == 0);
+    CHECK(owned == brushed);
+  }
+
   // The run: two dabs at either end of a 1600 x 600 photo, each filled in its
   // own box (two fills); every pixel outside both boxes is the photo's own.
   const std::uint32_t w = 1600, h = 600;
@@ -2002,7 +2047,9 @@ TEST_CASE("remove: things brushed apart are filled in their own boxes", "[enhanc
     for (std::uint32_t x = 0; x < w; ++x) {
       if (inside(run_plan.boxes[0], x, y) || inside(run_plan.boxes[1], x, y)) continue;
       const std::size_t i = (std::size_t{y} * w + x) * 3;
-      changed_outside += written[i] != original[i] || written[i + 1] != original[i + 1] || written[i + 2] != original[i + 2];
+      if (written[i] != original[i] || written[i + 1] != original[i + 1] || written[i + 2] != original[i + 2]) {
+        ++changed_outside;
+      }
     }
   }
   CHECK(changed_outside == 0);
