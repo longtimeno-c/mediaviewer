@@ -1853,10 +1853,28 @@ enum GlowPalette {
   ]
 }
 
-/// A soft multicolour edge round a surface ("glow"): a thin ring and a blurred
-/// halo behind it. "moving" turns it once every six seconds, at 30 fps at most,
-/// and never with Reduce Motion; "still" holds it. The canvas is never touched:
-/// this is the sheet's own drawing, and it stops when the node does.
+/// The glow's timing, the same on both hosts (GlowMath.cs): seconds for each
+/// layer of the edge to go once round, and for the halo to breathe in and
+/// out. (A progress bar's "glow" look is drawn as every bar since 2026-11-05:
+/// ProgressLine, docs/design/20 "Craft rules".)
+enum GlowTiming {
+  static let turn = 6.0       // the crisp ring
+  static let midTurn = 9.0    // the soft glow, the other way round
+  static let haloTurn = 13.0  // the wide halo
+  static let breath = 2.2
+
+  /// 0 up to 1 over `period` seconds.
+  static func phase(_ t: Double, _ period: Double) -> Double { t.truncatingRemainder(dividingBy: period) / period }
+  /// The halo's breath, 0 to 1 and back, eased.
+  static func breathe(_ t: Double) -> Double { 0.5 - 0.5 * cos(phase(t, breath) * 2 * .pi) }
+}
+
+/// A multicolour edge round a surface ("glow"), after Apple Intelligence's:
+/// a crisp ring, a soft glow and a wide halo, each turning at its own pace
+/// (the middle one the other way), the halo breathing. "moving" animates it,
+/// at 30 fps at most and never with Reduce Motion; "still" holds one quiet
+/// ring. The canvas is never touched: this is the sheet's own drawing, and it
+/// stops when the node does.
 private struct GlowEdge: ViewModifier {
   let state: String?
   let radius: CGFloat
@@ -1866,12 +1884,22 @@ private struct GlowEdge: ViewModifier {
     if let state {
       let moving = state == "moving" && !reduceMotion
       content.background {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !moving)) { t in
-          let turn = moving ? t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 6 : 0
-          let gradient = AngularGradient(colors: GlowPalette.colors, center: .center, angle: .degrees(turn * 360))
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !moving)) { tl in
+          let t = moving ? tl.date.timeIntervalSinceReferenceDate : 0
+          let shape = RoundedRectangle(cornerRadius: radius + 3)
           ZStack {
-            RoundedRectangle(cornerRadius: radius + 3).fill(gradient).blur(radius: 14).opacity(0.55)
-            RoundedRectangle(cornerRadius: radius + 3).fill(gradient)
+            if moving {
+              let breath = GlowTiming.breathe(t)
+              shape.fill(ring(GlowTiming.phase(t, GlowTiming.haloTurn)))
+                .blur(radius: 18 + 8 * breath).opacity(0.35 + 0.25 * breath)
+                .padding(-4 - 3 * breath)
+              shape.fill(ring(-GlowTiming.phase(t, GlowTiming.midTurn)))
+                .blur(radius: 6).opacity(0.75)
+                .padding(-2)
+            } else {
+              shape.fill(ring(0)).blur(radius: 10).opacity(0.3)
+            }
+            shape.fill(ring(GlowTiming.phase(t, GlowTiming.turn)))
           }
           .padding(-3)
         }
@@ -1880,6 +1908,10 @@ private struct GlowEdge: ViewModifier {
     } else {
       content
     }
+  }
+
+  private func ring(_ turn: Double) -> AngularGradient {
+    AngularGradient(colors: GlowPalette.colors, center: .center, angle: .degrees(turn * 360))
   }
 }
 

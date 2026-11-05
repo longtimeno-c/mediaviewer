@@ -41,6 +41,13 @@ std::vector<std::uint8_t> head_of(const std::string& path) {
   return head;
 }
 
+// The preview's height in points for a picture of `aspect` (width / height)
+// across a sheet `width_pt` wide: the picture fills the width, within reason.
+std::uint32_t preview_height(float width_pt, double aspect) {
+  if (aspect <= 0) return kPreviewHeight;
+  return static_cast<std::uint32_t>(std::clamp(std::lround(width_pt / aspect), 160L, 320L));
+}
+
 bool library_key(const std::string& path) { return path.rfind("photos:", 0) == 0; }
 
 // A Photos-library item ("photos:<id>", docs/design/26) has no file name to
@@ -77,12 +84,34 @@ std::optional<std::pair<model_kind, std::string>> knob_id(const std::string& nod
   return std::pair{*k, node.substr(dot + 1)};
 }
 
-// "install.<kind>" -> kind, for `what`.
-std::optional<model_kind> action_kind(const std::string& node, std::string_view what) {
+// "install.<kind>" -> (kind, ""), "remove.<kind>.<id>" -> (kind, id), for `what`.
+std::optional<std::pair<model_kind, std::string>> action_of(const std::string& node, std::string_view what) {
   if (node.size() <= what.size() + 1 || node.compare(0, what.size(), what) != 0 || node[what.size()] != '.') {
     return std::nullopt;
   }
-  return kind_from(std::string_view(node).substr(what.size() + 1));
+  const std::string_view rest = std::string_view(node).substr(what.size() + 1);
+  const std::size_t dot = rest.find('.');
+  const auto k = kind_from(rest.substr(0, dot));
+  if (!k) return std::nullopt;
+  return std::pair{*k, dot == std::string_view::npos ? std::string() : std::string(rest.substr(dot + 1))};
+}
+
+// A kind's model files: model.json first, then the others by name. Their
+// ids are their names; a file whose name is not an id is not a model.
+std::vector<std::pair<std::string, std::string>> model_files_in(const std::string& dir) {
+  std::vector<std::pair<std::string, std::string>> out;  // (id, path)
+  std::error_code ec;
+  for (fs::directory_iterator it(fs_path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+    if (!it->is_regular_file(ec)) continue;
+    const std::u8string name = it->path().filename().u8string();
+    const auto id = model_id_of(std::string(name.begin(), name.end()));
+    if (id) out.emplace_back(*id, dir + "/" + *id + ".json");
+  }
+  std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+    const bool da = a.first == kDefaultModelId, db = b.first == kDefaultModelId;
+    return da != db ? da : a.first < b.first;
+  });
+  return out;
 }
 
 }  // namespace
@@ -98,21 +127,31 @@ engine::engine(engine_port port, std::string self_dir, std::string data_dir, ai:
   std::vector<pin> pins;
   if (auto manifest = read_text(self_dir_ + "/manifest.json", 4u << 20)) pins = read_pins(*manifest);
   for (const model_kind k : kModelKinds) {
-    const auto text = read_text(self_dir_ + "/models/" + kind_name(k) + "/model.json", 256u << 10);
-    if (!text) continue;
-    auto s = parse_spec(*text, k);
-    if (!s) {
-      if (port_.log) port_.log(1, "enhance: a model.json did not parse; that kind is not offered");
-      continue;
+    auto& list = models_[static_cast<int>(k)];
+    for (const auto& [id, file] : model_files_in(self_dir_ + "/models/" + kind_name(k))) {
+      if (list.size() == 8) break;  // a choice, not a catalogue
+      const auto text = read_text(file, 256u << 10);
+      auto s = text ? parse_spec(*text, k) : std::nullopt;
+      if (!s) {
+        if (port_.log) port_.log(1, "enhance: a model file did not parse; that model is not offered");
+        continue;
+      }
+      s->id = id;
+      model_entry e;
+      e.files = files_for(*s, pins);
+      e.key = model_key(k, id);
+      e.spec = std::move(*s);
+      list.push_back(std::move(e));
     }
-    files_[static_cast<int>(k)] = files_for(*s, pins);
-    specs_[static_cast<int>(k)] = std::move(*s);
+    // model.json's stays first (the default); the others, cheapest first.
+    std::stable_sort(list.begin() + (list.empty() || list.front().spec.id != kDefaultModelId ? 0 : 1), list.end(),
+                     [](const model_entry& a, const model_entry& b) { return a.files.bytes < b.files.bytes; });
   }
   if (!data_dir_.empty()) prefs_ = load_prefs(data_dir_ + "/enhance.json");
   downloads::port dp;
   dp.transport = port_.transport;
   dp.free_disk = port_.free_disk;
-  dp.changed = [this](model_kind k) { on_changed(k); };
+  dp.changed = [this](const std::string&) { on_changed(); };
   dl_ = std::make_unique<downloads>(data_dir_ + "/models", std::move(dp), std::move(fetch));
 }
 
@@ -138,41 +177,78 @@ void engine::resume_wanted() {
   if (resume_.joinable() || data_dir_.empty()) return;
   resume_ = std::thread([this] {
     for (const model_kind k : kModelKinds) {
-      bool want = false;
-      {
-        std::lock_guard lock(m_);
-        want = prefs_.want(k) && kind_offered(k) && specs_[static_cast<int>(k)].has_value();
-      }
-      // Only a download this person started and a quit cut short (its part
-      // is here): a kind whose pin changed since (S7: still's 4.9 MB
-      // Real-ESRGAN became Real-HAT-GAN's 161 MB) has nothing here and
-      // waits for a click, never fetched unasked.
-      if (want && dl_->status(k, files_[static_cast<int>(k)]).state == dl_state::stopped) {
-        dl_->start(k, files_[static_cast<int>(k)]);
+      for (const model_entry& e : models_[static_cast<int>(k)]) {
+        bool want = false;
+        {
+          std::lock_guard lock(m_);
+          want = prefs_.want(e.key) && kind_offered(k);
+        }
+        // Only a download this person started and a quit cut short (its part
+        // is here): a model whose pin changed since (S7: still's 4.9 MB
+        // Real-ESRGAN became Real-HAT-GAN's 161 MB) has nothing here and
+        // waits for a click, never fetched unasked.
+        if (want && dl_->status(e.key, e.files).state == dl_state::stopped) dl_->start(e.key, e.files);
       }
     }
   });
 }
 
-const model_spec* engine::spec(model_kind k) const {
-  const auto& s = specs_[static_cast<int>(k)];
-  return s ? &*s : nullptr;
+const engine::model_entry* engine::find_model(model_kind k, const std::string& id) const {
+  for (const model_entry& e : models_[static_cast<int>(k)]) {
+    if (e.spec.id == id) return &e;
+  }
+  return nullptr;
 }
 
-dl_status engine::download_status(model_kind k) const { return dl_->status(k, files_[static_cast<int>(k)]); }
+const engine::model_entry* engine::chosen_locked(model_kind k) const {
+  const auto& list = models_[static_cast<int>(k)];
+  if (list.empty()) return nullptr;
+  if (const model_entry* e = find_model(k, prefs_.use_of(k))) return e;
+  return &list.front();  // model.json's, or the only one there is
+}
+
+const model_spec* engine::spec(model_kind k) const {
+  std::lock_guard lock(m_);
+  const model_entry* e = chosen_locked(k);
+  return e ? &e->spec : nullptr;
+}
+
+dl_status engine::download_status(model_kind k) const {
+  const model_entry* e = nullptr;
+  {
+    std::lock_guard lock(m_);
+    e = chosen_locked(k);
+  }
+  return e ? dl_->status(e->key, e->files) : dl_status{};
+}
 
 prefs engine::current_prefs() const {
   std::lock_guard lock(m_);
   return prefs_;
 }
 
-void engine::on_changed(model_kind k) {
+const model_spec* engine::spec_locked(model_kind k) const {
+  const model_entry* e = chosen_locked(k);
+  return e ? &e->spec : nullptr;
+}
+
+model_files engine::files_locked(model_kind k) const {
+  const model_entry* e = chosen_locked(k);
+  return e ? e->files : model_files{};
+}
+
+dl_status engine::status_locked(model_kind k) const {
+  const model_entry* e = chosen_locked(k);
+  return e ? dl_->status(e->key, e->files) : dl_status{};
+}
+
+void engine::on_changed() {
   bool start = false;
   {
     std::lock_guard lock(m_);
-    // One-click: a click's download, then its run.
-    if (pending_tool_ && pending_kind_ == k) {
-      const dl_status st = dl_->status(k, files_[static_cast<int>(k)]);
+    // One-click: a click's download (the tool's chosen model), then its run.
+    if (pending_tool_) {
+      const dl_status st = status_locked(pending_kind_);
       switch (st.state) {
         case dl_state::ready: start = true; break;
         case dl_state::no_space:
@@ -188,11 +264,13 @@ void engine::on_changed(model_kind k) {
           end_pending_locked(run_state::failed, "The model could not be downloaded.");
           break;
         case dl_state::stopped:
-        case dl_state::absent:
+        case dl_state::absent: {
           // Stopped by hand (Cancel, Stop the download), or cut short.
-          if (prefs_.want(k)) end_pending_locked(run_state::failed, "The download stopped. Try again.");
+          const model_entry* e = chosen_locked(pending_kind_);
+          if (e && prefs_.want(e->key)) end_pending_locked(run_state::failed, "The download stopped. Try again.");
           else end_pending_locked(run_state::cancelled, {});
           break;
+        }
         default: break;
       }
     }
@@ -231,12 +309,16 @@ void engine::post_settings_locked() {
   for (const model_kind k : kModelKinds) {
     model_card c;
     c.kind = k;
-    c.spec = spec(k);
-    c.files = files_[static_cast<int>(k)];
-    if (c.spec) c.st = dl_->status(k, c.files);
+    const model_entry* chosen = chosen_locked(k);
+    bool any_here = false;
+    for (const model_entry& e : models_[static_cast<int>(k)]) {
+      if (&e == chosen) c.chosen = c.models.size();
+      c.models.push_back({&e.spec, e.files, dl_->status(e.key, e.files)});
+      any_here = any_here || c.models.back().st.state != dl_state::absent;
+    }
     // A kind not offered (kOfferMotionBlur) shows only while its files are
     // here, so they can be removed.
-    if (!kind_offered(k) && c.st.state == dl_state::absent) continue;
+    if (!kind_offered(k) && !any_here) continue;
     // A kind this build has no model for is named only when it is one the
     // issue promises (photos): video and audio always are.
     cards.push_back(std::move(c));
@@ -250,8 +332,7 @@ void engine::post_settings_locked() {
 // S7: Enhance image's chosen model when this build offers it, else Sharpen
 // & restore (the kind a photo always had).
 bool engine::detail_offered(model_kind k) const {
-  return still_family(k) && kind_offered(k) && specs_[static_cast<int>(k)].has_value() &&
-         files_[static_cast<int>(k)].usable();
+  return still_family(k) && kind_offered(k) && files_locked(k).usable();
 }
 
 model_kind engine::detail_locked() const {
@@ -265,19 +346,18 @@ std::vector<model_kind> engine::kinds_for_locked(bool docked, std::optional<phot
       // Offered only once its weights are pinned (a model.json alone is not a
       // model anyone can download). Docked (S5), Remove is the card the
       // person chose: its knobs show before anything is brushed.
-      if (photo == photo_target::remove && (brushed_ > 0 || docked) &&
-          specs_[static_cast<int>(model_kind::remove)]) {
+      if (photo == photo_target::remove && (brushed_ > 0 || docked) && chosen_locked(model_kind::remove)) {
         return {model_kind::remove};
       }
-      if (photo == photo_target::extend && specs_[static_cast<int>(model_kind::remove)]) {
+      if (photo == photo_target::extend && chosen_locked(model_kind::remove)) {
         return {model_kind::remove};  // Remove's model, in its extend mode
       }
-      if (photo == photo_target::faces && specs_[static_cast<int>(model_kind::face)]) {
+      if (photo == photo_target::faces && chosen_locked(model_kind::face)) {
         return {model_kind::face};  // S10: Restore faces
       }
-      if (specs_[static_cast<int>(model_kind::restyle)] && files_[static_cast<int>(model_kind::restyle)].usable() &&
-          photo == photo_target::restyle) {
-        return {model_kind::restyle};
+      if (photo == photo_target::restyle) {
+        const model_entry* restyle = chosen_locked(model_kind::restyle);
+        if (restyle && restyle->files.usable()) return {model_kind::restyle};
       }
       return {detail_locked()};
     case item_kind::audio: return facts_.sound ? std::vector{model_kind::audio} : std::vector<model_kind>{};
@@ -305,13 +385,13 @@ sheet_view engine::sheet_locked(bool docked, std::optional<photo_target> as) con
   v.has_picture = facts_.picture;
   v.has_sound = facts_.sound;
   v.target = prefs_.target;
-  v.offers_restyle = specs_[static_cast<int>(model_kind::restyle)].has_value() &&
-                     files_[static_cast<int>(model_kind::restyle)].usable();
+  const model_entry* restyle = chosen_locked(model_kind::restyle);
+  v.offers_restyle = restyle && restyle->files.usable();
   // Remove is offered whenever something is brushed: a model not yet
-  // downloaded shows as not installed, as any kind does.
-  v.offers_remove = (brushed_ > 0 || docked) && specs_[static_cast<int>(model_kind::remove)].has_value();
-  v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
-  v.offers_faces = specs_[static_cast<int>(model_kind::face)].has_value();
+  // downloaded shows as not downloaded yet, as any kind does.
+  v.offers_remove = (brushed_ > 0 || docked) && chosen_locked(model_kind::remove) != nullptr;
+  v.offers_extend = chosen_locked(model_kind::remove) != nullptr;
+  v.offers_faces = chosen_locked(model_kind::face) != nullptr;
   v.framed = framed_ && item_ == item_kind::still;
   v.photo = as.value_or(prefs_.photo);
   v.level = effective_tier();
@@ -330,6 +410,8 @@ sheet_view engine::sheet_locked(bool docked, std::optional<photo_target> as) con
   v.progress = progress_;
   v.eta = eta_;
   v.preview = preview_;
+  v.preview_split = preview_split_;
+  v.preview_height = preview_ ? posted_height_ : kPreviewHeight;
   v.status = status_;
   switch (item_) {
     case item_kind::animation: v.note = "Enhance has no model for animations yet."; break;
@@ -348,28 +430,35 @@ sheet_view engine::sheet_locked(bool docked, std::optional<photo_target> as) con
     sheet_section s;
     s.kind = k;
     s.values = prefs_.of(k);
-    const model_spec* sp = spec(k);
-    const dl_status st = sp ? dl_->status(k, files_[static_cast<int>(k)]) : dl_status{};
-    if (sp && st.state == dl_state::ready) {
-      s.spec = sp;
-      level_quality(s.values, *sp, v.level);  // Restyle: the best the level allows
-    } else if (!sp) {
+    const model_entry* e = chosen_locked(k);
+    const dl_status st = e ? dl_->status(e->key, e->files) : dl_status{};
+    if (e) {
+      s.model = e->spec.id;
+      const auto& list = models_[static_cast<int>(k)];
+      if (list.size() > 1) {
+        for (const model_entry& m : list) s.models.push_back({m.spec.id, m.spec.name});
+      }
+    }
+    const bool photo_tool = still_family(k) || (docked && item_ == item_kind::still);
+    if (e && st.state == dl_state::ready) {
+      s.spec = &e->spec;
+      level_quality(s.values, e->spec, v.level);  // Restyle: the best the level allows
+    } else if (!e) {
       s.missing = "This version of Enhance has no " + std::string(model_noun(k)) + " yet.";
     } else if (st.state == dl_state::downloading || st.state == dl_state::waiting) {
-      s.missing = "The " + std::string(model_noun(k)) + " is still downloading.";
-      if (still_family(k) || (docked && item_ == item_kind::still)) {
-        s.downloading = true;
-        if (st.total_bytes > 0) {
-          s.missing = "Downloading the " + std::string(model_noun(k)) + "… " + size_text(st.done_bytes) + " of " +
-                      size_text(st.total_bytes) + ".";
-        }
+      s.missing = e->spec.name + " is downloading.";
+      s.downloading = st.total_bytes ? static_cast<double>(st.done_bytes) / static_cast<double>(st.total_bytes) : -1.0;
+      if (photo_tool && st.total_bytes > 0) {
+        s.missing = "Downloading the " + std::string(model_noun(k)) + "… " + size_text(st.done_bytes) + " of " +
+                    size_text(st.total_bytes) + ".";
       }
-    } else if ((still_family(k) || (docked && item_ == item_kind::still)) && files_[static_cast<int>(k)].usable() &&
-               st.state != dl_state::gone && st.state != dl_state::refused) {
+    } else if (st.state == dl_state::refused || st.state == dl_state::gone) {
+      s.missing = e->spec.name + " cannot be downloaded. An update of Enhance will name a new one.";
+    } else if (photo_tool && e->files.usable()) {
       // S7: each of Enhance image's models is fetched only when chosen, from
       // the sheet itself.
       s.missing = std::string(still_family(k) ? detail_text(k) : "This tool") + " needs its model, downloaded from Hugging Face once (" +
-                  size_text(files_[static_cast<int>(k)].bytes) + "). It runs on this computer.";
+                  size_text(e->files.bytes) + "). It runs on this computer.";
       if (st.state == dl_state::no_space) {
         s.missing = "Not enough free disk for the " + std::string(model_noun(k)) + ": it needs " +
                     size_text(st.need_bytes) + ", and " + size_text(st.free_bytes) + " is free.";
@@ -377,10 +466,11 @@ sheet_view engine::sheet_locked(bool docked, std::optional<photo_target> as) con
         s.missing = "The download never matched the model's checksum, so it was not kept.";
       }
       s.install = st.state == dl_state::stopped ? std::string("Resume the download")
-                  : st.state == dl_state::absent ? "Download (" + size_text(files_[static_cast<int>(k)].bytes) + ")"
+                  : st.state == dl_state::absent ? "Download (" + size_text(e->files.bytes) + ")"
                                                  : std::string("Try again");
     } else {
-      s.missing = "The " + std::string(model_noun(k)) + " is not installed. Download it in Settings → Add-ons → Enhance.";
+      s.missing = e->spec.name + " is not downloaded yet. It runs on this computer; only the download uses the network.";
+      s.install = (st.state == dl_state::stopped ? "Resume the download (" : "Download (") + size_text(e->files.bytes) + ")";
     }
     all_ready = all_ready && s.spec && runner_ && runner_->supports(k, item_);
     v.sections.push_back(std::move(s));
@@ -401,7 +491,8 @@ sheet_view engine::sheet_locked(bool docked, std::optional<photo_target> as) con
   if (!running_ && v.note.empty() && status_.empty() && !v.sections.empty()) {
     const bool models = std::all_of(v.sections.begin(), v.sections.end(), [](const sheet_section& s) { return s.spec; });
     if (models && !runner_) {
-      v.status = "This build of Enhance cannot run its models yet.";
+      // The host has no rows to read and write with (an older MediaViewer).
+      v.status = "This version of MediaViewer cannot run Enhance's models. Update MediaViewer to use them.";
     } else if (models) {
       for (const sheet_section& s : v.sections) {
         if (runner_->supports(s.kind, item_)) continue;
@@ -464,17 +555,17 @@ std::vector<card_view> engine::cards_locked() const {
   for (const photo_target t : {photo_target::remove, photo_target::restyle, photo_target::faces, photo_target::detail,
                                photo_target::extend}) {
     const model_kind k = kind_of_tool(t, detail_locked());
-    const model_spec* sp = spec(k);
+    const model_spec* sp = spec_locked(k);
     // Offered whenever this Enhance has the tool's model (a pinned one, for
     // the downloads): never gated on a palette command (the owner's "Not
     // offered" on Restyle, 2026-11-05).
-    if (!sp || !kind_offered(k) || !files_[static_cast<int>(k)].usable()) continue;
+    if (!sp || !kind_offered(k) || !files_locked(k).usable()) continue;
     if (t == photo_target::detail && !detail_offered(k)) continue;
     card_view c;
     c.tool = t;
     c.spec = sp;
     c.v = sheet_locked(true, t);
-    const dl_status st = dl_->status(k, files_[static_cast<int>(k)]);
+    const dl_status st = status_locked(k);
     c.downloading = st.state == dl_state::downloading || st.state == dl_state::waiting;
     if (c.downloading && st.total_bytes > 0) {
       c.download_fraction = static_cast<double>(st.done_bytes) / static_cast<double>(st.total_bytes);
@@ -490,7 +581,7 @@ std::vector<card_view> engine::cards_locked() const {
 std::string engine::card_eta_locked(photo_target t, const sheet_view& v) const {
   if (v.sections.empty()) return {};
   const sheet_section& s = v.sections.front();
-  const model_spec* sp = spec(s.kind);
+  const model_spec* sp = spec_locked(s.kind);
   if (!sp) return {};
   const tier_policy pol = policy_of(v.level);
   const auto value = [&](const char* id) -> json::value {
@@ -538,7 +629,7 @@ run_view engine::run_view_locked() const {
   if (run_state_ == run_state::running) {
     if (pending_tool_) {
       r.downloading = true;
-      const dl_status st = dl_->status(pending_kind_, files_[static_cast<int>(pending_kind_)]);
+      const dl_status st = status_locked(pending_kind_);
       if (st.total_bytes > 0) r.fraction = static_cast<double>(st.done_bytes) / static_cast<double>(st.total_bytes);
       r.model_name = still_family(pending_kind_) ? detail_text(pending_kind_) : std::string("the model");
     } else {
@@ -566,9 +657,9 @@ void engine::go(photo_target t) {
       save_locked();
     }
     const model_kind k = kind_of_tool(t, detail_locked());
-    const model_spec* sp = spec(k);
-    if (!sp || !files_[static_cast<int>(k)].usable()) return;
-    const dl_status st = dl_->status(k, files_[static_cast<int>(k)]);
+    const model_spec* sp = spec_locked(k);
+    if (!sp || !files_locked(k).usable()) return;
+    const dl_status st = status_locked(k);
     if (st.state == dl_state::downloading || st.state == dl_state::waiting) return;
     if (st.state == dl_state::ready && bar_runs) return;
     if (st.state != dl_state::ready) {
@@ -586,8 +677,8 @@ void engine::go(photo_target t) {
     }
   }
   if (fetch) {
-    install(*fetch);  // may answer at once (no room, refused): on_changed ends it
-    on_changed(*fetch);
+    install(*fetch, {});  // may answer at once (no room, refused): on_changed ends it
+    on_changed();
     return;
   }
   run(true);
@@ -640,6 +731,8 @@ void engine::adopt_locked(const std::string& path, const item_facts& f, std::vec
     forget_result_locked();  // a result belongs to the item it was made from
   }
   preview_ = false;  // a preview belongs to the run that drew it
+  preview_split_ = false;
+  preview_aspect_ = 0;
   path_ = path;
   keep_ = f.item == item_kind::media ? std::move(keep) : std::vector<std::int64_t>{};
   item_ = f.item;
@@ -689,7 +782,7 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     brushed_ = f.brushed;
     // S6: Fill on Edit's Extend frame opened it: it starts on Extend (not
     // saved either; the frame overrides the preset).
-    if (f.framed && specs_[static_cast<int>(model_kind::remove)]) prefs_.photo = photo_target::extend;
+    if (f.framed && chosen_locked(model_kind::remove)) prefs_.photo = photo_target::extend;
   }
   post_sheet_locked();
 }
@@ -736,7 +829,7 @@ void engine::tool_command(const std::string& value_json) {
       }
     }
     if (stop_run) cancel();
-    if (stop_dl) stop(dl_kind);
+    if (stop_dl) stop(dl_kind, {});
     if (p) {
       const item_facts f = read_item(*p);
       std::lock_guard lock(m_);
@@ -846,7 +939,7 @@ void engine::closed(const std::string& screen) {
     }
   }
   if (cancel_run) cancel();
-  if (stop_dl) stop(*stop_dl);
+  if (stop_dl) stop(*stop_dl, {});
 }
 
 void engine::command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns,
@@ -870,34 +963,53 @@ void engine::command(const std::vector<std::string>& paths, std::vector<std::int
   if (port_.show) port_.show(kSheetScreen, true);
 }
 
-void engine::install(model_kind k) {
-  if (!spec(k) || !kind_offered(k)) return;
+void engine::install(model_kind k, const std::string& id) {
+  if (!kind_offered(k)) return;
+  const model_entry* e = nullptr;
   {
     std::lock_guard lock(m_);
-    prefs_.want(k) = true;
+    e = id.empty() ? chosen_locked(k) : find_model(k, id);
+    if (!e) return;
+    prefs_.wanted.insert(e->key);
     save_locked();
   }
-  dl_->start(k, files_[static_cast<int>(k)]);
+  dl_->start(e->key, e->files);
 }
 
-void engine::stop(model_kind k) {
+void engine::stop(model_kind k, const std::string& id) {
+  const model_entry* e = nullptr;
   {
     std::lock_guard lock(m_);
-    prefs_.want(k) = false;  // stopped by hand: not resumed at the next start
+    e = id.empty() ? chosen_locked(k) : find_model(k, id);
+    if (!e) return;
+    prefs_.wanted.erase(e->key);  // stopped by hand: not resumed at the next start
     save_locked();
   }
-  dl_->stop(k);
-  on_changed(k);
+  dl_->stop(e->key);
+  on_changed();
 }
 
-void engine::remove(model_kind k) {
+void engine::remove(model_kind k, const std::string& id) {
+  const model_entry* e = nullptr;
   {
     std::lock_guard lock(m_);
     if (running_) return;  // a run may be reading the weights
-    prefs_.want(k) = false;
+    e = id.empty() ? chosen_locked(k) : find_model(k, id);
+    if (!e) return;
+    prefs_.wanted.erase(e->key);
     save_locked();
   }
-  dl_->remove(k, files_[static_cast<int>(k)]);
+  dl_->remove(e->key, e->files, cache_dir_for(data_dir_ + "/models/" + kind_name(k), e->spec.id));
+}
+
+void engine::choose(model_kind k, const std::string& id) {
+  std::lock_guard lock(m_);
+  // A run keeps the model it started with, as does a download waiting to run.
+  if (running_ || pending_tool_ || !find_model(k, id)) return;
+  prefs_.use_of(k) = id;
+  save_locked();
+  post_settings_locked();
+  post_sheet_locked();
 }
 
 tier engine::effective_tier() const {
@@ -976,6 +1088,8 @@ void engine::run(bool docked) {
     progress_ = -1;
     eta_.clear();
     preview_ = false;
+    preview_split_ = false;
+    preview_aspect_ = 0;
     run_started_ = std::chrono::steady_clock::now();
     status_.clear();
     forget_result_locked();
@@ -1022,28 +1136,44 @@ void engine::run(bool docked) {
     }
     if (whole) post_sheet_locked();
   };
-  ev.preview = [this](preview_image before, preview_image after) {
-    // Composed off the lock: a letterbox at the docked panel's pixel size
-    // when it shows, else the sheet's.
+  // A preview's pixels at the sheet's size, posted to its surface. The tree
+  // goes first when the surface is new or its shape changed (pixels for a
+  // surface the tree does not show are dropped).
+  const auto post_preview = [this](const preview_image& shape, bool split,
+                                    const std::function<std::vector<std::uint8_t>(std::uint32_t, std::uint32_t)>& draw) {
     float w_pt = 420, sc = 2;
+    std::uint32_t h_pt = kPreviewHeight;
     {
       std::lock_guard lock(m_);
       // One-click: the cards show no preview (the glow is over the photo).
       if (!running_ || sheet_gen_ == 0) return;
       w_pt = sheet_width_pt_;
       sc = sheet_scale_;
+      if (!shape.empty()) preview_aspect_ = static_cast<double>(shape.width) / shape.height;
+      h_pt = preview_height(w_pt, preview_aspect_);
     }
     const auto ow = static_cast<std::uint32_t>(std::min(2048.0f, w_pt * sc));
-    const auto oh = static_cast<std::uint32_t>(std::min(1024.0f, static_cast<float>(kPreviewHeight) * sc));
-    const std::vector<std::uint8_t> bgra = compose_preview(before, after, ow, oh);
+    const auto oh = static_cast<std::uint32_t>(std::min(1024.0f, static_cast<float>(h_pt) * sc));
+    // Composed off the lock.
+    const std::vector<std::uint8_t> bgra = draw(ow, oh);
     std::lock_guard lock(m_);
     if (!running_ || sheet_gen_ == 0 || !port_.surface) return;
-    if (!preview_) {
-      // The node first: pixels for a surface the tree does not show are dropped.
+    if (!preview_ || preview_split_ != split || posted_height_ != h_pt) {
       preview_ = true;
+      preview_split_ = split;
+      posted_height_ = h_pt;
       post_sheet_locked();
     }
     (void)port_.surface(kSheetScreen, "preview", sheet_gen_, bgra, ow, oh);
+  };
+  ev.preview = [post_preview](preview_image before, preview_image after) {
+    const bool split = !before.empty() && !after.empty();
+    post_preview(before.empty() ? after : before, split, [&](std::uint32_t ow, std::uint32_t oh) {
+      return compose_preview(before, after, ow, oh);
+    });
+  };
+  ev.reveal = [post_preview](preview_image partial, reveal_front at) {
+    post_preview(partial, false, [&](std::uint32_t ow, std::uint32_t oh) { return compose_reveal(partial, at, ow, oh); });
   };
   ev.done = [this](bool ok, const std::string& output, const std::string& message) {
     std::lock_guard lock(m_);
@@ -1170,15 +1300,21 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
       post_sheet_locked();
       return;
     }
-    if (kind != MV_SLOT_EVENT_CLICK) return;
-    if (const auto k = action_kind(node, "install")) {
-      install(*k);
-    } else if (const auto k2 = action_kind(node, "stop")) {
-      stop(*k2);
-    } else if (const auto k3 = action_kind(node, "remove")) {
-      remove(*k3);
+    // A model's buttons, and the choice of a kind's model.
+    if (kind == MV_SLOT_EVENT_CLICK) {
+      if (const auto a = action_of(node, "install")) {
+        install(a->first, a->second);
+      } else if (const auto a2 = action_of(node, "stop")) {
+        stop(a2->first, a2->second);
+      } else if (const auto a3 = action_of(node, "remove")) {
+        remove(a3->first, a3->second);
+      }
+    } else if (kind == MV_SLOT_EVENT_CHANGE) {
+      if (const auto a = action_of(node, "model"); a && a->second.empty()) {
+        const auto v = json::parse(value_json, 4);
+        if (v && v->k == json::kind::string) choose(a->first, v->s);
+      }
     }
-    return;
   }
   if (screen != kSheetScreen && screen != kToolScreen) return;
   const bool docked = screen == kToolScreen;
@@ -1201,7 +1337,7 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
         std::lock_guard lock(m_);
         k = kind_of_tool(*t, detail_locked());
       }
-      stop(k);
+      stop(k, {});
       return;
     }
     if (node == "run.dismiss") {
@@ -1219,7 +1355,7 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
         std::lock_guard lock(m_);
         if (pending_tool_) dl = pending_kind_;
       }
-      if (dl) stop(*dl);  // on_changed ends the wait as cancelled
+      if (dl) stop(*dl, {});  // on_changed ends the wait as cancelled
       else cancel();
       return;
     }
@@ -1242,17 +1378,19 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   }
   if (kind == MV_SLOT_EVENT_CLICK) {
     // S7: Enhance image's model, fetched from the sheet when chosen.
-    if (const auto k = action_kind(node, "install"); k && (still_family(*k) || docked)) {
+    // A model fetched from the sheet itself (S7's photo models, and any
+    // kind's chosen model since the choice of models per kind).
+    if (const auto a = action_of(node, "install")) {
       {
         std::lock_guard lock(m_);
         if (running_) return;
       }
-      install(*k);
-      on_changed(*k);
+      install(a->first, a->second);
+      on_changed();
       return;
     }
-    if (const auto k = action_kind(node, "stop"); k && (still_family(*k) || docked)) {
-      stop(*k);
+    if (const auto a = action_of(node, "stop")) {
+      stop(a->first, a->second);
       return;
     }
     if (node == "close" && !docked) {
@@ -1270,6 +1408,11 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   if (kind != MV_SLOT_EVENT_CHANGE) return;
   const auto v = json::parse(value_json, 4);
   if (!v) return;
+  // The choice of a kind's model ("model.<kind>"), on the sheet and a card.
+  if (const auto a = action_of(node, "model"); a && a->second.empty()) {
+    if (v->k == json::kind::string) choose(a->first, v->s);
+    return;
+  }
   std::lock_guard lock(m_);
   if (running_) return;
   if (node == "photo") {
@@ -1299,7 +1442,8 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   }
   const auto id = knob_id(node);
   if (!id) return;
-  const model_spec* sp = spec(id->first);
+  const model_entry* e = chosen_locked(id->first);
+  const model_spec* sp = e ? &e->spec : nullptr;
   const knob* kb = sp ? sp->find(id->second) : nullptr;
   if (!kb) return;
   if (id->first == model_kind::restyle && kb->id == "quality" && v->k == json::kind::string &&

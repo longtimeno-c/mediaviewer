@@ -15,8 +15,6 @@ namespace fs = std::filesystem;
 
 fs::path fs_path(const std::string& utf8) { return fs::path(std::u8string(utf8.begin(), utf8.end())); }
 
-int slot(model_kind k) noexcept { return static_cast<int>(k); }
-
 bool hex64(const std::string& s) noexcept {
   return s.size() == 64 &&
          std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
@@ -77,12 +75,13 @@ bool downloads::ready(const model_files& m) const {
   return std::all_of(m.files.begin(), m.files.end(), [&](const ai::remote_file& f) { return ai::fetch_ready(root_, f); });
 }
 
-dl_status downloads::status(model_kind k, const model_files& m) const {
+dl_status downloads::status(const std::string& key, const model_files& m) const {
   dl_status s;
   {
     std::lock_guard lock(m_);
-    const auto& r = runs_[slot(k)];
-    if (r) {
+    const auto it = runs_.find(key);
+    if (it != runs_.end() && it->second) {
+      const auto& r = it->second;
       if (r->running.load()) return r->last;
       s = r->last;
     }
@@ -113,20 +112,20 @@ dl_status downloads::status(model_kind k, const model_files& m) const {
   return s;
 }
 
-void downloads::start(model_kind k, const model_files& m) {
-  const int i = slot(k);
+void downloads::start(const std::string& key, const model_files& m) {
   {
     std::lock_guard lock(m_);
-    if (runs_[i] && runs_[i]->running.load()) return;
+    const auto it = runs_.find(key);
+    if (it != runs_.end() && it->second && it->second->running.load()) return;
   }
-  join(k);
+  join(key);
   dl_status s;
   s.total_bytes = m.bytes;
   if (!m.usable()) {
     // A pin over 5 GB, or a spec naming a file the manifest does not pin:
     // refused before any request.
     s.state = dl_state::refused;
-    finish(k, s);
+    finish(key, s);
     return;
   }
   // Room for what is still to come (the .part is the file: no second copy),
@@ -142,14 +141,14 @@ void downloads::start(model_kind k, const model_files& m) {
       s.state = dl_state::no_space;
       s.need_bytes = remaining + remaining / 10;
       s.free_bytes = *free;
-      finish(k, s);
+      finish(key, s);
       return;
     }
   }
   auto net = port_.transport ? port_.transport() : nullptr;
   if (!net) {
     s.state = dl_state::stopped;
-    finish(k, s);
+    finish(key, s);
     return;
   }
   auto r = std::make_unique<run>();
@@ -159,10 +158,10 @@ void downloads::start(model_kind k, const model_files& m) {
   r->last.total_bytes = m.bytes;
   {
     std::lock_guard lock(m_);
-    runs_[i] = std::move(r);
+    runs_[key] = std::move(r);
   }
-  if (port_.changed) port_.changed(k);
-  raw->t = std::thread([this, k, raw, files = m.files, net = std::move(net)]() mutable {
+  if (port_.changed) port_.changed(key);
+  raw->t = std::thread([this, key, raw, files = m.files, net = std::move(net)]() mutable {
     ai::fetcher f(root_, *net, opt_);
     const auto progress = [&](const ai::fetch_progress& p) {
       {
@@ -172,7 +171,7 @@ void downloads::start(model_kind k, const model_files& m) {
         raw->last.retry_in_s = p.retry_in_s;
         raw->last.state = p.state == ai::fetch_state::waiting ? dl_state::waiting : dl_state::downloading;
       }
-      if (port_.changed) port_.changed(k);
+      if (port_.changed) port_.changed(key);
     };
     const expected done = f.run(files, raw->stop, progress);
     dl_status s;
@@ -196,44 +195,44 @@ void downloads::start(model_kind k, const model_files& m) {
       raw->last = s;
       raw->running = false;
     }
-    if (port_.changed) port_.changed(k);
+    if (port_.changed) port_.changed(key);
   });
 }
 
-void downloads::finish(model_kind k, dl_status s) {
+void downloads::finish(const std::string& key, dl_status s) {
   {
     std::lock_guard lock(m_);
-    auto& r = runs_[slot(k)];
+    auto& r = runs_[key];
     if (!r) r = std::make_unique<run>();
     r->last = s;
   }
-  if (port_.changed) port_.changed(k);
+  if (port_.changed) port_.changed(key);
 }
 
-void downloads::join(model_kind k) {
+void downloads::join(const std::string& key) {
   std::thread t;
   {
     std::lock_guard lock(m_);
-    auto& r = runs_[slot(k)];
-    if (!r || !r->t.joinable()) return;
-    t = std::move(r->t);
+    const auto it = runs_.find(key);
+    if (it == runs_.end() || !it->second || !it->second->t.joinable()) return;
+    t = std::move(it->second->t);
   }
   t.join();
 }
 
-void downloads::stop(model_kind k) {
+void downloads::stop(const std::string& key) {
   {
     std::lock_guard lock(m_);
-    if (auto& r = runs_[slot(k)]) r->stop = true;
+    if (const auto it = runs_.find(key); it != runs_.end() && it->second) it->second->stop = true;
   }
-  join(k);
+  join(key);
 }
 
-void downloads::remove(model_kind k, const model_files& m) {
-  stop(k);
+void downloads::remove(const std::string& key, const model_files& m, const std::string& cache_dir) {
+  stop(key);
   {
     std::lock_guard lock(m_);
-    runs_[slot(k)].reset();
+    runs_.erase(key);
   }
   std::error_code ec;
   for (const ai::remote_file& f : m.files) {
@@ -243,12 +242,17 @@ void downloads::remove(model_kind k, const model_files& m) {
     fs::remove(fs_path(path + ".part"), ec);
   }
   // What a provider compiled from them (Core ML's cache, slice 5).
-  fs::remove_all(fs_path(root_ + "/" + kind_name(k) + "-cache"), ec);
-  if (port_.changed) port_.changed(k);
+  if (!cache_dir.empty()) fs::remove_all(fs_path(cache_dir), ec);
+  if (port_.changed) port_.changed(key);
 }
 
 void downloads::stop_all() {
-  for (const model_kind k : kModelKinds) stop(k);
+  std::vector<std::string> keys;
+  {
+    std::lock_guard lock(m_);
+    for (const auto& [key, r] : runs_) keys.push_back(key);
+  }
+  for (const std::string& key : keys) stop(key);
 }
 
 }  // namespace mv::enhance

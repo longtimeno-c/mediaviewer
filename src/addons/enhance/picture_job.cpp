@@ -96,6 +96,7 @@ expected enhance_picture(std::span<const std::uint8_t> rgb, std::uint32_t w, std
           }
         }
       }
+      if (o.placed) o.placed(oy0, oy0 + ch * s, ox0 + cw * s);
     }
   }
   return {};

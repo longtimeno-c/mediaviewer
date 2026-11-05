@@ -216,7 +216,7 @@ public static partial class IslandHost
         public const int InspectorMin = 1099;
         // docs/plans/edit-refresh.md S8: the Faces panel's controls
         // (IslandHost.Faces.cs), arg = shell::pack_faces_op.
-        public const int Faces = 1100;
+        public const int Faces = 1109;  // after the Video Editor look's 1100-1108
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
@@ -242,6 +242,18 @@ public static partial class IslandHost
         // is an EditorActions value (chrome_editor_action).
         public const int EditorSeek = 1023;
         public const int EditorAction = 1024;
+        // The Video Editor's light and colour (chrome_cmd_editor_light_*):
+        // one id per slider from 1100 (arg the value), 1105 a drag (1 start, 0 end).
+        public const int EditorLightExposure = 1100;
+        public const int EditorLightContrast = 1101;
+        public const int EditorLightSaturation = 1102;
+        public const int EditorLightTemperature = 1103;
+        public const int EditorLightTint = 1104;
+        public const int EditorLightDrag = 1105;
+        // Its sound: volume 1106, fade in 1107, fade out 1108 (ms).
+        public const int EditorSoundVolume = 1106;
+        public const int EditorSoundFadeIn = 1107;
+        public const int EditorSoundFadeOut = 1108;
         // Drag-out (IslandHost.DragDrop.cs). DragItems: a cell starts a drag,
         // arg is its folder index; native answers inside the call with
         // SetDragPaths. DragEnded: that drag finished. OpenRecent: arg is the

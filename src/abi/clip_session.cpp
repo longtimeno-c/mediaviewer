@@ -139,7 +139,8 @@ bool clip_session::to_request(const mv_clip_request& in, std::string source, cli
   // 0.10 callers end at `reserved`; 0.13 added the ranges.
   constexpr std::size_t kV10 = offsetof(mv_clip_request, ranges_ns);
   if (in.struct_size < kV10) return false;
-  const bool v12 = in.struct_size >= sizeof(mv_clip_request);
+  const bool v12 = in.struct_size >= offsetof(mv_clip_request, look);
+  const bool v36 = in.struct_size >= sizeof(mv_clip_request);
   if (in.op < MV_CLIP_TRIM_KEYFRAME || in.op > MV_CLIP_KEEP_RANGES) return false;
   if (in.op == MV_CLIP_KEEP_RANGES &&
       (!v12 || in.ranges_ns == nullptr || in.range_count == 0 || in.range_count > clip::kMaxRanges)) {
@@ -172,6 +173,23 @@ bool clip_session::to_request(const mv_clip_request& in, std::string source, cli
       }
       break;
     default: break;
+  }
+  // ABI 0.36: the Video Editor's look.
+  if (v36 && in.look != nullptr && (r.kind == clip::op::keep_ranges || r.kind == clip::op::frame)) {
+    const mv_clip_look& lk = *in.look;
+    if (lk.struct_size < sizeof(mv_clip_look) || lk.turns > 3 || lk.crop > MV_CLIP_CROP_4_5) return false;
+    clip::look l;
+    l.turns = static_cast<std::uint8_t>(lk.turns);
+    l.flip_h = (lk.flags & MV_CLIP_LOOK_FLIP_H) != 0;
+    l.flip_v = (lk.flags & MV_CLIP_LOOK_FLIP_V) != 0;
+    l.mute = (lk.flags & MV_CLIP_LOOK_MUTE) != 0;
+    l.crop = static_cast<clip::crop_ratio>(lk.crop);
+    for (std::size_t i = 0; i < clip::kLookLightParams; ++i) l.light.v[i] = lk.light[i];
+    l.volume = lk.volume;
+    l.fade_in_ms = lk.fade_in_ms;
+    l.fade_out_ms = lk.fade_out_ms;
+    l.speed = lk.speed;
+    r.look = clip::sanitised(l);
   }
   out = std::move(r);
   return true;

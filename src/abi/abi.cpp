@@ -39,9 +39,11 @@
 #include "player/poster.h"
 #include "core/job_system.h"
 #include "core/result.h"
+#include "core/sound_envelope.h"
 #include "core/spsc_ring.h"
 #include "core/status.h"
 #include "core/trace.h"
+#include "edit/clip.h"
 #include "gfx/device.h"
 #include "image/page_thumbs.h"
 #include "image/pipeline.h"
@@ -92,7 +94,10 @@ static_assert(offsetof(mv_folder_entry, moment_ms) == 32, "mv_folder_entry layou
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
 // ABI 0.13 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
 // the first 40 bytes and is still accepted (clip_session::to_request).
-static_assert(sizeof(mv_clip_request) == 56, "mv_clip_request layout is part of the ABI");
+static_assert(sizeof(mv_clip_request) == 64, "mv_clip_request layout is part of the ABI");
+static_assert(offsetof(mv_clip_request, look) == 56, "mv_clip_request 0.13 prefix is part of the ABI");
+static_assert(sizeof(mv_clip_look) == 56, "mv_clip_look layout is part of the ABI");
+static_assert(offsetof(mv_clip_look, volume) == 36, "mv_clip_look layout is part of the ABI");
 static_assert(offsetof(mv_clip_request, in_ns) == 8, "mv_clip_request layout is part of the ABI");
 static_assert(offsetof(mv_clip_request, ranges_ns) == 40, "mv_clip_request 0.10 prefix is part of the ABI");
 static_assert(sizeof(mv_clip_progress) == 368, "mv_clip_progress layout is part of the ABI");
@@ -3150,6 +3155,23 @@ mv_status MV_CALL mv_video_set_muted(mv_session_t session, int32_t muted) {
   return static_cast<mv_status>(guard("mv_video_set_muted", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
     session->video.command([=](mv::player::media_source& s) { s.set_muted(muted != 0); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_sound_look(mv_session_t session, const int64_t* ranges_ns, uint32_t range_count,
+                                          float volume, int32_t fade_in_ms, int32_t fade_out_ms) {
+  return static_cast<mv_status>(guard("mv_video_set_sound_look", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(range_count == 0 || ranges_ns != nullptr, "ranges must not be null");
+    MV_REQUIRE(range_count <= mv::edit::clip::kMaxRanges, "too many ranges");
+    mv::sound_envelope e;
+    if (!e.set(std::span<const std::int64_t>(ranges_ns, static_cast<std::size_t>(range_count) * 2), volume,
+               static_cast<std::int64_t>(std::max(0, fade_in_ms)) * 1'000'000,
+               static_cast<std::int64_t>(std::max(0, fade_out_ms)) * 1'000'000)) {
+      return status::invalid_arg;
+    }
+    session->video.command([e](mv::player::media_source& s) { s.set_sound_envelope(e); });
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
     return status::ok;
   }));

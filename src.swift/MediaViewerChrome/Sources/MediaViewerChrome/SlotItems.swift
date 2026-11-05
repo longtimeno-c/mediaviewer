@@ -67,8 +67,10 @@ struct SlotBarItems: View {
         Button {
           slots.invoke(item, paths: SlotTargets.paths(for: item))
         } label: {
+          // The icon and its name, as the chrome's own Open / View / Edit read:
+          // an icon alone was not found (Enhance, 2026-10-29).
           Label(item.label, systemImage: slotSymbol(item.symbol))
-            .labelStyle(.iconOnly)
+            .labelStyle(.titleAndIcon)
         }
         .buttonStyle(FlatButtonStyle())
         .help(item.label)

@@ -643,6 +643,10 @@ void job_runner::run_still(job_request r, job_events ev) {
   run_port::still out;
   out.width = static_cast<std::uint32_t>(ow);
   out.height = static_cast<std::uint32_t>(oh);
+  // Main's tile-by-tile reveal (ev.reveal) is the sheet's; a photo's run has
+  // no sheet since one-click (docs/design/29 "One click"): the working glow
+  // over the photo shows it instead, and the tiles here blend by weight after
+  // a shrink to the detail, so no row is final before the end.
   std::size_t unstable = 0, total = 0;
   po.unstable = &unstable;
   const expected ok = restore_at_detail(pic->rgb, pic->width, pic->height, **tiles, po, detail, out.rgb, &total);

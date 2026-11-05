@@ -22,7 +22,8 @@ download; it is built on the clip core ([08](08-video-editing.md)).
 └───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Scope: one clip, one video track and its audio, cuts only.
+Scope: one clip, one video track and its audio: cuts, and one look for the whole edit (turn,
+mirror, crop; colour, sound and speed follow, [plan](../plans/video-editor-look.md)).
 
 ## Pieces
 
@@ -37,6 +38,7 @@ Scope: one clip, one video track and its audio, cuts only.
 | Windows window, canvas hand-off, keys, playback follow | `main.cpp` (`set_editor_open`, `editor_window_proc`, `editor_key`, `editor_follow_playback`); `gfx/swapchain` `retarget`, `present_lab.cpp` |
 | Windows timeline island and the viewer's "away" card | `IslandHost.VideoEditor.cs` (`BuildEditorAway`), `chrome_host.h` |
 | Add-ons' buttons in the bar (`editor_items`: Enhance…) | `EditorAddonItems` (VideoEditorView.swift), `RebuildEditorAddons` (IslandHost.VideoEditor.cs); `mv_slots_editor_item` / `slot_registry::invoke_editor_item` |
+| The look: turn, mirror, crop for the whole edit, in the pieces' history; the canvas turns, mirrors and crops the clip; Export exact renders it; Save frame bakes it ([plan](../plans/video-editor-look.md), slice 1) | `edit/clip_look.{h,cpp}`, `video_timeline` `set_look`; `gfx/video_blit.hlsl` and its MSL twin (`crop`, `colour_b.z`); `edit/clip_look_run.cpp`; `input_snapshot::video_look_*` |
 
 ## The cut list
 
@@ -83,18 +85,21 @@ prompt; *Keep editing* leaves both windows open.
 ## Timeline UI
 
 Transport, timecode (frames at the clip's rate), Split / Delete / Mark in / Mark out / Trim start /
-Trim end / Undo / Redo, an add-on's buttons (`editor_items`, contribution API 11: Enhance… when
+Trim end / Undo / Redo, Turn left / Turn right / Crop (mirror and crop menu) / Light / Sound / Save frame / speed (0.5× 1× 2×), an
+add-on's buttons (`editor_items`, contribution API 11: Enhance… when
 Enhance is installed, [29](29-enhance.md) "In the Video Editor"; each gets the clip and the kept
 pieces, or the whole clip when nothing is cut, and writes a new file), Export / Export exact, Done. A ruler, one thumbnail track and one waveform
 per piece, a draggable playhead that snaps to joins and marks, piece selection, draggable piece
 edges (the preview shows the edge frame). On Mac the playhead is its own layer, so the thumbnail
 canvas does not redraw while playing, and the timeline stops polling when the window closes.
 
-Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (104 bytes) on each
+Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (160 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104, its five light values at 120, mute, volume and fades at 140, speed at 156) on each
 edit and the playhead on the tick, and `chrome_editor_strip_args` once per clip. The island sends
-`editor_seek` (1023, program milliseconds), `editor_action` (1024, `chrome_editor_action`; 1–6 are
-the Mac bridge's `mv_chrome_editor_edit` codes), `editor_trim_grab` (1028) and `editor_trim_to`
-(1029). Both sides' checksum tests pin the ids.
+`editor_seek` (1023, program milliseconds), `editor_action` (1024, `chrome_editor_action`; 1–6, 14–16
+and the look's 17–27 are the Mac bridge's `mv_chrome_editor_edit` codes), `editor_trim_grab` (1028), `editor_trim_to`
+(1029), and the light sliders `editor_light_*` (1100–1104, arg the value) and
+`editor_light_drag` (1105, 1 start, 0 end), and the sound's `editor_sound_volume` / `_fade_in` /
+`_fade_out` (1106–1108). Both sides' checksum tests pin the ids.
 
 ## Keys
 
@@ -114,9 +119,58 @@ Every key aimed at the editor window goes to the editor (`editor_key` on Windows
 | `Delete` / `Backspace` | Remove the marked range, else the selected piece |
 | `Ctrl+Z` / `Ctrl+Shift+Z` (`Ctrl+Y` on Windows) | Undo / redo |
 | `Ctrl+E` / `Ctrl+Shift+E` | Export (keyframes) / Export exact |
+| `Ctrl+Shift+S` | Save the frame at the playhead as a photo, with the look |
 | `Esc`, `Ctrl+W` | Close (Windows) |
 
 `Tab` and `Enter` stay with the island on Windows.
+
+## The look
+
+`edit::clip::look`, one for the whole edit, beside the pieces in the same undo history (a turn
+undoes like a cut; a slider drag is one step; marks survive it). Slice 1 is built: **⟲ ⟳** turn
+the clip a quarter at a time on top of its own matrix; the **Crop** menu mirrors it (left to
+right, upside down) and crops it to Original, 16:9, 9:16, 1:1, 4:3 or 4:5 about its centre;
+**Save frame** (`⌘⇧S` / `Ctrl+Shift+S`) writes the frame at the playhead as
+`<name>_frame_<time>.jpg` with the turn, mirror and crop (`op::frame`, in the helper). The
+order is the same everywhere: turned, mirrored, cropped (`geometry_of`).
+
+**Light** (slice 2) is PR 11's five sliders for the whole clip (Exposure, Contrast, Saturation,
+Temperature, Tint) in a popover (Mac) or flyout (Windows), with **Auto** (#289's auto tone on the
+frame at the playhead, decoded on a worker, `clip_auto_light.h`) and **Reset**. A Mac slider drag
+is one undo step; on Windows a flyout session is (the drag ids wrap its open and close). The
+canvas runs the same kernel tokens as the photo blit in the video blit, on the linear light it
+already decodes, before its sRGB encode; the export and Save frame run them through
+`colour_table` on 8-bit frames, decoding with the canvas's BT.1886 power so the kernel sees the
+light the preview shows (per channel exact, the saturation mix in linear light).
+
+**Sound** (slice 3): Mute, Volume (0–200 %), Fade in and Fade out (0–5 s each, on the program's
+start and end) in a popover / flyout. Playback hears them through a gain on every decoded block
+(`core/sound_envelope.h`, applied in `player/audio_decode.cpp` by each sample's source time: the
+pieces place the fades; in a cut it is the volume alone). Windows sends it with
+`mv_video_set_sound_look` (ABI 0.37); the Mac hands it to the render thread, which passes it to
+the clip playing (`present_lab_mac::set_sound_envelope`). It is separate from the listener's own
+volume and mute, and cleared when the editor closes. Export exact writes the same gains on the
+program's sound (`clip_look_run.cpp`); Export on keyframes writes mute only (no sound stream).
+
+**Speed** (slice 4): 0.5×, 1× or 2× for the whole edit, from a menu in the bar. Playback runs at
+it (Space and `J K L` ask for 1×, 2×, 4× of the edit's speed, on the viewer's rate ladder, pitch
+kept); the timeline and its timecode stay in the program's own time. Export exact puts the frames
+on the clip's own frame grid (each slot the latest frame due: 2× keeps every other frame, 0.5×
+shows each twice) and the sound through FFmpeg's `atempo` (pitch kept) after the volume and fades.
+Export on keyframes cannot carry it.
+
+- **Preview:** the host puts the turn, mirror and crop on the input snapshot
+  (`video_look_*`); the render thread adds the turn to the clip's own and passes the mirror and
+  crop to the video blit, whose uv map applies them, and the camera fits the cropped picture.
+  Closing the editor clears them.
+- **Export exact** with a look renders in the helper (`clip_look_run.cpp`): `frame_reader` →
+  the kept frames on the program's timeline → the turn, mirror and crop in C++ →
+  `picture_writer` on the hardware encoder, the pixels upright and no display matrix; the sound
+  read through the same cut (48 kHz) and encoded by the OS (AAC, else FLAC in Matroska), or none
+  when muted. 8-bit BT.709 SDR out.
+- **Export exact** and **Save frame** apply the light after the geometry (`colour_table`).
+- **Export on keyframes** carries a turn (the display matrix) and mute only; with anything else
+  in the look the button is greyed ("needs Export exact").
 
 ## Exports
 

@@ -196,7 +196,7 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
     }
     if (e->kind == MV_SLOT_EVENT_COMMAND) {
       // The command ("open") or the context entry ("enhance"): this file,
-      // then the sheet.
+      // then the sheet. No command-bar button: Enhance lives in the editors.
       const std::string node = e->node_id;
       // S5: the Edit workspace's enhance/tool, to the docked panel.
       if (node == mv::enhance::kToolScreen && screen == mv::enhance::kToolScreen) {

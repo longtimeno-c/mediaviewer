@@ -74,6 +74,9 @@
 #include "shell/compare_source.h"
 #include "shell/enhance_run.h"
 #include "shell/pane_width.h"
+#include "edit/clip_auto_light.h"
+#include "edit/clip_sample.h"
+#include "shell/clip_look_abi.h"
 #include "shell/video_timeline.h"
 #include "edit/auto_adjust.h"
 #include "edit/clip_strip.h"
@@ -4913,6 +4916,9 @@ bool submit_clip_job(app_state* app, const mv::edit::clip::request& r) noexcept 
     q.range_count = static_cast<std::uint32_t>(r.ranges.size());
     q.option = r.ranges_exact ? 2u : 1u;
   }
+  // ABI 0.36: the Video Editor's look (its pieces' export, Save frame).
+  const mv_clip_look look = mv::shell::abi_look(r.look);
+  if (!r.look.identity()) q.look = &look;
   std::uint64_t job = 0;
   if (mv_clip_submit(app->session, r.source.c_str(), &q, &job) != MV_OK) {
     ::MessageBeep(MB_ICONWARNING);
@@ -6259,6 +6265,7 @@ constexpr UINT_PTR kEditorReleaseTimerId = 0x7B02;
 constexpr UINT kEditorReleaseMs = 16;
 constexpr int kEditorReleaseTries = 120;
 constexpr UINT kMsgEditorLoaded = WM_APP + 0x79;  // the probe + strip job finished (any thread posts)
+constexpr UINT kMsgEditorAutoLight = WM_APP + 0x84;  // the Video Editor's Auto read its frame (any thread posts)
 
 struct editor_load_result {
   std::uint64_t token = 0;
@@ -6336,6 +6343,17 @@ void push_editor_view(app_state* app, bool edit) noexcept {
     a.frame_rate_milli = static_cast<std::int32_t>(std::lround(ed.fps * 1000.0));
     a.mark_in_ns = ed.timeline.marked_in();
     a.mark_out_ns = ed.timeline.marked_out();
+    const mv::edit::clip::look& lk = ed.timeline.look();
+    a.look_turns = lk.turns;
+    a.look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
+    a.look_crop = static_cast<std::int32_t>(lk.crop);
+    a.look_copyable = lk.copyable() ? 1 : 0;
+    for (std::size_t i = 0; i < lk.light.v.size(); ++i) a.look_light[i] = lk.light.v[i];
+    a.look_mute = lk.mute ? 1 : 0;
+    a.look_volume = lk.volume;
+    a.look_fade_in_ms = lk.fade_in_ms;
+    a.look_fade_out_ms = lk.fade_out_ms;
+    a.look_speed = lk.speed;
     app->chrome.set_editor_view(a);
   } catch (...) {
   }
@@ -6450,11 +6468,17 @@ void editor_set_rate(app_state* app, double rate) noexcept {
   ed.rate_changed = rate != 1.0;
 }
 
+// The editor's playback at the edit's speed (the look, slice 4): Space and
+// J K L ask for 1x, 2x, 4x of it. Leaving the editor uses editor_set_rate.
+void editor_play_rate(app_state* app, double rate) noexcept {
+  editor_set_rate(app, rate * static_cast<double>(app->editor.timeline.look().speed));
+}
+
 void editor_toggle_play(app_state* app) noexcept {
   auto& ed = app->editor;
   if (!ed.timeline.loaded() || !app->session) return;
   ed.shuttle.stop();
-  editor_set_rate(app, 1.0);  // Space plays at 1x
+  editor_play_rate(app, 1.0);  // Space plays at 1x
   const bool playing = editor_playing(app);
   // At the end, Play starts the program again.
   if (!playing && ed.timeline.next_play_start(clip_position(app), kEditorLeadNs) < 0) {
@@ -6488,6 +6512,116 @@ void editor_follow_playback(app_state* app) noexcept {
 // 1 split at the playhead, 2 delete (the marked range, else the selected
 // piece), 3 set in, 4 set out, 5 undo, 6 redo, 14 mark in, 15 mark out,
 // 16 clear the marks (chrome_editor_action, and the Mac bridge's codes).
+// The look's geometry on the canvas (docs/plans/video-editor-look.md); none
+// once the editor closes.
+void editor_publish_look(app_state* app) noexcept {
+  const auto& ed = app->editor;
+  const mv::edit::clip::look& l = ed.timeline.look();
+  const bool on = ed.open && ed.timeline.loaded();
+  app->input.video_look_turns = on ? l.turns : 0;
+  app->input.video_look_mirror = on ? static_cast<std::uint8_t>((l.flip_h ? 1 : 0) | (l.flip_v ? 2 : 0)) : 0;
+  app->input.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
+  app->input.video_look_light = on ? l.light.v : decltype(l.light.v){};
+  publish(app);
+  // Its sound, in playback: the pieces place the fades (mv_video_set_sound_look).
+  if (app->session) {
+    if (on && ed.timeline.sound_shaped()) {
+      try {
+        const std::vector<std::int64_t> flat = ed.timeline.flat_pieces();
+        (void)mv_video_set_sound_look(app->session, flat.data(), static_cast<std::uint32_t>(flat.size() / 2),
+                                      l.mute ? 0.0f : l.volume, l.fade_in_ms, l.fade_out_ms);
+      } catch (...) {
+      }
+    } else {
+      (void)mv_video_set_sound_look(app->session, nullptr, 0, 1.0f, 0, 0);
+    }
+  }
+}
+
+// The frame at the playhead as a JPEG beside the clip, with the look's turn,
+// mirror and crop (op::frame in the helper; the Jobs pane shows it).
+void editor_save_frame(app_state* app) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || ed.path.empty()) return;
+  try {
+    mv::edit::clip::request r;
+    r.kind = mv::edit::clip::op::frame;
+    r.source = ed.path;
+    r.in_ns = ed.timeline.to_source(editor_timeline_position(app));
+    r.frame = mv::edit::clip::frame_format::jpeg;
+    r.look = ed.timeline.look();
+    (void)submit_clip_job(app, r);
+  } catch (...) {
+    ::MessageBeep(MB_ICONWARNING);
+  }
+}
+
+// A light and colour slider (param: edit::adjust_param) moved to `value`.
+void editor_set_light(app_state* app, int param, float value) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  mv::edit::clip::look l = ed.timeline.look();
+  l.light.v[static_cast<std::size_t>(param)] = value;
+  if (ed.timeline.set_look(l)) {
+    editor_publish_look(app);
+    push_editor_view(app, true);
+  }
+}
+
+// The sound: param 0 volume (0..2), 1 fade in, 2 fade out (milliseconds).
+void editor_set_sound(app_state* app, int param, float value) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded()) return;
+  mv::edit::clip::look l = ed.timeline.look();
+  if (param == 0) l.volume = value;
+  if (param == 1) l.fade_in_ms = static_cast<std::int32_t>(std::lround(value));
+  if (param == 2) l.fade_out_ms = static_cast<std::int32_t>(std::lround(value));
+  if (ed.timeline.set_look(l)) {
+    editor_publish_look(app);
+    push_editor_view(app, true);
+  }
+}
+
+struct editor_auto_light_result {
+  std::uint64_t token = 0;
+  bool changed = false;
+  mv::edit::colour light;
+};
+
+// Auto: auto tone (#289) on the frame at the playhead, read on a worker.
+void editor_auto_light(app_state* app) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || ed.path.empty()) return;
+  const HWND hwnd = app->window;
+  const std::int64_t at_ms = ed.timeline.to_source(editor_timeline_position(app)) / 1'000'000;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = ed.path, token = ed.token, at_ms, current = ed.timeline.look().light,
+                       hwnd](const mv::job_context&) -> mv::status {
+                        auto frame = mv::edit::clip::frame_rgb_at(path, at_ms, 512);
+                        if (!frame) return frame.error();
+                        auto* r = new (std::nothrow) editor_auto_light_result{};
+                        if (!r) return mv::status::out_of_memory;
+                        r->token = token;
+                        r->light = mv::edit::clip::auto_light(frame->rgb, current, r->changed);
+                        if (!::PostMessageW(hwnd, kMsgEditorAutoLight, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+}
+
+void on_editor_auto_light(app_state* app, std::unique_ptr<editor_auto_light_result> r) noexcept {
+  auto& ed = app->editor;
+  if (!r || r->token != ed.token || !ed.open) return;  // another clip, or closed
+  mv::edit::clip::look l = ed.timeline.look();
+  l.light = r->light;
+  if (!r->changed || !ed.timeline.set_look(l)) {
+    ::MessageBeep(MB_ICONWARNING);  // a flat frame, or one that already fills the range
+    return;
+  }
+  editor_publish_look(app);
+  push_editor_view(app, true);
+}
+
+// what: chrome_editor_action's edit codes (1-6, 14-16) and the look (17-26, 29).
 void editor_edit(app_state* app, int what) noexcept {
   auto& ed = app->editor;
   if (!ed.timeline.loaded()) return;
@@ -6527,8 +6661,50 @@ void editor_edit(app_state* app, int what) noexcept {
       ed.timeline.clear_marks();
       push_editor_view(app, true);
       return;
+    case 17:
+    case 18:
+    case 19:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+    case 24:
+    case 25:
+    case 26: {
+      mv::edit::clip::look l = ed.timeline.look();
+      if (what == 17) l.turns = static_cast<std::uint8_t>((l.turns + 3) & 3);
+      if (what == 18) l.turns = static_cast<std::uint8_t>((l.turns + 1) & 3);
+      if (what == 19) l.flip_h = !l.flip_h;
+      if (what == 20) l.flip_v = !l.flip_v;
+      if (what >= 21) l.crop = static_cast<mv::edit::clip::crop_ratio>(what - 21);
+      changed = ed.timeline.set_look(l);
+      break;
+    }
+    case 29: {
+      mv::edit::clip::look l = ed.timeline.look();
+      l.light = {};
+      changed = ed.timeline.set_look(l);
+      break;
+    }
+    case 30: {
+      mv::edit::clip::look l = ed.timeline.look();
+      l.mute = !l.mute;
+      changed = ed.timeline.set_look(l);
+      break;
+    }
+    case 31:
+    case 32:
+    case 33: {
+      // The speed: 0.5x, 1x, 2x. Playback follows at once.
+      mv::edit::clip::look l = ed.timeline.look();
+      l.speed = what == 31 ? 0.5f : what == 32 ? 1.0f : 2.0f;
+      changed = ed.timeline.set_look(l);
+      if (changed) editor_play_rate(app, ed.shuttle.rate());
+      break;
+    }
     default: break;
   }
+  editor_publish_look(app);
   if (!changed) ::MessageBeep(MB_ICONWARNING);
   if (ed.selected >= static_cast<std::int32_t>(ed.timeline.pieces().size())) ed.selected = -1;
   push_editor_view(app, true);
@@ -6545,7 +6721,13 @@ void editor_export(app_state* app, bool exact) noexcept {
   if (!ed.timeline.loaded() || ed.path.empty()) return;
   if (!ed.timeline.edited()) {
     ::MessageBeep(MB_ICONWARNING);
-    notice_show(app, "Nothing has been cut yet");
+    notice_show(app, "Nothing has been changed yet");
+    return;
+  }
+  if (!exact && !ed.timeline.look().copyable()) {
+    // Packet copy carries a turn and mute only (docs/plans/video-editor-look.md).
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Crop, mirror, colour, sound and speed need Export exact");
     return;
   }
   try {
@@ -6579,6 +6761,7 @@ void editor_trim_grab(app_state* app, int code) noexcept {
       editor_seek_source(app, editor_edge_frame(app, ed.trim_in ? p.in_ns : p.out_ns));
     }
     ed.trim_index = -1;
+    editor_publish_look(app);  // the fades follow the program's new ends
     push_editor_view(app, true);
     return;
   }
@@ -6617,7 +6800,7 @@ void editor_shuttle_key(app_state* app, int key, bool down, bool repeat) noexcep
         return;
       }
       if (editor_playing(app)) (void)mv_video_pause(app->session);
-      editor_set_rate(app, 1.0);
+      editor_play_rate(app, 1.0);
       const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now().time_since_epoch()).count();
       const std::int64_t to = ed.shuttle.back(editor_timeline_position(app), now, repeat);
@@ -6633,12 +6816,12 @@ void editor_shuttle_key(app_state* app, int key, bool down, bool repeat) noexcep
       if (!down || repeat) return;
       ed.shuttle.stop();
       if (editor_playing(app)) (void)mv_video_pause(app->session);
-      editor_set_rate(app, 1.0);
+      editor_play_rate(app, 1.0);
       push_editor_view(app, false);
       return;
     case 'L': {
       if (!down || repeat) return;
-      const double rate = ed.shuttle.forward();
+      const double rate = ed.shuttle.forward() * static_cast<double>(ed.timeline.look().speed);
       (void)mv_video_set_rate(app->session, rate);
       ed.rate_changed = rate != 1.0;
       if (!editor_playing(app)) {
@@ -6683,7 +6866,24 @@ void editor_run_action(app_state* app, int action) {
     case chrome_editor_action::redo:
     case chrome_editor_action::mark_in:
     case chrome_editor_action::mark_out:
-    case chrome_editor_action::clear_marks: editor_edit(app, action); break;
+    case chrome_editor_action::clear_marks:
+    case chrome_editor_action::turn_left:
+    case chrome_editor_action::turn_right:
+    case chrome_editor_action::mirror_h:
+    case chrome_editor_action::mirror_v:
+    case chrome_editor_action::crop_original:
+    case chrome_editor_action::crop_16_9:
+    case chrome_editor_action::crop_9_16:
+    case chrome_editor_action::crop_1_1:
+    case chrome_editor_action::crop_4_3:
+    case chrome_editor_action::crop_4_5:
+    case chrome_editor_action::reset_light:
+    case chrome_editor_action::toggle_mute:
+    case chrome_editor_action::speed_half:
+    case chrome_editor_action::speed_normal:
+    case chrome_editor_action::speed_double: editor_edit(app, action); break;
+    case chrome_editor_action::auto_light: editor_auto_light(app); break;
+    case chrome_editor_action::save_frame: editor_save_frame(app); break;
     case chrome_editor_action::toggle_play: editor_toggle_play(app); break;
     case chrome_editor_action::step_back:
     case chrome_editor_action::step_forward:
@@ -6741,6 +6941,7 @@ bool editor_key(app_state* app, const MSG& msg) {
     case 'Z': if (ctrl) editor_edit(app, shift ? 6 : 5); return true;
     case 'Y': if (ctrl) editor_edit(app, 6); return true;
     case 'E': if (ctrl) editor_export(app, shift); return true;
+    case 'S': if (ctrl && shift) editor_save_frame(app); return true;
     case 'W': if (ctrl) editor_request_close(app); return true;
     default: return false;
   }
@@ -6962,6 +7163,7 @@ void set_editor_open(app_state* app, bool open) {
     ::SetTimer(hwnd, kEditorTickTimerId, kEditorTickMs, nullptr);
     push_editor_view(app, true);
     push_edit_view(app);  // the command bar's button reads Done
+    editor_publish_look(app);
   } else {
     const HWND hwnd = ed.window;
     editor_set_rate(app, 1.0);  // the viewer gets its clip back at 1x
@@ -6990,6 +7192,7 @@ void set_editor_open(app_state* app, bool open) {
     }
     apply_view_state(app);  // metrics back to the viewer's window, and a resize
     push_edit_view(app);
+    editor_publish_look(app);  // the viewer shows the clip as it is
   }
 }
 
@@ -7381,6 +7584,26 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
       return true;
     case mv::shell::chrome_cmd_editor_action:
       editor_run_action(app, static_cast<int>(arg));
+      return true;
+    case mv::shell::chrome_cmd_editor_light_exposure:
+    case mv::shell::chrome_cmd_editor_light_contrast:
+    case mv::shell::chrome_cmd_editor_light_saturation:
+    case mv::shell::chrome_cmd_editor_light_temperature:
+    case mv::shell::chrome_cmd_editor_light_tint:
+      editor_set_light(app, command - static_cast<int>(mv::shell::chrome_cmd_editor_light_exposure), arg);
+      return true;
+    case mv::shell::chrome_cmd_editor_sound_volume:
+    case mv::shell::chrome_cmd_editor_sound_fade_in:
+    case mv::shell::chrome_cmd_editor_sound_fade_out:
+      editor_set_sound(app, command - static_cast<int>(mv::shell::chrome_cmd_editor_sound_volume), arg);
+      return true;
+    case mv::shell::chrome_cmd_editor_light_drag:
+      if (arg != 0.0f) {
+        app->editor.timeline.begin_look_drag();
+      } else {
+        app->editor.timeline.end_look_drag();
+        push_editor_view(app, true);
+      }
       return true;
     case mv::shell::chrome_cmd_editor_trim_grab:
       editor_trim_grab(app, static_cast<int>(arg));
@@ -12830,6 +13053,11 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgShareReady:
       on_share_ready(app, std::unique_ptr<share_gathered>(reinterpret_cast<share_gathered*>(lparam)));
+      return 0;
+
+    case kMsgEditorAutoLight:  // the Video Editor's Auto light
+      on_editor_auto_light(app, std::unique_ptr<editor_auto_light_result>(
+                                    reinterpret_cast<editor_auto_light_result*>(lparam)));
       return 0;
 
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip

@@ -224,9 +224,24 @@ enum chrome_command : int {
   // inspector the island lays out unclipped, in DIPs (300 x the theme's type
   // scale; shell/pane_width.h theme_min). Sent with the theme; native re-clamps.
   chrome_cmd_inspector_min = 1099,
+  // The Video Editor's light and colour (docs/plans/video-editor-look.md
+  // slice 2): one id per slider, arg the value (exposure in EV, the rest
+  // -100..100); chrome_cmd_editor_light_drag arg 1 starts a drag (one undo
+  // step), 0 ends it.
+  chrome_cmd_editor_light_exposure = 1100,
+  chrome_cmd_editor_light_contrast = 1101,
+  chrome_cmd_editor_light_saturation = 1102,
+  chrome_cmd_editor_light_temperature = 1103,
+  chrome_cmd_editor_light_tint = 1104,
+  chrome_cmd_editor_light_drag = 1105,
+  // Its sound (slice 3): volume (0..2), fade in and fade out (ms); a drag is
+  // chrome_cmd_editor_light_drag's too.
+  chrome_cmd_editor_sound_volume = 1106,
+  chrome_cmd_editor_sound_fade_in = 1107,
+  chrome_cmd_editor_sound_fade_out = 1108,
   // docs/plans/edit-refresh.md S8: the Faces panel's controls (IslandHost.Faces.cs),
   // arg = shell::pack_faces_op (op x 100000 + (face + 1) x 100 + (action + 1)).
-  chrome_cmd_faces = 1100,
+  chrome_cmd_faces = 1109,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -255,6 +270,24 @@ enum class chrome_editor_action : std::int32_t {
   mark_in = 14,      // I: marks, cuts nothing (the Mac bridge's codes too)
   mark_out = 15,     // O
   clear_marks = 16,  // X
+  // The look (docs/plans/video-editor-look.md); the Mac bridge's codes too.
+  turn_left = 17,
+  turn_right = 18,
+  mirror_h = 19,     // left to right
+  mirror_v = 20,     // upside down
+  crop_original = 21,  // 21-26: original, 16:9, 9:16, 1:1, 4:3, 4:5
+  crop_16_9 = 22,
+  crop_9_16 = 23,
+  crop_1_1 = 24,
+  crop_4_3 = 25,
+  crop_4_5 = 26,
+  save_frame = 27,   // the frame at the playhead as a JPEG, with the look
+  auto_light = 28,   // auto tone on the frame at the playhead (exposure, contrast)
+  reset_light = 29,  // every light and colour slider back to 0
+  toggle_mute = 30,  // the edit's sound off / on
+  speed_half = 31,   // the edit at 0.5x, 1x, 2x (slice 4)
+  speed_normal = 32,
+  speed_double = 33,
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -830,9 +863,22 @@ struct chrome_editor_view_args {
   std::int32_t frame_rate_milli;  // the clip's rate x 1000 (29970); 0 unknown
   std::int64_t mark_in_ns;        // the marked range on the program; -1 unset
   std::int64_t mark_out_ns;
+  // The look: extra quarter turns, mirror (1 left-right, 2 upside down), crop
+  // (chrome_editor_action crop_* - 21), whether Export on keyframes carries it.
+  std::int32_t look_turns;
+  std::int32_t look_mirror;
+  std::int32_t look_crop;
+  std::int32_t look_copyable;
+  // Light and colour: exposure (EV), contrast, saturation, temperature, tint.
+  float look_light[5];
+  std::int32_t look_mute;       // sound (slice 3)
+  float look_volume;            // 0..2
+  std::int32_t look_fade_in_ms;
+  std::int32_t look_fade_out_ms;
+  float look_speed;             // 0.5, 1 or 2 (slice 4)
 };
 
-static_assert(sizeof(chrome_editor_view_args) == 104, "keep in sync with IslandHost.VideoEditor");
+static_assert(sizeof(chrome_editor_view_args) == 160, "keep in sync with IslandHost.VideoEditor");
 
 // One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
 struct chrome_editor_thumb {

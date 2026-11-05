@@ -19,9 +19,11 @@ screens from its view trees.
 
 - **Its page in Settings → Add-ons** (place `settings`): one card per kind (photos, video,
   audio) with that kind's model, its credit and size, and Download / Stop / Resume / Remove.
-- **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu
-  (no default key, [16](16-commands.md)), for an audio file or a clip on screen. A photo never
-  gets it (one-click, below): the hosts send those to the Edit pane's Enhance tab.
+- **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu,
+  and `Ctrl+Shift+R` / `⌘⇧R` ([16](16-commands.md)), for an audio file or a clip on screen. A
+  photo never gets it (one-click, below): the hosts send those to the Edit pane's Enhance tab. The
+  settings page says where Enhance opens from. Its tree is a `scroll` at the root, so a tall sheet
+  scrolls rather than cutting off its button; the host's header carries the title and Done.
 - **`Enhance…` in the Video Editor's bar** (`editor_items`, contribution API 11): the same sheet,
   over the editor, for the edit ("In the Video Editor" below). It has no button on the viewer's
   command bar.
@@ -37,11 +39,20 @@ index, Enhance writes a new file. Settings → Add-ons lists it on Windows and o
 
 ## Models
 
-Each kind Enhance can run ships `models/<kind>/model.json` in its signed zip:
+Each kind Enhance can run ships one or more `models/<kind>/<id>.json` in its signed zip (at most
+eight; the id is the file's name, `[a-z0-9_-]{1,32}`). **`model.json` is the one a kind uses until
+the person chooses another**, like Local search's tiers: a `Model` choice on the kind's card in
+Settings and on the sheet's section, shown when the kind has more than one. Each model downloads,
+stops and is removed on its own (keyed `<kind>.<id>` in `enhance.json`, which also keeps the
+choice per kind as `use`; an older file's bare kind means its `model.json`). The page names the
+kind's other models that hold files, each with its own Remove. A run keeps the model it started
+with. Core ML's compiled cache is per model: `models/<kind>-cache` for `model.json`'s, as before,
+`models/<kind>-cache-<id>` for another, removed with it.
 
 | Field | |
 |---|---|
 | `kind`, `name`, `credit` | `audio`, "Speech cleanup", who made the weights and their licence |
+| `summary` | optional: what choosing it means ("Finer detail; about six times as long"), on the page |
 | `weights` | the files it needs, pinned under the manifest's `remote` at `<kind>/<file>` |
 | `run_bytes` | free memory a run needs: the run gate |
 | `cpu` | one unit of work finishes inside a measured budget on CPU |
@@ -50,8 +61,8 @@ Each kind Enhance can run ships `models/<kind>/model.json` in its signed zip:
 
 The weights are never in the zip or a release asset. The signed manifest pins each file under
 `remote` (Hugging Face URL at a fixed revision, size, SHA-256, licence; `src/addons/enhance/
-remote.json` is the list `addon-pack.py` signs in). A click on a kind's Download fetches only that
-kind's files, with the AI pack's downloader (`mv_model_fetch`, [17](17-local-ai-search.md) "Model
+remote.json` is the list `addon-pack.py` signs in). A click on a model's Download fetches only that
+model's files, with the AI pack's downloader (`mv_model_fetch`, [17](17-local-ai-search.md) "Model
 tiers"), into the add-on's data folder: a plain GET with no query, cookies or token, resumed with
 Range (also after a restart: the click is remembered in `enhance.json`, and a start resumes a
 kind only when part of its download is here, so a kind whose pin changed since, as `still`'s did
@@ -62,8 +73,10 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | Kind | Model | Weights | Licence |
 |---|---|---|---|
 | audio | DeepFilterNet3 (Schröter et al.), streaming ONNX export (`kimtos-labs/denoiser-dfn3` @ `888f33c4`) | 16.1 MB | MIT (dual MIT / Apache-2.0) |
-| video | Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
+| video | "Detail, fast" (`model.json`): Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
+| video | "Detail, best" (`x4plus.json`): Real-ESRGAN x4plus, the same repo and revision; same contract (`input` [1, 3, h, w] → `output` [1, 3, 4h, 4w]) | 67.1 MB | BSD-3-Clause |
 | still | **Sharpen & restore**: Real-HAT-GAN SRx4 "sharper" (HAT, Chen et al., XPixelGroup), ONNX export `MahoCommerce/Real_HAT_GAN_sharper-ONNX` @ `f0c8c3a4`, `onnx/model.onnx` saved as `Real_HAT_GAN_sharper.onnx` | 161 MB | Apache-2.0 |
+| still | "Real-ESRGAN" (`x4plus.json`): Real-ESRGAN x4plus, the video kind's file pinned again under `still/` (each kind downloads its own); same size and shrink to the detail as HAT | 67.1 MB | BSD-3-Clause |
 | natural | **Natural**: 4xRealWebPhoto v4 (DAT-2) by Philip Hofmann, `Phips/4xRealWebPhoto_v4_dat2` @ `95e9cd50` | 48.8 MB | CC-BY-4.0 (credited in the spec and the notices) |
 | denoise | **Remove noise**: SCUNet real-PSNR (Zhang et al., KAIR), `deepghs/image_restoration` @ `77885239` | 91.3 MB | Apache-2.0 |
 | deblur | **Remove blur**: NAFNet-REDS-width64 (Chen et al., MEGVII), the same repo and revision | 275 MB | MIT |
@@ -74,6 +87,15 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 
 Restyle's files are pinned in `remote.json` (ForserX's export); its card offers them as any
 tool's: "Download (2.5 GB) and restyle".
+
+**A choice of model per kind** (2026-10-29, #570): every `models/<kind>/<id>.json` is a model of
+that kind; `model.json` is the one used until the person picks another (`model.<kind>`, kept as
+`use` in `enhance.json`), on the settings page, the sheet and the Enhance tab's card. Each model
+downloads, stops and is removed on its own, keyed `<kind>.<id>` (its Core ML cache
+`<dir>-cache-<id>`; model.json's keeps `<dir>-cache`). Video and still offer two models; the others
+have one each, so their card and section show no `Model` choice. Enhance image's own choices
+(Sharpen & restore, Natural, Remove noise, Remove blur) are kinds of their own (`detail`, S7);
+Sharpen & restore's kind is the one with a second model.
 
 ## The sheet
 
@@ -86,8 +108,8 @@ Built from the installed models, never a fixed form. What the item is comes from
 - **A still**: *Enhance image*'s chosen model (below), or Restyle, Remove, Extend.
 - **A document, an animation, a file it cannot read**: greyed, saying why.
 
-A kind with no installed model is named ("not installed — Download it in Settings → Add-ons →
-Enhance"), never offered. Knob values are remembered per kind of target, and a clip's target
+A kind whose chosen model is not downloaded says so and offers its **Download** (or Resume) and
+then its progress and Stop right on the sheet, never knobs it cannot run yet. Knob values are remembered per kind of target, and a clip's target
 too. Changing a knob starts nothing: Enhance runs on its button. Closing the sheet cancels a run
 (leaving the item); Cancel does too.
 
@@ -148,16 +170,23 @@ Core ML compile the graph (it refuses unbounded dimensions): Apple silicon runs 
 compiled once into `models/video-cache` in the add-on's data folder; elsewhere on the CPU with all
 but one core.
 
-**The preview.** While a clip's picture or a photo runs, the sheet shows the picture split down
-the middle: the original on the left, the enhanced on the right, with a thin light divider
-(`preview.h`). The runner hands over small copies (960 pixels on the long edge, box-averaged):
-a clip's first frame and then about one a second; a photo's original at the start and both at
-the end. The engine letterboxes them to the sheet's width at its scale (at most 2048 × 1024) and
-posts them to a `surface` with a `"glow"` edge, which turns while the run goes and holds still
-once it ends; under it, the one progress line (docs/design/20 "Craft rules"): "Enhancing · 40 % ·
-about 1 min left", its time left estimated by the host (`"timed"`, contribution API 13; the
-`"look": "glow"` it still names is drawn as every bar). This Enhance asks for 13
-([25](25-open-addons.md)); a model's download is the same line with its amounts (`"detail"`). The copies are made on
+**The preview.** While a clip's picture runs, the sheet shows the frame split down the middle:
+the original on the left, the enhanced on the right, with a thin light divider and a caption under
+it saying so (`preview.h`). The runner hands over small copies (960 pixels on the long edge,
+box-averaged): a clip's first frame and then about one a second. The surface is as tall as the
+picture's shape asks across the sheet (160–320 points), and the engine letterboxes into it at the
+sheet's scale (at most 2048 × 1024), posting to a `surface` with a `"glow"` edge. The hosts draw
+that edge after Apple Intelligence's: a crisp ring, a soft glow and a wide halo turning at their
+own pace (6, 9 the other way, 13 s) with the halo breathing (2.2 s), all held still once the run
+ends (`GlowTiming` in ScreenView.swift, `GlowMath` on Windows). Under it, the one progress line
+(docs/design/20 "Craft rules"): "Enhancing · 40 % · about 1 min left", its time left estimated by
+the host (`"timed"`, contribution API 13; the `"look": "glow"` it still names is drawn as every
+bar, so the flowing bar colours of 2026-10-29 are not drawn). This Enhance asks for 13
+([25](25-open-addons.md)); a model's download is the same line with its amounts (`"detail"`).
+**A photo being redrawn** tile by tile (2026-10-29: `picture_options::placed`, `compose_reveal`,
+the engine's `reveal` event) is built for the sheet, but a photo's run has no sheet since
+one-click: the working glow over the photo stands for it, and the photo path's tiles blend by
+weight after a shrink to the detail, so no row is final before the end. The copies are made on
 the runner's thread from the frame it already has; nothing is decoded twice, and nothing touches
 the canvas or the render device. A sound-only run shows no preview.
 
@@ -299,7 +328,7 @@ is not changed." With nothing cut it is the whole clip, as from the viewer. `Enh
 open sheet moves it to the new file and edit.
 
 The cut is applied by the host as it reads, not by the add-on: two rows appended to the table,
-`frames_keep` and `sound_keep` (`src/addon/keep_ranges.h`, in the thunks of `addon/host.cpp`),
+`frames_keep` and `sound_keep` (`src/core/keep_ranges.h`, in the thunks of `addon/host.cpp`),
 called once after `frames_open` / `sound_open`. Frames and samples outside the pieces are dropped;
 what is kept comes back on the edit's own timeline (each piece follows the last), so the writer
 gets the program's times and sound lines up with picture as it does for the whole clip (sound that
@@ -403,7 +432,7 @@ What follows is S5's panel, kept for its history; the cards above replaced it.
 
 docs/plans/edit-refresh.md S5 (owner call B). The manifest's third screen, `tool`, is in place
 `edit`: only the Edit workspace opens it, with a command (`slot_registry::screen_command`, ABI
-`mv_slots_screen_command`, 0.36), never an item, a status click or `screen_show` (an add-on has at
+`mv_slots_screen_command`, 0.38), never an item, a status click or `screen_show` (an add-on has at
 most one, and a manifest asks for contribution API 12 to name it). The command opens it on the
 photo on screen when it is not open, then hands Enhance `enhance/tool`
 `{"photo": "remove|restyle|detail|extend|faces", "run": true?}`: the panel switches to that tool (its
@@ -651,6 +680,7 @@ own pixels copied back bit for bit**. The result is `<stem>-extended.jpg` (`run_
 | A 640 × 360 clip, 30 frames, to 1280 × 720 with its sound, Core ML + VideoToolbox | 6.2 s (0.21 s a frame) |
 | Peak memory of that run, both models and a reference session | about 330 MB (`run_bytes` 600 MB) |
 | A 4032 × 3024 photo (EXIF-turned) to 6048 × 8064, Core ML, read to written | 8.7 s, about 850 MB peak (`run_bytes` 700 MB + the picture in and out) |
+| One 256-px tile, x4plus vs x4v3 (Python, 2026-10-29): Core ML / CPU 7 threads | 0.135 / 3.4 s vs 0.023 / 0.20 s; peak about 470 MB / 1.8 GB vs 220 / 150 MB |
 
 Restyle (2026-11-03, the same Mac, the hidden `[.restyle-model]` case on a 512 × 320 picture):
 14–16 s a request on Core ML at Standard once the size is compiled. The first run at a new size

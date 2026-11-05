@@ -1,6 +1,7 @@
 {
  "kind": "still",
  "name": "Sharpen & restore",
+ "summary": "The sharpest restoration: at the same size the photo is shrunk to its detail, then rebuilt.",
  "credit": "Real-HAT-GAN SRx4 sharper: HAT, Xiangyu Chen et al. (XPixelGroup); ONNX export by MahoCommerce. Apache-2.0.",
  "weights": [
   "Real_HAT_GAN_sharper.onnx"

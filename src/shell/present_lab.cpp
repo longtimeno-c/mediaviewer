@@ -483,6 +483,7 @@ void present_lab::render_thread_main() noexcept {
     // Before anything frames the camera: every usable_canvas below is then the
     // right half while compare is up.
     if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
+    if (apply_video_look(snapshot)) redraw = true;
 
     // --- Edge-triggered commands from the UI thread ---------------------
     if (snapshot.toggle_overlay_seq != seen_overlay_seq_) {
@@ -917,6 +918,7 @@ void present_lab::render_thread_main() noexcept {
     // A still that just landed (or a clip that replaced it) may start or end
     // the split; refit now, so no frame shows it framed for the wrong half.
     if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
+    if (apply_video_look(snapshot)) redraw = true;
 
     // Animation (docs/design/04, PR 6). Frames come from the session's decode ring
     // into anim_frame_ — never through the ready-image branch — so hold-previous
@@ -1664,7 +1666,14 @@ void present_lab::render_thread_main() noexcept {
       bp.window_w = view.w; bp.window_h = view.h; bp.origin_x = view.x; bp.origin_y = view.y;
       // The blitter wants the CODED frame plus the turn; media_width() is the displayed picture.
       bp.image_w = static_cast<float>(current_video_.width); bp.image_h = static_cast<float>(current_video_.height);
-      bp.rotation = current_video_.rotation;
+      // The Video Editor's look: its turn on top of the clip's, mirror and crop.
+      const edit::clip::frame_geometry g = video_geometry();
+      const edit::clip::uv_crop uc = edit::clip::uv_crop_of(g);
+      bp.rotation = g.turns;
+      bp.mirror = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
+      bp.crop_x = uc.origin[0]; bp.crop_y = uc.origin[1]; bp.crop_w = uc.size[0]; bp.crop_h = uc.size[1];
+      bp.adjust = !video_look_.light.identity();
+      bp.adjust_u = video_light_;
       bp.texture_w = static_cast<float>(desc.Width); bp.texture_h = static_cast<float>(desc.Height);
       video_blitter_.draw(device_.context(), current_video_.luma.Get(), current_video_.chroma.Get(), current_video_.colour, bp);
     }
@@ -1910,6 +1919,24 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
               IM_COL32(0, 0, 0, 200), label);
   fg->AddText(ImGui::GetFont(), fs, ImVec2(a.x, a.y - fs - 4.0f * scale),
               IM_COL32(235, 235, 240, 255), label);
+}
+
+bool present_lab::apply_video_look(const input_snapshot& snapshot) noexcept {
+  const edit::clip::look l = canvas_look_of(snapshot);
+  if (l == video_look_) return false;
+  const bool geometry = l.turns != video_look_.turns || l.crop != video_look_.crop;
+  video_look_ = l;
+  video_light_ = edit::uniforms_of(l.light);
+  if (current_video_.texture && geometry) {
+    // A fitted (or filled) clip stays fitted as it turns or its crop changes.
+    const canvas_view view = usable_canvas(snapshot);
+    if (camera_.fit_mode()) {
+      camera_.fit(media_width(), media_height(), view.w, view.h, true);
+    } else if (camera_.fill_mode()) {
+      camera_.fill(media_width(), media_height(), view.w, view.h, true);
+    }
+  }
+  return true;
 }
 
 bool present_lab::apply_compare_split(input_snapshot& snapshot,

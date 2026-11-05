@@ -6,11 +6,14 @@
 // viewer, built from the installed models' knobs for the item on screen
 // (slice 2). Pure functions of a view struct, so tests read the trees whole.
 //
-// Node ids: "install.<kind>", "stop.<kind>", "remove.<kind>" on the page,
-// "tier" (the level's choice) and "tierlevel" (the level in effect, "Default
-// level": the text the Edit pane's Enhance tab shows in its chip);
-// "target", "photo", "detail" (S7: Enhance image's model), "k.<kind>.<knob>",
-// "install.<kind>", "stop.<kind>", "run", "cancel", "close" on the sheet.
+// Node ids: "install.<kind>", "stop.<kind>", "remove.<kind>" for the kind's
+// chosen model, "remove.<kind>.<id>" / "stop.<kind>.<id>" for one of its others,
+// and "model.<kind>" (the choice of a kind's model, when it has more than one)
+// on the page; "tier" (the level's choice) and "tierlevel" (the level in
+// effect, "Default level": the text the Edit pane's Enhance tab shows in its
+// chip); "target", "photo", "detail" (S7: Enhance image's model),
+// "model.<kind>", "k.<kind>.<knob>", "install.<kind>", "stop.<kind>", "run",
+// "cancel", "close" on the sheet.
 //
 // docs/plans/edit-refresh.md S5 (owner call B): the third screen, "tool",
 // docked in the Edit workspace's Enhance tab (place "edit") under the tool the
@@ -51,11 +54,17 @@ inline constexpr std::uint32_t kPreviewHeight = 220;
 // Enhance image's choices as the sheet names them ("Sharpen & restore", …).
 [[nodiscard]] const char* detail_text(model_kind k) noexcept;
 
-struct model_card {
-  model_kind kind = model_kind::still;
-  const model_spec* spec = nullptr;  // null: this build of Enhance has no model of that kind
+// One model of a kind, and where its download stands.
+struct model_choice {
+  const model_spec* spec = nullptr;
   model_files files;
   dl_status st;
+};
+
+struct model_card {
+  model_kind kind = model_kind::still;
+  std::vector<model_choice> models;  // empty: this build of Enhance has none of that kind
+  std::size_t chosen = 0;            // the one the kind uses
 };
 // The performance level's row: what is chosen ("auto" or a tier name) and
 // this computer's recommendation.
@@ -77,12 +86,17 @@ struct sheet_section {
   // Why there is none: the model is not installed, still downloading, or
   // this build has none of that kind.
   std::string missing;
-  std::map<std::string, json::value> values;  // last-used, per kind of target
-  // S7: the model is not here yet and may be fetched from the sheet itself
-  // ("install.<kind>", the label says what and how big); "stop.<kind>" while
-  // it downloads. Empty: no button.
+  // The kind's models to choose from, when it has more than one (id, name),
+  // and the chosen one's id.
+  std::vector<knob_option> models;
+  std::string model;
+  // The chosen model is not installed: its Download button ("Download (64
+  // MB)", "Resume the download", "Try again"; "install.<kind>", S7: fetched
+  // from the sheet itself), or its progress while it downloads (0-1, -1
+  // unknown; "stop.<kind>" stops it). Empty and unset: no button.
   std::string install;
-  bool downloading = false;
+  std::optional<double> downloading;
+  std::map<std::string, json::value> values;  // last-used, per kind of target
 };
 
 struct sheet_view {
@@ -117,6 +131,8 @@ struct sheet_view {
   double progress = -1;      // -1 indeterminate
   std::string eta;           // "About 12 minutes left", or "" while it cannot tell
   bool preview = false;      // a picture run has posted its first preview
+  bool preview_split = false;      // ...split before / after (else a photo being redrawn)
+  std::uint32_t preview_height = kPreviewHeight;
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
   // S5, the docked panel: the file the last run wrote (absolute, or the
   // "photos:<id>" key of a new Photos-library photo), "" when there is none

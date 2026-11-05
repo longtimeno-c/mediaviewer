@@ -20,7 +20,7 @@
 #include <span>
 #include <vector>
 
-namespace mv::addon {
+namespace mv {
 
 class keep_ranges {
  public:
@@ -107,4 +107,4 @@ class keep_ranges {
   std::vector<range> ranges_;
 };
 
-}  // namespace mv::addon
+}  // namespace mv

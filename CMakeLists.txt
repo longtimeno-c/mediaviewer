@@ -283,8 +283,8 @@ mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_background ps_5_0 kBlitPsBackground 
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_tile vs_5_0 kBlitVsTile "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_tile ps_5_0 kBlitPsTile "${_mv_kernel_tokens}")
 set(_mv_video_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/video_blit.hlsl")
-mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" vs_main vs_5_0 kVideoBlitVsMain)
-mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" ps_main ps_5_0 kVideoBlitPsMain)
+mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" vs_main vs_5_0 kVideoBlitVsMain "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" ps_main ps_5_0 kVideoBlitPsMain "${_mv_kernel_tokens}")
 
 # ---------------------------------------------------------------------------
 # mv_gfx — D3D11 device, swapchain, frame pacer
@@ -657,6 +657,10 @@ add_library(mv::meta ALIAS mv_meta)
 # ---------------------------------------------------------------------------
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
+  src/edit/clip_look.cpp
+  src/edit/clip_look.h
+  src/edit/clip_auto_light.cpp
+  src/edit/clip_auto_light.h
   src/edit/adjust.h
   src/edit/auto_adjust.cpp
   src/edit/auto_tone.cpp
@@ -704,6 +708,7 @@ add_library(mv_clip STATIC
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
   src/edit/clip_picture_io.cpp
+  src/edit/clip_look_run.cpp
   src/edit/clip_sample.h
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp

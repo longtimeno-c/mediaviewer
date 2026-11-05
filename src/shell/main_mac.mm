@@ -102,6 +102,9 @@
 #include "shell/compare_source.h"
 #include "shell/enhance_run.h"
 #include "shell/pane_width.h"
+#include "edit/clip_auto_light.h"
+#include "edit/clip_sample.h"
+#include "shell/clip_look_abi.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
 #include "shell/folder_model_mac.h"
@@ -1004,6 +1007,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editorEdit:(int32_t)what;
 - (void)editorSelect:(int32_t)index;
 - (void)editorExport:(BOOL)exact;
+- (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase;
+- (void)editorSetSound:(int32_t)param value:(float)value phase:(int32_t)phase;
+- (void)editorPlayRate:(double)rate;
 - (BOOL)editorTrimBegin:(int32_t)index edge:(int32_t)edge;
 - (int64_t)editorTrimTo:(int64_t)source_ns;
 - (void)editorTrimEnd;
@@ -2155,6 +2161,14 @@ extern "C" void mv_chrome_editor_toggle_play(void) {
 }
 extern "C" void mv_chrome_editor_step(int32_t frames) {
   if (g_chrome_app) [g_chrome_app editorStep:frames];
+}
+extern "C" void mv_chrome_editor_set_sound(int32_t param, float value, int32_t phase) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorSetSound:param value:value phase:phase];
+}
+extern "C" void mv_chrome_editor_set_light(int32_t param, float value, int32_t phase) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorSetLight:param value:value phase:phase];
 }
 extern "C" void mv_chrome_editor_edit(int32_t what) {
   (void)mv::shell::crash::note_native_call();
@@ -9974,6 +9988,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     q.range_count = static_cast<std::uint32_t>(r.ranges.size());
     q.option = r.ranges_exact ? 2u : 1u;
   }
+  // ABI 0.36: the Video Editor's look (its pieces' export, Save frame).
+  const mv_clip_look look = mv::shell::abi_look(r.look);
+  if (!r.look.identity()) q.look = &look;
   std::uint64_t job = 0;
   if (_clipJobs->submit(r.source, q, job) != mv::status::ok) {
     NSBeep();
@@ -10311,6 +10328,17 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->mark_in_ns = _timeline.marked_in();
   out->mark_out_ns = _timeline.marked_out();
   out->frame_rate = _editorFps;
+  const mv::edit::clip::look& lk = _timeline.look();
+  out->look_turns = lk.turns;
+  out->look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
+  out->look_crop = static_cast<int32_t>(lk.crop);
+  out->look_copyable = lk.copyable() ? 1 : 0;
+  for (std::size_t i = 0; i < lk.light.v.size(); ++i) out->look_light[i] = lk.light.v[i];
+  out->look_mute = lk.mute ? 1 : 0;
+  out->look_volume = lk.volume;
+  out->look_fade_in_ms = lk.fade_in_ms;
+  out->look_fade_out_ms = lk.fade_out_ms;
+  out->look_speed = lk.speed;
 }
 
 - (void)setEditorOpen:(BOOL)open {
@@ -10351,6 +10379,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   } else {
     [self.editorWindow close];  // windowWillClose -> editorWindowClosed
   }
+  [self editorPublishLook];
   ++_editorGeneration;
 }
 
@@ -10359,6 +10388,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self editorSetRate:1.0];  // the viewer gets its clip back at the speed it had
   _timeline.end_trim();
   _editorOpen = NO;
+  [self editorPublishLook];  // the viewer shows the clip as it is
   ++_editorToken;
   [self layoutAIBadge];  // #345
   [_editorTick invalidate];
@@ -10568,7 +10598,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 - (void)editorTogglePlay {
   if (!_timeline.loaded()) return;
   _shuttle.stop();
-  [self editorSetRate:1.0];
+  [self editorPlayRate:1.0];
   const auto st = _lab.video_status_snapshot();
   // At the end, Play starts the program again.
   if (!st.playing && _timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
@@ -10581,9 +10611,94 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   mv_chrome_video_step(frames);
 }
 
+// The look's geometry on the canvas (docs/plans/video-editor-look.md); none
+// once the editor closes.
+- (void)editorPublishLook {
+  const mv::edit::clip::look& l = _timeline.look();
+  const bool on = _editorOpen && _timeline.loaded();
+  _snap.video_look_turns = on ? l.turns : 0;
+  _snap.video_look_mirror = on ? static_cast<std::uint8_t>((l.flip_h ? 1 : 0) | (l.flip_v ? 2 : 0)) : 0;
+  _snap.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
+  _snap.video_look_light = on ? l.light.v : decltype(l.light.v){};
+  [self publish];
+  // Its sound, in playback: the pieces place the fades (core/sound_envelope.h).
+  mv::sound_envelope e;
+  if (on && _timeline.sound_shaped()) {
+    const std::vector<std::int64_t> flat = _timeline.flat_pieces();
+    (void)e.set(flat, l.mute ? 0.0f : l.volume, static_cast<std::int64_t>(l.fade_in_ms) * 1'000'000,
+                static_cast<std::int64_t>(l.fade_out_ms) * 1'000'000);
+  }
+  _lab.set_sound_envelope(e);
+}
+
+// A light and colour slider (param: edit::adjust_param); a drag is one undo step.
+- (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase {
+  if (!_timeline.loaded() || param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  if (phase == 0) _timeline.begin_look_drag();
+  mv::edit::clip::look l = _timeline.look();
+  l.light.v[static_cast<std::size_t>(param)] = value;
+  if (_timeline.set_look(l)) [self editorPublishLook];
+  if (phase == 2) _timeline.end_look_drag();
+  ++_editorGeneration;
+}
+
+// The sound: param 0 volume (0..2), 1 fade in, 2 fade out (seconds); a drag
+// is one undo step.
+- (void)editorSetSound:(int32_t)param value:(float)value phase:(int32_t)phase {
+  if (!_timeline.loaded() || param < 0 || param > 2) return;
+  if (phase == 0) _timeline.begin_look_drag();
+  mv::edit::clip::look l = _timeline.look();
+  if (param == 0) l.volume = value;
+  if (param == 1) l.fade_in_ms = static_cast<std::int32_t>(std::lround(value * 1000.0f));
+  if (param == 2) l.fade_out_ms = static_cast<std::int32_t>(std::lround(value * 1000.0f));
+  if (_timeline.set_look(l)) [self editorPublishLook];
+  if (phase == 2) _timeline.end_look_drag();
+  ++_editorGeneration;
+}
+
+// Auto: auto tone (#289) on the frame at the playhead, read on a worker.
+- (void)editorAutoLight {
+  if (!_timeline.loaded() || _editorPath.empty()) return;
+  const std::string path = _editorPath;
+  const std::uint64_t token = _editorToken;
+  const std::int64_t at_ms = _timeline.to_source([self editorTimelinePosition]) / 1'000'000;
+  const mv::edit::colour current = _timeline.look().light;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    auto frame = mv::edit::clip::frame_rgb_at(path, at_ms, 512);
+    bool changed = false;
+    const mv::edit::colour light = frame ? mv::edit::clip::auto_light(frame->rgb, current, changed) : current;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (token != self->_editorToken || !self->_editorOpen) return;  // another clip, or closed
+      mv::edit::clip::look l = self->_timeline.look();
+      l.light = light;
+      if (!changed || !self->_timeline.set_look(l)) {
+        NSBeep();  // a flat frame, or one that already fills the range
+        return;
+      }
+      [self editorPublishLook];
+      ++self->_editorGeneration;
+    });
+  });
+}
+
+// The frame at the playhead as a JPEG beside the clip, with the look's turn,
+// mirror and crop (op::frame in the helper; the Jobs pane shows it).
+- (void)editorSaveFrame {
+  if (!_timeline.loaded() || _editorPath.empty()) return;
+  mv::edit::clip::request r;
+  r.kind = mv::edit::clip::op::frame;
+  r.source = _editorPath;
+  r.in_ns = _timeline.to_source([self editorTimelinePosition]);
+  r.frame = mv::edit::clip::frame_format::jpeg;
+  r.look = _timeline.look();
+  (void)[self submitClipJob:r];
+}
+
 // what: 1 split at the playhead, 2 delete (the marked range, else the
 // selected piece), 3 set in, 4 set out, 5 undo, 6 redo, 14 mark in, 15 mark
-// out, 16 clear the marks. The numbers are Windows' chrome_editor_action.
+// out, 16 clear the marks; the look: 17 turn left, 18 turn right, 19 mirror
+// left-right, 20 mirror upside down, 21-26 crop original / 16:9 / 9:16 / 1:1 /
+// 4:3 / 4:5, 27 save the frame. The numbers are Windows' chrome_editor_action.
 - (void)editorEdit:(int32_t)what {
   if (!_timeline.loaded()) return;
   const std::int64_t at = [self editorTimelinePosition];
@@ -10616,8 +10731,52 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
       _timeline.clear_marks();
       ++_editorGeneration;
       return;
+    case 17:
+    case 18:
+    case 19:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+    case 24:
+    case 25:
+    case 26: {
+      mv::edit::clip::look l = _timeline.look();
+      if (what == 17) l.turns = static_cast<std::uint8_t>((l.turns + 3) & 3);
+      if (what == 18) l.turns = static_cast<std::uint8_t>((l.turns + 1) & 3);
+      if (what == 19) l.flip_h = !l.flip_h;
+      if (what == 20) l.flip_v = !l.flip_v;
+      if (what >= 21) l.crop = static_cast<mv::edit::clip::crop_ratio>(what - 21);
+      changed = _timeline.set_look(l);
+      break;
+    }
+    case 27: [self editorSaveFrame]; return;
+    case 28: [self editorAutoLight]; return;
+    case 30: {
+      mv::edit::clip::look l = _timeline.look();
+      l.mute = !l.mute;
+      changed = _timeline.set_look(l);
+      break;
+    }
+    case 31:
+    case 32:
+    case 33: {
+      // The speed: 0.5x, 1x, 2x. Playback follows at once.
+      mv::edit::clip::look l = _timeline.look();
+      l.speed = what == 31 ? 0.5f : what == 32 ? 1.0f : 2.0f;
+      changed = _timeline.set_look(l);
+      if (changed) [self editorPlayRate:_shuttle.rate()];
+      break;
+    }
+    case 29: {
+      mv::edit::clip::look l = _timeline.look();
+      l.light = {};
+      changed = _timeline.set_look(l);
+      break;
+    }
     default: break;
   }
+  [self editorPublishLook];
   if (!changed) NSBeep();
   if (_editorSelected >= static_cast<int32_t>(_timeline.pieces().size())) _editorSelected = -1;
   ++_editorGeneration;
@@ -10669,11 +10828,18 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
     const auto& p = pieces[static_cast<std::size_t>(_editorTrimIndex)];
     [self editorSeekSource:[self editorEdgeFrame:_editorTrimEdge == 0 ? p.in_ns : p.out_ns]];
   }
+  [self editorPublishLook];  // the fades follow the program's new ends
   ++_editorGeneration;
 }
 
 // The speed ladder is the viewer's (present_lab_mac.mm kLadder); the editor
 // moves along it by rungs, as the viewer's speed keys do.
+// The editor's playback at the edit's speed (the look, slice 4): Space and
+// J K L ask for 1x, 2x, 4x of it. Leaving the editor uses editorSetRate.
+- (void)editorPlayRate:(double)rate {
+  [self editorSetRate:rate * static_cast<double>(_timeline.look().speed)];
+}
+
 - (void)editorSetRate:(double)rate {
   static constexpr int kRates[] = {25, 50, 100, 150, 200, 400};
   auto rung = [](int x100) {
@@ -10704,7 +10870,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
         return;
       }
       if (st.playing) mv_chrome_video_toggle();
-      [self editorSetRate:1.0];
+      [self editorPlayRate:1.0];
       const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now().time_since_epoch()).count();
       const std::int64_t to = _shuttle.back([self editorTimelinePosition], now, phase == 1);
@@ -10724,12 +10890,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
       if (phase != 0) return;
       _shuttle.stop();
       if (st.playing) mv_chrome_video_toggle();
-      [self editorSetRate:1.0];
+      [self editorPlayRate:1.0];
       return;
     case 2: {  // L: play, faster on each press
       if (phase != 0) return;
       const double rate = _shuttle.forward();
-      [self editorSetRate:rate];
+      [self editorPlayRate:rate];
       if (!st.playing) {
         if (_timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
           [self editorSeekSource:_timeline.pieces().front().in_ns];
@@ -11043,7 +11209,13 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (!_timeline.loaded() || _editorPath.empty()) return;
   if (!_timeline.edited()) {
     NSBeep();
-    [self noticeShow:std::string("Nothing has been cut yet")];
+    [self noticeShow:std::string("Nothing has been changed yet")];
+    return;
+  }
+  if (!exact && !_timeline.look().copyable()) {
+    // Packet copy carries a turn and mute only (docs/plans/video-editor-look.md).
+    NSBeep();
+    [self noticeShow:std::string("Crop, mirror, colour, sound and speed need Export exact")];
     return;
   }
   (void)[self submitClipJob:_timeline.export_request(_editorPath, exact)];

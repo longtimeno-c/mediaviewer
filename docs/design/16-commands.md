@@ -581,6 +581,12 @@ awake: `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)` on Wi
 | `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (with the viewer's marks for "Marked in viewer") |
 | `Ctrl+Shift+F7` | `⌘⇧F7` | Import the marked (else current) files now with the last preset |
 
+### Enhance (while the add-on is installed)
+
+| Windows | Mac | Command |
+|---|---|---|
+| `Ctrl+Shift+R` | `⌘⇧R` | Open Enhance for the marked (else current) file: the sheet for an audio file or a clip, the Edit pane's Enhance tab for a photo ([29](29-enhance.md)) |
+
 Inside the Import window (its own keys, not table rows): `Enter` imports (on a focused tile it
 opens that file in the viewer), `Ctrl+Enter` imports from anywhere, `Space` toggles a tile and
 pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctrl+Shift+Tab` the

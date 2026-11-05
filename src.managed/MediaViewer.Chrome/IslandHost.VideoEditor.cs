@@ -38,7 +38,7 @@ public static partial class IslandHost
     // chrome_host.h chrome_editor_*_args.
     internal const int EditorAttachArgsSize = 16;
     internal const int EditorLayoutArgsSize = 40;
-    internal const int EditorViewArgsSize = 104;
+    internal const int EditorViewArgsSize = 160;
     internal const int EditorStripArgsSize = 24;
     internal const int EditorThumbSize = 24;
 
@@ -61,7 +61,33 @@ public static partial class IslandHost
         public const int MarkIn = 14;
         public const int MarkOut = 15;
         public const int ClearMarks = 16;
+        public const int TurnLeft = 17;
+        public const int TurnRight = 18;
+        public const int MirrorH = 19;
+        public const int MirrorV = 20;
+        public const int CropOriginal = 21;  // 21-26: original, 16:9, 9:16, 1:1, 4:3, 4:5
+        public const int SaveFrame = 27;
+        public const int AutoLight = 28;
+        public const int ResetLight = 29;
+        public const int ToggleMute = 30;
+        public const int SpeedHalf = 31;  // 31-33: 0.5x, 1x, 2x
     }
+
+    // PR 11's five sliders (edit/adjust.cpp range_of), as on the Mac.
+    private static readonly (string Name, double Min, double Max, double Step)[] EditorLightSpecs =
+    {
+        ("Exposure", -5, 5, 0.1), ("Contrast", -100, 100, 5), ("Saturation", -100, 100, 5),
+        ("Temperature", -100, 100, 5), ("Tint", -100, 100, 5),
+    };
+    private static readonly float[] _editorLight = new float[5];
+    // Sound (slice 3): mute, volume 0..2, fades in milliseconds.
+    private static bool _editorMuted;
+    private static float _editorVolume = 1;
+    private static int _editorFadeInMs, _editorFadeOutMs;
+    private static float _editorSpeed = 1;  // slice 4: 0.5, 1 or 2
+    private static Button? _editorSpeedButton;
+
+    private static readonly string[] EditorCropNames = { "Original", "16:9", "9:16", "1:1", "4:3", "4:5" };
 
     private static DesktopWindowXamlSource? _editorTimeline;
     private static DesktopWindowXamlSource? _editorAway;
@@ -77,6 +103,9 @@ public static partial class IslandHost
     private static bool _editorCanUndo;
     private static bool _editorCanRedo;
     private static bool _editorEdited;
+    // The look (docs/plans/video-editor-look.md).
+    private static int _editorLookCrop;
+    private static bool _editorLookCopyable = true;
     private static ulong _editorGeneration = ulong.MaxValue;
     private static string _editorName = "";
     private static (long In, long Out)[] _editorPieces = Array.Empty<(long, long)>();
@@ -232,6 +261,18 @@ public static partial class IslandHost
                 _editorFps = Marshal.ReadInt32(arg, 84) / 1000.0;
                 _editorMarkIn = Marshal.ReadInt64(arg, 88);
                 _editorMarkOut = Marshal.ReadInt64(arg, 96);
+                _editorLookCrop = Marshal.ReadInt32(arg, 112);
+                _editorLookCopyable = Marshal.ReadInt32(arg, 116) != 0;
+                for (int i = 0; i < _editorLight.Length; i++)
+                {
+                    _editorLight[i] = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 120 + 4 * i));
+                }
+                _editorMuted = Marshal.ReadInt32(arg, 140) != 0;
+                _editorVolume = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 144));
+                _editorFadeInMs = Marshal.ReadInt32(arg, 148);
+                _editorFadeOutMs = Marshal.ReadInt32(arg, 152);
+                _editorSpeed = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 156));
+                if (_editorSpeedButton is not null) SetButtonText(_editorSpeedButton, EditorSpeedName(_editorSpeed));
                 long pieces = Marshal.ReadInt64(arg, 64);
                 var list = new (long, long)[pieces == 0 ? 0 : count];
                 for (int i = 0; i < list.Length; i++)
@@ -332,7 +373,7 @@ public static partial class IslandHost
         _editorStatus = null;
         _editorReading = null;
         _editorSpinner = null;
-        _editorPlay = _editorDelete = _editorUndo = _editorRedo = _editorExport = _editorExportExact = null;
+        _editorPlay = _editorDelete = _editorUndo = _editorRedo = _editorExport = _editorExportExact = _editorSpeedButton = null;
         _editorAddons = null;
         _editorAwayName = null;
         _editorAwayVisible = false;
@@ -434,7 +475,16 @@ public static partial class IslandHost
             EditButton("Trim end", () => SendEditor(EditorActions.SetOut), tip: "Cut everything after the playhead  ]"),
             EditorDivider(),
             _editorUndo,
-            _editorRedo);
+            _editorRedo,
+            EditorDivider(),
+            EditButton("Turn left", () => SendEditor(EditorActions.TurnLeft), tip: "Turn the clip left"),
+            EditButton("Turn right", () => SendEditor(EditorActions.TurnRight), tip: "Turn the clip right"),
+            EditorCropButton(),
+            EditorLightButton(),
+            EditorSoundButton(),
+            EditorSpeedButton(),
+            EditButton("Save frame", () => SendEditor(EditorActions.SaveFrame),
+                       tip: "Save this frame as a photo  Ctrl+Shift+S"));
         bar.Children.Add(left);
         _editorExport = EditButton("Export", () => SendEditor(EditorActions.Export),
             tip: "Write the edit as a new file, cut on keyframes: instant, no quality loss  Ctrl+E");
@@ -642,7 +692,14 @@ public static partial class IslandHost
         if (_editorDelete is not null) _editorDelete.IsEnabled = EditorHasMarks || _editorPieces.Length > 1;
         if (_editorUndo is not null) _editorUndo.IsEnabled = _editorCanUndo;
         if (_editorRedo is not null) _editorRedo.IsEnabled = _editorCanRedo;
-        if (_editorExport is not null) _editorExport.IsEnabled = _editorEdited;
+        if (_editorExport is not null)
+        {
+            // Packet copy carries a turn and mute only: the rest needs Export exact.
+            _editorExport.IsEnabled = _editorEdited && _editorLookCopyable;
+            ToolTipService.SetToolTip(_editorExport, _editorLookCopyable
+                ? "Write the edit as a new file, cut on keyframes: instant, no quality loss  Ctrl+E"
+                : "Crop, mirror, colour, sound and speed need Export exact");
+        }
         if (_editorExportExact is not null) _editorExportExact.IsEnabled = _editorEdited;
         if (_editorReading is not null) _editorReading.Visibility = _editorReady ? Visibility.Collapsed : Visibility.Visible;
         if (_editorSpinner is not null) _editorSpinner.Active = !_editorReady;
@@ -654,6 +711,167 @@ public static partial class IslandHost
     // Export, with a divider after them; none without one. Each runs on the
     // edit: the clip on screen and its kept pieces, or all of it when nothing
     // is cut. The add-on opens its own sheet (centred over this window).
+    // Mirror and crop the whole clip: a menu, as on the Mac. The crop shown
+    // checked is the one the last view pushed.
+    private static Button EditorCropButton()
+    {
+        Button crop = EditButton("Crop", () => { }, tip: "Mirror and crop the whole clip");
+        var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
+        menu.Opening += (_, _) =>
+        {
+            menu.Items.Clear();
+            menu.Items.Add(Item("Mirror left to right", null, () => SendEditor(EditorActions.MirrorH)));
+            menu.Items.Add(Item("Mirror upside down", null, () => SendEditor(EditorActions.MirrorV)));
+            menu.Items.Add(new MenuFlyoutSeparator());
+            for (int i = 0; i < EditorCropNames.Length; i++)
+            {
+                int ratio = i;
+                string label = (ratio == _editorLookCrop ? "\u2713 " : "    ") + EditorCropNames[ratio];
+                menu.Items.Add(Item(label, null, () => SendEditor(EditorActions.CropOriginal + ratio)));
+            }
+        };
+        crop.Flyout = menu;
+        return crop;
+    }
+
+    // Light and colour for the whole clip (docs/plans/video-editor-look.md
+    // slice 2): the five sliders, Auto and Reset in a flyout. Each move goes
+    // to native at once (the preview follows); a flyout session is one undo
+    // step (chrome_cmd_editor_light_drag on open and close).
+    private static Button EditorLightButton()
+    {
+        Button light = EditButton("Light", () => { }, tip: "Light and colour for the whole clip");
+        var flyout = new Flyout();
+        bool updating = false;
+        var sliders = new Slider[EditorLightSpecs.Length];
+        var readouts = new TextBlock[EditorLightSpecs.Length];
+        var col = new StackPanel { Spacing = Space(6), Width = 280 };
+        for (int i = 0; i < EditorLightSpecs.Length; i++)
+        {
+            var spec = EditorLightSpecs[i];
+            var head = new Grid();
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            head.Children.Add(Text(spec.Name, Body));
+            readouts[i] = Text("", Body);
+            Grid.SetColumn(readouts[i], 1);
+            head.Children.Add(readouts[i]);
+            col.Children.Add(head);
+            var slider = new Slider
+            {
+                Minimum = spec.Min,
+                Maximum = spec.Max,
+                StepFrequency = spec.Step,
+                SmallChange = spec.Step,
+                LargeChange = spec.Step * 10,
+                IsThumbToolTipEnabled = false,
+            };
+            AutomationProperties_SetName(slider, spec.Name);
+            int index = i;
+            slider.ValueChanged += (_, e) =>
+            {
+                readouts[index].Text = index == 0 ? $"{e.NewValue:+0.0;-0.0;0.0}" : $"{e.NewValue:+0;-0;0}";
+                if (updating) return;
+                _editorLight[index] = (float)e.NewValue;
+                Send(Command.EditorLightExposure + index, (float)e.NewValue);
+            };
+            slider.DoubleTapped += (_, _) => slider.Value = 0;
+            sliders[i] = slider;
+            col.Children.Add(slider);
+        }
+        col.Children.Add(Row(
+            EditButton("Auto", () => SendEditor(EditorActions.AutoLight), tip: "Exposure and contrast from the frame on screen"),
+            EditButton("Reset", () => SendEditor(EditorActions.ResetLight), tip: "Every slider back to 0")));
+        flyout.Content = col;
+        flyout.Opening += (_, _) =>
+        {
+            updating = true;
+            for (int i = 0; i < sliders.Length; i++) sliders[i].Value = _editorLight[i];
+            updating = false;
+            Send(Command.EditorLightDrag, 1);
+        };
+        flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
+        light.Flyout = flyout;
+        return light;
+    }
+
+    // The edit's sound (slice 3): Mute, Volume (0-200 %) and fades (0-5 s) in a
+    // flyout; a flyout session is one undo step, as Light's.
+    private static Button EditorSoundButton()
+    {
+        Button sound = EditButton("Sound", () => { }, tip: "Sound for the whole clip");
+        var flyout = new Flyout();
+        bool updating = false;
+        var col = new StackPanel { Spacing = Space(6), Width = 260 };
+        var mute = new CheckBox { Content = "Mute" };
+        mute.Click += (_, _) => SendEditor(EditorActions.ToggleMute);
+        col.Children.Add(mute);
+        Slider Row(string name, double min, double max, double step, int command, Func<double, string> format)
+        {
+            var head = new Grid();
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            head.Children.Add(Text(name, Body));
+            TextBlock readout = Text("", Body);
+            Grid.SetColumn(readout, 1);
+            head.Children.Add(readout);
+            col.Children.Add(head);
+            var slider = new Slider
+            {
+                Minimum = min, Maximum = max, StepFrequency = step, SmallChange = step, LargeChange = step * 10,
+                IsThumbToolTipEnabled = false,
+            };
+            AutomationProperties_SetName(slider, name);
+            slider.ValueChanged += (_, e) =>
+            {
+                readout.Text = format(e.NewValue);
+                if (!updating) Send(command, (float)e.NewValue);
+            };
+            col.Children.Add(slider);
+            return slider;
+        }
+        Slider volume = Row("Volume", 0, 2, 0.05, Command.EditorSoundVolume, v => $"{v * 100:0} %");
+        Slider fadeIn = Row("Fade in", 0, 5000, 100, Command.EditorSoundFadeIn, v => $"{v / 1000:0.0} s");
+        Slider fadeOut = Row("Fade out", 0, 5000, 100, Command.EditorSoundFadeOut, v => $"{v / 1000:0.0} s");
+        flyout.Content = col;
+        flyout.Opening += (_, _) =>
+        {
+            updating = true;
+            mute.IsChecked = _editorMuted;
+            volume.Value = _editorVolume;
+            fadeIn.Value = _editorFadeInMs;
+            fadeOut.Value = _editorFadeOutMs;
+            updating = false;
+            Send(Command.EditorLightDrag, 1);
+        };
+        flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
+        sound.Flyout = flyout;
+        return sound;
+    }
+
+    private static string EditorSpeedName(float s) => s < 0.75f ? "0.5×" : s < 1.5f ? "1×" : "2×";
+
+    // The edit's speed (slice 4): 0.5x, 1x, 2x, for playback and Export exact.
+    private static Button EditorSpeedButton()
+    {
+        _editorSpeedButton = EditButton(EditorSpeedName(_editorSpeed), () => { },
+                                        tip: "Speed of the whole clip: playback and Export exact");
+        var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
+        menu.Opening += (_, _) =>
+        {
+            menu.Items.Clear();
+            float[] speeds = { 0.5f, 1f, 2f };
+            for (int i = 0; i < speeds.Length; i++)
+            {
+                int code = EditorActions.SpeedHalf + i;
+                string label = (speeds[i] == _editorSpeed ? "\u2713 " : "    ") + EditorSpeedName(speeds[i]);
+                menu.Items.Add(Item(label, null, () => SendEditor(code)));
+            }
+        };
+        _editorSpeedButton.Flyout = menu;
+        return _editorSpeedButton;
+    }
+
     private static void RebuildEditorAddons()
     {
         StackPanel? panel = _editorAddons;

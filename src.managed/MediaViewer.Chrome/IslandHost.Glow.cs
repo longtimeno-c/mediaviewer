@@ -72,15 +72,19 @@ public static partial class IslandHost
     }
 
     /// <summary>
-    /// A soft multicolour edge round a surface: a 3-px ring and a wider faint
-    /// halo behind it. "moving" turns the colours once every six seconds;
-    /// "still" holds them.
+    /// A multicolour edge round a surface, after Apple Intelligence's: a crisp
+    /// 3-px ring, a soft glow and a wide halo, each turning at its own pace (the
+    /// middle one the other way), the halo breathing. "moving" animates it;
+    /// "still" holds one quiet ring. The Mac twin is GlowEdge.
     /// </summary>
     private static UIElement WithGlow(UIElement inner, string state)
     {
         if (state is not ("moving" or "still")) return inner;
-        var turn = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
-        LinearGradientBrush GlowBrush() => new()
+        bool moving = state == "moving";
+        var ringTurn = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
+        var midTurn = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
+        var haloTurn = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
+        LinearGradientBrush GlowBrush(RotateTransform turn) => new()
         {
             StartPoint = new Windows.Foundation.Point(0, 0),
             EndPoint = new Windows.Foundation.Point(1, 1),
@@ -93,15 +97,30 @@ public static partial class IslandHost
             root.HorizontalAlignment = fe.HorizontalAlignment;
             root.VerticalAlignment = fe.VerticalAlignment;
         }
-        root.Children.Add(new Border { Background = GlowBrush(), CornerRadius = new CornerRadius(14), Margin = new Thickness(-8), Opacity = 0.28 });
-        root.Children.Add(new Border { Background = GlowBrush(), CornerRadius = new CornerRadius(9), Margin = new Thickness(-3) });
+        // No blur on a Border in the islands: wider, fainter layers stand in for it.
+        var halo = new Border { Background = GlowBrush(haloTurn), CornerRadius = new CornerRadius(20), Margin = new Thickness(-14), Opacity = moving ? 0.16 : 0.12 };
+        var mid = new Border { Background = GlowBrush(midTurn), CornerRadius = new CornerRadius(13), Margin = new Thickness(-7), Opacity = moving ? 0.32 : 0 };
+        var ring = new Border { Background = GlowBrush(ringTurn), CornerRadius = new CornerRadius(9), Margin = new Thickness(-3) };
+        root.Children.Add(halo);
+        root.Children.Add(mid);
+        root.Children.Add(ring);
         root.Children.Add(inner);
-        // The ring and halo are decoration; the surface keeps its own name.
-        AutomationProperties.SetAccessibilityView(root.Children[0], Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
-        AutomationProperties.SetAccessibilityView(root.Children[1], Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
-        if (state == "moving" && GlowAnimates())
+        // The layers are decoration; the surface keeps its own name.
+        foreach (UIElement layer in new UIElement[] { halo, mid, ring })
         {
-            OnGlowFrames(root, t => turn.Angle = GlowMath.Turn(t));
+            AutomationProperties.SetAccessibilityView(layer, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        }
+        if (moving && GlowAnimates())
+        {
+            OnGlowFrames(root, t =>
+            {
+                ringTurn.Angle = GlowMath.Turn(t);
+                midTurn.Angle = -GlowMath.Turn(t, GlowMath.MidTurnSeconds);
+                haloTurn.Angle = GlowMath.Turn(t, GlowMath.HaloTurnSeconds);
+                double breath = GlowMath.Breathe(t);
+                halo.Opacity = 0.12 + 0.14 * breath;
+                halo.Margin = new Thickness(-12 - 4 * breath);
+            });
         }
         return root;
     }

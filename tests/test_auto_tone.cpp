@@ -15,10 +15,12 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <vector>
 
 #include "edit/adjust.h"
 #include "edit/auto_adjust.h"
 #include "edit/auto_tone.h"
+#include "edit/clip_auto_light.h"
 #include "edit/edit_stack.h"
 #include "edit/histogram.h"
 #include "gfx/adjust_kernel.h"
@@ -650,4 +652,24 @@ TEST_CASE("adjust pane: ✦ Auto is one token, no section spinner, and a second 
   (void)pane.set_item(42, false);
   CHECK_FALSE(pane.auto_enhance_on(3, landed));
   CHECK(pane.item() == 42u);
+}
+
+// The Video Editor's Auto light (edit/clip_auto_light.h): auto tone on one video frame.
+TEST_CASE("Auto light lifts a dark frame and leaves a full one", "[clip][look][light]") {
+  std::vector<std::uint8_t> dark;
+  for (int i = 0; i < 64 * 64; ++i) {
+    const auto v = static_cast<std::uint8_t>(20 + (i % 64) * 60 / 63);  // codes 20..80
+    dark.insert(dark.end(), {v, v, v});
+  }
+  bool changed = false;
+  const mv::edit::colour lifted = mv::edit::clip::auto_light(dark, {}, changed);
+  CHECK(changed);
+  CHECK(lifted.v[0] > 0.0f);  // brighter
+  std::vector<std::uint8_t> full;
+  for (int i = 0; i < 64 * 64; ++i) {
+    const auto v = static_cast<std::uint8_t>((i % 256));
+    full.insert(full.end(), {v, v, v});
+  }
+  (void)mv::edit::clip::auto_light(full, {}, changed);
+  CHECK_FALSE(changed);
 }

@@ -1226,7 +1226,7 @@ MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command
  * item it does not have. */
 MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* item, const char* path_utf8,
                                               const int64_t* ranges_ns, uint32_t range_count);
-/* 0.36 (docs/plans/edit-refresh.md S5): the Edit workspace's command to a
+/* 0.38 (docs/plans/edit-refresh.md S5): the Edit workspace's command to a
  * docked screen (place "edit", MV_SLOT_PLACE_EDIT): the screen opens first
  * when it is not open (on `path_utf8`, the file on screen, `width_pt` wide),
  * then the add-on gets MV_SLOT_EVENT_COMMAND with screen_id = node_id =

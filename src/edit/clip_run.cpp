@@ -195,6 +195,22 @@ result<outcome> run_with_encoders(const request& req, const control& ctl, std::v
     case op::keep_ranges: {
       if (req.ranges.empty() || req.ranges.size() > kMaxRanges) return err(status::invalid_arg);
       MV_TRY(clip_info info, probe(req.source, ctl.cancel));
+      if (req.ranges_exact && !req.look.identity()) {
+        // The Video Editor's look: rendered frame by frame (clip_look_run.cpp).
+        if (!info.has_video) return err(status::unsupported_format);
+        render_spec spec;
+        spec.ranges = req.ranges;
+        spec.lk = req.look;
+        spec.out_dir = dir;
+        spec.out_stem = stem + output_stem_suffix(req.kind);
+        spec.encoders = encoders;
+        spec.allow_software = allow_software;
+        MV_TRY(render_done r, render_look(req.source, spec, ctl));
+        done.outputs.push_back(std::move(r.path));
+        done.encoder = std::move(r.encoder);
+        done.written = {req.ranges.front().in_ns, req.ranges.back().out_ns};
+        return done;
+      }
       if (req.ranges_exact) {
         if (!info.has_video) return err(status::unsupported_format);
         reencode_spec spec;
@@ -213,9 +229,14 @@ result<outcome> run_with_encoders(const request& req, const control& ctl, std::v
         done.written = {req.ranges.front().in_ns, req.ranges.back().out_ns};
         return done;
       }
+      // Packet copy carries a turn (the display matrix) and mute; anything
+      // else in the look needs Export exact.
+      if (!req.look.copyable()) return err(status::invalid_arg);
       const time_ns end = info.duration_ns;
       copy_spec spec;
       spec.muxer = muxer_for_family(info.container);
+      if (req.look.turns % 4 != 0) spec.rotation = (info.rotation + 90 * (req.look.turns % 4)) % 360;
+      if (req.look.mute) spec.pick = stream_pick::video_only;
       time_ns last = -1;
       for (const range& r : req.ranges) {
         const time_ns out = r.out_ns < 0 ? end : std::min(r.out_ns, end);
@@ -247,7 +268,7 @@ result<outcome> run_with_encoders(const request& req, const control& ctl, std::v
       return done;
     }
     case op::frame: {
-      MV_TRY(std::vector<std::uint8_t> bytes, frame_image(req.source, req.in_ns, req.frame, req.jpeg_quality, ctl));
+      MV_TRY(std::vector<std::uint8_t> bytes, frame_image(req.source, req.in_ns, req.frame, req.jpeg_quality, ctl, req.look));
       if (cancelled(ctl.cancel)) return err(status::cancelled);
       const char* ext = req.frame == frame_format::jpeg ? ".jpg" : ".png";
       MV_TRY(std::string path, write_new_unique(dir, stem + "_frame_" + time_label(req.in_ns) + ext, bytes));
