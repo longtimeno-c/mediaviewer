@@ -40,6 +40,13 @@ struct ClipToolsView: View {
   private let flags = mv_chrome_clip_tool_flags()
   @State private var row = 0
   @FocusState private var focused: Bool
+  /// docs/design/20 "Craft rules": the chosen row is a lifted surface that
+  /// slides as ↑ ↓ move it, not a ▶ typed in front of its name.
+  @Namespace private var cursorSpace
+  @State private var shown = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var quick: Animation? { reduceMotion ? nil : .easeOut(duration: 0.15) }
 
   private func enabled(_ i: Int) -> Bool { Self.tools[i].needs & flags == Self.tools[i].needs }
 
@@ -60,22 +67,41 @@ struct ClipToolsView: View {
       Color.black.opacity(0.35)
         .ignoresSafeArea()
         .onTapGesture { mv_chrome_clip_tool_cancel() }
+        .opacity(shown ? 1 : 0)
       VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-        Text("Clip tools").font(.title3.bold())
+        Text("Clip tools").font(MVTheme.font(15).weight(.semibold)).foregroundStyle(MVTheme.title)
         Text("New files beside the clip; the original is never changed.")
-          .foregroundStyle(.secondary)
+          .font(MVTheme.font(13))
+          .foregroundStyle(MVTheme.body)
           .padding(.bottom, MVTheme.space(6))
-        ForEach(0..<Self.tools.count, id: \.self) { i in
-          Button { run(i) } label: {
-            Text((i == row ? "▶ " : "   ") + Self.tools[i].name)
-              .foregroundStyle(!enabled(i) ? .tertiary : i == row ? .primary : .secondary)
+        VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+          ForEach(0..<Self.tools.count, id: \.self) { i in
+            Button { run(i) } label: {
+              Text(Self.tools[i].name)
+                .foregroundStyle(!enabled(i) ? MVTheme.disabled : i == row ? MVTheme.title : MVTheme.body)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, MVTheme.space(8))
+                .padding(.vertical, MVTheme.space(3))
+                .background {
+                  if i == row {
+                    RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(0.11))
+                      .matchedGeometryEffect(id: "cursor", in: cursorSpace)
+                  }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!enabled(i))
+            .accessibilityAddTraits(i == row ? [.isSelected] : [])
           }
-          .buttonStyle(.plain)
-          .disabled(!enabled(i))
         }
+        .font(MVTheme.font(14))
+        .animation(quick, value: row)
+        // The rows' words on the title's edge; their lifted surface reaches past it.
+        .padding(.horizontal, -MVTheme.space(8))
         Text("↑ ↓ choose   Return run   Esc cancel   ·   jobs: ⌘J")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
           .padding(.top, MVTheme.space(6))
         HStack {
           Spacer()
@@ -87,7 +113,12 @@ struct ClipToolsView: View {
       }
       .padding(MVTheme.space(20))
       .frame(width: 440)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: MVTheme.radius(12)))
+      // An opaque sheet over the scrim (nothing translucent over something
+      // translucent): the canvas with a hairline, as Windows' sheet presenter.
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(12)).fill(MVTheme.canvas))
+      .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(12)).strokeBorder(MVTheme.hairline, lineWidth: 1))
+      .opacity(shown ? 1 : 0)
+      .offset(y: shown ? 0 : 8)
       .focusable()
       .focused($focused)
       .onKeyPress(.upArrow) { move(-1); return .handled }
@@ -95,6 +126,9 @@ struct ClipToolsView: View {
       .onAppear {
         if !enabled(row) { move(1) }
         focused = true
+        // The sheet arrives (a short fade and a few points of rise), it
+        // does not pop; Reduce Motion shows it at once.
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { shown = true }
       }
     }
   }
