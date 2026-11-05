@@ -239,18 +239,26 @@ brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`
 `io.runner: inpaint`):
 
 1. The dabs drawn as a mask of the full-resolution edited picture.
-2. Its box: the brushed bounds grown by half their longer side (at least 128 px a side), square
-   where the photo allows.
-3. The box's crop and mask scaled to the model's side (512), filled by **LaMa** (big-lama, Suvorov
-   et al., Apache-2.0; the ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx`, 208 MB,
-   CPU: `cpu: true`, so Windows runs it too), scaled back.
-4. Only the brushed pixels pasted, feathered outward (2–16 px with the box's size); a pixel more
-   than twice the feather from the brush is the photo's own, bit for bit.
+2. Its boxes (`remove_boxes`, edit-refresh S4b): the mask split into blobs (a grid of at most
+   256 cells a side, dilated 2 cells, 8-connected), each blob's bounds grown by half their longer
+   side (at least 128 px a side), square where the photo allows. Two boxes whose union is under
+   1.3× their summed area become one, so strokes close together share a box. More than 8 boxes
+   (or more than 64 blobs): one box over everything brushed.
+3. Each box in turn, top to bottom: its crop and mask scaled to the model's side (512), filled by
+   **LaMa** (big-lama, Suvorov et al., Apache-2.0; the ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`,
+   `lama_fp32.onnx`, 208 MB, CPU: `cpu: true`, so Windows runs it too), scaled back. The model's
+   mask holds the box's own blobs and any later box's (still holes); a later box sees the earlier
+   fills as photo. Cancel is checked before and after every fill.
+4. Only the box's own brushed pixels pasted, feathered outward (2–16 px with the box's size); a
+   pixel outside every box, or more than twice the feather from the brush, is the photo's own,
+   bit for bit.
 5. A new file, as every run.
 
 Measured 2026-11-03 (M-series, CPU, the hidden `[.remove-model]` case): an 832 × 832 box
 filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
-is filled at that size and scaled up, so a large fill is softer than the photo around it.
+is filled at that size and scaled up, so a large fill is softer than the photo around it. Things
+brushed far apart are each filled at the model's detail in their own box (one model run each, so
+two spots take about twice as long as one), not in one photo-sized box.
 
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 

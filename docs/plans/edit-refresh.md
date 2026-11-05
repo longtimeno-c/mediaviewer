@@ -376,6 +376,22 @@ follows `can_undo` (a Clear undoes), `tool_bar` / `chrome_tool_bar_args` 60 byte
 runs). Not run: either app, both PR 1 gates, the 0-presents check with strokes; the Windows native
 C++ is not compiled here (C# compiles). Not built: the crop "Discard N strokes?" question.
 
+**S4b built (2026-11-05):** per-blob LaMa, add-on only. `remove_boxes(mask)` (remove.{h,cpp})
+downscales the mask to at most 256 cells a side, dilates 2 cells, labels 8-connected blobs and
+gives each `remove_box`'s grown box of its exact bounds (the grow factored as `grown_box`); two
+boxes whose union is under 1.3x their summed area merge (bounds joined and grown again) until none
+do. More than 8 boxes after merging, or more than 64 blobs to merge, falls back to one
+`remove_box` over everything (the plan said "more than 8 blobs"; counting after the merge keeps
+clusters of nearby dabs per-blob). `run_remove` fills the boxes top to bottom with progress and a
+cancel check before and after each fill; a box's model mask holds its own pixels and the later
+boxes' (never shown what is being taken out), and only its own are pasted back
+(`paste_back_box`), feathered `clamp(box.w/256, 2, 16)`. `mv_import_tests "[enhance][remove]"`
+covers the verify line (two far blobs give two boxes each within 2x its blob's own grown box, near
+blobs merge, nine far blobs fall back, a run fills twice with every pixel outside both boxes the
+source's own, a cancel during the first fill never starts the second and writes nothing). Not
+run: the real LaMa on a two-blob photo (the hidden `[.remove-model]` case still brushes one
+stroke); the "Quality over speed" second pass for large boxes is not part of this slice.
+
 ### 4.1 Tool mode (shared, portable)
 
 **`src/shell/commands.h`.**

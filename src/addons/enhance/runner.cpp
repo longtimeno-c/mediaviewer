@@ -695,21 +695,30 @@ void job_runner::run_remove(job_request r, job_events ev) {
   const preview_image before = shrink(full.rgb, full.width, full.height, kPreviewEdge);
   if (ev.preview) ev.preview(before, {});
   const mask8 mask = mask_from_dabs(dabs, full.width, full.height);
-  const auto box = remove_box(mask);
-  if (!box) return fail("Nothing is brushed on this photo. Brush over what to take out, then Remove.");
+  // One box per thing brushed apart (S4b), each filled at the model's side:
+  // a later box sees the earlier ones' fills as photo.
+  const remove_plan plan = remove_boxes(mask);
+  if (plan.boxes.empty()) return fail("Nothing is brushed on this photo. Brush over what to take out, then Remove.");
   auto model = port_.load_inpaint(*part.spec, part.models_dir);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
-  if (ev.progress) ev.progress(0.2);
   const std::uint32_t side = (*model)->side();
-  const rgb8 crop = crop_rgb(full, *box);
-  auto filled = (*model)->fill(resize_rgb(crop, side, side), crop_mask(mask, *box, side, side));
-  if (!filled) return fail(why(filled.error()));
-  if (cancel_.load()) return fail(why(status::cancelled));
+  const std::size_t n = plan.boxes.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    if (cancel_.load()) return fail(why(status::cancelled));
+    if (ev.progress) ev.progress(0.2 + 0.7 * static_cast<double>(i) / static_cast<double>(n));
+    const pixel_box& box = plan.boxes[i];
+    const pixel_box whole{0, 0, box.width, box.height};
+    auto filled = (*model)->fill(resize_rgb(crop_rgb(full, box), side, side),
+                                 crop_mask(box_mask(mask, plan, i, true), whole, side, side));
+    if (!filled) return fail(why(filled.error()));
+    if (cancel_.load()) return fail(why(status::cancelled));
+    // The feather grows with the box: a few pixels on a small fix, more on a
+    // large one the model filled at a fraction of its size.
+    const std::uint32_t feather = std::clamp<std::uint32_t>(box.width / 256, 2, 16);
+    paste_back_box(full, box, resize_rgb(*filled, box.width, box.height), box_mask(mask, plan, i, false), feather);
+    if (ev.preview && i + 1 < n) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
+  }
   if (ev.progress) ev.progress(0.9);
-  // The feather grows with the box: a few pixels on a small fix, more on a
-  // large one the model filled at a fraction of its size.
-  const std::uint32_t feather = std::clamp<std::uint32_t>(box->width / 256, 2, 16);
-  paste_back(full, *box, resize_rgb(*filled, box->width, box->height), mask, feather);
   if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
   run_port::still still;
   still.width = full.width;

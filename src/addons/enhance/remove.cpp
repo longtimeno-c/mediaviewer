@@ -36,20 +36,24 @@ std::vector<T> pass(const std::vector<T>& in, std::uint32_t w, std::uint32_t h, 
 
 }  // namespace
 
-std::optional<pixel_box> remove_box(const mask8& mask) {
-  std::uint32_t x0 = mask.width, y0 = mask.height, x1 = 0, y1 = 0;
-  for (std::uint32_t y = 0; y < mask.height; ++y) {
-    for (std::uint32_t x = 0; x < mask.width; ++x) {
-      if (mask.a[std::size_t{y} * mask.width + x] > 127) {
-        x0 = std::min(x0, x);
-        y0 = std::min(y0, y);
-        x1 = std::max(x1, x);
-        y1 = std::max(y1, y);
-      }
-    }
+namespace {
+
+// Brushed bounds, inclusive.
+struct bounds {
+  std::uint32_t x0 = UINT32_MAX, y0 = UINT32_MAX, x1 = 0, y1 = 0;
+  [[nodiscard]] bool empty() const noexcept { return x0 > x1 || y0 > y1; }
+  void add(std::uint32_t x, std::uint32_t y) noexcept {
+    x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
   }
-  if (x0 > x1 || y0 > y1) return std::nullopt;
-  const std::uint32_t margin = std::max((std::max(x1 - x0, y1 - y0) + 1) / 2, kRemoveMinContext);
+  void add(const bounds& b) noexcept {
+    x0 = std::min(x0, b.x0), y0 = std::min(y0, b.y0), x1 = std::max(x1, b.x1), y1 = std::max(y1, b.y1);
+  }
+};
+
+// The bounds grown for context: half their longer side each way (at least
+// kRemoveMinContext), square where the photo allows, inside it.
+pixel_box grown_box(const bounds& r, std::uint32_t width, std::uint32_t height) {
+  const std::uint32_t margin = std::max((std::max(r.x1 - r.x0, r.y1 - r.y0) + 1) / 2, kRemoveMinContext);
   // One axis: [lo, hi) grown by `margin`, then to `side` where the photo
   // allows, shifted back inside it at an edge.
   const auto grow = [](std::uint32_t lo, std::uint32_t hi, std::uint32_t margin, std::uint32_t limit,
@@ -65,10 +69,163 @@ std::optional<pixel_box> remove_box(const mask8& mask) {
     a = std::max<std::int64_t>(a, 0);
     return std::pair<std::uint32_t, std::uint32_t>(static_cast<std::uint32_t>(a), static_cast<std::uint32_t>(b));
   };
-  const std::uint32_t side = std::max(x1 - x0, y1 - y0) + 1 + 2 * margin;
-  const auto [ax, bx] = grow(x0, x1, margin, mask.width, side);
-  const auto [ay, by] = grow(y0, y1, margin, mask.height, side);
+  const std::uint32_t side = std::max(r.x1 - r.x0, r.y1 - r.y0) + 1 + 2 * margin;
+  const auto [ax, bx] = grow(r.x0, r.x1, margin, width, side);
+  const auto [ay, by] = grow(r.y0, r.y1, margin, height, side);
   return pixel_box{ax, ay, bx - ax, by - ay};
+}
+
+std::uint64_t area(const pixel_box& b) noexcept { return std::uint64_t{b.width} * b.height; }
+
+pixel_box union_of(const pixel_box& a, const pixel_box& b) noexcept {
+  const std::uint32_t x0 = std::min(a.x, b.x), y0 = std::min(a.y, b.y);
+  const std::uint32_t x1 = std::max(a.x + a.width, b.x + b.width), y1 = std::max(a.y + a.height, b.y + b.height);
+  return {x0, y0, x1 - x0, y1 - y0};
+}
+
+}  // namespace
+
+std::optional<pixel_box> remove_box(const mask8& mask) {
+  bounds b;
+  for (std::uint32_t y = 0; y < mask.height; ++y) {
+    for (std::uint32_t x = 0; x < mask.width; ++x) {
+      if (mask.a[std::size_t{y} * mask.width + x] > 127) b.add(x, y);
+    }
+  }
+  if (b.empty()) return std::nullopt;
+  return grown_box(b, mask.width, mask.height);
+}
+
+remove_plan remove_boxes(const mask8& mask) {
+  remove_plan plan;
+  const std::uint32_t w = mask.width, h = mask.height;
+  if (w == 0 || h == 0) return plan;
+  // The grid: at most kRemoveGrid cells a side, a cell brushed when any of
+  // its pixels is.
+  const std::uint32_t cell = std::max(1u, (std::max(w, h) + kRemoveGrid - 1) / kRemoveGrid);
+  const std::uint32_t gw = (w + cell - 1) / cell, gh = (h + cell - 1) / cell;
+  std::vector<std::uint32_t> grid(std::size_t{gw} * gh, 0);
+  bool any = false;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t* row = mask.a.data() + std::size_t{y} * w;
+    std::uint32_t* g = grid.data() + std::size_t{y / cell} * gw;
+    for (std::uint32_t x = 0; x < w; ++x) {
+      if (row[x] > 127) g[x / cell] = 1, any = true;
+    }
+  }
+  if (!any) return plan;
+  // Dilated 2 cells, then 8-connected blobs.
+  const auto max_op = [](std::uint32_t a, std::uint32_t b) { return std::max(a, b); };
+  grid = pass(pass(grid, gw, gh, 2, true, max_op), gw, gh, 2, false, max_op);
+  std::vector<std::uint32_t> label(grid.size(), 0);  // blob + 1
+  std::uint32_t blobs = 0;
+  std::vector<std::uint32_t> stack;
+  for (std::size_t start = 0; start < grid.size(); ++start) {
+    if (!grid[start] || label[start]) continue;
+    label[start] = ++blobs;
+    stack.assign(1, static_cast<std::uint32_t>(start));
+    while (!stack.empty()) {
+      const std::uint32_t at = stack.back();
+      stack.pop_back();
+      const std::uint32_t cx = at % gw, cy = at / gw;
+      for (std::uint32_t ny = cy > 0 ? cy - 1 : 0; ny <= std::min(gh - 1, cy + 1); ++ny) {
+        for (std::uint32_t nx = cx > 0 ? cx - 1 : 0; nx <= std::min(gw - 1, cx + 1); ++nx) {
+          const std::size_t n = std::size_t{ny} * gw + nx;
+          if (grid[n] && !label[n]) label[n] = blobs, stack.push_back(static_cast<std::uint32_t>(n));
+        }
+      }
+    }
+  }
+  // Each blob's exact bounds, from the full-resolution mask.
+  std::vector<bounds> blob(blobs);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t* row = mask.a.data() + std::size_t{y} * w;
+    const std::uint32_t* l = label.data() + std::size_t{y / cell} * gw;
+    for (std::uint32_t x = 0; x < w; ++x) {
+      if (row[x] > 127) blob[l[x / cell] - 1].add(x, y);
+    }
+  }
+  // Groups of blobs, one box each, merged while a union is cheap.
+  struct group {
+    bounds b;
+    pixel_box box;
+    bool live = true;
+  };
+  std::vector<group> groups;
+  std::vector<std::uint32_t> group_of(blobs);  // blob -> group (followed to a live one)
+  if (blobs <= kRemoveMaxBlobs) {
+    groups.reserve(blobs);
+    for (std::uint32_t i = 0; i < blobs; ++i) {
+      groups.push_back({blob[i], grown_box(blob[i], w, h)});
+      group_of[i] = i;
+    }
+    for (bool merged = true; merged;) {
+      merged = false;
+      for (std::size_t i = 0; i < groups.size() && !merged; ++i) {
+        if (!groups[i].live) continue;
+        for (std::size_t j = i + 1; j < groups.size(); ++j) {
+          if (!groups[j].live) continue;
+          const double together = static_cast<double>(area(union_of(groups[i].box, groups[j].box)));
+          if (together >= 1.3 * static_cast<double>(area(groups[i].box) + area(groups[j].box))) continue;
+          groups[i].b.add(groups[j].b);
+          groups[i].box = grown_box(groups[i].b, w, h);
+          groups[j].live = false;
+          for (std::uint32_t& g : group_of) {
+            if (g == j) g = static_cast<std::uint32_t>(i);
+          }
+          merged = true;
+          break;
+        }
+      }
+    }
+  }
+  std::vector<std::uint32_t> order;  // live groups, in fill order
+  for (std::uint32_t i = 0; i < groups.size(); ++i) {
+    if (groups[i].live) order.push_back(i);
+  }
+  std::vector<std::uint8_t> box_of(blobs, 1);  // blob -> box index + 1
+  if (order.empty() || order.size() > kRemoveMaxBoxes) {
+    // Too many to fill one by one: one box over everything, as before.
+    bounds all;
+    for (const bounds& b : blob) all.add(b);
+    plan.boxes.push_back(grown_box(all, w, h));
+  } else {
+    std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+      const pixel_box &p = groups[a].box, &q = groups[b].box;
+      return p.y != q.y ? p.y < q.y : p.x < q.x;
+    });
+    std::vector<std::uint8_t> index(groups.size(), 0);
+    for (std::size_t k = 0; k < order.size(); ++k) {
+      plan.boxes.push_back(groups[order[k]].box);
+      index[order[k]] = static_cast<std::uint8_t>(k + 1);
+    }
+    for (std::uint32_t i = 0; i < blobs; ++i) box_of[i] = index[group_of[i]];
+  }
+  plan.cell = cell;
+  plan.grid_w = gw;
+  plan.grid_h = gh;
+  plan.owner.resize(label.size());
+  for (std::size_t i = 0; i < label.size(); ++i) plan.owner[i] = label[i] ? box_of[label[i] - 1] : 0;
+  return plan;
+}
+
+mask8 box_mask(const mask8& mask, const remove_plan& plan, std::size_t i, bool open) {
+  const pixel_box& b = plan.boxes[i];
+  const auto me = static_cast<std::uint8_t>(i + 1);
+  mask8 out;
+  out.width = b.width;
+  out.height = b.height;
+  out.a.assign(std::size_t{b.width} * b.height, 0);
+  for (std::uint32_t y = 0; y < b.height; ++y) {
+    const std::uint8_t* row = mask.a.data() + std::size_t{b.y + y} * mask.width + b.x;
+    std::uint8_t* o = out.a.data() + std::size_t{y} * b.width;
+    for (std::uint32_t x = 0; x < b.width; ++x) {
+      if (row[x] <= 127) continue;
+      const std::uint8_t who = plan.owner_at(b.x + x, b.y + y);
+      if (open ? (who == 0 || who >= me) : who == me) o[x] = 255;
+    }
+  }
+  return out;
 }
 
 rgb8 crop_rgb(const rgb8& src, const pixel_box& box) {
@@ -98,14 +255,12 @@ mask8 crop_mask(const mask8& src, const pixel_box& box, std::uint32_t width, std
   return out;
 }
 
-void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& mask, std::uint32_t feather) {
+namespace {
+
+// `m` (the box's size) 1 where brushed.
+void paste(rgb8& photo, const pixel_box& box, const rgb8& filled, std::vector<std::uint32_t> m,
+           std::uint32_t feather) {
   const std::uint32_t w = box.width, h = box.height;
-  std::vector<std::uint32_t> m(std::size_t{w} * h);
-  for (std::uint32_t y = 0; y < h; ++y) {
-    for (std::uint32_t x = 0; x < w; ++x) {
-      m[std::size_t{y} * w + x] = mask.a[std::size_t{box.y + y} * mask.width + box.x + x] > 127 ? 1 : 0;
-    }
-  }
   // Grown by `feather`, then averaged over the same radius: 1 on every
   // brushed pixel, falling to 0 at 2 * feather outside.
   const auto max_op = [](std::uint32_t a, std::uint32_t b) { return std::max(a, b); };
@@ -126,6 +281,25 @@ void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mas
       }
     }
   }
+}
+
+}  // namespace
+
+void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& mask, std::uint32_t feather) {
+  const std::uint32_t w = box.width, h = box.height;
+  std::vector<std::uint32_t> m(std::size_t{w} * h);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      m[std::size_t{y} * w + x] = mask.a[std::size_t{box.y + y} * mask.width + box.x + x] > 127 ? 1 : 0;
+    }
+  }
+  paste(photo, box, filled, std::move(m), feather);
+}
+
+void paste_back_box(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& own, std::uint32_t feather) {
+  std::vector<std::uint32_t> m(own.a.size());
+  for (std::size_t i = 0; i < m.size(); ++i) m[i] = own.a[i] > 127 ? 1 : 0;
+  paste(photo, box, filled, std::move(m), feather);
 }
 
 mask8 mask_from_dabs(const std::vector<float>& dabs, std::uint32_t width, std::uint32_t height) {

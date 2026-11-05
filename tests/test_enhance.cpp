@@ -1835,6 +1835,201 @@ TEST_CASE("remove: the box around a stroke, the crop, and only brushed pixels pa
   CHECK(photo.rgb[just_out] != original.rgb[just_out]);
 }
 
+namespace {
+
+void brush_rect(mask8& m, std::uint32_t x0, std::uint32_t y0, std::uint32_t w, std::uint32_t h) {
+  for (std::uint32_t y = y0; y < y0 + h; ++y) {
+    for (std::uint32_t x = x0; x < x0 + w; ++x) m.a[std::size_t{y} * m.width + x] = 255;
+  }
+}
+
+mask8 blank_mask(std::uint32_t w, std::uint32_t h) {
+  mask8 m;
+  m.width = w;
+  m.height = h;
+  m.a.assign(std::size_t{w} * h, 0);
+  return m;
+}
+
+std::uint64_t box_area(const pixel_box& b) { return std::uint64_t{b.width} * b.height; }
+
+bool inside(const pixel_box& b, std::uint32_t x, std::uint32_t y) {
+  return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height;
+}
+
+// The grey stand-in, counting its fills in `fills`; `on_fill` runs after
+// each, and `freed` is set when the runner lets it go.
+struct counting_fill final : inpaint_filler {
+  grey_fill grey;
+  std::atomic<int>& fills;
+  std::atomic<bool>& freed;
+  std::function<void()> on_fill;
+  counting_fill(std::atomic<int>& n, std::atomic<bool>& f, std::function<void()> hook)
+      : fills(n), freed(f), on_fill(std::move(hook)) {}
+  ~counting_fill() override { freed = true; }
+  std::uint32_t side() const noexcept override { return grey.side(); }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    auto out = grey.fill(image, mask);
+    ++fills;
+    if (on_fill) on_fill();
+    return out;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("remove: things brushed apart are filled in their own boxes", "[enhance][remove]") {
+  CHECK(remove_boxes(blank_mask(800, 600)).boxes.empty());
+
+  // Two far-apart strokes on a 2400 x 800 photo: two boxes, each its blob's
+  // own grown box (remove_box of that blob alone), disjoint.
+  mask8 two = blank_mask(2400, 800);
+  brush_rect(two, 300, 400, 40, 20);
+  brush_rect(two, 2000, 300, 40, 40);
+  const remove_plan plan = remove_boxes(two);
+  REQUIRE(plan.boxes.size() == 2);
+  mask8 a = blank_mask(2400, 800), b = blank_mask(2400, 800);
+  brush_rect(a, 300, 400, 40, 20);
+  brush_rect(b, 2000, 300, 40, 40);
+  const auto alone_a = remove_box(a), alone_b = remove_box(b);
+  REQUIRE(alone_a);
+  REQUIRE(alone_b);
+  // Fill order is top to bottom: b's box starts higher.
+  const pixel_box& pb = plan.boxes[0];
+  const pixel_box& pa = plan.boxes[1];
+  CHECK(box_area(pa) <= 2 * box_area(*alone_a));
+  CHECK(box_area(pb) <= 2 * box_area(*alone_b));
+  CHECK(inside(pa, 300, 400));
+  CHECK(inside(pa, 339, 419));
+  CHECK(inside(pb, 2000, 300));
+  CHECK(inside(pb, 2039, 339));
+  CHECK((pa.x + pa.width <= pb.x || pb.x + pb.width <= pa.x));
+  // Each brushed pixel belongs to the box around it; box masks split them.
+  CHECK(plan.owner_at(310, 405) == 2);
+  CHECK(plan.owner_at(2010, 310) == 1);
+  const mask8 own_b = box_mask(two, plan, 0, false), open_b = box_mask(two, plan, 0, true);
+  const mask8 own_a = box_mask(two, plan, 1, false);
+  CHECK(std::count(own_b.a.begin(), own_b.a.end(), 255) == 40 * 40);
+  CHECK(std::count(open_b.a.begin(), open_b.a.end(), 255) == 40 * 40);
+  CHECK(std::count(own_a.a.begin(), own_a.a.end(), 255) == 40 * 20);
+
+  // Near neighbours (separate blobs, overlapping boxes): one box.
+  mask8 near = blank_mask(2400, 800);
+  brush_rect(near, 600, 400, 40, 20);
+  brush_rect(near, 720, 400, 40, 20);
+  const remove_plan joined = remove_boxes(near);
+  REQUIRE(joined.boxes.size() == 1);
+  CHECK(inside(joined.boxes[0], 600, 400));
+  CHECK(inside(joined.boxes[0], 759, 419));
+  const mask8 own = box_mask(near, joined, 0, false);
+  CHECK(std::count(own.a.begin(), own.a.end(), 255) == 2 * 40 * 20);
+
+  // More than kRemoveMaxBoxes far apart: one box over everything, as before.
+  mask8 many = blank_mask(6000, 4000);
+  for (std::uint32_t gy = 0; gy < 3; ++gy) {
+    for (std::uint32_t gx = 0; gx < 3; ++gx) brush_rect(many, 500 + gx * 2400, 500 + gy * 1400, 20, 20);
+  }
+  const remove_plan fallback = remove_boxes(many);
+  REQUIRE(fallback.boxes.size() == 1);
+  const auto whole = remove_box(many);
+  REQUIRE(whole);
+  CHECK(fallback.boxes[0].x == whole->x);
+  CHECK(fallback.boxes[0].y == whole->y);
+  CHECK(fallback.boxes[0].width == whole->width);
+  CHECK(fallback.boxes[0].height == whole->height);
+  CHECK(fallback.owner_at(510, 510) == 1);
+
+  // The run: two dabs at either end of a 1600 x 600 photo, each filled in its
+  // own box (two fills); every pixel outside both boxes is the photo's own.
+  const std::uint32_t w = 1600, h = 600;
+  const std::vector<std::uint8_t> original = noise_rgb(w, h);
+  const std::vector<float> dabs = {0.1f, 0.5f, 0.01f, 0.9f, 0.5f, 0.01f};  // radius 16 px
+  const remove_plan run_plan = remove_boxes(mask_from_dabs(dabs, w, h));
+  REQUIRE(run_plan.boxes.size() == 2);
+  std::atomic<int> fills{0};
+  std::atomic<bool> freed{false};
+  std::function<void()> after_fill;  // read when the model loads
+  std::vector<std::uint8_t> written;
+  std::atomic<int> writes{0};
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new counting_fill(fills, freed, after_fill));
+  };
+  port.still_mask = [&](const std::string&) { return dabs; };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = original;
+    return s;
+  };
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    ++writes;
+    written = pic.rgb;
+    return std::string("/tmp/photo-removed.jpg");
+  };
+  model_spec spec;
+  spec.kind = model_kind::remove;
+  job_request req;
+  req.path = "photo.jpg";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = &spec;
+  req.parts.push_back(part);
+  {
+    job_runner jr(port);
+    CHECK(jr.check(req).empty());
+    std::atomic<bool> done{false};
+    bool ok = false;
+    job_events ev;
+    ev.done = [&](bool k, const std::string&, const std::string&) {
+      ok = k;
+      done = true;
+    };
+    jr.start(req, ev);
+    REQUIRE(eventually([&] { return done.load(); }));
+    REQUIRE(ok);
+  }
+  CHECK(fills.load() == 2);
+  CHECK(writes.load() == 1);
+  REQUIRE(written.size() == original.size());
+  CHECK(written[(std::size_t{300} * w + 160) * 3] == 128);   // the first dab's centre
+  CHECK(written[(std::size_t{300} * w + 1440) * 3] == 128);  // the second's
+  std::size_t changed_outside = 0;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      if (inside(run_plan.boxes[0], x, y) || inside(run_plan.boxes[1], x, y)) continue;
+      const std::size_t i = (std::size_t{y} * w + x) * 3;
+      changed_outside += written[i] != original[i] || written[i + 1] != original[i + 1] || written[i + 2] != original[i + 2];
+    }
+  }
+  CHECK(changed_outside == 0);
+
+  // Cancel during the first box: the second is never filled, nothing written.
+  fills = 0;
+  writes = 0;
+  freed = false;
+  {
+    job_runner jr(port);
+    after_fill = [&] { jr.cancel(); };  // from the job's thread, as a Cancel landing mid-fill
+    std::atomic<bool> done{false};
+    std::atomic<bool> ok{true};
+    job_events ev;
+    ev.done = [&](bool k, const std::string&, const std::string&) {
+      ok = k;
+      done = true;
+    };
+    jr.start(req, ev);
+    REQUIRE(eventually([&] { return done.load(); }));
+    CHECK_FALSE(ok.load());
+    REQUIRE(eventually([&] { return freed.load(); }));  // the run has let the model go
+  }
+  CHECK(fills.load() == 1);
+  CHECK(writes.load() == 0);
+}
+
 // The real LaMa (MV_REMOVE_MODEL: lama_fp32.onnx) on a photo
 // (MV_RESTYLE_RGB / _W / _H, raw RGB): a hole brushed over its middle is
 // filled with something like its surroundings, and everything away from the

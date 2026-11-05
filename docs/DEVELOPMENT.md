@@ -2305,8 +2305,9 @@ MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-genera
 ```
 
 **Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
-and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, and the run with a
-stand-in model). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
+and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob
+apart with merging and the 8-box fallback, and the run with a stand-in model, including a cancel
+between boxes). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
 
 **Restyle** (InstructPix2Pix, 2026-11-03) is not pinned yet. Export its files with
 `tools/package/restyle-export.py --out <dir>` (requirements-export.txt, about 2 GB download and

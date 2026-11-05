@@ -4,11 +4,12 @@
 // the person brushed over, filled in from its surroundings by an inpainting
 // model (LaMa, a fixed square input) on a crop of the full-resolution photo.
 //
-//   1. remove_box: the mask's bounds, grown for context and made square where
-//      the photo allows.
-//   2. The crop and its mask scaled to the model's side, filled, scaled back.
-//   3. paste_back: only the brushed pixels (feathered a few pixels outward)
-//      replaced; everything outside the box is the photo's own.
+//   1. remove_boxes: one box per blob brushed apart (remove_box's bounds,
+//      grown for context and made square where the photo allows).
+//   2. Each box's crop and its mask scaled to the model's side, filled,
+//      scaled back.
+//   3. paste_back_box: only that box's brushed pixels (feathered a few pixels
+//      outward) replaced; everything outside the boxes is the photo's own.
 //
 // The model is not here: these are the steps around it, so they are tested
 // without it. The runner's thread only (rule 1).
@@ -41,6 +42,37 @@ struct pixel_box {
 inline constexpr std::uint32_t kRemoveMinContext = 128;
 [[nodiscard]] std::optional<pixel_box> remove_box(const mask8& mask);
 
+// Several things brushed apart, each filled in its own box (edit-refresh S4b):
+// two dust spots at opposite corners are two small boxes at the model's
+// detail, not one photo-sized box filled at 512 px and scaled up.
+//
+// The mask is downscaled to a grid of at most kRemoveGrid cells a side (a
+// cell brushed when any of its pixels is), dilated 2 cells, and split into
+// 8-connected blobs. Each blob gets remove_box's grown box of its own exact
+// bounds. Two boxes whose union is under 1.3x their summed area are one
+// (their bounds joined and grown again), until none merge. More than
+// kRemoveMaxBoxes boxes left (or more than kRemoveMaxBlobs blobs to merge):
+// one remove_box over everything, as before.
+inline constexpr std::uint32_t kRemoveGrid = 256;
+inline constexpr std::size_t kRemoveMaxBoxes = 8;
+inline constexpr std::size_t kRemoveMaxBlobs = 64;
+struct remove_plan {
+  std::vector<pixel_box> boxes;  // in the order they are filled (top to bottom, then left to right)
+  // The blob grid: each cell a `cell` x `cell` square of the photo; `owner`
+  // the box (index + 1) filling its brushed pixels, 0 where nothing is.
+  std::uint32_t cell = 1, grid_w = 0, grid_h = 0;
+  std::vector<std::uint8_t> owner;
+  [[nodiscard]] std::uint8_t owner_at(std::uint32_t x, std::uint32_t y) const noexcept {
+    return owner[std::size_t{y / cell} * grid_w + x / cell];
+  }
+};
+// No boxes when nothing is brushed.
+[[nodiscard]] remove_plan remove_boxes(const mask8& mask);
+// Box `i`'s mask, the box's size: `open` false, the brushed pixels it fills
+// (pasted back); true, those and the ones later boxes fill (still holes when
+// it runs, so the model is never shown what is being taken out).
+[[nodiscard]] mask8 box_mask(const mask8& mask, const remove_plan& plan, std::size_t i, bool open);
+
 [[nodiscard]] rgb8 crop_rgb(const rgb8& src, const pixel_box& box);
 // The mask's crop scaled to width x height, nearest, then 0 or 255.
 [[nodiscard]] mask8 crop_mask(const mask8& src, const pixel_box& box, std::uint32_t width, std::uint32_t height);
@@ -49,6 +81,8 @@ inline constexpr std::uint32_t kRemoveMinContext = 128;
 // over `feather` pixels outward. Pixels farther than 2 * feather from a
 // brushed one are left exactly as they were.
 void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& mask, std::uint32_t feather);
+// The same with `own`, a mask of the box's size (box_mask's).
+void paste_back_box(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& own, std::uint32_t feather);
 
 // ---- Extend the picture (owner 2026-11-04: "recropping that extends") ----
 // New margins around the photo, in pixels, filled from it by the inpainting
