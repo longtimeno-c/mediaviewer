@@ -222,34 +222,30 @@ said nothing. Now (`shell/compare_source.h`, one model on both hosts):
 ### The Enhance tab
 
 Tab 5, any still. Five cards: **Remove objects · Restyle · Faces · Enhance image · Extend edges**,
-each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
-*Needs Enhance*, *Needs People*, *Working…*) from the edit view's wand bits
-(`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
-the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Set
-the new frame* (arms Extend, "Extend" below; with Enhance its docked panel opens under the card), *Choose faces* (S8: arms the Faces tool; its chip reads *Choosing* and the
-button *Done* while it is armed, and the Faces panel leads the tab). The Faces card also has
-**Restore faces…** on a row of its own (docs/plans/edit-refresh.md S10; both hosts): Enhance's
-docked panel on its `faces` tool, drawn under the Faces card (the card keeps Choose faces), or without it Enhance's `faces` command, its sheet
-started on Restore faces ([29](29-enhance.md) "Restore faces"); enabled by `kWandRestoreFaces`
-(1024: Enhance has that command); the ✦ popover / `Flyout` lists it as a row after Faces while
-Enhance is installed. *Enhance image* offers its five models: Sharpen & restore, Natural,
-Remove noise, Remove blur and Remove motion blur, each downloaded when first chosen (the docked
-panel's and the sheet's *Improve* choice, [29](29-enhance.md) "Enhance image"). Without the Enhance
+each an icon, a one-line purpose and a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
+*Needs Enhance*, *Needs People*, *Working…*, *Update Enhance*). The host's own buttons are the
+brush's (*Start brushing* / *Remove*, Undo stroke, Clear), the frame's (*Set the new frame*, arming
+Extend, "Extend" below) and the Faces tool's (*Choose faces*, S8: its chip reads *Choosing* and the
+button *Done* while armed, and the Faces panel leads the tab); Restyle, Enhance image and Restore
+faces (S10, under Choose faces on the Faces card) run from the add-on's stack inside their card
+(below). *Enhance image* offers four models: Sharpen & restore, Natural, Remove noise and Remove
+blur, each downloaded when first run ([29](29-enhance.md) "Enhance image"). Without the Enhance
 add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance). Cards are one
 column, two from 560.
 
-**Running inside the pane** (S5, owner call B). Remove, Restyle, Enhance image, Extend and Restore
-faces (S10) ask Enhance for its docked screen (place `edit`, [29](29-enhance.md) "Docked in Edit"),
-drawn under the chosen card with the add-on screens' renderer: the tool's knobs, the preview, the glowing progress
-with the time left, Cancel, and the **result row** — **Show** (Edit closes, the new file or new
-Photos-library photo is selected), **Keep editing** (the same with Edit reopened on this tab) and
-**Move to Trash / Recycle Bin** (Enhance's, through `recycle_file`; never a hard delete, never the
-original). The chosen card wears the accent outline and its own button gives way to the panel's
-(Remove keeps Start brushing / Remove / Undo stroke / Clear). A crop draft is applied first, as
-Save copy does. The panel closes with Edit, on another photo, or with its ×. Without a docked
-screen (an older Enhance) each card opens Enhance's sheet instead. Hosts: Mac `enhanceTool:run:` /
-`enhanceShowResult:keep:` (`mv_chrome_edit_enhance_tool` / `_result`); Windows `enhance_tool` /
-`enhance_show_result` (`chrome_edit_action` 9–14, and 15 for Restore faces).
+**One click** (owner 2026-11-05; [29](29-enhance.md) "One click"). No sheet and no panel: while
+the tab shows, Enhance's cards screen (place `edit`) is open on the photo on screen, and each card
+draws its tool's stack from it: Enhance image's Quality and Size, Restyle's words and Quality,
+Restore faces' Look and Strength (under Choose faces on the Faces card), the time the run will
+take, and one button (*Enhance*, *Restyle*, *Restore faces*, or *Download (161 MB) and enhance*).
+Remove (brush, then Remove ↵ in the tool bar) and Extend (the frame, then Fill ↵) run from the bar.
+A run glows over the photo, the tool bar shows its line with Cancel, and the new photo opens with
+Edit kept on this tab and "Saved as … · Move to Trash" in the bar. The card running wears the
+accent outline. A card is offered whenever the add-on's cards have it (never a palette command);
+an Enhance from before one-click says *Update Enhance*. The strip's Enhance…, the ✦ popover /
+`Flyout` (Enhance image and Restore faces run at once; Restyle shows the tab), Enhance's palette
+rows and its context entry on the photo open this tab. Hosts: Mac `EnhanceRun.swift`,
+`EnhanceHubView.swift`; Windows `IslandHost.EnhanceDock.cs`, `IslandHost.EnhanceHub.cs`.
 
 The tab's header carries Enhance's **performance level** as a chip (*Default level*; docs/plans/
 edit-refresh.md S9), a click away from Settings → Add-ons → Enhance, whose first card is
@@ -346,11 +342,10 @@ animation or with the workspace closed it goes down.
   face's thumbnail (a click toggles it), its name from People (or *Unnamed person* / *Not in
   People yet*), "from 37 photos of Anna" (People's other stills of them), an *Eyes closed* tag,
   and its own fixes, **Open eyes** (only where the eyes look shut), **Improve face** and, while
-  Enhance has its `faces` command, **Restore face** (S10's model: Enhance's docked panel opens
-  under the Faces card and runs on that face's box, or on the chosen faces' boxes, sent in the
-  `enhance/tool` command as `"faces": [x, y, w, h, …]`; Enhance matches them to its own read of the
-  faces by the same intersection-over-union rule and restores only those; an Enhance without the
-  docked panel restores every face in its sheet, and the notice says so); then
+  Enhance has its `faces` command, **Restore face** (S10's model, one click: it runs on that face's box, or on the chosen faces'
+  boxes, sent in the `enhance/tool` command as `"faces": [x, y, w, h, …]`, with the glow and the
+  tool bar's line as every one-click run; Enhance matches them to its own read of the faces by the
+  same intersection-over-union rule and restores only those); then
   **Do all** (each chosen face's best fix in one file: a clearly better face of the same person,
   else open eyes where they are shut), All / None. Without Local search it offers **Get Local
   search…**; with People off, **Turn on People…** (Settings → Add-ons → Local search, where People
@@ -402,10 +397,9 @@ edit** ([07](07-photo-editing.md)).
   crop on the stack (`edit_session::crop_inside`, composed with the committed crop, one undo
   step); the overhang becomes margins of that cropped picture, handed to Enhance through the host
   table's `still_extend` (`addon_media::set_still_extend`; Windows `mv_edit_still_extend`), and
-  Enhance's docked panel under the Extend card runs Extend on it (`enhance/tool
-  {"photo":"extend","run":true}`; the panel opened when Extend was armed), or, with an Enhance that
-  has no docked screen, its sheet opens on Extend ([29](29-enhance.md) "Extend"). The frame wins
-  over the panel's preset. A frame only inside the photo is
+  Enhance runs Extend on it at once (`enhance/tool {"photo":"extend","run":true}`; one click, the
+  glow, then the new photo opens: [29](29-enhance.md) "One click", "Extend"). The frame wins over
+  the add-on's preset. A frame only inside the photo is
   just a crop and needs no add-on; past the edges without Enhance, Fill says it needs the add-on.
   **Cancel** (`Esc`, the bar) drops the frame. `Backspace` / `Delete` set it back to Original.
 - **Keys:** a frame not filled is pending (owner call G): walking away is refused with "Fill or

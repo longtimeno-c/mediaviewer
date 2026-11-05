@@ -1760,6 +1760,14 @@ TEST_CASE("one click: Enhance image downloads, then runs, on one click", "[enhan
   // Dismiss takes the notice down.
   f.eng->event(kToolScreen, "run.dismiss", MV_SLOT_EVENT_CLICK, "");
   CHECK(*parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "idle");
+  // The ✦ popover's row: the host's command runs it with the card's choices,
+  // a new run with a new id.
+  const std::string first = parsed(f.host.tree(kToolScreen)).text("run.id");
+  written_w = 0;
+  f.eng->tool_command(R"({"photo": "detail", "run": true})");
+  REQUIRE(eventually([&] { return *parsed(f.host.tree(kToolScreen)).node("run")->str("label") == "done"; }));
+  CHECK(written_w == 80u);
+  CHECK(parsed(f.host.tree(kToolScreen)).text("run.id") != first);
 }
 
 // One-click: a download that cannot start ends the wait with a reason;

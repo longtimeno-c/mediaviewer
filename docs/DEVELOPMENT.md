@@ -724,8 +724,7 @@ are pending; rotate and flip stay refused while strokes are kept with the tool d
 `mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
 People on. **Extend** (S6; the Enhance tab's card, Edit ▸ Extend Edges): drag the frame's
 edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's presets, `Enter`
-fills (the part over the photo is a crop; Enhance's docked panel under the Extend card fills the
-rest, its sheet with an Enhance that has none), `Esc`
+fills (the part over the photo is a crop; Enhance fills the rest at once, one click), `Esc`
 cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`. **Compare** (the Edit header's
 and rail's; [docs/design/20](design/20-edit-workspace.md) "Compare"): a before/after split with a
 draggable divider, the before being the photo with no edit or, on an Enhance result, its source
@@ -2323,11 +2322,15 @@ hidden cases run it for real:
 MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
 ```
 
-**Docked in Edit** (docs/plans/edit-refresh.md S5): Remove, Restyle, Enhance image and Extend run
-inside the Edit workspace's Enhance tab (Enhance's screen in place `"edit"`, under the chosen
-card), with the result row Show / Keep editing / Move to Trash (Recycle Bin on Windows). Tests:
-`build/bin/mv_import_tests "[enhance][tool]"` (the panel, its commands, the row and Discard over
-fakes), `"[addon][slots][screens]"` (a docked screen opens only by the workspace's command) and
+**One click** (owner 2026-11-05, [docs/design/29](design/29-enhance.md) "One click"): no sheet and
+no panel for a photo. The Edit pane's Enhance tab draws Enhance's cards (its screen in place
+`"edit"`, root `cards`): each tool's choices, an estimate and one button (downloading the model
+first when needed); a run glows over the photo (both labs, `tool_overlay.h` `draw_work_glow`), the
+tool bar under it carries "Enhancing… 40 % · 1 min left · Cancel", and the new photo opens with
+"Saved as … · Move to Trash". Tests: `build/bin/mv_import_tests "[enhance][tool]"` (the cards, the
+run node, download-then-run, the estimate's words, Move to Bin over fakes), `"[enhance][tool][eta]"`
+(the estimate), `build/bin/mv_tests "[enhance-run]"` (the host's glow, band and open-once rule),
+`"[addon][slots][screens]"` (a docked screen opens only by the workspace's command) and
 `"a screen's place may be*"` (`test_addon_manifest`: `"edit"` accepted, unknown places refused).
 
 **Enhance image** (S7, docs/design/29 "Enhance image"): `build/bin/mv_import_tests "[enhance][still]"`

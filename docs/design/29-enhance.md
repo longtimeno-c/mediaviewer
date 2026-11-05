@@ -20,13 +20,15 @@ screens from its view trees.
 - **Its page in Settings → Add-ons** (place `settings`): one card per kind (photos, video,
   audio) with that kind's model, its credit and size, and Download / Stop / Resume / Remove.
 - **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu
-  (no default key, [16](16-commands.md)), for the file on screen.
+  (no default key, [16](16-commands.md)), for an audio file or a clip on screen. A photo never
+  gets it (one-click, below): the hosts send those to the Edit pane's Enhance tab.
 - **`Enhance…` in the Video Editor's bar** (`editor_items`, contribution API 11): the same sheet,
   over the editor, for the edit ("In the Video Editor" below). It has no button on the viewer's
   command bar.
-- **The tool panel docked in Edit** (place `edit`, contribution API 12; docs/plans/edit-refresh.md
-  S5, owner call B): Remove, Restyle, Enhance image and Extend run inside the Edit workspace's
-  Enhance tab, under the card chosen ("Docked in Edit" below). The sheet stays, as the fallback.
+- **The Enhance tab's cards** (place `edit`, contribution API 12; owner 2026-11-05, "One click"
+  below): each photo tool's compact choices, the time it will take and one button, drawn inside the
+  Edit pane's cards; one click runs it with a glow over the photo and opens the new photo. No sheet
+  and no panel for a photo.
 
 It is not part of Local search and not in the `ai` family: search reads pixels and writes an
 index, Enhance writes a new file. Settings → Add-ons lists it on Windows and on Apple silicon
@@ -70,8 +72,8 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | restyle | InstructPix2Pix (Brooks et al., `timbrooks/instruct-pix2pix` @ `31519b5c`), exported by `tools/package/restyle-export.py`: fp32 text encoder and VAE, fp16 UNet | about 2.5 GB | CreativeML OpenRAIL-M (owner, 2026-11-03); its use restrictions are shown with the credit |
 | face | RestoreFormer++ (Wang et al., `wzhouxiff/RestoreFormerPlusPlus`), the ONNX export `facefusion/models-3.0.0` @ `728b9659`, `restoreformer_plus_plus.onnx`; and GFPGAN v1.4 (Wang et al.), `neurobytemind/GFPGANv1.4.onnx` @ `e3fd467e`, `GFPGANv1.4.onnx` | 294 + 340 MB (both are the kind's files) | Apache-2.0 (owner call C, 2026-11-04) |
 
-Restyle is **not pinned yet**: its files must be hosted at a fixed revision before
-`remote.json` lists them, and until then no kind offers it.
+Restyle's files are pinned in `remote.json` (ForserX's export); its card offers them as any
+tool's: "Download (2.5 GB) and restyle".
 
 ## The sheet
 
@@ -329,7 +331,71 @@ lifted frame.
 - Lifting dark footage lifts its noise, and an 8-bit frame can band in lifted shadows; the help
   text says the first. HDR clips are still refused.
 
-## Docked in Edit (2026-11-05)
+## One click (owner 2026-11-05)
+
+"Why does 'enhance' open this window? It should just show quality / ETA and when clicked use an
+Apple Intelligence pattern over the image while it works, then open the new image." The sheet and
+S5's docked panel are gone from the photo flow ([12](12-decision-log.md), 2026-11-05).
+
+**The cards.** The `tool` screen (place `edit`) is opened by the host while the Edit pane's Enhance
+tab shows, on the photo on screen, and pointed at each photo after it (`enhance/tool
+{"path": …}`; a run on the last photo stops, as leaving it always did). Its tree's root is `cards`
+(`screens.h` `cards_tree`): one stack `card.<word>` per tool this Enhance has a pinned model for
+(never gated on a palette command), which the host draws inside its own card:
+
+| Card | Choices | Estimate | Button |
+|---|---|---|---|
+| Enhance image (`detail`) | Quality (the four models), Size (×1/×2/×4 for the upscalers) | "About 2 min · 6048 × 8064" | *Enhance* |
+| Restyle | the words (Return runs), Quality | "About 40 s", ", more the first time" above Standard | *Restyle* |
+| Restore faces (under Faces) | Look (RestoreFormer++ / Natural), Strength | "About 2 s a face" | *Restore faces* |
+| Remove, Extend | none (the tool bar's Remove ↵ / Fill ↵ runs them) | the run's own | only *Download (208 MB)* |
+
+A model not here yet makes the button *Download (161 MB) and enhance*: one click fetches it, the
+tool bar says "Downloading Sharpen & restore… 30 %", and the run starts on its own (`engine::go`;
+no room, a bad checksum or a stop ends it with the reason). Stop the download is on the card while
+it goes.
+
+**The estimate** (`eta.h`, `[enhance][tool][eta]`): the model's tiles counted as `restore_picture`
+counts them on the picture it sees (the photo shrunk to its detail by `detail_shrink`, so time
+scales with W·H/d²; `plan_shrink` for the Size), times doc 29's measured seconds a tile at 8
+threads (HAT 5.4 s / 192 px, RealWebPhoto 10 s / 256, SCUNet 4 s and NAFNet 1.25 s / 512: loaded
+runs, so upper bounds), times 8 / the level's threads (held to 0.5…4), plus about 1.5 s per 12 MP
+read and written. The photo is read as a run reads it (the edited picture) on a thread of the
+engine's own, never the host's worker, and only while no run goes; the card says *Estimating…*
+until then. Restyle: its level's steps × 0.8 / 2.15 / 5.4 s a step (Standard, High, Best; Best
+extrapolated). Restore faces: 1.6 s (RestoreFormer++) or 1 s (GFPGAN) a face, scaled the same.
+
+**The run.** One click (the card's button, Return in Restyle's words, the ✦ popover's Enhance
+image / Restore faces, the tool bar's Remove ↵ / Fill ↵) runs as before. The tree's hidden `run`
+node (`idle | running | downloading | done | failed | cancelled`, `run.id`, `run.progress`,
+`run.line`, `run.result`) is what the host follows (`shell/enhance_run.h`, `[enhance-run]`):
+
+- **The glow over the photo** while it works (not while only downloading): soft blue, purple,
+  pink and orange flowing round the photo's edges with a sheen sweeping across, in the present
+  path on both labs (`tool_overlay.h` `draw_work_glow`, Metal and D3D11 through the same ImGui
+  body). The labs present each frame only while it moves, then once to clear; it fades out in
+  300 ms the moment the run ends; Reduce Motion draws it still and presents nothing for it.
+- **The tool bar under the photo** (the canvas tool bar's slot and band, shown for the run even
+  with no tool armed): "Enhancing… 40 % · 1 min left · Cancel" (Restoring faces…, Removing…,
+  Extending…, Restyling…), then "Saved as IMG_0007-enhance.jpg · Move to Trash" (Recycle Bin on
+  Windows; the host table's `recycle_file`, never a hard delete, never the photo it was made from)
+  or the one-line reason · Dismiss.
+- **The result opens**: once per run, and only a run the host saw working, it navigates to the new
+  file (a library photo by the key the add returned), Edit kept on the Enhance tab; the cards follow
+  it and keep its line. Compare then compares it with its source ([20](20-edit-workspace.md)
+  "Compare", `note_result`). On a failure or a cancel the glow stops and the photo stays.
+
+Hosts: Mac `EnhanceRun.swift` (reads the tree; `mv_chrome_edit_enhance_run`), `EnhanceHubView.swift`
+(the cards), `ToolBarView.swift` (the line), `main_mac.mm` `-enhanceCardsSync` / `-enhanceRunState:`;
+Windows `IslandHost.EnhanceDock.cs` (the cards and the run node; `chrome_edit_action::enhance_run`),
+`IslandHost.EnhanceHub.cs`, `IslandHost.ToolBar.cs`, `main.cpp` `enhance_cards_sync` /
+`enhance_run_state`. Enhance's palette rows, its context entry and the strip's Enhance… on the photo
+on screen open the Enhance tab; an audio file, a clip and the Video Editor keep the sheet (there is
+no Edit pane for them). Tests: `mv_import_tests "[enhance][tool]"`, `mv_tests "[enhance-run]"`.
+
+## Docked in Edit (2026-11-05; replaced by "One click" the same day)
+
+What follows is S5's panel, kept for its history; the cards above replaced it.
 
 docs/plans/edit-refresh.md S5 (owner call B). The manifest's third screen, `tool`, is in place
 `edit`: only the Edit workspace opens it, with a command (`slot_registry::screen_command`, ABI

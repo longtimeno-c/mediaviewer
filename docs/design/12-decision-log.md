@@ -222,6 +222,27 @@ same sums, so the file is the size it showed. The result is `<stem>-extended.jpg
 `-enhance`). While a frame is being dragged the camera does not refit; it frames the photo and
 the frame (`fit_rect_uv`) when the drag ends, so the held edge never runs from the pointer.
 
+**One-click Enhance: no sheet and no panel in the Edit flow (2026-11-05, owner).** "Why does
+'enhance' open this window? It should just show quality / ETA and when clicked use an Apple
+Intelligence pattern over the image while it works, then open the new image", and "don't keep that
+sheet as a backup, remove it". Reverses S5's docked panel (owner call B, above) for the photo
+tools and the sheet as their fallback. Enhance's `edit` screen is now the Enhance tab's cards: each
+card draws its tool's compact choices, an estimate and one button from the add-on's tree; one click
+runs (downloading the model first when it is not here), the photo glows while it works, the tool
+bar under it carries the line and Cancel, and the new photo opens with Edit kept on the tab and a
+"Saved as … · Move to Trash" line. The strip's Enhance…, the ✦ popover / flyout, Enhance's palette
+rows and its context entry on the photo on screen open the tab; Enhance's sheet stays only where
+there is no Edit pane (an audio file, a clip, the Video Editor's Enhance…). The add-on's sheet
+code for a photo is unreachable from both hosts and kept only as the engine's shared view
+(docs/design/29 "One click").
+
+**The working glow is drawn over the photo (2026-11-05, owner; relaxes call A for a run only).**
+Call A keeps the photo clear of anything but the armed tool's own overlay. While a one-click run
+works on the photo, the present path also draws the working glow (`shell/tool_overlay.h`
+`draw_work_glow`, both labs): colour flowing round the photo's edges and a sheen crossing it,
+presenting each frame only while the run goes and for a 300 ms fade after (Reduce Motion: still, no
+presents). Nothing else floats over the photo; the run's words are the tool bar's.
+
 **The clip transport floats and auto-hides (2026-09-26).** Issue #38: one layout on both hosts,
 over the video rather than a reserved strip (auto-hiding a strip would refit the video on every
 wake). One portable rule, `shell/transport_autohide.h`: hide after 2.5 s idle while playing; held
