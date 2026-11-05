@@ -14,7 +14,7 @@ and "Enhance's first video model" (2026-10-26).
 
 ## What it is
 
-One slot add-on with no chrome of its own ([25](25-open-addons.md) §10): both hosts draw its two
+One slot add-on with no chrome of its own ([25](25-open-addons.md) §10): both hosts draw its three
 screens from its view trees.
 
 - **Its page in Settings → Add-ons** (place `settings`): one card per kind (photos, video,
@@ -24,6 +24,9 @@ screens from its view trees.
 - **`Enhance…` in the Video Editor's bar** (`editor_items`, contribution API 11): the same sheet,
   over the editor, for the edit ("In the Video Editor" below). It has no button on the viewer's
   command bar.
+- **The tool panel docked in Edit** (place `edit`, contribution API 12; docs/plans/edit-refresh.md
+  S5, owner call B): Remove, Restyle, Enhance image and Extend run inside the Edit workspace's
+  Enhance tab, under the card chosen ("Docked in Edit" below). The sheet stays, as the fallback.
 
 It is not part of Local search and not in the `ai` family: search reads pixels and writes an
 index, Enhance writes a new file. Settings → Add-ons lists it on Windows and on Apple silicon
@@ -231,10 +234,47 @@ lifted frame.
 - Lifting dark footage lifts its noise, and an 8-bit frame can band in lifted shadows; the help
   text says the first. HDR clips are still refused.
 
+## Docked in Edit (2026-11-05)
+
+docs/plans/edit-refresh.md S5 (owner call B). The manifest's third screen, `tool`, is in place
+`edit`: only the Edit workspace opens it, with a command (`slot_registry::screen_command`, ABI
+`mv_slots_screen_command`, 0.36), never an item, a status click or `screen_show` (an add-on has at
+most one, and a manifest asks for contribution API 12 to name it). The command opens it on the
+photo on screen when it is not open, then hands Enhance `enhance/tool`
+`{"photo": "remove|restyle|detail|extend", "run": true?}`: the panel switches to that tool (its
+knobs reset no result but its own) and, with `run`, starts it. Remove reads the brush again first:
+the host hands its dabs over (`still_mask`) in the same click, as the sheet's Remove did.
+
+`tool_tree` is the sheet's `sheet_tree` without the photo choice or Close: the tool's knob cards,
+the note, the preview surface (as wide as the inspector's column, at its backing scale), the glowing
+progress and the time left, **Cancel**, and the run button (*Remove*, *Restyle*, *Enhance*,
+*Extend*). Its root is `tool.<word>`, which is how the host knows the card to draw it under. Remove
+with nothing brushed shows only its knobs and *Brush over what to remove, then press Remove (or
+Return).*: the card's own Remove (or Return in the brush) runs it.
+
+A finished run shows the **result row**: a thumbnail of the new file, *Saved as
+IMG_0007-removed.jpg* (or *Added to your Photos library* for a library photo, whose key is never
+shown), and three buttons:
+
+- **Show**: the host's. Edit closes and the viewer selects the new file (a library photo by the key
+  the add returned, once PhotoKit has listed it beside its source).
+- **Keep editing**: the host's. The same, with Edit reopened on the Enhance tab.
+- **Move to Trash / Move to Recycle Bin**: Enhance's. The host table's `recycle_file`, never a
+  permanent delete; only the file the run wrote, never the original and never a library photo
+  (Photos asks before it deletes; that is done in Photos). A folder with no bin keeps the file and
+  says so under the row.
+
+The sheet keeps its own *Saved as …* status; the docked panel shows the row instead. The host
+closes the panel when Edit closes or another photo shows (a run still going stops, as closing the
+sheet does); its own × does the same. Mac: `DockedToolPanel` in `EnhanceHubView.swift`
+(`ScreenButtonHook` takes Show and Keep editing); Windows: `IslandHost.EnhanceDock.cs`
+(`TakeScreenButton`; the path goes to native as `OpenPath`'s does). Test: `"[enhance][tool]"`.
+
 ## Remove: what was brushed in Edit, filled in
 
-Edit → Adjust → **Remove** paints over the photo ([07](07-photo-editing.md)); **Remove…** opens
-this sheet with the dabs held by the host (`still_mask`). A sheet opened on a photo with something
+Edit → Adjust → **Remove** paints over the photo ([07](07-photo-editing.md)); **Remove** hands
+the dabs held by the host (`still_mask`) to the docked panel and runs ("Docked in Edit"; the sheet
+with an Enhance that has no docked panel). A sheet opened on a photo with something
 brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`,
 `io.runner: inpaint`):
 
