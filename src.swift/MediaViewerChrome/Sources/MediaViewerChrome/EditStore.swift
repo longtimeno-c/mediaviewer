@@ -221,7 +221,7 @@ final class EditStore: ObservableObject {
   func select(_ t: EditTab) { mv_chrome_edit_select_tab(t.rawValue) }
   /// The rail's icon: select, fold (the active one) or unfold.
   func rail(_ t: EditTab) { mv_chrome_edit_rail(t.rawValue) }
-  /// The rail's and the Enhance tab's tools.
+  /// The rail's and the Enhance tab's tools (Extend: the Enhance tab's card only).
   enum Tool: Int32 { case remove = 0, redEye = 1, faces = 2, extend = 3 }
   func tool(_ t: Tool) { mv_chrome_edit_tool(t.rawValue) }
   /// ✦ Auto: one undo step; again right after takes it back.

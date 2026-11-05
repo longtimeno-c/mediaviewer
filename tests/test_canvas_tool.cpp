@@ -66,7 +66,8 @@ TEST_CASE("canvas tool: each tool opens its home tab, unfolded", "[canvas-tool]"
   CHECK_FALSE(ws.collapsed);
   CHECK(home_tab(canvas_tool::wb_pick) == edit_tab::colour);
   CHECK(home_tab(canvas_tool::faces) == edit_tab::enhance);
-  CHECK(home_tab(canvas_tool::extend) == edit_tab::crop);
+  // Extend lives on the Enhance tab (its card), not Crop (owner 2026-11-05).
+  CHECK(home_tab(canvas_tool::extend) == edit_tab::enhance);
   s.pan_held = s.erase_held = true;
   CHECK_FALSE(arm_tool(s, ws, canvas_tool::none));  // putting it down leaves the pane
   CHECK(s.tool == canvas_tool::none);

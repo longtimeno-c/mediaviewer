@@ -1201,6 +1201,7 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, and the hosts' edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_crop_drag.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
     # Issue #614: Ctrl+P's paper layout (fit / fill, the contact sheet).

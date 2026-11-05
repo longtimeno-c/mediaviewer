@@ -17,6 +17,7 @@
 #include "io/paths.h"
 #include "io/replace.h"
 #include "meta/meta.h"
+#include "shell/crop_drag.h"
 
 namespace mv::shell {
 namespace {
@@ -446,6 +447,32 @@ edit_effect edit_session::set_crop_aspect(crop_aspect a, bool portrait) {
   if (a == crop_aspect::free) return changed || started ? edit_effect::redraw : edit_effect::none;
   draft_rect_ = fit_locked(draft_rect_);
   draft_auto_ = true;  // still the largest fit: a straighten keeps it so
+  return edit_effect::redraw;
+}
+
+edit_effect edit_session::drag_crop(const edit::rect& start, std::uint8_t handle, float du, float dv) {
+  if (!crop_ || handle == extend_none) return edit_effect::none;
+  const float k = locked_ratio();
+  const auto at = [&](float t) { return crop_drag_rect(start, handle, du * t, dv * t, k, kMinCrop); };
+  edit::rect r = at(1.0f);
+  if (draft_angle_ != 0.0f) {
+    // With an angle the rect stops where a corner of the rotated source would
+    // show: the furthest point along the drag that still fits.
+    const edit::size2 f = frame();
+    const auto fits = [&](const edit::rect& s) { return same_rect(edit::constrain_crop(s, draft_angle_, f), s); };
+    if (!fits(r)) {
+      float lo = 0.0f, hi = 1.0f;
+      for (int i = 0; i < 20; ++i) {
+        const float mid = (lo + hi) * 0.5f;
+        (fits(at(mid)) ? lo : hi) = mid;
+      }
+      r = at(lo);
+      if (!fits(r)) return edit_effect::none;
+    }
+  }
+  if (same_rect(r, draft_rect_)) return edit_effect::none;
+  draft_rect_ = r;
+  draft_auto_ = false;
   return edit_effect::redraw;
 }
 

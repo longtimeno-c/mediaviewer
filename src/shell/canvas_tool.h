@@ -69,15 +69,16 @@ struct tool_state {
   std::uint64_t hud_until_ms = 0;  // the size label's deadline (steady_ms)
 };
 
-// The tab a tool opens the workspace on: Remove and Faces on Enhance,
-// red-eye and the white-balance picker on Adjust, Extend on Crop.
+// The tab a tool opens the workspace on: Remove, Faces and Extend on Enhance
+// (Extend's one door is the Enhance tab's card, owner 2026-11-05), red-eye
+// and the white-balance picker on Adjust.
 [[nodiscard]] constexpr edit_tab home_tab(canvas_tool t) noexcept {
   switch (t) {
     case canvas_tool::remove_brush:
-    case canvas_tool::faces: return edit_tab::enhance;
+    case canvas_tool::faces:
+    case canvas_tool::extend: return edit_tab::enhance;
     case canvas_tool::red_eye:
     case canvas_tool::wb_pick: return edit_tab::colour;
-    case canvas_tool::extend: return edit_tab::crop;
     case canvas_tool::none: break;
   }
   return edit_tab::crop;

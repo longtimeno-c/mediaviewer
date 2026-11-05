@@ -681,7 +681,7 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 |---|---|
 | `[` / `]` | rotate left / right. On a JPEG with no other edit, the file is rewritten losslessly 0.4 s after the last press |
 | `H` / `V` | flip horizontal / vertical (same lossless rule) |
-| `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
+| `Shift+C` | crop / straighten. Drag the rect's handles (or inside it) on the photo, or arrows move the crop and `Shift`+arrows resize it; `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels. Tests: `mv_tests "[crop-drag]"` |
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
 | `Shift+A` | adjust pane (PR 11, grown by [edit-adjust](plans/edit-adjust.md) slice 1): Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White and Vignette sections, each with an Auto (not the vignette) and a reset, histogram and clipping. It takes the keyboard: `↑` `↓` pick a slider of an open section, `←` `→` step it (`⇧` ×10), `0` zeroes it, `A` runs its section's Auto, `R` resets all. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
@@ -722,7 +722,7 @@ puts the tool down. Rotate, flip, crop and Delete are refused meanwhile, and `A`
 are pending; rotate and flip stay refused while strokes are kept with the tool down. Tests: `mv_tests
 "[canvas-tool],[remove-brush],[tool]"`; the brush's snapshot publish and tint build time:
 `mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
-People on. **Extend** (S6; the rail, the Enhance tab, Edit ▸ Extend Edges): drag the frame's
+People on. **Extend** (S6; the Enhance tab's card, Edit ▸ Extend Edges): drag the frame's
 edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's presets, `Enter`
 fills (the part over the photo is a crop; Enhance's docked panel under the Extend card fills the
 rest, its sheet with an Enhance that has none), `Esc`

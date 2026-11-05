@@ -61,6 +61,7 @@
 #include "shell/adjust_pane.h"
 #include "shell/brush_mask.h"
 #include "shell/canvas_tool.h"
+#include "shell/crop_drag.h"
 #include "shell/faces_tool.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
@@ -364,6 +365,13 @@ struct app_state {
   float extend_press[2] = {0.0f, 0.0f};
   std::uint8_t extend_grab = 0;
   std::uint8_t extend_hover = 0;
+  // docs/design/20 Behaviour 4: crop mode's handles (shell/crop_drag.h): the
+  // edges a press holds with the draft and point it started from, and the
+  // edges under the pointer (WM_SETCURSOR picks their cursor).
+  mv::edit::rect crop_start{};
+  float crop_press[2] = {0.0f, 0.0f};
+  std::uint8_t crop_grab = 0;
+  std::uint8_t crop_hover = 0;
   // docs/plans/edit-refresh.md §2.4: the right column's edge. Its preferred
   // width is settings.right_pane_dip (0 = 360); while it is dragged that holds
   // the live width and is saved on release. The grab offset keeps the edge
@@ -3760,6 +3768,60 @@ void extend_hover_at(app_state* app, int x, int y) {
   brush_publish(app);  // the edge lights under the pointer (WM_SETCURSOR picks its cursor)
 }
 
+// ---- docs/design/20 Behaviour 4: crop mode's handles on the canvas -------------
+//
+// The twin of the Mac's -crop* methods. A press on the draft's edge or corner
+// (shell/crop_drag.h crop_hit, Extend's grab distance) resizes it, one inside
+// moves it; edit_session::drag_crop keeps a locked ratio and the straightened
+// source's covered area. Anywhere else the press is the canvas's as before.
+
+// Crop mode on a still on screen: the handles take presses.
+bool crop_handles(app_state* app) noexcept {
+  return app->edits.crop_active() && !app->show_original &&
+         edit_subject_of(app) == mv::shell::edit_subject::still;
+}
+
+std::uint8_t crop_hit_at(app_state* app, int x, int y) noexcept {
+  float u = 0, v = 0, ru = 0, rv = 0;
+  if (!crop_handles(app) || !pointer_over_canvas(app) ||
+      !app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v)) {
+    return mv::shell::extend_none;
+  }
+  extend_reach(app, ru, rv);
+  return mv::shell::crop_hit(app->edits.crop_overlay(), u, v, ru, rv);
+}
+
+bool crop_press(app_state* app, int x, int y) {
+  const std::uint8_t grab = crop_hit_at(app, x, y);
+  if (grab == mv::shell::extend_none) return false;
+  float u = 0, v = 0;
+  (void)app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v);
+  app->crop_grab = grab;
+  app->crop_hover = grab;
+  app->crop_start = app->edits.crop_overlay();
+  app->crop_press[0] = u;
+  app->crop_press[1] = v;
+  return true;
+}
+
+void crop_drag_to(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  if (app->crop_grab == 0 ||
+      !app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v)) {
+    return;
+  }
+  // Only the draft moves: the overlay redraws, the Crop pane's size follows.
+  if (app->edits.drag_crop(app->crop_start, app->crop_grab, u - app->crop_press[0], v - app->crop_press[1]) ==
+      mv::shell::edit_effect::redraw) {
+    publish_edit(app);
+    ++app->input.activity_seq;
+  }
+}
+
+void crop_release(app_state* app) noexcept { app->crop_grab = 0; }
+
+void crop_hover_at(app_state* app, int x, int y) noexcept { app->crop_hover = crop_hit_at(app, x, y); }
+
 // A chip on the bar: the add-on's preset as a frame (0 Original: none).
 void extend_preset(app_state* app, int i) {
   if (active_tool(app) != mv::shell::canvas_tool::extend) return;
@@ -3973,7 +4035,7 @@ void tool_from_island(app_state* app, int command, float arg) {
     return;
   }
   // S6: the Extend card toggles its frame and, armed, opens Enhance's docked
-  // panel under the card (S5), the rail's tool_extend path.
+  // panel under the card (S5): tool_extend's path.
   if (tool == mv::shell::canvas_tool::extend) {
     (void)run_tool_command(app, tool_extend);
     return;
@@ -11927,6 +11989,14 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // pointer (it is the cursor over the canvas); a drag paints; the red-eye
       // ring snaps to an eye (the twin of the Mac's -mouseMoved:).
       if (moved && tool_armed(app)) brush_move(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      // docs/design/20 Behaviour 4: a held crop handle drags the draft (nothing
+      // else sees the move); the one under the pointer picks the cursor.
+      if (app->crop_grab != 0) {
+        if (moved) crop_drag_to(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        publish(app);
+        return 0;
+      }
+      if (moved) crop_hover_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       // A recent folder under the pointer: highlighted, with the hand cursor
       // (WM_SETCURSOR). The move above already redraws.
       if (app->input.recents.count != 0) update_welcome_hover(app);
@@ -11978,6 +12048,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // drag ends where it was.
       if (app->pane_edge_drag && reinterpret_cast<HWND>(lparam) != hwnd) pane_edge_end(app);
       if (app->extend_grab != 0 && reinterpret_cast<HWND>(lparam) != hwnd) extend_release(app);  // S6
+      if (app->crop_grab != 0 && reinterpret_cast<HWND>(lparam) != hwnd) crop_release(app);
       break;
 
     case WM_MOUSELEAVE: {
@@ -11985,6 +12056,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       app->tracking_mouse = false;
       if (!app->pane_edge_drag) set_pane_edge_state(app, 0);
       app->input.mouse_in_client = false;
+      if (app->crop_grab == 0) app->crop_hover = 0;
       // S3: the ring goes with the pointer.
       if (app->brush_cursor[0] > -1.0f && !app->brush_stroke) {
         app->brush_cursor[0] = -1.0f;
@@ -12007,6 +12079,22 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
           ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEWE));
           return TRUE;
         }
+      }
+      // docs/design/20 Behaviour 4: a crop handle under the pointer (or held)
+      // says which way it drags.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT && crop_handles(app) &&
+          (app->crop_grab != 0 || app->crop_hover != 0)) {
+        LPCWSTR c = IDC_ARROW;
+        switch (mv::shell::extend_cursor_of(app->crop_grab != 0 ? app->crop_grab : app->crop_hover)) {
+          case mv::shell::extend_cursor::left_right: c = IDC_SIZEWE; break;
+          case mv::shell::extend_cursor::up_down: c = IDC_SIZENS; break;
+          case mv::shell::extend_cursor::nw_se: c = IDC_SIZENWSE; break;
+          case mv::shell::extend_cursor::ne_sw: c = IDC_SIZENESW; break;
+          case mv::shell::extend_cursor::move: c = IDC_SIZEALL; break;
+          case mv::shell::extend_cursor::cross: break;
+        }
+        ::SetCursor(::LoadCursorW(nullptr, c));
+        return TRUE;
       }
       // docs/plans/edit-refresh.md S3: an armed tool over the canvas. The brush and
       // red-eye ring is the cursor (drawn in the present, sized in screen
@@ -12069,6 +12157,27 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         app->pane_pending_x = GET_X_LPARAM(lparam);
         app->pane_move_pending = true;
         pane_edge_end(app);
+        return 0;
+      }
+      // docs/design/20 Behaviour 4: in crop mode a press on the draft's edge or
+      // corner resizes it and one inside moves it (never a pan or a file drag);
+      // anywhere else the press is the canvas's as before.
+      if (msg == WM_LBUTTONDOWN && crop_handles(app)) {
+        app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+        app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+        app->input.mouse_in_client = true;
+        if (crop_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam))) {
+          ::SetFocus(hwnd);
+          app->island_focus = mv::shell::focus_kind::command_bar;
+          ::SetCapture(hwnd);
+          return 0;
+        }
+      }
+      if (msg == WM_LBUTTONUP && app->crop_grab != 0) {
+        // Released before the capture goes, so WM_CAPTURECHANGED finds nothing held.
+        crop_release(app);
+        ::ReleaseCapture();
+        crop_hover_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
         return 0;
       }
       // docs/plans/edit-refresh.md S3: an armed canvas tool takes the press on
