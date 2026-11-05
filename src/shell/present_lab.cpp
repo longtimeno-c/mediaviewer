@@ -558,6 +558,11 @@ void present_lab::render_thread_main() noexcept {
       canvas_window_now_.store(host == window_ ? 0 : snapshot.canvas_window, std::memory_order_release);
       if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
     }
+    // docs/plans/edit-refresh.md S6: what fit frames (Extend's frame past the
+    // photo's edges, with room around it). A change comes with refit_seq, so
+    // the fits below pick it up; no presents of its own.
+    (void)camera_.set_fit_frame(snapshot.fit_rect_uv[0], snapshot.fit_rect_uv[1], snapshot.fit_rect_uv[2],
+                                snapshot.fit_rect_uv[3]);
     bool resized_now = false;
     if (snapshot.resize_seq != seen_resize_seq_ || resize_pending_) {
       seen_resize_seq_ = snapshot.resize_seq;

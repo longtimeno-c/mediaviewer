@@ -252,6 +252,7 @@ sheet_view engine::sheet_locked(bool docked) const {
   v.offers_remove = (brushed_ > 0 || docked) && specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_faces = specs_[static_cast<int>(model_kind::face)].has_value();
+  v.framed = framed_ && item_ == item_kind::still;
   v.photo = prefs_.photo;
   v.level = effective_tier();
   for (const model_kind k : kStillKinds) {
@@ -369,6 +370,7 @@ engine::item_facts engine::read_item(const std::string& path) const {
   f.item = path.empty() ? item_kind::unknown : library_key(path) ? item_kind::still : sniff(head_of(path));
   if ((f.item == item_kind::media || f.item == item_kind::audio) && port_.probe) f.facts = port_.probe(path);
   f.brushed = f.item == item_kind::still && port_.brushed ? port_.brushed(path) : 0;
+  f.framed = f.item == item_kind::still && port_.framed && port_.framed(path);
   return f;
 }
 
@@ -382,6 +384,7 @@ void engine::adopt_locked(const std::string& path, const item_facts& f, std::vec
   keep_ = f.item == item_kind::media ? std::move(keep) : std::vector<std::int64_t>{};
   item_ = f.item;
   facts_ = f.facts;
+  framed_ = f.framed;  // S6: the host's Extend frame for this photo
 }
 
 void engine::forget_result_locked() {
@@ -424,6 +427,9 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     // the photo's choice: it is offered only while something is brushed).
     if (f.brushed > 0 && brushed_ == 0) prefs_.photo = photo_target::remove;
     brushed_ = f.brushed;
+    // S6: Fill on Edit's Extend frame opened it: it starts on Extend (not
+    // saved either; the frame overrides the preset).
+    if (f.framed && specs_[static_cast<int>(model_kind::remove)]) prefs_.photo = photo_target::extend;
   }
   post_sheet_locked();
 }

@@ -131,10 +131,10 @@ right edge, from the command bar to the filmstrip; the column (the inspector) si
   `rail_pick`). A window too narrow for any inspector beside the canvas (`clamp_inspector`
   returns 0) folds it too, and unfolds when it is wide enough again. A tab's own key unfolds a
   folded inspector rather than closing it. Closing forgets the fold.
-- **Tools:** Remove, Red-eye and Faces are canvas tools ("Canvas tools" below): a click arms one
-  (Remove and Faces on the Enhance tab, Red-eye on Adjust), a second click puts it down, and the
-  armed one wears the selection. Extend opens Enhance's docked panel on Extend (S5) until S6
-  makes it a canvas tool too.
+- **Tools:** Remove, Red-eye, Faces and Extend are canvas tools ("Canvas tools" below): a click
+  arms one (Remove and Faces on the Enhance tab, Red-eye on Adjust, Extend on Crop; with Enhance,
+  Extend also opens Enhance's docked panel under the Extend card), a second click puts it down, and
+  the armed one wears the selection.
 - **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
   keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
 
@@ -158,8 +158,8 @@ Tab 5, any still. Five cards: **Remove objects · Restyle · Faces · Enhance im
 each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
 *Needs Enhance*, *Needs People*, *Working…*) from the edit view's wand bits
 (`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
-the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Choose a
-frame* (Extend), *Choose faces* (S8: arms the Faces tool; its chip reads *Choosing* and the
+the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Set
+the new frame* (arms Extend, "Extend" below; with Enhance its docked panel opens under the card), *Choose faces* (S8: arms the Faces tool; its chip reads *Choosing* and the
 button *Done* while it is armed, and the Faces panel leads the tab). The Faces card also has
 **Restore faces…** on a row of its own (docs/plans/edit-refresh.md S10; both hosts): Enhance's
 docked panel on its `faces` tool, drawn under the Faces card (the card keeps Choose faces), or without it Enhance's `faces` command, its sheet
@@ -200,7 +200,7 @@ overlapping tiles; quality over speed) is in
 
 docs/plans/edit-refresh.md S3. A **canvas tool** is what a press on the photo does while it is armed
 (`shell/canvas_tool.h`, one model on both hosts): the **Remove brush**, **red-eye** and the
-**white-balance picker**, and **Faces** (S8; Extend is S6's). The Adjust pane's picks, the
+**white-balance picker**, **Faces** (S8) and **Extend**'s frame (S6). The Adjust pane's picks, the
 rail, the Enhance tab's cards, the ✦ popover / Windows `Flyout`, `B` and the Edit menu all arm the
 same state; it is the host's, not the Colour pane's, so the brush and the red-eye ring work on any
 tab and before the working image is built (the white-balance picker alone needs it, and says so).
@@ -219,14 +219,16 @@ animation or with the workspace closed it goes down.
   56 pt band for it (`kToolBarBand` added to `chrome_bottom_px`; a `refit_seq` refit, never a
   swapchain resize), so the bar never covers the picture. Brush: Paint / Erase · Size (a log slider,
   "48 px") · Undo · Redo · Clear · "3 strokes" · **Remove ↵** · Done. Red-eye: "Click a red pupil ·
-  2 fixed" · Size · **Find eyes** · Undo · Done. The picker: a line and Done. When the brush is full
+  2 fixed" · Size · **Find eyes** · Undo · Done. Extend: the Enhance add-on's presets as chips
+  (Original · Wider · Taller · All round · 1:1 · 16:9 · 4:5; a menu when narrow) · "+18 % ·
+  6048×4032" · **Fill ↵** · Cancel. The picker: a line and Done. When the brush is full
   it says "Brush full: Remove, then brush more" instead of beeping. Its tooltip lists the live keys.
   The layout is fixed per tool: the status sits in a slot of one width (168 brush, 160 red-eye;
   shorter words when the bar is compact; the full text is its tooltip), the size readout is 48
   wide and Find eyes keeps its width while busy, so a stroke count appearing or going never
   moves a button.
   Mac: `ToolBarView.swift` in `toolBarHost` (`mv_tool_bar_view`, `mv_chrome_tool_*`); Windows: the
-  transport's island holds `IslandHost.ToolBar.cs` (`SetToolBar`, `chrome_tool_bar_args`, 56 bytes;
+  transport's island holds `IslandHost.ToolBar.cs` (`SetToolBar`, `chrome_tool_bar_args`, 72 bytes;
   `chrome_cmd_canvas_tool` / `tool_size_set` / `tool_erase_set`, 1096–1098), Button, Slider and
   TextBlock only.
 - **Sizes are screen pixels:** 4–400, the brush 40 and red-eye 24 by default. A dab's radius is the
@@ -295,6 +297,44 @@ animation or with the workspace closed it goes down.
   of the Mac's `-facesFetch` / `-adjustFaces:` / `-facesRun:action:`).
 - **Presents:** the overlay animates only to its deadlines (the label, the pulse): the labs draw
   until then and once more to clear. An armed tool with the pointer still presents nothing.
+
+#### Extend
+
+docs/plans/edit-refresh.md S6. **Extend** (`canvas_tool::extend`; the rail's icon, the Enhance
+tab's *Set the new frame*, Edit ▸ Extend Edges, `tool_extend`) puts a frame over the picture whose
+edges and corners are **dragged past the photo's edges** (a press inside moves it, its size kept).
+The frame is shell state, `extend_draft` in `shell/edit_workspace.h` (each side's distance past
+the edge as a fraction of the picture's width or height; negative is inside, a crop), **never an
+edit** ([07](07-photo-editing.md)).
+
+- **Limits (owner call E):** past 25 % a side the bar's readout (adding "· may smear") and that
+  side's band turn the caution amber (`MVTheme.warm` / `TrackWarm`); 50 % a side is a hard stop (Enhance grows a
+  picture at most twice each way). At least 5 % of the photo stays inside the frame.
+- **On the canvas** (`tool_overlay.h` `draw_extend_frame`, both labs): the new area hatched in the
+  accent, the part of the photo the frame leaves out dimmed as crop mode dims it, the frame with
+  eight handles (the held or hovered edge in the accent). The readout is the bar's only: nothing
+  floats over the photo (owner call A). The edge under
+  the pointer picks the cursor (resize arrows; Windows `IDC_SIZE*`, the Mac's left-right and
+  up-down cursors and the open hand for corners and moves). The camera frames the photo and the
+  frame with 8 % around them (`extend_fit` → `input_snapshot::fit_rect_uv`, a `refit_seq` refit,
+  `camera::set_fit_frame`) when a drag ends, a chip is chosen or the tool is armed, never during a
+  drag, so the held edge stays under the pointer. Arming also fits (`fit_seq`), so a zoomed-in
+  view shows the room past the edges; another tool taking over, a new item and a clip under the
+  armed tool all drop the frame and fit the picture as itself. Changes redraw through `brush_rev`; nothing
+  presents while the pointer is still.
+- **Readout:** "+18 % · 6048×4032": the result's pixels through Enhance's own sums
+  (`extend_size`: the crop part rounded as `place()` rounds it, then `extend_from_fractions`'
+  margins and caps), and its area over the photo's.
+- **Fill (`Enter`, the bar's Fill ↵):** the part of the frame over the photo lands as an ordinary
+  crop on the stack (`edit_session::crop_inside`, composed with the committed crop, one undo
+  step); the overhang becomes margins of that cropped picture, handed to Enhance through the host
+  table's `still_extend` (`addon_media::set_still_extend`; Windows `mv_edit_still_extend`), and
+  Enhance's sheet opens on Extend ([29](29-enhance.md) "Extend"). A frame only inside the photo is
+  just a crop and needs no add-on; past the edges without Enhance, Fill says it needs the add-on.
+  **Cancel** (`Esc`, the bar) drops the frame. `Backspace` / `Delete` set it back to Original.
+- **Keys:** a frame not filled is pending (owner call G): walking away is refused with "Fill or
+  cancel the new frame first". `A`, `X` and the arrows do not have their crop meanings in Extend
+  (not built).
 
 ### Width classes
 
@@ -425,10 +465,11 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
   redo); a split-screen before/after.
 - Crop entered from a menu with strokes kept asks nothing yet (it clears them silently; the plan's
   "Discard 3 strokes?" in the bar is not built); Undo of an earlier rotate or Reset with strokes
-  kept also forgets them. Extend as a canvas tool (S6).
+  kept also forgets them.
 - Faces: the panel cannot
   rename a person (People's own screen does); *Turn on People…* opens the settings rather than
   turning People on in place.
+- Extend: `A` / `X` / arrows with their crop meanings.
 - Windows: a rebuilt D3D11 device drops the brush texture; the strokes reappear at the next brush
   change (the host is not told).
 - Persisting a still's stack across sessions.

@@ -15,12 +15,13 @@ namespace MediaViewer.Chrome;
 /// Restyle, Faces, Enhance image, Extend edges. A card says what the tool does,
 /// whether it can run now (its chip) and has one primary button. They launch
 /// what exists: the Remove brush, Enhance's own sheet started on the right
-/// choice (its "open" and "restyle" commands; Extend through the sheet's photo
-/// choice) and the Faces tool (S8: a box per face on the photo and the Faces
+/// choice (its "open" and "restyle" commands), Extend's frame on the canvas (S6)
+/// and the Faces tool (S8: a box per face on the photo and the Faces
 /// panel here, IslandHost.Faces.cs). Every result is a new file; the original
 /// never changes. S5 (owner call B): Remove, Restyle, Enhance image and Extend
 /// run inside the pane, Enhance's docked screen drawn under the card
-/// (IslandHost.EnhanceDock.cs). The Mac twin is EnhanceHubView.swift.
+/// (IslandHost.EnhanceDock.cs); Extend's Fill runs there on the frame. The Mac
+/// twin is EnhanceHubView.swift.
 /// </summary>
 /// <remarks>
 /// Only Button, TextBlock, Border, Grid and StackPanel, and a plain Flyout of
@@ -91,7 +92,7 @@ public static partial class IslandHost
             EnhanceToolKind.RestoreFaces => (_editWand & WandFacesReady) != 0
                 ? new("Ready", true, false, "Restore faces…", true, false)
                 : new("Needs People", false, false, "Restore faces…", true, false),
-            _ => new("Ready", true, false, "Choose a frame", (_editWand & WandExtend) != 0, false),
+            _ => new("Ready", true, false, "Set the new frame", (_editWand & WandExtend) != 0, false),
         };
     }
 
@@ -120,7 +121,9 @@ public static partial class IslandHost
             // S8: the Faces tool (a second press puts it down).
             case EnhanceToolKind.Faces: Send(Command.CanvasTool, CanvasTools.Faces * 1000); break;
             case EnhanceToolKind.Detail: Send(Command.EditAction, EditActions.EnhanceDetail); break;
-            case EnhanceToolKind.Extend: Send(Command.EditAction, EditActions.EnhanceExtend); break;
+            // S6: Extend's frame on the canvas (canvas_tool 5; the context bar fills it). Armed,
+            // the host opens the docked panel under the card (S5), where Fill runs.
+            case EnhanceToolKind.Extend: Send(Command.CanvasTool, CanvasTools.Extend * 1000); break;
         }
     }
 
@@ -306,6 +309,8 @@ public static partial class IslandHost
             ToolTipService.SetToolTip(_enhanceRestoreFaces, RestoreFacesTool.Purpose);
             col.Children.Add(_enhanceRestoreFaces);
         }
+        if (kind == EnhanceToolKind.Extend && _editEnhance)
+            col.Children.Add(Hint("Drag the frame's edges past the photo, then Fill (Enter)."));
         if (kind == EnhanceToolKind.Remove)
         {
             _enhanceBrushNote = Hint("Brush full: Remove, then brush more.");

@@ -8,6 +8,7 @@
 // no GPU, no OS UI. Worker threads only: every call reads and decodes.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -118,6 +119,15 @@ void clear_still_edit();
 // sets it before Enhance's sheet opens; still_mask answers the add-on.
 void set_still_mask(const std::string& path, std::vector<float> dabs);
 [[nodiscard]] std::vector<float> still_mask(const std::string& path);
+// docs/plans/edit-refresh.md S6: Extend's frame over that photo, the margins
+// past its edges (left, top, right, bottom; fractions of the edited picture's
+// width or height, the crop part already on the edit). An empty path clears
+// it; still_extend answers all 0 for any other photo, and once the edit's
+// geometry (set_still_edit) is no longer the one the frame was set over (an
+// undo of Fill's crop, a later turn or crop): its fractions were of another
+// picture.
+void set_still_extend(const std::string& path, const std::array<float, 4>& ltrb);
+[[nodiscard]] std::array<float, 4> still_extend(const std::string& path);
 // docs/plans/edit-adjust.md slice 6: eyes open from the same moment.
 // The frames of the same moment as `path`: the other files of its folder
 // modified within kBurstSeconds of it, nearest first, at most kBurstFrames.

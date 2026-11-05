@@ -18,6 +18,11 @@
 //   * S8: the Faces tool's boxes, one per face (corner brackets, a numbered
 //     badge the panel's list shares, a wash and the accent when chosen, the
 //     person's name below, a dashed edge while a fix runs on it).
+//   * S6: Extend's frame past the photo's edges: the new area hatched (a
+//     side past 25 % in the caution tint), the part of the photo it crops
+//     dimmed as crop mode dims it, and the frame with its handles. The
+//     readout "+18 % · 6048×4032" is the context bar's (owner call A:
+//     nothing floats over the photo).
 //
 // Colours come from the theme (input_snapshot::home.accent) or are the ring's
 // black and white. Nothing here presents on its own: the lab keeps drawing
@@ -31,6 +36,7 @@
 #include <cstdio>
 
 #include "imgui.h"
+#include "shell/edit_workspace.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -45,6 +51,14 @@ namespace mv::shell {
   return (v.brush_on || v.brush_count > 0 || v.brush_mask != 0 || v.tool != 0 || v.tool_ring_px > 0.0f) &&
          !v.crop_overlay;
 }
+
+// canvas_tool::extend's wire value (canvas_tool.h asserts it; this header
+// does not include canvas_tool.h, which the labs need not).
+inline constexpr std::uint8_t kToolExtendWire = 5;
+// The caution tint of a side past Extend's 25 % warning (fills may smear
+// there). The theme has no caution token; this is the chromes' picture amber
+// (MVTheme.warm, IslandHost TrackWarm), which their bars' readout uses too.
+inline constexpr std::uint32_t kExtendCautionRgba = 0xFAB84DFFu;
 
 namespace detail {
 
@@ -89,7 +103,77 @@ inline void dashed_circle(ImDrawList* fg, ImVec2 c, float r, ImU32 col, float th
   }
 }
 
+// A hatched band: a wash and diagonal lines, clipped to it.
+inline void hatch(ImDrawList* fg, ImVec2 a, ImVec2 b, ImU32 wash, ImU32 line, float step, float thick) noexcept {
+  if (!(b.x > a.x && b.y > a.y)) return;
+  fg->AddRectFilled(a, b, wash);
+  fg->PushClipRect(a, b, true);
+  const float h = b.y - a.y;
+  // Lines anchored to the screen (x + y a multiple of `step` along each), so
+  // a band that grows or moves does not crawl: the line through (x, b.y) has
+  // x + b.y = k * step, and the first that reaches the band starts past a.x - h.
+  const float start = std::floor((a.x - h + b.y) / step) * step - b.y;
+  for (float x = start; x < b.x; x += step) {
+    fg->AddLine(ImVec2(x, b.y), ImVec2(x + h, a.y), line, thick);
+  }
+  fg->PopClipRect();
+}
+
 }  // namespace detail
+
+// S6: Extend's frame (edit_view::tool_extend) over the picture.
+template <class ToScreen>
+void draw_extend_frame(const edit_view& v, float pw, float ph, float scale, std::uint32_t accent,
+                       ToScreen to_screen) {
+  ImDrawList* fg = ImGui::GetForegroundDrawList();
+  const float l = v.tool_extend[0], t = v.tool_extend[1], r = v.tool_extend[2], b = v.tool_extend[3];
+  const ImVec2 p0 = to_screen(0.0f, 0.0f), p1 = to_screen(pw, ph);
+  const ImVec2 f0 = to_screen(-l * pw, -t * ph), f1 = to_screen((1.0f + r) * pw, (1.0f + b) * ph);
+  // The part of the photo the frame leaves out: cropped on Fill, dimmed.
+  const ImU32 shade = IM_COL32(0, 0, 0, 140);
+  const float ix0 = std::max(p0.x, f0.x), iy0 = std::max(p0.y, f0.y);
+  const float ix1 = std::min(p1.x, f1.x), iy1 = std::min(p1.y, f1.y);
+  if (ix0 < ix1 && iy0 < iy1) {
+    if (iy0 > p0.y) fg->AddRectFilled(p0, ImVec2(p1.x, iy0), shade);
+    if (iy1 < p1.y) fg->AddRectFilled(ImVec2(p0.x, iy1), p1, shade);
+    if (ix0 > p0.x) fg->AddRectFilled(ImVec2(p0.x, iy0), ImVec2(ix0, iy1), shade);
+    if (ix1 < p1.x) fg->AddRectFilled(ImVec2(ix1, iy0), ImVec2(p1.x, iy1), shade);
+  }
+  // The new picture past the photo's edges, hatched; a side past the warning
+  // in the caution tint.
+  const float step = 9.0f * scale;
+  const auto band = [&](ImVec2 a, ImVec2 c, bool warn) {
+    const std::uint32_t ink = warn ? kExtendCautionRgba : accent;
+    detail::hatch(fg, a, c, detail::rgba(ink, warn ? 0.22f : 0.12f), detail::rgba(ink, warn ? 0.7f : 0.45f), step,
+                  1.0f * scale);
+  };
+  if (f0.y < p0.y) band(f0, ImVec2(f1.x, std::min(f1.y, p0.y)), t > kExtendWarn);
+  if (f1.y > p1.y) band(ImVec2(f0.x, std::max(f0.y, p1.y)), f1, b > kExtendWarn);
+  const float my0 = std::max(f0.y, p0.y), my1 = std::min(f1.y, p1.y);
+  if (my0 < my1) {
+    if (f0.x < p0.x) band(ImVec2(f0.x, my0), ImVec2(std::min(f1.x, p0.x), my1), l > kExtendWarn);
+    if (f1.x > p1.x) band(ImVec2(std::max(f0.x, p1.x), my0), ImVec2(f1.x, my1), r > kExtendWarn);
+  }
+  // The frame: a light line over a dark one, the held or hovered edge in the
+  // accent; handles at the corners and the middles of the edges.
+  const ImU32 dark = IM_COL32(0, 0, 0, 170);
+  const ImU32 light = IM_COL32(255, 255, 255, 235);
+  const ImU32 hot = detail::rgba(v.tool_extend_warn ? kExtendCautionRgba : accent);
+  fg->AddRect(ImVec2(f0.x - scale, f0.y - scale), ImVec2(f1.x + scale, f1.y + scale), dark, 0.0f, 0, 1.5f * scale);
+  fg->AddRect(f0, f1, light, 0.0f, 0, 1.5f * scale);
+  const std::uint8_t hh = v.tool_extend_handle;
+  if (hh & extend_left) fg->AddLine(f0, ImVec2(f0.x, f1.y), hot, 3.0f * scale);
+  if (hh & extend_right) fg->AddLine(ImVec2(f1.x, f0.y), f1, hot, 3.0f * scale);
+  if (hh & extend_top) fg->AddLine(f0, ImVec2(f1.x, f0.y), hot, 3.0f * scale);
+  if (hh & extend_bottom) fg->AddLine(ImVec2(f0.x, f1.y), f1, hot, 3.0f * scale);
+  const float k = 4.0f * scale;
+  const float mx = (f0.x + f1.x) * 0.5f, my = (f0.y + f1.y) * 0.5f;
+  for (const ImVec2 c : {f0, ImVec2(mx, f0.y), ImVec2(f1.x, f0.y), ImVec2(f1.x, my), f1, ImVec2(mx, f1.y),
+                         ImVec2(f0.x, f1.y), ImVec2(f0.x, my)}) {
+    fg->AddRectFilled(ImVec2(c.x - k - scale, c.y - k - scale), ImVec2(c.x + k + scale, c.y + k + scale), dark);
+    fg->AddRectFilled(ImVec2(c.x - k, c.y - k), ImVec2(c.x + k, c.y + k), light);
+  }
+}
 
 // `pw` x `ph` the shown picture, `zoom` screen pixels per picture pixel,
 // `scale` the display's (physical pixels per point), `now_ms` steady_ms().
@@ -191,6 +275,8 @@ void draw_tool_overlay(const edit_view& v, float pw, float ph, float zoom, float
       fg->AddText(ImVec2(pa.x + pad, pa.y + pad * 0.3f), chosen ? accent_full : light, name);
     }
   }
+  // S6: Extend's frame past the photo's edges.
+  if (v.tool == kToolExtendWire) draw_extend_frame(v, pw, ph, scale, accent, to_screen);
   // The ring under the pointer, in screen pixels.
   if (v.tool_ring_px > 0.0f && !v.tool_dim) {
     const ImVec2 c = to_screen(v.brush_cursor[0] * pw, v.brush_cursor[1] * ph);

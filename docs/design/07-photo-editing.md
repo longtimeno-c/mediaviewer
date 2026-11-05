@@ -118,6 +118,12 @@ The stack folds into two canonical states:
   fills what is brushed with LaMa and writes a new file ([29](29-enhance.md) "Remove"); the stack
   and the original are untouched.
 
+  **Extend** (docs/plans/edit-refresh.md S6, [20](20-edit-workspace.md) "Extend") is **never an
+  op**: its frame past the photo's edges is shell state. Fill lands only the part of the frame
+  over the photo, as an ordinary `crop` op composed with the one before (`edit_session::
+  crop_inside`, one undo step); the new edges are Enhance's, a new file `<stem>-extended.jpg`
+  ([29](29-enhance.md) "Extend"), and the stack never holds a rect past 0..1.
+
   **Open closed eyes** (Faces section; [plan](../plans/edit-adjust.md) slice 6, owner call
   2026-11-02 in [12](12-decision-log.md)) writes a new file, `<stem>-eyes.jpg`, beside the photo;
   the original and the edit stack are untouched. The host offers the AI pack the files of the same

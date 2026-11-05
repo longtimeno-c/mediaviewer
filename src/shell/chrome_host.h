@@ -716,7 +716,7 @@ static_assert(sizeof(chrome_notify_args) == 8, "keep in sync with IslandHost.Not
 // shell::tool_bar (main.cpp static_asserts it) and the Mac's mv_tool_bar_view.
 struct chrome_tool_bar_args {
   std::int32_t visible;
-  std::int32_t tool;     // shell::canvas_tool: 1 Remove brush, 2 red-eye, 3 white-balance picker
+  std::int32_t tool;     // shell::canvas_tool: 1 Remove brush, 2 red-eye, 3 white-balance picker, 5 Extend
   float size_px;         // the ring's diameter, DIP
   std::int32_t erase;    // the Paint / Erase toggle
   std::int32_t strokes;  // the brush's strokes
@@ -730,9 +730,12 @@ struct chrome_tool_bar_args {
   std::int32_t can_redo;
   std::int32_t eyes;      // red-eye: eyes the AI pack found (People on)
   std::int32_t can_undo;  // S4a: a stroke or a Clear to undo
+  std::int32_t extend_growth;  // S6: Extend's readout, the growth in permille
+  std::int32_t extend_warn;    // S6: a side past the 25 % warning
+  std::int32_t extend_preset;  // S6: the chip the frame is (0 Original .. 6), -1 the person's own
 };
 
-static_assert(sizeof(chrome_tool_bar_args) == 60, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
+static_assert(sizeof(chrome_tool_bar_args) == 72, "keep in sync with IslandHost.ToolBar ToolBarArgsSize");
 
 // docs/plans/edit-refresh.md S8: the Faces tool's panel in the Enhance tab
 // (IslandHost.Faces.cs; the Mac's FacesPanelView), pushed with SetFacesPanel

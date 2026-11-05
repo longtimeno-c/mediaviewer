@@ -722,7 +722,10 @@ puts the tool down. Rotate, flip, crop and Delete are refused meanwhile, and `A`
 are pending; rotate and flip stay refused while strokes are kept with the tool down. Tests: `mv_tests
 "[canvas-tool],[remove-brush],[tool]"`; the brush's snapshot publish and tint build time:
 `mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
-People on.
+People on. **Extend** (S6; the rail, the Enhance tab, Edit ▸ Extend Edges): drag the frame's
+edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's presets, `Enter`
+fills (the part over the photo is a crop; the rest opens Enhance's sheet on Extend), `Esc`
+cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`.
 
 Faces (S8): the rail's Faces, the Enhance tab's Faces card or (Mac) Edit ▸ Faces arm the Faces
 tool: a box per face on the photo (a click chooses it or leaves it out) and the Faces panel first
@@ -2338,8 +2341,9 @@ MV_ENHANCE_IMAGE_MODELS=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob
 apart with merging and the 8-box fallback, the second pass's tiles and detail blend, and the run
 with a stand-in model, including a cancel between boxes and between tiles, and progress per fill).
-`"[enhance][extend]"` checks that every margin pixel is in at least three tiles, for the presets
-and random margins. LaMa's file is pinned in `remote.json`; Enhance's Download fetches it. With
+**Extend** uses the same file: `"[enhance][extend]"` checks the presets, the tiles, the canvas
+frame through `still_extend` written as `<stem>-extended.jpg` at the size the bar showed, and the
+host's readout sums against the add-on's. LaMa's file is pinned in `remote.json`; Enhance's Download fetches it. With
 it on disk, the quality defaults run through the runner and are timed on a photo of your own
 (raw RGB; `MV_REMOVE_DABS="u,v,r u,v,r …"` is the brush, default a block in the middle;
 `MV_EXTEND_PRESET` default `all`; `MV_QUALITY_ONLY=remove|extend`; `MV_REMOVE_OUT_DIR` keeps

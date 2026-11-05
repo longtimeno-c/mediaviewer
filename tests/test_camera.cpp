@@ -421,3 +421,32 @@ TEST_CASE("zoom_to centres a point at a zoom, clamped to the image", "[canvas]")
   cam.zoom_to(2.0f, 0.0f, 0.0f, 0.0f, 4000.0f, 1200.0f, 800.0f);
   REQUIRE_THAT(cam.target_zoom(), WithinAbs(1.0f, 1e-6f));
 }
+
+TEST_CASE("a fit frame past the image centres it at its own fit zoom", "[canvas][extend]") {
+  // docs/plans/edit-refresh.md S6: Extend's frame past a 3:2 photo's sides.
+  mv::canvas::camera cam;
+  REQUIRE_FALSE(cam.set_fit_frame(0.0f, 0.0f, 1.0f, 1.0f));  // the default
+  cam.fit(3000.0f, 2000.0f, 1500.0f, 1000.0f, true);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(0.5f, 1e-6f));
+  REQUIRE(cam.set_fit_frame(-0.25f, -0.1f, 1.5f, 1.2f));
+  REQUIRE_FALSE(cam.set_fit_frame(-0.25f, -0.1f, 1.5f, 1.2f));
+  cam.fit(3000.0f, 2000.0f, 1500.0f, 1000.0f, false);
+  CHECK(cam.fit_mode());
+  // 4500 x 2400 of image pixels in 1500 x 1000: the width decides, 1/3.
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(1.0f / 3.0f, 1e-6f));
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(1500.0f, 1e-3f));  // the frame's centre: (-0.25 + 0.75) of 3000
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(1000.0f, 1e-3f));
+  // Off-centre: only the left side grew.
+  REQUIRE(cam.set_fit_frame(-0.5f, 0.0f, 1.5f, 1.0f));
+  cam.fit(3000.0f, 2000.0f, 1500.0f, 1000.0f, true);
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(750.0f, 1e-3f));
+  // A refinement in fit mode keeps framing it.
+  cam.refine(3000.0f, 2000.0f, 6000.0f, 4000.0f, 1500.0f, 1000.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(1500.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(1.0f / 6.0f, 1e-6f));
+  // Nonsense resets to the image.
+  REQUIRE(cam.set_fit_frame(0.0f, 0.0f, -1.0f, 1.0f));
+  cam.fit(3000.0f, 2000.0f, 1500.0f, 1000.0f, true);
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(1500.0f, 1e-3f));
+  REQUIRE_THAT(cam.zoom(), WithinAbs(0.5f, 1e-6f));
+}

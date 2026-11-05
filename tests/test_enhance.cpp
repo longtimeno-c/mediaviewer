@@ -16,10 +16,12 @@
 #include "catch_compat.h"
 #include <catch2/catch_approx.hpp>
 
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -48,6 +50,7 @@
 #include "addons/enhance/spec.h"
 #include "core/json.h"
 #include "infer/ort.h"
+#include "shell/edit_workspace.h"  // S6: the host's readout, checked against the add-on's sums
 #include "import_fixture.h"
 
 using namespace mv::enhance;
@@ -137,6 +140,7 @@ struct fake_host {
   std::vector<float> brush;  // slice 7: the dabs the host holds over a photo
   std::vector<std::string> recycled;  // S5's Discard: what went to the Bin
   int recycle_answer = 0;             // 0 moved, 1 refused (no bin), -1 failed
+  bool framed = false;       // edit-refresh S6: a canvas frame over the photo (still_extend)
   // The preview's last pixels and how many were posted.
   std::uint32_t surface_w = 0, surface_h = 0;
   int surfaces = 0;
@@ -234,6 +238,10 @@ struct fixture {
       std::lock_guard lock(host.m);
       host.recycled.push_back(path);
       return host.recycle_answer;
+    };
+    p.framed = [this](const std::string&) {
+      std::lock_guard lock(host.m);
+      return host.framed;
     };
     p.free_disk = [this](const std::string&) -> std::optional<std::uint64_t> { return host.free; };
     auto shared = net;
@@ -1716,6 +1724,189 @@ TEST_CASE("extend: new edges filled tile by tile, the photo's own pixels kept", 
   }
   CHECK(changed == 0);
   CHECK(written.rgb[(std::size_t{150} * 500 + 10) * 3] == 128);
+}
+
+// ---- docs/plans/edit-refresh.md S6: Extend's frame from the canvas ---------------------
+
+TEST_CASE("extend: the host's frame, 3:2 to 16:9, is written at the size the host previewed", "[enhance][extend]") {
+  // The host drags both sides of a 3:2 photo out to 16:9 (shell/edit_workspace.h).
+  const std::uint32_t w = 480, h = 320;
+  const float side = (static_cast<float>(h) * 16.0f / 9.0f - static_cast<float>(w)) / 2.0f / static_cast<float>(w);
+  mv::shell::extend_draft d = mv::shell::extend_drag({}, mv::shell::extend_right, side, 0.0f);
+  d = mv::shell::extend_drag(d, mv::shell::extend_left, -side, 0.0f);
+  const mv::shell::extend_size_t shown = mv::shell::extend_size(d, w, h);
+  REQUIRE(shown.width == 568u);  // 320 x 16 / 9 = 568.9: 44.4 a side, rounded each
+  REQUIRE(shown.height == 320u);
+  const std::array<float, 4> frame = mv::shell::extend_overhang(d);
+
+  rgb8 photo;
+  photo.width = w;
+  photo.height = h;
+  photo.rgb = noise_rgb(w, h);
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [](const std::string&) { return std::vector<float>{}; };
+  std::string asked;
+  port.still_extend = [&](const std::string& path) {
+    asked = path;
+    return frame;
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still st;
+    st.width = photo.width;
+    st.height = photo.height;
+    st.rgb = photo.rgb;
+    return st;
+  };
+  run_port::still written;
+  port.write_still = [&](const std::string& source, const run_port::still& pic) -> mv::result<std::string> {
+    written = pic;
+    const std::string stem = source.substr(0, source.rfind('.'));
+    return stem + "-" + pic.suffix + ".jpg";
+  };
+  model_spec spec;
+  spec.kind = model_kind::remove;
+  job_runner jr(port);
+  job_request req;
+  req.path = "/photos/IMG_0007.jpg";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = &spec;
+  part.values["mode"] = *mv::json::parse("\"extend\"");
+  part.values["extend"] = *mv::json::parse("\"taller\"");  // the sheet's preset: the frame wins
+  req.parts.push_back(part);
+  std::atomic<bool> done{false};
+  bool ok = false;
+  std::string out;
+  job_events ev;
+  ev.done = [&](bool k, const std::string& name, const std::string&) {
+    ok = k;
+    out = name;
+    done = true;
+  };
+  jr.start(req, ev);
+  REQUIRE(eventually([&] { return done.load(); }));
+  REQUIRE(ok);
+  CHECK(asked == req.path);
+  CHECK(written.suffix == "extended");
+  CHECK(out == "IMG_0007-extended.jpg");
+  // The size the host's readout showed.
+  CHECK(written.width == shown.width);
+  CHECK(written.height == shown.height);
+  // The photo's rect, bit for bit (no feather into it), at the host's left margin.
+  REQUIRE(written.rgb.size() == std::size_t{shown.width} * shown.height * 3);
+  std::size_t changed = 0;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    changed += std::memcmp(photo.rgb.data() + std::size_t{y} * w * 3,
+                           written.rgb.data() + (std::size_t{y} * shown.width + shown.left) * 3, std::size_t{w} * 3) != 0;
+  }
+  CHECK(changed == 0);
+  CHECK(written.rgb[(std::size_t{160} * shown.width + 5) * 3] == 128);  // the new left edge is the fill
+
+  // No frame from the host: the sheet's preset as before (Taller: an eighth top and bottom).
+  port.still_extend = [](const std::string&) { return std::array<float, 4>{}; };
+  job_runner jr2(port);
+  done = false;
+  jr2.start(req, ev);
+  REQUIRE(eventually([&] { return done.load(); }));
+  REQUIRE(ok);
+  CHECK(written.width == w);
+  CHECK(written.height == h + 2 * (h / 8));
+}
+
+TEST_CASE("extend: a canvas frame opens the sheet on Extend, with no preset to pick", "[enhance][extend]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0004.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "extend", "label": "Extend", "type": "choice", "default": "wider",
+               "options": [{"id": "wider", "text": "Wider"}, {"id": "taller", "text": "Taller"}]}],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  // The knobs show once Remove's model is installed.
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = true;
+  }
+  f.eng->sheet_opened(1, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(*t.node("photo")->str("value") == "extend");  // Fill opened it
+    // The frame wins over a preset, so the sheet says so instead of offering one.
+    CHECK(t.has("frame.remove"));
+    CHECK_FALSE(t.has("k.remove.extend"));
+  }
+  // No frame (Cancel, or the edit moved on): the presets again.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = false;
+  }
+  f.eng->sheet_opened(2, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(*t.node("photo")->str("value") == "extend");
+    CHECK_FALSE(t.has("frame.remove"));
+    CHECK(t.has("k.remove.extend"));
+  }
+}
+
+TEST_CASE("extend: the host's readout and presets are the add-on's own sums", "[enhance][extend]") {
+  // shell/edit_workspace.h repeats extend_from_fractions and extend_preset so
+  // the bar reads the size the file is: the two must never drift.
+  const std::uint32_t sizes[][2] = {{480, 320}, {6000, 4000}, {4000, 6000}, {12000, 1000}, {9000, 9000},
+                                    {10000, 10000}, {16000, 300}, {7, 5}};
+  const float fractions[] = {0.0f, 0.013f, 0.1f, 0.25f, 0.3333f, 0.5f, 0.75f, 1.0f};
+  for (const auto& wh : sizes) {
+    for (float l : fractions) {
+      for (float r : {0.0f, 0.2f, 0.5f}) {
+        for (float t : {0.0f, 0.125f, 0.5f}) {
+          const extend_margins a = extend_from_fractions(l, t, r, t * 0.5f, wh[0], wh[1]);
+          const std::array<std::uint32_t, 4> b = mv::shell::extend_margins_of({l, t, r, t * 0.5f}, wh[0], wh[1]);
+          INFO(wh[0] << "x" << wh[1] << " l " << l << " t " << t << " r " << r);
+          CHECK(a.left == b[0]);
+          CHECK(a.top == b[1]);
+          CHECK(a.right == b[2]);
+          CHECK(a.bottom == b[3]);
+          CHECK(std::uint64_t{wh[0] + a.left + a.right} * (wh[1] + a.top + a.bottom) <=
+                std::max<std::uint64_t>(kExtendMaxPixels, std::uint64_t{wh[0]} * wh[1]));
+          CHECK(wh[0] + a.left + a.right <= std::max(kExtendMaxEdge, wh[0]));
+        }
+      }
+    }
+    for (int i = 1; i < mv::shell::kExtendPresetCount; ++i) {
+      const extend_margins p = extend_preset(mv::shell::extend_preset_name(i), wh[0], wh[1]);
+      const mv::shell::extend_size_t s = mv::shell::extend_size(mv::shell::extend_preset_draft(i, wh[0], wh[1]), wh[0], wh[1]);
+      INFO(wh[0] << "x" << wh[1] << " preset " << mv::shell::extend_preset_name(i));
+      // A preset past 100 MP is refused by the sheet; the chip's frame is held to it.
+      if (std::uint64_t{wh[0] + p.left + p.right} * (wh[1] + p.top + p.bottom) > kExtendMaxPixels) continue;
+      CHECK(s.left == p.left);
+      CHECK(s.top == p.top);
+      CHECK(s.right == p.right);
+      CHECK(s.bottom == p.bottom);
+    }
+  }
+  CHECK(mv::shell::kExtendMaxEdge == kExtendMaxEdge);
+  CHECK(mv::shell::kExtendMaxPixels == kExtendMaxPixels);
+  // Nonsense fractions add nothing.
+  CHECK(extend_from_fractions(-0.2f, std::nanf(""), 0.0f, 0.0f, 400, 300).empty());
 }
 
 // ---- the live preview and its glow (contribution API 10) ------------------------------

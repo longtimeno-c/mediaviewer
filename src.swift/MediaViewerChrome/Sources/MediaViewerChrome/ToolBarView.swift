@@ -39,6 +39,7 @@ struct ToolBarView: View {
       case .brush: brushRow(compact: compact)
       case .redEye: redEyeRow(compact: compact)
       case .faces: facesRow(compact: compact)
+      case .extend: extendRow(compact: compact)
       default: pickerRow
       }
     }
@@ -142,6 +143,45 @@ struct ToolBarView: View {
     doneButton
   }
 
+  // S6, Extend: preset chips · "+18 % · 6048×4032" · Fill ↵ · Cancel.
+  @ViewBuilder
+  private func extendRow(compact: Bool) -> some View {
+    if compact {
+      // A narrow canvas: the chips fold into a menu.
+      Menu(bar.extendPreset >= 0 ? ToolBarState.extendPresets[bar.extendPreset] : "Frame") {
+        ForEach(Array(ToolBarState.extendPresets.enumerated()), id: \.offset) { i, label in
+          Button(label) { store.extendPreset(i) }
+        }
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .help("The Enhance add-on's frames")
+    } else {
+      HStack(spacing: MVTheme.space(2)) {
+        ForEach(Array(ToolBarState.extendPresets.enumerated()), id: \.offset) { i, label in
+          ChipButton(label: label, selected: bar.extendPreset == i) { store.extendPreset(i) }
+        }
+      }
+    }
+    // Past the 25 % warning: the overlay's caution amber, and it says why.
+    Text(bar.extendW > 0 ? bar.extendReadout + (bar.extendWarn && !compact ? " · may smear" : "")
+                         : "Drag the edges past the photo")
+      .monospacedDigit()
+      .foregroundStyle(bar.extendWarn ? MVTheme.warm : MVTheme.body)
+      .lineLimit(1)
+      .help(bar.extendWarn ? "Past 25 % a side, fills may smear" : "The new picture's size")
+    Button { store.toolAction(.apply) } label: {
+      Text(compact ? "Fill" : "Fill ↵")
+    }
+    .buttonStyle(AccentButtonStyle())
+    .disabled(!bar.canApply)
+    .help(store.enhance ? withKey("Fill the new edges (a frame inside the photo crops it)", "Apply tool")
+                        : "Filling new edges needs the Enhance add-on (Settings → Add-ons); a frame inside the photo crops it")
+    Button { store.toolAction(.done) } label: { Text("Cancel") }
+      .buttonStyle(AccentButtonStyle(filled: false))
+      .help("Drop the new frame (Esc)")
+  }
+
   // The white-balance picker: one click, then it puts itself down.
   @ViewBuilder
   private var pickerRow: some View {
@@ -241,6 +281,11 @@ struct ToolBarView: View {
     var parts: [String] = []
     let smaller = liveKey("Smaller brush"), bigger = liveKey("Bigger brush")
     if !smaller.isEmpty || !bigger.isEmpty { parts.append("\(smaller) \(bigger) size") }
+    if bar.tool == .extend {
+      // S6: drag the edges; Enter fills, Esc cancels.
+      let apply = liveKey("Apply tool")
+      return "Drag an edge past the photo · \(apply.isEmpty ? "↩" : apply) fill · Esc cancel"
+    }
     if bar.tool == .brush { parts.append("⌥ erase") }
     let pan = liveKey("Pan while brushing")
     parts.append("\(pan.isEmpty ? "Space" : pan) pan")
@@ -256,9 +301,31 @@ struct ToolBarView: View {
     case .brush: return "Remove brush"
     case .redEye: return "Red-eye tool"
     case .faces: return "Faces tool"
+    case .extend: return "Extend edges"
     case .whiteBalance: return "White balance picker"
     default: return "Canvas tool"
     }
+  }
+}
+
+/// S6: one of Extend's preset chips.
+private struct ChipButton: View {
+  let label: String
+  let selected: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Text(label)
+        .padding(.horizontal, MVTheme.space(6)).padding(.vertical, MVTheme.space(3))
+        .foregroundStyle(selected ? MVTheme.accent : MVTheme.body)
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(6))
+          .fill(selected ? MVTheme.selectionWash : Color.clear))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(label)
+    .accessibilityAddTraits(selected ? [.isSelected] : [])
   }
 }
 

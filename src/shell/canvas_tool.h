@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // docs/plans/edit-refresh.md S3: canvas tools. What a click or drag on the photo
 // does while a tool is armed (the Remove brush, the red-eye tool, Faces
-// (shell/faces_tool.h); Extend arrives with S6), its size in screen pixels, and the pure maths
+// (shell/faces_tool.h), Extend's frame (S6)), its size in screen pixels, and the pure maths
 // both hosts share: the home tab a tool opens, the size steps, the spot under
 // the pointer, the eye the red-eye ring snaps to, and Find eyes' test.
 //
@@ -383,8 +383,14 @@ struct tool_bar {
   // `busy` a read or a fix on the pool.
   std::int32_t eyes = 0;
   std::int32_t can_undo = 0;  // S4a: a stroke or a Clear to undo (a cleared brush still undoes)
+  // S6: Extend's readout "+18 % · 6048×4032" (extend_w x extend_h above),
+  // the growth in permille, a side past the 25 % warning, and the preset chip
+  // the frame is (shell::extend_preset_label; -1 a frame of the person's own).
+  std::int32_t extend_growth = 0;
+  std::int32_t extend_warn = 0;
+  std::int32_t extend_preset = 0;
 };
-static_assert(sizeof(tool_bar) == 60);
+static_assert(sizeof(tool_bar) == 72);
 
 // The bar's buttons, as both chromes send them back (mv_chrome_tool_action,
 // chrome_cmd_canvas_tool's actions are commands; these are the bar's own).
@@ -399,7 +405,36 @@ enum class tool_bar_action : std::int32_t {
   faces_open_eyes = 6,
   faces_improve = 7,
   faces_do_all = 8,
+  // S6: Extend's preset chip i is extend_preset + i (shell/edit_workspace.h
+  // kExtendPresetCount; 0 Original). Its Fill is apply, its Cancel done.
+  extend_preset = 16,
 };
+// The bar's action for Extend's preset chip `i`, and back (-1 not one).
+[[nodiscard]] constexpr std::int32_t extend_preset_action(int i) noexcept {
+  return static_cast<std::int32_t>(tool_bar_action::extend_preset) + i;
+}
+[[nodiscard]] constexpr int extend_preset_of_action(std::int32_t action) noexcept {
+  const int i = action - static_cast<std::int32_t>(tool_bar_action::extend_preset);
+  return i >= 0 && i < kExtendPresetCount ? i : -1;
+}
+
+// The pointer over Extend's frame: what its cursor says (both hosts map these
+// to their own resize cursors).
+enum class extend_cursor : std::uint8_t { cross, left_right, up_down, nw_se, ne_sw, move };
+[[nodiscard]] constexpr extend_cursor extend_cursor_of(std::uint8_t handle) noexcept {
+  if (handle & extend_move) return extend_cursor::move;
+  const bool h = (handle & (extend_left | extend_right)) != 0, v = (handle & (extend_top | extend_bottom)) != 0;
+  if (h && v) {
+    const bool nw = ((handle & extend_left) != 0) == ((handle & extend_top) != 0);
+    return nw ? extend_cursor::nw_se : extend_cursor::ne_sw;
+  }
+  if (h) return extend_cursor::left_right;
+  if (v) return extend_cursor::up_down;
+  return extend_cursor::cross;
+}
+static_assert(static_cast<int>(canvas_tool::extend) == 5, "tool_overlay.h kToolExtendWire");
+// Screen pixels (points times the display's scale) from an edge a press grabs it.
+inline constexpr float kExtendGrabPx = 12.0f;
 
 // ---- Onto the canvas -------------------------------------------------------------------
 
@@ -417,6 +452,9 @@ struct tool_view_in {
   int hover_spot = -1;
   std::array<float, 3> pulse{-1.0f, -1.0f, 0.0f};
   std::uint64_t pulse_until_ms = 0;
+  // S6: Extend's frame and the edge(s) under the pointer or held.
+  extend_draft extend{};
+  std::uint8_t extend_handle = 0;
 };
 
 // The red-eye tool shows the photo's fixes, so a click on one can take it off.
@@ -442,6 +480,36 @@ inline void apply_tool(edit_view& v, const tool_view_in& in, const edit::placeme
   v.tool_pulse[1] = in.pulse[1];
   v.tool_pulse[2] = in.pulse[2];
   v.tool_pulse_until_ms = in.pulse_until_ms;
+  // S6: Extend's frame, its warning and its readout (the shown picture's
+  // pixels through the add-on's sums: the file is the size it reads).
+  if (in.tool == canvas_tool::extend) {
+    v.tool_extend[0] = in.extend.l;
+    v.tool_extend[1] = in.extend.t;
+    v.tool_extend[2] = in.extend.r;
+    v.tool_extend[3] = in.extend.b;
+    v.tool_extend_handle = in.extend_handle;
+    v.tool_extend_warn = extend_warns(in.extend) ? 1 : 0;
+    const extend_size_t sz = extend_size(in.extend, p.cropped.w, p.cropped.h);
+    v.tool_extend_w = sz.width;
+    v.tool_extend_h = sz.height;
+    v.tool_extend_growth = sz.growth_permille;
+  } else {
+    v.tool_extend[0] = v.tool_extend[1] = v.tool_extend[2] = v.tool_extend[3] = 0.0f;
+    v.tool_extend_handle = 0;
+    v.tool_extend_warn = 0;
+    v.tool_extend_w = v.tool_extend_h = 0;
+    v.tool_extend_growth = 0;
+  }
+}
+
+// S6: Extend's part of the bar: the readout and the chip the frame is.
+inline void apply_extend_bar(tool_bar& b, const extend_draft& d, const edit::placement& p) noexcept {
+  const extend_size_t sz = extend_size(d, p.cropped.w, p.cropped.h);
+  b.extend_w = static_cast<std::int32_t>(sz.width);
+  b.extend_h = static_cast<std::int32_t>(sz.height);
+  b.extend_growth = sz.growth_permille;
+  b.extend_warn = extend_warns(d) ? 1 : 0;
+  b.extend_preset = extend_preset_of(d, p.cropped.w, p.cropped.h);
 }
 
 }  // namespace mv::shell

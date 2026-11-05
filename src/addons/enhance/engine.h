@@ -60,6 +60,10 @@ struct engine_port {
   // Bin / Trash, 1 refused (the place has no bin: nothing was removed), -1
   // failed. Never a permanent delete.
   std::function<int(const std::string& path)> recycle;
+  // edit-refresh S6: whether the host holds a frame dragged past this
+  // photo's edges (the host table's still_extend): the sheet then opens on
+  // Extend, as it opens on Remove when something is brushed.
+  std::function<bool(const std::string& path)> framed;
   std::function<std::optional<std::uint64_t>(const std::string& dir)> free_disk;
   std::function<std::unique_ptr<ai::http_transport>()> transport;
   // Never a path or a name (rule 6).
@@ -164,6 +168,7 @@ class engine {
     item_kind item = item_kind::unknown;
     media_facts facts;
     std::uint32_t brushed = 0;
+    bool framed = false;  // S6: the host holds an Extend frame for it
   };
   [[nodiscard]] item_facts read_item(const std::string& path) const;
   void adopt_locked(const std::string& path, const item_facts& f, std::vector<std::int64_t> keep);
@@ -200,6 +205,7 @@ class engine {
   media_facts facts_;
   tier recommended_ = tier::standard;  // this computer's, by Local search's rule
   std::uint32_t brushed_ = 0;  // slice 7: dabs brushed over the photo, when the sheet opened
+  bool framed_ = false;        // edit-refresh S6: a canvas frame over the photo, when the sheet opened
   bool running_ = false;
   double progress_ = -1;
   std::chrono::steady_clock::time_point run_started_{};

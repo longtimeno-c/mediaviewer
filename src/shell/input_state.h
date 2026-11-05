@@ -164,6 +164,17 @@ struct edit_view {
   std::int8_t tool_face_hover = -1;
   float tool_faces[kToolFaces][4] = {};
   char tool_face_names[kToolFaces][kToolFaceName] = {};
+  // docs/plans/edit-refresh.md S6: Extend's frame (tool == extend): left, top,
+  // right, bottom past the shown picture's edges as fractions of its width /
+  // height (negative inside: a crop), the edge(s) under the pointer or held
+  // (shell::extend_handle bits), a side past the 25 % warning, and the
+  // readout: the result's pixels and its growth in permille.
+  float tool_extend[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  std::uint8_t tool_extend_handle = 0;
+  std::uint8_t tool_extend_warn = 0;
+  std::uint32_t tool_extend_w = 0;
+  std::uint32_t tool_extend_h = 0;
+  std::int32_t tool_extend_growth = 0;
 };
 
 struct input_snapshot {
@@ -335,6 +346,12 @@ struct input_snapshot {
   // re-fills the picture into the new rect and never touches the swapchain
   // (no resize, no ResizeBuffers, no drawable size, no refresh probe).
   std::uint32_t refit_seq = 0;
+  // docs/plans/edit-refresh.md S6: what fit frames, in the shown picture's uv
+  // (x, y, w, h): {0, 0, 1, 1} the picture; while Extend is armed, the photo
+  // and its frame past the edges with room around (shell/edit_workspace.h
+  // extend_fit). The host bumps refit_seq with a change; the render thread
+  // hands it to the camera (canvas::camera::set_fit_frame).
+  float fit_rect_uv[4] = {0.0f, 0.0f, 1.0f, 1.0f};
   // Non-zero while the user drags the right column's edge: the picture
   // tracks the edge exactly (an immediate fit); on release it springs.
   std::uint8_t chrome_live_resize = 0;

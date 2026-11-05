@@ -216,6 +216,25 @@ edit::placement edit_session::preview_placement() const {
   return edit::place(preview(), edit::size2{item_.width, item_.height}, {}, crop_);
 }
 
+edit_effect edit_session::crop_inside(const edit::rect& r) {
+  if (!has_item_ || crop_) return edit_effect::refused;
+  if (!(r.w > 0.0f && r.h > 0.0f) || !std::isfinite(r.x) || !std::isfinite(r.y)) return edit_effect::refused;
+  if (r.x <= 1e-6f && r.y <= 1e-6f && r.x + r.w >= 1.0f - 1e-6f && r.y + r.h >= 1.0f - 1e-6f) {
+    return edit_effect::none;
+  }
+  const edit::geometry g = export_geometry();
+  // What the picture on screen is cut from today (the angle's own fit when
+  // nothing is cropped), then the part of it the frame keeps.
+  const edit::rect now = edit::constrain_crop(g.crop, g.straighten, frame());
+  edit::rect next{now.x + r.x * now.w, now.y + r.y * now.h, r.w * now.w, r.h * now.h};
+  next = edit::constrain_crop(next, g.straighten, frame());
+  if (same_rect(next, now)) return edit_effect::none;
+  op o{op_kind::crop};
+  o.crop = next;
+  current().push(o);
+  return edit_effect::redraw;
+}
+
 edit::geometry edit_session::export_geometry() const {
   const edit::edit_stack* s = stack();
   return s ? edit::fold(*s) : edit::geometry{};

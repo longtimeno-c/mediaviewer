@@ -200,6 +200,18 @@ click, so an add-on cannot put UI into the inspector on its own. Navigating (Sho
 stays the host's; the add-on's tree names the file, the host decides. The sheet is kept as the
 fallback for an add-on without one ([29](29-enhance.md) "Docked in Edit"; docs/plans/edit-refresh.md S5).
 
+**Extend's frame is shell state; its margins reach Enhance by a host-table row (2026-11-05, owner
+call E).** Extend (docs/plans/edit-refresh.md S6) drags a frame past the photo's edges on the
+canvas. The edit stack never holds a rect past 0..1 ([07](07-photo-editing.md)): Fill lands the
+part of the frame over the photo as an ordinary crop op and hands the overhang to Enhance through
+`still_extend` (appended last, after S10's `still_faces`), as fractions of the cropped picture, so the add-on
+never sees the stack. A side warns past 25 % and stops at 50 % (the add-on grows a picture at most
+twice each way). The frame's margins are held to 16384 px a side and shrunk evenly to 100 MP
+rather than refused (a sheet preset over 100 MP is still refused), and the bar's readout uses the
+same sums, so the file is the size it showed. The result is `<stem>-extended.jpg` (it was
+`-enhance`). While a frame is being dragged the camera does not refit; it frames the photo and
+the frame (`fit_rect_uv`) when the drag ends, so the held edge never runs from the pointer.
+
 **The clip transport floats and auto-hides (2026-09-26).** Issue #38: one layout on both hosts,
 over the video rather than a reserved strip (auto-hiding a strip would refit the video on every
 wake). One portable rule, `shell/transport_autohide.h`: hide after 2.5 s idle while playing; held

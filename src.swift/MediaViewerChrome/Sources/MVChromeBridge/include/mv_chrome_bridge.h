@@ -1124,7 +1124,7 @@ void mv_chrome_edit_enhance(void);
 // chrome_tool_bar_args is the same. Re-read when mv_chrome_edit_generation moves.
 typedef struct mv_tool_bar_view {
   int32_t visible;
-  int32_t tool;             // shell::canvas_tool: 1 Remove brush, 2 red-eye, 3 white-balance picker
+  int32_t tool;             // shell::canvas_tool: 1 Remove brush, 2 red-eye, 3 white-balance picker, 5 Extend
   float size_px;            // the ring's diameter in points (4-400)
   int32_t erase;            // the Erase toggle (Option held is not shown here)
   int32_t strokes;          // the brush's strokes
@@ -1138,11 +1138,15 @@ typedef struct mv_tool_bar_view {
   int32_t can_redo;
   int32_t eyes;             // red-eye: eyes the AI pack found (People on); 0 none or not known
   int32_t can_undo;         // S4a: a stroke or a Clear to undo (Clear is undoable)
+  int32_t extend_growth;    // S6: Extend's readout, the growth in permille (+180 reads "+18 %")
+  int32_t extend_warn;      // S6: a side is past the 25 % warning
+  int32_t extend_preset;    // S6: the preset chip the frame is (0 Original ... 6 4:5), -1 the person's own
 } mv_tool_bar_view;
 bool mv_chrome_tool_bar(mv_tool_bar_view* out);
 // The bar's buttons (shell::tool_bar_action): 0 Done (the tool goes down, the
-// strokes stay), 1 Undo, 2 Redo, 3 Clear, 4 Remove / apply, 5 Find eyes;
-// S8, on the chosen faces: 6 Open eyes, 7 Improve, 8 Do all.
+// strokes stay; Extend's Cancel), 1 Undo, 2 Redo, 3 Clear, 4 Remove / apply
+// (Extend's Fill), 5 Find eyes; S8, on the chosen faces: 6 Open eyes,
+// 7 Improve, 8 Do all; S6: 16 + i Extend's preset chip i.
 void mv_chrome_tool_action(int32_t action);
 // The size slider, in points (the label fades in beside the ring).
 void mv_chrome_tool_set_size(float px);

@@ -133,7 +133,7 @@ struct EnhanceToolState {
       else { (chip, chipText, action, enabled) = (.ready, "Ready", "Set up", store.offersDetail) }
     case .extend:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Choose a frame", store.offersExtend) }
+      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Set the new frame", store.offersExtend) }
     case .restoreFaces:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
       else if !store.offersRestoreFaces {
@@ -163,7 +163,10 @@ struct EnhanceToolState {
         store.enhanceTool("remove")  // its knobs and, later, its result under the card
       }
     case .faces: store.tool(.faces)  // S8: the Faces tool; a second press puts it down
-    case .restyle, .detail, .extend:
+    // S6: the frame on the canvas (a second press puts it down); armed, the
+    // host opens the docked panel under the card (S5), where Fill runs.
+    case .extend: store.tool(.extend)
+    case .restyle, .detail:
       if let photo = tool.photo { store.enhanceTool(photo) }
     case .restoreFaces: store.restoreFaces()  // S10: docked under the Faces card
     }
@@ -401,6 +404,10 @@ struct EnhanceCard: View {
             .accessibilityLabel("Restore faces, \(restore.chipText)")
           Spacer(minLength: 0)
         }
+      }
+      if tool.kind == .extend && store.enhance {
+        Text("Drag the frame's edges past the photo, then Fill (↩).")
+          .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
       }
       if tool.kind == .remove && store.brushFull {
         Text("Brush full: Remove, then brush more.")
