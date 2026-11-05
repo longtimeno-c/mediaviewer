@@ -754,22 +754,41 @@ void job_runner::run_remove(job_request r, job_events ev) {
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
   const std::uint32_t side = (*model)->side();
   const std::size_t n = plan.boxes.size();
+  // Quality over speed (owner 2026-11-04): a box over 1.5x the model's side
+  // is filled again at full resolution on model-side tiles. Progress counts
+  // fills, the first pass's and every tile's, so the time left is the work
+  // left.
+  std::vector<std::vector<pixel_box>> refine(n);
+  std::size_t total = n, done = 0;
+  for (std::size_t i = 0; i < n; ++i) total += (refine[i] = refine_tiles(mask, plan, i, side)).size();
+  const auto step = [&] {
+    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / static_cast<double>(total));
+  };
   for (std::size_t i = 0; i < n; ++i) {
     if (cancel_.load()) return fail(why(status::cancelled));
-    if (ev.progress) ev.progress(0.2 + 0.7 * static_cast<double>(i) / static_cast<double>(n));
+    step();
     const pixel_box& box = plan.boxes[i];
     const pixel_box whole{0, 0, box.width, box.height};
-    auto filled = (*model)->fill(resize_rgb(crop_rgb(full, box), side, side),
-                                 crop_mask(box_mask(mask, plan, i, true), whole, side, side));
-    if (!filled) return fail(why(filled.error()));
+    auto first = (*model)->fill(resize_rgb(crop_rgb(full, box), side, side),
+                                crop_mask(box_mask(mask, plan, i, true), whole, side, side));
+    if (!first) return fail(why(first.error()));
+    ++done;
+    if (cancel_.load()) return fail(why(status::cancelled));
+    rgb8 filled = resize_rgb(*first, box.width, box.height);
+    const expected refined = refine_fill(full, mask, plan, i, refine[i], **model, filled, [&] {
+      if (cancel_.load()) return false;
+      step();
+      ++done;
+      return true;
+    });
+    if (!refined) return fail(why(refined.error()));
     if (cancel_.load()) return fail(why(status::cancelled));
     // The feather grows with the box: a few pixels on a small fix, more on a
-    // large one the model filled at a fraction of its size.
-    const std::uint32_t feather = std::clamp<std::uint32_t>(box.width / 256, 2, 16);
-    paste_back_box(full, box, resize_rgb(*filled, box.width, box.height), box_mask(mask, plan, i, false), feather);
+    // large one.
+    paste_back_box(full, box, filled, box_mask(mask, plan, i, false), remove_feather(box));
     if (ev.preview && i + 1 < n) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
   }
-  if (ev.progress) ev.progress(0.9);
+  if (ev.progress) ev.progress(0.95);
   if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
   run_port::still still;
   still.width = full.width;
@@ -795,12 +814,23 @@ void job_runner::run_extend(job_request r, job_events ev) {
   photo.width = pic->width;
   photo.height = pic->height;
   photo.rgb = std::move(pic->rgb);
-  std::string preset = "wider";
-  if (const auto it = part.values.find("extend"); it != part.values.end() && it->second.k == json::kind::string) {
-    preset = it->second.s;
+  // edit-refresh S6: the frame dragged on the canvas when the host has one,
+  // else the sheet's preset.
+  std::array<float, 4> frame{};
+  if (port_.still_extend) frame = port_.still_extend(r.path);
+  const bool dragged = frame[0] > 0.0f || frame[1] > 0.0f || frame[2] > 0.0f || frame[3] > 0.0f;
+  extend_margins m;
+  if (dragged) {
+    m = extend_from_fractions(frame[0], frame[1], frame[2], frame[3], photo.width, photo.height);
+    if (m.empty()) return fail("The new frame adds nothing to this photo.");
+  } else {
+    std::string preset = "wider";
+    if (const auto it = part.values.find("extend"); it != part.values.end() && it->second.k == json::kind::string) {
+      preset = it->second.s;
+    }
+    m = extend_preset(preset, photo.width, photo.height);
+    if (m.empty()) return fail("The photo is already that shape.");
   }
-  const extend_margins m = extend_preset(preset, photo.width, photo.height);
-  if (m.empty()) return fail("The photo is already that shape.");
   if (std::uint64_t{photo.width + m.left + m.right} * (photo.height + m.top + m.bottom) > kMaxStillPixels) {
     return fail("The extended picture would be over 100 megapixels.");
   }
@@ -813,11 +843,31 @@ void job_runner::run_extend(job_request r, job_events ev) {
   auto model = port_.load_inpaint(*part.spec, part.models_dir);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
   const std::vector<pixel_box> tiles = extend_tiles(out.width, out.height, m);
-  const expected filled = extend_fill(out, mask, tiles, **model, [&](std::size_t done, std::size_t total) {
-    if (ev.progress) ev.progress(0.1 + 0.85 * static_cast<double>(done) / std::max<std::size_t>(total, 1));
+  // Quality over speed (2026-11-05): where those tiles were filled shrunk,
+  // a detail pass at the model's side gives the grain back. Progress counts
+  // every fill, both passes', so the time left is the work left.
+  const std::vector<pixel_box> detail = extend_detail_tiles(out.width, out.height, m, (*model)->side());
+  const std::size_t total = tiles.size() + detail.size();
+  std::size_t done = 0;
+  const auto step = [&] {
+    const double all = static_cast<double>(std::max<std::size_t>(total, 1));
+    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / all);
+  };
+  const rgb8 start = detail.empty() ? rgb8{} : out;  // the detail pass fills against the canvas as made
+  const expected filled = extend_fill(out, mask, tiles, **model, [&](std::size_t d, std::size_t) {
+    done = d;
+    step();
     return !cancel_.load();
   });
   if (!filled) return fail(why(filled.error()));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  const expected sharpened = extend_detail(start, mask, m, detail, **model, out, [&] {
+    if (cancel_.load()) return false;
+    step();
+    ++done;
+    return true;
+  });
+  if (!sharpened) return fail(why(sharpened.error()));
   // The photo, exactly as it was, in the middle.
   for (std::uint32_t y = 0; y < original.height; ++y) {
     std::copy_n(original.rgb.data() + std::size_t{y} * original.width * 3, std::size_t{original.width} * 3,
@@ -828,6 +878,7 @@ void job_runner::run_extend(job_request r, job_events ev) {
   still.width = out.width;
   still.height = out.height;
   still.rgb = std::move(out.rgb);
+  still.suffix = "extended";  // <stem>-extended.jpg (docs/plans/edit-refresh.md 3.2)
   auto path = port_.write_still(r.path, still);
   if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");
@@ -880,6 +931,19 @@ void job_runner::run_faces(job_request r, job_events ev) {
   auto found = find_faces(full, faces);
   if (!found) return fail(found.error() == status::cancelled ? why(status::cancelled) : pack_why(found.error()));
   if (found->empty()) return fail("No faces were found in this photo.");
+  // edit-refresh S8: the Faces panel's Restore face runs on the faces chosen
+  // on the canvas only ("faces": x, y, w, h quads, 0..1 of the photo).
+  if (const auto it = part.values.find("faces"); it != part.values.end() && it->second.k == json::kind::array) {
+    std::vector<float> boxes;
+    for (const json::value& n : it->second.a) {
+      if (n.k != json::kind::number) return fail(why(status::invalid_arg));
+      boxes.push_back(static_cast<float>(n.is_integer ? static_cast<double>(n.i) : n.d));
+    }
+    if (!boxes.empty()) {
+      *found = chosen_faces(*found, full.width, full.height, boxes);
+      if (found->empty()) return fail("The chosen faces were not found again in this photo.");
+    }
+  }
   if (cancel_.load()) return fail(why(status::cancelled));
   auto model = port_.load_face(*part.spec, part.models_dir, choice, r.policy.threads);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));

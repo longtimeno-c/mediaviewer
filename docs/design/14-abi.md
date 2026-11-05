@@ -511,6 +511,12 @@ nothing of the core and reaches it only through the host function table.
   over the photo being edited: dabs of three floats, u and v across the edited picture
   `still_open` returns and the radius over its longer side. The Windows host sets them through
   `mv_edit_still_mask`, the Mac host directly (`addon_media::set_still_mask`).
+- **Edit ↔ add-ons, Extend's frame** (edit-refresh S6). The host table's `still_extend`
+  (appended after `still_mask`, version not bumped) answers the margins the person dragged past the
+  edges of the photo being edited: four floats, left, top, right and bottom, each a fraction of the
+  edited picture `still_open` returns; all 0 when none is set or another photo is asked. The
+  Windows host sets them through `mv_edit_still_extend`, the Mac host directly
+  (`addon_media::set_still_extend`).
 - **Edit ↔ add-ons** ([plan](../plans/edit-adjust.md) slices 5–6). `still_open` answers the
   still being edited with its edit applied; the Windows host sets that edit through
   `mv_edit_still_set` (an opaque blob of this build's edit geometry and colour; host and
@@ -522,6 +528,11 @@ nothing of the core and reaches it only through the host function table.
   `mv_eyes_json` (`mediaviewer_addon.h`, worker thread) hands the Windows exe the same answer
   with no candidates, for the red-eye ring's snap and Find eyes; `MV_ERR_NOT_FOUND` without the
   pack, `MV_ERR_INVALID_ARG` while People is off or when `cap` is short (`needed` says how much).
+  S8: `mv_adjust_faces(path, fix, boxes, count, note…)` runs the Faces tool's fix (`fix` -1 Do
+  all, 0 Open eyes, 1 Improve face; appended values follow `addon::media::face_fix`) on only the
+  faces whose boxes the canvas chose (x, y, w, h quads, matched to this run's answer; NULL every
+  face), worker thread, and returns the note. The pack's `eyes_json` answer gains `"name"` and
+  `"photos"` per face (appended keys).
 - **Restore faces** (docs/plans/edit-refresh.md S10, [29](29-enhance.md)). `mv_ai_api` appends
   `faces_json` (after `eyes_json`): the faces and five landmarks in pixels handed over (8-bit RGB,
   no path), and with `other_rgb` (the same picture changed) each face's People cosine to the face

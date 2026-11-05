@@ -77,6 +77,7 @@
 #endif
 #include "shell/adjust_pane.h"
 #include "shell/canvas_tool.h"
+#include "shell/faces_tool.h"
 #include "shell/brush_mask.h"
 #include "shell/remove_brush.h"
 #include "shell/ai_badge.h"
@@ -880,6 +881,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)brushDragX:(float)x y:(float)y;
 - (void)brushHoverX:(float)x y:(float)y;
 - (void)brushRelease;
+// docs/plans/edit-refresh.md S6: Extend's frame.
+- (BOOL)extendActive;
+- (BOOL)extendPressX:(float)x y:(float)y;
 // docs/plans/edit-refresh.md S3: canvas tools.
 - (BOOL)toolArmed;
 - (BOOL)toolPanHeld;
@@ -892,6 +896,10 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)toolSetErase:(BOOL)on;
 - (BOOL)toolWheel:(CGFloat)dy precise:(BOOL)precise;
 - (mv::shell::tool_bar)toolBar;
+// docs/plans/edit-refresh.md S8: the Faces tool's panel (FacesPanelView.swift).
+- (const mv::shell::faces_tool&)facesTool;
+- (BOOL)facesArmed;
+- (void)facesOp:(int32_t)packed;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -946,6 +954,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editRailPick:(int32_t)tab;
 - (void)editTool:(int32_t)tool;
 - (void)enhanceTool:(const std::string&)photo run:(BOOL)run;
+- (void)enhanceTool:(const std::string&)photo run:(BOOL)run faces:(const std::vector<float>&)faces;
 - (void)enhanceShowResult:(const std::string&)path keep:(BOOL)keep;
 - (void)enhanceDockClose;
 - (void)autoEnhance;
@@ -1964,6 +1973,7 @@ static_assert(sizeof(mv_tool_bar_view) == sizeof(mv::shell::tool_bar), "mv_tool_
 static_assert(offsetof(mv_tool_bar_view, size_px) == offsetof(mv::shell::tool_bar, size_px));
 static_assert(offsetof(mv_tool_bar_view, eyes) == offsetof(mv::shell::tool_bar, eyes));
 static_assert(offsetof(mv_tool_bar_view, can_undo) == offsetof(mv::shell::tool_bar, can_undo));  // S4a
+static_assert(offsetof(mv_tool_bar_view, extend_preset) == offsetof(mv::shell::tool_bar, extend_preset));  // S6
 static_assert(static_cast<int>(mv::shell::tool_bar_action::find_eyes) == 5);
 extern "C" bool mv_chrome_tool_bar(mv_tool_bar_view* out) {
   if (!g_chrome_app || !out) return false;
@@ -1977,6 +1987,57 @@ extern "C" void mv_chrome_tool_action(int32_t action) {
 }
 extern "C" void mv_chrome_tool_set_size(float px) {
   if (g_chrome_app) [g_chrome_app toolSetSize:px];
+}
+// docs/plans/edit-refresh.md S8: the Faces panel (FacesPanelView.swift).
+static_assert(static_cast<int>(mv::shell::tool_bar_action::faces_do_all) == 8);
+static_assert(static_cast<int>(mv::shell::faces_status::failed) == 5);
+static_assert(static_cast<int>(mv::shell::face_action::improve) == 1 && mv::shell::kFaceDoAll == -1);
+static_assert(static_cast<int>(mv::addon::media::face_fix::improve) == static_cast<int>(mv::shell::face_action::improve) &&
+              static_cast<int>(mv::addon::media::face_fix::do_all) == mv::shell::kFaceDoAll);
+extern "C" bool mv_chrome_faces_panel(mv_faces_panel_view* out) {
+  if (!g_chrome_app || !out) return false;
+  const mv::shell::faces_tool& f = [g_chrome_app facesTool];
+  *out = {};
+  out->armed = [g_chrome_app facesArmed] ? 1 : 0;  // polled every pass: no tool_bar built here
+  out->status = static_cast<std::int32_t>(f.status);
+  out->count = f.count();
+  out->chosen = static_cast<std::int32_t>(f.chosen);
+  out->running = f.running_here() ? 1 : 0;  // not a fix left running on another photo
+  out->running_face = f.running_face;
+  out->running_action = f.running_action;
+  out->revision = f.revision;
+  return true;
+}
+extern "C" bool mv_chrome_face_card(int32_t index, mv_face_card_view* out, char* name, int32_t name_cap, char* source,
+                                    int32_t source_cap, uint8_t* rgba, int32_t rgba_cap) {
+  if (!g_chrome_app || !out) return false;
+  const mv::shell::faces_tool& f = [g_chrome_app facesTool];
+  if (index < 0 || index >= f.count()) return false;
+  const mv::shell::face_card& c = f.faces[static_cast<std::size_t>(index)];
+  *out = {};
+  out->person = c.person;
+  out->photos = static_cast<std::int32_t>(c.photos);
+  out->actions = static_cast<std::int32_t>(mv::shell::actions_of(
+      c, mv::shell::find_addon_command("enhance", "faces") != mv::shell::command_id::none));
+  out->shut = c.shut ? 1 : 0;
+  out->thumb_w = static_cast<std::int32_t>(c.thumb_w);
+  out->thumb_h = static_cast<std::int32_t>(c.thumb_h);
+  auto copy = [](const std::string& text, char* dst, int32_t cap) {
+    if (!dst || cap <= 0) return;
+    const std::size_t n = std::min(text.size(), static_cast<std::size_t>(cap - 1));
+    std::memcpy(dst, text.data(), n);
+    dst[n] = '\0';
+  };
+  copy(c.name, name, name_cap);
+  copy(mv::shell::face_source_line(c), source, source_cap);
+  if (rgba && rgba_cap > 0 && !c.thumb.empty() && static_cast<std::size_t>(rgba_cap) >= c.thumb.size()) {
+    std::memcpy(rgba, c.thumb.data(), c.thumb.size());
+  }
+  return true;
+}
+extern "C" void mv_chrome_faces_op(int32_t packed) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app facesOp:packed];
 }
 extern "C" void mv_chrome_tool_set_erase(int32_t on) {
   if (g_chrome_app) [g_chrome_app toolSetErase:on != 0];
@@ -2728,6 +2789,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     if ([self.app brushActive]) {
       [self.app toolModifiers:(event.modifierFlags & NSEventModifierFlagOption) != 0];
       _brushStroke = [self.app brushPressX:self.snap->mouse_x y:self.snap->mouse_y];
+    } else if ([self.app extendActive]) {
+      // S6: a press on an edge (or inside) of Extend's frame drags it; the
+      // drag and release go through the brush's path (-brushDragX:, -brushRelease).
+      _brushStroke = [self.app extendPressX:self.snap->mouse_x y:self.snap->mouse_y];
     } else {
       [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
     }
@@ -3657,6 +3722,14 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   BOOL _toolBand;           // the context bar's band is reserved below the photo
   int _toolHoverPlus1;      // the red-eye fix under the pointer, + 1 (0 none)
   float _toolSnap[3];       // the red-eye ring snapped to an eye (shown uv, r over long; r 0 none)
+  // docs/plans/edit-refresh.md S6: Extend's frame (shell/edit_workspace.h), the
+  // edges a press holds and the draft and point it started from, the edges
+  // under the pointer.
+  mv::shell::extend_draft _extend;
+  mv::shell::extend_draft _extendStart;
+  float _extendPress[2];
+  std::uint8_t _extendGrab;
+  std::uint8_t _extendHover;
   float _toolPulse[3];      // a fix just made (shown uv, r over long)
   std::uint64_t _toolPulseUntil;
   // The eyes the AI pack found on the photo (People on): the ring snaps to
@@ -3671,6 +3744,10 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   std::uint32_t _brushRev;
   std::vector<mv::edit::adjust_section> _pendingAutos;  // slice 5b: a typed request's Autos still to run
   BOOL _eyesRunning;  // slice 6: Open closed eyes is on the pool
+  // docs/plans/edit-refresh.md S8: the Faces tool's faces of the photo on
+  // screen (read once per item when the tool is armed), which are chosen, the
+  // one under the pointer and the fix running (shell/faces_tool.h).
+  mv::shell::faces_tool _faces;
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -7174,7 +7251,8 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   // S3: the canvas tools are for a still; the armed one shows checked.
   if (tag >= kMenuToolBrush && tag <= kMenuToolFaces) {
     item.state = (tag == kMenuToolBrush && _tool.tool == mv::shell::canvas_tool::remove_brush) ||
-                         (tag == kMenuToolRedEye && _tool.tool == mv::shell::canvas_tool::red_eye)
+                         (tag == kMenuToolRedEye && _tool.tool == mv::shell::canvas_tool::red_eye) ||
+                         (tag == kMenuToolExtend && _tool.tool == mv::shell::canvas_tool::extend)
                      ? NSControlStateValueOn
                      : NSControlStateValueOff;
     return [self editSubject] == mv::shell::edit_subject::still;
@@ -8563,8 +8641,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
   // S3: an armed tool stays armed on the next still (the bar and its band go
-  // on a clip); red-eye reads the new photo's eyes.
+  // on a clip); red-eye reads the new photo's eyes, Faces its faces (S8).
   if (_tool.tool == mv::shell::canvas_tool::red_eye) [self toolFetchEyes];
+  if (_tool.tool == mv::shell::canvas_tool::faces && [self adjustStill]) [self facesFetch];
+  if (_tool.tool == mv::shell::canvas_tool::extend) [self extendReset];  // S6: a frame is the photo's own
   [self syncToolBar];
   [self toolCursor];
   // A document or a clip arriving under the filmstrip: say what T changes.
@@ -8989,9 +9069,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 // The rail's and the Enhance tab's tools (EditRailView / EnhanceHubView):
 // 0 Remove (the brush, on the Enhance tab), 1 Red-eye (on Adjust), 2 Faces
-// (the Enhance tab), 3 Extend (Enhance's docked panel on Extend, S5; the
-// sheet with an Enhance that has none). S3: Remove and Red-eye are canvas tools
-// (shell/canvas_tool.h); a second click on the armed one puts it down.
+// (the Enhance tab), 3 Extend (S6: Extend's frame on the canvas, and with
+// Enhance its docked panel on Extend, S5, where Fill runs). S3: Remove and
+// Red-eye are canvas tools (shell/canvas_tool.h), S8 Faces too; a second
+// click on the armed one puts it down.
 - (void)editTool:(int32_t)tool {
   if ([self editSubject] != mv::shell::edit_subject::still) {
     NSBeep();
@@ -9000,22 +9081,29 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   using mv::shell::edit_tab;
   switch (tool) {
     case 0:
-    case 1: {
-      const mv::shell::canvas_tool t =
-          tool == 0 ? mv::shell::canvas_tool::remove_brush : mv::shell::canvas_tool::red_eye;
+    case 1:
+    case 2: {
+      // S8: Faces is a canvas tool too (a box per face, the Faces panel).
+      const mv::shell::canvas_tool t = tool == 0   ? mv::shell::canvas_tool::remove_brush
+                                       : tool == 1 ? mv::shell::canvas_tool::red_eye
+                                                   : mv::shell::canvas_tool::faces;
       if (_tool.tool == t) [self toolDown];
       else [self armTool:t];
       break;
     }
-    case 2:
-      [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];
-      break;
     case 3:
-      // S5: Enhance's docked panel on Extend (its sheet without one).
-      if (mv::shell::find_addon_command("enhance", "open") == mv::shell::command_id::none) {
-        [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];  // its card offers the add-on
+      // S6: Extend is a canvas tool: its frame is dragged past the photo's
+      // edges (a crop-only frame needs no add-on; Fill says when one is
+      // needed). With Enhance, its docked panel opens under the Extend card
+      // (S5): Fill runs there, on the frame.
+      if (_tool.tool == mv::shell::canvas_tool::extend) {
+        [self toolDown];
       } else {
-        [self enhanceTool:"extend" run:NO];
+        [self armTool:mv::shell::canvas_tool::extend];
+        if (_tool.tool == mv::shell::canvas_tool::extend &&
+            mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none) {
+          [self enhanceTool:"extend" run:NO];
+        }
       }
       break;
     default: break;
@@ -9099,6 +9187,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // command; `run` starts it (Remove hands the brushed dabs over first, as the
 // sheet's Remove did). An Enhance without the panel opens its sheet instead.
 - (void)enhanceTool:(const std::string&)photo run:(BOOL)run {
+  [self enhanceTool:photo run:run faces:{}];
+}
+
+// `faces` (S8's Faces panel, Restore face): the chosen faces' boxes, x, y, w,
+// h quads 0..1 of the upright photo; Enhance restores only those. Empty: every face.
+- (void)enhanceTool:(const std::string&)photo run:(BOOL)run faces:(const std::vector<float>&)faces {
   if ([self editSubject] != mv::shell::edit_subject::still || _items.empty() || _index.current() >= _items.size()) {
     NSBeep();
     return;
@@ -9116,6 +9210,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   mv::json::writer w;
   w.begin_object().key("photo").string(photo);
   if (run) w.key("run").boolean(true);
+  if (!faces.empty()) {
+    w.key("faces").begin_array();
+    for (const float v : faces) w.number(static_cast<double>(v));
+    w.end_array();
+  }
   w.end_object();
   // The panel's content width: the column less the pane's and the card's margins.
   const CGFloat column = self.rightColumnWidth ? self.rightColumnWidth.constant : kInspectorDefaultPoints;
@@ -9138,6 +9237,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     [self noticeShow:"This needs the Enhance add-on (Settings → Add-ons)."];
     return;
   }
+  // An Enhance without the docked panel has no way to take the chosen faces.
+  if (!faces.empty()) [self noticeShow:"This Enhance restores every face in the photo"];
   (void)[self runCommand:id back:mv::shell::back_target::none];
 }
 
@@ -11765,7 +11866,9 @@ static double mv_wall_seconds() {
 - (BOOL)toolPanHeld { return _tool.pan_held ? YES : NO; }
 // Strokes not yet applied: A / D, Space and the walks are refused (owner call G).
 - (BOOL)toolPending {
-  return [self activeTool] == mv::shell::canvas_tool::remove_brush && !_brush.empty() ? YES : NO;
+  const mv::shell::canvas_tool t = [self activeTool];
+  if (t == mv::shell::canvas_tool::extend) return mv::shell::extend_empty(_extend) ? NO : YES;  // S6: a frame not filled
+  return t == mv::shell::canvas_tool::remove_brush && !_brush.empty() ? YES : NO;
 }
 
 // Arms `t`: the workspace opens on its home tab (Remove on Enhance, red-eye on
@@ -11782,11 +11885,21 @@ static double mv_wall_seconds() {
     return;
   }
   if (_edits.crop_active()) [self runEditCommand:mv::shell::command_id::crop_commit];
+  const BOOL wasExtend = _tool.tool == mv::shell::canvas_tool::extend ? YES : NO;
   const BOOL changed = mv::shell::arm_tool(_tool, _ws, t) ? YES : NO;
   _toolHoverPlus1 = 0;
   _toolSnap[2] = 0.0f;
   if (changed) [self syncWorkspace];
   if (t == mv::shell::canvas_tool::red_eye) [self toolFetchEyes];
+  if (t == mv::shell::canvas_tool::faces) [self facesFetch];
+  // S6: a new frame, the camera framing room past the edges; another tool
+  // taking over from Extend drops its frame and the room with it.
+  if (t == mv::shell::canvas_tool::extend || wasExtend) [self extendReset];
+  if (t == mv::shell::canvas_tool::extend) {
+    // Zoomed in, the room past the edges would be off screen: Fit (0) at once.
+    ++_snap.fit_seq;
+    [self pokeSnapshot];
+  }
   [self toolChanged];
 }
 
@@ -11794,7 +11907,10 @@ static double mv_wall_seconds() {
 // brush's strokes stay, dimmed, for Remove later (or a walk away clears them).
 - (void)toolDown {
   if (_tool.tool == mv::shell::canvas_tool::none) return;
+  const BOOL extending = _tool.tool == mv::shell::canvas_tool::extend;
   (void)mv::shell::arm_tool(_tool, _ws, mv::shell::canvas_tool::none);
+  // S6: Extend's Cancel (Esc, Done): the frame goes and the camera frames the photo again.
+  if (extending) [self extendReset];
   _toolHoverPlus1 = 0;
   _toolSnap[2] = 0.0f;
   [self toolChanged];
@@ -11833,6 +11949,29 @@ static double mv_wall_seconds() {
   _toolCursorSet = YES;
   if (_tool.pan_held) {
     [NSCursor.openHandCursor set];
+    return;
+  }
+  if ([self activeTool] == mv::shell::canvas_tool::faces) {
+    // S8: a hand over a face's box (a click chooses it), the arrow elsewhere.
+    [(_faces.hover >= 0 ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
+    return;
+  }
+  if ([self activeTool] == mv::shell::canvas_tool::extend) {
+    // S6: the edge under the pointer says which way it drags.
+    NSCursor* c = NSCursor.crosshairCursor;
+    switch (mv::shell::extend_cursor_of(_extendGrab != 0 ? _extendGrab : _extendHover)) {
+      case mv::shell::extend_cursor::left_right: c = NSCursor.resizeLeftRightCursor; break;
+      case mv::shell::extend_cursor::up_down: c = NSCursor.resizeUpDownCursor; break;
+      case mv::shell::extend_cursor::nw_se:
+      case mv::shell::extend_cursor::ne_sw:
+        // AppKit has no public diagonal resize cursor before macOS 15; the
+        // open hand reads as "drag the corner".
+        c = NSCursor.openHandCursor;
+        break;
+      case mv::shell::extend_cursor::move: c = NSCursor.openHandCursor; break;
+      case mv::shell::extend_cursor::cross: break;
+    }
+    [c set];
     return;
   }
   if (!mv::shell::sized([self activeTool])) {
@@ -11967,7 +12106,13 @@ static double mv_wall_seconds() {
   in.hover_spot = _toolHoverPlus1 - 1;
   in.pulse = {_toolPulse[0], _toolPulse[1], _toolPulse[2]};
   in.pulse_until_ms = _toolPulseUntil;
-  mv::shell::apply_tool(_snap.edit[0], in, _edits.preview_placement(), _edits.colour());
+  in.extend = _extend;
+  in.extend_handle = _extendGrab != 0 ? _extendGrab : _extendHover;
+  const mv::edit::placement p = _edits.preview_placement();
+  mv::shell::apply_tool(_snap.edit[0], in, p, _edits.colour());
+  // S8: the faces' boxes (only for the photo they were read from).
+  if (_faces.item == _itemId) mv::shell::apply_faces(_snap.edit[0], _faces, p);
+  else mv::shell::apply_faces(_snap.edit[0], mv::shell::faces_tool{}, p);
 }
 
 - (BOOL)brushPressX:(float)x y:(float)y {
@@ -11991,6 +12136,10 @@ static double mv_wall_seconds() {
 }
 
 - (void)brushDragX:(float)x y:(float)y {
+  if (_extendGrab != 0) {
+    [self extendDragX:x y:y];
+    return;
+  }
   float u = 0, v = 0;
   if (![self brushUV:x y:y u:&u v:&v]) return;
   (void)_brush.drag(u, v);
@@ -12003,11 +12152,21 @@ static double mv_wall_seconds() {
 // red-eye ring snaps to an eye the pack found, and a fix under it shows the
 // cross a click acts on.
 - (void)brushHoverX:(float)x y:(float)y {
+  if ([self extendActive]) {
+    [self extendHoverX:x y:y];
+    return;
+  }
   float u = 0, v = 0;
   const BOOL on = [self brushUV:x y:y u:&u v:&v] && [self pointerOverCanvas];
   if (!on && _brushCursor[0] <= -1.0f) return;
   _brushCursor[0] = on ? u : -1.0f;
   _brushCursor[1] = v;
+  if ([self activeTool] == mv::shell::canvas_tool::faces) {
+    // S8: the box under the pointer lights up (a redraw only when it changes).
+    const int face = on && _faces.item == _itemId ? mv::shell::face_at(_faces, _edits.preview_placement(), u, v) : -1;
+    if (_faces.set_hover(face)) [self brushPublish];
+    return;
+  }
   if ([self activeTool] == mv::shell::canvas_tool::red_eye && on) {
     const mv::edit::placement p = _edits.preview_placement();
     const float ring = mv::shell::radius_over_long([self toolRingPx], _lab.still_map());
@@ -12031,6 +12190,10 @@ static double mv_wall_seconds() {
 }
 
 - (void)brushRelease {
+  if (_extendGrab != 0) {
+    [self extendRelease];
+    return;
+  }
   _brush.end();
   [self brushPublish];  // S4a: the stroke goes to the tint texture's next build
   [self bumpAdjustView];
@@ -12086,6 +12249,15 @@ static double mv_wall_seconds() {
     c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
     e = _edits.set_colour(c);
     [self toolDown];  // one click
+  } else if (tool == mv::shell::canvas_tool::faces) {
+    // S8: a click on a box chooses that face or leaves it out.
+    if (_faces.item != _itemId) return;
+    const int face = mv::shell::face_at(_faces, p, u, v);
+    if (face < 0 || _faces.running) return;
+    (void)_faces.toggle(face);
+    [self brushPublish];
+    ++_editGeneration;  // the bar's "2 chosen", the panel's checks
+    return;
   } else if (tool == mv::shell::canvas_tool::red_eye) {
     const float ring = mv::shell::radius_over_long([self toolRingPx], _lab.still_map());
     const int hit = mv::shell::spot_at(p, _edits.colour(), u, v, ring * 0.5f);
@@ -12233,7 +12405,10 @@ static double mv_wall_seconds() {
       else [self armTool:canvas_tool::red_eye];
       return YES;
     case tool_faces: [self editTool:2]; return YES;
-    case tool_extend: [self editTool:3]; return YES;
+    case tool_extend:
+      if (![self adjustStill]) return NO;
+      [self editTool:3];
+      return YES;
     default: break;
   }
   const canvas_tool active = [self activeTool];
@@ -12284,9 +12459,11 @@ static double mv_wall_seconds() {
           [self brushPublish];
         }
       }
+      if (active == canvas_tool::extend) [self extendPreset:0];  // S6: back to the photo's own frame
       return YES;
     case tool_apply:
       if (active == canvas_tool::remove_brush) [self adjustBrush:2];
+      else if (active == canvas_tool::extend) [self extendFill];  // S6: Fill ↵
       else [self toolDown];
       return YES;
     case tool_pan: case tool_pan_release:
@@ -12302,6 +12479,10 @@ static double mv_wall_seconds() {
 - (void)toolBarAction:(int32_t)action {
   using mv::shell::tool_bar_action;
   using enum mv::shell::command_id;
+  if (const int preset = mv::shell::extend_preset_of_action(action); preset >= 0) {
+    [self extendPreset:preset];  // S6: a chip on Extend's bar
+    return;
+  }
   switch (static_cast<tool_bar_action>(action)) {
     case tool_bar_action::done: [self toolDown]; break;
     case tool_bar_action::undo: (void)[self runToolCommand:tool_undo]; break;
@@ -12309,6 +12490,14 @@ static double mv_wall_seconds() {
     case tool_bar_action::clear: (void)[self runToolCommand:tool_clear]; break;
     case tool_bar_action::apply: (void)[self runToolCommand:tool_apply]; break;
     case tool_bar_action::find_eyes: [self toolFindEyes]; break;
+    case tool_bar_action::faces_open_eyes:
+      [self facesRun:-1 action:static_cast<int>(mv::shell::face_action::open_eyes)];
+      break;
+    case tool_bar_action::faces_improve:
+      [self facesRun:-1 action:static_cast<int>(mv::shell::face_action::improve)];
+      break;
+    case tool_bar_action::faces_do_all: [self facesRun:-1 action:mv::shell::kFaceDoAll]; break;
+    case tool_bar_action::extend_preset: break;  // handled above
   }
 }
 - (void)toolSetSize:(float)px {
@@ -12356,13 +12545,308 @@ static double mv_wall_seconds() {
   b.can_apply = active == mv::shell::canvas_tool::remove_brush
                     ? (!_brush.empty() && mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none)
                     : active == mv::shell::canvas_tool::red_eye ? b.eyes > 0 && !_findEyesBusy : 0;
+  if (active == mv::shell::canvas_tool::faces) {
+    // S8: `eyes` the faces found, `spots` the chosen, `busy` a read or a fix
+    // on the pool (shell/canvas_tool.h tool_bar).
+    const bool mine = _faces.item == _itemId;
+    b.eyes = mine ? _faces.count() : 0;
+    b.spots = mine ? _faces.chosen_count() : 0;
+    b.busy = mine && (_faces.running_here() || _faces.status == mv::shell::faces_status::looking) ? 1 : 0;
+    b.can_apply = mine && _faces.status == mv::shell::faces_status::ready && b.spots > 0 && !_faces.running &&
+                          !_eyesRunning
+                      ? 1
+                      : 0;
+  }
+  if (active == mv::shell::canvas_tool::extend) {
+    // S6: the readout, the chip, and Fill: any frame; past the edges only with Enhance.
+    mv::shell::apply_extend_bar(b, _extend, _edits.preview_placement());
+    b.can_apply = !mv::shell::extend_empty(_extend) &&
+                  (!mv::shell::extend_overhangs(_extend) ||
+                   mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none);
+  }
   return b;
+}
+
+// ---- docs/plans/edit-refresh.md S8: the Faces tool ----------------------------------
+
+- (const mv::shell::faces_tool&)facesTool {
+  static const mv::shell::faces_tool none;
+  return _faces.item == _itemId ? _faces : none;
+}
+- (BOOL)facesArmed { return [self activeTool] == mv::shell::canvas_tool::faces ? YES : NO; }
+
+// The faces of the photo on screen, once per item, on the pool: the pack's
+// answer (People's names and counts with it), then the still for each face's
+// thumbnail and whether its eyes look shut. Without the pack, or with People
+// off, the panel says so (and offers to turn People on).
+- (void)facesFetch {
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  // Read (or reading) already; a failure or a refusal (People off) reads again.
+  if (!_faces.needs_read(_itemId)) return;
+  const std::uint64_t item = _itemId;
+  _faces.looking(item);
+  ++_editGeneration;
+  const std::string path = _items[_index.current()].path_utf8;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, item, weakSelf](const mv::job_context& ctx) -> mv::status {
+    // Always lands (a cancelled read as failed, so "Try again" can read it
+    // again): the panel never waits on a read that is not coming.
+    auto scan = std::make_shared<mv::shell::faces_scan>();
+    if (!ctx.cancelled()) {
+      try {
+        const std::string readable = mv::addon::media::readable_path(path, &ctx).value_or(path);
+        auto json = mv::addon::ai_eyes_json(readable, "");
+        std::optional<mv::image::linear_image> still;
+        if (json && json->find("\"lm\"") != std::string::npos && !ctx.cancelled()) {
+          if (auto bytes = mv::io::read_all(readable)) {
+            if (auto img = mv::image::decode_linear(*bytes, &ctx)) still = std::move(*img);
+          }
+        }
+        *scan = mv::shell::read_faces(json ? mv::status::ok : json.error(),
+                                      json ? std::string_view(*json) : std::string_view(), still ? &*still : nullptr);
+      } catch (...) {
+        *scan = {};  // out of memory: failed
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* app = weakSelf;
+      if (app) [app facesLanded:item scan:scan];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)facesLanded:(std::uint64_t)item scan:(std::shared_ptr<mv::shell::faces_scan>)scan {
+  if (!_faces.landed(item, std::move(*scan))) return;  // another photo's
+  [self brushPublish];
+  ++_editGeneration;  // the panel, the bar
+}
+
+// A fix from the panel or the bar: `action` (shell::face_action, or
+// kFaceDoAll) on `face`, or on the chosen faces for -1. On the pool: the same
+// moment's frames and the pack's donors (People), matched to the boxes the
+// canvas chose (media::faces_mask_of), then a new file beside the photo.
+- (void)facesRun:(int)face action:(int)action {
+  if (_eyesRunning || _faces.running || _faces.item != _itemId || ![self adjustStill] || _items.empty() ||
+      _index.current() >= _items.size()) {
+    return;
+  }
+  if (action < mv::shell::kFaceDoAll || action >= mv::shell::kFaceActionCount) return;
+  std::vector<float> boxes = _faces.run_boxes(face);
+  if (boxes.empty()) {
+    [self noticeShow:"Choose a face first: click its box on the photo"];
+    return;
+  }
+  if (action == static_cast<int>(mv::shell::face_action::restore)) {
+    // S10's model through Enhance's docked panel (its progress and result
+    // row), on these faces only; the host's own fixes stay free meanwhile.
+    [self enhanceTool:"faces" run:YES faces:boxes];
+    return;
+  }
+  _faces.start_run(face, action);
+  _eyesRunning = YES;
+  ++_editGeneration;
+  [self brushPublish];
+  const std::string path = _items[_index.current()].path_utf8;
+  const auto fix = static_cast<mv::addon::media::face_fix>(action);
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, fix, boxes, weakSelf](const mv::job_context& ctx) -> mv::status {
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
+    if (pack) r = mv::addon::media::fix_faces(path, *pack, fix, mv::addon::media::faces_mask_of(*pack, boxes), &ctx);
+    const std::string note = mv::addon::media::fix_note(fix, pack ? mv::status::ok : pack.error(), r);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf facesRunLanded:note];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)facesRunLanded:(const std::string&)note {
+  _faces.run_done();
+  [self brushPublish];
+  [self eyesLanded:note];  // the wand's busy flag, the note, the notice
+}
+
+// The panel's and the bar's controls (mv_chrome_faces_op, shell::pack_faces_op).
+- (void)facesOp:(int32_t)packed {
+  const std::optional<mv::shell::faces_op_args> a = mv::shell::unpack_faces_op(packed);
+  if (!a) return;
+  switch (a->op) {
+    case mv::shell::faces_op::run: [self facesRun:a->face action:a->action]; return;
+    case mv::shell::faces_op::toggle:
+      if (_faces.running || !_faces.toggle(a->face)) return;
+      break;
+    case mv::shell::faces_op::choose_all:
+      if (_faces.running) return;
+      _faces.choose_all();
+      break;
+    case mv::shell::faces_op::choose_none:
+      if (_faces.running) return;
+      _faces.choose_none();
+      break;
+    case mv::shell::faces_op::people:
+      // The chrome opens People's settings (AddonNav). The panel keeps
+      // saying People is off until a read says otherwise: the next arm, a
+      // walk, or Check again (retry) reads again.
+      return;
+    case mv::shell::faces_op::retry:
+      if ([self facesArmed] && [self adjustStill]) [self facesFetch];
+      return;
+    case mv::shell::faces_op::hover:
+      // The panel's row under the pointer lights its box on the photo.
+      if (_faces.item != _itemId || !_faces.set_hover(a->face)) return;
+      [self brushPublish];
+      return;
+  }
+  [self brushPublish];
+  ++_editGeneration;
 }
 
 // What tool mode refused: say why (docs/plans/edit-refresh.md §4.1).
 - (void)toolBlocked {
+  if ([self activeTool] == mv::shell::canvas_tool::extend && [self toolPending]) {
+    [self noticeShow:"Fill or cancel the new frame first"];  // S6
+    return;
+  }
   [self noticeShow:[self toolPending] ? "Remove or clear the strokes first"
                                       : "Put the tool down first (Esc)"];
+}
+
+// ---- docs/plans/edit-refresh.md S6: Extend on the canvas --------------------------
+//
+// The frame is shell state (shell/edit_workspace.h extend_draft), never an
+// edit: dragged past the photo's edges it is new picture Enhance fills,
+// inside them a crop. The camera frames the photo and the frame with room
+// around them (input_snapshot::fit_rect_uv, refit_seq) once a drag ends, so
+// the edge under the pointer does not run away while it is held.
+
+- (BOOL)extendActive {
+  return [self activeTool] == mv::shell::canvas_tool::extend ? YES : NO;
+}
+
+// A new frame (none), nothing held, and the camera framing it.
+- (void)extendReset {
+  _extend = {};
+  _extend.on = _tool.tool == mv::shell::canvas_tool::extend;
+  _extendGrab = 0;
+  _extendHover = 0;
+  mv::addon::media::set_still_extend({}, {});  // a frame not filled is not Enhance's
+  [self extendRefit];
+  ++_editGeneration;  // the bar's readout
+}
+
+// The camera frames the photo and the frame (a refit, never a resize).
+- (void)extendRefit {
+  // Only while Extend is active on a still: a clip under an armed tool fits as itself.
+  std::array<float, 4> f{0.0f, 0.0f, 1.0f, 1.0f};
+  if ([self extendActive]) f = mv::shell::extend_fit(_extend);
+  if (std::equal(f.begin(), f.end(), _snap.fit_rect_uv)) return;
+  std::copy(f.begin(), f.end(), _snap.fit_rect_uv);
+  ++_snap.refit_seq;
+  [self pokeSnapshot];
+}
+
+// The grab distance in the shown picture's uv, from screen pixels.
+- (void)extendReachU:(float*)ru v:(float*)rv {
+  const auto map = _lab.still_map();
+  const float px = mv::shell::kExtendGrabPx * (_snap.dpi_scale > 0.0f ? _snap.dpi_scale : 1.0f);
+  *ru = map.zoom > 0.0f && map.width > 0.0f ? px / (map.width * map.zoom) : 0.0f;
+  *rv = map.zoom > 0.0f && map.height > 0.0f ? px / (map.height * map.zoom) : 0.0f;
+}
+
+- (BOOL)extendPressX:(float)x y:(float)y {
+  float u = 0, v = 0, ru = 0, rv = 0;
+  if (![self brushUV:x y:y u:&u v:&v]) return NO;
+  [self extendReachU:&ru v:&rv];
+  const std::uint8_t grab = mv::shell::extend_hit(_extend, u, v, ru, rv);
+  if (grab == mv::shell::extend_none) return NO;
+  _extendGrab = grab;
+  _extendStart = _extend;
+  _extendPress[0] = u;
+  _extendPress[1] = v;
+  [self brushPublish];
+  [self toolCursor];
+  return YES;
+}
+
+- (void)extendDragX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (![self brushUV:x y:y u:&u v:&v]) return;
+  const mv::shell::extend_draft d =
+      mv::shell::extend_drag(_extendStart, _extendGrab, u - _extendPress[0], v - _extendPress[1]);
+  if (d.l == _extend.l && d.t == _extend.t && d.r == _extend.r && d.b == _extend.b) return;
+  _extend = d;
+  _extend.on = YES;
+  [self brushPublish];
+  ++_editGeneration;  // the bar's readout follows the drag
+}
+
+- (void)extendRelease {
+  _extendGrab = 0;
+  [self extendRefit];
+  [self brushPublish];
+  [self toolCursor];
+  ++_editGeneration;
+}
+
+- (void)extendHoverX:(float)x y:(float)y {
+  float u = 0, v = 0, ru = 0, rv = 0;
+  std::uint8_t hover = 0;
+  if ([self brushUV:x y:y u:&u v:&v] && [self pointerOverCanvas]) {
+    [self extendReachU:&ru v:&rv];
+    hover = mv::shell::extend_hit(_extend, u, v, ru, rv);
+  }
+  if (hover == _extendHover) return;
+  _extendHover = hover;
+  [self brushPublish];  // the edge lights under the pointer
+}
+
+// A chip on the bar: the add-on's preset as a frame (0 Original: none).
+- (void)extendPreset:(int)i {
+  if ([self activeTool] != mv::shell::canvas_tool::extend) return;
+  const mv::edit::placement p = _edits.preview_placement();
+  _extend = mv::shell::extend_preset_draft(i, p.cropped.w, p.cropped.h);
+  _extendGrab = 0;
+  [self extendRefit];
+  [self brushPublish];
+  ++_editGeneration;
+}
+
+// Fill ↵: the part of the frame over the photo lands as an ordinary crop (one
+// undo step); the rest is margins Enhance fills, from the edited picture
+// (still_extend), in its docked panel on the Enhance tab (S5), or in its
+// sheet, which opens on Extend, with an Enhance that has no panel.
+- (void)extendFill {
+  if ([self activeTool] != mv::shell::canvas_tool::extend) return;
+  if (mv::shell::extend_empty(_extend)) {
+    [self noticeShow:"Drag the frame's edges past the photo first"];
+    return;
+  }
+  const BOOL over = mv::shell::extend_overhangs(_extend) ? YES : NO;
+  const mv::shell::command_id enhance = mv::shell::find_addon_command("enhance", "open");
+  if (over && enhance == mv::shell::command_id::none) {
+    [self noticeShow:"Extending past the edges needs the Enhance add-on (Settings → Add-ons)."];
+    return;
+  }
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  const std::string path = _items[_index.current()].path_utf8;
+  const mv::shell::extend_draft d = _extend;
+  if (mv::shell::extend_crops(d)) {
+    const std::array<float, 4> c = mv::shell::extend_crop(d);
+    std::uint32_t w = 0, h = 0;
+    if (_lab.still_size(_itemId, &w, &h)) _edits.set_size(w, h);
+    // One crop op; publishEdit hands Enhance's copy the crop (set_still_edit).
+    [self applyEditEffect:_edits.crop_inside({c[0], c[1], c[2], c[3]})];
+  }
+  [self toolDown];  // the frame goes; the camera frames the picture again
+  if (!over) return;
+  mv::addon::media::set_still_extend(path, mv::shell::extend_overhang(d));
+  // Enhance's docked panel under the Extend card runs it on the frame (S5's
+  // enhance/tool); an Enhance without the panel opens its sheet on Extend.
+  [self enhanceTool:"extend" run:YES];
 }
 
 // A section's Reset: its sliders back to 0, one undo step.

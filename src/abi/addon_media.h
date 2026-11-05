@@ -8,6 +8,7 @@
 // no GPU, no OS UI. Worker threads only: every call reads and decodes.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -23,6 +24,7 @@
 #include "core/job_system.h"
 #include "core/result.h"
 #include "edit/edit_stack.h"
+#include "image/linear.h"
 
 namespace mv::addon {
 
@@ -117,6 +119,15 @@ void clear_still_edit();
 // sets it before Enhance's sheet opens; still_mask answers the add-on.
 void set_still_mask(const std::string& path, std::vector<float> dabs);
 [[nodiscard]] std::vector<float> still_mask(const std::string& path);
+// docs/plans/edit-refresh.md S6: Extend's frame over that photo, the margins
+// past its edges (left, top, right, bottom; fractions of the edited picture's
+// width or height, the crop part already on the edit). An empty path clears
+// it; still_extend answers all 0 for any other photo, and once the edit's
+// geometry (set_still_edit) is no longer the one the frame was set over (an
+// undo of Fill's crop, a later turn or crop): its fractions were of another
+// picture.
+void set_still_extend(const std::string& path, const std::array<float, 4>& ltrb);
+[[nodiscard]] std::array<float, 4> still_extend(const std::string& path);
 // docs/plans/edit-adjust.md slice 6: eyes open from the same moment.
 // The frames of the same moment as `path`: the other files of its folder
 // modified within kBurstSeconds of it, nearest first, at most kBurstFrames.
@@ -137,8 +148,14 @@ struct eyes_outcome {
 // The pane's note for an outcome, or for the pack's refusal (`pack` the
 // status of ai_eyes_json: not_found no pack, invalid_arg People off).
 [[nodiscard]] std::string eyes_note(status pack, const result<eyes_outcome>& r);
+// docs/plans/edit-refresh.md S8: which faces a run changes. Bit i is face i of
+// the pack's answer (its "faces" array, in order); a face whose bit is clear
+// is left exactly as it was. The Faces tool sends the faces chosen on the
+// canvas (faces_mask_of); every other caller every face.
+inline constexpr std::uint64_t kAllFaces = ~std::uint64_t{0};
 [[nodiscard]] result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view pack_json,
-                                                    const job_context* ctx = nullptr);
+                                                    const job_context* ctx = nullptr,
+                                                    std::uint64_t faces_mask = kAllFaces);
 // Owner 2026-11-04, the wand menu's "Improve faces from your photos": for each
 // face, the best donor of the same person (the pack's answer: the same moment
 // and their other photos in People) turned as it is; when that face is clearly
@@ -146,8 +163,43 @@ struct eyes_outcome {
 // face from it (edit::transfer_face), in this photo's light. A new photo
 // "<stem>-faces.jpg" beside the original; `fixed` counts the faces replaced.
 [[nodiscard]] result<eyes_outcome> improve_faces(const std::string& path, std::string_view pack_json,
-                                                 const job_context* ctx = nullptr);
+                                                 const job_context* ctx = nullptr,
+                                                 std::uint64_t faces_mask = kAllFaces);
 [[nodiscard]] std::string faces_note(status pack, const result<eyes_outcome>& r);
+
+// S8: the Faces tool's fixes, one table both hosts and the C entry
+// (mv_adjust_faces) share. The per-face actions are data: a fix is appended
+// here (S10's "Restore faces" is the next value), with its row in
+// shell/faces_tool.h kFaceActions and the chromes' labels. do_all runs, per
+// chosen face, the best fix there is: a clearly better face of the same
+// person, else open eyes where they are shut; one file, "<stem>-faces.jpg".
+enum class face_fix : std::int32_t { do_all = -1, open_eyes = 0, improve = 1 };
+// The fix's file suffix ("eyes", "faces").
+[[nodiscard]] const char* face_fix_suffix(face_fix fix) noexcept;
+// `fix` on the faces of `pack_json` whose bit is set in `faces_mask`, in
+// `target` itself (the photo's working image, upright): no file. Every pixel
+// outside the chosen faces' edit regions (edit::face_region) stays bit for bit
+// what it was; inside, the fix fades to nothing at the region's edge. Donors
+// are read through readable_path. Returns the faces fixed; `found` (may be
+// null) the faces of the answer. invalid_arg for an answer that is not one.
+[[nodiscard]] result<int> fix_faces_in(image::linear_image& target, std::string_view pack_json, face_fix fix,
+                                       std::uint64_t faces_mask, const job_context* ctx = nullptr,
+                                       int* found = nullptr);
+// fix_faces_in on the photo at `path` (a Photos key too), then a new photo
+// beside it, "<stem>-<suffix>.jpg", its metadata carried as write_still does.
+// The original is never written. Nothing chosen, or nothing a fix helped: no
+// file (`written` empty).
+[[nodiscard]] result<eyes_outcome> fix_faces(const std::string& path, std::string_view pack_json, face_fix fix,
+                                             std::uint64_t faces_mask, const job_context* ctx = nullptr);
+// The note for a fix's outcome (eyes_note / faces_note by the fix).
+[[nodiscard]] std::string fix_note(face_fix fix, status pack, const result<eyes_outcome>& r);
+// The faces of `pack_json` the canvas chose: `boxes` holds x, y, w, h (0..1
+// of the upright still) of each chosen face, as the Faces tool read them from
+// an earlier answer for the same photo (the run asks the pack again, with the
+// same moment's frames). Each box takes the face of this answer it overlaps
+// most (intersection over union at least 0.3), each face at most once; 0 when
+// none match. Faces past the 64th are never chosen.
+[[nodiscard]] std::uint64_t faces_mask_of(std::string_view pack_json, std::span<const float> boxes);
 [[nodiscard]] result<std::string> write_still(const std::string& source, const rgb_image& pixels,
                                               const std::string& suffix);
 // #354: a document's text in reading order with the page each paragraph

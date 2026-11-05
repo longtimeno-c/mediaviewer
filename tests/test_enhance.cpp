@@ -17,15 +17,18 @@
 #include <catch2/catch_approx.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +52,7 @@
 #include "addons/enhance/spec.h"
 #include "core/json.h"
 #include "infer/ort.h"
+#include "shell/edit_workspace.h"  // S6: the host's readout, checked against the add-on's sums
 #include "import_fixture.h"
 
 using namespace mv::enhance;
@@ -138,6 +142,7 @@ struct fake_host {
   std::vector<float> brush;  // slice 7: the dabs the host holds over a photo
   std::vector<std::string> recycled;  // S5's Discard: what went to the Bin
   int recycle_answer = 0;             // 0 moved, 1 refused (no bin), -1 failed
+  bool framed = false;       // edit-refresh S6: a canvas frame over the photo (still_extend)
   // The preview's last pixels and how many were posted.
   std::uint32_t surface_w = 0, surface_h = 0;
   int surfaces = 0;
@@ -235,6 +240,10 @@ struct fixture {
       std::lock_guard lock(host.m);
       host.recycled.push_back(path);
       return host.recycle_answer;
+    };
+    p.framed = [this](const std::string&) {
+      std::lock_guard lock(host.m);
+      return host.framed;
     };
     p.free_disk = [this](const std::string&) -> std::optional<std::uint64_t> { return host.free; };
     auto shared = net;
@@ -1719,6 +1728,279 @@ TEST_CASE("extend: new edges filled tile by tile, the photo's own pixels kept", 
   CHECK(written.rgb[(std::size_t{150} * 500 + 10) * 3] == 128);
 }
 
+// ---- docs/plans/edit-refresh.md S6: Extend's frame from the canvas ---------------------
+
+TEST_CASE("extend: the host's frame, 3:2 to 16:9, is written at the size the host previewed", "[enhance][extend]") {
+  // The host drags both sides of a 3:2 photo out to 16:9 (shell/edit_workspace.h).
+  const std::uint32_t w = 480, h = 320;
+  const float side = (static_cast<float>(h) * 16.0f / 9.0f - static_cast<float>(w)) / 2.0f / static_cast<float>(w);
+  mv::shell::extend_draft d = mv::shell::extend_drag({}, mv::shell::extend_right, side, 0.0f);
+  d = mv::shell::extend_drag(d, mv::shell::extend_left, -side, 0.0f);
+  const mv::shell::extend_size_t shown = mv::shell::extend_size(d, w, h);
+  REQUIRE(shown.width == 568u);  // 320 x 16 / 9 = 568.9: 44.4 a side, rounded each
+  REQUIRE(shown.height == 320u);
+  const std::array<float, 4> frame = mv::shell::extend_overhang(d);
+
+  rgb8 photo;
+  photo.width = w;
+  photo.height = h;
+  photo.rgb = noise_rgb(w, h);
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [](const std::string&) { return std::vector<float>{}; };
+  std::string asked;
+  port.still_extend = [&](const std::string& path) {
+    asked = path;
+    return frame;
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still st;
+    st.width = photo.width;
+    st.height = photo.height;
+    st.rgb = photo.rgb;
+    return st;
+  };
+  run_port::still written;
+  port.write_still = [&](const std::string& source, const run_port::still& pic) -> mv::result<std::string> {
+    written = pic;
+    const std::string stem = source.substr(0, source.rfind('.'));
+    return stem + "-" + pic.suffix + ".jpg";
+  };
+  model_spec spec;
+  spec.kind = model_kind::remove;
+  job_runner jr(port);
+  job_request req;
+  req.path = "/photos/IMG_0007.jpg";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = &spec;
+  part.values["mode"] = *mv::json::parse("\"extend\"");
+  part.values["extend"] = *mv::json::parse("\"taller\"");  // the sheet's preset: the frame wins
+  req.parts.push_back(part);
+  std::atomic<bool> done{false};
+  bool ok = false;
+  std::string out;
+  job_events ev;
+  ev.done = [&](bool k, const std::string& name, const std::string&) {
+    ok = k;
+    out = name;
+    done = true;
+  };
+  jr.start(req, ev);
+  REQUIRE(eventually([&] { return done.load(); }));
+  REQUIRE(ok);
+  CHECK(asked == req.path);
+  CHECK(written.suffix == "extended");
+  CHECK(out == "IMG_0007-extended.jpg");
+  // The size the host's readout showed.
+  CHECK(written.width == shown.width);
+  CHECK(written.height == shown.height);
+  // The photo's rect, bit for bit (no feather into it), at the host's left margin.
+  REQUIRE(written.rgb.size() == std::size_t{shown.width} * shown.height * 3);
+  std::size_t changed = 0;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    changed += std::memcmp(photo.rgb.data() + std::size_t{y} * w * 3,
+                           written.rgb.data() + (std::size_t{y} * shown.width + shown.left) * 3, std::size_t{w} * 3) != 0;
+  }
+  CHECK(changed == 0);
+  CHECK(written.rgb[(std::size_t{160} * shown.width + 5) * 3] == 128);  // the new left edge is the fill
+
+  // No frame from the host: the sheet's preset as before (Taller: an eighth top and bottom).
+  port.still_extend = [](const std::string&) { return std::array<float, 4>{}; };
+  job_runner jr2(port);
+  done = false;
+  jr2.start(req, ev);
+  REQUIRE(eventually([&] { return done.load(); }));
+  REQUIRE(ok);
+  CHECK(written.width == w);
+  CHECK(written.height == h + 2 * (h / 8));
+}
+
+TEST_CASE("extend: a canvas frame opens the sheet on Extend, with no preset to pick", "[enhance][extend]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0004.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "extend", "label": "Extend", "type": "choice", "default": "wider",
+               "options": [{"id": "wider", "text": "Wider"}, {"id": "taller", "text": "Taller"}]}],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  // The knobs show once Remove's model is installed.
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = true;
+  }
+  f.eng->sheet_opened(1, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(*t.node("photo")->str("value") == "extend");  // Fill opened it
+    // The frame wins over a preset, so the sheet says so instead of offering one.
+    CHECK(t.has("frame.remove"));
+    CHECK_FALSE(t.has("k.remove.extend"));
+  }
+  // No frame (Cancel, or the edit moved on): the presets again.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = false;
+  }
+  f.eng->sheet_opened(2, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(*t.node("photo")->str("value") == "extend");
+    CHECK_FALSE(t.has("frame.remove"));
+    CHECK(t.has("k.remove.extend"));
+  }
+}
+
+// The S5 + S6 merge: the canvas's Fill hands its frame over (still_extend) and
+// runs Extend in the docked panel (enhance/tool {"photo":"extend","run":true});
+// the panel reads the frame again then, so it shows the frame, not a preset,
+// and the run fills the frame's margins.
+TEST_CASE("extend: Fill on a canvas frame runs in the docked panel, the frame over the preset", "[enhance][extend][tool]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0005.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "extend", "label": "Extend", "type": "choice", "default": "wider",
+               "options": [{"id": "wider", "text": "Wider"}, {"id": "taller", "text": "Taller"}]}],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+
+  // Extend armed: the panel opens under the card before any frame is dragged,
+  // on the preset.
+  f.eng->tool_opened(3, utf8(photo), 340, 2);
+  f.eng->tool_command(R"({"photo": "extend"})");
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    REQUIRE(t.has("tool.extend"));
+    CHECK(t.has("k.remove.extend"));
+    CHECK_FALSE(t.has("frame.remove"));
+  }
+
+  const std::uint32_t w = 96, h = 64;
+  const std::array<float, 4> frame{0.25f, 0.0f, 0.25f, 0.0f};  // a quarter each side, the host's fractions
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [](const std::string&) { return std::vector<float>{}; };
+  port.still_extend = [&](const std::string&) {
+    std::lock_guard lock(f.host.m);
+    return f.host.framed ? frame : std::array<float, 4>{};
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = noise_rgb(w, h);
+    return s;
+  };
+  std::mutex wm;
+  run_port::still written;
+  const fs::path made = f.dir / "IMG_0005-extended.jpg";
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    std::lock_guard lock(wm);
+    written = pic;
+    write_bytes(made, bytes({0xFF, 0xD8, 0xFF, 0xE0}));
+    return utf8(made);
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+
+  // Fill: the host sets the frame, then asks for the run in one command.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.framed = true;
+  }
+  f.eng->tool_command(R"({"photo": "extend", "run": true})");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kToolScreen)).has("result"); }));
+  {
+    parsed t(f.host.tree(kToolScreen));
+    INFO(f.host.tree(kToolScreen));
+    CHECK(t.has("frame.remove"));  // the frame won: no preset to pick
+    CHECK_FALSE(t.has("k.remove.extend"));
+    CHECK(t.text("result.title") == "Saved as IMG_0005-extended.jpg");
+  }
+  CHECK(f.host.tree(kSheetScreen).empty());  // never the sheet
+  {
+    std::lock_guard lock(wm);
+    CHECK(written.width == w + 2 * 24);  // the frame's margins, not Wider's eighth
+    CHECK(written.height == h);
+  }
+}
+
+TEST_CASE("extend: the host's readout and presets are the add-on's own sums", "[enhance][extend]") {
+  // shell/edit_workspace.h repeats extend_from_fractions and extend_preset so
+  // the bar reads the size the file is: the two must never drift.
+  const std::uint32_t sizes[][2] = {{480, 320}, {6000, 4000}, {4000, 6000}, {12000, 1000}, {9000, 9000},
+                                    {10000, 10000}, {16000, 300}, {7, 5}};
+  const float fractions[] = {0.0f, 0.013f, 0.1f, 0.25f, 0.3333f, 0.5f, 0.75f, 1.0f};
+  for (const auto& wh : sizes) {
+    for (float l : fractions) {
+      for (float r : {0.0f, 0.2f, 0.5f}) {
+        for (float t : {0.0f, 0.125f, 0.5f}) {
+          const extend_margins a = extend_from_fractions(l, t, r, t * 0.5f, wh[0], wh[1]);
+          const std::array<std::uint32_t, 4> b = mv::shell::extend_margins_of({l, t, r, t * 0.5f}, wh[0], wh[1]);
+          INFO(wh[0] << "x" << wh[1] << " l " << l << " t " << t << " r " << r);
+          CHECK(a.left == b[0]);
+          CHECK(a.top == b[1]);
+          CHECK(a.right == b[2]);
+          CHECK(a.bottom == b[3]);
+          CHECK(std::uint64_t{wh[0] + a.left + a.right} * (wh[1] + a.top + a.bottom) <=
+                std::max<std::uint64_t>(kExtendMaxPixels, std::uint64_t{wh[0]} * wh[1]));
+          CHECK(wh[0] + a.left + a.right <= std::max(kExtendMaxEdge, wh[0]));
+        }
+      }
+    }
+    for (int i = 1; i < mv::shell::kExtendPresetCount; ++i) {
+      const extend_margins p = extend_preset(mv::shell::extend_preset_name(i), wh[0], wh[1]);
+      const mv::shell::extend_size_t s = mv::shell::extend_size(mv::shell::extend_preset_draft(i, wh[0], wh[1]), wh[0], wh[1]);
+      INFO(wh[0] << "x" << wh[1] << " preset " << mv::shell::extend_preset_name(i));
+      // A preset past 100 MP is refused by the sheet; the chip's frame is held to it.
+      if (std::uint64_t{wh[0] + p.left + p.right} * (wh[1] + p.top + p.bottom) > kExtendMaxPixels) continue;
+      CHECK(s.left == p.left);
+      CHECK(s.top == p.top);
+      CHECK(s.right == p.right);
+      CHECK(s.bottom == p.bottom);
+    }
+  }
+  CHECK(mv::shell::kExtendMaxEdge == kExtendMaxEdge);
+  CHECK(mv::shell::kExtendMaxPixels == kExtendMaxPixels);
+  // Nonsense fractions add nothing.
+  CHECK(extend_from_fractions(-0.2f, std::nanf(""), 0.0f, 0.0f, 400, 300).empty());
+}
+
 // ---- the live preview and its glow (contribution API 10) ------------------------------
 
 TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "[enhance][preview]") {
@@ -2383,6 +2665,11 @@ TEST_CASE("remove: things brushed apart are filled in their own boxes", "[enhanc
   const std::vector<float> dabs = {0.1f, 0.5f, 0.01f, 0.9f, 0.5f, 0.01f};  // radius 16 px
   const remove_plan run_plan = remove_boxes(mask_from_dabs(dabs, w, h));
   REQUIRE(run_plan.boxes.size() == 2);
+  // The stand-in's side is 64, so each box (over 1.5x it) is filled again on
+  // one 64-px tile at full resolution: four fills in all.
+  const mask8 run_mask = mask_from_dabs(dabs, w, h);
+  const std::size_t second_pass = refine_tiles(run_mask, run_plan, 0, 64).size() + refine_tiles(run_mask, run_plan, 1, 64).size();
+  CHECK(second_pass == 2);
   std::atomic<int> fills{0};
   std::atomic<bool> freed{false};
   std::function<void()> after_fill;  // read when the model loads
@@ -2429,7 +2716,7 @@ TEST_CASE("remove: things brushed apart are filled in their own boxes", "[enhanc
     REQUIRE(eventually([&] { return done.load(); }));
     REQUIRE(ok);
   }
-  CHECK(fills.load() == 2);
+  CHECK(fills.load() == static_cast<int>(2 + second_pass));
   CHECK(writes.load() == 1);
   REQUIRE(written.size() == original.size());
   CHECK(written[(std::size_t{300} * w + 160) * 3] == 128);   // the first dab's centre
@@ -2467,6 +2754,428 @@ TEST_CASE("remove: things brushed apart are filled in their own boxes", "[enhanc
   }
   CHECK(fills.load() == 1);
   CHECK(writes.load() == 0);
+}
+
+// ---- Quality over speed (owner 2026-11-04): Remove's second pass, Extend's tiles ----
+
+namespace {
+
+// Gives back the picture it was shown, its holes included (a stand-in can
+// peek at what LaMa never sees), with two things added in the holes: an
+// offset that alternates call by call (+16, -16: neighbouring tiles disagree
+// by 32, as two real fills of the same hole disagree on shape and colour),
+// and a fine checker (+-12, the grain a full-resolution fill has).
+struct offset_fill final : inpaint_filler {
+  std::uint32_t n;
+  int calls = 0;
+  double least_known = 1.0;
+  explicit offset_fill(std::uint32_t side) : n(side) {}
+  std::uint32_t side() const noexcept override { return n; }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    REQUIRE(image.width == n);
+    REQUIRE(mask.width == n);
+    const auto known = static_cast<double>(std::count(mask.a.begin(), mask.a.end(), 0)) / static_cast<double>(mask.a.size());
+    least_known = std::min(least_known, known);
+    const int off = calls % 2 == 0 ? 16 : -16;
+    rgb8 out = image;
+    for (std::uint32_t y = 0; y < n; ++y) {
+      for (std::uint32_t x = 0; x < n; ++x) {
+        const std::size_t i = std::size_t{y} * n + x;
+        if (mask.a[i] <= 127) continue;
+        const int grain = (x + y) % 2 == 0 ? 12 : -12;
+        for (int c = 0; c < 3; ++c) out.rgb[i * 3 + c] = static_cast<std::uint8_t>(std::clamp(image.rgb[i * 3 + c] + off + grain, 0, 255));
+      }
+    }
+    ++calls;
+    return out;
+  }
+};
+
+rgb8 flat_picture(std::uint32_t w, std::uint32_t h, std::uint8_t v) {
+  rgb8 r;
+  r.width = w;
+  r.height = h;
+  r.rgb.assign(std::size_t{w} * h * 3, v);
+  return r;
+}
+
+}  // namespace
+
+TEST_CASE("remove: a large box is filled again at full resolution on model-side tiles", "[enhance][remove]") {
+  CHECK_FALSE(needs_refine(pixel_box{0, 0, 768, 700}, 512));  // 1.5x the side: the first pass alone
+  CHECK(needs_refine(pixel_box{0, 0, 769, 300}, 512));
+  CHECK(remove_feather(pixel_box{0, 0, 300, 300}) == 2);
+  CHECK(remove_feather(pixel_box{0, 0, 900, 2000}) == 7);
+  CHECK(remove_feather(pixel_box{0, 0, 9000, 10}) == 16);
+
+  // A small stroke: its box is under 1.5x the model's side, no second pass.
+  mask8 small = blank_mask(3000, 2000);
+  brush_rect(small, 1000, 800, 100, 100);
+  const remove_plan small_plan = remove_boxes(small);
+  REQUIRE(small_plan.boxes.size() == 1);
+  CHECK(refine_tiles(small, small_plan, 0, 512).empty());
+
+  // A 600 x 400 brush: tiles of the model's side, inside the photo, over every
+  // pixel the paste can change (the brush and its feather's reach), reaching
+  // a quarter tile past it for context.
+  mask8 big = blank_mask(3000, 2000);
+  brush_rect(big, 1000, 800, 600, 400);
+  const remove_plan plan = remove_boxes(big);
+  REQUIRE(plan.boxes.size() == 1);
+  const pixel_box box = plan.boxes[0];
+  REQUIRE(needs_refine(box, 512));
+  const std::vector<pixel_box> tiles = refine_tiles(big, plan, 0, 512);
+  CHECK(tiles.size() == 6);  // (600 + 256) / 256 across, (400 + 256) / 256 down, half overlapping
+  std::vector<std::uint8_t> cover(std::size_t{3000} * 2000, 0);
+  for (const pixel_box& t : tiles) {
+    CHECK(t.width == 512);
+    CHECK(t.height == 512);
+    CHECK(t.x + t.width <= 3000);
+    CHECK(t.y + t.height <= 2000);
+    for (std::uint32_t y = t.y; y < t.y + t.height; ++y) {
+      for (std::uint32_t x = t.x; x < t.x + t.width; ++x) cover[std::size_t{y} * 3000 + x] = 1;
+    }
+  }
+  const std::uint32_t reach = 2 * remove_feather(box) + 1;
+  std::size_t uncovered = 0;
+  for (std::uint32_t y = 800 - reach; y < 1200 + reach; ++y) {
+    for (std::uint32_t x = 1000 - reach; x < 1600 + reach; ++x) {
+      if (inside(box, x, y)) uncovered += cover[std::size_t{y} * 3000 + x] == 0;
+    }
+  }
+  CHECK(uncovered == 0);
+  CHECK(cover[std::size_t{800 - 128} * 3000 + 1000 - 128] == 1);  // context past the brush
+
+  // A strip of a photo, shorter than the model's side: tiles as tall as it.
+  mask8 thin = blank_mask(4000, 300);
+  brush_rect(thin, 1500, 100, 900, 100);
+  const remove_plan thin_plan = remove_boxes(thin);
+  REQUIRE(thin_plan.boxes.size() == 1);
+  const std::vector<pixel_box> thin_tiles = refine_tiles(thin, thin_plan, 0, 512);
+  REQUIRE_FALSE(thin_tiles.empty());
+  for (const pixel_box& t : thin_tiles) {
+    CHECK(t.width == 512);
+    CHECK(t.height == 300);
+    CHECK(t.x + t.width <= 4000);
+  }
+
+  // The fill keeps the first pass's shape and colour and takes the tiles'
+  // detail. A photo that is a gentle ramp, a 400 x 120 stroke (an 800-px box)
+  // and a stand-in at 256 px: inside the stroke the result is the first pass
+  // (here the ramp itself) plus the stand-in's grain, its per-tile offsets
+  // gone (they are not detail), so tiles that disagree leave no seam; just
+  // outside, the photo's own.
+  rgb8 photo;
+  photo.width = 1200;
+  photo.height = 900;
+  photo.rgb.resize(std::size_t{1200} * 900 * 3);
+  const auto ramp = [](std::uint32_t x, std::uint32_t y) { return static_cast<int>(40 + x / 10 + y / 10); };
+  for (std::uint32_t y = 0; y < 900; ++y) {
+    for (std::uint32_t x = 0; x < 1200; ++x) {
+      for (int c = 0; c < 3; ++c) photo.rgb[(std::size_t{y} * 1200 + x) * 3 + c] = static_cast<std::uint8_t>(ramp(x, y));
+    }
+  }
+  const auto first_pass = [&](const pixel_box& b) { return crop_rgb(photo, b); };
+  mask8 stroke = blank_mask(1200, 900);
+  brush_rect(stroke, 400, 300, 400, 120);
+  const remove_plan sp = remove_boxes(stroke);
+  REQUIRE(sp.boxes.size() == 1);
+  const pixel_box sb = sp.boxes[0];
+  const std::vector<pixel_box> st = refine_tiles(stroke, sp, 0, 256);
+  REQUIRE(st.size() >= 3);
+  offset_fill grainy(256);
+  rgb8 filled = first_pass(sb);
+  std::size_t asked = 0;
+  REQUIRE(refine_fill(photo, stroke, sp, 0, st, grainy, filled, [&] { return ++asked, true; }));
+  CHECK(asked == st.size());
+  CHECK(grainy.calls == static_cast<int>(st.size()));
+  int most_off = 0;
+  for (std::uint32_t y = 332; y < 388; ++y) {
+    for (std::uint32_t x = 432; x < 768; ++x) {
+      const std::size_t at = (std::size_t{y - sb.y} * sb.width + (x - sb.x)) * 3;
+      const int grain = (x + y) % 2 == 0 ? 12 : -12;
+      most_off = std::max(most_off, std::abs(filled.rgb[at] - ramp(x, y) - grain));
+    }
+  }
+  INFO("most off the first pass plus the grain: " << most_off);
+  CHECK(most_off <= 4);
+  const std::size_t ring = (std::size_t{296 - sb.y} * sb.width + (600 - sb.x)) * 3;
+  CHECK(std::abs(filled.rgb[ring] - ramp(600, 296)) <= 2);
+
+  // A hole 400 x 300 under 64-px tiles: the tiles deep in it would see
+  // nothing, so they are not among the tiles (none a tenth known or less, so
+  // the run's progress counts only fills), and there the first pass stays
+  // exactly.
+  mask8 hole = blank_mask(1200, 900);
+  brush_rect(hole, 400, 300, 400, 300);
+  const remove_plan hp = remove_boxes(hole);
+  REQUIRE(hp.boxes.size() == 1);
+  const pixel_box hb = hp.boxes[0];
+  const std::vector<pixel_box> ht = refine_tiles(hole, hp, 0, 64);
+  REQUIRE(ht.size() > 20);  // the ring around the hole
+  offset_fill model(64);
+  rgb8 deep = flat_picture(hb.width, hb.height, 200);
+  REQUIRE(refine_fill(photo, hole, hp, 0, ht, model, deep, nullptr));
+  CHECK(model.calls == static_cast<int>(ht.size()));
+  CHECK(model.least_known > 0.1);
+  for (const pixel_box& t : ht) CHECK_FALSE(inside(t, 600, 450));
+  CHECK(deep.rgb[(std::size_t{450 - hb.y} * hb.width + (600 - hb.x)) * 3] == 200);
+
+  // Cancelled before a tile: nothing more is filled.
+  offset_fill again(64);
+  rgb8 f2 = flat_picture(hb.width, hb.height, 200);
+  int left = 3;
+  const mv::expected stopped = refine_fill(photo, hole, hp, 0, ht, again, f2, [&] { return left-- > 0; });
+  CHECK_FALSE(stopped);
+  CHECK(again.calls <= 3);
+}
+
+TEST_CASE("remove: the second pass runs in the job with progress per tile, and cancels between tiles",
+          "[enhance][remove]") {
+  const std::uint32_t w = 1600, h = 600;
+  const std::vector<std::uint8_t> original = noise_rgb(w, h);
+  const std::vector<float> dabs = {0.1f, 0.5f, 0.01f, 0.9f, 0.5f, 0.01f};
+  const mask8 mask = mask_from_dabs(dabs, w, h);
+  const remove_plan plan = remove_boxes(mask);
+  REQUIRE(plan.boxes.size() == 2);
+  const std::size_t units = 2 + refine_tiles(mask, plan, 0, 64).size() + refine_tiles(mask, plan, 1, 64).size();
+  std::atomic<int> fills{0};
+  std::atomic<bool> freed{false};
+  std::function<void()> after_fill;
+  std::atomic<int> writes{0};
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new counting_fill(fills, freed, after_fill));
+  };
+  port.still_mask = [&](const std::string&) { return dabs; };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = original;
+    return s;
+  };
+  port.write_still = [&](const std::string&, const run_port::still&) -> mv::result<std::string> {
+    ++writes;
+    return std::string("/tmp/photo-removed.jpg");
+  };
+  model_spec spec;
+  spec.kind = model_kind::remove;
+  job_request req;
+  req.path = "photo.jpg";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = &spec;
+  req.parts.push_back(part);
+  std::mutex m;
+  std::vector<double> steps;
+  {
+    job_runner jr(port);
+    std::atomic<bool> done{false};
+    bool ok = false;
+    job_events ev;
+    ev.progress = [&](double f) {
+      std::lock_guard lock(m);
+      steps.push_back(f);
+    };
+    ev.done = [&](bool k, const std::string&, const std::string&) {
+      ok = k;
+      done = true;
+    };
+    jr.start(req, ev);
+    REQUIRE(eventually([&] { return done.load(); }));
+    REQUIRE(ok);
+  }
+  CHECK(fills.load() == static_cast<int>(units));
+  {
+    // One report a fill (and the start's "working" and the end's), only forward.
+    std::lock_guard lock(m);
+    std::vector<double> known;
+    for (const double f : steps) {
+      if (f >= 0) known.push_back(f);
+    }
+    CHECK(known.size() >= units + 1);
+    CHECK(std::is_sorted(known.begin(), known.end()));
+    CHECK(known.back() < 1.0);
+  }
+
+  // A cancel during the first box's second pass: no later tile or box runs,
+  // nothing is written.
+  fills = 0;
+  writes = 0;
+  freed = false;
+  {
+    job_runner jr(port);
+    after_fill = [&] {
+      if (fills.load() == 2) jr.cancel();  // the first pass, then the first tile
+    };
+    std::atomic<bool> done{false};
+    std::atomic<bool> ok{true};
+    job_events ev;
+    ev.done = [&](bool k, const std::string&, const std::string&) {
+      ok = k;
+      done = true;
+    };
+    jr.start(req, ev);
+    REQUIRE(eventually([&] { return done.load(); }));
+    CHECK_FALSE(ok.load());
+    REQUIRE(eventually([&] { return freed.load(); }));
+  }
+  CHECK(fills.load() == 2);
+  CHECK(writes.load() == 0);
+}
+
+TEST_CASE("extend: tiles of the model's side or more, half overlapping, every margin pixel in one", "[enhance][extend]") {
+  // Every margin pixel of the extended picture in a tile, each inside it and
+  // never smaller than the model's side (or the picture): the presets on
+  // photos of many shapes, and margins of any depth on any side (the host's
+  // drag, up to the photo's own size).
+  const auto check = [](std::uint32_t pw, std::uint32_t ph, const extend_margins& m) {
+    const std::uint32_t w = pw + m.left + m.right, h = ph + m.top + m.bottom, shorter = std::min(w, h);
+    const std::vector<pixel_box> tiles = extend_tiles(w, h, m);
+    // Counts by a 2-D difference array.
+    std::vector<std::int32_t> d(std::size_t{w + 1} * (h + 1), 0);
+    std::uint32_t big_enough = 0;
+    for (const pixel_box& b : tiles) {
+      REQUIRE(b.width == b.height);  // square: never squashed into the model's square
+      REQUIRE(b.width > 0);
+      REQUIRE(b.x + b.width <= w);
+      REQUIRE(b.y + b.height <= h);
+      CHECK(b.width >= std::min(kExtendMinTile, shorter));
+      big_enough += b.width >= std::min(kExtendMinTile, shorter) ? 1u : 0u;
+      d[std::size_t{b.y} * (w + 1) + b.x] += 1;
+      d[std::size_t{b.y} * (w + 1) + b.x + b.width] -= 1;
+      d[std::size_t{b.y + b.height} * (w + 1) + b.x] -= 1;
+      d[std::size_t{b.y + b.height} * (w + 1) + b.x + b.width] += 1;
+    }
+    CHECK(big_enough > 0);
+    for (std::uint32_t y = 0; y <= h; ++y) {
+      for (std::uint32_t x = 0; x <= w; ++x) {
+        std::int32_t& v = d[std::size_t{y} * (w + 1) + x];
+        if (x > 0) v += d[std::size_t{y} * (w + 1) + x - 1];
+        if (y > 0) v += d[std::size_t{y - 1} * (w + 1) + x];
+        if (x > 0 && y > 0) v -= d[std::size_t{y - 1} * (w + 1) + x - 1];
+      }
+    }
+    std::size_t thin = 0;
+    for (std::uint32_t y = 0; y < h; ++y) {
+      for (std::uint32_t x = 0; x < w; ++x) {
+        const bool photo = x >= m.left && x < m.left + pw && y >= m.top && y < m.top + ph;
+        if (!photo && d[std::size_t{y} * (w + 1) + x] < 1) ++thin;
+      }
+    }
+    INFO(pw << "x" << ph << " margins " << m.left << " " << m.top << " " << m.right << " " << m.bottom);
+    CHECK(thin == 0);
+    return tiles;
+  };
+  for (const char* preset : {"wider", "taller", "all", "square", "16x9", "4x5"}) {
+    for (const auto [pw, ph] : {std::pair{400u, 300u}, std::pair{1200u, 800u}, std::pair{2000u, 1500u},
+                                std::pair{900u, 1600u}, std::pair{2400u, 300u}, std::pair{300u, 2000u}}) {
+      const extend_margins m = extend_preset(preset, pw, ph);
+      if (!m.empty()) (void)check(pw, ph, m);
+    }
+  }
+  std::uint32_t seed = 4242;
+  const auto next = [&seed](std::uint32_t n) {
+    seed = seed * 1664525u + 1013904223u;
+    return (seed >> 8) % n;
+  };
+  for (int trial = 0; trial < 40; ++trial) {
+    const std::uint32_t pw = 64 + next(1600), ph = 64 + next(1600);
+    extend_margins m;
+    m.left = next(3) == 0 ? 0 : next(pw / 2 + 1);
+    m.right = next(3) == 0 ? 0 : next(pw / 2 + 1);
+    m.top = next(3) == 0 ? 0 : next(ph / 2 + 1);
+    m.bottom = next(3) == 0 ? 0 : next(ph / 2 + 1);
+    if (!m.empty()) (void)check(pw, ph, m);
+  }
+  // On a 4000 x 3000 photo a tile overlaps its neighbour along the margin by
+  // half, so a margin pixel half a tile from the margin's ends is in
+  // kExtendCover tiles; on a small photo the tiles are the model's side (filled
+  // at full resolution, nothing for the detail pass).
+  const extend_margins wide = extend_preset("wider", 4000, 3000);
+  const std::vector<pixel_box> tiles = check(4000, 3000, wide);
+  for (const pixel_box& b : tiles) CHECK(b.width == 1500u);  // 3 x 500, under the 3000 rows
+  CHECK(tiles[1].y - tiles[0].y == tiles[0].width / 2);
+  for (std::uint32_t y = tiles[0].width / 2; y + tiles[0].width / 2 < 3000; y += 37) {
+    std::uint32_t in = 0;
+    for (const pixel_box& b : tiles) in += b.x == 0 && y >= b.y && y < b.y + b.height ? 1u : 0u;
+    CHECK(in >= kExtendCover);
+  }
+  for (const pixel_box& b : extend_tiles(1536, 1024, extend_preset("all", 1280, 854))) CHECK(b.width == kExtendMinTile);
+  CHECK(extend_detail_tiles(1536, 1024, extend_preset("all", 1280, 854), kExtendMinTile).empty());
+}
+
+// A stand-in for the model that fills its holes with fine vertical stripes:
+// what the first pass (grey_fill, flat) cannot have.
+struct stripe_fill final : inpaint_filler {
+  std::uint32_t side() const noexcept override { return 64; }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    rgb8 out = image;
+    for (std::size_t i = 0; i < mask.a.size(); ++i) {
+      if (mask.a[i] != 255) continue;
+      const std::uint8_t v = (i % 64) % 2 == 0 ? 96 : 160;
+      out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = v;
+    }
+    return out;
+  }
+};
+
+TEST_CASE("extend: the detail pass gives back what the shrunk tiles lost, and only in the margins", "[enhance][extend]") {
+  // A 300 x 200 photo grown 100 px left and right, 66 top and bottom: tiles
+  // of 332 (the picture's shorter side), filled at the stand-in's 64.
+  rgb8 photo;
+  photo.width = 300;
+  photo.height = 200;
+  photo.rgb.assign(std::size_t{300} * 200 * 3, 0);
+  for (std::size_t i = 0; i < photo.rgb.size(); ++i) photo.rgb[i] = static_cast<std::uint8_t>((i * 7) % 251);
+  extend_margins m;
+  m.left = m.right = 100;
+  m.top = m.bottom = 66;
+  rgb8 canvas;
+  mask8 mask;
+  extend_canvas(photo, m, canvas, mask);
+  const rgb8 start = canvas;
+  grey_fill flat;
+  stripe_fill fine;
+  REQUIRE(extend_fill(canvas, mask, extend_tiles(canvas.width, canvas.height, m), flat, nullptr));
+  const rgb8 first = canvas;
+  const std::vector<pixel_box> tiles = extend_detail_tiles(canvas.width, canvas.height, m, fine.side());
+  REQUIRE_FALSE(tiles.empty());
+  for (const pixel_box& t : tiles) {
+    CHECK(t.width == 64u);
+    CHECK(t.height == 64u);
+  }
+  std::size_t calls = 0;
+  REQUIRE(extend_detail(start, mask, m, tiles, fine, canvas, [&] {
+    ++calls;
+    return true;
+  }));
+  CHECK(calls == tiles.size());
+  // The photo's own pixels are untouched; the margins gained the stripes.
+  std::size_t photo_changed = 0;
+  double before = 0, after = 0;
+  std::size_t n = 0;
+  for (std::uint32_t y = 1; y < canvas.height; ++y) {
+    for (std::uint32_t x = 1; x < canvas.width; ++x) {
+      const std::size_t at = (std::size_t{y} * canvas.width + x) * 3;
+      if (mask.a[std::size_t{y} * canvas.width + x] <= 127) {
+        photo_changed += canvas.rgb[at] != first.rgb[at];
+        continue;
+      }
+      before += std::abs(first.rgb[at] - first.rgb[at - 3]);
+      after += std::abs(canvas.rgb[at] - canvas.rgb[at - 3]);
+      ++n;
+    }
+  }
+  CHECK(photo_changed == 0);
+  REQUIRE(n > 0);
+  CHECK(after / n > before / n + 5.0);
+  // Cancel between tiles.
+  rgb8 again = first;
+  CHECK(extend_detail(start, mask, m, tiles, fine, again, [] { return false; }).error() == mv::status::cancelled);
 }
 
 // The real LaMa (MV_REMOVE_MODEL: lama_fp32.onnx) on a photo
@@ -2557,6 +3266,161 @@ TEST_CASE("remove: LaMa through ONNX Runtime", "[.remove-model]") {
   std::printf("extend: %ux%u -> %ux%u in %.2f s on CPU\n", full.width, full.height, bigger.width, bigger.height,
               std::chrono::duration<double>(std::chrono::steady_clock::now() - e0).count());
   if (const char* keep = std::getenv("MV_EXTEND_OUT")) write_bytes(std::string(keep), bigger.rgb);
+}
+
+// The quality defaults ("Quality over speed", owner 2026-11-04) timed with the
+// real LaMa, through the runner as the app runs them (progress, cancel
+// checks, the second pass): MV_REMOVE_MODEL, MV_ENHANCE_RUNTIME_DIR and a
+// photo (MV_RESTYLE_RGB / _W / _H, raw RGB). MV_REMOVE_DABS ("u,v,r u,v,r
+// ...", the host's brush) says what to take out (default: a block of dabs
+// over the middle sixth of the picture each way); MV_EXTEND_PRESET the Extend (default
+// "all"); MV_REMOVE_OUT_DIR keeps both results as raw RGB; MV_QUALITY_ONLY
+// ("remove" or "extend") runs one.
+TEST_CASE("remove and extend: the quality defaults timed with the real LaMa", "[.remove-quality]") {
+  const char* file = std::getenv("MV_REMOVE_MODEL");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  if (!file || !ort || !raw || !ws || !hs) SKIP("MV_REMOVE_MODEL / MV_ENHANCE_RUNTIME_DIR / MV_RESTYLE_RGB not set");
+  run_port::still photo;
+  photo.width = static_cast<std::uint32_t>(std::atoi(ws));
+  photo.height = static_cast<std::uint32_t>(std::atoi(hs));
+  photo.rgb = mv::test::read_bytes(raw);
+  REQUIRE(photo.rgb.size() == std::size_t{photo.width} * photo.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  std::vector<float> dabs;
+  if (const char* d = std::getenv("MV_REMOVE_DABS")) {
+    std::string s(d);
+    for (char& c : s) c = c == ',' ? ' ' : c;
+    std::istringstream in(s);
+    for (float v; in >> v;) dabs.push_back(v);
+  } else {
+    for (float v = 0.42f; v <= 0.58f; v += 0.01f) {
+      for (float u = 0.42f; u <= 0.58f; u += 0.01f) dabs.insert(dabs.end(), {u, v, 0.02f});
+    }
+  }
+  const char* out_dir = std::getenv("MV_REMOVE_OUT_DIR");
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    auto m = inpaint_model::open(**rt, file, inpaint_io{});
+    if (!m) return mv::err(m.error());
+    return std::unique_ptr<inpaint_filler>(std::move(*m));
+  };
+  port.still_mask = [&](const std::string&) { return dabs; };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> { return photo; };
+  std::string written_name;
+  port.write_still = [&](const std::string& source, const run_port::still& pic) -> mv::result<std::string> {
+    std::printf("  wrote %ux%u\n", pic.width, pic.height);
+    if (out_dir) write_bytes(fs::path(out_dir) / (source + ".rgb"), pic.rgb);
+    return source + ".jpg";
+  };
+  model_spec spec;
+  spec.kind = model_kind::remove;
+  const auto run = [&](const char* name, bool extend) {
+    job_request req;
+    req.path = name;
+    req.item = item_kind::still;
+    job_request::part part;
+    part.kind = model_kind::remove;
+    part.spec = &spec;
+    if (extend) {
+      part.values["mode"] = *mv::json::parse("\"extend\"");
+      const char* preset = std::getenv("MV_EXTEND_PRESET");
+      part.values["extend"] = *mv::json::parse("\"" + std::string(preset ? preset : "all") + "\"");
+    }
+    req.parts.push_back(part);
+    job_runner jr(port);
+    std::atomic<bool> done{false};
+    bool ok = false;
+    std::string message;
+    std::mutex m;
+    std::vector<double> steps;
+    job_events ev;
+    ev.progress = [&](double f) {
+      std::lock_guard lock(m);
+      steps.push_back(f);
+    };
+    ev.done = [&](bool k, const std::string&, const std::string& why) {
+      ok = k;
+      message = why;
+      done = true;
+    };
+    const auto t0 = std::chrono::steady_clock::now();
+    jr.start(req, ev);
+    while (!done.load()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    INFO(message);
+    REQUIRE(ok);
+    std::lock_guard lock(m);
+    std::printf("%s: %ux%u in %.2f s, %zu progress reports\n", name, photo.width, photo.height, s, steps.size());
+    // Progress only goes forward once it has started (time left reads it).
+    for (std::size_t i = 1; i < steps.size(); ++i) {
+      if (steps[i - 1] >= 0) CHECK(steps[i] >= steps[i - 1]);
+    }
+  };
+  // MV_QUALITY_ONLY=remove or extend runs only that one.
+  const char* only = std::getenv("MV_QUALITY_ONLY");
+  if (!only || std::string_view(only) == "remove") run("remove", false);
+  if (!only || std::string_view(only) == "extend") run("extend", true);
+}
+
+// Extend's two passes on a real photo with the real LaMa (2026-11-05: the
+// comparison behind kExtendMinTile, kExtendCover and extend_detail, docs/
+// design/29 "Extend"). MV_REMOVE_MODEL, MV_ENHANCE_RUNTIME_DIR, the photo
+// (MV_RESTYLE_RGB / _W / _H, raw RGB), MV_EXTEND_PRESET (default "all") and
+// MV_EXTEND_COMPARE_OUT (a directory): "fill" (the tiles alone) and "detail"
+// (the tiles, then the detail pass, as the runner does) are written there as
+// <variant>.rgb at the size printed, for tools/enhance/extend_metrics.py.
+// MV_EXTEND_VARIANTS picks ("fill detail", the default both).
+TEST_CASE("extend: the tiles and the detail pass with the real LaMa", "[.extend-compare]") {
+  const char* file = std::getenv("MV_REMOVE_MODEL");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  const char* out_dir = std::getenv("MV_EXTEND_COMPARE_OUT");
+  if (!file || !ort || !raw || !ws || !hs || !out_dir) SKIP("MV_REMOVE_MODEL / runtime / photo / out dir not set");
+  rgb8 full;
+  full.width = static_cast<std::uint32_t>(std::atoi(ws));
+  full.height = static_cast<std::uint32_t>(std::atoi(hs));
+  full.rgb = mv::test::read_bytes(raw);
+  REQUIRE(full.rgb.size() == std::size_t{full.width} * full.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  auto model = inpaint_model::open(**rt, file, inpaint_io{});
+  REQUIRE(model);
+  const char* preset = std::getenv("MV_EXTEND_PRESET");
+  const extend_margins em = extend_preset(preset ? preset : "all", full.width, full.height);
+  rgb8 start;
+  mask8 gmask;
+  extend_canvas(full, em, start, gmask);
+  const std::uint32_t w = start.width, h = start.height;
+  std::string variants = "fill detail";
+  if (const char* v = std::getenv("MV_EXTEND_VARIANTS")) variants = v;
+  std::istringstream names(variants);
+  for (std::string name; names >> name;) {
+    REQUIRE((name == "fill" || name == "detail"));
+    rgb8 pic = start;
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::vector<pixel_box> tiles = extend_tiles(w, h, em);
+    REQUIRE(extend_fill(pic, gmask, tiles, **model, nullptr));
+    std::size_t fills = tiles.size();
+    if (name == "detail") {
+      const auto d = extend_detail_tiles(w, h, em, (*model)->side());
+      fills += d.size();
+      REQUIRE(extend_detail(start, gmask, em, d, **model, pic, nullptr));
+    }
+    for (std::uint32_t y = 0; y < full.height; ++y) {
+      std::copy_n(full.rgb.data() + std::size_t{y} * full.width * 3, std::size_t{full.width} * 3,
+                  pic.rgb.data() + (std::size_t{y + em.top} * w + em.left) * 3);
+    }
+    std::printf("%s: %ux%u -> %ux%u, %zu fills, %.1f s\n", name.c_str(), full.width, full.height, w, h, fills,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    write_bytes(fs::path(out_dir) / (name + ".rgb"), pic.rgb);
+  }
 }
 
 TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {

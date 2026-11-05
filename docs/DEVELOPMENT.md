@@ -722,7 +722,20 @@ puts the tool down. Rotate, flip, crop and Delete are refused meanwhile, and `A`
 are pending; rotate and flip stay refused while strokes are kept with the tool down. Tests: `mv_tests
 "[canvas-tool],[remove-brush],[tool]"`; the brush's snapshot publish and tint build time:
 `mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
-People on.
+People on. **Extend** (S6; the rail, the Enhance tab, Edit ▸ Extend Edges): drag the frame's
+edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's presets, `Enter`
+fills (the part over the photo is a crop; Enhance's docked panel under the Extend card fills the
+rest, its sheet with an Enhance that has none), `Esc`
+cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`.
+
+Faces (S8): the rail's Faces, the Enhance tab's Faces card or (Mac) Edit ▸ Faces arm the Faces
+tool: a box per face on the photo (a click chooses it or leaves it out) and the Faces panel first
+in the Enhance tab (each face's thumbnail, People's name, its Open eyes / Improve face, Do all).
+It needs the AI pack with People on; without them the panel says what to turn on. Results are new
+files beside the photo (`-eyes.jpg`, `-faces.jpg`). Tests: `mv_tests "[faces-tool],[eyes]"` (the
+cards, choosing, the boxes, shut-eye detection, the edit region) and `mv_ai_tests "[faces-mask]"`
+(only the chosen faces change: 0 pixels differ outside their boxes; the canvas's boxes matched
+to the run's answer) and `mv_ai_tests "[eyes]"` (the pack's names and counts).
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
@@ -2327,8 +2340,31 @@ MV_ENHANCE_IMAGE_MODELS=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/
 
 **Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob
-apart with merging and the 8-box fallback, and the run with a stand-in model, including a cancel
-between boxes). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
+apart with merging and the 8-box fallback, the second pass's tiles and detail blend, and the run
+with a stand-in model, including a cancel between boxes and between tiles, and progress per fill).
+**Extend** uses the same file: `"[enhance][extend]"` checks the presets, the tiles (the model's
+side at least, every margin pixel in one, two away from the ends), the detail pass with a stand-in
+model (the margins gain what the shrunk tiles lost, the photo untouched, cancel between tiles), the
+canvas frame through `still_extend` written as `<stem>-extended.jpg` at the size the bar showed
+(also from the docked panel's Fill), and the host's readout sums against the add-on's. LaMa's file is pinned in `remote.json`; Enhance's Download fetches it. With
+it on disk, the quality defaults run through the runner and are timed on a photo of your own
+(raw RGB; `MV_REMOVE_DABS="u,v,r u,v,r …"` is the brush, default a block in the middle;
+`MV_EXTEND_PRESET` default `all`; `MV_QUALITY_ONLY=remove|extend`; `MV_REMOVE_OUT_DIR` keeps
+both results as raw RGB):
+
+```bash
+MV_REMOVE_MODEL=<dir>/lama_fp32.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=3840 MV_RESTYLE_H=2160 build/bin/mv_import_tests "[.remove-quality]"
+```
+
+Extend's margins, measured (docs/design/29 "Extend"): the hidden `[.extend-compare]` case writes the
+first pass alone (`fill`) and both passes (`detail`) as raw RGB into `MV_EXTEND_COMPARE_OUT`
+(`MV_EXTEND_PRESET`, `MV_EXTEND_VARIANTS`); `tools/enhance/extend_metrics.py` prints the margins'
+sharpness, the step at the photo's edge and the seams (numpy and Pillow):
+
+```bash
+MV_REMOVE_MODEL=<dir>/lama_fp32.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=1280 MV_RESTYLE_H=854 MV_EXTEND_COMPARE_OUT=<dir> build/bin/mv_import_tests "[.extend-compare]"
+python3 tools/enhance/extend_metrics.py <dir> 1280 854 128 85 128 85 fill detail   # photo size, then left top right bottom
+```
 
 **Restore faces** (RestoreFormer++ / GFPGAN v1.4, docs/plans/edit-refresh.md S10):
 `build/bin/mv_import_tests "[faces]"` (the FFHQ alignment, the warp, the feathered mask, the paste

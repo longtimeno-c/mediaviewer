@@ -4,6 +4,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cmath>
 
 #include "edit/eyes.h"
@@ -193,4 +194,49 @@ TEST_CASE("faces: the whole face comes from another photo, in this photo's light
   for (int i = 4; i < 10; i += 2) turned[i] += 0.04f;
   mv::image::linear_image again = before;
   CHECK_FALSE(mv::edit::transfer_face(again, t, donor, turned));
+}
+
+// docs/plans/edit-refresh.md S8: the Faces panel offers Open eyes only on a
+// face whose eyes look shut, with no donor to compare against.
+TEST_CASE("eyes: a shut pair reads as shut on its own; open, tilted, dark or tiny ones do not", "[eyes]") {
+  const face shut{200, 150, 120, 0.0f, false, 1.0f};
+  const face open{200, 150, 120, 0.0f, true, 1.0f};
+  const face tilt{210, 140, 110, 0.12f, true, 0.7f};
+  const face dark_shut{200, 150, 90, 0.08f, false, 0.4f};
+  const auto a = draw(400, 300, shut), b = draw(400, 300, open), c = draw(400, 300, tilt), d = draw(400, 300, dark_shut);
+  CHECK(edit::eyes_look_shut(a, marks(a, shut)));
+  CHECK_FALSE(edit::eyes_look_shut(b, marks(b, open)));
+  CHECK_FALSE(edit::eyes_look_shut(c, marks(c, tilt)));
+  CHECK(edit::eyes_look_shut(d, marks(d, dark_shut)));
+  // Too small to tell (eyes under 8 px apart), or plain skin: not shut.
+  const face tiny{200, 150, 6, 0.0f, false, 1.0f};
+  const auto t = draw(400, 300, tiny);
+  CHECK_FALSE(edit::eyes_look_shut(t, marks(t, tiny)));
+  image::linear_image none;
+  CHECK_FALSE(edit::eyes_look_shut(none, marks(a, shut)));
+}
+
+TEST_CASE("eyes: a face's edit region holds its box and the whole-face ellipse, inside the picture", "[eyes]") {
+  // Eyes 100 px apart at (200, 150) in 400 x 300, nose 50 px below.
+  edit::face_landmarks lm{150.f / 400, 150.f / 300, 250.f / 400, 150.f / 300, 200.f / 400, 200.f / 300,
+                          165.f / 400, 230.f / 300, 235.f / 400, 230.f / 300};
+  const std::array<float, 4> box{140.f / 400, 100.f / 300, 120.f / 400, 160.f / 300};
+  const auto r = edit::face_region(box, lm, 400, 300);
+  // The box, grown kFaceRegionGrow each side...
+  CHECK(r[0] <= box[0] - edit::kFaceRegionGrow * box[2] + 1e-6f);
+  CHECK(r[0] + r[2] >= box[0] + box[2] * (1 + edit::kFaceRegionGrow) - 1e-6f);
+  // ...and the ellipse: half width 1.05 eye distances about the nose.
+  const float cx = 200.f + (150.f - 200.f) * 0.0f;  // the nose is level with the eyes' middle in x
+  CHECK(r[0] * 400 <= cx - 105.f + 0.5f);
+  CHECK((r[0] + r[2]) * 400 >= cx + 105.f - 0.5f);
+  CHECK(r[1] * 300 <= 200.f + (150.f - 200.f) * 0.1f - 125.f + 0.5f);
+  // Clamped to the picture.
+  CHECK(r[0] >= 0.0f);
+  CHECK(r[1] >= 0.0f);
+  CHECK(r[0] + r[2] <= 1.0f + 1e-6f);
+  CHECK(r[1] + r[3] <= 1.0f + 1e-6f);
+  // With no picture size, the grown box alone.
+  const auto g = edit::face_region(box, lm, 0, 0);
+  CHECK(g[0] == Approx(box[0] - edit::kFaceRegionGrow * box[2]));
+  CHECK(g[2] == Approx(box[2] * (1 + 2 * edit::kFaceRegionGrow)));
 }

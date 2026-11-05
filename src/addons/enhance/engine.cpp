@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/enhance/engine.h"
+#include "addons/enhance/face_restore.h"
 
 #include "addons/enhance/memory.h"
 
@@ -256,6 +257,7 @@ sheet_view engine::sheet_locked(bool docked) const {
   v.offers_remove = (brushed_ > 0 || docked) && specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
   v.offers_faces = specs_[static_cast<int>(model_kind::face)].has_value();
+  v.framed = framed_ && item_ == item_kind::still;
   v.photo = prefs_.photo;
   v.level = effective_tier();
   for (const model_kind k : kStillKinds) {
@@ -373,6 +375,7 @@ engine::item_facts engine::read_item(const std::string& path) const {
   f.item = path.empty() ? item_kind::unknown : library_key(path) ? item_kind::still : sniff(head_of(path));
   if ((f.item == item_kind::media || f.item == item_kind::audio) && port_.probe) f.facts = port_.probe(path);
   f.brushed = f.item == item_kind::still && port_.brushed ? port_.brushed(path) : 0;
+  f.framed = f.item == item_kind::still && port_.framed && port_.framed(path);
   return f;
 }
 
@@ -386,6 +389,7 @@ void engine::adopt_locked(const std::string& path, const item_facts& f, std::vec
   keep_ = f.item == item_kind::media ? std::move(keep) : std::vector<std::int64_t>{};
   item_ = f.item;
   facts_ = f.facts;
+  framed_ = f.framed;  // S6: the host's Extend frame for this photo
 }
 
 void engine::forget_result_locked() {
@@ -428,6 +432,9 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     // the photo's choice: it is offered only while something is brushed).
     if (f.brushed > 0 && brushed_ == 0) prefs_.photo = photo_target::remove;
     brushed_ = f.brushed;
+    // S6: Fill on Edit's Extend frame opened it: it starts on Extend (not
+    // saved either; the frame overrides the preset).
+    if (f.framed && specs_[static_cast<int>(model_kind::remove)]) prefs_.photo = photo_target::extend;
   }
   post_sheet_locked();
 }
@@ -461,6 +468,18 @@ void engine::tool_command(const std::string& value_json) {
   }
   const json::value* go = v->find("run");
   const bool start = go && go->k == json::kind::boolean && go->b;
+  // edit-refresh S8: Restore face from the Faces panel names the chosen
+  // faces' boxes; any other command runs on every face.
+  std::vector<float> boxes;
+  if (const json::value* fb = v->find("faces"); fb && fb->k == json::kind::array) {
+    for (const json::value& n : fb->a) {
+      if (n.k != json::kind::number || boxes.size() >= 4 * kMaxChosenFaces) return;
+      const double d = n.is_integer ? static_cast<double>(n.i) : n.d;
+      if (!(d >= -1.0 && d <= 2.0)) return;
+      boxes.push_back(static_cast<float>(d));
+    }
+    if (boxes.size() % 4 != 0) return;
+  }
   // Remove reads the brush again: the host hands its dabs over (still_mask)
   // just before it asks for a run.
   std::string path;
@@ -474,6 +493,11 @@ void engine::tool_command(const std::string& value_json) {
   const bool reread = still && !path.empty() && port_.brushed &&
                       (chosen == photo_target::remove || (!chosen && current_prefs().photo == photo_target::remove));
   const std::uint32_t brushed = reread ? port_.brushed(path) : 0;
+  // S6: Fill on the canvas hands its frame over (still_extend) just before it
+  // asks for an Extend run: the panel says the frame wins over the preset.
+  const bool extend = chosen == photo_target::extend || (!chosen && current_prefs().photo == photo_target::extend);
+  const bool reframe = still && !path.empty() && port_.framed && extend;
+  const bool framed = reframe && port_.framed(path);
   {
     std::lock_guard lock(m_);
     if (tool_gen_ == 0) return;
@@ -486,6 +510,8 @@ void engine::tool_command(const std::string& value_json) {
         save_locked();
       }
       if (reread && path == path_) brushed_ = brushed;
+      if (reframe && path == path_) framed_ = framed;
+      face_boxes_ = std::move(boxes);
     }
     post_sheet_locked();
   }
@@ -589,6 +615,16 @@ void engine::run(bool docked) {
       for (const knob& kb : s.spec->knobs) {
         const auto it = s.values.find(kb.id);
         p.values[kb.id] = knob_value(kb, it == s.values.end() ? nullptr : &it->second);
+      }
+      if (s.kind == model_kind::face && docked && !face_boxes_.empty()) {
+        json::value& faces = p.values["faces"];
+        faces.k = json::kind::array;
+        for (const float b : face_boxes_) {
+          json::value n;
+          n.k = json::kind::number;
+          n.d = b;
+          faces.a.push_back(std::move(n));
+        }
       }
       if (s.kind == model_kind::remove) p.values["mode"].k = json::kind::string;
       if (s.kind == model_kind::remove) p.values["mode"].s = v.photo == photo_target::extend ? "extend" : "remove";

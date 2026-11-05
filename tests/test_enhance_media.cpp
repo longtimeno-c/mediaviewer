@@ -9,6 +9,7 @@
 // the real one (hidden case).
 #include "catch_compat.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -31,6 +32,7 @@
 #include "edit/clip_sample.h"
 #include "edit/encode.h"
 #include "core/json.h"
+#include "image/half.h"
 #include "image/linear.h"
 #include "edit/eyes.h"
 #include "edit/picture_io.h"
@@ -576,6 +578,7 @@ mv::addon::host_services still_services() {
   mv::addon::host_services svc = picture_services();
   svc.full_still = &mv::addon::media::full_still;
   svc.write_still = &mv::addon::media::write_still;
+  svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6
   return svc;
 }
 
@@ -950,6 +953,217 @@ TEST_CASE("eyes: a shut-eyed photo becomes a new file with a neighbour's open ey
   CHECK_FALSE(mv::addon::media::open_closed_eyes(utf8(shut), "not json"));
 }
 
+// docs/plans/edit-refresh.md S8: the Faces tool changes only the faces chosen
+// on the canvas. Two faces in one photo (eyes shut), their open-eyed selves in
+// a frame of the same moment; a faces_mask picks which are fixed, and every
+// pixel outside the chosen faces' edit regions (edit::face_region, the boxes
+// the canvas draws) is bit for bit what it was.
+namespace {
+
+struct drawn_face {
+  float cx, cy, d;
+  bool open;
+};
+
+std::vector<std::uint8_t> faces_jpeg(std::uint32_t w, std::uint32_t h, std::initializer_list<drawn_face> faces) {
+  mv::codec::raster r;
+  r.width = w;
+  r.height = h;
+  r.format = mv::codec::format_family::jpeg;
+  r.rgba.assign(std::size_t{w} * h * 4, 255);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      std::uint8_t* p = &r.rgba[(std::size_t{y} * w + x) * 4];
+      // Skin with a gentle gradient, so a fix that leaked would show.
+      p[0] = static_cast<std::uint8_t>(190 + (x * 20) / w), p[1] = static_cast<std::uint8_t>(140 + (y * 20) / h),
+      p[2] = 120;
+      for (const drawn_face& f : faces) {
+        for (float side : {-0.5f, 0.5f}) {
+          const float ux = static_cast<float>(x) - (f.cx + side * f.d), uy = static_cast<float>(y) - f.cy;
+          if (f.open) {
+            if ((ux / (0.25f * f.d)) * (ux / (0.25f * f.d)) + (uy / (0.11f * f.d)) * (uy / (0.11f * f.d)) < 1.0f) {
+              p[0] = p[1] = p[2] = 235;
+            }
+            if (ux * ux + uy * uy < (0.09f * f.d) * (0.09f * f.d)) p[0] = 25, p[1] = 20, p[2] = 18;
+          } else if (std::abs(uy) < 1.5f && std::abs(ux) < 0.25f * f.d) {
+            p[0] = 30, p[1] = 25, p[2] = 25;
+          }
+        }
+      }
+    }
+  }
+  mv::edit::encode_options o;
+  o.quality = 95;
+  auto bytes = mv::edit::encode(r, o, {});
+  REQUIRE(bytes);
+  return *bytes;
+}
+
+// A face of the pack's answer: its box (two eye distances wide, 2.4 tall),
+// landmarks, and the donor face in `donor`.
+std::string pack_face(float w, float h, const drawn_face& f, const std::string& donor_quoted, const drawn_face& d,
+                      const char* extra = "") {
+  char box[160];
+  std::snprintf(box, sizeof box, "{\"x\":%g,\"y\":%g,\"w\":%g,\"h\":%g,%s\"lm\":", (f.cx - f.d) / w,
+                (f.cy - f.d) / h, 2 * f.d / w, 2.4f * f.d / h, extra);
+  return std::string(box) + lm_json(w, h, f.cx, f.cy, f.d) + ",\"donors\":[{\"path\":" + donor_quoted +
+         ",\"quality\":0.9,\"lm\":" + lm_json(w, h, d.cx, d.cy, d.d) + "}]}";
+}
+
+std::array<float, 4> region_of(float w, float h, const drawn_face& f) {
+  mv::edit::face_landmarks lm{};
+  auto parsed = mv::json::parse(lm_json(w, h, f.cx, f.cy, f.d));
+  for (std::size_t i = 0; i < lm.size(); ++i) lm[i] = static_cast<float>(parsed->a[i].d);
+  return mv::edit::face_region({(f.cx - f.d) / w, (f.cy - f.d) / h, 2 * f.d / w, 2.4f * f.d / h}, lm, w, h);
+}
+
+bool inside(const std::array<float, 4>& r, std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h) {
+  const float fx = (static_cast<float>(x) + 0.5f) / static_cast<float>(w);
+  const float fy = (static_cast<float>(y) + 0.5f) / static_cast<float>(h);
+  // The region's pixels as fix_faces_in rounds them (floor / ceil).
+  return x >= static_cast<std::uint32_t>(std::floor(r[0] * w)) && x < static_cast<std::uint32_t>(std::ceil((r[0] + r[2]) * w)) &&
+         y >= static_cast<std::uint32_t>(std::floor(r[1] * h)) && y < static_cast<std::uint32_t>(std::ceil((r[1] + r[3]) * h)) &&
+         fx >= 0.0f && fy >= 0.0f;
+}
+
+// How many pixels changed inside and outside `regions` (any channel's bits).
+struct diff_count {
+  std::size_t in = 0, out = 0;
+};
+diff_count diff(const mv::image::linear_image& a, const mv::image::linear_image& b,
+                std::initializer_list<std::array<float, 4>> regions) {
+  diff_count d;
+  for (std::uint32_t y = 0; y < a.height; ++y) {
+    for (std::uint32_t x = 0; x < a.width; ++x) {
+      const std::size_t i = (std::size_t{y} * a.width + x) * 4;
+      if (std::equal(a.rgba.begin() + static_cast<std::ptrdiff_t>(i), a.rgba.begin() + static_cast<std::ptrdiff_t>(i + 4),
+                     b.rgba.begin() + static_cast<std::ptrdiff_t>(i))) {
+        continue;
+      }
+      bool in = false;
+      for (const auto& r : regions) in = in || inside(r, x, y, a.width, a.height);
+      ++(in ? d.in : d.out);
+    }
+  }
+  return d;
+}
+
+}  // namespace
+
+TEST_CASE("faces: a fix changes only the chosen faces; nothing outside their boxes moves", "[enhance][eyes][faces-mask]") {
+  scratch_dir s("faces_mask");
+  constexpr std::uint32_t W = 800, H = 320;
+  const drawn_face a{200, 150, 100, false}, b{600, 150, 100, false};
+  const drawn_face da{205, 148, 102, true}, db{596, 152, 98, true};
+  const fs::path photo = s / "IMG_0300.JPG", donor = s / "IMG_0301.JPG";
+  mv::test::write_bytes(photo, faces_jpeg(W, H, {a, b}));
+  mv::test::write_bytes(donor, faces_jpeg(W, H, {da, db}));
+  mv::json::writer q;
+  q.string(utf8(donor));
+  const std::string dq = q.take();
+  const std::string pack = "{\"faces\":[" + pack_face(W, H, a, dq, da, "\"quality\":0.2,") + "," +
+                           pack_face(W, H, b, dq, db, "\"quality\":0.2,") + "]}";
+  auto decoded = mv::image::decode_linear(mv::test::read_bytes(photo));
+  REQUIRE(decoded);
+  const mv::image::linear_image src = std::move(decoded).value();
+  const mv::image::linear_image* source = &src;
+  const auto ra = region_of(W, H, a), rb = region_of(W, H, b);
+  REQUIRE(ra[0] + ra[2] < rb[0]);  // the two regions do not touch
+
+  using mv::addon::media::face_fix;
+  for (const face_fix fix : {face_fix::open_eyes, face_fix::improve, face_fix::do_all}) {
+    INFO("fix " << static_cast<int>(fix));
+    // Face 0 only: face 1 and everything around both are untouched.
+    mv::image::linear_image only_a = *source;
+    int found = 0;
+    auto fa = mv::addon::media::fix_faces_in(only_a, pack, fix, 1u, nullptr, &found);
+    REQUIRE(fa);
+    CHECK(*fa == 1);
+    CHECK(found == 2);
+    const diff_count da_ = diff(*source, only_a, {ra});
+    CHECK(da_.out == 0);  // the verify line: 0 outside the chosen box
+    CHECK(da_.in > 100);
+    CHECK(diff(*source, only_a, {rb}).in == 0);  // face 1's box: the same pixels
+    // Face 1 only, the other way round.
+    mv::image::linear_image only_b = *source;
+    REQUIRE(mv::addon::media::fix_faces_in(only_b, pack, fix, 2u).value_or(-1) == 1);
+    CHECK(diff(*source, only_b, {rb}).out == 0);
+    CHECK(diff(*source, only_b, {ra}).in == 0);
+    // Both: each face exactly as when it was fixed alone.
+    mv::image::linear_image both = *source;
+    REQUIRE(mv::addon::media::fix_faces_in(both, pack, fix, mv::addon::media::kAllFaces).value_or(-1) == 2);
+    CHECK(diff(*source, both, {ra, rb}).out == 0);
+    CHECK(diff(only_a, both, {rb}).out == 0);
+    CHECK(diff(only_b, both, {ra}).out == 0);
+    // Nothing chosen: nothing changes.
+    mv::image::linear_image none = *source;
+    REQUIRE(mv::addon::media::fix_faces_in(none, pack, fix, 0u).value_or(-1) == 0);
+    CHECK(none.rgba == source->rgba);
+  }
+  // Open eyes really opened face 0's eyes.
+  {
+    mv::image::linear_image fixed = *source;
+    REQUIRE(mv::addon::media::fix_faces_in(fixed, pack, face_fix::open_eyes, 1u).value_or(-1) == 1);
+    mv::edit::face_landmarks lm{};
+    auto parsed = mv::json::parse(lm_json(W, H, a.cx, a.cy, a.d));
+    for (std::size_t i = 0; i < lm.size(); ++i) lm[i] = static_cast<float>(parsed->a[i].d);
+    CHECK(mv::edit::eye_openness(fixed, lm) > mv::edit::eye_openness(*source, lm) * mv::edit::kEyesBetter);
+  }
+
+  // The file: "<stem>-eyes.jpg" beside the original, which is never written;
+  // the face left out is the source's own (the JPEG's noise only).
+  const auto before = mv::test::read_bytes(photo);
+  auto r = mv::addon::media::fix_faces(utf8(photo), pack, face_fix::open_eyes, 2u);
+  REQUIRE(r);
+  CHECK(r->faces == 2);
+  CHECK(r->fixed == 1);
+  CHECK(fs::path(r->written).filename() == "IMG_0300-eyes.jpg");
+  CHECK(mv::test::read_bytes(photo) == before);
+  auto written = mv::image::decode_linear(mv::test::read_bytes(fs::path(r->written)));
+  REQUIRE(written);
+  double err_a = 0, err_b = 0;
+  std::size_t n_a = 0, n_b = 0;
+  for (std::uint32_t y = 0; y < H; ++y) {
+    for (std::uint32_t x = 0; x < W; ++x) {
+      const std::size_t i = (std::size_t{y} * W + x) * 4;
+      const double e = std::abs(mv::image::half_to_float(written->rgba[i]) - mv::image::half_to_float(source->rgba[i]));
+      if (inside(ra, x, y, W, H)) err_a += e, ++n_a;
+      if (inside(rb, x, y, W, H)) err_b += e, ++n_b;
+    }
+  }
+  CHECK(err_a / static_cast<double>(n_a) < 0.01);  // face 0, left out: re-encoded, not changed
+  CHECK(err_b / static_cast<double>(n_b) > err_a / static_cast<double>(n_a) * 2);
+  // Do all names its file "-faces"; nothing chosen writes nothing.
+  auto all = mv::addon::media::fix_faces(utf8(photo), pack, face_fix::do_all, mv::addon::media::kAllFaces);
+  REQUIRE(all);
+  CHECK(all->fixed == 2);
+  CHECK(fs::path(all->written).filename() == "IMG_0300-faces.jpg");
+  auto nothing = mv::addon::media::fix_faces(utf8(photo), pack, face_fix::improve, 0u);
+  REQUIRE(nothing);
+  CHECK(nothing->written.empty());
+  CHECK(mv::addon::media::fix_note(face_fix::do_all, mv::status::ok, all).find("2 faces") == 0);
+}
+
+TEST_CASE("faces: the canvas's chosen boxes find their faces in the run's answer", "[enhance][faces-mask]") {
+  const std::string pack =
+      "{\"faces\":[{\"x\":0.1,\"y\":0.2,\"w\":0.2,\"h\":0.3,\"lm\":[0,0,0,0,0,0,0,0,0,0]},"
+      "{\"x\":0.6,\"y\":0.2,\"w\":0.2,\"h\":0.3,\"lm\":[0,0,0,0,0,0,0,0,0,0]},"
+      "{\"x\":0.62,\"y\":0.25,\"w\":0.05,\"h\":0.05,\"lm\":[0,0,0,0,0,0,0,0,0,0]}]}";
+  using mv::addon::media::faces_mask_of;
+  // The second face, read a little differently by the earlier answer.
+  const float second[4] = {0.61f, 0.21f, 0.19f, 0.31f};
+  CHECK(faces_mask_of(pack, second) == 2u);
+  // Both big faces; a box over nothing chooses nothing.
+  const float two[12] = {0.1f, 0.2f, 0.2f, 0.3f, 0.6f, 0.2f, 0.2f, 0.3f, 0.4f, 0.8f, 0.05f, 0.05f};
+  CHECK(faces_mask_of(pack, two) == 3u);
+  // The same box twice takes one face, then the next best that overlaps
+  // enough (here none: the small face's overlap is under 0.3).
+  const float twice[8] = {0.6f, 0.2f, 0.2f, 0.3f, 0.6f, 0.2f, 0.2f, 0.3f};
+  CHECK(faces_mask_of(pack, twice) == 2u);
+  CHECK(faces_mask_of(pack, {}) == 0u);
+  CHECK(faces_mask_of("not json", second) == 0u);
+}
+
 // S0 (docs/plans/edit-refresh.md §5): the writer audit. Every writer of a
 // Photos-library item's result (Enhance's Detail, Remove and Extend through
 // the host table; Open closed eyes; Improve faces; Save copy) reads the item
@@ -1110,7 +1324,57 @@ TEST_CASE("photos: every writer of a library photo adds it once and writes nothi
     run_request(port, req, o);
     INFO(o.message);
     REQUIRE(o.ok);
-    audit("extend", "enhance");
+    audit("extend", "extended");
+  }
+  {
+    // edit-refresh S6: the frame dragged on the canvas, through the host
+    // table's still_extend (the sheet's preset is then not used).
+    mv::addon::media::set_still_extend(kShut, {0.1f, 0.0f, 0.2f, 0.0f});
+    const mv_host_api* api = table.api();
+    REQUIRE(api->struct_size >= offsetof(mv_host_api, still_extend) + sizeof(api->still_extend));
+    REQUIRE(api->still_extend);
+    float f[4] = {9, 9, 9, 9};
+    REQUIRE(api->still_extend(api->host, kShut.c_str(), f) == MV_OK);
+    CHECK(f[0] == 0.1f);
+    CHECK(f[2] == 0.2f);
+    REQUIRE(api->still_extend(api->host, kOpen.c_str(), f) == MV_OK);  // another photo: none
+    CHECK(f[0] == 0.0f);
+    CHECK(f[2] == 0.0f);
+    REQUIRE(port.still_extend);
+    job_request req;
+    req.path = kShut;
+    req.item = item_kind::still;
+    job_request::part p;
+    p.kind = model_kind::remove;
+    p.spec = &remove_spec;
+    p.models_dir = "unused";
+    p.values["mode"] = *mv::json::parse("\"extend\"");
+    p.values["extend"] = *mv::json::parse("\"taller\"");
+    req.parts.push_back(p);
+    outcome o;
+    run_request(port, req, o);
+    INFO(o.message);
+    REQUIRE(o.ok);
+    audit("extend frame", "extended");
+    mv::addon::media::set_still_extend("", {});
+    CHECK(mv::addon::media::still_extend(kShut)[0] == 0.0f);
+
+    // The frame is measured against the edit it was set over: Fill's crop
+    // undone (or any other turn or crop) and it no longer answers; a colour
+    // change keeps it.
+    mv::edit::geometry cropped;
+    cropped.crop = {0.1f, 0.0f, 0.8f, 1.0f};
+    mv::addon::media::set_still_edit(kShut, cropped, {});
+    mv::addon::media::set_still_extend(kShut, {0.1f, 0.0f, 0.2f, 0.0f});
+    CHECK(mv::addon::media::still_extend(kShut)[0] == 0.1f);
+    mv::edit::colour warmer;
+    warmer.v[static_cast<std::size_t>(mv::edit::adjust_param::mono)] = 100.0f;
+    mv::addon::media::set_still_edit(kShut, cropped, warmer);
+    CHECK(mv::addon::media::still_extend(kShut)[2] == 0.2f);
+    mv::addon::media::clear_still_edit();  // the crop undone: nothing left to edit
+    CHECK(mv::addon::media::still_extend(kShut)[0] == 0.0f);
+    CHECK(mv::addon::media::still_extend(kShut)[2] == 0.0f);
+    mv::addon::media::set_still_extend("", {});
   }
 
   // Open closed eyes and Improve faces: the target and the donor both by key.
@@ -1157,7 +1421,7 @@ TEST_CASE("photos: every writer of a library photo adds it once and writes nothi
   }
   {
     std::lock_guard lock(c.m);
-    CHECK(c.added.size() == 6);
+    CHECK(c.added.size() == 7);  // S6 adds the canvas frame's Extend
     for (const std::string& k : c.resolved) CHECK((k == kShut || k == kOpen));
   }
 

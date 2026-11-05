@@ -180,6 +180,16 @@ inline constexpr std::uint32_t kFindEdge = 2048;
 inline constexpr std::uint32_t kFindTile = 1024;
 [[nodiscard]] result<std::vector<face_found>> find_faces(const rgb8& photo, const faces_fn& faces);
 
+// The faces of `found` (pixels of a width x height photo) the host chose on
+// its canvas (edit-refresh S8's Faces panel): `boxes` x, y, w, h quads, 0..1
+// of the upright photo, as the Faces tool drew them. Each box takes the face
+// it overlaps most, an intersection over union of 0.3 or more (the rule
+// addon_media's faces_mask_of uses for the host's own fixes), each face once;
+// `found`'s order. Empty `boxes`: every face.
+inline constexpr std::size_t kMaxChosenFaces = 64;
+[[nodiscard]] std::vector<face_found> chosen_faces(const std::vector<face_found>& found, std::uint32_t width,
+                                                   std::uint32_t height, std::span<const float> boxes);
+
 // Steps 2-5 for every face of `found` (find_faces), in place. status::cancelled
 // when `progress` says so; the photo may then be partly restored (the runner
 // writes nothing).

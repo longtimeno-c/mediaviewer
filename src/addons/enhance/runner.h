@@ -10,6 +10,7 @@
 // failure leaves none.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -76,6 +77,9 @@ struct run_port {
   struct still {
     std::uint32_t width = 0, height = 0;
     std::vector<std::uint8_t> rgb;
+    // What write_still names the new photo: "<stem>-<suffix>.jpg" ([a-z0-9_-]).
+    // edit-refresh S6: Extend's is "extended".
+    std::string suffix = "enhance";
   };
   // [job thread] At full resolution, upright (seconds for a RAW).
   std::function<result<still>(const std::string& path)> open_still;
@@ -106,6 +110,12 @@ struct run_port {
   // [job thread] write_still with its own name: "<stem>-<suffix>.jpg" (doc 29).
   std::function<result<std::string>(const std::string& source, const still& pixels, const std::string& suffix)>
       write_still_as;
+
+  // ---- Extend on the canvas (docs/plans/edit-refresh.md S6) ----
+  // [any thread] The frame the person dragged past the photo's edges: left,
+  // top, right, bottom, each a fraction of the edited picture's width or
+  // height (remove.h extend_from_fractions); all 0 when the host set none.
+  std::function<std::array<float, 4>(const std::string& path)> still_extend;
 };
 
 // The largest photo Enhance writes: 100 megapixels (a 4x of a 25 MP photo is

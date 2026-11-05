@@ -990,11 +990,22 @@ typedef struct mv_host_api {
    * there). `*out_needed` is the size with its NUL; MV_ERR_INVALID_ARG when
    * `capacity` is short. MV_ERR_NOT_FOUND without Local search (or an older
    * pack), MV_ERR_PERMISSION_DENIED while People is off. The pixels are only
-   * read; nothing is kept or written. Appended after still_mask (and the
-   * plan's still_extend, when present): read only when `struct_size` covers
-   * it and the pointer is non-NULL. */
+   * read; nothing is kept or written. Appended after still_mask (still_extend
+   * follows): read only when `struct_size` covers it and the pointer is
+   * non-NULL. */
   mv_status(MV_CALL* still_faces)(void* host, const uint8_t* rgb, uint32_t width, uint32_t height, uint32_t stride,
                                   const uint8_t* other_rgb, char* out_json, uint32_t capacity, uint32_t* out_needed);
+  /* ---- Extend on the canvas (docs/plans/edit-refresh.md S6) ---------------------- */
+  /* [any-thread] The new frame the person dragged past the edges of the photo
+   * being edited at `path_utf8`, for Enhance's Extend: out_ltrb[0..3] are the
+   * left, top, right and bottom margins, each a fraction (0..1) of the edited
+   * picture still_open answers with (left and right of its width, top and
+   * bottom of its height). The part of the frame inside the photo is already a
+   * crop on the edit, so still_open answers the cropped picture. All four 0
+   * when no frame is set or another photo is being edited (the add-on then
+   * uses its own preset). Appended after still_faces, last: read only when
+   * `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* still_extend)(void* host, const char* path_utf8, float* out_ltrb);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1261,6 +1272,11 @@ MV_API mv_status MV_CALL mv_edit_still_set(const char* path_utf8, const void* ed
  * v, radius; the host table's still_mask says how), for Enhance's Remove. A
  * NULL path or 0 dabs clears it. [ui-thread][no-block] */
 MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* dabs, uint32_t count);
+/* docs/plans/edit-refresh.md S6: Extend's frame over that still, the margins
+ * past its edges as the host table's still_extend answers them (`ltrb` left,
+ * top, right, bottom; each 0..1 of the edited picture's width or height). A
+ * NULL path or NULL `ltrb` clears it. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_edit_still_extend(const char* path_utf8, const float* ltrb);
 /* Slice 6: Open closed eyes for the still at `path_utf8`: the frames of the
  * same moment, the AI pack's same-person faces (People must be on), the
  * transfer, and a new file beside the photo. `note_out` gets what happened,
@@ -1280,6 +1296,16 @@ MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out,
  * MV_ERR_NOT_FOUND without the pack, MV_ERR_INVALID_ARG while People is off.
  * Runs the pack's face model: [worker-thread]. */
 MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t cap, uint32_t* needed);
+/* docs/plans/edit-refresh.md S8: the Faces tool's fix for the still at
+ * `path_utf8`: `fix` -1 Do all (each face's best fix), 0 Open eyes, 1 Improve
+ * face (addon_media.h face_fix; appended values follow). Only the faces whose
+ * boxes the canvas chose change: `boxes` holds `count` x, y, w, h quads (0..1
+ * of the upright still, as mv_eyes_json gave them), matched to this run's
+ * answer; NULL means every face. The same moment's frames and People's
+ * donors as mv_open_closed_eyes, a new file beside the photo ("-eyes.jpg" for
+ * Open eyes, else "-faces.jpg"), `note_out` what happened. [worker-thread] */
+MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                         char* note_out, uint32_t cap, uint32_t* needed);
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file

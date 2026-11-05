@@ -253,6 +253,8 @@ final class EditStore: ObservableObject {
   func brushAction(_ action: Int32) { mv_chrome_adjust_brush(action) }
   /// S3: the context bar's buttons, size slider and Paint / Erase toggle.
   func toolAction(_ a: ToolBarState.Action) { mv_chrome_tool_action(a.rawValue) }
+  /// S6: a chip on Extend's bar (0 Original).
+  func extendPreset(_ i: Int) { mv_chrome_tool_action(ToolBarState.extendPresetAction + Int32(i)) }
   func setToolSize(_ px: Double) { mv_chrome_tool_set_size(Float(px)) }
   func setToolErase(_ on: Bool) { mv_chrome_tool_set_erase(on ? 1 : 0) }
   func openClosedEyes() { mv_chrome_edit_faces(0) }
@@ -265,7 +267,15 @@ struct ToolBarState: Equatable {
   /// shell::canvas_tool.
   enum Tool: Int32 { case none = 0, brush = 1, redEye = 2, whiteBalance = 3, faces = 4, extend = 5 }
   /// shell::tool_bar_action.
-  enum Action: Int32 { case done = 0, undo = 1, redo = 2, clear = 3, apply = 4, findEyes = 5 }
+  enum Action: Int32 {
+    case done = 0, undo = 1, redo = 2, clear = 3, apply = 4, findEyes = 5
+    // docs/plans/edit-refresh.md S8: the Faces bar, on the chosen faces.
+    case facesOpenEyes = 6, facesImprove = 7, facesDoAll = 8
+  }
+  /// S6: Extend's preset chips (shell::extend_preset_label, the add-on's
+  /// presets after Original); chip i is the bar action 16 + i.
+  static let extendPresets = ["Original", "Wider", "Taller", "All round", "1:1", "16:9", "4:5"]
+  static let extendPresetAction: Int32 = 16
 
   var visible = false
   var tool: Tool = .none
@@ -280,6 +290,12 @@ struct ToolBarState: Equatable {
   var canRedo = false
   var canUndo = false  // S4a: a stroke or a Clear to undo
   var eyes = 0
+  // S6: Extend's readout and chip.
+  var extendW = 0
+  var extendH = 0
+  var extendGrowth = 0  // permille
+  var extendWarn = false
+  var extendPreset = 0  // -1 a frame of the person's own
 
   init() {}
   init(_ v: mv_tool_bar_view) {
@@ -296,5 +312,16 @@ struct ToolBarState: Equatable {
     canRedo = v.can_redo != 0
     canUndo = v.can_undo != 0
     eyes = Int(v.eyes)
+    extendW = Int(v.extend_w)
+    extendH = Int(v.extend_h)
+    extendGrowth = Int(v.extend_growth)
+    extendWarn = v.extend_warn != 0
+    extendPreset = Int(v.extend_preset)
+  }
+
+  /// "+18 % · 6048×4032".
+  var extendReadout: String {
+    let pct = (abs(extendGrowth) + 5) / 10
+    return "\(extendGrowth < 0 ? "−" : "+")\(pct) % · \(extendW)×\(extendH)"
   }
 }

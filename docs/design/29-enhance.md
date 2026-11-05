@@ -386,16 +386,79 @@ brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`
    `lama_fp32.onnx`, 208 MB, CPU: `cpu: true`, so Windows runs it too), scaled back. The model's
    mask holds the box's own blobs and any later box's (still holes); a later box sees the earlier
    fills as photo. Cancel is checked before and after every fill.
-4. Only the box's own brushed pixels pasted, feathered outward (2–16 px with the box's size); a
-   pixel outside every box, or more than twice the feather from the brush, is the photo's own,
-   bit for bit.
-5. A new file, as every run.
+4. **The second pass** (quality over speed, owner 2026-11-04; edit-refresh Q): a box over 1.5× the
+   model's side (`needs_refine`, 768 px at 512) is filled again at full resolution
+   (`refine_tiles`, `refine_fill`). Tiles of the model's side (smaller only where the photo is),
+   half overlapping, cover the box's own brushed pixels and their feather's reach plus a quarter
+   tile of context; a tile whose brushed pixels are all filled by earlier boxes, or that is a
+   tenth known or less (deep in a large hole), is left out before the run, so every tile counted
+   is a fill. Each
+   tile is filled against the photo (its holes the box's open mask), and what it has **above the
+   first pass's scale** (the fill less the fill shrunk by the box-to-512 ratio and grown back) is
+   added to the first pass, the weighted mean over the tiles (a tent, highest in a tile's middle,
+   times how much of the tile was known: rising from a tenth known, full from two fifths). The first pass keeps the shape and colour, since it saw the whole
+   box; the tiles give the grain the 512-px fill lost. Filling the tiles' whole result in was
+   tried and dropped (2026-11-05): a 512-px tile deep in a large hole sees only what is near it,
+   and on a 770 × 500 hole it smeared the next rock's texture over a horizon the first pass had
+   continued, and averaging tiles that disagree left translucent ghosts. Cancel is checked before
+   every tile; progress counts fills (the first passes and every tile), so the time left is the
+   work left.
+5. Only the box's own brushed pixels pasted, feathered outward (`remove_feather`: the box's longer
+   side / 256, 2–16 px); a pixel outside every box, or more than twice the feather from the brush,
+   is the photo's own, bit for bit.
+6. A new file, as every run.
+
+**Extend** (owner 2026-11-04) runs on the same model: the photo in the middle of the bigger
+picture, its margins started as the photo mirrored, then filled tile by tile (`extend_tiles`,
+`extend_fill`). Tiles are square, three times the margin's depth and at least the model's side
+(`kExtendMinTile` = 512, so a shallow margin is filled at full resolution; at most the picture's
+shorter side), half overlapping along the margin (and across it where it is deeper than half a
+tile), so every margin pixel is in a tile and, away from a margin's ends, in two (`kExtendCover`).
+Each is filled at the model's side and every margin pixel is the tent-weighted mean of the tiles
+over it. Where the tiles were larger than the model's side, a **detail pass** (`extend_detail`,
+Remove's detail transfer) fills model-side tiles over those margins at full resolution and adds
+what each has above the first pass's scale, tent-weighted by how much of the tile was known: the
+first pass keeps the shapes and colours, the second gives back the grain. The photo's own pixels
+are copied back unchanged. Progress counts every fill of both passes; cancel is checked between them.
 
 Measured 2026-11-03 (M-series, CPU, the hidden `[.remove-model]` case): an 832 × 832 box
-filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
-is filled at that size and scaled up, so a large fill is softer than the photo around it. Things
+filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. Things
 brushed far apart are each filled at the model's detail in their own box (one model run each, so
 two spots take about twice as long as one), not in one photo-sized box.
+
+Measured 2026-11-05 (the same Mac, CPU, the hidden `[.remove-quality]` case through the runner, on
+a 3840 × 2160 lake photo, the machine shared with about seven builds, so times are wide; base and
+new runs alternated): **Remove** of a rock and a tree (two boxes; the second pass adds 12 tiles)
+took 4.0, 6.2 and 14.1 s before and 18.7, 24.4 and 45.0 s after. The fine detail
+inside the removed rock (mean |picture − its 2-px blur|) went from 1.79 to 2.60, against 4.94 for
+the untouched water beside it; no tile seam is visible, and shapes are the first pass's. On a
+770 × 500 hole over a horizon the large fill is still the first pass's guess, now with grain.
+**Extend** with Q's first tiling (tiles of at least 768 px, two-thirds overlapping, every margin
+pixel in three) took 158–170 s "all" on that photo, against 47–121 s before, and its margins came
+out visibly softer. It was measured against the other tilings the same day (the hidden
+`[.extend-compare]` case with the real LaMa, `tools/enhance/extend_metrics.py`; the libheif example
+photo, 1280 × 854, and a 3840 × 2562 Lanczos enlargement of it standing in for a camera file;
+sharpness is the variance of the luma Laplacian in the margins, 8 px clear of the photo and the
+edge, the photo's own border band 3,400–5,500 and 117 for the enlargement; "edge" is the step
+across the line where a margin meets the photo over the steps beside it, 1 for no line; "seam" the
+worst column-to-column peak along a margin over its local median):
+
+| Margins sharpness / edge / seam | "all", 1280 | "square", 1280 | "all", 3840 |
+|---|---|---|---|
+| Before Q: 512-px tiles at least, half overlapping | 1837 / 0.79 / 5.3 | 83 / 1.66 / 2.5 | 16.5 / 1.96 / 3.8 |
+| Q: 768-px tiles at least, three deep | 61 / 2.99 / 4.8 | 17 / 5.63 / 1.9 | 7.0 / 2.28 / 3.6 |
+| Q's tiles, then the detail pass | 1210 / 0.91 / 4.8 | 317 / 1.19 / 1.6 | 19.1 / 1.75 / 3.0 |
+| Three deep at 512 (no 768) | 401 / 1.10 / 9.1 | 27 / 3.04 / 1.9 | |
+| **Shipped:** 512-px tiles at least, two deep, then the detail pass | **1832 / 0.79 / 5.3** | **273 / 1.17 / 1.8** | **28.5 / 1.70 / 3.0** |
+
+Averaging three different fills, not the 768-px size alone, took most of the detail (three deep at
+512 kept a fifth of two deep's). The shipped tiling is the sharpest in every case and the best or
+level on the edge and the seams; on the 1280 photo "all" its tiles are the model's side, so it is the
+old fill (no detail pass, 12 fills, 13.7 s); "square" took 18.1 s (16 fills) and the 3840 photo
+99 s (86 fills: 32 tiles and 54 detail tiles) against Q's 66 s and the old 36 s, on a loaded
+machine. Q's "colour fringes" at the half-overlapping tiles' edges did not show as seams in these
+numbers; the sky over a deep "square" margin can still show a faint step at the photo's edge (the
+photo is copied back bit for bit; the fill is not matched to it).
 
 ## Restore faces (docs/plans/edit-refresh.md S10, owner call C)
 
@@ -458,6 +521,51 @@ and **0.6 s with GFPGAN** (the model alone 1.3 s / 0.6 s on the first run). The 
 (three per face: the photo once, the crop, the guard) are not in those numbers. Under heavy load
 (load average 40) the Python guard run took a median 4.4 s / 2.2 s for the model alone. Windows is
 not measured.
+
+## Faces in the Enhance tab (edit-refresh S8)
+
+The Enhance tab's **Faces** card is not this add-on: it arms the host's Faces tool
+([20](20-edit-workspace.md) "Canvas tools"), whose fixes are the host's own pixel work on real
+photos (`edit/eyes.h` through `addon::media::fix_faces`, with donors from the AI pack's People),
+never a generated face. A box per face on the canvas, a click chooses which faces change, and the
+Faces panel lists each face (thumbnail, People's name, "from 37 photos of Anna") with **Open eyes**
+(only where they look shut), **Improve face** and **Do all**. Only the chosen faces change: every
+pixel outside their boxes is the original's (`mv_ai_tests "[faces-mask]"`). Results are
+`<stem>-eyes.jpg` / `<stem>-faces.jpg`, new files like every Enhance result. The fixes are a table
+(`addon::media::face_fix`, `shell::kFaceActions`); the model-based **Restore face** (S10, owner
+call C) is the third row, and it is this add-on's: the panel's per-face button opens the docked
+panel on `faces` and runs it with the chosen boxes (`"faces"` in the `enhance/tool` command, 0..1
+quads). The run reads the faces itself as below and keeps only those each box overlaps most
+(`chosen_faces`, intersection over union ≥ 0.3, each face once); a box that matches no face says
+"The chosen faces were not found again". The palette's Restore faces… and the Faces card's row
+still restore every face.
+
+## Extend: new edges around the photo
+
+The sheet's photo choice **Extend the picture** (owner 2026-11-04) is served by Remove's model with
+no second download (`remove` in its `mode: extend`). The margins come from one of two places:
+
+- **The frame dragged on the canvas** (edit-refresh S6, [20](20-edit-workspace.md) "Extend"). The
+  host table's `still_extend` row ([14](14-abi.md)) answers the margins past the edges of the photo
+  being edited: left, top, right and bottom, each a fraction of the edited picture `still_open`
+  returns (the part of the frame inside the photo is already a crop on the edit). The canvas's
+  **Fill** runs Extend in the docked panel under the Extend card ("Docked in Edit", `enhance/tool
+  {"photo":"extend","run":true}`), or in the sheet with an Enhance that has no docked screen. A
+  sheet or panel opened on a photo with a frame starts on Extend (not saved as the photo's choice), and the frame wins over
+  the preset: the sheet or panel then shows "The new frame you dragged…" instead of the preset choice. The
+  frame is measured against the edit it was set over (`addon_media` keeps that geometry): an undo
+  of Fill's crop, or any later turn or crop, and it answers all 0 again (the presets come back).
+  Cancel, a new Extend and a new item clear it. `extend_from_fractions` (`remove.h`) rounds each to whole pixels and holds them to
+  the caps below, shrinking the margins evenly to fit 100 MP rather than refusing.
+- **A preset** otherwise: Wider and Taller (an eighth each side), All round (a tenth), Square,
+  16:9 and 4:5 (grown on one axis only, centred).
+
+The caps: at most twice the picture each way, 16384 px a side, 100 MP in all (a preset past 100 MP
+is refused). The host's bar reads the size from the same sums (`shell/edit_workspace.h`
+`extend_size` and `extend_preset_draft`; `"[enhance][extend]"` checks the two agree), so the file is
+the size the bar showed. The run: the photo mirrored into the new margins as a start, overlapping
+square tiles along the margins filled at the model's side and blended by weight, then **the photo's
+own pixels copied back bit for bit**. The result is `<stem>-extended.jpg` (`run_port::still.suffix`).
 
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 

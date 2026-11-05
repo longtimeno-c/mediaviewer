@@ -284,6 +284,39 @@ result<std::vector<face_found>> parse_faces(std::string_view text, std::uint32_t
   return out;
 }
 
+std::vector<face_found> chosen_faces(const std::vector<face_found>& found, std::uint32_t width,
+                                     std::uint32_t height, std::span<const float> boxes) {
+  if (boxes.empty()) return found;
+  std::vector<face_found> out;
+  if (width == 0 || height == 0) return out;
+  const auto iou = [&](const face_found& f, const float* b) {
+    const float fx = f.x / static_cast<float>(width), fy = f.y / static_cast<float>(height);
+    const float fw = f.w / static_cast<float>(width), fh = f.h / static_cast<float>(height);
+    const float ix = std::max(0.0f, std::min(fx + fw, b[0] + b[2]) - std::max(fx, b[0]));
+    const float iy = std::max(0.0f, std::min(fy + fh, b[1] + b[3]) - std::max(fy, b[1]));
+    const float inter = ix * iy, uni = fw * fh + b[2] * b[3] - inter;
+    return uni > 0.0f ? inter / uni : 0.0f;
+  };
+  std::vector<bool> taken(found.size(), false);
+  for (std::size_t b = 0; b + 4 <= boxes.size() && b / 4 < kMaxChosenFaces; b += 4) {
+    int best = -1;
+    float best_iou = 0.3f;
+    for (std::size_t i = 0; i < found.size(); ++i) {
+      if (taken[i]) continue;
+      const float v = iou(found[i], boxes.data() + b);
+      if (v >= best_iou) {
+        best_iou = v;
+        best = static_cast<int>(i);
+      }
+    }
+    if (best >= 0) taken[static_cast<std::size_t>(best)] = true;
+  }
+  for (std::size_t i = 0; i < found.size(); ++i) {
+    if (taken[i]) out.push_back(found[i]);
+  }
+  return out;
+}
+
 result<std::vector<face_found>> find_faces(const rgb8& photo, const faces_fn& faces) {
   if (!faces || photo.width == 0 || photo.height == 0) return err(status::invalid_arg);
   std::vector<face_found> all;

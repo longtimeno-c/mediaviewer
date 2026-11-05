@@ -141,8 +141,8 @@ public static partial class IslandHost
             top.Children.Add(Holder(_railRemove));
             top.Children.Add(Holder(RailButton(RailGlyph.RedEye, "Red-eye", "Red-eye: click each red pupil on the photo",
                 () => Send(Command.EditAction, EditActions.ArmRedEye))));
-            top.Children.Add(Holder(RailButton(RailGlyph.Faces, "Faces", "Faces: open closed eyes on the Enhance tab",
-                () => Send(Command.EditAction, EditActions.ShowEnhance))));
+            top.Children.Add(Holder(RailButton(RailGlyph.Faces, "Faces", "Faces: choose faces on the photo to fix",
+                () => Send(Command.CanvasTool, CanvasTools.Faces * 1000))));
             top.Children.Add(Holder(RailButton(RailGlyph.Extend, "Extend",
                 _editEnhance ? "Extend edges: more picture around the photo (Enhance)"
                              : "Extend edges (needs the Enhance add-on)",

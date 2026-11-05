@@ -2738,6 +2738,17 @@ TEST_CASE("eyes: the same person's faces in the frames offered, with landmarks; 
   REQUIRE(donors);
   REQUIRE(donors->a.size() == 1);  // anna_2 only: not Ben, not the empty frame, not itself, not the missing file
   CHECK(donors->a[0].find("path")->s.find("anna_2.jpg") != std::string::npos);
+  // docs/plans/edit-refresh.md S8: who she is, for the Faces panel. Unnamed:
+  // no "name", and People's other photo of her (anna_2, not this one).
+  CHECK_FALSE(f.find("name"));
+  CHECK(f.integer("photos").value_or(-1) == 1);
+  REQUIRE(r.eng->person_rename(*f.integer("person"), "Anna"));
+  auto named = mv::json::parse(*r.eng->eyes_json(target, {}));
+  REQUIRE(named);
+  const mv::json::value& g = named->find("faces")->a[0];
+  REQUIRE(g.str("name"));
+  CHECK(*g.str("name") == "Anna");
+  CHECK(g.integer("photos").value_or(-1) == 1);
 }
 
 // docs/plans/edit-refresh.md S10 (mv_ai_api faces_json): Restore faces hands

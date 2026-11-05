@@ -443,7 +443,75 @@ blobs merge, nine far blobs fall back, on random dabs every brushed pixel is pas
 box, the one around it, a run fills twice with every pixel outside both boxes the
 source's own, a cancel during the first fill never starts the second and writes nothing). Not
 run: the real LaMa on a two-blob photo (the hidden `[.remove-model]` case still brushes one
-stroke); the "Quality over speed" second pass for large boxes is not part of this slice.
+stroke); the "Quality over speed" second pass for large boxes is not part of this slice (Q built
+it, below).
+
+**S8 built (2026-11-05):** Faces on the canvas, both hosts. Portable: `shell/faces_tool.{h,cpp}`
+(+ `test_faces_tool`): the cards from the pack's answer and the decoded still (thumbnails,
+`edit::eyes_look_shut`), choosing (every face starts chosen), `face_at`, `apply_faces` onto
+`edit_view` (`tool_face_*`, appended), `kFaceActions` (the per-face fixes as data: Open eyes only
+where shut, Improve face; S10 appends Restore), `pack_faces_op`. `edit::face_region` is a face's
+edit region (the drawn box). `addon::media::fix_faces` / `fix_faces_in` take a `faces_mask`
+(`open_closed_eyes` / `improve_faces` gained it too) and fix each chosen face on a crop written
+back inside its region, faded at its edge: `mv_ai_tests "[faces-mask]"` checks 0 pixels differ
+outside the chosen boxes for Open eyes, Improve and Do all, and `faces_mask_of` matches the
+canvas's boxes to the run's answer. The pack's `eyes_json` gains `"name"` and `"photos"`. Overlay:
+brackets, numbered badge, wash, name pill, dashed while busy. Bar: `tool_bar_action` 6–8 (Open
+eyes, Improve, Do all on the chosen faces); `eyes` / `spots` carry faces / chosen. Mac:
+`FacesPanelView.swift` (`FacesStore`, `mv_chrome_faces_panel` / `_face_card` / `_faces_op`),
+`-facesFetch`, `-facesRun:action:`, the hub's card and the rail arm the tool. Windows:
+`IslandHost.Faces.cs` (`SetFacesPanel`, `chrome_faces_args` 40 / `chrome_face_card_args` 48
+bytes), `chrome_cmd_faces` = **1100** (not reserved by this plan; renumber on a collision),
+`main.cpp` `faces_fetch` / `adjust_faces` (the twin of the Mac's `adjustFaces:`, through the new
+`mv_adjust_faces`, writing the same `-eyes.jpg` / `-faces.jpg`). Not run here: either app, both PR 1
+gates, the 0-presents check with Faces armed, the real pack on a real photo (the shut-eye guess is
+tested on drawn faces only), and "the Windows adjust_faces gives the same -eyes.jpg as the Mac on a
+shared fixture" (both call the same `fix_faces`; the Windows native C++ is not compiled here, C#
+is). S8 review: "Try again" re-armed the tool (a toggle: it put it down) and
+"Turn on People…" left the panel spinning on "Looking for faces…" with nothing reading; both now
+send the appended `faces_op::retry` (and the refused states offer *Check again*), a refused or
+failed read is read again on re-arm (`needs_read`), a cancelled Mac read still lands (failed), a
+fix left running on another photo no longer marks the next photo's faces busy (`run_item`), the
+panel's rows light their boxes (`faces_op::hover`), and the Mac's per-pass panel poll no longer
+builds a whole `tool_bar`.
+
+**S6 built (2026-11-05):** Extend on the canvas, both hosts. Portable: `extend_draft` and its
+pure maths in `shell/edit_workspace.h` (`extend_hit` / `extend_drag` / `clamp_extend`: 25 %
+warning, 50 % stop, 5 % of the photo kept; `extend_crop` / `extend_overhang` split a mixed frame;
+`extend_fit` the camera's frame with 8 % around; `extend_size` the readout through Enhance's sums;
+the add-on's presets as `extend_preset_draft`), `input_snapshot::fit_rect_uv` →
+`canvas::camera::set_fit_frame` in both labs (refit on drag end, a chip or arming; never during a
+drag), `edit_view::tool_extend*` and `draw_extend_frame` in `tool_overlay.h` (hatched new area,
+caution tint past 25 %, dimmed crop part, handles, readout), `edit_session::crop_inside` (the crop
+part of a mixed frame, one stack op), `tool_bar` 72 bytes (`extend_growth` / `_warn` / `_preset`;
+`tool_bar_action::extend_preset` + i) on both chromes. Host table: `still_extend` appended after
+`still_mask` (`addon_media::set_still_extend`, `mv_edit_still_extend` for the Windows exe,
+`host_services.still_extend`, `addon_abi.cpp`, `addons_mac.mm`). Add-on: `extend_from_fractions`
+(remove.cpp; 2×, 16384, 100 MP, shrunk evenly), `run_extend` takes the host's frame when set, else
+the preset; `run_port::still.suffix` names it `<stem>-extended.jpg`; a sheet opened with a frame
+starts on Extend (`engine_port.framed`). Hosts: Mac `main_mac.mm` (`-extend*`, the press through
+the brush's drag path, resize cursors) and `ToolBarView.swift` (chips, readout, Fill ↵, Cancel;
+a menu when narrow); Windows `main.cpp` (`extend_*`, capture, `IDC_SIZE*` cursors) and
+`IslandHost.ToolBar.cs`. Tests: `mv_tests "[extend]"` (draft: hit, drag, stops, warn, move, split,
+fit, 3:2 → 16:9 size, caps; camera fit frame; `crop_inside` composes and undoes as one op),
+`mv_import_tests "[enhance][extend]"` (the host-margins case: 3:2 → 16:9 dragged, written as
+`<stem>-extended.jpg` at the size the readout showed, the photo's rect bit-exact; no frame → the
+preset; the host's sums equal the add-on's on a grid and for every preset), `mv_ai_tests
+"[photos]"` (the frame through the real host table's `still_extend`, a library photo added once).
+Fill runs Extend in Enhance's docked panel (`enhance/tool {"photo":"extend","run":true}`, wired in
+the merge of S5, S6 and S8; the sheet without a docked screen). Not built: `A` /
+`X` / arrows with crop meanings in Extend.
+Not run: either app, both PR 1 gates and the PR 1 soak with Extend armed (the pan-gate check),
+the 0-presents check with Extend armed, the real LaMa on a dragged frame; the Windows native C++
+is not compiled here (C# compiles).
+S6 review: another tool armed over Extend now drops its frame and the room (both hosts); the Mac
+resets the frame on a new item as Windows did; the fit frame applies only while Extend is active on
+a still (a clip under the armed tool fits as itself); arming fits (`fit_seq`) so a zoomed view shows
+the room; the frame in `addon_media` is tagged with the edit's geometry, so an undo of Fill's crop
+or a later turn or crop makes it answer 0 (no stale fractions); a sheet opened with a frame hides
+the preset choice and says the frame is used (`sheet_view::framed`); the canvas readout is gone
+(the bar's, owner call A) and the bar adds "· may smear" in the overlay's amber past 25 %; the
+hatch no longer crawls as a band grows; Windows releases the drag before `ReleaseCapture`.
 
 ### 4.1 Tool mode (shared, portable)
 
@@ -680,11 +748,38 @@ Concretely, applied in the second build round:
   side is filled again on 512 tiles at full resolution, blended by weight as Extend is. The feather
   scales with the box.
 - **Extend:** tiles of at least 768 px when the photo allows, two-thirds overlapping. Every margin pixel
-  is in at least three tiles.
+  is in at least three tiles. (Built, measured softer, replaced: tiles of the model's side at least,
+  two deep, and a detail pass; see Q's note below.)
 - **Faces (GFPGAN):** the fp32 file, alignment by the FFHQ template, strength default 0.7, the People
   guard on. Eyes and whole-face transfer keep their look-matching.
 - **Enhance image:** Real-ESRGAN tiles with more overlap, and the app's own noise reduction before it.
 - Every run shows progress with the time left and can be cancelled.
+
+**Q built (2026-11-05):** Remove and Extend, add-on only (`remove.{h,cpp}`, `runner.cpp`
+`run_remove`). Remove's second pass: a box over 1.5× the model's side gets model-side tiles at full
+resolution, half overlapping, over its own brushed pixels and their feather's reach
+(`refine_tiles`), tent-weighted by how much each tile knew (none under a tenth, full from two
+fifths), the feather `remove_feather` (longer side / 256, 2–16). One change to the plan's letter:
+the tiles give the first pass their **detail** (the fill less itself at the first pass's scale),
+not their whole fill. Filling them in whole was built and measured first: on a hole wider than a
+tile the 512-px tiles see only nearby texture (a rock smeared over a horizon the first pass had
+continued) and disagreeing tiles averaged to ghosts; with detail only the shapes stay the first
+pass's and the grain comes back (inside a removed rock 1.79 → 2.60, the water beside it 4.94).
+Extend: tiles of max(3× depth, 768) up to the picture's shorter side, two-thirds overlapping, two
+more of other sizes at each end, every margin pixel in at least three (tested over the presets and
+random margins); square tiles only (the old end tiles could be squashed). Progress counts fills,
+cancel is checked between fills and tiles on both. Measured on a busy machine (docs/design/29):
+Remove 4–14 s → 19–45 s, Extend 47–121 s → 158–170 s on a 3840 × 2160 photo. Extend's margins
+lose their colour fringes and dark corners but are softer than before (more 768-px tiles filled at
+512 and averaged); the detail transfer could serve Extend too. **Changed in the merge of Q, S6 and
+S8 (2026-11-05):** measured with the real LaMa (docs/design/29 "Extend"), the three-deep averaging
+took most of the detail, so Extend is back to tiles of the model's side at least, half overlapping
+(two deep), and Remove's detail transfer now runs for Extend wherever a tile was larger than the
+model's side (`extend_detail`): the sharpest margins of every tiling tried. Not run: either app,
+Windows (add-on C++ mirrors existing patterns, not compiled there). Review (2026-11-05):
+`refine_tiles` now leaves out the tiles `refine_fill` would skip (no hole, or a tenth known or
+less), so Remove's progress counts only real fills and the time left no longer jumps; the output
+is unchanged (those tiles had no weight).
 
 ## Models (owner OK 2026-11-04; downloaded and checked here, `~/Dev/.mv-toolchain/enhance-models/`)
 

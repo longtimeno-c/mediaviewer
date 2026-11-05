@@ -677,10 +677,13 @@ typedef struct mv_ai_api {
    * over its same_person. Owner call 2026-11-02: face data may serve this
    * edit (docs/design/12). JSON:
    *   {"faces":[{"x":,"y":,"w":,"h":,"lm":[10 numbers],"person":id,
+   *              "name":"Anna","photos":37,
    *              "donors":[{"path":"…","lm":[…],"sim":0.83}, …]}, …]}
    * Boxes and the five landmarks (right eye, left eye, nose, mouth corners;
    * x, y) are 0..1 of the upright still; donors best first; "person" is the
-   * People cluster the face matches, 0 for none. Reads the stills through the
+   * People cluster the face matches, 0 for none; for a match, "photos" counts
+   * People's other stills of them and "name" is theirs when they have one
+   * (docs/plans/edit-refresh.md S8, appended keys). Reads the stills through the
    * host; writes nothing. MV_ERR_INVALID_ARG while People is off or its piece
    * is not loaded. Appended: read it only when `struct_size` covers it and
    * the pointer is non-NULL. [worker-thread] */

@@ -33,6 +33,11 @@ bool has_faces_row(const mv_host_api* h) {
   return h->struct_size >= offsetof(mv_host_api, still_faces) + sizeof(h->still_faces) && h->still_faces;
 }
 
+// edit-refresh S6: Extend's frame from the canvas.
+bool has_extend_row(const mv_host_api* h) {
+  return h->struct_size >= offsetof(mv_host_api, still_extend) + sizeof(h->still_extend) && h->still_extend;
+}
+
 bool has_picture_rows(const mv_host_api* h) {
   return h->struct_size >= offsetof(mv_host_api, clip_write_close) + sizeof(h->clip_write_close) &&
          h->frames_open && h->frames_read && h->frames_close && h->clip_write_open && h->clip_write_frame &&
@@ -128,7 +133,8 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
     p.write_still = [h](const std::string& source, const run_port::still& pic) -> mv::result<std::string> {
       char buf[4096] = {};
       const mv_status st = h->still_write(h->host, source.c_str(), pic.rgb.data(), pic.width, pic.height,
-                                          pic.width * 3, "enhance", buf, sizeof buf);
+                                          pic.width * 3, pic.suffix.empty() ? "enhance" : pic.suffix.c_str(), buf,
+                                          sizeof buf);
       if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
       return std::string(buf);
     };
@@ -216,6 +222,13 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
       if (h->still_mask(h->host, path.c_str(), dabs.data(), n, &n) != MV_OK) return std::vector<float>{};
       dabs.resize(std::min<std::size_t>(dabs.size(), std::size_t{n} * 3));
       return dabs;
+    };
+  }
+  if (has_extend_row(h)) {
+    p.still_extend = [h](const std::string& path) {
+      std::array<float, 4> f{};
+      if (h->still_extend(h->host, path.c_str(), f.data()) != MV_OK) return std::array<float, 4>{};
+      return f;
     };
   }
   p.load_inpaint = [runtime](const model_spec& spec, const std::string& models_dir)

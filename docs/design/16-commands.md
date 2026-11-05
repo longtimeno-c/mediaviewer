@@ -491,7 +491,7 @@ mode **tool**; everything else is the browse row underneath, minus what `blocked
 | hold `Space` | tool | **Pan while brushing** (`tool_pan` / `tool_pan_release`): a drag pans, the open hand shows. Never next |
 | `Alt` / `⌥` held | tool | The brush erases while it is down (the ring dashes); no row, read at the press |
 | `Esc` | tool | The tool goes down (strokes kept, dimmed) |
-| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): the rail, the Enhance tab's cards, Edit ▸ on the Mac, Settings. Faces and Extend open the Enhance tab / Enhance's sheet until S8 / S6 make them canvas tools |
+| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): the rail, the Enhance tab's cards, Edit ▸ on the Mac, Settings. Faces arms the Faces tool (S8: a box per face, a click chooses it; the Faces panel's controls are `chrome_cmd_faces` on Windows, `mv_chrome_faces_op` on the Mac); Extend opens Enhance's sheet until S6 makes it a canvas tool |
 
 ### Crop
 
