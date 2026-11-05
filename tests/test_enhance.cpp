@@ -3114,7 +3114,7 @@ struct stripe_fill final : inpaint_filler {
     rgb8 out = image;
     for (std::size_t i = 0; i < mask.a.size(); ++i) {
       if (mask.a[i] != 255) continue;
-      const std::uint8_t v = (i % 64) % 2 == 0 ? 96 : 160;
+      const auto v = static_cast<std::uint8_t>((i % 64) % 2 == 0 ? 96 : 160);
       out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = v;
     }
     return out;
