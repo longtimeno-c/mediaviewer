@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
@@ -138,9 +139,17 @@ public static partial class IslandHost
     private static EditorTrackCanvas? _editorTrack;
     private static Canvas? _editorPlayheadMark;
     private static TextBlock? _editorTimecode;
-    private static TextBlock? _editorStatus;
-    private static StackPanel? _editorReading;
-    private static Spinner? _editorSpinner;
+    // While the clip is read: the tracks at their own size, quiet (no spinner:
+    // reading the strip can take seconds). The Mac's TimelineSkeleton.
+    private static FrameworkElement? _editorSkeleton;
+    private static bool _editorShownReady;
+    // What the track last drew, so a change of choice or marks can fade.
+    private static int _editorDrawnSelected = -1;
+    private static int _editorDrawnPieces;
+    private static (long In, long Out)? _editorDrawnMarks;
+    // The Light flyout follows a pushed view while it is open (Auto, Reset, undo).
+    private static Action? _editorLightSync;
+    private static Button? _editorSoundButton;
     private static Button? _editorPlay;
     private static Button? _editorDelete;
     private static Button? _editorUndo;
@@ -273,6 +282,7 @@ public static partial class IslandHost
                 _editorFadeOutMs = Marshal.ReadInt32(arg, 152);
                 _editorSpeed = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 156));
                 if (_editorSpeedButton is not null) SetButtonText(_editorSpeedButton, EditorSpeedName(_editorSpeed));
+                _editorLightSync?.Invoke();
                 long pieces = Marshal.ReadInt64(arg, 64);
                 var list = new (long, long)[pieces == 0 ? 0 : count];
                 for (int i = 0; i < list.Length; i++)
@@ -370,10 +380,10 @@ public static partial class IslandHost
         _editorTrack = null;
         _editorPlayheadMark = null;
         _editorTimecode = null;
-        _editorStatus = null;
-        _editorReading = null;
-        _editorSpinner = null;
+        _editorSkeleton = null;
+        _editorLightSync = null;
         _editorPlay = _editorDelete = _editorUndo = _editorRedo = _editorExport = _editorExportExact = _editorSpeedButton = null;
+        _editorSoundButton = null;
         _editorAddons = null;
         _editorAwayName = null;
         _editorAwayVisible = false;
@@ -399,6 +409,10 @@ public static partial class IslandHost
         _editorTrim = null;
         _editorFps = 0;
         _editorMarkIn = _editorMarkOut = -1;
+        _editorShownReady = false;
+        _editorDrawnSelected = -1;
+        _editorDrawnPieces = 0;
+        _editorDrawnMarks = null;
     }
 
     private static void SendEditor(int action) => Send(Command.EditorAction, action);
@@ -442,12 +456,15 @@ public static partial class IslandHost
         var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // rule
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // toolbar
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // rule
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // key hints
+        // The one hairline: where the preview meets the timeline. The bar and
+        // the tracks share a surface, so spacing (not a rule) parts them.
         root.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
 
-        var bar = new Grid { Padding = Pad(10, 6, 10, 6) };
+        // The bar pulls back by its buttons' inset (8), so the first icon's ink
+        // lines up with the tracks and the key line, 12 from the edge.
+        var bar = new Grid { Padding = Pad(4, 6, 4, 6) };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -459,6 +476,9 @@ public static partial class IslandHost
                                    tip: "Delete the marked range, else the selected piece  Delete");
         _editorUndo = EditButton("Undo", () => SendEditor(EditorActions.Undo), tip: "Undo  Ctrl+Z");
         _editorRedo = EditButton("Redo", () => SendEditor(EditorActions.Redo), tip: "Redo  Ctrl+Shift+Z");
+        Button saveFrame = PaneIconButton(EditorGlyphCamera, "Save frame", "Ctrl+Shift+S",
+                                          () => SendEditor(EditorActions.SaveFrame));
+        ToolTipService.SetToolTip(saveFrame, "Save this frame as a photo  Ctrl+Shift+S");
         var left = Row(
             PaneIconButton(Glyph.Previous, "Previous frame", "Left", () => SendEditor(EditorActions.StepBack)),
             _editorPlay,
@@ -477,14 +497,16 @@ public static partial class IslandHost
             _editorUndo,
             _editorRedo,
             EditorDivider(),
-            EditButton("Turn left", () => SendEditor(EditorActions.TurnLeft), tip: "Turn the clip left"),
-            EditButton("Turn right", () => SendEditor(EditorActions.TurnRight), tip: "Turn the clip right"),
+            // The look's tools are icons, as on the Mac: each with its tooltip
+            // and an accessibility name.
+            PaneIconButton(Glyph.Rotate, "Turn left", null, () => SendEditor(EditorActions.TurnLeft),
+                           new ScaleTransform { ScaleX = -1 }),
+            PaneIconButton(Glyph.Rotate, "Turn right", null, () => SendEditor(EditorActions.TurnRight)),
             EditorCropButton(),
             EditorLightButton(),
             EditorSoundButton(),
             EditorSpeedButton(),
-            EditButton("Save frame", () => SendEditor(EditorActions.SaveFrame),
-                       tip: "Save this frame as a photo  Ctrl+Shift+S"));
+            saveFrame);
         bar.Children.Add(left);
         _editorExport = EditButton("Export", () => SendEditor(EditorActions.Export),
             tip: "Write the edit as a new file, cut on keyframes: instant, no quality loss  Ctrl+E");
@@ -499,28 +521,12 @@ public static partial class IslandHost
         Grid.SetRow(bar, 1);
         root.Children.Add(bar);
 
-        var rule = new Border { Height = 1, Background = Brush(Hairline) };
-        Grid.SetRow(rule, 2);
-        root.Children.Add(rule);
-
         var area = new Grid { Padding = Pad(12, 10, 12, 10) };
-        // The Mac's ProgressView beside the text while the clip is read.
-        _editorStatus = Text("Reading the clip…", Body, UiFontSize - 2);
-        _editorStatus.VerticalAlignment = VerticalAlignment.Center;
-        _editorSpinner = new Spinner(16);
-        _editorReading = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = Space(8),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        _editorReading.Children.Add(_editorSpinner.Root);
-        _editorReading.Children.Add(_editorStatus);
-        area.Children.Add(_editorReading);
+        _editorSkeleton = BuildEditorSkeleton();
+        area.Children.Add(_editorSkeleton);
         _editorTrack = new EditorTrackCanvas
         {
-            Height = RulerH + TrackGap + VideoH + TrackGap + AudioH + 4,
+            Height = EditorTrackHeight,
             VerticalAlignment = VerticalAlignment.Top,
             Background = Brush(Colors.Transparent),  // hit-testable everywhere
         };
@@ -586,14 +592,14 @@ public static partial class IslandHost
             }
         });
         area.Children.Add(_editorTrack);
-        Grid.SetRow(area, 3);
+        Grid.SetRow(area, 2);
         root.Children.Add(area);
 
         TextBlock hints = Hint(
             "Space play · Left Right frame · J K L shuttle · I O mark · X clear · [ ] trim · Ctrl+B split · " +
-            "Delete · Ctrl+Z undo · Ctrl+E export · Esc close");
-        hints.Margin = Pad(12, 0, 12, 8);
-        Grid.SetRow(hints, 4);
+            "Delete · Ctrl+Z undo · Ctrl+Shift+S save frame · Ctrl+E export · Esc close");
+        hints.Margin = Pad(12, 0, 12, 10);
+        Grid.SetRow(hints, 3);
         root.Children.Add(hints);
         AutomationProperties_SetName(root, "Video Editor timeline");
         _editorRoot = root;
@@ -604,6 +610,94 @@ public static partial class IslandHost
 
     private static UIElement EditorDivider() =>
         new Border { Width = 1, Height = 18, Background = Brush(Hairline), Margin = Pad(6, 0, 6, 0) };
+
+    // Segoe Fluent / MDL2 code points for the look's tools (the Mac's crop,
+    // sun.max.fill and camera.fill); the rest are the shared Glyph table's.
+    private const string EditorGlyphCrop = "\uE7A8";
+    private const string EditorGlyphLight = "\uE706";  // Brightness, as Adjust's Light
+    private const string EditorGlyphCamera = "\uE722";
+
+    private static double EditorTrackHeight => RulerH + TrackGap + VideoH + TrackGap + AudioH + 4;
+
+    // The tracks at their own size while the clip is read, quiet and still
+    // (nothing pulses), with one line saying what is happening.
+    private static FrameworkElement BuildEditorSkeleton()
+    {
+        var col = new StackPanel
+        {
+            Spacing = TrackGap,
+            Height = EditorTrackHeight,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = false,
+        };
+        col.Children.Add(new Border { Height = RulerH });
+        TextBlock reading = Text("Reading the clip…", Body, UiFontSize - 4, maxLines: 1);
+        reading.VerticalAlignment = VerticalAlignment.Center;
+        reading.Margin = Pad(12, 0, 12, 0);
+        col.Children.Add(new Border
+        {
+            Height = VideoH, CornerRadius = Corner(5), Background = Brush(ChromeColour.Surface), Child = reading,
+        });
+        col.Children.Add(new Border { Height = AudioH, CornerRadius = Corner(4), Background = Brush(ChromeColour.Surface) });
+        AutomationProperties_SetName(col, "Reading the clip");
+        return col;
+    }
+
+    // A state a click sets fades (150 ms ease out); with Windows' animations
+    // off it cuts. `done` runs when it lands.
+    private static void EditorFade(UIElement element, double from, double to, Action? done = null)
+    {
+        if (from == to || !HostAnimationsEnabled())
+        {
+            element.Opacity = to;
+            done?.Invoke();
+            return;
+        }
+        element.Opacity = from;
+        var fade = new DoubleAnimation
+        {
+            From = from,
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        Storyboard.SetTarget(fade, element);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+        var board = new Storyboard();
+        board.Children.Add(fade);
+        if (done is not null) board.Completed += (_, _) => Guard(done);
+        board.Begin();
+    }
+
+    // A menu row that shows the current choice with the menu's own check
+    // (not a text "✓"); styled as Item.
+    private static ToggleMenuFlyoutItem EditorCheckItem(string text, bool on, Action action)
+    {
+        var item = new ToggleMenuFlyoutItem
+        {
+            Text = text,
+            IsChecked = on,
+            Foreground = Brush(Title),
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Background = new SolidColorBrush(Colors.Transparent),
+            Padding = Pad(12, 8, 12, 8),
+            CornerRadius = Corner(RadiusButton),
+            AllowFocusOnInteraction = false,
+        };
+        foreach (string prefix in new[] { "MenuFlyoutItem", "ToggleMenuFlyoutItem" })
+        {
+            item.Resources[prefix + "BackgroundPointerOver"] = Brush(ChromeColour.HoverWash);
+            item.Resources[prefix + "BackgroundPressed"] = Brush(ChromeColour.PressedWash);
+            item.Resources[prefix + "ForegroundPointerOver"] = Brush(Title);
+            item.Resources[prefix + "ForegroundPressed"] = Brush(Title);
+            item.Resources[prefix + "ForegroundDisabled"] = Brush(ChromeColour.Disabled);
+        }
+        foreach (string state in new[] { "", "PointerOver", "Pressed" })
+            item.Resources["ToggleMenuFlyoutItemCheckGlyphForeground" + state] = Brush(Title);
+        item.Click += (_, _) => Guarded(action);
+        return item;
+    }
 
     private static void Guard(Action action)
     {
@@ -701,11 +795,41 @@ public static partial class IslandHost
                 : "Crop, mirror, colour, sound and speed need Export exact");
         }
         if (_editorExportExact is not null) _editorExportExact.IsEnabled = _editorEdited;
-        if (_editorReading is not null) _editorReading.Visibility = _editorReady ? Visibility.Collapsed : Visibility.Visible;
-        if (_editorSpinner is not null) _editorSpinner.Active = !_editorReady;
+        if (_editorSoundButton?.Content is FontIcon sound) sound.Glyph = _editorMuted ? Glyph.Mute : Glyph.Volume;
+        if (_editorAddons is not null)
+        {
+            foreach (UIElement child in _editorAddons.Children)
+            {
+                if (child is not Button { Tag: string verb } addon) continue;
+                addon.IsEnabled = _editorReady;
+                ToolTipService.SetToolTip(addon, EditorAddonTip(verb));
+            }
+        }
         if (_editorAwayName is not null) _editorAwayName.Text = _editorName;
         DrawEditorTrack();
+        // The skeleton and the tracks cross-fade in one place, so nothing moves.
+        if (_editorReady != _editorShownReady && _editorSkeleton is FrameworkElement skeleton && _editorTrack is not null)
+        {
+            _editorShownReady = _editorReady;
+            if (_editorReady)
+            {
+                EditorFade(_editorTrack, 0, 1);
+                EditorFade(skeleton, 1, 0, () =>
+                {
+                    if (_editorShownReady) skeleton.Visibility = Visibility.Collapsed;
+                });
+            }
+            else
+            {
+                skeleton.Visibility = Visibility.Visible;
+                skeleton.Opacity = 1;
+            }
+        }
     }
+
+    // "The original is not changed" is the result notice's to say, once.
+    private static string EditorAddonTip(string verb) =>
+        _editorEdited ? $"{verb} the edit as a new clip" : $"{verb} the whole clip as a new clip";
 
     // Add-ons' buttons in the bar (editor_items, contribution API 11), before
     // Export, with a divider after them; none without one. Each runs on the
@@ -715,7 +839,8 @@ public static partial class IslandHost
     // checked is the one the last view pushed.
     private static Button EditorCropButton()
     {
-        Button crop = EditButton("Crop", () => { }, tip: "Mirror and crop the whole clip");
+        Button crop = PaneIconButton(EditorGlyphCrop, "Mirror and crop", null, () => { });
+        ToolTipService.SetToolTip(crop, "Mirror and crop the whole clip");
         var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
         menu.Opening += (_, _) =>
         {
@@ -726,13 +851,34 @@ public static partial class IslandHost
             for (int i = 0; i < EditorCropNames.Length; i++)
             {
                 int ratio = i;
-                string label = (ratio == _editorLookCrop ? "\u2713 " : "    ") + EditorCropNames[ratio];
-                menu.Items.Add(Item(label, null, () => SendEditor(EditorActions.CropOriginal + ratio)));
+                menu.Items.Add(EditorCheckItem(EditorCropNames[ratio], ratio == _editorLookCrop,
+                                               () => SendEditor(EditorActions.CropOriginal + ratio)));
             }
         };
         crop.Flyout = menu;
         return crop;
     }
+
+    // A slider row of the Light and Sound flyouts, as the Mac's popovers: the
+    // name, its value right of it in the body ink, and the slider 2 below.
+    private static (StackPanel Row, TextBlock Readout) EditorSliderRow(string name, Slider slider)
+    {
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.Children.Add(Text(name, Title, UiFontSize - 3));
+        TextBlock readout = Text("", Body, UiFontSize - 4);
+        readout.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(readout, 1);
+        head.Children.Add(readout);
+        var row = new StackPanel { Spacing = Space(2) };
+        row.Children.Add(head);
+        row.Children.Add(slider);
+        return (row, readout);
+    }
+
+    private static string EditorLightValue(int index, double v) =>
+        index == 0 ? $"{v:+0.0;-0.0;0.0} EV" : $"{v:+0;-0;0}";  // Edit's own words (AdjustStore)
 
     // Light and colour for the whole clip (docs/plans/video-editor-look.md
     // slice 2): the five sliders, Auto and Reset in a flyout. Each move goes
@@ -740,23 +886,18 @@ public static partial class IslandHost
     // step (chrome_cmd_editor_light_drag on open and close).
     private static Button EditorLightButton()
     {
-        Button light = EditButton("Light", () => { }, tip: "Light and colour for the whole clip");
-        var flyout = new Flyout();
-        bool updating = false;
+        Button light = PaneIconButton(EditorGlyphLight, "Light and colour", null, () => { });
+        ToolTipService.SetToolTip(light, "Light and colour for the whole clip");
+        var flyout = new Flyout { FlyoutPresenterStyle = FlyoutPresenterStyle() };
+        bool updating = false, open = false;
         var sliders = new Slider[EditorLightSpecs.Length];
         var readouts = new TextBlock[EditorLightSpecs.Length];
-        var col = new StackPanel { Spacing = Space(6), Width = 280 };
+        // The presenter's 4 and this 8: words 12 from the flyout's edge.
+        var col = new StackPanel { Spacing = Space(8), Width = 280, Padding = Pad(8) };
+        Button reset = EditButton("Reset", () => SendEditor(EditorActions.ResetLight), tip: "Every slider back to 0");
         for (int i = 0; i < EditorLightSpecs.Length; i++)
         {
             var spec = EditorLightSpecs[i];
-            var head = new Grid();
-            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            head.Children.Add(Text(spec.Name, Body));
-            readouts[i] = Text("", Body);
-            Grid.SetColumn(readouts[i], 1);
-            head.Children.Add(readouts[i]);
-            col.Children.Add(head);
             var slider = new Slider
             {
                 Minimum = spec.Min,
@@ -767,81 +908,122 @@ public static partial class IslandHost
                 IsThumbToolTipEnabled = false,
             };
             AutomationProperties_SetName(slider, spec.Name);
+            (StackPanel row, readouts[i]) = EditorSliderRow(spec.Name, slider);
             int index = i;
             slider.ValueChanged += (_, e) =>
             {
-                readouts[index].Text = index == 0 ? $"{e.NewValue:+0.0;-0.0;0.0}" : $"{e.NewValue:+0;-0;0}";
+                readouts[index].Text = EditorLightValue(index, e.NewValue);
                 if (updating) return;
                 _editorLight[index] = (float)e.NewValue;
+                reset.IsEnabled = _editorLight.Any(v => v != 0);
                 Send(Command.EditorLightExposure + index, (float)e.NewValue);
             };
             slider.DoubleTapped += (_, _) => slider.Value = 0;
             sliders[i] = slider;
-            col.Children.Add(slider);
+            col.Children.Add(row);
         }
-        col.Children.Add(Row(
-            EditButton("Auto", () => SendEditor(EditorActions.AutoLight), tip: "Exposure and contrast from the frame on screen"),
-            EditButton("Reset", () => SendEditor(EditorActions.ResetLight), tip: "Every slider back to 0")));
+        // Auto at the start, Reset at the end, as on the Mac.
+        var foot = new Grid();
+        foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        foot.Children.Add(EditButton("Auto", () => SendEditor(EditorActions.AutoLight),
+                                     tip: "Exposure and contrast from the frame on screen"));
+        Grid.SetColumn(reset, 1);
+        foot.Children.Add(reset);
+        col.Children.Add(foot);
         flyout.Content = col;
-        flyout.Opening += (_, _) =>
+        // The sliders say what the edit holds: on opening, and while open when
+        // a pushed view changes it (Auto, Reset, an undo). A value already
+        // there (the one being dragged) is left alone.
+        void Sync()
         {
             updating = true;
-            for (int i = 0; i < sliders.Length; i++) sliders[i].Value = _editorLight[i];
+            for (int i = 0; i < sliders.Length; i++)
+            {
+                if (Math.Abs(sliders[i].Value - _editorLight[i]) > EditorLightSpecs[i].Step / 2)
+                    sliders[i].Value = _editorLight[i];
+                readouts[i].Text = EditorLightValue(i, sliders[i].Value);
+            }
             updating = false;
+            reset.IsEnabled = _editorLight.Any(v => v != 0);
+        }
+        _editorLightSync = () => { if (open) Sync(); };
+        flyout.Opening += (_, _) =>
+        {
+            open = true;
+            Sync();
             Send(Command.EditorLightDrag, 1);
         };
-        flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
+        flyout.Closed += (_, _) =>
+        {
+            open = false;
+            Send(Command.EditorLightDrag, 0);
+        };
         light.Flyout = flyout;
         return light;
     }
 
     // The edit's sound (slice 3): Mute, Volume (0-200 %) and fades (0-5 s) in a
-    // flyout; a flyout session is one undo step, as Light's.
+    // flyout; a flyout session is one undo step, as Light's. Muted, the sliders
+    // rest (as the Mac's).
     private static Button EditorSoundButton()
     {
-        Button sound = EditButton("Sound", () => { }, tip: "Sound for the whole clip");
-        var flyout = new Flyout();
+        Button sound = PaneIconButton(_editorMuted ? Glyph.Mute : Glyph.Volume, "Sound", null, () => { });
+        ToolTipService.SetToolTip(sound, "Sound for the whole clip");
+        _editorSoundButton = sound;
+        var flyout = new Flyout { FlyoutPresenterStyle = FlyoutPresenterStyle() };
         bool updating = false;
-        var col = new StackPanel { Spacing = Space(6), Width = 260 };
-        var mute = new CheckBox { Content = "Mute" };
-        mute.Click += (_, _) => SendEditor(EditorActions.ToggleMute);
-        col.Children.Add(mute);
-        Slider Row(string name, double min, double max, double step, int command, Func<double, string> format)
+        var col = new StackPanel { Spacing = Space(8), Width = 260, Padding = Pad(8) };
+        var mute = new CheckBox
         {
-            var head = new Grid();
-            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            head.Children.Add(Text(name, Body));
-            TextBlock readout = Text("", Body);
-            Grid.SetColumn(readout, 1);
-            head.Children.Add(readout);
-            col.Children.Add(head);
+            Content = "Mute", FontFamily = UiFont, FontSize = UiFontSize - 3, Foreground = Brush(Title),
+        };
+        col.Children.Add(mute);
+        var sliders = new List<Slider>();
+        (Slider Slider, Action Say) Add(string name, double min, double max, double step, int command,
+                                        Func<double, string> format)
+        {
             var slider = new Slider
             {
                 Minimum = min, Maximum = max, StepFrequency = step, SmallChange = step, LargeChange = step * 10,
                 IsThumbToolTipEnabled = false,
             };
             AutomationProperties_SetName(slider, name);
+            (StackPanel row, TextBlock readout) = EditorSliderRow(name, slider);
             slider.ValueChanged += (_, e) =>
             {
                 readout.Text = format(e.NewValue);
                 if (!updating) Send(command, (float)e.NewValue);
             };
-            col.Children.Add(slider);
-            return slider;
+            col.Children.Add(row);
+            sliders.Add(slider);
+            return (slider, () => readout.Text = format(slider.Value));
         }
-        Slider volume = Row("Volume", 0, 2, 0.05, Command.EditorSoundVolume, v => $"{v * 100:0} %");
-        Slider fadeIn = Row("Fade in", 0, 5000, 100, Command.EditorSoundFadeIn, v => $"{v / 1000:0.0} s");
-        Slider fadeOut = Row("Fade out", 0, 5000, 100, Command.EditorSoundFadeOut, v => $"{v / 1000:0.0} s");
+        var volume = Add("Volume", 0, 2, 0.05, Command.EditorSoundVolume, v => $"{v * 100:0} %");
+        var fadeIn = Add("Fade in", 0, 5000, 100, Command.EditorSoundFadeIn, v => $"{v / 1000:0.0} s");
+        var fadeOut = Add("Fade out", 0, 5000, 100, Command.EditorSoundFadeOut, v => $"{v / 1000:0.0} s");
+        void Rest()
+        {
+            foreach (Slider s in sliders) s.IsEnabled = mute.IsChecked != true;
+        }
+        mute.Click += (_, _) =>
+        {
+            Rest();
+            SendEditor(EditorActions.ToggleMute);
+        };
         flyout.Content = col;
         flyout.Opening += (_, _) =>
         {
             updating = true;
             mute.IsChecked = _editorMuted;
-            volume.Value = _editorVolume;
-            fadeIn.Value = _editorFadeInMs;
-            fadeOut.Value = _editorFadeOutMs;
+            volume.Slider.Value = _editorVolume;
+            fadeIn.Slider.Value = _editorFadeInMs;
+            fadeOut.Slider.Value = _editorFadeOutMs;
             updating = false;
+            volume.Say();
+            fadeIn.Say();
+            fadeOut.Say();
+            Rest();
             Send(Command.EditorLightDrag, 1);
         };
         flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
@@ -864,8 +1046,8 @@ public static partial class IslandHost
             for (int i = 0; i < speeds.Length; i++)
             {
                 int code = EditorActions.SpeedHalf + i;
-                string label = (speeds[i] == _editorSpeed ? "\u2713 " : "    ") + EditorSpeedName(speeds[i]);
-                menu.Items.Add(Item(label, null, () => SendEditor(code)));
+                menu.Items.Add(EditorCheckItem(EditorSpeedName(speeds[i]), speeds[i] == _editorSpeed,
+                                               () => SendEditor(code)));
             }
         };
         _editorSpeedButton.Flyout = menu;
@@ -881,8 +1063,10 @@ public static partial class IslandHost
         foreach (SlotItem item in items)
         {
             string verb = item.Label.Replace("…", "");
-            panel.Children.Add(EditButton(item.Label, () => RunEditorAddon(item),
-                tip: verb + " the edit (or the whole clip, when nothing is cut) as a new clip; the original is not changed"));
+            Button addon = EditButton(item.Label, () => RunEditorAddon(item), tip: EditorAddonTip(verb));
+            addon.Tag = verb;  // RenderEditor re-says the tip as the edit changes
+            addon.IsEnabled = _editorReady;
+            panel.Children.Add(addon);
         }
         if (items.Count > 0) panel.Children.Add(EditorDivider());
         panel.Visibility = items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -908,6 +1092,13 @@ public static partial class IslandHost
         double X(long t) => (double)t / length * width;
 
         DrawEditorRuler(track, width, length);
+        bool silent = _editorPeaks.Length == 0 || _editorSourceNs <= 0;
+        bool saidSilent = false;
+        // Lift, don't ring: with a piece chosen (Delete's target), the others
+        // step back under a wash of the field, fading as the choice moves.
+        bool lifted = _editorPieces.Length > 1 && _editorSelected >= 0;
+        bool samePieces = _editorDrawnPieces == _editorPieces.Length;
+        bool wasLifted = samePieces && _editorPieces.Length > 1 && _editorDrawnSelected >= 0;
         long start = 0;
         for (int i = 0; i < _editorPieces.Length; i++)
         {
@@ -915,25 +1106,72 @@ public static partial class IslandHost
             long len = pout - pin;
             double x0 = X(start);
             double w = Math.Max(1, X(start + len) - x0 - 2);
-            DrawEditorPiece(track, i, pin, pout, x0, RulerH + TrackGap, w);
-            DrawEditorWave(track, pin, pout, x0, RulerH + TrackGap + VideoH + TrackGap, w);
+            double audioY = RulerH + TrackGap + VideoH + TrackGap;
+            DrawEditorPiece(track, pin, pout, x0, RulerH + TrackGap, w);
+            DrawEditorWave(track, pin, pout, x0, audioY, w);
+            // "No audio" is said once, in the first piece wide enough for it.
+            if (silent && !saidSilent && w >= 88)
+            {
+                saidSilent = true;
+                TextBlock none = Text("No audio", Body, UiFontSize - 5, maxLines: 1);
+                XamlCanvas.SetLeft(none, x0 + 12);
+                XamlCanvas.SetTop(none, audioY + AudioH / 2 - 9);
+                track.Children.Add(none);
+            }
+            double to = lifted && i != _editorSelected ? 1 : 0;
+            double from = samePieces ? (wasLifted && i != _editorDrawnSelected ? 1 : 0) : to;
+            if (from > 0 || to > 0)
+            {
+                var wash = new Canvas { IsHitTestVisible = false, Opacity = from };
+                foreach ((double y, double h, double r) in new[] { (RulerH + TrackGap, VideoH, 5.0), (audioY, AudioH, 4.0) })
+                {
+                    var part = new Border
+                    {
+                        Width = w, Height = h, CornerRadius = Corner(r), Background = Brush(Canvas), Opacity = 0.45,
+                    };
+                    XamlCanvas.SetLeft(part, x0);
+                    XamlCanvas.SetTop(part, y);
+                    wash.Children.Add(part);
+                }
+                track.Children.Add(wash);
+                EditorFade(wash, from, to);
+            }
             start += len;
         }
-        DrawEditorMarks(track, width, length);
+        _editorDrawnSelected = _editorSelected;
+        _editorDrawnPieces = _editorPieces.Length;
+        // Marks fade in and out; a cleared range fades from where it was.
+        (long In, long Out)? marks = EditorHasMarks ? (_editorMarkIn, _editorMarkOut) : null;
+        if (marks is { } now)
+        {
+            UIElement drawn = DrawEditorMarks(track, width, length, now.In, now.Out);
+            if (_editorDrawnMarks is null) EditorFade(drawn, 0, 1);
+        }
+        else if (_editorDrawnMarks is { } was)
+        {
+            UIElement ghost = DrawEditorMarks(track, width, length, was.In, was.Out);
+            EditorFade(ghost, 1, 0);
+        }
+        _editorDrawnMarks = marks;
         AutomationProperties_SetName(track, EditorHasMarks
             ? $"Timeline, {_editorPieces.Length} pieces, marked {EditorTimecode(Math.Max(0, _editorMarkIn))} to " +
               $"{EditorTimecode(_editorMarkOut >= 0 ? _editorMarkOut : _editorLengthNs)}"
             : $"Timeline, {_editorPieces.Length} pieces");
 
-        // The playhead, on top; the tick moves it without a redraw.
+        // The playhead, on top; the tick moves it without a redraw. The title
+        // ink on a thin halo of the field, so it reads over any frame without
+        // borrowing a status colour (the Mac's EditorPlayhead).
         var mark = new Canvas { IsHitTestVisible = false };
+        var halo = new Rectangle { Width = 4, Height = track.Height, Fill = Brush(Canvas) };
+        XamlCanvas.SetLeft(halo, -1);
+        mark.Children.Add(halo);
         mark.Children.Add(new Rectangle
         {
             Width = 2,
             Height = track.Height,
-            Fill = Brush(Colors.Red),
+            Fill = Brush(Title),
         });
-        var head = new Polygon { Fill = Brush(Colors.Red) };
+        var head = new Polygon { Fill = Brush(Title) };
         head.Points.Add(new Point(-5, 0));
         head.Points.Add(new Point(7, 0));
         head.Points.Add(new Point(1, 8));
@@ -968,50 +1206,55 @@ public static partial class IslandHost
             XamlCanvas.SetLeft(tick, x);
             XamlCanvas.SetTop(tick, RulerH - 6);
             track.Children.Add(tick);
-            TextBlock label = Text(EditorRulerLabel((long)(t * 1e9)), Body, UiFontSize - 6);
+            TextBlock label = Text(EditorRulerLabel((long)(t * 1e9)), Body, UiFontSize - 5);
             label.TextWrapping = TextWrapping.NoWrap;
-            XamlCanvas.SetLeft(label, x + 2);
-            XamlCanvas.SetTop(label, -2);
+            XamlCanvas.SetLeft(label, x + 3);
+            XamlCanvas.SetTop(label, -1);
             track.Children.Add(label);
         }
     }
 
     // The marked range: a band over both tracks, and a bracket at each end that
-    // is set (shape, not only colour, says "marked").
-    private static void DrawEditorMarks(Canvas track, double width, long length)
+    // is set (shape, not only colour, says "marked"). One layer, so it fades
+    // as a whole.
+    private static UIElement DrawEditorMarks(Canvas track, double width, long length, long markIn, long markOut)
     {
-        if (!EditorHasMarks) return;
         double X(long t) => (double)Math.Clamp(t, 0, length) / length * width;
-        double a = X(Math.Max(0, _editorMarkIn));
-        double b = X(_editorMarkOut >= 0 ? _editorMarkOut : length);
+        double a = X(Math.Max(0, markIn));
+        double b = X(markOut >= 0 ? markOut : length);
         double top = RulerH + TrackGap;
         double h = track.Height - top;
+        var layer = new Canvas { IsHitTestVisible = false };
         var band = new Rectangle
         {
             Width = Math.Max(1, b - a),
             Height = h,
             Fill = Brush(TrimAccent),
             Opacity = 0.18,
-            IsHitTestVisible = false,
         };
         XamlCanvas.SetLeft(band, a);
         XamlCanvas.SetTop(band, top);
-        track.Children.Add(band);
-        foreach ((long t, bool isIn) in new[] { (_editorMarkIn, true), (_editorMarkOut, false) })
+        layer.Children.Add(band);
+        foreach ((long t, bool isIn) in new[] { (markIn, true), (markOut, false) })
         {
             if (t < 0) continue;
             double x = X(t);
             double arm = isIn ? 6 : -6;
-            var bracket = new Polyline { Stroke = Brush(TrimAccent), StrokeThickness = 2, IsHitTestVisible = false };
+            var bracket = new Polyline { Stroke = Brush(TrimAccent), StrokeThickness = 2 };
             bracket.Points.Add(new Point(x + arm, top));
             bracket.Points.Add(new Point(x, top));
             bracket.Points.Add(new Point(x, top + h - 2));
             bracket.Points.Add(new Point(x + arm, top + h - 2));
-            track.Children.Add(bracket);
+            layer.Children.Add(bracket);
         }
+        track.Children.Add(layer);
+        return layer;
     }
 
-    private static void DrawEditorPiece(Canvas track, int index, long pin, long pout, double x, double y, double w)
+    // One surface per piece: its fill and its frames, no outline (the 2 DIP
+    // join already parts it from the next). The chosen one is lifted by the
+    // wash over the others (DrawEditorTrack), not ringed in the accent.
+    private static void DrawEditorPiece(Canvas track, long pin, long pout, double x, double y, double w)
     {
         // Thumbnails of this piece, each at its own source time, tiled to fill it.
         var tiles = new Canvas
@@ -1048,21 +1291,9 @@ public static partial class IslandHost
         XamlCanvas.SetLeft(frame, x);
         XamlCanvas.SetTop(frame, y);
         track.Children.Add(frame);
-        bool selected = index == _editorSelected;
-        var outline = new Border
-        {
-            Width = w,
-            Height = VideoH,
-            CornerRadius = Corner(5),
-            BorderBrush = Brush(selected ? TrimAccent : Hairline),
-            BorderThickness = new Thickness(selected ? 3 : 1),
-            IsHitTestVisible = false,
-        };
-        XamlCanvas.SetLeft(outline, x);
-        XamlCanvas.SetTop(outline, y);
-        track.Children.Add(outline);
     }
 
+    // The envelope in the body ink: the accent is kept for what you marked.
     private static void DrawEditorWave(Canvas track, long pin, long pout, double x, double y, double w)
     {
         var box = new Border
@@ -1075,14 +1306,7 @@ public static partial class IslandHost
         XamlCanvas.SetLeft(box, x);
         XamlCanvas.SetTop(box, y);
         track.Children.Add(box);
-        if (_editorPeaks.Length == 0 || _editorSourceNs <= 0)
-        {
-            TextBlock none = Text("No audio", Body, UiFontSize - 5);
-            XamlCanvas.SetLeft(none, x + 8);
-            XamlCanvas.SetTop(none, y + AudioH / 2 - 9);
-            track.Children.Add(none);
-            return;
-        }
+        if (_editorPeaks.Length == 0 || _editorSourceNs <= 0) return;  // DrawEditorTrack says "No audio" once
         // An envelope polygon: the peaks along the top, mirrored back along the bottom.
         int n = _editorPeaks.Length;
         double mid = y + AudioH / 2;
@@ -1095,7 +1319,7 @@ public static partial class IslandHost
             double h = Math.Max(0.5, _editorPeaks[b] * (AudioH / 2 - 2));
             top[c] = new Point(x + c * 2, mid - h);
         }
-        var wave = new Polygon { Fill = Brush(TrimAccent), Opacity = 0.75, IsHitTestVisible = false };
+        var wave = new Polygon { Fill = Brush(Body), IsHitTestVisible = false };
         foreach (Point p in top) wave.Points.Add(p);
         for (int c = cols - 1; c >= 0; c--) wave.Points.Add(new Point(top[c].X, 2 * mid - top[c].Y));
         track.Children.Add(wave);
@@ -1106,21 +1330,27 @@ public static partial class IslandHost
     private static UIElement BuildEditorAway()
     {
         var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme };
+        // Hierarchy from one ink and one size step: the line in the title ink,
+        // the clip's name under it 4 apart, the two buttons 12 below.
         var col = new StackPanel
         {
-            Spacing = Space(10),
+            Spacing = Space(12),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        TextBlock head = Text("Editing in the Video Editor window", Body, UiFontSize);
+        var words = new StackPanel { Spacing = Space(4) };
+        TextBlock head = Text("Editing in the Video Editor window", Title, UiFontSize - 1);
         head.HorizontalAlignment = HorizontalAlignment.Center;
-        col.Children.Add(head);
+        words.Children.Add(head);
         _editorAwayName = Text(_editorName, Body, UiFontSize - 3, maxLines: 1);
         _editorAwayName.HorizontalAlignment = HorizontalAlignment.Center;
-        col.Children.Add(_editorAwayName);
+        _editorAwayName.TextTrimming = TextTrimming.CharacterEllipsis;
+        words.Children.Add(_editorAwayName);
+        col.Children.Add(words);
         StackPanel buttons = Row(
             EditButton("Show editor", () => SendEditor(EditorActions.Show), tip: "Bring the Video Editor forward"),
             EditButton("Done", () => SendEditor(EditorActions.Close), tip: "Close the editor and put the picture back"));
+        buttons.Spacing = Space(8);
         buttons.HorizontalAlignment = HorizontalAlignment.Center;
         col.Children.Add(buttons);
         root.Children.Add(col);
