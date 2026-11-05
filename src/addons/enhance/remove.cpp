@@ -287,6 +287,177 @@ void paste(rgb8& photo, const pixel_box& box, const rgb8& filled, std::vector<st
 
 }  // namespace
 
+std::uint32_t remove_feather(const pixel_box& box) noexcept {
+  return std::clamp<std::uint32_t>(std::max(box.width, box.height) / 256, 2, 16);
+}
+
+bool needs_refine(const pixel_box& box, std::uint32_t side) noexcept {
+  return side > 0 && std::uint64_t{std::max(box.width, box.height)} * 2 > std::uint64_t{side} * 3;
+}
+
+namespace {
+
+// Starts of tiles `t` long covering [lo, hi) inside [0, limit): one centred
+// when it fits, else half overlapping from lo, the last ending at hi.
+std::vector<std::uint32_t> starts_over(std::uint32_t lo, std::uint32_t hi, std::uint32_t t, std::uint32_t limit) {
+  std::vector<std::uint32_t> out;
+  const std::uint32_t len = hi - lo, last = limit - t;
+  if (len <= t) {
+    const std::int64_t c = static_cast<std::int64_t>(lo) + len / 2 - t / 2;
+    out.push_back(static_cast<std::uint32_t>(std::clamp<std::int64_t>(c, 0, last)));
+    return out;
+  }
+  const std::uint32_t step = std::max(1u, t / 2);
+  for (std::uint32_t at = lo;; at += step) {
+    const std::uint32_t s = std::min(std::min(at, hi - t), last);
+    out.push_back(s);
+    if (s + t >= hi) break;
+  }
+  return out;
+}
+
+// The how-much-was-known weight of a tile: nothing under a tenth of its
+// picture known (the model has nothing to continue), all from two fifths.
+float known_weight(double known) noexcept {
+  return static_cast<float>(std::clamp((known - 0.1) / 0.3, 0.0, 1.0));
+}
+
+// Where the tiles over a pixel barely count (their tents' edges, little
+// known), their detail fades out against this.
+inline constexpr float kRefineBase = 0.02f;
+
+}  // namespace
+
+std::vector<pixel_box> refine_tiles(const mask8& mask, const remove_plan& plan, std::size_t i, std::uint32_t side) {
+  std::vector<pixel_box> out;
+  const pixel_box& box = plan.boxes[i];
+  if (!needs_refine(box, side) || mask.width == 0 || mask.height == 0) return out;
+  const mask8 own = box_mask(mask, plan, i, false);
+  // What it pastes back: its own brushed pixels' bounds, and an integral
+  // image of them to keep only the tiles that hold some.
+  const std::uint32_t bw = box.width, bh = box.height;
+  std::vector<std::uint32_t> sat(std::size_t{bw + 1} * (bh + 1), 0);
+  bounds b;
+  for (std::uint32_t y = 0; y < bh; ++y) {
+    std::uint32_t row = 0;
+    for (std::uint32_t x = 0; x < bw; ++x) {
+      const bool on = own.a[std::size_t{y} * bw + x] > 127;
+      if (on) b.add(x, y);
+      row += on ? 1u : 0u;
+      sat[std::size_t{y + 1} * (bw + 1) + x + 1] = sat[std::size_t{y} * (bw + 1) + x + 1] + row;
+    }
+  }
+  if (b.empty()) return out;
+  // Every pixel the paste can change is within `reach` of one it fills; the
+  // tiles reach past them by at least a quarter tile for context.
+  const std::uint32_t reach = 2 * remove_feather(box) + 1, pad = std::max(reach, side / 4);
+  const std::uint32_t w = mask.width, h = mask.height;
+  const std::uint32_t tw = std::min(side, w), th = std::min(side, h);
+  const auto lo = [&](std::uint32_t v) { return v > pad ? v - pad : 0u; };
+  const std::uint32_t gx0 = lo(box.x + b.x0), gy0 = lo(box.y + b.y0);
+  const std::uint32_t gx1 = std::min(w, box.x + b.x1 + 1 + pad), gy1 = std::min(h, box.y + b.y1 + 1 + pad);
+  const auto sum = [&](std::int64_t x0, std::int64_t y0, std::int64_t x1, std::int64_t y1) {  // box-local, clipped
+    x0 = std::clamp<std::int64_t>(x0, 0, bw), x1 = std::clamp<std::int64_t>(x1, 0, bw);
+    y0 = std::clamp<std::int64_t>(y0, 0, bh), y1 = std::clamp<std::int64_t>(y1, 0, bh);
+    if (x0 >= x1 || y0 >= y1) return std::uint32_t{0};
+    const auto at = [&](std::int64_t x, std::int64_t y) { return sat[static_cast<std::size_t>(y * (bw + 1) + x)]; };
+    return at(x1, y1) - at(x0, y1) - at(x1, y0) + at(x0, y0);
+  };
+  for (const std::uint32_t y : starts_over(gy0, gy1, th, h)) {
+    for (const std::uint32_t x : starts_over(gx0, gx1, tw, w)) {
+      const std::int64_t lx = static_cast<std::int64_t>(x) - box.x, ly = static_cast<std::int64_t>(y) - box.y;
+      if (sum(lx - reach, ly - reach, lx + tw + reach, ly + th + reach) == 0) continue;
+      out.push_back({x, y, tw, th});
+    }
+  }
+  return out;
+}
+
+expected refine_fill(const rgb8& photo, const mask8& mask, const remove_plan& plan, std::size_t i,
+                     const std::vector<pixel_box>& tiles, inpaint_filler& model, rgb8& filled,
+                     const std::function<bool()>& next) {
+  if (tiles.empty()) return {};
+  const pixel_box& box = plan.boxes[i];
+  const std::uint32_t side = model.side();
+  const auto me = static_cast<std::uint8_t>(i + 1);
+  // How much the first pass shrank the box: the detail it could not keep is
+  // what a tile has above that scale.
+  const double sx = static_cast<double>(box.width) / side, sy = static_cast<double>(box.height) / side;
+  // Sums over the box's pixels the tiles cover (nothing outside the box is
+  // pasted): `r`, in the photo.
+  pixel_box r = tiles[0];
+  for (const pixel_box& t : tiles) r = union_of(r, t);
+  {
+    const std::uint32_t x0 = std::max(r.x, box.x), y0 = std::max(r.y, box.y);
+    const std::uint32_t x1 = std::min(r.x + r.width, box.x + box.width), y1 = std::min(r.y + r.height, box.y + box.height);
+    if (x0 >= x1 || y0 >= y1) return {};
+    r = {x0, y0, x1 - x0, y1 - y0};
+  }
+  std::vector<float> sum(std::size_t{r.width} * r.height * 3, 0.0f), weight(std::size_t{r.width} * r.height, 0.0f);
+  for (const pixel_box& t : tiles) {
+    if (next && !next()) return err(status::cancelled);
+    // The tile's holes: box i's open mask (its own pixels and the later
+    // boxes'; the earlier boxes' are filled in the photo).
+    const std::size_t area = std::size_t{t.width} * t.height;
+    mask8 m;
+    m.width = t.width;
+    m.height = t.height;
+    m.a.assign(area, 0);
+    std::size_t holes = 0;
+    for (std::uint32_t y = 0; y < t.height; ++y) {
+      const std::uint8_t* row = mask.a.data() + std::size_t{t.y + y} * mask.width + t.x;
+      for (std::uint32_t x = 0; x < t.width; ++x) {
+        if (row[x] <= 127) continue;
+        const std::uint8_t who = plan.owner_at(t.x + x, t.y + y);
+        if (who != 0 && who < me) continue;
+        m.a[std::size_t{y} * t.width + x] = 255;
+        ++holes;
+      }
+    }
+    if (holes == 0) continue;
+    const float conf = known_weight(1.0 - static_cast<double>(holes) / static_cast<double>(area));
+    if (conf <= 0.0f) continue;  // nothing to continue: the first pass alone there
+    const bool exact = t.width == side && t.height == side;
+    const rgb8 in = crop_rgb(photo, t);
+    MV_TRY(rgb8 out, model.fill(exact ? in : resize_rgb(in, side, side),
+                                exact ? m : crop_mask(m, pixel_box{0, 0, t.width, t.height}, side, side)));
+    if (!exact) out = resize_rgb(out, t.width, t.height);
+    // Its detail: the fill less the fill at the first pass's scale.
+    const auto lw = static_cast<std::uint32_t>(std::max(1.0, std::round(t.width / sx)));
+    const auto lh = static_cast<std::uint32_t>(std::max(1.0, std::round(t.height / sy)));
+    const rgb8 low = resize_rgb(resize_rgb(out, lw, lh), t.width, t.height);
+    // A tent across the tile, never 0 inside it, times how much it knew.
+    for (std::uint32_t y = 0; y < t.height; ++y) {
+      const std::uint32_t py = t.y + y;
+      if (py < r.y || py >= r.y + r.height) continue;
+      const float wy = (std::min(y, t.height - 1 - y) + 1.0f) / (t.height * 0.5f + 1.0f);
+      for (std::uint32_t x = 0; x < t.width; ++x) {
+        const std::uint32_t px = t.x + x;
+        if (px < r.x || px >= r.x + r.width) continue;
+        const float wt = conf * wy * (std::min(x, t.width - 1 - x) + 1.0f) / (t.width * 0.5f + 1.0f);
+        const std::size_t at = std::size_t{py - r.y} * r.width + (px - r.x), from = (std::size_t{y} * t.width + x) * 3;
+        for (int c = 0; c < 3; ++c) {
+          sum[at * 3 + c] += wt * (static_cast<float>(out.rgb[from + c]) - static_cast<float>(low.rgb[from + c]));
+        }
+        weight[at] += wt;
+      }
+    }
+  }
+  for (std::uint32_t y = 0; y < r.height; ++y) {
+    for (std::uint32_t x = 0; x < r.width; ++x) {
+      const std::size_t at = std::size_t{y} * r.width + x;
+      if (weight[at] <= 0.0f) continue;
+      const float all = kRefineBase + weight[at];
+      std::uint8_t* f = filled.rgb.data() + (std::size_t{r.y - box.y + y} * box.width + (r.x - box.x + x)) * 3;
+      for (int c = 0; c < 3; ++c) {
+        const float v = static_cast<float>(f[c]) + sum[at * 3 + c] / all;
+        f[c] = static_cast<std::uint8_t>(std::clamp(v + 0.5f, 0.0f, 255.0f));
+      }
+    }
+  }
+  return {};
+}
+
 void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& mask, std::uint32_t feather) {
   const std::uint32_t w = box.width, h = box.height;
   std::vector<std::uint32_t> m(std::size_t{w} * h);
@@ -403,33 +574,76 @@ void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8&
 
 std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const extend_margins& m) {
   std::vector<pixel_box> out;
+  if (w == 0 || h == 0) return out;
   const std::uint32_t shorter = std::min(w, h);
-  // A tile reaches as far into the photo as the margin is deep (context), at
-  // least 256 and at most the picture's shorter side.
-  const auto side_for = [&](std::uint32_t margin) { return std::clamp(std::max(margin * 3, 512u), 256u, shorter); };
-  const auto along = [&](std::uint32_t length, std::uint32_t tile, auto&& place) {
-    const std::uint32_t step = std::max(1u, tile / 2);  // half overlapping: every pixel in two tiles
-    for (std::uint32_t at = 0;; at += step) {
-      const std::uint32_t start = std::min(at, length > tile ? length - tile : 0u);
-      place(start);
-      if (start + tile >= length) break;
+  // One margin: `depth` deep across a picture `across` wide there, `length`
+  // long. Tiles are (a, b, size) with `a` the start across from the margin's
+  // outer edge, `b` along it.
+  struct tile {
+    std::uint32_t a, b, size;
+  };
+  const auto margin = [&](std::uint32_t depth, std::uint32_t across, std::uint32_t length) {
+    std::vector<tile> ts;
+    // Three times the depth (as deep into the photo as the margin is, each
+    // side), at least kExtendMinTile, at most the picture's shorter side.
+    const std::uint32_t t = std::min(std::max(depth * 3, kExtendMinTile), shorter);
+    // Along: two-thirds overlapping (every pixel a third of a tile past the
+    // ends in three), and at each end two more anchored there, of other
+    // sizes, which give the end pixels their three: larger (a quarter and a
+    // half again) where the picture has room, else smaller (three quarters,
+    // a half).
+    std::vector<std::uint32_t> along;
+    for (std::uint32_t at = 0, step = std::max(1u, t / 3);; at += step) {
+      const std::uint32_t start = std::min(at, length - t);
+      along.push_back(start);
+      if (start + t >= length) break;
     }
+    // Across: from the outer edge, as many as reach past the margin into
+    // the photo (one, unless the picture is thinner than the margin is deep).
+    const auto across_starts = [&](std::uint32_t size) {
+      std::vector<std::uint32_t> as;
+      const std::uint32_t reach = std::min(across, depth + std::max(1u, size / 3));
+      const std::uint32_t step = std::max(1u, size / 3);
+      for (std::uint32_t at = 0;; at += step) {
+        const std::uint32_t start = std::min(at, across - size);
+        as.push_back(start);
+        if (start + size >= reach) break;
+      }
+      return as;
+    };
+    for (const std::uint32_t a : across_starts(t)) {
+      for (const std::uint32_t b : along) ts.push_back({a, b, t});
+    }
+    const std::uint32_t b1 = std::min(shorter, t + t / 4), b2 = std::min(shorter, t + t / 2);
+    std::uint32_t ends[2] = {(t * 3 + 3) / 4, (t + 1) / 2};
+    if (b1 > t) ends[0] = b1;
+    if (b1 > t && b2 > b1) ends[1] = b2;
+    for (const std::uint32_t size : ends) {
+      if (size == 0 || size == t) continue;
+      for (const std::uint32_t a : across_starts(size)) {
+        ts.push_back({a, 0, size});
+        ts.push_back({a, length - size, size});
+      }
+    }
+    return ts;
+  };
+  const auto add = [&](pixel_box b) {
+    for (const pixel_box& o : out) {
+      if (o.x == b.x && o.y == b.y && o.width == b.width && o.height == b.height) return;
+    }
+    out.push_back(b);
   };
   if (m.left) {
-    const std::uint32_t t = side_for(m.left);
-    along(h, t, [&](std::uint32_t y) { out.push_back({0, y, t, std::min(t, h - y)}); });
+    for (const tile& t : margin(m.left, w, h)) add({t.a, t.b, t.size, t.size});
   }
   if (m.right) {
-    const std::uint32_t t = side_for(m.right);
-    along(h, t, [&](std::uint32_t y) { out.push_back({w - t, y, t, std::min(t, h - y)}); });
+    for (const tile& t : margin(m.right, w, h)) add({w - t.a - t.size, t.b, t.size, t.size});
   }
   if (m.top) {
-    const std::uint32_t t = side_for(m.top);
-    along(w, t, [&](std::uint32_t x) { out.push_back({x, 0, std::min(t, w - x), t}); });
+    for (const tile& t : margin(m.top, h, w)) add({t.b, t.a, t.size, t.size});
   }
   if (m.bottom) {
-    const std::uint32_t t = side_for(m.bottom);
-    along(w, t, [&](std::uint32_t x) { out.push_back({x, h - t, std::min(t, w - x), t}); });
+    for (const tile& t : margin(m.bottom, h, w)) add({t.b, h - t.a - t.size, t.size, t.size});
   }
   return out;
 }

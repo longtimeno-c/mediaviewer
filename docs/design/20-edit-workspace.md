@@ -163,7 +163,9 @@ and *Improve faces* (the Mac; Windows has Open closed eyes, its Improve faces tw
 *Enhance…* and *Extend…* (Enhance's `open`; Extend is the sheet's photo choice). Without the
 Enhance add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance).
 Cards are one column, two from 560. Running inside the pane (`place "edit"`) and the result row are
-S5's; every result is a new file today, as before.
+S5's; every result is a new file today, as before. How Remove and Extend fill (Remove's
+full-resolution second pass on large boxes, Extend's overlapping tiles; quality over speed) is in
+[29](29-enhance.md#remove-what-was-brushed-in-edit-filled-in).
 
 ### Canvas tools
 
