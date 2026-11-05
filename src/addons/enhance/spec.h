@@ -48,6 +48,17 @@ inline constexpr std::size_t kKindCount = kModelKinds.size();
 // The photo's "More detail" choices, in the order the sheet offers them.
 inline constexpr std::array<model_kind, 5> kStillKinds{model_kind::still, model_kind::natural, model_kind::denoise,
                                                        model_kind::deblur, model_kind::motion};
+// Remove motion blur is not offered (2026-11-05): S7 found the pinned
+// NAFNet-GoPro ONNX export defective (it blows up on about a third of photos;
+// restore_picture's guard then keeps the photo's own pixels, so the tool
+// does nothing). Its spec, pin and code stay, behind this flag, so a working
+// export can replace the pin and turn it back on. Off, it is not a choice, not
+// a Settings card (unless already downloaded, so it can be removed) and never
+// downloaded.
+inline constexpr bool kOfferMotionBlur = false;
+[[nodiscard]] constexpr bool kind_offered(model_kind k) noexcept {
+  return k != model_kind::motion || kOfferMotionBlur;
+}
 [[nodiscard]] constexpr bool still_family(model_kind k) noexcept {
   return k == model_kind::still || k == model_kind::natural || k == model_kind::denoise ||
          k == model_kind::deblur || k == model_kind::motion;

@@ -65,7 +65,7 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | natural | **Natural**: 4xRealWebPhoto v4 (DAT-2) by Philip Hofmann, `Phips/4xRealWebPhoto_v4_dat2` @ `95e9cd50` | 48.8 MB | CC-BY-4.0 (credited in the spec and the notices) |
 | denoise | **Remove noise**: SCUNet real-PSNR (Zhang et al., KAIR), `deepghs/image_restoration` @ `77885239` | 91.3 MB | Apache-2.0 |
 | deblur | **Remove blur**: NAFNet-REDS-width64 (Chen et al., MEGVII), the same repo and revision | 275 MB | MIT |
-| motion | **Remove motion blur**: NAFNet-GoPro-width64, the same repo and revision | 275 MB | MIT |
+| motion | **Remove motion blur** (not offered, `kOfferMotionBlur`): NAFNet-GoPro-width64, the same repo and revision | 275 MB | MIT |
 | remove | LaMa (Suvorov et al.), ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx` | 208 MB | Apache-2.0 |
 | restyle | InstructPix2Pix (Brooks et al., `timbrooks/instruct-pix2pix` @ `31519b5c`), exported by `tools/package/restyle-export.py`: fp32 text encoder and VAE, fp16 UNet | about 2.5 GB | CreativeML OpenRAIL-M (owner, 2026-11-03); its use restrictions are shown with the credit |
 | face | RestoreFormer++ (Wang et al., `wzhouxiff/RestoreFormerPlusPlus`), the ONNX export `facefusion/models-3.0.0` @ `728b9659`, `restoreformer_plus_plus.onnx`; and GFPGAN v1.4 (Wang et al.), `neurobytemind/GFPGANv1.4.onnx` @ `e3fd467e`, `GFPGANv1.4.onnx` | 294 + 340 MB (both are the kind's files) | Apache-2.0 (owner call C, 2026-11-04) |
@@ -168,17 +168,19 @@ a few percent in.
 
 ## Enhance image: a photo restored (S7, owner 2026-11-04)
 
-The photo's **Enhance image** offers five models, each its own kind (`spec.h` `kStillKinds`), so
+The photo's **Enhance image** has five models, each its own kind (`spec.h` `kStillKinds`), so
 each is downloaded only when it is chosen: **Sharpen & restore** (`still`, the default), **Natural**
 (`natural`), **Remove noise** (`denoise`), **Remove blur** (`deblur`) and **Remove motion blur**
-(`motion`). The sheet's *Improve* choice (`"detail"`, kept in `enhance.json`) lists those this build
+(`motion`). **Remove motion blur is not offered** (2026-11-05, `spec.h` `kOfferMotionBlur` false):
+its pinned NAFNet-GoPro export blows up on about a third of photos, so it is not a choice, not a
+Settings card unless its files are already here (so they can be removed), never resumed or
+installed; its spec, pin and code stay for a sound export. The sheet's *Improve* choice (`"detail"`, kept in `enhance.json`) lists those this build
 has a spec and a pin for; one not downloaded yet shows its size and a **Download** button in the
 sheet itself (`install.<kind>`, then progress and *Stop the download*), and Settings → Add-ons →
-Enhance lists all five too. The docked panel ("Docked in Edit") draws the same choice, Download
+Enhance lists the four offered. The docked panel ("Docked in Edit") draws the same choice, Download
 and credit under the Enhance image card, and a restorer's note on parts it left as they were under
-its result row. The two upscalers have a **Size** (the same size, twice, four times);
-the same size is the model's 4× brought back down, so it is restored detail, not a resample. The
-three restorers keep the size and have no Size. Each has **Strength** (the model's picture mixed
+its result row. The two upscalers have a **Size** (the same size, twice, four times),
+run **shrunk to the detail** (below). The three restorers keep the size and have no Size. Each has **Strength** (the model's picture mixed
 with the photo, or with its plain bilinear enlargement) and shows its credit line.
 
 The run (`picture_job.h` `restore_picture`): tiles of the model's side (Real-HAT-GAN is fixed at
@@ -193,6 +195,24 @@ shows. Rows are written as soon as no later tile reaches them; only a band of fl
 high is held. Progress is per tile (the sheet's time left), and Cancel is honoured between tiles.
 The models run in fp32 on the CPU (`io.backend: "cpu"`): measured, they are not worth Core ML's
 fp16.
+
+**Shrunk to the detail** (owner 2026-11-05: "when I run Enhance to sharpen the image it doesn't
+look any sharper"; [plan](../plans/edit-refresh.md)). A ×4 model restores detail at its own input's
+pixel scale. A soft photo (a small picture blown up, an out-of-focus shot) has none there, so ×4 on
+the photo itself and a downscale back changed almost nothing (Laplacian variance 2.4 → 3.1 with
+HAT). So the upscalers (HAT, RealWebPhoto) first measure how far the photo can be shrunk without
+losing its detail (`detail_shrink`, milliseconds): on its three busiest 320 px crops of nine, at
+full resolution, the largest d in 1.25…4 (quarter steps) whose Lanczos-3 down-and-up round trip
+loses at most 3 % more gradient energy than a 1.15 round trip does (that finest band holds only
+grain, JPEG blocks and an enlargement's kinks on a soft photo), or one 8-bit level squared where
+the photo is nearly flat; 1 when even 1.25 loses detail. Sharp photos get 1 and run as before
+(`restore_picture` on the photo as it is); a soft one is resized to 1/d (Lanczos-3), run tiled at
+the least of the model's scales that covers the size asked for (`plan_shrink`), and resized
+(Lanczos-3) to exactly the source size times the Size. Same size, ×2 and ×4 all shrink alike;
+Strength mixes with the photo itself enlarged, never the shrunk copy (`restore_at_detail`). A
+6× enlargement reads d = 4, a 2× one about 2, a sharp scene ≤ 1.5 (unit tests). It is also much
+faster: the model sees 1/d² of the pixels. The run gate adds the shrunk copy, the model's result
+before its resize and the resize's float rows.
 
 **A tile the model blows up.** NAFNet's ONNX exports (GoPro worst, REDS sometimes) return values
 in the thousands on some tiles of ordinary photos (11 of 30 COCO crops for GoPro, 4 of 30 for
@@ -479,14 +499,21 @@ SCUNet took a σ = 15 noisy crop from 24.5 to 36.5 dB; NAFNet-REDS doubled to qu
 Laplacian variance (PSNR −0.4 to −1 dB: it sharpens past the original); NAFNet-GoPro blew up on
 the synthetic scene in every view (kept as the photo) and on 11 of 30 COCO crops in Python.
 
+Shrunk to the detail (2026-11-05, the owner's soft 1500 × 1500 photo, Sharpen & restore at the
+same size, the hidden `[.enhance-sharp-check]` case, CPU fp32, load average 10–12 from other
+builds): d = 4.00 (estimated in 90 ms), 9 HAT tiles, **138 s**, Laplacian variance **2.13 →
+18.71** (the plan's Python run: 17.6). The whole photo at d = 1 would be about 170 tiles.
+
 Not measured: Windows (Restyle is refused there without a GPU provider), a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
 
 - Enhance image on Core ML or a GPU: fp32 on the CPU only; Sharpen & restore takes about an hour
-  for 12 MP. Remove motion blur's NAFNet-GoPro export is unstable on many photos (the guard keeps
-  those parts as they were); a sounder export or another model wants an owner call.
+  for a sharp 12 MP photo (a soft one is shrunk first and takes 1/d² of that). **Remove motion
+  blur is hidden** (`kOfferMotionBlur`): its NAFNet-GoPro export is defective, blowing up on about a
+  third of photos (the guard then keeps them as they were, so the tool does nothing); a sounder
+  export or another model, then the flag on, wants an owner call.
   A file a changed pin no longer names (the earlier `still/realesr-general-x4v3.onnx`, 4.9 MB)
   stays in the data folder until Remove; nothing sweeps unpinned files yet.
 - Restore faces: Core ML / a GPU provider (it runs on CPU fp32 by the quality call); downloading

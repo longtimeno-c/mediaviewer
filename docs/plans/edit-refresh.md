@@ -713,13 +713,21 @@ high-frequency energy, so sharp photos get d = 2 or are left as they are), resiz
 and resizes to the exact source size; ×2 and ×4 sizes use the same shrink before the model when the photo
 is soft. Applies to HAT, RealWebPhoto and x4v3 alike.
 
+**Built (2026-11-05):** `picture_job.h` `detail_shrink` / `plan_shrink` / `restore_at_detail`, run
+by `run_still` for the upscalers (HAT, RealWebPhoto; x4v3 is only the video kind now). d is 1 or
+1.25…4 (a sharp photo is not shrunk at all, rather than at 2), from the photo's three busiest
+full-resolution crops; see [29](../design/29-enhance.md) "Shrunk to the detail". On the owner's
+photo through the app's own tiled path: d = 4, Laplacian variance 2.13 → 18.71, 138 s for 9 HAT
+tiles at load 10–12 (the 9.5 s above was a single untiled Python run). **Remove motion blur** is
+hidden behind `kOfferMotionBlur` (its NAFNet-GoPro export is defective).
+
 **S7 built (2026-11-05):** the five Enhance image models above, each its own kind
 (`natural`, `denoise`, `deblur`, `motion` appended to `model_kind` after `remove`), downloaded
 from the sheet when chosen; tiles blended by tent weight (`restore_picture`); a guard for tiles a
 model blows up (NAFNet's exports do, GoPro on about a third of photo crops). See
 [29](../design/29-enhance.md) "Enhance image". Not built here: the app's own noise reduction
-before the upscalers (Remove noise is its own choice instead); Core ML for these (fp32 CPU); the
-same-size shrink to the detail above (S7's same size is still ×4 then a high-quality downscale).
+before the upscalers (Remove noise is its own choice instead); Core ML for these (fp32 CPU). The
+same-size shrink to the detail above was built after S7 (see its built note).
 
 Enhance image offers: **Sharpen & restore** (HAT; at the same size, shrink to the detail then ×4, as above)
 as the default, **Natural** (RealWebPhoto), **Remove noise**, **Remove blur**, **Remove motion blur**;

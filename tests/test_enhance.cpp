@@ -16,9 +16,11 @@
 #include "catch_compat.h"
 #include <catch2/catch_approx.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -3474,5 +3476,162 @@ TEST_CASE("enhance image: the five models restore a damaged picture", "[.enhance
       CHECK(after > before * 1.2);
     }
   }
+#endif
+}
+
+// ---- shrink to the detail (docs/plans/edit-refresh.md, owner 2026-11-05) -----------
+
+TEST_CASE("enhance image: the detail shrink reads a soft photo as 4 and a sharp one as 1", "[enhance][still][shrink]") {
+  // Sharp: the synthetic scene (one-pixel lines, a checker) and noise.
+  const std::uint32_t W = 384, H = 288;
+  const auto sharp = to8(scene(W, H));
+  const double d_sharp = detail_shrink(sharp, W, H);
+  INFO("sharp scene d=" << d_sharp);
+  CHECK(d_sharp <= 1.5);
+  CHECK(detail_shrink(noise_rgb(W, H), W, H) == 1.0);
+  // Soft: a small picture enlarged 6x, as the owner's 250 px face blown up to 1500.
+  const auto tiny = to8(scene(64, 48));
+  const auto blown = resize_lanczos(tiny, 64, 48, W, H);
+  REQUIRE(blown.size() == std::size_t{W} * H * 3);
+  const double d_soft = detail_shrink(blown, W, H);
+  INFO("6x enlargement d=" << d_soft);
+  CHECK(d_soft >= 3.5);
+  CHECK(d_soft <= kMaxDetailShrink);
+  // Enlarged 2x: in between.
+  const auto twice = resize_lanczos(to8(scene(W / 2, H / 2)), W / 2, H / 2, W, H);
+  const double d_twice = detail_shrink(twice, W, H);
+  INFO("2x enlargement d=" << d_twice);
+  CHECK(d_twice >= 1.25);
+  CHECK(d_twice <= 2.5);
+  // Flat, tiny and bad input: 1.
+  CHECK(detail_shrink(std::vector<std::uint8_t>(std::size_t{W} * H * 3, 128), W, H) == 1.0);
+  CHECK(detail_shrink(sharp, 20, 20) == 1.0);
+  CHECK(detail_shrink({}, W, H) == 1.0);
+}
+
+TEST_CASE("enhance image: the shrink plan and Lanczos resize", "[enhance][still][shrink]") {
+  const shrink_plan a = plan_shrink(1500, 1500, 4, 1, 4.0);
+  CHECK(a.in_w == 375);
+  CHECK(a.model_out == 4);
+  const shrink_plan b = plan_shrink(1500, 1000, 4, 1, 1.5);
+  CHECK(b.in_w == 1000);
+  CHECK(b.in_h == 667);
+  CHECK(b.model_out == 2);  // 2000 covers 1500: the least that does
+  const shrink_plan c = plan_shrink(1000, 800, 4, 4, 4.0);
+  CHECK(c.in_w == 250);
+  CHECK(c.model_out == 4);  // 1000 < 4000: all the model has, then enlarged
+  CHECK(plan_shrink(1000, 800, 4, 1, 1.1).shrink == 1.0);  // sharp: as it is
+  CHECK(plan_shrink(1000, 800, 1, 1, 4.0).shrink == 1.0);  // a same-size model is never shrunk
+  // Lanczos keeps a flat colour flat both ways, and lands on the size asked.
+  const std::vector<std::uint8_t> flat(std::size_t{37} * 23 * 3, 77);
+  for (const auto [nw, nh] : {std::pair{11u, 7u}, std::pair{100u, 61u}, std::pair{37u, 23u}}) {
+    const auto r = resize_lanczos(flat, 37, 23, nw, nh);
+    REQUIRE(r.size() == std::size_t{nw} * nh * 3);
+    CHECK(std::all_of(r.begin(), r.end(), [](std::uint8_t v) { return v == 77; }));
+  }
+  CHECK(resize_lanczos(flat, 37, 23, 0, 5).empty());
+}
+
+TEST_CASE("enhance image: restored at the detail, the new photo is exactly the size asked", "[enhance][still][shrink]") {
+  const std::uint32_t w = 101, h = 77;
+  const auto soft = resize_lanczos(to8(scene(17, 13)), 17, 13, w, h);
+  for (const std::uint32_t s : {1u, 2u, 4u}) {
+    for (const double d : {1.0, 1.5, 2.75, 4.0}) {
+      INFO("x" << s << " d=" << d);
+      nearest4 m(32);
+      restore_options o;
+      o.out_scale = s;
+      o.overlap = 8;
+      std::size_t tiles = 0, unstable = 99;
+      o.unstable = &unstable;
+      std::vector<std::uint8_t> out;
+      REQUIRE(restore_at_detail(soft, w, h, m, o, d, out, &tiles));
+      CHECK(out.size() == std::size_t{w} * s * h * s * 3);
+      CHECK(unstable == 0);
+      CHECK(tiles == static_cast<std::size_t>(m.calls));
+      const shrink_plan p = plan_shrink(w, h, 4, s, d);
+      CHECK(tiles == restore_tiles(p.in_w, p.in_h, 32, 8));
+      // Close to the photo it came from (nearest 4x of the shrunk copy, resized
+      // back: the photo, blockier the more it was shrunk).
+      if (s == 1) CHECK(psnr(out, soft) > 25.0);
+    }
+  }
+  // Shrink 1 is restore_picture as before.
+  nearest4 m1(32), m2(32);
+  restore_options o;
+  o.overlap = 8;
+  std::vector<std::uint8_t> a, b;
+  REQUIRE(restore_at_detail(soft, w, h, m1, o, 1.0, a));
+  REQUIRE(restore_picture(soft, w, h, m2, o, b));
+  CHECK(a == b);
+  // Strength 0 is the photo itself, never the shrunk copy.
+  o.strength = 0;
+  REQUIRE(restore_at_detail(soft, w, h, m1, o, 4.0, a));
+  CHECK(a == soft);
+}
+
+TEST_CASE("enhance image: Remove motion blur is not offered while its export is broken", "[enhance][still]") {
+  static_assert(!kind_offered(model_kind::motion));
+  static_assert(kind_offered(model_kind::still) && kind_offered(model_kind::deblur));
+  static_assert(still_family(model_kind::motion));  // the code and its pin stay
+  CHECK_FALSE(kind_offered(model_kind::motion));
+}
+
+// The owner's soft photo through the real HAT, shrunk to its detail (hidden;
+// docs/plans/edit-refresh.md). MV_ENHANCE_SHARP_RGB: raw rgb8;
+// MV_ENHANCE_SHARP_SIZE "WxH"; MV_ENHANCE_SHARP_OUT: raw rgb8 written there;
+// MV_ENHANCE_SHARP_KIND: "still" (default) or "natural"; MV_ENHANCE_SHARP_D
+// forces the shrink. Models and runtime as the test above.
+TEST_CASE("enhance image: a soft photo sharpened at its detail", "[.enhance-sharp-check]") {
+#ifndef MV_ENHANCE_SOURCE_DIR
+  SKIP("no source dir");
+#else
+  const char* models = std::getenv("MV_ENHANCE_IMAGE_MODELS");
+  const char* runtime = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_ENHANCE_SHARP_RGB");
+  const char* size = std::getenv("MV_ENHANCE_SHARP_SIZE");
+  if (!models || !runtime || !raw || !size) SKIP("MV_ENHANCE_IMAGE_MODELS / _RUNTIME_DIR / _SHARP_RGB / _SHARP_SIZE");
+  unsigned w = 0, h = 0;
+  REQUIRE(std::sscanf(size, "%ux%u", &w, &h) == 2);
+  const auto in = mv::test::read_bytes(raw);
+  REQUIRE(in.size() == std::size_t{w} * h * 3);
+  const char* kind_env = std::getenv("MV_ENHANCE_SHARP_KIND");
+  const std::string kind = kind_env ? kind_env : "still";
+  const model_kind k = kind == "natural" ? model_kind::natural : model_kind::still;
+  const fs::path file = k == model_kind::natural
+                            ? fs::path(models) / "realwebphoto" / "4xRealWebPhoto_v4_fp32_opset17.onnx"
+                            : fs::path(models) / "hat" / "model.onnx";
+  REQUIRE(fs::exists(file));
+  const auto text = mv::test::read_bytes(fs::path(MV_ENHANCE_SOURCE_DIR) / "models" / kind_name(k) / "model.json");
+  const auto spec = parse_spec(std::string(text.begin(), text.end()), k);
+  REQUIRE(spec);
+  scratch_dir dir("enhance-sharp-check");
+  const fs::path kdir = dir / kind_name(k);
+  fs::create_directories(kdir);
+  fs::create_symlink(file, kdir / spec->weights.front());
+  runtime_holder rt(runtime);
+  auto m = rt.open_tiles(*spec, utf8(kdir), utf8(dir / "cache"));
+  INFO(mv::infer::session::last_error());
+  REQUIRE(m);
+  const auto t0 = std::chrono::steady_clock::now();
+  double d = detail_shrink(in, w, h);
+  const double est_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  if (const char* force = std::getenv("MV_ENHANCE_SHARP_D")) d = std::atof(force);
+  restore_options o;
+  o.out_scale = 1;
+  o.overlap = tile_shape_of(*spec)->overlap;
+  std::size_t tiles = 0, unstable = 0;
+  o.unstable = &unstable;
+  std::vector<std::uint8_t> out;
+  const auto t1 = std::chrono::steady_clock::now();
+  REQUIRE(restore_at_detail(in, w, h, **m, o, d, out, &tiles));
+  const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+  REQUIRE(out.size() == in.size());
+  const double before = lap_var(in, w, h), after = lap_var(out, w, h);
+  std::printf("sharp check %s %ux%u: d=%.2f (estimated in %.0f ms), %zu tiles (%zu unstable), %.1f s; "
+              "Laplacian variance %.2f -> %.2f\n",
+              kind.c_str(), w, h, d, est_ms, tiles, unstable, secs, before, after);
+  if (const char* dst = std::getenv("MV_ENHANCE_SHARP_OUT")) write_bytes(dst, out);
+  CHECK(after > before * 1.5);
 #endif
 }

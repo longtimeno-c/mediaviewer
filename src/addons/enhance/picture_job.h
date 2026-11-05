@@ -94,4 +94,57 @@ struct restore_options {
 // to the end unless `last`. Never 0 inside the tile.
 [[nodiscard]] std::vector<float> tent_weights(std::uint32_t side, std::uint32_t ramp, bool first, bool last);
 
+// ---- Shrink to the detail (docs/plans/edit-refresh.md, measured 2026-11-05) ----
+//
+// A x4 model run on a soft photo and averaged back to its size changes almost
+// nothing: on a 250 px face blown up to 1500 px, Laplacian variance 2.4 ->
+// 3.1 with HAT (and 2,597 s). The model restores detail at its own input's
+// pixel scale, and a soft photo has none there. Shrunk first to where its
+// detail lives (÷4 there), then run x4 back: 17.6 in 9.5 s. So an upscaler
+// (HAT, RealWebPhoto) runs on the photo resized to 1/d, d from the photo's
+// own detail, and its result is resized (Lanczos-3) to the exact size asked
+// for. Same-size restorers (SCUNet, NAFNet) are not shrunk.
+
+inline constexpr double kMaxDetailShrink = 4.0;   // the model's own scale
+inline constexpr std::uint32_t kDetailCrop = 320;  // analysis crops' side, at full resolution
+inline constexpr double kDetailLoss = 0.03;        // of the photo's gradient energy
+inline constexpr double kDetailNoise = 1.0;        // 8-bit levels squared, per pixel
+
+// How far the photo can be shrunk and lose almost none of its detail: 1 (or
+// 1.25..4 in quarter steps). Measured on the photo's three busiest 320 px
+// crops of nine, at full resolution (a downscaled copy cannot see a shrink
+// smaller than its own): the largest d whose Lanczos down-and-up round trip
+// loses at most 3 % more gradient energy than a 1.15 round trip (the finest
+// band, which a soft photo holds only grain, JPEG blocks and an enlargement's
+// kinks in) does; one level squared where the photo is nearly flat. Sharp
+// photos get 1, a 6x enlargement 4. Milliseconds.
+[[nodiscard]] double detail_shrink(std::span<const std::uint8_t> rgb, std::uint32_t width, std::uint32_t height);
+
+// Lanczos-3 resample of width x height x 3 to nw x nh x 3 (either way; the
+// kernel widens when shrinking), edges clamped. Empty on bad arguments.
+[[nodiscard]] std::vector<std::uint8_t> resize_lanczos(std::span<const std::uint8_t> rgb, std::uint32_t width,
+                                                       std::uint32_t height, std::uint32_t nw, std::uint32_t nh);
+
+// What restore_at_detail runs: the model's input size and the model output
+// scale (1, 2 or 4; the least that covers width x out_scale, else the
+// model's all) before the final resize. shrink 1: the photo as it is, at
+// out_scale (restore_picture).
+struct shrink_plan {
+  double shrink = 1.0;
+  std::uint32_t in_w = 0, in_h = 0;
+  std::uint32_t model_out = 1;
+};
+[[nodiscard]] shrink_plan plan_shrink(std::uint32_t width, std::uint32_t height, std::uint32_t model_scale,
+                                      std::uint32_t out_scale, double shrink);
+
+// restore_picture on the photo shrunk by `shrink` (plan_shrink; under 1.25 or
+// a same-size model: the photo as it is), then resized to exactly width x
+// out_scale by height x out_scale. Strength mixes with the photo itself
+// enlarged, never the shrunk copy; a model that gave no picture on any tile
+// gives the photo back. `tiles`: the tiles it ran (for the unstable note).
+[[nodiscard]] expected restore_at_detail(std::span<const std::uint8_t> rgb, std::uint32_t width,
+                                         std::uint32_t height, tile_model& model, const restore_options& o,
+                                         double shrink, std::vector<std::uint8_t>& out,
+                                         std::size_t* tiles = nullptr);
+
 }  // namespace mv::enhance

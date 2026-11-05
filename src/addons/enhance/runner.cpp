@@ -604,11 +604,22 @@ void job_runner::run_still(job_request r, job_events ev) {
     return fail("At this size the new photo would be " + std::to_string(ow * oh / 1'000'000) +
                 " megapixels, more than Enhance writes (100). Choose a smaller size.");
   }
-  // The picture in and out, both whole, and one tile-high band of float
+  // An upscaler runs on the photo shrunk to where its detail is (picture_job.h,
+  // "Shrink to the detail"): a soft photo restored at the model's own scale,
+  // then resized to the size asked for. A sharp one is not shrunk.
+  const double detail = shape->scale > 1 ? detail_shrink(pic->rgb, pic->width, pic->height) : 1.0;
+  const shrink_plan plan = plan_shrink(pic->width, pic->height, shape->scale, scale, detail);
+  const std::uint64_t mid_w = std::uint64_t{plan.in_w} * plan.model_out;
+  const std::uint64_t mid_h = std::uint64_t{plan.in_h} * plan.model_out;
+  // The picture in and out, both whole, the shrunk copy and the model's
+  // result before its resize (when shrunk), and one tile-high band of float
   // sums (restore_picture), on top of the model.
-  const std::uint64_t band = std::uint64_t{shape->tile} * scale * ow * 16;
+  const std::uint64_t band = std::uint64_t{shape->tile} * plan.model_out * mid_w * 16;
+  const std::uint64_t shrunk = plan.shrink > 1.0 ? std::uint64_t{plan.in_w} * plan.in_h * 3 + mid_w * mid_h * 3 +
+                                                       mid_h * ow * 12  // the resize's float rows
+                                                 : 0;
   const std::uint64_t need =
-      part.spec->run_bytes + std::uint64_t{pic->width} * pic->height * 3 + ow * oh * 3 + band;
+      part.spec->run_bytes + std::uint64_t{pic->width} * pic->height * 3 + ow * oh * 3 + band + shrunk;
   if (port_.free_memory) {
     if (const auto free = port_.free_memory(); free && *free < need) {
       return fail("This photo needs " + size_text(need) + " of free memory at this size; " + size_text(*free) +
@@ -632,9 +643,9 @@ void job_runner::run_still(job_request r, job_events ev) {
   run_port::still out;
   out.width = static_cast<std::uint32_t>(ow);
   out.height = static_cast<std::uint32_t>(oh);
-  std::size_t unstable = 0;
+  std::size_t unstable = 0, total = 0;
   po.unstable = &unstable;
-  const expected ok = restore_picture(pic->rgb, pic->width, pic->height, **tiles, po, out.rgb);
+  const expected ok = restore_at_detail(pic->rgb, pic->width, pic->height, **tiles, po, detail, out.rgb, &total);
   pic->rgb = {};  // the original's pixels go before the encode needs its own
   if (!ok) return fail(why(ok.error()));
   if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
@@ -642,7 +653,6 @@ void job_runner::run_still(job_request r, job_events ev) {
   auto path = port_.write_still(r.path, out);
   if (!path) return fail(why(path.error()));
   // Said, not hidden: parts the model could not restore are the photo's own.
-  const std::size_t total = restore_tiles(pic->width, pic->height, shape->tile, shape->overlap);
   const std::string note = unstable == 0 ? std::string()
                            : unstable >= total
                                ? std::string("The model could not restore this photo, so it is unchanged; try another choice.")

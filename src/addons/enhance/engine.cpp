@@ -133,7 +133,7 @@ void engine::resume_wanted() {
       bool want = false;
       {
         std::lock_guard lock(m_);
-        want = prefs_.want(k) && specs_[static_cast<int>(k)].has_value();
+        want = prefs_.want(k) && kind_offered(k) && specs_[static_cast<int>(k)].has_value();
       }
       // Only a download this person started and a quit cut short (its part
       // is here): a kind whose pin changed since (S7: still's 4.9 MB
@@ -179,6 +179,9 @@ void engine::post_settings_locked() {
     c.spec = spec(k);
     c.files = files_[static_cast<int>(k)];
     if (c.spec) c.st = dl_->status(k, c.files);
+    // A kind not offered (kOfferMotionBlur) shows only while its files are
+    // here, so they can be removed.
+    if (!kind_offered(k) && c.st.state == dl_state::absent) continue;
     // A kind this build has no model for is named only when it is one the
     // issue promises (photos): video and audio always are.
     cards.push_back(std::move(c));
@@ -192,7 +195,8 @@ void engine::post_settings_locked() {
 // S7: Enhance image's chosen model when this build offers it, else Sharpen
 // & restore (the kind a photo always had).
 bool engine::detail_offered(model_kind k) const {
-  return still_family(k) && specs_[static_cast<int>(k)].has_value() && files_[static_cast<int>(k)].usable();
+  return still_family(k) && kind_offered(k) && specs_[static_cast<int>(k)].has_value() &&
+         files_[static_cast<int>(k)].usable();
 }
 
 model_kind engine::detail_locked() const {
@@ -529,7 +533,7 @@ void engine::command(const std::vector<std::string>& paths, std::vector<std::int
 }
 
 void engine::install(model_kind k) {
-  if (!spec(k)) return;
+  if (!spec(k) || !kind_offered(k)) return;
   {
     std::lock_guard lock(m_);
     prefs_.want(k) = true;
