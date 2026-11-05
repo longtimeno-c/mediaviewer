@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // shell/edit_workspace.h and the PR 29 rows of the command table (docs/design/20).
 #include "catch_compat.h"
+#include <catch2/catch_approx.hpp>
+
+#include <array>
+#include <cmath>
 
 #include <string>
 
@@ -207,4 +211,146 @@ TEST_CASE("the rail's active icon folds the inspector; any icon unfolds it", "[e
   edit_workspace closed;
   CHECK_FALSE(apply_step(closed, {workspace_action::collapse, edit_tab::crop}));
   CHECK_FALSE(closed.open);
+}
+
+// ---- docs/plans/edit-refresh.md S6: Extend's frame ----------------------------------
+
+TEST_CASE("extend_draft: edges dragged past the photo stop at 50 % and warn past 25 %", "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  extend_draft d;
+  CHECK(extend_empty(d));
+  CHECK_FALSE(extend_overhangs(d));
+  // A press on the right edge grabs it; inside grabs the frame; far off nothing.
+  CHECK(extend_hit(d, 1.0f, 0.5f, 0.02f, 0.03f) == extend_right);
+  CHECK(extend_hit(d, -0.01f, 0.5f, 0.02f, 0.03f) == extend_left);
+  CHECK(extend_hit(d, 0.0f, 0.0f, 0.02f, 0.03f) == (extend_left | extend_top));
+  CHECK(extend_hit(d, 1.01f, 1.02f, 0.02f, 0.03f) == (extend_right | extend_bottom));
+  CHECK(extend_hit(d, 0.5f, 0.5f, 0.02f, 0.03f) == extend_move);
+  CHECK(extend_hit(d, 1.5f, 0.5f, 0.02f, 0.03f) == extend_none);
+
+  // Right edge 20 % past the photo: no warning yet.
+  extend_draft a = extend_drag(d, extend_right, 0.2f, 0.0f);
+  CHECK(a.r == Catch::Approx(0.2f));
+  CHECK(extend_overhangs(a));
+  CHECK_FALSE(extend_warns(a));
+  // 30 %: past the soft warning (owner call E).
+  a = extend_drag(d, extend_right, 0.3f, 0.0f);
+  CHECK(extend_warns(a));
+  // 90 %: held at the hard stop, 50 %.
+  a = extend_drag(d, extend_right, 0.9f, 0.0f);
+  CHECK(a.r == Catch::Approx(kExtendMax));
+  // The left edge dragged left (negative du) grows the left side; the top up.
+  a = extend_drag(d, extend_left | extend_top, -0.1f, -0.2f);
+  CHECK(a.l == Catch::Approx(0.1f));
+  CHECK(a.t == Catch::Approx(0.2f));
+  // Into the photo is a crop, never past keeping 5 % of it.
+  a = extend_drag(d, extend_left, 2.0f, 0.0f);
+  CHECK(a.l == Catch::Approx(kExtendMinKeep - 1.0f));
+  CHECK(extend_crops(a));
+  CHECK_FALSE(extend_overhangs(a));
+  // The frame never shrinks to less than 5 % of the photo either way.
+  const std::array<float, 4> c = extend_crop(a);
+  CHECK(c[2] == Catch::Approx(kExtendMinKeep));
+  // NaN from a degenerate map leaves the draft where it was.
+  a = extend_drag(d, extend_right, std::nanf(""), 0.0f);
+  CHECK(extend_empty(a));
+}
+
+TEST_CASE("extend_draft: a move keeps the frame's size inside the stops", "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  extend_draft d;
+  d.l = 0.1f;
+  d.r = 0.1f;
+  // Moved right by 0.2: the left side becomes a crop, the right grows.
+  extend_draft m = extend_drag(d, extend_move, 0.2f, 0.0f);
+  CHECK(m.l == Catch::Approx(-0.1f));
+  CHECK(m.r == Catch::Approx(0.3f));
+  CHECK(1.0f + m.l + m.r == Catch::Approx(1.2f));
+  // Moved far right: the right side stops at 50 %, the size kept.
+  m = extend_drag(d, extend_move, 5.0f, 0.0f);
+  CHECK(m.r == Catch::Approx(kExtendMax));
+  CHECK(1.0f + m.l + m.r == Catch::Approx(1.2f));
+  // Down by a lot: the bottom stops at 50 %, the top crops the same, the height kept.
+  m = extend_drag(d, extend_move, 0.0f, 3.0f);
+  CHECK(m.t == Catch::Approx(-kExtendMax));
+  CHECK(m.b == Catch::Approx(kExtendMax));
+}
+
+TEST_CASE("extend_draft: a mixed frame splits into a crop and margins of the crop", "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  extend_draft d;
+  d.l = -0.2f;  // 20 % cropped off the left
+  d.r = 0.3f;   // 30 % new picture on the right
+  d.t = 0.1f;
+  const std::array<float, 4> crop = extend_crop(d);
+  CHECK(crop[0] == Catch::Approx(0.2f));
+  CHECK(crop[1] == Catch::Approx(0.0f));
+  CHECK(crop[2] == Catch::Approx(0.8f));
+  CHECK(crop[3] == Catch::Approx(1.0f));
+  const std::array<float, 4> o = extend_overhang(d);
+  CHECK(o[0] == Catch::Approx(0.0f));
+  CHECK(o[1] == Catch::Approx(0.1f));
+  CHECK(o[2] == Catch::Approx(0.3f / 0.8f));  // of the cropped width
+  CHECK(o[3] == Catch::Approx(0.0f));
+  // 3000 x 2000: cropped to 2400 x 2000, then 900 right and 200 on top.
+  const extend_size_t s = extend_size(d, 3000, 2000);
+  CHECK(s.crop_w == 2400u);
+  CHECK(s.crop_h == 2000u);
+  CHECK(s.right == 900u);
+  CHECK(s.top == 200u);
+  CHECK(s.width == 3300u);
+  CHECK(s.height == 2200u);
+  CHECK(s.growth_permille == 210);  // 3300 x 2200 over 3000 x 2000: +21 %
+  // The camera frames the photo and the frame with 8 % around them.
+  const std::array<float, 4> fit = extend_fit(d);
+  CHECK(fit[0] == Catch::Approx(-0.08f * 1.3f));
+  CHECK(fit[2] == Catch::Approx(1.3f * 1.16f));
+  CHECK(fit[1] == Catch::Approx(-0.1f - 0.08f * 1.1f));
+}
+
+TEST_CASE("extend_draft: 3:2 to 16:9 by dragging the sides, and the add-on's presets", "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  // A 3:2 photo, both sides dragged out to 16:9.
+  const std::uint32_t w = 3000, h = 2000;
+  const float side = (static_cast<float>(h) * 16.0f / 9.0f - static_cast<float>(w)) / 2.0f / static_cast<float>(w);
+  extend_draft d = extend_drag(extend_draft{}, extend_right, side, 0.0f);
+  d = extend_drag(d, extend_left, -side, 0.0f);
+  const extend_size_t s = extend_size(d, w, h);
+  CHECK(s.height == 2000u);
+  CHECK(s.width == 3556u);  // 2000 x 16 / 9 = 3555.6
+  CHECK(s.growth_permille == 185);
+  // The 16:9 chip is the add-on's own sums: 555 more pixels, 277 left, 278 right.
+  const extend_draft p = extend_preset_draft(5, w, h);
+  const extend_size_t ps = extend_size(p, w, h);
+  CHECK(ps.left == 277u);
+  CHECK(ps.right == 278u);
+  CHECK(ps.width == 3555u);
+  CHECK(extend_preset_of(p, w, h) == 5);
+  CHECK(extend_preset_of(extend_draft{}, w, h) == 0);
+  CHECK(extend_preset_of(d, w, h) == -1);
+  CHECK(std::string(extend_preset_label(5)) == "16:9");
+  CHECK(std::string(extend_preset_name(5)) == "16x9");
+  // Original is no frame; a square of a 3:2 adds 500 above and below.
+  CHECK(extend_empty(extend_preset_draft(0, w, h)));
+  const extend_size_t sq = extend_size(extend_preset_draft(4, w, h), w, h);
+  CHECK(sq.width == 3000u);
+  CHECK(sq.height == 3000u);
+}
+
+TEST_CASE("extend_size: Enhance's caps, 16384 a side and 100 MP", "[edit_workspace][extend]") {
+  using namespace mv::shell;
+  extend_draft d;
+  d.l = d.r = 0.5f;
+  // 12000 wide doubled would be 24000: held to 16384 a side.
+  extend_size_t s = extend_size(d, 12000, 1000);
+  CHECK(s.width == 16384u);
+  // 9000 x 9000 (81 MP) to 13500 x 9000 (121 MP): shrunk evenly to 100 MP.
+  s = extend_size(d, 9000, 9000);
+  CHECK(std::uint64_t{s.width} * s.height <= kExtendMaxPixels);
+  CHECK(std::uint64_t{s.width} * s.height > kExtendMaxPixels - 2 * 9000);  // each margin floored
+  CHECK((s.left > s.right ? s.left - s.right : s.right - s.left) <= 1u);
+  // A photo already at 100 MP grows nothing.
+  s = extend_size(d, 10000, 10000);
+  CHECK(s.width == 10000u);
+  CHECK(s.height == 10000u);
 }

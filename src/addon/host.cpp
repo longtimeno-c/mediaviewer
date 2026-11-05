@@ -1292,6 +1292,16 @@ mv_status MV_CALL t_still_mask(void* host, const char* path, float* out, uint32_
   });
 }
 
+mv_status MV_CALL t_still_extend(void* host, const char* path, float* out) {
+  return guarded([&] {
+    if (!path || !out) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().still_extend;
+    const std::array<float, 4> f = fn ? fn(path) : std::array<float, 4>{};
+    std::memcpy(out, f.data(), sizeof(float) * 4);
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* rgb, uint32_t w, uint32_t h,
                                 uint32_t stride, const char* suffix, char* out, uint32_t cap) {
   return guarded([&] {
@@ -1478,6 +1488,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   if (svc_.route) api_.route_of = &t_route_of;  // #606
   api_.watch_tree = &t_watch_tree;
   if (svc_.still_mask) api_.still_mask = &t_still_mask;
+  if (svc_.still_extend) api_.still_extend = &t_still_extend;  // edit-refresh S6
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

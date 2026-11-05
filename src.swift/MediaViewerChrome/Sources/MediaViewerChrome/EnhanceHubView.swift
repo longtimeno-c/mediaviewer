@@ -86,7 +86,7 @@ struct EnhanceToolState {
       else { (chip, chipText, action, enabled) = (.ready, "Ready", "Enhance…", store.offersDetail) }
     case .extend:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Extend…", store.offersExtend) }
+      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Set the new frame", store.offersExtend) }
     }
   }
 
@@ -215,7 +215,7 @@ struct EnhanceCard: View {
         Spacer(minLength: 0)
       }
       if tool.kind == .extend && store.enhance {
-        Text("In the sheet, choose Extend the picture and a frame.")
+        Text("Drag the frame's edges past the photo, then Fill (↩).")
           .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
       }
       if tool.kind == .remove && store.brushFull {

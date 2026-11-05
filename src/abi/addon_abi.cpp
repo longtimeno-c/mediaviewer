@@ -9,6 +9,8 @@
 #include <mediaviewer/mediaviewer_addon.h>
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -273,6 +275,15 @@ MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* 
     std::vector<float> v;
     if (path_utf8 && count > 0) v.assign(dabs, dabs + std::size_t{count} * 3);
     mv::addon::media::set_still_mask(path_utf8 ? path_utf8 : "", std::move(v));
+    return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_edit_still_extend(const char* path_utf8, const float* ltrb) {
+  return static_cast<mv_status>(mv::abi::guard("mv_edit_still_extend", [&] {
+    std::array<float, 4> f{};
+    if (path_utf8 && ltrb) std::copy_n(ltrb, 4, f.begin());
+    mv::addon::media::set_still_extend(path_utf8 && ltrb ? path_utf8 : "", f);
     return status::ok;
   }));
 }
@@ -768,6 +779,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
     svc.route = &mv::addon::media::route;              // #606
     svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
+    svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);

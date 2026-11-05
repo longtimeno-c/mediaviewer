@@ -111,6 +111,13 @@ mv::enhance::engine_port make_port(const mv_host_api* h) {
       return h->still_mask(h->host, path.c_str(), nullptr, 0, &n) == MV_OK ? n : 0u;
     };
   }
+  // edit-refresh S6: a frame dragged past the photo's edges (the sheet opens on Extend).
+  if (h->struct_size >= offsetof(mv_host_api, still_extend) + sizeof(h->still_extend) && h->still_extend) {
+    p.framed = [h](const std::string& path) {
+      float f[4] = {};
+      return h->still_extend(h->host, path.c_str(), f) == MV_OK && (f[0] > 0 || f[1] > 0 || f[2] > 0 || f[3] > 0);
+    };
+  }
   p.free_disk = [h](const std::string& dir) -> std::optional<uint64_t> {
     if (!h->volume_of) return std::nullopt;
     mv_addon_volume v{};

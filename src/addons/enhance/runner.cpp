@@ -744,12 +744,23 @@ void job_runner::run_extend(job_request r, job_events ev) {
   photo.width = pic->width;
   photo.height = pic->height;
   photo.rgb = std::move(pic->rgb);
-  std::string preset = "wider";
-  if (const auto it = part.values.find("extend"); it != part.values.end() && it->second.k == json::kind::string) {
-    preset = it->second.s;
+  // edit-refresh S6: the frame dragged on the canvas when the host has one,
+  // else the sheet's preset.
+  std::array<float, 4> frame{};
+  if (port_.still_extend) frame = port_.still_extend(r.path);
+  const bool dragged = frame[0] > 0.0f || frame[1] > 0.0f || frame[2] > 0.0f || frame[3] > 0.0f;
+  extend_margins m;
+  if (dragged) {
+    m = extend_from_fractions(frame[0], frame[1], frame[2], frame[3], photo.width, photo.height);
+    if (m.empty()) return fail("The new frame adds nothing to this photo.");
+  } else {
+    std::string preset = "wider";
+    if (const auto it = part.values.find("extend"); it != part.values.end() && it->second.k == json::kind::string) {
+      preset = it->second.s;
+    }
+    m = extend_preset(preset, photo.width, photo.height);
+    if (m.empty()) return fail("The photo is already that shape.");
   }
-  const extend_margins m = extend_preset(preset, photo.width, photo.height);
-  if (m.empty()) return fail("The photo is already that shape.");
   if (std::uint64_t{photo.width + m.left + m.right} * (photo.height + m.top + m.bottom) > kMaxStillPixels) {
     return fail("The extended picture would be over 100 megapixels.");
   }
@@ -777,6 +788,7 @@ void job_runner::run_extend(job_request r, job_events ev) {
   still.width = out.width;
   still.height = out.height;
   still.rgb = std::move(out.rgb);
+  still.suffix = "extended";  // <stem>-extended.jpg (docs/plans/edit-refresh.md 3.2)
   auto path = port_.write_still(r.path, still);
   if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");

@@ -17,6 +17,13 @@ class camera {
   void fit(float image_w, float image_h, float window_w, float window_h,
            bool immediate) noexcept;
 
+  // docs/plans/edit-refresh.md S6: what fit frames, as a rect of the image's
+  // uv (x, y, w, h; it may reach past 0..1: Extend's frame past the photo's
+  // edges, with room around it). {0, 0, 1, 1}, the default, is the image.
+  // Fit (and a refinement in fit mode) then centres that rect at its fit
+  // zoom. True when it changed; the caller re-fits (input_snapshot::refit_seq).
+  bool set_fit_frame(float x, float y, float w, float h) noexcept;
+
   // 100 %. Keeps the current centre.
   void one_to_one() noexcept;
 
@@ -129,6 +136,8 @@ class camera {
 
  private:
   void clear_rubber() noexcept;
+  // Fit's target for an image_w x image_h image: the fit frame's zoom and centre.
+  void fit_target(float image_w, float image_h, float window_w, float window_h) noexcept;
   // Image px per screen px: pan rest thresholds are in screen pixels.
   [[nodiscard]] float pan_settle_scale() const noexcept;
 
@@ -147,6 +156,7 @@ class camera {
   bool fit_mode_ = true;
   bool fill_mode_ = false;
   bool dragging_ = false;
+  float frame_[4] = {0.0f, 0.0f, 1.0f, 1.0f};  // set_fit_frame
 };
 
 }  // namespace mv::canvas

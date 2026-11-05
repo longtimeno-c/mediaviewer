@@ -1487,6 +1487,11 @@ void present_lab_mac::render_thread_main() noexcept {
           pacer_.set_refresh(layer_.refresh_interval_seconds());
           redraw = true;
         }
+        // docs/plans/edit-refresh.md S6: what fit frames (Extend's frame past
+        // the photo's edges, with room around it). A change comes with
+        // refit_seq, so the fits below pick it up; no presents of its own.
+        (void)camera_.set_fit_frame(snapshot.fit_rect_uv[0], snapshot.fit_rect_uv[1], snapshot.fit_rect_uv[2],
+                                    snapshot.fit_rect_uv[3]);
         bool resized_now = false;
         if (snapshot.resize_seq != seen_resize_seq_) {
           seen_resize_seq_ = snapshot.resize_seq;

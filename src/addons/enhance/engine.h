@@ -56,6 +56,10 @@ struct engine_port {
   // [worker] Slice 7: how many brush dabs the host holds over the photo at
   // `path` (Edit → Adjust → Remove); 0 none.
   std::function<std::uint32_t(const std::string& path)> brushed;
+  // edit-refresh S6: whether the host holds a frame dragged past this
+  // photo's edges (the host table's still_extend): the sheet then opens on
+  // Extend, as it opens on Remove when something is brushed.
+  std::function<bool(const std::string& path)> framed;
   std::function<std::optional<std::uint64_t>(const std::string& dir)> free_disk;
   std::function<std::unique_ptr<ai::http_transport>()> transport;
   // Never a path or a name (rule 6).

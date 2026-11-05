@@ -393,6 +393,35 @@ source's own, a cancel during the first fill never starts the second and writes 
 run: the real LaMa on a two-blob photo (the hidden `[.remove-model]` case still brushes one
 stroke); the "Quality over speed" second pass for large boxes is not part of this slice.
 
+**S6 built (2026-11-05):** Extend on the canvas, both hosts. Portable: `extend_draft` and its
+pure maths in `shell/edit_workspace.h` (`extend_hit` / `extend_drag` / `clamp_extend`: 25 %
+warning, 50 % stop, 5 % of the photo kept; `extend_crop` / `extend_overhang` split a mixed frame;
+`extend_fit` the camera's frame with 8 % around; `extend_size` the readout through Enhance's sums;
+the add-on's presets as `extend_preset_draft`), `input_snapshot::fit_rect_uv` →
+`canvas::camera::set_fit_frame` in both labs (refit on drag end, a chip or arming; never during a
+drag), `edit_view::tool_extend*` and `draw_extend_frame` in `tool_overlay.h` (hatched new area,
+caution tint past 25 %, dimmed crop part, handles, readout), `edit_session::crop_inside` (the crop
+part of a mixed frame, one stack op), `tool_bar` 72 bytes (`extend_growth` / `_warn` / `_preset`;
+`tool_bar_action::extend_preset` + i) on both chromes. Host table: `still_extend` appended after
+`still_mask` (`addon_media::set_still_extend`, `mv_edit_still_extend` for the Windows exe,
+`host_services.still_extend`, `addon_abi.cpp`, `addons_mac.mm`). Add-on: `extend_from_fractions`
+(remove.cpp; 2×, 16384, 100 MP, shrunk evenly), `run_extend` takes the host's frame when set, else
+the preset; `run_port::still.suffix` names it `<stem>-extended.jpg`; a sheet opened with a frame
+starts on Extend (`engine_port.framed`). Hosts: Mac `main_mac.mm` (`-extend*`, the press through
+the brush's drag path, resize cursors) and `ToolBarView.swift` (chips, readout, Fill ↵, Cancel;
+a menu when narrow); Windows `main.cpp` (`extend_*`, capture, `IDC_SIZE*` cursors) and
+`IslandHost.ToolBar.cs`. Tests: `mv_tests "[extend]"` (draft: hit, drag, stops, warn, move, split,
+fit, 3:2 → 16:9 size, caps; camera fit frame; `crop_inside` composes and undoes as one op),
+`mv_import_tests "[enhance][extend]"` (the host-margins case: 3:2 → 16:9 dragged, written as
+`<stem>-extended.jpg` at the size the readout showed, the photo's rect bit-exact; no frame → the
+preset; the host's sums equal the add-on's on a grid and for every preset), `mv_ai_tests
+"[photos]"` (the frame through the real host table's `still_extend`, a library photo added once).
+Fill opens Enhance's sheet (S5's in-pane `enhance/tool` run is not wired here). Not built: `A` /
+`X` / arrows with crop meanings in Extend, the 768-px three-deep tiling of "Quality over speed".
+Not run: either app, both PR 1 gates and the PR 1 soak with Extend armed (the pan-gate check),
+the 0-presents check with Extend armed, the real LaMa on a dragged frame; the Windows native C++
+is not compiled here (C# compiles).
+
 ### 4.1 Tool mode (shared, portable)
 
 **`src/shell/commands.h`.**

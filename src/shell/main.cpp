@@ -350,6 +350,14 @@ struct app_state {
   bool find_eyes_busy = false;
   std::uint32_t brush_rev = 0;
   bool brush_stroke = false;
+  // docs/plans/edit-refresh.md S6: Extend's frame (shell/edit_workspace.h), the
+  // edges a press holds with the draft and point it started from, and the
+  // edges under the pointer.
+  mv::shell::extend_draft extend;
+  mv::shell::extend_draft extend_start;
+  float extend_press[2] = {0.0f, 0.0f};
+  std::uint8_t extend_grab = 0;
+  std::uint8_t extend_hover = 0;
   // docs/plans/edit-refresh.md §2.4: the right column's edge. Its preferred
   // width is settings.right_pane_dip (0 = 360); while it is dragged that holds
   // the live width and is saved on release. The grab offset keeps the edge
@@ -2834,6 +2842,7 @@ static_assert(sizeof(mv::shell::chrome_tool_bar_args) == sizeof(mv::shell::tool_
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, size_px) == offsetof(mv::shell::tool_bar, size_px));
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, eyes) == offsetof(mv::shell::tool_bar, eyes));
 static_assert(offsetof(mv::shell::chrome_tool_bar_args, can_undo) == offsetof(mv::shell::tool_bar, can_undo));  // S4a
+static_assert(offsetof(mv::shell::chrome_tool_bar_args, extend_preset) == offsetof(mv::shell::tool_bar, extend_preset));  // S6
 
 void brush_move(app_state* app, int x, int y);
 void sync_workspace(app_state* app);
@@ -2863,7 +2872,9 @@ mv::shell::canvas_tool active_tool(app_state* app) noexcept {
 bool tool_armed(app_state* app) noexcept { return active_tool(app) != mv::shell::canvas_tool::none; }
 // Strokes not yet applied: A / D, Space and the walks are refused (owner call G).
 bool tool_pending(app_state* app) noexcept {
-  return active_tool(app) == mv::shell::canvas_tool::remove_brush && !app->brush.empty();
+  const mv::shell::canvas_tool t = active_tool(app);
+  if (t == mv::shell::canvas_tool::extend) return !mv::shell::extend_empty(app->extend);  // S6: a frame not filled
+  return t == mv::shell::canvas_tool::remove_brush && !app->brush.empty();
 }
 bool brush_active(app_state* app) noexcept { return active_tool(app) == mv::shell::canvas_tool::remove_brush; }
 
@@ -2902,6 +2913,8 @@ void tool_apply_view(app_state* app) noexcept {
   in.hover_spot = app->tool_hover_plus1 - 1;
   in.pulse = {app->tool_pulse[0], app->tool_pulse[1], app->tool_pulse[2]};
   in.pulse_until_ms = app->tool_pulse_until;
+  in.extend = app->extend;
+  in.extend_handle = app->extend_grab != 0 ? app->extend_grab : app->extend_hover;
   mv::shell::apply_tool(app->input.edit[0], in, app->edits.preview_placement(), app->edits.colour());
 }
 
@@ -2936,6 +2949,12 @@ mv::shell::tool_bar tool_bar_of(app_state* app) noexcept {
     b.can_apply = !app->brush.empty() && mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none;
   } else if (active == mv::shell::canvas_tool::red_eye) {
     b.can_apply = b.eyes > 0 && !app->find_eyes_busy;
+  } else if (active == mv::shell::canvas_tool::extend) {
+    // S6: the readout, the chip, and Fill: any frame; past the edges only with Enhance.
+    mv::shell::apply_extend_bar(b, app->extend, app->edits.preview_placement());
+    b.can_apply = !mv::shell::extend_empty(app->extend) &&
+                  (!mv::shell::extend_overhangs(app->extend) ||
+                   mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none);
   }
   return b;
 }
@@ -3002,9 +3021,14 @@ void tool_changed(app_state* app) noexcept {
 
 // Esc, Done, a second click on the armed tool: the tool goes down; the
 // brush's strokes stay, dimmed, for Remove later (a walk away clears them).
+void extend_reset(app_state* app) noexcept;
+
 void tool_down(app_state* app) noexcept {
   if (app->tool.tool == mv::shell::canvas_tool::none) return;
+  const bool extending = app->tool.tool == mv::shell::canvas_tool::extend;
   (void)mv::shell::arm_tool(app->tool, app->ws, mv::shell::canvas_tool::none);
+  // S6: Extend's Cancel (Esc, Done): the frame goes and the camera frames the photo again.
+  if (extending) extend_reset(app);
   app->tool_hover_plus1 = 0;
   app->tool_snap[2] = 0.0f;
   tool_changed(app);
@@ -3031,6 +3055,7 @@ void arm_tool(app_state* app, mv::shell::canvas_tool t) {
   app->tool_snap[2] = 0.0f;
   if (changed) sync_workspace(app);
   if (t == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
+  if (t == mv::shell::canvas_tool::extend) extend_reset(app);  // S6: a new frame, room past the edges
   tool_changed(app);
 }
 
@@ -3141,7 +3166,19 @@ bool brush_press(app_state* app, int x, int y) {
 // over the canvas). The red-eye ring snaps to an eye the pack found, and a fix
 // under it shows the cross a click acts on. The Windows twin of Mac
 // -brushHoverX:y: (the ring follows whatever tool is armed).
+void extend_drag_to(app_state* app, int x, int y);
+void extend_hover_at(app_state* app, int x, int y);
+
 void brush_move(app_state* app, int x, int y) {
+  // S6: Extend's frame follows a held edge; otherwise the edge under the pointer lights.
+  if (app->extend_grab != 0) {
+    extend_drag_to(app, x, y);
+    return;
+  }
+  if (active_tool(app) == mv::shell::canvas_tool::extend) {
+    extend_hover_at(app, x, y);
+    return;
+  }
   float u = 0, v = 0;
   const bool on = app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v);
   // Alt held erases while it is down (the ring dashes).
@@ -3376,7 +3413,137 @@ void on_tool_job(app_state* app, std::unique_ptr<tool_job_result> r) {
 
 // What tool mode refused (key_router.h blocked_in_tool): say why.
 void tool_blocked(app_state* app) {
+  if (active_tool(app) == mv::shell::canvas_tool::extend && tool_pending(app)) {
+    notice_show(app, "Fill or cancel the new frame first");  // S6
+    return;
+  }
   notice_show(app, tool_pending(app) ? "Remove or clear the strokes first" : "Put the tool down first (Esc)");
+}
+
+// ---- docs/plans/edit-refresh.md S6: Extend on the canvas --------------------------
+//
+// The twin of the Mac's -extend* methods. The frame is shell state
+// (shell/edit_workspace.h extend_draft), never an edit: past the photo's
+// edges it is new picture Enhance fills, inside them a crop. The camera frames
+// the photo and the frame with room around them (input_snapshot::fit_rect_uv,
+// refit_seq) once a drag ends, so a held edge does not run away.
+
+// The camera frames the photo and the frame (a refit, never a resize).
+void extend_refit(app_state* app) noexcept {
+  std::array<float, 4> f{0.0f, 0.0f, 1.0f, 1.0f};
+  if (app->tool.tool == mv::shell::canvas_tool::extend) f = mv::shell::extend_fit(app->extend);
+  if (std::equal(f.begin(), f.end(), app->input.fit_rect_uv)) return;
+  std::copy(f.begin(), f.end(), app->input.fit_rect_uv);
+  ++app->input.refit_seq;
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// A new frame (none), nothing held, and the camera framing it.
+void extend_reset(app_state* app) noexcept {
+  app->extend = {};
+  app->extend.on = app->tool.tool == mv::shell::canvas_tool::extend;
+  app->extend_grab = 0;
+  app->extend_hover = 0;
+  (void)mv_edit_still_extend(nullptr, nullptr);  // a frame not filled is not Enhance's
+  extend_refit(app);
+}
+
+// The grab distance in the shown picture's uv, from screen pixels.
+void extend_reach(const app_state* app, float& ru, float& rv) noexcept {
+  const auto map = app->lab.still_map();
+  const float px = mv::shell::kExtendGrabPx * (app->input.dpi_scale > 0.0f ? app->input.dpi_scale : 1.0f);
+  ru = map.zoom > 0.0f && map.width > 0.0f ? px / (map.width * map.zoom) : 0.0f;
+  rv = map.zoom > 0.0f && map.height > 0.0f ? px / (map.height * map.zoom) : 0.0f;
+}
+
+bool extend_press(app_state* app, int x, int y) {
+  float u = 0, v = 0, ru = 0, rv = 0;
+  if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v)) return false;
+  extend_reach(app, ru, rv);
+  const std::uint8_t grab = mv::shell::extend_hit(app->extend, u, v, ru, rv);
+  if (grab == mv::shell::extend_none) return false;
+  app->extend_grab = grab;
+  app->extend_start = app->extend;
+  app->extend_press[0] = u;
+  app->extend_press[1] = v;
+  brush_publish(app);
+  return true;
+}
+
+void extend_drag_to(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v)) return;
+  const mv::shell::extend_draft d = mv::shell::extend_drag(app->extend_start, app->extend_grab,
+                                                           u - app->extend_press[0], v - app->extend_press[1]);
+  if (d.l == app->extend.l && d.t == app->extend.t && d.r == app->extend.r && d.b == app->extend.b) return;
+  app->extend = d;
+  app->extend.on = true;
+  brush_publish(app);
+  push_tool_bar(app);  // the readout follows the drag
+}
+
+void extend_release(app_state* app) {
+  app->extend_grab = 0;
+  extend_refit(app);
+  brush_publish(app);
+  push_tool_bar(app);
+}
+
+void extend_hover_at(app_state* app, int x, int y) {
+  float u = 0, v = 0, ru = 0, rv = 0;
+  std::uint8_t hover = 0;
+  if (app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v) && pointer_over_canvas(app)) {
+    extend_reach(app, ru, rv);
+    hover = mv::shell::extend_hit(app->extend, u, v, ru, rv);
+  }
+  if (hover == app->extend_hover) return;
+  app->extend_hover = hover;
+  brush_publish(app);  // the edge lights under the pointer (WM_SETCURSOR picks its cursor)
+}
+
+// A chip on the bar: the add-on's preset as a frame (0 Original: none).
+void extend_preset(app_state* app, int i) {
+  if (active_tool(app) != mv::shell::canvas_tool::extend) return;
+  const mv::edit::placement p = app->edits.preview_placement();
+  app->extend = mv::shell::extend_preset_draft(i, p.cropped.w, p.cropped.h);
+  app->extend_grab = 0;
+  extend_refit(app);
+  brush_publish(app);
+  push_tool_bar(app);
+}
+
+// Fill (Enter): the part of the frame over the photo lands as an ordinary crop
+// (one undo step); the rest is margins Enhance fills from the edited picture
+// (still_extend), in its sheet, which opens on Extend.
+void extend_fill(app_state* app) {
+  if (active_tool(app) != mv::shell::canvas_tool::extend) return;
+  if (mv::shell::extend_empty(app->extend)) {
+    notice_show(app, "Drag the frame's edges past the photo first");
+    return;
+  }
+  const bool over = mv::shell::extend_overhangs(app->extend);
+  const mv::shell::command_id enhance = mv::shell::find_addon_command("enhance", "open");
+  if (over && enhance == mv::shell::command_id::none) {
+    notice_show(app, "Extending past the edges needs the Enhance add-on (Settings → Add-ons).");
+    return;
+  }
+  if (app->edit_path.empty()) return;
+  const std::string path = app->edit_path;
+  const mv::shell::extend_draft d = app->extend;
+  if (mv::shell::extend_crops(d)) {
+    const std::array<float, 4> c = mv::shell::extend_crop(d);
+    std::uint32_t w = 0, h = 0;
+    if (app->lab.still_size(app->edit_key, &w, &h)) app->edits.set_size(w, h);
+    // One crop op; publish_edit hands Enhance's copy the crop (mv_edit_still_set).
+    apply_edit_effect(app, app->edits.crop_inside({c[0], c[1], c[2], c[3]}));
+  }
+  tool_down(app);  // the frame goes; the camera frames the picture again
+  if (!over) return;
+  const std::array<float, 4> o = mv::shell::extend_overhang(d);
+  // The add-on media layer is in mediaviewer_core.dll: through its C entry.
+  (void)mv_edit_still_extend(path.c_str(), o.data());
+  (void)run_command(app, enhance);
 }
 
 // The tool keys (docs/design/16, shell/canvas_tool.h), routed in tool mode.
@@ -3398,15 +3565,13 @@ bool run_tool_command(app_state* app, mv::shell::command_id command) {
       if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
       edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
       return true;
-    case tool_extend: {
-      // S6 makes Extend a canvas tool; today Enhance's sheet offers it (its
-      // photo choice has Extend the picture), else the Enhance tab's card.
-      if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
-      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
-      if (id == mv::shell::command_id::none) edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
-      else (void)run_command(app, id);
+    case tool_extend:
+      // S6: Extend is a canvas tool: its frame is dragged past the photo's
+      // edges (a crop-only frame needs no add-on; Fill says when one is needed).
+      if (!adjust_still(app)) return false;
+      if (app->tool.tool == canvas_tool::extend) tool_down(app);
+      else arm_tool(app, canvas_tool::extend);
       return true;
-    }
     default:
       break;
   }
@@ -3458,9 +3623,11 @@ bool run_tool_command(app_state* app, mv::shell::command_id command) {
           push_tool_bar(app);
         }
       }
+      if (active == canvas_tool::extend) extend_preset(app, 0);  // S6: back to the photo's own frame
       return true;
     case tool_apply:
       if (active == canvas_tool::remove_brush) adjust_brush(app, 2);
+      else if (active == canvas_tool::extend) extend_fill(app);  // S6: Fill ↵
       else tool_down(app);
       return true;
     case tool_pan:
@@ -3492,6 +3659,10 @@ void tool_from_island(app_state* app, int command, float arg) {
     return;
   }
   const int packed = static_cast<int>(std::lround(arg));
+  if (packed < 0 && mv::shell::extend_preset_of_action(-packed - 1) >= 0) {
+    extend_preset(app, mv::shell::extend_preset_of_action(-packed - 1));  // S6: a chip on Extend's bar
+    return;
+  }
   if (packed < 0) {
     switch (static_cast<tool_bar_action>(-packed - 1)) {
       case tool_bar_action::done: tool_down(app); break;
@@ -3500,6 +3671,7 @@ void tool_from_island(app_state* app, int command, float arg) {
       case tool_bar_action::clear: (void)run_tool_command(app, tool_clear); break;
       case tool_bar_action::apply: (void)run_tool_command(app, tool_apply); break;
       case tool_bar_action::find_eyes: tool_find_eyes(app); break;
+      case tool_bar_action::extend_preset: break;  // handled above
     }
     return;
   }
@@ -4726,6 +4898,7 @@ void workspace_item_changed(app_state* app) noexcept {
     // docs/plans/edit-refresh.md S3: an armed tool stays armed on the next still
     // (the bar and its band go on a clip); red-eye reads the new photo's eyes.
     if (app->tool.tool == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
+    if (app->tool.tool == mv::shell::canvas_tool::extend) extend_reset(app);  // S6: a frame is the photo's own
     app->tool_hover_plus1 = 0;
     app->tool_snap[2] = 0.0f;
     sync_tool_bar(app);
@@ -11396,6 +11569,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // Something else took the mouse mid-drag (a menu, another window): the
       // drag ends where it was.
       if (app->pane_edge_drag && reinterpret_cast<HWND>(lparam) != hwnd) pane_edge_end(app);
+      if (app->extend_grab != 0 && reinterpret_cast<HWND>(lparam) != hwnd) extend_release(app);  // S6
       break;
 
     case WM_MOUSELEAVE: {
@@ -11431,9 +11605,25 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // pixels); the white-balance picker is a cross; Space held, the open hand.
       if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT && tool_armed(app) &&
           pointer_over_canvas(app)) {
-        if (app->tool.pan_held) ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
-        else if (mv::shell::sized(active_tool(app))) ::SetCursor(nullptr);
-        else ::SetCursor(::LoadCursorW(nullptr, IDC_CROSS));
+        if (app->tool.pan_held) {
+          ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        } else if (active_tool(app) == mv::shell::canvas_tool::extend) {
+          // S6: the edge under the pointer (or held) says which way it drags.
+          LPCWSTR c = IDC_CROSS;
+          switch (mv::shell::extend_cursor_of(app->extend_grab != 0 ? app->extend_grab : app->extend_hover)) {
+            case mv::shell::extend_cursor::left_right: c = IDC_SIZEWE; break;
+            case mv::shell::extend_cursor::up_down: c = IDC_SIZENS; break;
+            case mv::shell::extend_cursor::nw_se: c = IDC_SIZENWSE; break;
+            case mv::shell::extend_cursor::ne_sw: c = IDC_SIZENESW; break;
+            case mv::shell::extend_cursor::move: c = IDC_SIZEALL; break;
+            case mv::shell::extend_cursor::cross: break;
+          }
+          ::SetCursor(::LoadCursorW(nullptr, c));
+        } else if (mv::shell::sized(active_tool(app))) {
+          ::SetCursor(nullptr);
+        } else {
+          ::SetCursor(::LoadCursorW(nullptr, IDC_CROSS));
+        }
         return TRUE;
       }
       // Issue #38: fullscreen, playing, idle, over the video. Anything else is
@@ -11485,9 +11675,17 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         if (brush_active(app)) {
           app->brush_stroke = brush_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
           if (app->brush_stroke) ::SetCapture(hwnd);
+        } else if (active_tool(app) == mv::shell::canvas_tool::extend) {
+          // S6: a press on an edge (or inside) of Extend's frame drags it.
+          if (extend_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam))) ::SetCapture(hwnd);
         } else {
           adjust_pick_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
         }
+        return 0;
+      }
+      if (msg == WM_LBUTTONUP && app->extend_grab != 0) {
+        ::ReleaseCapture();
+        extend_release(app);
         return 0;
       }
       if (msg == WM_LBUTTONUP && app->brush_stroke) {

@@ -29,7 +29,7 @@ public static partial class IslandHost
     private struct ChromeToolBarArgs
     {
         public int Visible;
-        public int Tool;      // shell::canvas_tool: 1 brush, 2 red-eye, 3 white-balance picker
+        public int Tool;      // shell::canvas_tool: 1 brush, 2 red-eye, 3 white-balance picker, 5 Extend
         public float SizePx;  // the ring's diameter, DIP
         public int Erase;
         public int Strokes;
@@ -43,8 +43,11 @@ public static partial class IslandHost
         public int CanRedo;
         public int Eyes;
         public int CanUndo;  // S4a: a stroke or a Clear to undo
+        public int ExtendGrowth;  // S6: Extend's readout, the growth in permille
+        public int ExtendWarn;    // S6: a side past the 25 % warning
+        public int ExtendPreset;  // S6: the chip the frame is (0 Original .. 6), -1 the person's own
     }
-    private const int ToolBarArgsSize = 60;
+    private const int ToolBarArgsSize = 72;
 
     // shell::canvas_tool and shell::tool_bar_action (canvas_tool.h).
     private static class CanvasTools
@@ -52,6 +55,7 @@ public static partial class IslandHost
         public const int Brush = 1;
         public const int RedEye = 2;
         public const int WhiteBalance = 3;
+        public const int Extend = 5;  // S6
     }
     private static class ToolBarAction
     {
@@ -61,7 +65,11 @@ public static partial class IslandHost
         public const int Clear = 3;
         public const int Apply = 4;
         public const int FindEyes = 5;
+        public const int ExtendPreset = 16;  // S6: chip i is ExtendPreset + i
     }
+    // S6: Extend's chips (shell::extend_preset_label: the Enhance add-on's
+    // presets after Original).
+    private static readonly string[] ExtendPresets = { "Original", "Wider", "Taller", "All round", "1:1", "16:9", "4:5" };
 
     private static ChromeToolBarArgs _toolBar;
     // The bar as built, for an update in place; null while the island holds
@@ -73,6 +81,7 @@ public static partial class IslandHost
     private static TextBlock? _toolSizeText, _toolStatus;
     private static Spinner? _toolSpinner;
     private static bool _updatingToolBar;
+    private static Button[]? _toolChips;  // S6: Extend's presets
 
     // Segoe Fluent Icons / MDL2 Assets code points.
     private const string GlyphBrush = "";
@@ -115,6 +124,7 @@ public static partial class IslandHost
         _toolSize = null;
         _toolSizeText = _toolStatus = null;
         _toolSpinner = null;
+        _toolChips = null;
         _toolBarBuiltFor = 0;
     }
 
@@ -176,6 +186,26 @@ public static partial class IslandHost
                                        () => SendToolAction(ToolBarAction.Undo));
                 row.Children.Add(_toolUndo);
                 break;
+            case CanvasTools.Extend:
+                // S6: preset chips · "+18 % · 6048×4032" · Fill ↵ · Cancel.
+                _toolChips = new Button[ExtendPresets.Length];
+                var chips = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2) };
+                for (int i = 0; i < ExtendPresets.Length; i++)
+                {
+                    int chip = i;
+                    Button b = EditButton(ExtendPresets[i], () => SendToolAction(ToolBarAction.ExtendPreset + chip),
+                                          tip: i == 0 ? "No new edges" : $"{ExtendPresets[i]} (the Enhance add-on's frame)");
+                    _toolChips[i] = b;
+                    chips.Children.Add(b);
+                }
+                row.Children.Add(chips);
+                row.Children.Add(_toolStatus);
+                _toolApply = AccentButton("Fill ↵", () => SendToolAction(ToolBarAction.Apply));
+                ToolTipService.SetToolTip(_toolApply, WithKey("Fill the new edges (a frame inside the photo crops it)",
+                                                              Command.ToolApply));
+                row.Children.Add(_toolApply);
+                done = EditButton("Cancel", () => SendToolAction(ToolBarAction.Done), tip: "Drop the new frame  Esc");
+                break;
             default:
                 // The white-balance picker: one click, then it puts itself down.
                 _toolStatus.Text = "Click something that should be neutral grey";
@@ -203,6 +233,7 @@ public static partial class IslandHost
         {
             CanvasTools.Brush => "Remove brush",
             CanvasTools.RedEye => "Red-eye tool",
+            CanvasTools.Extend => "Extend edges",
             _ => "White balance picker",
         });
         ToolTipService.SetToolTip(_toolBarRoot, ToolHints());
@@ -297,6 +328,16 @@ public static partial class IslandHost
                     : "Find eyes needs People in Local search (Settings → Add-ons)");
             }
             if (_toolSpinner is not null) _toolSpinner.Active = b.Busy != 0;
+            if (_toolChips is not null)
+            {
+                // The chip the frame is, in the accent on its wash (the Mac's ChipButton).
+                for (int i = 0; i < _toolChips.Length; i++)
+                {
+                    bool on = b.ExtendPreset == i;
+                    _toolChips[i].Background = on ? Brush(ChromeColour.SelectionWash) : Brush(Microsoft.UI.Colors.Transparent);
+                    _toolChips[i].Foreground = Brush(on ? ChromeColour.Accent : Body);
+                }
+            }
             if (_toolStatus is not null)
             {
                 switch (b.Tool)
@@ -310,6 +351,16 @@ public static partial class IslandHost
                     case CanvasTools.RedEye:
                         _toolStatus.Text = b.Busy != 0 ? "Looking for red eyes…"
                                          : b.Spots == 0 ? "Click a red pupil" : $"Click a red pupil · {b.Spots} fixed";
+                        break;
+                    case CanvasTools.Extend:
+                        // "+18 % · 6048×4032", in the accent past the 25 % warning.
+                        int pct = (Math.Abs(b.ExtendGrowth) + 5) / 10;
+                        _toolStatus.Text = b.ExtendW > 0
+                            ? $"{(b.ExtendGrowth < 0 ? "−" : "+")}{pct} % · {b.ExtendW}×{b.ExtendH}"
+                            : "Drag the edges past the photo";
+                        _toolStatus.Foreground = Brush(b.ExtendWarn != 0 ? ChromeColour.Accent : Body);
+                        ToolTipService.SetToolTip(_toolStatus, b.ExtendWarn != 0 ? "Past 25 % a side, fills may smear"
+                                                                                  : "The new picture's size");
                         break;
                 }
             }
@@ -328,6 +379,11 @@ public static partial class IslandHost
         var parts = new List<string>();
         string? smaller = KeyOf(Command.ToolSmaller), bigger = KeyOf(Command.ToolBigger);
         if (smaller is not null || bigger is not null) parts.Add($"{smaller} {bigger} size");
+        if (_toolBar.Tool == CanvasTools.Extend)
+        {
+            // S6: drag the edges; Enter fills, Esc cancels.
+            return $"Drag an edge past the photo · {KeyOf(Command.ToolApply) ?? "Enter"} fill · Esc cancel";
+        }
         if (_toolBar.Tool == CanvasTools.Brush) parts.Add("Alt erase");
         parts.Add($"{KeyOf(Command.ToolPan) ?? "Space"} pan");
         if (_toolBar.Tool == CanvasTools.Brush && KeyOf(Command.ToolApply) is string apply) parts.Add($"{apply} remove");

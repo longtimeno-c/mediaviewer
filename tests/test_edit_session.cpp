@@ -632,3 +632,31 @@ TEST_CASE("print: the bake is the export's crop, in memory, nothing written", "[
   CHECK(cells->at(1).pixels.width == 32);
   CHECK(cells->at(1).pixels.height == 24);
 }
+
+TEST_CASE("Extend's Fill: the part of its frame over the photo is an ordinary crop", "[shell][edit][extend]") {
+  // docs/plans/edit-refresh.md S6: the crop part of a mixed frame lands as a
+  // normal stack crop, composed with the one already there; one undo step.
+  edit_session s;
+  (void)s.set_item(jpeg_item());  // 600 x 400
+  // The whole picture (a frame only past the edges) crops nothing.
+  CHECK(s.crop_inside({0.0f, 0.0f, 1.0f, 1.0f}) == edit_effect::none);
+  CHECK(s.export_geometry().identity());
+  REQUIRE(s.crop_inside({0.25f, 0.0f, 0.75f, 1.0f}) == edit_effect::redraw);
+  CHECK(s.preview_placement().cropped == mv::edit::size2{450, 400});
+  CHECK(s.edit_count() == 1);
+  // A second one is of the picture shown now (the cropped one).
+  REQUIRE(s.crop_inside({0.0f, 0.5f, 0.5f, 0.5f}) == edit_effect::redraw);
+  CHECK(s.preview_placement().cropped == mv::edit::size2{225, 200});
+  const mv::edit::geometry g = s.export_geometry();
+  CHECK(std::abs(g.crop.x - 0.25f) < 1e-5f);
+  CHECK(std::abs(g.crop.y - 0.5f) < 1e-5f);
+  CHECK(std::abs(g.crop.w - 0.375f) < 1e-5f);
+  REQUIRE(s.run(command_id::undo_edit) == edit_effect::redraw);
+  CHECK(s.preview_placement().cropped == mv::edit::size2{450, 400});
+  // Refused while crop mode holds a draft, and with no photo.
+  REQUIRE(s.run(command_id::crop_mode) == edit_effect::redraw);
+  CHECK(s.crop_inside({0.1f, 0.1f, 0.5f, 0.5f}) == edit_effect::refused);
+  s.cancel_crop();
+  edit_session none;
+  CHECK(none.crop_inside({0.1f, 0.1f, 0.5f, 0.5f}) == edit_effect::refused);
+}

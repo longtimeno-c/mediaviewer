@@ -511,6 +511,12 @@ nothing of the core and reaches it only through the host function table.
   over the photo being edited: dabs of three floats, u and v across the edited picture
   `still_open` returns and the radius over its longer side. The Windows host sets them through
   `mv_edit_still_mask`, the Mac host directly (`addon_media::set_still_mask`).
+- **Edit ↔ add-ons, Extend's frame** (edit-refresh S6). The host table's `still_extend`
+  (appended after `still_mask`, version not bumped) answers the margins the person dragged past the
+  edges of the photo being edited: four floats, left, top, right and bottom, each a fraction of the
+  edited picture `still_open` returns; all 0 when none is set or another photo is asked. The
+  Windows host sets them through `mv_edit_still_extend`, the Mac host directly
+  (`addon_media::set_still_extend`).
 - **Edit ↔ add-ons** ([plan](../plans/edit-adjust.md) slices 5–6). `still_open` answers the
   still being edited with its edit applied; the Windows host sets that edit through
   `mv_edit_still_set` (an opaque blob of this build's edit geometry and colour; host and

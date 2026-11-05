@@ -13,7 +13,8 @@ namespace MediaViewer.Chrome;
 /// Restyle, Faces, Enhance image, Extend edges. A card says what the tool does,
 /// whether it can run now (its chip) and has one primary button. They launch
 /// what exists: the Remove brush, Enhance's own sheet started on the right
-/// choice (its "open" and "restyle" commands; Extend through the sheet's photo
+/// choice (its "open" and "restyle" commands; S6: Extend arms its frame on the
+/// canvas, and its Fill opens the sheet on Extend; before that, through the sheet's photo
 /// choice) and Open closed eyes. Every result is a new file; the original
 /// never changes. Running inside the pane is S5's. The Mac twin is EnhanceHubView.swift.
 /// </summary>
@@ -70,7 +71,7 @@ public static partial class IslandHost
                 ? new("Ready", true, false, "Open closed eyes", true, false)
                 : new("Needs People", false, false, "Open closed eyes", true, false),
             EnhanceToolKind.Detail => new("Ready", true, false, "Enhance…", (_editWand & WandDetail) != 0, false),
-            _ => new("Ready", true, false, "Extend…", (_editWand & WandExtend) != 0, false),
+            _ => new("Ready", true, false, "Set the new frame", (_editWand & WandExtend) != 0, false),
         };
     }
 
@@ -91,8 +92,9 @@ public static partial class IslandHost
                 break;
             case EnhanceToolKind.Restyle: Send(Command.EditAction, EditActions.Restyle); break;
             case EnhanceToolKind.Faces: Send(Command.AdjustOpenEyes); break;
-            case EnhanceToolKind.Detail:
-            case EnhanceToolKind.Extend: Send(Command.EditAction, EditActions.Enhance); break;
+            case EnhanceToolKind.Detail: Send(Command.EditAction, EditActions.Enhance); break;
+            // S6: Extend's frame on the canvas (canvas_tool 5; the context bar fills it).
+            case EnhanceToolKind.Extend: Send(Command.CanvasTool, CanvasTools.Extend * 1000); break;
         }
     }
 
@@ -247,7 +249,7 @@ public static partial class IslandHost
         }
         col.Children.Add(actions);
         if (kind == EnhanceToolKind.Extend && _editEnhance)
-            col.Children.Add(Hint("In the sheet, choose Extend the picture and a frame."));
+            col.Children.Add(Hint("Drag the frame's edges past the photo, then Fill (Enter)."));
         if (kind == EnhanceToolKind.Remove)
         {
             _enhanceBrushNote = Hint("Brush full: Remove, then brush more.");

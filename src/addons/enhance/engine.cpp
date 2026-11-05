@@ -323,6 +323,7 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
   media_facts facts;
   if ((item == item_kind::media || item == item_kind::audio) && port_.probe) facts = port_.probe(path);
   const std::uint32_t brushed = item == item_kind::still && port_.brushed ? port_.brushed(path) : 0;
+  const bool framed = item == item_kind::still && port_.framed && port_.framed(path);
   std::lock_guard lock(m_);
   sheet_gen_ = generation;
   if (width_pt >= 100 && width_pt <= 2000) sheet_width_pt_ = width_pt;
@@ -338,6 +339,9 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     // the photo's choice: it is offered only while something is brushed).
     if (brushed > 0 && brushed_ == 0) prefs_.photo = photo_target::remove;
     brushed_ = brushed;
+    // S6: Fill on Edit's Extend frame opened it: it starts on Extend (not
+    // saved either; the frame overrides the preset).
+    if (framed && specs_[static_cast<int>(model_kind::remove)]) prefs_.photo = photo_target::extend;
   }
   post_sheet_locked();
 }

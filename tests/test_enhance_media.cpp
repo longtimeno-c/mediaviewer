@@ -575,6 +575,7 @@ mv::addon::host_services still_services() {
   mv::addon::host_services svc = picture_services();
   svc.full_still = &mv::addon::media::full_still;
   svc.write_still = &mv::addon::media::write_still;
+  svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6
   return svc;
 }
 
@@ -1019,7 +1020,40 @@ TEST_CASE("photos: every writer of a library photo adds it once and writes nothi
     run_request(port, req, o);
     INFO(o.message);
     REQUIRE(o.ok);
-    audit("extend", "enhance");
+    audit("extend", "extended");
+  }
+  {
+    // edit-refresh S6: the frame dragged on the canvas, through the host
+    // table's still_extend (the sheet's preset is then not used).
+    mv::addon::media::set_still_extend(kShut, {0.1f, 0.0f, 0.2f, 0.0f});
+    const mv_host_api* api = table.api();
+    REQUIRE(api->struct_size >= offsetof(mv_host_api, still_extend) + sizeof(api->still_extend));
+    REQUIRE(api->still_extend);
+    float f[4] = {9, 9, 9, 9};
+    REQUIRE(api->still_extend(api->host, kShut.c_str(), f) == MV_OK);
+    CHECK(f[0] == 0.1f);
+    CHECK(f[2] == 0.2f);
+    REQUIRE(api->still_extend(api->host, kOpen.c_str(), f) == MV_OK);  // another photo: none
+    CHECK(f[0] == 0.0f);
+    CHECK(f[2] == 0.0f);
+    REQUIRE(port.still_extend);
+    job_request req;
+    req.path = kShut;
+    req.item = item_kind::still;
+    job_request::part p;
+    p.kind = model_kind::remove;
+    p.spec = &remove_spec;
+    p.models_dir = "unused";
+    p.values["mode"] = *mv::json::parse("\"extend\"");
+    p.values["extend"] = *mv::json::parse("\"taller\"");
+    req.parts.push_back(p);
+    outcome o;
+    run_request(port, req, o);
+    INFO(o.message);
+    REQUIRE(o.ok);
+    audit("extend frame", "extended");
+    mv::addon::media::set_still_extend("", {});
+    CHECK(mv::addon::media::still_extend(kShut)[0] == 0.0f);
   }
 
   // Open closed eyes and Improve faces: the target and the donor both by key.
@@ -1066,7 +1100,7 @@ TEST_CASE("photos: every writer of a library photo adds it once and writes nothi
   }
   {
     std::lock_guard lock(c.m);
-    CHECK(c.added.size() == 6);
+    CHECK(c.added.size() == 7);  // S6 adds the canvas frame's Extend
     for (const std::string& k : c.resolved) CHECK((k == kShut || k == kOpen));
   }
 

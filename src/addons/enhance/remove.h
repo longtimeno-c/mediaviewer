@@ -87,13 +87,24 @@ void paste_back_box(rgb8& photo, const pixel_box& box, const rgb8& filled, const
 // ---- Extend the picture (owner 2026-11-04: "recropping that extends") ----
 // New margins around the photo, in pixels, filled from it by the inpainting
 // model. A preset ("wider", "taller", "all", "square", "16x9", "4x5") or the
-// host's own drag (later) gives them.
+// host's own drag (extend_from_fractions) gives them.
 struct extend_margins {
   std::uint32_t left = 0, top = 0, right = 0, bottom = 0;
   [[nodiscard]] bool empty() const noexcept { return left + top + right + bottom == 0; }
 };
 // The largest a picture grows: twice its size each way, and 16384 a side.
 [[nodiscard]] extend_margins extend_preset(std::string_view preset, std::uint32_t w, std::uint32_t h) noexcept;
+// edit-refresh S6: the host's own frame, dragged past the photo's edges on
+// the canvas (the host table's still_extend): each margin a fraction of the
+// w x h picture still_open answers with (left and right of its width, top and
+// bottom of its height), rounded to whole pixels, then held to extend_preset's
+// caps (twice the size each way, 16384 a side) and to kExtendMaxPixels in all
+// (the margins shrunk evenly). The host's readout (shell/edit_workspace.h
+// extend_size) does the same sums, so the file is the size it previewed.
+inline constexpr std::uint32_t kExtendMaxEdge = 16384;
+inline constexpr std::uint64_t kExtendMaxPixels = 100'000'000;
+[[nodiscard]] extend_margins extend_from_fractions(float l, float t, float r, float b, std::uint32_t w,
+                                                   std::uint32_t h) noexcept;
 // The photo in the middle of a bigger picture, the new margins filled with
 // its nearest edge pixel (a start the model refines), and the mask of them.
 void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8& mask);

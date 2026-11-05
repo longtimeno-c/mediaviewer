@@ -10,6 +10,7 @@
 // half (D9).
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -127,6 +128,10 @@ struct host_services {
   // Slice 7: the Remove brush's dabs (u, v, r triples) over the photo being
   // edited at `path`; empty when none.
   std::function<std::vector<float>(const std::string& path)> still_mask;
+  // docs/plans/edit-refresh.md S6: Extend's frame dragged past the edges of
+  // the photo being edited at `path` (left, top, right, bottom fractions of
+  // the edited picture); all 0 when none. Empty leaves still_extend NULL.
+  std::function<std::array<float, 4>(const std::string& path)> still_extend;
   std::function<result<std::string>(const std::string& source, const rgb_image& pixels, const std::string& suffix)>
       write_still;
   // #606: a clip's GPS route from its telemetry (meta::read_route in both

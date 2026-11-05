@@ -677,6 +677,7 @@ mv::addon::host_services ai_services() {
   svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
   svc.route = &mv::addon::media::route;              // #606: the index's tracks
   svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
+  svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;
@@ -2119,6 +2120,7 @@ mv::addon::host_services slot_services() {
   svc.full_still = &mv::addon::media::full_still;
   svc.write_still = &mv::addon::media::write_still;
   svc.still_mask = &mv::addon::media::still_mask;
+  svc.still_extend = &mv::addon::media::still_extend;
   if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
   return svc;
 }

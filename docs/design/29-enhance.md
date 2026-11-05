@@ -260,6 +260,28 @@ is filled at that size and scaled up, so a large fill is softer than the photo a
 brushed far apart are each filled at the model's detail in their own box (one model run each, so
 two spots take about twice as long as one), not in one photo-sized box.
 
+## Extend: new edges around the photo
+
+The sheet's photo choice **Extend the picture** (owner 2026-11-04) is served by Remove's model with
+no second download (`remove` in its `mode: extend`). The margins come from one of two places:
+
+- **The frame dragged on the canvas** (edit-refresh S6, [20](20-edit-workspace.md) "Extend"). The
+  host table's `still_extend` row ([14](14-abi.md)) answers the margins past the edges of the photo
+  being edited: left, top, right and bottom, each a fraction of the edited picture `still_open`
+  returns (the part of the frame inside the photo is already a crop on the edit). A sheet opened on
+  a photo with a frame starts on Extend (not saved as the photo's choice), and the frame wins over
+  the preset. `extend_from_fractions` (`remove.h`) rounds each to whole pixels and holds them to
+  the caps below, shrinking the margins evenly to fit 100 MP rather than refusing.
+- **A preset** otherwise: Wider and Taller (an eighth each side), All round (a tenth), Square,
+  16:9 and 4:5 (grown on one axis only, centred).
+
+The caps: at most twice the picture each way, 16384 px a side, 100 MP in all (a preset past 100 MP
+is refused). The host's bar reads the size from the same sums (`shell/edit_workspace.h`
+`extend_size` and `extend_preset_draft`; `"[enhance][extend]"` checks the two agree), so the file is
+the size the bar showed. The run: the photo mirrored into the new margins as a start, overlapping
+square tiles along the margins filled at the model's side and blended by weight, then **the photo's
+own pixels copied back bit for bit**. The result is `<stem>-extended.jpg` (`run_port::still.suffix`).
+
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |
@@ -295,6 +317,11 @@ installed (it loads no runtime until a run, and runs nothing at launch).
 - Hosting Restyle's weights and pinning them in `remote.json` (the owner's upload).
 - Restyle on Windows: needs a DirectML or CUDA ONNX Runtime piece; measure before offering it.
 
+- Extend: the sheet still shows its preset while a canvas frame is set (the frame wins); a frame
+  is cleared by Cancel, a new Extend or the next Fill, so a later preset run on the same photo
+  after a Fill uses that Fill's frame. An undo of Fill's crop leaves the frame's fractions to the
+  uncropped picture. The "Quality over speed" tiling (768 px tiles, three-deep overlap) is not
+  built; the tiles are as before.
 - HDR clips: the picture would come back SDR; refused for now.
 - A GPU on Windows: the bundled ONNX Runtime is the CPU build, so a clip's picture there runs on
   the CPU (about a quarter of Core ML's speed on this Mac's CPU; not measured on Windows).

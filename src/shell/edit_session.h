@@ -143,6 +143,13 @@ class edit_session {
   // fix, or when nothing would change; `refused` with no item.
   [[nodiscard]] edit_effect remove_red_eye(int index);
   [[nodiscard]] edit_effect add_red_eyes(std::span<const edit::red_eye_spot> spots);
+  // docs/plans/edit-refresh.md S6: Extend's Fill. The part of its frame over
+  // the shown (edited) picture, `r` in that picture's uv, lands as an
+  // ordinary crop: composed with the committed one in the straightened frame,
+  // one op, so one Ctrl+Z takes it off. `none` when `r` is the whole picture
+  // (a frame only past the edges crops nothing); `refused` in crop mode or
+  // with no item.
+  [[nodiscard]] edit_effect crop_inside(const edit::rect& r);
 
   // PR 12. A metadata write (rating, comment, orientation tag) landed on
   // `path`: the bytes changed (size, mtime), the pixels did not. Moves the

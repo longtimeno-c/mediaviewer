@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iterator>
 #include <mutex>
@@ -347,6 +348,8 @@ struct still_edit {
   edit::colour c;
   std::string mask_path;
   std::vector<float> mask;
+  std::string extend_path;  // edit-refresh S6
+  std::array<float, 4> extend{};
 };
 
 still_edit& edit_slot() {
@@ -454,6 +457,25 @@ std::vector<float> still_mask(const std::string& path) {
   const std::lock_guard<std::mutex> lock(s.m);
   if (path.empty() || s.mask_path != path) return {};
   return s.mask;
+}
+
+void set_still_extend(const std::string& path, const std::array<float, 4>& ltrb) {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  s.extend_path = path;
+  s.extend = {};
+  if (path.empty()) return;
+  for (std::size_t i = 0; i < 4; ++i) {
+    const float f = ltrb[i];
+    s.extend[i] = f > 0.0f && std::isfinite(f) ? std::min(f, 1.0f) : 0.0f;
+  }
+}
+
+std::array<float, 4> still_extend(const std::string& path) {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  if (path.empty() || s.extend_path != path) return {};
+  return s.extend;
 }
 
 result<rgb_image> full_still(const std::string& path) {

@@ -373,6 +373,59 @@ extend_margins extend_preset(std::string_view preset, std::uint32_t w, std::uint
   return m;
 }
 
+extend_margins extend_from_fractions(float l, float t, float r, float b, std::uint32_t w, std::uint32_t h) noexcept {
+  extend_margins m;
+  if (w == 0 || h == 0) return m;
+  // Keep these sums in step with shell/edit_workspace.h extend_size (the
+  // host's readout); "[enhance][extend]" checks the two agree.
+  const auto px = [](float f, std::uint32_t side) -> std::uint32_t {
+    if (!(f > 0.0f)) return 0;  // none, negative or NaN
+    return static_cast<std::uint32_t>(std::floor(std::min(static_cast<double>(f), 1.0) * side + 0.5));
+  };
+  m.left = px(l, w);
+  m.right = px(r, w);
+  m.top = px(t, h);
+  m.bottom = px(b, h);
+  // At most twice the size each way, and kExtendMaxEdge a side.
+  const auto cap = [](std::uint32_t& a, std::uint32_t& c, std::uint32_t side) {
+    const std::uint32_t most = std::min(side, kExtendMaxEdge > side ? kExtendMaxEdge - side : 0u);
+    if (a + c > most) {
+      const double k = static_cast<double>(most) / (a + c);
+      a = static_cast<std::uint32_t>(a * k);
+      c = static_cast<std::uint32_t>(c * k);
+    }
+  };
+  cap(m.left, m.right, w);
+  cap(m.top, m.bottom, h);
+  // At most kExtendMaxPixels in all: the margins shrunk by one factor.
+  const auto area = [&] {
+    return std::uint64_t{w + m.left + m.right} * std::uint64_t{h + m.top + m.bottom};
+  };
+  if (area() > kExtendMaxPixels) {
+    if (std::uint64_t{w} * h >= kExtendMaxPixels) return {};
+    const double ax = static_cast<double>(m.left + m.right), ay = static_cast<double>(m.top + m.bottom);
+    // (w + k ax)(h + k ay) = most, the root in [0, 1].
+    const double qa = ax * ay, qb = static_cast<double>(w) * ay + static_cast<double>(h) * ax;
+    const double qc = static_cast<double>(w) * h - static_cast<double>(kExtendMaxPixels);
+    double k = qa > 0.0 ? (-qb + std::sqrt(qb * qb - 4.0 * qa * qc)) / (2.0 * qa) : qb > 0.0 ? -qc / qb : 0.0;
+    k = std::clamp(k, 0.0, 1.0);
+    m.left = static_cast<std::uint32_t>(m.left * k);
+    m.right = static_cast<std::uint32_t>(m.right * k);
+    m.top = static_cast<std::uint32_t>(m.top * k);
+    m.bottom = static_cast<std::uint32_t>(m.bottom * k);
+    // Rounding: a pixel or two off the largest margin until it fits.
+    for (int guard = 0; area() > kExtendMaxPixels && guard < 4096; ++guard) {
+      std::uint32_t* most = &m.left;
+      for (std::uint32_t* side : {&m.top, &m.right, &m.bottom}) {
+        if (*side > *most) most = side;
+      }
+      if (*most == 0) return {};
+      --*most;
+    }
+  }
+  return m;
+}
+
 void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8& mask) {
   out.width = photo.width + m.left + m.right;
   out.height = photo.height + m.top + m.bottom;
