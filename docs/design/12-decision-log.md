@@ -200,6 +200,16 @@ click, so an add-on cannot put UI into the inspector on its own. Navigating (Sho
 stays the host's; the add-on's tree names the file, the host decides. The sheet is kept as the
 fallback for an add-on without one ([29](29-enhance.md) "Docked in Edit"; docs/plans/edit-refresh.md S5).
 
+**Extend fills at the model's side, two deep, then gives the detail back (2026-11-05).** "Quality over
+speed" (owner 2026-11-04) first grew Extend's tiles to 768 px and three deep, which made the
+margins visibly softer. Measured with the real LaMa ([29](29-enhance.md) "Extend": three tilings
+and the detail pass, on a 1280 and a 3840 photo), the mean of three different fills lost most of
+the detail and the 768-px tiles lost more by being shrunk to 512. Extend is back to tiles of at
+least the model's side, half overlapping, and wherever a tile is larger than the model's side
+Remove's detail transfer runs on it (`extend_detail`): the sharpest margins of every variant, with
+the best or level seams, at more time on large photos (99 s against 66 s for a 3840 px "all" on a
+loaded Mac). Quality over speed still holds: the change is for detail, not time.
+
 **Extend's frame is shell state; its margins reach Enhance by a host-table row (2026-11-05, owner
 call E).** Extend (docs/plans/edit-refresh.md S6) drags a frame past the photo's edges on the
 canvas. The edit stack never holds a rect past 0..1 ([07](07-photo-editing.md)): Fill lands the

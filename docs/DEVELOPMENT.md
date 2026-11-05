@@ -2342,9 +2342,11 @@ MV_ENHANCE_IMAGE_MODELS=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob
 apart with merging and the 8-box fallback, the second pass's tiles and detail blend, and the run
 with a stand-in model, including a cancel between boxes and between tiles, and progress per fill).
-**Extend** uses the same file: `"[enhance][extend]"` checks the presets, the tiles, the canvas
-frame through `still_extend` written as `<stem>-extended.jpg` at the size the bar showed, and the
-host's readout sums against the add-on's. LaMa's file is pinned in `remote.json`; Enhance's Download fetches it. With
+**Extend** uses the same file: `"[enhance][extend]"` checks the presets, the tiles (the model's
+side at least, every margin pixel in one, two away from the ends), the detail pass with a stand-in
+model (the margins gain what the shrunk tiles lost, the photo untouched, cancel between tiles), the
+canvas frame through `still_extend` written as `<stem>-extended.jpg` at the size the bar showed
+(also from the docked panel's Fill), and the host's readout sums against the add-on's. LaMa's file is pinned in `remote.json`; Enhance's Download fetches it. With
 it on disk, the quality defaults run through the runner and are timed on a photo of your own
 (raw RGB; `MV_REMOVE_DABS="u,v,r u,v,r …"` is the brush, default a block in the middle;
 `MV_EXTEND_PRESET` default `all`; `MV_QUALITY_ONLY=remove|extend`; `MV_REMOVE_OUT_DIR` keeps
@@ -2352,6 +2354,16 @@ both results as raw RGB):
 
 ```bash
 MV_REMOVE_MODEL=<dir>/lama_fp32.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=3840 MV_RESTYLE_H=2160 build/bin/mv_import_tests "[.remove-quality]"
+```
+
+Extend's margins, measured (docs/design/29 "Extend"): the hidden `[.extend-compare]` case writes the
+first pass alone (`fill`) and both passes (`detail`) as raw RGB into `MV_EXTEND_COMPARE_OUT`
+(`MV_EXTEND_PRESET`, `MV_EXTEND_VARIANTS`); `tools/enhance/extend_metrics.py` prints the margins'
+sharpness, the step at the photo's edge and the seams (numpy and Pillow):
+
+```bash
+MV_REMOVE_MODEL=<dir>/lama_fp32.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=1280 MV_RESTYLE_H=854 MV_EXTEND_COMPARE_OUT=<dir> build/bin/mv_import_tests "[.extend-compare]"
+python3 tools/enhance/extend_metrics.py <dir> 1280 854 128 85 128 85 fill detail   # photo size, then left top right bottom
 ```
 
 **Restore faces** (RestoreFormer++ / GFPGAN v1.4, docs/plans/edit-refresh.md S10):

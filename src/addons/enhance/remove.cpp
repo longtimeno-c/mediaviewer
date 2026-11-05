@@ -650,7 +650,7 @@ void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8&
   }
 }
 
-std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const extend_margins& m) {
+std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const extend_margins& m, std::uint32_t min_tile) {
   std::vector<pixel_box> out;
   if (w == 0 || h == 0) return out;
   const std::uint32_t shorter = std::min(w, h);
@@ -663,15 +663,11 @@ std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const exte
   const auto margin = [&](std::uint32_t depth, std::uint32_t across, std::uint32_t length) {
     std::vector<tile> ts;
     // Three times the depth (as deep into the photo as the margin is, each
-    // side), at least kExtendMinTile, at most the picture's shorter side.
-    const std::uint32_t t = std::min(std::max(depth * 3, kExtendMinTile), shorter);
-    // Along: two-thirds overlapping (every pixel a third of a tile past the
-    // ends in three), and at each end two more anchored there, of other
-    // sizes, which give the end pixels their three: larger (a quarter and a
-    // half again) where the picture has room, else smaller (three quarters,
-    // a half).
+    // side), at least min_tile, at most the picture's shorter side.
+    const std::uint32_t t = std::min(std::max(depth * 3, min_tile), shorter);
+    // Along: half overlapping (every pixel half a tile past the ends in two).
     std::vector<std::uint32_t> along;
-    for (std::uint32_t at = 0, step = std::max(1u, t / 3);; at += step) {
+    for (std::uint32_t at = 0, step = std::max(1u, t / 2);; at += step) {
       const std::uint32_t start = std::min(at, length - t);
       along.push_back(start);
       if (start + t >= length) break;
@@ -680,8 +676,8 @@ std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const exte
     // the photo (one, unless the picture is thinner than the margin is deep).
     const auto across_starts = [&](std::uint32_t size) {
       std::vector<std::uint32_t> as;
-      const std::uint32_t reach = std::min(across, depth + std::max(1u, size / 3));
-      const std::uint32_t step = std::max(1u, size / 3);
+      const std::uint32_t reach = std::min(across, depth + std::max(1u, size / 2));
+      const std::uint32_t step = std::max(1u, size / 2);
       for (std::uint32_t at = 0;; at += step) {
         const std::uint32_t start = std::min(at, across - size);
         as.push_back(start);
@@ -691,17 +687,6 @@ std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const exte
     };
     for (const std::uint32_t a : across_starts(t)) {
       for (const std::uint32_t b : along) ts.push_back({a, b, t});
-    }
-    const std::uint32_t b1 = std::min(shorter, t + t / 4), b2 = std::min(shorter, t + t / 2);
-    std::uint32_t ends[2] = {(t * 3 + 3) / 4, (t + 1) / 2};
-    if (b1 > t) ends[0] = b1;
-    if (b1 > t && b2 > b1) ends[1] = b2;
-    for (const std::uint32_t size : ends) {
-      if (size == 0 || size == t) continue;
-      for (const std::uint32_t a : across_starts(size)) {
-        ts.push_back({a, 0, size});
-        ts.push_back({a, length - size, size});
-      }
     }
     return ts;
   };
@@ -756,6 +741,101 @@ expected extend_fill(rgb8& canvas, const mask8& mask, const std::vector<pixel_bo
     }
   }
   if (progress) (void)progress(tiles.size(), tiles.size());
+  return {};
+}
+
+namespace {
+
+// How much extend_tiles shrank a margin `depth` deep to the model's side.
+double extend_scale(std::uint32_t depth, std::uint32_t shorter, std::uint32_t side, std::uint32_t min_tile) noexcept {
+  if (depth == 0 || side == 0) return 1.0;
+  const std::uint32_t t = std::min(std::max(depth * 3, min_tile), shorter);
+  return static_cast<double>(t) / side;
+}
+
+}  // namespace
+
+std::vector<pixel_box> extend_detail_tiles(std::uint32_t w, std::uint32_t h, const extend_margins& m,
+                                           std::uint32_t side, std::uint32_t min_tile) {
+  std::vector<pixel_box> out;
+  if (w == 0 || h == 0 || side == 0) return out;
+  const std::uint32_t shorter = std::min(w, h);
+  const auto add = [&](pixel_box b) {
+    for (const pixel_box& o : out) {
+      if (o.x == b.x && o.y == b.y && o.width == b.width && o.height == b.height) return;
+    }
+    out.push_back(b);
+  };
+  // Model-side tiles, half overlapping, over the margin and a quarter tile
+  // into the photo, only where the first pass shrank its tiles.
+  const auto band = [&](std::uint32_t depth, std::uint32_t across, std::uint32_t length, auto&& place) {
+    if (depth == 0 || extend_scale(depth, shorter, side, min_tile) <= 1.0) return;
+    const std::uint32_t ta = std::min(side, across), tl = std::min(side, length);
+    const std::uint32_t reach = std::min(across, depth + side / 4);
+    for (const std::uint32_t a : starts_over(0, reach, ta, across)) {
+      for (const std::uint32_t b : starts_over(0, length, tl, length)) place(a, b, ta, tl);
+    }
+  };
+  band(m.left, w, h, [&](std::uint32_t a, std::uint32_t b, std::uint32_t ta, std::uint32_t tl) { add({a, b, ta, tl}); });
+  band(m.right, w, h,
+       [&](std::uint32_t a, std::uint32_t b, std::uint32_t ta, std::uint32_t tl) { add({w - a - ta, b, ta, tl}); });
+  band(m.top, h, w, [&](std::uint32_t a, std::uint32_t b, std::uint32_t ta, std::uint32_t tl) { add({b, a, tl, ta}); });
+  band(m.bottom, h, w,
+       [&](std::uint32_t a, std::uint32_t b, std::uint32_t ta, std::uint32_t tl) { add({b, h - a - ta, tl, ta}); });
+  return out;
+}
+
+expected extend_detail(const rgb8& start, const mask8& mask, const extend_margins& m, const std::vector<pixel_box>& tiles,
+                       inpaint_filler& model, rgb8& canvas, const std::function<bool()>& next,
+                       std::uint32_t min_tile) {
+  if (tiles.empty()) return {};
+  const std::uint32_t w = canvas.width, h = canvas.height, side = model.side(), shorter = std::min(w, h);
+  std::vector<float> sum(std::size_t{w} * h * 3, 0.0f), weight(std::size_t{w} * h, 0.0f);
+  for (const pixel_box& t : tiles) {
+    if (next && !next()) return err(status::cancelled);
+    // The first pass's scale here: the largest of the margins the tile is in.
+    double s = 1.0;
+    if (t.x < m.left) s = std::max(s, extend_scale(m.left, shorter, side, min_tile));
+    if (t.x + t.width > w - m.right) s = std::max(s, extend_scale(m.right, shorter, side, min_tile));
+    if (t.y < m.top) s = std::max(s, extend_scale(m.top, shorter, side, min_tile));
+    if (t.y + t.height > h - m.bottom) s = std::max(s, extend_scale(m.bottom, shorter, side, min_tile));
+    if (s <= 1.0) continue;
+    const mask8 tm = crop_mask(mask, t, t.width, t.height);
+    std::size_t holes = 0;
+    for (const std::uint8_t a : tm.a) holes += a > 127 ? 1u : 0u;
+    if (holes == 0) continue;
+    const float conf = known_weight(1.0 - static_cast<double>(holes) / (static_cast<double>(t.width) * t.height));
+    if (conf <= 0.0f) continue;
+    const bool exact = t.width == side && t.height == side;
+    const rgb8 in = crop_rgb(start, t);
+    MV_TRY(rgb8 out, model.fill(exact ? in : resize_rgb(in, side, side),
+                                exact ? tm : crop_mask(tm, pixel_box{0, 0, t.width, t.height}, side, side)));
+    if (!exact) out = resize_rgb(out, t.width, t.height);
+    const auto lw = static_cast<std::uint32_t>(std::max(1.0, std::round(t.width / s)));
+    const auto lh = static_cast<std::uint32_t>(std::max(1.0, std::round(t.height / s)));
+    const rgb8 low = resize_rgb(resize_rgb(out, lw, lh), t.width, t.height);
+    for (std::uint32_t y = 0; y < t.height; ++y) {
+      const float wy = (std::min(y, t.height - 1 - y) + 1.0f) / (t.height * 0.5f + 1.0f);
+      for (std::uint32_t x = 0; x < t.width; ++x) {
+        const std::size_t at = std::size_t{t.y + y} * w + t.x + x;
+        if (mask.a[at] <= 127) continue;
+        const float wt = conf * wy * (std::min(x, t.width - 1 - x) + 1.0f) / (t.width * 0.5f + 1.0f);
+        const std::size_t from = (std::size_t{y} * t.width + x) * 3;
+        for (int c = 0; c < 3; ++c) {
+          sum[at * 3 + c] += wt * (static_cast<float>(out.rgb[from + c]) - static_cast<float>(low.rgb[from + c]));
+        }
+        weight[at] += wt;
+      }
+    }
+  }
+  for (std::size_t at = 0; at < weight.size(); ++at) {
+    if (weight[at] <= 0.0f) continue;
+    const float all = kRefineBase + weight[at];
+    for (int c = 0; c < 3; ++c) {
+      const float v = static_cast<float>(canvas.rgb[at * 3 + c]) + sum[at * 3 + c] / all;
+      canvas.rgb[at * 3 + c] = static_cast<std::uint8_t>(std::clamp(v + 0.5f, 0.0f, 255.0f));
+    }
+  }
   return {};
 }
 

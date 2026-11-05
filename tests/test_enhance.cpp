@@ -3025,11 +3025,11 @@ TEST_CASE("remove: the second pass runs in the job with progress per tile, and c
   CHECK(writes.load() == 0);
 }
 
-TEST_CASE("extend: tiles of 768 or more, two-thirds overlapping, every margin pixel in three", "[enhance][extend]") {
-  // Every margin pixel of the extended picture in at least kExtendCover
-  // tiles, each inside it: the presets on photos of many shapes, and
-  // margins of any depth on any side (the host's drag, up to the photo's own
-  // size).
+TEST_CASE("extend: tiles of the model's side or more, half overlapping, every margin pixel in one", "[enhance][extend]") {
+  // Every margin pixel of the extended picture in a tile, each inside it and
+  // never smaller than the model's side (or the picture): the presets on
+  // photos of many shapes, and margins of any depth on any side (the host's
+  // drag, up to the photo's own size).
   const auto check = [](std::uint32_t pw, std::uint32_t ph, const extend_margins& m) {
     const std::uint32_t w = pw + m.left + m.right, h = ph + m.top + m.bottom, shorter = std::min(w, h);
     const std::vector<pixel_box> tiles = extend_tiles(w, h, m);
@@ -3041,14 +3041,14 @@ TEST_CASE("extend: tiles of 768 or more, two-thirds overlapping, every margin pi
       REQUIRE(b.width > 0);
       REQUIRE(b.x + b.width <= w);
       REQUIRE(b.y + b.height <= h);
-      CHECK(b.width * 2 >= std::min(kExtendMinTile, shorter));
+      CHECK(b.width >= std::min(kExtendMinTile, shorter));
       big_enough += b.width >= std::min(kExtendMinTile, shorter) ? 1u : 0u;
       d[std::size_t{b.y} * (w + 1) + b.x] += 1;
       d[std::size_t{b.y} * (w + 1) + b.x + b.width] -= 1;
       d[std::size_t{b.y + b.height} * (w + 1) + b.x] -= 1;
       d[std::size_t{b.y + b.height} * (w + 1) + b.x + b.width] += 1;
     }
-    CHECK(big_enough > 0);  // the side is the smaller ends' only where the picture is too small for larger
+    CHECK(big_enough > 0);
     for (std::uint32_t y = 0; y <= h; ++y) {
       for (std::uint32_t x = 0; x <= w; ++x) {
         std::int32_t& v = d[std::size_t{y} * (w + 1) + x];
@@ -3061,7 +3061,7 @@ TEST_CASE("extend: tiles of 768 or more, two-thirds overlapping, every margin pi
     for (std::uint32_t y = 0; y < h; ++y) {
       for (std::uint32_t x = 0; x < w; ++x) {
         const bool photo = x >= m.left && x < m.left + pw && y >= m.top && y < m.top + ph;
-        if (!photo && d[std::size_t{y} * (w + 1) + x] < static_cast<std::int32_t>(kExtendCover)) ++thin;
+        if (!photo && d[std::size_t{y} * (w + 1) + x] < 1) ++thin;
       }
     }
     INFO(pw << "x" << ph << " margins " << m.left << " " << m.top << " " << m.right << " " << m.bottom);
@@ -3089,12 +3089,91 @@ TEST_CASE("extend: tiles of 768 or more, two-thirds overlapping, every margin pi
     m.bottom = next(3) == 0 ? 0 : next(ph / 2 + 1);
     if (!m.empty()) (void)check(pw, ph, m);
   }
-  // On a 4000 x 3000 photo every tile is at least 768, and a tile overlaps
-  // its neighbour along the margin by two-thirds.
+  // On a 4000 x 3000 photo a tile overlaps its neighbour along the margin by
+  // half, so a margin pixel half a tile from the margin's ends is in
+  // kExtendCover tiles; on a small photo the tiles are the model's side (filled
+  // at full resolution, nothing for the detail pass).
   const extend_margins wide = extend_preset("wider", 4000, 3000);
   const std::vector<pixel_box> tiles = check(4000, 3000, wide);
-  for (const pixel_box& b : tiles) CHECK(b.width >= kExtendMinTile);
-  CHECK(tiles[1].y - tiles[0].y == tiles[0].width / 3);
+  for (const pixel_box& b : tiles) CHECK(b.width == 1500u);  // 3 x 500, under the 3000 rows
+  CHECK(tiles[1].y - tiles[0].y == tiles[0].width / 2);
+  for (std::uint32_t y = tiles[0].width / 2; y + tiles[0].width / 2 < 3000; y += 37) {
+    std::uint32_t in = 0;
+    for (const pixel_box& b : tiles) in += b.x == 0 && y >= b.y && y < b.y + b.height ? 1u : 0u;
+    CHECK(in >= kExtendCover);
+  }
+  for (const pixel_box& b : extend_tiles(1536, 1024, extend_preset("all", 1280, 854))) CHECK(b.width == kExtendMinTile);
+  CHECK(extend_detail_tiles(1536, 1024, extend_preset("all", 1280, 854), kExtendMinTile).empty());
+}
+
+// A stand-in for the model that fills its holes with fine vertical stripes:
+// what the first pass (grey_fill, flat) cannot have.
+struct stripe_fill final : inpaint_filler {
+  std::uint32_t side() const noexcept override { return 64; }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    rgb8 out = image;
+    for (std::size_t i = 0; i < mask.a.size(); ++i) {
+      if (mask.a[i] != 255) continue;
+      const std::uint8_t v = (i % 64) % 2 == 0 ? 96 : 160;
+      out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = v;
+    }
+    return out;
+  }
+};
+
+TEST_CASE("extend: the detail pass gives back what the shrunk tiles lost, and only in the margins", "[enhance][extend]") {
+  // A 300 x 200 photo grown 100 px left and right, 66 top and bottom: tiles
+  // of 332 (the picture's shorter side), filled at the stand-in's 64.
+  rgb8 photo;
+  photo.width = 300;
+  photo.height = 200;
+  photo.rgb.assign(std::size_t{300} * 200 * 3, 0);
+  for (std::size_t i = 0; i < photo.rgb.size(); ++i) photo.rgb[i] = static_cast<std::uint8_t>((i * 7) % 251);
+  extend_margins m;
+  m.left = m.right = 100;
+  m.top = m.bottom = 66;
+  rgb8 canvas;
+  mask8 mask;
+  extend_canvas(photo, m, canvas, mask);
+  const rgb8 start = canvas;
+  grey_fill flat;
+  stripe_fill fine;
+  REQUIRE(extend_fill(canvas, mask, extend_tiles(canvas.width, canvas.height, m), flat, nullptr));
+  const rgb8 first = canvas;
+  const std::vector<pixel_box> tiles = extend_detail_tiles(canvas.width, canvas.height, m, fine.side());
+  REQUIRE_FALSE(tiles.empty());
+  for (const pixel_box& t : tiles) {
+    CHECK(t.width == 64u);
+    CHECK(t.height == 64u);
+  }
+  std::size_t calls = 0;
+  REQUIRE(extend_detail(start, mask, m, tiles, fine, canvas, [&] {
+    ++calls;
+    return true;
+  }));
+  CHECK(calls == tiles.size());
+  // The photo's own pixels are untouched; the margins gained the stripes.
+  std::size_t photo_changed = 0;
+  double before = 0, after = 0;
+  std::size_t n = 0;
+  for (std::uint32_t y = 1; y < canvas.height; ++y) {
+    for (std::uint32_t x = 1; x < canvas.width; ++x) {
+      const std::size_t at = (std::size_t{y} * canvas.width + x) * 3;
+      if (mask.a[std::size_t{y} * canvas.width + x] <= 127) {
+        photo_changed += canvas.rgb[at] != first.rgb[at];
+        continue;
+      }
+      before += std::abs(first.rgb[at] - first.rgb[at - 3]);
+      after += std::abs(canvas.rgb[at] - canvas.rgb[at - 3]);
+      ++n;
+    }
+  }
+  CHECK(photo_changed == 0);
+  REQUIRE(n > 0);
+  CHECK(after / n > before / n + 5.0);
+  // Cancel between tiles.
+  rgb8 again = first;
+  CHECK(extend_detail(start, mask, m, tiles, fine, again, [] { return false; }).error() == mv::status::cancelled);
 }
 
 // The real LaMa (MV_REMOVE_MODEL: lama_fp32.onnx) on a photo
@@ -3284,6 +3363,62 @@ TEST_CASE("remove and extend: the quality defaults timed with the real LaMa", "[
   const char* only = std::getenv("MV_QUALITY_ONLY");
   if (!only || std::string_view(only) == "remove") run("remove", false);
   if (!only || std::string_view(only) == "extend") run("extend", true);
+}
+
+// Extend's two passes on a real photo with the real LaMa (2026-11-05: the
+// comparison behind kExtendMinTile, kExtendCover and extend_detail, docs/
+// design/29 "Extend"). MV_REMOVE_MODEL, MV_ENHANCE_RUNTIME_DIR, the photo
+// (MV_RESTYLE_RGB / _W / _H, raw RGB), MV_EXTEND_PRESET (default "all") and
+// MV_EXTEND_COMPARE_OUT (a directory): "fill" (the tiles alone) and "detail"
+// (the tiles, then the detail pass, as the runner does) are written there as
+// <variant>.rgb at the size printed, for tools/enhance/extend_metrics.py.
+// MV_EXTEND_VARIANTS picks ("fill detail", the default both).
+TEST_CASE("extend: the tiles and the detail pass with the real LaMa", "[.extend-compare]") {
+  const char* file = std::getenv("MV_REMOVE_MODEL");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  const char* out_dir = std::getenv("MV_EXTEND_COMPARE_OUT");
+  if (!file || !ort || !raw || !ws || !hs || !out_dir) SKIP("MV_REMOVE_MODEL / runtime / photo / out dir not set");
+  rgb8 full;
+  full.width = static_cast<std::uint32_t>(std::atoi(ws));
+  full.height = static_cast<std::uint32_t>(std::atoi(hs));
+  full.rgb = mv::test::read_bytes(raw);
+  REQUIRE(full.rgb.size() == std::size_t{full.width} * full.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  auto model = inpaint_model::open(**rt, file, inpaint_io{});
+  REQUIRE(model);
+  const char* preset = std::getenv("MV_EXTEND_PRESET");
+  const extend_margins em = extend_preset(preset ? preset : "all", full.width, full.height);
+  rgb8 start;
+  mask8 gmask;
+  extend_canvas(full, em, start, gmask);
+  const std::uint32_t w = start.width, h = start.height;
+  std::string variants = "fill detail";
+  if (const char* v = std::getenv("MV_EXTEND_VARIANTS")) variants = v;
+  std::istringstream names(variants);
+  for (std::string name; names >> name;) {
+    REQUIRE((name == "fill" || name == "detail"));
+    rgb8 pic = start;
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::vector<pixel_box> tiles = extend_tiles(w, h, em);
+    REQUIRE(extend_fill(pic, gmask, tiles, **model, nullptr));
+    std::size_t fills = tiles.size();
+    if (name == "detail") {
+      const auto d = extend_detail_tiles(w, h, em, (*model)->side());
+      fills += d.size();
+      REQUIRE(extend_detail(start, gmask, em, d, **model, pic, nullptr));
+    }
+    for (std::uint32_t y = 0; y < full.height; ++y) {
+      std::copy_n(full.rgb.data() + std::size_t{y} * full.width * 3, std::size_t{full.width} * 3,
+                  pic.rgb.data() + (std::size_t{y + em.top} * w + em.left) * 3);
+    }
+    std::printf("%s: %ux%u -> %ux%u, %zu fills, %.1f s\n", name.c_str(), full.width, full.height, w, h, fills,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    write_bytes(fs::path(out_dir) / (name + ".rgb"), pic.rgb);
+  }
 }
 
 TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {

@@ -500,7 +500,7 @@ preset; the host's sums equal the add-on's on a grid and for every preset), `mv_
 "[photos]"` (the frame through the real host table's `still_extend`, a library photo added once).
 Fill runs Extend in Enhance's docked panel (`enhance/tool {"photo":"extend","run":true}`, wired in
 the merge of S5, S6 and S8; the sheet without a docked screen). Not built: `A` /
-`X` / arrows with crop meanings in Extend, the 768-px three-deep tiling of "Quality over speed".
+`X` / arrows with crop meanings in Extend.
 Not run: either app, both PR 1 gates and the PR 1 soak with Extend armed (the pan-gate check),
 the 0-presents check with Extend armed, the real LaMa on a dragged frame; the Windows native C++
 is not compiled here (C# compiles).
@@ -748,7 +748,8 @@ Concretely, applied in the second build round:
   side is filled again on 512 tiles at full resolution, blended by weight as Extend is. The feather
   scales with the box.
 - **Extend:** tiles of at least 768 px when the photo allows, two-thirds overlapping. Every margin pixel
-  is in at least three tiles.
+  is in at least three tiles. (Built, measured softer, replaced: tiles of the model's side at least,
+  two deep, and a detail pass; see Q's note below.)
 - **Faces (GFPGAN):** the fp32 file, alignment by the FFHQ template, strength default 0.7, the People
   guard on. Eyes and whole-face transfer keep their look-matching.
 - **Enhance image:** Real-ESRGAN tiles with more overlap, and the app's own noise reduction before it.
@@ -770,7 +771,11 @@ random margins); square tiles only (the old end tiles could be squashed). Progre
 cancel is checked between fills and tiles on both. Measured on a busy machine (docs/design/29):
 Remove 4–14 s → 19–45 s, Extend 47–121 s → 158–170 s on a 3840 × 2160 photo. Extend's margins
 lose their colour fringes and dark corners but are softer than before (more 768-px tiles filled at
-512 and averaged); the detail transfer could serve Extend too (not built). Not run: either app,
+512 and averaged); the detail transfer could serve Extend too. **Changed in the merge of Q, S6 and
+S8 (2026-11-05):** measured with the real LaMa (docs/design/29 "Extend"), the three-deep averaging
+took most of the detail, so Extend is back to tiles of the model's side at least, half overlapping
+(two deep), and Remove's detail transfer now runs for Extend wherever a tile was larger than the
+model's side (`extend_detail`): the sharpest margins of every tiling tried. Not run: either app,
 Windows (add-on C++ mirrors existing patterns, not compiled there). Review (2026-11-05):
 `refine_tiles` now leaves out the tiles `refine_fill` would skip (no hole, or a tenth known or
 less), so Remove's progress counts only real fills and the time left no longer jumps; the output

@@ -833,11 +833,31 @@ void job_runner::run_extend(job_request r, job_events ev) {
   auto model = port_.load_inpaint(*part.spec, part.models_dir);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
   const std::vector<pixel_box> tiles = extend_tiles(out.width, out.height, m);
-  const expected filled = extend_fill(out, mask, tiles, **model, [&](std::size_t done, std::size_t total) {
-    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / std::max<std::size_t>(total, 1));
+  // Quality over speed (2026-11-05): where those tiles were filled shrunk,
+  // a detail pass at the model's side gives the grain back. Progress counts
+  // every fill, both passes', so the time left is the work left.
+  const std::vector<pixel_box> detail = extend_detail_tiles(out.width, out.height, m, (*model)->side());
+  const std::size_t total = tiles.size() + detail.size();
+  std::size_t done = 0;
+  const auto step = [&] {
+    const double all = static_cast<double>(std::max<std::size_t>(total, 1));
+    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / all);
+  };
+  const rgb8 start = detail.empty() ? rgb8{} : out;  // the detail pass fills against the canvas as made
+  const expected filled = extend_fill(out, mask, tiles, **model, [&](std::size_t d, std::size_t) {
+    done = d;
+    step();
     return !cancel_.load();
   });
   if (!filled) return fail(why(filled.error()));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  const expected sharpened = extend_detail(start, mask, m, detail, **model, out, [&] {
+    if (cancel_.load()) return false;
+    step();
+    ++done;
+    return true;
+  });
+  if (!sharpened) return fail(why(sharpened.error()));
   // The photo, exactly as it was, in the middle.
   for (std::uint32_t y = 0; y < original.height; ++y) {
     std::copy_n(original.rgb.data() + std::size_t{y} * original.width * 3, std::size_t{original.width} * 3,
