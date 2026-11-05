@@ -299,7 +299,7 @@ struct PhotosBackupSection: View {
         .padding(MVTheme.space(14))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+        .settingsCardOutline(MVTheme.radius(8))  // fill only; the hairline under Increase Contrast, as SettingsRow
       }
     }
   }

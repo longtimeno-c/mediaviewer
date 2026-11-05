@@ -3076,6 +3076,20 @@ percentage) and `timed` (the host estimates and says the time left, Driftwire's 
 left" and "Downloading… 48 of 161 MB" text nodes went. The cost: Enhance asks for 13. The rest of
 the pass (header, rail, cards, Adjust) is in [20 "Craft rules"](20-edit-workspace.md#craft-rules).
 
+**The craft rules apply to every surface (2026-11-05).** The owner: "take a look at this skill
+[Stageshow] and apply it to all areas of this application". The Edit workspace's rules ([20 "Craft
+rules"](20-edit-workspace.md#craft-rules)) now hold for the whole chrome on both hosts, and gained
+what the rest of the app needed: cards are a fill with the hairline only in contrast modes; selection
+lifts or washes and the accent ring means where the keys act; typed glyphs become icons; state
+changes fade or slide over 150 ms and changing numbers roll in tabular digits, one shot and never
+while idle; corner notices share one card; long waits are a skeleton or the progress line, not a
+spinner. Visible reversals: the AI badge loses its sparkle (#345 drew one) and is the letters "AI";
+the Video Editor's playhead is the title colour, not red, its waveform the body colour, and the
+selected piece is shown by dimming the others instead of a 3 pt accent ring; Windows' Settings tabs slide as a segmented control; Mac Photos backup's
+live line drops the file name that changed many times a second. Cost: chrome animations on state
+changes only; nothing added to the canvas, the gallery's scroll path or idle. Not measured: no
+present-loop or browse soak was run for this pass, and neither host was looked at running.
+
 **A choice of model per kind meets one-click Enhance (2026-11-05, merging main's #570 into the
 Edit refresh).** Both lines changed Enhance at once. Kept from main: every `models/<kind>/<id>.json`
 is a model of its kind, chosen per kind (`model.<kind>`, keyed downloads `<kind>.<id>`), on the

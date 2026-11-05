@@ -2001,10 +2001,24 @@ public static partial class IslandHost
         string name = Path.GetFileName(parent.TrimEnd('\\', '/'));
         // The button is kept while it still says the same, so arrow-key focus
         // sitting on it survives a refresh.
-        string label = "↑  Up to " + (name.Length == 0 ? parent : name);
-        if (_treeUp.Child is Button { Content: TextBlock { Text: var shown } } && shown == label) return;
+        string label = "Up to " + (name.Length == 0 ? parent : name);
+        if (_treeUp.Child is Button { Tag: string shown } && shown == label) return;
         string target = parent;
-        Button up = FlatButton(Text(label, Body), Pad(0, 2, 8, 2));
+        // The icon set's Up arrow, not a typed "↑" (docs/design/20 "Craft rules"; the Mac's
+        // arrow.up.left).
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+        content.Children.Add(new FontIcon
+        {
+            Glyph = "\uE74A",  // Up
+            FontFamily = IconFont,
+            FontSize = TypeSize(TypeSmall),
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        content.Children.Add(Text(label, Body));
+        Button up = FlatButton(content, Pad(0, 2, 8, 2));
+        up.Tag = label;
+        AutomationProperties_SetName(up, label);
         up.Click += (_, _) => OpenTreePath(target);
         up.KeyDown += (_, e) => TreeArrow(up, e);
         _treeUp.Child = up;

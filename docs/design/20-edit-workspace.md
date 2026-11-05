@@ -569,9 +569,14 @@ in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag
 
 ## Craft rules
 
-The Edit workspace's look follows a short set of rules (2026-11-05, from the craft rules of Benji
-Taylor's Stageshow skill, read for the owner's "the progress bar for enhance etc… all ugly"). New
-surfaces in the pane, the rail, the tool bar and Enhance's cards keep to them on both hosts.
+The chrome's look follows a short set of rules from the craft and motion rules of Benji Taylor's
+Stageshow skill (benji.org/stageshow). They were written first for the Edit workspace (2026-11-05,
+the owner's "the progress bar for enhance etc… all ugly"), then applied to **every surface of both
+chromes** the same day (owner: "apply it to all areas of this application"): the command bar and
+transport, notices, the gallery and folder tree, the info pane and jobs, Settings and add-ons, local
+search and every add-on screen, and the Video Editor. New surfaces anywhere keep to them on both
+hosts. Stageshow is about faux product UI in demos; only its still-frame and motion rules carry over,
+and real feedback stays as quick as the platform's.
 
 - **One surface per thing.** A card is icon + title, one short line, its controls and one primary
   button, never a bordered box inside another. A fill alone marks a surface; a hairline only where
@@ -611,6 +616,36 @@ surfaces in the pane, the rail, the tool bar and Enhance's cards keep to them on
   (`canvas/refinement.h` `k_result_fade_seconds`; `present_lab_mac.mm`, `present_lab.cpp`). Any
   other navigation cuts as before; Reduce Motion / animations off cut too. The canvas presents
   only for those 250 ms, then idles.
+- **Typed glyphs are not icons.** "✦", "★", "✓", "⚠", "▾", "▶", "↑", "+" and "−" typed as text
+  become the icon set's symbol (SF Symbols / Segoe Fluent) with a tooltip and a name: menus' checks,
+  the add-on alert's warning, Open with's chevron, the folder tree's Up, a screen's number field.
+  The AI badge is the letters "AI" alone ([06](06-metadata.md) "The AI badge").
+- **Cards are a fill.** A card (Settings rows, the add-on list, an add-on's page, a screen's
+  `"look": "card"`, a job, Photos backup) is its fill with no hairline; the outline comes back only
+  where fill and ground are one colour: Increase Contrast on the Mac (`SettingsCardOutline`,
+  `CardLook`), a high-contrast theme on Windows (`CardOutline`, `HighContrastOn`). A page inside a
+  card draws no card of its own.
+- **Selection lifts; the ring is the keyboard.** A chosen theme, the page on screen in the page
+  sidebar, a shift-click range, a selected Video Editor piece (the others dim) take a lighter
+  surface or a wash; the accent ring marks only where the keys act (the gallery's current tile, the
+  filmstrip's cell, a job while its pane has focus). Windows' high-contrast range keeps its ring,
+  where the wash is transparent.
+- **State changes move, briefly.** A wash, lift, ring or tab highlight a click or key sets fades or
+  slides over 150 ms (Settings' General | Keyboard shortcuts and the info pane's tabs are segmented,
+  their highlight sliding); a count or status word that changes rolls in its own slot with tabular
+  digits; a notice, editor row, job or search bar arrives with a fade and a few points of rise. One
+  shot on the state change, never per frame or per tile on scroll, never while idle; Reduce Motion
+  (Mac) and animations off (Windows) cut. Where Windows rebuilds a surface from state (the info
+  pane's editors, add-on screens' nodes), arrivals fade and departures cut.
+- **Corner cards are one card.** The hint, resume and restart notices share one look per host (Mac
+  `NoticeCard` / `NoticeButtonStyle` in `NoticeStore.swift`, Windows `NoticeCardBorder` /
+  `NoticeButton` in `IslandHost.HintNotice.cs`): 12 pt padding all round, radius 10, a 14 pt title
+  4 pt over its 12 pt line, buttons 12 pt below with a surface at rest (the main one filled with the
+  accent), and a button whose label changes is the same button.
+- **Waits are skeletons or the progress line.** A wait that can pass a second shows the content's own
+  empty geometry with one line (the Video Editor's "Reading the clip…") or the shared progress line
+  on its calm sweep (Local search's Starting and Removing, Photos backup's run); a spinner only where
+  the call ends within a second (Final Cut Pro's turn-on, a screen's first tree).
 - **Say each control once.** The header carries Undo, Reset and Compare; the rail repeats Undo and
   Compare only while the panel is folded away. The Enhance tools are the Enhance tab's cards, so
   the rail keeps only Red-eye, the canvas tool without a card, and the header has no tools chevron.
