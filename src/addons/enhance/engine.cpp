@@ -764,8 +764,8 @@ void engine::tool_command(const std::string& value_json) {
       if (*p == photo_target_name(t)) chosen = t;
     }
   }
-  const json::value* go = v->find("run");
-  const bool start = go && go->k == json::kind::boolean && go->b;
+  const json::value* run_flag = v->find("run");
+  const bool start = run_flag && run_flag->k == json::kind::boolean && run_flag->b;
   // edit-refresh S8: Restore face from the Faces panel names the chosen
   // faces' boxes; any other command runs on every face.
   std::vector<float> boxes;
@@ -813,7 +813,14 @@ void engine::tool_command(const std::string& value_json) {
     }
     post_sheet_locked();
   }
-  if (start) run(true);
+  // One-click: Enhance image, Restyle and Restore faces fetch their model
+  // first when it is not here; Remove and Extend run on what is brushed or framed.
+  if (start && chosen && (*chosen == photo_target::detail || *chosen == photo_target::restyle ||
+                          *chosen == photo_target::faces)) {
+    go(*chosen);
+  } else if (start) {
+    run(true);
+  }
 }
 
 void engine::closed(const std::string& screen) {

@@ -18,8 +18,10 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "addon/slots.h"
+#include "core/json.h"
 #include "shell/addons_mac.h"
 #include "shell/present_busy.h"
 
@@ -123,7 +125,20 @@ extern "C" bool mv_chrome_slots_event(const char* addon, const char* screen, con
   return mv::addon::default_slots().send_event(str(addon), str(screen), str(node), kind, str(value_json)) ==
          mv::status::ok;
 }
+// main_mac.mm: Enhance's context entry on the photo on screen opens the Edit
+// pane's Enhance tab (one-click, owner 2026-11-05) instead of its sheet.
+bool MvEnhanceTakesItem(const std::vector<std::string>& paths);
+
 extern "C" bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json) {
+  if (str(addon) == "enhance" && str(item) == "enhance") {
+    std::vector<std::string> paths;
+    if (const auto doc = mv::json::parse(paths_json ? paths_json : "[]", 4); doc && doc->k == mv::json::kind::array) {
+      for (const mv::json::value& v : doc->a) {
+        if (v.k == mv::json::kind::string) paths.push_back(v.s);
+      }
+    }
+    if (MvEnhanceTakesItem(paths)) return true;
+  }
   return mv::addon::default_slots().invoke_item(str(addon), str(item),
                                                 paths_json ? std::string(paths_json) : "[]") == mv::status::ok;
 }

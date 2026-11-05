@@ -10,13 +10,13 @@
 // Photos-library photo); the original never changes.
 // The Windows twin is IslandHost.EnhanceHub.cs.
 //
-// S5 (owner call B): Remove, Restyle, Enhance image and Extend (and S10's
-// Restore faces, under the Faces card) run inside the pane. A card asks Enhance for its docked screen (place "edit", the
-// workspace's enhance/tool command), which is drawn under that card
-// (DockedToolPanel): the tool's knobs, the preview, the glowing progress with
-// the time left, Cancel, and the result row. The row's Show and Keep editing
-// are the viewer's (ScreenButtonHook); Move to Trash is Enhance's (the host
-// table's recycle_file). An Enhance without the docked screen opens its sheet.
+// One-click (owner 2026-11-05, docs/design/29 "One click"): no sheet and no
+// panel. Enhance's "tool" screen is the tab's cards (EnhanceRun.swift): each
+// card draws its tool's compact choices, the time the run will take and its
+// one button ("Enhance", or "Download (161 MB) and enhance") from the
+// add-on's `card.<word>` stack. One click runs it: the glow over the photo,
+// the tool bar's line, then the new photo opens with Edit kept on this tab.
+// Remove and Extend run from the tool bar under the photo (Remove ↵, Fill ↵).
 import Combine
 import MVChromeBridge
 import SwiftUI
@@ -42,10 +42,9 @@ struct EnhanceTool: Identifiable {
     }
   }
 
-  /// The docked tree a card draws under it: its own tool's, and for the Faces
-  /// card Restore faces' (S10: its second button), the Faces tool staying
-  /// the host's.
-  var dockedWord: String? { kind == .faces ? "faces" : photo }
+  /// The add-on's card stack this card draws (`card.<word>`): its own tool's,
+  /// and for the Faces card Restore faces' (the Faces tool staying the host's).
+  var cardWord: String? { kind == .faces ? "faces" : photo }
 
   var title: String {
     switch kind {
@@ -117,10 +116,11 @@ struct EnhanceToolState {
       } else {
         (chip, chipText, action, enabled) = (.ready, "Ready", "Start brushing", true)
       }
-    case .restyle:
+    case .restyle, .detail:
+      // One-click: offered whenever the add-on's cards have the tool (never a
+      // palette command: the owner's "Not offered", 2026-11-05).
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else if store.offersRestyle { (chip, chipText, action, enabled) = (.ready, "Ready", "Set up Restyle", true) }
-      else { (chip, chipText, action, enabled) = (.needsAddon, "Not offered", "Set up Restyle", false) }
+      else { (chip, chipText, action, enabled) = Self.offered(tool) }
     case .faces:
       // S8: the card arms the Faces tool; FacesPanelView takes over while it is.
       let armed = FacesStore.shared.armed
@@ -128,47 +128,58 @@ struct EnhanceToolState {
       else if armed { (chip, chipText, action, enabled) = (.brushing, "Choosing", "Done", true) }
       else if store.facesReady { (chip, chipText, action, enabled) = (.ready, "Ready", "Choose faces", true) }
       else { (chip, chipText, action, enabled) = (.needsPeople, "Needs People", "Choose faces", true) }
-    case .detail:
-      if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else { (chip, chipText, action, enabled) = (.ready, "Ready", "Set up", store.offersDetail) }
     case .extend:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
       else { (chip, chipText, action, enabled) = (.ready, "Ready", "Set the new frame", store.offersExtend) }
     case .restoreFaces:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
-      else if !store.offersRestoreFaces {
-        (chip, chipText, action, enabled) = (.needsAddon, "Not offered", "Restore faces…", false)
-      } else if store.facesReady {
-        (chip, chipText, action, enabled) = (.ready, "Ready", "Restore faces…", true)
+      else if EnhanceRun.shared.card("faces") == nil { (chip, chipText, action, enabled) = Self.offered(tool) }
+      else if store.facesReady {
+        (chip, chipText, action, enabled) = (.ready, "Ready", "Restore faces", true)
       } else {
-        (chip, chipText, action, enabled) = (.needsPeople, "Needs People", "Restore faces…", true)
+        (chip, chipText, action, enabled) = (.needsPeople, "Needs People", "Restore faces", true)
       }
     }
   }
 
+  /// A tool the cards draw: ready when the add-on's tree has its card, else
+  /// why not (the cards still opening, an Enhance to update, or one without it).
+  private static func offered(_ tool: EnhanceTool) -> (Chip, String, String, Bool) {
+    let run = EnhanceRun.shared
+    if let word = tool.cardWord, run.card(word) != nil {
+      return (.ready, run.working && run.tool == word ? "Working…" : "Ready", tool.title, true)
+    }
+    if run.outdated { return (.needsAddon, "Update Enhance", "Update Enhance…", true) }
+    if run.cards == nil { return (.busy, "Opening…", tool.title, false) }
+    return (.needsAddon, "Not in this Enhance", tool.title, false)
+  }
+
   /// The primary button's work.
   static func run(_ tool: EnhanceTool, _ store: EditStore) {
-    let needsAddon = !store.enhance && tool.kind != .faces
+    let cardsTool = tool.kind == .restyle || tool.kind == .detail || tool.kind == .restoreFaces
+    let needsAddon = (!store.enhance && tool.kind != .faces) || (cardsTool && EnhanceRun.shared.outdated)
     if needsAddon {
       AddonNav.shared.show("enhance")
       return
     }
     switch tool.kind {
     case .remove:
-      // Remove hands the strokes to the docked panel and runs (S5).
+      // One-click: Remove hands the strokes over and runs (the glow, then the
+      // new photo); the tool bar's Remove ↵ does the same.
       if store.brushOn && store.brushed { store.brushAction(2) }
       else if store.brushOn { store.setBrush(false, size: 0) }
-      else {
-        store.tool(.remove)
-        store.enhanceTool("remove")  // its knobs and, later, its result under the card
-      }
+      else { store.tool(.remove) }
     case .faces: store.tool(.faces)  // S8: the Faces tool; a second press puts it down
-    // S6: the frame on the canvas (a second press puts it down); armed, the
-    // host opens the docked panel under the card (S5), where Fill runs.
+    // S6: the frame on the canvas (a second press puts it down); Fill ↵ on
+    // the tool bar runs it.
     case .extend: store.tool(.extend)
-    case .restyle, .detail:
-      if let photo = tool.photo { store.enhanceTool(photo) }
-    case .restoreFaces: store.restoreFaces()  // S10: docked under the Faces card
+    // The popover's rows: Enhance image and Restore faces run at once with
+    // the card's choices (downloading first when the model is not here);
+    // Restyle needs its words, so it shows the tab.
+    case .detail: store.enhanceTool("detail", run: true)
+    case .restoreFaces: store.enhanceTool("faces", run: true)
+    case .restyle:
+      if EnhanceRun.shared.outdated { AddonNav.shared.show("enhance") } else { store.select(.enhance) }
     }
   }
 }
@@ -343,19 +354,28 @@ struct EnhanceCard: View {
   @ObservedObject private var slots = SlotStore.shared
   @State private var hover = false
 
-  /// Enhance's docked screen when it is open on this card's tool.
-  private var docked: SlotScreen? {
-    guard let photo = tool.dockedWord,
-          let screen = slots.screens.first(where: { $0.place == "edit" && $0.addon == "enhance" }),
-          let root = screen.tree?.id, root == "tool." + photo
-    else { return nil }
-    return screen
+  @ObservedObject private var run = EnhanceRun.shared
+
+  /// The add-on's stack for this card (`card.<word>`), drawn inside it.
+  private var cardTree: ScreenNode? {
+    guard store.enhance, let word = tool.cardWord else { return nil }
+    return run.card(word)
+  }
+
+  /// Whether the card's own (host) button shows: the brush's and the frame's,
+  /// the Faces tool's, and Get / Update Enhance; the cards' tools run from
+  /// the add-on's own button inside the card.
+  private func hostButton(_ state: EnhanceToolState) -> Bool {
+    switch tool.kind {
+    case .remove, .faces, .extend: return true
+    case .restyle, .detail, .restoreFaces: return state.chip == .needsAddon && state.enabled
+    }
   }
 
   var body: some View {
     let state = EnhanceToolState(tool, store)
-    let docked = self.docked
-    let chosen = docked != nil || state.chip == .brushing || state.chip == .brushed
+    let cardTree = self.cardTree
+    let chosen = state.chip == .brushing || state.chip == .brushed || (run.working && run.tool == tool.cardWord)
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       HStack(alignment: .center, spacing: MVTheme.space(10)) {
         Image(systemName: tool.symbol)
@@ -375,9 +395,7 @@ struct EnhanceCard: View {
         .foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: MVTheme.space(6)) {
-        // Docked, the panel below carries the run (Remove keeps its brush
-        // buttons; Faces keeps Choose faces, the panel being Restore faces').
-        if docked == nil || tool.kind == .remove || tool.kind == .faces {
+        if hostButton(state) {
           Button(state.action) { EnhanceToolState.run(tool, store) }
             .buttonStyle(AccentButtonStyle(filled: state.chip != .needsAddon && state.chip != .needsPeople))
             .disabled(!state.enabled)
@@ -392,18 +410,12 @@ struct EnhanceCard: View {
         }
         Spacer(minLength: 0)
       }
-      if tool.kind == .faces && store.enhance && docked == nil {
-        // S10: Enhance's face model, guarded by People; its own row so the
-        // card fits the narrowest pane. Docked, the panel below carries its run.
-        let restore = EnhanceToolState(.init(kind: .restoreFaces), store)
-        HStack(spacing: MVTheme.space(6)) {
-          Button("Restore faces…") { EnhanceToolState.run(.init(kind: .restoreFaces), store) }
-            .buttonStyle(FlatButtonStyle(compact: true))
-            .disabled(!restore.enabled)
-            .help(EnhanceTool(kind: .restoreFaces).purpose)
-            .accessibilityLabel("Restore faces, \(restore.chipText)")
-          Spacer(minLength: 0)
-        }
+      if tool.kind == .faces && store.enhance && cardTree != nil {
+        // S10: Enhance's face model, guarded by People: its Look, Strength,
+        // the time a face takes and its one button, below Choose faces.
+        Text("Restore faces").font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+          .padding(.top, MVTheme.space(4))
+          .help(EnhanceTool(kind: .restoreFaces).purpose)
       }
       if tool.kind == .extend && store.enhance {
         Text("Drag the frame's edges past the photo, then Fill (↩).")
@@ -413,79 +425,22 @@ struct EnhanceCard: View {
         Text("Brush full: Remove, then brush more.")
           .font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
       }
-      if let docked {
-        DockedToolPanel(screen: docked)
-          .transition(.opacity.combined(with: .move(edge: .top)))
+      if let cardTree {
+        ScreenNodeView(node: cardTree, address: EnhanceRun.address, revision: run.revision)
+          .environment(\.screenWindow, true)
       }
     }
     .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(RoundedRectangle(cornerRadius: MVTheme.radius(10))
-      .fill(hover && docked == nil ? MVTheme.hoverWash : MVTheme.surface2))
+      .fill(hover && cardTree == nil ? MVTheme.hoverWash : MVTheme.surface2))
     .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10))
       .stroke(chosen ? MVTheme.accent : MVTheme.hairline.opacity(0.6), lineWidth: chosen ? 1.5 : 0.5))
     .onHover { hover = $0 }
     .animation(.easeOut(duration: 0.12), value: hover)
-    .animation(.easeOut(duration: 0.18), value: docked?.revision != nil)
+    .animation(.easeOut(duration: 0.18), value: cardTree != nil)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(tool.title), \(state.chipText)")
-  }
-}
-
-/// S5: Enhance's docked screen (place "edit") under the chosen card, drawn
-/// with the add-on screens' renderer. Show and Keep editing are the viewer's:
-/// they navigate to the new file (or Photos-library photo) the row's
-/// thumbnail names. Remove has no run button of its own here: the card's
-/// Remove (or Return in the brush) hands the strokes over and runs it.
-struct DockedToolPanel: View {
-  let screen: SlotScreen
-  @ObservedObject private var slots = SlotStore.shared
-  @ObservedObject private var store = EditStore.shared
-
-  var body: some View {
-    let address = ScreenAddress(addon: screen.addon, screen: screen.screen)
-    VStack(alignment: .leading, spacing: MVTheme.space(10)) {
-      HStack(spacing: MVTheme.space(6)) {
-        Rectangle().fill(MVTheme.hairline).frame(height: 0.5)
-        Button { slots.close(address) } label: {
-          Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
-        }
-        .buttonStyle(FlatButtonStyle(compact: true))
-        .help("Close (a run in progress stops)")
-        .accessibilityLabel("Close the tool panel")
-      }
-      if let tree = screen.tree {
-        ScreenNodeView(node: tree, address: address, revision: screen.revision)
-          .environment(\.screenWindow, true)
-          .environment(\.screenButtonHook, ScreenButtonHook { _, id in take(id, tree) })
-      } else {
-        HStack(spacing: MVTheme.space(8)) {
-          ProgressView().controlSize(.small)
-          Text("Opening…").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-        }
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  /// The host's buttons: true when the click was the viewer's.
-  private func take(_ id: String, _ tree: ScreenNode) -> Bool {
-    switch id {
-    case "result.show", "result.keep":
-      guard let path = Self.find("result.thumb", in: tree)?.string("path"), !path.isEmpty else { return true }
-      store.enhanceResult(path: path, keep: id == "result.keep")
-      return true
-    default:
-      return false
-    }
-  }
-
-  private static func find(_ id: String, in node: ScreenNode) -> ScreenNode? {
-    if node.id == id { return node }
-    for child in node.children {
-      if let hit = find(id, in: child) { return hit }
-    }
-    return nil
   }
 }
 
