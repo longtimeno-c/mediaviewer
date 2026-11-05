@@ -39,6 +39,17 @@ struct MetadataView: View {
   /// docs/plans/edit-refresh.md §2.5: the label column, min(100, 30 % of the
   /// pane), so a 280 pt pane keeps room for the values.
   @State private var labelWidth: CGFloat = 100
+  /// docs/design/20 "Craft rules": the chosen tab's wash slides between tabs.
+  @Namespace private var tabSpace
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// A state a click sets fades in quickly and back out the same; Reduce
+  /// Motion cuts instead.
+  private var quick: Animation? { reduceMotion ? nil : .easeOut(duration: 0.15) }
+  /// An editor's extra rows arrive from just above and leave the same way.
+  private static let appear = AnyTransition.opacity.combined(with: .offset(y: -4))
+  /// The value column's leading edge: the label column and its gap.
+  private var valueInset: CGFloat { labelWidth + MVTheme.space(10) }
 
   private enum Tab: String, CaseIterable, Identifiable {
     case summary = "Summary"
@@ -53,24 +64,35 @@ struct MetadataView: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      HStack {
-        Text("Metadata").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-        Spacer()
-        if store.loading { ProgressView().controlSize(.small) }
-      }
-      .padding(.horizontal, MVTheme.space(14))
-      .padding(.top, MVTheme.space(12))
+      // No spinner: a read is quick, and the tab's own body says "Reading…"
+      // while there is nothing to show yet (say it once).
+      Text("Metadata").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, MVTheme.space(14))
+        .padding(.top, MVTheme.space(12))
       HStack(spacing: MVTheme.space(4)) {
         ForEach(tabs) { t in
-          Button { tab = t } label: { Text(t.rawValue).frame(maxWidth: .infinity) }
-            .buttonStyle(FlatButtonStyle(selected: tab == t, compact: true))
+          Button { tab = t } label: {
+            Text(t.rawValue).foregroundStyle(tab == t ? MVTheme.title : MVTheme.body).frame(maxWidth: .infinity)
+          }
+            .buttonStyle(FlatButtonStyle(compact: true))
+            // The chosen tab's wash (FlatButtonStyle's selected fill), one
+            // surface that slides to the tab chosen.
+            .background {
+              if tab == t {
+                RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(0.11))
+                  .matchedGeometryEffect(id: "tab", in: tabSpace)
+              }
+            }
             .accessibilityAddTraits(tab == t ? [.isSelected] : [])
         }
       }
+      .animation(quick, value: tab)
       .padding(MVTheme.space(4))
-      // Where the keyboard is: the tab row is what ← → move.
+      // Where the keyboard is: the tab row is what ← → move. Its corner is the
+      // tabs' own plus the padding between them.
       .overlay(
-        RoundedRectangle(cornerRadius: MVTheme.radius(6))
+        RoundedRectangle(cornerRadius: MVTheme.radius(4) + MVTheme.space(4))
           .strokeBorder(paneFocused ? MVTheme.accent : .clear, lineWidth: 2)
       )
       .padding(.horizontal, MVTheme.space(6))
@@ -161,7 +183,7 @@ struct MetadataView: View {
       VStack(alignment: .leading, spacing: 0) {
       if store.summary.isEmpty {
         Text(store.loading ? "Reading…" : "Nothing selected")
-          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(MVTheme.space(20))
+          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(MVTheme.space(14))
       } else {
         VStack(alignment: .leading, spacing: MVTheme.space(8)) {
           ForEach(store.summary) { row in
@@ -183,11 +205,11 @@ struct MetadataView: View {
             }
           }
           Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, MVTheme.space(4))
-          HStack {
+          HStack(spacing: MVTheme.space(8)) {
             Text("Edit any tag under All tags.").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
             Spacer(minLength: 0)
-            Button("Revert all") { store.revert() }
-              .buttonStyle(FlatButtonStyle(compact: true))
+            // A quiet action at the end of a line, not as loud as the values.
+            QuietButton(title: "Revert all") { store.revert() }
               .disabled(!store.canRevert)
               .help("Put every tag back to how this file was before this session's first change")
           }
@@ -217,16 +239,26 @@ struct MetadataView: View {
         .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: MVTheme.space(4)) {
+      HStack(spacing: MVTheme.space(6)) {
         ForEach(Self.labelSwatches, id: \.name) { swatch in
           let on = swatch.name.caseInsensitiveCompare(row.value) == .orderedSame
           Button {
             if on { store.removeTag("Xmp.xmp.Label") } else { store.setTag("Xmp.xmp.Label", swatch.name) }
           } label: {
+            // The fill alone marks a swatch; the one set wears a check, not a
+            // ring (an outline means keyboard focus).
             Circle()
               .fill(swatch.colour)
-              .frame(width: 14, height: 14)
-              .overlay(Circle().stroke(on ? MVTheme.title : MVTheme.hairline, lineWidth: on ? 2 : 1))
+              .frame(width: 16, height: 16)
+              .overlay {
+                if on {
+                  Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(swatch.name == "Yellow" ? Color.black.opacity(0.75) : Color.white)
+                    .transition(.opacity)
+                }
+              }
+              .animation(quick, value: on)
           }
           .buttonStyle(.plain)
           .disabled(!store.canEdit)
@@ -262,12 +294,11 @@ struct MetadataView: View {
             .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-          Button("Edit") {
+          QuietButton(title: "Edit") {
             dateDraft = !taken || row.value.isEmpty ? "" : String(row.value.prefix(19))
             editingDate = true
             fieldFocused = true
           }
-          .buttonStyle(FlatButtonStyle(compact: true))
           .disabled(!store.canEdit)
           .help(taken ? "Change when this was taken; every date tag in the file moves together"
                       : "Set when this was taken; the date shown is not written")
@@ -275,8 +306,8 @@ struct MetadataView: View {
         }
       }
       if editingDate {
+        // Save's surface lines up with the field above it.
         HStack(spacing: MVTheme.space(6)) {
-          Spacer().frame(width: labelWidth)
           Button("Save") { saveDate() }.buttonStyle(FlatButtonStyle(selected: true, compact: true))
           Button("Remove") {
             store.removeDate()
@@ -287,9 +318,12 @@ struct MetadataView: View {
           .help("Remove every date-taken tag")
           Button("Cancel") { cancelEdits(); store.blur() }.buttonStyle(FlatButtonStyle(compact: true))
         }
+        .padding(.leading, valueInset)
+        .transition(Self.appear)
       }
     }
     .font(MVTheme.font(14))
+    .animation(quick, value: editingDate)
   }
 
   // MARK: Location (#352)
@@ -335,23 +369,23 @@ struct MetadataView: View {
             .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-          Button("Edit") {
+          QuietButton(title: "Edit") {
             cancelEdits()
             locationDraft = store.locationText
             editingLocation = true
             fieldFocused = true
           }
-          .buttonStyle(FlatButtonStyle(compact: true))
           .disabled(!store.canEdit || !store.locationRights.canSet)
           .help(locationEditHelp)
           .accessibilityLabel("Edit location")
         }
       }
       if editingLocation {
+        // The note and the buttons start on the value column's edge.
         HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(4)) {
-          Spacer().frame(width: labelWidth + 6)
           if note.error {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(nsColor: .systemRed))
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11))
+              .foregroundStyle(Color(nsColor: .systemRed))
               .accessibilityHidden(true)
           }
           Text(note.text)
@@ -360,16 +394,20 @@ struct MetadataView: View {
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel(note.error ? "Error: " + note.text : note.text)
         }
+        .padding(.leading, valueInset)
+        .transition(Self.appear)
         HStack(spacing: MVTheme.space(6)) {
-          Spacer().frame(width: labelWidth)
           Button("Save") { saveLocation() }.buttonStyle(FlatButtonStyle(selected: true, compact: true))
             .help("Return")
           Button("Cancel") { cancelEdits(); store.blur() }.buttonStyle(FlatButtonStyle(compact: true))
             .help("Esc")
         }
+        .padding(.leading, valueInset)
+        .transition(Self.appear)
       }
     }
     .font(MVTheme.font(14))
+    .animation(quick, value: editingLocation)
     // A native alert: Esc and Return both land on Cancel; Remove must be chosen.
     .alert("Remove location from this file?", isPresented: $confirmRemoveLocation) {
       Button("Remove", role: .destructive) {
@@ -460,12 +498,14 @@ struct MetadataView: View {
         .help("Add a tag by its key, e.g. Xmp.dc.subject or Exif.Image.Artist")
       }
       .padding(MVTheme.space(10))
-      if addingTag { addTagForm }
+      if addingTag { addTagForm.transition(Self.appear) }
       if store.properties.isEmpty && !addingTag {
         ScrollView {
           VStack(alignment: .leading, spacing: 0) {
+            // On the search field's edge, as the rows below it are.
             Text(store.loading ? "Reading…" : "No metadata in this file")
-              .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(MVTheme.space(20))
+              .font(MVTheme.font(14)).foregroundStyle(MVTheme.body)
+              .padding(.horizontal, MVTheme.space(10)).padding(.vertical, MVTheme.space(6))
             AddonInfoSections()
           }
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -486,6 +526,7 @@ struct MetadataView: View {
         .scrollContentBackground(.hidden)
       }
     }
+    .animation(quick, value: addingTag)
   }
 
   private var addTagForm: some View {
@@ -518,28 +559,30 @@ struct MetadataView: View {
   }
 
   private func tagRow(_ p: MetaProperty) -> some View {
-    VStack(alignment: .leading, spacing: MVTheme.space(3)) {
-      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(6)) {
+    // The tag's name over its value, 4 pt apart; the row's own padding keeps
+    // the next tag further off than its value is.
+    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(4)) {
         Text(p.label).font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
-        Spacer(minLength: MVTheme.space(4))
+        Spacer(minLength: MVTheme.space(8))
+        // Quiet actions: the tag and its value are the heaviest marks.
         if p.editable && editing != p.rawTag {
-          Button("Edit") {
+          QuietButton(title: "Edit") {
             cancelEdits()
             draft = p.raw
             editing = p.rawTag
             fieldFocused = true
           }
-          .buttonStyle(FlatButtonStyle(compact: true))
           .help(p.access == "s" ? "Saved to the XMP sidecar; the original is never rewritten" : "Edit this tag")
           .accessibilityLabel("Edit \(p.label)")
           if p.removable {
-            Button("Remove") { store.removeTag(p.rawTag) }
-              .buttonStyle(FlatButtonStyle(compact: true))
+            QuietButton(title: "Remove") { store.removeTag(p.rawTag) }
               .accessibilityLabel("Remove \(p.label)")
           }
         } else if !p.editable {
-          Image(systemName: "lock")
-            .foregroundStyle(MVTheme.disabled)
+          Image(systemName: "lock.fill")
+            .font(.system(size: 11))
+            .foregroundStyle(MVTheme.body)
             .help(p.lockReason)
             .accessibilityLabel("Read-only: \(p.lockReason)")
         }
@@ -556,15 +599,22 @@ struct MetadataView: View {
           }
           .onExitCommand { cancelEdits(); store.blur() }
           .accessibilityLabel("New value for \(p.label)")
-        Text("Return saves · Esc cancels").font(MVTheme.font(11)).foregroundStyle(MVTheme.body)
+          .transition(.opacity)
+        Text("Return saves · Esc cancels").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          .transition(Self.appear)
       } else {
+        // The theme's family, as every other value in the pane (not a 10 pt
+        // monospaced caption).
         Text(p.value.isEmpty ? "—" : p.value)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(MVTheme.body)
+          .font(MVTheme.font(13))
+          .foregroundStyle(p.value.isEmpty ? MVTheme.disabled : MVTheme.body)
           .lineLimit(3)
           .textSelection(.enabled)
+          .transition(.opacity)
       }
     }
+    .padding(.vertical, MVTheme.space(4))
+    .animation(quick, value: editing == p.rawTag)
     .help(p.rawTag)  // the untranslated origin, always one hover away
   }
 
@@ -588,16 +638,23 @@ struct MetadataView: View {
           }
         }
         if !store.chapters.isEmpty {
-          Text("Chapters").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
-          ForEach(store.chapters) { c in
-            HStack {
-              Text(timecode(c.startMs)).font(.system(.callout, design: .monospaced)).foregroundStyle(MVTheme.body)
-              Text(c.title.isEmpty ? "Chapter \(c.id + 1)" : c.title).foregroundStyle(MVTheme.title)
+          // One group: the heading close over its rows, the rows a list's
+          // pitch apart (not the 14 between streams). Times in tabular
+          // figures of the theme's family, so the titles share one edge.
+          VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+            Text("Chapters").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
+              .padding(.bottom, MVTheme.space(2))
+            ForEach(store.chapters) { c in
+              HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
+                Text(timecode(c.startMs)).font(MVTheme.font(13).monospacedDigit()).foregroundStyle(MVTheme.body)
+                Text(c.title.isEmpty ? "Chapter \(c.id + 1)" : c.title).font(MVTheme.font(13))
+                  .foregroundStyle(MVTheme.title)
+              }
             }
           }
         }
         if store.streams.isEmpty {
-          Text(store.loading ? "Reading…" : "No streams").foregroundStyle(MVTheme.body)
+          Text(store.loading ? "Reading…" : "No streams").font(MVTheme.font(14)).foregroundStyle(MVTheme.body)
         }
       }
       .padding(MVTheme.space(14))
