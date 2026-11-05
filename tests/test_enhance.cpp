@@ -597,7 +597,7 @@ TEST_CASE("enhance: a restart never fetches a wanted kind with nothing here (a c
   const std::size_t calls = f.net->count();
   f.restart();
   fs::remove(f.data / "models/audio/denoise.onnx");  // the pinned file is not the one here
-  REQUIRE(f.eng->current_prefs().want(model_kind::audio));
+  REQUIRE(f.eng->current_prefs().want("audio.model"));
   f.eng->resume_wanted();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   CHECK(f.net->count() == calls);
@@ -1761,6 +1761,37 @@ TEST_CASE("one click: Restore faces is a card with its Look, Strength and time",
   CHECK(*t.node("go.faces")->str("label") == "Download (1 MB) and restore faces");
 }
 #endif
+
+TEST_CASE("one click: a card whose kind has two models offers the choice, greyed while a run goes",
+          "[enhance][tool]") {
+  // The merge of #570's model per kind with the cards: Enhance image's
+  // Sharpen & restore kind ships HAT (model.json) and Real-ESRGAN (x4plus).
+  card_view c;
+  c.tool = photo_target::detail;
+  sheet_section s;
+  s.kind = model_kind::still;
+  s.models = {{"model", "Sharpen & restore"}, {"x4plus", "Real-ESRGAN"}};
+  s.model = "x4plus";
+  c.v.item = item_kind::still;
+  c.v.sections.push_back(s);
+  {
+    const std::string tree = cards_tree(std::span<const card_view>(&c, 1), run_view{});
+    INFO(tree);
+    parsed t(tree);
+    REQUIRE(t.has("model.still"));
+    CHECK(*t.node("model.still")->str("value") == "x4plus");
+    CHECK(t.node("model.still")->find("options")->a.size() == 2);
+    CHECK_FALSE(t.node("model.still")->boolean("disabled").value_or(false));
+    mv::addon::screen::tree st;
+    CHECK(st.set(tree) == mv::addon::screen::error::none);
+  }
+  run_view busy;
+  busy.state = run_state::running;
+  CHECK(parsed(cards_tree(std::span<const card_view>(&c, 1), busy)).node("model.still")->boolean("disabled").value_or(false));
+  // One model: nothing to choose.
+  c.v.sections.front().models.clear();
+  CHECK_FALSE(parsed(cards_tree(std::span<const card_view>(&c, 1), run_view{})).has("model.still"));
+}
 
 TEST_CASE("one click: a library photo's result has no Move to Bin and its key is never text", "[enhance][tool]") {
   run_view r;

@@ -185,7 +185,7 @@ constexpr UINT kMsgPrintDone = WM_APP + 0x83;
 // S0 (docs/plans/edit-refresh.md §5): a worker began (wparam 1) or ended (0)
 // reading a cloud placeholder (OneDrive, iCloud for Windows), which comes
 // down with that read. The status line says so meanwhile.
-constexpr UINT kMsgCloudFetch = WM_APP + 0x84;
+constexpr UINT kMsgCloudFetch = WM_APP + 0x8D;  // 0x84 is the Video Editor's Auto light (kMsgEditorAutoLight)
 // docs/plans/edit-refresh.md S3: a canvas-tool job finished, the eyes of a
 // still or Find eyes' fixes (LPARAM: a tool_job_result the handler owns).
 constexpr UINT kMsgToolJob = WM_APP + 0x85;
