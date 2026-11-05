@@ -687,6 +687,7 @@ struct LocalSearchSection: View {
   @ObservedObject var store = LocalSearchStore.shared
   @ObservedObject var settings = SettingsStore.shared
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorSchemeContrast) private var contrast
 
   var body: some View {
     if store.supported {
@@ -739,13 +740,11 @@ struct LocalSearchSection: View {
         }
       }
     }
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+    .modifier(LocalSearchCard(radius: 8, contrast: contrast))
     // docs/design/23: offered once Core is installed, on a Mac that carries the pieces.
     if store.coreInstalled, !store.removing.contains("ai"), store.finalCut != 0 {
       finalCutRow
-        .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+        .modifier(LocalSearchCard(radius: 8, contrast: contrast))
         .transition(.opacity)
     }
     if let id = store.confirmingRemove {
@@ -759,10 +758,9 @@ struct LocalSearchSection: View {
     }
     AddonRestartButton()
     if store.loading {
-      HStack(spacing: MVTheme.space(8)) {
-        ProgressView().controlSize(.small)
-        Text(LocalSearchStore.startingText).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-      }
+      // Loading the pack takes seconds (it verifies its files): the shared
+      // progress line, not a spinner (docs/design/20 "Craft rules").
+      startingLine
     } else if store.onDemand {
       // Issue #292: nothing of the pack runs until the first search; its own
       // settings (compute, folders, People) need it running.
@@ -800,10 +798,7 @@ struct LocalSearchSection: View {
          : "Local search is not installed. " + LocalSearchStore.elsewhereText)
     if store.coreInstalled {
       if store.loading {
-        HStack(spacing: MVTheme.space(8)) {
-          ProgressView().controlSize(.small)
-          Text("Starting Local search…").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-        }
+        startingLine
       } else if !store.loaded && !store.loadReason.isEmpty {
         note(store.loadError == "NOT_FOUND" ? store.loadReason : "Local search couldn't start. " + store.loadReason)
       }
@@ -823,8 +818,12 @@ struct LocalSearchSection: View {
       VStack(alignment: .leading, spacing: MVTheme.space(3)) {
         HStack(spacing: MVTheme.space(6)) {
           Text("Final Cut Pro").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-          Text(store.finalCut == 2 ? "On" : store.finalCut == 3 ? "Waiting for approval" : "Off")
-            .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          // Say it once: Turn on / Turn off already says on or off; only the
+          // state that needs the person is worth a word.
+          if store.finalCut == 3 {
+            Text("Waiting for approval").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+              .transition(.opacity)
+          }
         }
         Text(finalCutDetail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
@@ -911,8 +910,7 @@ struct LocalSearchSection: View {
     }
     .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(12)).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(12)).stroke(MVTheme.hairline, lineWidth: 1))
+    .modifier(LocalSearchCard(radius: 12, contrast: contrast))
   }
 
   @ViewBuilder
@@ -962,11 +960,11 @@ struct LocalSearchSection: View {
         }
         .transition(.opacity)
       } else if store.removing.contains(piece.id) {
-        HStack(spacing: MVTheme.space(6)) {
-          ProgressView().controlSize(.small)
-          Text("Removing…").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-        }
-        .transition(.opacity)
+        // Unloading and deleting up to gigabytes: the shared line in the
+        // install bar's slot, not a spinner (the Windows twin's).
+        ProgressLine(verb: "Removing", fraction: nil)
+          .frame(width: 200, alignment: .leading)
+          .transition(.opacity)
       } else if piece.installed {
         // Clicks queue behind an install in progress (owner request,
         // 2026-09-28); only Remove waits for the queue to finish.
@@ -1026,6 +1024,31 @@ struct LocalSearchSection: View {
   private func note(_ text: String) -> some View {
     Text(text).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       .fixedSize(horizontal: false, vertical: true)
+  }
+
+  /// "Starting Local search…" on the calm sweep: a wait of seconds, said once.
+  /// The Windows twin is WaitLine.
+  private var startingLine: some View {
+    ProgressLine(verb: "Starting Local search", fraction: nil)
+      .frame(maxWidth: 320, alignment: .leading)
+      .transition(.opacity)
+  }
+}
+
+/// A Settings card: a fill alone marks it (docs/design/20 "Craft rules": no
+/// redundant tonal border); with Increase Contrast the hairline edge returns.
+private struct LocalSearchCard: ViewModifier {
+  let radius: CGFloat
+  let contrast: ColorSchemeContrast
+
+  func body(content: Content) -> some View {
+    content
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(radius)).fill(MVTheme.surface))
+      .overlay {
+        if contrast == .increased {
+          RoundedRectangle(cornerRadius: MVTheme.radius(radius)).stroke(MVTheme.hairline, lineWidth: 1)
+        }
+      }
   }
 }
 
@@ -1092,11 +1115,14 @@ struct LocalSearchBarItem: View {
         HStack(spacing: MVTheme.space(7)) {
           ProgressRing(progress: store.pillProgress, spinning: store.pillSpinning && !reduceMotion)
             .frame(width: 14, height: 14)
+          // The count rolls in place in tabular digits, so "Indexing 1,204 of
+          // 3,310" does not jiggle at 2 Hz (docs/design/20 "Craft rules").
           Text(store.pillText)
-            .font(MVTheme.font(13))
+            .font(MVTheme.font(13).monospacedDigit())
             .foregroundStyle(MVTheme.title)
             .lineLimit(1)
             .contentTransition(.numericText())
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.pillText)
         }
         .padding(.horizontal, MVTheme.space(10)).padding(.vertical, MVTheme.space(5))
         .background(Capsule().fill(Color.primary.opacity(hover ? 0.10 : 0.06)))
@@ -1104,6 +1130,8 @@ struct LocalSearchBarItem: View {
       }
       .buttonStyle(.plain)
       .onHover { hover = $0 }
+      // The hover step fades in and out (150 ms), never in one frame.
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hover)
       .contextMenu {
         Button("Open search") { store.openSearchWhenReady() }
         if store.pillOnBattery && !store.elsewhere {

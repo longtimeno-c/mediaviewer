@@ -485,7 +485,16 @@ public static partial class IslandHost
             return;  // the clipboard is busy (another app holds it): the click still counts
         }
         object? before = b.Content;
-        b.Content = SText("✓ Copied", Title, UiFontSize - 2);
+        // The icon set's check, not a text glyph (the Mac's Label "checkmark"),
+        // in the button's own ink; the new label fades in on the button itself.
+        var done = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+        done.Children.Add(new FontIcon { Glyph = "", FontFamily = SymbolFont, FontSize = 12, Foreground = b.Foreground,
+                                         VerticalAlignment = VerticalAlignment.Center });
+        TextBlock words = SText("Copied", Title, UiFontSize - 2);
+        words.Foreground = b.Foreground;
+        done.Children.Add(words);
+        b.Content = done;
+        FadeInScreenContent(done);
         AutomationProperties.SetName(b, "Copied");
         DispatcherQueueTimer? t = b.DispatcherQueue?.CreateTimer();
         if (t == null) return;
@@ -494,9 +503,42 @@ public static partial class IslandHost
         t.Tick += (_, _) =>
         {
             b.Content = before;
+            if (before is UIElement back) FadeInScreenContent(back);
             AutomationProperties.SetName(b, label);
         };
         t.Start();
+    }
+
+    // A label that changed in place fades in (150 ms, ease out), the Mac's
+    // crossfade; with Windows' animations off it simply shows.
+    private static void FadeInScreenContent(UIElement e)
+    {
+        e.Opacity = 1;
+        if (!HostAnimationsEnabled()) return;
+        try
+        {
+            var fade = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+            {
+                From = 0,
+                To = 1,
+                Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                EasingFunction = new Microsoft.UI.Xaml.Media.Animation.CubicEase
+                {
+                    EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut,
+                },
+            };
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(fade, e);
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+            var board = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+            board.Children.Add(fade);
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            // Cosmetic: the label is there either way.
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            e.Opacity = 1;
+        }
     }
 
     /// <summary>
@@ -774,13 +816,20 @@ public static partial class IslandHost
 
     // ---- #442 additions: card, ring, tiles, code entry ------------------------------
 
+    // A Windows contrast theme paints the surface in the window colour: there the
+    // card's outline is what carries it (as Surface2, IslandHost.Theme.cs).
+    private static bool HighContrastOn => _accessibilitySettings?.HighContrast == true;
+
+    // "look": "card": the fill alone marks it (docs/design/20 "Craft rules": no
+    // redundant tonal border); a contrast theme keeps the outline. The Mac twin
+    // is CardLook.
     private static Border ScreenCard(UIElement content) => new()
     {
         Child = content,
         Padding = Pad(14),
         Background = Brush(ChromeColour.Surface),
         BorderBrush = Brush(Hairline),
-        BorderThickness = new Thickness(1),
+        BorderThickness = new Thickness(HighContrastOn ? 1 : 0),
         CornerRadius = Corner(10),
         HorizontalAlignment = HorizontalAlignment.Stretch,
     };
@@ -1031,15 +1080,19 @@ public static partial class IslandHost
             shown.Text = $"{label}: {ScreenNumberJson(value)}";
             SendScreenEvent(at, id, SlotNative.EventChange, ScreenNumberJson(value));
         }
-        Button minus = ScreenButton("−", () => Step(-step));
-        Button plus = ScreenButton("+", () => Step(step));
-        foreach (Button b in new[] { minus, plus })
+        Button minus = ScreenButton("", () => Step(-step));
+        Button plus = ScreenButton("", () => Step(step));
+        // The icon set's Remove and Add (the Mac's Stepper), not text glyphs; each
+        // named and tipped, as every icon-only control is.
+        foreach ((Button b, string glyph, string name) in new[]
+                 { (minus, "", $"Decrease {label}"), (plus, "", $"Increase {label}") })
         {
+            b.Content = new FontIcon { Glyph = glyph, FontFamily = SymbolFont, FontSize = 12, Foreground = b.Foreground };
             b.AllowFocusOnInteraction = true;
             b.IsTabStop = true;
+            AutomationProperties.SetName(b, name);
+            ToolTipService.SetToolTip(b, name);
         }
-        AutomationProperties.SetName(minus, $"Decrease {label}");
-        AutomationProperties.SetName(plus, $"Increase {label}");
         row.Children.Add(shown);
         row.Children.Add(minus);
         row.Children.Add(plus);
@@ -1067,7 +1120,8 @@ public static partial class IslandHost
             for (int c = 0; c < columns.Length; ++c)
             {
                 header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                TextBlock h = SText(JStr(columns[c], "title"), Body, UiFontSize - 4, bold: true);
+                // The body colour carries the header (the Mac's): no second weight step.
+                TextBlock h = SText(JStr(columns[c], "title"), Body, UiFontSize - 4);
                 Grid.SetColumn(h, c);
                 header.Children.Add(h);
             }
@@ -1095,7 +1149,8 @@ public static partial class IslandHost
             }
             else
             {
-                var col = new StackPanel { Spacing = Space(1) };
+                // A title over its detail reads as one item: the Mac's 2 pt gap.
+                var col = new StackPanel { Spacing = Space(2) };
                 col.Children.Add(SText(JStr(r, "text"), Title, UiFontSize - 2));
                 string detail = JStr(r, "detail");
                 if (detail.Length > 0) col.Children.Add(SText(detail, Body, UiFontSize - 4));

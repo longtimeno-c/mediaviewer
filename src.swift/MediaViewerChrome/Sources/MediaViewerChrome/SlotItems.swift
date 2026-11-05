@@ -60,6 +60,7 @@ extension Array {
 /// The add-ons' command-bar buttons and status text, after the chrome's own.
 struct SlotBarItems: View {
   @ObservedObject private var slots = SlotStore.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     HStack(spacing: MVTheme.space(2)) {
@@ -78,10 +79,14 @@ struct SlotBarItems: View {
       }
       ForEach(slots.status, id: \.id) { status in
         if status.opens.isEmpty {
+          // A status that counts ("Receiving 40 %") rolls in place in tabular
+          // digits; its neighbours do not jump (docs/design/20 "Craft rules").
           Text(status.text)
-            .font(MVTheme.font(13))
+            .font(MVTheme.font(13).monospacedDigit())
             .foregroundStyle(MVTheme.body)
             .lineLimit(1)
+            .contentTransition(.numericText())
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: status.text)
             .padding(.horizontal, MVTheme.space(6))
             .help(status.label)
             .accessibilityLabel("\(status.label): \(status.text)")
@@ -92,6 +97,8 @@ struct SlotBarItems: View {
             slots.openScreen(addon: status.addon, screen: status.opens)
           } label: {
             Text(status.text).lineLimit(1)
+              .contentTransition(.numericText())
+              .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: status.text)
           }
           .buttonStyle(StatusButtonStyle())
           .help("Open \(status.label)")
@@ -109,14 +116,17 @@ private struct StatusButtonStyle: ButtonStyle {
   private struct StatusButtonBody: View {
     let configuration: Configuration
     @State private var hover = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
       configuration.label
-        .font(MVTheme.font(13))
+        .font(MVTheme.font(13).monospacedDigit())
         .foregroundStyle(MVTheme.body)
         .padding(.horizontal, MVTheme.space(6)).padding(.vertical, MVTheme.space(3))
         .background(
           RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(
             configuration.isPressed ? 0.11 : (hover ? 0.06 : 0))))
+        // The wash fades in and out, never in one frame.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hover)
         .contentShape(Rectangle())
         .onHover { inside in
           guard inside != hover else { return }
@@ -132,6 +142,7 @@ private struct StatusButtonStyle: ButtonStyle {
 struct SlotPathItems: View {
   @ObservedObject private var slots = SlotStore.shared
   @State private var hover: String?
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     ForEach(slots.items(in: "path")) { item in
@@ -146,7 +157,12 @@ struct SlotPathItems: View {
       }
       .buttonStyle(.plain)
       .foregroundStyle(MVTheme.title)
-      .onHover { hover = $0 ? item.id : nil }
+      .onHover { inside in
+        // The wash fades in and out (150 ms), never in one frame.
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+          if inside { hover = item.id } else if hover == item.id { hover = nil }
+        }
+      }
       .help(item.label)
       .accessibilityLabel(item.label)
     }
@@ -190,11 +206,14 @@ struct SlotTileBadges: View {
     if !badges.isEmpty {
       HStack(spacing: MVTheme.space(2)) {
         ForEach(badges, id: \.key) { badge in
+          // Filled at this size, on an opaque 18 pt disc over the thumbnail
+          // (nothing translucent over the picture), as the Windows twin's.
           Image(systemName: slotSymbol(badge.symbol))
+            .symbolVariant(.fill)
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(MVTheme.space(4))
-            .background(Circle().fill(MVTheme.accent.opacity(0.9)))
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(MVTheme.accent))
             .help(badge.label)
         }
       }
@@ -257,14 +276,18 @@ struct SlotLocalMore: View {
       Button {
         addToList(rows)
       } label: {
-        Text(names.isEmpty ? "+ \(rows.count) more from add-ons" : "+ \(rows.count) in \(names)")
+        // The icon set's plus, not a "+" typed into the words.
+        Label(names.isEmpty ? "\(rows.count) more from add-ons" : "\(rows.count) in \(names)",
+              systemImage: "plus")
+          .labelStyle(.titleAndIcon)
       }
       .buttonStyle(FlatButtonStyle(compact: true))
       .help("Add what other Local search providers matched to these results")
       .accessibilityLabel("Add \(rows.count) more results from add-ons")
     } else if slots.localResults.searching && slots.localResults.total > 0 {
       Text("Still reading tags — \(slots.localResults.read) of \(slots.localResults.total)")
-        .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+        .font(MVTheme.font(12).monospacedDigit()).foregroundStyle(MVTheme.body)
+        .contentTransition(.numericText())
     }
   }
 
