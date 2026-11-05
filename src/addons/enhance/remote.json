@@ -40,5 +40,11 @@
   "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349", "licence": "CreativeML-OpenRAIL-M"},
  {"url": "https://huggingface.co/ForserX/instruct-pix2pix-onnx/resolve/9d38efb6e903dd2be121b598bac4c5fea1d5db2a/tokenizer/merges.txt",
   "path": "restyle/merges.txt", "size": 524619,
-  "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a", "licence": "CreativeML-OpenRAIL-M"}
+  "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a", "licence": "CreativeML-OpenRAIL-M"},
+ {"url": "https://huggingface.co/facefusion/models-3.0.0/resolve/728b9659bd9691bf32cbf7f61af478d94b7ba81e/restoreformer_plus_plus.onnx",
+  "path": "face/restoreformer_plus_plus.onnx", "size": 294264232,
+  "sha256": "164818b70d1745da4108a45c9263b05452236d14ac0ffab2202af0ac4a438195", "licence": "Apache-2.0"},
+ {"url": "https://huggingface.co/neurobytemind/GFPGANv1.4.onnx/resolve/e3fd467e3a83420614abb9bf0b1c2c3addd359bc/GFPGANv1.4.onnx",
+  "path": "face/GFPGANv1.4.onnx", "size": 340256686,
+  "sha256": "cd7311b8d9e13cdb1e208b12363182da58c7bf45e26d1aa67bbeac4751aae92e", "licence": "Apache-2.0"}
 ]

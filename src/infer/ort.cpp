@@ -430,6 +430,11 @@ const std::string& session::last_error() noexcept { return t_last_error; }
 using named_input_element = session::element;
 
 result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> inputs) const {
+  return run_named(inputs, std::span<const std::string>(p_->out_names));
+}
+
+result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> inputs,
+                                                   std::span<const std::string> outputs) const {
   const OrtApi* api = p_->api;
   t_last_error.clear();
   values ins(api);
@@ -486,7 +491,14 @@ result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> 
     in_names.push_back(it->c_str());
   }
   std::vector<const char*> out_names;
-  for (const auto& n : p_->out_names) out_names.push_back(n.c_str());
+  for (const std::string& n : outputs) {
+    if (std::find(p_->out_names.begin(), p_->out_names.end(), n) == p_->out_names.end()) {
+      t_last_error = "no output " + n;
+      return err(status::invalid_arg);
+    }
+    out_names.push_back(n.c_str());
+  }
+  if (out_names.empty()) return err(status::invalid_arg);
   values outs(api);
   outs.v.assign(out_names.size(), nullptr);
   if (!ok(api, api->Run(p_->s, nullptr, in_names.data(), ins.v.data(), ins.v.size(), out_names.data(),

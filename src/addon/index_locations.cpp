@@ -18,6 +18,7 @@ struct source_state {
   std::condition_variable idle;
   index_location_source source;  // under m
   eyes_source eyes;              // under m (slice 6)
+  faces_source faces;            // under m (edit-refresh S10)
   std::uint32_t in_flight = 0;   // under m
   // Bumped by every publish and retract; a call in flight compares it per row
   // without the lock.
@@ -62,6 +63,7 @@ void retract_index_locations() noexcept {
     gone = std::move(s.source);
     s.source = nullptr;
     s.eyes = nullptr;
+    s.faces = nullptr;
     s.epoch.fetch_add(1, std::memory_order_acq_rel);
   }
 }
@@ -141,6 +143,55 @@ eyes_source ai_eyes(const mv_ai_api* api) {
       st = api->eyes_json(api->ctx, path.c_str(), candidates.c_str(), out.data(),
                           static_cast<std::uint32_t>(out.size()), &needed);
     }
+    if (st != MV_OK) return err(static_cast<status>(st));
+    out.resize(std::strlen(out.c_str()));
+    return out;
+  };
+}
+
+void publish_ai_faces(faces_source source) {
+  source_state& s = state();
+  std::lock_guard lock(s.m);
+  s.faces = std::move(source);
+}
+
+result<std::string> ai_faces_json(const std::uint8_t* rgb, std::uint32_t width, std::uint32_t height,
+                                  std::uint32_t stride, const std::uint8_t* other) {
+  source_state& s = state();
+  faces_source faces;
+  {
+    std::lock_guard lock(s.m);
+    if (!s.faces) return err(status::not_found);
+    faces = s.faces;
+    ++s.in_flight;
+  }
+  struct leave {
+    source_state& s;
+    ~leave() {
+      std::lock_guard lock(s.m);
+      if (--s.in_flight == 0) s.idle.notify_all();
+    }
+  } on_leave{s};
+  return faces(rgb, width, height, stride, other);
+}
+
+faces_source ai_faces(const mv_ai_api* api) {
+  if (!api || api->struct_size < offsetof(mv_ai_api, faces_json) + sizeof(api->faces_json) || !api->faces_json) {
+    return nullptr;
+  }
+  return [api](const std::uint8_t* rgb, std::uint32_t width, std::uint32_t height, std::uint32_t stride,
+               const std::uint8_t* other) -> result<std::string> {
+    std::string out(16 * 1024, '\0');
+    std::uint32_t needed = 0;
+    mv_status st = api->faces_json(api->ctx, rgb, width, height, stride, other, out.data(),
+                                   static_cast<std::uint32_t>(out.size()), &needed);
+    if (st == MV_ERR_INVALID_ARG && needed > out.size()) {
+      out.assign(needed, '\0');
+      st = api->faces_json(api->ctx, rgb, width, height, stride, other, out.data(),
+                           static_cast<std::uint32_t>(out.size()), &needed);
+    }
+    // The pack's invalid_arg with room enough: People is off.
+    if (st == MV_ERR_INVALID_ARG && needed <= out.size()) return err(status::permission_denied);
     if (st != MV_OK) return err(static_cast<status>(st));
     out.resize(std::strlen(out.c_str()));
     return out;

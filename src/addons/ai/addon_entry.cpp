@@ -354,6 +354,32 @@ mv_status MV_CALL t_eyes_json(void* ctx, const char* path, const char* candidate
     return write_out(*r, out, cap, needed);
   });
 }
+// docs/plans/edit-refresh.md S10: Restore faces' landmarks and its identity guard.
+mv_status MV_CALL t_faces_json(void* ctx, const uint8_t* rgb, uint32_t width, uint32_t height, uint32_t stride,
+                               const uint8_t* other, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    if (!rgb || width == 0 || height == 0 || width > 16384 || height > 16384 ||
+        std::uint64_t{width} * height > 100'000'000ull || stride < width * 3) {
+      return MV_ERR_INVALID_ARG;
+    }
+    auto frame_of = [&](const uint8_t* src) {
+      rgb_frame f;
+      f.width = width;
+      f.height = height;
+      f.rgb.resize(std::size_t{width} * height * 3);
+      for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(f.rgb.data() + std::size_t{y} * width * 3, src + std::size_t{y} * stride, std::size_t{width} * 3);
+      }
+      return f;
+    };
+    const rgb_frame img = frame_of(rgb);
+    rgb_frame changed;
+    if (other) changed = frame_of(other);
+    auto r = eng(ctx).faces_json(img, other ? &changed : nullptr);
+    if (!r) return to_mv(r.error());
+    return write_out(*r, out, cap, needed);
+  });
+}
 mv_status MV_CALL t_root_documents(void* ctx, uint64_t root, uint32_t docs) {
   return guard([&] {
     auto r = eng(ctx).root_set_documents(static_cast<std::int64_t>(root), docs);
@@ -535,6 +561,7 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.each_location = &t_each_location;
     a.root_set_documents = &t_root_documents;  // #354
     a.eyes_json = &t_eyes_json;                // edit-adjust slice 6
+    a.faces_json = &t_faces_json;              // edit-refresh S10
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

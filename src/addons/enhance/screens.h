@@ -97,6 +97,7 @@ struct sheet_view {
   bool offers_restyle = false;
   bool offers_remove = false;  // slice 7: something is brushed and Remove has a model
   bool offers_extend = false;  // Remove's model, extending the picture's edges
+  bool offers_faces = false;   // S10: Restore faces has a model
   photo_target photo = photo_target::detail;
   // The performance level in effect: Restyle's qualities above what it allows
   // are shown disabled with the level they need (docs/plans/edit-refresh.md S9).

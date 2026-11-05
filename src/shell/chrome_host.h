@@ -279,6 +279,10 @@ enum class chrome_edit_action : std::int32_t {
   // take_tree_path, as for chrome_cmd_open_path.
   enhance_result_show = 13,
   enhance_result_keep = 14,
+  // docs/plans/edit-refresh.md S10: the Faces card's and the flyout's Restore
+  // faces: Enhance's docked panel on Restore faces (its tool "faces"), else its
+  // sheet started on Restore faces (its "faces" command).
+  restore_faces = 15,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);

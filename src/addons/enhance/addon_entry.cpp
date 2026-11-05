@@ -199,6 +199,8 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       if (node == "open" || node == "enhance") g->eng->command(paths_of(e->value_json));
       // The Edit strip's wand menu: the sheet, started on Restyle with words.
       if (node == "restyle") g->eng->command(paths_of(e->value_json), {}, mv::enhance::photo_target::restyle);
+      // S10: the Edit pane's Faces card and its wand row (Restore faces).
+      if (node == "faces") g->eng->command(paths_of(e->value_json), {}, mv::enhance::photo_target::faces);
       // The Video Editor's Enhance…: the clip, and the edit's kept ranges.
       std::string path;
       std::vector<std::int64_t> keep;

@@ -9,8 +9,8 @@
 // is a new file (or a new Photos-library photo); the original never changes.
 // The Windows twin is IslandHost.EnhanceHub.cs.
 //
-// S5 (owner call B): Remove, Restyle, Enhance image and Extend run inside the
-// pane. A card asks Enhance for its docked screen (place "edit", the
+// S5 (owner call B): Remove, Restyle, Enhance image and Extend (and S10's
+// Restore faces, under the Faces card) run inside the pane. A card asks Enhance for its docked screen (place "edit", the
 // workspace's enhance/tool command), which is drawn under that card
 // (DockedToolPanel): the tool's knobs, the preview, the glowing progress with
 // the time left, Cancel, and the result row. The row's Show and Keep editing
@@ -22,7 +22,9 @@ import SwiftUI
 
 /// One tool as both the cards and the popover show it.
 struct EnhanceTool: Identifiable {
-  enum Kind { case remove, restyle, faces, detail, extend }
+  /// restoreFaces (S10) is the Faces card's second button and a popover row
+  /// of its own, not a sixth card.
+  enum Kind { case remove, restyle, faces, detail, extend, restoreFaces }
   let kind: Kind
   var id: Kind { kind }
 
@@ -34,9 +36,15 @@ struct EnhanceTool: Identifiable {
     case .restyle: return "restyle"
     case .detail: return "detail"
     case .extend: return "extend"
+    case .restoreFaces: return "faces"
     case .faces: return nil
     }
   }
+
+  /// The docked tree a card draws under it: its own tool's, and for the Faces
+  /// card Restore faces' (S10: its second button), Open closed eyes staying
+  /// the host's.
+  var dockedWord: String? { kind == .faces ? "faces" : photo }
 
   var title: String {
     switch kind {
@@ -45,6 +53,7 @@ struct EnhanceTool: Identifiable {
     case .faces: return "Faces"
     case .detail: return "Enhance image"
     case .extend: return "Extend edges"
+    case .restoreFaces: return "Restore faces"
     }
   }
 
@@ -52,9 +61,11 @@ struct EnhanceTool: Identifiable {
     switch kind {
     case .remove: return "Brush over what to take out; it is filled in from around it."
     case .restyle: return "Describe a new look in words: a snowy day, golden hour."
-    case .faces: return "Open closed eyes, or a better face of the same person from your photos."
+    case .faces: return "Open closed eyes, or restore blurred faces so they look sharp and clear."
     case .detail: return "Sharpen and restore, remove noise or blur, or enlarge, with a model on this Mac."
     case .extend: return "More picture around the edges, to a wider or taller frame."
+    case .restoreFaces:
+      return "Sharper, clearer faces, each checked by People to still look like the same person. Saves a new file."
     }
   }
 
@@ -65,11 +76,21 @@ struct EnhanceTool: Identifiable {
     case .faces: return "face.smiling"
     case .detail: return "sparkles"
     case .extend: return "arrow.up.left.and.arrow.down.right"
+    case .restoreFaces: return "person.crop.circle.badge.checkmark"
     }
   }
 
   static let all: [EnhanceTool] = [.init(kind: .remove), .init(kind: .restyle), .init(kind: .faces),
                                    .init(kind: .detail), .init(kind: .extend)]
+  /// The ✦ popover's rows: the cards, with Restore faces after Faces while
+  /// Enhance is there.
+  @MainActor static func popover(_ store: EditStore) -> [EnhanceTool] {
+    var rows = all
+    if store.enhance, let i = rows.firstIndex(where: { $0.kind == .faces }) {
+      rows.insert(.init(kind: .restoreFaces), at: i + 1)
+    }
+    return rows
+  }
 }
 
 /// What a card's chip and button say for the photo on screen, from the edit
@@ -108,6 +129,15 @@ struct EnhanceToolState {
     case .extend:
       if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
       else { (chip, chipText, action, enabled) = (.ready, "Ready", "Choose a frame", store.offersExtend) }
+    case .restoreFaces:
+      if !store.enhance { (chip, chipText, action, enabled) = (.needsAddon, "Needs Enhance", "Get Enhance…", true) }
+      else if !store.offersRestoreFaces {
+        (chip, chipText, action, enabled) = (.needsAddon, "Not offered", "Restore faces…", false)
+      } else if store.facesReady {
+        (chip, chipText, action, enabled) = (.ready, "Ready", "Restore faces…", true)
+      } else {
+        (chip, chipText, action, enabled) = (.needsPeople, "Needs People", "Restore faces…", true)
+      }
     }
   }
 
@@ -130,6 +160,7 @@ struct EnhanceToolState {
     case .faces: store.openClosedEyes()
     case .restyle, .detail, .extend:
       if let photo = tool.photo { store.enhanceTool(photo) }
+    case .restoreFaces: store.restoreFaces()  // S10: docked under the Faces card
     }
   }
 }
@@ -299,7 +330,7 @@ struct EnhanceCard: View {
 
   /// Enhance's docked screen when it is open on this card's tool.
   private var docked: SlotScreen? {
-    guard let photo = tool.photo,
+    guard let photo = tool.dockedWord,
           let screen = slots.screens.first(where: { $0.place == "edit" && $0.addon == "enhance" }),
           let root = screen.tree?.id, root == "tool." + photo
     else { return nil }
@@ -329,8 +360,9 @@ struct EnhanceCard: View {
         .foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: MVTheme.space(6)) {
-        // Docked, the panel below carries the run (Remove keeps its brush buttons).
-        if docked == nil || tool.kind == .remove {
+        // Docked, the panel below carries the run (Remove keeps its brush
+        // buttons; Faces keeps Open closed eyes, the panel being Restore faces').
+        if docked == nil || tool.kind == .remove || tool.kind == .faces {
           Button(state.action) { EnhanceToolState.run(tool, store) }
             .buttonStyle(AccentButtonStyle(filled: state.chip != .needsAddon && state.chip != .needsPeople))
             .disabled(!state.enabled)
@@ -350,6 +382,19 @@ struct EnhanceCard: View {
             .help("Each face replaced by a clearly better one of the same person from your photos (People in Local search). Saves a new file.")
         }
         Spacer(minLength: 0)
+      }
+      if tool.kind == .faces && store.enhance && docked == nil {
+        // S10: Enhance's face model, guarded by People; its own row so the
+        // card fits the narrowest pane. Docked, the panel below carries its run.
+        let restore = EnhanceToolState(.init(kind: .restoreFaces), store)
+        HStack(spacing: MVTheme.space(6)) {
+          Button("Restore faces…") { EnhanceToolState.run(.init(kind: .restoreFaces), store) }
+            .buttonStyle(FlatButtonStyle(compact: true))
+            .disabled(!restore.enabled)
+            .help(EnhanceTool(kind: .restoreFaces).purpose)
+            .accessibilityLabel("Restore faces, \(restore.chipText)")
+          Spacer(minLength: 0)
+        }
       }
       if tool.kind == .remove && store.brushFull {
         Text("Brush full: Remove, then brush more.")
@@ -493,7 +538,7 @@ struct EnhanceToolsPopover: View {
     VStack(alignment: .leading, spacing: MVTheme.space(2)) {
       Text("Enhance tools").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .padding(.horizontal, MVTheme.space(8)).padding(.bottom, MVTheme.space(4))
-      ForEach(EnhanceTool.all) { tool in
+      ForEach(EnhanceTool.popover(store)) { tool in
         PopoverRow(tool: tool, state: EnhanceToolState(tool, store)) {
           dismiss()
           EnhanceToolState.run(tool, store)

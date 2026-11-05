@@ -160,15 +160,20 @@ each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, 
 (`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
 the docked panel runs on what is brushed), *Set up Restyle*, *Set up* (Enhance image) and *Choose a
 frame* (Extend), *Open closed eyes* and *Improve faces* (the Mac; Windows has Open closed eyes, its
-Improve faces twin is S8's). *Enhance image* offers its five models: Sharpen & restore, Natural,
+Improve faces twin is S8's). The Faces card also has **Restore faces…** on a row of its own
+(docs/plans/edit-refresh.md S10; both hosts): Enhance's docked panel on its `faces` tool, drawn under
+the Faces card (the card keeps Open closed eyes), or without it Enhance's `faces` command, its sheet
+started on Restore faces ([29](29-enhance.md) "Restore faces"); enabled by `kWandRestoreFaces`
+(1024: Enhance has that command); the ✦ popover / `Flyout` lists it as a row after Faces while
+Enhance is installed. *Enhance image* offers its five models: Sharpen & restore, Natural,
 Remove noise, Remove blur and Remove motion blur, each downloaded when first chosen (the docked
 panel's and the sheet's *Improve* choice, [29](29-enhance.md) "Enhance image"). Without the Enhance
 add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance). Cards are one
 column, two from 560.
 
-**Running inside the pane** (S5, owner call B). Remove, Restyle, Enhance image and Extend ask
-Enhance for its docked screen (place `edit`, [29](29-enhance.md) "Docked in Edit"), drawn under the
-chosen card with the add-on screens' renderer: the tool's knobs, the preview, the glowing progress
+**Running inside the pane** (S5, owner call B). Remove, Restyle, Enhance image, Extend and Restore
+faces (S10) ask Enhance for its docked screen (place `edit`, [29](29-enhance.md) "Docked in Edit"),
+drawn under the chosen card with the add-on screens' renderer: the tool's knobs, the preview, the glowing progress
 with the time left, Cancel, and the **result row** — **Show** (Edit closes, the new file or new
 Photos-library photo is selected), **Keep editing** (the same with Edit reopened on this tab) and
 **Move to Trash / Recycle Bin** (Enhance's, through `recycle_file`; never a hard delete, never the
@@ -177,7 +182,7 @@ original). The chosen card wears the accent outline and its own button gives way
 Save copy does. The panel closes with Edit, on another photo, or with its ×. Without a docked
 screen (an older Enhance) each card opens Enhance's sheet instead. Hosts: Mac `enhanceTool:run:` /
 `enhanceShowResult:keep:` (`mv_chrome_edit_enhance_tool` / `_result`); Windows `enhance_tool` /
-`enhance_show_result` (`chrome_edit_action` 9–14).
+`enhance_show_result` (`chrome_edit_action` 9–14, and 15 for Restore faces).
 
 The tab's header carries Enhance's **performance level** as a chip (*Default level*; docs/plans/
 edit-refresh.md S9), a click away from Settings → Add-ons → Enhance, whose first card is

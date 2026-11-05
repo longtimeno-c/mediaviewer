@@ -46,6 +46,8 @@ add_library(mv_enhance_engine STATIC
   ${_E}/downloads.h
   ${_E}/engine.cpp
   ${_E}/engine.h
+  ${_E}/face_restore.cpp
+  ${_E}/face_restore.h
   ${_E}/prefs.cpp
   ${_E}/prefs.h
   ${_E}/screens.cpp
@@ -144,12 +146,14 @@ add_custom_command(TARGET mv_enhance POST_BUILD
 # loaded from a signed store whose manifest pins a fixture weights file,
 # the settings page and sheet answered through the v3 host table.
 function(mv_enhance_tests target)
-  target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance.cpp")
+  target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance.cpp"
+                                   "${MV_SOURCE_ROOT}/tests/test_face_restore.cpp")
   target_link_libraries(${target} PRIVATE mv_enhance_engine)
   target_compile_definitions(${target} PRIVATE
     MV_ENHANCE_AUDIO_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/audio/model.json"
     MV_ENHANCE_RESTYLE_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/restyle/model.json"
-    MV_ENHANCE_SOURCE_DIR="${MV_SOURCE_ROOT}/src/addons/enhance")
+    MV_ENHANCE_SOURCE_DIR="${MV_SOURCE_ROOT}/src/addons/enhance"
+    MV_ENHANCE_FACE_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/face/model.json")
 endfunction()
 function(mv_enhance_addon_tests target)
   target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance_addon.cpp")

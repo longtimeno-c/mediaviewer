@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/enhance/host_port.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <memory>
 
 #include "addons/enhance/memory.h"
@@ -24,6 +26,11 @@ bool has_still_rows(const mv_host_api* h) {
 // Slice 7: the Remove brush's row, appended after sound_keep.
 bool has_mask_row(const mv_host_api* h) {
   return h->struct_size >= offsetof(mv_host_api, still_mask) + sizeof(h->still_mask) && h->still_mask;
+}
+
+// S10: Restore faces' row, appended after still_mask.
+bool has_faces_row(const mv_host_api* h) {
+  return h->struct_size >= offsetof(mv_host_api, still_faces) + sizeof(h->still_faces) && h->still_faces;
 }
 
 bool has_picture_rows(const mv_host_api* h) {
@@ -227,6 +234,58 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
     MV_TRY(infer::runtime * rt, runtime->runtime());
     MV_TRY(auto model, inpaint_model::open(*rt, models_dir + "/" + spec.weights.front(), io));
     return std::unique_ptr<inpaint_filler>(std::move(model));
+  };
+  // S10: Restore faces (the AI pack's faces, the face model, its own name).
+  if (has_faces_row(h)) {
+    p.still_faces = [h](const rgb8& img, const rgb8* other) -> mv::result<std::vector<face_found>> {
+      if (other && (other->width != img.width || other->height != img.height)) return mv::err(mv::status::invalid_arg);
+      std::string out(16 * 1024, '\0');
+      uint32_t needed = 0;
+      auto ask = [&] {
+        return h->still_faces(h->host, img.rgb.data(), img.width, img.height, img.width * 3,
+                              other ? other->rgb.data() : nullptr, out.data(), static_cast<uint32_t>(out.size()),
+                              &needed);
+      };
+      mv_status st = ask();
+      if (st == MV_ERR_INVALID_ARG && needed > out.size()) {
+        out.assign(needed, '\0');
+        st = ask();
+      }
+      if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+      out.resize(std::strlen(out.c_str()));
+      return parse_faces(out, img.width, img.height);
+    };
+  }
+  if (has_still_rows(h)) {
+    p.write_still_as = [h](const std::string& source, const run_port::still& pic,
+                           const std::string& suffix) -> mv::result<std::string> {
+      char buf[4096] = {};
+      const mv_status st = h->still_write(h->host, source.c_str(), pic.rgb.data(), pic.width, pic.height,
+                                          pic.width * 3, suffix.c_str(), buf, sizeof buf);
+      if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+      return std::string(buf);
+    };
+  }
+  p.load_face = [runtime](const model_spec& spec, const std::string& models_dir, const std::string& choice,
+                          int threads) -> result<std::unique_ptr<face_restorer>> {
+    face_io io;
+    if (const auto side = spec.io.integer("side"); side && *side >= 64 && *side <= 2048) {
+      io.side = static_cast<std::uint32_t>(*side);
+    }
+    const json::value* models = spec.io.find("models");
+    const json::value* m = models && models->k == json::kind::object ? models->find(choice) : nullptr;
+    if (!m || m->k != json::kind::object) return mv::err(mv::status::unsupported_format);
+    const std::string* file = m->str("file");
+    // Only a file the spec downloads (its weights), never a path.
+    if (!file || std::find(spec.weights.begin(), spec.weights.end(), *file) == spec.weights.end()) {
+      return mv::err(mv::status::unsupported_format);
+    }
+    io.file = *file;
+    if (const std::string* v = m->str("input")) io.input = *v;
+    if (const std::string* v = m->str("output")) io.output = *v;
+    MV_TRY(infer::runtime * rt, runtime->runtime());
+    MV_TRY(auto model, face_model::open(*rt, models_dir + "/" + *file, io, threads));
+    return std::unique_ptr<face_restorer>(std::move(model));
   };
   p.load_tiles = [runtime](const model_spec& spec, const std::string& models_dir) {
     // Core ML's compiled model, kept beside the weights (Remove deletes it).

@@ -29,7 +29,9 @@ namespace MediaViewer.Chrome;
 /// </remarks>
 public static partial class IslandHost
 {
-    private enum EnhanceToolKind { Remove, Restyle, Faces, Detail, Extend }
+    // RestoreFaces (S10) is the Faces card's second button and a flyout row of
+    // its own, not a sixth card.
+    private enum EnhanceToolKind { Remove, Restyle, Faces, Detail, Extend, RestoreFaces }
 
     private sealed record EnhanceToolInfo(EnhanceToolKind Kind, string Title, string Purpose, string Glyph);
 
@@ -40,16 +42,22 @@ public static partial class IslandHost
         new(EnhanceToolKind.Restyle, "Restyle",
             "Describe a new look in words: a snowy day, golden hour.", ""),  // Color
         new(EnhanceToolKind.Faces, "Faces",
-            "Open closed eyes from another photo of the same person.", RailGlyph.Faces),
+            "Open closed eyes from another photo of the same person, or restore blurred faces.", RailGlyph.Faces),
         new(EnhanceToolKind.Detail, "Enhance image",
             "Sharpen and restore, remove noise or blur, or enlarge, with a model on this PC.", RailGlyph.Enhance),
         new(EnhanceToolKind.Extend, "Extend edges",
             "More picture around the edges, to a wider or taller frame.", RailGlyph.Extend),
     };
 
+    // S10: Restore faces, in the flyout after Faces.
+    private static readonly EnhanceToolInfo RestoreFacesTool = new(EnhanceToolKind.RestoreFaces, "Restore faces",
+        "Sharper, clearer faces, each checked by People to still look like the same person. Saves a new file.",
+        RailGlyph.Faces);
+
     // shell/adjust_pane.h kWand*: what chrome_edit_args.wand says.
     private const int WandBrushOn = 1, WandBrushStrokes = 2, WandBrushFull = 4, WandRestyle = 8, WandEyesBusy = 16,
-                      WandExtend = 32, WandDetail = 64, WandFacesReady = 128, WandAutoOn = 256, WandAutoBusy = 512;
+                      WandExtend = 32, WandDetail = 64, WandFacesReady = 128, WandAutoOn = 256, WandAutoBusy = 512,
+                      WandRestoreFaces = 1024;
 
     private readonly record struct EnhanceToolState(string Chip, bool Ready, bool Busy, string Action, bool Enabled,
                                                     bool NeedsAddon);
@@ -74,6 +82,11 @@ public static partial class IslandHost
                 ? new("Ready", true, false, "Open closed eyes", true, false)
                 : new("Needs People", false, false, "Open closed eyes", true, false),
             EnhanceToolKind.Detail => new("Ready", true, false, "Set up", (_editWand & WandDetail) != 0, false),
+            EnhanceToolKind.RestoreFaces when (_editWand & WandRestoreFaces) == 0 =>
+                new("Not offered", false, false, "Restore faces…", false, false),
+            EnhanceToolKind.RestoreFaces => (_editWand & WandFacesReady) != 0
+                ? new("Ready", true, false, "Restore faces…", true, false)
+                : new("Needs People", false, false, "Restore faces…", true, false),
             _ => new("Ready", true, false, "Choose a frame", (_editWand & WandExtend) != 0, false),
         };
     }
@@ -99,6 +112,7 @@ public static partial class IslandHost
                 }
                 break;
             case EnhanceToolKind.Restyle: Send(Command.EditAction, EditActions.EnhanceRestyle); break;
+            case EnhanceToolKind.RestoreFaces: Send(Command.EditAction, EditActions.RestoreFaces); break;
             case EnhanceToolKind.Faces: Send(Command.AdjustOpenEyes); break;
             case EnhanceToolKind.Detail: Send(Command.EditAction, EditActions.EnhanceDetail); break;
             case EnhanceToolKind.Extend: Send(Command.EditAction, EditActions.EnhanceExtend); break;
@@ -127,11 +141,13 @@ public static partial class IslandHost
     private static TextBlock? _enhanceBrushNote;
     private static Button? _enhanceUndoStroke;
     private static Button? _enhanceClearStrokes;
+    private static Button? _enhanceRestoreFaces;  // S10: the Faces card's Restore faces
 
     private static void DropEnhanceUi()
     {
         EnhanceCards.Clear();
         EnhanceDockHosts.Clear();
+        _enhanceRestoreFaces = null;
         _enhanceBrushNote = null;
         _enhanceUndoStroke = null;
         _enhanceClearStrokes = null;
@@ -272,12 +288,20 @@ public static partial class IslandHost
             actions.Children.Add(_enhanceClearStrokes);
         }
         col.Children.Add(actions);
+        if (kind == EnhanceToolKind.Faces)
+        {
+            // Its own row so the card fits the narrowest pane.
+            _enhanceRestoreFaces = EditButton("Restore faces…", () => RunEnhanceTool(EnhanceToolKind.RestoreFaces));
+            _enhanceRestoreFaces.HorizontalAlignment = HorizontalAlignment.Left;
+            ToolTipService.SetToolTip(_enhanceRestoreFaces, RestoreFacesTool.Purpose);
+            col.Children.Add(_enhanceRestoreFaces);
+        }
         if (kind == EnhanceToolKind.Remove)
         {
             _enhanceBrushNote = Hint("Brush full: Remove, then brush more.");
             col.Children.Add(_enhanceBrushNote);
         }
-        if (EnhancePhotoOf(kind) is not null) col.Children.Add(BuildEnhanceDockHost(kind));
+        if (EnhanceDockWordOf(kind) is not null) col.Children.Add(BuildEnhanceDockHost(kind));
         var card = new Border
         {
             Child = col,
@@ -310,9 +334,11 @@ public static partial class IslandHost
             if (action.Content is TextBlock t) t.Text = st.Action;
             AutomationProperties_SetName(action, st.Action);
             action.IsEnabled = st.Enabled;
-            // Docked, the panel under the card carries the run (Remove keeps its brush buttons).
+            // Docked, the panel under the card carries the run (Remove keeps its brush
+            // buttons; Faces keeps Open closed eyes, the panel being Restore faces').
             bool docked = EnhanceDockedOn(kind);
-            action.Visibility = docked && kind != EnhanceToolKind.Remove ? Visibility.Collapsed : Visibility.Visible;
+            action.Visibility = docked && kind != EnhanceToolKind.Remove && kind != EnhanceToolKind.Faces
+                ? Visibility.Collapsed : Visibility.Visible;
             bool armed = docked || (kind == EnhanceToolKind.Remove && (_editWand & WandBrushOn) != 0);
             card.BorderBrush = armed ? Brush(ChromeColour.Accent) : Brush(Hairline);
             card.BorderThickness = new Thickness(armed ? 1.5 : 0.5);
@@ -328,6 +354,16 @@ public static partial class IslandHost
         {
             _enhanceClearStrokes.Visibility = brushOn ? Visibility.Visible : Visibility.Collapsed;
             _enhanceClearStrokes.IsEnabled = brushed;
+        }
+        if (_enhanceRestoreFaces is not null)
+        {
+            // Shown with Enhance; enabled once it has the face model's command.
+            // Docked on the Faces card, the panel below carries its run.
+            EnhanceToolState rf = EnhanceStateOf(EnhanceToolKind.RestoreFaces);
+            _enhanceRestoreFaces.Visibility = _editEnhance && !EnhanceDockedOn(EnhanceToolKind.Faces)
+                ? Visibility.Visible : Visibility.Collapsed;
+            _enhanceRestoreFaces.IsEnabled = rf.Enabled;
+            AutomationProperties_SetName(_enhanceRestoreFaces, "Restore faces, " + rf.Chip);
         }
         if (_enhanceBrushNote is not null)
             _enhanceBrushNote.Visibility = (_editWand & WandBrushFull) != 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -448,7 +484,11 @@ public static partial class IslandHost
             _enhanceFlyout?.Hide();
             var rows = new StackPanel { Spacing = Space(2), Width = 300 };
             rows.Children.Add(Hint("Enhance tools"));
-            foreach (EnhanceToolInfo tool in EnhanceTools)
+            var flyoutTools = new List<EnhanceToolInfo>(EnhanceTools);
+            if (_editEnhance)
+                flyoutTools.Insert(Array.FindIndex(EnhanceTools, t => t.Kind == EnhanceToolKind.Faces) + 1,
+                                   RestoreFacesTool);
+            foreach (EnhanceToolInfo tool in flyoutTools)
             {
                 EnhanceToolState st = EnhanceStateOf(tool.Kind);
                 var line = new Grid { ColumnSpacing = Space(10) };

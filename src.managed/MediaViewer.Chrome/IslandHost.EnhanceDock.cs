@@ -11,7 +11,7 @@ namespace MediaViewer.Chrome;
 /// docs/plans/edit-refresh.md S5 (owner call B): Enhance's docked screen
 /// (manifest place "edit", contribution API 12) drawn in the Edit workspace's
 /// Enhance tab, under the card of the tool it is on (its tree's root is
-/// "tool.&lt;remove|restyle|detail|extend&gt;"): the tool's knobs, the preview,
+/// "tool.&lt;remove|restyle|detail|extend|faces&gt;", faces under the Faces card): the tool's knobs, the preview,
 /// the glowing progress with the time left, Cancel, and the result row. Native
 /// opens it (main.cpp enhance_tool, through mv_slots_screen_command) and closes
 /// it with Edit or another photo; it is never a window (SyncScreenWindows skips
@@ -39,12 +39,18 @@ public static partial class IslandHost
         EnhanceToolKind.Restyle => "restyle",
         EnhanceToolKind.Detail => "detail",
         EnhanceToolKind.Extend => "extend",
+        EnhanceToolKind.RestoreFaces => "faces",
         _ => null,
     };
 
+    // The docked tree a card draws under it: its own tool's, and for the Faces
+    // card Restore faces' (S10: its second button), Open closed eyes staying native's.
+    private static string? EnhanceDockWordOf(EnhanceToolKind kind) =>
+        kind == EnhanceToolKind.Faces ? "faces" : EnhancePhotoOf(kind);
+
     // The card the docked screen is on, if any.
     private static bool EnhanceDockedOn(EnhanceToolKind kind) =>
-        _enhanceDock is not null && _enhanceDockTool.Length > 0 && EnhancePhotoOf(kind) == _enhanceDockTool;
+        _enhanceDock is not null && _enhanceDockTool.Length > 0 && EnhanceDockWordOf(kind) == _enhanceDockTool;
 
     /// <summary>Under a card: the docked panel's place, collapsed until the screen is on that tool.</summary>
     private static StackPanel BuildEnhanceDockHost(EnhanceToolKind kind)
@@ -120,7 +126,7 @@ public static partial class IslandHost
         _enhanceDockResult = JStr(FindScreenNode(tree, "result.thumb") ?? default, "path");
         foreach ((EnhanceToolKind kind, (StackPanel panel, ContentControl body)) in EnhanceDockHosts)
         {
-            if (EnhancePhotoOf(kind) != tool)
+            if (EnhanceDockWordOf(kind) != tool)
             {
                 body.Content = null;
                 panel.Visibility = Visibility.Collapsed;

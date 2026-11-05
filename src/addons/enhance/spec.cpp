@@ -126,6 +126,7 @@ const char* kind_name(model_kind k) noexcept {
     case model_kind::denoise: return "denoise";
     case model_kind::deblur: return "deblur";
     case model_kind::motion: return "motion";
+    case model_kind::face: return "face";
   }
   return "still";
 }

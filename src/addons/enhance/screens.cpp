@@ -20,6 +20,7 @@ const char* card_title(model_kind k) {
     case model_kind::denoise: return "Remove noise (photos)";
     case model_kind::deblur: return "Remove blur (photos)";
     case model_kind::motion: return "Remove motion blur (photos)";
+    case model_kind::face: return "Restore faces (photos)";
   }
   return "";
 }
@@ -35,6 +36,7 @@ const char* model_noun(model_kind k) {
     case model_kind::denoise: return "noise model";
     case model_kind::deblur: return "blur model";
     case model_kind::motion: return "motion-blur model";
+    case model_kind::face: return "face model";
   }
   return "model";
 }
@@ -206,6 +208,7 @@ const char* section_title(const sheet_view& v, model_kind k) {
     case model_kind::denoise:
     case model_kind::deblur:
     case model_kind::motion: return "Photo";
+    case model_kind::face: return "Restore faces";
   }
   return "";
 }
@@ -305,6 +308,7 @@ const char* run_label(photo_target t) {
     case photo_target::remove: return "Remove";
     case photo_target::restyle: return "Restyle";
     case photo_target::extend: return "Extend";
+    case photo_target::faces: return "Restore faces";  // S10, docked under the Faces card
     case photo_target::detail: break;
   }
   return "Enhance";
@@ -453,7 +457,7 @@ std::string sheet_tree(const sheet_view& v) {
       w.end_object();
     }
   }
-  if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove || v.offers_extend)) {
+  if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove || v.offers_extend || v.offers_faces)) {
     w.begin_object().key("type").string("choice").key("id").string("photo").key("label").string("Enhance");
     w.key("options").begin_array();
     w.begin_object().key("id").string(photo_target_name(photo_target::detail)).key("text").string("Enhance image").end_object();
@@ -465,6 +469,9 @@ std::string sheet_tree(const sheet_view& v) {
     }
     if (v.offers_extend) {
       w.begin_object().key("id").string(photo_target_name(photo_target::extend)).key("text").string("Extend the picture").end_object();
+    }
+    if (v.offers_faces) {
+      w.begin_object().key("id").string(photo_target_name(photo_target::faces)).key("text").string("Restore faces").end_object();
     }
     w.end_array();
     w.key("value").string(photo_target_name(v.photo));

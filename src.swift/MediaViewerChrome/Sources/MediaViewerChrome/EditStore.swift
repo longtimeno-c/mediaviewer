@@ -138,6 +138,8 @@ final class EditStore: ObservableObject {
   var facesReady: Bool { wand & 128 != 0 }
   var autoOn: Bool { wand & 256 != 0 }
   var autoBusy: Bool { wand & 512 != 0 }
+  /// docs/plans/edit-refresh.md S10: Enhance has Restore faces (its "faces" command).
+  var offersRestoreFaces: Bool { wand & 1024 != 0 }
   /// The header's chip: 1 a Photos-library photo, 2 fetching its original.
   @Published private(set) var chips: Int32 = 0
   /// The inspector is folded to the rail.
@@ -242,6 +244,9 @@ final class EditStore: ObservableObject {
   func enhanceTool(_ photo: String, run: Bool = false) { mv_chrome_edit_enhance_tool(photo, run ? 1 : 0) }
   /// The docked panel's result row: Show (`keep` false) or Keep editing.
   func enhanceResult(path: String, keep: Bool) { mv_chrome_edit_enhance_result(path, keep ? 1 : 0) }
+  /// S10: Restore faces, docked under the Faces card (Enhance's "faces" tool);
+  /// Enhance's sheet started on Restore faces without the docked panel.
+  func restoreFaces() { enhanceTool("faces") }
   /// The Remove brush: on (at `size`, −100…100 about the default) or off.
   func setBrush(_ on: Bool, size: Double) { mv_chrome_adjust_pick(on ? 3 : 0, Float(size)) }
   /// 0 the last stroke off, 1 all of them, 2 Remove (Enhance's sheet).

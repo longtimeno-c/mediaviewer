@@ -32,15 +32,17 @@ namespace mv::enhance {
 // "More detail" offers five models, each its own kind so each is downloaded
 // only when chosen: `still` sharpens and restores (Real-HAT-GAN), `natural`
 // enlarges faithfully (RealWebPhoto), `denoise` (SCUNet), `deblur` and
-// `motion` (NAFNet REDS / GoPro) keep the size. Appended: the values are
+// `motion` (NAFNet REDS / GoPro) keep the size. `face` (S10, owner call C)
+// restores each face of a photo (face_restore.h). Appended: the values are
 // never stored (prefs and folders go by name).
 enum class model_kind : std::uint8_t {
   still = 0, video = 1, audio = 2, restyle = 3, remove = 4,
-  natural = 5, denoise = 6, deblur = 7, motion = 8,
+  natural = 5, denoise = 6, deblur = 7, motion = 8, face = 9,
 };
-inline constexpr std::array<model_kind, 9> kModelKinds{model_kind::still,   model_kind::video,   model_kind::audio,
-                                                       model_kind::restyle, model_kind::remove,  model_kind::natural,
-                                                       model_kind::denoise, model_kind::deblur,  model_kind::motion};
+inline constexpr std::array<model_kind, 10> kModelKinds{model_kind::still,   model_kind::video,   model_kind::audio,
+                                                        model_kind::restyle, model_kind::remove,  model_kind::natural,
+                                                        model_kind::denoise, model_kind::deblur,  model_kind::motion,
+                                                        model_kind::face};
 inline constexpr std::size_t kKindCount = kModelKinds.size();
 
 // The photo's "More detail" choices, in the order the sheet offers them.
@@ -51,7 +53,7 @@ inline constexpr std::array<model_kind, 5> kStillKinds{model_kind::still, model_
          k == model_kind::deblur || k == model_kind::motion;
 }
 
-// "still" | "video" | "audio" | "restyle" | "remove" | "natural" | "denoise" | "deblur" | "motion"
+// "still" | "video" | "audio" | "restyle" | "remove" | "natural" | "denoise" | "deblur" | "motion" | "face"
 [[nodiscard]] const char* kind_name(model_kind k) noexcept;
 [[nodiscard]] std::optional<model_kind> kind_from(std::string_view name) noexcept;
 

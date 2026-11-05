@@ -19,6 +19,7 @@
 
 #include "abi/addon_media.h"
 #include "addon/host.h"
+#include "addons/enhance/face_restore.h"
 #include "addons/enhance/host_port.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/runner.h"
@@ -675,6 +676,96 @@ TEST_CASE("enhance: a photo at twice the size, upright, with its metadata, besid
   INFO(c.message);
   REQUIRE(c.ok);
   CHECK(c.name == "shot-enhance.png");
+}
+
+// docs/plans/edit-refresh.md S10: Restore faces through the host table's
+// still_faces row (a stand-in for the AI pack) and still_write's own name.
+TEST_CASE("enhance: Restore faces through the host table writes <stem>-restored.jpg", "[enhance][still][faces]") {
+  scratch_dir s("enhance_faces");
+  const fs::path photo = s / "IMG_0002.JPG";
+  mv::test::write_bytes(photo, sideways_jpeg(160, 120));
+  const auto before = mv::test::read_bytes(photo);
+  mv::addon::host_services svc = still_services();
+  std::atomic<int> asked{0}, judged{0};
+  // One face, the FFHQ template at a fifth of 512, wherever it is asked about;
+  // the guard's cosine says the same person.
+  svc.still_faces = [&](const std::uint8_t*, std::uint32_t w, std::uint32_t h, std::uint32_t stride,
+                        const std::uint8_t* other) -> mv::result<std::string> {
+    CHECK(stride == w * 3);
+    ++(other ? judged : asked);
+    const float k = w == 512 ? 1.0f : 0.2f;  // the aligned crop, or the photo
+    const float ox = w == 512 ? 0.0f : 20.0f, oy = w == 512 ? 0.0f : 10.0f;
+    std::string lm;
+    for (std::size_t i = 0; i < 10; ++i) {
+      const float v = (kFfhq512[i] * k + (i % 2 == 0 ? ox : oy)) / static_cast<float>(i % 2 == 0 ? w : h);
+      lm += (i ? "," : "") + std::to_string(v);
+    }
+    const float bx = (128 * k + ox) / w, by = (150 * k + oy) / h, bw = 256 * k / w, bh = 280 * k / h;
+    return std::string("{\"faces\":[{\"x\":") + std::to_string(bx) + ",\"y\":" + std::to_string(by) +
+           ",\"w\":" + std::to_string(bw) + ",\"h\":" + std::to_string(bh) + ",\"score\":0.9,\"lm\":[" + lm +
+           "]" + (other ? ",\"sim\":0.95" : "") + "}]}";
+  };
+  mv::addon::host_table table(svc);
+  REQUIRE(has_faces_row(table.api()));
+  run_port port = run_port_of(table.api(), "");
+  REQUIRE(port.still_faces);
+  REQUIRE(port.write_still_as);
+  struct invert final : face_restorer {
+    std::uint32_t side() const noexcept override { return 512; }
+    mv::result<rgb8> restore(const rgb8& f) override {
+      rgb8 r = f;
+      for (auto& v : r.rgb) v = static_cast<std::uint8_t>(255 - v);
+      return r;
+    }
+  };
+  port.load_face = [](const model_spec&, const std::string&, const std::string&,
+                      int) -> mv::result<std::unique_ptr<face_restorer>> {
+    return std::unique_ptr<face_restorer>(new invert());
+  };
+  auto spec = parse_spec(R"json({"kind": "face", "name": "Restore faces", "weights": ["f.onnx"], "run_bytes": 1000,
+    "cpu": true, "knobs": [{"id": "strength", "label": "Strength", "type": "slider", "min": 0, "max": 1, "default": 0.7}],
+    "io": {"runner": "face", "side": 512, "models": {"restoreformer": {"file": "f.onnx"}}}})json",
+                         model_kind::face);
+  REQUIRE(spec);
+  job_runner r(std::move(port));
+  job_request req;
+  req.path = utf8(photo);
+  req.item = item_kind::still;
+  job_request::part p;
+  p.kind = model_kind::face;
+  p.spec = &*spec;
+  p.models_dir = "unused";
+  req.parts.push_back(p);
+  REQUIRE(r.check(req).empty());
+  outcome out;
+  job_events ev;
+  ev.done = [&](bool ok, const std::string& name, const std::string& message) {
+    std::lock_guard lock(out.m);
+    out.done = true;
+    out.ok = ok;
+    out.name = name;
+    out.message = message;
+  };
+  r.start(std::move(req), std::move(ev));
+  for (int i = 0; i < 6000; ++i) {
+    {
+      std::lock_guard lock(out.m);
+      if (out.done) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::lock_guard lock(out.m);
+  REQUIRE(out.done);
+  INFO(out.message);
+  REQUIRE(out.ok);
+  CHECK(out.name == "IMG_0002-restored.jpg");
+  CHECK(asked.load() >= 2);   // the photo, then the aligned crop
+  CHECK(judged.load() == 1);  // the guard, once for the one face
+  CHECK(mv::test::read_bytes(photo) == before);  // never the original
+  auto decoded = mv::codec::decode(mv::test::read_bytes(s / out.name));
+  REQUIRE(decoded);
+  CHECK(decoded->width == 120u);  // upright, the same size
+  CHECK(decoded->height == 160u);
 }
 
 // docs/plans/edit-adjust.md slice 5: the photo being edited carries its edit

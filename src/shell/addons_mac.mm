@@ -677,6 +677,7 @@ mv::addon::host_services ai_services() {
   svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
   svc.route = &mv::addon::media::route;              // #606: the index's tracks
   svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
+  svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;
@@ -765,6 +766,7 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   // locations_of_index (Places' place: over the whole index).
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
   mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
+  mv::addon::publish_ai_faces(mv::addon::ai_faces(static_cast<const mv_ai_api*>(table)));  // edit-refresh S10
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.
@@ -2119,6 +2121,7 @@ mv::addon::host_services slot_services() {
   svc.full_still = &mv::addon::media::full_still;
   svc.write_still = &mv::addon::media::write_still;
   svc.still_mask = &mv::addon::media::still_mask;
+  svc.still_faces = &mv::addon::ai_faces_json;  // edit-refresh S10: Restore faces
   if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
   return svc;
 }

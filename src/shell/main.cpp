@@ -4636,7 +4636,9 @@ void push_edit_view(app_state* app) noexcept {
              (mv::shell::addon_commands_available(mv::shell::addon_family::ai) ? mv::shell::kWandFacesReady : 0) |
              (app->adjust.auto_enhance_on(app->edits.edit_count(), app->edits.colour()) ? mv::shell::kWandAutoOn
                                                                                        : 0) |
-             (app->auto_enhance_token != 0 || app->auto_enhance_pending ? mv::shell::kWandAutoBusy : 0);
+             (app->auto_enhance_token != 0 || app->auto_enhance_pending ? mv::shell::kWandAutoBusy : 0) |
+             (mv::shell::find_addon_command("enhance", "faces") != mv::shell::command_id::none
+                  ? mv::shell::kWandRestoreFaces : 0);  // S10
     a.chips = app->cloud_fetches > 0 ? mv::shell::kEditChipCloud : 0;
     if (app->window) {
       RECT rc{};
@@ -4847,7 +4849,8 @@ void enhance_tool(app_state* app, std::string_view photo, bool run) {
     return;
   }
   // The sheet, started on the tool where its commands can say so.
-  mv::shell::command_id id = mv::shell::find_addon_command("enhance", photo == "restyle" ? "restyle" : "open");
+  mv::shell::command_id id = mv::shell::find_addon_command(
+      "enhance", photo == "restyle" ? "restyle" : photo == "faces" ? "faces" : "open");
   if (id == mv::shell::command_id::none) id = mv::shell::find_addon_command("enhance", "open");
   if (id == mv::shell::command_id::none) {
     notice_show(app, "This needs the Enhance add-on (Settings → Add-ons).");
@@ -4950,6 +4953,8 @@ void run_edit_action(app_state* app, int action) {
     case mv::shell::chrome_edit_action::enhance_restyle: enhance_tool(app, "restyle", false); return;
     case mv::shell::chrome_edit_action::enhance_detail: enhance_tool(app, "detail", false); return;
     case mv::shell::chrome_edit_action::enhance_extend: enhance_tool(app, "extend", false); return;
+    // S10: Restore faces, docked under the Faces card (the sheet on "faces" without it).
+    case mv::shell::chrome_edit_action::restore_faces: enhance_tool(app, "faces", false); return;
     case mv::shell::chrome_edit_action::enhance_result_show: enhance_show_result(app, false); return;
     case mv::shell::chrome_edit_action::enhance_result_keep: enhance_show_result(app, true); return;
   }

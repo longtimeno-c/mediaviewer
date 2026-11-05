@@ -60,6 +60,9 @@ public static partial class IslandHost
         public const int EnhanceExtend = 12;
         public const int EnhanceResultShow = 13;
         public const int EnhanceResultKeep = 14;
+        // docs/plans/edit-refresh.md S10: Restore faces (Enhance's docked panel on
+        // its "faces" tool, else its sheet started on Restore faces).
+        public const int RestoreFaces = 15;
     }
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).

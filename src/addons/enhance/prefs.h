@@ -24,10 +24,13 @@ enum class clip_target : std::uint8_t { picture = 0, sound = 1, both = 2 };
 // a typed restyle.
 // remove (slice 7): fill in what was brushed in Edit, offered while it is.
 // extend (owner 2026-11-04): new edges around the photo, Remove's model.
-enum class photo_target : std::uint8_t { detail = 0, restyle = 1, remove = 2, extend = 3 };
+// faces (docs/plans/edit-refresh.md S10): each face restored, the face model.
+// Appended: stored by name, but other slices append too.
+enum class photo_target : std::uint8_t { detail = 0, restyle = 1, remove = 2, extend = 3, faces = 4 };
 inline constexpr photo_target kPhotoTargets[] = {photo_target::detail, photo_target::restyle, photo_target::remove,
-                                                 photo_target::extend};
-[[nodiscard]] const char* photo_target_name(photo_target t) noexcept;  // "detail" | "restyle" | "remove"
+                                                 photo_target::extend, photo_target::faces};
+// "detail" | "restyle" | "remove" | "extend" | "faces"
+[[nodiscard]] const char* photo_target_name(photo_target t) noexcept;
 
 struct prefs {
   // values[kind][knob id], for a target of that kind.

@@ -1579,6 +1579,33 @@ TEST_CASE("enhance: the docked tool panel runs one tool and offers the result", 
   CHECK(f.host.tree(kToolScreen).empty());
 }
 
+#ifdef MV_ENHANCE_FACE_SPEC
+// The S5 + S10 merge: Restore faces runs docked too, under the Faces card
+// (root "tool.faces"), with its own run label; without the face model's spec
+// the panel falls back to Enhance image, as the sheet does.
+TEST_CASE("enhance: Restore faces docks as the \"faces\" tool", "[enhance][tool][faces]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0009.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  f.eng->tool_opened(7, utf8(photo), 340, 2);
+  f.eng->tool_command(R"({"photo": "faces"})");
+  CHECK(parsed(f.host.tree(kToolScreen)).has("tool.detail"));  // no face model here
+
+  const auto spec = mv::test::read_bytes(MV_ENHANCE_FACE_SPEC);
+  write_text(f.self / "models/face/model.json", std::string(spec.begin(), spec.end()));
+  f.restart();
+  f.eng->tool_opened(8, utf8(photo), 340, 2);
+  f.eng->tool_command(R"({"photo": "faces"})");
+  parsed t(f.host.tree(kToolScreen));
+  INFO(f.host.tree(kToolScreen));
+  REQUIRE(t.has("tool.faces"));
+  CHECK(t.has("sec.face"));
+  CHECK_FALSE(t.has("photo"));
+  CHECK(*t.node("run")->str("label") == "Restore faces");
+  CHECK(f.eng->current_prefs().photo == photo_target::faces);
+}
+#endif
+
 TEST_CASE("enhance: a library photo's result row has no Discard and no visible tile", "[enhance][tool]") {
   sheet_view v;
   v.item = item_kind::still;

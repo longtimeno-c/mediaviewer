@@ -34,6 +34,7 @@ const char* photo_target_name(photo_target t) noexcept {
     case photo_target::restyle: return "restyle";
     case photo_target::remove: return "remove";
     case photo_target::extend: return "extend";
+    case photo_target::faces: return "faces";
     case photo_target::detail: break;
   }
   return "detail";

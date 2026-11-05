@@ -186,12 +186,13 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.items[1].slot == mv::addon::item_slot::editor);
   CHECK(c.items[1].label == "Enhance…");
   CHECK(c.api_min == 12);
-  // "open" and the Edit strip wand menu's "restyle", neither with a default key (docs/design/16).
-  REQUIRE(d.m.commands.size() == 2);
+  // "open", the Edit strip wand menu's "restyle" and the Faces card's "faces"
+  // (docs/plans/edit-refresh.md S10), none with a default key (docs/design/16).
+  REQUIRE(d.m.commands.size() == 3);
   CHECK(d.m.commands[0].id == "open");
   CHECK(d.m.commands[1].id == "restyle");
-  CHECK(d.m.commands[0].windows.empty());
-  CHECK(d.m.commands[1].windows.empty());
+  CHECK(d.m.commands[2].id == "faces");
+  for (const auto& c : d.m.commands) CHECK(c.windows.empty());
   CHECK(d.m.chrome.empty());
   CHECK(mv::addon::loads_for_slots(d.m));
 }

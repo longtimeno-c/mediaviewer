@@ -7404,6 +7404,52 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
   return w.take();
 }
 
+result<std::string> engine::faces_json(const rgb_frame& img, const rgb_frame* other) {
+  std::shared_ptr<face_analyzer> model;
+  {
+    std::lock_guard lock(models_m_);
+    model = faces_model_;
+    if (!faces_ || !model) return err(status::invalid_arg);  // People is off
+  }
+  if (img.width == 0 || img.height == 0 || img.rgb.size() != std::size_t{img.width} * img.height * 3) {
+    return err(status::invalid_arg);
+  }
+  MV_TRY(std::vector<face_in> found, model->analyze(img));
+  std::vector<face_in> theirs;
+  if (other) {
+    if (other->width != img.width || other->height != img.height) return err(status::invalid_arg);
+    MV_TRY(theirs, model->analyze(*other));
+  }
+  json::writer w;
+  w.begin_object().key("faces").begin_array();
+  for (const face_in& f : found) {
+    w.begin_object();
+    w.key("x").number(f.x).key("y").number(f.y).key("w").number(f.w).key("h").number(f.h);
+    w.key("score").number(f.score);
+    w.key("lm").begin_array();
+    for (const float v : f.landmarks) w.number(v);
+    w.end_array();
+    if (other) {
+      // The face of `other` whose centre is inside this face's box: the same
+      // face, changed. The most similar when several are.
+      float sim = -1.0f;
+      for (const face_in& g : theirs) {
+        const float cx = g.x + g.w * 0.5f, cy = g.y + g.h * 0.5f;
+        if (cx < f.x || cx > f.x + f.w || cy < f.y || cy > f.y + f.h) continue;
+        double s = 0;
+        for (std::size_t i = 0; i < std::min(f.emb.size(), g.emb.size()); ++i) {
+          s += static_cast<double>(f.emb[i]) * g.emb[i];
+        }
+        sim = std::max(sim, static_cast<float>(s));
+      }
+      w.key("sim").number(sim);
+    }
+    w.end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
 result<std::string> engine::tile_of(const std::string& path, std::int64_t ms) const {
   if (is_photos_key(path)) {
     // A Photos still, or a clip Photos only has in iCloud: the chrome draws the

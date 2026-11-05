@@ -1,0 +1,18 @@
+{
+ "kind": "face",
+ "name": "Restore faces",
+ "credit": "RestoreFormer++, Zhouxia Wang et al. (Apache-2.0); GFPGAN v1.4, Xintao Wang et al. (Apache-2.0)",
+ "weights": ["restoreformer_plus_plus.onnx", "GFPGANv1.4.onnx"],
+ "run_bytes": 2500000000,
+ "cpu": true,
+ "knobs": [
+  {"id": "model", "label": "Look", "type": "choice", "default": "restoreformer",
+   "options": [{"id": "restoreformer", "text": "Faithful (RestoreFormer++)"}, {"id": "gfpgan", "text": "Natural (GFPGAN)"}],
+   "help": "Faithful keeps the person's features most closely; Natural gives smoother, softer skin."},
+  {"id": "strength", "label": "Strength", "type": "slider", "min": 0, "max": 1, "step": 0.05, "default": 0.7,
+   "help": "How much of the restored face replaces the original. A face that would stop looking like the same person (People) is left as it was."}
+ ],
+ "io": {"runner": "face", "side": 512,
+        "models": {"restoreformer": {"file": "restoreformer_plus_plus.onnx", "input": "input"},
+                   "gfpgan": {"file": "GFPGANv1.4.onnx", "input": "input", "output": "1288"}}}
+}
