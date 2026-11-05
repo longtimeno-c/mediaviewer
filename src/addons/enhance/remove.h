@@ -8,7 +8,9 @@
 //      grown for context and made square where the photo allows).
 //   2. Each box's crop and its mask scaled to the model's side, filled,
 //      scaled back.
-//   3. paste_back_box: only that box's brushed pixels (feathered a few pixels
+//   3. A box over 1.5x the model's side filled again at full resolution on
+//      model-side tiles (refine_fill), blended by weight.
+//   4. paste_back_box: only that box's brushed pixels (feathered a few pixels
 //      outward) replaced; everything outside the boxes is the photo's own.
 //
 // The model is not here: these are the steps around it, so they are tested
@@ -26,6 +28,8 @@
 #include "addons/enhance/diffusion.h"
 
 namespace mv::enhance {
+
+class inpaint_filler;
 
 // 8-bit, the photo's size; over 127 is brushed.
 struct mask8 {
@@ -77,6 +81,38 @@ struct remove_plan {
 // The mask's crop scaled to width x height, nearest, then 0 or 255.
 [[nodiscard]] mask8 crop_mask(const mask8& src, const pixel_box& box, std::uint32_t width, std::uint32_t height);
 
+// The paste-back feather for a box: grows with it, 2 to 16 pixels.
+[[nodiscard]] std::uint32_t remove_feather(const pixel_box& box) noexcept;
+
+// ---- Quality over speed (owner 2026-11-04) ----
+// A box over 1.5x the model's side was filled at a fraction of its size (a
+// 1500-px box at 512 is three times softer than the photo). A second pass
+// fills it again at full resolution: model-side tiles, half overlapping,
+// over the brushed pixels the box pastes back (and their feather), blended
+// by weight as Extend's are, for the detail.
+[[nodiscard]] bool needs_refine(const pixel_box& box, std::uint32_t side) noexcept;
+// The second pass's tiles for box `i` of `plan`: side x side (smaller only
+// where the photo is), inside the photo, each holding some of the pixels the
+// box pastes back or their feather, and only those refine_fill runs (some of
+// box i's open mask, more than a tenth known), so a run's progress counts
+// fills; none when the box does not need it.
+[[nodiscard]] std::vector<pixel_box> refine_tiles(const mask8& mask, const remove_plan& plan, std::size_t i,
+                                                  std::uint32_t side);
+// `filled` (box `i`'s size, the first pass's fill scaled back) given the
+// detail the first pass could not keep: each tile is filled at full
+// resolution against `photo` (its holes box i's open mask, box_mask's rule),
+// and what it has above the first pass's scale (the fill less the fill
+// shrunk by that scale and grown back) is added, the weighted mean of the
+// tiles over each pixel (a tent, highest in a tile's middle, times how much
+// of the tile was known; a tile under a tenth known is not run). The first
+// pass keeps the shape and colour (it saw the whole box; a tile deep in a
+// large hole sees only what is near it, measured 2026-11-05), the tiles give
+// the grain, and where they disagree only their fine detail averages, never
+// two shapes. `next()` runs before each tile; false cancels.
+[[nodiscard]] expected refine_fill(const rgb8& photo, const mask8& mask, const remove_plan& plan, std::size_t i,
+                                   const std::vector<pixel_box>& tiles, inpaint_filler& model, rgb8& filled,
+                                   const std::function<bool()>& next);
+
 // `filled` (the box's size) over `photo` where the mask is brushed, blended
 // over `feather` pixels outward. Pixels farther than 2 * feather from a
 // brushed one are left exactly as they were.
@@ -97,9 +133,15 @@ struct extend_margins {
 // The photo in the middle of a bigger picture, the new margins filled with
 // its nearest edge pixel (a start the model refines), and the mask of them.
 void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8& mask);
-// Overlapping square boxes along the margins, each half margin half photo
-// (context for the model), in the order they are filled: each sees the ones
-// before it as photo.
+// Overlapping square boxes along the margins of a w x h picture (the
+// extended one), each reaching into the photo for context: a side three
+// times the margin's depth, at least kExtendMinTile where the picture allows
+// (quality over speed, owner 2026-11-04), two-thirds overlapping along the
+// margin, with two more anchored at each end of it, of other sizes (larger
+// where the picture has room, else smaller), so that every margin pixel is
+// in at least three tiles (kExtendCover) for extend_fill to blend.
+inline constexpr std::uint32_t kExtendMinTile = 768;
+inline constexpr std::uint32_t kExtendCover = 3;
 [[nodiscard]] std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const extend_margins& m);
 
 // The host's brush (u, v, r triples: the picture's uv, the radius over its

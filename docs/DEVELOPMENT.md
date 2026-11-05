@@ -2327,8 +2327,18 @@ MV_ENHANCE_IMAGE_MODELS=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/
 
 **Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
 and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob
-apart with merging and the 8-box fallback, and the run with a stand-in model, including a cancel
-between boxes). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
+apart with merging and the 8-box fallback, the second pass's tiles and detail blend, and the run
+with a stand-in model, including a cancel between boxes and between tiles, and progress per fill).
+`"[enhance][extend]"` checks that every margin pixel is in at least three tiles, for the presets
+and random margins. LaMa's file is pinned in `remote.json`; Enhance's Download fetches it. With
+it on disk, the quality defaults run through the runner and are timed on a photo of your own
+(raw RGB; `MV_REMOVE_DABS="u,v,r u,v,r …"` is the brush, default a block in the middle;
+`MV_EXTEND_PRESET` default `all`; `MV_QUALITY_ONLY=remove|extend`; `MV_REMOVE_OUT_DIR` keeps
+both results as raw RGB):
+
+```bash
+MV_REMOVE_MODEL=<dir>/lama_fp32.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=3840 MV_RESTYLE_H=2160 build/bin/mv_import_tests "[.remove-quality]"
+```
 
 **Restore faces** (RestoreFormer++ / GFPGAN v1.4, docs/plans/edit-refresh.md S10):
 `build/bin/mv_import_tests "[faces]"` (the FFHQ alignment, the warp, the feathered mask, the paste

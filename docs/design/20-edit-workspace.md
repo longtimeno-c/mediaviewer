@@ -192,6 +192,10 @@ tab opens it too while it shows (Mac `EnhanceLevel`, Windows `OpenEnhanceLevel`,
 after the tab goes unless Settings is drawing it) and keeps the last text read, since the level
 changes only in Settings, whose trees pass through the same list. Without Enhance there is no chip.
 
+How Remove and Extend fill (Remove's full-resolution second pass on large boxes, Extend's
+overlapping tiles; quality over speed) is in
+[29](29-enhance.md#remove-what-was-brushed-in-edit-filled-in).
+
 ### Canvas tools
 
 docs/plans/edit-refresh.md S3. A **canvas tool** is what a press on the photo does while it is armed

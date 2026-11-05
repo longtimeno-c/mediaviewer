@@ -366,16 +366,54 @@ brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`
    `lama_fp32.onnx`, 208 MB, CPU: `cpu: true`, so Windows runs it too), scaled back. The model's
    mask holds the box's own blobs and any later box's (still holes); a later box sees the earlier
    fills as photo. Cancel is checked before and after every fill.
-4. Only the box's own brushed pixels pasted, feathered outward (2–16 px with the box's size); a
-   pixel outside every box, or more than twice the feather from the brush, is the photo's own,
-   bit for bit.
-5. A new file, as every run.
+4. **The second pass** (quality over speed, owner 2026-11-04; edit-refresh Q): a box over 1.5× the
+   model's side (`needs_refine`, 768 px at 512) is filled again at full resolution
+   (`refine_tiles`, `refine_fill`). Tiles of the model's side (smaller only where the photo is),
+   half overlapping, cover the box's own brushed pixels and their feather's reach plus a quarter
+   tile of context; a tile whose brushed pixels are all filled by earlier boxes, or that is a
+   tenth known or less (deep in a large hole), is left out before the run, so every tile counted
+   is a fill. Each
+   tile is filled against the photo (its holes the box's open mask), and what it has **above the
+   first pass's scale** (the fill less the fill shrunk by the box-to-512 ratio and grown back) is
+   added to the first pass, the weighted mean over the tiles (a tent, highest in a tile's middle,
+   times how much of the tile was known: rising from a tenth known, full from two fifths). The first pass keeps the shape and colour, since it saw the whole
+   box; the tiles give the grain the 512-px fill lost. Filling the tiles' whole result in was
+   tried and dropped (2026-11-05): a 512-px tile deep in a large hole sees only what is near it,
+   and on a 770 × 500 hole it smeared the next rock's texture over a horizon the first pass had
+   continued, and averaging tiles that disagree left translucent ghosts. Cancel is checked before
+   every tile; progress counts fills (the first passes and every tile), so the time left is the
+   work left.
+5. Only the box's own brushed pixels pasted, feathered outward (`remove_feather`: the box's longer
+   side / 256, 2–16 px); a pixel outside every box, or more than twice the feather from the brush,
+   is the photo's own, bit for bit.
+6. A new file, as every run.
+
+**Extend** (owner 2026-11-04) runs on the same model: the photo in the middle of the bigger
+picture, its margins started as the photo mirrored, then filled tile by tile (`extend_tiles`,
+`extend_fill`). Tiles are square, three times the margin's depth and at least 768 px where the
+picture allows (`kExtendMinTile`; at most its shorter side), two-thirds overlapping along the
+margin, with two more anchored at each end of it (a quarter and a half larger where there is room,
+else three quarters and a half), so every margin pixel is in at least three tiles
+(`kExtendCover`). Each is filled at the model's side and every margin pixel is the tent-weighted
+mean of the tiles over it; the photo's own pixels are copied back unchanged. Progress is per tile.
 
 Measured 2026-11-03 (M-series, CPU, the hidden `[.remove-model]` case): an 832 × 832 box
-filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
-is filled at that size and scaled up, so a large fill is softer than the photo around it. Things
+filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. Things
 brushed far apart are each filled at the model's detail in their own box (one model run each, so
 two spots take about twice as long as one), not in one photo-sized box.
+
+Measured 2026-11-05 (the same Mac, CPU, the hidden `[.remove-quality]` case through the runner, on
+a 3840 × 2160 lake photo, the machine shared with about seven builds, so times are wide; base and
+new runs alternated): **Remove** of a rock and a tree (two boxes; the second pass adds 12 tiles)
+took 4.0, 6.2 and 14.1 s before and 18.7, 24.4 and 45.0 s after. The fine detail
+inside the removed rock (mean |picture − its 2-px blur|) went from 1.79 to 2.60, against 4.94 for
+the untouched water beside it; no tile seam is visible, and shapes are the first pass's. On a
+770 × 500 hole over a horizon the large fill is still the first pass's guess, now with grain.
+**Extend** "all" (to 4608 × 2592, 36 tiles before, 54 after) took 47, 80, 82 and 121 s before and
+170 and 158 s after. The colour fringes the half-overlapping 512-px tiles left at their edges are
+gone and the corners no longer darken, but the margins are softer: more tiles of 768 px, each
+filled at 512 and averaged, trade detail for agreement. The line where a margin meets the photo
+can still show (the photo is copied back bit for bit; the fill is not matched to it).
 
 ## Restore faces (docs/plans/edit-refresh.md S10, owner call C)
 

@@ -443,7 +443,8 @@ blobs merge, nine far blobs fall back, on random dabs every brushed pixel is pas
 box, the one around it, a run fills twice with every pixel outside both boxes the
 source's own, a cancel during the first fill never starts the second and writes nothing). Not
 run: the real LaMa on a two-blob photo (the hidden `[.remove-model]` case still brushes one
-stroke); the "Quality over speed" second pass for large boxes is not part of this slice.
+stroke); the "Quality over speed" second pass for large boxes is not part of this slice (Q built
+it, below).
 
 ### 4.1 Tool mode (shared, portable)
 
@@ -685,6 +686,28 @@ Concretely, applied in the second build round:
   guard on. Eyes and whole-face transfer keep their look-matching.
 - **Enhance image:** Real-ESRGAN tiles with more overlap, and the app's own noise reduction before it.
 - Every run shows progress with the time left and can be cancelled.
+
+**Q built (2026-11-05):** Remove and Extend, add-on only (`remove.{h,cpp}`, `runner.cpp`
+`run_remove`). Remove's second pass: a box over 1.5× the model's side gets model-side tiles at full
+resolution, half overlapping, over its own brushed pixels and their feather's reach
+(`refine_tiles`), tent-weighted by how much each tile knew (none under a tenth, full from two
+fifths), the feather `remove_feather` (longer side / 256, 2–16). One change to the plan's letter:
+the tiles give the first pass their **detail** (the fill less itself at the first pass's scale),
+not their whole fill. Filling them in whole was built and measured first: on a hole wider than a
+tile the 512-px tiles see only nearby texture (a rock smeared over a horizon the first pass had
+continued) and disagreeing tiles averaged to ghosts; with detail only the shapes stay the first
+pass's and the grain comes back (inside a removed rock 1.79 → 2.60, the water beside it 4.94).
+Extend: tiles of max(3× depth, 768) up to the picture's shorter side, two-thirds overlapping, two
+more of other sizes at each end, every margin pixel in at least three (tested over the presets and
+random margins); square tiles only (the old end tiles could be squashed). Progress counts fills,
+cancel is checked between fills and tiles on both. Measured on a busy machine (docs/design/29):
+Remove 4–14 s → 19–45 s, Extend 47–121 s → 158–170 s on a 3840 × 2160 photo. Extend's margins
+lose their colour fringes and dark corners but are softer than before (more 768-px tiles filled at
+512 and averaged); the detail transfer could serve Extend too (not built). Not run: either app,
+Windows (add-on C++ mirrors existing patterns, not compiled there). Review (2026-11-05):
+`refine_tiles` now leaves out the tiles `refine_fill` would skip (no hole, or a tenth known or
+less), so Remove's progress counts only real fills and the time left no longer jumps; the output
+is unchanged (those tiles had no weight).
 
 ## Models (owner OK 2026-11-04; downloaded and checked here, `~/Dev/.mv-toolchain/enhance-models/`)
 
