@@ -27,10 +27,11 @@ namespace mv::addon {
 // `editor_items`, the Video Editor's bar (2026-11-02, Enhance), 12 = a
 // screen in place "edit" (2026-11-04, docs/plans/edit-refresh.md S5): docked
 // in the Edit workspace's Enhance tab, and a `choice` option's "disabled"
-// (2026-11-04, S9: listed, never chosen). Points of an
+// (2026-11-04, S9: listed, never chosen), 13 = a progress bar's `detail` and
+// `timed` (2026-11-05, docs/design/20 "Craft rules"). Points of an
 // API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 12;
+inline constexpr std::uint32_t kSlotsContributionApi = 13;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".
