@@ -9,8 +9,8 @@
 // model downloader (#482 T3, src/addons/ai/fetch.h) fetches them into the
 // add-on's data folder: a plain GET with no query, cookies or token,
 // resumable with Range (also after a restart), each file kept only when its
-// SHA-256 matches. A kind's download is its own: a video model never pulls an
-// audio one.
+// SHA-256 matches. A model's download is its own, keyed "<kind>.<id>": a
+// video model never pulls an audio one, nor a kind's other model.
 //
 // Refused before any request: a pin over 5 GB (kMaxWeightsBytes), and a disk
 // without room for what is still to come. The models' folder is never
@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -83,9 +84,9 @@ class downloads {
     std::function<std::unique_ptr<ai::http_transport>()> transport;
     // Free bytes on the volume holding `dir`; nullopt when unknown (no gate).
     std::function<std::optional<std::uint64_t>(const std::string& dir)> free_disk;
-    // A kind's status moved. Called on the download's own thread (or the
+    // A model's status moved. Called on the download's own thread (or the
     // caller's), never while this object's lock is held.
-    std::function<void(model_kind)> changed;
+    std::function<void(const std::string& key)> changed;
   };
 
   // `root` is <data>/models: a kind's files land at <root>/<kind>/<file>.
@@ -96,15 +97,17 @@ class downloads {
 
   // Here and verified (the .ok records agree); costs a stat per file.
   [[nodiscard]] bool ready(const model_files& m) const;
-  // The status, with `ready` folded in for a kind that is not running.
-  [[nodiscard]] dl_status status(model_kind k, const model_files& m) const;
-  // The person asked for this kind (Install / Resume): fetch what is missing
-  // on a thread of the kind's own. A no-op while it runs.
-  void start(model_kind k, const model_files& m);
-  // Stops the kind's download; what arrived is kept for Resume.
-  void stop(model_kind k);
-  // Stops it and deletes its files (Remove).
-  void remove(model_kind k, const model_files& m);
+  // The status of model `key` ("still.x4plus"), with `ready` folded in for
+  // one that is not running.
+  [[nodiscard]] dl_status status(const std::string& key, const model_files& m) const;
+  // The person asked for this model (Install / Resume): fetch what is missing
+  // on a thread of its own. A no-op while it runs.
+  void start(const std::string& key, const model_files& m);
+  // Stops the model's download; what arrived is kept for Resume.
+  void stop(const std::string& key);
+  // Stops it and deletes its files (Remove), and `cache_dir` (what a provider
+  // compiled from them) when not empty.
+  void remove(const std::string& key, const model_files& m, const std::string& cache_dir = {});
   // Every download stops (the add-on is shutting down). Joins.
   void stop_all();
 
@@ -117,14 +120,14 @@ class downloads {
     std::atomic<bool> running{false};
     dl_status last;  // under m_
   };
-  void join(model_kind k);
-  void finish(model_kind k, dl_status s);
+  void join(const std::string& key);
+  void finish(const std::string& key, dl_status s);
 
   std::string root_;
   port port_;
   ai::fetch_options opt_;
   mutable std::mutex m_;
-  std::array<std::unique_ptr<run>, 3> runs_;
+  std::map<std::string, std::unique_ptr<run>> runs_;
 };
 
 }  // namespace mv::enhance

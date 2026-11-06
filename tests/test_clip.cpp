@@ -9,7 +9,9 @@
 //   * each PR 14 operation round-trips; lossless rotate does not re-encode.
 #include "catch_compat.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -22,9 +24,12 @@ extern "C" {
 }
 
 #include "clip_fixture.h"
+#include "core/sound_envelope.h"
 #include "edit/clip.h"
+#include "gfx/adjust_kernel.h"
 #include "edit/clip_internal.h"
 #include "edit/clip_jobs.h"
+#include "edit/clip_sample.h"
 #include "edit/clip_strip.h"
 #include "edit/clip_wire.h"
 #include "edit/hwencode.h"
@@ -707,4 +712,404 @@ TEST_CASE("a clip job's crash slot names the container and codec, never the path
   }
   // Closed: the slot is given back.
   CHECK(std::string(mv::crash_context::this_thread_slot()).empty());
+}
+
+// ---- the Video Editor's look (docs/plans/video-editor-look.md) -----------------------
+
+TEST_CASE("the look's geometry: turn, mirror, crop, in one map", "[clip][look]") {
+  clip::look l;
+  // 320 x 240 coded, no rotation: 9:16 of a landscape picture is a centred strip.
+  l.crop = clip::crop_ratio::r9_16;
+  auto g = clip::geometry_of(320, 240, 0, l);
+  CHECK(g.shown_w == 320);
+  CHECK(g.out_h == 240);
+  CHECK(g.out_w == 134);  // 240 * 9 / 16 = 135, even
+  CHECK(g.crop_x == (320 - 134) / 2);
+  // Turned once more on top of a 90° matrix: upside down, landscape again.
+  l = {};
+  l.turns = 1;
+  g = clip::geometry_of(320, 240, 90, l);
+  CHECK(g.turns == 2);
+  CHECK(g.out_w == 320);
+  CHECK(g.out_h == 240);
+  // 1080p turned once is already 9:16; cropped 9:16 unturned it is the
+  // plan's verify shape, 608 x 1080.
+  l.crop = clip::crop_ratio::r9_16;
+  g = clip::geometry_of(1920, 1080, 0, l);
+  CHECK(g.out_w == 1080);
+  CHECK(g.out_h == 1920);
+  l.turns = 0;
+  g = clip::geometry_of(1920, 1080, 0, l);
+  CHECK(g.out_w == 608);
+  CHECK(g.out_h == 1080);
+  const auto uv = clip::uv_crop_of(g);
+  CHECK(std::abs(uv.size[0] - 608.0f / 1920.0f) < 1e-6f);
+  CHECK(uv.size[1] == 1.0f);
+
+  // The pixel bake against the definition, on a 4 x 2 picture of indices.
+  const std::vector<std::uint8_t> src = {0, 1, 2, 3, 4, 5, 6, 7};
+  const auto bake = [&](const clip::look& lk, int rot) {
+    const auto gg = clip::geometry_of(4, 2, rot, lk);
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(gg.out_w) * gg.out_h);
+    clip::apply_geometry(gg, src, 4, 2, 1, out);
+    return out;
+  };
+  clip::look t1;
+  t1.turns = 1;  // clockwise: the bottom row becomes the left column
+  CHECK(bake(t1, 0) == std::vector<std::uint8_t>{4, 0, 5, 1, 6, 2, 7, 3});
+  clip::look t3;
+  t3.turns = 3;
+  CHECK(bake(t3, 0) == std::vector<std::uint8_t>{3, 7, 2, 6, 1, 5, 0, 4});
+  CHECK(bake({}, 180) == std::vector<std::uint8_t>{7, 6, 5, 4, 3, 2, 1, 0});
+  clip::look fh;
+  fh.flip_h = true;
+  CHECK(bake(fh, 0) == std::vector<std::uint8_t>{3, 2, 1, 0, 7, 6, 5, 4});
+  clip::look fv;
+  fv.flip_v = true;
+  CHECK(bake(fv, 0) == std::vector<std::uint8_t>{4, 5, 6, 7, 0, 1, 2, 3});
+  clip::look sq;
+  sq.crop = clip::crop_ratio::r1_1;  // the middle 2 x 2
+  CHECK(bake(sq, 0) == std::vector<std::uint8_t>{1, 2, 5, 6});
+
+  // What packet copy can carry, and sanitising.
+  clip::look c;
+  c.turns = 3;
+  c.mute = true;
+  CHECK(c.copyable());
+  c.crop = clip::crop_ratio::r1_1;
+  CHECK_FALSE(c.copyable());
+  clip::look wild;
+  wild.turns = 7;
+  wild.volume = 9.0f;
+  wild.fade_in_ms = -4;
+  wild.speed = 1.7f;
+  wild.light.v[0] = 40.0f;
+  const auto s = clip::sanitised(wild);
+  CHECK(s.turns == 3);
+  CHECK(s.volume == 2.0f);
+  CHECK(s.fade_in_ms == 0);
+  CHECK(s.speed == 2.0f);
+  CHECK(s.light.v[0] == 5.0f);
+  clip::crop_ratio r{};
+  CHECK(clip::crop_from_name(clip::crop_name(clip::crop_ratio::r4_5), r));
+  CHECK(r == clip::crop_ratio::r4_5);
+}
+
+TEST_CASE("Export exact with a look: turned, cropped, the pieces, sound or none", "[clip][look]") {
+  scratch_dir d("clip_look_exact");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 90;
+  REQUIRE(fx::make(utf8(src), s));
+  const auto before = read_bytes(src);
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{10 * kFrameNs, 30 * kFrameNs}, {60 * kFrameNs, 70 * kFrameNs}};
+  r.look.turns = 1;
+  r.look.crop = clip::crop_ratio::r9_16;
+  auto done = run_soft(r);
+  REQUIRE(done);
+  CHECK(done->encoder == "mpeg4");
+  CHECK(fs::path(done->outputs[0]).stem() == "clip_edit");
+  fx::decoded out;
+  REQUIRE(fx::decode_all(done->outputs[0], out));
+  // 320 x 240 turned is 240 x 320; 9:16 of that is 180 x 320.
+  CHECK(out.width == 180);
+  CHECK(out.height == 320);
+  CHECK(out.luma.size() == 30);  // 20 + 10 frames, nothing between
+  for (std::size_t i = 1; i < out.pts_ns.size(); ++i) CHECK(out.pts_ns[i] > out.pts_ns[i - 1]);
+  CHECK(out.audio_packets > 0);  // the sound, through the same cut
+  auto info = clip::probe(done->outputs[0]);
+  REQUIRE(info);
+  CHECK(info->rotation == 0);  // the pixels were turned: no matrix on top
+  CHECK(read_bytes(src) == before);
+
+  // Mute: no sound stream at all.
+  r.look = {};
+  r.look.mute = true;
+  r.look.flip_h = true;
+  done = run_soft(r);
+  REQUIRE(done);
+  fx::decoded muted;
+  REQUIRE(fx::decode_all(done->outputs[0], muted));
+  CHECK(muted.width == 320);
+  CHECK(muted.audio_packets == 0);
+
+  // The helper's wire carries the look.
+  r.look = {};
+  r.look.turns = 2;
+  r.look.flip_v = true;
+  r.look.crop = clip::crop_ratio::r4_5;
+  r.look.light.v[1] = 25.0f;
+  r.look.volume = 0.5f;
+  r.look.fade_out_ms = 1200;
+  r.look.speed = 2.0f;
+  clip::request back;
+  REQUIRE(clip::wire::decode_request(clip::wire::encode_request(r), back));
+  CHECK(back.look == r.look);
+  clip::request plain = req_for(clip::op::keep_ranges, src);
+  plain.ranges = r.ranges;
+  REQUIRE(clip::wire::decode_request(clip::wire::encode_request(plain), back));
+  CHECK(back.look.identity());
+}
+
+TEST_CASE("Export on keyframes carries a turn and mute, nothing else", "[clip][look]") {
+  scratch_dir d("clip_look_copy");
+  const fs::path src = d / "clip.mp4";
+  REQUIRE(fx::make(utf8(src), {}));
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges = {{0, 2'000'000'000}};
+  r.look.turns = 1;
+  r.look.mute = true;
+  auto done = clip::run(r, {});
+  REQUIRE(done);
+  auto info = clip::probe(done->outputs[0]);
+  REQUIRE(info);
+  CHECK(info->rotation == 90);
+  fx::decoded out;
+  REQUIRE(fx::decode_all(done->outputs[0], out));
+  CHECK(out.audio_packets == 0);
+  CHECK(out.width == 320);  // packets copied: the coded size
+  r.look.crop = clip::crop_ratio::r1_1;
+  CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);
+}
+
+TEST_CASE("Save frame bakes the look's turn, mirror and crop", "[clip][look]") {
+  scratch_dir d("clip_look_frame");
+  const fs::path src = d / "clip.mp4";
+  REQUIRE(fx::make(utf8(src), {}));
+  auto r = req_for(clip::op::frame, src);
+  r.in_ns = 10 * kFrameNs;
+  r.look.turns = 1;
+  r.look.crop = clip::crop_ratio::r1_1;
+  auto png = clip::run(r, {});
+  REQUIRE(png);
+  const auto bytes = read_bytes(png->outputs[0]);
+  spng_ctx* ctx = spng_ctx_new(0);
+  REQUIRE(spng_set_png_buffer(ctx, bytes.data(), bytes.size()) == 0);
+  spng_ihdr ihdr{};
+  REQUIRE(spng_get_ihdr(ctx, &ihdr) == 0);
+  spng_ctx_free(ctx);
+  CHECK(ihdr.width == 240);
+  CHECK(ihdr.height == 240);
+}
+
+TEST_CASE("the export's colour table is the canvas's kernel", "[clip][look][light]") {
+  namespace kernel = mv::gfx::kernel;
+  CHECK(clip::colour_table({}).identity());
+  mv::edit::colour c;
+  c.v[0] = 1.0f;     // exposure +1 EV
+  c.v[1] = 30.0f;    // contrast
+  c.v[2] = -40.0f;   // saturation
+  c.v[3] = 20.0f;    // warmer
+  const clip::colour_table t(c);
+  REQUIRE_FALSE(t.identity());
+  const mv::gfx::adjust_args args(mv::edit::uniforms_of(c));
+  int worst = 0;
+  for (int r = 0; r < 256; r += 15) {
+    for (int g = 0; g < 256; g += 15) {
+      for (int b = 0; b < 256; b += 15) {
+        std::vector<std::uint8_t> px = {static_cast<std::uint8_t>(r), static_cast<std::uint8_t>(g),
+                                        static_cast<std::uint8_t>(b)};
+        t.apply(px, 3);
+        const auto dec = [](int v) { return static_cast<float>(std::pow(v / 255.0, 2.4)); };
+        const kernel::float3 o = mv::gfx::adjust(kernel::float3{dec(r), dec(g), dec(b)}, {}, args);
+        const float want[3] = {o.x, o.y, o.z};
+        for (int ch = 0; ch < 3; ++ch) {
+          const int code = static_cast<int>(
+              std::lround(std::pow(std::clamp(static_cast<double>(want[ch]), 0.0, 1.0), 1.0 / 2.4) * 255.0));
+          worst = std::max(worst, std::abs(code - px[static_cast<std::size_t>(ch)]));
+        }
+      }
+    }
+  }
+  CHECK(worst <= 1);
+  // RGBA: alpha is left alone.
+  std::vector<std::uint8_t> rgba = {100, 100, 100, 77};
+  t.apply(rgba, 4);
+  CHECK(rgba[3] == 77);
+  CHECK(rgba[0] > 100);
+}
+
+TEST_CASE("Export exact and Save frame carry the light", "[clip][look][light]") {
+  scratch_dir d("clip_look_light");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 30;
+  REQUIRE(fx::make(utf8(src), s));
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{0, 20 * kFrameNs}};
+  r.look.flip_h = true;  // a look either way, so both runs render
+  auto plain = run_soft(r);
+  REQUIRE(plain);
+  r.look.light.v[0] = 1.0f;  // +1 EV
+  auto bright = run_soft(r);
+  REQUIRE(bright);
+  fx::decoded a, b;
+  REQUIRE(fx::decode_all(plain->outputs[0], a));
+  REQUIRE(fx::decode_all(bright->outputs[0], b));
+  REQUIRE(a.luma.size() == b.luma.size());
+  // +1 EV on BT.1886 light scales a full-range code by 2^(1/2.4) (limited
+  // range luma, 16..235, around its 16).
+  const double k = std::pow(2.0, 1.0 / 2.4);
+  for (std::size_t i = 0; i < a.luma.size(); ++i) {
+    const double want = std::min(235.0, 16.0 + (a.luma[i] - 16) * k);
+    CHECK(std::abs(b.luma[i] - want) <= 3.0);
+  }
+
+  auto f = req_for(clip::op::frame, src);
+  f.in_ns = 10 * kFrameNs;
+  auto dark = clip::run(f, {});
+  f.look.light.v[0] = 1.0f;
+  auto lit = clip::run(f, {});
+  REQUIRE(dark);
+  REQUIRE(lit);
+  const auto centre = [](const std::string& path) {
+    const auto bytes = read_bytes(path);
+    spng_ctx* ctx = spng_ctx_new(0);
+    spng_set_png_buffer(ctx, bytes.data(), bytes.size());
+    std::size_t size = 0;
+    spng_decoded_image_size(ctx, SPNG_FMT_RGBA8, &size);
+    std::vector<std::uint8_t> px(size);
+    spng_decode_image(ctx, px.data(), size, SPNG_FMT_RGBA8, 0);
+    spng_ctx_free(ctx);
+    return static_cast<int>(px[(static_cast<std::size_t>(180) * 320 + 160) * 4]);
+  };
+  CHECK(centre(lit->outputs[0]) > centre(dark->outputs[0]) + 10);
+}
+
+TEST_CASE("the sound envelope: volume, fades on the program, nothing in a cut", "[clip][look][sound]") {
+  constexpr std::int64_t kS = 1'000'000'000;
+  mv::sound_envelope e;
+  CHECK(e.set({}, 1.0f, 0, 0));
+  CHECK_FALSE(e.active());  // volume 1, no fades: off
+  CHECK(e.gain_at(3 * kS) == 1.0f);
+  // Pieces 0-2 s and 5-8 s: a 5 s program. Fades of 1 s at each end.
+  const std::vector<std::int64_t> pieces = {0, 2 * kS, 5 * kS, 8 * kS};
+  REQUIRE(e.set(pieces, 0.5f, kS, kS));
+  REQUIRE(e.active());
+  CHECK(e.gain_at(0) == 0.0f);
+  CHECK(std::abs(e.gain_at(kS / 2) - 0.25f) < 1e-6f);    // half way in, at half volume
+  CHECK(std::abs(e.gain_at(kS * 3 / 2) - 0.5f) < 1e-6f);  // past the fade in
+  CHECK(e.gain_at(3 * kS) == 0.5f);                       // in the cut: the volume alone
+  CHECK(std::abs(e.gain_at(7 * kS + kS / 2) - 0.25f) < 1e-6f);  // program 4.5 s of 5
+  CHECK(e.gain_at(8 * kS - 1) < 0.001f);
+  // apply(): interleaved frames, by source time.
+  std::vector<float> pcm(2 * 4, 1.0f);
+  e.apply(pcm.data(), 4, 2, 3 * kS, 1e9 / 48000.0);
+  CHECK(pcm[0] == 0.5f);
+  CHECK(pcm[7] == 0.5f);
+  // Mute is volume 0.
+  REQUIRE(e.set(pieces, 0.0f, 0, 0));
+  CHECK(e.gain_at(kS) == 0.0f);
+  const std::vector<std::int64_t> overlapping = {0, 2 * kS, kS, 3 * kS};
+  CHECK_FALSE(e.set(overlapping, 1.0f, 0, 0));  // refused
+  CHECK_FALSE(e.active());
+}
+
+TEST_CASE("Export exact writes the volume and the fades", "[clip][look][sound]") {
+  scratch_dir d("clip_look_sound");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 120;  // 4 s of a 440 Hz tone
+  REQUIRE(fx::make(utf8(src), s));
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{0, 3'000'000'000}};
+  r.look.flip_h = true;
+  const auto rms_of = [](const std::string& path, double from_s, double to_s) {
+    auto reader = clip::audio_reader::open(path, 48000, 0, nullptr, 1);
+    REQUIRE(reader);
+    std::vector<float> all;
+    std::int64_t start = 0;
+    for (;;) {
+      auto chunk = (*reader)->read(48000, start);
+      REQUIRE(chunk);
+      if (chunk->empty()) break;
+      all.insert(all.end(), chunk->begin(), chunk->end());
+    }
+    const auto a = static_cast<std::size_t>(std::max(0.0, from_s) * 48000);
+    const auto b = std::min(all.size(), static_cast<std::size_t>(to_s * 48000));
+    double sum = 0;
+    for (std::size_t i = a; i < b; ++i) sum += static_cast<double>(all[i]) * all[i];
+    return std::make_pair(b > a ? std::sqrt(sum / static_cast<double>(b - a)) : 0.0, all.size());
+  };
+  auto plain = run_soft(r);
+  REQUIRE(plain);
+  r.look.volume = 0.5f;
+  auto half = run_soft(r);
+  REQUIRE(half);
+  const double full_rms = rms_of(plain->outputs[0], 1.0, 2.0).first;
+  const double half_rms = rms_of(half->outputs[0], 1.0, 2.0).first;
+  REQUIRE(full_rms > 0.05);
+  CHECK(std::abs(20 * std::log10(half_rms / full_rms) - (-6.02)) < 0.2);
+
+  r.look.volume = 1.0f;
+  r.look.fade_in_ms = 1000;
+  r.look.fade_out_ms = 1000;
+  auto faded = run_soft(r);
+  REQUIRE(faded);
+  const auto [mid, frames] = rms_of(faded->outputs[0], 1.2, 1.8);
+  CHECK(std::abs(20 * std::log10(mid / full_rms)) < 0.2);  // between the fades: untouched
+  const double end_s = static_cast<double>(frames) / 48000.0;
+  const double head = rms_of(faded->outputs[0], 0.0, 0.01).first;
+  const double tail = rms_of(faded->outputs[0], end_s - 0.01, end_s).first;
+  INFO("head " << 20 * std::log10(head / full_rms + 1e-12) << " dB, tail "
+               << 20 * std::log10(tail / full_rms + 1e-12) << " dB, " << end_s << " s");
+  CHECK(20 * std::log10(head / full_rms + 1e-12) < -30.0);
+  CHECK(20 * std::log10(tail / full_rms + 1e-12) < -40.0);
+}
+
+TEST_CASE("Export exact at 2x and 0.5x: half and double the length, in sync", "[clip][look][speed]") {
+  scratch_dir d("clip_look_speed");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 300;  // 10 s at 30 fps, a 440 Hz tone
+  REQUIRE(fx::make(utf8(src), s));
+  const auto sound_s = [](const std::string& path) {
+    auto reader = clip::audio_reader::open(path, 48000, 0, nullptr, 1);
+    REQUIRE(reader);
+    std::size_t n = 0;
+    std::int64_t start = 0;
+    for (;;) {
+      auto chunk = (*reader)->read(48000, start);
+      REQUIRE(chunk);
+      if (chunk->empty()) break;
+      n += chunk->size();
+    }
+    return static_cast<double>(n) / 48000.0;
+  };
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{0, -1}};
+  r.look.speed = 2.0f;
+  auto fast = run_soft(r);
+  REQUIRE(fast);
+  fx::decoded a;
+  REQUIRE(fx::decode_all(fast->outputs[0], a));
+  REQUIRE(a.pts_ns.size() > 2);
+  const double frame_s = 1.0 / 30.0;
+  const double picture_s = static_cast<double>(a.pts_ns.back() - a.pts_ns.front()) / 1e9 + frame_s;
+  INFO("2x: " << a.pts_ns.size() << " frames, " << picture_s << " s picture, " << sound_s(fast->outputs[0])
+              << " s sound");
+  CHECK(std::abs(picture_s - 5.0) <= frame_s + 1e-6);
+  CHECK(a.pts_ns.size() >= 149);  // every other frame, on the clip's own 30 fps grid
+  CHECK(a.pts_ns.size() <= 151);
+  CHECK(std::abs(sound_s(fast->outputs[0]) - picture_s) < 0.04);
+
+  r.ranges = {{0, 3'000'000'000}};
+  r.look.speed = 0.5f;
+  auto slow = run_soft(r);
+  REQUIRE(slow);
+  fx::decoded b;
+  REQUIRE(fx::decode_all(slow->outputs[0], b));
+  const double slow_s = static_cast<double>(b.pts_ns.back() - b.pts_ns.front()) / 1e9 + frame_s;
+  INFO("0.5x: " << b.pts_ns.size() << " frames, " << slow_s << " s picture, " << sound_s(slow->outputs[0])
+                << " s sound");
+  CHECK(std::abs(slow_s - 6.0) <= frame_s + 1e-6);
+  CHECK(std::abs(sound_s(slow->outputs[0]) - slow_s) < 0.04);
+  // Speed is not something packet copy can carry.
+  r.ranges_exact = false;
+  CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);
 }

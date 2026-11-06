@@ -280,16 +280,17 @@ class present_lab {
   // crop shrinks it): the camera frames what the edit shows.
   // A clip's size is the picture as DISPLAYED: a 90 / 270 degree container
   // matrix (a portrait phone clip) swaps the coded width and height.
+  // The Video Editor's look (edit/clip_look.h) turns, mirrors and crops it.
+  [[nodiscard]] edit::clip::frame_geometry video_geometry() const noexcept {
+    return edit::clip::geometry_of(current_video_.width, current_video_.height,
+                                   static_cast<int>(current_video_.rotation & 3u) * 90, video_look_);
+  }
   float media_width() const {
-    if (current_video_.texture) {
-      return static_cast<float>((current_video_.rotation & 1u) ? current_video_.height : current_video_.width);
-    }
+    if (current_video_.texture) return static_cast<float>(video_geometry().out_w);
     return current_image_ ? static_cast<float>(place_image(*current_image_).cropped.w) : 0.0f;
   }
   float media_height() const {
-    if (current_video_.texture) {
-      return static_cast<float>((current_video_.rotation & 1u) ? current_video_.width : current_video_.height);
-    }
+    if (current_video_.texture) return static_cast<float>(video_geometry().out_h);
     return current_image_ ? static_cast<float>(place_image(*current_image_).cropped.h) : 0.0f;
   }
   // PR 10 edit geometry (shell/edit_view.h). The snapshot's slot for `img`, or
@@ -431,6 +432,10 @@ class present_lab {
   // of the snapshot, refitting a fitted / filled camera when the split moves.
   // True when the split changed (one more frame).
   bool apply_compare_split(input_snapshot& snapshot, std::uint32_t host_chrome_left) noexcept;
+  // The Video Editor's look from the snapshot; a fitted clip refits. True when it changed.
+  bool apply_video_look(const input_snapshot& snapshot) noexcept;
+  edit::clip::look video_look_{};
+  edit::adjust_uniforms video_light_{};  // uniforms_of(video_look_.light)
   // The previous still in the left half of the split (or, in a --pan-soak,
   // the current one, so the soak measures two full draws with one file).
   void draw_compare_left(const input_snapshot& snapshot, double elapsed,

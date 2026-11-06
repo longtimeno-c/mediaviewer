@@ -191,6 +191,33 @@ enum chrome_command : int {
   // drain while it is attached), so the page count of what is on screen is
   // known: native shows or updates the page sidebar.
   chrome_cmd_image_opened = 1083,
+  // docs/plans/edit-adjust.md slice 2: a curve from the adjust pane. Native
+  // pulls "channel\tx,y;x,y;..." (0 image, 1 red, 2 green, 3 blue; x and y
+  // 0..1, at most 8 points) with take_parked_text. 1090 up for edit-adjust.
+  chrome_cmd_adjust_curve = 1090,
+  // Slice 3: one adjust parameter as parked "param\tvalue" (edit::adjust_param;
+  // selective colour's sliders, which have no command of their own).
+  chrome_cmd_adjust_param = 1091,
+  // Slice 5b: a typed request (edit/prompt.h), parked as UTF-8 text.
+  chrome_cmd_adjust_prompt = 1092,
+  // Slice 7: the Remove brush; the argument 0 the last stroke off, 1 all of
+  // them, 2 Remove (Enhance's sheet takes what is brushed).
+  chrome_cmd_adjust_brush = 1093,
+  // The Video Editor's light and colour (docs/plans/video-editor-look.md
+  // slice 2): one id per slider, arg the value (exposure in EV, the rest
+  // -100..100); chrome_cmd_editor_light_drag arg 1 starts a drag (one undo
+  // step), 0 ends it.
+  chrome_cmd_editor_light_exposure = 1100,
+  chrome_cmd_editor_light_contrast = 1101,
+  chrome_cmd_editor_light_saturation = 1102,
+  chrome_cmd_editor_light_temperature = 1103,
+  chrome_cmd_editor_light_tint = 1104,
+  chrome_cmd_editor_light_drag = 1105,
+  // Its sound (slice 3): volume (0..2), fade in and fade out (ms); a drag is
+  // chrome_cmd_editor_light_drag's too.
+  chrome_cmd_editor_sound_volume = 1106,
+  chrome_cmd_editor_sound_fade_in = 1107,
+  chrome_cmd_editor_sound_fade_out = 1108,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -219,6 +246,24 @@ enum class chrome_editor_action : std::int32_t {
   mark_in = 14,      // I: marks, cuts nothing (the Mac bridge's codes too)
   mark_out = 15,     // O
   clear_marks = 16,  // X
+  // The look (docs/plans/video-editor-look.md); the Mac bridge's codes too.
+  turn_left = 17,
+  turn_right = 18,
+  mirror_h = 19,     // left to right
+  mirror_v = 20,     // upside down
+  crop_original = 21,  // 21-26: original, 16:9, 9:16, 1:1, 4:3, 4:5
+  crop_16_9 = 22,
+  crop_9_16 = 23,
+  crop_1_1 = 24,
+  crop_4_3 = 25,
+  crop_4_5 = 26,
+  save_frame = 27,   // the frame at the playhead as a JPEG, with the look
+  auto_light = 28,   // auto tone on the frame at the playhead (exposure, contrast)
+  reset_light = 29,  // every light and colour slider back to 0
+  toggle_mute = 30,  // the edit's sound off / on
+  speed_half = 31,   // the edit at 0.5x, 1x, 2x (slice 4)
+  speed_normal = 32,
+  speed_double = 33,
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -227,9 +272,12 @@ enum class chrome_edit_action : std::int32_t {
   original_off = 1,  // the strip's Original toggle
   original_on = 2,
   save_copy = 3,     // applies a crop draft, then the PR 10 export dialog
+  enhance = 4,       // slice 5: Enhance's sheet for the photo, with the edit in its copy
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
+static_assert(chrome_cmd_adjust_curve >= kCommandCount && chrome_cmd_adjust_param >= kCommandCount &&
+              chrome_cmd_adjust_prompt >= kCommandCount && chrome_cmd_adjust_brush >= kCommandCount);
 
 // Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
 enum class chrome_popup : std::int32_t {
@@ -367,6 +415,8 @@ static_assert(static_cast<int>(command_id::show_original) == 153);
 static_assert(static_cast<int>(command_id::search_open) == 157);
 // Issue #206: View > Show's items (arg = io::kind_filter).
 static_assert(static_cast<int>(command_id::kind_filter_set) == 174);
+// Issue #614: the Open flyout's Print… (IslandHost.Command.Print).
+static_assert(static_cast<int>(command_id::print) == 184);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -603,9 +653,12 @@ struct chrome_edit_args {
   std::uint64_t open_apps_utf8;
   std::int32_t open_apps_len;
   std::int32_t document;
+  // edit-adjust slice 5: the Enhance add-on is loaded; the strip offers Enhance….
+  std::int32_t enhance;
+  std::int32_t reserved;
 };
 
-static_assert(sizeof(chrome_edit_args) == 88, "keep in sync with IslandHost.Edit EditArgsSize");
+static_assert(sizeof(chrome_edit_args) == 96, "keep in sync with IslandHost.Edit EditArgsSize");
 
 // PR 30 (docs/design/21): the Video Editor window. Its timeline is an island on the
 // editor's own top-level window; the card that says where the picture went is
@@ -654,9 +707,22 @@ struct chrome_editor_view_args {
   std::int32_t frame_rate_milli;  // the clip's rate x 1000 (29970); 0 unknown
   std::int64_t mark_in_ns;        // the marked range on the program; -1 unset
   std::int64_t mark_out_ns;
+  // The look: extra quarter turns, mirror (1 left-right, 2 upside down), crop
+  // (chrome_editor_action crop_* - 21), whether Export on keyframes carries it.
+  std::int32_t look_turns;
+  std::int32_t look_mirror;
+  std::int32_t look_crop;
+  std::int32_t look_copyable;
+  // Light and colour: exposure (EV), contrast, saturation, temperature, tint.
+  float look_light[5];
+  std::int32_t look_mute;       // sound (slice 3)
+  float look_volume;            // 0..2
+  std::int32_t look_fade_in_ms;
+  std::int32_t look_fade_out_ms;
+  float look_speed;             // 0.5, 1 or 2 (slice 4)
 };
 
-static_assert(sizeof(chrome_editor_view_args) == 104, "keep in sync with IslandHost.VideoEditor");
+static_assert(sizeof(chrome_editor_view_args) == 160, "keep in sync with IslandHost.VideoEditor");
 
 // One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
 struct chrome_editor_thumb {

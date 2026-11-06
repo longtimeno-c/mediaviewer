@@ -649,7 +649,10 @@ typedef struct mv_ai_api {
 
   /* ---- the index's coordinates (#398, docs/design/17 "Places over the index") -- */
   /* Every indexed asset whose tags gave coordinates (assets.lat / lon, schema
-   * 4), in id order: `path_utf8` the asset's key, `location.has` = 1. Reads
+   * 4), in id order: `path_utf8` the asset's key, `location.has` =
+   * MV_ADDON_LOCATION_HAS. #606: a GoPro or DJI clip's row is followed by
+   * its route (schema 11's tracks, at most 128 points), one row a point under
+   * the same path with MV_ADDON_LOCATION_HAS | MV_ADDON_LOCATION_ROUTE_POINT. Reads
    * index.db only, never a file; the index is locked for one batch's SELECT
    * (512 rows), never while `visit` runs, so indexing goes on between
    * batches. `visit` returning 0 stops it: MV_ERR_CANCELLED. The host serves
@@ -666,6 +669,23 @@ typedef struct mv_ai_api {
    * page pictures. Appended: read it only when
    * `struct_size` covers it and the pointer is non-NULL. [no-block] */
   mv_status(MV_CALL* root_set_documents)(void* ctx, uint64_t root_id, uint32_t docs);
+
+  /* ---- eyes open (docs/plans/edit-adjust.md slice 6; owner 2026-11-02) ----------- */
+  /* The faces in the still `path_utf8` and, for each, the faces of the same
+   * person in `candidates_utf8` (paths, one a line: the host picks the frames
+   * of the same moment): the People face model's embedding, cosine at or
+   * over its same_person. Owner call 2026-11-02: face data may serve this
+   * edit (docs/design/12). JSON:
+   *   {"faces":[{"x":,"y":,"w":,"h":,"lm":[10 numbers],"person":id,
+   *              "donors":[{"path":"…","lm":[…],"sim":0.83}, …]}, …]}
+   * Boxes and the five landmarks (right eye, left eye, nose, mouth corners;
+   * x, y) are 0..1 of the upright still; donors best first; "person" is the
+   * People cluster the face matches, 0 for none. Reads the stills through the
+   * host; writes nothing. MV_ERR_INVALID_ARG while People is off or its piece
+   * is not loaded. Appended: read it only when `struct_size` covers it and
+   * the pointer is non-NULL. [worker-thread] */
+  mv_status(MV_CALL* eyes_json)(void* ctx, const char* path_utf8, const char* candidates_utf8, char* out,
+                                uint32_t cap, uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

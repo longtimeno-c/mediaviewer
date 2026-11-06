@@ -53,11 +53,15 @@
 #include "core/job_system.h"
 #include "core/json.h"
 #include "core/trace.h"
+#include "edit/auto_adjust.h"
+#include "edit/detail.h"
+#include "edit/prompt.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "image/page_thumbs.h"
 #include "io/collision_name.h"
 #include "io/paths.h"
+#include "io/storage.h"
 #include "io/file.h"
 #include "io/replace.h"
 #include "io/dir.h"
@@ -72,8 +76,11 @@
 #include "nle/mac/agent_mac.h"
 #endif
 #include "shell/adjust_pane.h"
+#include "shell/remove_brush.h"
 #include "shell/ai_badge.h"
+#include "abi/addon_media.h"
 #include "abi/clip_session.h"
+#include "addon/index_locations.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/gesture.h"
@@ -88,6 +95,9 @@
 #include "shell/text_recognition_mac.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "edit/clip_auto_light.h"
+#include "edit/clip_sample.h"
+#include "shell/clip_look_abi.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
 #include "shell/folder_model_mac.h"
@@ -95,6 +105,7 @@
 #include "meta/tables.h"
 #include "shell/key_router.h"
 #include "shell/keymap.h"
+#include "shell/print_layout.h"
 #include "shell/meta_store.h"
 #include "meta/tag_index.h"
 #include "shell/present_busy.h"
@@ -146,6 +157,9 @@ static_assert(offsetof(mv_adjust_view, clip_high) == offsetof(mv::shell::adjust_
 static_assert(offsetof(mv_adjust_view, histogram_valid) ==
               offsetof(mv::shell::adjust_view, histogram_valid));
 static_assert(offsetof(mv_adjust_view, bins) == offsetof(mv::shell::adjust_view, bins));
+static_assert(offsetof(mv_adjust_view, curve_x) == offsetof(mv::shell::adjust_view, curve_x));
+static_assert(offsetof(mv_adjust_view, picking) == offsetof(mv::shell::adjust_view, picking));
+static_assert(offsetof(mv_adjust_view, prompt_note) == offsetof(mv::shell::adjust_view, prompt_note));
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -645,6 +659,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (BOOL)welcomePointerMoved;
 - (void)openWelcomeRow:(int)row;
 - (void)removeWelcomeRow:(int)row;
+// Issue #617: a folder row's context menu (Open, Pin to Top / Unpin, Remove
+// from List); nil for the iCloud row or no row.
+- (NSMenu*)welcomeRowMenu:(int)row;
 // Settings screen (docs/design/16 Settings): view preferences, persisted in
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
@@ -706,6 +723,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (uint64_t)galleryRangeGeneration;
 - (NSInteger)galleryRangeCount;
 - (uint64_t)thumbGeneration;
+// #612: the thumbnail cache's sweep, now (Settings set a cap).
+- (void)startThumbSweep;
 - (std::string)thumbKeyAtIndex:(NSInteger)index;
 - (std::string)listingSnapshot;
 - (BOOL)isIndexMarked:(NSInteger)index;
@@ -718,6 +737,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // 3 ready (mv_chrome_bridge.h).
 - (int32_t)updatePhase;
 - (NSString*)updateVersion;
+// #620: the staged update's "What's new" (the appcast item's signed plain-text
+// description, up to three lines); nil when it carries none.
+- (NSString*)updateNotes;
 - (void)restartToUpdate;
 // An add-on update waits on a restart (mv_chrome_restart_for_addons).
 - (void)restartForAddons;
@@ -763,6 +785,21 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (mv::abi::clip_session*)clipJobs;
 - (void)jobsBlur;
 - (void)adjustReset;
+- (void)adjustAuto:(int32_t)section;
+- (void)adjustResetSection:(int32_t)section;
+- (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k;
+- (void)adjustPick:(int32_t)mode size:(float)size;
+- (void)adjustPrompt:(const std::string&)text;
+- (void)adjustOpenEyes;
+- (BOOL)adjustPicking;
+- (void)adjustPickAtX:(float)x y:(float)y;
+- (BOOL)brushActive;
+- (void)adjustBrush:(int32_t)action;
+- (void)brushPublish;
+- (BOOL)brushPressX:(float)x y:(float)y;
+- (void)brushDragX:(float)x y:(float)y;
+- (void)brushHoverX:(float)x y:(float)y;
+- (void)brushRelease;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -826,6 +863,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editorEdit:(int32_t)what;
 - (void)editorSelect:(int32_t)index;
 - (void)editorExport:(BOOL)exact;
+- (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase;
+- (void)editorSetSound:(int32_t)param value:(float)value phase:(int32_t)phase;
+- (void)editorPlayRate:(double)rate;
 - (BOOL)editorTrimBegin:(int32_t)index edge:(int32_t)edge;
 - (int64_t)editorTrimTo:(int64_t)source_ns;
 - (void)editorTrimEnd;
@@ -1310,6 +1350,14 @@ int32_t MvCopyOut(const std::string& out, char* buf, int32_t size) {
   return static_cast<int32_t>(out.size());
 }
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"): Settings -> Storage's cap
+// for the thumbnail cache in bytes, 0 (the default) none; kept in the user's
+// defaults, read at launch, applied by the next sweep. And the host's folder
+// model, for Clear from Swift's background task (it lives as long as the app).
+std::atomic<std::uint64_t> g_thumb_cache_cap{0};
+std::atomic<mv::shell::folder_model*> g_storage_folder{nullptr};
+NSString* const kThumbCacheCapDefault = @"mv.thumbCacheCap";
+
 // What a path handed to the app names: the folder to open and, for a file, the
 // file to select there. One stat (containing_dir() would take a second); false
 // when nothing exists. A worker's call, but for the launch open.
@@ -1568,6 +1616,30 @@ extern "C" int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32
 extern "C" uint64_t mv_chrome_tag_generation(void) {
   return g_chrome_app ? [g_chrome_app tagGeneration] : 0;
 }
+// #612: Settings -> Storage. [any-thread]: walks folders, called from Swift's
+// background task, never the main thread. The core's places (io/storage.h)
+// and the crash database; the Mac keeps no telemetry spool.
+extern "C" int32_t mv_chrome_storage_report(char* buf, int32_t size) {
+  std::vector<mv::io::storage_place> extra;
+  if (std::string crashes = mv::shell::crash::crashes_dir(); !crashes.empty()) {
+    extra.push_back({"crash_reports", std::move(crashes)});
+  }
+  return MvCopyOut(mv::io::storage_json(mv::io::measure_storage(extra)), buf, size);
+}
+// [any-thread], a background task: deletes every cached thumbnail.
+extern "C" bool mv_chrome_thumb_cache_clear(void) {
+  mv::shell::folder_model* folder = g_storage_folder.load(std::memory_order_acquire);
+  return folder != nullptr && folder->clear_thumb_cache().has_value();
+}
+extern "C" uint64_t mv_chrome_thumb_cache_cap(void) {
+  return g_thumb_cache_cap.load(std::memory_order_relaxed);
+}
+// [main-thread] Saves the cap, and sweeps now when there is one.
+extern "C" void mv_chrome_set_thumb_cache_cap(uint64_t bytes) {
+  g_thumb_cache_cap.store(bytes, std::memory_order_relaxed);
+  [[NSUserDefaults standardUserDefaults] setObject:@(bytes) forKey:kThumbCacheCapDefault];
+  if (bytes != 0 && g_chrome_app) [g_chrome_app startThumbSweep];
+}
 extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
   return MvCopyOut(std::string([[g_chrome_app currentFolder] UTF8String]), buf, size);
@@ -1675,6 +1747,41 @@ extern "C" void mv_chrome_adjust_reset(void) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app adjustReset];
 }
+extern "C" void mv_chrome_adjust_auto(int32_t section) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustAuto:section];
+}
+extern "C" void mv_chrome_adjust_reset_section(int32_t section) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustResetSection:section];
+}
+extern "C" void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* xs, const float* ys) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || xs == nullptr || ys == nullptr) return;
+  mv::edit::curve k;
+  k.n = static_cast<std::uint8_t>(std::clamp<int32_t>(n, 0, mv::edit::kCurvePoints));
+  for (int i = 0; i < k.n; ++i) {
+    k.x[i] = xs[i];
+    k.y[i] = ys[i];
+  }
+  [g_chrome_app adjustCurve:channel curve:k];
+}
+extern "C" void mv_chrome_adjust_pick(int32_t mode, float size) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustPick:mode size:size];
+}
+extern "C" void mv_chrome_adjust_prompt(const char* text) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app && text) [g_chrome_app adjustPrompt:std::string(text)];
+}
+extern "C" void mv_chrome_adjust_open_eyes(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustOpenEyes];
+}
+extern "C" void mv_chrome_adjust_brush(int32_t action) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustBrush:action];
+}
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
 }
@@ -1734,6 +1841,12 @@ extern "C" void mv_chrome_edit_cancel_crop(void) {
 extern "C" void mv_chrome_edit_show_original(int32_t on) {
   if (g_chrome_app) [g_chrome_app editShowOriginal:on != 0];
 }
+extern "C" void mv_chrome_edit_enhance(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app) return;
+  const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+  if (id != mv::shell::command_id::none) (void)[g_chrome_app runCommand:id back:mv::shell::back_target::none];
+}
 extern "C" void mv_chrome_edit_save_copy(void) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app editSaveCopy];
@@ -1787,6 +1900,14 @@ extern "C" void mv_chrome_editor_toggle_play(void) {
 }
 extern "C" void mv_chrome_editor_step(int32_t frames) {
   if (g_chrome_app) [g_chrome_app editorStep:frames];
+}
+extern "C" void mv_chrome_editor_set_sound(int32_t param, float value, int32_t phase) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorSetSound:param value:value phase:phase];
+}
+extern "C" void mv_chrome_editor_set_light(int32_t param, float value, int32_t phase) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorSetLight:param value:value phase:phase];
 }
 extern "C" void mv_chrome_editor_edit(int32_t what) {
   (void)mv::shell::crash::note_native_call();
@@ -1967,6 +2088,12 @@ extern "C" bool mv_chrome_update_version(char* out, int32_t cap) {
   if (v.length == 0) return false;
   return [v getCString:out maxLength:static_cast<NSUInteger>(cap) encoding:NSUTF8StringEncoding];
 }
+extern "C" bool mv_chrome_update_notes(char* out, int32_t cap) {
+  if (!g_chrome_app || !out || cap <= 0) return false;
+  NSString* n = [g_chrome_app updateNotes];
+  if (n.length == 0) return false;
+  return [n getCString:out maxLength:static_cast<NSUInteger>(cap) encoding:NSUTF8StringEncoding];
+}
 extern "C" void mv_chrome_restart_to_update(void) {
   if (g_chrome_app) [g_chrome_app restartToUpdate];
 }
@@ -2100,6 +2227,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
+  BOOL _brushStroke;  // slice 7: the left press is a Remove brush stroke
   BOOL _textBeam;            // the I-beam is up over text in a still
   // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
   // two-finger sideways swipe that steps one item.
@@ -2271,6 +2399,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     }
   }
   [self trackPointer:event];
+  // Slice 3: the adjust pane's white-balance picker or red-eye tool takes the
+  // click on the photo; nothing pans.
+  if (self.app && [self.app adjustPicking]) {
+    // Slice 7: the Remove brush strokes while the button is down.
+    if ([self.app brushActive]) {
+      _brushStroke = [self.app brushPressX:self.snap->mouse_x y:self.snap->mouse_y];
+    } else {
+      [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
+    }
+    return;
+  }
   _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
   // Text in images: a press on a word selects (published with the press, so
   // the render thread never starts a pan for it).
@@ -2284,6 +2423,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
+  if (_brushStroke) {
+    _brushStroke = NO;
+    if (self.app) [self.app brushRelease];
+  }
   self.snap->mouse_down[0] = false;
   if (self.snap->text_press) {
     self.snap->text_press = false;
@@ -2328,9 +2471,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 // so no menu, over the gallery, the editor, an empty window, or when no add-on
 // contributes an entry.
 - (NSMenu*)menuForEvent:(NSEvent*)event {
-  (void)event;
   NSMenu* menu = nil;
-  if (self.app && ![self.app galleryVisible] && ![self.app editorOwnsCanvas] && [self.app hasFolder]) {
+  // Issue #617: a welcome card folder row's own menu. The card lists rows only
+  // while nothing is open, so it never competes with the add-ons' menu.
+  if (self.app) {
+    [self trackPointer:event];
+    const int row = [self.app welcomeRowAtPointer];
+    if (row >= 0) menu = [self.app welcomeRowMenu:row];
+  }
+  if (!menu && self.app && ![self.app galleryVisible] && ![self.app editorOwnsCanvas] && [self.app hasFolder]) {
     menu = [MVChromeHost canvasContextMenu];
   }
   _contextMenuShown = menu != nil;
@@ -2428,6 +2577,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseMoved:(NSEvent*)event {
   [self trackPointer:event];
+  // Slice 7: the brush's ring follows the pointer; a drag paints.
+  if (self.app && [self.app brushActive]) {
+    if (_brushStroke) [self.app brushDragX:self.snap->mouse_x y:self.snap->mouse_y];
+    else [self.app brushHoverX:self.snap->mouse_x y:self.snap->mouse_y];
+  }
   // A recent folder under the pointer reads as a link. Only a change of row
   // redraws (the app bumps the snapshot); an empty welcome stays idle.
   if (self.app && self.snap->recents.count > 0) {
@@ -2552,6 +2706,244 @@ static void MvAdoptNewDefaultViewerTypes() {
   });
 }
 #endif
+
+// ---- Issue #614: Print (⌘P; docs/design/16 "Print", shell/print_layout.h) ---------
+//
+// The bake runs on the pool before the panel opens ("Preparing to print…"),
+// sized for the paper Page Setup holds; nothing is written, so Cancel leaves no
+// file. NSPrintOperation then runs modal for the window (a sheet) over
+// MvPrintView, with MvPrintOptions as the panel's accessory: fit or fill, the
+// sheet's layout and its file names. The operation spools on its own thread
+// (canSpawnSeparateThread), so the main thread never draws a page.
+
+// A CGImage over a baked picture: tagged sRGB (the bake), or with the picture's
+// own ICC profile (the re-encode path keeps it), so Quartz colour-manages to
+// the printer what the export's PNG holds. Any thread. The pixels are copied:
+// the raster can go once this returns.
+static CGImageRef MvPrintImage(const mv::codec::raster& r) {
+  if (r.width == 0 || r.height == 0 || r.rgba.size() < static_cast<std::size_t>(r.width) * r.height * 4) {
+    return nullptr;
+  }
+  CFDataRef bytes = CFDataCreate(nullptr, r.rgba.data(), static_cast<CFIndex>(r.rgba.size()));
+  CGDataProviderRef provider = bytes ? CGDataProviderCreateWithCFData(bytes) : nullptr;
+  if (bytes) CFRelease(bytes);
+  CGColorSpaceRef space = nullptr;
+  if (!r.icc.empty()) {
+    CFDataRef icc = CFDataCreate(nullptr, r.icc.data(), static_cast<CFIndex>(r.icc.size()));
+    if (icc) {
+      space = CGColorSpaceCreateWithICCData(icc);
+      CFRelease(icc);
+    }
+  }
+  if (!space) space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGImageRef cg = provider && space
+                      ? CGImageCreate(r.width, r.height, 8, 32, static_cast<std::size_t>(r.width) * 4, space,
+                                      static_cast<CGBitmapInfo>(kCGImageAlphaLast), provider, nullptr, true,
+                                      kCGRenderingIntentPerceptual)
+                      : nullptr;
+  CGColorSpaceRelease(space);
+  CGDataProviderRelease(provider);
+  return cg;
+}
+
+// The paper NSPrintInfo describes, in print_layout's terms (top-left origin).
+static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
+  const NSSize paper = info.paperSize;
+  const NSRect ib = info.imageablePageBounds;  // bottom-left origin
+  mv::shell::print_page page;
+  page.width = paper.width;
+  page.height = paper.height;
+  page.printable = {ib.origin.x, paper.height - NSMaxY(ib), ib.size.width, ib.size.height};
+  return page;
+}
+
+// The print panel's accessory. Each property is KVO-observed by the panel
+// (keyPathsForValuesAffectingPreview), so the preview follows the controls.
+@interface MvPrintOptions : NSViewController <NSPrintPanelAccessorizing>
+@property(nonatomic) BOOL sheet;
+@property(nonatomic) BOOL fill;
+@property(nonatomic) BOOL captions;
+@property(nonatomic) NSInteger grid;  // index into kContactGrids; -1 automatic
+@end
+
+@implementation MvPrintOptions
+
+- (void)loadView {
+  NSButton* fill = [NSButton checkboxWithTitle:@"Fill the page (crops the photo to the paper’s shape)"
+                                        target:self
+                                        action:@selector(fillChanged:)];
+  fill.state = self.fill ? NSControlStateValueOn : NSControlStateValueOff;
+  fill.enabled = !self.sheet;
+  NSTextField* label = [NSTextField labelWithString:@"Contact sheet layout:"];
+  NSPopUpButton* grid = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  for (int i = -1; i < mv::shell::kContactGridCount; ++i) {
+    [grid addItemWithTitle:@(mv::shell::contact_grid_label(i))];
+  }
+  [grid selectItemAtIndex:self.grid + 1];
+  grid.target = self;
+  grid.action = @selector(gridChanged:);
+  grid.enabled = self.sheet;
+  NSButton* captions = [NSButton checkboxWithTitle:@"Print file names" target:self action:@selector(captionsChanged:)];
+  captions.state = self.captions ? NSControlStateValueOn : NSControlStateValueOff;
+  captions.enabled = self.sheet;
+  NSStackView* row = [NSStackView stackViewWithViews:@[ label, grid ]];
+  NSStackView* stack = [NSStackView stackViewWithViews:@[ fill, row, captions ]];
+  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  stack.alignment = NSLayoutAttributeLeading;
+  stack.edgeInsets = NSEdgeInsetsMake(12, 20, 12, 20);
+  [stack setFrameSize:stack.fittingSize];
+  self.view = stack;
+}
+
+- (void)fillChanged:(NSButton*)sender {
+  self.fill = sender.state == NSControlStateValueOn;
+}
+
+- (void)captionsChanged:(NSButton*)sender {
+  self.captions = sender.state == NSControlStateValueOn;
+}
+
+- (void)gridChanged:(NSPopUpButton*)sender {
+  self.grid = sender.indexOfSelectedItem - 1;
+}
+
+- (NSSet<NSString*>*)keyPathsForValuesAffectingPreview {
+  return [NSSet setWithObjects:@"fill", @"captions", @"grid", nil];
+}
+
+- (NSArray<NSDictionary<NSPrintPanelAccessorySummaryKey, NSString*>*>*)localizedSummaryItems {
+  NSString* layout = self.sheet ? @(mv::shell::contact_grid_label(static_cast<int>(self.grid)))
+                                : (self.fill ? @"Fill the page" : @"Fit to the page");
+  return @[ @{NSPrintPanelAccessorySummaryItemNameKey : @"Layout",
+              NSPrintPanelAccessorySummaryItemDescriptionKey : layout} ];
+}
+
+- (mv::shell::print_options)chosenOptions {
+  mv::shell::print_options o;
+  o.fit = self.fill ? mv::shell::print_fit::fill : mv::shell::print_fit::fit;
+  o.captions = self.captions;
+  o.grid = static_cast<int>(self.grid);
+  return o;
+}
+
+@end
+
+// The pages: one photo, or the sheet's cells page by page, stacked down a
+// flipped view one paper-height apart. Immutable once made, so the print
+// thread may draw it.
+@interface MvPrintView : NSView
+- (instancetype)initWithImages:(NSArray*)images
+                         names:(std::vector<std::string>)names
+                         sheet:(BOOL)sheet
+                       options:(MvPrintOptions*)options;
+@end
+
+@implementation MvPrintView {
+  NSArray* _images;  // CGImageRef, bridged
+  std::vector<std::string> _names;
+  BOOL _sheet;
+  MvPrintOptions* _options;
+  mv::shell::print_page _page;
+}
+
+- (instancetype)initWithImages:(NSArray*)images
+                         names:(std::vector<std::string>)names
+                         sheet:(BOOL)sheet
+                       options:(MvPrintOptions*)options {
+  const mv::shell::print_page page = MvPrintPage(NSPrintInfo.sharedPrintInfo);
+  self = [super initWithFrame:NSMakeRect(0, 0, page.width, page.height)];
+  if (self) {
+    _page = page;
+    _images = images;
+    _names = std::move(names);
+    _sheet = sheet;
+    _options = options;
+  }
+  return self;
+}
+
+- (BOOL)isFlipped {
+  return YES;
+}
+
+- (mv::shell::print_grid)grid {
+  return mv::shell::contact_grid(_images.count, static_cast<int>(_options.grid));
+}
+
+- (BOOL)knowsPageRange:(NSRangePointer)range {
+  NSPrintOperation* op = [NSPrintOperation currentOperation];
+  _page = MvPrintPage(op ? op.printInfo : NSPrintInfo.sharedPrintInfo);
+  const NSInteger pages =
+      _sheet ? std::max<NSInteger>(1, mv::shell::contact_pages(_images.count, [self grid])) : 1;
+  [self setFrameSize:NSMakeSize(_page.width, _page.height * pages)];
+  *range = NSMakeRange(1, static_cast<NSUInteger>(pages));
+  return YES;
+}
+
+- (NSRect)rectForPage:(NSInteger)page {
+  return NSMakeRect(0, _page.height * static_cast<CGFloat>(page - 1), _page.width, _page.height);
+}
+
+// `image` at `at` on page `page`: the drawn part of the picture into its rect.
+- (void)drawImage:(CGImageRef)image at:(const mv::shell::print_placement&)at page:(std::uint32_t)page {
+  const CGFloat w = CGImageGetWidth(image);
+  const CGFloat h = CGImageGetHeight(image);
+  NSImage* ns = [[NSImage alloc] initWithCGImage:image size:NSMakeSize(w, h)];
+  // NSImage's own space is bottom-up: the top-left source rect flips.
+  const NSRect from = NSMakeRect(at.source.x * w, (1.0 - at.source.y - at.source.h) * h, at.source.w * w,
+                                 at.source.h * h);
+  const NSRect to = NSMakeRect(at.dest.x, at.dest.y + _page.height * page, at.dest.w, at.dest.h);
+  [ns drawInRect:to fromRect:from operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:nil];
+}
+
+- (void)drawRect:(NSRect)dirty {
+  [[NSColor whiteColor] setFill];
+  NSRectFill(dirty);
+  const mv::shell::print_rect area = mv::shell::print_area(_page);
+  if (!_sheet) {
+    CGImageRef image = (__bridge CGImageRef)_images.firstObject;
+    if (!image) return;
+    const mv::shell::print_fit fit = _options.fill ? mv::shell::print_fit::fill : mv::shell::print_fit::fit;
+    [self drawImage:image
+                 at:mv::shell::place_picture(area, static_cast<std::uint32_t>(CGImageGetWidth(image)),
+                                             static_cast<std::uint32_t>(CGImageGetHeight(image)), fit)
+               page:0];
+    return;
+  }
+  const mv::shell::print_grid grid = [self grid];
+  const bool captions = _options.captions;
+  NSMutableParagraphStyle* para = [[NSMutableParagraphStyle alloc] init];
+  para.alignment = NSTextAlignmentCenter;
+  para.lineBreakMode = NSLineBreakByTruncatingMiddle;
+  NSDictionary* attrs = @{
+    NSFontAttributeName : [NSFont systemFontOfSize:mv::shell::kCaptionPoints],
+    NSForegroundColorAttributeName : [NSColor colorWithWhite:0.25 alpha:1.0],
+    NSParagraphStyleAttributeName : para,
+  };
+  for (NSUInteger i = 0; i < _images.count; ++i) {
+    const mv::shell::contact_cell cell = mv::shell::contact_cell_at(area, grid, i, captions);
+    const CGFloat top = _page.height * cell.page;
+    const NSRect bounds = NSMakeRect(cell.frame.x, cell.frame.y + top, cell.frame.w,
+                                     cell.frame.h + (captions ? cell.caption.h : 0.0));
+    if (!NSIntersectsRect(bounds, dirty)) continue;
+    CGImageRef image = (__bridge CGImageRef)_images[i];
+    [self drawImage:image
+                 at:mv::shell::place_picture(cell.frame, static_cast<std::uint32_t>(CGImageGetWidth(image)),
+                                             static_cast<std::uint32_t>(CGImageGetHeight(image)),
+                                             mv::shell::print_fit::fit)
+               page:cell.page];
+    if (captions && i < _names.size()) {
+      const std::string_view name = mv::shell::print_caption(_names[i]);
+      NSString* text = [[NSString alloc] initWithBytes:name.data() length:name.size() encoding:NSUTF8StringEncoding];
+      [text drawWithRect:NSMakeRect(cell.caption.x, cell.caption.y + top, cell.caption.w, cell.caption.h)
+                 options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+              attributes:attrs
+                 context:nil];
+    }
+  }
+}
+
+@end
 
 @implementation MvLabApp {
   mv::shell::present_lab_mac _lab;
@@ -2696,6 +3088,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // metadata write) and refreshes its size / mtime without a relist: Swift
   // re-reads the thumbnail keys when it moves (mv_chrome_thumb_generation).
   std::uint64_t _thumbGeneration;
+  // #612: the thumbnail cache's sweep, once a launch, after the first image.
+  BOOL _thumbSweepStarted;
   BOOL _helpVisible;
 
   // Settings screen + the router. _viewFlags uses the same bit layout as
@@ -2751,6 +3145,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::set<std::string> _kindKept;
   BOOL _kindFilterChanged;
   BOOL _renamePending;  // issue #210: one F2 rename at a time
+  // Issue #614: ⌘P. One print prepared at a time; the panel's last answer
+  // (this run only) and the accessory of the panel on screen.
+  BOOL _printBusy;
+  mv::shell::print_options _printOptions;
+  MvPrintOptions* _printOptionsPanel;
 
   // Slideshow (docs/design/16 "Slideshow", folded into PR 18 -- stills only, no
   // video on Mac yet, PR 19). _enteredFullscreenForSlideshow distinguishes
@@ -2880,8 +3279,24 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _jobsVisible;
   BOOL _clipToolsVisible;
   std::shared_ptr<const mv::image::linear_image> _working;
+  // Slice 4: the working image as built, before the detail pass; the pass
+  // shown on the canvas (_working is its result), and the one in flight.
+  std::shared_ptr<const mv::image::linear_image> _workingBase;
+  mv::edit::detail_params _detailShown;
+  std::uint64_t _detailToken;
+  NSTimer* _detailDebounce;
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
+  float _redEyeSize;  // slice 3: the red-eye tool's size, −100..+100
+  // Slice 7: the Remove brush's strokes over the shown still, its size
+  // (−100..+100 about kBrushDefaultRadius), the ring under the pointer, and a
+  // count of changes the canvas redraws on.
+  mv::shell::remove_brush _brush;
+  float _brushSize;
+  float _brushCursor[3];
+  std::uint32_t _brushRev;
+  std::vector<mv::edit::adjust_section> _pendingAutos;  // slice 5b: a typed request's Autos still to run
+  BOOL _eyesRunning;  // slice 6: Open closed eyes is on the pool
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -2925,6 +3340,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::string _currentDir;
   // PR 15: the Dock menu's recent folders (mv.recentFolders), most recent first.
   std::vector<std::string> _recentFolders;
+  // Issue #617: the pinned folders (mv.pinnedFolders), oldest pin first. They
+  // lead the card, the Dock menu and Open Recent (-shownFolders); the MRU
+  // list above is kept as it would be without them.
+  std::vector<std::string> _pinnedFolders;
   NSMenu* _openRecentMenu;  // File > Open Recent, rebuilt as it opens
   // PR 15: Now Playing. The timer runs only while a clip is on the canvas.
   NSTimer* _nowPlayingTimer;
@@ -2956,6 +3375,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // while Sparkle is in that step; ready while _installUpdateNow is held.
   int32_t _updateActivity;  // 0 idle, 1 checking, 2 downloading
   NSString* _updateVersionShown;
+  NSString* _updateNotesShown;  // #620: -updateNotes
   // The preview channel's appcast: the newest release's, stable or not
   // (-resolveFeedThenCheck:). nil = Info.plist SUFeedURL, the stable feed.
   NSString* _previewFeedURL;
@@ -3447,6 +3867,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   // The Mac host has no mv_session: its job workers are the session's twin.
   mv::boot::mark(mv::boot::stage::session_created);
   _options.jobs = &_jobs;
+  // #612: Clear reaches the folder model from Swift's background task; the
+  // cache's cap is the user's choice from before (no file read: defaults).
+  g_storage_folder.store(&_folder, std::memory_order_release);
+  g_thumb_cache_cap.store(static_cast<std::uint64_t>(std::max<long long>(
+                              0, [[[NSUserDefaults standardUserDefaults] objectForKey:kThumbCacheCapDefault]
+                                     longLongValue])),
+                          std::memory_order_relaxed);
   _tags = std::make_unique<mv::meta::tag_index>(
       mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }),
       [](std::string_view path) -> mv::result<mv::meta::search_facts> {
@@ -4203,6 +4630,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     }
   }
   [self startTagScanIfDue];
+  [self startThumbSweepIfDue];
   // Issue #207: ratings and labels arriving on the pool re-apply a cull filter.
   if (_meta.consume_cull_changed() && mv::io::needs_cull_marks(mv::io::kind_filter_mask(_kindFilter))) {
     _refilterListing = YES;
@@ -5790,6 +6218,7 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuShare: return share;
     case kMenuCopyPath: return copy_path;
     case kMenuCopyEdited: return copy_flattened;
+    case kMenuPrint: return print;
     case kMenuNewWindow: return new_window;
     case kMenuRename: return rename_file;
     default: return none;
@@ -5808,6 +6237,7 @@ static mv::shell::command_id MvMenuChordCommand(NSMenuItem* item) {
     case kMenuNewWindow: return new_window;
     case kMenuOpen: return open;
     case kMenuFolderTree: return folder_tree;
+    case kMenuPrint: return print;
     default: return none;
   }
 }
@@ -5973,6 +6403,9 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuCopyEdited:
       if (![self runCommand:mv::shell::command_id::copy_flattened back:mv::shell::back_target::none]) NSBeep();
       break;
+    case kMenuPrint:
+      if (![self runCommand:mv::shell::command_id::print back:mv::shell::back_target::none]) NSBeep();
+      break;
     case kMenuEditWorkspace: [self runCommand:mv::shell::command_id::edit_workspace back:mv::shell::back_target::none]; break;
     case kMenuEditCrop: [self runCommand:mv::shell::command_id::crop_mode back:mv::shell::back_target::none]; break;
     case kMenuEditColour: [self runCommand:mv::shell::command_id::adjust_pane back:mv::shell::back_target::none]; break;
@@ -6100,6 +6533,12 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuSlideshow: return [self hasFolder] && !_slideshowActive;
     // A clip or an animation has no still to bake (-copyFlattened refuses it).
     case kMenuCopyEdited: return [self hasFolder] && ![self currentItemIsVideo] && !_lab.anim_active();
+    // Issue #614: the marks as a sheet, or a still (-printRequest refuses the rest).
+    // Not in a slideshow, as the key's row; mid-crop menuCmdBlocked says no.
+    case kMenuPrint:
+      return [self hasFolder] && !_slideshowActive &&
+             (mv::shell::print_as_sheet(std::max(_marks.size(), _galleryRange.size())) ||
+              (![self currentItemIsVideo] && !_lab.anim_active()));
     default:
       return [self hasFolder];
   }
@@ -6207,6 +6646,9 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Share…" cmd:kMenuShare key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Path" cmd:kMenuCopyPath key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Edited Image" cmd:kMenuCopyEdited key:@"" mods:0 toMenu:file];
+  [file addItem:[NSMenuItem separatorItem]];
+  // Issue #614. ⌘P comes from the live table (MvMenuChordCommand), as Open's ⌘O.
+  [self addMenuItem:@"Print…" cmd:kMenuPrint key:@"" mods:0 toMenu:file];
   [file addItem:[NSMenuItem separatorItem]];
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@""];
 
@@ -6419,6 +6861,14 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 #endif
 }
 
+- (NSString*)updateNotes {
+#if MV_WITH_SPARKLE
+  return _installUpdateNow != nil ? _updateNotesShown : nil;
+#else
+  return nil;
+#endif
+}
+
 - (void)restartToUpdate {
 #if MV_WITH_SPARKLE
   if (!_installUpdateNow) return;
@@ -6511,6 +6961,20 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 }
 
 #if MV_WITH_SPARKLE
+// #620: "What's new" is the appcast item's description, which the feed's EdDSA
+// signature covers and which arrived with the feed (the release embeds it;
+// tools/mac/macpack.py refuses a releaseNotesLink, so nothing else is fetched).
+// Only plain text is shown, and only within the rule the Windows manifest
+// applies (tools/package/whats_new.py): up to three lines, 400 bytes.
+static NSString* MvUpdateNotes(SUAppcastItem* item) {
+  NSString* text = item.itemDescription;
+  if (text.length == 0 || ![item.itemDescriptionFormat isEqualToString:@"plain-text"]) return nil;
+  text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (text.length == 0 || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 400) return nil;
+  if ([text componentsSeparatedByString:@"\n"].count > 3) return nil;
+  return text;
+}
+
 // Sparkle has a verified update staged. YES = we own the timing: nothing
 // installs until the user clicks "Update ready — restart", or quits normally
 // (then it installs on the way out, without a relaunch). Never a modal, never
@@ -6522,6 +6986,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   _installUpdateNow = [immediateInstallHandler copy];
   _updateActivity = 0;
   _updateVersionShown = [item.displayVersionString copy];
+  _updateNotesShown = MvUpdateNotes(item);
   dispatch_async(dispatch_get_main_queue(), ^{
     [self applyUpdateInBackground];
   });
@@ -7126,6 +7591,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
     }
     case copy_flattened: return [self copyFlattened];
+    // Issue #614 (docs/design/16 "Print"): the photo on screen, or the marks as a sheet.
+    case print: return [self printRequest];
     case share: return [self shareRequest:{}];  // the key's request: the menu, on the selection
     default:
       // command_coverage.inc sent this id here. A missing case is a
@@ -7378,9 +7845,28 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     v.item = _itemId;
     _snap.edit[0] = v;
   } else {
+    const mv::shell::edit_view before = _snap.edit[0];
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
+    // Slice 7: strokes lie over what was brushed only while the item and its
+    // geometry stay; otherwise they go (and Enhance's copy of them).
+    if (!_brush.empty() &&
+        (before.item != _itemId || !mv::shell::same_geometry(before, _snap.edit[0]) || _edits.crop_active())) {
+      _brush.clear();
+      mv::addon::media::set_still_mask({}, {});
+      [self bumpAdjustView];
+    }
+    ++_brushRev;
+    mv::shell::apply_brush(_snap.edit[0], _brush, [self brushActive] == YES, _brushRev, _brushCursor);
   }
   ++_editGeneration;  // the strip's edit count, the Crop pane's draft
+  // Slice 5: Enhance's copy of the photo being edited carries its edit.
+  if (_edits.has_item() && !_items.empty() && _index.current() < _items.size() &&
+      !(_edits.export_geometry().identity() && _edits.colour().identity())) {
+    mv::addon::media::set_still_edit(_items[_index.current()].path_utf8, _edits.export_geometry(),
+                                     _edits.colour());
+  } else {
+    mv::addon::media::clear_still_edit();
+  }
   // A new item, a turn or a crop: words read before no longer line up.
   [self textSync];
 }
@@ -7513,6 +7999,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->straighten = _edits.crop_active() ? _edits.crop_angle() : _edits.export_geometry().straighten;
   out->edit_count = static_cast<int32_t>(_edits.edit_count());
   out->show_original = _showOriginal ? 1 : 0;
+  out->enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
   if (subject == mv::shell::edit_subject::still && _edits.has_item()) {
     std::uint32_t w = 0, h = 0;
     if (_lab.still_size(_itemId, &w, &h)) {
@@ -7818,6 +8305,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     q.range_count = static_cast<std::uint32_t>(r.ranges.size());
     q.option = r.ranges_exact ? 2u : 1u;
   }
+  // ABI 0.36: the Video Editor's look (its pieces' export, Save frame).
+  const mv_clip_look look = mv::shell::abi_look(r.look);
+  if (!r.look.identity()) q.look = &look;
   std::uint64_t job = 0;
   if (_clipJobs->submit(r.source, q, job) != mv::status::ok) {
     NSBeep();
@@ -8093,6 +8583,17 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->mark_in_ns = _timeline.marked_in();
   out->mark_out_ns = _timeline.marked_out();
   out->frame_rate = _editorFps;
+  const mv::edit::clip::look& lk = _timeline.look();
+  out->look_turns = lk.turns;
+  out->look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
+  out->look_crop = static_cast<int32_t>(lk.crop);
+  out->look_copyable = lk.copyable() ? 1 : 0;
+  for (std::size_t i = 0; i < lk.light.v.size(); ++i) out->look_light[i] = lk.light.v[i];
+  out->look_mute = lk.mute ? 1 : 0;
+  out->look_volume = lk.volume;
+  out->look_fade_in_ms = lk.fade_in_ms;
+  out->look_fade_out_ms = lk.fade_out_ms;
+  out->look_speed = lk.speed;
 }
 
 - (void)setEditorOpen:(BOOL)open {
@@ -8133,6 +8634,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   } else {
     [self.editorWindow close];  // windowWillClose -> editorWindowClosed
   }
+  [self editorPublishLook];
   ++_editorGeneration;
 }
 
@@ -8141,6 +8643,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self editorSetRate:1.0];  // the viewer gets its clip back at the speed it had
   _timeline.end_trim();
   _editorOpen = NO;
+  [self editorPublishLook];  // the viewer shows the clip as it is
   ++_editorToken;
   [self layoutAIBadge];  // #345
   [_editorTick invalidate];
@@ -8350,7 +8853,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 - (void)editorTogglePlay {
   if (!_timeline.loaded()) return;
   _shuttle.stop();
-  [self editorSetRate:1.0];
+  [self editorPlayRate:1.0];
   const auto st = _lab.video_status_snapshot();
   // At the end, Play starts the program again.
   if (!st.playing && _timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
@@ -8363,9 +8866,94 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   mv_chrome_video_step(frames);
 }
 
+// The look's geometry on the canvas (docs/plans/video-editor-look.md); none
+// once the editor closes.
+- (void)editorPublishLook {
+  const mv::edit::clip::look& l = _timeline.look();
+  const bool on = _editorOpen && _timeline.loaded();
+  _snap.video_look_turns = on ? l.turns : 0;
+  _snap.video_look_mirror = on ? static_cast<std::uint8_t>((l.flip_h ? 1 : 0) | (l.flip_v ? 2 : 0)) : 0;
+  _snap.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
+  _snap.video_look_light = on ? l.light.v : decltype(l.light.v){};
+  [self publish];
+  // Its sound, in playback: the pieces place the fades (core/sound_envelope.h).
+  mv::sound_envelope e;
+  if (on && _timeline.sound_shaped()) {
+    const std::vector<std::int64_t> flat = _timeline.flat_pieces();
+    (void)e.set(flat, l.mute ? 0.0f : l.volume, static_cast<std::int64_t>(l.fade_in_ms) * 1'000'000,
+                static_cast<std::int64_t>(l.fade_out_ms) * 1'000'000);
+  }
+  _lab.set_sound_envelope(e);
+}
+
+// A light and colour slider (param: edit::adjust_param); a drag is one undo step.
+- (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase {
+  if (!_timeline.loaded() || param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  if (phase == 0) _timeline.begin_look_drag();
+  mv::edit::clip::look l = _timeline.look();
+  l.light.v[static_cast<std::size_t>(param)] = value;
+  if (_timeline.set_look(l)) [self editorPublishLook];
+  if (phase == 2) _timeline.end_look_drag();
+  ++_editorGeneration;
+}
+
+// The sound: param 0 volume (0..2), 1 fade in, 2 fade out (seconds); a drag
+// is one undo step.
+- (void)editorSetSound:(int32_t)param value:(float)value phase:(int32_t)phase {
+  if (!_timeline.loaded() || param < 0 || param > 2) return;
+  if (phase == 0) _timeline.begin_look_drag();
+  mv::edit::clip::look l = _timeline.look();
+  if (param == 0) l.volume = value;
+  if (param == 1) l.fade_in_ms = static_cast<std::int32_t>(std::lround(value * 1000.0f));
+  if (param == 2) l.fade_out_ms = static_cast<std::int32_t>(std::lround(value * 1000.0f));
+  if (_timeline.set_look(l)) [self editorPublishLook];
+  if (phase == 2) _timeline.end_look_drag();
+  ++_editorGeneration;
+}
+
+// Auto: auto tone (#289) on the frame at the playhead, read on a worker.
+- (void)editorAutoLight {
+  if (!_timeline.loaded() || _editorPath.empty()) return;
+  const std::string path = _editorPath;
+  const std::uint64_t token = _editorToken;
+  const std::int64_t at_ms = _timeline.to_source([self editorTimelinePosition]) / 1'000'000;
+  const mv::edit::colour current = _timeline.look().light;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    auto frame = mv::edit::clip::frame_rgb_at(path, at_ms, 512);
+    bool changed = false;
+    const mv::edit::colour light = frame ? mv::edit::clip::auto_light(frame->rgb, current, changed) : current;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (token != self->_editorToken || !self->_editorOpen) return;  // another clip, or closed
+      mv::edit::clip::look l = self->_timeline.look();
+      l.light = light;
+      if (!changed || !self->_timeline.set_look(l)) {
+        NSBeep();  // a flat frame, or one that already fills the range
+        return;
+      }
+      [self editorPublishLook];
+      ++self->_editorGeneration;
+    });
+  });
+}
+
+// The frame at the playhead as a JPEG beside the clip, with the look's turn,
+// mirror and crop (op::frame in the helper; the Jobs pane shows it).
+- (void)editorSaveFrame {
+  if (!_timeline.loaded() || _editorPath.empty()) return;
+  mv::edit::clip::request r;
+  r.kind = mv::edit::clip::op::frame;
+  r.source = _editorPath;
+  r.in_ns = _timeline.to_source([self editorTimelinePosition]);
+  r.frame = mv::edit::clip::frame_format::jpeg;
+  r.look = _timeline.look();
+  (void)[self submitClipJob:r];
+}
+
 // what: 1 split at the playhead, 2 delete (the marked range, else the
 // selected piece), 3 set in, 4 set out, 5 undo, 6 redo, 14 mark in, 15 mark
-// out, 16 clear the marks. The numbers are Windows' chrome_editor_action.
+// out, 16 clear the marks; the look: 17 turn left, 18 turn right, 19 mirror
+// left-right, 20 mirror upside down, 21-26 crop original / 16:9 / 9:16 / 1:1 /
+// 4:3 / 4:5, 27 save the frame. The numbers are Windows' chrome_editor_action.
 - (void)editorEdit:(int32_t)what {
   if (!_timeline.loaded()) return;
   const std::int64_t at = [self editorTimelinePosition];
@@ -8398,8 +8986,52 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
       _timeline.clear_marks();
       ++_editorGeneration;
       return;
+    case 17:
+    case 18:
+    case 19:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+    case 24:
+    case 25:
+    case 26: {
+      mv::edit::clip::look l = _timeline.look();
+      if (what == 17) l.turns = static_cast<std::uint8_t>((l.turns + 3) & 3);
+      if (what == 18) l.turns = static_cast<std::uint8_t>((l.turns + 1) & 3);
+      if (what == 19) l.flip_h = !l.flip_h;
+      if (what == 20) l.flip_v = !l.flip_v;
+      if (what >= 21) l.crop = static_cast<mv::edit::clip::crop_ratio>(what - 21);
+      changed = _timeline.set_look(l);
+      break;
+    }
+    case 27: [self editorSaveFrame]; return;
+    case 28: [self editorAutoLight]; return;
+    case 30: {
+      mv::edit::clip::look l = _timeline.look();
+      l.mute = !l.mute;
+      changed = _timeline.set_look(l);
+      break;
+    }
+    case 31:
+    case 32:
+    case 33: {
+      // The speed: 0.5x, 1x, 2x. Playback follows at once.
+      mv::edit::clip::look l = _timeline.look();
+      l.speed = what == 31 ? 0.5f : what == 32 ? 1.0f : 2.0f;
+      changed = _timeline.set_look(l);
+      if (changed) [self editorPlayRate:_shuttle.rate()];
+      break;
+    }
+    case 29: {
+      mv::edit::clip::look l = _timeline.look();
+      l.light = {};
+      changed = _timeline.set_look(l);
+      break;
+    }
     default: break;
   }
+  [self editorPublishLook];
   if (!changed) NSBeep();
   if (_editorSelected >= static_cast<int32_t>(_timeline.pieces().size())) _editorSelected = -1;
   ++_editorGeneration;
@@ -8451,11 +9083,18 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
     const auto& p = pieces[static_cast<std::size_t>(_editorTrimIndex)];
     [self editorSeekSource:[self editorEdgeFrame:_editorTrimEdge == 0 ? p.in_ns : p.out_ns]];
   }
+  [self editorPublishLook];  // the fades follow the program's new ends
   ++_editorGeneration;
 }
 
 // The speed ladder is the viewer's (present_lab_mac.mm kLadder); the editor
 // moves along it by rungs, as the viewer's speed keys do.
+// The editor's playback at the edit's speed (the look, slice 4): Space and
+// J K L ask for 1x, 2x, 4x of it. Leaving the editor uses editorSetRate.
+- (void)editorPlayRate:(double)rate {
+  [self editorSetRate:rate * static_cast<double>(_timeline.look().speed)];
+}
+
 - (void)editorSetRate:(double)rate {
   static constexpr int kRates[] = {25, 50, 100, 150, 200, 400};
   auto rung = [](int x100) {
@@ -8486,7 +9125,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
         return;
       }
       if (st.playing) mv_chrome_video_toggle();
-      [self editorSetRate:1.0];
+      [self editorPlayRate:1.0];
       const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now().time_since_epoch()).count();
       const std::int64_t to = _shuttle.back([self editorTimelinePosition], now, phase == 1);
@@ -8506,12 +9145,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
       if (phase != 0) return;
       _shuttle.stop();
       if (st.playing) mv_chrome_video_toggle();
-      [self editorSetRate:1.0];
+      [self editorPlayRate:1.0];
       return;
     case 2: {  // L: play, faster on each press
       if (phase != 0) return;
       const double rate = _shuttle.forward();
-      [self editorSetRate:rate];
+      [self editorPlayRate:rate];
       if (!st.playing) {
         if (_timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
           [self editorSeekSource:_timeline.pieces().front().in_ns];
@@ -8825,7 +9464,13 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (!_timeline.loaded() || _editorPath.empty()) return;
   if (!_timeline.edited()) {
     NSBeep();
-    [self noticeShow:std::string("Nothing has been cut yet")];
+    [self noticeShow:std::string("Nothing has been changed yet")];
+    return;
+  }
+  if (!exact && !_timeline.look().copyable()) {
+    // Packet copy carries a turn and mute only (docs/plans/video-editor-look.md).
+    NSBeep();
+    [self noticeShow:std::string("Crop, mirror, colour, sound and speed need Export exact")];
     return;
   }
   (void)[self submitClipJob:_timeline.export_request(_editorPath, exact)];
@@ -9248,6 +9893,24 @@ static std::string MvSelfTestPageSummary(const char* addon) {
   [self editSelfTestStep:0 dir:out];
 }
 
+// The colour sliders' values and the stack's length, one `adjust:` line.
+- (void)editSelfTestAdjustLine:(NSString*)name dir:(NSString*)dir {
+  const mv::edit::colour c = _edits.colour();
+  NSMutableString* line = [NSMutableString stringWithFormat:@"    adjust %@: edits=%d auto=%d", name,
+                                                            static_cast<int>(_edits.edit_count()),
+                                                            _adjust.auto_running() ? 1 : 0];
+  for (int i = 0; i < mv::edit::kAdjustParamCount; ++i) {
+    const auto p = static_cast<mv::edit::adjust_param>(i);
+    if (c.get(p) != 0.0f) [line appendFormat:@" %s=%g", mv::edit::range_of(p).name, c.get(p)];
+  }
+  for (int ch = 0; ch < mv::edit::kCurveChannels; ++ch) {
+    if (c.curves[static_cast<std::size_t>(ch)].n > 0) [line appendFormat:@" curve%d=%d", ch, c.curves[static_cast<std::size_t>(ch)].n];
+  }
+  if (c.spot_count > 0) [line appendFormat:@" red_eye=%d", c.spot_count];
+  [line appendString:@"\n"];
+  [self editSelfTestLine:line dir:dir];
+}
+
 - (void)editSelfTestSnap:(NSString*)name dir:(NSString*)dir {
   NSView* v = self.window.contentView;
   [v layoutSubtreeIfNeeded];
@@ -9411,19 +10074,72 @@ static std::string MvSelfTestPageSummary(const char* addon) {
       case 2: [self editSelfTestSnap:@"s1-workspace" dir:dir]; [self editSetAspect:2 portrait:NO]; break;
       case 3: [self editSelfTestSnap:@"s2-crop-1x1" dir:dir]; [self runCommand:crop_commit back:kNoBack]; break;
       case 4: [self editSelfTestSnap:@"s3-applied" dir:dir]; [self editSelectTab:1]; break;
-      case 5: [self editSelfTestSnap:@"s4-colour" dir:dir]; [self editSelectTab:2]; break;
-      case 6: [self editSelfTestSnap:@"s5-info" dir:dir];
+      case 5: {
+        // docs/plans/edit-adjust.md slice 1: the new sliders, then Colour's Auto.
+        [self editSelfTestSnap:@"s4-colour" dir:dir];
+        using mv::edit::adjust_param;
+        [self adjustSet:static_cast<int32_t>(adjust_param::highlights) value:-40.0f];
+        [self adjustSet:static_cast<int32_t>(adjust_param::shadows) value:40.0f];
+        [self adjustSet:static_cast<int32_t>(adjust_param::vignette) value:60.0f];
+        [self adjustSet:static_cast<int32_t>(adjust_param::mono) value:100.0f];
+        [self adjustAuto:static_cast<int32_t>(mv::edit::adjust_section::colour)];
+        break;
+      }
+      case 6:
+        [self editSelfTestSnap:@"s4b-adjusted" dir:dir];
+        [self editSelfTestAdjustLine:@"adjusted" dir:dir];
+        [self adjustResetSection:static_cast<int32_t>(mv::edit::adjust_section::mono)];
+        {
+          // Slice 2: an S curve on the image, then Levels' Auto.
+          mv::edit::curve s;
+          s.n = 4;
+          const float xs[] = {0.0f, 0.25f, 0.75f, 1.0f}, ys[] = {0.0f, 0.2f, 0.8f, 1.0f};
+          for (int i = 0; i < 4; ++i) {
+            s.x[i] = xs[i];
+            s.y[i] = ys[i];
+          }
+          [self adjustCurve:0 curve:s];
+          [self adjustAuto:static_cast<int32_t>(mv::edit::adjust_section::levels)];
+        }
+        break;
+      case 7: {
+        [self editSelfTestAdjustLine:@"mono-reset" dir:dir];
+        // Slice 3: the white-balance picker and the red-eye tool clicked in
+        // the middle of the view, and a selective colour band.
+        const mv::shell::canvas_map map = _lab.still_map();
+        [self adjustPick:1 size:0];
+        [self adjustPickAtX:map.centre_x y:map.centre_y];
+        [self adjustPick:2 size:0];
+        [self adjustPickAtX:map.centre_x y:map.centre_y];
+        [self adjustPick:0 size:0];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sel_blue_sat) value:-50.0f];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sharpen) value:40.0f];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::noise) value:30.0f];
+        [self adjustPrompt:"a bit warmer and less noisy, more contrast"];
+        [self editSelfTestLine:[NSString stringWithFormat:@"    prompt: %s\n", _adjust.view(_edits.colour()).prompt_note]
+                          dir:dir];
+        [self editSelfTestAdjustLine:@"picked" dir:dir];
+        [self editSelfTestSnap:@"s4c-picked" dir:dir];
+        [self adjustOpenEyes];  // slice 6: its note lands on the pool's answer
+        break;
+      }
+      case 8:
+        [self editSelfTestLine:[NSString stringWithFormat:@"    eyes: %s\n", _adjust.view(_edits.colour()).prompt_note]
+                          dir:dir];
+        [self editSelectTab:2];
+        break;
+      case 9: [self editSelfTestSnap:@"s5-info" dir:dir];
         // PR 29: any tag, and the date, from the Info tab.
         [self metaSetTag:"Exif.Image.Artist" value:"MV self-test"];
         [self metaSetDate:"2020-02-02 10:00:00"];
         break;
-      case 7: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
-      case 8: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
-      case 9: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
+      case 10: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
+      case 11: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
+      case 12: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
         [self confirmExport:mv::shell::pack_export(mv::edit::export_options{})];
         break;
-      case 10: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
-      case 11: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
+      case 13: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
+      case 14: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
     }
   }
   if (done) {
@@ -9565,7 +10281,12 @@ static double mv_wall_seconds() {
 
 - (BOOL)adjustVisible { return _adjust.visible() ? YES : NO; }
 - (uint64_t)adjustGeneration { return _adjustViewGeneration; }
-- (mv::shell::adjust_view)adjustView { return _adjust.view(_edits.colour()); }
+- (mv::shell::adjust_view)adjustView {
+  mv::shell::adjust_view v = _adjust.view(_edits.colour());
+  v.brush_strokes = static_cast<std::int32_t>(_brush.strokes());
+  v.brush_full = _brush.full() ? 1 : 0;
+  return v;
+}
 - (void)bumpAdjustView { ++_adjustViewGeneration; }
 
 // Read, develop (a RAW: LibRaw's linear 16-bit develop — docs/design/07 waits for it,
@@ -9574,6 +10295,9 @@ static double mv_wall_seconds() {
 // lab's decode uses, so it is drained before the Metal device goes away.
 - (void)startWorkingBuild:(std::uint64_t)token {
   _working.reset();
+  _workingBase.reset();
+  _detailShown = {};
+  ++_detailToken;  // a pass for the item left is dropped when it lands
   _lab.drop_working();
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
@@ -9618,9 +10342,70 @@ static double mv_wall_seconds() {
               working:(std::shared_ptr<const mv::image::linear_image>)working {
   if (_adjust.working_landed(token, ok, fromRaw)) {
     _working = std::move(working);
+    _workingBase = _working;
+    _detailShown = {};
     [self scheduleHistogram];
+    [self scheduleDetail];
   }
   [self bumpAdjustView];
+}
+
+// Slice 4 (edit/detail.h): when the detail sliders differ from the pass on
+// the canvas, run it again on the pool once they settle, from the working
+// image as built, and upload the result as the working texture. The canvas
+// shows the last finished pass meanwhile.
+- (void)scheduleDetail {
+  if (!_workingBase) return;
+  if (mv::edit::detail_of(_edits.colour()) == _detailShown) return;
+  [_detailDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _detailDebounce = [NSTimer scheduledTimerWithTimeInterval:0.15
+                                                    repeats:NO
+                                                      block:^(NSTimer* timer) {
+                                                        (void)timer;
+                                                        [weakSelf startDetail];
+                                                      }];
+}
+
+- (void)startDetail {
+  _detailDebounce = nil;
+  if (!_workingBase) return;
+  const mv::edit::detail_params d = mv::edit::detail_of(_edits.colour());
+  if (d == _detailShown) return;
+  const std::uint64_t token = ++_detailToken;
+  const std::shared_ptr<const mv::image::linear_image> base = _workingBase;
+  const std::uint64_t item = _itemId;
+  const mv::generation gen = _adjustGen.load(std::memory_order_relaxed);
+  std::atomic<mv::generation>* current = &_adjustGen;
+  mv::shell::present_lab_mac* lab = &_lab;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [base, d, item, gen, current, lab, token,
+                                              weakSelf](const mv::job_context&) -> mv::status {
+    const mv::job_context ctx(0, gen, current, 0);
+    std::shared_ptr<const mv::image::linear_image> shown = base;
+    if (!d.identity()) {
+      auto out = mv::edit::apply_detail(*base, d, &ctx);
+      if (!out) return out.error();
+      shown = std::make_shared<const mv::image::linear_image>(std::move(out).value());
+    }
+    if (ctx.cancelled()) return mv::status::cancelled;
+    if (!lab->upload_working(*shown, item)) return mv::status::internal;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf detailLanded:token params:d working:shown];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)detailLanded:(std::uint64_t)token
+              params:(mv::edit::detail_params)d
+             working:(std::shared_ptr<const mv::image::linear_image>)working {
+  if (token != _detailToken || !_workingBase) return;
+  _working = std::move(working);
+  _detailShown = d;
+  [self pokeSnapshot];
+  [self scheduleHistogram];
+  [self scheduleDetail];  // a slider that moved while this ran
 }
 
 - (void)adjustBuildIf:(std::optional<std::uint64_t>)token {
@@ -9638,6 +10423,8 @@ static double mv_wall_seconds() {
       before != mv::shell::adjust_readiness::none) {
     _adjustGen.fetch_add(1, std::memory_order_relaxed);
     _working.reset();
+    _workingBase.reset();
+    ++_detailToken;
     _lab.drop_working();
   }
   [self adjustBuildIf:token];
@@ -9648,6 +10435,7 @@ static double mv_wall_seconds() {
   const bool has_colour = _edits.has_item() && !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+  [self scheduleDetail];
   [self bumpAdjustView];
 }
 
@@ -9669,7 +10457,7 @@ static double mv_wall_seconds() {
   const std::optional<std::uint64_t> token = _adjust.take_histogram_request();
   if (!token) return;
   const std::shared_ptr<const mv::image::linear_image> working = _working;
-  const mv::edit::adjust_uniforms u = mv::edit::uniforms_of(_edits.colour());
+  const mv::edit::colour u = _edits.colour();
   const std::uint64_t t = *token;
   __weak MvLabApp* weakSelf = self;
   _jobs.submit_at(mv::background_generation, [working, u, t, weakSelf](const mv::job_context&) -> mv::status {
@@ -9700,10 +10488,13 @@ static double mv_wall_seconds() {
   if (visible && _jobsVisible) [self setJobsVisible:NO];
   const bool has_colour = _edits.has_item() && !_edits.colour().identity();
   [self adjustBuildIf:_adjust.show(visible, has_colour)];
+  [self brushPublish];  // slice 7: the strokes show only with the pane's brush on
   if (!visible && !has_colour) {
     // Nothing on the canvas needs the working image now; a reopen rebuilds it.
     _adjustGen.fetch_add(1, std::memory_order_relaxed);
     _working.reset();
+    _workingBase.reset();
+    ++_detailToken;
     _lab.drop_working();
     _adjust.working_dropped();
   }
@@ -9734,6 +10525,7 @@ static double mv_wall_seconds() {
   const bool has_colour = !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+  [self scheduleDetail];
 }
 
 - (void)adjustReset {
@@ -9742,6 +10534,268 @@ static double mv_wall_seconds() {
   [self publishEdit];
   [self pokeSnapshot];
   [self adjustColourChanged];
+}
+
+// Slice 2: a curve from the pane. A drag of a point is one op; no echo back
+// (the pane already shows it), the histogram follows when it settles.
+- (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k {
+  if (channel < 0 || channel >= mv::edit::kCurveChannels) return;
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  if (_edits.set_curve(static_cast<mv::edit::curve_channel>(channel), k) != mv::shell::edit_effect::redraw) {
+    return;
+  }
+  [self publishEdit];
+  [self pokeSnapshot];
+  const bool has_colour = !_edits.colour().identity();
+  [self adjustBuildIf:_adjust.colour_changed(has_colour)];
+  [self scheduleHistogram];
+  [self scheduleDetail];
+}
+
+// Slice 5b (edit/prompt.h): a typed request. Its slider moves land as one
+// op; the Autos it asked for run one after another (autoLanded starts the next).
+- (void)adjustPrompt:(const std::string&)text {
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  const mv::edit::prompt_result r = mv::edit::parse_prompt(text, _edits.colour());
+  _adjust.set_prompt_note(mv::edit::prompt_summary(r));
+  if (r.changed(_edits.colour()) && _edits.set_colour(r.value) == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+  }
+  _pendingAutos.assign(r.autos.begin(), r.autos.end());
+  [self adjustColourChanged];
+  [self nextPendingAuto];
+}
+
+- (void)nextPendingAuto {
+  if (_pendingAutos.empty() || _adjust.auto_running()) return;
+  const mv::edit::adjust_section s = _pendingAutos.front();
+  _pendingAutos.erase(_pendingAutos.begin());
+  [self adjustAuto:static_cast<int32_t>(s)];
+}
+
+// Slice 6: Open closed eyes. On the pool: the frames of the same moment, the
+// pack's faces and same-person donors (People data, owner 2026-11-02), then
+// the transfer and a new file beside the photo. The note says what happened.
+- (void)adjustOpenEyes {
+  if (_eyesRunning || ![self adjustStill] || _items.empty() || _index.current() >= _items.size()) return;
+  _eyesRunning = YES;
+  _adjust.set_prompt_note("Looking for open eyes in the same moment…");
+  [self bumpAdjustView];
+  const std::string path = _items[_index.current()].path_utf8;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, weakSelf](const mv::job_context& ctx) -> mv::status {
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
+    if (pack) r = mv::addon::media::open_closed_eyes(path, *pack, &ctx);
+    const std::string note = mv::addon::media::eyes_note(pack ? mv::status::ok : pack.error(), r);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf eyesLanded:note];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)eyesLanded:(const std::string&)note {
+  _eyesRunning = NO;
+  _adjust.set_prompt_note(note);
+  [self bumpAdjustView];
+}
+
+// Slice 3: what the next click on the photo does (shell::adjust_pick).
+// `size` is the red-eye tool's −100..+100 about its default radius.
+- (void)adjustPick:(int32_t)mode size:(float)size {
+  if (mode < 0 || mode > static_cast<int32_t>(mv::shell::adjust_pick::remove)) return;
+  if (mode == static_cast<int32_t>(mv::shell::adjust_pick::remove)) {
+    _brushSize = std::clamp(size, -100.0f, 100.0f);
+  } else {
+    _redEyeSize = std::clamp(size, -100.0f, 100.0f);
+  }
+  _adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
+  _brushCursor[0] = -1.0f;
+  [self brushPublish];
+  [self bumpAdjustView];
+}
+
+// ---- Slice 7: the Remove brush ---------------------------------------------------
+
+- (BOOL)brushActive {
+  return _adjust.pick() == mv::shell::adjust_pick::remove && [self adjustStill] && !_edits.crop_active() ? YES : NO;
+}
+
+- (float)brushRadius {
+  return mv::shell::kBrushDefaultRadius * std::exp2(_brushSize / 100.0f);
+}
+
+// Screen → the shown (edited) image's uv; false off the picture.
+- (BOOL)brushUV:(float)x y:(float)y u:(float*)u v:(float*)v {
+  return _lab.still_map().to_uv(x, y, *u, *v) ? YES : NO;
+}
+
+// The strokes and the ring onto the canvas's edit view (a redraw, no decode).
+- (void)brushPublish {
+  if (_snap.edit[0].item != _itemId) return;
+  ++_brushRev;
+  mv::shell::apply_brush(_snap.edit[0], _brush, [self brushActive] == YES, _brushRev, _brushCursor);
+  [self pokeSnapshot];
+}
+
+- (BOOL)brushPressX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (![self brushUV:x y:y u:&u v:&v] || u < 0 || u > 1 || v < 0 || v > 1) return NO;
+  const mv::edit::placement p = _edits.preview_placement();
+  _brush.set_frame(p.cropped.w, p.cropped.h);
+  if (!_brush.begin(u, v, [self brushRadius])) {
+    NSBeep();  // full
+    return NO;
+  }
+  _brushCursor[0] = u;
+  _brushCursor[1] = v;
+  _brushCursor[2] = [self brushRadius];
+  [self brushPublish];
+  [self bumpAdjustView];
+  return YES;
+}
+
+- (void)brushDragX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (![self brushUV:x y:y u:&u v:&v]) return;
+  (void)_brush.drag(u, v);
+  _brushCursor[0] = u;
+  _brushCursor[1] = v;
+  [self brushPublish];
+}
+
+- (void)brushHoverX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  const BOOL on = [self brushUV:x y:y u:&u v:&v] && u >= 0 && u <= 1 && v >= 0 && v <= 1;
+  if (!on && _brushCursor[0] < 0.0f) return;
+  _brushCursor[0] = on ? u : -1.0f;
+  _brushCursor[1] = v;
+  _brushCursor[2] = [self brushRadius];
+  [self brushPublish];
+}
+
+- (void)brushRelease {
+  _brush.end();
+  [self bumpAdjustView];
+}
+
+// 0 the last stroke off, 1 all of them, 2 Remove: Enhance's sheet takes it.
+- (void)adjustBrush:(int32_t)action {
+  if (action == 0) {
+    (void)_brush.undo_stroke();
+  } else if (action == 1) {
+    _brush.clear();
+  } else if (action == 2) {
+    if (_brush.empty() || _items.empty() || _index.current() >= _items.size()) {
+      NSBeep();
+      return;
+    }
+    const auto dabs = _brush.dabs();
+    std::vector<float> flat;
+    flat.reserve(dabs.size() * 3);
+    for (const mv::shell::brush_dab& d : dabs) flat.insert(flat.end(), {d.u, d.v, d.r});
+    mv::addon::media::set_still_mask(_items[_index.current()].path_utf8, std::move(flat));
+    const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+    if (id == mv::shell::command_id::none) {
+      _adjust.set_prompt_note("Remove needs the Enhance add-on (Settings → Add-ons).");
+    } else {
+      (void)[self runCommand:id back:mv::shell::back_target::none];
+    }
+  }
+  [self brushPublish];
+  [self bumpAdjustView];
+}
+
+- (BOOL)adjustPicking {
+  return _adjust.pick() != mv::shell::adjust_pick::none && [self adjustStill] && _working ? YES : NO;
+}
+
+// A click on the photo while picking: screen → the shown (edited) image's
+// uv → the source's uv through the edit's map → the working image.
+- (void)adjustPickAtX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (!_lab.still_map().to_uv(x, y, u, v) || u < 0 || u > 1 || v < 0 || v > 1) return;
+  const mv::edit::placement p = _edits.preview_placement();
+  const float* m = p.map.m;
+  const float su = m[0] * u + m[1] * v + m[2], sv = m[3] * u + m[4] * v + m[5];
+  mv::shell::edit_effect e = mv::shell::edit_effect::none;
+  if (_adjust.pick() == mv::shell::adjust_pick::white_balance) {
+    const auto mean = mv::edit::sample_mean(*_working, su, sv);
+    if (!mean) return;
+    const std::array<float, 2> wb = mv::edit::neutral_balance(*mean);
+    mv::edit::colour c = _edits.colour();
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::temperature)] = wb[0];
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
+    e = _edits.set_colour(c);
+    _adjust.set_pick(mv::shell::adjust_pick::none);  // one click
+  } else {
+    const float r = mv::edit::kRedEyeDefaultRadius * std::exp2(_redEyeSize / 100.0f);
+    e = _edits.add_red_eye({su, sv, r});
+  }
+  if (e == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+  }
+  [self adjustColourChanged];
+}
+
+// A section's Reset: its sliders back to 0, one undo step.
+- (void)adjustResetSection:(int32_t)section {
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount) return;
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  const mv::edit::colour c =
+      mv::edit::without_section(_edits.colour(), static_cast<mv::edit::adjust_section>(section));
+  if (_edits.set_colour(c) != mv::shell::edit_effect::redraw) return;
+  [self publishEdit];
+  [self pokeSnapshot];
+  [self adjustColourChanged];
+}
+
+// A section's Auto (edit/auto_adjust.h): read on the pool from the working
+// image, landed on the main thread as one op if nothing moved meanwhile.
+- (void)adjustAuto:(int32_t)section {
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount ||
+      !mv::edit::has_auto(static_cast<mv::edit::adjust_section>(section))) {
+    return;
+  }
+  if (!_working || ![self adjustStill]) return;
+  const auto sec = static_cast<mv::edit::adjust_section>(section);
+  const std::optional<std::uint64_t> token = _adjust.request_auto_tone(sec);
+  if (!token) return;
+  [self bumpAdjustView];
+  const std::shared_ptr<const mv::image::linear_image> working = _working;
+  const mv::edit::colour current = _edits.colour();
+  const std::uint64_t t = *token;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [working, current, sec, t, weakSelf](const mv::job_context& ctx) -> mv::status {
+                    auto r = mv::edit::compute_auto(*working, current, sec, &ctx);
+                    const bool ok = r.has_value();
+                    const mv::edit::colour value = ok ? r->value : current;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      [weakSelf autoLanded:t ok:ok value:value];
+                    });
+                    return ok ? mv::status::ok : r.error();
+                  });
+}
+
+- (void)autoLanded:(std::uint64_t)token ok:(bool)ok value:(const mv::edit::colour&)value {
+  if (!_adjust.auto_tone_landed(token)) {
+    _pendingAutos.clear();  // the colour moved meanwhile: the rest of a typed request's Autos too
+    return;
+  }
+  if (ok && [self adjustStill] && _edits.set_colour(value) == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+    [self adjustColourChanged];
+  } else {
+    [self bumpAdjustView];  // the spinner stops; nothing changed
+  }
+  [self nextPendingAuto];
 }
 
 - (void)adjustBlur {
@@ -10382,6 +11436,20 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   if (_tagScanPending && !_listOpen && !_items.empty()) return;
   [_tagScanTimer invalidate];
   _tagScanTimer = nil;
+}
+
+// #612 (docs/design/04 "Thumbnail cache upkeep"): the cache's sweep, once a
+// launch, when a still is on screen: never ahead of the view (CLAUDE.md). A
+// background job that waits while the viewer pans or plays.
+- (void)startThumbSweepIfDue {
+  if (_thumbSweepStarted || !_lab.showing_still()) return;
+  _thumbSweepStarted = YES;
+  [self startThumbSweep];
+}
+
+- (void)startThumbSweep {
+  _folder.start_thumb_sweep(_jobs, g_thumb_cache_cap.load(std::memory_order_relaxed),
+                            [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); });
 }
 
 - (void)startTagScanIfDue {
@@ -11164,6 +12232,95 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   [self persistRecentFolders];
 }
 
+// Issue #617: what the card, the Dock menu and File > Open Recent list: the
+// pins first, then the recents that are not pinned (os_integration.h). Every
+// row index is into this list.
+- (std::vector<std::string>)shownFolders {
+  return mv::shell::pinned_then_recent(_pinnedFolders, _recentFolders);
+}
+
+- (void)persistPinnedFolders {
+  NSMutableArray<NSString*>* list = [NSMutableArray array];
+  for (const auto& p : _pinnedFolders) {
+    if (NSString* s = [NSString stringWithUTF8String:p.c_str()]) [list addObject:s];
+  }
+  [NSUserDefaults.standardUserDefaults setObject:list forKey:kDefaultsPinnedFolders];
+}
+
+// Pin / Unpin from a card row's menu. A soak or a --boot-report records nothing
+// (the PR 15 rule), and a full list beeps.
+- (void)setFolder:(const std::string&)dir pinned:(BOOL)pin {
+  if (_options.soak_seconds > 0.0 || !g_boot_report.empty() || dir.empty()) return;
+  std::vector<std::string> next = pin ? mv::shell::pin_folder(_pinnedFolders, dir)
+                                      : mv::shell::remove_folder(_pinnedFolders, dir);
+  if (next == _pinnedFolders) {
+    if (pin) NSBeep();
+    return;
+  }
+  _pinnedFolders = std::move(next);
+  [self persistPinnedFolders];
+  [self refreshWelcomeRecents];
+}
+
+// A folder leaves every list: the recents and, if it was pinned, the pins.
+- (void)forgetFolder:(const std::string&)dir {
+  _recentFolders = mv::shell::remove_folder(std::move(_recentFolders), dir);
+  [self persistRecentFolders];
+  if (mv::shell::is_pinned_folder(_pinnedFolders, dir)) {
+    _pinnedFolders = mv::shell::remove_folder(std::move(_pinnedFolders), dir);
+    [self persistPinnedFolders];
+  }
+  [self refreshWelcomeRecents];
+}
+
+// The shown folder a card row stands for ("" for the iCloud row or none).
+- (std::string)welcomeRowFolder:(int)row {
+  if (_snap.recents.icloud) {
+    if (row == 0) return {};
+    --row;
+  }
+  const std::vector<std::string> shown = [self shownFolders];
+  if (row < 0 || static_cast<std::size_t>(row) >= shown.size()) return {};
+  return shown[static_cast<std::size_t>(row)];
+}
+
+- (NSMenu*)welcomeRowMenu:(int)row {
+  const std::string dir = [self welcomeRowFolder:row];
+  NSString* path = dir.empty() ? nil : [NSString stringWithUTF8String:dir.c_str()];
+  if (!path) return nil;
+  const bool pinned = mv::shell::is_pinned_folder(_pinnedFolders, dir);
+  NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
+  menu.autoenablesItems = NO;
+  NSMenuItem* open = [menu addItemWithTitle:@"Open" action:@selector(openRecentFolder:) keyEquivalent:@""];
+  open.target = self;
+  open.representedObject = path;
+  NSMenuItem* pin = [menu addItemWithTitle:pinned ? @"Unpin" : @"Pin to Top"
+                                    action:@selector(togglePinnedFolder:)
+                             keyEquivalent:@""];
+  pin.target = self;
+  pin.representedObject = path;
+  pin.enabled = pinned || _pinnedFolders.size() < mv::shell::kMaxPinnedFolders;
+  [menu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem* remove = [menu addItemWithTitle:@"Remove from List" action:@selector(forgetFolderFromMenu:)
+                                keyEquivalent:@""];
+  remove.target = self;
+  remove.representedObject = path;
+  return menu;
+}
+
+- (void)togglePinnedFolder:(NSMenuItem*)item {
+  NSString* path = item.representedObject;
+  if (![path isKindOfClass:[NSString class]]) return;
+  const std::string dir = path.UTF8String;
+  [self setFolder:dir pinned:mv::shell::is_pinned_folder(_pinnedFolders, dir) ? NO : YES];
+}
+
+- (void)forgetFolderFromMenu:(NSMenuItem*)item {
+  NSString* path = item.representedObject;
+  if (![path isKindOfClass:[NSString class]]) return;
+  [self forgetFolder:path.UTF8String];
+}
+
 // The welcome card lists recent folders only while nothing has been opened:
 // once a folder or file is chosen the card is a hint again, not a menu.
 - (BOOL)welcomeListsRecents {
@@ -11175,10 +12332,12 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   mv::shell::welcome_recents next;
   if ([self welcomeListsRecents]) {
     const char* home = NSHomeDirectory().fileSystemRepresentation;
-    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", next, [self photosLibraryAvailable] == YES);
+    mv::shell::fill_welcome_recents([self shownFolders], home ? home : "", next,
+                                    [self photosLibraryAvailable] == YES, _pinnedFolders.size());
   }
   // A row index survives the refresh only if the rows did not move.
-  if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud) {
+  if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud &&
+      next.pinned == _snap.recents.pinned) {
     next.hover = _snap.recents.hover;
     next.hover_remove = _snap.recents.hover_remove;
   }
@@ -11222,30 +12381,23 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 // The x on a welcome card row: the folder leaves the card, the Dock menu and
 // File > Open Recent. The folder itself is not touched.
 - (void)removeWelcomeRow:(int)row {
-  if (_snap.recents.icloud) {
-    if (row == 0) return;  // the library leaves from Settings, not the card
-    --row;
-  }
-  if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
-  _recentFolders.erase(_recentFolders.begin() + row);
-  [self persistRecentFolders];
-  [self refreshWelcomeRecents];
+  // The library leaves from Settings, not the card (its row has no folder).
+  const std::string dir = [self welcomeRowFolder:row];
+  if (dir.empty()) return;
+  [self forgetFolder:dir];  // a pinned folder's x unpins it too
 }
 
 - (void)openWelcomeRow:(int)row {
-  if (_snap.recents.icloud) {
-    if (row == 0) {
-      // The library's settings (its backup), not the library itself: listing
-      // every asset is File > Open Photos Library and the folder tree's row.
-      [NSCursor.arrowCursor set];
-      [self setSettingsVisible:YES];
-      [MVChromeHost revealPhotosSettings];
-      return;
-    }
-    --row;
+  if (_snap.recents.icloud && row == 0) {
+    // The library's settings (its backup), not the library itself: listing
+    // every asset is File > Open Photos Library and the folder tree's row.
+    [NSCursor.arrowCursor set];
+    [self setSettingsVisible:YES];
+    [MVChromeHost revealPhotosSettings];
+    return;
   }
-  if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
-  NSString* path = [NSString stringWithUTF8String:_recentFolders[static_cast<std::size_t>(row)].c_str()];
+  const std::string dir = [self welcomeRowFolder:row];
+  NSString* path = dir.empty() ? nil : [NSString stringWithUTF8String:dir.c_str()];
   if (!path) return;
   [NSCursor.arrowCursor set];
   NSMenuItem* item = [[NSMenuItem alloc] init];
@@ -11267,10 +12419,9 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   NSMenuItem* newWindow = [menu addItemWithTitle:@"New Window" action:@selector(menuAction:) keyEquivalent:@""];
   newWindow.target = self;
   newWindow.tag = kMenuNewWindow;
-  if (_recentFolders.empty() && ![self photosLibraryAvailable]) return menu;
+  if (_recentFolders.empty() && _pinnedFolders.empty() && ![self photosLibraryAvailable]) return menu;
   [menu addItem:[NSMenuItem separatorItem]];
-  [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
-  [self addRecentFolderItemsTo:menu];
+  [self addRecentFolderItemsTo:menu headers:YES];
   return menu;
 }
 
@@ -11279,27 +12430,36 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (void)menuNeedsUpdate:(NSMenu*)menu {
   if (menu != _openRecentMenu) return;
   [menu removeAllItems];
-  [self addRecentFolderItemsTo:menu];
+  [self addRecentFolderItemsTo:menu headers:NO];
   if (menu.numberOfItems == 0) [menu addItemWithTitle:@"No Recent Folders" action:nil keyEquivalent:@""];
 }
 
-- (void)addRecentFolderItemsTo:(NSMenu*)menu {
+// Issue #617: the pins first (a pin glyph on each; under a "Pinned Folders"
+// header in the Dock menu), a separator, then the recents (under "Recent
+// Folders" there). Open Recent has no headers, as the system's own.
+- (void)addRecentFolderItemsTo:(NSMenu*)menu headers:(BOOL)headers {
+  const std::vector<std::string> shown = [self shownFolders];
+  const std::size_t pinned = std::min(_pinnedFolders.size(), shown.size());
   // docs/design/26: the iCloud Photos library first, while it is added in Settings.
   if ([self photosLibraryAvailable]) {
     NSMenuItem* icloud = [menu addItemWithTitle:@"iCloud Photos" action:@selector(openPhotosLibraryFromMenu:)
                                   keyEquivalent:@""];
     icloud.target = self;
     icloud.image = [NSImage imageWithSystemSymbolName:@"icloud" accessibilityDescription:@"iCloud"];
-    if (!_recentFolders.empty()) [menu addItem:[NSMenuItem separatorItem]];
+    if (!shown.empty()) [menu addItem:[NSMenuItem separatorItem]];
   }
-  const std::vector<std::string> labels = mv::shell::recent_folder_labels(_recentFolders);
-  for (std::size_t i = 0; i < _recentFolders.size(); ++i) {
-    NSString* path = [NSString stringWithUTF8String:_recentFolders[i].c_str()];
+  const std::vector<std::string> labels = mv::shell::recent_folder_labels(shown);
+  for (std::size_t i = 0; i < shown.size(); ++i) {
+    if (headers && i == 0 && pinned > 0) [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Pinned Folders"]];
+    if (i == pinned && pinned > 0) [menu addItem:[NSMenuItem separatorItem]];
+    if (headers && i == pinned) [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
+    NSString* path = [NSString stringWithUTF8String:shown[i].c_str()];
     NSString* title = [NSString stringWithUTF8String:labels[i].c_str()];
     if (!path || !title) continue;
     NSMenuItem* item = [menu addItemWithTitle:title action:@selector(openRecentFolder:) keyEquivalent:@""];
     item.target = self;
     item.representedObject = path;
+    if (i < pinned) item.image = [NSImage imageWithSystemSymbolName:@"pin" accessibilityDescription:@"Pinned"];
   }
 }
 
@@ -11323,9 +12483,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
                   MvLabApp* app = weakSelf;
                   NSBeep();
                   if (!app) return;
-                  std::erase(app->_recentFolders, gone);
-                  [app persistRecentFolders];
-                  [app refreshWelcomeRecents];
+                  [app forgetFolder:gone];  // and its pin, if it had one
                 }];
 }
 
@@ -11360,6 +12518,136 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     return mv::status::ok;
   });
   return YES;
+}
+
+// ---- Issue #614: Print (⌘P; docs/design/16 "Print") --------------------------------
+
+// ⌘P / File ▸ Print…: two or more marks (or a gallery range) as a contact
+// sheet, else the still on screen with its edits baked. The bake runs on the
+// pool; the panel opens when it lands. NO beeps (nothing here prints).
+- (BOOL)printRequest {
+  if (_printBusy) {
+    [self noticeShow:"Still preparing the last print"];
+    return YES;
+  }
+  const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
+  const bool sheet = mv::shell::print_as_sheet(entries.size());
+  std::vector<mv::shell::print_source> sources;
+  const std::string current =
+      !_items.empty() && _index.current() < _items.size() ? _items[_index.current()].path_utf8 : std::string();
+  if (sheet) {
+    // The file on screen keeps its session edits; the other marks print as
+    // they are on disk.
+    for (const auto& entry : entries) {
+      mv::shell::print_source s{entry.path_utf8, {}, {}};
+      if (entry.path_utf8 == current) {
+        s.g = _edits.export_geometry();
+        s.c = _edits.colour();
+      }
+      sources.push_back(std::move(s));
+    }
+  } else {
+    // As ⌘⌥C: a clip or a playing animation has no still to bake.
+    if (current.empty() || [self currentItemIsVideo] || _lab.anim_active()) return NO;
+    sources.push_back(mv::shell::print_source{current, _edits.export_geometry(), _edits.colour()});
+  }
+
+  // Sized for the paper Page Setup holds, at kPrintDpi. Fit or fill is chosen
+  // in the panel, so a photo is baked to cover the page (fill's need, which
+  // also serves fit); a sheet's cells for the grid its marks ask for.
+  const mv::shell::print_rect area = mv::shell::print_area(MvPrintPage(NSPrintInfo.sharedPrintInfo));
+  const mv::shell::print_pixels px =
+      sheet ? mv::shell::pixels_for(mv::shell::contact_frame(
+                  area, mv::shell::contact_grid(sources.size(), _printOptions.grid), false))
+            : mv::shell::pixels_for(area);
+  const mv::edit::size2 box{px.w, px.h};
+  const bool cover = !sheet;
+
+  _printBusy = YES;
+  [self noticeShow:"Preparing to print…"];
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [sources, box, cover, sheet, weakSelf](const mv::job_context& ctx) -> mv::status {
+                    // A pool thread has no autorelease pool of its own.
+                    @autoreleasepool {
+                      NSMutableArray* images = [[NSMutableArray alloc] init];
+                      std::vector<std::string> names;
+                      mv::status st = mv::status::ok;
+                      auto keep = [&](const mv::codec::raster& pixels, const std::string& path) {
+                        CGImageRef cg = MvPrintImage(pixels);
+                        if (!cg) return;
+                        [images addObject:(__bridge_transfer id)cg];
+                        names.push_back(path);
+                      };
+                      if (sheet) {
+                        auto pics = mv::shell::render_contact_pictures(sources, box, &ctx);
+                        if (pics) {
+                          for (const auto& p : *pics) keep(p.pixels, p.path);
+                        } else {
+                          st = pics.error();
+                        }
+                      } else {
+                        const mv::shell::print_source& s = sources.front();
+                        auto pic = mv::shell::render_print_picture(s.path, s.g, s.c, box, cover, &ctx);
+                        if (pic) {
+                          keep(*pic, s.path);
+                        } else {
+                          st = pic.error();
+                        }
+                      }
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        MvLabApp* strongSelf = weakSelf;
+                        if (strongSelf) [strongSelf printPrepared:images names:names sheet:sheet];
+                      });
+                      return st;
+                    }
+                  });
+  return YES;
+}
+
+- (void)printPrepared:(NSArray*)images names:(const std::vector<std::string>&)names sheet:(bool)sheet {
+  _printBusy = NO;
+  if (images.count == 0 || !self.window) {
+    NSBeep();
+    [self noticeShow:"Could not prepare the print"];
+    return;
+  }
+  [self noticeClear];
+  MvPrintOptions* options = [[MvPrintOptions alloc] init];
+  options.sheet = sheet;
+  options.fill = _printOptions.fit == mv::shell::print_fit::fill;
+  options.captions = _printOptions.captions;
+  options.grid = _printOptions.grid;
+  MvPrintView* view = [[MvPrintView alloc] initWithImages:images names:names sheet:sheet options:options];
+  NSPrintInfo* info = [NSPrintInfo.sharedPrintInfo copy];
+  // print_layout keeps its own margins inside the device's imageable area.
+  info.topMargin = 0;
+  info.bottomMargin = 0;
+  info.leftMargin = 0;
+  info.rightMargin = 0;
+  info.horizontallyCentered = NO;
+  info.verticallyCentered = NO;
+  NSPrintOperation* op = [NSPrintOperation printOperationWithView:view printInfo:info];
+  op.jobTitle = sheet ? @"Contact sheet" : @(std::string(mv::shell::print_caption(names.front())).c_str());
+  op.showsPrintPanel = YES;
+  op.showsProgressPanel = YES;
+  op.canSpawnSeparateThread = YES;  // pages spool off the main thread
+  op.printPanel.options |= NSPrintPanelShowsPaperSize | NSPrintPanelShowsOrientation | NSPrintPanelShowsPreview;
+  [op.printPanel addAccessoryController:options];
+  _printOptionsPanel = options;
+  [op runOperationModalForWindow:self.window
+                        delegate:self
+                  didRunSelector:@selector(printOperationDidRun:success:contextInfo:)
+                     contextInfo:nullptr];
+}
+
+// Print kept the panel's choices for the next ⌘P (this run only); Cancel drops
+// them, and nothing was written.
+- (void)printOperationDidRun:(NSPrintOperation*)op success:(BOOL)success contextInfo:(void*)contextInfo {
+  (void)op;
+  (void)contextInfo;
+  if (success && _printOptionsPanel) _printOptions = [_printOptionsPanel chosenOptions];
+  _printOptionsPanel = nil;
 }
 
 // ---- Text in images (Live Text, docs/design/16 "Text in images") -------------------
@@ -11659,6 +12947,7 @@ static NSString* const kDefaultsViewFlags = @"mv.viewFlags";
 static NSString* const kDefaultsKeys = @"mv.keys";
 static NSString* const kDefaultsAddonKeys = @"mv.addonKeys";
 static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
+static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #617
 
 - (BOOL)settingsVisible { return _settingsVisible; }
 - (void)setSettingsVisible:(BOOL)visible {
@@ -11765,11 +13054,17 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       _recentFolders.emplace_back([entry UTF8String]);
     }
   }
+  _pinnedFolders.clear();
+  for (id entry in [d arrayForKey:kDefaultsPinnedFolders]) {
+    if ([entry isKindOfClass:[NSString class]] && [entry length] > 0) {
+      _pinnedFolders = mv::shell::pin_folder(std::move(_pinnedFolders), [entry UTF8String]);  // capped, no repeats
+    }
+  }
   // A launch with a path to open never shows the rows, not even for a frame.
   if (_options.open_path.empty() && [self welcomeListsRecents]) {
     const char* home = NSHomeDirectory().fileSystemRepresentation;
-    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", _snap.recents,
-                                    [self photosLibraryAvailable] == YES);
+    mv::shell::fill_welcome_recents([self shownFolders], home ? home : "", _snap.recents,
+                                    [self photosLibraryAvailable] == YES, _pinnedFolders.size());
   }
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
@@ -12273,6 +13568,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   // and joins running ones, so this ordering guarantees that. Both block,
   // so both run on a background queue; the window is already closed by the
   // time this method runs, so nothing user-visible waits on it.
+  // #612: a sweep waiting out a busy viewer would hold a worker the join
+  // below waits for; Clear no longer reaches the folder model.
+  g_storage_folder.store(nullptr, std::memory_order_release);
+  _folder.stop_thumb_sweep();
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     // PR 13 / 14: running clip jobs are cancelled and their temporaries
     // removed (no partial output); joins the queue's workers.

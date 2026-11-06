@@ -39,9 +39,11 @@
 #include "player/poster.h"
 #include "core/job_system.h"
 #include "core/result.h"
+#include "core/sound_envelope.h"
 #include "core/spsc_ring.h"
 #include "core/status.h"
 #include "core/trace.h"
+#include "edit/clip.h"
 #include "gfx/device.h"
 #include "image/page_thumbs.h"
 #include "image/pipeline.h"
@@ -58,6 +60,7 @@
 #include "meta/tag_index.h"
 #include "core/json.h"
 #include "io/paths.h"
+#include "io/storage.h"
 
 // The enum values on both sides of the line must stay numerically identical.
 // If someone reorders mv::status, this stops the build rather than shipping a
@@ -91,7 +94,10 @@ static_assert(offsetof(mv_folder_entry, moment_ms) == 32, "mv_folder_entry layou
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
 // ABI 0.13 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
 // the first 40 bytes and is still accepted (clip_session::to_request).
-static_assert(sizeof(mv_clip_request) == 56, "mv_clip_request layout is part of the ABI");
+static_assert(sizeof(mv_clip_request) == 64, "mv_clip_request layout is part of the ABI");
+static_assert(offsetof(mv_clip_request, look) == 56, "mv_clip_request 0.13 prefix is part of the ABI");
+static_assert(sizeof(mv_clip_look) == 56, "mv_clip_look layout is part of the ABI");
+static_assert(offsetof(mv_clip_look, volume) == 36, "mv_clip_look layout is part of the ABI");
 static_assert(offsetof(mv_clip_request, in_ns) == 8, "mv_clip_request layout is part of the ABI");
 static_assert(offsetof(mv_clip_request, ranges_ns) == 40, "mv_clip_request 0.10 prefix is part of the ABI");
 static_assert(sizeof(mv_clip_progress) == 368, "mv_clip_progress layout is part of the ABI");
@@ -238,6 +244,10 @@ struct mv_session {
   // The listing changed; its tag pass waits for the selected stop's first image.
   std::atomic<bool> tag_pass_due{false};
   std::atomic<std::uint64_t> tag_generation{0};
+  // 0.34 (#612): the thumbnail cache's sweep runs once a session, after the
+  // first image is on screen (never ahead of the view), and again on
+  // mv_thumb_cache_sweep.
+  std::atomic<bool> thumb_sweep_due{true};
   // 0.19: io::kHideAudio / kHideDocuments. `folder_listing` stays unfiltered,
   // so turning a kind back on re-applies without another scan.
   std::atomic<std::uint32_t> hidden_kinds{0};
@@ -419,9 +429,11 @@ struct mv_session {
     if (completion_event) ::SetEvent(completion_event);
     // #291: the first image is on its way to the screen: the folder's tag
     // pass may start now (never ahead of the view, CLAUDE.md).
+    // #612: and, once a session, the thumbnail cache's sweep.
     if (c.kind == static_cast<uint32_t>(MV_COMPLETION_IMAGE_OPENED) && c.status == static_cast<uint32_t>(MV_OK) &&
         image_shown_hook &&
-        tag_pass_due.load(std::memory_order_relaxed)) {
+        (tag_pass_due.load(std::memory_order_relaxed) ||
+         thumb_sweep_due.load(std::memory_order_relaxed))) {
       try {
         image_shown_hook();
       } catch (...) {
@@ -1456,6 +1468,42 @@ void start_tag_pass(mv_session* session) {
       [] { return mv::abi::present_busy(); });
 }
 
+// 0.34 (#612): Settings -> Storage's size cap for the thumbnail cache, in
+// bytes; 0 (the default) is no cap: a cap too small brings back cold
+// thumbnails. Process-wide; the next sweep applies it.
+std::atomic<std::uint64_t> g_thumb_cache_cap{0};
+
+// #612: the thumbnail cache's sweep (image/thumb.h thumb_store::sweep), on a
+// worker behind the view, paced like the tag pass. The store is opened there
+// if no thumbnail has opened it yet (opening is I/O).
+void start_thumb_sweep(mv_session* session) {
+  (void)session->jobs.submit_at(mv::background_generation, [session](const mv::job_context&) -> status {
+    if (session->closing.load(std::memory_order_acquire)) return status::cancelled;
+    if (!session->thumbs.is_open()) {
+      auto dir = mv::io::thumb_cache_dir();
+      if (!dir) return dir.error();
+      if (auto opened = session->thumbs.open(dir.value()); !opened) return opened.error();
+    }
+    (void)session->thumbs.submit_sweep(
+        session->jobs, g_thumb_cache_cap.load(std::memory_order_relaxed),
+        [] { return mv::abi::present_busy(); },
+        [](mv::result<mv::image::thumb_sweep_stats> r) {
+          if (!r) return;
+          const mv::image::thumb_sweep_stats& s = r.value();
+          // Counts only: never a path or a name (rule 6).
+          ::mv::log::write(::mv::log::level::info,
+                           "thumb sweep: %llu rows and %llu files (%llu bytes) removed; %llu files "
+                           "(%llu bytes) kept",
+                           static_cast<unsigned long long>(s.rows_removed),
+                           static_cast<unsigned long long>(s.files_removed),
+                           static_cast<unsigned long long>(s.bytes_removed),
+                           static_cast<unsigned long long>(s.files_kept),
+                           static_cast<unsigned long long>(s.bytes_kept));
+        });
+    return status::ok;
+  });
+}
+
 // Issue #207: the rating and label of `e` when its stamp is current, else null.
 // folder_mutex held.
 const mv::io::cull_marks* cull_stamp_of_locked(const mv_session* session,
@@ -1782,6 +1830,7 @@ mv_status MV_CALL mv_session_create(const mv_session_config* config, mv_session_
     {
       mv_session* raw = session.get();
       session->image_shown_hook = [raw] {
+        if (raw->thumb_sweep_due.exchange(false, std::memory_order_relaxed)) start_thumb_sweep(raw);
         if (!raw->tag_pass_due.exchange(false, std::memory_order_relaxed)) return;
         (void)raw->jobs.submit_at(mv::background_generation, [raw](const mv::job_context&) -> status {
           start_tag_pass(raw);
@@ -1839,6 +1888,9 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     // pool joins it.
     session->closing.store(true, std::memory_order_release);
     wake_upload_gates(session);
+    // #612: a sweep waiting out a busy viewer would hold a worker the join
+    // waits for.
+    session->thumbs.stop_sweep();
     session->jobs.shutdown();
     session->thumbs.close();
     delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
@@ -2510,6 +2562,62 @@ mv_status MV_CALL mv_folder_tag_generation(mv_session_t session, uint64_t* out_g
   }));
 }
 
+// 0.34 (#612): Settings -> Storage.
+mv_status MV_CALL mv_storage_report_json(const char* extra_utf8, char* utf8, uint32_t cap,
+                                         uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_storage_report_json", [&]() -> status {
+    // Host-only places, one "id\tpath" a line (the crash database, the
+    // telemetry spool: the shell knows those, the core does not).
+    std::vector<mv::io::storage_place> extra;
+    if (extra_utf8 != nullptr) {
+      std::string_view rest(extra_utf8);
+      while (!rest.empty()) {
+        const auto nl = rest.find('\n');
+        const std::string_view line = rest.substr(0, nl);
+        rest = nl == std::string_view::npos ? std::string_view() : rest.substr(nl + 1);
+        const auto tab = line.find('\t');
+        if (tab == std::string_view::npos || tab == 0 || tab + 1 >= line.size()) continue;
+        extra.push_back({std::string(line.substr(0, tab)), std::string(line.substr(tab + 1))});
+      }
+    }
+    return copy_utf8(mv::io::storage_json(mv::io::measure_storage(extra)), utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_thumb_cache_clear(mv_session_t session) {
+  return static_cast<mv_status>(guard("mv_thumb_cache_clear", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    if (!session->thumbs.is_open()) {
+      auto dir = mv::io::thumb_cache_dir();
+      if (!dir) return dir.error();
+      if (auto opened = session->thumbs.open(dir.value()); !opened) return opened.error();
+    }
+    if (auto cleared = session->thumbs.clear(); !cleared) return cleared.error();
+    // The open folder's tiles name files that are gone: forgotten, so the
+    // chrome's next request regenerates them rather than loading nothing.
+    std::lock_guard lock(session->folder_mutex);
+    for (auto& item : session->folder_items) item.thumb_path.clear();
+    for (auto& card : session->folder_subdirs) card.cover_thumb.clear();
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_thumb_cache_sweep(mv_session_t session) {
+  return static_cast<mv_status>(guard("mv_thumb_cache_sweep", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->thumb_sweep_due.store(false, std::memory_order_relaxed);
+    start_thumb_sweep(session);
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes) {
+  return static_cast<mv_status>(guard("mv_thumb_cache_set_cap", [&]() -> status {
+    g_thumb_cache_cap.store(cap_bytes, std::memory_order_relaxed);
+    return status::ok;
+  }));
+}
+
 mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap,
                                          uint32_t* out_bytes) {
   return static_cast<mv_status>(guard("mv_list_subdirectories", [&]() -> status {
@@ -3038,6 +3146,23 @@ mv_status MV_CALL mv_video_set_muted(mv_session_t session, int32_t muted) {
   return static_cast<mv_status>(guard("mv_video_set_muted", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
     session->video.command([=](mv::player::media_source& s) { s.set_muted(muted != 0); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_sound_look(mv_session_t session, const int64_t* ranges_ns, uint32_t range_count,
+                                          float volume, int32_t fade_in_ms, int32_t fade_out_ms) {
+  return static_cast<mv_status>(guard("mv_video_set_sound_look", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(range_count == 0 || ranges_ns != nullptr, "ranges must not be null");
+    MV_REQUIRE(range_count <= mv::edit::clip::kMaxRanges, "too many ranges");
+    mv::sound_envelope e;
+    if (!e.set(std::span<const std::int64_t>(ranges_ns, static_cast<std::size_t>(range_count) * 2), volume,
+               static_cast<std::int64_t>(std::max(0, fade_in_ms)) * 1'000'000,
+               static_cast<std::int64_t>(std::max(0, fade_out_ms)) * 1'000'000)) {
+      return status::invalid_arg;
+    }
+    session->video.command([e](mv::player::media_source& s) { s.set_sound_envelope(e); });
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
     return status::ok;
   }));

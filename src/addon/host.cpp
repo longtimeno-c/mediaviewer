@@ -7,11 +7,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <optional>
 #include <string_view>
 #include <span>
 #include <thread>
 #include <vector>
 
+#include "core/keep_ranges.h"
 #include "addon/settings_values.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
@@ -263,6 +265,49 @@ mv_status MV_CALL t_watch(void* host, void(MV_CALL* cb)(void*, std::uint32_t, co
       w.running = true;
     }
     return MV_OK;
+  });
+}
+
+void on_io_tree(void* user, std::uint32_t root, std::string_view dir, std::uint32_t flags) {
+  auto& t = *static_cast<host_table::tree_state*>(user);
+  void(MV_CALL* cb)(void*, std::uint32_t, const char*, std::uint32_t) = nullptr;
+  void* cb_user = nullptr;
+  {
+    std::lock_guard lock(t.m);
+    cb = t.cb;
+    cb_user = t.user;
+  }
+  if (!cb) return;
+  const std::string z(dir);
+  cb(cb_user, root, z.c_str(), flags);
+}
+
+mv_status MV_CALL t_watch_tree(void* host, const char* const* roots, uint32_t count,
+                               void(MV_CALL* cb)(void*, uint32_t, const char*, uint32_t), void* user,
+                               uint8_t* out_ok) {
+  return guarded([&] {
+    if (out_ok) std::fill(out_ok, out_ok + count, std::uint8_t{0});
+    if (count == 0 || !cb) {
+      self(host).stop_trees();
+      return MV_OK;
+    }
+    if (!roots) return MV_ERR_INVALID_ARG;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) list.emplace_back(roots[i] ? roots[i] : "");
+    auto& t = self(host).trees;
+    std::lock_guard control(t.control);
+    {
+      std::lock_guard lock(t.m);
+      t.cb = cb;
+      t.user = user;
+    }
+    std::vector<bool> ok;
+    const auto started = t.watcher.start(list, &on_io_tree, &t, ok);
+    if (out_ok) {
+      for (uint32_t i = 0; i < count && i < ok.size(); ++i) out_ok[i] = ok[i] ? 1 : 0;
+    }
+    return started ? MV_OK : to_mv(started.error());
   });
 }
 
@@ -731,6 +776,15 @@ mv_status MV_CALL t_screen_show(void* host, const char* screen, uint32_t show) {
   });
 }
 
+// #601: a Places folder-map dot asks the viewer to show its file.
+mv_status MV_CALL t_open_item(void* host, const char* screen, uint64_t g, const char* path) {
+  return guarded([&] {
+    if (!screen || !path) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().open_item(t.addon_id(), screen, g, path));
+  });
+}
+
 mv_status MV_CALL t_location_of(void* host, const char* path, mv_addon_location* out) {
   return guarded([&] {
     if (!path || !out) return MV_ERR_INVALID_ARG;
@@ -882,6 +936,12 @@ mv_status MV_CALL t_busy_post(void* host, const char* what) {
 
 struct sound_box {
   std::unique_ptr<sound_stream> s;
+  // The Video Editor's cut (sound_keep): what is read is filtered through it.
+  keep_ranges keep;
+  bool read = false;
+  std::uint64_t position = 0;  // frames read from the source so far
+  std::vector<float> held;     // kept frames not yet handed out
+  bool ended = false;
 };
 
 mv_status MV_CALL t_sound_open(void* host, const char* path, uint32_t rate, uint32_t channels,
@@ -916,7 +976,35 @@ mv_status MV_CALL t_sound_open(void* host, const char* path, uint32_t rate, uint
 mv_status MV_CALL t_sound_read(void*, void* sound, float* out, uint32_t max_frames, uint32_t* frames) {
   return guarded([&] {
     if (!sound || !out || !frames || max_frames == 0) return MV_ERR_INVALID_ARG;
-    auto& s = *static_cast<sound_box*>(sound)->s;
+    auto* box = static_cast<sound_box*>(sound);
+    box->read = true;
+    auto& s = *box->s;
+    if (box->keep.active()) {
+      // Read the source until enough is kept (or it ends); hand out at most
+      // max_frames, keeping the rest for the next call.
+      const std::size_t ch = std::max<std::uint32_t>(1, s.facts().channels);
+      const std::uint32_t rate = s.facts().sample_rate;
+      while (!box->ended && box->held.size() < static_cast<std::size_t>(max_frames) * ch) {
+        auto r = s.read(max_frames);
+        if (!r) return to_mv(r.error());
+        if (r->empty()) {
+          box->ended = true;
+          break;
+        }
+        const std::int64_t base_ns = s.first_ms() * 1'000'000;
+        box->keep.keep_sound(*r, box->position, base_ns, rate, static_cast<std::uint32_t>(ch), box->held);
+        box->position += r->size() / ch;
+        const std::uint64_t r1 = std::max<std::uint32_t>(1, rate);
+        const auto now_ns = base_ns + static_cast<std::int64_t>(box->position / r1 * 1'000'000'000 +
+                                                                box->position % r1 * 1'000'000'000 / r1);
+        if (box->keep.past_end(now_ns)) box->ended = true;  // the rest is cut
+      }
+      const std::size_t n = std::min(box->held.size(), static_cast<std::size_t>(max_frames) * ch);
+      std::memcpy(out, box->held.data(), n * sizeof(float));
+      box->held.erase(box->held.begin(), box->held.begin() + static_cast<std::ptrdiff_t>(n));
+      *frames = static_cast<uint32_t>(n / ch);
+      return MV_OK;
+    }
     auto r = s.read(max_frames);
     if (!r) return to_mv(r.error());
     const std::size_t ch = std::max<std::uint32_t>(1, s.facts().channels);
@@ -924,6 +1012,15 @@ mv_status MV_CALL t_sound_read(void*, void* sound, float* out, uint32_t max_fram
     std::memcpy(out, r->data(), r->size() * sizeof(float));
     *frames = static_cast<uint32_t>(r->size() / ch);
     return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_sound_keep(void*, void* sound, const int64_t* ranges, uint32_t count) {
+  return guarded([&] {
+    auto* box = static_cast<sound_box*>(sound);
+    if (!box || box->read || (count > 0 && !ranges)) return MV_ERR_INVALID_ARG;
+    if (count == 0) return MV_OK;
+    return box->keep.set(std::span<const std::int64_t>(ranges, std::size_t{count} * 2)) ? MV_OK : MV_ERR_INVALID_ARG;
   });
 }
 
@@ -991,6 +1088,8 @@ void MV_CALL t_sound_write_close(void*, void* writer) {
 struct frames_box {
   std::unique_ptr<picture_source> s;
   std::vector<std::uint8_t> rgb;
+  keep_ranges keep;  // the Video Editor's cut (frames_keep)
+  bool read = false;
 };
 
 mv_status MV_CALL t_frames_open(void* host, const char* path, mv_addon_frames_info* info, void** out) {
@@ -1028,9 +1127,23 @@ mv_status MV_CALL t_frames_read(void*, void* frames, uint8_t* out, uint64_t cap,
     if (!box || !out || !got) return MV_ERR_INVALID_ARG;
     const picture_facts& f = box->s->facts();
     if (cap < static_cast<uint64_t>(f.width) * f.height * 3) return MV_ERR_INVALID_ARG;
+    box->read = true;
     std::int64_t t = 0;
     auto more = box->s->next(box->rgb, t);
     if (!more) return to_mv(more.error());
+    if (box->keep.active()) {
+      // Frames in a cut are decoded and dropped; past the last piece, the end.
+      std::optional<std::int64_t> program;
+      while (*more && !(program = box->keep.program_of(t * 1000))) {
+        if (box->keep.past_end(t * 1000)) {
+          *more = false;
+          break;
+        }
+        more = box->s->next(box->rgb, t);
+        if (!more) return to_mv(more.error());
+      }
+      if (*more) t = *program / 1000;
+    }
     *got = *more ? 1 : 0;
     if (*more) {
       if (box->rgb.size() > cap) return MV_ERR_INTERNAL;
@@ -1038,6 +1151,15 @@ mv_status MV_CALL t_frames_read(void*, void* frames, uint8_t* out, uint64_t cap,
       if (pts_us) *pts_us = t;
     }
     return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_frames_keep(void*, void* frames, const int64_t* ranges, uint32_t count) {
+  return guarded([&] {
+    auto* box = static_cast<frames_box*>(frames);
+    if (!box || box->read || (count > 0 && !ranges)) return MV_ERR_INVALID_ARG;
+    if (count == 0) return MV_OK;
+    return box->keep.set(std::span<const std::int64_t>(ranges, std::size_t{count} * 2)) ? MV_OK : MV_ERR_INVALID_ARG;
   });
 }
 
@@ -1158,6 +1280,18 @@ void MV_CALL t_still_close(void*, void* still) {
   }
 }
 
+mv_status MV_CALL t_still_mask(void* host, const char* path, float* out, uint32_t cap, uint32_t* count) {
+  return guarded([&] {
+    if (!path || !count || (cap > 0 && !out)) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().still_mask;
+    const std::vector<float> dabs = fn ? fn(path) : std::vector<float>{};
+    *count = static_cast<uint32_t>(dabs.size() / 3);
+    const std::size_t n = std::min<std::size_t>(cap, *count) * 3;
+    if (n > 0) std::memcpy(out, dabs.data(), n * sizeof(float));
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* rgb, uint32_t w, uint32_t h,
                                 uint32_t stride, const char* suffix, char* out, uint32_t cap) {
   return guarded([&] {
@@ -1177,6 +1311,66 @@ mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* r
     auto r = fn(source, img, suffix);
     if (!r) return to_mv(r.error());
     return out ? copy_out(*r, out, cap) : MV_OK;
+  });
+}
+
+// #606: the last routes asked for, by path + size + mtime + cap. Places asks
+// for the file on screen on every info request (a theme change, a settings
+// change), and search asks again for a clip a later query passes over; the
+// telemetry read is a few hundred small reads, so a repeat is a lookup.
+struct route_entry {
+  std::string path;
+  std::uint64_t size = 0;
+  std::int64_t mtime = 0;
+  std::uint32_t cap = 0;
+  std::vector<mv_addon_route_point> points;
+};
+std::mutex& route_cache_m() {
+  static std::mutex m;
+  return m;
+}
+std::vector<route_entry>& route_cache() {
+  static std::vector<route_entry> c;  // most recent last
+  return c;
+}
+constexpr std::size_t kRouteCacheEntries = 32;
+
+mv_status MV_CALL t_route_of(void* host, const char* path, mv_addon_route_point* out, uint32_t capacity,
+                             uint32_t* out_count) {
+  return guarded([&] {
+    if (!path || !out_count || (capacity > 0 && !out)) return MV_ERR_INVALID_ARG;
+    *out_count = 0;
+    if (capacity == 0) return MV_OK;
+    const auto& fn = self(host).services().route;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto st = io::stat_path(path);
+    if (!st || st->is_directory) return MV_ERR_IO;
+    const auto give = [&](const std::vector<mv_addon_route_point>& pts) {
+      const auto n = static_cast<uint32_t>(std::min<std::size_t>(pts.size(), capacity));
+      std::copy_n(pts.begin(), n, out);
+      *out_count = n;
+      return MV_OK;
+    };
+    {
+      std::lock_guard lock(route_cache_m());
+      auto& c = route_cache();
+      for (auto it = c.begin(); it != c.end(); ++it) {
+        if (it->path == path && it->size == st->size && it->mtime == st->mtime_unix && it->cap == capacity) {
+          route_entry e = std::move(*it);
+          c.erase(it);
+          c.push_back(std::move(e));
+          return give(c.back().points);
+        }
+      }
+    }
+    // Read outside the lock: another add-on's ask for another file goes on.
+    auto r = fn(path, capacity);
+    if (!r) return to_mv(r.error());
+    std::lock_guard lock(route_cache_m());
+    auto& c = route_cache();
+    if (c.size() >= kRouteCacheEntries) c.erase(c.begin());
+    c.push_back(route_entry{path, st->size, st->mtime_unix, capacity, std::move(*r)});
+    return give(c.back().points);
   });
 }
 
@@ -1253,6 +1447,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.sound_open = &t_sound_open;
     api_.sound_read = &t_sound_read;
     api_.sound_close = &t_sound_close;
+    api_.sound_keep = &t_sound_keep;
   }
   if (svc_.open_sound_writer) {
     api_.sound_write_open = &t_sound_write_open;
@@ -1264,6 +1459,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.frames_open = &t_frames_open;
     api_.frames_read = &t_frames_read;
     api_.frames_close = &t_frames_close;
+    api_.frames_keep = &t_frames_keep;
   }
   if (svc_.open_clip_writer) {
     api_.clip_write_open = &t_clip_write_open;
@@ -1278,11 +1474,30 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.still_close = &t_still_close;
   }
   if (svc_.write_still) api_.still_write = &t_still_write;
+  api_.open_item = &t_open_item;
+  if (svc_.route) api_.route_of = &t_route_of;  // #606
+  api_.watch_tree = &t_watch_tree;
+  if (svc_.still_mask) api_.still_mask = &t_still_mask;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
 
-host_table::~host_table() { stop_watch(); }
+host_table::~host_table() {
+  stop_watch();
+  stop_trees();
+}
+
+void host_table::stop_trees() noexcept {
+  std::lock_guard control(trees.control);
+  {
+    std::lock_guard lock(trees.m);
+    trees.cb = nullptr;
+    trees.user = nullptr;
+  }
+  // Not under `m`: stop() drains the watcher thread, which may be inside
+  // on_io_tree waiting for `m`.
+  trees.watcher.stop();
+}
 
 void host_table::stop_watch() noexcept {
   std::lock_guard control(watch.control);
@@ -1322,9 +1537,12 @@ loaded_addon::~loaded_addon() {
   // The add-on stops its threads before its code goes away, and the host
   // table (whose thunks it calls) outlives both.
   if (api_.shutdown && api_.addon) api_.shutdown(api_.addon);
-  // An add-on that left its volume callback registered must not be called
-  // after its code is unmapped.
-  if (table_) table_->stop_watch();
+  // An add-on that left its volume or tree callback registered must not be
+  // called after its code is unmapped.
+  if (table_) {
+    table_->stop_watch();
+    table_->stop_trees();
+  }
   lib_.close();
   table_.reset();
 }

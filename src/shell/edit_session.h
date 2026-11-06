@@ -132,6 +132,11 @@ class edit_session {
   // #289: every colour parameter at once (auto tone, edit/auto_tone.h), each
   // clamped: one op, so one Ctrl+Z undoes it. `none` when nothing changes.
   [[nodiscard]] edit_effect set_colour(const edit::colour& c);
+  // Slice 2: one channel's curve (sanitised). A drag of a point is one op.
+  [[nodiscard]] edit_effect set_curve(edit::curve_channel ch, const edit::curve& k);
+  // Slice 3: one red-eye fix at `s` (source uv, radius a fraction of the
+  // diagonal), one op; r 0 clears every fix. `refused` past kRedEyeSpots.
+  [[nodiscard]] edit_effect add_red_eye(const edit::red_eye_spot& s);
 
   // PR 12. A metadata write (rating, comment, orientation tag) landed on
   // `path`: the bytes changed (size, mtime), the pixels did not. Moves the
@@ -257,5 +262,33 @@ struct flattened_copy {
 };
 [[nodiscard]] result<flattened_copy> run_flatten(std::string_view source_path, const edit::geometry& g,
                                                  const edit::colour& c = {});
+
+// ---- Print (issue #614, docs/design/16 "Print"; shell/print_layout.h) --------
+
+// Ctrl+P / ⌘P on a still: the pixels the export of `g` and `c` writes
+// (edit::render_picture), no larger than `box` (fitting it, or covering it
+// when `cover`: the page's fill). Nothing is written anywhere, so a cancelled
+// print leaves no file. Worker thread only.
+[[nodiscard]] result<codec::raster> render_print_picture(std::string_view source_path,
+                                                         const edit::geometry& g, const edit::colour& c,
+                                                         edit::size2 box, bool cover,
+                                                         const job_context* ctx = nullptr);
+
+struct print_source {
+  std::string path;   // UTF-8
+  edit::geometry g{};  // the session's stack for the file on screen; identity for the rest
+  edit::colour c{};
+};
+struct print_picture {
+  std::string path;
+  codec::raster pixels;
+};
+// The contact sheet's pictures, in `sources` order, each fitted to `cell`
+// (pixels). A file that does not render as a still (a clip, audio, gone, not
+// readable) is left out rather than failing the sheet. Cancelled stops early
+// with status::cancelled. Worker thread only.
+[[nodiscard]] result<std::vector<print_picture>> render_contact_pictures(std::span<const print_source> sources,
+                                                                         edit::size2 cell,
+                                                                         const job_context* ctx = nullptr);
 
 }  // namespace mv::shell

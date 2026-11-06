@@ -245,6 +245,7 @@ public static partial class IslandHost
         }
         RebuildSlotBar();
         RebuildSlotPathItems();
+        RebuildEditorAddons();
         // Gallery tiles carry badge / context wrappers only while something fills
         // them: when that changes, the realised tiles are made again.
         bool badges = SlotBadgeDefs.Count > 0;
@@ -313,7 +314,37 @@ public static partial class IslandHost
         string json = SlotNative.InfoJson();
         // No early return on equal text: new surface pixels arrive with the same tree.
         _slotInfoJson = json;
+        OpenSlotRequest(json);
         FillSlotSections();
+    }
+
+    // #601: a section asked to show a file of this folder (a Places folder-map
+    // dot): opened once per revision (the core's only grows), and only when
+    // the listing holds it, as a click on its strip tile would.
+    private static long _slotOpenRevision;
+
+    private static void OpenSlotRequest(string json)
+    {
+        if (json.Length == 0) return;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("open", out JsonElement open) || open.ValueKind != JsonValueKind.Object) return;
+            long revision = (long)JNum(open, "revision", 0);
+            string path = JStr(open, "path");
+            if (revision <= _slotOpenRevision || path.Length == 0) return;
+            _slotOpenRevision = revision;
+            string want = path.Replace('/', '\\');
+            for (int i = 0; i < Items.Count; ++i)
+            {
+                if (string.Equals(Items[i].Path.Replace('/', '\\'), want, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i != _selectedIndex) Send(Command.SelectItem, i);
+                    return;
+                }
+            }
+        }
+        catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
     }
 
     // The pane's bottom area (BuildMetaPane): the add-ons' sections after all the
@@ -667,8 +698,22 @@ public static partial class IslandHost
         _slotBarPanel.Children.Clear();
         foreach (SlotItem item in _slotItems.Where(i => i.Slot == "bar"))
         {
-            Button b = PathIconButton(SlotGlyph(item.Symbol), () => InvokeSlotItem(item));
-            if (b.Content is FontIcon icon) icon.FontFamily = SymbolFont;
+            // The icon and its name, as the bar's own Open / View / Edit read: an
+            // icon alone was not found (Enhance, 2026-10-29). The Mac twin is
+            // SlotBarItems.
+            Button b = TextButton(item.Label, () => InvokeSlotItem(item));
+            if (b.Content is UIElement name)
+            {
+                b.Content = null;
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(5) };
+                row.Children.Add(new FontIcon
+                {
+                    Glyph = SlotGlyph(item.Symbol), FontFamily = SymbolFont, FontSize = 12, Foreground = Brush(Title),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+                row.Children.Add(name);
+                b.Content = row;
+            }
             AutomationProperties.SetName(b, item.Label);
             ToolTipService.SetToolTip(b, item.Label);
             _slotBarPanel.Children.Add(b);

@@ -7,10 +7,12 @@
 // the app (no cache, no decoder instance, no state between requests).
 //
 // shellext/ is a host, like shell/: Explorer's. It sits beside shell/ at the
-// top of the graph and reaches the core only through image/ and codec/.
+// top of the graph and reaches the core only through image/ and codec/, and
+// for a clip's poster (thumb_poster.h, issue #610) through player/poster.
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -32,8 +34,19 @@ inline constexpr std::chrono::milliseconds kDeadline{4000};
 // Decode threads allowed at once, abandoned ones included. A decoder that
 // ignores cancellation keeps its thread and its copy of the bytes; past this
 // many, a new request is refused unstarted (status::busy) rather than piling
-// up another 512 MB in a surrogate other handlers share.
+// up another 512 MB in a surrogate other handlers share. Stills and clip
+// posters (thumb_poster.h) take slots from this one cap.
 inline constexpr std::uint32_t kMaxInFlight = 4;
+
+// How much of a file's head classify() needs. A host reads this much first,
+// then either the whole still or, for a clip, nothing more up front.
+inline constexpr std::size_t kProbeBytes = 4096;
+
+// Which path a file takes: a still (the D5 still set, by magic bytes; read
+// whole under kMaxSourceBytes) or a clip (anything else; posterised through a
+// seekable reader, thumb_poster.h). By content, never by extension or ProgId.
+enum class source_kind : std::uint8_t { still, clip };
+[[nodiscard]] source_kind classify(std::span<const std::uint8_t> head) noexcept;
 
 // Top-down BGRA, what a 32-bpp DIB section holds. Premultiplied when
 // `has_alpha` (WTSAT_ARGB); opaque otherwise (WTSAT_RGB).

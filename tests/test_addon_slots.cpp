@@ -377,6 +377,42 @@ TEST_CASE("an info section that needs a location is never asked for a file witho
   REQUIRE(mv::json::parse(r.info_json())->find("sections")->a.empty());
 }
 
+TEST_CASE("an info section asks the viewer to show a file of the same folder (#601)", "[addon][slots]") {
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  const auto theme = test_theme();
+  r.request_info("/f/sintra.jpg", "", theme, 280, 2);
+  r.drain();
+  auto info = mv::json::parse(r.info_json());
+  REQUIRE(info);
+  const auto g = static_cast<std::uint64_t>(*info->integer("generation"));
+  CHECK_FALSE(info->find("open"));
+  // Only a file of the folder of the file on screen, for the current request.
+  CHECK(r.open_item("slotstest", "always", g, "/elsewhere/a.jpg") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "/f/sub/a.jpg") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "/f/..") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "/f/") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "photos:ABC") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g + 1000, "/f/b.jpg") == status::cancelled);
+  CHECK(r.open_item("slotstest", "nosuch", g, "/f/b.jpg") == status::cancelled);
+  CHECK(mv::json::parse(r.info_json())->find("open") == nullptr);
+  REQUIRE(r.open_item("slotstest", "always", g, "/f/b.jpg") == status::ok);
+  info = mv::json::parse(r.info_json());
+  REQUIRE(info->find("open"));
+  CHECK(*info->find("open")->str("path") == "/f/b.jpg");
+  const auto first = *info->find("open")->integer("revision");
+  // Either separator: a Windows host hands over both.
+  REQUIRE(r.open_item("slotstest", "always", g, "\\f\\c.jpg") == status::ok);
+  info = mv::json::parse(r.info_json());
+  CHECK(*info->find("open")->integer("revision") > first);
+  // The viewer shows the next file: the request is done with.
+  r.request_info("/f/c.jpg", "", theme, 280, 2);
+  r.drain();
+  CHECK(mv::json::parse(r.info_json())->find("open") == nullptr);
+  r.clear_info();
+}
+
 TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[addon][slots]") {
   slot_registry r;
   auto client = std::make_unique<fake_client>(r, "slotstest");
@@ -1139,7 +1175,26 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
-  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 11, "max": 12)")) == rejection::needs_update);
+  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 12, "max": 13)")) == rejection::needs_update);
+  // editor_items (API 11): a labelled button with no symbol, target or opens,
+  // and only under a range that reaches 11.
+  {
+    const std::string badge = R"("tile_badges": [{"id": "geotagged", "label": "Slots test badge", "symbol": "check"}])";
+    const auto editor = [&](const std::string& range, const std::string& item) {
+      std::string c = kContributes;
+      const std::string from = R"("min": 4, "max": 5)";
+      c.replace(c.find(from), from.size(), range);
+      c.replace(c.find(badge), badge.size(), badge + ", " + item);
+      return c;
+    };
+    const std::string go = R"("editor_items": [{"id": "go", "label": "Go…"}])";
+    REQUIRE(check(k, editor(R"("min": 4, "max": 11)", go)) == rejection::none);
+    REQUIRE(check(k, editor(R"("min": 4, "max": 5)", go)) == rejection::malformed);  // before editor_items
+    REQUIRE(check(k, editor(R"("min": 4, "max": 11)", R"("editor_items": [{"id": "go", "label": "Go…", "symbol": "bolt"}])")) ==
+            rejection::malformed);
+    REQUIRE(check(k, editor(R"("min": 4, "max": 11)", R"("editor_items": [{"id": "go", "label": "Go…", "target": "files"}])")) ==
+            rejection::malformed);
+  }
   // Malformed, each a mistake an author should hear about.
   REQUIRE(check(k, kContributes, 2, 3) == rejection::malformed);                       // table v3 needed
   REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 4, "max": 4)")) == rejection::malformed);  // slots are 5
@@ -1199,7 +1254,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 10);
+  REQUIRE(mv::addon::kContributionApi == 11);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);

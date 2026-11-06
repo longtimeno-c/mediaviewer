@@ -77,6 +77,20 @@ result<mv_addon_tag_facts> host::tag_facts(const std::string& path) const {
   return out;
 }
 
+bool host::has_route_of() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, route_of) + sizeof(api_->route_of) && api_->route_of;
+}
+
+result<std::vector<mv_addon_route_point>> host::route_of(const std::string& path, std::uint32_t max_points) const {
+  if (!has_route_of()) return err(status::unsupported_format);
+  std::vector<mv_addon_route_point> out(max_points);
+  std::uint32_t n = 0;
+  const mv_status s = api_->route_of(api_->host, path.c_str(), out.data(), max_points, &n);
+  if (s != MV_OK) return err(to_status(s));
+  out.resize(std::min(n, max_points));
+  return out;
+}
+
 bool host::has_cues() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, read_cues) + sizeof(api_->read_cues) && api_->read_cues;
 }
@@ -164,6 +178,24 @@ expected host::walk(const std::string& root, int max_depth,
   const mv_status s = has_walk2() ? api_->walk_files2(api_->host, root.c_str(), max_depth, &walk2_thunk, user)
                                   : api_->walk_files(api_->host, root.c_str(), max_depth, &walk_thunk, user);
   return s == MV_OK ? expected{} : err(to_status(s));
+}
+
+bool host::has_watch_tree() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, watch_tree) + sizeof(api_->watch_tree) &&
+         api_->watch_tree;
+}
+
+result<std::vector<bool>> host::watch_tree(const std::vector<std::string>& roots, tree_change_fn on_change,
+                                           void* user) const {
+  if (!has_watch_tree()) return err(status::unsupported_format);
+  std::vector<const char*> raw;
+  raw.reserve(roots.size());
+  for (const std::string& r : roots) raw.push_back(r.c_str());
+  std::vector<std::uint8_t> ok(roots.size(), 0);
+  const mv_status s = api_->watch_tree(api_->host, raw.data(), static_cast<std::uint32_t>(raw.size()),
+                                       roots.empty() ? nullptr : on_change, user, ok.data());
+  if (s != MV_OK) return err(to_status(s));
+  return std::vector<bool>(ok.begin(), ok.end());
 }
 
 result<host::stat_result> host::stat(const std::string& path) const {

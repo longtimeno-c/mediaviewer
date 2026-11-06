@@ -65,6 +65,24 @@ constexpr int kSettleMs = 60000;
 // without a core for over a minute under `ctest -j` beside other builds.
 constexpr mv::ai::engine_options kTestOptions{.background_threads = false};
 
+// #606: the route of a "route" file: Sintra east to Badajoz, 300 fixes,
+// thinned to what is asked for. A plain function, not a lambda in the rig:
+// MSVC 19.5x Debug hit an internal compiler error (C1001) on the lambda form.
+mv::result<std::vector<mv_addon_route_point>> fake_route(const std::string& name, std::uint32_t max_points) {
+  std::vector<mv_addon_route_point> out;
+  if (name.find("route") == std::string::npos) return out;
+  const std::uint32_t n = std::min<std::uint32_t>(300, max_points);
+  out.reserve(n);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0;
+    mv_addon_route_point p{};
+    p.lat = 38.7975 + (38.8786 - 38.7975) * t;
+    p.lon = -9.3883 + (-6.9703 + 9.3883) * t;
+    out.push_back(p);
+  }
+  return out;
+}
+
 double ms_since(std::chrono::steady_clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -284,6 +302,7 @@ class fake_faces final : public mv::ai::face_analyzer {
     f.emb[tag == 11 ? 0 : 1] = 1.0f;
     f.emb[2] = 0.05f;
     mv::infer::l2_normalise(f.emb);
+    f.landmarks = {0.32f, 0.33f, 0.48f, 0.33f, 0.4f, 0.42f, 0.34f, 0.5f, 0.46f, 0.5f};
     out.push_back(std::move(f));
     return out;
   }
@@ -672,6 +691,8 @@ struct walk2_ctx {
 };
 std::mutex g_walks_m;
 std::map<void*, std::pair<decltype(mv_host_api::walk_files2), cloud_world*>> g_walks;  // by host
+// Every walk the engine asked for: (folder, depth) (docs/plans/index-watcher.md).
+std::vector<std::pair<std::string, int>> g_walk_log;
 
 int32_t MV_CALL flag_cloud(void* user, const mv_addon_file_entry2* e) {
   auto* c = static_cast<walk2_ctx*>(user);
@@ -689,6 +710,7 @@ mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, 
     if (it == g_walks.end()) return MV_ERR_INTERNAL;
     real = it->second.first;
     world = it->second.second;
+    g_walk_log.emplace_back(root ? root : "", depth);
   }
   walk2_ctx c{world, visit, user};
   return real(host, root, depth, &flag_cloud, &c);
@@ -898,6 +920,12 @@ struct rig {
         out.lat = 38.7975;
         out.lon = -9.3883;
       }
+      // #606: "route" is a GoPro clip whose telemetry starts in Sintra.
+      if (name.find("route") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_HAS_LOCATION | MV_ADDON_TAG_HAS_ROUTE;
+        out.lat = 38.7975;
+        out.lon = -9.3883;
+      }
       // #405: "iso400" is ISO 400, f/2.8, 1/250 s, 35 mm, five stars, Red;
       // anything else is unrated with no exposure (a clip's case too).
       if (name.find("iso400") != std::string::npos) {
@@ -919,6 +947,10 @@ struct rig {
       }
       std::strcpy(out.fields_utf8, fields.c_str());
       return true;
+    };
+    // #606: a "route" file's telemetry route (fake_route).
+    svc.route = [](const std::string& path, std::uint32_t max_points) {
+      return fake_route(utf8(fs::path(path).filename()), max_points);
     };
     // #406: a clip named "*cues*" has a chapter "Birthday cake" at 4 s and a
     // subtitle "suited and booted" at 7 s; "*manycues*" 200 subtitle lines a
@@ -1076,6 +1108,8 @@ struct rig {
     };
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
+    d.tree_quiet_s = 0.05;  // docs/plans/index-watcher.md: the host's watch, walked at once
+    d.tree_max_wait_s = 0.5;
     d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
     d.pdf = [this]() -> std::unique_ptr<mv::ai::pdf_reader> {
       if (!pdf_available) return nullptr;
@@ -1338,6 +1372,102 @@ TEST_CASE("an edited file is re-queued and a reopened tree queues only its delta
   REQUIRE(r.eng->root_rescan(1));
   REQUIRE(r.idle());
   CHECK(r.search("red").size() == 1);
+}
+
+// docs/plans/index-watcher.md: the host watches a remembered folder's tree,
+// and the engine walks only the folders it says changed: a file added deep
+// down, a file removed, a folder moved in. No rescan and no folder opened.
+TEST_CASE("a watched folder finds new, removed and moved-in files on its own", "[ai][engine][watch]") {
+  rig r;
+  r.file("a/b/red_1.jpg");
+  r.file("c/blue_2.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  REQUIRE(r.search("red").size() == 1);
+  {
+    const auto roots = mv::json::parse(r.eng->roots_json());
+    REQUIRE(roots);
+    REQUIRE(roots->a.size() == 1);
+#if defined(_WIN32) || defined(__APPLE__)
+    CHECK(roots->a[0].boolean("watching").value_or(false));
+#else
+    // No tree watch on Linux yet (tree_watch_none.cpp): the 15-minute walk.
+    CHECK_FALSE(roots->a[0].boolean("watching").value_or(true));
+    SKIP("no tree watch on this OS");
+#endif
+  }
+  const auto eventually = [&](const std::function<bool()>& done) {
+    for (int i = 0; i < 300; ++i) {
+      if (done()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return done();
+  };
+  const auto walks_since = [](std::size_t from) {
+    std::lock_guard lock(g_walks_m);
+    return std::vector<std::pair<std::string, int>>(g_walk_log.begin() + static_cast<std::ptrdiff_t>(from),
+                                                    g_walk_log.end());
+  };
+  const auto walk_count = [] {
+    std::lock_guard lock(g_walks_m);
+    return g_walk_log.size();
+  };
+  const int decoded = r.stills_decoded.load();
+
+  // A new file three folders down: its folder alone is walked.
+  std::size_t mark = walk_count();
+  r.file("a/b/green_3.jpg");
+  REQUIRE(eventually([&] { return r.idle() && r.search("green").size() == 1; }));
+  CHECK(r.stills_decoded.load() == decoded + 1);
+  for (const auto& [dir, depth] : walks_since(mark)) {
+    CHECK(fs::path(dir).filename() == "b");
+    CHECK(depth == 0);
+  }
+
+  // A file removed leaves the results.
+  fs::remove(r.photos() / "c/blue_2.jpg");
+  REQUIRE(eventually([&] { return r.idle() && r.status().assets_total == 2; }));
+
+  // A folder moved in from outside the root: everything in it is found.
+  const fs::path outside = r.dir / "elsewhere";
+  write_bytes(outside / "trip/red_4.jpg", pattern(16, 7));
+  write_bytes(outside / "trip/day2/blue_5.jpg", pattern(16, 7));
+  fs::rename(outside / "trip", r.photos() / "trip");
+  REQUIRE(eventually([&] { return r.idle() && r.status().assets_total == 4; }));
+  CHECK(r.search("red").size() == 2);
+
+  // ... and a folder moved out takes its files with it.
+  fs::rename(r.photos() / "trip", outside / "trip");
+  REQUIRE(eventually([&] { return r.idle() && r.status().assets_total == 2; }));
+  CHECK(r.search("red").size() == 1);
+}
+
+TEST_CASE("a paused or turned-off folder is not watched", "[ai][engine][watch]") {
+  rig r;
+  r.file("red_1.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->root_set_enabled(1, false));
+  REQUIRE(r.idle());
+  const auto watching = [&] {
+    const auto roots = mv::json::parse(r.eng->roots_json());
+    REQUIRE(roots);
+    return roots->a[0].boolean("watching").value_or(true);
+  };
+  for (int i = 0; i < 100 && watching(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  CHECK_FALSE(watching());
+  std::size_t before = 0;
+  {
+    std::lock_guard lock(g_walks_m);
+    before = g_walk_log.size();
+  }
+  r.file("green_2.jpg");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  REQUIRE(r.idle());
+  std::lock_guard lock(g_walks_m);
+  CHECK(g_walk_log.size() == before);  // nothing walked it
 }
 
 // Issue #299: a root left part-way by a quit is held at the next start (when
@@ -1786,7 +1916,7 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
 }
 
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
-constexpr const char* kSchemaNow = "10";
+constexpr const char* kSchemaNow = "11";
 
 TEST_CASE("schema 8 migrates to 9: documents' passages, their words and a folder's choice (#354)",
           "[ai][engine][documents]") {
@@ -2255,6 +2385,94 @@ TEST_CASE("the index lists its geotagged assets in batches, from index.db alone"
   }
 }
 
+// #606: a GoPro or DJI clip's route, kept in tracks (schema 11) by the tag
+// backfill and streamed after its own row, under its path, to Places.
+TEST_CASE("a clip's telemetry route is kept and streamed after its position", "[ai][engine][tags][places]") {
+  SECTION("index_db: schema 10 migrates, only clips are read again, tracks round-trip") {
+    scratch_dir dir{"ai-tracks"};
+    const std::string path = utf8(dir / "index.db");
+    std::int64_t photo = 0, clip = 0;
+    {
+      auto d = mv::ai::index_db::open(path);
+      REQUIRE(d);
+      auto root = (*d)->add_root("/library", true);
+      REQUIRE(root);
+      const std::vector<mv::ai::index_db::seen_file> files = {{"/library/a.jpg", 1, 100, mv::ai::asset_kind::photo},
+                                                              {"/library/b.mp4", 1, 100, mv::ai::asset_kind::video}};
+      auto ups = (*d)->see_assets(*root, files, (*d)->next_generation());
+      REQUIRE(ups);
+      photo = (*ups)[0].id;
+      clip = (*ups)[1].id;
+      std::vector<mv::ai::asset_tags> tags(2);
+      for (int i = 0; i < 2; ++i) {
+        tags[i].id = (*ups)[i].id;
+        tags[i].mtime = 1;
+        tags[i].size = 100;
+        tags[i].level = 2;  // as a schema 10 pack read them
+      }
+      REQUIRE((*d)->commit_tags(tags));
+      // Back to schema 10, as an older pack left it.
+      REQUIRE((*d)->set_meta("schema", "10"));
+      sqlite3* raw = nullptr;
+      REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
+      REQUIRE(sqlite3_exec(raw, "DROP TABLE tracks;", nullptr, nullptr, nullptr) == SQLITE_OK);
+      sqlite3_close(raw);
+    }
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == kSchemaNow);
+    // The photo has nothing more to read; the clip is read again for its route.
+    const auto todo = (*d)->assets_needing_tags(10);
+    REQUIRE(todo.size() == 1);
+    CHECK(todo[0].id == clip);
+    mv::ai::asset_tags t;
+    t.id = clip;
+    t.mtime = 1;
+    t.size = 100;
+    t.has_where = true;
+    t.lat = 38.7975;
+    t.lon = -9.3883;
+    for (int i = 0; i < 200; ++i) t.track.push_back({38.7975 + i * 1e-3, -9.3883 + i * 1e-3});
+    t.track.push_back({std::nan(""), 0});  // dropped, never stored
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->assets_needing_tags(10).empty());
+    auto located = (*d)->located_assets(0, 512);
+    REQUIRE(located);
+    REQUIRE(located->size() == 1);
+    const auto& l = located->front();
+    CHECK(l.id == clip);
+    REQUIRE(l.track.size() == mv::ai::kTrackPoints);  // capped
+    CHECK(std::abs(l.track.front().lat - 38.7975) < 1e-6);
+    CHECK(std::abs(l.track.back().lon - (-9.3883 + 127 * 1e-3)) < 1e-6);
+    // Read again with no route: the track goes.
+    t.track.clear();
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->located_assets(0, 512)->front().track.empty());
+    (void)photo;
+  }
+  SECTION("engine: the backfill reads the route of a clip that has one") {
+    rig r;
+    r.file("blue_route.jpg");
+    r.file("green_geo.jpg");
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    std::size_t route_points = 0, plain = 0;
+    REQUIRE(r.eng->each_location([&](const mv::ai::index_db::located& l) {
+      if (l.path.find("route") != std::string::npos) {
+        route_points = l.track.size();
+        CHECK(std::abs(l.track.back().lon + 6.9703) < 1e-6);  // it ends at Badajoz
+      } else {
+        ++plain;
+        CHECK(l.track.empty());
+      }
+      return true;
+    }));
+    CHECK(route_points == mv::ai::kTrackPoints);
+    CHECK(plain == 1);
+  }
+}
+
 TEST_CASE("date terms use the date taken, and the file's time only when there is none", "[ai][engine][tags][dates]") {
   rig r;
   r.file("red_y2019.jpg");  // taken in 2019, written (mtime) today
@@ -2485,6 +2703,41 @@ TEST_CASE("people: one face is enough in a small folder, not across a large libr
   auto solo = mv::json::parse(r.eng->people_json(utf8(r.photos() / "solo"), MV_AI_SCOPE_TREE));
   REQUIRE(solo);
   CHECK(solo->a.size() == 1);  // but his own small folder shows him
+}
+
+TEST_CASE("eyes: the same person's faces in the frames offered, with landmarks; nothing while People is off",
+          "[ai][engine][faces][eyes]") {
+  rig r;
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.file("ben_1.jpg");
+  r.file("red_nobody.jpg");
+  r.start();
+  const std::string target = utf8(r.photos() / "anna_1.jpg");
+  const std::vector<std::string> offered = {utf8(r.photos() / "anna_2.jpg"), utf8(r.photos() / "ben_1.jpg"),
+                                            utf8(r.photos() / "red_nobody.jpg"), target,
+                                            utf8(r.photos() / "missing.jpg")};
+  CHECK_FALSE(r.eng->eyes_json(target, offered));  // People is off: no face data is read
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  auto j = r.eng->eyes_json(target, offered);
+  REQUIRE(j);
+  auto doc = mv::json::parse(*j);
+  REQUIRE(doc);
+  const mv::json::value* faces = doc->find("faces");
+  REQUIRE(faces);
+  REQUIRE(faces->a.size() == 1);
+  const mv::json::value& f = faces->a[0];
+  REQUIRE(f.find("lm"));
+  CHECK(f.find("lm")->a.size() == 10);
+  CHECK(std::abs(f.find("lm")->a[0].d - 0.32) < 1e-3);
+  CHECK(f.integer("person").value_or(0) != 0);  // Anna's People cluster
+  const mv::json::value* donors = f.find("donors");
+  REQUIRE(donors);
+  REQUIRE(donors->a.size() == 1);  // anna_2 only: not Ben, not the empty frame, not itself, not the missing file
+  CHECK(donors->a[0].find("path")->s.find("anna_2.jpg") != std::string::npos);
 }
 
 TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leaves no vectors",
@@ -4927,6 +5180,38 @@ TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once 
   // its poster row stayed, and nothing was re-embedded for it.
   CHECK(has_row(r.answered("red"), "photos:red-cloudclip"));
   CHECK(r.library->stills == posters + 2);  // the photo: the launch check, then its embedding
+}
+
+// docs/plans/index-watcher.md: a photo taken on the phone reaches the
+// library only in iCloud; when Photos brings it down later that session its
+// date and size are the same, so the change notice asks again about it alone
+// (not every iCloud-only asset in the library, and not only at the next launch).
+TEST_CASE("an iCloud-only asset that arrives this session indexes when Photos downloads it",
+          "[ai][engine][photos][watch]") {
+  rig r;
+  r.library->items = {{"red-old", 1, mv::ai::asset_kind::photo, false, ""}};  // in iCloud since before
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_unavailable == 1);
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items.push_back({"blue-new", 1, mv::ai::asset_kind::photo, false, ""});  // taken on the phone
+  }
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.status().assets_unavailable == 2; }));
+  REQUIRE(r.idle());
+  const int asked = r.library->stills;
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items[1].local = true;  // Photos downloaded it
+  }
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.status().assets_unavailable == 1 && r.status().assets_done == 1; }));
+  REQUIRE(r.idle());
+  CHECK(has_row(r.answered("blue"), "photos:blue-new"));
+  // The new asset was asked about and embedded; the old one was never asked.
+  CHECK(r.library->stills == asked + 2);
 }
 
 TEST_CASE("the opt-in iCloud fetch downloads iCloud-only clips, indexes them, then deletes the files",

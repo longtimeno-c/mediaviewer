@@ -128,6 +128,14 @@ extern "C" bool mv_chrome_slots_invoke(const char* addon, const char* item, cons
                                                 paths_json ? std::string(paths_json) : "[]") == mv::status::ok;
 }
 
+extern "C" bool mv_chrome_slots_editor_item(const char* addon, const char* item, const char* path,
+                                            const int64_t* ranges_ns, uint32_t range_count) {
+  if (range_count > 0 && !ranges_ns) return false;
+  return mv::addon::default_slots().invoke_editor_item(
+             str(addon), str(item), str(path),
+             std::span<const std::int64_t>(ranges_ns, std::size_t{range_count} * 2)) == mv::status::ok;
+}
+
 extern "C" bool mv_chrome_slots_command(const char* addon, const char* command, const char* paths_json) {
   return mv::addon::default_slots().run_command(str(addon), str(command),
                                                 paths_json ? std::string(paths_json) : "[]") == mv::status::ok;

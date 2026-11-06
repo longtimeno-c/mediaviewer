@@ -1368,7 +1368,7 @@ public static partial class IslandHost
     // or the mouse): a mouse wheel, or a precision touchpad pinch (which arrives
     // as Ctrl + wheel), zooms about the pointer; a touchpad two-finger scroll
     // without Ctrl is left to the pane's ScrollViewer. A drag pans, a double-click
-    // is reported. While a gesture runs the current pixels are scaled / moved at
+    // and a click (#601) are reported. While a gesture runs the current pixels are scaled / moved at
     // once (a RenderTransform, no present), and each gesture is reported to the
     // add-on's worker once it settles; the add-on's next pixels rebuild the node.
     private static UIElement BuildSurface(JsonElement n, ScreenAt at)
@@ -1421,7 +1421,9 @@ public static partial class IslandHost
             Visibility = pinAt is null ? Visibility.Collapsed : Visibility.Visible,
         };
         content.Children.Add(glyph);
-        JsonElement[] markRows = JArr(n, "marks").ToArray();
+        // Read now: the tree's JsonDocument is disposed once the section is built, and
+        // SizeChanged runs later (reading a JsonElement then throws, a fail-fast in XAML).
+        var markRows = JArr(n, "marks").Select(m => (Text: JStr(m, "text"), X: JNum(m, "x", 0), Y: JNum(m, "y", 0))).ToArray();
         frame.SizeChanged += (_, _) =>
         {
             double w = frame.ActualWidth, h = frame.ActualHeight;
@@ -1429,11 +1431,10 @@ public static partial class IslandHost
             marks.Children.Clear();
             var taken = new List<Windows.Foundation.Rect>();
             if (pinAt is { } pp) taken.Add(new Windows.Foundation.Rect(w * pp.X - 12, h * pp.Y - 24, 24, 26));
-            foreach (JsonElement m in markRows)
+            foreach (var (text, mx, my) in markRows)
             {
-                string text = JStr(m, "text");
                 if (text.Length == 0) continue;
-                var r = new Windows.Foundation.Rect(JNum(m, "x", 0) * w + 6, JNum(m, "y", 0) * h - 8, text.Length * 6.6 + 4, 16);
+                var r = new Windows.Foundation.Rect(mx * w + 6, my * h - 8, text.Length * 6.6 + 4, 16);
                 if (r.Right > w + 1 || r.Top < -1 || r.Bottom > h + 1) continue;
                 if (taken.Any(t => RectsOverlap(t, r))) continue;
                 taken.Add(r);
@@ -1534,6 +1535,20 @@ public static partial class IslandHost
             var pos = e.GetPosition(frame);
             double w = Math.Max(1, frame.ActualWidth), h = Math.Max(1, frame.ActualHeight);
             SendScreenEvent(at, id, 12, JsonSerializer.Serialize(new
+            {
+                x = Math.Clamp(pos.X / w, 0, 1),
+                y = Math.Clamp(pos.Y / h, 0, 1),
+            }));
+        };
+        // #601: a click (no drag: Tapped is not raised past the drag threshold)
+        // is reported too, so a Places folder-map dot opens its file. The
+        // first click of a double-click is one as well; the add-on acts only
+        // on a click over a dot, and the file it opens asks the section again.
+        frame.Tapped += (_, e) =>
+        {
+            var pos = e.GetPosition(frame);
+            double w = Math.Max(1, frame.ActualWidth), h = Math.Max(1, frame.ActualHeight);
+            SendScreenEvent(at, id, 14, JsonSerializer.Serialize(new
             {
                 x = Math.Clamp(pos.X / w, 0, 1),
                 y = Math.Clamp(pos.Y / h, 0, 1),
@@ -1837,6 +1852,13 @@ public static partial class IslandHost
         int width = (int)JNum(s, "width", 0), height = (int)JNum(s, "height", 0);
         SlotRect main = default;
         bool haveMain = _themeWindow != IntPtr.Zero && SlotGetWindowRect(_themeWindow, out main);
+        // A sheet opened while the Video Editor is up (its Enhance…) is centred
+        // over the editor, where it was asked for; still owned by the viewer.
+        if (place == "sheet" && _editorThemeWindow != IntPtr.Zero && SlotGetWindowRect(_editorThemeWindow, out SlotRect ed))
+        {
+            main = ed;
+            haveMain = true;
+        }
         uint dpi = _themeWindow != IntPtr.Zero ? SlotGetDpiForWindow(_themeWindow) : 0;
         double scale = dpi > 0 ? dpi / 96.0 : 1.0;
         int Px(double dip) => (int)Math.Round(dip * scale);

@@ -94,6 +94,8 @@ add_library(mv_io STATIC
   "${MV_ROOT}/src/io/paths_mac.cpp"
   "${MV_ROOT}/src/io/replace_mac.cpp"
   "${MV_ROOT}/src/io/child_process_posix.cpp"
+  # Local search's tree watch (docs/plans/index-watcher.md): none on Linux yet.
+  "${MV_ROOT}/src/io/tree_watch_none.cpp"
 )
 target_include_directories(mv_io PUBLIC "${MV_ROOT}/src")
 target_link_libraries(mv_io PUBLIC mv_project_options PRIVATE ${MV_BLAKE3_TARGET})
@@ -187,6 +189,12 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_sound_write.cpp"
     "${MV_ROOT}/src/edit/clip_audio_enc.cpp"
     "${MV_ROOT}/src/edit/clip_picture_io.cpp"
+    "${MV_ROOT}/src/edit/clip_look_run.cpp"
+    "${MV_ROOT}/src/edit/clip_look.cpp"
+    # The look's colour (edit::colour, uniforms_of) is the photo edit's: its
+    # two TUs need nothing else (edit/adjust.cpp calls edit_stack.cpp's invert).
+    "${MV_ROOT}/src/edit/adjust.cpp"
+    "${MV_ROOT}/src/edit/edit_stack.cpp"
     "${MV_ROOT}/src/edit/clip_run.cpp"
     "${MV_ROOT}/src/edit/clip_jobs.cpp"
     "${MV_ROOT}/src/edit/clip_wire.cpp"

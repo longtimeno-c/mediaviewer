@@ -383,6 +383,16 @@ ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross
 BC7 is not used: a BC7 blob cannot be an `Image.Source`; it is the format to take if thumbs ever
 need to be GPU-resident. The Mac uses the same spec and schema (`image/thumb_mac.cpp`, 2026-09-17).
 
+**The thumbnail cache tidies itself; no cap by default (2026-11-02, #612).** Every bump above, and
+every edit or rotate, left the old JPEGs behind: the store only ever added. Now `store` drops the
+path's rows of other stamps and specs with their files (the issue's draft said on the next lookup;
+on the store the hot lookup stays a read), and a sweep once a launch, after the first image, drops
+old-spec rows, rows whose JPEG is gone and unnamed JPEGs, paced behind the view like the tag pass.
+A size cap exists but is **off by default** (owner, in the issue): a cap too small would bring back
+cold thumbnails, the first-pixel path the cache exists for. With a cap the oldest-written go first,
+not the least recently used: recording use would turn every lookup into a write. Metadata
+snapshots are never swept (they are not a cache, docs/design/06 "Undo").
+
 **Warm browse is a five-slot GPU LRU (2026-09-07).** Current ± 2 decoded textures, not a second
 `mv_image_open`. Prefetch jobs use the view generation; thumb jobs use a folder generation so arrow
 keys do not cancel the filmstrip.
@@ -623,6 +633,22 @@ disabled until the working image exists.
 **The Edit workspace (2026-09-26).** Issue #39: **Edit image / Edit video**, `Enter` and a Mac Edit
 menu open a workspace of tabs over the existing panes, a base feature with no new engine. It docks
 (see "Panes float" above).
+
+**Face data may serve one edit: Open closed eyes (owner, 2026-11-02).** The People promise was
+"face data is used for nothing but local search". The owner approved its use for the eyes-open
+edit ([plan](../plans/edit-adjust.md) slice 6): the AI pack matches the face in the photo being
+edited to the same person in the frames of the same moment (within 10 s, same folder) by the
+People embedding. Bounds kept: only on a click, only while People is on, nothing written to
+`faces.db`, nothing kept, the result a new file beside the original. Why: matching by position
+alone picks the wrong person in a group shot. The generative alternative (eyes drawn from the
+person's other photos) was not taken: gigabytes of weights, minutes on Windows' CPU, eyes that may
+not be theirs, and identity models under non-commercial licences.
+
+**Detail is a CPU pass, not a kernel term (2026-11-02).** Definition, brilliance, sharpen and
+noise reduction need neighbours. They run on the working image on a worker after the slider
+settles and replace the working texture; the export runs the same code at full size. Not a GPU
+base layer: no new texture binding or shader twin on either GPU, and export matches the preview
+by construction. Cost: the canvas follows a detail slider a quarter second after it settles.
 
 ---
 
@@ -915,7 +941,22 @@ every still type. It reports duration, size, codecs, audio, bit rate, media type
 title and camera (`shell/spotlight_fields.h`) through `meta/`, never a decoder.
 
 **Quick Look (2026-09-23).** A sandboxed thumbnail `.appex` running `image::make_thumb_jpeg`, the
-filmstrip's pixels, with no cache of its own. Stills only.
+filmstrip's pixels, with no cache of its own. Stills only (until 2026-11-02, below).
+
+**Clip thumbnails in Explorer and Finder (issue #610, 2026-11-02).** Reverses "stills only" for
+both the Explorer handler (2026-09-25, `MediaViewer.Image` only) and Quick Look (2026-09-23). Why: a
+camera dump is photos and clips in one folder, and Windows has no thumbnail for MKV, WebM, AVI, TS
+or an AV1 / VP9 / HEVC MP4 without a Store extension (D3 says never require one); macOS has none
+for the first four. The same handler now also sits on `MediaViewer.Video`, still only on our
+ProgIds, so it serves what the user made MediaViewer the default for and replaces no other
+vendor's handler. Quick Look adds only the four containers macOS cannot thumbnail and leaves MP4 /
+QuickTime to Apple. The path is chosen by magic bytes, not ProgId or UTI. A clip is never read into
+memory (the stills' 512 MB read would refuse a long clip and is the wrong shape for one): FFmpeg
+reads the stream through a seekable reader, decodes one frame in software on one thread (no
+D3D11VA / VideoToolbox session in a shell process), and shares the stills' deadline and four-slot
+cap. Cost: the handler's folder now carries the FFmpeg DLLs (dynamic, LGPL, as everywhere), and
+`avcodec` is mapped in the surrogate, never in Explorer or Finder. The Explorer handler reads the
+shell's `IStream` from its decode thread; that it is callable there is part of the Windows verify.
 
 **Associations and the default app (2026-09-24).** Windows: the wizard writes per-user `ProgId` /
 `OpenWithProgids` / `RegisteredApplications` keys for D5 stills (`MediaViewer.Image`) and video
@@ -984,6 +1025,19 @@ and "newer than running" checks are unchanged, and asset URLs outside the repo's
 ignored. Previews are signed exactly like stable. `github-release.py` refuses a release that does
 not exceed every published one, so switching back to Stable never downgrades. Add-ons ship on stable
 releases only.
+
+**"What's new" rides in what is already signed and fetched; the manifest stays schema 1 on the
+wire (2026-11-02, #620).** The update notice's short notes are the Windows manifest's optional
+`notes` and the Mac appcast item's embedded plain-text description, both under the existing
+signature, so no request is added (a Sparkle `releaseNotesLink` would be one, and an unsigned
+page). The Windows reader accepts schema 1 and 2 (2 = 1 with `notes` defined), but the release
+tool keeps writing `"schema": 1` with `notes` in it: every installed reader before this one
+rejects any schema but 1 as `UnsupportedSchema` and ignores unknown members, so a schema 2
+manifest would strand every existing install on its version for good. The bump to 2 waits until
+no supported version predates the schema 2 reader. Notes that break the bound (3 lines, 400 bytes,
+no links, a fixed list of forbidden characters) make the manifest malformed rather than being
+trimmed: they are ours and signed, and the release's own `verify-release` step and the writers
+check the same rule first.
 
 **Add-on updates are offered, not silent (2026-09-27).** Opening Settings probes the channel for
 installed add-ons; a newer signed manifest shows **Update to X**. Nothing is fetched without a
@@ -1641,6 +1695,20 @@ calls, each because the alternative measured or reasoned worse:
 `mv_ai_status` appends `scans_total`, `scans_done`.
 
 ---
+
+**Local search watches its folders; the full walk becomes a backstop (2026-11-02, owner; docs/plans/index-watcher.md).**
+[17](17-local-ai-search.md) said folder roots had a watcher, but the pack had none: a file added
+to an indexed folder waited for the next full walk of every root (every 15 minutes) unless the
+viewer opened its folder, and a OneDrive file made available offline waited the same. The host
+now watches each enabled, unheld folder root's tree (`watch_tree`, `io::tree_watcher`) and the
+pack walks only the folders it names. **Budget change:** a root the host watches is walked whole
+once an hour instead of every 15 minutes; a root it could not watch, and one on a network share,
+keep 15 minutes. **Photos:** an iCloud-only asset first seen this session is asked again at each
+change notice, not only at the next launch; the launch check of every iCloud-only asset is
+unchanged (asking all ~4,000 on each change was the cost rejected before). **Not changed:**
+nothing is noticed before the pack loads (#292), and a held root is not watched (#299).
+**Not measured:** idle CPU with watched roots, and the PR 1 gates during a large copy into a
+watched root, on either platform; the Windows watcher has been compiled only by CI.
 
 ## Final Cut Pro search (Mac)
 
@@ -2763,6 +2831,38 @@ That is one GitHub asset per platform, not three, and no per-piece install UI in
 The command is not greyed per kind (manifest commands carry no state); the sheet opens and names
 what is missing instead.
 
+**Enhance moves into the Video Editor; Brighten dark scenes is a knob, not a model (2026-11-02,
+owner).** The owner asked for Enhance inside Edit video (and Edit image, done in its own change)
+rather than as a button of its own on the viewer's bar, and for video that brightens dark scenes.
+The editor gets a contribution point, `editor_items` (contribution API 11), not a call that names
+Enhance: the editor stays part of the base app, Enhance stays an add-on that links nothing of the
+core. **Enhance runs on the edit, not the original clip** (the alternative, the whole clip with a
+note, would surprise inside an editor): the host applies the kept ranges as it reads
+(`frames_keep` / `sound_keep`), so the add-on's runner is unchanged apart from writing a cut
+clip's sound again (packets of a cut cannot be copied whole). **Brighten dark scenes** is a fitted
+tone lift with temporal easing, in the add-on, as a knob of the video model: no new download, no
+licence to vet, deterministic, about 1.6 ms a 1080p frame. A low-light model (the Zero-DCE
+family and its kin) was set aside until one's licence and its flicker on video are checked; the
+knob can be served by one later without a change to the sheet. Cost: Enhance now asks for
+contribution API 11, so this Enhance needs this MediaViewer or later. The palette and context-menu
+`Enhance…` stay. **The command-bar ✦ Enhance button (#570) is dropped (2026-11-03, owner):**
+Enhance lives in the editors, not on the bar beside them.
+
+**The Video Editor gets a look: turn, mirror, crop, colour, sound, speed, Save frame
+(2026-11-03, owner).** The owner asked for the edits a photo gets in Edit image to reach Edit
+video. 21 said the base editor is "cuts only" and 22 keeps grading, an audio engine and
+multi-track for the Editor add-on; the line now drawn: **one set of settings for the whole edit**
+(`edit::clip::look`), each one a photo edit's twin (PR 11's five colour sliders, the photo crop's
+ratios, quarter turns), plus mute, volume, fades and 0.5× / 2×, stays in the base app; anything
+keyframed, per-piece, graded beyond PR 11's sliders, or mixed stays the add-on's. The look shares
+the pieces' undo history. **Preview** is the canvas's own video blit (turn, mirror and crop in its
+uv map, HLSL and MSL twins; the colour kernel in slice 2), not a second present path. **Export
+exact with a look** renders in the clip helper through Enhance's `frame_reader` /
+`picture_writer` (the hardware encoder, the OS's AAC) rather than a new FFmpeg filter graph:
+8-bit BT.709 SDR out, as Enhance's clips are, and stated. **Export on keyframes** carries only what
+packet copy can: a turn (the display matrix) and mute (no sound stream); it is greyed otherwise.
+ABI 0.36 (`mv_clip_look`). Plan: [`docs/plans/video-editor-look.md`](../plans/video-editor-look.md).
+
 **Enhance's first audio model, and where its sound is written (2026-10-26, #297 slice 4).**
 DeepFilterNet3 (MIT / Apache-2.0), the streaming ONNX export pinned at
 `kimtos-labs/denoiser-dfn3@888f33c4` (16.1 MB, its card's SHA-256 matches the file). Chosen over the
@@ -2812,6 +2912,43 @@ off) and costs the canvas nothing: the viewer's present loop and idle cost are u
 preview's copies are made on Enhance's runner thread from frames it already decoded. The cost: an
 Enhance that asks for 10 needs this MediaViewer or later ("needs a newer MediaViewer" on an older
 one). Not measured: the glow's own CPU on either chrome.
+
+**Enhance offers a choice of model per kind, and the Mac host can run it (2026-10-29).** The owner
+asked why Enhance said it "cannot run its models yet", why its models were only about 5 MB, and why
+nothing led to it. Three answers. (1) **A Mac host bug:** the Mac loads slot add-ons with
+`slot_services()`, and slices 3–5 had put the sound, frame and photo rows only in the AI pack's
+`ai_services()`, so Enhance on the Mac never got a runner; Windows hands every add-on the rows. Now
+the slot services carry them too. (2) **A choice, like Local search's tiers:** every
+`models/<kind>/<id>.json` in the add-on is a model of that kind; `model.json` is the one used until
+the person picks another (Settings → Add-ons → Enhance, or the sheet), and each model downloads,
+stops and is removed on its own (keyed `<kind>.<id>`). The photo and video kinds gain **Real-ESRGAN
+x4plus** (64 MB, BSD-3-Clause, the same pinned repo and revision as x4v3, the same tensor contract)
+as "Detail, best"; x4v3 stays the default, "Detail, fast". This does not reverse "Enhance's first
+video model": x4plus was turned down as the *only* model for its cost, and it is still not the
+default. Measured with ONNX Runtime (Python) on this Mac, one 256-pixel tile: x4plus 0.135 s on
+Core ML against x4v3's 0.023 s, and 3.4 s against 0.20 s on the CPU (7 threads); peak memory about
+470 MB on Core ML and 1.8 GB on the CPU against 220 / 150 MB, hence its `run_bytes` of 2.0 GB
+(photo) and 2.2 GB (clip). On a CPU-only PC a 12 MP photo at x4plus takes minutes, which its summary
+says. Not measured: x4plus's quality against x4v3 on a set of our own (upstream's comparisons only),
+its end-to-end run times in the app, and Windows at all. (3) **A way in:** Enhance's command gets
+`Ctrl+Shift+R` / `⌘⇧R` (free in the table), the sheet downloads a missing model itself instead of
+pointing at Settings, and the settings page says where Enhance opens from. A **✦ Enhance**
+button in the command bar was built here and dropped before merge (owner, 2026-11-03): Enhance
+belongs in Edit image and Edit video, not on the bar beside them.
+
+**Enhance's sheet, seen in the app (2026-10-29).** Run on the Mac by the owner and then by us in a
+dev copy: the sheet cut off its own buttons, a square photo sat small between dark bands with
+"Before" on the band and "Enhanced" hidden, the bar's icon-only button was not found, and the
+progress bar read as "so dead". Changed: the sheet's root is a `scroll`, with no title or Close of
+its own (the host's header has both) and a taller default (680); the preview is as tall as the
+picture asks; its labels are a caption under it (the hosts' marks are map labels, unreadable over
+a light photo); a photo is shown being redrawn tile by tile behind a glowing front; command-bar
+items show their name beside the icon on both hosts; the glow edge is three layers turning at their
+own pace with a breathing halo, and the bar's colours flow. Nothing in the tree vocabulary changed,
+so no contribution API step. Cost: the reveal samples the output four times a second on the
+runner's thread (nearest samples at 960 pixels: a few milliseconds a time, not measured
+separately); the hosts' drawing stays capped at 30 fps, only while shown, off with Reduce Motion /
+animations off. Not measured: the glow's CPU on either host, and Windows not run at all.
 
 ## Not built
 

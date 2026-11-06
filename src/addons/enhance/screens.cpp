@@ -6,6 +6,13 @@
 #include <cmath>
 #include <cstdio>
 
+// The key Enhance's command carries (manifest.json), as the page names it.
+#if defined(__APPLE__)
+#define ENHANCE_KEY_TEXT "⌘⇧R"
+#else
+#define ENHANCE_KEY_TEXT "Ctrl+Shift+R"
+#endif
+
 namespace mv::enhance {
 namespace {
 
@@ -14,6 +21,8 @@ const char* card_title(model_kind k) {
     case model_kind::still: return "Photos";
     case model_kind::video: return "Video";
     case model_kind::audio: return "Audio";
+    case model_kind::restyle: return "Restyle (photos)";
+    case model_kind::remove: return "Remove (photos)";
   }
   return "";
 }
@@ -23,6 +32,8 @@ const char* model_noun(model_kind k) {
     case model_kind::still: return "photo model";
     case model_kind::video: return "video model";
     case model_kind::audio: return "audio model";
+    case model_kind::restyle: return "restyle model";
+    case model_kind::remove: return "remove model";
   }
   return "model";
 }
@@ -54,15 +65,12 @@ void progress(json::writer& w, const std::string& id, const std::string& label, 
 // The live preview (contribution API 10): the latest frame, the original left
 // of the split and the enhanced picture right of it, in a surface the host
 // draws a slow glow round while the run goes.
-void preview_node(json::writer& w, bool moving) {
+void preview_node(json::writer& w, const sheet_view& v) {
   w.begin_object().key("type").string("surface").key("id").string("preview").key("surface").string("preview");
-  w.key("label").string("Preview: the original on the left, enhanced on the right");
-  w.key("height").integer(kPreviewHeight);
-  w.key("glow").string(moving ? "moving" : "still");
-  w.key("marks").begin_array();
-  w.begin_object().key("x").number(0.12).key("y").number(0.9).key("text").string("Before").end_object();
-  w.begin_object().key("x").number(0.86).key("y").number(0.9).key("text").string("Enhanced").end_object();
-  w.end_array();
+  w.key("label").string(v.preview_split ? "Preview: the original on the left, enhanced on the right"
+                                        : "Preview: the photo as it is enhanced, top to bottom");
+  w.key("height").integer(v.preview_height);
+  w.key("glow").string(v.running ? "moving" : "still");
   w.end_object();
 }
 
@@ -80,44 +88,93 @@ std::string of_text(std::uint64_t done, std::uint64_t total) {
   return size_text(done) + " of " + size_text(total);
 }
 
+// The choice of a kind's model, on the page and the sheet.
+void model_choice_node(json::writer& w, model_kind k, std::span<const knob_option> models, const std::string& value,
+                       bool disabled) {
+  w.begin_object().key("type").string("choice").key("id").string(id_of("model", k)).key("label").string("Model");
+  w.key("options").begin_array();
+  for (const knob_option& o : models) w.begin_object().key("id").string(o.id).key("text").string(o.text).end_object();
+  w.end_array();
+  w.key("value").string(value);
+  if (disabled) w.key("disabled").boolean(true);
+  w.end_object();
+}
+
+// One of a kind's other models, when it holds files or is downloading:
+// named, with its own Stop or Remove.
+void other_model(json::writer& w, model_kind k, const model_choice& m) {
+  const std::string id = std::string(kind_name(k)) + "." + m.spec->id;
+  switch (m.st.state) {
+    case dl_state::ready:
+      text(w, "other." + id, "Also downloaded: " + m.spec->name + " · " + size_text(m.files.bytes), "secondary");
+      button(w, "remove." + id, "Remove " + m.spec->name, "destructive");
+      break;
+    case dl_state::downloading:
+    case dl_state::waiting:
+      text(w, "other." + id, m.spec->name + " is downloading… " + of_text(m.st.done_bytes, m.st.total_bytes),
+           "secondary");
+      button(w, "stop." + id, "Stop");
+      break;
+    case dl_state::stopped:
+    case dl_state::gone:
+    case dl_state::failed:
+      text(w, "other." + id, m.spec->name + " did not finish downloading.", "secondary");
+      button(w, "remove." + id, "Remove what was downloaded", "destructive");
+      break;
+    default: break;
+  }
+}
+
 void model_card_body(json::writer& w, const model_card& c) {
   const model_kind k = c.kind;
-  if (!c.spec) {
+  if (c.models.empty()) {
     text(w, id_of("none", k), "This version of Enhance has no " + std::string(model_noun(k)) + " yet.", "secondary");
     return;
   }
-  std::string line = c.spec->name;
-  if (!c.spec->credit.empty()) line += " — " + c.spec->credit;
+  const model_choice& chosen = c.models[std::min(c.chosen, c.models.size() - 1)];
+  if (c.models.size() > 1) {
+    std::vector<knob_option> options;
+    for (const model_choice& m : c.models) {
+      const bool here = m.st.state == dl_state::ready;
+      options.push_back({m.spec->id, m.spec->name + " · " + size_text(m.files.bytes) + (here ? "" : ", not downloaded")});
+    }
+    model_choice_node(w, k, options, chosen.spec->id, false);
+  }
+  if (!chosen.spec->summary.empty()) text(w, id_of("summary", k), chosen.spec->summary);
+  std::string line = chosen.spec->name;
+  if (!chosen.spec->credit.empty()) line += " — " + chosen.spec->credit;
   text(w, id_of("name", k), line, "secondary");
-  const std::string size = size_text(c.files.bytes);
-  switch (c.st.state) {
+  const model_spec* spec = chosen.spec;
+  const model_files& files = chosen.files;
+  const dl_status& st = chosen.st;
+  const std::string size = size_text(files.bytes);
+  switch (st.state) {
     case dl_state::absent:
-      text(w, id_of("state", k), "Not installed. The model is " + size + ", downloaded from Hugging Face.",
-           "secondary");
-      button(w, id_of("install", k), "Download the " + std::string(model_noun(k)) + " (" + size + ")", "primary");
+      text(w, id_of("state", k), "Not downloaded. The model is " + size + ", from Hugging Face.", "secondary");
+      button(w, id_of("install", k), "Download " + spec->name + " (" + size + ")", "primary");
       break;
     case dl_state::downloading:
       progress(w, id_of("progress", k), "Downloading the " + std::string(model_noun(k)),
-               c.st.total_bytes ? static_cast<double>(c.st.done_bytes) / static_cast<double>(c.st.total_bytes) : -1);
-      text(w, id_of("state", k), "Downloading… " + of_text(c.st.done_bytes, c.st.total_bytes), "secondary");
+               st.total_bytes ? static_cast<double>(st.done_bytes) / static_cast<double>(st.total_bytes) : -1);
+      text(w, id_of("state", k), "Downloading… " + of_text(st.done_bytes, st.total_bytes), "secondary");
       button(w, id_of("stop", k), "Stop");
       break;
     case dl_state::waiting:
       progress(w, id_of("progress", k), "Downloading the " + std::string(model_noun(k)),
-               c.st.total_bytes ? static_cast<double>(c.st.done_bytes) / static_cast<double>(c.st.total_bytes) : -1);
+               st.total_bytes ? static_cast<double>(st.done_bytes) / static_cast<double>(st.total_bytes) : -1);
       text(w, id_of("state", k), "Waiting for Hugging Face… downloads resume automatically.", "secondary");
       button(w, id_of("stop", k), "Stop");
       break;
     case dl_state::stopped:
       text(w, id_of("state", k),
-           "The model did not finish downloading (" + of_text(c.st.done_bytes, c.st.total_bytes) + ").", "secondary");
+           "The model did not finish downloading (" + of_text(st.done_bytes, st.total_bytes) + ").", "secondary");
       button(w, id_of("install", k), "Resume", "primary");
       button(w, id_of("remove", k), "Remove what was downloaded", "destructive");
       break;
     case dl_state::no_space:
       text(w, id_of("state", k),
-           "Not enough free disk: the model needs " + size_text(c.st.need_bytes) + ", and " +
-               size_text(c.st.free_bytes) + " is free.",
+           "Not enough free disk: the model needs " + size_text(st.need_bytes) + ", and " +
+               size_text(st.free_bytes) + " is free.",
            "secondary");
       button(w, id_of("install", k), "Try again");
       break;
@@ -137,8 +194,11 @@ void model_card_body(json::writer& w, const model_card& c) {
       break;
     case dl_state::ready:
       text(w, id_of("state", k), "Installed · " + size, "secondary");
-      button(w, id_of("remove", k), "Remove the " + std::string(model_noun(k)), "destructive");
+      button(w, id_of("remove", k), "Remove " + spec->name, "destructive");
       break;
+  }
+  for (std::size_t i = 0; i < c.models.size(); ++i) {
+    if (i != c.chosen) other_model(w, k, c.models[i]);
   }
 }
 
@@ -161,6 +221,10 @@ void knob_node(json::writer& w, model_kind k, const knob& kb, const json::value&
     case knob::type::toggle:
       w.key("type").string("toggle").key("value").boolean(v.k == json::kind::boolean ? v.b : kb.def_on);
       break;
+    case knob::type::text:
+      w.key("type").string("text_field").key("value").string(v.k == json::kind::string ? v.s : kb.def_text);
+      if (!kb.placeholder.empty()) w.key("placeholder").string(kb.placeholder);
+      break;
   }
   w.end_object();
 }
@@ -171,6 +235,8 @@ const char* section_title(const sheet_view& v, model_kind k) {
     case model_kind::still: return "Photo";
     case model_kind::video: return "Picture";
     case model_kind::audio: return "Sound";
+    case model_kind::restyle: return "Restyle";
+    case model_kind::remove: return "Remove what you brushed";
   }
   return "";
 }
@@ -213,7 +279,9 @@ std::string settings_tree(std::span<const model_card> cards) {
   begin_stack(w, "root", "vertical", 12);
   text(w, "intro",
        "Enhance writes a restored copy of the photo, clip or audio file on screen. The original is never changed. "
-       "Each kind has its own model, downloaded only when you ask for it.");
+       "Each kind has its own model, downloaded only when you ask for it. Where a kind has more than one, choose "
+       "between a faster model and a slower one with more detail. Open Enhance from a file's right-click menu, the "
+       "command palette, or " ENHANCE_KEY_TEXT ".");
   for (const model_card& c : cards) {
     begin_stack(w, id_of("card", c.kind), "vertical", 8, "card");
     text(w, id_of("title", c.kind), card_title(c.kind), "heading");
@@ -228,11 +296,31 @@ std::string settings_tree(std::span<const model_card> cards) {
   return w.take();
 }
 
+std::string edit_text(std::span<const std::int64_t> keep_ns) {
+  const std::size_t pieces = keep_ns.size() / 2;
+  if (pieces == 0) return {};
+  std::int64_t ns = 0;
+  for (std::size_t i = 0; i + 1 < keep_ns.size(); i += 2) ns += keep_ns[i + 1] - keep_ns[i];
+  const std::int64_t s = (ns + 500'000'000) / 1'000'000'000;
+  std::string len = std::to_string(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + std::to_string(s % 60);
+  if (s >= 3600) {
+    const std::int64_t m = s / 60 % 60;
+    len = std::to_string(s / 3600) + ":" + (m < 10 ? "0" : "") + std::to_string(m) + ":" +
+          (s % 60 < 10 ? "0" : "") + std::to_string(s % 60);
+  }
+  return "The edit from the Video Editor: " + std::to_string(pieces) + (pieces == 1 ? " piece, " : " pieces, ") +
+         len + " in all. The new clip is the edit, enhanced; the original is not changed.";
+}
+
 std::string sheet_tree(const sheet_view& v) {
   json::writer w;
-  begin_stack(w, "root", "vertical", 12);
-  text(w, "title", "Enhance", "heading");
+  // A scroll at the root: a tall sheet (two models' sections, the preview)
+  // scrolls rather than cutting off its buttons. The host's own header
+  // carries the title and Done.
+  w.begin_object().key("type").string("scroll").key("id").string("root").key("axis").string("vertical");
+  w.key("children").begin_array();
   if (!v.file_name.empty()) text(w, "file", v.file_name, "secondary");
+  if (!v.edit.empty()) text(w, "edit", v.edit, "secondary");
   if (v.item == item_kind::media) {
     const auto targets = targets_for(v.has_picture, v.has_sound);
     if (targets.size() > 1) {
@@ -248,9 +336,25 @@ std::string sheet_tree(const sheet_view& v) {
       w.end_object();
     }
   }
+  if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove)) {
+    w.begin_object().key("type").string("choice").key("id").string("photo").key("label").string("Enhance");
+    w.key("options").begin_array();
+    w.begin_object().key("id").string(photo_target_name(photo_target::detail)).key("text").string("More detail").end_object();
+    if (v.offers_restyle) {
+      w.begin_object().key("id").string(photo_target_name(photo_target::restyle)).key("text").string("Restyle with words").end_object();
+    }
+    if (v.offers_remove) {
+      w.begin_object().key("id").string(photo_target_name(photo_target::remove)).key("text").string("Remove what you brushed").end_object();
+    }
+    w.end_array();
+    w.key("value").string(photo_target_name(v.photo));
+    if (v.running) w.key("disabled").boolean(true);
+    w.end_object();
+  }
   for (const sheet_section& s : v.sections) {
     begin_stack(w, id_of("sec", s.kind), "vertical", 8, "card");
     text(w, id_of("head", s.kind), section_title(v, s.kind), "heading");
+    if (!s.models.empty()) model_choice_node(w, s.kind, s.models, s.model, v.running);
     if (s.spec) {
       std::size_t shown = 0;
       for (const knob& kb : s.spec->knobs) {
@@ -262,26 +366,35 @@ std::string sheet_tree(const sheet_view& v) {
       if (shown == 0) text(w, id_of("plain", s.kind), s.spec->name + " has nothing to set.", "secondary");
     } else {
       text(w, id_of("missing", s.kind), s.missing, "secondary");
+      if (s.downloading) {
+        progress(w, id_of("progress", s.kind), "Downloading", *s.downloading);
+        button(w, id_of("stop", s.kind), "Stop");
+      } else if (!s.install.empty()) {
+        button(w, id_of("install", s.kind), s.install, "primary");
+      }
     }
     end_stack(w);
   }
   if (!v.note.empty()) text(w, "note", v.note, "secondary");
-  if (v.preview) preview_node(w, v.running);
+  if (v.preview) {
+    preview_node(w, v);
+    // Said under it, not marked on it: a label over a light photo cannot be read.
+    if (v.preview_split) text(w, "sides", "Before on the left, enhanced on the right.", "caption");
+  }
   if (v.running) {
     progress(w, "progress", "Enhancing", v.progress, "glow");
     text(w, "eta", v.eta.empty() ? std::string("Working…") : v.eta, "secondary");
   }
   if (!v.status.empty()) text(w, "status", v.status, "secondary");
-  text(w, "where", "Enhance writes a new file beside the original. The original is not changed.", "caption");
   begin_stack(w, "buttons", "horizontal", 8);
   if (v.running) {
     button(w, "cancel", "Cancel", "destructive");
   } else {
-    button(w, "close", "Close");
     button(w, "run", "Enhance", "primary", !v.can_run);
   }
   end_stack(w);
-  end_stack(w);
+  text(w, "where", "A new file is written beside the original, which is never changed.", "caption");
+  w.end_array().end_object();
   return w.take();
 }
 

@@ -414,6 +414,31 @@ instance via Launch Services. `MediaViewerSpotlight.mdimporter` in `Contents/Lib
 indexes MKV / WebM / AVI / TS, the containers macOS does not index itself
 (`shell/spotlight_importer_mac.mm`, `shell/spotlight_fields.cpp`).
 
+**Pinned folders and Tasks (#617, draft).** Pins are a second list beside the MRU list
+(`shell/os_integration.h`): at most five (`kMaxPinnedFolders`), oldest pin first, one entry per
+folder under the MRU list's folder rule. Every host shows `pinned_then_recent`: the pins, then the
+recents that are not pinned, ten in all. Neither list changes the other: opening a pinned folder
+still moves it to the front of the MRU list, so unpinning puts it where plain MRU order has it
+(or off the list, if ten newer folders were opened since it was last opened). A gone folder, the
+card's ×, and a removal from the jump list drop the pin too. Pin / Unpin is on a welcome-card
+folder row's context menu (with Open and Remove from list) on both hosts; pinned rows draw a pin
+(`welcome_recents::pinned`, `welcome_screen.h`). Windows keeps them in `[recent] pinned0`…`pinned4`;
+the Mac in `mv.pinnedFolders`. Soak, scripted and `--boot-report` runs record nothing.
+Windows: the jump list has a **Pinned folders** category above **Recent folders**, and Tasks
+(`AddUserTasks`): **New window** (`--new-instance`), **Open folder…** and, while Import is
+installed, **Import…** (`--task open-folder|import`). A task start hands the task to the running
+viewer over the single-instance pipe as a first line marked `\x01`; a first start runs it from the
+message loop once the window is up, and `import` waits for the add-on to load. The list is still
+committed on the pool, and only when it changes; `[recent] jump_tasks` records which Tasks the last
+commit carried, so a start never pays for a `CommitList` and the add-on's load or removal adds or
+drops Import…. Mac: the Dock menu lists the pins under **Pinned Folders**, then **Recent
+Folders**; File ▸ Open Recent lists the pins (with a pin glyph), a separator, then the recents.
+
+**Verify (#617, both):** the jump list shows New window / Open folder…, and New window opens a
+second empty window; a pinned folder survives 10 newer opens on the welcome card, the jump list
+and the Dock menu; unpinning restores MRU order; soak and scripted runs record nothing;
+`CommitList` stays off the UI thread.
+
 **Verify (Windows):** double-clicking a HEIC in Explorer opens the app, and Explorer shows its
 thumbnail and the MediaViewer file-type icon; a deliberately corrupted HEIC in a browsed folder
 leaves Explorer running; uninstall removes every association. The running window and taskbar

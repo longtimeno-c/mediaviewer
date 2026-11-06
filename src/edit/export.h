@@ -96,12 +96,37 @@ struct export_result {
 [[nodiscard]] result<codec::raster> full_picture(std::span<const std::uint8_t> source,
                                                  const job_context* ctx = nullptr);
 
+// docs/plans/edit-adjust.md slice 5: the same with the edit applied, as an
+// export bakes it (detail, geometry, colour), upright, 8-bit sRGB RGBA: what
+// Enhance gets for the photo being edited.
+[[nodiscard]] result<codec::raster> edited_picture(std::span<const std::uint8_t> source,
+                                                   const geometry& g, const colour& c,
+                                                   const job_context* ctx = nullptr);
+
 // New pixels for `source`, encoded with its metadata under `opt.policy`, as
 // an export carries it: Orientation 1, the written size, the EXIF thumbnail
 // dropped (it would show the old picture). `pixels` is sRGB RGBA8.
 [[nodiscard]] result<export_result> export_pixels(std::span<const std::uint8_t> source, const codec::raster& pixels,
                                                   const export_options& opt,
                                                   const metadata_blobs* carried = nullptr);
+
+// Issue #614 (Print, docs/design/07 "Print"): the pixels an export of `g` and
+// `c` would encode, before the encode — the bake (sRGB RGBA8, tagged_srgb) when
+// a colour adjust is set, else the decoded, upright source through the
+// geometry with its own ICC profile kept. So a print matches the export.
+// `box` bounds the result for the paper: when not {0, 0}, the picture is
+// scaled down (never up) until it fits inside it (`cover` false) or just
+// covers it (`cover` true, the page's fill). A RAW still develops in full;
+// only the resample is smaller. Worker thread only.
+[[nodiscard]] result<codec::raster> render_picture(std::span<const std::uint8_t> source,
+                                                   const geometry& g, const colour& c,
+                                                   size2 box = {}, bool cover = false,
+                                                   const job_context* ctx = nullptr);
+
+// The long edge (pixels) `picture` scales to so it fits in `box` (or covers
+// it), or 0 when it is already no bigger than that: render_picture never
+// enlarges, the printer's own resample does. Pure.
+[[nodiscard]] std::uint32_t shrink_to_box(size2 picture, size2 box, bool cover) noexcept;
 
 // "IMG_0001.HEIC" → "IMG_0001-edit.jpg". The host runs it through
 // io::unique_name, so an existing export is never overwritten either.

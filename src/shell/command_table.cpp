@@ -332,6 +332,9 @@ constexpr binding kBindings[] = {
     // Issue #429. Appended. Shift+T beside T (the filmstrip): browse and the
     // islands, as the page keys; the gallery types ahead.
     row(C('T'), mod_shift, kBrowse | kIsland, edge, toggle_page_sidebar),
+    // Issue #614. Appended. Ctrl+P was free; plain P stays trim preview (kTrim
+    // only). Viewing modes: the photo on screen, or the marks from the gallery.
+    row(C('P'), mod_ctrl, kViewing, edge, print),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -523,6 +526,34 @@ constexpr command_info kCommands[] = {
     {zoom_af_point, "Zoom to AF point"},
     {compare_two_up, "Compare with previous"},
     {toggle_page_sidebar, "Page sidebar"},
+    {print, "Print…"},
+    {adjust_highlights, "Adjust: highlights", true},
+    {adjust_shadows, "Adjust: shadows", true},
+    {adjust_whites, "Adjust: whites", true},
+    {adjust_blacks, "Adjust: blacks", true},
+    {adjust_vibrance, "Adjust: vibrance", true},
+    {adjust_mono, "Adjust: black & white", true},
+    {adjust_mono_filter, "Adjust: black & white filter", true},
+    {adjust_mono_tone, "Adjust: black & white tone", true},
+    {adjust_vignette, "Adjust: vignette", true},
+    {adjust_vignette_radius, "Adjust: vignette radius", true},
+    {adjust_vignette_softness, "Adjust: vignette softness", true},
+    {adjust_auto, "Adjust: auto", true},
+    {adjust_reset_section, "Adjust: reset section", true},
+    {adjust_levels_black, "Adjust: levels black", true},
+    {adjust_levels_mid, "Adjust: levels mid-tones", true},
+    {adjust_levels_white, "Adjust: levels white", true},
+    {adjust_levels_red_black, "Adjust: levels red black", true},
+    {adjust_levels_red_mid, "Adjust: levels red mid-tones", true},
+    {adjust_levels_red_white, "Adjust: levels red white", true},
+    {adjust_levels_green_black, "Adjust: levels green black", true},
+    {adjust_levels_green_mid, "Adjust: levels green mid-tones", true},
+    {adjust_levels_green_white, "Adjust: levels green white", true},
+    {adjust_levels_blue_black, "Adjust: levels blue black", true},
+    {adjust_levels_blue_mid, "Adjust: levels blue mid-tones", true},
+    {adjust_levels_blue_white, "Adjust: levels blue white", true},
+    {adjust_pick, "Adjust: pick on the photo", true},
+    {adjust_open_eyes, "Open closed eyes", true},
 };
 
 const char* named_key(key k) noexcept {
@@ -747,6 +778,16 @@ const addon_command_row* addon_command(command_id id) noexcept {
   const addon_slots& s = addon_store();
   return n >= 0 && static_cast<std::size_t>(n) < s.rows.size() ? &s.rows[static_cast<std::size_t>(n)]
                                                                : nullptr;
+}
+
+command_id find_addon_command(std::string_view addon, std::string_view id) noexcept {
+  const addon_slots& s = addon_store();
+  for (std::size_t i = 0; i < s.rows.size() && i < static_cast<std::size_t>(kAddonCommandSlots); ++i) {
+    if (s.rows[i].addon == addon && s.rows[i].id == id) {
+      return static_cast<command_id>(static_cast<int>(command_id::addon_cmd_0) + static_cast<int>(i));
+    }
+  }
+  return command_id::none;
 }
 
 mode_mask parse_modes(std::string_view modes) noexcept {

@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "core/result.h"
+#include "gfx/adjust_kernel.h"
 #include "gfx/colour_desc.h"
 
 namespace mv::gfx {
@@ -32,6 +33,19 @@ struct video_blit_params_mac {
   // stay the CODED frame; the camera (pan, zoom, fit) works in the DISPLAYED
   // picture, which is image_h x image_w for 1 and 3.
   std::uint32_t rotation = 0;
+  // The Video Editor's look (edit/clip_look.h uv_crop_of): the turned picture
+  // mirrored (1 left-right, 2 upside down) and cropped to this rect of it
+  // (0..1). The camera then frames the crop: image_w / image_h stay coded.
+  std::uint32_t mirror = 0;
+  float crop_x = 0.0f;
+  float crop_y = 0.0f;
+  float crop_w = 1.0f;
+  float crop_h = 1.0f;
+  // The Video Editor's light and colour: the shared kernel
+  // (gfx/adjust_kernel.h) with edit::adjust_uniforms, run only when `adjust`
+  // is set.
+  bool adjust = false;
+  adjust_vectors adjust_u{};
 };
 
 class video_blitter_mac {

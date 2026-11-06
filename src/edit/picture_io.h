@@ -69,6 +69,14 @@ struct picture_out_options {
   std::uint32_t sound_rate = 0;
   std::uint32_t sound_channels = 0;
   std::string suffix = "enhance";  // [a-z0-9_-]{1,32}
+  // The Video Editor's render (clip_look.h): the output's folder (empty:
+  // beside the source) and whole stem (empty: "<stem>-<suffix>"); a display
+  // rotation in place of the source's (>= 0, clockwise degrees: the frames
+  // were turned already); no sound at all (mute), neither copied nor new.
+  std::string out_dir;
+  std::string out_stem;
+  int rotation = -1;
+  bool drop_sound = false;
   // Tests only: these FFmpeg encoders instead of the hardware list, and one
   // FFmpeg does not mark hardware may open. The product never sets them.
   std::vector<std::string> encoders;

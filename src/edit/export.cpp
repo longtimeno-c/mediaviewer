@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "edit/export.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <new>
 
@@ -9,6 +11,7 @@
 #include "codec/exif.h"
 #include "codec/format.h"
 #include "edit/bake.h"
+#include "edit/detail.h"
 #include "edit/geometry.h"
 #include "edit/lossless_jpeg.h"
 #include "image/linear.h"
@@ -151,6 +154,19 @@ resolution source_resolution(std::span<const std::uint8_t> source, const metadat
   }
 }
 
+result<codec::raster> edited_picture(std::span<const std::uint8_t> source, const geometry& g,
+                                     const colour& c, const job_context* ctx) {
+  if (g.identity() && c.identity()) return full_picture(source, ctx);
+  MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  if (c.has_detail()) {
+    MV_TRY(image::linear_image detailed, apply_detail(working, detail_of(c), ctx));
+    working = std::move(detailed);
+  }
+  const placement p = place(g, size2{working.width, working.height});
+  return bake(working, p, c, ctx);
+}
+
 result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
                                    const export_options& opt, const job_context* ctx,
                                    const metadata_blobs* carried) {
@@ -179,8 +195,14 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
   if (!c.identity()) {
     MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
     if (ctx && ctx->cancelled()) return err(status::cancelled);
+    // Slice 4: the detail pass at full resolution, as the canvas ran it on
+    // the preview (its radii scale with the picture).
+    if (c.has_detail()) {
+      MV_TRY(image::linear_image detailed, apply_detail(working, detail_of(c), ctx));
+      working = std::move(detailed);
+    }
     const placement p = place(g, size2{working.width, working.height});
-    MV_TRY(codec::raster out, bake(working, p, uniforms_of(c), ctx));
+    MV_TRY(codec::raster out, bake(working, p, c, ctx));
     working = image::linear_image{};  // release the full frame before encoding
     metadata_blobs meta = source_metadata(source, opt.policy, carried);
     patch_for_output(meta, out.width, out.height, true, stated);
@@ -262,6 +284,41 @@ result<export_result> export_pixels(std::span<const std::uint8_t> source, const 
   r.width = pixels.width;
   r.height = pixels.height;
   return r;
+}
+
+std::uint32_t shrink_to_box(size2 picture, size2 box, bool cover) noexcept {
+  if (picture.w == 0 || picture.h == 0 || box.w == 0 || box.h == 0) return 0;
+  const double sx = static_cast<double>(box.w) / picture.w;
+  const double sy = static_cast<double>(box.h) / picture.h;
+  const double scale = cover ? std::max(sx, sy) : std::min(sx, sy);
+  if (!(scale < 1.0)) return 0;
+  const double edge = std::ceil(std::max(picture.w, picture.h) * scale);
+  return static_cast<std::uint32_t>(std::max(1.0, edge));
+}
+
+result<codec::raster> render_picture(std::span<const std::uint8_t> source, const geometry& stack,
+                                     const colour& c, size2 box, bool cover,
+                                     const job_context* ctx) {
+  geometry g = stack;
+  // The box applies on top of the stack's own size, as the export dialog's
+  // long edge does; a stack resize to something smaller still wins.
+  auto bound = [&](size2 frame) {
+    const placement first = place(g, frame);
+    if (const std::uint32_t edge = shrink_to_box(first.output, box, cover); edge != 0) {
+      g.resize = resize_spec{resize_mode::long_edge, edge, 0, 100.0f};
+    }
+    return place(g, frame);
+  };
+  if (!c.identity()) {
+    MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    const placement p = bound(size2{working.width, working.height});
+    return bake(working, p, uniforms_of(c), ctx);
+  }
+  MV_TRY(codec::raster decoded, codec::decode(source, ctx));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  const placement p = bound(size2{decoded.width, decoded.height});
+  return render(decoded, p, ctx);
 }
 
 std::string export_file_name(std::string_view source_name, image_format format) {

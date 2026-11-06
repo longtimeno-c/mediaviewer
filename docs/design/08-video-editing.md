@@ -62,9 +62,9 @@ over. With no hardware encoder the job fails with `unsupported_format`.
 | `remove_middle` | One file without `[in, out)`, both edges on keyframes. `_cut` | In process |
 | `remux` | MKV ↔ MP4, every stream the target can hold | In process |
 | `audio` | The first audio track: stream copy, WAV or FLAC. `_audio` | Copy in process; WAV / FLAC in the helper |
-| `frame` | The frame shown at `in`, as PNG or JPEG (quality 92), sRGB. `_frame` | Helper |
+| `frame` | The frame shown at `in`, as PNG or JPEG (quality 92), sRGB; with a look, its turn, mirror and crop (the Video Editor's Save frame). `_frame` | Helper |
 | `animation` | `[in, out)` as GIF (two-pass palette) or animated WebP; long edge 16–1920 px (480 default), 1–50 fps (15 default); refused over 60 s | Helper |
-| `keep_ranges` | The listed ranges in one file, on keyframes (copy) or exact (re-encoded like Path 2); up to 1000 ranges. `_edit`. Used by the Video Editor ([21](21-video-editor.md)) | Copy in process; exact in the helper |
+| `keep_ranges` | The listed ranges in one file, on keyframes (copy) or exact (re-encoded like Path 2); up to 1000 ranges. `_edit`. Used by the Video Editor ([21](21-video-editor.md)). With the editor's look (`request::look`, `edit/clip_look.h`): copy carries a turn and mute only; exact renders it frame by frame (`clip_look_run.cpp`) | Copy in process; exact in the helper |
 
 `split` and `remove_middle` are offered on a clip as `Ctrl+B` and `Ctrl+X` (in trim); the rest
 are in the **Clip tools** flyout (`Ctrl+S` on a clip).

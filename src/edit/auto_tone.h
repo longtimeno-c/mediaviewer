@@ -60,12 +60,13 @@ inline constexpr float kAutoToneMaxContrast = 40.0f;  // slider units, slope ×1
 inline constexpr float kAutoToneMinExposure = 0.05f;
 inline constexpr float kAutoToneMinContrast = 2.0f;
 
-// `c` with exposure and contrast at 0: the colour the histogram auto_tone
-// reads must be computed with.
+// `c` with the Light section at 0 (exposure, contrast, highlights, shadows,
+// whites, blacks): the colour the histogram auto_tone reads must be computed
+// with, and the rest of the Light section in its result.
 [[nodiscard]] colour auto_tone_basis(const colour& c) noexcept;
 
 struct auto_tone_result {
-  colour value;          // `current` with exposure and contrast replaced
+  colour value;          // `current` with the Light section replaced
   bool changed = false;  // value != current
   // What was read, in fractional sRGB codes: black and white of R, G, B,
   // the median of luma. For tests and the log.

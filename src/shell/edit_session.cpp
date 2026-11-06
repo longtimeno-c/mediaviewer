@@ -183,7 +183,7 @@ void edit_session::land(std::uint64_t old_key, codec::d4 applied) {
     const edit::geometry g = edit::fold(it->second);
     if (g.orientation_only()) remaining = codec::compose(codec::inverse(applied), g.orient);
     for (const op& o : it->second.ops) {
-      if (o.kind == op_kind::adjust || o.kind == op_kind::adjust_all) colour_ops.push_back(o);
+      if (edit::is_colour_op(o)) colour_ops.push_back(o);
     }
     stacks_.erase(it);
     order_.erase(std::remove(order_.begin(), order_.end(), old_key), order_.end());
@@ -257,6 +257,38 @@ edit_effect edit_session::reset_adjust() {
   return edit_effect::redraw;
 }
 
+edit_effect edit_session::set_curve(edit::curve_channel ch, const edit::curve& k) {
+  const auto i = static_cast<std::size_t>(ch);
+  if (!has_item_ || i >= static_cast<std::size_t>(edit::kCurveChannels)) return edit_effect::refused;
+  const edit::curve clean = edit::sanitise(k);
+  edit::edit_stack& s = current();
+  // A drag of a point is one op, as a slider drag is.
+  if (!s.ops.empty() && s.ops.back().kind == op_kind::curve && s.ops.back().channel == ch) {
+    if (s.ops.back().values.curves[i] == clean) return edit_effect::none;
+    s.ops.back().values.curves[i] = clean;
+    const std::span<const op> before(s.ops.data(), s.ops.size() - 1);
+    if (edit::fold_colour(before).curves[i] == clean) s.ops.pop_back();
+    return edit_effect::redraw;
+  }
+  if (edit::fold_colour(s.ops).curves[i] == clean) return edit_effect::none;
+  op o{op_kind::curve};
+  o.channel = ch;
+  o.values.curves[i] = clean;
+  s.push(o);
+  return edit_effect::redraw;
+}
+
+edit_effect edit_session::add_red_eye(const edit::red_eye_spot& s) {
+  if (!has_item_) return edit_effect::refused;
+  const edit::colour now = colour();
+  if (s.r > 0.0f && now.spot_count >= edit::kRedEyeSpots) return edit_effect::refused;
+  if (s.r <= 0.0f && now.spot_count == 0) return edit_effect::none;
+  op o{op_kind::red_eye};
+  o.spot = s;
+  current().push(o);
+  return edit_effect::redraw;
+}
+
 edit_effect edit_session::set_colour(const edit::colour& c) {
   if (!has_item_) return edit_effect::refused;
   op o{op_kind::adjust_all};
@@ -264,6 +296,9 @@ edit_effect edit_session::set_colour(const edit::colour& c) {
     const auto p = static_cast<edit::adjust_param>(i);
     o.values.v[static_cast<std::size_t>(i)] = edit::clamp_param(p, c.get(p));
   }
+  for (std::size_t k = 0; k < o.values.curves.size(); ++k) o.values.curves[k] = edit::sanitise(c.curves[k]);
+  o.values.spots = c.spots;
+  o.values.spot_count = c.spot_count;
   if (colour() == o.values) return edit_effect::none;
   current().push(o);
   return edit_effect::redraw;
@@ -702,6 +737,30 @@ result<flattened_copy> run_flatten(std::string_view source_path, const edit::geo
     for (std::size_t i = 0; i + kKeptFlattenedCopies < kids->size(); ++i) {
       if (kids->at(i).path_utf8 != mine) (void)io::remove_tree(kids->at(i).path_utf8);
     }
+  }
+  return out;
+}
+
+result<codec::raster> render_print_picture(std::string_view source_path, const edit::geometry& g,
+                                           const edit::colour& c, edit::size2 box, bool cover,
+                                           const job_context* ctx) {
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  return edit::render_picture(bytes, g, c, box, cover, ctx);
+}
+
+result<std::vector<print_picture>> render_contact_pictures(std::span<const print_source> sources,
+                                                           edit::size2 cell, const job_context* ctx) {
+  std::vector<print_picture> out;
+  out.reserve(sources.size());
+  for (const print_source& s : sources) {
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    result<codec::raster> r = render_print_picture(s.path, s.g, s.c, cell, false, ctx);
+    if (!r) {
+      if (r.error() == status::cancelled) return err(status::cancelled);
+      continue;  // a clip, audio, a file gone since it was marked: left out
+    }
+    out.push_back(print_picture{s.path, std::move(*r)});
   }
   return out;
 }

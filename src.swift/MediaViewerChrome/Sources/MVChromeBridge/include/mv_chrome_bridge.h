@@ -45,6 +45,8 @@ enum MvMenuCmd : int32_t {
   kMenuRename,
   // Issue #429: View > Page Sidebar (Shift+T).
   kMenuPageSidebar,
+  // Issue #614: File > Print… (Cmd+P).
+  kMenuPrint,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -204,6 +206,21 @@ int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size);
 // search re-runs its tag half. [main-thread]
 uint64_t mv_chrome_tag_generation(void);
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"), Settings -> Storage: what
+// MediaViewer keeps on disk, with sizes, as JSON
+//   {"rows":[{"id":"thumbnails","path":"...","bytes":n,"files":n},...],"total":n}
+// (ids in io/storage.h; the Mac adds crash_reports). Walks folders: call it
+// from a background task, never the main thread. Returns the byte length
+// needed, as the tables; a buffer too small is filled cut short. [any-thread]
+int32_t mv_chrome_storage_report(char* buf, int32_t size);
+// Clear: deletes every cached thumbnail and its row (the search cache and
+// metadata snapshots are untouched). A background task. [any-thread]
+bool mv_chrome_thumb_cache_clear(void);
+// The thumbnail cache's cap in bytes, 0 = none (the default). Setting one
+// saves it and sweeps now. [main-thread]
+uint64_t mv_chrome_thumb_cache_cap(void);
+void mv_chrome_set_thumb_cache_cap(uint64_t bytes);
+
 // Bumped when the host rewrites a listed file in place (a lossless rotate, a
 // metadata write) and updates its size / mtime without a relist, so Swift
 // re-reads mv_chrome_item_thumb_key and the cell asks for the new thumbnail.
@@ -247,6 +264,9 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 // file. [main-thread]
 int32_t mv_chrome_update_phase(void);
 bool mv_chrome_update_version(char* out, int32_t cap);
+// #620: the staged update's "What's new" (phase 3 only): up to three lines of
+// plain text, at most 400 bytes, from the signed appcast. False if none.
+bool mv_chrome_update_notes(char* out, int32_t cap);
 void mv_chrome_restart_to_update(void);
 // #532: other running copies of this app, and asking them to quit once idle
 // (each finishes a Driftwire transfer first). Restart waits until none is
@@ -614,6 +634,10 @@ bool mv_chrome_slots_event(const char* addon, const char* screen, const char* no
                            const char* value_json);
 // An item was chosen; paths_json is a JSON array of the files it targets.
 bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json);
+// A Video Editor button (editor_items): the clip and the edit's kept source
+// ranges, `range_count` (in, out) pairs in ns (none when nothing is cut).
+bool mv_chrome_slots_editor_item(const char* addon, const char* item, const char* path,
+                                 const int64_t* ranges_ns, uint32_t range_count);
 // #410: one of a slot add-on's manifest commands (Settings' Open, the share icon).
 bool mv_chrome_slots_command(const char* addon, const char* command, const char* paths_json);
 // A surface's BGRA pixels (premultiplied). Returns the bytes needed (0: none);
@@ -869,16 +893,32 @@ int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current);
 // Field for field shell::adjust_view (src/shell/adjust_pane.h); main_mac.mm
 // static_asserts the size and offsets.
 //   readiness: 0 no still, 1 preparing (sliders disabled), 2 ready, 3 failed
-//   values:    exposure (EV, -5..5), contrast, saturation, temperature, tint (-100..100)
+//   values:    edit::adjust_param order: exposure (EV, -5..5), contrast, saturation,
+//              temperature, tint, highlights, shadows, whites, blacks, vibrance (-100..100),
+//              mono (0..100), mono_filter, mono_tone, vignette, vignette_radius,
+//              vignette_softness (-100..100), then levels black (0..100), mid (-100..100)
+//              and white (-100..0) for the image, red, green and blue, then selective
+//              colour's hue, saturation and luminance (-100..100) for red, orange, yellow,
+//              green, aqua, blue, purple and magenta, then definition, brilliance
+//              (-100..100), sharpen and noise reduction (0..100)
+//   curve_*:   the master, red, green and blue curves' points (0..1), curve_n of each
 //   bins:      64 bins each of R, G, B, luma, 0..1000 (edit::pack_histogram)
 typedef struct mv_adjust_view {
   int32_t readiness;
   int32_t from_raw;
-  float values[5];
+  float values[56];
   float clip_high;
   float clip_low;
   int32_t histogram_valid;
-  int32_t reserved;
+  int32_t auto_section;  // the section whose Auto is running, -1 none
+  int32_t curve_n[4];
+  float curve_x[4][8];
+  float curve_y[4][8];
+  int32_t picking;     // slice 3: 0 none, 1 white-balance picker, 2 red-eye tool, 3 Remove brush
+  int32_t spot_count;  // red-eye fixes in the edit
+  int32_t brush_strokes;  // slice 7: the Remove brush's strokes
+  int32_t brush_full;     // ... and 1 when it holds as many dabs as it can
+  char prompt_note[128];  // slice 5b: what the last typed request did, UTF-8
   uint16_t bins[4 * 64];
 } mv_adjust_view;
 
@@ -888,9 +928,33 @@ bool mv_chrome_adjust_visible(void);
 // the view only when it moves, so a drag is never fought.
 uint64_t mv_chrome_adjust_generation(void);
 bool mv_chrome_adjust_view(mv_adjust_view* out);
-// `param` is edit::adjust_param (0 exposure .. 4 tint). Ignored until ready.
+// `param` is edit::adjust_param (0 exposure .. 15 vignette_softness). Ignored until ready.
 void mv_chrome_adjust_set(int32_t param, float value);
 void mv_chrome_adjust_reset(void);
+// `section` is edit::adjust_section (0 light, 1 colour, 2 black & white, 3 vignette).
+// Auto runs on a worker and lands as one undo step; vignette has none. Reset
+// puts that section's sliders back to 0, one undo step.
+void mv_chrome_adjust_auto(int32_t section);
+void mv_chrome_adjust_reset_section(int32_t section);
+// Slice 2: curve `channel` (0 image, 1 red, 2 green, 3 blue) is `n` points
+// (at most 8; x and y 0..1). A drag of a point is one undo step.
+void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* xs, const float* ys);
+// Slice 3: what the next click on the photo does: 0 nothing, 1 the white-balance
+// picker (one click), 2 the red-eye tool (each click, until 0); `size` is its
+// -100..100 about the default radius. Section 7 (red-eye)'s reset clears the fixes.
+void mv_chrome_adjust_pick(int32_t mode, float size);
+// Slice 5b: a typed request ("a bit brighter and warmer"): the sliders it names
+// move as one undo step, any Auto it asks for runs, and prompt_note says what
+// happened. UTF-8.
+void mv_chrome_adjust_prompt(const char* text);
+// Slice 6: Open closed eyes: a face whose eyes are shut takes the same person's
+// open eyes from a frame of the same moment (People in Local search), written
+// as a new file beside the photo; prompt_note says what happened.
+void mv_chrome_adjust_open_eyes(void);
+// Slice 7: the Remove brush (picking 3, mv_chrome_adjust_pick's `size` its
+// −100..100 about the default): 0 the last stroke off, 1 every stroke off,
+// 2 Remove — Enhance's sheet opens to take out what is brushed.
+void mv_chrome_adjust_brush(int32_t action);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);
@@ -986,6 +1050,7 @@ typedef struct mv_edit_view {
   int32_t crop_width;     // what Apply would keep, in pixels (0 = not known yet)
   int32_t crop_height;
   int32_t document;       // a PDF or DOCX: nothing to edit; the bar offers "Open in <app>"
+  int32_t enhance;        // edit-adjust slice 5: the Enhance add-on is loaded (the strip offers Enhance…)
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -1004,6 +1069,9 @@ void mv_chrome_edit_cancel_crop(void);
 void mv_chrome_edit_show_original(int32_t on);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
+// Slice 5: Enhance… from the strip: Enhance's own sheet for the photo, whose
+// copy carries the crop, colour and detail being edited.
+void mv_chrome_edit_enhance(void);
 // A document's "Open in <app>" (docs/design/20): opens the file on the canvas in
 // the app at `app_path_utf8`, or in its default app (never this one) when NULL
 // or "". Asynchronous; never blocks the caller. [main-thread]
@@ -1032,6 +1100,22 @@ typedef struct mv_editor_view {
   int64_t mark_in_ns;     // the marked range on the program; -1 unset
   int64_t mark_out_ns;
   double frame_rate;      // the clip's; 0 unknown (timecode falls back to hundredths)
+  // The look (docs/plans/video-editor-look.md): extra quarter turns, mirror
+  // (1 left-right, 2 upside down), crop (0 original, 1 16:9, 2 9:16, 3 1:1,
+  // 4 4:3, 5 4:5), and whether Export on keyframes can carry it.
+  int32_t look_turns;
+  int32_t look_mirror;
+  int32_t look_crop;
+  int32_t look_copyable;
+  // Light and colour: exposure (EV, ±5), contrast, saturation, temperature,
+  // tint (±100); 0 = unchanged.
+  float look_light[5];
+  // Sound (slice 3): muted, volume 0..2, fades on the program's ends.
+  int32_t look_mute;
+  float look_volume;
+  int32_t look_fade_in_ms;
+  int32_t look_fade_out_ms;
+  float look_speed;  // 0.5, 1 or 2 (slice 4)
 } mv_editor_view;
 uint64_t mv_chrome_editor_generation(void);
 bool mv_chrome_editor_view(mv_editor_view* out);
@@ -1050,9 +1134,22 @@ void mv_chrome_editor_toggle_play(void);
 void mv_chrome_editor_step(int32_t frames);
 // 1 split at the playhead, 2 delete (the marked range, else the selected
 // piece), 3 set in (cut everything before), 4 set out (cut everything after),
-// 5 undo, 6 redo, 14 mark in, 15 mark out, 16 clear the marks. A change that
+// 5 undo, 6 redo, 14 mark in, 15 mark out, 16 clear the marks; the look
+// (docs/plans/video-editor-look.md): 17 turn left, 18 turn right, 19 mirror
+// left-right, 20 upside down, 21-26 crop original / 16:9 / 9:16 / 1:1 / 4:3 /
+// 4:5, 27 save the frame at the playhead, 28 Auto light (auto tone on the frame
+// at the playhead), 29 reset light and colour, 30 mute / unmute, 31-33 the
+// speed 0.5x / 1x / 2x. A change that
 // changes nothing beeps.
 void mv_chrome_editor_edit(int32_t what);
+// The look's light and colour (slice 2): slider `param` (0 exposure,
+// 1 contrast, 2 saturation, 3 temperature, 4 tint) to `value`; phase 0 starts
+// a drag (one undo step), 1 moves it, 2 ends it. Auto and Reset are
+// mv_chrome_editor_edit 28 and 29.
+void mv_chrome_editor_set_light(int32_t param, float value, int32_t phase);
+// The look's sound (slice 3): `param` 0 volume (0..2), 1 fade in, 2 fade out
+// (seconds, 0..5); phase as set_light. Mute is mv_chrome_editor_edit 30.
+void mv_chrome_editor_set_sound(int32_t param, float value, int32_t phase);
 void mv_chrome_editor_select(int32_t index);
 // Queues keep_ranges on the Jobs pane: 0 keyframe cuts (instant), 1 exact.
 void mv_chrome_editor_export(int32_t exact);

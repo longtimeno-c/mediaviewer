@@ -15,6 +15,7 @@
 
 #include "fixtures.h"
 #include "meta/location.h"
+#include "telemetry_fixture.h"
 
 namespace {
 
@@ -107,4 +108,31 @@ TEST_CASE("coordinate text parses both ways a file or a summary writes it", "[me
   REQUIRE(parse_coordinate_pair("33.86882\xC2\xB0 S, 151.20929\xC2\xB0 W")->lon == Approx(-151.20929));
   REQUIRE_FALSE(parse_coordinate_pair("48.85837 N, 2.29448 E"));
   REQUIRE_FALSE(parse_coordinate_pair("95.0\xC2\xB0 N, 2.0\xC2\xB0 E"));
+}
+
+// #606: a GoPro clip has no ISO 6709 tag; read_location takes its first
+// telemetry fix, and read_route the whole route, thinned to its cap.
+TEST_CASE("a GoPro clip's position and route come from its telemetry", "[meta][location][telemetry]") {
+  namespace gp = mv::test::gpmf;
+  temp_file clip("gopro.mp4");
+  std::vector<gp::bytes> packets;
+  for (int i = 0; i < 20; ++i) {
+    std::vector<gp::fix> fixes;
+    for (int k = 0; k < 18; ++k) fixes.push_back({38.70 + (i * 18 + k) * 1e-4, -9.13 - (i * 18 + k) * 1e-4, 30});
+    packets.push_back(gp::payload(gp::gps5_strm(fixes)));
+  }
+  REQUIRE(gp::make_mp4(clip.path.string(), packets));
+  const auto where = mv::meta::read_location(clip.path.string());
+  REQUIRE(where);
+  CHECK(where->lat == Approx(38.70).margin(1e-5));
+  CHECK(where->lon == Approx(-9.13).margin(1e-5));
+  const auto route = mv::meta::read_route(clip.path.string(), 32);
+  REQUIRE(route.size() == 32);
+  CHECK(route.front().lat == Approx(38.70).margin(1e-6));
+  CHECK(route.back().lat == Approx(38.70 + 359 * 1e-4).margin(1e-6));
+  CHECK(mv::meta::read_route(clip.path.string(), 0).empty());
+  // A still has no route, and nothing opens it as a clip.
+  temp_file still("still.jpg");
+  still.write(jpeg_with({}, {}));
+  CHECK(mv::meta::read_route(still.path.string()).empty());
 }

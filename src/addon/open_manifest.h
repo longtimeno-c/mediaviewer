@@ -52,7 +52,9 @@ inline constexpr int kOpenManifestSchema = 2;
 //      host scrolls it into view and marks it. A tree that uses it asks for 9.
 //  10  2026-10-28: a surface's `glow` and a progress bar's "glow" look
 //      (Enhance's sheet). No new point: a tree that uses them asks for 10.
-inline constexpr std::uint32_t kContributionApi = 10;
+//  11  2026-11-02: `editor_items`, buttons in the Video Editor's bar that hand
+//      the add-on the clip and the edit's kept ranges (Enhance).
+inline constexpr std::uint32_t kContributionApi = 11;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;
@@ -66,7 +68,7 @@ struct contribution_point {
   std::string_view key;  // the key under `contributes`
   std::uint32_t api;     // the contribution API that introduces it
 };
-inline constexpr std::array<contribution_point, 12> kContributionPoints{{
+inline constexpr std::array<contribution_point, 13> kContributionPoints{{
     {"themes", 1},
     {"settings", 2},
     {"keymaps", 2},
@@ -79,6 +81,7 @@ inline constexpr std::array<contribution_point, 12> kContributionPoints{{
     {"context_menu", 5},
     {"status_items", 5},
     {"tile_badges", 5},
+    {"editor_items", 11},
 }};
 
 // The API that introduces `key` under `contributes`, or 0 if §7 names no

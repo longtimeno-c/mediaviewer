@@ -55,6 +55,20 @@ final class VideoEditorStore: ObservableObject {
   @Published private(set) var markIn: Int64 = -1
   @Published private(set) var markOut: Int64 = -1
   @Published private(set) var fps: Double = 0
+  // The look (docs/plans/video-editor-look.md): turn, mirror, crop.
+  @Published private(set) var lookTurns = 0
+  @Published private(set) var lookMirror = 0
+  @Published private(set) var lookCrop = 0
+  @Published private(set) var lookCopyable = true
+  /// Light and colour: exposure (EV), contrast, saturation, temperature, tint.
+  @Published private(set) var light: [Float] = [0, 0, 0, 0, 0]
+  /// Sound: mute, volume (0..2), fades in seconds.
+  @Published private(set) var muted = false
+  @Published private(set) var volume: Float = 1
+  @Published private(set) var fadeIn: Float = 0
+  @Published private(set) var fadeOut: Float = 0
+  /// The edit's speed: 0.5, 1 or 2.
+  @Published private(set) var speed: Float = 1
   @Published private(set) var thumbs: [EditorThumb] = []
   @Published private(set) var peaks: [Float] = []
 
@@ -126,6 +140,17 @@ final class VideoEditorStore: ObservableObject {
     if markIn != v.mark_in_ns { markIn = v.mark_in_ns }
     if markOut != v.mark_out_ns { markOut = v.mark_out_ns }
     if fps != v.frame_rate { fps = v.frame_rate }
+    if lookTurns != Int(v.look_turns) { lookTurns = Int(v.look_turns) }
+    if lookMirror != Int(v.look_mirror) { lookMirror = Int(v.look_mirror) }
+    if lookCrop != Int(v.look_crop) { lookCrop = Int(v.look_crop) }
+    if lookCopyable != (v.look_copyable != 0) { lookCopyable = v.look_copyable != 0 }
+    let l = withUnsafeBytes(of: v.look_light) { Array($0.bindMemory(to: Float.self)) }
+    if light != l { light = l }
+    if muted != (v.look_mute != 0) { muted = v.look_mute != 0 }
+    if volume != v.look_volume { volume = v.look_volume }
+    if fadeIn != Float(v.look_fade_in_ms) / 1000 { fadeIn = Float(v.look_fade_in_ms) / 1000 }
+    if fadeOut != Float(v.look_fade_out_ms) / 1000 { fadeOut = Float(v.look_fade_out_ms) / 1000 }
+    if speed != v.look_speed { speed = v.look_speed }
     var buf = [CChar](repeating: 0, count: 1024)
     _ = mv_chrome_editor_name(&buf, Int32(buf.count))
     let newName = String(cString: buf)
@@ -192,7 +217,46 @@ final class VideoEditorStore: ObservableObject {
   func setMarkIn() { mv_chrome_editor_edit(14) }
   func setMarkOut() { mv_chrome_editor_edit(15) }
   func clearMarks() { mv_chrome_editor_edit(16) }
+  func turnLeft() { mv_chrome_editor_edit(17) }
+  func turnRight() { mv_chrome_editor_edit(18) }
+  func mirrorLeftRight() { mv_chrome_editor_edit(19) }
+  func mirrorUpsideDown() { mv_chrome_editor_edit(20) }
+  /// 0 original, 1 16:9, 2 9:16, 3 1:1, 4 4:3, 5 4:5.
+  func crop(_ ratio: Int) { mv_chrome_editor_edit(Int32(21 + ratio)) }
+  func saveFrame() { mv_chrome_editor_edit(27) }
+  func autoLight() { mv_chrome_editor_edit(28) }
+  func toggleMute() { mv_chrome_editor_edit(30) }
+  /// 0.5, 1 or 2.
+  func setSpeed(_ s: Float) { mv_chrome_editor_edit(s < 0.75 ? 31 : s < 1.5 ? 32 : 33) }
+  static func speedName(_ s: Float) -> String { s < 0.75 ? "0.5×" : s < 1.5 ? "1×" : "2×" }
+  /// param 0 volume (0..2), 1 fade in, 2 fade out (seconds); phase as setLight.
+  func setSound(_ param: Int, _ value: Float, phase: Int32) {
+    switch param {
+    case 0: volume = value
+    case 1: fadeIn = value
+    default: fadeOut = value
+    }
+    mv_chrome_editor_set_sound(Int32(param), value, phase)
+  }
+  func resetLight() { mv_chrome_editor_edit(29) }
+  /// phase 0 starts a drag (one undo step), 1 moves it, 2 ends it.
+  func setLight(_ param: Int, _ value: Float, phase: Int32) {
+    if param < light.count { light[param] = value }
+    mv_chrome_editor_set_light(Int32(param), value, phase)
+  }
+  /// The five sliders: PR 11's names, ranges and steps (edit/adjust.cpp range_of).
+  static let lightSpecs: [(name: String, min: Float, max: Float, step: Float)] = [
+    ("Exposure", -5, 5, 0.1), ("Contrast", -100, 100, 5), ("Saturation", -100, 100, 5),
+    ("Temperature", -100, 100, 5), ("Tint", -100, 100, 5),
+  ]
+  static let cropNames = ["Original", "16:9", "9:16", "1:1", "4:3", "4:5"]
   func export(exact: Bool) { mv_chrome_editor_export(exact ? 1 : 0) }
+  /// An add-on's button in the bar (editor_items: Enhance…), on the edit: the
+  /// clip on screen with the kept pieces, or the whole clip when nothing is cut.
+  func runAddon(_ item: SlotItem) {
+    guard let path = SlotTargets.path(at: FolderStore.shared.currentIndex) else { return }
+    SlotStore.shared.invokeEditor(item, path: path, ranges: edited ? pieces : [])
+  }
   func close() { mv_chrome_editor_close() }
   func shuttle(_ key: Int32, _ phase: Int32) { mv_chrome_editor_shuttle(key, phase) }
   func trimBegin(_ index: Int, inEdge: Bool) -> Bool { mv_chrome_editor_trim_begin(Int32(index), inEdge ? 0 : 1) }
@@ -250,7 +314,7 @@ struct VideoEditorView: View {
         .frame(maxWidth: .infinity)
       }
       HStack {
-        Text("Space play · ← → frame · J K L shuttle · I O mark · X clear · [ ] trim · ⌘B split · ⌫ delete · ⌘Z undo · ⌘E export")
+        Text("Space play · ← → frame · J K L shuttle · I O mark · X clear · [ ] trim · ⌘B split · ⌫ delete · ⌘Z undo · ⇧⌘S save frame · ⌘E export")
           .font(MVTheme.font(12))
           .foregroundStyle(MVTheme.body)
         Spacer()
@@ -283,7 +347,7 @@ struct VideoEditorView: View {
       store.shuttle(key, phase)
       return .handled
     }
-    .onKeyPress(characters: .init(charactersIn: "iobezxIOBEZX[]")) { press in
+    .onKeyPress(characters: .init(charactersIn: "iobezxsIOBEZXS[]")) { press in
       let cmd = press.modifiers.contains(.command)
       switch press.characters.lowercased() {
       case "i" where !cmd: store.setMarkIn()
@@ -294,6 +358,7 @@ struct VideoEditorView: View {
       case "b" where cmd: store.split()
       case "e" where cmd: store.export(exact: press.modifiers.contains(.shift))
       case "z" where cmd: press.modifiers.contains(.shift) ? store.redo() : store.undo()
+      case "s" where cmd && press.modifiers.contains(.shift): store.saveFrame()
       default: return .ignored
       }
       return .handled
@@ -323,10 +388,63 @@ struct VideoEditorView: View {
       divider
       Button("Undo") { store.undo() }.disabled(!store.canUndo).help("Undo (⌘Z)")
       Button("Redo") { store.redo() }.disabled(!store.canRedo).help("Redo (⇧⌘Z)")
+      divider
+      Button { store.turnLeft() } label: { Image(systemName: "rotate.left") }
+        .help("Turn left").accessibilityLabel("Turn left")
+      Button { store.turnRight() } label: { Image(systemName: "rotate.right") }
+        .help("Turn right").accessibilityLabel("Turn right")
+      Menu {
+        Button("Mirror left to right") { store.mirrorLeftRight() }
+        Button("Mirror upside down") { store.mirrorUpsideDown() }
+        Divider()
+        ForEach(0..<VideoEditorStore.cropNames.count, id: \.self) { i in
+          Button {
+            store.crop(i)
+          } label: {
+            if store.lookCrop == i {
+              Label(VideoEditorStore.cropNames[i], systemImage: "checkmark")
+            } else {
+              Text(VideoEditorStore.cropNames[i])
+            }
+          }
+        }
+      } label: {
+        Image(systemName: "crop")
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .help("Mirror and crop the whole clip")
+      .accessibilityLabel("Mirror and crop")
+      EditorLightButton(store: store)
+      EditorSoundButton(store: store)
+      Menu {
+        ForEach([Float(0.5), 1, 2], id: \.self) { s in
+          Button {
+            store.setSpeed(s)
+          } label: {
+            if store.speed == s {
+              Label(VideoEditorStore.speedName(s), systemImage: "checkmark")
+            } else {
+              Text(VideoEditorStore.speedName(s))
+            }
+          }
+        }
+      } label: {
+        Text(VideoEditorStore.speedName(store.speed))
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .help("Speed of the whole clip: playback and Export exact")
+      .accessibilityLabel("Speed")
+      Button { store.saveFrame() } label: { Image(systemName: "camera") }
+        .help("Save this frame as a photo (⇧⌘S)").accessibilityLabel("Save frame")
       Spacer(minLength: MVTheme.space(8))
+      EditorAddonItems(store: store)
       Button("Export") { store.export(exact: false) }
-        .disabled(!store.edited)
-        .help("Write the edit as a new file, cut on keyframes: instant, no quality loss (⌘E)")
+        .disabled(!store.edited || !store.lookCopyable)
+        .help(store.lookCopyable
+          ? "Write the edit as a new file, cut on keyframes: instant, no quality loss (⌘E)"
+          : "Crop, mirror, colour, sound and speed need Export exact")
       Button("Export exact") { store.export(exact: true) }
         .disabled(!store.edited)
         .help("Frame-accurate: re-encoded on the hardware encoder, slower (⇧⌘E)")
@@ -338,6 +456,26 @@ struct VideoEditorView: View {
 
   private var divider: some View {
     Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, MVTheme.space(6))
+  }
+}
+
+/// Add-ons' buttons in the bar (editor_items, contribution API 11): Enhance….
+/// Each runs on the edit, never the clip itself; none shows without one.
+struct EditorAddonItems: View {
+  @ObservedObject var store: VideoEditorStore
+  @ObservedObject private var slots = SlotStore.shared
+
+  var body: some View {
+    let items = slots.items(in: "editor")
+    if !items.isEmpty {
+      ForEach(items) { item in
+        Button(item.label) { store.runAddon(item) }
+          .disabled(!store.ready)
+          .help(store.edited ? "\(item.label.replacingOccurrences(of: "…", with: "")) the edit as a new clip; the original is not changed"
+                             : "\(item.label.replacingOccurrences(of: "…", with: "")) the clip as a new clip; the original is not changed")
+      }
+      Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, MVTheme.space(6))
+    }
   }
 }
 
@@ -608,5 +746,91 @@ private struct EditorPlayhead: View {
       ctx.fill(head, with: .color(.red))
     }
     .allowsHitTesting(false)
+  }
+}
+
+/// Light and colour for the whole clip (docs/plans/video-editor-look.md
+/// slice 2): PR 11's five sliders, Auto (auto tone on the frame at the
+/// playhead) and Reset, in a popover. The preview follows as a slider moves;
+/// a drag is one undo step.
+struct EditorLightButton: View {
+  @ObservedObject var store: VideoEditorStore
+  @State private var shown = false
+
+  var body: some View {
+    Button { shown.toggle() } label: { Image(systemName: "sun.max") }
+      .help("Light and colour for the whole clip").accessibilityLabel("Light and colour")
+      .popover(isPresented: $shown, arrowEdge: .bottom) {
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+          ForEach(0..<VideoEditorStore.lightSpecs.count, id: \.self) { i in
+            let spec = VideoEditorStore.lightSpecs[i]
+            VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+              HStack {
+                Text(spec.name).font(MVTheme.font(13))
+                Spacer()
+                Text(i == 0 ? String(format: "%+.1f", store.light[i]) : String(format: "%+.0f", store.light[i]))
+                  .font(MVTheme.font(12)).monospacedDigit()
+              }
+              Slider(value: Binding(get: { store.light[i] },
+                                    set: { store.setLight(i, $0, phase: 1) }),
+                     in: spec.min...spec.max, step: spec.step) { editing in
+                store.setLight(i, store.light[i], phase: editing ? 0 : 2)
+              }
+              .accessibilityLabel(spec.name)
+            }
+          }
+          HStack {
+            Button("Auto") { store.autoLight() }.help("Exposure and contrast from the frame on screen")
+            Spacer()
+            Button("Reset") { store.resetLight() }.disabled(store.light.allSatisfy { $0 == 0 })
+          }
+        }
+        .padding(MVTheme.space(14))
+        .frame(width: 280)
+      }
+  }
+}
+
+/// The edit's sound (docs/plans/video-editor-look.md slice 3): mute, volume
+/// and fades on the program's start and end. Playback hears them; Export
+/// exact writes them (Export on keyframes carries mute only).
+struct EditorSoundButton: View {
+  @ObservedObject var store: VideoEditorStore
+  @State private var shown = false
+
+  private func row(_ name: String, _ readout: String, _ value: Float, _ range: ClosedRange<Float>,
+                   _ step: Float, _ param: Int) -> some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+      HStack {
+        Text(name).font(MVTheme.font(13))
+        Spacer()
+        Text(readout).font(MVTheme.font(12)).monospacedDigit()
+      }
+      Slider(value: Binding(get: { value }, set: { store.setSound(param, $0, phase: 1) }),
+             in: range, step: step) { editing in
+        store.setSound(param, value, phase: editing ? 0 : 2)
+      }
+      .accessibilityLabel(name)
+    }
+  }
+
+  var body: some View {
+    Button { shown.toggle() } label: {
+      Image(systemName: store.muted ? "speaker.slash" : "speaker.wave.2")
+    }
+    .help("Sound for the whole clip").accessibilityLabel("Sound")
+    .popover(isPresented: $shown, arrowEdge: .bottom) {
+      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+        Toggle("Mute", isOn: Binding(get: { store.muted }, set: { _ in store.toggleMute() }))
+        row("Volume", String(format: "%.0f %%", store.volume * 100), store.volume, 0...2, 0.05, 0)
+          .disabled(store.muted)
+        row("Fade in", String(format: "%.1f s", store.fadeIn), store.fadeIn, 0...5, 0.1, 1)
+          .disabled(store.muted)
+        row("Fade out", String(format: "%.1f s", store.fadeOut), store.fadeOut, 0...5, 0.1, 2)
+          .disabled(store.muted)
+      }
+      .padding(MVTheme.space(14))
+      .frame(width: 260)
+    }
   }
 }
