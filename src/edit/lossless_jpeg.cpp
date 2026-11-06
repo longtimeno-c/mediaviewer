@@ -53,7 +53,7 @@ std::uint32_t div_up(std::uint64_t v, std::uint64_t d) noexcept {
 // Markers into the output, under `policy`. EXIF/XMP are patched in place in
 // the source's saved copy (it is ours; the decompressor is done with it).
 void write_markers(j_decompress_ptr src, j_compress_ptr dst, metadata_policy policy,
-                   bool rotated, std::uint32_t out_w, std::uint32_t out_h) {
+                   bool rotated, std::uint32_t out_w, std::uint32_t out_h, const resolution& stated) {
   for (jpeg_saved_marker_ptr m = src->marker_list; m != nullptr; m = m->next) {
     const bool is_icc = m->marker == JPEG_APP0 + 2 && starts_with(m, kIccNs, sizeof(kIccNs));
     if (m->marker == JPEG_APP0 && dst->write_JFIF_header && starts_with(m, "JFIF", 5)) continue;
@@ -65,6 +65,9 @@ void write_markers(j_decompress_ptr src, j_compress_ptr dst, metadata_policy pol
       (void)codec::exif_set_orientation(tiff, 1);
       (void)codec::exif_set_pixel_dimensions(tiff, out_w, out_h);
       if (rotated) (void)codec::exif_drop_thumbnail(tiff);
+      if (stated.stated()) {
+        (void)codec::exif_set_resolution(tiff, stated.ppi, stated.unit == resolution_unit::per_cm);
+      }
       if (policy == metadata_policy::minus_gps && !codec::exif_strip_gps(tiff)) continue;
     } else if (m->marker == JPEG_APP0 + 1 && starts_with(m, kXmpNs, sizeof(kXmpNs))) {
       std::span<std::uint8_t> xmp(m->data + sizeof(kXmpNs), m->data_length - sizeof(kXmpNs));
@@ -269,6 +272,15 @@ result<std::vector<std::uint8_t>> transform(std::span<const std::uint8_t> jpeg,
     }
   }
   dst.optimize_coding = TRUE;
+  if (req.stated.stated()) {
+    const bool cm = req.stated.unit == resolution_unit::per_cm;
+    double d = resolution_in(req.stated.ppi, req.stated.unit);
+    d = d < 1.0 ? 1.0 : (d > 65535.0 ? 65535.0 : d);
+    dst.write_JFIF_header = TRUE;
+    dst.density_unit = static_cast<UINT8>(cm ? 2 : 1);
+    dst.X_density = static_cast<UINT16>(d + 0.5);
+    dst.Y_density = dst.X_density;
+  }
   if (src.progressive_mode) jpeg_simple_progression(&dst);
 
   // Rearrange: output block (ox, oy) of the crop → block of the full
@@ -311,7 +323,7 @@ result<std::vector<std::uint8_t>> transform(std::span<const std::uint8_t> jpeg,
 
   jpeg_write_coefficients(&dst, dst_arrays);
   const bool rotated = !req.transform.identity() || req.crop_w != 0;
-  write_markers(&src, &dst, req.policy, rotated, out_w, out_h);
+  write_markers(&src, &dst, req.policy, rotated, out_w, out_h, req.stated);
   jpeg_finish_compress(&dst);
   jpeg_destroy_compress(&dst);
   dst_created = false;
