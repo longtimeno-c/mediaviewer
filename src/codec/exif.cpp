@@ -3,6 +3,7 @@
 #include "codec/exif.h"
 
 #include <cstring>
+#include <initializer_list>
 
 namespace mv::codec {
 namespace {
@@ -12,9 +13,13 @@ constexpr std::uint16_t kTagExifIfd = 0x8769;
 constexpr std::uint16_t kTagGpsIfd = 0x8825;
 constexpr std::uint16_t kTagPixelX = 0xA002;
 constexpr std::uint16_t kTagPixelY = 0xA003;
+constexpr std::uint16_t kTagXResolution = 0x011A;
+constexpr std::uint16_t kTagYResolution = 0x011B;
+constexpr std::uint16_t kTagResolutionUnit = 0x0128;
 
 constexpr std::uint16_t kTypeShort = 3;
 constexpr std::uint16_t kTypeLong = 4;
+constexpr std::uint16_t kTypeRational = 5;
 
 constexpr char kXmpNamespace[] = "http://ns.adobe.com/xap/1.0/";  // + NUL
 
@@ -134,6 +139,33 @@ std::optional<byte_range> find_app1(std::span<const std::uint8_t> jpeg, const ch
   return std::nullopt;
 }
 
+// The out-of-line 8 bytes of a one-value RATIONAL entry, if it is one.
+std::optional<std::size_t> rational_at(const tiff_view& v, std::size_t entry) noexcept {
+  if (v.u16(entry + 2) != kTypeRational || v.u32(entry + 4) != 1) return std::nullopt;
+  const std::uint32_t off = v.u32(entry + 8);
+  if (!v.has(off, 8)) return std::nullopt;
+  return off;
+}
+
+double read_rational(const tiff_view& v, std::size_t off) noexcept {
+  const std::uint32_t den = v.u32(off + 4);
+  return den == 0 ? 0.0 : static_cast<double>(v.u32(off)) / den;
+}
+
+// A whole value as n/1, else to 1/10000.
+void write_rational(const tiff_view& v, std::size_t off, double value) noexcept {
+  if (!(value > 0.0)) value = 1.0;
+  if (value > 400000.0) value = 400000.0;
+  const double whole = static_cast<double>(static_cast<std::uint64_t>(value + 0.5));
+  if (value - whole < 1e-6 && whole - value < 1e-6) {
+    v.put32(off, static_cast<std::uint32_t>(whole));
+    v.put32(off + 4, 1);
+  } else {
+    v.put32(off, static_cast<std::uint32_t>(value * 10000.0 + 0.5));
+    v.put32(off + 4, 10000);
+  }
+}
+
 }  // namespace
 
 std::optional<byte_range> find_jpeg_exif(std::span<const std::uint8_t> jpeg) noexcept {
@@ -179,6 +211,82 @@ bool exif_set_pixel_dimensions(std::span<std::uint8_t> tiff, std::uint32_t width
   if (const auto x = find_entry(*v, exif_ifd, kTagPixelX)) ok = put_scalar(*v, *x, width) && ok;
   if (const auto y = find_entry(*v, exif_ifd, kTagPixelY)) ok = put_scalar(*v, *y, height) && ok;
   return ok;
+}
+
+std::optional<exif_resolution_tags> exif_resolution(std::span<const std::uint8_t> tiff) noexcept {
+  const auto v = open_tiff(tiff);
+  if (!v) return std::nullopt;
+  const std::uint32_t ifd0 = v->u32(4);
+  const auto xe = find_entry(*v, ifd0, kTagXResolution);
+  const auto ye = find_entry(*v, ifd0, kTagYResolution);
+  if (!xe || !ye) return std::nullopt;
+  const auto xo = rational_at(*v, *xe);
+  const auto yo = rational_at(*v, *ye);
+  if (!xo || !yo) return std::nullopt;
+  exif_resolution_tags r;
+  r.x = read_rational(*v, *xo);
+  r.y = read_rational(*v, *yo);
+  if (const auto ue = find_entry(*v, ifd0, kTagResolutionUnit)) {
+    if (v->u16(*ue + 2) != kTypeShort) return std::nullopt;
+    r.unit = v->u16(*ue + 8);
+  }
+  if (r.unit != 2 && r.unit != 3) return std::nullopt;
+  if (!(r.x > 0.0) || !(r.y > 0.0)) return std::nullopt;
+  return r;
+}
+
+bool exif_set_resolution(std::span<std::uint8_t> tiff, double ppi, bool per_cm) noexcept {
+  const auto v = open_tiff(tiff);
+  if (!v) return false;
+  const std::uint32_t ifd0 = v->u32(4);
+  if (!v->has(ifd0, 2) || !v->has(ifd0 + 2ull, 12ull * v->u16(ifd0))) return false;
+  const auto ue = find_entry(*v, ifd0, kTagResolutionUnit);
+  const bool cm = per_cm && ue.has_value();
+  const double value = cm ? ppi / 2.54 : ppi;
+  bool ok = true;
+  for (const std::uint16_t tag : {kTagXResolution, kTagYResolution}) {
+    const auto e = find_entry(*v, ifd0, tag);
+    if (!e) continue;
+    const auto off = rational_at(*v, *e);
+    if (!off) {
+      ok = false;
+      continue;
+    }
+    write_rational(*v, *off, value);
+  }
+  if (ue) ok = put_scalar(*v, *ue, cm ? 3u : 2u) && ok;
+  return ok;
+}
+
+std::optional<jfif_density> jpeg_jfif_density(std::span<const std::uint8_t> jpeg) noexcept {
+  if (jpeg.size() < 4 || jpeg[0] != 0xFF || jpeg[1] != 0xD8) return std::nullopt;
+  std::size_t p = 2;
+  while (p + 4 <= jpeg.size()) {
+    if (jpeg[p] != 0xFF) return std::nullopt;
+    const std::uint8_t marker = jpeg[p + 1];
+    if (marker == 0xFF) {  // fill byte
+      ++p;
+      continue;
+    }
+    if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+      p += 2;
+      continue;
+    }
+    if (marker == 0xDA || marker == 0xD9) return std::nullopt;
+    const std::size_t len = static_cast<std::size_t>(jpeg[p + 2] << 8 | jpeg[p + 3]);
+    if (len < 2 || p + 2 + len > jpeg.size()) return std::nullopt;
+    // Length (2), "JFIF" NUL (5), version (2), units (1), X, Y density (2 + 2).
+    if (marker == 0xE0 && len >= 14 && std::memcmp(jpeg.data() + p + 4, "JFIF", 5) == 0) {
+      const std::uint8_t* d = jpeg.data() + p + 4 + 5 + 2;
+      jfif_density r;
+      r.unit = d[0];
+      r.x = static_cast<std::uint16_t>(d[1] << 8 | d[2]);
+      r.y = static_cast<std::uint16_t>(d[3] << 8 | d[4]);
+      return r;
+    }
+    p += 2 + len;
+  }
+  return std::nullopt;
 }
 
 bool exif_has_gps(std::span<const std::uint8_t> tiff) noexcept {

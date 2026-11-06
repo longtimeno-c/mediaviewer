@@ -439,6 +439,7 @@ add_library(mv_edit STATIC
   src/edit/clip_auto_light.h
   src/edit/adjust.h
   src/edit/auto_adjust.cpp
+  src/edit/adjust_size.h
   src/edit/auto_tone.cpp
   src/edit/auto_tone.h
   src/edit/bake.cpp
@@ -969,6 +970,9 @@ if(MV_BUILD_TESTS)
     tests/test_meta_writer_queue.cpp
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
+    # #288: Adjust Size (maths, stack resolution, JFIF / pHYs / EXIF).
+    tests/test_adjust_size.cpp
+    tests/test_adjust_size_export.cpp
     tests/test_edit_session.cpp
     # Issue #614: ⌘P's paper layout.
     tests/test_print_layout.cpp
