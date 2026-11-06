@@ -54,11 +54,14 @@ inline constexpr int kOpenManifestSchema = 2;
 //      (Enhance's sheet). No new point: a tree that uses them asks for 10.
 //  11  2026-11-02: `editor_items`, buttons in the Video Editor's bar that hand
 //      the add-on the clip and the edit's kept ranges (Enhance).
-//  12  2026-11-04: a screen in place "edit", docked in the Edit workspace's
+//  12  2026-11-04: a `surface` with "fill" (it takes its parent's room and the
+//      chrome reports the size, MV_SLOT_EVENT_RESIZE): the Places world map.
+//      No new point: a tree that uses it asks for 12.
+//  13  2026-11-04: a screen in place "edit", docked in the Edit workspace's
 //      Enhance tab (Enhance's tools, docs/plans/edit-refresh.md S5). No new point.
-//  13  2026-11-05: a progress bar's `detail` ("48 of 161 MB") and `timed` (the
+//  14  2026-11-05: a progress bar's `detail` ("48 of 161 MB") and `timed` (the
 //      host says the time left), the one progress line (docs/design/20). No new point.
-inline constexpr std::uint32_t kContributionApi = 13;
+inline constexpr std::uint32_t kContributionApi = 14;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

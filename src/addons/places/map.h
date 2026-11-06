@@ -67,6 +67,9 @@ struct map_palette {
 // town scale, and no further: the data has towns, coasts to ~1 km and
 // borders to ~250 m, but no streets.
 inline constexpr double k_max_span_deg = 40.0;  // country / a whole region of the world
+// The world map's widest: 360 degrees of the Mercator y at the equator, the
+// whole world's height (to 85 degrees) on a square picture.
+inline constexpr double k_world_span_deg = 360.0;
 inline constexpr double k_min_span_deg = 0.2;   // town scale (~22 km tall)
 // The steps the -/+ buttons and the framing use (each half the last). Step 0
 // is country scale; region scale is 1.2 degrees; the last two are town scale.
@@ -92,10 +95,18 @@ struct map_view {
   std::uint32_t width = 0;   // pixels
   std::uint32_t height = 0;  // pixels
   float scale = 1;           // backing scale: line widths and the corner radius are in points
-  double span_deg = 2.25;    // k_min_span_deg .. k_max_span_deg
+  double span_deg = 2.25;    // k_min_span_deg .. max_span_deg
+  // The widest span this view may take: the Place section's k_max_span_deg;
+  // the world map's window (docs/plans/places-world-map.md) raises it so the
+  // whole world fits (at most k_world_span_deg).
+  double max_span_deg = k_max_span_deg;
 };
 
 [[nodiscard]] double clamp_span(double span_deg) noexcept;
+// The same within [k_min_span_deg, max_span_deg] (a non-finite or too small
+// max is k_max_span_deg; at most k_world_span_deg).
+[[nodiscard]] double clamp_span(double span_deg, double max_span_deg) noexcept;
+[[nodiscard]] inline double clamp_span(const map_view& v) noexcept { return clamp_span(v.span_deg, v.max_span_deg); }
 
 // The step that frames the point's region (or, with none, its country) with a
 // margin: what the map opens at. Clamped to the region step at most.
@@ -126,10 +137,14 @@ void map_point(const map_view& v, double x, double y, double& lat, double& lon) 
 // at normalised p of `v`'s picture now shows at anchor + (p - anchor) * scale
 // + pan. The result keeps the pixel scale the gesture showed (exact, so the
 // re-rendered picture lands where the live transform left it), then is
-// clamped: span to [k_min_span_deg, k_max_span_deg], and the centre so that
+// clamped: span to [k_min_span_deg, v.max_span_deg], and the centre so that
 // (pin_lat, pin_lon), the photo's point, stays on the picture with a margin.
 [[nodiscard]] map_view apply_gesture(const map_view& v, double scale, double anchor_x, double anchor_y, double pan_x,
                                      double pan_y, double pin_lat, double pin_lon) noexcept;
+// The same gesture with no pin to keep: span clamped to the view's
+// max_span_deg, centre latitude to +/-80 degrees (the world map's window).
+[[nodiscard]] map_view apply_view_gesture(const map_view& v, double scale, double anchor_x, double anchor_y,
+                                          double pan_x, double pan_y) noexcept;
 // Keeps (pin_lat, pin_lon) within [margin, 1 - margin] of the picture.
 [[nodiscard]] map_view keep_pin_in_view(const map_view& v, double pin_lat, double pin_lon,
                                         double margin = 0.08) noexcept;

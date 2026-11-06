@@ -24,14 +24,15 @@ namespace mv::addon {
 // the add-on's own page in Settings -> Add-ons, 9 = `reveal` on a screen stack
 // (2026-10-28): the host scrolls it into view and marks it, 10 = a surface's
 // `glow` and a progress bar's "glow" look (2026-10-28, Enhance), 11 =
-// `editor_items`, the Video Editor's bar (2026-11-02, Enhance), 12 = a
-// screen in place "edit" (2026-11-04, docs/plans/edit-refresh.md S5): docked
+// `editor_items`, the Video Editor's bar (2026-11-02, Enhance), 12 = a surface
+// with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04, the Places world map), 13 =
+// a screen in place "edit" (2026-11-04, docs/plans/edit-refresh.md S5): docked
 // in the Edit workspace's Enhance tab, and a `choice` option's "disabled"
-// (2026-11-04, S9: listed, never chosen), 13 = a progress bar's `detail` and
+// (2026-11-04, S9: listed, never chosen), 14 = a progress bar's `detail` and
 // `timed` (2026-11-05, docs/design/20 "Craft rules"). Points of an
 // API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 13;
+inline constexpr std::uint32_t kSlotsContributionApi = 14;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".
@@ -40,8 +41,9 @@ inline constexpr std::uint32_t kScreensApi = 4;
 inline constexpr std::uint32_t kSlotsApi = 5;
 // The contribution API that introduces `editor_items`.
 inline constexpr std::uint32_t kEditorItemsApi = 11;
-// The contribution API from which a screen may be in place "edit".
-inline constexpr std::uint32_t kEditScreenApi = 12;
+// The contribution API from which a screen may be in place "edit" (13 since the
+// merge with main's 12, the Places world map's "fill").
+inline constexpr std::uint32_t kEditScreenApi = 13;
 // The host function table version that carries the screen / slot calls
 // (mediaviewer_addon.h, v3). A manifest naming a point needs host_api.min >= this.
 inline constexpr std::uint32_t kSlotsHostApi = 3;

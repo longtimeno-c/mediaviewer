@@ -199,6 +199,11 @@ typedef enum mv_ai_photos_access {
 
 /* Sharing an index (2026-09-28, docs/design/17 "Sharing an index"): what an export
  * carries besides the index rows, and what an import takes from a file. */
+#define MV_AI_DRY_RUN 1u               /* person_refine_json / people_dedupe_json: look first */
+#define MV_AI_ASSIGN_PIN 1u            /* faces_assign: the faces become the user's */
+#define MV_AI_ASSIGN_UNDO 2u           /* faces_assign: an undo, putting faces back where they
+                                          were: nothing is recorded against where they are
+                                          now, and person 0 leaves them unassigned */
 #define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
                                           then identifies the people in it. Off by default */
 #define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
@@ -689,6 +694,94 @@ typedef struct mv_ai_api {
    * the pointer is non-NULL. [worker-thread] */
   mv_status(MV_CALL* eyes_json)(void* ctx, const char* path_utf8, const char* candidates_utf8, char* out,
                                 uint32_t cap, uint32_t* needed);
+  /* ---- correcting people (2026-11-02, docs/design/17 "Correcting people") ---------- */
+  /* Appended: read each only when `struct_size` covers it and the pointer is
+   * non-NULL. Every write posts MV_ADDON_EVENT_AI_PEOPLE. */
+  /* "Move to": these faces are `person_id` (an existing person): each leaves
+   * the person it was in for good (as "not this person"), and any "not this
+   * person" from `person_id` is withdrawn. MV_AI_ASSIGN_PIN makes them the
+   * user's: anchors the refinement never moves. MV_AI_ASSIGN_UNDO is a
+   * chrome's Undo of its last action (a move, a reject, a Yes on an unknown
+   * face): the faces go back with no "not this person" recorded against
+   * where they are now, and `person_id` 0 returns them to nobody.
+   * MV_ERR_INVALID_ARG for a face or person that does not exist. [worker-thread] */
+  mv_status(MV_CALL* faces_assign)(void* ctx, const uint64_t* face_ids, uint32_t count, uint64_t person_id,
+                                   uint32_t flags);
+  /* "Yes, this is <name>" (1) / "Unpin" (0): a face's place becomes the
+   * user's, or not. Faces filed under nobody are left alone. [worker-thread] */
+  mv_status(MV_CALL* faces_pin)(void* ctx, const uint64_t* face_ids, uint32_t count, uint32_t pinned);
+  /* face_reject for several faces at once, and what became of them: each
+   * leaves its person for good, with the frames of the same clip in that
+   * person that are the same face, and is filed under another existing
+   * person it clearly matches, else nobody (never a new person of its own).
+   * {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}],
+   *  "faces":[{"face":9,"from":3,"to":7,"pinned":false}]}
+   * ("spread": frames that went with them; "faces": every face that left,
+   * those frames included, with the person it left and whether it was
+   * pinned, so an Undo can put each back with faces_assign and
+   * MV_AI_ASSIGN_UNDO). [worker-thread] */
+  mv_status(MV_CALL* faces_reject_json)(void* ctx, const uint64_t* face_ids, uint32_t count, char* out,
+                                        uint32_t cap, uint32_t* needed);
+  /* person_rename, pinning `cover_face` (0: the grid's cover), the face the
+   * user saw when naming, unless it is not this person's or too poor to be
+   * an anchor. [worker-thread] */
+  mv_status(MV_CALL* person_rename_cover)(void* ctx, uint64_t person_id, const char* name_utf8,
+                                          uint64_t cover_face);
+  /* person_merge with the covers the user saw (0: the grid's), and a token
+   * person_merge_undo takes (`out_undo` may be NULL). [worker-thread] */
+  mv_status(MV_CALL* person_merge_covers)(void* ctx, uint64_t into_id, uint64_t from_id, uint64_t cover_into,
+                                          uint64_t cover_from, uint64_t* out_undo);
+  /* Puts a merge of this session back: the faces still in `into` return to
+   * the person they came from, with its id, name, pins and corrections.
+   * MV_ERR_NOT_FOUND when it can no longer be undone. [worker-thread] */
+  mv_status(MV_CALL* person_merge_undo)(void* ctx, uint64_t token);
+  /* A person's faces for its sheet, doubtful first:
+   * [{"face":9,"path":"...","pts_ms":-1,"box":[x,y,w,h],"score":0.9,"pinned":false,
+   *   "quality":0.6,"support":0.42,"rival":0.31,"rival_id":12,"rival_name":"Ben",
+   *   "check":true,"doubtful_pin":false}]
+   * support: how well the person's own faces vouch for it (-1: nothing to go
+   * by); rival: the best other person's (-1: nobody near); check: worth the
+   * user's look (low or contested support, or a pin that agrees with none of
+   * the person's other pins). [worker-thread] */
+  mv_status(MV_CALL* person_review_json)(void* ctx, uint64_t person_id, char* out, uint32_t cap,
+                                         uint32_t* needed);
+  /* Unknown faces: unassigned faces clear enough to name, in the order the
+   * user answers best: suggested for a named person first (surest first),
+   * then for anyone, then the clearest; each with the person it most
+   * resembles (0: nobody near). The order is kept between pages until the
+   * people change.
+   * {"total":N,"faces":[{"face":..,"path":..,"pts_ms":..,"box":[..],"quality":..,
+   *   "suggest":7,"suggest_name":"Anna","score":0.27}]}  `limit` <= 200. [worker-thread] */
+  mv_status(MV_CALL* unknown_faces_json)(void* ctx, uint32_t offset, uint32_t limit, char* out, uint32_t cap,
+                                         uint32_t* needed);
+  /* "Might also be <name>": unnamed people and unknown faces that resemble
+   * this person, best first, at most `limit` of each; never one kept apart
+   * from it (a split, a rejection, a photo together).
+   * {"people":[{"id":..,"score":..,"faces":N,"cover_face":..,"cover_path":..,
+   *   "cover_ms":..,"cover_box":[..]}],"faces":[{"face":..,..,"score":..}]} [worker-thread] */
+  mv_status(MV_CALL* person_suggest_json)(void* ctx, uint64_t person_id, uint32_t limit, char* out, uint32_t cap,
+                                          uint32_t* needed);
+
+  /* ---- Refine / Merge duplicates in detail (2026-11-02, docs/design/17) ------------ */
+  /* person_refine, saying which faces left and where. MV_AI_DRY_RUN looks
+   * first: nothing changes, and a face that would start a new person names
+   * its "group" (1..). For real, "to" is the person each face went to (0:
+   * nobody); an Undo puts each back with faces_assign(MV_AI_ASSIGN_UNDO).
+   * {"dry":false,"removed":N,"faces":[{"face":..,"path":..,"pts_ms":..,"box":[..],
+   *   "why":"move|evict|regroup","to":7,"group":0,"to_name":"Ben"}]}
+   * A real run's answer is kept for the buffer retry (it is not run twice).
+   * Appended: check struct_size. [worker-thread] */
+  mv_status(MV_CALL* person_refine_json)(void* ctx, uint64_t person_id, uint32_t flags, char* out, uint32_t cap,
+                                         uint32_t* needed);
+  /* people_dedupe, saying who merges into whom. MV_AI_DRY_RUN looks first
+   * (nothing changes; the faces the check would move are counted, not
+   * moved). For real, each merged person carries an "undo" token for
+   * person_merge_undo.
+   * {"dry":true,"merged":N,"moved":N,"merges":[{"into":3,"into_name":"Anna","into_faces":40,
+   *   "cover_face":..,"cover_path":..,"cover_ms":..,"cover_box":[..],
+   *   "from":[{"id":9,"name":"","faces":4,"cover_face":..,..,"undo":0}]}]}
+   * Appended: check struct_size. [worker-thread] */
+  mv_status(MV_CALL* people_dedupe_json)(void* ctx, uint32_t flags, char* out, uint32_t cap, uint32_t* needed);
 
   /* ---- faces of a picture (docs/plans/edit-refresh.md S10, Restore faces) --------- */
   /* The faces the People model finds in `rgb` (width x height, 8-bit RGB,

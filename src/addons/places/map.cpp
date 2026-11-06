@@ -85,7 +85,7 @@ struct projection {
     m0 = merc(lat0);
     // The map's height covers the span in latitude at its centre:
     // d(merc)/d(lat) = 1 / cos(lat).
-    k = v.height * std::cos(lat0 * kDeg) / (clamp_span(v.span_deg) * kDeg);
+    k = v.height * std::cos(lat0 * kDeg) / (clamp_span(v) * kDeg);
   }
   // The point under pixel (x, y).
   void inverse(double x, double y, double& lat, double& lon) const noexcept {
@@ -530,13 +530,21 @@ double clamp_span(double span_deg) noexcept {
   return std::clamp(span_deg, k_min_span_deg, k_max_span_deg);
 }
 
+double clamp_span(double span_deg, double max_span_deg) noexcept {
+  const double hi = std::isfinite(max_span_deg) && max_span_deg > k_min_span_deg
+                        ? std::min(max_span_deg, k_world_span_deg)
+                        : k_max_span_deg;
+  if (!std::isfinite(span_deg)) return std::min(k_zoom_span_deg[k_region_zoom_step], hi);
+  return std::clamp(span_deg, k_min_span_deg, hi);
+}
+
 void map_point(const map_view& v, double x, double y, double& lat, double& lon) noexcept {
   projection(v).inverse(x, y, lat, lon);
 }
 
 map_view keep_pin_in_view(const map_view& v, double pin_lat, double pin_lon, double margin) noexcept {
   map_view out = v;
-  out.span_deg = clamp_span(out.span_deg);
+  out.span_deg = clamp_span(out);
   out.lat = std::clamp(out.lat, -80.0, 80.0);
   if (v.width == 0 || v.height == 0) return out;
   double x = 0, y = 0;
@@ -553,16 +561,24 @@ map_view keep_pin_in_view(const map_view& v, double pin_lat, double pin_lon, dou
   const double k_before = std::cos(out.lat * kDeg) / out.span_deg;
   out.lat = std::clamp(lat, -80.0, 80.0);
   out.lon = lon;
-  out.span_deg = clamp_span(std::cos(out.lat * kDeg) / k_before);
+  out.span_deg = clamp_span(std::cos(out.lat * kDeg) / k_before, out.max_span_deg);
   return out;
 }
 
 map_view apply_gesture(const map_view& v, double scale, double anchor_x, double anchor_y, double pan_x, double pan_y,
                        double pin_lat, double pin_lon) noexcept {
+  return keep_pin_in_view(apply_view_gesture(v, scale, anchor_x, anchor_y, pan_x, pan_y), pin_lat, pin_lon);
+}
+
+map_view apply_view_gesture(const map_view& v, double scale, double anchor_x, double anchor_y, double pan_x,
+                            double pan_y) noexcept {
   map_view out = v;
   if (!(scale > 0) || !std::isfinite(scale) || !std::isfinite(anchor_x) || !std::isfinite(anchor_y) ||
       !std::isfinite(pan_x) || !std::isfinite(pan_y) || v.width == 0 || v.height == 0) {
-    return keep_pin_in_view(out, pin_lat, pin_lon);
+    out.span_deg = clamp_span(out);
+    out.lat = std::isfinite(out.lat) ? std::clamp(out.lat, -80.0, 80.0) : 0;
+    if (!std::isfinite(out.lon)) out.lon = 0;
+    return out;
   }
   // The old picture's point that now shows at the centre:
   // centre = a + (p - a) * s + pan  =>  p = a + (centre - pan - a) / s.
@@ -575,8 +591,8 @@ map_view apply_gesture(const map_view& v, double scale, double anchor_x, double 
   const double lat_new = std::clamp(lat, -80.0, 80.0);
   out.lat = lat_new;
   out.lon = lon;
-  out.span_deg = clamp_span(clamp_span(v.span_deg) * std::cos(lat_new * kDeg) / std::cos(lat_old * kDeg) / scale);
-  return keep_pin_in_view(out, pin_lat, pin_lon);
+  out.span_deg = clamp_span(clamp_span(v) * std::cos(lat_new * kDeg) / std::cos(lat_old * kDeg) / scale, v.max_span_deg);
+  return out;
 }
 
 bool render_map(const geo::database& db, const map_view& v, const map_palette& p, std::string_view home_country,
@@ -590,7 +606,7 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
   const float scale = v.scale > 0 ? std::min(v.scale, 8.0f) : 1.0f;
   const projection pr(v);
   const geo::box b = pr.bounds(v);
-  const double span = clamp_span(v.span_deg);
+  const double span = clamp_span(v);
 
   std::vector<std::uint32_t> countries;
   if (db.valid()) countries = db.polygons_in(geo::layer::countries, b);
@@ -722,7 +738,7 @@ std::shared_ptr<const map_image> map_cache::get(const geo::database& db, const m
   k.width = v.width;
   k.height = v.height;
   k.scale_x100 = static_cast<std::int32_t>(std::lround(v.scale * 100));
-  k.span_e6 = std::llround(clamp_span(v.span_deg) * 1e6);
+  k.span_e6 = std::llround(clamp_span(v) * 1e6);
   k.palette = p;
   k.home = std::string(home_country);
   {

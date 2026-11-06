@@ -10906,7 +10906,8 @@ bool run_session_command(app_state* app, mv::shell::command_id command) noexcept
     case search_open:
     case search_similar:
     case search_next_match:
-    case search_prev_match: {
+    case search_prev_match:
+    case search_this_person: {
       if (!mv::shell::addon_command_available(command)) {
         // Ctrl+F without the pack (docs/design/16 "File search", 2026-09-28): the
         // island opens Local search's panel once a starting pack attaches,
@@ -10920,10 +10921,12 @@ bool run_session_command(app_state* app, mv::shell::command_id command) noexcept
         }
         return answer == gallery_search_answer::took;
       }
-      const std::int32_t kind = command == search_open        ? 0
-                                : command == search_similar   ? 1
-                                : command == search_next_match ? 2
-                                                               : 3;
+      // SearchCommand's kinds (Addons.cs); 4 is the pill's "Index anyway".
+      const std::int32_t kind = command == search_open          ? 0
+                                : command == search_similar     ? 1
+                                : command == search_next_match  ? 2
+                                : command == search_prev_match  ? 3
+                                                                : 5;
       const bool video = video_mode(app);
       std::uint32_t state = MV_PLAY_STOPPED;
       if (video) (void)mv_video_state(app->session, &state);

@@ -407,9 +407,25 @@ class engine {
   [[nodiscard]] std::string people_json(const std::string& scope_dir = std::string(),
                                         std::uint32_t scope = MV_AI_SCOPE_ALL);
   [[nodiscard]] std::string person_faces_json(std::int64_t person); // [worker-thread]
-  [[nodiscard]] expected person_rename(std::int64_t person, const std::string& name);
+  [[nodiscard]] expected person_rename(std::int64_t person, const std::string& name, std::int64_t cover = 0);
   [[nodiscard]] expected person_merge(std::int64_t into, std::int64_t from);
   [[nodiscard]] expected face_reject(std::int64_t face);
+  // Correcting people (docs/design/17 "Correcting people"). [worker-thread]
+  // The user's merge, with the covers they saw; returns an undo token.
+  [[nodiscard]] result<std::int64_t> person_merge(std::int64_t into, std::int64_t from, std::int64_t cover_into,
+                                                  std::int64_t cover_from);
+  [[nodiscard]] expected person_merge_undo(std::int64_t token);
+  [[nodiscard]] expected faces_assign(const std::vector<std::int64_t>& faces, std::int64_t person, bool pin,
+                                      bool undo = false);
+  [[nodiscard]] expected faces_pin(const std::vector<std::int64_t>& faces, bool pinned);
+  // {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}]}
+  [[nodiscard]] result<std::string> faces_reject_json(const std::vector<std::int64_t>& faces);
+  // A person's faces, doubtful first, with how well the person and its rival vouch for each.
+  [[nodiscard]] std::string person_review_json(std::int64_t person);
+  // {"total":N,"faces":[...]}: unassigned usable faces, clearest first, with a suggestion.
+  [[nodiscard]] std::string unknown_faces_json(std::uint32_t offset, std::uint32_t limit);
+  // {"people":[...],"faces":[...]}: "Might also be X".
+  [[nodiscard]] std::string person_suggest_json(std::int64_t person, std::uint32_t limit);
   [[nodiscard]] result<std::int64_t> face_split(const std::vector<std::int64_t>& faces);
   // "Refine": files this person's misplaced faces out (docs/design/17 "People
   // refinement"); how many left them. Only ever on request. [worker-thread]
@@ -422,6 +438,13 @@ class engine {
     std::uint32_t moved = 0;   // faces that moved, left, joined or regrouped
   };
   [[nodiscard]] result<dedupe_result> people_dedupe();
+  // Refine / Merge duplicates in detail (docs/design/17 "Refine and Merge
+  // duplicates in detail"): `dry` looks first and changes nothing. [worker-thread]
+  // {"dry":b,"removed":N,"faces":[{face,path,pts_ms,box,"why","to","group","to_name"}]}
+  [[nodiscard]] result<std::string> person_refine_json(std::int64_t person, bool dry);
+  // {"dry":b,"merged":N,"moved":N,"merges":[{"into",.."into_name","into_faces",cover..,
+  //   "from":[{"id","name","faces",cover..,"undo"}]}]}
+  [[nodiscard]] result<std::string> people_dedupe_json(bool dry);
 
   // "Re-analyse faces" (docs/design/17 "People model"): every asset through the
   // People pass again, then one settle. [no-block]
@@ -760,6 +783,22 @@ class engine {
   // are filed into the people (a full refinement, no focus), then merged.
   // The control thread, when indexing is idle.
   void settle_people();
+  struct refine_run {
+    refine_output out;
+    refine_stats stats;  // empty for a look first
+    refine_params params;
+    std::uint32_t dim = 0;
+    std::uint64_t serial = 0;
+  };
+  // person 0: everyone (no focus).
+  [[nodiscard]] result<refine_run> refine_person_run(std::int64_t person, bool dry);
+  struct dedupe_run {
+    std::vector<std::vector<std::int64_t>> groups;      // survivor first
+    std::vector<std::vector<std::int64_t>> tokens;      // undo per merged member (0: not merged)
+    std::map<std::int64_t, person_row> rows;
+    std::uint32_t merged = 0, moved = 0;
+  };
+  [[nodiscard]] result<dedupe_run> people_dedupe_run(bool dry);
   std::atomic<bool> settling_{false};
   // Faces landed since the control loop last posted AI_PEOPLE (faces_of).
   std::atomic<bool> people_changed_{false};
@@ -902,6 +941,10 @@ class engine {
   loaded_clip answer_;  // the tower whose vectors answer queries (the active spec)
   std::uint32_t build_compute_ = MV_AI_COMPUTE_AUTO;  // the compute choice build_ opened on
   std::shared_ptr<face_analyzer> faces_model_;
+  // The unknown-faces queue in answering order, and the faces.db generation it was scored at.
+  std::mutex unknown_m_;
+  std::shared_ptr<const std::vector<loose_face>> unknown_;
+  std::uint64_t unknown_gen_ = 0;
   std::unique_ptr<faces_db> faces_;
   std::set<std::int64_t> faces_scanned_;  // under models_m_
   loaded_sound sound_;    // empty model: no ai-audio piece

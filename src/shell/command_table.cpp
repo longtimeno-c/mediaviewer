@@ -335,6 +335,8 @@ constexpr binding kBindings[] = {
     // Issue #614. Appended. Ctrl+P was free; plain P stays trim preview (kTrim
     // only). Viewing modes: the photo on screen, or the marks from the gallery.
     row(C('P'), mod_ctrl, kViewing, edge, print),
+    // docs/design/17 (2026-11-02): this person's photos, beside Find similar. Appended.
+    row(C('P'), mod_ctrl | mod_shift, kViewing, edge, search_this_person),
     // docs/plans/edit-refresh.md S1. Appended, unbound: the right column one
     // step (40) wider or narrower, from the View menu or a key the user gives
     // them in Settings. The panes' own islands too, where the column has focus.
@@ -584,6 +586,7 @@ constexpr command_info kCommands[] = {
     {adjust_levels_blue_white, "Adjust: levels blue white", true},
     {adjust_pick, "Adjust: pick on the photo", true},
     {adjust_open_eyes, "Open closed eyes", true},
+    {search_this_person, "Find this person"},
     {pane_wider, "Wider side pane"},
     {pane_narrower, "Narrower side pane"},
     {auto_enhance, "Auto enhance"},
@@ -996,6 +999,7 @@ addon_family addon_family_of(command_id id) noexcept {
     case search_similar:
     case search_next_match:
     case search_prev_match:
+    case search_this_person:
       return addon_family::ai;
     default:
       return addon_family::none;

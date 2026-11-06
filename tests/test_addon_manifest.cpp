@@ -441,7 +441,7 @@ TEST_CASE("a manifest may say what it contributes (docs/design/25)", "[addon][ma
 }
 
 // docs/plans/edit-refresh.md S5 (owner call B): a screen may be docked in the
-// Edit workspace (place "edit", contribution API 12); a place the host does
+// Edit workspace (place "edit", contribution API 13); a place the host does
 // not know is refused, never shown somewhere else.
 TEST_CASE("a screen's place may be \"edit\"; an unknown place is refused", "[addon][manifest]") {
   keypair k;
@@ -453,18 +453,18 @@ TEST_CASE("a screen's place may be \"edit\"; an unknown place is refused", "[add
                                    R"(},"screens":[{"id":"tool","title":"Tool","place":")" + place + R"("}]})");
     return out;
   };
-  const std::string ok = with("12", "edit");
+  const std::string ok = with("13", "edit");
   const auto d = mv::addon::check_manifest(bytes_of(ok), k.sign(ok), k.pub, MV_ADDON_HOST_API);
   INFO(ok);
   REQUIRE(d.trusted());
   REQUIRE(d.m.slots.screens.size() == 1);
   CHECK(d.m.slots.screens[0].place == mv::addon::screen_place::edit);
   for (const auto& [api, place] : std::vector<std::pair<std::string, std::string>>{
-           {"11", "edit"},        // written for an API before "edit"
-           {"12", "Edit"},        // places are exact
-           {"12", "inspector"},   // not a place
-           {"12", "docked"},
-           {"12", ""}}) {
+           {"12", "edit"},        // written for an API before "edit"
+           {"13", "Edit"},        // places are exact
+           {"13", "inspector"},   // not a place
+           {"13", "docked"},
+           {"13", ""}}) {
     const std::string text = with(api, place);
     INFO(text);
     CHECK(mv::addon::check_manifest(bytes_of(text), k.sign(text), k.pub, MV_ADDON_HOST_API).why ==

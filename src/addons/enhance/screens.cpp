@@ -64,7 +64,7 @@ void button(json::writer& w, const std::string& id, const std::string& label, co
   w.end_object();
 }
 
-// The one progress line (contribution API 13, docs/design/20 "Craft rules"):
+// The one progress line (contribution API 14, docs/design/20 "Craft rules"):
 // the label is the verb, `detail` stands in for the percentage ("48 of 161
 // MB"), and a `timed` bar's time left is the host's to estimate and say.
 void progress(json::writer& w, const std::string& id, const std::string& label, double value,

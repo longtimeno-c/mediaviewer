@@ -43,7 +43,7 @@ namespace mv::enhance {
 
 inline constexpr const char* kSheetScreen = "enhance";
 inline constexpr const char* kSettingsScreen = "settings";
-// S5: the docked tool panel (manifest place "edit", contribution API 12).
+// S5: the docked tool panel (manifest place "edit", contribution API 13).
 inline constexpr const char* kToolScreen = "tool";
 // The preview surface's height, in points (its width is the sheet's).
 inline constexpr std::uint32_t kPreviewHeight = 220;

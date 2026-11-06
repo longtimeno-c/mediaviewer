@@ -675,6 +675,16 @@ How it works:
   {x, y}, `MV_SLOT_EVENT_TAP`; surface coordinates, 0..1); the add-on's next pixels replace the
   provisional transform. Nothing presents the canvas. An info section may ask the viewer to show a
   file of the same folder through the host table's `open_item` (#601; [27](27-places.md#the-folder-map-601)).
+- **A surface that fills; a window hands the viewer a list (contribution API 12, ABI 0.38,
+  2026-11-04).** `"fill": true` on a `surface` makes it take its parent's room on both axes (no
+  `height` needed); the chrome reports the laid-out size, in points with the backing scale, as
+  `MV_SLOT_EVENT_RESIZE` at first layout and when a resize settles (never per frame), and the
+  registry keeps only the newest one queued. A window, pane or sheet (never an info section) may
+  ask the viewer to show files as a result list through the host table's `open_list` (1–10 000
+  absolute paths or `photos:` keys, a title, the item to show); the registry keeps the last request
+  with a growing revision (`mv_slots_open_list_json`) and each chrome opens it once, as Local
+  search's results open, and brings the viewer forward. A window whose tree fills goes full screen.
+  First user: the Places world map ([27](27-places.md#the-world-map)).
 - **Search providers.** File search posts the typed text on every debounced change and returns;
   name hits show at once and a provider's rows join when they arrive, with its reason
   ("Portugal") or "Still reading tags — N of M" under the field. A query starting with a

@@ -169,7 +169,7 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
                 : *place == "settings" ? screen_place::settings
                                        : screen_place::edit;
       // A settings page asks for contribution API 8, a docked Edit screen for
-      // 12 (docs/plans/edit-refresh.md S5); an add-on has at most one of each.
+      // 13 (docs/plans/edit-refresh.md S5); an add-on has at most one of each.
       const std::uint32_t needs = s.place == screen_place::settings ? kSettingsScreenApi
                                   : s.place == screen_place::edit   ? kEditScreenApi
                                                                     : 0;

@@ -188,6 +188,15 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
                 ShowSearch(new SimilarTo(item.Path, item.IsVideo ? item.PositionMs : -1));
                 return true;
             }
+            case SearchCommand.ThisPerson:
+            {
+                // The person whose face is in the still / frame on screen: read
+                // the viewer as Similar does; the panel says when no face is there.
+                AddonCurrentItem item = _host.CurrentItem();
+                if (item.Path.Length == 0) return false;
+                ShowSearch(new SimilarTo(item.Path, item.IsVideo ? item.PositionMs : -1, Person: true));
+                return true;
+            }
             case SearchCommand.NextMatch:
                 return WalkMatch(+1);
             case SearchCommand.PrevMatch:
@@ -305,7 +314,11 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
 
     // ---- the search panel ------------------------------------------------------------------
 
-    internal readonly record struct SimilarTo(string Path, long PtsMs)
+    /// <summary>
+    /// What the panel searches from instead of words: Find similar, or (<paramref name="Person"/>)
+    /// "This person", the largest face in the still / frame on screen.
+    /// </summary>
+    internal readonly record struct SimilarTo(string Path, long PtsMs, bool Person = false)
     {
         public string Name => System.IO.Path.GetFileName(Path);
     }

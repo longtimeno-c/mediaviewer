@@ -618,6 +618,7 @@ packs name these rows `<addon-id>/<command-id>`.
 |---|---|---|
 | `Ctrl+F` | Viewing | **With Local search:** its panel, keyboard-focused. **Without:** file search (below) |
 | `Ctrl+Shift+F` | Viewing | Find similar to the still or paused frame on screen (Local search) |
+| `Ctrl+Shift+P` | Viewing | Find this person: the photos and moments of the largest face in the still or paused frame on screen (Local search, People on) |
 | `N` / `Shift+N` | video | On a clip opened from results: next / previous matching moment (Local search) |
 
 The same command runs from the search icon at the right end of the command bar's folder path

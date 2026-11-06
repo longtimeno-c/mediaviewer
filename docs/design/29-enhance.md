@@ -27,7 +27,7 @@ screens from its view trees.
 - **`Enhance…` in the Video Editor's bar** (`editor_items`, contribution API 11): the same sheet,
   over the editor, for the edit ("In the Video Editor" below). It has no button on the viewer's
   command bar.
-- **The Enhance tab's cards** (place `edit`, contribution API 12; owner 2026-11-05, "One click"
+- **The Enhance tab's cards** (place `edit`, contribution API 13; owner 2026-11-05, "One click"
   below): each photo tool's compact choices, the time it will take and one button, drawn inside the
   Edit pane's cards; one click runs it with a glow over the photo and opens the new photo. No sheet
   and no panel for a photo.
@@ -180,7 +180,7 @@ that edge after Apple Intelligence's: a crisp ring, a soft glow and a wide halo 
 own pace (6, 9 the other way, 13 s) with the halo breathing (2.2 s), all held still once the run
 ends (`GlowTiming` in ScreenView.swift, `GlowMath` on Windows). Under it, the one progress line
 (docs/design/20 "Craft rules"): "Enhancing · 40 % · about 1 min left", its time left estimated by
-the host (`"timed"`, contribution API 13; the `"look": "glow"` it still names is drawn as every
+the host (`"timed"`, contribution API 14; the `"look": "glow"` it still names is drawn as every
 bar, so the flowing bar colours of 2026-10-29 are not drawn). This Enhance asks for 13
 ([25](25-open-addons.md)); a model's download is the same line with its amounts (`"detail"`).
 **A photo being redrawn** tile by tile (2026-10-29: `picture_options::placed`, `compose_reveal`,
@@ -305,7 +305,7 @@ and Restyle starts at the best quality its level allows:
 
 The words' guidance stays 7.5 at every level. In the sheet a quality above the level is listed,
 disabled, with the level it needs (*Best (needs Maxxed level)*; a choice option's `"disabled"`,
-[25](25-open-addons.md), contribution API 12 with the docked panel's place `"edit"`), and a
+[25](25-open-addons.md), contribution API 13 with the docked panel's place `"edit"`), and a
 change to it is not kept. A quality the person chose is theirs while the level allows it; above
 it, or with none chosen, the sheet shows and runs the level's highest (`screens.h`
 `level_quality`), and the chosen one comes back when the level does. A request that still names a quality above the level is refused with the level it needs. Potato
@@ -439,7 +439,7 @@ What follows is S5's panel, kept for its history; the cards above replaced it.
 docs/plans/edit-refresh.md S5 (owner call B). The manifest's third screen, `tool`, is in place
 `edit`: only the Edit workspace opens it, with a command (`slot_registry::screen_command`, ABI
 `mv_slots_screen_command`, 0.38), never an item, a status click or `screen_show` (an add-on has at
-most one, and a manifest asks for contribution API 12 to name it). The command opens it on the
+most one, and a manifest asks for contribution API 13 to name it). The command opens it on the
 photo on screen when it is not open, then hands Enhance `enhance/tool`
 `{"photo": "remove|restyle|detail|extend|faces", "run": true?}`: the panel switches to that tool (its
 knobs reset no result but its own) and, with `run`, starts it. Remove reads the brush again first:

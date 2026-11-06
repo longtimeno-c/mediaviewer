@@ -869,6 +869,7 @@ public static class SearchCommand
     public const int NextMatch = 2;   // N on a clip
     public const int PrevMatch = 3;   // Shift+N
     public const int IndexAnyway = 4; // the pill's menu, on battery (#200); an older chrome returns false
+    public const int ThisPerson = 5;  // Ctrl+Shift+P: the person whose face is on screen; an older chrome returns false
 }
 
 /// <summary>

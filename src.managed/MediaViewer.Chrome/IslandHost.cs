@@ -176,27 +176,27 @@ public static partial class IslandHost
         public const int AdjustOpenEyes = 211;  // slice 6
         // docs/plans/edit-refresh.md S1: the right column a step (40) wider or
         // narrower. No default key; the View menu sends them.
-        public const int PaneWider = 212;
-        public const int PaneNarrower = 213;
+        public const int PaneWider = 213;
+        public const int PaneNarrower = 214;
         // docs/plans/edit-refresh.md S2: the Edit header's ✦ Auto (one undo
         // step; again right after takes it back). No default key.
-        public const int AutoEnhance = 214;
+        public const int AutoEnhance = 215;
         // docs/plans/edit-refresh.md S3: the canvas tools (shell/canvas_tool.h).
         // Keyed in tool mode ([ ] size, Ctrl+Z / Ctrl+Shift+Z one stroke or fix,
         // Backspace / Delete clear, Enter apply, Space held pans); B arms the
         // brush on a still; red-eye, Extend and Faces ship unbound.
-        public const int ToolSmaller = 215;
-        public const int ToolBigger = 216;
-        public const int ToolUndo = 217;
-        public const int ToolRedo = 218;
-        public const int ToolClear = 219;
-        public const int ToolApply = 220;
-        public const int ToolPan = 221;
-        public const int ToolPanRelease = 222;
-        public const int ToolBrush = 223;
-        public const int ToolRedEye = 224;
-        public const int ToolExtend = 225;
-        public const int ToolFaces = 226;
+        public const int ToolSmaller = 216;
+        public const int ToolBigger = 217;
+        public const int ToolUndo = 218;
+        public const int ToolRedo = 219;
+        public const int ToolClear = 220;
+        public const int ToolApply = 221;
+        public const int ToolPan = 222;
+        public const int ToolPanRelease = 223;
+        public const int ToolBrush = 224;
+        public const int ToolRedEye = 225;
+        public const int ToolExtend = 226;
+        public const int ToolFaces = 227;
         // The context bar (IslandHost.ToolBar.cs, chrome_host.h). CanvasTool: arg
         // >= 0 arms a tool, tool * 1000 + size (0 keeps the tool's own; tool 0
         // puts it down); arg < 0 is a bar button, -(ToolBarAction + 1).

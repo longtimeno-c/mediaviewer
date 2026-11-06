@@ -193,7 +193,7 @@ never covers the photo and nothing new is drawn over the picture but the tool's 
 
 **An add-on screen may dock inside the Edit pane (2026-11-05, owner call B).** Enhance's tools
 ran in a sheet over the viewer, which covered the photo being edited and lost the Edit context. A
-screen may now be in place `"edit"` (contribution API 12): drawn by the add-on screens' renderer
+screen may now be in place `"edit"` (contribution API 13): drawn by the add-on screens' renderer
 inside the Edit workspace's Enhance tab, under the tool's card, never a window. Only the workspace
 opens it, with a command (`mv_slots_screen_command`): never `screen_show`, an item or a status
 click, so an add-on cannot put UI into the inspector on its own. Navigating (Show, Keep editing)
@@ -664,6 +664,22 @@ pane. The chrome moves the last bitmap during the gesture and the add-on re-draw
 (#348's generic surface events); no present. The range runs from country scale (40° tall) to town
 scale (0.2°) with cities1000 town dots and names, never streets, and says so under the map. The pin
 never leaves the picture: a pan is clamped to keep the photo's point inside it.
+
+**Places gets a window: the world map of the whole library (2026-11-04, owner).** This amends the
+row above ("no bar, path or status item and no window") and the 2026-10-11 row's "clicking it opens
+nothing" (already relaxed by #601's folder-map dots). The owner asked for the map full screen, out to
+the whole world, with every geotagged item of the library on it and a click on a dot opening those
+photos. Places now contributes one window, `world` (`docs/plans/places-world-map.md`, folded into 27
+"The world map"), opened from an Open map button under the section's map and a World Map command;
+the section itself is unchanged and still the pane's last thing. The window's span runs past the
+section's 40° (`map_view::max_span_deg`) to the whole world's width; the section keeps 40°. A click
+shows the dot's items in the viewer as a result list, as Local search's results open (host table
+`open_list`, from a window only). Still read-only, still offline: the picture is drawn on Places'
+worker from its own data, the index's coordinates are read from index.db, nothing leaves the
+machine (rule 6). Measured on the full place blob with 100 000 items at 1440 × 900 pt and 2×: a
+settled gesture redraws in 25–40 ms median, 50 ms at most, off the UI and render threads; the
+canvas presents nothing. On Windows the map's window is not owned by the viewer, so the viewer can
+come in front of it when a click opens a list (it gets its own taskbar button).
 
 **Location is editable; blank removes, with a confirmation (owner, 2026-10-12, #352).** Summary's
 Location row has Edit instead of Remove: coordinates typed in, read by one core parser
@@ -1528,6 +1544,44 @@ then rescored by the refinement's exemplar `support`, so the faces the user conf
 photos are matched against. Weak faces and unconfirmed people keep the mean. Exemplars for every
 person were tried and dropped: on LFW they cost online BCubed F 0.9975 → 0.9945, because a newcomer
 joined a lookalike. Numbers are in docs/design/17 "Online clustering".
+
+**Corrections hold, and a frame is evidence (2026-11-02, owner: "the wrong person is in another
+person's group").** Five calls, numbers in docs/design/17 "Corrections that hold":
+- The idle merge never joins two people the user confirmed (a name or a pinned face), even by way
+  of a third, and joins an unconfirmed cluster to a confirmed person only when the person's
+  exemplars do not call it a stranger. It no longer merges by average alone into a person the
+  user named: an unnamed lookalike could carry one named person's faces into another. Requiring
+  the exemplars at `merge_at` was measured and dropped: a varied person's own fragments stayed out.
+- Two faces of one photo or frame are two people (online, refinement, regroup, the merges),
+  unless they are one face twice (≥ join + 2 margins: a mirror). Without the exception the rule
+  split 113 of the owner's faces off himself.
+- A clip's frames are one sighting: one exemplar per photo or clip, the medoid counts each once,
+  and a face is not vouched for by its own clip while its person has other photos. LFW is
+  unchanged (one face a photo).
+- A lone pin another person explains clearly better stops anchoring the person (it stays pinned);
+  one nobody explains still anchors (#434's side-on cover).
+- "Not this person" counts against the person (negatives), except a rejection the person vouches
+  for as its own (a slip); corrections are remapped by every merge, kept across a changed file by
+  box, and never name a reused id. Undo for a merge; "Move to…", "Yes", an unknown-faces queue
+  and suggestions in both chromes.
+Held out and filed again, a tenth of the named people's clear faces return to their person 597 → 695
+of 862, none to another named person either way.
+Cost: the library-wide settle 3.8 → 5.2 s on the owner's copy (once per re-run or rules change);
+`add` 0.285 → 0.297 ms a face (one run each). Rules 3 settles every library once.
+
+**A person's own fragment is no rival; tracks; the unknown faces' order (2026-11-02, later
+the same day).** The first build of the rules above moved 408 of the owner's clear faces into
+tighter fragments of himself, because a clip no longer vouched for its own frames. Now a face its
+person vouches for unmistakably stays, a smaller person whose core is no stranger to its own is no
+destination (join − margin / 2: join − margin cost LFW one correct move), and a lone pin is
+distrusted only when the rest of its person calls it a stranger. A weak clip frame follows the
+clear frames of its track. The unknown-faces queue puts suggestions of named people first. Against
+the base commit on today's copy (50,588 faces): faces better matched by a different person 45 → 5,
+unfiled 31,107 → 29,805, settle 4.6 → 4.0 s, LFW unchanged; weak held-out faces back to their person
+118 → 139 of 179; the first 60 one-click suggestions 39 right / 5 wrong → 60 / 0. Tried and left
+out, with numbers in docs/design/17 "Measured": admitting into unconfirmed people by their average
+in the settle, and farthest-point exemplars. Refine and Merge duplicates look first and can be
+undone; Find this person is Ctrl+Shift+P.
 
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
@@ -3061,7 +3115,7 @@ runner's thread (nearest samples at 960 pixels: a few milliseconds a time, not m
 separately); the hosts' drawing stays capped at 30 fps, only while shown, off with Reduce Motion /
 animations off. Not measured: the glow's CPU on either host, and Windows not run at all.
 
-**One progress language; the glow bar goes (2026-11-05, contribution API 13).** Partly reverses
+**One progress language; the glow bar goes (2026-11-05, contribution API 14).** Partly reverses
 the progress half of "Enhance's sheet glows while it works" and the flowing bar of "Enhance's
 sheet, seen in the app" above. The owner, of the Edit pane: "improve the UI using lessons
 learned from Stageshow — like the progress bar for enhance etc… all ugly". Every bar the chromes
@@ -3117,3 +3171,11 @@ Renumbered after main's: ABI 0.36 (S5's docked screens) became 0.38, `chrome_cmd
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.
+
+**Renumbered on the 2026-11-06 merge with main (edit-refresh).** Main's Places world map took ABI
+0.38 and contribution API 12 ("fill") first, so the Edit refresh's docked screens are ABI **0.39**,
+a screen in place `"edit"` contribution API **13** and the progress line's `detail` / `timed`
+**14** (Enhance's manifest asks for 14). Main's `search_this_person` and host-table row
+`open_list` keep their places; ours (`pane_wider` … `tool_faces`, `still_faces`, `still_extend`,
+the AI table's `faces_json`) follow them.
+

@@ -82,6 +82,10 @@ extern "C" int32_t mv_chrome_slots_info(char* buf, int32_t size) {
 extern "C" int32_t mv_chrome_slots_screens(char* buf, int32_t size) {
   return copy_out(mv::addon::default_slots().screens_json(), buf, size);
 }
+// 0.38: the last list an add-on window asked the viewer to show (open_list).
+extern "C" int32_t mv_chrome_slots_open_list(char* buf, int32_t size) {
+  return copy_out(mv::addon::default_slots().open_list_json(), buf, size);
+}
 extern "C" int32_t mv_chrome_slots_search_results(uint32_t scope, char* buf, int32_t size) {
   return copy_out(mv::addon::default_slots().search_json(scope), buf, size);
 }

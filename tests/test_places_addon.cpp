@@ -157,11 +157,16 @@ TEST_CASE("places: the shipped manifest declares the section, the search provide
   CHECK(c.search_providers[0].id == "place");
   CHECK(c.search_providers[0].prefixes == std::vector<std::string>{"place:", "in:"});
   CHECK(c.search_providers[0].files);
-  // Owner, 2026-10-12: the map lives only at the foot of the Metadata pane.
+  // Owner, 2026-10-12: the map lives at the foot of the Metadata pane; no bar
+  // or path item. 2026-11-04 (docs/plans/places-world-map.md): and in a window
+  // of its own, opened from the section or the command bar.
   CHECK(c.items.empty());
-  CHECK(c.screens.empty());
+  REQUIRE(c.screens.size() == 1);
+  CHECK(c.screens[0].id == "world");
+  CHECK(c.screens[0].place == mv::addon::screen_place::window);
   CHECK(c.badges.empty());
-  CHECK(d.m.commands.empty());
+  REQUIRE(d.m.commands.size() == 1);
+  CHECK(d.m.commands[0].id == "world");
   CHECK(d.m.chrome.empty());
   // The settings page: four items, in the manifest's order.
   REQUIRE(d.m.settings.sections.size() == 1);

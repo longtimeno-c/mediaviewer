@@ -315,7 +315,7 @@ ideal width no longer includes the whole file name, so a long name does not drop
 - *Deferred, not in these slices:* Photos' staged "stand-in" on the canvas.
 
 **S5 built (2026-11-05):** owner call B on both hosts. Core: manifest place `"edit"`
-(contribution API 12, one per add-on, refused for an item's `opens`, a status item and
+(contribution API 13, one per add-on, refused for an item's `opens`, a status item and
 `screen_show`), `slot_registry::screen_command` / `mv_slots_screen_command` (ABI 0.38; 0.36 when built, renumbered after the Video Editor look on the merge with main). Enhance: the
 `tool` screen (`tool_tree`: the knob cards without the photo choice, preview, glow progress, time
 left, Cancel, the result row), `engine::tool_command` for `enhance/tool {"photo", "run"?}`, Discard

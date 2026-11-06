@@ -65,11 +65,25 @@ internal sealed class PeopleGrid
     private readonly Grid _hintRow;
     private readonly MediaViewer.Shared.FlatBar _dedupeBar;
     private readonly Button _dedupe;
+    // Merge duplicates' look (people_dedupe_json, dry): the merges it would make, Apply / Cancel.
+    private readonly StackPanel _dedupeLook;
+    private readonly TextBlock _dedupeLookHeader;
+    private readonly StackPanel _dedupeLookMerges;
+    private readonly Button _dedupeApply;
+    private bool _dedupeLooking;
     private readonly Grid _mergeBar;
     private readonly TextBlock _mergeCount;
     private readonly Button _mergeSelected;
     private readonly ItemsRepeater _repeater;
+    private readonly StackPanel _noteRow;
     private readonly TextBlock _note;
+    private readonly Button _noteUndo;
+    // The last merge's undo (person_merge_undo), offered for a few seconds.
+    private Action<AiApi>? _undo;
+    // "Unknown faces (N)": unknown_faces_json's total, read with the people.
+    private readonly Button _unknown;
+    private long _unknownTotal;
+    private UnknownFacesSheet? _unknownSheet;
     private MvAiScope _scope = MvAiScope.Tree;
     private bool _deduping;
     private ulong _opening;
@@ -157,12 +171,48 @@ internal sealed class PeopleGrid
         _hintRow.Children.Add(_dedupeBar.Root);
         _dedupe = _look.Button("Merge duplicates", MergeDuplicates);
         _dedupe.VerticalAlignment = VerticalAlignment.Center;
-        ToolTipService.SetToolTip(_dedupe,
-            "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.");
+        ToolTipService.SetToolTip(_dedupe, _api.HasPeopleDedupeJson
+            ? "Re-check every face and merge people who are the same person. Two people you named differently are never merged. You see the merges before they happen, and can undo them."
+            : "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.");
         AutomationProperties.SetName(_dedupe, "Merge duplicate people");
         Grid.SetColumn(_dedupe, 2);
         _hintRow.Children.Add(_dedupe);
         _root.Children.Add(_hintRow);
+
+        // Merge duplicates' look: nothing changes until Apply.
+        _dedupeLook = new StackPanel
+        {
+            Spacing = 10,
+            Padding = new Thickness(12),
+            CornerRadius = new CornerRadius(6),
+            Background = _look.Tint(AddonColour.Accent, 20),
+            Visibility = Visibility.Collapsed,
+        };
+        _dedupeLookHeader = _look.Text("", 13, AddonColour.Title);
+        AutomationProperties.SetHeadingLevel(_dedupeLookHeader, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        AutomationProperties.SetLiveSetting(_dedupeLookHeader, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        _dedupeLook.Children.Add(_dedupeLookHeader);
+        _dedupeLookMerges = new StackPanel { Spacing = 12 };
+        AutomationProperties.SetName(_dedupeLookMerges, "Duplicates to merge");
+        _dedupeLook.Children.Add(_dedupeLookMerges);
+        var lookButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        Button lookCancel = _look.Button(MediaViewer.Shared.PeopleWords.Cancel, CancelDedupeLook);
+        AutomationProperties.SetName(lookCancel, "Cancel merging duplicates");
+        ToolTipService.SetToolTip(lookCancel, "Keep everyone as they are (Esc)");
+        lookButtons.Children.Add(lookCancel);
+        _dedupeApply = _look.Button(MediaViewer.Shared.PeopleWords.Apply, ApplyDedupe, accent: true);
+        AutomationProperties.SetName(_dedupeApply, "Apply merging duplicates");
+        ToolTipService.SetToolTip(_dedupeApply, "Merge these people and move the faces that don't match");
+        lookButtons.Children.Add(_dedupeApply);
+        _dedupeLook.Children.Add(lookButtons);
+        _root.Children.Add(_dedupeLook);
+
+        // "Unknown faces (N)": faces clear enough to name that nobody is filed under.
+        _unknown = _look.Button("", OpenUnknown);
+        _unknown.HorizontalAlignment = HorizontalAlignment.Left;
+        _unknown.Visibility = Visibility.Collapsed;
+        ToolTipService.SetToolTip(_unknown, "Faces nobody is named for yet, with who each looks like");
+        _root.Children.Add(_unknown);
 
         // "3 people selected · Merge into… · Cancel": the target keeps its name.
         _mergeBar = new Grid
@@ -220,12 +270,35 @@ internal sealed class PeopleGrid
             if (!_applying) SyncVisible();
         };
 
+        _noteRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Visibility = Visibility.Collapsed };
         _note = _look.Text("", 12, AddonColour.Title);
-        _note.Visibility = Visibility.Collapsed;
-        _root.Children.Add(_note);
+        _note.VerticalAlignment = VerticalAlignment.Center;
+        AutomationProperties.SetLiveSetting(_note, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        _noteRow.Children.Add(_note);
+        _noteUndo = _look.Button(MediaViewer.Shared.PeopleWords.Undo, UndoMerge);
+        _noteUndo.Visibility = Visibility.Collapsed;
+        ToolTipService.SetToolTip(_noteUndo, "Undo the merge (Ctrl+Z)");
+        AutomationProperties.SetName(_noteUndo, "Undo the merge");
+        _noteRow.Children.Add(_noteUndo);
+        _root.Children.Add(_noteRow);
 
         _root.KeyDown += (_, e) =>
         {
+            // Ctrl+Z while "Merged · Undo" shows: the merge put back.
+            if (e.Key == VirtualKey.Z && _undo is not null && e.OriginalSource is not MediaViewer.Shared.FakeInput &&
+                InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down))
+            {
+                UndoMerge();
+                e.Handled = true;
+                return;
+            }
+            // Esc cancels Merge duplicates' look, then clears a selection, before Settings closes.
+            if (e.Key == VirtualKey.Escape && _dedupeLooking)
+            {
+                CancelDedupeLook();
+                e.Handled = true;
+                return;
+            }
             // Esc clears a selection before Settings closes (the Mac's onExitCommand).
             if (e.Key != VirtualKey.Escape || _selection.Count == 0) return;
             ClearSelection();
@@ -315,6 +388,13 @@ internal sealed class PeopleGrid
         _ = Task.Run(() =>
         {
             var people = new List<PersonVm>();
+            long unknown = 0;
+            try
+            {
+                // Everyone unnamed and unfiled (not the folder's: they have no person to scope by).
+                if (api.HasUnknownFacesJson) unknown = MediaViewer.Shared.PeopleWords.ParseUnknown(api.UnknownFacesJson(0, 1)).Total;
+            }
+            catch (Exception ex) when (ex is MediaViewerException or JsonException) { }
             try
             {
                 using JsonDocument doc = JsonDocument.Parse(api.PeopleJson(scopeDir, scope));
@@ -334,7 +414,11 @@ internal sealed class PeopleGrid
                                            or FormatException) { }
             _root.DispatcherQueue.TryEnqueue(() =>
             {
-                if (generation == _loadGeneration) Apply(people);
+                if (generation == _loadGeneration)
+                {
+                    _unknownTotal = unknown;
+                    Apply(people);
+                }
                 if (!_loadAgain)
                 {
                     _loading = false;
@@ -442,9 +526,12 @@ internal sealed class PeopleGrid
         _mergeBar.Visibility = any && n >= 2 ? Visibility.Visible : Visibility.Collapsed;
         _mergeCount.Text = $"{n} people selected";
         _hintRow.Visibility = any && n < 2 ? Visibility.Visible : Visibility.Collapsed;
-        _dedupe.IsEnabled = !_deduping;
+        _dedupe.IsEnabled = !_deduping && !_dedupeLooking;
         _dedupeBar.Root.Visibility = _deduping ? Visibility.Visible : Visibility.Collapsed;
         _repeater.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
+        _unknown.Visibility = _unknownTotal > 0 && _api.HasUnknownFacesJson ? Visibility.Visible : Visibility.Collapsed;
+        _unknown.Content = MediaViewer.Shared.PeopleWords.UnknownEntry(_unknownTotal);
+        AutomationProperties.SetName(_unknown, $"Unknown faces, {_unknownTotal:N0}");
         foreach (Card card in _cards.Values) card.Update();
     }
 
@@ -518,24 +605,58 @@ internal sealed class PeopleGrid
         _sheet.Present();
     }
 
-    /// <summary>Settings built a newer panel, or the pack is going: the sheet goes too.</summary>
+    /// <summary>"Unknown faces (N)": the faces nobody is filed under, to name.</summary>
+    private void OpenUnknown()
+    {
+        _unknownSheet?.Close();
+        _unknownSheet = new UnknownFacesSheet(_chrome, this);
+        _unknownSheet.Closed += (s, _) =>
+        {
+            if (ReferenceEquals(s, _unknownSheet)) _unknownSheet = null;
+        };
+        _unknownSheet.Present();
+    }
+
+    /// <summary>Settings built a newer panel, or the pack is going: the sheets go too.</summary>
     internal void Detach()
     {
         _sheet?.Close();
         _sheet = null;
+        _unknownSheet?.Close();
+        _unknownSheet = null;
     }
 
     internal IReadOnlyList<PersonVm> People => All.ToList();
 
     internal PersonVm? Find(ulong id) => _items.FirstOrDefault(s => s.P.Id == id)?.P;
 
-    internal void Rename(ulong id, string name)
+    /// <summary>
+    /// A name, shown now and written on a worker: person_rename_cover pins the
+    /// cover the user saw while naming (<paramref name="coverFace"/>), else
+    /// person_rename from an older pack. A failed write reads the truth back.
+    /// </summary>
+    internal void Rename(ulong id, string name, ulong coverFace)
     {
-        try { _api.PersonRename(id, name); }
-        catch (MediaViewerException) { return; }
         Slot? slot = _items.FirstOrDefault(s => s.P.Id == id);
         if (slot is not null) Set(slot, slot.P with { Name = name });
         _sheet?.PeopleChanged();
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            bool failed = false;
+            try
+            {
+                if (api.HasPersonRenameCover) api.PersonRenameCover(id, name, coverFace);
+                else api.PersonRename(id, name);
+            }
+            catch (MediaViewerException) { failed = true; }
+            _root.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!failed) return;
+                Note("The name could not be saved. Try again.");
+                Refresh();
+            });
+        });
     }
 
     /// <summary>
@@ -552,34 +673,68 @@ internal sealed class PeopleGrid
         List<Slot> moved = _items.Where(s => from.Contains(s.P.Id)).ToList();
         if (moved.Count == 0) return;
         PersonVm target = at.P;
+        // The covers the user saw: the faces the pack keeps as anchors.
+        ulong coverInto = target.CoverFace;
+        var covers = moved.ToDictionary(s => s.P.Id, s => s.P.CoverFace);
         string name = target.Name.Length > 0 ? target.Name : moved.FirstOrDefault(s => s.P.Name.Length > 0)?.P.Name ?? "";
         Set(at, target with { Name = name, Faces = target.Faces + moved.Sum(s => s.P.Faces) });
         foreach (Slot s in moved) _items.Remove(s);
         _selection.Clear();
         string who = name.Length > 0 ? name : "one person";
-        Note(moved.Count == 1 ? $"Merged into {who}." : $"Merged {moved.Count + 1} people into {who}.");
+        string merged = moved.Count == 1 ? $"Merged into {who}." : $"Merged {moved.Count + 1} people into {who}.";
+        Note(merged);
         UpdateChrome();
         AiApi api = _api;
         _ = Task.Run(() =>
         {
             bool failed = false;
+            var tokens = new List<ulong>();
             foreach (ulong f in from)
             {
-                try { api.PersonMerge(into, f); }
+                try
+                {
+                    if (api.HasPersonMergeCovers)
+                    {
+                        ulong token = api.PersonMergeCovers(into, f, coverInto, covers.GetValueOrDefault(f));
+                        if (token != 0) tokens.Add(token);
+                    }
+                    else
+                    {
+                        api.PersonMerge(into, f);
+                    }
+                }
                 catch (MediaViewerException) { failed = true; }
             }
             _root.DispatcherQueue.TryEnqueue(() =>
             {
                 if (failed) Note("Some faces could not be merged. Try again.");
+                else if (tokens.Count > 0 && api.HasPersonMergeUndo)
+                {
+                    // "Merged · Undo" for ~8 s: the merges put back, last first.
+                    tokens.Reverse();
+                    Note(merged, a =>
+                    {
+                        foreach (ulong t in tokens) a.PersonMergeUndo(t);
+                    }, 8000);
+                }
                 Refresh();
             });
         });
     }
 
-    /// <summary>"Merge duplicates" (docs/design/17): the whole library, on request.</summary>
+    /// <summary>
+    /// "Merge duplicates" (docs/design/17): the whole library, on request. With
+    /// people_dedupe_json a look first (nothing changes) and Apply / Cancel; an
+    /// older pack merges at once.
+    /// </summary>
     private void MergeDuplicates()
     {
-        if (_deduping) return;
+        if (_deduping || _dedupeLooking) return;
+        if (_api.HasPeopleDedupeJson)
+        {
+            LookDedupe();
+            return;
+        }
         _deduping = true;
         UpdateChrome();
         AiApi api = _api;
@@ -594,10 +749,128 @@ internal sealed class PeopleGrid
                 UpdateChrome();
                 Note(result switch
                 {
-                    null => "Couldn't check for duplicates. Try again.",
-                    (0, 0) => "No duplicates found, and every face matches.",
-                    var (m, f) => (m == 1 ? "1 person" : $"{m} people") + " merged, " + (f == 1 ? "1 face" : $"{f} faces") + " moved.",
+                    null => MediaViewer.Shared.PeopleWords.CouldNotDedupe,
+                    var (m, f) => MediaViewer.Shared.PeopleWords.DedupeSummary(m, f),
                 });
+                Refresh();
+            });
+        });
+    }
+
+    private void LookDedupe()
+    {
+        _deduping = true;
+        UpdateChrome();
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            MediaViewer.Shared.DedupeOutcome? look = null;
+            try { look = MediaViewer.Shared.PeopleWords.ParseDedupe(api.PeopleDedupeJson(dry: true)); }
+            catch (Exception ex) when (ex is MediaViewerException or JsonException) { }
+            _root.DispatcherQueue.TryEnqueue(() =>
+            {
+                _deduping = false;
+                if (look is null) Note(MediaViewer.Shared.PeopleWords.CouldNotDedupe);
+                else if (look.IsEmpty) Note(MediaViewer.Shared.PeopleWords.NoDuplicates);
+                else ShowDedupeLook(look);
+                UpdateChrome();
+            });
+        });
+    }
+
+    private void ShowDedupeLook(MediaViewer.Shared.DedupeOutcome look)
+    {
+        _dedupeLooking = true;
+        _dedupeLookHeader.Text = MediaViewer.Shared.PeopleWords.DedupeLookHeader(look);
+        _dedupeLookMerges.Children.Clear();
+        foreach (MediaViewer.Shared.DedupeMerge m in look.Merges)
+        {
+            var row = new StackPanel { Spacing = 6 };
+            string line = MediaViewer.Shared.PeopleWords.MergeLine(m);
+            TextBlock title = _look.Text(line, 12, AddonColour.Title);
+            row.Children.Add(title);
+            var covers = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            AutomationProperties.SetName(covers, line);
+            foreach (MediaViewer.Shared.DedupePerson p in m.From.Prepend(m.Into))
+            {
+                var face = new TileFace(p.CoverFace, p.CoverPath, p.CoverMs, p.CoverBox,
+                                        Caption: MediaViewer.Shared.PeopleWords.DedupeCaption(p));
+                var tile = new FaceTile(_chrome, face, Cover + 28, captioned: true, _ => { });
+                AutomationProperties.SetName(tile.Root, MediaViewer.Shared.PeopleWords.DedupeCaption(p));
+                covers.Children.Add(tile.Root);
+            }
+            row.Children.Add(new ScrollViewer
+            {
+                Content = covers,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                HorizontalScrollMode = ScrollMode.Auto,
+                VerticalScrollMode = ScrollMode.Disabled,
+            });
+            _dedupeLookMerges.Children.Add(row);
+        }
+        _dedupeLookMerges.Visibility = look.Merges.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _dedupeLook.Visibility = Visibility.Visible;
+        UpdateChrome();
+        _dedupeApply.Focus(FocusState.Programmatic);
+    }
+
+    private void HideDedupeLook()
+    {
+        _dedupeLooking = false;
+        _dedupeLook.Visibility = Visibility.Collapsed;
+        _dedupeLookMerges.Children.Clear();
+        UpdateChrome();
+    }
+
+    private void CancelDedupeLook()
+    {
+        if (!_dedupeLooking) return;
+        HideDedupeLook();
+        _dedupe.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Apply: Merge duplicates for real; "3 people merged, 12 faces moved." with Undo of every merge.</summary>
+    private void ApplyDedupe()
+    {
+        if (!_dedupeLooking || _deduping) return;
+        HideDedupeLook();
+        _deduping = true;
+        UpdateChrome();
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            MediaViewer.Shared.DedupeOutcome? done = null;
+            bool failed = false;
+            try
+            {
+                string json = api.PeopleDedupeJson(dry: false);
+                try { done = MediaViewer.Shared.PeopleWords.ParseDedupe(json); }
+                catch (JsonException) { }
+            }
+            catch (MediaViewerException) { failed = true; }
+            _root.DispatcherQueue.TryEnqueue(() =>
+            {
+                _deduping = false;
+                UpdateChrome();
+                if (failed || done is null)
+                {
+                    Note(failed ? MediaViewer.Shared.PeopleWords.CouldNotDedupe : "Duplicates merged.");
+                }
+                else
+                {
+                    List<ulong> tokens = MediaViewer.Shared.PeopleWords.DedupeUndoTokens(done);
+                    string line = MediaViewer.Shared.PeopleWords.DedupeSummary(done.Merged, done.Moved);
+                    if (tokens.Count > 0 && api.HasPersonMergeUndo)
+                    {
+                        // Every merge put back, last first; "Merged · Undo" for ~8 s as a manual merge.
+                        Note(line, a =>
+                        {
+                            foreach (ulong t in tokens) a.PersonMergeUndo(t);
+                        }, 8000);
+                    }
+                    else Note(line);
+                }
                 Refresh();
             });
         });
@@ -616,16 +889,43 @@ internal sealed class PeopleGrid
         }
     }
 
-    /// <summary>A line under the grid that clears itself after a few seconds.</summary>
-    internal void Note(string text)
+    /// <summary>
+    /// A line under the grid that clears itself after a few seconds, with an
+    /// Undo while it shows when <paramref name="undo"/> is given (run on a worker).
+    /// </summary>
+    internal void Note(string text, Action<AiApi>? undo = null, int ms = 5000)
     {
         int g = ++_noteGeneration;
+        _undo = undo;
         _note.Text = text;
-        _note.Visibility = Visibility.Visible;
-        _ = Task.Delay(5000).ContinueWith(_ => _root.DispatcherQueue.TryEnqueue(() =>
+        _noteUndo.Visibility = undo is null ? Visibility.Collapsed : Visibility.Visible;
+        _noteRow.Visibility = Visibility.Visible;
+        _ = Task.Delay(ms).ContinueWith(_ => _root.DispatcherQueue.TryEnqueue(() =>
         {
-            if (g == _noteGeneration) _note.Visibility = Visibility.Collapsed;
+            if (g != _noteGeneration) return;
+            _noteRow.Visibility = Visibility.Collapsed;
+            _undo = null;
         }), TaskScheduler.Default);
+    }
+
+    /// <summary>"Merged · Undo": person_merge_undo, then the grid reads again.</summary>
+    private void UndoMerge()
+    {
+        if (_undo is not Action<AiApi> work) return;
+        _undo = null;
+        _noteUndo.Visibility = Visibility.Collapsed;
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            bool ok = true;
+            try { work(api); }
+            catch (MediaViewerException) { ok = false; }
+            _root.DispatcherQueue.TryEnqueue(() =>
+            {
+                Note(ok ? MediaViewer.Shared.PeopleWords.Undone : "The merge can no longer be undone.");
+                Refresh();
+            });
+        });
     }
 
     // ---- a card ------------------------------------------------------------------------
@@ -952,7 +1252,8 @@ internal sealed class PeopleGrid
             string name = editor.Text.Trim();
             _nameHost.Content = _name;
             _nameHost.IsTabStop = true;
-            if (save && name != Person.Name) _grid.Rename(Person.Id, name);
+            // The cover on screen while naming: the face the pack pins for this name.
+            if (save && name != Person.Name) _grid.Rename(Person.Id, name, _cropFace != 0 ? _cropFace : Person.CoverFace);
             Update();
             if (refocus) _nameHost.Focus(FocusState.Keyboard);
         }

@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "addon/host.h"
+#include "addon/index_locations.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "addon/open_manifest.h"
@@ -413,6 +414,51 @@ TEST_CASE("an info section asks the viewer to show a file of the same folder (#6
   r.clear_info();
 }
 
+TEST_CASE("a window asks the viewer to show files as a list (0.38)", "[addon][slots]") {
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  const auto theme = test_theme();
+  CHECK(*mv::json::parse(r.open_list_json())->integer("revision") == 0);
+  r.request_info("/f/sintra.jpg", "", theme, 280, 2);
+  REQUIRE(r.open_screen("slotstest", "explorer", "/f/sintra.jpg", theme, 0, 0, 2) == status::ok);
+  r.drain();
+  const auto screens = mv::json::parse(r.screens_json());
+  REQUIRE(screens);
+  const auto g = static_cast<std::uint64_t>(*screens->a[0].integer("generation"));
+  const auto info_g = static_cast<std::uint64_t>(*mv::json::parse(r.info_json())->integer("generation"));
+  using paths = std::vector<std::string>;
+  // Never from an info section; never a stale or unknown window.
+  CHECK(r.open_list("slotstest", "always", info_g, "Sintra", paths{"/f/a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g + 1000, "Sintra", paths{"/f/a.jpg"}, 0) == status::cancelled);
+  // Absolute paths or Photos keys only, 1..10 000, select within them.
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"/f/../etc/a"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"/f/./a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"photos:"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths{"/f/a.jpg"}, 1) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, std::string(201, 'x'), paths{"/f/a.jpg"}, 0) == status::invalid_arg);
+  CHECK(r.open_list("slotstest", "explorer", g, "Sintra", paths(10001, "/f/a.jpg"), 0) == status::invalid_arg);
+  CHECK(*mv::json::parse(r.open_list_json())->integer("revision") == 0);
+  // Any folder, either separator, and the Photos library.
+  REQUIRE(r.open_list("slotstest", "explorer", g, "Sintra, Lisbon, Portugal (3)",
+                      paths{"/f/a.jpg", "/elsewhere/b.mov", "C:\\Photos\\c.heic", "photos:ABC/L0/001"},
+                      1) == status::ok);
+  auto doc = mv::json::parse(r.open_list_json());
+  REQUIRE(doc);
+  const auto first = *doc->integer("revision");
+  CHECK(first > 0);
+  CHECK(*doc->str("addon") == "slotstest");
+  CHECK(*doc->str("title") == "Sintra, Lisbon, Portugal (3)");
+  REQUIRE(doc->find("paths")->a.size() == 4);
+  CHECK(doc->find("paths")->a[2].s == "C:\\Photos\\c.heic");
+  CHECK(*doc->integer("select") == 1);
+  REQUIRE(r.open_list("slotstest", "explorer", g, "Lisbon", paths{"/f/a.jpg"}, 0) == status::ok);
+  CHECK(*mv::json::parse(r.open_list_json())->integer("revision") > first);
+  r.clear_info();
+}
+
 TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[addon][slots]") {
   slot_registry r;
   auto client = std::make_unique<fake_client>(r, "slotstest");
@@ -782,6 +828,68 @@ TEST_CASE("locations_of_index streams the index's coordinates, generation-tagged
   }
 }
 
+TEST_CASE("an add-on asking for the index starts the pack, or stops waiting when there is none (0.38)",
+          "[addon][slots]") {
+  slot_registry r;
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
+          status::ok);
+  const std::uint64_t g = r.search(MV_SLOT_SCOPE_LOCAL, "test: portugal", "");
+  r.drain();
+  mv::addon::host_services svc;
+  svc.slots = &r;
+  mv::addon::host_table t(svc);
+  t.set_addon_id("slotstest");
+  const mv_host_api* api = t.api();
+  mv::addon::retract_index_locations();
+
+  // The host starts its pack, which attaches a moment later: the walk waits
+  // for it and then reads it.
+  std::atomic<int> asked{0};
+  std::thread loader;
+  mv::addon::set_index_wanted_listener([&] {
+    ++asked;
+    loader = std::thread([] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(150));
+      mv::addon::publish_index_locations([](const mv::addon::index_location_visit& visit) -> mv::expected {
+        mv_addon_location_entry e{};
+        e.path_utf8 = "/index/late.jpg";
+        e.location.has = 1;
+        e.location.lat = 38.7;
+        e.location.lon = -9.1;
+        if (!visit(e)) return mv::err(status::cancelled);
+        return {};
+      });
+    });
+  });
+  index_walk w;
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_OK);
+  loader.join();
+  CHECK(asked == 1);
+  REQUIRE(w.paths.size() == 1);
+  CHECK(w.paths[0] == "/index/late.jpg");
+
+  // No pack to start: the host declines and the walk stops at once.
+  mv::addon::retract_index_locations();
+  mv::addon::set_index_wanted_listener([] { mv::addon::decline_index_request(); });
+  const auto t0 = std::chrono::steady_clock::now();
+  index_walk w2;
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w2) == MV_ERR_NOT_FOUND);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+  CHECK(w2.paths.empty());
+
+  // The request goes stale while it waits (the window closed): cancelled.
+  mv::addon::set_index_wanted_listener([] {});
+  std::thread later([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    (void)r.search(MV_SLOT_SCOPE_LOCAL, "test: spain", "");
+  });
+  index_walk w3;
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w3) == MV_ERR_CANCELLED);
+  later.join();
+  mv::addon::set_index_wanted_listener({});
+  r.drain();
+}
+
 TEST_CASE("the index's coordinates come from the AI pack while it is published, and stop when it goes",
           "[addon][slots]") {
   slot_registry r;
@@ -795,7 +903,9 @@ TEST_CASE("the index's coordinates come from the AI pack while it is published, 
   t.set_addon_id("slotstest");
   const mv_host_api* api = t.api();
 
-  // Nothing published (the AI pack not loaded): not found, nothing visited.
+  // Nothing published (the AI pack not loaded) and no host to ask: not
+  // found at once, nothing visited.
+  mv::addon::set_index_wanted_listener({});
   mv::addon::retract_index_locations();
   index_walk w;
   CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_ERR_NOT_FOUND);
@@ -1175,7 +1285,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
-  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 14, "max": 15)")) == rejection::needs_update);
+  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 15, "max": 16)")) == rejection::needs_update);
   // editor_items (API 11): a labelled button with no symbol, target or opens,
   // and only under a range that reaches 11.
   {
@@ -1248,19 +1358,19 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
     CHECK(check(k, s) == rejection::malformed);
   }
   // docs/plans/edit-refresh.md S5: a screen docked in the Edit workspace
-  // (place "edit", contribution API 12): one, never opened by an item, never
+  // (place "edit", contribution API 13): one, never opened by an item, never
   // asked for by an add-on written for less. Unknown places stay refused.
   const std::string docked = R"({"id": "explorer", "title": "Explorer", "place": "window", "width": 640, "height": 480},
     {"id": "tool", "title": "Explorer", "place": "edit"})";
   const auto at12 = [&](std::string s) {
-    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 12, "max": 12)");
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 13, "max": 13));
     return s;
   };
   CHECK(check(k, with(screen, docked)) == rejection::malformed);  // API 4-5
   {
     std::string s = with(screen, docked);
-    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 11, "max": 12)");
-    CHECK(check(k, s) == rejection::malformed);  // a range that starts before 12
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 12, "max": 13));
+    CHECK(check(k, s) == rejection::malformed);  // a range that starts before 13
   }
   {
     const std::string m12 = slots_manifest("lib.bin", bytes, at12(with(screen, docked)));
@@ -1337,7 +1447,7 @@ TEST_CASE("a docked Edit screen opens only by the workspace's command, which fol
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 13);
+  REQUIRE(mv::addon::kContributionApi == 14);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);
