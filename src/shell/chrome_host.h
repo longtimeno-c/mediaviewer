@@ -470,17 +470,18 @@ static_assert(static_cast<int>(command_id::search_open) == 157);
 static_assert(static_cast<int>(command_id::kind_filter_set) == 174);
 // Issue #614: the Open flyout's Print… (IslandHost.Command.Print).
 static_assert(static_cast<int>(command_id::print) == 184);
-// docs/plans/edit-refresh.md S1 / S2 (IslandHost.cs Command.PaneWider .. AutoEnhance).
-static_assert(static_cast<int>(command_id::pane_wider) == 212 &&
-              static_cast<int>(command_id::pane_narrower) == 213 &&
-              static_cast<int>(command_id::auto_enhance) == 214);
+// docs/plans/edit-refresh.md S1 / S2 (IslandHost.cs Command.PaneWider .. AutoEnhance); 212 is
+// search_this_person (#642), appended first.
+static_assert(static_cast<int>(command_id::pane_wider) == 213 &&
+              static_cast<int>(command_id::pane_narrower) == 214 &&
+              static_cast<int>(command_id::auto_enhance) == 215);
 // docs/plans/edit-refresh.md S3 (IslandHost.cs Command.ToolSmaller .. ToolFaces).
-static_assert(static_cast<int>(command_id::tool_smaller) == 215 && static_cast<int>(command_id::tool_bigger) == 216 &&
-              static_cast<int>(command_id::tool_undo) == 217 && static_cast<int>(command_id::tool_redo) == 218 &&
-              static_cast<int>(command_id::tool_clear) == 219 && static_cast<int>(command_id::tool_apply) == 220 &&
-              static_cast<int>(command_id::tool_pan) == 221 && static_cast<int>(command_id::tool_pan_release) == 222 &&
-              static_cast<int>(command_id::tool_brush) == 223 && static_cast<int>(command_id::tool_red_eye) == 224 &&
-              static_cast<int>(command_id::tool_extend) == 225 && static_cast<int>(command_id::tool_faces) == 226);
+static_assert(static_cast<int>(command_id::tool_smaller) == 216 && static_cast<int>(command_id::tool_bigger) == 217 &&
+              static_cast<int>(command_id::tool_undo) == 218 && static_cast<int>(command_id::tool_redo) == 219 &&
+              static_cast<int>(command_id::tool_clear) == 220 && static_cast<int>(command_id::tool_apply) == 221 &&
+              static_cast<int>(command_id::tool_pan) == 222 && static_cast<int>(command_id::tool_pan_release) == 223 &&
+              static_cast<int>(command_id::tool_brush) == 224 && static_cast<int>(command_id::tool_red_eye) == 225 &&
+              static_cast<int>(command_id::tool_extend) == 226 && static_cast<int>(command_id::tool_faces) == 227);
 static_assert(chrome_cmd_canvas_tool >= kCommandCount && chrome_cmd_tool_erase_set >= kCommandCount);
 static_assert(chrome_cmd_faces >= kCommandCount);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);

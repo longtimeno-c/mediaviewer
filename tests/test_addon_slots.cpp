@@ -1363,13 +1363,13 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   const std::string docked = R"({"id": "explorer", "title": "Explorer", "place": "window", "width": 640, "height": 480},
     {"id": "tool", "title": "Explorer", "place": "edit"})";
   const auto at12 = [&](std::string s) {
-    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 13, "max": 13));
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 13, "max": 13)");
     return s;
   };
   CHECK(check(k, with(screen, docked)) == rejection::malformed);  // API 4-5
   {
     std::string s = with(screen, docked);
-    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 12, "max": 13));
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 12, "max": 13)");
     CHECK(check(k, s) == rejection::malformed);  // a range that starts before 13
   }
   {
