@@ -187,6 +187,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case search_similar:
     case search_next_match:
     case search_prev_match:
+    case search_this_person:
       return mv::shell::addon_commands_available(mv::shell::addon_family::ai);
     default:
       return true;
@@ -7715,7 +7716,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case search_open:
     case search_similar:
     case search_next_match:
-    case search_prev_match: {
+    case search_prev_match:
+    case search_this_person: {
       if (!mv::shell::addon_command_available(command)) {
         if (command != search_open) return NO;
         // The pack waiting since launch (issue #292), or a later window's
@@ -7724,10 +7726,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
         if ([MVChromeHost openLocalSearchWhenStarting]) return YES;
         return [self openFileSearch];
       }
-      const char* name = command == search_open         ? "search_open"
-                         : command == search_similar    ? "search_similar"
-                         : command == search_next_match ? "search_next_match"
-                                                        : "search_prev_match";
+      const char* name = command == search_open          ? "search_open"
+                         : command == search_similar     ? "search_similar"
+                         : command == search_next_match  ? "search_next_match"
+                         : command == search_prev_match  ? "search_prev_match"
+                                                         : "search_this_person";
       return MvAddonsRunCommand(name) ? YES : NO;
     }
     case metadata_pane:

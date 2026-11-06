@@ -899,9 +899,17 @@ person's fragments and names everyone with 3+ photos, and files the remaining 40
 LFW has only clear faces, so check a clustering or People-speed change on a real library too:
 copy its `faces.db` (`sqlite3 "file:<faces.db>?mode=ro" ".backup <copy>"`; opening migrates, so
 never the live one), then `MV_FACES_DB=<copy> mv_ai_tests "[.people-settle]"` (the settle, with
-people listed before and after) or `"[.people-api]"` (what each People read the chrome makes
-costs, then the copy's unfiled faces offered again through `add`: ms per face and where they
-went; it writes, so use a fresh copy per run). Delete the copy after: it is face data.
+people listed before and after, and the counts that must be 0: faces filed where they were
+rejected, rejections of what is gone, two people of one frame in one person) or `"[.people-api]"`
+(what each People read the chrome makes costs, the sheet's review, suggestions and unknown faces
+included, then the copy's unfiled faces offered again through `add`: ms per face and where they
+went; it writes, so use a fresh copy per run) or `"[.people-heldout]"` (a tenth of the named
+people's clear faces taken out and filed again: how many come back to their person;
+`MV_HELDOUT_WEAK=1` the weak ones, `MV_HELDOUT_SETTLE=1` then settles), `"[.people-unknown-order]"`
+(the unknown-faces queue's right and wrong one-click suggestions on held-out faces) or
+`"[.people-why]"` with `MV_PEOPLE_NAME` (a named person's settle verdicts, tallied). Compare
+with the base commit's `mv_ai_tests`
+built in its own worktree, runs alternated. Delete the copy after: it is face data.
 
 The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
@@ -1130,7 +1138,8 @@ ctest --test-dir build -C Release -R script_ --output-on-failure
 # portable-core job, Ubuntu under ASan + UBSan; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
 # tools/portable/vcpkg.json, or the system). With FFmpeg, libspng and libjpeg
 # installed (pkg-config) it also builds the PR 13 / 14 clip suites,
-# mv_clip_tests and mv_trim_tests:
+# mv_clip_tests and mv_trim_tests; with libspng and libjpeg alone, #288's
+# Adjust Size maths and resolution writers, mv_adjust_size_tests:
 #   cmake -S cmake/portable -B build-portable \
 #     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
 #     -DVCPKG_MANIFEST_DIR=tools/portable
@@ -1139,6 +1148,9 @@ ctest --test-dir build -C Release -R script_ --output-on-failure
 
 # PR 13 / 14 clip editing: the same suites inside the Windows / Mac mv_tests
 ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
+# #288 Adjust Size: the maths, the stack's stated resolution, and export
+# writing it (JFIF, pHYs, EXIF), inside the Windows / Mac mv_tests
+build/bin/mv_tests "[adjust_size]"
 
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only

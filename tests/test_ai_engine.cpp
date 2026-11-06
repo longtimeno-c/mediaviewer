@@ -2806,6 +2806,87 @@ TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leave
   CHECK(r.status().frames_indexed == 6);
 }
 
+TEST_CASE("people: the sheet's review, move to, yes, not this person, merge and undo", "[ai][engine][faces]") {
+  rig r;
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.file("anna_3.jpg");
+  r.file("ben_1.jpg");
+  r.file("ben_2.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 2);
+  const std::int64_t anna = *people->a[0].integer("id");
+  const std::int64_t ben = *people->a[1].integer("id");
+  const std::int64_t anna_cover = *people->a[0].integer("cover_face");
+  REQUIRE(r.eng->person_rename(anna, "Anna", anna_cover));
+  // The review: every face, with what vouches for it; nothing doubtful yet.
+  auto review = mv::json::parse(r.eng->person_review_json(anna));
+  REQUIRE(review);
+  REQUIRE(review->a.size() == 3);
+  for (const auto& f : review->a) {
+    CHECK(f.integer("face"));
+    CHECK(f.find("support"));
+    CHECK(f.find("check"));
+  }
+  // Move to: a Ben face filed under Anna by hand is doubtful in her review,
+  // first, with Ben as its rival.
+  const auto ben_faces = mv::json::parse(r.eng->person_faces_json(ben));
+  REQUIRE(ben_faces);
+  const std::int64_t moved = *ben_faces->a[0].integer("face");
+  REQUIRE(r.eng->faces_assign({moved}, anna, false));
+  review = mv::json::parse(r.eng->person_review_json(anna));
+  REQUIRE(review);
+  REQUIRE(review->a.size() == 4);
+  CHECK(*review->a[0].integer("face") == moved);
+  CHECK(review->a[0].boolean("check").value_or(false));
+  // Not this person: it goes back to Ben, and says so.
+  auto went = r.eng->faces_reject_json({moved});
+  REQUIRE(went);
+  auto j = mv::json::parse(*went);
+  REQUIRE(j);
+  REQUIRE(j->find("to"));
+  CHECK(j->find("to")->a.size() + static_cast<std::size_t>(*j->integer("unassigned")) == 1);
+  // Yes: pinned; then unpinned.
+  REQUIRE(r.eng->faces_pin({anna_cover}, true));
+  REQUIRE(r.eng->faces_pin({anna_cover}, false));
+  // Merge with the covers seen, then undo: both people are back as they were.
+  auto token = r.eng->person_merge(anna, ben, anna_cover, 0);
+  REQUIRE(token);
+  CHECK(mv::json::parse(r.eng->people_json())->a.size() == 1);
+  REQUIRE(r.eng->person_merge_undo(*token));
+  CHECK(mv::json::parse(r.eng->people_json())->a.size() == 2);
+  // Refine and Merge duplicates in detail: a look first changes nothing.
+  const auto before = r.eng->people_json();
+  auto look = r.eng->person_refine_json(anna, true);
+  REQUIRE(look);
+  auto lj = mv::json::parse(*look);
+  REQUIRE(lj);
+  CHECK(lj->boolean("dry").value_or(false));
+  CHECK(lj->find("faces"));
+  auto dlook = r.eng->people_dedupe_json(true);
+  REQUIRE(dlook);
+  REQUIRE(mv::json::parse(*dlook));
+  CHECK(r.eng->people_json() == before);
+  auto done = r.eng->person_refine_json(anna, false);
+  REQUIRE(done);
+  CHECK(mv::json::parse(*done));
+  // Suggestions and unknown faces answer well-formed JSON.
+  auto sug = mv::json::parse(r.eng->person_suggest_json(anna, 10));
+  REQUIRE(sug);
+  CHECK(sug->find("people"));
+  CHECK(sug->find("faces"));
+  auto unknown = mv::json::parse(r.eng->unknown_faces_json(0, 50));
+  REQUIRE(unknown);
+  CHECK(unknown->integer("total"));
+}
+
 TEST_CASE("people in the open folder: only those with a face there, counted and covered there",
           "[ai][engine][faces]") {
   rig r;

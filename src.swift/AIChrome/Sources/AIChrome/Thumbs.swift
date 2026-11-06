@@ -131,4 +131,17 @@ enum ImageLoad {
     ImageCache.shared.put(key, cut)
     return cut
   }
+
+  /// The whole picture a face was found in ("Show photo", Space in a faces
+  /// sheet), uncropped, for the face's box to be outlined on. In memory only.
+  /// [worker-thread]: face_thumb may decode.
+  static func facePicture(_ t: AITable, faceID: UInt64) -> CGImage? {
+    let key = "facepic|\(faceID)"
+    if let hit = ImageCache.shared.get(key) { return hit }
+    guard t.hasFaceThumb,
+          let jpeg = t.path({ t.a.face_thumb?(t.ctx, faceID, $0, $1) ?? MV_ERR_INVALID_ARG }),
+          let full = decode(path: jpeg, maxPixel: 1024) else { return nil }
+    ImageCache.shared.put(key, full)
+    return full
+  }
 }

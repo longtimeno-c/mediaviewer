@@ -226,7 +226,10 @@ final class SearchModel: ObservableObject {
   @Published var reference: Reference?
 
   struct Reference: Equatable {
-    enum Kind: Equatable { case similar(path: String, ptsMs: Int64), person(id: UInt64) }
+    /// thisPerson: the largest face in the still or frame on screen (search_this_person).
+    enum Kind: Equatable {
+      case similar(path: String, ptsMs: Int64), person(id: UInt64), thisPerson(path: String, ptsMs: Int64)
+    }
     let kind: Kind
     let label: String       // "Similar to IMG_0412.MOV", "Photos of Sam"
   }
@@ -590,6 +593,12 @@ final class SearchModel: ObservableObject {
         st = withOptionalCString(scopeDir) { dir in
           table.a.search_person?(table.ctx, person, dir, effectiveScope, &id) ?? MV_ERR_INVALID_ARG
         }
+      case .thisPerson(let path, let pts):
+        // [no-block] like search_similar: the pack finds the face on its own
+        // thread and answers with SEARCH_DONE (count 0: no face there). It
+        // starts here, on the main actor, so the answer can never arrive
+        // before `pending` names it. It takes no scope.
+        st = table.call { table.a.search_this_person?(table.ctx, path, pts, &id) }
       }
     } else if !text.isEmpty {
       let places = chrome?.hostPlaceTerms(text) ?? 0
@@ -968,6 +977,24 @@ final class SearchModel: ObservableObject {
     reference = Reference(kind: .similar(path: path, ptsMs: pts),
                           label: "Similar to \((path as NSString).lastPathComponent)")
     run(keepSelection: false)
+  }
+
+  /// Whether the pack has "This person" (an older one does not).
+  var canFindThisPerson: Bool { table.has(\mv_ai_api.search_this_person) && table.a.search_this_person != nil }
+
+  /// "This person" from the viewer: the photos and moments of the person
+  /// whose face is largest in the still, or the clip's current frame.
+  func findThisPerson(path: String, isVideo: Bool, positionMs: Int64) {
+    guard !path.isEmpty else { return }
+    let pts = isVideo ? max(0, positionMs) : -1
+    reference = Reference(kind: .thisPerson(path: path, ptsMs: pts), label: "This person")
+    run(keepSelection: false)
+  }
+
+  /// The search on screen is "This person" (its empty state says no face was found).
+  var isThisPerson: Bool {
+    if case .thisPerson? = reference?.kind { return true }
+    return false
   }
 
   enum PersonOpen { case opened, nothing, failed }

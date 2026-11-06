@@ -11,7 +11,7 @@ import AppKit
 import SwiftUI
 
 /// A face or cover, cropped in memory. Monogram until (or unless) it decodes.
-private struct FaceImage: View {
+struct FaceImage: View {
   let table: AITable
   let faceID: UInt64
   let box: [Double]
@@ -67,6 +67,10 @@ struct PeopleGrid: View {
   @State private var selection = Set<UInt64>()
   /// "Merge duplicates" is running in the pack.
   @State private var deduping = false
+  /// "Merge duplicates" in detail: the look, shown until Apply or Cancel.
+  @State private var dedupeLook: DedupePlan?
+  /// The unknown faces sheet is open.
+  @State private var showUnknown = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -100,7 +104,9 @@ struct PeopleGrid: View {
               }
               Button("Merge duplicates") { mergeDuplicates() }
                 .disabled(deduping)
-                .help("Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.")
+                .help(model.canDedupeDetail
+                      ? "Re-check every face and merge people who are the same person. Two people you named differently are never merged. You see the merges before they happen, and can undo them."
+                      : "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.")
             }
           }
         }
@@ -112,14 +118,30 @@ struct PeopleGrid: View {
               .equatable()
           }
         }
-        if let showAll, shown.count < model.people.count {
-          Button("Show all \(model.people.count) people…", action: showAll)
-            .help(model.readOnly ? "Every person found" : "Every person found, to name, merge and correct")
+        HStack(spacing: 12) {
+          if let showAll, shown.count < model.people.count {
+            Button("Show all \(model.people.count) people…", action: showAll)
+              .help(model.readOnly ? "Every person found" : "Every person found, to name, merge and correct")
+          }
+          // Faces filed under nobody, clear enough to name (docs/design/17
+          // "Correcting people"). Hidden with none, or with an older pack.
+          if model.unknownCount > 0 && !model.readOnly {
+            Button("Unknown faces (\(countText(UInt64(model.unknownCount))))") { showUnknown = true }
+              .help("Faces not filed under anyone yet. Say who they are.")
+              .accessibilityLabel("Unknown faces, \(model.unknownCount)")
+          }
         }
       }
       if !model.peopleNote.isEmpty {
-        Text(model.peopleNote).font(AITheme.font(12)).foregroundStyle(AITheme.title)
-          .transition(.opacity)
+        HStack(spacing: 10) {
+          Text(model.peopleNote).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+          if model.mergeUndo != nil {
+            Button("Undo") { model.undoGridMerge() }
+              .help("Put the people back as they were")
+              .accessibilityLabel("Undo merge")
+          }
+        }
+        .transition(.opacity)
       }
     }
     .padding(12)
@@ -137,6 +159,14 @@ struct PeopleGrid: View {
       if !selection.isSubset(of: ids) { selection.formIntersection(ids) }
     }
     .onExitCommand { selection = [] }
+    .sheet(isPresented: $showUnknown) {
+      UnknownFacesSheet(model: model) { showUnknown = false }
+    }
+    .sheet(isPresented: Binding(get: { dedupeLook != nil }, set: { if !$0 { dedupeLook = nil } })) {
+      if let plan = dedupeLook {
+        DedupeSheet(model: model, plan: plan, cancel: { dedupeLook = nil }, apply: applyDuplicates)
+      }
+    }
   }
 
   /// The people this grid shows: the first `limit`, or everyone.
@@ -194,6 +224,7 @@ struct PeopleGrid: View {
   /// "Merge duplicates" (docs/design/17): the whole library, on request; the note
   /// under the grid says what it did.
   private func mergeDuplicates() {
+    guard !model.canDedupeDetail else { return lookDuplicates() }
     deduping = true
     Task {
       let result = await model.mergeDuplicates()
@@ -206,6 +237,33 @@ struct PeopleGrid: View {
       case let (m, f)?:
         model.note((m == 1 ? "1 person" : "\(m) people") + " merged, " + (f == 1 ? "1 face" : "\(f) faces") + " moved.")
       }
+    }
+  }
+
+  /// Merge duplicates in detail, step 1: a look (MV_AI_DRY_RUN), nothing changed.
+  private func lookDuplicates() {
+    deduping = true
+    Task {
+      let plan = await model.dedupeDetail(dry: true)
+      deduping = false
+      switch plan {
+      case nil: model.note("Couldn't check for duplicates. Try again.")
+      case let p? where p.isEmpty: model.note("No duplicates found, and every face matches.")
+      case let p?: dedupeLook = p
+      }
+    }
+  }
+
+  /// Step 2: for real; the note says what it did, with Undo of every merge.
+  private func applyDuplicates() {
+    dedupeLook = nil
+    deduping = true
+    Task {
+      let plan = await model.dedupeDetail(dry: false)
+      deduping = false
+      guard let plan else { return model.note("Couldn't merge the duplicates. Try again.") }
+      let tokens = model.table.canMergeUndo ? plan.undoTokens : []
+      model.note(plan.summary, seconds: tokens.isEmpty ? 5 : 8, undo: tokens.isEmpty ? nil : tokens)
     }
   }
 
@@ -364,6 +422,10 @@ private struct PersonCover: View, Equatable {
       } isTargeted: { dropTarget = $0 }
       .help(model.readOnly ? "Click to see this person's photos."
             : "Click to see this person's photos. Drag onto another person to merge them.")
+      // One element whatever it draws: once the cover decodes, FaceImage's
+      // picture is decorative and the monogram is gone, and without this the
+      // label had nothing to sit on, so VoiceOver skipped the person.
+      .accessibilityElement(children: .ignore)
       .accessibilityLabel(person.name.isEmpty ? "Unnamed person" : person.name)
       .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
       .accessibilityHint("Shows their photos in the gallery")
@@ -435,7 +497,6 @@ private struct PersonName: View, Equatable {
   }
 }
 
-/// A person's faces: "Not this person", split, merge, show photos.
 /// Everyone, from "Show all … people" under the Settings grid: the same grid,
 /// in a scroll view of its own so only the cards on screen are live.
 struct AllPeopleSheet: View {
@@ -469,190 +530,73 @@ struct AllPeopleSheet: View {
   }
 }
 
-struct PersonSheet: View {
+/// "Merge duplicates" in detail: the merges a look proposes, each as the
+/// covers of the people that would go and the one they would join, with
+/// Apply and Cancel. Nothing has changed while it is up.
+struct DedupeSheet: View {
   @ObservedObject var model: ManagementModel
-  let person: Person
-  let done: () -> Void
-  @State private var faces: [Face] = []
-  @State private var selection = Set<UInt64>()
-  @State private var loading = true
-  @State private var refining = false
-  @State private var refineNote = ""
-  /// The face the arrow keys move from (the last one clicked or reached).
-  @State private var cursor: Int?
-  @FocusState private var focused: Bool
-
-  private func toggle(_ id: UInt64, at index: Int) {
-    if !selection.insert(id).inserted { selection.remove(id) }
-    cursor = index
-  }
+  let plan: DedupePlan
+  let cancel: () -> Void
+  let apply: () -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      HStack {
-        Text(person.name.isEmpty ? "Unnamed person" : person.name)
-          .font(AITheme.font(18)).foregroundStyle(AITheme.title)
-        Spacer()
-        Button("Show photos") { done(); model.showPhotos(of: person) }
-        Menu("Merge into…") {
-          ForEach(model.people.filter { $0.id != person.id }) { other in
-            Button(model.displayName(other)) {
-              model.merge(into: other.id, from: person.id)
-              done()
-            }
-          }
-        }
-        .fixedSize()
-      }
-      Text("Select faces that are someone else. ⌘-click selects several, ← → move, ⇧ adds; Delete removes them from this person.")
+      Text("Merge duplicates").font(AITheme.font(18)).foregroundStyle(AITheme.title)
+      Text(plan.merges.isEmpty ? "No duplicates found." : "These people look like the same person. Nothing changes until you apply.")
         .font(AITheme.font(12)).foregroundStyle(AITheme.body)
-      ScrollViewReader { proxy in
-        ScrollView {
-          if loading {
-            ProgressView().frame(maxWidth: .infinity).padding(40)
-          }
-          LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 92), spacing: 10)], spacing: 10) {
-            ForEach(Array(faces.enumerated()), id: \.element.id) { i, face in
-              FaceCell(table: model.table, face: face, selected: selection.contains(face.id),
-                       toggle: { toggle(face.id, at: i) },
-                       reject: { reject([face.id]) })
-                .id(face.id)
-                .onTapGesture {
-                  if NSEvent.modifierFlags.contains(.command) || NSEvent.modifierFlags.contains(.shift) {
-                    toggle(face.id, at: i)
-                  } else {
-                    selection = [face.id]
-                    cursor = i
-                  }
-                }
-            }
-          }
-          .padding(4)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          ForEach(plan.merges) { merge in row(merge) }
         }
-        .frame(minHeight: 280)
-        .focusable()
-        .focused($focused)
-        .focusEffectDisabled()
-        .onKeyPress(keys: [.delete, .deleteForward]) { _ in
-          guard !selection.isEmpty else { return .ignored }
-          reject(Array(selection))
-          return .handled
-        }
-        // Selection from the keyboard (issue #192): "Not this person" and
-        // Split were mouse-only. ← → move it, ⇧ adds to it.
-        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-          guard !faces.isEmpty else { return .ignored }
-          let step = press.key == .leftArrow ? -1 : 1
-          let next = cursor.map { min(max($0 + step, 0), faces.count - 1) } ?? (step < 0 ? faces.count - 1 : 0)
-          cursor = next
-          let id = faces[next].id
-          if press.modifiers.contains(.shift) { selection.insert(id) } else { selection = [id] }
-          proxy.scrollTo(id)
-          return .handled
-        }
+        .padding(4)
+      }
+      .frame(minHeight: 200)
+      if !plan.movedNote.isEmpty {
+        Text(plan.movedNote).font(AITheme.font(12)).foregroundStyle(AITheme.body)
       }
       HStack {
-        Button("Not this person") { reject(Array(selection)) }
-          .disabled(selection.isEmpty)
-        Button("Split into new person") {
-          model.split(Array(selection))
-          faces.removeAll { selection.contains($0.id) }
-          selection = []
-        }
-        .disabled(selection.count < 1)
-        if model.canRefine {
-          Button("Refine faces") { refine() }
-            .disabled(refining || loading)
-            .help("Check every face against this person and move out the ones that don't match")
-          if refining {
-            ProgressView().controlSize(.small)
-          } else if !refineNote.isEmpty {
-            Text(refineNote).font(AITheme.font(12)).foregroundStyle(AITheme.body)
-          }
-        }
         Spacer()
-        Button("Done", action: done).keyboardShortcut(.defaultAction)
+        Button("Cancel", action: cancel)
+          .keyboardShortcut(.cancelAction)
+          .help("Leave everyone as they are")
+          .accessibilityLabel("Cancel, change nothing")
+        Button("Apply", action: apply)
+          .keyboardShortcut(.defaultAction)
+          .help("Merge these people. Undo puts them back.")
+          .accessibilityLabel(plan.merges.count == 1 ? "Apply the merge" : "Apply \(plan.merges.count) merges")
       }
     }
     .padding(20)
-    .frame(width: 620, height: 520)
-    .onExitCommand(perform: done)  // Esc closes, as Done does (issue #192)
-    .task {
-      faces = await model.faces(of: person.id)
-      loading = false
-      focused = true
-    }
+    .frame(width: 560, height: 480)
+    .onExitCommand(perform: cancel)
   }
 
-  private func refine() {
-    refining = true
-    refineNote = ""
-    selection = []
-    Task {
-      let removed = await model.refine(person.id)
-      let now = await model.faces(of: person.id)
-      withAnimation(.easeOut(duration: 0.18)) { faces = now }
-      refining = false
-      switch removed {
-      case nil: refineNote = "Couldn't refine"
-      case 0: refineNote = "All faces match"
-      case 1: refineNote = "1 face moved out"
-      case let n?: refineNote = "\(n) faces moved out"
-      }
-    }
-  }
+  private func faces(_ n: Int) -> String { n == 1 ? "1 face" : "\(n) faces" }
 
-  private func reject(_ ids: [UInt64]) {
-    model.reject(ids)
-    withAnimation(.easeOut(duration: 0.18)) {
-      faces.removeAll { ids.contains($0.id) }
-      selection.subtract(ids)
-    }
-  }
-}
-
-private struct FaceCell: View {
-  let table: AITable
-  let face: Face
-  let selected: Bool
-  let toggle: () -> Void
-  let reject: () -> Void
-  @State private var hover = false
-
-  /// What VoiceOver reads: the file the face is in, and the moment for a clip.
-  private var label: String {
-    let name = (face.path as NSString).lastPathComponent
-    guard face.ptsMs >= 0 else { return name.isEmpty ? "Face" : "Face in \(name)" }
-    let s = face.ptsMs / 1000
-    let at = s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
-                       : String(format: "%d:%02d", s / 60, s % 60)
-    return "Face in \(name) at \(at)"
-  }
-
-  var body: some View {
-    FaceImage(table: table, faceID: face.id, box: face.box, monogram: "")
-      .frame(width: 72, height: 72)
-      .overlay(Circle().stroke(selected ? AITheme.accent : .clear, lineWidth: 2.5).padding(-2))
-      .overlay(alignment: .topTrailing) {
-        if hover {
-          Button(action: reject) {
-            Image(systemName: "xmark.circle.fill")
-              .symbolRenderingMode(.palette)
-              .foregroundStyle(.white, .black.opacity(0.65))
-              .font(.system(size: 16))
-          }
-          .buttonStyle(.plain)
-          .help("Not this person")
-          .accessibilityLabel("Not this person")
-          .transition(.opacity)
+  private func row(_ merge: DedupePlan.Merge) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(merge.title).font(AITheme.font(13)).foregroundStyle(AITheme.title)
+      HStack(alignment: .top, spacing: 12) {
+        ForEach(merge.from) { p in
+          cover(face: p.coverFace, box: p.coverBox, name: p.name, caption: faces(p.faces))
         }
+        Image(systemName: "arrow.right").foregroundStyle(AITheme.body).padding(.top, 18)
+          .accessibilityHidden(true)
+        cover(face: merge.coverFace, box: merge.coverBox, name: merge.intoName,
+              caption: merge.intoName.isEmpty ? faces(merge.intoFaces) : merge.intoName)
       }
-      .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(label)
-      .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-      .accessibilityHint("Selects or deselects this face")
-      .accessibilityAction { toggle() }
-      .accessibilityAction(named: "Not this person") { reject() }
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(merge.title + ", " + merge.from.map { faces($0.faces) }.joined(separator: " and ")
+                        + " into " + faces(merge.intoFaces))
+  }
+
+  private func cover(face: UInt64, box: [Double], name: String, caption: String) -> some View {
+    VStack(spacing: 4) {
+      FaceImage(table: model.table, faceID: face, box: box, monogram: String(name.prefix(1)).uppercased())
+        .frame(width: 56, height: 56)
+      Text(caption).font(AITheme.font(11)).foregroundStyle(AITheme.body)
+        .lineLimit(1).frame(maxWidth: 80)
+    }
   }
 }

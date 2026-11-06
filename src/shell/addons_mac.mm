@@ -112,7 +112,7 @@
 // pack running for the exit (a read inside it must not see it freed). A chrome
 // without it gets -shutdown.
 - (BOOL)shutdownForQuit;
-// search_open / search_similar / search_next_match / search_prev_match.
+// search_open / search_similar / search_next_match / search_prev_match / search_this_person.
 - (BOOL)runCommand:(NSString*)name;
 // A directory opened in the viewer (the chrome calls note_folder_opened).
 - (void)folderChanged:(NSString*)dir;

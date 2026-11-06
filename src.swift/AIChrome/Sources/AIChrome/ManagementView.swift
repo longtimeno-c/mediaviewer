@@ -174,6 +174,11 @@ final class ManagementModel: ObservableObject {
   /// What the last People action did ("Merged 2 people into Sam."), shown in
   /// the People section itself: the top line is out of sight down there.
   @Published private(set) var peopleNote = ""
+  /// Faces filed under nobody that are clear enough to name
+  /// (unknown_faces_json "total"); 0 with a pack without the entry.
+  @Published private(set) var unknownCount = 0
+  /// The last grid merge's undo tokens while its "Undo" shows (~8 s).
+  @Published private(set) var mergeUndo: [UInt64]?
   /// Pictures and Movies while no indexed folder covers them, worked out off
   /// the main thread with the roots (never in a view body).
   @Published private(set) var suggestedFolders: [SuggestedFolder] = []
@@ -607,6 +612,7 @@ final class ManagementModel: ObservableObject {
     guard visible > 0 else { return }  // appeared() reads them
     guard facesOn else {
       if !people.isEmpty { people = [] }
+      if unknownCount != 0 { unknownCount = 0 }
       return
     }
     if peopleLoading {
@@ -630,8 +636,11 @@ final class ManagementModel: ObservableObject {
                faces: Int(int64($0["faces"])), coverFace: UInt64(clamping: int64($0["cover_face"])),
                coverBox: ($0["cover_box"] as? [NSNumber] ?? []).map { $0.doubleValue })
       }
+      // "Unknown faces (N)": the count only (one row asked for).
+      let unknown = UnknownPage.parse(t.unknownFacesJSON(offset: 0, limit: 1))?.total ?? 0
       await MainActor.run {
         self.applyPeople(list)
+        if self.unknownCount != unknown { self.unknownCount = unknown }
         guard self.peopleAgain else {
           self.peopleLoading = false
           return
@@ -653,14 +662,29 @@ final class ManagementModel: ObservableObject {
     if list != people { people = list }
   }
 
-  /// A line under People that clears itself after a few seconds.
-  func note(_ text: String) {
+  /// A line under People that clears itself after a few seconds (a merge's,
+  /// with its Undo, after `seconds`).
+  func note(_ text: String, seconds: Double = 5, undo: [UInt64]? = nil) {
     noteGeneration &+= 1
     let g = noteGeneration
     peopleNote = text
+    mergeUndo = undo
     Task { @MainActor in
-      try? await Task.sleep(nanoseconds: 5_000_000_000)
-      if self.noteGeneration == g { self.peopleNote = "" }
+      try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+      if self.noteGeneration == g {
+        self.peopleNote = ""
+        self.mergeUndo = nil
+      }
+    }
+  }
+
+  /// The grid's "Undo" after a merge: each merge put back, the last first.
+  func undoGridMerge() {
+    guard let tokens = mergeUndo else { return }
+    mergeUndo = nil
+    Task {
+      let ok = await undo(.merge(tokens))
+      note(ok ? "Merge undone." : "That merge can no longer be undone.")
     }
   }
 
@@ -685,13 +709,15 @@ final class ManagementModel: ObservableObject {
   /// The card shows the name now; the row is written on a worker, as merge
   /// and reject are (person_rename takes the engine's lock; issue #192).
   func rename(_ id: UInt64, _ name: String) {
+    let cover = people.first(where: { $0.id == id })?.coverFace ?? 0
     if let i = people.firstIndex(where: { $0.id == id }) { people[i].name = name }
     let t = table
     let previous = renames
     // One after another: two quick renames land in the order they were typed.
     renames = Task.detached {
       await previous?.value
-      let ok = t.call { t.a.person_rename?(t.ctx, id, name) } == MV_OK
+      // The cover the user saw while naming becomes one of theirs.
+      let ok = (t.personRenameCover(id, name, cover: cover) ?? t.call { t.a.person_rename?(t.ctx, id, name) }) == MV_OK
       if !ok {
         await MainActor.run {
           self.note("The name could not be saved. Try again.")
@@ -710,18 +736,34 @@ final class ManagementModel: ObservableObject {
     let from = ids.filter { $0 != into }
     guard !from.isEmpty, let i = people.firstIndex(where: { $0.id == into }) else { return }
     let moved = people.filter { from.contains($0.id) }
+    // The covers on screen: the faces the user judged by (person_merge_covers).
+    let coverInto = people[i].coverFace
+    let covers = Dictionary(moved.map { ($0.id, $0.coverFace) }, uniquingKeysWith: { a, _ in a })
     if people[i].name.isEmpty, let named = moved.first(where: { !$0.name.isEmpty }) {
       people[i].name = named.name
     }
     people[i].faces += moved.reduce(0) { $0 + $1.faces }
     let name = people[i].name.isEmpty ? "one person" : people[i].name
     people.removeAll { from.contains($0.id) }
-    note(moved.count == 1 ? "Merged into \(name)." : "Merged \(moved.count + 1) people into \(name).")
+    let text = moved.count == 1 ? "Merged into \(name)." : "Merged \(moved.count + 1) people into \(name)."
+    note(text)
     let t = table
     Task.detached {
-      let failed = from.map { f in t.call { t.a.person_merge?(t.ctx, into, f) } }.contains { $0 != MV_OK }
+      var tokens: [UInt64] = []
+      let failed = from.map { f -> mv_status in
+        if let r = t.personMergeCovers(into: into, from: f, coverInto: coverInto, coverFrom: covers[f] ?? 0) {
+          if r.status == MV_OK && r.undo != 0 { tokens.append(r.undo) }
+          return r.status
+        }
+        return t.call { t.a.person_merge?(t.ctx, into, f) }
+      }.contains { $0 != MV_OK }
+      let undo = tokens
       await MainActor.run {
-        if failed { self.note("Some faces could not be merged. Try again.") }
+        if failed {
+          self.note("Some faces could not be merged. Try again.")
+        } else if !undo.isEmpty && t.canMergeUndo && self.peopleNote == text {
+          self.note(text, seconds: 8, undo: undo)
+        }
         self.reloadPeople()
       }
     }
@@ -739,6 +781,95 @@ final class ManagementModel: ObservableObject {
     }.value
   }
 
+  // ---- correcting people (2026-11-02, docs/design/17 "Correcting people") ----
+  // Every call below is [worker-thread]: each runs detached, never here.
+
+  var canAssign: Bool { table.canAssign }
+  var canPin: Bool { table.canPin }
+  var canUnknown: Bool { table.canUnknown }
+  var canSuggest: Bool { table.canSuggest }
+  var canMergeCovers: Bool { table.canMergeCovers }
+  var canRejectJSON: Bool { table.canRejectJSON }
+
+  /// A person's sheet: person_review_json (doubtful first), or person_faces_json
+  /// from an older pack (`detailed` false: no doubt, pins or quality to show).
+  func review(of person: UInt64) async -> (faces: [ReviewFace], detailed: Bool) {
+    let t = table
+    return await Task.detached {
+      if let faces = ReviewFace.parseReview(t.personReviewJSON(person)) { return (faces, true) }
+      let json = t.json { t.a.person_faces_json?(t.ctx, person, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+      return (ReviewFace.parsePlain(json), false)
+    }.value
+  }
+
+  /// "Move to…" / "Yes": the faces become `person`'s. False when it failed.
+  func assign(_ faces: [UInt64], to person: UInt64, pin: Bool) async -> Bool {
+    let t = table
+    return await Task.detached { t.facesAssign(faces, to: person, pin: pin) == MV_OK }.value
+  }
+
+  /// "Yes, this is <name>" (true) / "Unpin" (false).
+  func pin(_ faces: [UInt64], _ pinned: Bool) async -> Bool {
+    let t = table
+    return await Task.detached { t.facesPin(faces, pinned) == MV_OK }.value
+  }
+
+  /// "Not this person", and where the faces went: nil from an older pack
+  /// (face_reject one at a time, which says nothing) or when it failed.
+  func rejectReporting(_ faces: [UInt64]) async -> RejectOutcome? {
+    guard !faces.isEmpty else { return nil }
+    let t = table
+    return await Task.detached { () -> RejectOutcome? in
+      if t.canRejectJSON { return RejectOutcome.parse(t.facesRejectJSON(faces)) }
+      for face in faces { t.call { t.a.face_reject?(t.ctx, face) } }
+      return nil
+    }.value
+  }
+
+  /// "Might also be <name>": empty without the entry.
+  func suggestions(for person: UInt64, limit: UInt32 = 12) async -> PersonSuggestions {
+    let t = table
+    return await Task.detached { PersonSuggestions.parse(t.personSuggestJSON(person, limit: limit)) }.value
+  }
+
+  /// A page of unknown faces; nil without the entry or when it failed.
+  func unknownFaces(offset: Int, limit: Int = 60) async -> UnknownPage? {
+    let t = table
+    return await Task.detached {
+      UnknownPage.parse(t.unknownFacesJSON(offset: UInt32(clamping: offset), limit: UInt32(clamping: limit)))
+    }.value
+  }
+
+  /// A suggested person merged into this one, with both covers on screen;
+  /// the undo token (nil: it failed; 0: merged, nothing to undo with).
+  func mergeCovers(into: UInt64, from: UInt64, coverInto: UInt64, coverFrom: UInt64) async -> UInt64? {
+    let t = table
+    return await Task.detached { () -> UInt64? in
+      if let r = t.personMergeCovers(into: into, from: from, coverInto: coverInto, coverFrom: coverFrom) {
+        return r.status == MV_OK ? r.undo : nil
+      }
+      return t.call { t.a.person_merge?(t.ctx, into, from) } == MV_OK ? 0 : nil
+    }.value
+  }
+
+  /// Puts the last action back. False when any of it failed.
+  func undo(_ action: PeopleUndo) async -> Bool {
+    let t = table
+    let ok = await Task.detached { () -> Bool in
+      switch action {
+      case .assign(let groups):
+        return groups.map { t.facesAssign($0.faces, to: $0.person, pin: $0.pin, undo: true) == MV_OK }
+          .allSatisfy { $0 }
+      case .merge(let tokens):
+        return tokens.reversed().map { t.personMergeUndo($0) == MV_OK }.allSatisfy { $0 }
+      case .pin(let faces, let pinned):
+        return t.facesPin(faces, pinned) == MV_OK
+      }
+    }.value
+    reloadPeople()
+    return ok
+  }
+
   /// A pack built before person_refine was appended has no "Refine faces".
   var canRefine: Bool { table.has(\mv_ai_api.person_refine) }
 
@@ -754,6 +885,30 @@ final class ManagementModel: ObservableObject {
     }.value
     reloadPeople()
     return removed
+  }
+
+  /// Refine in detail: a look, then Apply (person_refine_json).
+  var canRefineDetail: Bool { table.canRefineDetail }
+
+  /// person_refine_json: with `dry` a look (nothing changes), else the real
+  /// run, which reloads the grid. Nil when it could not run.
+  func refineDetail(_ person: UInt64, dry: Bool) async -> RefineAnswer? {
+    let t = table
+    let answer = await Task.detached { RefineAnswer.parse(t.personRefineJSON(person, dry: dry)) }.value
+    if !dry { reloadPeople() }
+    return answer
+  }
+
+  /// Merge duplicates in detail: a look, then Apply (people_dedupe_json).
+  var canDedupeDetail: Bool { table.canDedupeDetail }
+
+  /// people_dedupe_json: with `dry` a look (nothing changes), else the real
+  /// run, which reloads the grid. Nil when it could not run.
+  func dedupeDetail(dry: Bool) async -> DedupePlan? {
+    let t = table
+    let plan = await Task.detached { DedupePlan.parse(t.peopleDedupeJSON(dry: dry)) }.value
+    if !dry { reloadPeople() }
+    return plan
   }
 
   /// A pack built before people_dedupe was appended has no "Merge duplicates".

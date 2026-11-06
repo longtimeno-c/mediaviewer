@@ -213,3 +213,4 @@ MV_COMMAND(adjust_levels_blue_mid, excluded, edit, excludes, handles, "island sl
 MV_COMMAND(adjust_levels_blue_white, excluded, edit, excludes, handles, "island slider; the Mac pane writes the edit stack", nullptr)
 MV_COMMAND(adjust_pick, excluded, edit, excludes, handles, "island button; the Mac pane calls mv_chrome_adjust_pick", nullptr)
 MV_COMMAND(adjust_open_eyes, excluded, edit, excludes, handles, "island button; the Mac pane calls mv_chrome_adjust_open_eyes", nullptr)
+MV_COMMAND(search_this_person, session, session, handles, handles, nullptr, nullptr)

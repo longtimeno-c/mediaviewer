@@ -159,6 +159,120 @@ final class AITable: @unchecked Sendable {
   func indexAnyway() { setSetting("battery_override", "1") }
 }
 
+/// Correcting people (2026-11-02, docs/design/17 "Correcting people"): entries
+/// appended after root_set_documents. Each wrapper answers nil when the pack's
+/// table does not reach the entry (struct_size, through `has`) or its pointer is
+/// NULL, so the caller falls back to person_faces_json / person_rename /
+/// person_merge / face_reject. All [worker-thread]: call them from a detached
+/// task only.
+extension AITable {
+  var canAssign: Bool { has(\mv_ai_api.faces_assign) && a.faces_assign != nil }
+  var canPin: Bool { has(\mv_ai_api.faces_pin) && a.faces_pin != nil }
+  var canRejectJSON: Bool { has(\mv_ai_api.faces_reject_json) && a.faces_reject_json != nil }
+  var canRenameCover: Bool { has(\mv_ai_api.person_rename_cover) && a.person_rename_cover != nil }
+  var canMergeCovers: Bool { has(\mv_ai_api.person_merge_covers) && a.person_merge_covers != nil }
+  var canMergeUndo: Bool { has(\mv_ai_api.person_merge_undo) && a.person_merge_undo != nil }
+  var canReview: Bool { has(\mv_ai_api.person_review_json) && a.person_review_json != nil }
+  var canUnknown: Bool { has(\mv_ai_api.unknown_faces_json) && a.unknown_faces_json != nil }
+  var canSuggest: Bool { has(\mv_ai_api.person_suggest_json) && a.person_suggest_json != nil }
+
+  /// "Move to" / "Yes": the faces become `person`'s (pinned with `pin`).
+  /// `undo`: putting faces back (MV_AI_ASSIGN_UNDO): nothing recorded against
+  /// where they are now; person 0 returns them to nobody.
+  func facesAssign(_ faces: [UInt64], to person: UInt64, pin: Bool, undo: Bool = false) -> mv_status? {
+    guard canAssign, !faces.isEmpty else { return nil }
+    return guarded { () -> mv_status? in
+      guard let fn = a.faces_assign else { return nil }
+      let flags = (pin ? MV_AI_ASSIGN_PIN : 0) | (undo ? MV_AI_ASSIGN_UNDO : 0)
+      return faces.withUnsafeBufferPointer {
+        fn(ctx, $0.baseAddress, UInt32($0.count), person, flags)
+      }
+    } ?? nil
+  }
+
+  /// "Yes, this is <name>" (true) / "Unpin" (false).
+  func facesPin(_ faces: [UInt64], _ pinned: Bool) -> mv_status? {
+    guard canPin, !faces.isEmpty else { return nil }
+    return guarded { () -> mv_status? in
+      guard let fn = a.faces_pin else { return nil }
+      return faces.withUnsafeBufferPointer { fn(ctx, $0.baseAddress, UInt32($0.count), pinned ? 1 : 0) }
+    } ?? nil
+  }
+
+  /// "Not this person" for several faces, and where they went. A write: the
+  /// pack keeps its answer, so the buffer retry does not reject twice.
+  func facesRejectJSON(_ faces: [UInt64]) -> String? {
+    guard canRejectJSON, !faces.isEmpty else { return nil }
+    return faces.withUnsafeBufferPointer { ids in
+      json { a.faces_reject_json?(ctx, ids.baseAddress, UInt32(ids.count), $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+    }
+  }
+
+  /// person_rename, pinning the cover the user saw (0: the grid's).
+  func personRenameCover(_ person: UInt64, _ name: String, cover: UInt64) -> mv_status? {
+    guard canRenameCover else { return nil }
+    return guarded { () -> mv_status? in
+      guard let fn = a.person_rename_cover else { return nil }
+      return name.withCString { fn(ctx, person, $0, cover) }
+    } ?? nil
+  }
+
+  /// person_merge with the covers the user saw; the undo token (0: none).
+  func personMergeCovers(into: UInt64, from: UInt64, coverInto: UInt64, coverFrom: UInt64)
+    -> (status: mv_status, undo: UInt64)? {
+    guard canMergeCovers else { return nil }
+    return guarded { () -> (mv_status, UInt64)? in
+      guard let fn = a.person_merge_covers else { return nil }
+      var token: UInt64 = 0
+      let s = fn(ctx, into, from, coverInto, coverFrom, &token)
+      return (s, token)
+    }.flatMap { $0.map { (status: $0.0, undo: $0.1) } }
+  }
+
+  func personMergeUndo(_ token: UInt64) -> mv_status? {
+    guard canMergeUndo, token != 0 else { return nil }
+    return guarded { () -> mv_status? in a.person_merge_undo?(ctx, token) } ?? nil
+  }
+
+  func personReviewJSON(_ person: UInt64) -> String? {
+    guard canReview else { return nil }
+    return json { a.person_review_json?(ctx, person, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+  }
+
+  func unknownFacesJSON(offset: UInt32, limit: UInt32) -> String? {
+    guard canUnknown else { return nil }
+    return json { a.unknown_faces_json?(ctx, offset, min(limit, 200), $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+  }
+
+  func personSuggestJSON(_ person: UInt64, limit: UInt32) -> String? {
+    guard canSuggest else { return nil }
+    return json { a.person_suggest_json?(ctx, person, limit, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+  }
+
+  /// Refine and Merge duplicates in detail (2026-11-02): a look first
+  /// (MV_AI_DRY_RUN), then the real run. A pack without them keeps
+  /// person_refine / people_dedupe.
+  var canRefineDetail: Bool { has(\mv_ai_api.person_refine_json) && a.person_refine_json != nil }
+  var canDedupeDetail: Bool { has(\mv_ai_api.people_dedupe_json) && a.people_dedupe_json != nil }
+
+  /// person_refine_json: which faces leave `person` and where. With `dry`
+  /// nothing changes. A real run's answer is kept by the pack for the
+  /// buffer retry, so it is not run twice.
+  func personRefineJSON(_ person: UInt64, dry: Bool) -> String? {
+    guard canRefineDetail else { return nil }
+    let flags = dry ? MV_AI_DRY_RUN : 0
+    return json { a.person_refine_json?(ctx, person, flags, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+  }
+
+  /// people_dedupe_json: who merges into whom. With `dry` nothing changes;
+  /// for real each merged person carries a person_merge_undo token.
+  func peopleDedupeJSON(dry: Bool) -> String? {
+    guard canDedupeDetail else { return nil }
+    let flags = dry ? MV_AI_DRY_RUN : 0
+    return json { a.people_dedupe_json?(ctx, flags, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+  }
+}
+
 /// `body(nil)` for nil, else the C string: the table takes NULL for "no scope".
 func withOptionalCString<R>(_ s: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
   guard let s else { return body(nil) }
