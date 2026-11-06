@@ -15,7 +15,11 @@
 namespace mv::enhance {
 namespace {
 
+// What `done` reports: a file's name, or a Photos-library photo's key whole
+// (S0: the host added the result to the library; the engine says so and
+// never shows the key).
 std::string name_of(const std::string& path) {
+  if (path.rfind("photos:", 0) == 0) return path;
   const std::size_t slash = path.find_last_of("/\\");
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
@@ -28,6 +32,10 @@ std::string why(status s) {
     case status::unsupported_format: return "Enhance cannot read this file's sound.";
     case status::io: return "The new file could not be written. Check the folder has room and can be written to.";
     case status::out_of_memory: return "There was not enough memory to finish.";
+    // A library photo's result could not be added (S0): Photos access.
+    case status::permission_denied:
+      return "MediaViewer may not add photos to your Photos library. Allow it in System Settings, "
+             "Privacy & Security, Photos.";
     default: return "Enhance stopped before it finished. Nothing was written.";
   }
 }
@@ -60,6 +68,14 @@ std::uint32_t scale_of(const job_request::part& p) {
 const job_request::part* part_of(const job_request& r, model_kind k) {
   for (const auto& p : r.parts) {
     if (p.kind == k && p.spec) return &p;
+  }
+  return nullptr;
+}
+
+// Enhance image's part: any of the photo's five models (spec.h kStillKinds).
+const job_request::part* still_part(const job_request& r) {
+  for (const auto& p : r.parts) {
+    if (still_family(p.kind) && p.spec) return &p;
   }
   return nullptr;
 }
@@ -148,6 +164,32 @@ restyle_quality quality_of(const job_request::part& part) {
 
 }  // namespace
 
+// io.tensors: the graphs' names when the pinned export is not our own.
+restyle_io restyle_io_of(const model_spec& spec) {
+  restyle_io io;
+  if (const json::value* t = spec.io.find("tensors")) {
+    const auto take = [&](const char* key, std::string& into) {
+      if (const std::string* v = t->str(key)) into = *v;
+    };
+    take("ids", io.ids);
+    take("sample", io.sample);
+    take("timestep", io.timestep);
+    take("hidden", io.hidden);
+    take("encode_in", io.encode_in);
+    take("decode_in", io.decode_in);
+    take("dim_batch", io.dim_batch);
+    take("dim_h", io.dim_h);
+    take("dim_w", io.dim_w);
+    if (const json::value* c = t->find("coreml"); c && c->k == json::kind::boolean) io.coreml = c->b;
+    if (const json::value* fixed = t->find("fixed"); fixed && fixed->k == json::kind::object) {
+      for (const auto& [name, v] : fixed->o) {
+        if (v.k == json::kind::number && v.is_integer && v.i > 0 && v.i < 4096) io.fixed.emplace_back(name, v.i);
+      }
+    }
+  }
+  return io;
+}
+
 job_runner::job_runner(run_port port) : port_(std::move(port)) {}
 
 job_runner::~job_runner() {
@@ -164,7 +206,7 @@ bool job_runner::supports(model_kind k, item_kind item) const {
   if (k == model_kind::video) {
     return item == item_kind::media && port_.open_frames && port_.create_clip && port_.load_tiles;
   }
-  if (k == model_kind::still) {
+  if (still_family(k)) {
     return item == item_kind::still && port_.open_still && port_.write_still && port_.load_tiles;
   }
   if (k == model_kind::restyle) {
@@ -174,12 +216,28 @@ bool job_runner::supports(model_kind k, item_kind item) const {
     return item == item_kind::still && port_.open_still && port_.write_still && port_.load_inpaint &&
            port_.still_mask;
   }
+  if (k == model_kind::face) {
+    return item == item_kind::still && port_.open_still && (port_.write_still_as || port_.write_still) &&
+           port_.load_face && port_.still_faces;
+  }
   return false;
 }
 
 std::string job_runner::check(const job_request& r) const {
+  if (const job_request::part* face = part_of(r, model_kind::face)) {
+    if (port_.free_memory) {
+      if (const auto free = port_.free_memory(); free && *free < face->spec->run_bytes) {
+        return "Needs " + size_text(face->spec->run_bytes) + " of free memory to run; " + size_text(*free) +
+               " is free. Close something and try again.";
+      }
+    }
+    return {};
+  }
   if (const job_request::part* remove = part_of(r, model_kind::remove)) {
-    if (!port_.still_mask || port_.still_mask(r.path).empty()) {
+    const auto mode = remove->values.find("mode");
+    const bool extending = mode != remove->values.end() && mode->second.k == json::kind::string &&
+                           mode->second.s == "extend";
+    if (!extending && (!port_.still_mask || port_.still_mask(r.path).empty())) {
       return "Nothing is brushed. In Edit, open Adjust → Remove, brush over what to take out, then Remove.";
     }
     if (port_.free_memory) {
@@ -195,6 +253,21 @@ std::string job_runner::check(const job_request& r) const {
     const bool empty = it == restyle->values.end() || it->second.k != json::kind::string ||
                        it->second.s.find_first_not_of(" \t") == std::string::npos;
     if (empty) return "Type what to change, for example \"make it a snowy winter day\".";
+    // The performance level bounds the quality (tier.h).
+    if (const knob* qk = restyle->spec->find("quality")) {
+      const auto qv = restyle->values.find("quality");
+      if (qv != restyle->values.end() && qv->second.k == json::kind::string) {
+        // By the quality's id (Standard 0, High 1, Best 2); another id is Standard.
+        const std::string& id = qv->second.s;
+        const int rank = quality_rank(id);
+        if (rank > r.policy.max_quality) {
+          const auto opt = std::find_if(qk->options.begin(), qk->options.end(),
+                                        [&](const knob_option& o) { return o.id == id; });
+          return (opt != qk->options.end() ? opt->text : id) + " quality needs the " +
+                 tier_words(tier_for_quality(rank)) + " performance level (Settings → Add-ons → Enhance).";
+        }
+      }
+    }
     if (port_.free_memory) {
       const std::uint64_t need = quality_of(*restyle).run_bytes;
       if (const auto free = port_.free_memory(); free && *free < need) {
@@ -206,10 +279,10 @@ std::string job_runner::check(const job_request& r) const {
   }
   const job_request::part* video = part_of(r, model_kind::video);
   const job_request::part* audio = part_of(r, model_kind::audio);
-  const job_request::part* still = part_of(r, model_kind::still);
+  const job_request::part* still = still_part(r);
   if (still) {
     if (!tile_shape_of(*still->spec)) return "This photo model is not one this version of Enhance can run.";
-    video = still;  // the same runner, and its memory below
+    video = still;  // its memory below
   }
   if (!video && !audio) return "There is nothing for Enhance to run.";
   if (!r.keep_ns.empty() && (!port_.open_frames || !port_.create_clip)) {
@@ -250,11 +323,13 @@ void job_runner::cancel() {
 }
 
 void job_runner::run(job_request r, job_events ev) {
-  if (part_of(r, model_kind::remove)) {
+  if (part_of(r, model_kind::face)) {
+    run_faces(std::move(r), std::move(ev));
+  } else if (part_of(r, model_kind::remove)) {
     run_remove(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::restyle)) {
     run_restyle(std::move(r), std::move(ev));
-  } else if (part_of(r, model_kind::still)) {
+  } else if (still_part(r)) {
     run_still(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::video) || !r.keep_ns.empty()) {
     // A cut clip's sound alone goes through here too: its picture is cut
@@ -509,10 +584,12 @@ void job_runner::run_still(job_request r, job_events ev) {
   const auto fail = [&](const std::string& message) {
     if (ev.done) ev.done(false, "", message);
   };
-  const job_request::part& part = *part_of(r, model_kind::still);
+  const job_request::part& part = *still_part(r);
   const auto shape = tile_shape_of(*part.spec);
   if (!shape) return fail(why(status::unsupported_format));
-  const std::uint32_t scale = std::min(scale_of(part), shape->scale);
+  // A model that keeps the size (noise, blur) has no Size knob: 1.
+  const std::uint32_t scale = part.spec->find("scale") ? std::min(scale_of(part), shape->scale) : 1;
+  if (scale == 0 || shape->scale % scale != 0) return fail(why(status::unsupported_format));
   if (ev.progress) ev.progress(-1);  // a RAW's develop takes a while, and says nothing
   auto pic = port_.open_still(r.path);
   if (!pic) {
@@ -527,8 +604,22 @@ void job_runner::run_still(job_request r, job_events ev) {
     return fail("At this size the new photo would be " + std::to_string(ow * oh / 1'000'000) +
                 " megapixels, more than Enhance writes (100). Choose a smaller size.");
   }
-  // The picture in and out, both whole, on top of the model.
-  const std::uint64_t need = part.spec->run_bytes + std::uint64_t{pic->width} * pic->height * 3 + ow * oh * 3;
+  // An upscaler runs on the photo shrunk to where its detail is (picture_job.h,
+  // "Shrink to the detail"): a soft photo restored at the model's own scale,
+  // then resized to the size asked for. A sharp one is not shrunk.
+  const double detail = shape->scale > 1 ? detail_shrink(pic->rgb, pic->width, pic->height) : 1.0;
+  const shrink_plan plan = plan_shrink(pic->width, pic->height, shape->scale, scale, detail);
+  const std::uint64_t mid_w = std::uint64_t{plan.in_w} * plan.model_out;
+  const std::uint64_t mid_h = std::uint64_t{plan.in_h} * plan.model_out;
+  // The picture in and out, both whole, the shrunk copy and the model's
+  // result before its resize (when shrunk), and one tile-high band of float
+  // sums (restore_picture), on top of the model.
+  const std::uint64_t band = std::uint64_t{shape->tile} * plan.model_out * mid_w * 16;
+  const std::uint64_t shrunk = plan.shrink > 1.0 ? std::uint64_t{plan.in_w} * plan.in_h * 3 + mid_w * mid_h * 3 +
+                                                       mid_h * ow * 12  // the resize's float rows
+                                                 : 0;
+  const std::uint64_t need =
+      part.spec->run_bytes + std::uint64_t{pic->width} * pic->height * 3 + ow * oh * 3 + band + shrunk;
   if (port_.free_memory) {
     if (const auto free = port_.free_memory(); free && *free < need) {
       return fail("This photo needs " + size_text(need) + " of free memory at this size; " + size_text(*free) +
@@ -537,41 +628,41 @@ void job_runner::run_still(job_request r, job_events ev) {
   }
   auto tiles = port_.load_tiles(*part.spec, part.models_dir);
   if (!tiles) return fail(why(tiles.error() == status::out_of_memory ? status::out_of_memory : status::internal));
-  picture_options po;
+  // Tiles overlapping and blended by weight (restore_picture), progress per
+  // tile and a cancel between them: quality over speed (owner 2026-11-04).
+  restore_options po;
   po.out_scale = scale;
   po.overlap = shape->overlap;
   po.strength = strength_of(part);
   po.cancel = &cancel_;
-  po.progress = [&](double f) {
-    if (ev.progress) ev.progress(std::min(0.99, f));
+  po.progress = [&](std::size_t done, std::size_t total) {
+    if (ev.progress && total > 0) {
+      ev.progress(std::min(0.99, static_cast<double>(done) / static_cast<double>(total)));
+    }
   };
   run_port::still out;
   out.width = static_cast<std::uint32_t>(ow);
   out.height = static_cast<std::uint32_t>(oh);
-  // The sheet watches the photo being redrawn: the tiles so far, about four
-  // times a second. Nearest samples of the output (a few milliseconds), on
-  // this thread between tiles, so the run waits on nothing else.
-  auto last_reveal = std::chrono::steady_clock::now();
-  if (ev.reveal) {
-    po.placed = [&](std::uint32_t rows_done, std::uint32_t band_end, std::uint32_t x_end) {
-      const auto now = std::chrono::steady_clock::now();
-      if (now - last_reveal < std::chrono::milliseconds(250)) return;
-      last_reveal = now;
-      reveal_front at;
-      at.y0 = static_cast<double>(rows_done) / static_cast<double>(oh);
-      at.y1 = static_cast<double>(band_end) / static_cast<double>(oh);
-      at.x = static_cast<double>(x_end) / static_cast<double>(ow);
-      ev.reveal(partial_of(before, out.rgb, out.width, out.height, at), at);
-    };
-  }
-  const expected ok = enhance_picture(pic->rgb, pic->width, pic->height, **tiles, po, out.rgb);
+  // Main's tile-by-tile reveal (ev.reveal) is the sheet's; a photo's run has
+  // no sheet since one-click (docs/design/29 "One click"): the working glow
+  // over the photo shows it instead, and the tiles here blend by weight after
+  // a shrink to the detail, so no row is final before the end.
+  std::size_t unstable = 0, total = 0;
+  po.unstable = &unstable;
+  const expected ok = restore_at_detail(pic->rgb, pic->width, pic->height, **tiles, po, detail, out.rgb, &total);
   pic->rgb = {};  // the original's pixels go before the encode needs its own
   if (!ok) return fail(why(ok.error()));
   if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
   if (cancel_.load()) return fail(why(status::cancelled));
   auto path = port_.write_still(r.path, out);
   if (!path) return fail(why(path.error()));
-  if (ev.done) ev.done(true, name_of(*path), "");
+  // Said, not hidden: parts the model could not restore are the photo's own.
+  const std::string note = unstable == 0 ? std::string()
+                           : unstable >= total
+                               ? std::string("The model could not restore this photo, so it is unchanged; try another choice.")
+                               : "The model could not restore " + std::to_string(unstable) + " of " +
+                                     std::to_string(total) + " parts, so those are as they were.";
+  if (ev.done) ev.done(true, name_of(*path), note);
 }
 
 // Slice 5b: the photo small, restyled by the words, the change carried back
@@ -600,7 +691,7 @@ void job_runner::run_restyle(job_request r, job_events ev) {
   if (cancel_.load()) return fail(why(status::cancelled));
   const preview_image before = shrink(pic->rgb, pic->width, pic->height, kPreviewEdge);
   if (ev.preview) ev.preview(before, {});
-  auto model = port_.load_restyle(*part.spec, part.models_dir);
+  auto model = port_.load_restyle(*part.spec, part.models_dir, r.policy.threads);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
   rgb8 full;
   full.width = pic->width;
@@ -608,6 +699,7 @@ void job_runner::run_restyle(job_request r, job_events ev) {
   full.rgb = std::move(pic->rgb);
   std::uint32_t w = 0, h = 0;
   p.edge = quality_of(part).edge;
+  p.steps = r.policy.restyle_steps;
   restyle_size(full.width, full.height, p.edge, w, h);
   // A model that needs the GPU (its spec's cpu false) is refused where its
   // UNet would run on the CPU: many minutes a request (on Windows the bundled
@@ -642,6 +734,10 @@ void job_runner::run_remove(job_request r, job_events ev) {
     if (ev.done) ev.done(false, "", message);
   };
   const job_request::part& part = *part_of(r, model_kind::remove);
+  if (const auto mode = part.values.find("mode");
+      mode != part.values.end() && mode->second.k == json::kind::string && mode->second.s == "extend") {
+    return run_extend(std::move(r), std::move(ev));
+  }
   if (ev.progress) ev.progress(-1);
   const std::vector<float> dabs = port_.still_mask(r.path);
   auto pic = port_.open_still(r.path);
@@ -654,21 +750,49 @@ void job_runner::run_remove(job_request r, job_events ev) {
   const preview_image before = shrink(full.rgb, full.width, full.height, kPreviewEdge);
   if (ev.preview) ev.preview(before, {});
   const mask8 mask = mask_from_dabs(dabs, full.width, full.height);
-  const auto box = remove_box(mask);
-  if (!box) return fail("Nothing is brushed on this photo. Brush over what to take out, then Remove.");
+  // One box per thing brushed apart (S4b), each filled at the model's side:
+  // a later box sees the earlier ones' fills as photo.
+  const remove_plan plan = remove_boxes(mask);
+  if (plan.boxes.empty()) return fail("Nothing is brushed on this photo. Brush over what to take out, then Remove.");
   auto model = port_.load_inpaint(*part.spec, part.models_dir);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
-  if (ev.progress) ev.progress(0.2);
   const std::uint32_t side = (*model)->side();
-  const rgb8 crop = crop_rgb(full, *box);
-  auto filled = (*model)->fill(resize_rgb(crop, side, side), crop_mask(mask, *box, side, side));
-  if (!filled) return fail(why(filled.error()));
-  if (cancel_.load()) return fail(why(status::cancelled));
-  if (ev.progress) ev.progress(0.9);
-  // The feather grows with the box: a few pixels on a small fix, more on a
-  // large one the model filled at a fraction of its size.
-  const std::uint32_t feather = std::clamp<std::uint32_t>(box->width / 256, 2, 16);
-  paste_back(full, *box, resize_rgb(*filled, box->width, box->height), mask, feather);
+  const std::size_t n = plan.boxes.size();
+  // Quality over speed (owner 2026-11-04): a box over 1.5x the model's side
+  // is filled again at full resolution on model-side tiles. Progress counts
+  // fills, the first pass's and every tile's, so the time left is the work
+  // left.
+  std::vector<std::vector<pixel_box>> refine(n);
+  std::size_t total = n, done = 0;
+  for (std::size_t i = 0; i < n; ++i) total += (refine[i] = refine_tiles(mask, plan, i, side)).size();
+  const auto step = [&] {
+    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / static_cast<double>(total));
+  };
+  for (std::size_t i = 0; i < n; ++i) {
+    if (cancel_.load()) return fail(why(status::cancelled));
+    step();
+    const pixel_box& box = plan.boxes[i];
+    const pixel_box whole{0, 0, box.width, box.height};
+    auto first = (*model)->fill(resize_rgb(crop_rgb(full, box), side, side),
+                                crop_mask(box_mask(mask, plan, i, true), whole, side, side));
+    if (!first) return fail(why(first.error()));
+    ++done;
+    if (cancel_.load()) return fail(why(status::cancelled));
+    rgb8 filled = resize_rgb(*first, box.width, box.height);
+    const expected refined = refine_fill(full, mask, plan, i, refine[i], **model, filled, [&] {
+      if (cancel_.load()) return false;
+      step();
+      ++done;
+      return true;
+    });
+    if (!refined) return fail(why(refined.error()));
+    if (cancel_.load()) return fail(why(status::cancelled));
+    // The feather grows with the box: a few pixels on a small fix, more on a
+    // large one.
+    paste_back_box(full, box, filled, box_mask(mask, plan, i, false), remove_feather(box));
+    if (ev.preview && i + 1 < n) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
+  }
+  if (ev.progress) ev.progress(0.95);
   if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
   run_port::still still;
   still.width = full.width;
@@ -677,6 +801,198 @@ void job_runner::run_remove(job_request r, job_events ev) {
   auto path = port_.write_still(r.path, still);
   if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// Owner 2026-11-04: the picture extended past its edges, Remove's model
+// filling the new margins tile by tile (remove.h extend_*), each tile seeing
+// the photo and the tiles filled before it. The photo's own pixels are kept.
+void job_runner::run_extend(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::remove);
+  if (ev.progress) ev.progress(-1);
+  auto pic = port_.open_still(r.path);
+  if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  rgb8 photo;
+  photo.width = pic->width;
+  photo.height = pic->height;
+  photo.rgb = std::move(pic->rgb);
+  // edit-refresh S6: the frame dragged on the canvas when the host has one,
+  // else the sheet's preset.
+  std::array<float, 4> frame{};
+  if (port_.still_extend) frame = port_.still_extend(r.path);
+  const bool dragged = frame[0] > 0.0f || frame[1] > 0.0f || frame[2] > 0.0f || frame[3] > 0.0f;
+  extend_margins m;
+  if (dragged) {
+    m = extend_from_fractions(frame[0], frame[1], frame[2], frame[3], photo.width, photo.height);
+    if (m.empty()) return fail("The new frame adds nothing to this photo.");
+  } else {
+    std::string preset = "wider";
+    if (const auto it = part.values.find("extend"); it != part.values.end() && it->second.k == json::kind::string) {
+      preset = it->second.s;
+    }
+    m = extend_preset(preset, photo.width, photo.height);
+    if (m.empty()) return fail("The photo is already that shape.");
+  }
+  if (std::uint64_t{photo.width + m.left + m.right} * (photo.height + m.top + m.bottom) > kMaxStillPixels) {
+    return fail("The extended picture would be over 100 megapixels.");
+  }
+  rgb8 out;
+  mask8 mask;
+  extend_canvas(photo, m, out, mask);
+  const preview_image before = shrink(photo.rgb, photo.width, photo.height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
+  const rgb8 original = std::move(photo);
+  auto model = port_.load_inpaint(*part.spec, part.models_dir);
+  if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  const std::vector<pixel_box> tiles = extend_tiles(out.width, out.height, m);
+  // Quality over speed (2026-11-05): where those tiles were filled shrunk,
+  // a detail pass at the model's side gives the grain back. Progress counts
+  // every fill, both passes', so the time left is the work left.
+  const std::vector<pixel_box> detail = extend_detail_tiles(out.width, out.height, m, (*model)->side());
+  const std::size_t total = tiles.size() + detail.size();
+  std::size_t done = 0;
+  const auto step = [&] {
+    const double all = static_cast<double>(std::max<std::size_t>(total, 1));
+    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / all);
+  };
+  const rgb8 start = detail.empty() ? rgb8{} : out;  // the detail pass fills against the canvas as made
+  const expected filled = extend_fill(out, mask, tiles, **model, [&](std::size_t d, std::size_t) {
+    done = d;
+    step();
+    return !cancel_.load();
+  });
+  if (!filled) return fail(why(filled.error()));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  const expected sharpened = extend_detail(start, mask, m, detail, **model, out, [&] {
+    if (cancel_.load()) return false;
+    step();
+    ++done;
+    return true;
+  });
+  if (!sharpened) return fail(why(sharpened.error()));
+  // The photo, exactly as it was, in the middle.
+  for (std::uint32_t y = 0; y < original.height; ++y) {
+    std::copy_n(original.rgb.data() + std::size_t{y} * original.width * 3, std::size_t{original.width} * 3,
+                out.rgb.data() + (std::size_t{y + m.top} * out.width + m.left) * 3);
+  }
+  if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
+  run_port::still still;
+  still.width = out.width;
+  still.height = out.height;
+  still.rgb = std::move(out.rgb);
+  still.suffix = "extended";  // <stem>-extended.jpg (docs/plans/edit-refresh.md 3.2)
+  auto path = port_.write_still(r.path, still);
+  if (!path) return fail(why(path.error()));
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// docs/plans/edit-refresh.md S10 (owner call C): every face the AI pack finds
+// restored by the face model, guarded by People, pasted back at Strength
+// (face_restore.h). Pixels away from the faces are the photo's own; the
+// original is never written. "<stem>-restored.jpg" (doc 29).
+void job_runner::run_faces(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::face);
+  std::string choice = choice_of(part, "model");
+  if (choice.empty()) choice = "restoreformer";
+  face_options o;
+  // Strength as chosen, else the spec's default (0.7), never a full replace by omission.
+  if (const auto it = part.values.find("strength"); it != part.values.end() && it->second.k == json::kind::number) {
+    o.strength = static_cast<float>(strength_of(part));
+  } else if (const knob* k = part.spec->find("strength")) {
+    o.strength = static_cast<float>(std::clamp(k->def, 0.0, 1.0));
+  }
+  // At Strength 0 nothing would change: said before the photo is read.
+  if (o.strength <= 0.0f) return fail("At Strength 0 the faces stay as they are. Raise Strength and try again.");
+  if (ev.progress) ev.progress(-1);
+  auto pic = port_.open_still(r.path);
+  if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  if (cancel_.load()) return fail(why(status::cancelled));
+  rgb8 full;
+  full.width = pic->width;
+  full.height = pic->height;
+  full.rgb = std::move(pic->rgb);
+  const preview_image before = shrink(full.rgb, full.width, full.height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
+  const auto pack_why = [](status s) -> std::string {
+    if (s == status::not_found) return "Restore faces finds faces with Local search. Add it in Settings → Add-ons.";
+    if (s == status::permission_denied) {
+      return "Turn on People in Local search: Restore faces finds the faces with it, and checks each restored face "
+             "still looks like the same person.";
+    }
+    return "Enhance could not look for faces in this photo.";
+  };
+  // Every pack call (the photo's tiles, each crop, each guard) checks Cancel
+  // first, so a cancel never waits for the whole search.
+  const faces_fn faces = [this](const rgb8& img, const rgb8* other) -> result<std::vector<face_found>> {
+    if (cancel_.load()) return err(status::cancelled);
+    return port_.still_faces(img, other);
+  };
+  auto found = find_faces(full, faces);
+  if (!found) return fail(found.error() == status::cancelled ? why(status::cancelled) : pack_why(found.error()));
+  if (found->empty()) return fail("No faces were found in this photo.");
+  // edit-refresh S8: the Faces panel's Restore face runs on the faces chosen
+  // on the canvas only ("faces": x, y, w, h quads, 0..1 of the photo).
+  if (const auto it = part.values.find("faces"); it != part.values.end() && it->second.k == json::kind::array) {
+    std::vector<float> boxes;
+    for (const json::value& n : it->second.a) {
+      if (n.k != json::kind::number) return fail(why(status::invalid_arg));
+      boxes.push_back(static_cast<float>(n.is_integer ? static_cast<double>(n.i) : n.d));
+    }
+    if (!boxes.empty()) {
+      *found = chosen_faces(*found, full.width, full.height, boxes);
+      if (found->empty()) return fail("The chosen faces were not found again in this photo.");
+    }
+  }
+  if (cancel_.load()) return fail(why(status::cancelled));
+  auto model = port_.load_face(*part.spec, part.models_dir, choice, r.policy.threads);
+  if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  o.progress = [&](std::size_t done, std::size_t total) {
+    if (ev.progress) ev.progress(0.05 + 0.9 * static_cast<double>(done) / std::max<std::size_t>(total, 1));
+    return !cancel_.load();
+  };
+  auto out = restore_faces(full, *found, **model, faces, o);
+  if (!out) {
+    if (out.error() == status::not_found || out.error() == status::permission_denied) {
+      return fail(pack_why(out.error()));
+    }
+    return fail(why(out.error()));
+  }
+  if (out->restored == 0) {
+    if (out->kept > 0) {
+      return fail("No face was changed: restored, each one stopped looking like the same person, so the photo was "
+                  "left as it was.");
+    }
+    if (out->small > 0) return fail("The faces in this photo are too small to restore.");
+    return fail("No face in this photo could be restored.");
+  }
+  if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  run_port::still still;
+  still.width = full.width;
+  still.height = full.height;
+  still.rgb = std::move(full.rgb);
+  auto path =
+      port_.write_still_as ? port_.write_still_as(r.path, still, "restored") : port_.write_still(r.path, still);
+  if (!path) return fail(why(path.error()));
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// One-click: the card's estimate reads the photo as a run would (the edited
+// picture, upright) and its detail shrink; nothing is kept.
+std::optional<photo_size> job_runner::measure(const std::string& path) {
+  if (!port_.open_still) return std::nullopt;
+  auto pic = port_.open_still(path);
+  if (!pic || pic->width == 0 || pic->height == 0) return std::nullopt;
+  photo_size out;
+  out.width = pic->width;
+  out.height = pic->height;
+  out.detail = detail_shrink(pic->rgb, pic->width, pic->height);
+  return out;
 }
 
 }  // namespace mv::enhance

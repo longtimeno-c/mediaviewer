@@ -176,7 +176,9 @@ TEST_CASE("driftwire relay: a code carries the relay place and its token, after 
   REQUIRE(c.relay);
   CHECK(c.places.size() == invite::kMaxPlaces - 1);  // the relay takes one of the four
   const std::string text = invite::encode(c);
-  CHECK(text.find("203") == std::string::npos);
+  // The relay's address is not in the code as text. (A bare "203" can occur
+  // by chance in the encoded random token, so look for the address itself.)
+  CHECK(text.find("203.0.113.9") == std::string::npos);
   auto back = invite::decode(text);
   REQUIRE(back);
   REQUIRE(back->relay);

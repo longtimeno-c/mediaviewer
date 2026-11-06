@@ -141,6 +141,12 @@ public static partial class IslandHost
             _editShape = "";
             RenderEdit();
         }
+        // docs/plans/edit-refresh.md S2: the rail's tooltips name their keys too.
+        if (_editRailVisible)
+        {
+            _railShape = "";
+            RenderRail();
+        }
     }
 
     public static int ShowPopup(IntPtr arg, int sizeBytes)

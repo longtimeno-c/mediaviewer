@@ -7349,6 +7349,36 @@ std::uint64_t engine::search_this_person(const std::string& path, std::int64_t p
   });
 }
 
+namespace {
+// How differently two faces are turned (edit/eyes.h pose_distance, the same
+// measure: the pack links none of the core): nose and mouth corners in the
+// eyes' frame, eye distance 1, mean distance apart. Landmarks 0..1 of images
+// of the given sizes.
+float pose_apart(const std::array<float, 10>& a, float aw, float ah, const std::array<float, 10>& b, float bw,
+                 float bh) noexcept {
+  const auto frame = [](const std::array<float, 10>& lm, float w, float h) {
+    const float rx = lm[0] * w, ry = lm[1] * h, lx = lm[2] * w, ly = lm[3] * h;
+    const float cx = (rx + lx) * 0.5f, cy = (ry + ly) * 0.5f, dx = lx - rx, dy = ly - ry;
+    const float d = std::sqrt(dx * dx + dy * dy);
+    std::array<float, 6> out{};
+    if (d <= 0.0f) return out;
+    const float c = dx / d, s = dy / d;
+    for (int i = 0; i < 3; ++i) {
+      const float px = lm[4 + 2 * i] * w - cx, py = lm[5 + 2 * i] * h - cy;
+      out[2 * i] = (c * px + s * py) / d;
+      out[2 * i + 1] = (-s * px + c * py) / d;
+    }
+    return out;
+  };
+  const auto fa = frame(a, aw, ah), fb = frame(b, bw, bh);
+  float sum = 0.0f;
+  for (int i = 0; i < 3; ++i) sum += std::hypot(fa[2 * i] - fb[2 * i], fa[2 * i + 1] - fb[2 * i + 1]);
+  return sum / 3.0f;
+}
+// edit/eyes.h kPoseMatch: a donor further than this looks the wrong way.
+constexpr float kPoseMatch = 0.12f;
+}  // namespace
+
 result<std::string> engine::eyes_json(const std::string& path, const std::vector<std::string>& candidates) {
   std::shared_ptr<face_analyzer> model;
   {
@@ -7363,15 +7393,18 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
   struct other {
     std::string path;
     std::vector<face_in> faces;
+    bool library = false;  // from People, not the same moment
+    float w = 0, h = 0;    // the frame the faces were found in
   };
   std::vector<other> others;
+  std::vector<std::int64_t> library_read;  // people whose other photos are in `others`
   for (const std::string& c : candidates) {
     if (c.empty() || c == path) continue;
     auto frame = still_of(c, kEdge);
     if (!frame) continue;  // a candidate that will not read is no donor
     auto faces = model->analyze(*frame);
     if (!faces) continue;
-    others.push_back({c, std::move(*faces)});
+    others.push_back({c, std::move(*faces), false, static_cast<float>(frame->width), static_cast<float>(frame->height)});
   }
   const float same = model->same_person();
   auto cosine = [](const std::vector<float>& a, const std::vector<float>& b) {
@@ -7383,6 +7416,44 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
     w.key("lm").begin_array();
     for (const float v : f.landmarks) w.number(v);
     w.end_array();
+  };
+  // docs/plans/edit-refresh.md S8: who each face is, for the Faces panel's
+  // "from 37 photos of Anna": People's name ("" unnamed) and how many other
+  // photos (stills; not this one) People holds of them. Once a person.
+  struct who {
+    std::int64_t person = 0;
+    std::string name;
+    std::uint32_t photos = 0;
+  };
+  std::vector<who> known;
+  std::vector<std::pair<std::int64_t, std::string>> names;
+  bool names_read = false;
+  auto who_is = [&](std::int64_t person) -> const who& {
+    for (const who& k : known) {
+      if (k.person == person) return k;
+    }
+    who k;
+    k.person = person;
+    std::vector<face_row> rows;
+    {
+      std::lock_guard lock(models_m_);
+      if (faces_) {
+        if (!names_read) names = faces_->names();
+        rows = faces_->faces_of(person);
+      }
+    }
+    names_read = true;
+    for (const auto& [id, name] : names) {
+      if (id == person) k.name = name;
+    }
+    std::vector<std::string> seen;
+    for (const face_row& r : rows) {
+      if (r.pts_ms >= 0 || r.path == path || std::find(seen.begin(), seen.end(), r.path) != seen.end()) continue;
+      seen.push_back(r.path);
+    }
+    k.photos = static_cast<std::uint32_t>(seen.size());
+    known.push_back(std::move(k));
+    return known.back();
   };
   json::writer w;
   w.begin_object().key("faces").begin_array();
@@ -7396,8 +7467,48 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
       const std::string* path;
       const face_in* face;
       float sim;
+      bool library;
     };
     std::vector<donor> donors;
+    // Their other photos in People, from every indexed folder and the Photos
+    // library (owner 2026-11-04: all of the person's faces, not this folder):
+    // largest faces first, each read once, kept when the head is turned as
+    // this one is. Stops at kLibraryKeep such faces or kLibraryRead photos.
+    // The whole-face fix wants them even when a frame of the moment exists.
+    constexpr std::size_t kLibraryRead = 64, kLibraryKeep = 6;
+    if (person != 0 && std::find(library_read.begin(), library_read.end(), person) == library_read.end()) {
+      library_read.push_back(person);
+      std::vector<face_row> rows;
+      {
+        std::lock_guard lock(models_m_);
+        if (faces_) rows = faces_->faces_of(person);
+      }
+      std::erase_if(rows, [&](const face_row& r) {
+        return r.pts_ms >= 0 || r.path == path ||
+               std::find(candidates.begin(), candidates.end(), r.path) != candidates.end();
+      });
+      std::sort(rows.begin(), rows.end(), [](const face_row& a, const face_row& b) { return a.w * a.h > b.w * b.h; });
+      std::vector<std::string> seen;
+      std::size_t kept = 0;
+      for (const face_row& r : rows) {
+        if (seen.size() >= kLibraryRead || kept >= kLibraryKeep) break;
+        if (std::find(seen.begin(), seen.end(), r.path) != seen.end()) continue;
+        seen.push_back(r.path);
+        auto frame = still_of(r.path, kEdge);
+        if (!frame) continue;
+        auto faces = model->analyze(*frame);
+        if (!faces) continue;
+        const float fw = static_cast<float>(frame->width), fh = static_cast<float>(frame->height);
+        std::erase_if(*faces, [&](const face_in& g) {
+          return cosine(f.emb, g.emb) < same ||
+                 pose_apart(f.landmarks, static_cast<float>(img.width), static_cast<float>(img.height), g.landmarks,
+                            fw, fh) > kPoseMatch;
+        });
+        if (faces->empty()) continue;
+        ++kept;
+        others.push_back({r.path, std::move(*faces), true, fw, fh});
+      }
+    }
     for (const other& o : others) {
       const face_in* best = nullptr;
       float best_sim = same;
@@ -7408,20 +7519,78 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
           best = &g;
         }
       }
-      if (best) donors.push_back({&o.path, best, best_sim});
+      if (best) donors.push_back({&o.path, best, best_sim, o.library});
     }
     std::sort(donors.begin(), donors.end(), [](const donor& a, const donor& b) { return a.sim > b.sim; });
     w.begin_object();
     w.key("x").number(f.x).key("y").number(f.y).key("w").number(f.w).key("h").number(f.h);
     landmarks(w, f);
+    if (f.quality >= 0) w.key("quality").number(f.quality);
     w.key("person").integer(person);
+    if (person != 0) {
+      const who k = who_is(person);  // a copy: `known` may grow
+      if (!k.name.empty()) w.key("name").string(k.name);
+      w.key("photos").integer(k.photos);
+    }
     w.key("donors").begin_array();
     for (const donor& d : donors) {
-      w.begin_object().key("path").string(*d.path);
+      // The host reads the donor's pixels: a Photos key goes as its file.
+      auto file = file_of(*d.path);
+      if (!file) continue;
+      w.begin_object().key("path").string(*file);
       landmarks(w, *d.face);
-      w.key("sim").number(d.sim).end_object();
+      if (d.face->quality >= 0) w.key("quality").number(d.face->quality);
+      w.key("sim").number(d.sim);
+      if (d.library) w.key("library").boolean(true);
+      w.end_object();
     }
     w.end_array().end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
+result<std::string> engine::faces_json(const rgb_frame& img, const rgb_frame* other) {
+  std::shared_ptr<face_analyzer> model;
+  {
+    std::lock_guard lock(models_m_);
+    model = faces_model_;
+    if (!faces_ || !model) return err(status::invalid_arg);  // People is off
+  }
+  if (img.width == 0 || img.height == 0 || img.rgb.size() != std::size_t{img.width} * img.height * 3) {
+    return err(status::invalid_arg);
+  }
+  MV_TRY(std::vector<face_in> found, model->analyze(img));
+  std::vector<face_in> theirs;
+  if (other) {
+    if (other->width != img.width || other->height != img.height) return err(status::invalid_arg);
+    MV_TRY(theirs, model->analyze(*other));
+  }
+  json::writer w;
+  w.begin_object().key("faces").begin_array();
+  for (const face_in& f : found) {
+    w.begin_object();
+    w.key("x").number(f.x).key("y").number(f.y).key("w").number(f.w).key("h").number(f.h);
+    w.key("score").number(f.score);
+    w.key("lm").begin_array();
+    for (const float v : f.landmarks) w.number(v);
+    w.end_array();
+    if (other) {
+      // The face of `other` whose centre is inside this face's box: the same
+      // face, changed. The most similar when several are.
+      float sim = -1.0f;
+      for (const face_in& g : theirs) {
+        const float cx = g.x + g.w * 0.5f, cy = g.y + g.h * 0.5f;
+        if (cx < f.x || cx > f.x + f.w || cy < f.y || cy > f.y + f.h) continue;
+        double s = 0;
+        for (std::size_t i = 0; i < std::min(f.emb.size(), g.emb.size()); ++i) {
+          s += static_cast<double>(f.emb[i]) * g.emb[i];
+        }
+        sim = std::max(sim, static_cast<float>(s));
+      }
+      w.key("sim").number(sim);
+    }
+    w.end_object();
   }
   w.end_array().end_object();
   return w.take();

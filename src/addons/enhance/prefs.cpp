@@ -35,6 +35,8 @@ const char* photo_target_name(photo_target t) noexcept {
   switch (t) {
     case photo_target::restyle: return "restyle";
     case photo_target::remove: return "remove";
+    case photo_target::extend: return "extend";
+    case photo_target::faces: return "faces";
     case photo_target::detail: break;
   }
   return "detail";
@@ -55,6 +57,8 @@ std::string prefs_json(const prefs& p) {
   w.end_object();
   w.key("target").string(target_name(p.target));
   w.key("photo").string(photo_target_name(p.photo));
+  w.key("detail").string(kind_name(p.detail));
+  w.key("tier").string(p.tier);
   w.key("use").begin_object();
   for (const model_kind k : kModelKinds) {
     if (!p.use_of(k).empty()) w.key(kind_name(k)).string(p.use_of(k));
@@ -85,10 +89,16 @@ prefs prefs_from(std::string_view json_text) {
       if (*t == target_name(c)) p.target = c;
     }
   }
+  if (const std::string* t = doc->str("tier")) {
+    if (*t == "auto" || *t == "potato" || *t == "intel" || *t == "default" || *t == "maxxed") p.tier = *t;
+  }
   if (const std::string* t = doc->str("photo")) {
     for (const photo_target c : kPhotoTargets) {
       if (*t == photo_target_name(c)) p.photo = c;
     }
+  }
+  if (const std::string* t = doc->str("detail")) {
+    if (const auto k = kind_from(*t); k && still_family(*k)) p.detail = *k;
   }
   if (const json::value* use = doc->find("use"); use && use->k == json::kind::object) {
     for (const auto& [name, v] : use->o) {

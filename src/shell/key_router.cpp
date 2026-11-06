@@ -27,6 +27,8 @@ mode resolve_mode(const view_state& s) noexcept {
   // Crop is a canvas mode (docs/design/16): it only exists on a still, and the
   // host leaves it when the item changes.
   if (s.crop && s.item == item_kind::still) return mode::crop;
+  // docs/plans/edit-refresh.md S3: a canvas tool on a still; layers over browse.
+  if (s.tool && s.item == item_kind::still && !s.slideshow) return mode::tool;
   // Trim is a clip mode (docs/design/08, docs/design/16): it layers over video.
   if (s.trim && s.item == item_kind::clip && !s.slideshow) return mode::trim;
   if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
@@ -55,6 +57,8 @@ back_target resolve_back(const view_state& s) noexcept {
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.
   if (s.crop) return back_target::crop;
+  // S3: the tool goes down before the pane closes (its strokes stay).
+  if (s.tool && s.item == item_kind::still) return back_target::tool;
   if (s.trim) return back_target::trim;
   if (s.pane_open) return back_target::pane;
   // The gallery covers the canvas like an overlay, so it goes before the
@@ -71,6 +75,44 @@ back_target resolve_back(const view_state& s) noexcept {
   // closes, then the next Esc is "Back to folder").
   if (s.list_open) return back_target::result_list;
   return back_target::none;
+}
+
+bool blocked_by_strokes(command_id id) noexcept {
+  switch (id) {
+    case command_id::rotate_ccw:
+    case command_id::rotate_cw:
+    case command_id::flip_horizontal:
+    case command_id::flip_vertical:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool blocked_in_tool(command_id id, bool pending) noexcept {
+  switch (id) {
+    case command_id::rotate_ccw:
+    case command_id::rotate_cw:
+    case command_id::flip_horizontal:
+    case command_id::flip_vertical:
+    case command_id::crop_mode:
+    case command_id::delete_to_recycle_bin:
+      return true;
+    case command_id::next:
+    case command_id::prev:
+    case command_id::first:
+    case command_id::last:
+    case command_id::skip_back:
+    case command_id::skip_forward:
+    case command_id::folder_up:
+    case command_id::folder_prev:
+    case command_id::folder_next:
+    case command_id::next_page:
+    case command_id::prev_page:
+      return pending;
+    default:
+      return false;
+  }
 }
 
 text_edit text_edit_for(const key_event& e) noexcept {
@@ -201,6 +243,11 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   if (e.repeat) {
     if (held* h = find_held(e.k); h && !h->momentary && h->hold != command_id::none) {
       h->repeated = true;
+      // S3: a walk held from before a stroke landed stops once strokes are
+      // pending (the refusal was said at the press that started it, if any).
+      if (resolve_mode(s) == mode::tool && blocked_in_tool(h->hold, s.tool_pending)) {
+        return {command_id::none, back_target::none, true};
+      }
       return {h->hold, back_target::none, true};
     }
   }
@@ -258,7 +305,20 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     // keep working while the markers are set (docs/design/08 "preview the cut").
     b = lookup(e.k, e.mods, mode::video);
   }
+  if (!b && m == mode::tool) {
+    // S3: a tool layers over browse: only what the tool changes has a kTool
+    // row; everything else is the still's own key.
+    b = lookup(e.k, e.mods, mode::browse);
+  }
   if (!b) return {};
+  // S3: whichever row answered (a kTool row, an all-modes row such as A / D, or
+  // browse underneath), tool mode refuses what would wipe or walk away from
+  // the strokes.
+  if (m == mode::tool && blocked_in_tool(b->command, s.tool_pending)) {
+    route r{command_id::none, back_target::none, true};
+    r.blocked = !e.repeat;  // say why once, not per typematic repeat
+    return r;
+  }
 
   switch (b->policy) {
     case repeat_policy::edge:

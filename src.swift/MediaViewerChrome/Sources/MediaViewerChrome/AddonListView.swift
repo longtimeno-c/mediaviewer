@@ -163,27 +163,13 @@ struct AddonsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      Text(AddonListWords.heading).font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
+      // A group of the General page like the others: its heading is a section's.
+      SettingsSectionTitle(title: AddonListWords.heading)
       AddonsRestartMarker()  // #510: "Restart to finish updating …"
       VStack(spacing: MVTheme.space(6)) {
         ForEach(entries) { e in
-          Button { nav.open(e.id) } label: {
-            HStack(spacing: MVTheme.space(12)) {
-              Text(e.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
-              Spacer(minLength: MVTheme.space(12))
-              Text(e.line).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-              Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(MVTheme.body)
-            }
-            .padding(.horizontal, MVTheme.space(14)).padding(.vertical, MVTheme.space(12))
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-            .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("\(e.name), \(e.line)")
-          .id(AddonNav.rowAnchor(e.id))
+          AddonListRow(name: e.name, line: e.line) { nav.open(e.id) }
+            .id(AddonNav.rowAnchor(e.id))
         }
       }
     }
@@ -206,6 +192,42 @@ struct AddonsSection: View {
     for row in slots.rows where row.id != "places" {
       SlotAddonOffer.channel(id: row.id, name: row.name).probe()
     }
+  }
+}
+
+/// A row of the list: one surface (no hairline around it), a lighter step of
+/// it under the pointer, eased; the state changes in its own slot with a
+/// crossfade (docs/design/20 "Craft rules"). The Windows twin is AddonListRow
+/// in IslandHost.AddonList.cs.
+private struct AddonListRow: View {
+  let name: String
+  let line: String
+  let open: () -> Void
+  @State private var hover = false
+
+  var body: some View {
+    Button(action: open) {
+      HStack(spacing: MVTheme.space(12)) {
+        Text(name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
+        Spacer(minLength: MVTheme.space(12))
+        Text(line).font(MVTheme.font(12).monospacedDigit()).foregroundStyle(MVTheme.body)
+          .contentTransition(.opacity)
+          .animation(.easeOut(duration: 0.15), value: line)
+        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(MVTheme.body)
+          .accessibilityHidden(true)
+      }
+      .padding(MVTheme.space(12))
+      .frame(maxWidth: .infinity)
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
+      .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(hover ? MVTheme.hoverWash : .clear))
+      .settingsCardOutline(MVTheme.radius(8))
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hover = $0 }
+    .animation(.easeOut(duration: 0.15), value: hover)
+    .accessibilityLabel("\(name), \(line)")
   }
 }
 
@@ -252,10 +274,13 @@ struct AddonPageView: View {
         default: SlotAddonsSection(only: id)
         }
       }
-      .padding(MVTheme.space(14))
+      // The page's one surface: everything of the add-on inside it, no box
+      // inside it (its settings page and an install question draw none).
+      .padding(MVTheme.space(12))
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-      .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+      .settingsCardOutline(MVTheme.radius(8))
+      AddonStorageBlock(page: id)
       // The add-on's own settings (place "settings"), its cards under this one:
       // never a card in a card.
       if let screen = slots.settingsScreens[id] {
@@ -297,3 +322,37 @@ struct AddonSettingsScreen: View {
     .onChange(of: slots.settingsScreens) { _, _ in if settings.visible { slots.openSettingsScreen(address) } }
   }
 }
+
+/// What an add-on keeps on this Mac, on its own page (owner 2026-11-04): one line
+/// a store folder, Local search's pieces together. Absent when it keeps nothing.
+private struct AddonStorageBlock: View {
+  let page: String
+  @ObservedObject private var storage = StorageStore.shared
+  @ObservedObject private var settings = SettingsStore.shared
+
+  var body: some View {
+    let rows = storage.rows(forPage: page)
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      if !rows.isEmpty {
+        HStack {
+          Text("On this Mac").font(MVTheme.font(15)).foregroundStyle(MVTheme.title)
+          Spacer()
+          Text(StorageStore.sizeText(rows.reduce(Int64(0)) { $0 + $1.bytes }))
+            .font(MVTheme.font(15).monospacedDigit()).foregroundStyle(MVTheme.title)
+        }
+        ForEach(rows) { row in
+          let folder = StorageStore.addonFolder(row.id) ?? ""
+          HStack(spacing: MVTheme.space(12)) {
+            Text(StorageStore.pieceWords(folder)).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+            Spacer(minLength: 0)
+            Text(StorageStore.sizeText(row.bytes)).font(MVTheme.font(13).monospacedDigit())
+              .foregroundStyle(MVTheme.body)
+          }
+        }
+      }
+    }
+    .onAppear { storage.refresh() }
+    .onChange(of: settings.visible) { _, visible in if visible { storage.refresh() } }
+  }
+}
+

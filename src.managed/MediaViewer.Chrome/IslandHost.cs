@@ -174,10 +174,49 @@ public static partial class IslandHost
         // AdjustParam sends parked "param\tvalue" (selective colour).
         public const int AdjustPick = 210;
         public const int AdjustOpenEyes = 211;  // slice 6
+        // docs/plans/edit-refresh.md S1: the right column a step (40) wider or
+        // narrower. No default key; the View menu sends them.
+        public const int PaneWider = 213;
+        public const int PaneNarrower = 214;
+        // docs/plans/edit-refresh.md S2: the Edit header's ✦ Auto (one undo
+        // step; again right after takes it back). No default key.
+        public const int AutoEnhance = 215;
+        // docs/plans/edit-refresh.md S3: the canvas tools (shell/canvas_tool.h).
+        // Keyed in tool mode ([ ] size, Ctrl+Z / Ctrl+Shift+Z one stroke or fix,
+        // Backspace / Delete clear, Enter apply, Space held pans); B arms the
+        // brush on a still; red-eye, Extend and Faces ship unbound.
+        public const int ToolSmaller = 216;
+        public const int ToolBigger = 217;
+        public const int ToolUndo = 218;
+        public const int ToolRedo = 219;
+        public const int ToolClear = 220;
+        public const int ToolApply = 221;
+        public const int ToolPan = 222;
+        public const int ToolPanRelease = 223;
+        public const int ToolBrush = 224;
+        public const int ToolRedEye = 225;
+        public const int ToolExtend = 226;
+        public const int ToolFaces = 227;
+        // The context bar (IslandHost.ToolBar.cs, chrome_host.h). CanvasTool: arg
+        // >= 0 arms a tool, tool * 1000 + size (0 keeps the tool's own; tool 0
+        // puts it down); arg < 0 is a bar button, -(ToolBarAction + 1).
+        // ToolSizeSet: DIP. ToolEraseSet: 1 erase, 0 paint.
+        public const int CanvasTool = 1096;
+        public const int ToolSizeSet = 1097;
+        public const int ToolEraseSet = 1098;
         public const int AdjustParam = 1091;
         public const int AdjustPrompt = 1092;  // slice 5b: parked UTF-8 request
         // Slice 7: the Remove brush: 0 the last stroke off, 1 all, 2 Remove.
         public const int AdjustBrush = 1093;
+        // docs/plans/edit-refresh.md S2 (chrome_host.h): the Edit header's own
+        // height in DIPs; the column edge's state, native to the island through
+        // Notify (0 idle, 1 hot, 2 drag); the theme's narrowest inspector, DIPs.
+        public const int EditStripHeight = 1094;
+        public const int PaneEdgeState = 1095;
+        public const int InspectorMin = 1099;
+        // docs/plans/edit-refresh.md S8: the Faces panel's controls
+        // (IslandHost.Faces.cs), arg = shell::pack_faces_op.
+        public const int Faces = 1109;  // after the Video Editor look's 1100-1108
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
@@ -294,6 +333,9 @@ public static partial class IslandHost
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
                 Rename, GalleryRange,
+                EditStripHeight, PaneEdgeState, InspectorMin,
+                CanvasTool, ToolSizeSet, ToolEraseSet,
+                Faces,
             };
             unchecked
             {
@@ -324,6 +366,8 @@ public static partial class IslandHost
     internal const int PaneAdjustIsland = 8;
     internal const int PaneEditIsland = 9;
     internal const int PaneJobsIsland = 10;
+    // docs/plans/edit-refresh.md S2: the Edit workspace's icon rail.
+    internal const int PaneRailIsland = 11;
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
     // menu is a view of it, pushed in by ApplySettings so a T keypress and the
@@ -413,6 +457,7 @@ public static partial class IslandHost
                 PaneAdjustIsland => _adjustPane,
                 PaneEditIsland => _editPane,
                 PaneJobsIsland => _jobsPane,
+                PaneRailIsland => _editRail,
                 _ => null,
             };
             long hwnd = source?.SiteBridge is null
@@ -596,6 +641,7 @@ public static partial class IslandHost
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
                 else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root) || OwnsRoot(_adjustPane, root) ||
                          OwnsRoot(_editPane, root) || OwnsRoot(_jobsPane, root) ||
+                         OwnsRoot(_editRail, root) ||  // docs/plans/edit-refresh.md S2: the icon rail
                          OwnsRoot(_editorTimeline, root) || OwnsRoot(_editorAway, root))
                 {
                     // PR 11: the adjust pane too — its sliders own the arrows.
@@ -922,13 +968,14 @@ public static partial class IslandHost
 
     // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
     // command bar, folder tree, gallery, the right column (Edit, metadata,
-    // adjust, jobs), transport, filmstrip, the AI badge while it is up (#345:
+    // adjust, jobs, then the Edit rail at the window's edge), transport,
+    // filmstrip, the AI badge while it is up (#345:
     // it sits on the canvas, so it is the last ring before it) — and then the
     // canvas. A ring is visible while its island has content (hidden ones are
     // dropped and parked).
     private static DesktopWindowXamlSource?[] FocusOrder() => new[]
     {
-        _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+        _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _editRail, _transport, _filmstrip,
         _aiBadgeShown ? _aiBadge : null,
     };
 
@@ -1170,6 +1217,27 @@ public static partial class IslandHost
     private static MenuFlyoutSeparator Sep() =>
         new() { Foreground = Brush(Hairline), Background = Brush(Hairline) };
 
+    // The chosen one of a set (Sort by, Show) or a setting that is on
+    // (Descending): Segoe Fluent's checkmark in the item's icon column, as the
+    // Mac's flyout shows an SF checkmark, never a "●" or "on"/"off" text glyph
+    // (docs/design/20 "Craft rules"). The column is the presenter's: it lines
+    // every item of the menu up when any carries an icon (as Share's do).
+    private static MenuFlyoutItem CheckItem(string text, bool on, Action action)
+    {
+        MenuFlyoutItem item = Item(text, null, action);
+        if (on)
+        {
+            item.Icon = new FontIcon
+            {
+                Glyph = "\uE73E",  // CheckMark
+                FontFamily = IconFont,
+                Foreground = Brush(Title),
+            };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(item, "Chosen");
+        }
+        return item;
+    }
+
     // Loading indicator. A decode that misses the viewer cache is not
     // instantaneous on a camera dump, and a viewer that shows the previous
     // photo with no sign that a new one is coming reads as a hang. This is the
@@ -1382,8 +1450,8 @@ public static partial class IslandHost
     private static readonly string[] SortNames =
         { "Name", "Date modified", "Size", "Type", "Date taken (EXIF)" };
 
-    // View > Sort by. Rebuilt each time the flyout opens so the marker is the
-    // order native actually applied, never a guess.
+    // View > Sort by. Rebuilt each time the flyout opens so the checkmark is
+    // the order native actually applied, never a guess.
     private static MenuFlyoutSubItem SortSubMenu(MenuFlyout owner)
     {
         var sub = new MenuFlyoutSubItem { Text = "Sort by" };
@@ -1393,11 +1461,11 @@ public static partial class IslandHost
             for (int k = 0; k < SortNames.Length; k++)
             {
                 int key = k;
-                sub.Items.Add(Item(SortNames[k], (_sortPacked & 7) == k ? "●" : null,
+                sub.Items.Add(CheckItem(SortNames[k], (_sortPacked & 7) == k,
                     () => Send(Command.SetSort, (_sortPacked & 8) | key)));
             }
             sub.Items.Add(Sep());
-            sub.Items.Add(Item("Descending", (_sortPacked & 8) != 0 ? "on" : "off",
+            sub.Items.Add(CheckItem("Descending", (_sortPacked & 8) != 0,
                 () => Send(Command.SetSort, _sortPacked ^ 8)));
         }
         owner.Opening += (_, _) => Fill();
@@ -1413,7 +1481,7 @@ public static partial class IslandHost
     private const int FirstCullFilter = 5;
 
     // View > Show (issue #206): a view of the folder, for this run only. Rebuilt
-    // on open so the marker is the filter native applied. "Marked" keeps the
+    // on open so the checkmark is the filter native applied. "Marked" keeps the
     // marks as they are when it is chosen. Picks / Not rejected / a colour
     // (issue #207) re-apply when chosen again.
     private static MenuFlyoutSubItem KindFilterSubMenu(MenuFlyout owner)
@@ -1426,7 +1494,7 @@ public static partial class IslandHost
             {
                 if (k == FirstCullFilter) sub.Items.Add(Sep());
                 int filter = k;
-                sub.Items.Add(Item(KindFilterNames[k], _kindFilter == k ? "●" : null,
+                sub.Items.Add(CheckItem(KindFilterNames[k], _kindFilter == k,
                     () => Send(Command.KindFilterSet, filter)));
             }
         }
@@ -1452,6 +1520,8 @@ public static partial class IslandHost
         flyout.Items.Add(Item("Filmstrip", KeyOf(Command.ToggleFilmstrip), () => Send(Command.ToggleFilmstrip)));
         flyout.Items.Add(Item("Metadata pane", KeyOf(Command.MetadataPane), () => Send(Command.MetadataPane)));
         flyout.Items.Add(Item("Folder tree", KeyOf(Command.FolderTree), () => Send(Command.FolderTree)));
+        flyout.Items.Add(Item("Wider side pane", KeyOf(Command.PaneWider), () => Send(Command.PaneWider)));
+        flyout.Items.Add(Item("Narrower side pane", KeyOf(Command.PaneNarrower), () => Send(Command.PaneNarrower)));
         flyout.Items.Add(sortMenu);
         flyout.Items.Add(kindMenu);
         AddGoItems(flyout);  // issue #220 (IslandHost.FileMenu.cs)

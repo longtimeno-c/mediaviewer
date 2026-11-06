@@ -1,0 +1,38 @@
+{
+ "kind": "denoise",
+ "name": "Remove noise",
+ "credit": "SCUNet real-PSNR, Kai Zhang et al. (KAIR); ONNX export by deepghs. Apache-2.0.",
+ "weights": [
+  "SCUNet-PSNR.onnx"
+ ],
+ "run_bytes": 3000000000,
+ "cpu": true,
+ "knobs": [
+  {
+   "id": "strength",
+   "label": "Strength",
+   "type": "slider",
+   "min": 0,
+   "max": 1,
+   "step": 0.05,
+   "default": 1,
+   "help": "How much of the model's picture replaces the photo (or a plain enlargement of it)."
+  }
+ ],
+ "io": {
+  "runner": "tiles",
+  "scale": 1,
+  "tile": 512,
+  "overlap": 128,
+  "dims": [
+   "unk__2",
+   "unk__3"
+  ],
+  "fixed": {
+   "unk__0": 1,
+   "unk__1": 3
+  },
+  "output": "output",
+  "backend": "cpu"
+ }
+}

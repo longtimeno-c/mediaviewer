@@ -19,4 +19,11 @@ std::optional<std::uint64_t> available_memory() noexcept {
   return m.ullAvailPhys;
 }
 
+std::optional<std::uint64_t> total_memory() noexcept {
+  MEMORYSTATUSEX m{};
+  m.dwLength = sizeof m;
+  if (!GlobalMemoryStatusEx(&m)) return std::nullopt;
+  return m.ullTotalPhys;
+}
+
 }  // namespace mv::enhance

@@ -108,13 +108,21 @@ The stack folds into two canonical states:
   definition 32 ms, noise 87 ms, all four 96 ms.
 
   **Remove** (its own section; [plan](../plans/edit-adjust.md) slice 7) is a brush: the pane's
-  button turns it on (`adjust_pick::remove`), a drag on the photo paints round dabs in the shown
-  picture's uv (`shell/remove_brush.h`, at most 512, one undo step a stroke), and the canvas draws
-  them and a ring under the pointer in the crop overlay's pass (`shell/brush_overlay.h`, both
-  labs), presenting only while they change. A new item, a geometry change or crop mode clears them.
+  button, `B`, the rail or the Enhance tab arms it (a canvas tool since
+  docs/plans/edit-refresh.md S3, [20](20-edit-workspace.md) "Canvas tools"), a drag on the photo
+  paints round dabs in the shown picture's uv, sized in screen pixels (`shell/remove_brush.h`, at
+  most 512, one undo step a stroke, redo, Alt / ⌥ erases), and the canvas draws them and a ring
+  under the pointer in the crop overlay's pass (`shell/tool_overlay.h`, both labs), presenting
+  only while they change. A new item, a geometry change or crop mode clears them.
   **Remove…** hands the dabs to Enhance (`still_mask`, [14](14-abi.md)) and opens its sheet, which
   fills what is brushed with LaMa and writes a new file ([29](29-enhance.md) "Remove"); the stack
   and the original are untouched.
+
+  **Extend** (docs/plans/edit-refresh.md S6, [20](20-edit-workspace.md) "Extend") is **never an
+  op**: its frame past the photo's edges is shell state. Fill lands only the part of the frame
+  over the photo, as an ordinary `crop` op composed with the one before (`edit_session::
+  crop_inside`, one undo step); the new edges are Enhance's, a new file `<stem>-extended.jpg`
+  ([29](29-enhance.md) "Extend"), and the stack never holds a rect past 0..1.
 
   **Open closed eyes** (Faces section; [plan](../plans/edit-adjust.md) slice 6, owner call
   2026-11-02 in [12](12-decision-log.md)) writes a new file, `<stem>-eyes.jpg`, beside the photo;
@@ -168,11 +176,24 @@ of the Adjust pane takes a sentence ("a bit brighter and warmer", "less noisy", 
 "like an old film", "fix the white balance") and moves the sliders it names, as one op. A fixed
 vocabulary, no model: each word names a slider and a step (exposure 0.3 EV, contrast 20,
 temperature 15, shadows 30, noise reduction 30…); "less", "too", "reduce", "deeper" turn it
-around, "a bit" halves and "much" doubles it; an adjective before a region ("brighter shadows",
+around, "a bit" halves and "much" doubles it; "down" before a slider turns it around too ("turn
+down the contrast") and right after a slider's name reverses it ("exposure down"), but after an
+adjective it is an echo ("cool it down"); "noise reduction" is the denoise slider; an adjective before a region ("brighter shadows",
 "darker corners") moves the region's slider; a few looks move several ("punchy", "dramatic",
 "film", "matte", "soft"); "fix the white balance" and "auto" run the matching Autos one after
-another. Moves add to where each slider is, land on its steps and clamp. Words it does not know are
-listed back under the field ("not understood: …"), never guessed at.
+another. Moves add to where each slider is, land on its steps and clamp. The note under the field
+always says what happened: what moved ("Exposure +0.3 EV · Temperature +15 · Noise reduction +30"),
+words it does not know ("· not understood: …", never guessed at), "Didn't recognise that — try
+'warmer', 'brighter', 'less noise'" when no word was recognised, or why not now (no still, "Still
+preparing the photo — press Return again in a moment", or a photo that could not be prepared).
+Both hosts take the request through `adjust_pane::prompt`, which decides; before 2026-11-05 a
+request the host could not run was dropped without a word. Return commits the text AppKit shows on
+the Mac (the field editor's, or the field's once editing has ended), so a value set by VoiceOver or
+another accessibility client is sent, not the binding's last typed copy; the pane's own Return
+handler submits it too (whichever hears Return first; blank text is no request), and the field is
+emptied once it ran (kept while the photo is still being prepared). While any field editor has the
+keyboard the pane's keys (0, A, R, arrows) step aside even if SwiftUI's focus never heard: "warmer"
+typed then lost its r and a to Reset and Auto (2026-11-05).
 
 **Auto** (`edit/auto_adjust.h`): each section's AUTO button runs `compute_auto` on a worker
 from the preview working image and lands as one `adjust_all` op. Each returns absolute values for
@@ -200,6 +221,16 @@ its own section, so a second click gives what the first gave.
 Each reads at most 65 536 pixels (`kAutoSampleBudget`). `adjust_pane::request_auto_tone(section)`
 gives the job a token that a colour change, a new item, a dropped working image or another Auto
 makes stale; `adjust_view::auto_section` tells the chromes which Auto is running.
+
+**✦ Auto** (`auto_enhance`, the Edit header's one-click enhance; docs/plans/edit-refresh.md S2):
+Light's Auto, then Colour's on what Light left (`compute_auto_sections` with
+`kAutoEnhanceSections`), landed as one `adjust_all` op. Black & white and levels are left alone.
+`adjust_pane::request_auto(mask)` carries the token (no section's spinner shows; the header's
+does, `kWandAutoBusy`). When it lands the pane records the stack's op count and colour
+(`auto_enhance_landed`); while the stack is still exactly that (`auto_enhance_on`, `kWandAutoOn`)
+the next press is an undo of that one op, so a second click takes it back. Pressed before the
+working image exists, it asks for the image and runs when it lands, on that photo only: moving
+to another photo, the pane dropping the image or a failed read ends the wait and nothing runs.
 
 **Auto tone** (`edit/auto_tone.h`, #289, Preview's Auto Levels): exposure and contrast from the
 histogram, a levels stretch fitted to the two tone controls the kernel has, a gain and a power
@@ -378,8 +409,8 @@ kernel or one more pass, evaluated in the order above.
 - Dehaze, grain, split-tone; detail on the GPU (the pass is on the CPU, so the canvas follows a
   detail slider when it settles, not during the drag).
 - Local adjustments: gradients, brush masks, healing / clone.
-- Auto-straighten, auto-crop. An Auto key outside the pane (the pane's `A` runs the focused
-  slider's section).
+- Auto-straighten, auto-crop. A default key for ✦ Auto (`auto_enhance` is unbound; the pane's
+  `A` runs the focused slider's section).
 - GPU demosaic, highlight recovery, lens profiles, dual-illuminant white balance.
 - A compute-shader ping-pong chain and a cache of pipeline state after early stages (the single
   kernel on the blit does not need them).

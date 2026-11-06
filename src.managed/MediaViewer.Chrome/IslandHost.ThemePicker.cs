@@ -57,8 +57,16 @@ public static partial class IslandHost
         _themeButtonName.Foreground = Brush(Title);
         _themeButtonName.TextTrimming = TextTrimming.CharacterEllipsis;
         _themeButtonName.VerticalAlignment = VerticalAlignment.Center;
-        var chevron = Label("›");
-        chevron.VerticalAlignment = VerticalAlignment.Center;
+        // An icon, not a text glyph (the Mac's chevron.right).
+        var chevron = new FontIcon
+        {
+            Glyph = "",  // ChevronRight
+            FontFamily = IconFont,
+            FontSize = TypeSize(10),
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        AutomationProperties.SetAccessibilityView(chevron, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
         var content = new Grid { ColumnSpacing = Space(8) };
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -79,7 +87,7 @@ public static partial class IslandHost
             Foreground = Brush(Title),
         };
         FillSettingsButton(_themeButton, accent: false);
-        _themeButton.Padding = new Thickness(10, 6, 10, 6);
+        _themeButton.Padding = Pad(10, 6, 10, 6);
         ToolTipService.SetToolTip(_themeButton, "Choose a theme");
         _themeButton.Click += (_, _) =>
         {
@@ -354,7 +362,7 @@ public static partial class IslandHost
         var detail = Label(choice.Detail);
         detail.FontSize = TypeSize(11);
         detail.TextTrimming = TextTrimming.CharacterEllipsis;
-        var labels = new StackPanel { Spacing = Space(2) };
+        var labels = new StackPanel { Spacing = Space(4) };
         labels.Children.Add(name);
         labels.Children.Add(detail);
         var caption = new Grid { ColumnSpacing = Space(4) };
@@ -366,7 +374,8 @@ public static partial class IslandHost
             var check = new FontIcon
             {
                 Glyph = "",  // CheckMark
-                FontSize = 12,
+                FontFamily = IconFont,
+                FontSize = TypeSize(13),
                 Foreground = Brush(ChromeColour.Accent),
                 VerticalAlignment = VerticalAlignment.Top,
             };
@@ -377,15 +386,22 @@ public static partial class IslandHost
         var body = new StackPanel { Spacing = Space(8) };
         body.Children.Add(pending ? EmptyPreview() : ThemePreview(p));
         body.Children.Add(caption);
+        // Lift, don't ring (docs/design/20 "Craft rules"; the Mac's ThemeCard):
+        // the chosen theme's card is a lighter step of the surface with a check,
+        // a hovered one a wash, both eased; the ring is the keyboard focus's
+        // (the button's own focus visual). No hairline at rest.
+        SolidColorBrush rest = chosen ? ThemeCardLift() : Brush(ChromeColour.Surface);
         var frame = new Border
         {
             Child = body,
             Padding = Pad(8),
             CornerRadius = Corner(10),
-            Background = Brush(ChromeColour.Surface),
-            BorderBrush = Brush(chosen ? ChromeColour.Accent : Hairline),
-            BorderThickness = new Thickness(chosen ? 2 : 1),
+            Background = rest,
+            BorderBrush = Brush(Hairline),
+            BorderThickness = CardOutline,  // only in a high-contrast theme
         };
+        if (HostAnimationsEnabled())
+            frame.BackgroundTransition = new BrushTransition { Duration = TimeSpan.FromMilliseconds(150) };
         var card = new Button
         {
             Content = frame,
@@ -399,6 +415,12 @@ public static partial class IslandHost
         FlattenButton(card);
         card.CornerRadius = Corner(10);
         AutomationProperties.SetName(card, choice.Name + ", " + choice.Detail + (chosen ? ", chosen" : ""));
+        if (!chosen)
+        {
+            card.PointerEntered += (_, _) => frame.Background = ThemeCardHover();
+            card.PointerExited += (_, _) => frame.Background = rest;
+            card.PointerCanceled += (_, _) => frame.Background = rest;
+        }
         string key = choice.Key;
         card.Click += (_, _) =>
         {
@@ -406,6 +428,19 @@ public static partial class IslandHost
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }  // never out of a XAML event
         };
         return card;
+    }
+
+    // Solid steps over the card's surface (a BrushTransition eases solid
+    // colours): the title colour blended in at the Mac's MVTheme.raised (0.12)
+    // for the chosen card, at its hover wash (0.07) under the pointer.
+    private static SolidColorBrush ThemeCardLift() => ThemeCardStep(0.12);
+    private static SolidColorBrush ThemeCardHover() => ThemeCardStep(0.07);
+
+    private static SolidColorBrush ThemeCardStep(double amount)
+    {
+        Color s = Brush(ChromeColour.Surface).Color, t = Brush(Title).Color;
+        byte Mix(byte a, byte b) => (byte)Math.Round(a + (b - a) * amount);
+        return new SolidColorBrush(Color.FromArgb(255, Mix(s.R, t.R), Mix(s.G, t.G), Mix(s.B, t.B)));
     }
 
     private static FrameworkElement EmptyPreview() => new Border

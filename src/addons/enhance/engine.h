@@ -15,6 +15,7 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -26,11 +27,13 @@
 #include <vector>
 
 #include "addons/enhance/downloads.h"
+#include "addons/enhance/eta.h"
 #include "addons/enhance/prefs.h"
 #include "addons/enhance/preview.h"
 #include "addons/enhance/screens.h"
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
+#include "addons/enhance/tier.h"
 
 namespace mv::enhance {
 
@@ -55,6 +58,14 @@ struct engine_port {
   // [worker] Slice 7: how many brush dabs the host holds over the photo at
   // `path` (Edit → Adjust → Remove); 0 none.
   std::function<std::uint32_t(const std::string& path)> brushed;
+  // [worker] S5's Discard: the host table's recycle_file. 0 moved to the
+  // Bin / Trash, 1 refused (the place has no bin: nothing was removed), -1
+  // failed. Never a permanent delete.
+  std::function<int(const std::string& path)> recycle;
+  // edit-refresh S6: whether the host holds a frame dragged past this
+  // photo's edges (the host table's still_extend): the sheet then opens on
+  // Extend, as it opens on Remove when something is brushed.
+  std::function<bool(const std::string& path)> framed;
   std::function<std::optional<std::uint64_t>(const std::string& dir)> free_disk;
   std::function<std::unique_ptr<ai::http_transport>()> transport;
   // Never a path or a name (rule 6).
@@ -78,6 +89,8 @@ struct job_request {
   // From the Video Editor: the edit's kept source ranges, (in, out) pairs in
   // nanoseconds, in source order. Empty: the whole clip.
   std::vector<std::int64_t> keep_ns;
+  // The performance level's bounds (tier.h).
+  tier_policy policy = policy_of(tier::standard);
   bool has_sound = false;  // a clip: it holds sound (a cut one's is written again)
 };
 
@@ -103,6 +116,13 @@ class runner {
   [[nodiscard]] virtual std::string check(const job_request& r) const = 0;
   virtual void start(job_request r, job_events events) = 0;
   virtual void cancel() = 0;
+  // One-click: the photo's size after its edit and how far it shrinks without
+  // losing detail, for the card's time estimate. On the engine's own estimate
+  // thread, never while a job runs; nullopt when it cannot read it.
+  [[nodiscard]] virtual std::optional<photo_size> measure(const std::string& path) {
+    (void)path;
+    return std::nullopt;
+  }
 };
 
 class engine {
@@ -126,10 +146,24 @@ class engine {
   // `width_pt` / `scale`: the sheet's content width and backing scale, for
   // the preview's pixels.
   void sheet_opened(std::uint64_t generation, const std::string& path, float width_pt = 420, float scale = 2);
+  // S5: the docked panel (place "edit") opened on `path`, `width_pt` wide.
+  void tool_opened(std::uint64_t generation, const std::string& path, float width_pt = 340, float scale = 2);
+  // S5: the Edit workspace's command to it, enhance/tool:
+  // {"photo": "remove|restyle|detail|extend|faces", "run": true?, "path": ?}.
+  // Chooses the tool (Remove reads the brushed dabs again) and, with "run",
+  // starts it (one-click: downloading its model first when it is not here).
+  // "path" (one-click): the photo now on screen; the cards follow it (a run
+  // on another photo stops, as leaving it does; the result it opened keeps
+  // its notice).
+  void tool_command(const std::string& value_json);
   void closed(const std::string& screen);
   // The command or the context entry: these files (the first is enhanced),
   // then the sheet. From the Video Editor, `keep_ns` is the edit (job_request).
-  void command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns = {});
+  // `start_on`: the wand menu's Restyle opens the sheet on it (when offered).
+  // The level in force: the chosen one, else the recommendation.
+  [[nodiscard]] tier effective_tier() const;
+  void command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns = {},
+               std::optional<photo_target> start_on = std::nullopt);
   void event(const std::string& screen, const std::string& node, std::uint32_t kind, const std::string& value_json);
 
   // For tests: the model each kind uses (its chosen one), and its download
@@ -147,19 +181,51 @@ class engine {
   };
   [[nodiscard]] const model_entry* chosen_locked(model_kind k) const;
   [[nodiscard]] const model_entry* find_model(model_kind k, const std::string& id) const;
+  // The chosen model's spec, files and download status (m_ held).
+  [[nodiscard]] const model_spec* spec_locked(model_kind k) const;
+  [[nodiscard]] model_files files_locked(model_kind k) const;
+  [[nodiscard]] dl_status status_locked(model_kind k) const;
+  // A download moved, or a click's download should be looked at: posts the
+  // screens, and a one-click download that finished starts its run.
   void on_changed();
   void post_settings_locked();
+  // Posts the sheet and the docked panel, whichever are open.
   void post_sheet_locked();
-  [[nodiscard]] sheet_view sheet_locked() const;
-  [[nodiscard]] std::vector<model_kind> kinds_for_locked() const;
+  // `docked`: the panel's view (Remove stays Remove with nothing brushed yet).
+  // `as`: that tool's view rather than the chosen one (one-click's cards).
+  [[nodiscard]] sheet_view sheet_locked(bool docked = false, std::optional<photo_target> as = std::nullopt) const;
+  [[nodiscard]] std::vector<model_kind> kinds_for_locked(bool docked = false,
+                                                        std::optional<photo_target> as = std::nullopt) const;
+  // One-click: the Enhance tab's cards and what the run is doing.
+  [[nodiscard]] std::vector<card_view> cards_locked() const;
+  [[nodiscard]] run_view run_view_locked() const;
+  [[nodiscard]] std::string card_eta_locked(photo_target t, const sheet_view& v) const;
+  // A card's one button: the model first when it is not here, then the run.
+  void go(photo_target t);
+  void measure_loop();
+  void want_measure_locked();
+  // A screen opened on `path`: what it is, read before the lock.
+  struct item_facts {
+    item_kind item = item_kind::unknown;
+    media_facts facts;
+    std::uint32_t brushed = 0;
+    bool framed = false;  // S6: the host holds an Extend frame for it
+  };
+  [[nodiscard]] item_facts read_item(const std::string& path) const;
+  void adopt_locked(const std::string& path, const item_facts& f, std::vector<std::int64_t> keep);
+  void discard();
+  void forget_result_locked();
+  [[nodiscard]] bool detail_offered(model_kind k) const;
+  [[nodiscard]] model_kind detail_locked() const;
   void save_locked();
   // `id` empty: the kind's chosen model.
   void install(model_kind k, const std::string& id);
   void stop(model_kind k, const std::string& id);
   void remove(model_kind k, const std::string& id);
   void choose(model_kind k, const std::string& id);
-  void run();
+  void run(bool docked = false);
   void cancel();
+  void end_pending_locked(run_state st, std::string message);
 
   engine_port port_;
   std::string self_dir_;
@@ -175,13 +241,19 @@ class engine {
   prefs prefs_;
   std::uint64_t settings_gen_ = 0;
   std::uint64_t sheet_gen_ = 0;
+  std::uint64_t tool_gen_ = 0;  // S5: the docked panel's generation, 0 closed
   std::string pending_path_;  // from a command, for the sheet it opens
   std::vector<std::int64_t> pending_keep_;
   std::string path_;          // the item the sheet is about
   std::vector<std::int64_t> keep_;  // the Video Editor's edit of it, or empty
   item_kind item_ = item_kind::unknown;
   media_facts facts_;
+  tier recommended_ = tier::standard;  // this computer's, by Local search's rule
   std::uint32_t brushed_ = 0;  // slice 7: dabs brushed over the photo, when the sheet opened
+  bool framed_ = false;        // edit-refresh S6: a canvas frame over the photo, when the sheet opened
+  // edit-refresh S8: the faces the host's Faces panel chose for Restore face
+  // (x, y, w, h quads, 0..1); empty every face. Set by each tool command.
+  std::vector<float> face_boxes_;
   bool running_ = false;
   double progress_ = -1;
   std::chrono::steady_clock::time_point run_started_{};
@@ -192,7 +264,35 @@ class engine {
   std::uint32_t posted_height_ = 0;  // the preview's height in the last tree
   float sheet_width_pt_ = 420;
   float sheet_scale_ = 2;
+  float tool_width_pt_ = 340;
+  float tool_scale_ = 2;
   std::string status_;
+  // S5: the file the last run wrote (absolute, or a library key), for the
+  // docked panel's result row; "" none or discarded.
+  std::string result_path_;
+  std::string result_name_;
+  std::string result_note_;  // Discard refused or failed: why, under the row
+  // One-click (owner 2026-11-05): the run the cards' host follows. Every run,
+  // and every download a click started to run after, has a new id.
+  run_state run_state_ = run_state::idle;
+  std::uint64_t run_id_ = 0;
+  photo_target run_tool_ = photo_target::detail;
+  std::string run_message_;
+  std::string run_eta_;
+  std::string source_path_;  // the photo the last run was made from
+  // The photo the cards were pointed at while a run went on another: the
+  // run stops, and the cards follow once it has.
+  std::string follow_path_;
+  // Download, then run: the tool waiting for its model, and which model.
+  std::optional<photo_target> pending_tool_;
+  model_kind pending_kind_ = model_kind::still;
+  // The card's estimate: each photo's size and detail, measured on a thread
+  // of the engine's own (never the host's worker), the newest few kept.
+  std::map<std::string, std::optional<photo_size>> measured_;
+  std::string measure_want_;
+  bool measure_quit_ = false;
+  std::condition_variable measure_cv_;
+  std::thread measure_t_;
 };
 
 }  // namespace mv::enhance

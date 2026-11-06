@@ -32,6 +32,7 @@
 #include "edit/edit_stack.h"
 #include "edit/export.h"
 #include "shell/commands.h"
+#include "shell/crop_aspect.h"
 
 namespace mv::shell {
 
@@ -52,21 +53,8 @@ enum class edit_effect : std::uint8_t {
   export_image,    // run an export of `export_geometry()` for the current item
 };
 
-// PR 29 (docs/design/20): the Crop pane's aspect presets. `original` is the frame's
-// own ratio (after the stack's turns). Values are stable: the chromes send them.
-enum class crop_aspect : std::uint8_t {
-  free = 0,
-  original = 1,
-  square = 2,
-  r4_3 = 3,
-  r3_2 = 4,
-  r16_9 = 5,
-  r5_4 = 6,
-  count
-};
-inline constexpr int kCropAspectCount = static_cast<int>(crop_aspect::count);
-// "Free", "Original", "1:1", "4:3", ... (landscape spelling).
-[[nodiscard]] const char* crop_aspect_label(crop_aspect a) noexcept;
+// PR 29 (docs/design/20): the Crop pane's aspect presets, crop_aspect, are in
+// shell/crop_aspect.h (Extend's frame locks to the same list).
 
 struct rotation_write {
   std::string path;
@@ -112,6 +100,13 @@ class edit_session {
   [[nodiscard]] edit_effect set_crop_aspect(crop_aspect a, bool portrait);
   [[nodiscard]] crop_aspect aspect() const noexcept { return aspect_; }
   [[nodiscard]] bool aspect_portrait() const noexcept { return portrait_; }
+  // docs/design/20 Behaviour 4: a drag of the draft's handle on the canvas.
+  // `handle` the edge bits a press grabbed (shell/crop_drag.h crop_hit),
+  // (du, dv) the pointer's travel since the press in the frame's uv, `start`
+  // the draft at the press. A locked preset keeps its ratio; with an angle the
+  // rect stops where a corner of the rotated source would show. `redraw` when
+  // the draft changed; `none` outside crop mode.
+  [[nodiscard]] edit_effect drag_crop(const edit::rect& start, std::uint8_t handle, float du, float dv);
   // The Crop pane's slider: an absolute angle, clamped to ±kMaxStraighten.
   // Starts cropping when not already (the angle is part of the draft).
   [[nodiscard]] edit_effect set_straighten(float degrees);
@@ -137,6 +132,19 @@ class edit_session {
   // Slice 3: one red-eye fix at `s` (source uv, radius a fraction of the
   // diagonal), one op; r 0 clears every fix. `refused` past kRedEyeSpots.
   [[nodiscard]] edit_effect add_red_eye(const edit::red_eye_spot& s);
+  // docs/plans/edit-refresh.md S3: the red-eye tool's click on a fix takes it
+  // off (the others kept), and Find eyes adds every red eye it found; each
+  // one op, so one Ctrl+Z puts it back. `none` for an index that is not a
+  // fix, or when nothing would change; `refused` with no item.
+  [[nodiscard]] edit_effect remove_red_eye(int index);
+  [[nodiscard]] edit_effect add_red_eyes(std::span<const edit::red_eye_spot> spots);
+  // docs/plans/edit-refresh.md S6: Extend's Fill. The part of its frame over
+  // the shown (edited) picture, `r` in that picture's uv, lands as an
+  // ordinary crop: composed with the committed one in the straightened frame,
+  // one op, so one Ctrl+Z takes it off. `none` when `r` is the whole picture
+  // (a frame only past the edges crops nothing); `refused` in crop mode or
+  // with no item.
+  [[nodiscard]] edit_effect crop_inside(const edit::rect& r);
 
   // PR 12. A metadata write (rating, comment, orientation tag) landed on
   // `path`: the bytes changed (size, mtime), the pixels did not. Moves the
@@ -232,11 +240,19 @@ inline constexpr int kExportLongEdgeCount =
 // rotates losslessly and swaps the result in (io::replace_atomic).
 [[nodiscard]] expected run_rotation_write(const rotation_write& w);
 
+// S0 (docs/plans/edit-refresh.md §5): a file the sync client keeps only in the
+// cloud (OneDrive, iCloud Drive: io::file_stat::cloud_placeholder) comes down
+// with the worker's read of it (the export's, the working image's). The
+// notice says so meanwhile; both hosts clear it when the read ends.
+inline constexpr std::string_view kCloudFetchNotice = "Downloading this file from the cloud\xE2\x80\xA6";
+
 // Exports next to the original as "<name>-edit.jpg" (or " (2)", …: never an
 // overwrite). Returns the path written. `c` is the PR 11 colour state.
+// `out_dir` (ending in a separator), when set, is where it goes instead: a
+// Photos-library item's export is staged there, then added to the library.
 [[nodiscard]] result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
                                              const edit::export_options& opt,
-                                             const edit::colour& c = {});
+                                             const edit::colour& c = {}, std::string_view out_dir = {});
 
 // PR 15, Ctrl+Alt+C / ⌘⌥C (docs/design/16 View): the still with its stack baked, as a
 // PNG, for the clipboard. Written to a folder of its own under

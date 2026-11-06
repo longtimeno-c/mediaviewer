@@ -7,7 +7,9 @@
 #include "abi/addon_media.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iterator>
 #include <mutex>
@@ -20,6 +22,7 @@
 #include "edit/eyes.h"
 #include "edit/picture_io.h"
 #include "edit/sound_writer.h"
+#include "image/half.h"
 #include "image/linear.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
@@ -347,6 +350,12 @@ struct still_edit {
   edit::colour c;
   std::string mask_path;
   std::vector<float> mask;
+  std::string extend_path;  // edit-refresh S6
+  std::array<float, 4> extend{};
+  // The geometry of the edit the frame was measured against (identity when
+  // the photo had none): an undo of Fill's crop, or any later turn or crop,
+  // leaves fractions of another picture, so the frame stops answering.
+  edit::geometry extend_g;
 };
 
 still_edit& edit_slot() {
@@ -354,7 +363,88 @@ still_edit& edit_slot() {
   return s;
 }
 
+// The edit's geometry still_open applies to `path` now (s.m held).
+edit::geometry geometry_now(const still_edit& s, const std::string& path) {
+  return !s.path.empty() && s.path == path ? s.g : edit::geometry{};
+}
+
+bool same_geometry(const edit::geometry& a, const edit::geometry& b) {
+  return a.orient == b.orient && a.straighten == b.straighten && a.crop == b.crop && a.resize == b.resize;
+}
+
 }  // namespace
+
+namespace {
+struct photos_hooks {
+  std::mutex m;
+  photos_resolve_fn resolve;
+  photos_add_fn add;
+};
+photos_hooks& hooks() {
+  static photos_hooks h;
+  return h;
+}
+}  // namespace
+
+void set_photos_hooks(photos_resolve_fn resolve, photos_add_fn add) {
+  photos_hooks& h = hooks();
+  const std::lock_guard<std::mutex> lock(h.m);
+  h.resolve = std::move(resolve);
+  h.add = std::move(add);
+}
+
+bool is_photos_key(std::string_view path) noexcept { return path.size() > 7 && path.substr(0, 7) == "photos:"; }
+
+result<std::string> readable_path(const std::string& path, const job_context* ctx) {
+  if (!is_photos_key(path)) return path;
+  photos_resolve_fn resolve;
+  {
+    photos_hooks& h = hooks();
+    const std::lock_guard<std::mutex> lock(h.m);
+    resolve = h.resolve;
+  }
+  if (!resolve) return err(status::not_found);
+  return resolve(path, ctx);
+}
+
+result<std::string> staging_dir() {
+  std::error_code ec;
+  const std::filesystem::path staging = std::filesystem::temp_directory_path(ec) / "MediaViewer Saves";
+  if (ec) return err(status::io);
+  std::filesystem::create_directories(staging, ec);
+  if (ec) return err(status::io);
+  const std::u8string u = staging.u8string();
+  return std::string(reinterpret_cast<const char*>(u.data()), u.size()) + "/";
+}
+
+result<std::string> add_to_library(const std::string& file, const std::string& source) {
+  photos_add_fn add;
+  {
+    photos_hooks& h = hooks();
+    const std::lock_guard<std::mutex> lock(h.m);
+    add = h.add;
+  }
+  result<std::string> key = add ? add(file, source) : result<std::string>(err(status::unsupported_format));
+  // The library has its own copy, or none: ours never stays behind.
+  (void)io::remove_file(file);
+  return key;
+}
+
+result<std::string> save_copy_to_library(const std::string& source, const library_exporter& exporter,
+                                         const job_context* ctx) {
+  if (!is_photos_key(source) || !exporter) return err(status::invalid_arg);
+  MV_TRY(const std::string file, readable_path(source, ctx));
+  MV_TRY(const std::string dir, staging_dir());
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  MV_TRY(const std::string written, exporter(file, dir));
+  return add_to_library(written, source);
+}
+
+std::string result_name(const std::string& written) {
+  if (is_photos_key(written)) return "to your Photos library";
+  const std::size_t slash = written.find_last_of("/\\");
+  return slash == std::string::npos ? written : written.substr(slash + 1);
+}
 
 void set_still_edit(const std::string& path, const edit::geometry& g, const edit::colour& c) {
   still_edit& s = edit_slot();
@@ -384,6 +474,27 @@ std::vector<float> still_mask(const std::string& path) {
   return s.mask;
 }
 
+void set_still_extend(const std::string& path, const std::array<float, 4>& ltrb) {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  s.extend_path = path;
+  s.extend = {};
+  s.extend_g = geometry_now(s, path);
+  if (path.empty()) return;
+  for (std::size_t i = 0; i < 4; ++i) {
+    const float f = ltrb[i];
+    s.extend[i] = f > 0.0f && std::isfinite(f) ? std::min(f, 1.0f) : 0.0f;
+  }
+}
+
+std::array<float, 4> still_extend(const std::string& path) {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  if (path.empty() || s.extend_path != path) return {};
+  if (!same_geometry(s.extend_g, geometry_now(s, path))) return {};
+  return s.extend;
+}
+
 result<rgb_image> full_still(const std::string& path) {
   edit::geometry g;
   edit::colour c;
@@ -395,7 +506,8 @@ result<rgb_image> full_still(const std::string& path) {
       c = s.c;
     }
   }
-  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
+  MV_TRY(const std::string file, readable_path(path));
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(file));
   MV_TRY(codec::raster pic, edit::edited_picture(bytes, g, c));
   rgb_image out;
   out.width = pic.width;
@@ -441,66 +553,262 @@ std::string eyes_note(status pack, const result<eyes_outcome>& r) {
   if (pack == status::invalid_arg) return "Turn on People in Local search to open closed eyes";
   if (pack != status::ok || !r) return "Could not look for open eyes in this photo";
   if (r->faces == 0) return "No faces found";
-  if (r->fixed == 0) return "No closed eyes with an open frame of the same moment";
-  const std::size_t slash = r->written.find_last_of("/\\");
-  const std::string name = slash == std::string::npos ? r->written : r->written.substr(slash + 1);
-  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + " fixed — saved " + name;
+  if (r->fixed == 0) {
+    return "No open eyes to use: no photo of the same moment, and none of this person in People "
+           "with their head turned the same way";
+  }
+  // A library photo's result is a new photo there (S0): "added to your Photos library".
+  const std::string verb = is_photos_key(r->written) ? " fixed — added " : " fixed — saved ";
+  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + verb + result_name(r->written);
 }
 
-result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view pack_json, const job_context* ctx) {
+namespace {
+
+bool read_landmarks(const json::value* lm, edit::face_landmarks& out) {
+  if (!lm || lm->k != json::kind::array || lm->a.size() != out.size()) return false;
+  for (std::size_t i = 0; i < out.size(); ++i) out[i] = static_cast<float>(lm->a[i].d);
+  return true;
+}
+
+float json_number(const json::value& v, const char* key, float fallback) {
+  const json::value* n = v.find(key);
+  if (!n || n->k != json::kind::number) return fallback;
+  return static_cast<float>(n->is_integer ? static_cast<double>(n->i) : n->d);
+}
+
+// The pack's box (x, y, w, h), or the landmarks' bounds grown to a face when
+// an answer carries none (the tests' hand-written ones).
+std::array<float, 4> face_box(const json::value& f, const edit::face_landmarks& lm) {
+  const json::value* x = f.find("x");
+  if (x && x->k == json::kind::number) {
+    return {json_number(f, "x", 0.0f), json_number(f, "y", 0.0f), json_number(f, "w", 0.0f),
+            json_number(f, "h", 0.0f)};
+  }
+  float x0 = 1.0f, y0 = 1.0f, x1 = 0.0f, y1 = 0.0f;
+  for (std::size_t i = 0; i < 5; ++i) {
+    x0 = std::min(x0, lm[2 * i]), x1 = std::max(x1, lm[2 * i]);
+    y0 = std::min(y0, lm[2 * i + 1]), y1 = std::max(y1, lm[2 * i + 1]);
+  }
+  return {x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
+}
+
+// A rectangle of `img` in pixels: x0, y0 inclusive, x1, y1 exclusive.
+struct px_rect {
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  [[nodiscard]] int w() const noexcept { return x1 - x0; }
+  [[nodiscard]] int h() const noexcept { return y1 - y0; }
+};
+
+px_rect to_px(const std::array<float, 4>& r, std::uint32_t w, std::uint32_t h) {
+  const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+  px_rect p;
+  p.x0 = std::clamp(static_cast<int>(std::floor(r[0] * fw)), 0, static_cast<int>(w));
+  p.y0 = std::clamp(static_cast<int>(std::floor(r[1] * fh)), 0, static_cast<int>(h));
+  p.x1 = std::clamp(static_cast<int>(std::ceil((r[0] + r[2]) * fw)), p.x0, static_cast<int>(w));
+  p.y1 = std::clamp(static_cast<int>(std::ceil((r[1] + r[3]) * fh)), p.y0, static_cast<int>(h));
+  return p;
+}
+
+image::linear_image crop_of(const image::linear_image& img, const px_rect& r) {
+  image::linear_image out;
+  out.width = static_cast<std::uint32_t>(r.w());
+  out.height = static_cast<std::uint32_t>(r.h());
+  out.format = img.format;
+  out.from_raw = img.from_raw;
+  out.rgba.resize(std::size_t{out.width} * out.height * 4);
+  for (int y = 0; y < r.h(); ++y) {
+    const std::uint16_t* src = img.rgba.data() + (static_cast<std::size_t>(r.y0 + y) * img.width + r.x0) * 4;
+    std::copy(src, src + std::size_t{out.width} * 4, out.rgba.data() + static_cast<std::size_t>(y) * out.width * 4);
+  }
+  return out;
+}
+
+// One face's fix, kept inside its edit region: the transfer runs on a crop
+// (the region and a margin, so its look-matching ring reads real skin), and
+// only the region is written back, faded to the original over its outer edge.
+// `transfer` gets the crop and the face's landmarks in it.
+template <class Transfer>
+bool fix_in_region(image::linear_image& target, const edit::face_landmarks& lm, const std::array<float, 4>& box,
+                   Transfer transfer) {
+  const float tw = static_cast<float>(target.width), th = static_cast<float>(target.height);
+  const std::array<float, 4> region = edit::face_region(box, lm, tw, th);
+  const px_rect rp = to_px(region, target.width, target.height);
+  if (rp.w() < 4 || rp.h() < 4) return false;
+  const std::array<float, 4> margin{region[0] - region[2] * 0.5f, region[1] - region[3] * 0.5f, region[2] * 2.0f,
+                                    region[3] * 2.0f};
+  const px_rect cp = to_px(margin, target.width, target.height);
+  image::linear_image crop = crop_of(target, cp);
+  edit::face_landmarks local{};
+  const float cw = static_cast<float>(crop.width), ch = static_cast<float>(crop.height);
+  for (std::size_t i = 0; i < 5; ++i) {
+    local[2 * i] = (lm[2 * i] * tw - static_cast<float>(cp.x0)) / cw;
+    local[2 * i + 1] = (lm[2 * i + 1] * th - static_cast<float>(cp.y0)) / ch;
+  }
+  if (!transfer(crop, local)) return false;
+  // Back into the region: weight 1 inside, falling to 0 at its border over
+  // `fade` pixels, so nothing outside it moves and there is no seam.
+  const float fade = std::max(2.0f, 0.08f * static_cast<float>(std::min(rp.w(), rp.h())));
+  for (int y = rp.y0; y < rp.y1; ++y) {
+    const float dy = std::min(static_cast<float>(y - rp.y0) + 0.5f, static_cast<float>(rp.y1 - y) - 0.5f);
+    for (int x = rp.x0; x < rp.x1; ++x) {
+      const float dx = std::min(static_cast<float>(x - rp.x0) + 0.5f, static_cast<float>(rp.x1 - x) - 0.5f);
+      const float t = std::clamp(std::min(dx, dy) / fade, 0.0f, 1.0f);
+      const float wgt = t * t * (3.0f - 2.0f * t);
+      if (wgt <= 0.0f) continue;
+      std::uint16_t* dst = target.rgba.data() + (static_cast<std::size_t>(y) * target.width + x) * 4;
+      const std::uint16_t* src =
+          crop.rgba.data() + (static_cast<std::size_t>(y - cp.y0) * crop.width + (x - cp.x0)) * 4;
+      if (wgt >= 1.0f) {
+        std::copy(src, src + 4, dst);
+        continue;
+      }
+      for (int c = 0; c < 3; ++c) {
+        const float a = image::half_to_float(dst[c]), b = image::half_to_float(src[c]);
+        dst[c] = image::float_to_half(a + (b - a) * wgt);
+      }
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+const char* face_fix_suffix(face_fix fix) noexcept {
+  return fix == face_fix::open_eyes ? "eyes" : "faces";
+}
+
+result<int> fix_faces_in(image::linear_image& target, std::string_view pack_json, face_fix fix,
+                         std::uint64_t faces_mask, const job_context* ctx, int* found) {
   auto doc = json::parse(pack_json);
   if (!doc) return err(status::invalid_arg);
   const json::value* faces = doc->find("faces");
   if (!faces || faces->k != json::kind::array) return err(status::invalid_arg);
-  auto landmarks = [](const json::value* lm, edit::face_landmarks& out) {
-    if (!lm || lm->a.size() != out.size()) return false;
-    for (std::size_t i = 0; i < out.size(); ++i) out[i] = static_cast<float>(lm->a[i].d);
-    return true;
-  };
-  eyes_outcome r;
-  r.faces = static_cast<int>(faces->a.size());
-  if (faces->a.empty()) return r;
-  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
-  MV_TRY(image::linear_image target, image::decode_linear(bytes, ctx));
+  if (found) *found = static_cast<int>(faces->a.size());
+  if (!target.valid()) return err(status::invalid_arg);
   std::vector<std::pair<std::string, image::linear_image>> donors;  // decoded once each
   auto donor_image = [&](const std::string& p) -> const image::linear_image* {
     for (const auto& [k, img] : donors) {
       if (k == p) return &img;
     }
-    auto b = io::read_all(p);
+    auto readable = readable_path(p, ctx);
+    if (!readable) return nullptr;
+    auto b = io::read_all(*readable);
     if (!b) return nullptr;
     auto img = image::decode_linear(*b, ctx);
     if (!img) return nullptr;
     donors.emplace_back(p, std::move(*img));
     return &donors.back().second;
   };
-  for (const json::value& f : faces->a) {
-    if (ctx && ctx->cancelled()) return err(status::cancelled);
-    edit::face_landmarks t{};
-    if (!landmarks(f.find("lm"), t)) continue;
-    const float shut = edit::eye_openness(target, t);
+  const float tw = static_cast<float>(target.width), th = static_cast<float>(target.height);
+  // A donor's eyes for a face: the most open, by kEyesBetter over these. Of
+  // the same moment, the three most alike are enough. From the person's other
+  // photos (People, "library"), any of them whose head is turned as this one
+  // is (pose_distance), since one from another day rarely is.
+  auto eyes_donor = [&](const json::value& f, const edit::face_landmarks& t, edit::face_landmarks& out_lm)
+      -> const image::linear_image* {
     const json::value* list = f.find("donors");
-    if (!list) continue;
+    if (!list || list->k != json::kind::array) return nullptr;
     const image::linear_image* best = nullptr;
-    edit::face_landmarks best_lm{};
-    float best_open = shut * edit::kEyesBetter;
-    // The three most alike are enough: further down is a worse match.
-    for (std::size_t i = 0; i < list->a.size() && i < 3; ++i) {
-      const json::value& d = list->a[i];
+    float best_open = edit::eye_openness(target, t) * edit::kEyesBetter;
+    int seen_moment = 0;
+    for (const json::value& d : list->a) {
+      const bool library = d.find("library") && d.find("library")->k == json::kind::boolean && d.find("library")->b;
+      if (!library && ++seen_moment > 3) continue;
       const std::string* dp = d.str("path");
       edit::face_landmarks lm{};
-      if (!dp || !landmarks(d.find("lm"), lm)) continue;
+      if (!dp || !read_landmarks(d.find("lm"), lm)) continue;
       const image::linear_image* img = donor_image(*dp);
       if (!img) continue;
+      if (library && edit::pose_distance(t, tw, th, lm, static_cast<float>(img->width),
+                                         static_cast<float>(img->height)) > edit::kPoseMatch) {
+        continue;
+      }
       const float open = edit::eye_openness(*img, lm);
       if (open > best_open && open > 0.0f) {
         best_open = open;
         best = img;
-        best_lm = lm;
+        out_lm = lm;
       }
     }
-    if (best && edit::transfer_eyes(target, t, *best, best_lm)) ++r.fixed;
+    return best;
+  };
+  // A clearly better face of the same person: the pack's quality up by
+  // kFaceBetter, or the same quality with the eyes open where these are shut.
+  auto face_donor = [&](const json::value& f, const edit::face_landmarks& t, edit::face_landmarks& out_lm)
+      -> const image::linear_image* {
+    const json::value* list = f.find("donors");
+    if (!list || list->k != json::kind::array) return nullptr;
+    constexpr float kFaceBetter = 0.08f;
+    const float here_open = edit::eye_openness(target, t);
+    float best_score = json_number(f, "quality", 0.5f) + kFaceBetter;
+    const image::linear_image* best = nullptr;
+    for (const json::value& d : list->a) {
+      const std::string* dp = d.str("path");
+      edit::face_landmarks lm{};
+      if (!dp || !read_landmarks(d.find("lm"), lm)) continue;
+      const image::linear_image* img = donor_image(*dp);
+      if (!img) continue;
+      if (edit::pose_distance(t, tw, th, lm, static_cast<float>(img->width), static_cast<float>(img->height)) >
+          edit::kPoseMatch) {
+        continue;
+      }
+      float score = json_number(d, "quality", 0.5f);
+      const float open = edit::eye_openness(*img, lm);
+      if (open > here_open * edit::kEyesBetter && open > 0.0f) score += 0.15f;  // shut here, open there
+      if (score > best_score) {
+        best_score = score;
+        best = img;
+        out_lm = lm;
+      }
+    }
+    return best;
+  };
+  int fixed = 0;
+  for (std::size_t i = 0; i < faces->a.size(); ++i) {
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    if (i >= 64 || (faces_mask & (std::uint64_t{1} << i)) == 0) continue;
+    const json::value& f = faces->a[i];
+    edit::face_landmarks t{};
+    if (!read_landmarks(f.find("lm"), t)) continue;
+    const std::array<float, 4> box = face_box(f, t);
+    edit::face_landmarks dlm{};
+    bool done = false;
+    if (fix == face_fix::improve || fix == face_fix::do_all) {
+      if (const image::linear_image* d = face_donor(f, t, dlm)) {
+        done = fix_in_region(target, t, box, [&](image::linear_image& crop, const edit::face_landmarks& local) {
+          return edit::transfer_face(crop, local, *d, dlm).has_value();
+        });
+      }
+    }
+    if (!done && (fix == face_fix::open_eyes || fix == face_fix::do_all)) {
+      if (const image::linear_image* d = eyes_donor(f, t, dlm)) {
+        done = fix_in_region(target, t, box, [&](image::linear_image& crop, const edit::face_landmarks& local) {
+          return edit::transfer_eyes(crop, local, *d, dlm).has_value();
+        });
+      }
+    }
+    if (done) ++fixed;
   }
+  return fixed;
+}
+
+result<eyes_outcome> fix_faces(const std::string& path, std::string_view pack_json, face_fix fix,
+                               std::uint64_t faces_mask, const job_context* ctx) {
+  // The answer first: a malformed one reads nothing.
+  {
+    auto doc = json::parse(pack_json);
+    if (!doc) return err(status::invalid_arg);
+    const json::value* faces = doc->find("faces");
+    if (!faces || faces->k != json::kind::array) return err(status::invalid_arg);
+    eyes_outcome none;
+    none.faces = static_cast<int>(faces->a.size());
+    if (faces->a.empty() || faces_mask == 0) return none;
+  }
+  MV_TRY(const std::string file, readable_path(path, ctx));
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(file));
+  MV_TRY(image::linear_image target, image::decode_linear(bytes, ctx));
+  eyes_outcome r;
+  MV_TRY(r.fixed, fix_faces_in(target, pack_json, fix, faces_mask, ctx, &r.faces));
   if (r.fixed == 0) return r;
   // Upright 8-bit sRGB, as the export bake writes it, then beside the original.
   MV_TRY(codec::raster out,
@@ -516,8 +824,72 @@ result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view 
     pixels.rgb[i * 3 + 1] = out.rgba[i * 4 + 1];
     pixels.rgb[i * 3 + 2] = out.rgba[i * 4 + 2];
   }
-  MV_TRY(r.written, write_still(path, pixels, "eyes"));
+  MV_TRY(r.written, write_still(path, pixels, face_fix_suffix(fix)));
   return r;
+}
+
+result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view pack_json, const job_context* ctx,
+                                      std::uint64_t faces_mask) {
+  return fix_faces(path, pack_json, face_fix::open_eyes, faces_mask, ctx);
+}
+
+result<eyes_outcome> improve_faces(const std::string& path, std::string_view pack_json, const job_context* ctx,
+                                   std::uint64_t faces_mask) {
+  return fix_faces(path, pack_json, face_fix::improve, faces_mask, ctx);
+}
+
+std::string fix_note(face_fix fix, status pack, const result<eyes_outcome>& r) {
+  if (fix == face_fix::open_eyes) return eyes_note(pack, r);
+  if (fix == face_fix::do_all && pack == status::ok && r && r->faces > 0 && r->fixed == 0) {
+    return "Nothing to fix: no clearly better face of these people, and no open eyes to use";
+  }
+  return faces_note(pack, r);
+}
+
+std::uint64_t faces_mask_of(std::string_view pack_json, std::span<const float> boxes) {
+  auto doc = json::parse(pack_json);
+  if (!doc) return 0;
+  const json::value* faces = doc->find("faces");
+  if (!faces || faces->k != json::kind::array) return 0;
+  std::vector<std::array<float, 4>> here;
+  for (const json::value& f : faces->a) {
+    edit::face_landmarks lm{};
+    (void)read_landmarks(f.find("lm"), lm);
+    here.push_back(face_box(f, lm));
+  }
+  auto iou = [](const std::array<float, 4>& a, const float* b) {
+    const float ix = std::max(0.0f, std::min(a[0] + a[2], b[0] + b[2]) - std::max(a[0], b[0]));
+    const float iy = std::max(0.0f, std::min(a[1] + a[3], b[1] + b[3]) - std::max(a[1], b[1]));
+    const float inter = ix * iy, uni = a[2] * a[3] + b[2] * b[3] - inter;
+    return uni > 0.0f ? inter / uni : 0.0f;
+  };
+  std::uint64_t mask = 0;
+  for (std::size_t b = 0; b + 4 <= boxes.size(); b += 4) {
+    int best = -1;
+    float best_iou = 0.3f;
+    for (std::size_t i = 0; i < here.size() && i < 64; ++i) {
+      if (mask & (std::uint64_t{1} << i)) continue;
+      const float v = iou(here[i], boxes.data() + b);
+      if (v >= best_iou) {
+        best_iou = v;
+        best = static_cast<int>(i);
+      }
+    }
+    if (best >= 0) mask |= std::uint64_t{1} << best;
+  }
+  return mask;
+}
+
+std::string faces_note(status pack, const result<eyes_outcome>& r) {
+  if (pack == status::not_found) return "Improving faces needs Local search (Settings → Add-ons)";
+  if (pack == status::invalid_arg) return "Turn on People in Local search to improve faces";
+  if (pack != status::ok || !r) return "Could not look for better faces for this photo";
+  if (r->faces == 0) return "No faces found";
+  if (r->fixed == 0) {
+    return "No clearly better photo of these people with their head turned the same way";
+  }
+  const std::string verb = is_photos_key(r->written) ? " improved — added " : " improved — saved ";
+  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + verb + result_name(r->written);
 }
 
 result<std::string> write_still(const std::string& source, const rgb_image& pixels, const std::string& suffix) {
@@ -527,7 +899,11 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
       })) {
     return err(status::invalid_arg);
   }
-  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source));
+  // A Photos item: read its file, write beside nothing of the library's, and
+  // hand the new file to the library as a new photo (docs/design/26).
+  const bool to_library = is_photos_key(source);
+  MV_TRY(const std::string source_file, readable_path(source));
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_file));
   const codec::format_family family = codec::probe(bytes);
   // HEIC, TIFF, RAW, WebP: their metadata from Exiv2 (meta/), as an export does.
   edit::metadata_blobs carried;
@@ -554,9 +930,13 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
   MV_TRY(edit::export_result r, edit::export_pixels(bytes, pic, opt, &carried));
   pic = codec::raster{};
 
-  const std::size_t sep = source.find_last_of("/\\");
-  const std::string dir = sep == std::string::npos ? std::string() : source.substr(0, sep + 1);
-  const std::string name = sep == std::string::npos ? source : source.substr(sep + 1);
+  const std::size_t sep = source_file.find_last_of("/\\");
+  std::string dir = sep == std::string::npos ? std::string() : source_file.substr(0, sep + 1);
+  const std::string name = sep == std::string::npos ? source_file : source_file.substr(sep + 1);
+  if (to_library) {
+    MV_TRY(std::string staging, staging_dir());
+    dir = std::move(staging);
+  }
   std::size_t dot = name.rfind('.');
   if (dot == std::string::npos || dot == 0) dot = name.size();
   const std::string wanted =
@@ -567,7 +947,10 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
         io::unique_name(wanted, [&](std::string_view candidate) { return io::file_exists(dir + std::string(candidate)); });
     if (file.empty()) return err(status::io);
     const std::string out = dir + file;
-    if (io::write_new(out, r.bytes)) return out;
+    if (io::write_new(out, r.bytes)) {
+      if (!to_library) return out;
+      return add_to_library(out, source);  // the new photo's key; our copy is gone
+    }
     if (!io::file_exists(out)) return err(status::io);
   }
   return err(status::io);

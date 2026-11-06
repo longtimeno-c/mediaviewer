@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // mv_enhance's one export, mv_addon_get, and its mv.slots.1 interface (#297).
 //
-// Enhance opens two screens the hosts render from its trees: its page in
+// Enhance opens three screens the hosts render from its trees: its page in
 // Settings -> Add-ons (place "settings"), where each kind's model is
-// downloaded or removed, and the sheet over the viewer (place "sheet"),
+// downloaded or removed, the sheet over the viewer (place "sheet"),
 // opened by the "Enhance…" command or the context entry for the file on
-// screen. Both run on the host's worker for this add-on, never the UI or
+// screen, and the tool panel docked in the Edit workspace's Enhance tab
+// (place "edit", docs/plans/edit-refresh.md S5), opened by the workspace's
+// command enhance/tool. All run on the host's worker for this add-on, never the UI or
 // render thread (rule 1). The add-on links nothing of the core: the host
 // function table is its only way in.
 //
@@ -111,6 +113,21 @@ mv::enhance::engine_port make_port(const mv_host_api* h) {
       return h->still_mask(h->host, path.c_str(), nullptr, 0, &n) == MV_OK ? n : 0u;
     };
   }
+  // S5's Discard: to the Bin / Trash, never a permanent delete.
+  if (h->struct_size >= offsetof(mv_host_api, recycle_file) + sizeof(h->recycle_file) && h->recycle_file) {
+    p.recycle = [h](const std::string& path) {
+      std::uint32_t refused = 0;
+      if (h->recycle_file(h->host, path.c_str(), &refused) != MV_OK) return -1;
+      return refused != 0 ? 1 : 0;
+    };
+  }
+  // edit-refresh S6: a frame dragged past the photo's edges (the sheet opens on Extend).
+  if (h->struct_size >= offsetof(mv_host_api, still_extend) + sizeof(h->still_extend) && h->still_extend) {
+    p.framed = [h](const std::string& path) {
+      float f[4] = {};
+      return h->still_extend(h->host, path.c_str(), f) == MV_OK && (f[0] > 0 || f[1] > 0 || f[2] > 0 || f[3] > 0);
+    };
+  }
   p.free_disk = [h](const std::string& dir) -> std::optional<uint64_t> {
     if (!h->volume_of) return std::nullopt;
     mv_addon_volume v{};
@@ -159,6 +176,10 @@ mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
       g->eng->settings_opened(r->generation);
       return MV_OK;
     }
+    if (std::strcmp(r->screen_id, mv::enhance::kToolScreen) == 0) {
+      g->eng->tool_opened(r->generation, r->path_utf8 ? r->path_utf8 : "", r->width_pt, r->scale);
+      return MV_OK;
+    }
     if (std::strcmp(r->screen_id, mv::enhance::kSheetScreen) != 0) return MV_ERR_INVALID_ARG;
     g->eng->sheet_opened(r->generation, r->path_utf8 ? r->path_utf8 : "", r->width_pt, r->scale);
     return MV_OK;
@@ -177,7 +198,16 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       // The command ("open") or the context entry ("enhance"): this file,
       // then the sheet. No command-bar button: Enhance lives in the editors.
       const std::string node = e->node_id;
+      // S5: the Edit workspace's enhance/tool, to the docked panel.
+      if (node == mv::enhance::kToolScreen && screen == mv::enhance::kToolScreen) {
+        g->eng->tool_command(e->value_json ? e->value_json : "");
+        return MV_OK;
+      }
       if (node == "open" || node == "enhance") g->eng->command(paths_of(e->value_json));
+      // The Edit strip's wand menu: the sheet, started on Restyle with words.
+      if (node == "restyle") g->eng->command(paths_of(e->value_json), {}, mv::enhance::photo_target::restyle);
+      // S10: the Edit pane's Faces card and its wand row (Restore faces).
+      if (node == "faces") g->eng->command(paths_of(e->value_json), {}, mv::enhance::photo_target::faces);
       // The Video Editor's Enhance…: the clip, and the edit's kept ranges.
       std::string path;
       std::vector<std::int64_t> keep;

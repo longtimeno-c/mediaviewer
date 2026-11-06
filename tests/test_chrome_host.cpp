@@ -80,10 +80,11 @@ TEST_CASE("chrome host attaches and detaches an island on an hwnd") {
 TEST_CASE("focus in any pane island classifies as pane, not the command bar") {
   // Issue #213: only the metadata and tree islands were cached, so focus in the
   // Adjust, Edit or Jobs pane fell through to command_bar and ran viewer keys.
-  REQUIRE(mv::shell::kPaneIslandCount == 5);
+  REQUIRE(mv::shell::kPaneIslandCount == 6);
   REQUIRE(mv::shell::kPaneIslandIds[2] == 8);   // adjust
   REQUIRE(mv::shell::kPaneIslandIds[3] == 9);   // Edit workspace
   REQUIRE(mv::shell::kPaneIslandIds[4] == 10);  // Jobs
+  REQUIRE(mv::shell::kPaneIslandIds[5] == 11);  // the Edit workspace's icon rail (edit-refresh S2)
 
   const HINSTANCE instance = ::GetModuleHandleW(nullptr);
   const HWND top = ::CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPED, 0, 0, 64, 64, nullptr,

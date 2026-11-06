@@ -36,6 +36,8 @@
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
 #include "shell/compare.h"
+#include "shell/compare_source.h"
+#include "shell/drag_frames.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
 
@@ -51,6 +53,11 @@ struct mac_lab_options {
   // not the window has focus, as a soak does, so a person using the machine
   // does not stall it.
   bool harness = false;
+  // --pane-drag-soak (docs/plans/edit-refresh.md §7 S1), the Windows lab's
+  // twin: while the host drags the right column's edge, pan the still at
+  // 100 % for 10 s, then fit it so the rest of the drag refits live, and log
+  // every present-to-present interval (drag_log()).
+  bool pane_drag_soak = false;
   // PR 17: a still to open on start (--open PATH), decoded and uploaded on a
   // job_system worker, never on the render thread (rule 1, docs/design/02).
   std::string open_path;
@@ -170,6 +177,14 @@ class present_lab_mac {
     int cached = 0;
     int valid = 0;
   };
+  // --pane-drag-soak: what the render thread presented during the drag, and
+  // how many times the layer's drawable size was assigned (a column drag
+  // must not). [any thread]
+  [[nodiscard]] const drag_frame_log& drag_log() const noexcept { return drag_log_; }
+  [[nodiscard]] std::uint32_t drawable_sets() const noexcept {
+    return drawable_sets_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] std::uint64_t mark_navigation() noexcept;
   [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
   [[nodiscard]] nav_sample navigation_sample(std::uint64_t seq) const noexcept;
@@ -212,6 +227,30 @@ class present_lab_mac {
   [[nodiscard]] bool upload_working(const image::linear_image& img, std::uint64_t item) noexcept;
   // [any-thread] Releases it: the item changed, or nothing needs it.
   void drop_working() noexcept;
+
+  // [worker thread] docs/plans/edit-refresh.md S4a: the Remove brush's committed
+  // strokes (shell/brush_mask.h) for the open `item`, built for mask `epoch`,
+  // as an immutable RGBA8Unorm MTLTexture (image::upload_overlay), handed to
+  // the render thread by an atomic exchange like the working texture. False
+  // when there is no device or the texture could not be made.
+  [[nodiscard]] bool upload_brush_mask(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                       std::uint64_t item, std::uint32_t epoch) noexcept;
+  // [any-thread] Releases it (the brush was cleared or forgotten).
+  void drop_brush_mask() noexcept;
+
+  // [any-thread] docs/design/20 "Compare": a second still for the canvas, the
+  // before of an Enhance result's split (its source). Decoded on a job_system
+  // worker at the current view generation (a navigation abandons it), or
+  // shared from the still cache when it is there; never on the render or UI
+  // thread. Returns the token input_snapshot::before_token names it by; a
+  // later call replaces it.
+  std::uint64_t load_side_still(std::string path_utf8) noexcept;
+  // [any-thread] Where the split was last drawn (shell/compare_source.h), for
+  // the host's divider hit-test and drag; !valid while none is drawn.
+  [[nodiscard]] compare_frame compare_frame_now() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return compare_frame_;
+  }
 
   // [any-thread] What the SwiftUI transport strip shows. Published by the render
   // thread through atomics; `active` is false when no clip is on screen.
@@ -358,8 +397,43 @@ class present_lab_mac {
   std::atomic<bool> drop_working_{false};
   std::unique_ptr<working_texture_mac> working_;
   bool take_working() noexcept;  // render thread: true when what it draws changed
+  // S4a brush tint: the same one-way hand-off; `brush_mask_` is render-thread only.
+  struct brush_mask_texture_mac {
+    image::gpu_image_mac image;
+    std::uint64_t item = 0;
+    std::uint32_t epoch = 0;
+  };
+  std::atomic<brush_mask_texture_mac*> pending_brush_mask_{nullptr};
+  std::atomic<bool> drop_brush_mask_{false};
+  std::unique_ptr<brush_mask_texture_mac> brush_mask_;
+  bool take_brush_mask() noexcept;  // render thread: true when what it draws changed
+  // docs/design/20 "Compare": the side still, the same one-way hand-off;
+  // `side_` is render-thread only. `seen_before_` is the split last drawn,
+  // so a change of it is one redraw and nothing else is.
+  struct side_still_mac {
+    image::gpu_image_mac image;
+    std::uint64_t token = 0;
+  };
+  std::atomic<side_still_mac*> pending_side_{nullptr};
+  std::atomic<std::uint64_t> side_counter_{0};
+  std::unique_ptr<side_still_mac> side_;
+  bool take_side_still() noexcept;  // render thread: true when it changed
+  struct before_seen {
+    std::uint8_t mode = 0, layout = 0;
+    bool whole = false, hot = false;
+    float split = 0.5f;
+    std::uint64_t token = 0;
+    float rect[4] = {};
+  };
+  before_seen seen_before_{};
+  [[nodiscard]] bool before_changed(const input_snapshot& s) noexcept;
+  // The split this frame draws, or none (render thread).
+  [[nodiscard]] compare_frame before_frame(const input_snapshot& s) const noexcept;
   edit_view edit_slots_[2];      // copied from the snapshot each iteration
   edit_view applied_edit_{};     // what the current still was last fitted with
+  // docs/plans/edit-refresh.md S3: a tool's label or pulse was drawn while live;
+  // one more frame clears it once its deadline passes.
+  bool tool_hud_drawn_ = false;
   std::atomic<std::uint64_t> shown_item_{0};
   std::atomic<std::uint32_t> shown_w_{0};
   std::atomic<std::uint32_t> shown_h_{0};
@@ -389,6 +463,7 @@ class present_lab_mac {
   eyedropper_sample eye_;
   mutable std::mutex eye_mutex_;
   canvas_map still_map_;  // under eye_mutex_
+  compare_frame compare_frame_;  // under eye_mutex_
   std::string eye_text_;  // "#RRGGBB  rgb(r, g, b)  x, y" for the texel under the cursor
 
   void* view_ = nullptr;
@@ -432,6 +507,10 @@ class present_lab_mac {
   edit::clip::look video_look_{};
   edit::adjust_uniforms video_light_{};  // uniforms_of(video_look_.light)
   canvas::crossfade fade_;
+  // One-click Enhance's result cross-fading in over previous_image_ (render
+  // thread), and the host's last request it has taken (input_snapshot.result_fade_ms).
+  canvas::crossfade result_fade_;
+  std::uint64_t seen_result_fade_ms_ = 0;
   std::atomic<std::uint32_t> stills_shown_{0};
 
   // PR 19 video. The render thread owns `media_` and `video_frame_`; a worker
@@ -537,6 +616,10 @@ class present_lab_mac {
   bool boot_full_due_ = false;
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
+  drag_frame_log drag_log_;
+  std::atomic<std::uint32_t> drawable_sets_{0};
+  double drag_pan_start_ = -1.0;  // --pane-drag-soak: the drag's pan began
+  bool drag_pan_done_ = false;
   bool was_presenting_ = false;
   // docs/design/17 "Yield policy": the last dropped frame holds the busy signal for
   // background add-on work (the AI indexer) for two seconds.
@@ -561,6 +644,7 @@ class present_lab_mac {
   double last_game_elapsed_ = 0.0;
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
+  std::uint32_t seen_refit_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
   // Issue #408: the theme's tokens (one redraw when they change) and the
   // home's ground effect, which ticks at 10 Hz by its rest rule.

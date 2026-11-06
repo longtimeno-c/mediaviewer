@@ -184,6 +184,14 @@ struct mv_session {
 
   std::mutex image_mutex;
   std::atomic<mv::image::gpu_image*> ready{nullptr};
+  // docs/design/20 "Compare": a second still the render thread draws as the
+  // before of a split (an Enhance result's source), with the token of the
+  // request it answers. The same one-way hand-off as `ready`.
+  struct side_still {
+    std::unique_ptr<mv::image::gpu_image> gpu;
+    std::uint64_t token = 0;
+  };
+  std::atomic<side_still*> side_ready{nullptr};
   std::shared_ptr<mv::image::display_image> cpu;
   // The CPU pyramid of `cpu` when it is a tiled image, so a device rebuild
   // re-creates the overview without rebuilding the pyramid.
@@ -1894,6 +1902,7 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     session->jobs.shutdown();
     session->thumbs.close();
     delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
+    delete session->side_ready.exchange(nullptr, std::memory_order_acq_rel);
     session->tile_service.reset();  // joins; reads jobs' generation until then
     if (session->completion_event) ::CloseHandle(session->completion_event);
     if (session->image_ready_event) ::CloseHandle(session->image_ready_event);
@@ -3300,8 +3309,73 @@ void detach_device(mv_session_t session) {
   // next one (docs/design/12). CPU cache is kept; attach_device re-uploads.
   session->jobs.bump_generation();
   delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
+  delete session->side_ready.exchange(nullptr, std::memory_order_acq_rel);
   std::lock_guard lock(session->device_mutex);
   session->device.Reset();
+}
+
+namespace {
+void post_side_still(mv_session* session, std::unique_ptr<mv::image::gpu_image> gpu, std::uint64_t token) {
+  auto* side = new (std::nothrow) mv_session::side_still{std::move(gpu), token};
+  if (!side) return;
+  delete session->side_ready.exchange(side, std::memory_order_acq_rel);
+  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+}
+}  // namespace
+
+void request_side_still(mv_session_t session, const char* utf8_path, std::uint64_t token) noexcept {
+  if (!session || !utf8_path || !*utf8_path) return;
+  try {
+    std::string path(utf8_path);
+    // The viewer LRU first: the source is usually the photo just left.
+    std::unique_ptr<mv::image::gpu_image> hit;
+    {
+      std::lock_guard lock(session->lru_mutex);
+      for (const auto& slot : session->lru) {
+        if (slot.path != path || !slot.gpu) continue;
+        hit = clone_gpu(*slot.gpu);
+        break;
+      }
+    }
+    if (hit) {
+      hit->quality = mv::image::gpu_quality::full;
+      post_side_still(session, std::move(hit), token);
+      return;
+    }
+    // Else one decode at the current view generation: a navigation abandons
+    // it, as it does a neighbour's.
+    (void)session->jobs.submit([session, path = std::move(path), token](const mv::job_context& ctx) -> status {
+      if (ctx.cancelled()) return status::cancelled;
+      auto bytes = mv::io::read_all(path);
+      if (!bytes) return bytes.error();
+      if (ctx.cancelled()) return status::cancelled;
+      auto decoded = mv::image::decode_bytes(bytes.value(), &ctx, mv::codec::raw_foreground_threads());
+      if (!decoded) return decoded.error();
+      if (ctx.cancelled()) return status::cancelled;
+      auto cpu = std::make_shared<mv::image::display_image>(std::move(decoded).value());
+      // One texture: a tiled pyramid belongs to the item on screen.
+      if (mv::image::needs_tiles(cpu->width, cpu->height)) return status::unsupported_format;
+      auto dev = session->copy_device();
+      if (!dev) return status::device_lost;
+      std::unique_ptr<mv::image::gpu_image> gpu;
+      const status up = upload_still(session, dev.Get(), cpu, ctx, 0, gpu);
+      if (up != status::ok) return up;
+      if (ctx.cancelled()) return status::cancelled;
+      lru_put(session, path, *gpu, info_from(*cpu));
+      post_side_still(session, std::move(gpu), token);
+      return status::ok;
+    });
+  } catch (...) {
+    // No memory for the request: the split shows no before.
+  }
+}
+
+image::gpu_image* take_side_still(mv_session_t session, std::uint64_t* token) noexcept {
+  if (!session) return nullptr;
+  std::unique_ptr<mv_session::side_still> side(session->side_ready.exchange(nullptr, std::memory_order_acq_rel));
+  if (!side) return nullptr;
+  if (token) *token = side->token;
+  return side->gpu.release();
 }
 
 image::gpu_image* take_ready_image(mv_session_t session) {

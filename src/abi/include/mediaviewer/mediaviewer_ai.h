@@ -682,10 +682,13 @@ typedef struct mv_ai_api {
    * over its same_person. Owner call 2026-11-02: face data may serve this
    * edit (docs/design/12). JSON:
    *   {"faces":[{"x":,"y":,"w":,"h":,"lm":[10 numbers],"person":id,
+   *              "name":"Anna","photos":37,
    *              "donors":[{"path":"…","lm":[…],"sim":0.83}, …]}, …]}
    * Boxes and the five landmarks (right eye, left eye, nose, mouth corners;
    * x, y) are 0..1 of the upright still; donors best first; "person" is the
-   * People cluster the face matches, 0 for none. Reads the stills through the
+   * People cluster the face matches, 0 for none; for a match, "photos" counts
+   * People's other stills of them and "name" is theirs when they have one
+   * (docs/plans/edit-refresh.md S8, appended keys). Reads the stills through the
    * host; writes nothing. MV_ERR_INVALID_ARG while People is off or its piece
    * is not loaded. Appended: read it only when `struct_size` covers it and
    * the pointer is non-NULL. [worker-thread] */
@@ -779,6 +782,22 @@ typedef struct mv_ai_api {
    *   "from":[{"id":9,"name":"","faces":4,"cover_face":..,..,"undo":0}]}]}
    * Appended: check struct_size. [worker-thread] */
   mv_status(MV_CALL* people_dedupe_json)(void* ctx, uint32_t flags, char* out, uint32_t cap, uint32_t* needed);
+
+  /* ---- faces of a picture (docs/plans/edit-refresh.md S10, Restore faces) --------- */
+  /* The faces the People model finds in `rgb` (width x height, 8-bit RGB,
+   * `stride` bytes a row) and, when `other_rgb` is given (the same size and
+   * stride: that picture changed, Enhance's restored faces), for each face
+   * the cosine of its embedding to the face of `other_rgb` whose centre is in
+   * its box ("sim", -1 when there is none). JSON:
+   *   {"faces":[{"x":,"y":,"w":,"h":,"score":,"lm":[10 numbers],"sim":}, …]}
+   * Boxes and landmarks as eyes_json's, 0..1 of the picture; "sim" only with
+   * `other_rgb`. Reads no file and keeps nothing (owner call 2026-11-02: face
+   * data may serve an edit). At most 16384 a side and 100 megapixels.
+   * MV_ERR_INVALID_ARG while People is off or its piece is not loaded, or
+   * when `cap` is short (`*needed` says how much). Appended: read it only
+   * when `struct_size` covers it and the pointer is non-NULL. [worker-thread] */
+  mv_status(MV_CALL* faces_json)(void* ctx, const uint8_t* rgb, uint32_t width, uint32_t height, uint32_t stride,
+                                 const uint8_t* other_rgb, char* out, uint32_t cap, uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

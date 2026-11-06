@@ -278,6 +278,37 @@ TEST_CASE("the I/O jobs rotate in place and export beside the original", "[shell
   CHECK(lo->height == 32);
 }
 
+// S0 (docs/plans/edit-refresh.md §5): Save copy of a Photos-library item
+// exports the library's file into the staging folder (then hands it to the
+// library): nothing is written beside the source, which stays as it was.
+TEST_CASE("Save copy into another folder writes nothing beside the source", "[shell][edit][io][photos]") {
+  temp_dir library, staging;
+  const fs::path p = library.path / "IMG_0412.JPG";
+  const auto bytes = jpeg_bytes(64, 48);
+  {
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  const auto stamp = fs::last_write_time(p);
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 0.5f, 1.0f};
+  const std::string out_dir = staging.path.string() + "/";
+  auto a = mv::shell::run_export(p.string(), g, {}, {}, out_dir);
+  REQUIRE(a);
+  CHECK(fs::path(*a).parent_path() == staging.path);
+  CHECK(fs::path(*a).filename() == "IMG_0412-edit.jpg");
+  auto b = mv::shell::run_export(p.string(), g, {}, {}, out_dir);  // the next free name, there
+  REQUIRE(b);
+  CHECK(fs::path(*b).filename() == "IMG_0412-edit (2).jpg");
+  std::size_t beside = 0;
+  for (const auto& e : fs::directory_iterator(library.path)) beside += e.is_regular_file() ? 1 : 0;
+  CHECK(beside == 1);  // only the source
+  CHECK((fs::last_write_time(p) == stamp));
+  std::ifstream in(p, std::ios::binary);
+  const std::vector<std::uint8_t> now{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  CHECK(now == bytes);
+}
+
 TEST_CASE("a flattened copy is a PNG in the app's own folder, a few at a time", "[shell][edit][io]") {
   temp_dir src;
   temp_dir clip;
@@ -600,4 +631,32 @@ TEST_CASE("print: the bake is the export's crop, in memory, nothing written", "[
   CHECK(cells->at(0).pixels.height == 24);
   CHECK(cells->at(1).pixels.width == 32);
   CHECK(cells->at(1).pixels.height == 24);
+}
+
+TEST_CASE("Extend's Fill: the part of its frame over the photo is an ordinary crop", "[shell][edit][extend]") {
+  // docs/plans/edit-refresh.md S6: the crop part of a mixed frame lands as a
+  // normal stack crop, composed with the one already there; one undo step.
+  edit_session s;
+  (void)s.set_item(jpeg_item());  // 600 x 400
+  // The whole picture (a frame only past the edges) crops nothing.
+  CHECK(s.crop_inside({0.0f, 0.0f, 1.0f, 1.0f}) == edit_effect::none);
+  CHECK(s.export_geometry().identity());
+  REQUIRE(s.crop_inside({0.25f, 0.0f, 0.75f, 1.0f}) == edit_effect::redraw);
+  CHECK(s.preview_placement().cropped == mv::edit::size2{450, 400});
+  CHECK(s.edit_count() == 1);
+  // A second one is of the picture shown now (the cropped one).
+  REQUIRE(s.crop_inside({0.0f, 0.5f, 0.5f, 0.5f}) == edit_effect::redraw);
+  CHECK(s.preview_placement().cropped == mv::edit::size2{225, 200});
+  const mv::edit::geometry g = s.export_geometry();
+  CHECK(std::abs(g.crop.x - 0.25f) < 1e-5f);
+  CHECK(std::abs(g.crop.y - 0.5f) < 1e-5f);
+  CHECK(std::abs(g.crop.w - 0.375f) < 1e-5f);
+  REQUIRE(s.run(command_id::undo_edit) == edit_effect::redraw);
+  CHECK(s.preview_placement().cropped == mv::edit::size2{450, 400});
+  // Refused while crop mode holds a draft, and with no photo.
+  REQUIRE(s.run(command_id::crop_mode) == edit_effect::redraw);
+  CHECK(s.crop_inside({0.1f, 0.1f, 0.5f, 0.5f}) == edit_effect::refused);
+  s.cancel_crop();
+  edit_session none;
+  CHECK(none.crop_inside({0.1f, 0.1f, 0.5f, 0.5f}) == edit_effect::refused);
 }

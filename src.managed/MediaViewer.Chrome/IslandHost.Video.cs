@@ -139,12 +139,22 @@ public static partial class IslandHost
                 _volume = null;
                 _mute = null;
                 DropTrimUi();
+                DropToolBarUi();  // docs/plans/edit-refresh.md S3
                 SetTransportHeld(false);
                 _transport.Content = null;
                 MoveAt(_transport, args.X, args.Y, args.Width, args.Height);
                 return 0;
             }
             MoveAt(_transport, args.X, args.Y, args.Width, args.Height);
+            // docs/plans/edit-refresh.md S3: on a still with a canvas tool armed the
+            // island holds the tool's context bar (IslandHost.ToolBar.cs), set by
+            // SetToolBar just before; a clip's controls otherwise.
+            if (ToolBarWanted)
+            {
+                _transport.Content = BuildToolBar();
+                return 0;
+            }
+            DropToolBarUi();
             _transport.Content = BuildTransport();
             UpdateVideoControls();
             RenderTrim();
@@ -184,6 +194,8 @@ public static partial class IslandHost
             _volume = null;
             _mute = null;
             DropTrimUi();
+            DropToolBarUi();
+            _toolBar = default;
             _videoActive = false;
             _transportWidth = 0;
             _matchMs = Array.Empty<long>();
@@ -282,7 +294,11 @@ public static partial class IslandHost
 
         Button more = IconButton(Glyph.More, "More: frame step, volume, audio track, loop", () => { });
         var panel = new StackPanel { Spacing = Space(10), Padding = Pad(12), MinWidth = 260 };
-        var steps = new StackPanel { Orientation = Orientation.Horizontal };
+        // The rows of text buttons pull back by the buttons' own inset, so their
+        // words line up with the headers under them (docs/design/20 "Craft rules":
+        // edges line up exactly), as the Mac's volume row lines up with its frame steps.
+        var buttonRowMargin = new Thickness(-ButtonPadding.Left, 0, 0, 0);
+        var steps = new StackPanel { Orientation = Orientation.Horizontal, Margin = buttonRowMargin };
         steps.Children.Add(TextButton("Previous frame", () => _folderSession?.VideoStep(-1)));
         steps.Children.Add(TextButton("Next frame", () => _folderSession?.VideoStep(1)));
         ToolTipService.SetToolTip(steps.Children[0], ",");
@@ -310,7 +326,7 @@ public static partial class IslandHost
                 Send(Command.VideoTrack, _audioTracks.SelectedIndex);
         };
         panel.Children.Add(_audioTracks);
-        var loop = new StackPanel { Orientation = Orientation.Horizontal };
+        var loop = new StackPanel { Orientation = Orientation.Horizontal, Margin = buttonRowMargin };
         loop.Children.Add(TextButton("Set A", () => Send(Command.VideoLoop, LoopActions.SetA)));
         loop.Children.Add(TextButton("Set B", () => Send(Command.VideoLoop, LoopActions.SetB)));
         loop.Children.Add(TextButton("Clear loop", () => Send(Command.VideoLoop, LoopActions.Clear)));

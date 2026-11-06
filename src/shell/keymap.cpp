@@ -219,6 +219,21 @@ constexpr slug_row kSlugs[] = {
     {adjust_pick, "adjust_pick"},
     {adjust_open_eyes, "adjust_open_eyes"},
     {search_this_person, "search_this_person"},
+    {pane_wider, "pane_wider"},
+    {pane_narrower, "pane_narrower"},
+    {auto_enhance, "auto_enhance"},
+    {tool_smaller, "tool_smaller"},
+    {tool_bigger, "tool_bigger"},
+    {tool_undo, "tool_undo"},
+    {tool_redo, "tool_redo"},
+    {tool_clear, "tool_clear"},
+    {tool_apply, "tool_apply"},
+    {tool_pan, "tool_pan"},
+    {tool_pan_release, "tool_pan_release"},
+    {tool_brush, "tool_brush"},
+    {tool_red_eye, "tool_red_eye"},
+    {tool_extend, "tool_extend"},
+    {tool_faces, "tool_faces"},
 };
 
 struct claim {

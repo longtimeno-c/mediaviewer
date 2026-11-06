@@ -181,6 +181,30 @@ bool rows(const json::value& v, std::initializer_list<std::string_view> required
   return true;
 }
 
+// A choice's options: id and text required, "disabled" (a boolean) optional;
+// the text keys checked as rows() checks them, ids unique.
+bool choice_rows(const json::value& v, std::size_t& items) {
+  if (v.k != json::kind::array) return false;
+  items += v.a.size();
+  if (items > kMaxItems) return false;
+  std::set<std::string_view> seen;
+  for (const json::value& r : v.a) {
+    if (r.k != json::kind::object) return false;
+    for (const auto& [key, value] : r.o) {
+      if (key == "disabled") {
+        if (value.k != json::kind::boolean) return false;
+      } else if (key != "id" && key != "text") {
+        return false;
+      } else if (!str_max(value, key == "id" ? 256 : kMaxLabel)) {
+        return false;
+      }
+    }
+    const std::string* id = r.str("id");
+    if (!id || !r.find("text") || !seen.insert(*id).second) return false;
+  }
+  return true;
+}
+
 // A tiles node's items (#442): id and text required; detail, initials (a
 // short monogram the host draws in the circle), progress (-1 none, else 0..1,
 // drawn as a ring) and mark ("done" / "failed") optional. Ids unique.
@@ -305,9 +329,11 @@ error check_props(node& n, std::size_t& items) {
           break;
         case node_type::choice:
           if (key == "options") {
+            // An option may be "disabled": true (2026-11-04, Enhance's quality
+            // above the performance level): shown, never chosen.
             std::size_t ignored = 0;
             ok = v.k == json::kind::array && !v.a.empty() && v.a.size() <= 256 &&
-                 rows(v, {"id", "text"}, {}, "id", ignored);
+                 choice_rows(v, ignored);
           } else {
             ok = key == "value" && str_max(v, 256);
           }
@@ -332,9 +358,13 @@ error check_props(node& n, std::size_t& items) {
         case node_type::progress:
           // "look": "ring" (#442): a circle that fills, `size` points across.
           // "look": "glow" (contribution API 10, 2026-10-28): a bar in the
-          // host's glow colours, with a shimmer while it moves.
+          // host's glow colours, with a shimmer while it moves; from API 13
+          // the hosts draw it as every bar (docs/design/20 "Craft rules").
+          // "detail" (API 13): a few words in place of the percentage on the
+          // bar's line ("48 of 161 MB"); "timed": the host says the time left.
           ok = (key == "value" && num_in(v, -1.0, 1.0)) || (key == "look" && one_of(v, {"bar", "ring", "glow"})) ||
-               (key == "size" && int_in(v, 16, 256));
+               (key == "size" && int_in(v, 16, 256)) || (key == "detail" && str_max(v, kMaxLabel)) ||
+               (key == "timed" && v.k == json::kind::boolean);
           break;
         case node_type::tiles:
           // "static": shown, not chosen (a sender's avatar on an offer): no
@@ -556,6 +586,16 @@ bool item_has(const json::value* items, std::string_view key, std::string_view v
   return std::any_of(items->a.begin(), items->a.end(), [&](const json::value& r) {
     const std::string* s = r.str(key);
     return s && *s == value;
+  });
+}
+
+// A choice's option that is shown but may not be chosen.
+bool option_disabled(const json::value* options, std::string_view id) {
+  if (!options || options->k != json::kind::array) return false;
+  return std::any_of(options->a.begin(), options->a.end(), [&](const json::value& r) {
+    const std::string* s = r.str("id");
+    const json::value* d = r.find("disabled");
+    return s && *s == id && d && d->k == json::kind::boolean && d->b;
   });
 }
 
@@ -809,7 +849,7 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
       return error::none;
     case node_type::choice:
       if (kind != ev_change || !v || v->k != json::kind::string ||
-          !item_has(n->props.find("options"), "id", v->s)) {
+          !item_has(n->props.find("options"), "id", v->s) || option_disabled(n->props.find("options"), v->s)) {
         return error::bad_value;
       }
       set_prop(n->props, "value", *v);

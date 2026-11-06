@@ -364,6 +364,11 @@ class engine {
   // docs/plans/edit-adjust.md slice 6 (mv_ai_api eyes_json): the faces in the
   // still and, for each, the same person's faces in `candidates`.
   [[nodiscard]] result<std::string> eyes_json(const std::string& path, const std::vector<std::string>& candidates);
+  // docs/plans/edit-refresh.md S10 (mv_ai_api faces_json): the faces in a
+  // picture handed over as pixels, and with `other` (the same size: that
+  // picture changed, Enhance's restored faces) each face's cosine to the face
+  // of `other` at the same place (-1: none there). Reads no file, keeps nothing.
+  [[nodiscard]] result<std::string> faces_json(const rgb_frame& img, const rgb_frame* other);
 
   // ---- the Photos library (issue #72; macOS) --------------------------------
   // Remembers the library as a root ("photos:") and scans it. unsupported_format

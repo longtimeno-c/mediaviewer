@@ -22,6 +22,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -85,5 +86,19 @@ void publish_ai_eyes(eyes_source source);
 [[nodiscard]] result<std::string> ai_eyes_json(const std::string& path, const std::string& candidates);
 // The table's eyes_json row as a source; empty for an older pack.
 [[nodiscard]] eyes_source ai_eyes(const mv_ai_api* api);
+
+// docs/plans/edit-refresh.md S10: the pack's faces_json row (Restore faces'
+// landmarks and its identity guard), published and retracted with the eyes.
+// `other` may be null; both are `stride`-byte rows of 8-bit RGB.
+using faces_source = std::function<result<std::string>(const std::uint8_t* rgb, std::uint32_t width,
+                                                       std::uint32_t height, std::uint32_t stride,
+                                                       const std::uint8_t* other)>;
+void publish_ai_faces(faces_source source);
+// The pack's answer. status::not_found when no pack is loaded or it predates
+// the row; status::permission_denied while People is off.
+[[nodiscard]] result<std::string> ai_faces_json(const std::uint8_t* rgb, std::uint32_t width, std::uint32_t height,
+                                                std::uint32_t stride, const std::uint8_t* other);
+// The table's faces_json row as a source; empty for an older pack.
+[[nodiscard]] faces_source ai_faces(const mv_ai_api* api);
 
 }  // namespace mv::addon

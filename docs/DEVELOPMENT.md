@@ -686,7 +686,7 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 |---|---|
 | `[` / `]` | rotate left / right. On a JPEG with no other edit, the file is rewritten losslessly 0.4 s after the last press |
 | `H` / `V` | flip horizontal / vertical (same lossless rule) |
-| `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
+| `Shift+C` | crop / straighten. Drag the rect's handles (or inside it) on the photo, or arrows move the crop and `Shift`+arrows resize it; `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels. Tests: `mv_tests "[crop-drag]"` |
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
 | `Shift+A` | adjust pane (PR 11, grown by [edit-adjust](plans/edit-adjust.md) slice 1): Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White and Vignette sections, each with an Auto (not the vignette) and a reset, histogram and clipping. It takes the keyboard: `↑` `↓` pick a slider of an open section, `←` `→` step it (`⇧` ×10), `0` zeroes it, `A` runs its section's Auto, `R` resets all. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
@@ -718,6 +718,34 @@ Keys go through one router and one table (`src/shell/commands.h`,
 [docs/design/16](design/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
 keyboard layout, not a US key position.
 
+Canvas tools (docs/plans/edit-refresh.md S3, [docs/design/20](design/20-edit-workspace.md)
+"Canvas tools"): `B` on a still arms the Remove brush; red-eye is on the Edit rail, the Adjust
+pane and (Mac) Edit ▸ Red-Eye. While one is armed a bar below the photo shows its controls, `[`
+`]` size the ring (Alt / ⌥ + wheel too), Alt / ⌥ held erases, `Space` held pans, `Ctrl/⌘+Z`
+undoes a stroke or fix (`Ctrl/⌘+Shift+Z` redoes; Clear is undoable too), `Enter` removes, `Esc`
+puts the tool down. Rotate, flip, crop and Delete are refused meanwhile, and `A` / `D` while strokes
+are pending; rotate and flip stay refused while strokes are kept with the tool down. Tests: `mv_tests
+"[canvas-tool],[remove-brush],[tool]"`; the brush's snapshot publish and tint build time:
+`mv_tests "perf: the brush's snapshot publish and tint build"` (in `"[.perf-bench]"`, S4a). Red-eye's snap and Find eyes need the AI pack with
+People on. **Extend** (S6; the Enhance tab's card, Edit ▸ Extend Edges): drag the frame's
+edges past the photo (25 % a side warns, 50 % stops), chips for the add-on's frames and a
+Ratio menu with Crop's ratios and its portrait swap (drags then keep the ratio), `Enter`
+fills (the part over the photo is a crop; Enhance fills the rest at once, one click), `Esc`
+cancels. Tests: `mv_tests "[extend]"`, `mv_import_tests "[enhance][extend]"`. **Compare** (the Edit header's
+and rail's; [docs/design/20](design/20-edit-workspace.md) "Compare"): a before/after split with a
+draggable divider, the before being the photo with no edit or, on an Enhance result, its source
+photo; `Y` held shows the before alone; disabled, with the reason, when there is nothing to compare.
+Tests: `mv_tests "[compare-source]"`.
+
+Faces (S8): the rail's Faces, the Enhance tab's Faces card or (Mac) Edit ▸ Faces arm the Faces
+tool: a box per face on the photo (a click chooses it or leaves it out) and the Faces panel first
+in the Enhance tab (each face's thumbnail, People's name, its Open eyes / Improve face, Do all).
+It needs the AI pack with People on; without them the panel says what to turn on. Results are new
+files beside the photo (`-eyes.jpg`, `-faces.jpg`). Tests: `mv_tests "[faces-tool],[eyes]"` (the
+cards, choosing, the boxes, shut-eye detection, the edit region) and `mv_ai_tests "[faces-mask]"`
+(only the chosen faces change: 0 pixels differ outside their boxes; the canvas's boxes matched
+to the run's answer) and `mv_ai_tests "[eyes]"` (the pack's names and counts).
+
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
 springs back to centre. Drop a file on the window. A pinch (touchscreen,
@@ -735,7 +763,10 @@ taking the keyboard, as the soaks do; see "Performance suite"), `--background` (
 the sign-in start: the window is never shown, only the tray / menu-bar icon once Driftwire keeps
 the process; it quits after 60 s if nothing does),
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
-past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too. The
+past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too, and takes
+`--edit-tab N` to walk with the Edit workspace open on tab N, 5 being Enhance, whose cards measure
+each photo for their time estimate. `--work-glow` (macOS lab): open the Edit workspace on the first still and hold
+one-click Enhance's working glow on, to look at it or to run `--soak 60 --gate` with it up. The
 Windows lab adds `quick` steps — Right as soon as the last photo is on screen — and one
 `held` run — a Right every 50 ms, then the last photo timed to full resolution, with the
 run's decode job counts under `"held"`; every step carries `full_ms`. Those are the cases
@@ -747,6 +778,15 @@ showing it and the full-size page; add `--soak N` to have the canvas pacing meas
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
 the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan),
+`--pane-drag-soak` (both labs, docs/plans/edit-refresh.md S1: with `--json PATH` and a still, not
+`--soak`: opens the Edit workspace and drags the right column's edge 280 ↔ 720 and back every
+4 s for 20 s through the drag's own code, while the still pans at 100 % for 10 s and then refits
+live. The JSON has the present intervals during the drag (`frames`, `p50_ms`, `p99_ms`,
+`max_ms`, `over_2x`), the UI thread's layout time per step (`layout_p95_ms`; Windows also says
+`guide_line_fallback` when that is over 12 ms), the Mac's drawable-size assignments during the
+drag (must be 0) and `presents_after_settle` (2 s after a 1.5 s settle, must be 0); `pass` is
+none over 2× refresh and 0 presents after settle. Compare its `p99_ms` with a base `--pan-soak`
+run's by hand. The width it drags to is never saved),
 `--compare` (start in the two-up compare; add it to `--pan-soak` to pan both halves, the
 left one drawing the same still again since one file has no previous, or to `--browse-soak`
 to walk a folder with the split up; `compare_frames` in the soak JSON counts the two-half
@@ -1053,7 +1093,15 @@ File gains *Open Photos Library*: the host lists the library as **virtual items*
 needed: `mv_tests "[folder][photos]"` (virtual entries and tiles over a fake provider),
 `"[photos_backup]"` (the engine over a fake library: each folder layout, verified copies, the
 manifest across a layout change and a remount, a collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
-poster; the thumbnail spec is `jpg512.4`). A dev build shows the row and the section only when
+poster; the thumbnail spec is `jpg512.4`). Edits of a library photo (docs/design/26 "Edits of a library
+photo", docs/plans/edit-refresh.md S0): `mv_ai_tests "[photos]"`, with the writer audit
+`"[photos][audit]"` (Detail, Remove, Extend, Open closed eyes, Improve faces and Save copy on a
+`photos:` key with fake hooks: one add each, staged outside the library, nothing beside the
+source, the staging folder `$TMPDIR/MediaViewer Saves` left empty), and `mv_tests "[photos]"`. On
+a real library the result lands next to its source in the list and the notice says so; an
+iCloud-only original shows *Downloading from iCloud… N %* while it comes. On Windows a OneDrive
+placeholder shows *Downloading this file from the cloud…* in the title while Save copy or the
+Edit pane reads it. A dev build shows the row and the section only when
 its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set in its
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
 without the pack loaded can be pointed at it by hand (`defaults write
@@ -1636,7 +1684,12 @@ $env:MV_EDIT_SELFTEST = "$env:TEMP\mv-edit"
 ```
 
 It quits when done, leaving `s0-viewer` … `s8-closed-reverted` captures (PNG on the Mac, BMP on
-Windows; a clip gives `c0` … `c4`) and `state.txt` in the folder. On the Mac,
+Windows; a clip gives `c0` … `c4`) and `state.txt` in the folder. Since the inspector refresh
+(docs/plans/edit-refresh.md S2) a still also passes the Enhance tab (`s4d-enhance`) and presses
+✦ Auto twice: `state.txt`'s `auto_enhance:` line should read `after` one more than
+`edits_before`, `on=1`, and `after_second_press` back at `edits_before`. The typed request's
+`prompt_temperature:` line (both hosts; "a bit warmer" on Windows, a longer request on the Mac)
+should read `rose=1`. On the Mac,
 `MV_EDIT_SELFTEST_DARK=1` or `0` forces Dark or Light Mode; Windows follows the system theme.
 
 On a clip it opens the Video Editor and, on the Mac, also walks a marked range, a dragged edge,
@@ -2256,20 +2309,23 @@ the clip with its picture stream-copied. The video model (Real-ESRGAN general x4
 picture in 256-pixel tiles (Core ML on Apple silicon, CPU elsewhere) and the host encodes it on a
 hardware encoder. New host rows `sound_open` … `sound_write_close` and `frames_open` …
 `clip_write_close` (`src/addon/host.cpp`, `abi/addon_media`, `edit/sound_writer.h`,
-`edit/picture_io.h`). Photos use the same tiles: decoded and written through the export path
+`edit/picture_io.h`). Photos run Enhance image's five models (tiles blended by tent weight, docs/design/29 "Enhance image"), decoded and written through the export path
 (`still_open` … `still_write`, `edit::full_picture`, `edit::export_pixels`); a crop or colour change
 made on screen is not in the copy yet. While a clip's picture or a photo runs, the sheet shows a
-before/after preview with a glowing edge and progress bar (contribution API 10: a `surface`'s
-`"glow"`, `progress` `"look": "glow"`; `src/addons/enhance/preview.h`, Mac `GlowEdge`/`GlowBar`,
-Windows `IslandHost.Glow.cs`). A stable release packs Enhance as a preferred add-on, like Places:
+before/after preview with a glowing edge (contribution API 10: a `surface`'s `"glow"`;
+`src/addons/enhance/preview.h`, Mac `GlowEdge`, Windows `IslandHost.Glow.cs`) and the one progress
+line, which says the time left (API 13: `"timed"`; Mac `ProgressLine.swift`, Windows
+`IslandHost.Progress.cs`, words in `src.managed/Shared/ProgressWords.cs`, tested by
+`dotnet test src.managed/MediaViewer.Chrome.Tests` against the Swift twin). A stable release packs Enhance as a preferred add-on, like Places:
 `mediaviewer-addon-enhance-{win-x64,macos}.{zip,json,json.sig}` (the Mac pack arm64 only, signed
 and notarized by `macpack.py addon`) when that platform's pack is complete; a packing failure warns
 and the release publishes without it.
-Each kind may ship several models (`models/<kind>/<id>.json`; `model.json` is the default): photos
-and video offer "Detail, fast" (x4v3) and "Detail, best" (x4plus), chosen on the page or the sheet,
-each downloaded and removed on its own. The sheet opens from Enhance… in the context menu or
-`Ctrl+Shift+R` / `⌘⇧R` and downloads a missing model itself; a photo's run shows it redrawn tile by
-tile behind a glowing front.
+Each kind may ship several models (`models/<kind>/<id>.json`; `model.json` is the default): video
+offers "Detail, fast" (x4v3) and "Detail, best" (x4plus), and the photo kind Sharpen & restore (HAT)
+and Real-ESRGAN (x4plus), chosen on the page, the sheet or the Enhance tab's card, each downloaded
+and removed on its own. Enhance… in the context menu or `Ctrl+Shift+R` / `⌘⇧R` opens the sheet on
+an audio file or a clip (it downloads a missing model itself) and the Edit pane's Enhance tab on a
+photo.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:
@@ -2283,7 +2339,9 @@ on the edit's kept pieces, which the host applies as it reads (`frames_keep` / `
 the video model's sheet has **Brighten dark scenes** (`brighten.h`; no model of its own).
 
 Tests: `build/bin/mv_import_tests "[enhance]"` (the engine and runner over fakes: downloads, the
-sheet, the sound pipeline's alignment and mix, the run gate, the editor's cut and Brighten), `build/bin/mv_ai_tests "[enhance],[still]"`
+sheet, the sound pipeline's alignment and mix, the run gate, the editor's cut and Brighten;
+`"[enhance][tier]"` the performance level: Restyle's steps and default quality by level, the
+qualities it gates and the `tierlevel` text the Edit pane's chip shows), `build/bin/mv_ai_tests "[enhance],[still]"`
 (end to end through the host table's rows and FFmpeg, the editor's cut included), `build/bin/mv_tests "[sound],[picture]"`
 (the reader's channels, `sound_writer`, `frame_reader`, `picture_writer`), `python3 -m unittest test_addon_pack.EnhancePackTest
 test_github_release` in `tools/package`. With the model downloaded (from its pinned URL), the
@@ -2293,9 +2351,72 @@ hidden cases run it for real:
 MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
 ```
 
+**One click** (owner 2026-11-05, [docs/design/29](design/29-enhance.md) "One click"): no sheet and
+no panel for a photo. The Edit pane's Enhance tab draws Enhance's cards (its screen in place
+`"edit"`, root `cards`): each tool's choices, an estimate and one button (downloading the model
+first when needed); a run glows over the photo (both labs, `tool_overlay.h` `draw_work_glow`), the
+tool bar under it carries "Enhancing… 40 % · 1 min left · Cancel", and the new photo opens with
+"Saved as … · Move to Trash". Tests: `build/bin/mv_import_tests "[enhance][tool]"` (the cards, the
+run node, download-then-run, the estimate's words, Move to Bin over fakes), `"[enhance][tool][eta]"`
+(the estimate), `build/bin/mv_tests "[enhance-run]"` (the host's glow, band and open-once rule),
+`"[addon][slots][screens]"` (a docked screen opens only by the workspace's command) and
+`"a screen's place may be*"` (`test_addon_manifest`: `"edit"` accepted, unknown places refused).
+
+**Enhance image** (S7, docs/design/29 "Enhance image"): `build/bin/mv_import_tests "[enhance][still]"`
+runs the tiling, blending, sizes, cancel, the blow-up guard and the sheet's per-model download over
+fakes, and checks `remote.json`'s five pins. With the five files downloaded (laid out as
+`hat/model.onnx`, `realwebphoto/`, `scunet/`, `nafnet-reds/`, `nafnet-gopro/`), the hidden case runs
+them for real and prints seconds per megapixel; `MV_ENHANCE_IMAGE_RGB` (raw rgb8) and
+`MV_ENHANCE_IMAGE_SIZE` swap the synthetic scene for a real crop, `MV_ENHANCE_IMAGE_ONLY=<kind>`
+runs one:
+
+```bash
+MV_ENHANCE_IMAGE_MODELS=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_import_tests "[.enhance-image-model]"
+```
+
 **Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
-and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, and the run with a
-stand-in model). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
+and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, one box per blob
+apart with merging and the 8-box fallback, the second pass's tiles and detail blend, and the run
+with a stand-in model, including a cancel between boxes and between tiles, and progress per fill).
+**Extend** uses the same file: `"[enhance][extend]"` checks the presets, the tiles (the model's
+side at least, every margin pixel in one, two away from the ends), the detail pass with a stand-in
+model (the margins gain what the shrunk tiles lost, the photo untouched, cancel between tiles), the
+canvas frame through `still_extend` written as `<stem>-extended.jpg` at the size the bar showed
+(also from the docked panel's Fill), and the host's readout sums against the add-on's. LaMa's file is pinned in `remote.json`; Enhance's Download fetches it. With
+it on disk, the quality defaults run through the runner and are timed on a photo of your own
+(raw RGB; `MV_REMOVE_DABS="u,v,r u,v,r …"` is the brush, default a block in the middle;
+`MV_EXTEND_PRESET` default `all`; `MV_QUALITY_ONLY=remove|extend`; `MV_REMOVE_OUT_DIR` keeps
+both results as raw RGB):
+
+```bash
+MV_REMOVE_MODEL=<dir>/lama_fp32.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=3840 MV_RESTYLE_H=2160 build/bin/mv_import_tests "[.remove-quality]"
+```
+
+Extend's margins, measured (docs/design/29 "Extend"): the hidden `[.extend-compare]` case writes the
+first pass alone (`fill`) and both passes (`detail`) as raw RGB into `MV_EXTEND_COMPARE_OUT`
+(`MV_EXTEND_PRESET`, `MV_EXTEND_VARIANTS`); `tools/enhance/extend_metrics.py` prints the margins'
+sharpness, the step at the photo's edge and the seams (numpy and Pillow):
+
+```bash
+MV_REMOVE_MODEL=<dir>/lama_fp32.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=1280 MV_RESTYLE_H=854 MV_EXTEND_COMPARE_OUT=<dir> build/bin/mv_import_tests "[.extend-compare]"
+python3 tools/enhance/extend_metrics.py <dir> 1280 854 128 85 128 85 fill detail   # photo size, then left top right bottom
+```
+
+**Restore faces** (RestoreFormer++ / GFPGAN v1.4, docs/plans/edit-refresh.md S10):
+`build/bin/mv_import_tests "[faces]"` (the FFHQ alignment, the warp, the feathered mask, the paste
+back, the pack's answer, and the pipeline and runner with a stand-in model and pack: only the faces
+change, the People guard keeps a drifted face, `<stem>-restored.jpg`). With local copies of the two
+pinned files (never fetched by a test) and a raw RGB picture with its five landmarks in pixels:
+
+```bash
+MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_FACE_MODEL_DIR=<dir with restoreformer_plus_plus.onnx, GFPGANv1.4.onnx> \
+  MV_FACE_RGB=<raw rgb8> MV_FACE_W=500 MV_FACE_H=500 MV_FACE_LM="<10 numbers>" [MV_FACE_OUT=<prefix>] \
+  build/bin/mv_import_tests "[.face-model]"
+```
+
+The guard's threshold (`face_restore.h` `kFaceGuard`) is measured on LFW with the People eval
+folder (`~/Dev/.mv-toolchain/faceeval`, its venv): `<faceeval>/venv/bin/python -I
+tools/enhance/face_guard.py --faceeval <faceeval> --restoreformer <file> --gfpgan <file>`.
 
 **Restyle** (InstructPix2Pix, 2026-11-03) is not pinned yet. Export its files with
 `tools/package/restyle-export.py --out <dir>` (requirements-export.txt, about 2 GB download and

@@ -118,6 +118,13 @@ Shift+Z	Zoom to AF point	181	1
 |	Compare with previous	182	1
 Shift+T	Page sidebar	183	1
 Ctrl+P	Print…	184	1
+	Wider side pane	213	1
+	Narrower side pane	214	1
+	Auto enhance	215	1
+B	Remove brush	224	1
+	Red-eye tool	225	1
+	Extend edges	226	1
+	Faces tool	227	1
 
 [video]
 Left	Previous	9	1
@@ -234,6 +241,8 @@ Ctrl+Shift+9	Label blue	179	1
 U	Clear label	180	1
 |	Compare with previous	182	1
 Ctrl+P	Print…	184	1
+	Wider side pane	213	1
+	Narrower side pane	214	1
 
 [slideshow]
 Left	Previous	9	1
@@ -339,6 +348,8 @@ Ctrl+Shift+8	Label green	178	1
 Ctrl+Shift+9	Label blue	179	1
 Shift+T	Page sidebar	183	1
 Ctrl+P	Print…	184	1
+	Wider side pane	213	1
+	Narrower side pane	214	1
 
 [loupe]
 A	Previous	9	1
@@ -442,6 +453,8 @@ Ctrl+Shift+7	Label yellow	177	1
 Ctrl+Shift+8	Label green	178	1
 Ctrl+Shift+9	Label blue	179	1
 Ctrl+P	Print…	184	1
+	Wider side pane	213	1
+	Narrower side pane	214	1
 
 [runner]
 A	Previous	9	1
@@ -546,3 +559,31 @@ Left	Skip back 2 s	34	1
 hold Left	Skip back 2 s	34	1
 Right	Skip forward 2 s	35	1
 hold Right	Skip forward 2 s	35	1
+
+[tool]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+Ctrl+Shift+A	Always on top	51	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+Shift+E	Folder tree	78	1
+[	Smaller brush	216	1
+]	Bigger brush	217	1
+Ctrl+Z	Undo stroke	218	1
+Ctrl+Shift+Z	Redo stroke	219	1
+Backspace	Clear strokes	220	1
+Delete	Clear strokes	220	1
+Enter	Apply tool	221	1
+X	Crop: portrait / landscape	152	1
+hold Space	Pan while brushing	222	0
+B	Remove brush	224	1

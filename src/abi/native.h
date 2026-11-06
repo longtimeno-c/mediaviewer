@@ -81,6 +81,18 @@ struct animation_stats {
 };
 [[nodiscard]] MV_API animation_stats animation_stats_now(mv_session_t session) noexcept;
 
+// docs/design/20 "Compare": a second still for the canvas, the before of an
+// Enhance result's split (its source). [any thread][no-block] Asks for
+// `utf8_path`'s full-resolution texture: cloned from the viewer LRU at once
+// when it is there, else decoded by one job at the current view generation (a
+// navigation abandons it). `token` names the request; a later one replaces it.
+// A still too large for one texture (tiled) is not served.
+MV_API void request_side_still(mv_session_t session, const char* utf8_path, std::uint64_t token) noexcept;
+// [render thread][wait-free] The texture a request made, once ready: the
+// caller owns it (release_gpu_image) and `token` says which request it
+// answers. Null when none is ready. image_ready_wait_handle is signalled.
+[[nodiscard]] MV_API image::gpu_image* take_side_still(mv_session_t session, std::uint64_t* token) noexcept;
+
 // Auto-reset event signalled when a new GPU image is published. The render
 // thread waits on this alongside its own wake event so an idle still appears
 // without polling. Null if the session is null.

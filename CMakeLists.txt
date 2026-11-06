@@ -904,6 +904,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/text_select.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
+  src/shell/compare_source.h
   src/shell/video_timeline.cpp
   src/shell/video_timeline.h
   src/shell/edit_view.h
@@ -911,6 +912,10 @@ add_executable(mediaviewer_lab WIN32
   src/shell/adjust_pane.h
   src/shell/remove_brush.cpp
   src/shell/remove_brush.h
+  src/shell/brush_mask.cpp
+  src/shell/brush_mask.h
+  src/shell/faces_tool.cpp
+  src/shell/faces_tool.h
   src/shell/trim_state.cpp
   src/shell/trim_state.h
   src/shell/open_request.cpp
@@ -1207,6 +1212,8 @@ if(MV_BUILD_TESTS)
     tests/test_adjust_size.cpp
     tests/test_adjust_size_export.cpp
     tests/test_edit_session.cpp
+    tests/test_crop_drag.cpp
+    tests/test_enhance_run.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
     # Issue #614: Ctrl+P's paper layout (fit / fill, the contact sheet).
@@ -1221,6 +1228,10 @@ if(MV_BUILD_TESTS)
     # PR 29: the Edit workspace's tab model.
     tests/test_edit_workspace.cpp
     src/shell/edit_workspace.cpp
+    # docs/design/20 "Compare": what the still is compared with, the split's maths.
+    tests/test_compare_source.cpp
+    # The right column's width (docs/plans/edit-refresh.md §2.1).
+    tests/test_pane_width.cpp
     # PR 30: the Video Editor's timeline.
     tests/test_video_timeline.cpp
     src/shell/video_timeline.cpp
@@ -1228,8 +1239,12 @@ if(MV_BUILD_TESTS)
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
     # Slice 7: the Remove brush's strokes and mask.
+    tests/test_canvas_tool.cpp
     tests/test_remove_brush.cpp
     src/shell/remove_brush.cpp
+    src/shell/brush_mask.cpp
+    tests/test_faces_tool.cpp
+    src/shell/faces_tool.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp

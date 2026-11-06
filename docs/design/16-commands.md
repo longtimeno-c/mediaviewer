@@ -122,6 +122,7 @@ Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in
 | **gallery** | The gallery grid is visible (and no popup) | Owns navigation even with canvas focus. Unmodified printable keys reach only gallery navigation, `G`, `F`, `?`, `/`; other letters are typeahead |
 | **island** | Filmstrip or gallery island has focus | In-pane traversal belongs to XAML; unmodified printable keys are typeahead. Named keys and chords still route |
 | **crop** | Crop mode on a still | Owns its keys; `A` `D`, `G`, `Ctrl+O` do nothing (walking away would drop the draft) |
+| **tool** | A canvas tool armed on a still (the Remove brush, red-eye, the white-balance picker; `shell/canvas_tool.h`), not in a slideshow | Layers over **browse**: only the tool's rows differ (below, "Canvas tools"). `blocked_in_tool` refuses rotate, flip, crop and the Bin always, and walking away (`A` `D`, `←` `→`, `Home` `End`, the folder walks, page skips) while strokes are pending; a refused key says why ("Remove or clear the strokes first") once, not per repeat. The same rule greys or refuses those commands from the menus and buttons |
 | **trim** | Trim armed on a clip (not in a slideshow) | Layers over **video**: unbound keys fall back to the video rows |
 | **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
 | **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
@@ -136,7 +137,8 @@ folder and `Q` / `E` still skip.
 ### `Esc` walks out
 
 `resolve_back` picks one target per press, never quitting: text field → popup (`?`, go-to, find)
-→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
+→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → canvas tool (put down;
+the brush's strokes stay, dimmed, for Remove later) → trim (disarm, markers kept) → pane → gallery →
 slideshow → fullscreen → runner → canvas focus → result list ("Back to folder", the outermost:
 a search result list is a place, not an overlay). A list opened from the empty window (a search
 from the welcome) goes back to the empty window: the welcome card with its recent folders, the
@@ -156,7 +158,8 @@ Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (fold
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
 On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
-tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip, the AI badge while it is up —
+tree, gallery, Edit, metadata, adjust, jobs, the Edit icon rail (docs/plans/edit-refresh.md S2),
+transport, filmstrip, the AI badge while it is up —
 and then back to the canvas;
 `Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 
@@ -245,6 +248,8 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
 | `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
 | `Shift+T` | browse, island | Page sidebar show / hide: page thumbnails down the left of a PDF, DOCX or PPTX while the filmstrip is hidden (below). Remembered (Windows `settings.ini` `[view] page_sidebar`, Mac `mv.pageSidebar`), on by default. Also View ▸ Page Sidebar |
+| *(unbound)* | browse | **Auto enhance** (`auto_enhance`): the Edit header's ✦ Auto on a still: tone, then white balance, one undo step; again right after takes it back ([20](20-edit-workspace.md) "Header", [07](07-photo-editing.md) "Auto"). Also Edit ▸ Auto Enhance on the Mac; listed in Settings |
+| *(unbound)* | Viewing | **Wider side pane** / **Narrower side pane** (`pane_wider` / `pane_narrower`): the right column 40 wider or narrower, 280–720 ([20](20-edit-workspace.md) "The right column"). Also View ▸ Wider / Narrower Side Pane; listed in Settings. Its edge drags too, and a double-click on the edge resets it to 360 |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
@@ -471,6 +476,23 @@ yet) and not in a slideshow.
 | hold `Y` | browse | Show the original (edit stack untouched) |
 | `Enter` | browse, video | Open / close the **Edit workspace** — Edit image on a still, Edit video on a clip ([edit workspace](20-edit-workspace.md)). `Shift+C` / `Shift+A` / `Ctrl+T` open it on Crop / Colour / Trim; with it open `I` / `Ctrl+J` select its Info / Jobs tabs |
 
+### Canvas tools
+
+docs/plans/edit-refresh.md S3 (`shell/canvas_tool.h`, [20](20-edit-workspace.md) "Canvas tools"). Rows in
+mode **tool**; everything else is the browse row underneath, minus what `blocked_in_tool` refuses.
+
+| Key | Modes | Command |
+|---|---|---|
+| `B` | browse, tool | **Remove brush** (`tool_brush`): opens Edit on the Enhance tab with the brush armed (owner call D). `Ctrl+B` stays the clip split |
+| `[` `]` (repeat) | tool | **Smaller / Bigger brush** (`tool_smaller` / `tool_bigger`): the ring ×1/1.2 / ×1.2, 4–400 px on screen, with a fading "48 px" beside it. Never rotates in this mode |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | tool | **Undo / Redo stroke** (`tool_undo` / `tool_redo`): one stroke; with red-eye, one fix (the edit stack's undo); with the brush and no stroke left, the edit's own undo |
+| `Backspace`, `Delete` | tool | **Clear strokes** (`tool_clear`); with red-eye, every fix off as one step. Never the Bin |
+| `Enter` | tool | **Apply tool** (`tool_apply`): Remove (Enhance takes what is brushed); otherwise the tool goes down |
+| hold `Space` | tool | **Pan while brushing** (`tool_pan` / `tool_pan_release`): a drag pans, the open hand shows. Never next |
+| `Alt` / `⌥` held | tool | The brush erases while it is down (the ring dashes); no row, read at the press |
+| `Esc` | tool | The tool goes down (strokes kept, dimmed) |
+| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): the rail (Red-eye, Faces; Extend has no rail icon since 2026-11-05), the Enhance tab's cards, Edit ▸ on the Mac, Settings. Faces arms the Faces tool (S8: a box per face, a click chooses it; the Faces panel's controls are `chrome_cmd_faces` on Windows, `mv_chrome_faces_op` on the Mac); Extend opens Enhance's sheet until S6 makes it a canvas tool |
+
 ### Crop
 
 | Key | Command |
@@ -479,9 +501,13 @@ yet) and not in a slideshow.
 | `Shift` + arrows | Move its bottom-right corner (narrower / wider / shorter / taller) |
 | `,` `.` | Straighten −0.5° / +0.5° (±45°); an untouched rectangle follows the angle as its largest fit |
 | `[` `]` `H` `V` | Turn / flip with the draft carried along (no file write while cropping) |
-| `A` / `X` | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap portrait and landscape |
+| `A` / `X` | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap portrait and landscape (`X` also turns Extend's ratio; in the other canvas tools it stays Reject) |
 | `Enter` | Apply: the draft joins the edit stack |
 | `Esc` | Cancel the draft |
+
+With the mouse, a press on the rectangle's edge or corner drags it and one inside moves it
+(a locked preset keeps its ratio); a press elsewhere pans as before
+([20](20-edit-workspace.md) Behaviour 4, `shell/crop_drag.h`).
 
 ### Rate
 
@@ -559,7 +585,7 @@ awake: `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)` on Wi
 
 | Windows | Mac | Command |
 |---|---|---|
-| `Ctrl+Shift+R` | `⌘⇧R` | Open the Enhance sheet for the marked (else current) file ([29](29-enhance.md)) |
+| `Ctrl+Shift+R` | `⌘⇧R` | Open Enhance for the marked (else current) file: the sheet for an audio file or a clip, the Edit pane's Enhance tab for a photo ([29](29-enhance.md)) |
 
 Inside the Import window (its own keys, not table rows): `Enter` imports (on a focused tile it
 opens that file in the viewer), `Ctrl+Enter` imports from anywhere, `Space` toggles a tile and

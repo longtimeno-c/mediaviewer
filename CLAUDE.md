@@ -49,7 +49,7 @@ Read `docs/design/README.md` first, then the doc for the area you are touching:
 | `docs/design/17-local-ai-search.md` | Local AI search add-on |
 | `docs/design/18-import.md` | Import add-on; the add-on mechanism |
 | `docs/design/19-voice.md` | Voice query (parser only; the add-on is not built) |
-| `docs/design/20-edit-workspace.md` | The Edit button / `Enter`, the docked Edit pane, every-tag metadata editing |
+| `docs/design/20-edit-workspace.md` | The Edit button / `Enter`, the docked Edit pane, every-tag metadata editing; its "Craft rules" govern every chrome surface on both hosts — read before any UI change |
 | `docs/design/21-video-editor.md` | The Video Editor window |
 | `docs/design/22-editor-addon.md` | Editor add-on (not built) |
 | `docs/design/23-nle-search.md` | Local search inside Final Cut Pro (Mac-only D9 exception), FCPXML export |

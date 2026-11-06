@@ -29,7 +29,8 @@ TEST_CASE("table rows are well-formed", "[shell][commands][review]") {
   REQUIRE(rows.size() < 255);  // the router's index is uint8 row + 1
   for (const auto& b : rows) {
     INFO("key " << static_cast<int>(b.k) << " command " << static_cast<int>(b.command));
-    // PR 7: Open RAW / Open JPEG, and issue #206's Show next kind, are the only
+    // PR 7: Open RAW / Open JPEG, issue #206's Show next kind and the right
+    // column's wider / narrower (docs/plans/edit-refresh.md S1) are the only
     // live rows that ship unbound. Issue #408's retired `B` keeps a row with no
     // key and no mode (saved rebinds name rows by index).
     if (b.k == key::none) {
@@ -38,7 +39,10 @@ TEST_CASE("table rows are well-formed", "[shell][commands][review]") {
         continue;
       }
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
-               b.command == command_id::kind_filter_next));
+               b.command == command_id::kind_filter_next || b.command == command_id::pane_wider ||
+               b.command == command_id::pane_narrower ||
+               b.command == command_id::auto_enhance || b.command == command_id::tool_red_eye ||
+               b.command == command_id::tool_extend || b.command == command_id::tool_faces));
       continue;
     }
     REQUIRE(static_cast<int>(b.k) > 0);

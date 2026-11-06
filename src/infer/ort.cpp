@@ -430,11 +430,17 @@ const std::string& session::last_error() noexcept { return t_last_error; }
 using named_input_element = session::element;
 
 result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> inputs) const {
+  return run_named(inputs, std::span<const std::string>(p_->out_names));
+}
+
+result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> inputs,
+                                                   std::span<const std::string> outputs) const {
   const OrtApi* api = p_->api;
   t_last_error.clear();
   values ins(api);
   std::vector<const char*> in_names;
   std::vector<std::vector<std::uint16_t>> halves;
+  std::vector<std::vector<std::int32_t>> narrowed;  // int64 ids for an int32 input (some exports)
   halves.reserve(inputs.size());
   for (const named_input& in : inputs) {
     auto it = std::find(p_->in_names.begin(), p_->in_names.end(), in.name);
@@ -461,6 +467,14 @@ result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> 
                                                  in.count * sizeof(float), in.shape.data(), in.shape.size(),
                                                  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &v);
       }
+    } else if (in.type == named_input_element::i64 && type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32) {
+      // An export that takes int32 ids (token ids fit): narrowed, as the f16 case.
+      static std::int32_t empty_i32 = 0;
+      narrowed.emplace_back(in.count);
+      for (std::size_t k = 0; k < in.count; ++k) narrowed.back()[k] = static_cast<std::int32_t>(in.i64[k]);
+      st = api->CreateTensorWithDataAsOrtValue(p_->mem, in.count ? narrowed.back().data() : &empty_i32,
+                                               in.count * 4, in.shape.data(), in.shape.size(),
+                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32, &v);
     } else if (in.type == named_input_element::i64) {
       st = api->CreateTensorWithDataAsOrtValue(p_->mem, in.count ? const_cast<std::int64_t*>(in.i64) : &empty_i,
                                                in.count * 8, in.shape.data(), in.shape.size(),
@@ -477,7 +491,14 @@ result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> 
     in_names.push_back(it->c_str());
   }
   std::vector<const char*> out_names;
-  for (const auto& n : p_->out_names) out_names.push_back(n.c_str());
+  for (const std::string& n : outputs) {
+    if (std::find(p_->out_names.begin(), p_->out_names.end(), n) == p_->out_names.end()) {
+      t_last_error = "no output " + n;
+      return err(status::invalid_arg);
+    }
+    out_names.push_back(n.c_str());
+  }
+  if (out_names.empty()) return err(status::invalid_arg);
   values outs(api);
   outs.v.assign(out_names.size(), nullptr);
   if (!ok(api, api->Run(p_->s, nullptr, in_names.data(), ins.v.data(), ins.v.size(), out_names.data(),

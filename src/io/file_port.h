@@ -63,6 +63,11 @@ struct file_stat {
   // macOS birth time), seconds since the Unix epoch. 0 = the filesystem keeps
   // none. Comes with the same call as the size: no extra syscall.
   std::int64_t created_unix = 0;
+  // S0 (docs/plans/edit-refresh.md §5): the sync client keeps the bytes in the
+  // cloud only (Windows: FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS / _ON_OPEN /
+  // OFFLINE, a OneDrive or iCloud placeholder; macOS: SF_DATALESS, an evicted
+  // iCloud Drive file). Reading it downloads it. From the same call.
+  bool cloud_placeholder = false;
 };
 
 // #498: which file a path names: the volume and the file's number on it

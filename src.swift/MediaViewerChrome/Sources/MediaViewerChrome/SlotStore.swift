@@ -151,6 +151,10 @@ final class SlotStore: ObservableObject {
   /// Each add-on's settings page (place "settings", contribution API 8): drawn
   /// on its page in Settings -> Add-ons, never in a window.
   @Published private(set) var settingsScreens: [String: String] = [:]
+  /// docs/plans/edit-refresh.md S5: each add-on's screen docked in the Edit
+  /// workspace (place "edit", contribution API 13): drawn in the Enhance tab
+  /// under the chosen tool's card, never in a window.
+  @Published private(set) var editScreens: [String: String] = [:]
   /// #512: `opens` is the screen a click opens ("" = plain text).
   @Published private(set) var status: [(id: String, addon: String, label: String, text: String, opens: String)] = []
   /// True while an add-on answers Local search (the path bar's button opens it).
@@ -245,16 +249,19 @@ final class SlotStore: ObservableObject {
     }
     var windows: [String: String] = [:]
     var settings: [String: String] = [:]
+    var docked: [String: String] = [:]
     for sc in doc["screens"] as? [[String: Any]] ?? [] {
       guard let a = sc["addon"] as? String, let id = sc["id"] as? String else { continue }
       switch sc["place"] as? String {
       case "window": if windows[a] == nil { windows[a] = id }
       case "settings": if settings[a] == nil { settings[a] = id }
+      case "edit": if docked[a] == nil { docked[a] = id }
       default: break
       }
     }
     if windows != windowScreens { windowScreens = windows }
     if settings != settingsScreens { settingsScreens = settings }
+    if docked != editScreens { editScreens = docked }
     badgeDefs = [:]
     for b in doc["badges"] as? [[String: Any]] ?? [] {
       guard let key = b["key"] as? String else { continue }

@@ -443,8 +443,13 @@ typedef struct mv_slot_search_row {
 /* Contribution API 8: on the add-on's own page in Settings -> Add-ons, opened
  * while that page shows (never by screen_show: MV_ERR_INVALID_ARG). */
 #define MV_SLOT_PLACE_SETTINGS 4u
+/* Contribution API 12 (docs/plans/edit-refresh.md S5): docked in the Edit
+ * workspace's Enhance tab, opened only by the Edit workspace with a command
+ * (mv_slots_screen_command); never by screen_show (MV_ERR_INVALID_ARG) or an item. */
+#define MV_SLOT_PLACE_EDIT 5u
 
-/* A window, pane, sheet or settings page of the add-on's opened (manifest screens[]). */
+/* A window, pane, sheet, settings page or docked Edit screen of the add-on's
+ * opened (manifest screens[]). */
 typedef struct mv_slot_screen_request {
   uint32_t struct_size;
   uint32_t place;               /* MV_SLOT_PLACE_* */
@@ -993,6 +998,35 @@ typedef struct mv_host_api {
    * non-NULL. */
   mv_status(MV_CALL* open_list)(void* host, const char* screen_id, uint64_t generation, const char* title_utf8,
                                 const char* const* paths_utf8, uint32_t count, uint32_t select);
+  /* ---- faces of a picture (docs/plans/edit-refresh.md S10, Restore faces) --------- */
+  /* [worker-thread] The faces the AI pack's People model finds in `rgb`
+   * (width x height, 8-bit RGB, `stride` bytes a row; at most 16384 a side
+   * and 100 megapixels) and, when `other_rgb` is given (the same size and
+   * stride: that picture changed, a restored face), each face's cosine to the
+   * face of `other_rgb` at the same place. UTF-8 JSON into `out_json`,
+   * NUL-terminated (mediaviewer_ai.h faces_json):
+   *   {"faces":[{"x":,"y":,"w":,"h":,"score":,"lm":[10 numbers],"sim":}, …]}
+   * boxes and the five landmarks (right eye, left eye, nose, mouth corners;
+   * x, y) 0..1 of the picture, "sim" only with `other_rgb` (-1: no face
+   * there). `*out_needed` is the size with its NUL; MV_ERR_INVALID_ARG when
+   * `capacity` is short. MV_ERR_NOT_FOUND without Local search (or an older
+   * pack), MV_ERR_PERMISSION_DENIED while People is off. The pixels are only
+   * read; nothing is kept or written. Appended after open_list (still_extend
+   * follows): read only when `struct_size` covers it and the pointer is
+   * non-NULL. */
+  mv_status(MV_CALL* still_faces)(void* host, const uint8_t* rgb, uint32_t width, uint32_t height, uint32_t stride,
+                                  const uint8_t* other_rgb, char* out_json, uint32_t capacity, uint32_t* out_needed);
+  /* ---- Extend on the canvas (docs/plans/edit-refresh.md S6) ---------------------- */
+  /* [any-thread] The new frame the person dragged past the edges of the photo
+   * being edited at `path_utf8`, for Enhance's Extend: out_ltrb[0..3] are the
+   * left, top, right and bottom margins, each a fraction (0..1) of the edited
+   * picture still_open answers with (left and right of its width, top and
+   * bottom of its height). The part of the frame inside the photo is already a
+   * crop on the edit, so still_open answers the cropped picture. All four 0
+   * when no frame is set or another photo is being edited (the add-on then
+   * uses its own preset). Appended after still_faces, last: read only when
+   * `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* still_extend)(void* host, const char* path_utf8, float* out_ltrb);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1226,6 +1260,16 @@ MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* ite
  * each once (Mac mv_chrome_open_list, Windows mv_folder_open_list) and brings
  * the viewer forward. Buffer rule as mv_slots_info_json. */
 MV_API mv_status MV_CALL mv_slots_open_list_json(char* out, uint32_t cap, uint32_t* needed);
+/* 0.39 (docs/plans/edit-refresh.md S5): the Edit workspace's command to a
+ * docked screen (place "edit", MV_SLOT_PLACE_EDIT): the screen opens first
+ * when it is not open (on `path_utf8`, the file on screen, `width_pt` wide),
+ * then the add-on gets MV_SLOT_EVENT_COMMAND with screen_id = node_id =
+ * `screen` and value `value_json`, one JSON object of at most 4096 bytes
+ * (Enhance's {"photo": "remove|restyle|detail|extend", "run": true}).
+ * MV_ERR_NOT_FOUND for an add-on without such a screen; MV_ERR_INVALID_ARG for
+ * a value that is not an object. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_slots_screen_command(const char* addon, const char* screen, const char* path_utf8,
+                                                 const char* value_json, float width_pt, float scale);
 /* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
  * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
 MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
@@ -1262,6 +1306,11 @@ MV_API mv_status MV_CALL mv_edit_still_set(const char* path_utf8, const void* ed
  * v, radius; the host table's still_mask says how), for Enhance's Remove. A
  * NULL path or 0 dabs clears it. [ui-thread][no-block] */
 MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* dabs, uint32_t count);
+/* docs/plans/edit-refresh.md S6: Extend's frame over that still, the margins
+ * past its edges as the host table's still_extend answers them (`ltrb` left,
+ * top, right, bottom; each 0..1 of the edited picture's width or height). A
+ * NULL path or NULL `ltrb` clears it. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_edit_still_extend(const char* path_utf8, const float* ltrb);
 /* Slice 6: Open closed eyes for the still at `path_utf8`: the frames of the
  * same moment, the AI pack's same-person faces (People must be on), the
  * transfer, and a new file beside the photo. `note_out` gets what happened,
@@ -1269,6 +1318,28 @@ MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* 
  * [worker-thread]. */
 MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_out, uint32_t cap,
                                              uint32_t* needed);
+/* The wand menu's "Improve faces from your photos" (owner 2026-11-04): each
+ * face replaced by a clearly better one of the same person from the same
+ * moment or their other photos in People, turned the same way, in this
+ * photo's light; a new file beside the photo. As mv_open_closed_eyes. */
+MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out, uint32_t cap, uint32_t* needed);
+/* docs/plans/edit-refresh.md S3: the faces and eye landmarks of the still at
+ * `path_utf8`, the AI pack's eyes_json answer with no candidates
+ * (mediaviewer_ai.h: {"faces":[{"x","y","w","h","lm":[10 numbers]}]}, 0..1 of
+ * the upright still), for the red-eye ring's snap and Find eyes.
+ * MV_ERR_NOT_FOUND without the pack, MV_ERR_INVALID_ARG while People is off.
+ * Runs the pack's face model: [worker-thread]. */
+MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t cap, uint32_t* needed);
+/* docs/plans/edit-refresh.md S8: the Faces tool's fix for the still at
+ * `path_utf8`: `fix` -1 Do all (each face's best fix), 0 Open eyes, 1 Improve
+ * face (addon_media.h face_fix; appended values follow). Only the faces whose
+ * boxes the canvas chose change: `boxes` holds `count` x, y, w, h quads (0..1
+ * of the upright still, as mv_eyes_json gave them), matched to this run's
+ * answer; NULL means every face. The same moment's frames and People's
+ * donors as mv_open_closed_eyes, a new file beside the photo ("-eyes.jpg" for
+ * Open eyes, else "-faces.jpg"), `note_out` what happened. [worker-thread] */
+MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                         char* note_out, uint32_t cap, uint32_t* needed);
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file
@@ -1293,8 +1364,10 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
  * 9  `reveal` on a screen stack (2026-10-28);
  * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28);
  * 11 `editor_items`, the Video Editor's bar (2026-11-02);
- * 12 a `surface` with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04). */
-#define MV_ADDON_CONTRIBUTION_API 12
+ * 12 a `surface` with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04);
+ * 13 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04);
+ * 14 a progress bar's "detail" and "timed" (2026-11-05). */
+#define MV_ADDON_CONTRIBUTION_API 14
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

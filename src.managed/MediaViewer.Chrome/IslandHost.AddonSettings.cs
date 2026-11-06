@@ -214,8 +214,12 @@ public static partial class IslandHost
 
     private static FrameworkElement BuildSettingsPage(AddonSettingsPage page)
     {
-        var view = new StackPanel { Spacing = Space(8), Margin = Pad(0, 8, 0, 4) };
+        // A part of its add-on's page card, never a card in it (docs/design/20
+        // "Craft rules"): set off by space, its rows plain. Sizes as the Mac's
+        // AddonSettingsPage: the heading 14 semibold, sections 13, help 12.
+        var view = new StackPanel { Spacing = Space(8), Margin = Pad(0, 4, 0, 0) };
         TextBlock heading = WrappedLabel(page.Title).WithForeground(Brush(Title));
+        heading.FontSize = TypeSize(TypeBody);
         heading.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         view.Children.Add(heading);
         // enabled_by: the toggles of this page by key, and what each one enables.
@@ -224,8 +228,18 @@ public static partial class IslandHost
         foreach (SettingsSectionModel section in page.Sections)
         {
             if (section.Title.Length > 0)
-                view.Children.Add(Label(section.Title).WithForeground(Brush(Title)));
-            if (section.Help.Length > 0) view.Children.Add(WrappedLabel(section.Help));
+            {
+                TextBlock title = Label(section.Title).WithForeground(Brush(Title));
+                title.FontSize = TypeSize(TypeNote);
+                title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+                view.Children.Add(title);
+            }
+            if (section.Help.Length > 0)
+            {
+                TextBlock help = WrappedLabel(section.Help);
+                help.FontSize = TypeSize(TypeCaption);
+                view.Children.Add(help);
+            }
             foreach (SettingItem item in section.Items)
             {
                 view.Children.Add(BuildSettingRow(page, item, toggles, dependents));
@@ -244,14 +258,16 @@ public static partial class IslandHost
     private static FrameworkElement BuildSettingRow(AddonSettingsPage page, SettingItem item,
         Dictionary<string, ToggleSwitch> toggles, List<(string By, Action<bool> Enable)> dependents)
     {
-        var row = new Grid { Padding = Pad(14), ColumnSpacing = Space(24),
-            Background = Brush(ChromeColour.Surface), CornerRadius = Corner(8) };
+        // A plain row of the page card (no surface of its own), label left,
+        // control right, 16 apart (the Mac's itemRow).
+        var row = new Grid { ColumnSpacing = Space(16) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var labels = new StackPanel { Spacing = Space(4), VerticalAlignment = VerticalAlignment.Center };
         TextBlock name = WrappedLabel(item.Label).WithForeground(Brush(Title));
+        name.FontSize = TypeSize(TypeNote);
         labels.Children.Add(name);
         if (item.Help.Length > 0)
         {
@@ -264,7 +280,7 @@ public static partial class IslandHost
         // Why the core refused the last change, under the row's text.
         TextBlock refused = WrappedLabel(item.Message).WithForeground(Brush(Title));
         refused.FontSize = TypeSize(12);
-        refused.Margin = Pad(0, 6, 0, 0);
+        refused.Margin = Pad(0, 4, 0, 0);
         refused.Visibility = item.Message.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         Grid.SetRow(refused, 1);
         Grid.SetColumnSpan(refused, 2);
@@ -292,6 +308,9 @@ public static partial class IslandHost
 
         if (item.EnabledBy.Length > 0 && item.EnabledBy != item.Key)
         {
+            // The label dims with its control, eased (the Mac's itemRow).
+            if (HostAnimationsEnabled())
+                labels.OpacityTransition = new ScalarTransition { Duration = TimeSpan.FromMilliseconds(150) };
             dependents.Add((item.EnabledBy, on =>
             {
                 foreach (Control c in controls) c.IsEnabled = on;

@@ -211,7 +211,7 @@ empty whenever `ai_generated` is false.
 
 ## The AI badge (#345)
 
-When the item on screen says it was AI-made, a small badge — a sparkle and "AI", 44 × 20 pt — sits
+When the item on screen says it was AI-made, a small badge — the letters "AI" in the theme's face, 44 × 20 pt, no sparkle (2026-11-05, [20 "Craft rules"](20-edit-workspace.md#craft-rules)) — sits
 in the bottom-right of the canvas: 16 pt in from the right (or from a right-hand pane), 10 pt above
 the filmstrip or the bottom edge, and above a clip's transport bar. Hover or keyboard focus shows
 "Made with <generator>" (or "AI-generated" when nothing names the tool) and the evidence line.

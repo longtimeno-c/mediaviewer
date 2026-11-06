@@ -47,6 +47,12 @@ enum MvMenuCmd : int32_t {
   kMenuPageSidebar,
   // Issue #614: File > Print… (Cmd+P).
   kMenuPrint,
+  // docs/plans/edit-refresh.md S1: View > Wider / Narrower Side Pane.
+  kMenuPaneWider, kMenuPaneNarrower,
+  // S2: Edit > Auto Enhance.
+  kMenuAutoEnhance,
+  // S3: Edit > the canvas tools (tool_brush, tool_red_eye, tool_extend, tool_faces).
+  kMenuToolBrush, kMenuToolRedEye, kMenuToolExtend, kMenuToolFaces,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -961,6 +967,10 @@ void mv_chrome_adjust_open_eyes(void);
 // −100..100 about the default): 0 the last stroke off, 1 every stroke off,
 // 2 Remove — Enhance's sheet opens to take out what is brushed.
 void mv_chrome_adjust_brush(int32_t action);
+// The wand menu's faces (owner 2026-11-04): 0 Open closed eyes, 1 Improve faces
+// from your photos. Each looks in the same moment, then the person's other
+// photos in People, and writes a new file; the note says what happened.
+void mv_chrome_edit_faces(int32_t mode);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);
@@ -1057,6 +1067,21 @@ typedef struct mv_edit_view {
   int32_t crop_height;
   int32_t document;       // a PDF or DOCX: nothing to edit; the bar offers "Open in <app>"
   int32_t enhance;        // edit-adjust slice 5: the Enhance add-on is loaded (the strip offers Enhance…)
+  // The wand menu's state, bits: 1 the Remove brush is on, 2 something is
+  // brushed, 4 the brush is full, 8 Enhance offers Restyle, 16 Open closed eyes
+  // is running; docs/plans/edit-refresh.md S2: 32 Extend, 64 more detail,
+  // 128 the faces can run (the AI pack), 256 ✦ Auto is the last edit (a click
+  // takes it back), 512 ✦ Auto is running (shell/adjust_pane.h kWand*).
+  int32_t wand;
+  // S2: the header's chip, bits: 1 a Photos-library photo, 2 its original is
+  // being fetched from iCloud. And the inspector folded to the rail.
+  int32_t chips;
+  int32_t collapsed;
+  // docs/design/20 "Compare" (shell::compare_kind): 0 nothing to compare (no
+  // edits), 1 the edits (before = the photo with none), 2 an Enhance result
+  // and the photo it was made from, 3 a result whose photo is not beside it,
+  // 4 that photo still being looked for. Compare is enabled on 1 and 2.
+  int32_t compare;
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -1064,6 +1089,15 @@ bool mv_chrome_edit_view(mv_edit_view* out);
 int32_t mv_chrome_edit_name(char* buf, int32_t size);
 // A tab the subject offers; others are ignored.
 void mv_chrome_edit_select_tab(int32_t tab);
+// docs/plans/edit-refresh.md S2: a click on the rail's icon for `tab` (another
+// tab selects it; the active one folds the inspector to the rail; a folded
+// rail unfolds on that tab).
+void mv_chrome_edit_rail(int32_t tab);
+// The rail's and the Enhance tab's tools: 0 Remove (the brush), 1 Red-eye,
+// 2 Faces, 3 Extend (Enhance's sheet).
+void mv_chrome_edit_tool(int32_t tool);
+// ✦ Auto (auto_enhance): one undo step; right after, a second call takes it back.
+void mv_chrome_edit_auto(void);
 // Done / the close button: applies a crop draft, then closes.
 void mv_chrome_edit_close(void);
 // The Crop pane: a preset (+ orientation), the straighten slider (degrees),
@@ -1071,13 +1105,115 @@ void mv_chrome_edit_close(void);
 void mv_chrome_edit_set_aspect(int32_t aspect, int32_t portrait);
 void mv_chrome_edit_set_straighten(float degrees);
 void mv_chrome_edit_cancel_crop(void);
-// The strip's Original toggle (the same state Y holds).
+// The header's and the rail's Compare: the before/after split on the canvas
+// (docs/design/20 "Compare"); Y held shows the before alone.
 void mv_chrome_edit_show_original(int32_t on);
+// The wand menu's Enhance rows: the Edit pane's Enhance tab for the photo
+// (one-click: its cards run each tool; never the sheet).
+void mv_chrome_edit_enhance_command(const char* command);
+// docs/plans/edit-refresh.md S5 (owner call B): an Enhance tool run inside the
+// Edit pane. `photo` is "remove", "restyle", "detail" or "extend"; the
+// workspace shows the Enhance tab and Enhance's docked panel (place "edit")
+// opens under that tool's card; `run` != 0 also starts it (Remove hands the
+// brushed dabs over first). Without a docked panel, Enhance's sheet opens on it.
+void mv_chrome_edit_enhance_tool(const char* photo, int32_t run);
+// The docked panel's result row: Show (`keep` 0: leave Edit and show the new
+// file or Photos-library photo) or Keep editing (`keep` 1: show it with Edit
+// still open on the Enhance tab). `path` is the panel's result.thumb path.
+void mv_chrome_edit_enhance_result(const char* path, int32_t keep);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
-// Slice 5: Enhance… from the strip: Enhance's own sheet for the photo, whose
-// copy carries the crop, colour and detail being edited.
+// Enhance… from the strip: the Edit pane's Enhance tab for the photo
+// (one-click, owner 2026-11-05: no sheet for a photo).
 void mv_chrome_edit_enhance(void);
+// One-click Enhance (docs/design/29 "One click"): the run node of Enhance's
+// cards as the chrome read it: `state` (shell::enhance_run_state: 0 idle,
+// 1 running, 2 done, 3 failed, 4 cancelled, 5 downloading), the run's id, and
+// the new file (or Photos-library key) when done, else "". Native keeps the
+// glow over the photo, the tool bar's band, and opens the result once.
+void mv_chrome_edit_enhance_run(int32_t state, uint64_t run, const char* result);
+
+// ---- docs/plans/edit-refresh.md S3: the canvas tools' context bar ------------------
+//
+// The capsule below the photo while a canvas tool is armed on a still: it takes
+// the transport's slot (a still has no transport) and a band the canvas leaves
+// for it, so nothing covers the picture. Field for field shell::tool_bar
+// (shell/canvas_tool.h; main_mac.mm static_asserts the layout); Windows'
+// chrome_tool_bar_args is the same. Re-read when mv_chrome_edit_generation moves.
+typedef struct mv_tool_bar_view {
+  int32_t visible;
+  int32_t tool;             // shell::canvas_tool: 1 Remove brush, 2 red-eye, 3 white-balance picker, 5 Extend
+  float size_px;            // the ring's diameter in points (4-400)
+  int32_t erase;            // the Erase toggle (Option held is not shown here)
+  int32_t strokes;          // the brush's strokes
+  int32_t spots;            // red-eye fixes on the photo
+  int32_t can_apply;        // Remove (brush) / Find eyes (red-eye) can run
+  int32_t busy;             // Find eyes is reading the photo
+  int32_t progress_permille;
+  int32_t extend_w;         // S6: the extended frame, pixels
+  int32_t extend_h;
+  int32_t full;             // the brush holds all it can
+  int32_t can_redo;
+  int32_t eyes;             // red-eye: eyes the AI pack found (People on); 0 none or not known
+  int32_t can_undo;         // S4a: a stroke or a Clear to undo (Clear is undoable)
+  int32_t extend_growth;    // S6: Extend's readout, the growth in permille (+180 reads "+18 %")
+  int32_t extend_warn;      // S6: a side is past the 25 % warning
+  int32_t extend_preset;    // S6: the chip the frame is (0 Original ... 3 All round), -1 none
+  int32_t extend_aspect;    // Extend's ratio held (shell::crop_aspect: 0 Free, 1 Original, 2 1:1 ... 6 5:4)
+  int32_t extend_portrait;  // ... turned portrait (4:5 is 5:4 turned)
+  int32_t extend_short;     // the frame falls short of the ratio (the 50 % stop or Enhance's caps)
+} mv_tool_bar_view;
+bool mv_chrome_tool_bar(mv_tool_bar_view* out);
+// The bar's buttons (shell::tool_bar_action): 0 Done (the tool goes down, the
+// strokes stay; Extend's Cancel), 1 Undo, 2 Redo, 3 Clear, 4 Remove / apply
+// (Extend's Fill), 5 Find eyes; S8, on the chosen faces: 6 Open eyes,
+// 7 Improve, 8 Do all; S6: 16 + i Extend's preset chip i; Extend's ratio:
+// 32 + i Crop's ratio i (0 Free), 9 Landscape / Portrait.
+void mv_chrome_tool_action(int32_t action);
+// The size slider, in points (the label fades in beside the ring).
+void mv_chrome_tool_set_size(float px);
+// The Paint / Erase toggle.
+void mv_chrome_tool_set_erase(int32_t on);
+
+// ---- docs/plans/edit-refresh.md S8: the Faces tool's panel (FacesPanelView) -------
+//
+// While the Faces tool is armed the canvas draws a box per face and the
+// Enhance tab lists them (shell/faces_tool.h): a thumbnail, the person's name
+// from People and "from 37 photos of Anna", each face's fixes (Open eyes only
+// where the eyes look shut), Do all. Re-read the cards when `revision` moves.
+typedef struct mv_faces_panel_view {
+  int32_t armed;           // the Faces tool is armed on a still
+  int32_t status;          // shell::faces_status: 0 idle, 1 looking, 2 ready, 3 no Local search,
+                           // 4 People off, 5 failed
+  int32_t count;           // faces (at most 16)
+  int32_t chosen;          // bit i: face i is chosen
+  int32_t running;         // a fix is on the pool
+  int32_t running_face;    // the face it runs on, -1 the chosen faces
+  int32_t running_action;  // shell::face_action, -1 Do all
+  uint32_t revision;       // moves with every change the panel shows
+} mv_faces_panel_view;
+bool mv_chrome_faces_panel(mv_faces_panel_view* out);
+typedef struct mv_face_card_view {
+  int64_t person;   // People's cluster, 0 none
+  int32_t photos;   // People's other photos of them
+  int32_t actions;  // bit per shell::face_action the face offers (0 Open eyes, 1 Improve face)
+  int32_t shut;     // the eyes look shut
+  int32_t thumb_w;  // the thumbnail, RGBA8 sRGB
+  int32_t thumb_h;
+  int32_t reserved;
+} mv_face_card_view;
+// Face `index`'s card; its name ("" unnamed) and "from 37 photos of Anna"
+// ("" none) as UTF-8 into `name` / `source` (`*_cap` bytes, NUL-terminated);
+// its thumbnail into `rgba` when `rgba_cap` holds thumb_w * thumb_h * 4. False
+// out of range. [main-thread]
+bool mv_chrome_face_card(int32_t index, mv_face_card_view* out, char* name, int32_t name_cap, char* source,
+                         int32_t source_cap, uint8_t* rgba, int32_t rgba_cap);
+// The panel's controls, packed as shell::pack_faces_op: op × 100000 +
+// (face + 1) × 100 + (action + 1). Ops: 0 run `action` (-1 Do all) on `face`
+// (-1 the chosen faces), 1 toggle `face`, 2 choose all, 3 choose none,
+// 4 People is being turned on (nothing changes until a read), 5 read the faces
+// again, 6 the panel's row under the pointer (`face`, -1 none) lights its box.
+void mv_chrome_faces_op(int32_t packed);
 // A document's "Open in <app>" (docs/design/20): opens the file on the canvas in
 // the app at `app_path_utf8`, or in its default app (never this one) when NULL
 // or "". Asynchronous; never blocks the caller. [main-thread]

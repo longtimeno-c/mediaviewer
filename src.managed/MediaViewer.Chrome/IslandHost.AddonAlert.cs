@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Media;
 
 namespace MediaViewer.Chrome;
 
@@ -25,6 +26,9 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     private static Button? _addonAlert;
+    // The button's warning sign (Segoe Fluent's, not a "⚠" text glyph) and its words.
+    private static FontIcon? _addonAlertIcon;
+    private static TextBlock? _addonAlertText;
     private static Flyout? _addonAlertFlyout;
     private static AddonSlot? _addonAlertSlot;
     private static string _addonAlertTitle = "";
@@ -34,7 +38,22 @@ public static partial class IslandHost
 
     private static Button BuildAddonAlert()
     {
-        _addonAlert = TextButton("", () => OpenAddonAlert());
+        _addonAlertIcon = new FontIcon
+        {
+            Glyph = "\uE7BA",  // Warning
+            FontFamily = IconFont,
+            FontSize = TypeSize(TypeSmall),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _addonAlertText = ButtonLabel("", UiFontSize);
+        _addonAlertText.VerticalAlignment = VerticalAlignment.Center;
+        var label = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Space(6),
+            Children = { _addonAlertIcon, _addonAlertText },
+        };
+        _addonAlert = ChromeButton(label, ButtonPadding, () => OpenAddonAlert());
         _addonAlert.Visibility = Visibility.Collapsed;
         return _addonAlert;
     }
@@ -53,10 +72,16 @@ public static partial class IslandHost
         _addonAlertBody = body;
         _addonAlertDetails = details;
         if (_addonAlert is null) return;
-        if (_addonAlert.Content is TextBlock text)
+        SolidColorBrush ink = Brush(warn ? ChromeColour.TrimAccent : Body);
+        if (_addonAlertText is not null)
         {
-            text.Text = warn ? $"⚠ {title}" : title;
-            text.Foreground = Brush(warn ? ChromeColour.TrimAccent : Body);
+            _addonAlertText.Text = title;
+            _addonAlertText.Foreground = ink;
+        }
+        if (_addonAlertIcon is not null)
+        {
+            _addonAlertIcon.Visibility = warn ? Visibility.Visible : Visibility.Collapsed;
+            _addonAlertIcon.Foreground = ink;
         }
         AutomationProperties.SetName(_addonAlert, $"{title}. {body}");
         ToolTipService.SetToolTip(_addonAlert, body);
@@ -106,11 +131,13 @@ public static partial class IslandHost
     private static FrameworkElement BuildAddonAlertContent()
     {
         var root = new StackPanel { Spacing = Space(10), Width = 420, Padding = Pad(4) };
+        // The Mac's popover (AddonsView.swift AddonAlertItem): the title at the
+        // bar's size, the reason at 13, Dismiss and the filled Open Settings.
         root.Children.Add(new TextBlock
         {
             Text = _addonAlertTitle,
             FontFamily = UiFont,
-            FontSize = UiFontSize + 3,
+            FontSize = UiFontSize,
             Foreground = Brush(Title),
             TextWrapping = TextWrapping.Wrap,
         });
@@ -118,7 +145,8 @@ public static partial class IslandHost
         {
             Text = _addonAlertBody,
             FontFamily = UiFont,
-            FontSize = UiFontSize,
+            FontSize = TypeSize(TypeSmall),
+            LineHeight = Math.Round(TypeSize(TypeSmall) * 1.35),
             Foreground = Brush(Body),
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = true,  // to copy into a bug report
@@ -129,24 +157,19 @@ public static partial class IslandHost
             {
                 Text = "Details: " + _addonAlertDetails,
                 FontFamily = UiFont,
-                FontSize = UiFontSize - 2,
+                FontSize = TypeSize(TypeCaption),
+                LineHeight = Math.Round(TypeSize(TypeCaption) * 1.35),
                 Foreground = Brush(Body),
                 TextWrapping = TextWrapping.Wrap,
                 IsTextSelectionEnabled = true,
             });
         }
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = Space(8),
-            HorizontalAlignment = HorizontalAlignment.Right,
-        };
         AddonSlot? slot = _addonAlertSlot;
-        Button dismiss = TextButton("Dismiss", () =>
+        Button dismiss = NoticeButton("Dismiss", () =>
         {
             if (slot is not null) ClearAddonAlert(slot);
         });
-        Button settings = TextButton("Open Settings", () =>
+        Button settings = NoticeButton("Open Settings", () =>
         {
             try { _addonAlertFlyout?.Hide(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
@@ -167,14 +190,8 @@ public static partial class IslandHost
             {
                 HostShowLocalSearchSettings();
             }
-        });
-        foreach (Button b in new[] { dismiss, settings })
-        {
-            b.IsTabStop = true;
-            b.AllowFocusOnInteraction = true;
-            buttons.Children.Add(b);
-        }
-        root.Children.Add(buttons);
+        }, primary: true);
+        root.Children.Add(NoticeButtons(dismiss, settings));
         return root;
     }
 

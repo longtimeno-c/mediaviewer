@@ -38,6 +38,8 @@
 #include "shell/dino_game.h"
 #include "shell/edit_view.h"
 #include "shell/compare.h"
+#include "shell/compare_source.h"
+#include "shell/drag_frames.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
 
@@ -57,6 +59,12 @@ struct lab_options {
   // Soak only: once a still is up, pan it at 100 % across the whole image on
   // a fixed path (tiled pyramid / cached-image pan measurement). `--pan-soak`.
   bool scripted_pan = false;
+  // --pane-drag-soak (docs/plans/edit-refresh.md §7 S1): the host drags the
+  // right column's edge. While it does (input_snapshot::chrome_live_resize),
+  // the lab pans the still at 100 % on the --pan-soak path for 10 s, then
+  // fits it so the rest of the drag refits live, and logs every
+  // present-to-present interval (drag_log()).
+  bool pane_drag_soak = false;
   // Keep presenting while the window is in the background. `--browse-soak`
   // drives itself and must not stall if it is not the foreground window.
   bool present_when_inactive = false;
@@ -159,6 +167,17 @@ class present_lab {
   // [any-thread][no-block] Releases it: the item changed, or nothing needs it.
   void drop_working() noexcept;
 
+  // [worker thread] docs/plans/edit-refresh.md S4a: the Remove brush's committed
+  // strokes (shell/brush_mask.h) for the still `item` (its item_key), built
+  // for mask `epoch`, as an immutable R8G8B8A8_UNORM texture
+  // (gfx::create_overlay_texture, D3D11_SUBRESOURCE_DATA on the free-threaded
+  // device), handed to the render thread by an atomic exchange, never a lock
+  // it waits on. False when there is no device or the create failed.
+  [[nodiscard]] bool upload_brush_mask(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                       std::uint64_t item, std::uint32_t epoch) noexcept;
+  // [any-thread] Releases it (the brush was cleared or forgotten).
+  void drop_brush_mask() noexcept;
+
   // [any-thread][no-block] PR 30: the input_snapshot::canvas_window the
   // swapchain is in now (0 = the viewer's window). The host waits for this to
   // leave the Video Editor's window before it destroys that window.
@@ -186,6 +205,9 @@ class present_lab {
     int cached = 0;
     int valid = 0;
   };
+  // --pane-drag-soak: what the render thread presented during the drag. [any thread]
+  [[nodiscard]] const drag_frame_log& drag_log() const noexcept { return drag_log_; }
+
   [[nodiscard]] std::uint64_t mark_navigation() noexcept;
   [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
   [[nodiscard]] bool navigation_full(std::uint64_t seq) const noexcept;
@@ -215,6 +237,13 @@ class present_lab {
     std::lock_guard<std::mutex> lock(eye_mutex_);
     return eye_text_;
   }
+  // [any-thread] docs/design/20 "Compare": where the before/after split was
+  // last drawn (shell/compare_source.h), for the host's divider hit-test and
+  // drag; !valid while none is drawn.
+  [[nodiscard]] compare_frame compare_frame_now() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return compare_frame_;
+  }
 
  private:
   // Eyedropper (PR 9). Image textures are immutable GPU memory, so one texel is
@@ -232,6 +261,7 @@ class present_lab {
   gfx::com_ptr<ID3D11Texture2D> eye_staging_;
   mutable std::mutex eye_mutex_;
   canvas_map still_map_;  // under eye_mutex_
+  compare_frame compare_frame_;  // under eye_mutex_
   std::string eye_text_;
   std::uint32_t seen_meta_seq_ = 0;
   std::uint8_t seen_view_flags2_ = 0;
@@ -317,6 +347,19 @@ class present_lab {
   std::unique_ptr<working_texture> working_incoming_;
   bool working_drop_ = false;
   bool take_working() noexcept;  // render thread: true when what it draws changed
+  // S4a brush tint. `brush_mask_` is render-thread only; the pending pointer
+  // is exchanged, so a worker handing one over never makes the render thread
+  // skip it for a frame.
+  struct brush_mask_texture {
+    gfx::com_ptr<ID3D11ShaderResourceView> srv;
+    ID3D11Device* device = nullptr;  // identity only: a rebuilt device drops it
+    std::uint64_t item = 0;
+    std::uint32_t epoch = 0;
+  };
+  std::atomic<brush_mask_texture*> pending_brush_mask_{nullptr};
+  std::atomic<bool> drop_brush_mask_{false};
+  std::unique_ptr<brush_mask_texture> brush_mask_;
+  bool take_brush_mask() noexcept;  // render thread: true when what it draws changed
   // The working texture if it belongs to `ev` (the shown still's slot).
   [[nodiscard]] const working_texture* working_for(const edit_view* ev) const noexcept {
     if (!working_ || !ev || ev->item == 0) return nullptr;
@@ -345,6 +388,9 @@ class present_lab {
   bool nav_have_ready_ = false;
   edit_view edit_slots_[2];   // copied from the snapshot each iteration
   edit_view applied_edit_{};  // what the current still was last fitted with
+  // docs/plans/edit-refresh.md S3: a tool's label or pulse was drawn while live;
+  // one more frame clears it once its deadline passes.
+  bool tool_hud_drawn_ = false;
   std::atomic<std::uint64_t> shown_key_{0};
   std::atomic<std::uint32_t> shown_w_{0};
   std::atomic<std::uint32_t> shown_h_{0};
@@ -354,6 +400,10 @@ class present_lab {
   // under the incoming one while `fade_` runs, then released.
   mv::abi::gpu_image_ptr fade_from_;
   canvas::crossfade fade_;
+  // One-click Enhance's result cross-fading in over previous_image_, and the
+  // host's last request taken (input_snapshot.result_fade_ms).
+  canvas::crossfade result_fade_;
+  std::uint64_t seen_result_fade_ms_ = 0;
   // A preview sharper than a tiled image's overview stays under its tiles until
   // the item changes, so the swap to the tiled pyramid never blurs first.
   mv::abi::gpu_image_ptr refine_base_;
@@ -397,6 +447,9 @@ class present_lab {
   bool boot_full_due_ = false;
   double tiles_complete_seconds_ = -1.0;
   double scripted_pan_start_ = -1.0;
+  drag_frame_log drag_log_;
+  double drag_pan_start_ = -1.0;  // --pane-drag-soak: the drag's pan began
+  bool drag_pan_done_ = false;
   // The last different still that was on screen, for hold `\` (docs/design/16). Kept
   // here, so showing it is a draw of a texture already in VRAM — never a
   // second session or an mv_image_open.
@@ -440,6 +493,27 @@ class present_lab {
   // the current one, so the soak measures two full draws with one file).
   void draw_compare_left(const input_snapshot& snapshot, double elapsed,
                          const float theme_rgb[3]) noexcept;
+  // docs/design/20 "Compare": the before/after split. `side_image_` is the
+  // session's side still (mv::abi::take_side_still: an Enhance result's
+  // source) and the request it answers; `seen_before_` the split last drawn,
+  // so a change of it is one redraw and nothing else is. Render thread only.
+  mv::abi::gpu_image_ptr side_image_;
+  std::uint64_t side_token_ = 0;
+  struct before_seen {
+    std::uint8_t mode = 0, layout = 0;
+    bool whole = false, hot = false;
+    float split = 0.5f;
+    std::uint64_t token = 0;
+    float rect[4] = {};
+  };
+  before_seen seen_before_{};
+  [[nodiscard]] bool before_changed(const input_snapshot& s) noexcept;
+  // The split this frame draws, or none.
+  [[nodiscard]] compare_frame before_frame(const input_snapshot& s) const noexcept;
+  // The before, left of the divider (all of the view while Y is held), over
+  // the after in the current viewport.
+  void draw_before(const input_snapshot& snapshot, const compare_frame& f, double elapsed,
+                   const float theme_rgb[3]) noexcept;
   std::uint8_t seen_view_flags_ = 0;
   // Issue #408: the theme's tokens (one redraw when they change) and the
   // home's ground effect, which ticks at 10 Hz by its rest rule.
@@ -505,6 +579,7 @@ class present_lab {
   double last_game_elapsed_ = 0.0;
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
+  std::uint32_t seen_refit_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
   std::uint32_t seen_fit_seq_ = 0;
   std::uint32_t seen_one_seq_ = 0;

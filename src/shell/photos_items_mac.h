@@ -32,6 +32,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -95,13 +96,46 @@ struct resolved {
   std::uint64_t size = 0;
 };
 
+// S0 (docs/plans/edit-refresh.md §5): how far an iCloud fetch has come, 0..1,
+// called on a PhotoKit queue (never the main thread; the host marshals).
+// Returning false stops the fetch, as `cancel` does.
+using fetch_progress = std::function<bool(double fraction)>;
+
 // [worker] The file for `key`. The current rendition where Photos keeps it
 // (in place) when this Mac has it. Otherwise, with want_original the
 // original is fetched from iCloud (the one network request; `cancel` stops
-// it, leaving nothing); without it the best local picture is written once
-// as "<name> (preview).jpg" and returned as a preview. not_found: gone.
+// it, leaving nothing; `progress` hears how far it is); without it the best
+// local picture is written once as "<name> (preview).jpg" and returned as a
+// preview. not_found: gone. Two fetches of the same original never write at
+// once: the second waits for the first's file.
 [[nodiscard]] result<resolved> resolve(std::string_view key, bool want_original,
-                                       const std::atomic<bool>* cancel = nullptr);
+                                       const std::atomic<bool>* cancel = nullptr,
+                                       const fetch_progress& progress = {});
+
+// The notice while an original comes from iCloud: "Downloading from iCloud… 40 %"
+// (no number before the first progress report).
+[[nodiscard]] std::string fetch_notice(double fraction);
+inline constexpr std::string_view kFetchNoticePrefix = "Downloading from iCloud";
+
+// Owner 2026-11-04: an edit of a library item (Save copy, Enhance, faces) goes
+// back into the library as a new photo; nothing existing changes. `file` is
+// removed once Photos has its copy (or has refused it). Returns the new
+// photo's key ("photos:" + the created asset's localIdentifier), so the host
+// can list and show it. [worker] (waits on PhotoKit).
+[[nodiscard]] result<std::string> add_photo(std::string_view file);
+// The notices for a saved edit of a library item (S0): where it went, and
+// why it could not go.
+inline constexpr std::string_view kAddedNotice = "Added to your Photos library as a new photo";
+inline constexpr std::string_view kAddedBesideNotice = "Added to your Photos library, next to this photo";
+inline constexpr std::string_view kAddRefusedNotice =
+    "MediaViewer may not add photos to your Photos library (System Settings, Privacy & Security, Photos)";
+// May this app add a photo: read-write access (full or limited) or add-only.
+// Never prompts. [any-thread]
+[[nodiscard]] bool can_add() noexcept;
+// [main] Neither access granted and never asked: asks for add-only access
+// (the system prompt, NSPhotoLibraryAddUsageDescription). `done(granted)`
+// runs on the main queue; at once when already decided.
+void request_add_access(std::function<void(bool granted)> done);
 
 // ---- For the backup (shell/photos_backup.h; docs/design/26 "Backup"), all [worker].
 // `kind`: 0 the original photo or video as shot, 1 a Live Photo's paired

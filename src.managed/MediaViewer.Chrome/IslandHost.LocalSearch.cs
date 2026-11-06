@@ -298,18 +298,16 @@ public static partial class IslandHost
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(7) };
         row.Children.Add(_indexingRing.Root);
         row.Children.Add(_indexingText);
-        // Starting (issue #292) or indexing: what Ctrl+F does.
+        // Starting (issue #292) or indexing: what Ctrl+F does. The pill is the
+        // button's own fill (the Mac's capsule: the text colour at a low
+        // alpha, a step deeper under the pointer), one shape with no outline
+        // and no second wash around it (docs/design/20 "Craft rules").
         _indexingPill = TextButton("", OpenSearchFromPath);
-        _indexingPill.Content = new Border
-        {
-            Child = row,
-            Background = Brush(ChromeColour.Surface),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),  // a pill (the Mac's Capsule), not a theme radius
-            Padding = Pad(10, 3, 12, 3),
-        };
-        _indexingPill.Padding = Pad(4, 0, 4, 0);
+        FillSettingsButton(_indexingPill, accent: false);
+        _indexingPill.Content = row;
+        _indexingPill.CornerRadius = new CornerRadius(12);  // a pill (the Mac's Capsule), not a theme radius
+        _indexingPill.Padding = Pad(10, 3, 12, 3);
+        _indexingPill.Margin = Pad(4, 0, 4, 0);
         _indexingPill.Visibility = Visibility.Collapsed;
         _indexingPill.Opacity = 0;
         _indexingShown = false;
@@ -731,7 +729,7 @@ public static partial class IslandHost
             Padding = Pad(14),
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(HighContrastOn ? 1 : 0),  // the fill alone marks it
             CornerRadius = Corner(RadiusSheet),
         };
         TextBlock what = Note("Find photos and moments in videos by describing them: “dog on a beach”, “birthday cake”.");
@@ -832,15 +830,14 @@ public static partial class IslandHost
             Child = pieces,
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(HighContrastOn ? 1 : 0),
             CornerRadius = Corner(RadiusCard),
         });
 
         if (_confirmCoreRemove) _localSearchPanel.Children.Add(BuildCoreRemoveConfirm());
         else if (_confirmPieceRemove is AddonSlot asked && asked.State.Installed && !asked.Removing)
             _localSearchPanel.Children.Add(BuildPieceRemoveConfirm(asked));
-        // Installed, verified and being loaded: say so (the Mac's).
-        if (AiStarting()) _localSearchPanel.Children.Add(Note("Starting Local search…"));
+        // Installed, verified and being loaded: AddAiSettingsPanel says so, once.
 
         if (AiSlot.State.Installed && AiSlot.State.State != "ok")
         {
@@ -869,7 +866,9 @@ public static partial class IslandHost
         if (_localSearchPanel is null) return;
         if (SearchChrome is null && AiStarting())
         {
-            _localSearchPanel.Children.Add(WrappedLabel(AiStartingText));
+            // Loading takes seconds (it verifies its files): the shared line
+            // on its calm sweep, not a bare label (docs/design/20 "Craft rules").
+            _localSearchPanel.Children.Add(WaitLine("Starting Local search", 320));
             return;
         }
         if (AiOnDemand())
@@ -895,6 +894,18 @@ public static partial class IslandHost
                 _localSearchPanel.Children.Add(_aiSettingsPanel);
             }
         }
+    }
+
+    // A wait of more than a second with no fraction (docs/design/20 "Craft
+    // rules"): the shared progress line, its calm sweep and one line ("Starting
+    // Local search…"). The Mac twin is LocalSearchSection.startingLine.
+    private static FrameworkElement WaitLine(string verb, double width)
+    {
+        var line = new ProgressLine();
+        line.Root.Width = width;
+        line.Root.HorizontalAlignment = HorizontalAlignment.Left;
+        line.Show(verb, null);
+        return line.Root;
     }
 
     private static TextBlock Small(string text)
@@ -956,9 +967,10 @@ public static partial class IslandHost
         else if (slot.Removing)
         {
             // Removing: said at once, not a greyed Remove (owner report,
-            // 2026-09-27); Install comes back when it has gone.
-            var removing = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
-            removing.Children.Add(Small("Removing…"));
+            // 2026-09-27); Install comes back when it has gone. Unloading and
+            // deleting up to gigabytes is a wait of seconds: the shared line in
+            // the install bar's slot (the Mac's).
+            FrameworkElement removing = WaitLine("Removing", 200);
             AutomationProperties.SetName(removing, $"Removing {title}");
             action = removing;
         }
@@ -1161,7 +1173,7 @@ public static partial class IslandHost
         Padding = Pad(12),
         Background = Brush(ChromeColour.Surface),
         BorderBrush = Brush(Hairline),
-        BorderThickness = new Thickness(1),
+        BorderThickness = new Thickness(HighContrastOn ? 1 : 0),
         CornerRadius = Corner(RadiusCard),
     };
 

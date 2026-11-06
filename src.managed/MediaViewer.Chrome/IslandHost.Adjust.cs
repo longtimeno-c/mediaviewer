@@ -148,23 +148,22 @@ public static partial class IslandHost
     private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false, false, false, false };
     private const int FacesSection = 9;
     private const int RemoveSection = 10;
-    // Slice 7: the Remove brush from native, its size, and its controls.
+    // Slice 7: the Remove brush from native and its controls (S3: its size is
+    // the context bar's, IslandHost.ToolBar.cs).
     private static int _brushStrokes;
     private static bool _brushFull;
-    private static double _brushSize;
     private static Button? _brushPick;
     private static Button? _brushUndo;
     private static Button? _brushClear;
     private static Button? _brushRemove;
     private static TextBlock? _brushNote;
     // Slice 3: the band Selective Colour shows, the pick mode and fixes from
-    // native, the red-eye tool's size, and their controls.
+    // native, and their controls.
     private static int _band;
     private static string _promptNote = "";
     private static TextBlock? _promptNoteText;
     private static int _picking;
     private static int _spotCount;
-    private static double _redEyeSize;
     private static Button? _wbPick;
     private static Button? _redEyePick;
     private static TextBlock? _redEyeCount;
@@ -176,6 +175,19 @@ public static partial class IslandHost
     private static int _curvesChannel;
     private static Canvas? _curveCanvas;
     private static int _curveDrag = -1;
+    // docs/plans/edit-refresh.md §2.6: the curve's plot sits 6 DIP inside its
+    // square, so the end points and edge lines are whole and hittable; drawing
+    // and hit-testing share that inset. The last press on a point, for a
+    // double-click that removes it, and the "in -> out" readout while dragging.
+    private const double CurveInset = 6;
+    private const double CurveMaxSide = 340;  // shell/pane_width.h curve_side
+    private static int _curveLastPress = -1;
+    private static long _curveLastPressMs;
+    private static TextBlock? _curveReadout;
+    // A resize redraws the curve and histogram once, on the next frame, not
+    // per SizeChanged (a column drag sends many).
+    private static bool _adjustRedrawQueued;
+    private static bool _histMeasured;
     private static Button[]? _levelsPicks;
     private static Button[]? _curvesPicks;
 
@@ -194,9 +206,44 @@ public static partial class IslandHost
     private static Button?[]? _sectionAutos;
     private static ToggleSwitch? _monoSwitch;
     private static bool _updatingAdjust;
+    // docs/plans/edit-refresh.md S2 (§2.5): the layout by the inspector's width class.
+    // The section cards are built once and moved (never rebuilt) between one
+    // column and two (Light, Colour, B&W, Vignette, Detail | Levels, Curves,
+    // Selective Colour, Red-Eye, then Faces and Remove); at xwide the histogram
+    // and the Curves square move into a scopes row side by side.
+    private static readonly int[] AdjustLeftSections = { 0, 1, 2, 3, 8 };
+    private static readonly int[] AdjustRightSections = { 4, 5, 6, 7, 9, 10 };
+    private static int _adjustWidthClass = -1;
+    private static Border[]? _sectionCards;
+    private static Border[]? _sectionDots;
+    private static StackPanel? _adjustOneColumn;
+    private static Grid? _adjustTwoColumns;
+    private static StackPanel? _adjustLeft;
+    private static StackPanel? _adjustRight;
+    private static Grid? _adjustHistFrame;   // the histogram with its clip triangles
+    private static Grid? _adjustCurveFrame;  // the Curves square with its readout
+    private static StackPanel? _adjustHistSlot;   // where the histogram sits outside xwide
+    private static StackPanel? _adjustCurveSlot;  // where the curve sits in its section
+    private static Grid? _adjustScopes;      // xwide: histogram | curve
+    private static Grid[]? _adjustRowGrids;
+    private static Button[]? _adjustValueButtons;
 
     private static void DropAdjustUi()
     {
+        _adjustWidthClass = -1;
+        _sectionCards = null;
+        _sectionDots = null;
+        _adjustOneColumn = null;
+        _adjustTwoColumns = null;
+        _adjustLeft = null;
+        _adjustRight = null;
+        _adjustHistFrame = null;
+        _adjustCurveFrame = null;
+        _adjustHistSlot = null;
+        _adjustCurveSlot = null;
+        _adjustScopes = null;
+        _adjustRowGrids = null;
+        _adjustValueButtons = null;
         _adjustSliders = null;
         _adjustReadouts = null;
         _adjustStatus = null;
@@ -212,6 +259,11 @@ public static partial class IslandHost
         _sectionAutos = null;
         _monoSwitch = null;
         _curveCanvas = null;
+        _curveReadout = null;
+        _curveDrag = -1;
+        _clipLowMark = null;
+        _clipHighMark = null;
+        _histMeasured = false;
         _wbPick = null;
         _promptNoteText = null;
         _redEyePick = null;
@@ -293,9 +345,49 @@ public static partial class IslandHost
         Grid root = PanelShell("Adjust", Command.AdjustPane, out Grid body);
         var col = new StackPanel { Spacing = Space(10), Padding = Pad(14, 4, 14, 14) };
 
+        // Slice 5b: say what you want; the sliders it names move (one undo
+        // step). Not a TextBox: that control fail-fasts in these islands
+        // (see FakeInput, tools/check-winui-controls.ps1). It and the header
+        // stay put; everything under them scrolls (docs/plans/edit-refresh.md
+        // §2.5 "Height rule"), as on the Mac.
+        var request = new FakeInput("Describe a change — a bit warmer, less noise…");
+        AutomationProperties_SetName(request, "Describe a change");
+        request.Submitted += () =>
+        {
+            if (request.Text.Trim().Length == 0) return;
+            _treePending = request.Text;
+            Send(Command.AdjustPrompt);
+            request.SetText("");
+        };
+        _promptNoteText = Text("", Body, UiFontSize - 2);
+        col.Children.Add(_promptNoteText);
+
+        // The histogram with its clipping triangles (a click shows the
+        // blinkies, `C`), redrawn on a resize once per frame.
         _histCanvas = new Canvas { Height = 96, Background = Brush(ChromeColour.Surface) };
+        _histCanvas.SizeChanged += (_, _) =>
+        {
+            _histMeasured = true;
+            QueueAdjustRedraw();
+        };
+        var hist = new Grid();
         // Clipped to radius 4, as the Mac's clipShape (issue #198).
-        col.Children.Add(new Border { CornerRadius = Corner(RadiusButton), Child = _histCanvas });
+        hist.Children.Add(new Border
+        {
+            CornerRadius = Corner(6), Child = _histCanvas, BorderBrush = Brush(Hairline), BorderThickness = new Thickness(1),
+        });
+        hist.Children.Add(ClipTriangle(left: true));
+        hist.Children.Add(ClipTriangle(left: false));
+        _adjustHistFrame = hist;
+        // The histogram's place outside xwide; at xwide it moves into the
+        // scopes row beside the Curves square (ApplyAdjustWidthClass).
+        _adjustHistSlot = new StackPanel();
+        _adjustHistSlot.Children.Add(hist);
+        col.Children.Add(_adjustHistSlot);
+        _adjustScopes = new Grid { ColumnSpacing = Space(12), Visibility = Visibility.Collapsed };
+        _adjustScopes.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _adjustScopes.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        col.Children.Add(_adjustScopes);
         _adjustClip = Text("", Body, UiFontSize - 2);
         col.Children.Add(_adjustClip);
         _adjustStatus = Text("", Body);
@@ -306,22 +398,6 @@ public static partial class IslandHost
         _adjustPreparing.Root.Visibility = Visibility.Collapsed;
         col.Children.Add(_adjustPreparing.Root);
 
-        // Slice 5b: say what you want; the sliders it names move (one undo
-        // step). Not a TextBox: that control fail-fasts in these islands
-        // (see FakeInput, tools/check-winui-controls.ps1).
-        var request = new FakeInput("Describe a change — a bit warmer, less noise…");
-        AutomationProperties_SetName(request, "Describe a change");
-        request.Submitted += () =>
-        {
-            if (request.Text.Trim().Length == 0) return;
-            _treePending = request.Text;
-            Send(Command.AdjustPrompt);
-            request.SetText("");
-        };
-        col.Children.Add(request);
-        _promptNoteText = Text("", Body, UiFontSize - 2);
-        col.Children.Add(_promptNoteText);
-
         _adjustSliders = new Slider[AdjustSpecs.Length];
         _adjustReadouts = new TextBlock[AdjustSpecs.Length];
         _adjustRows = new Border[AdjustSpecs.Length];
@@ -330,11 +406,28 @@ public static partial class IslandHost
         _sectionChevrons = new FontIcon[AdjustSections.Length];
         _sectionResets = new Button[AdjustSections.Length];
         _sectionAutos = new Button?[AdjustSections.Length];
+        _sectionCards = new Border[AdjustSections.Length];
+        _sectionDots = new Border[AdjustSections.Length];
+        _adjustRowGrids = new Grid[AdjustSpecs.Length];
+        _adjustValueButtons = new Button[AdjustSpecs.Length];
         int tab = 0;
         for (int s = 0; s < AdjustSections.Length; s++)
         {
-            col.Children.Add(BuildAdjustSection(s, ref tab));
+            _sectionCards[s] = BuildAdjustSection(s, ref tab);
         }
+        // One column, or two independent stacks (a section opening on one side
+        // never moves the other). Both exist; the cards move between them.
+        _adjustOneColumn = new StackPanel { Spacing = Space(8) };
+        _adjustLeft = new StackPanel { Spacing = Space(8) };
+        _adjustRight = new StackPanel { Spacing = Space(8) };
+        Grid.SetColumn(_adjustRight, 1);
+        _adjustTwoColumns = new Grid { ColumnSpacing = Space(10), Visibility = Visibility.Collapsed };
+        _adjustTwoColumns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _adjustTwoColumns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _adjustTwoColumns.Children.Add(_adjustLeft);
+        _adjustTwoColumns.Children.Add(_adjustRight);
+        col.Children.Add(_adjustOneColumn);
+        col.Children.Add(_adjustTwoColumns);
 
         _adjustResetButton = EditButton("Reset adjustments", () => Send(Command.AdjustReset), compact: false);
         _adjustResetButton.TabIndex = tab;
@@ -347,14 +440,173 @@ public static partial class IslandHost
         // owns its keys (key_router: focus_kind::pane), so these reach XAML.
         col.PreviewKeyDown += OnAdjustKey;
 
-        body.Children.Add(new ScrollViewer { Content = col, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var stack = new Grid();
+        stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        stack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var ask = new Border { Padding = Pad(14, 4, 14, 4), Child = request };
+        stack.Children.Add(ask);
+        var scroll = new ScrollViewer { Content = col, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        Grid.SetRow(scroll, 1);
+        stack.Children.Add(scroll);
+        body.Children.Add(stack);
+        // The width class follows the pane; the cards move only when it changes.
+        root.SizeChanged += (_, e) => ApplyAdjustWidthClass(e.NewSize.Width);
+        ApplyAdjustWidthClass(0);
         RenderAdjust();
         return root;
     }
 
+    // compact (< 340): one column, labels above the sliders, histogram 72.
+    // regular: one column, labels inline, histogram 96. wide (560+): two
+    // columns, labels above. xwide (720+): two columns, labels inline, and
+    // the histogram beside a square Curves. The same controls, moved.
+    private static void ApplyAdjustWidthClass(double width)
+    {
+        int cls = width <= 0 ? WidthRegular : WidthClassOf(width);
+        if (cls == _adjustWidthClass || _sectionCards is null || _adjustOneColumn is null || _adjustLeft is null ||
+            _adjustRight is null || _adjustTwoColumns is null)
+        {
+            return;
+        }
+        _adjustWidthClass = cls;
+        bool two = cls >= WidthWide;
+        static void Detach(UIElement e)
+        {
+            if (VisualTreeHelper.GetParent(e) is Panel p) p.Children.Remove(e);
+        }
+        foreach (Border card in _sectionCards) Detach(card);
+        if (two)
+        {
+            foreach (int s in AdjustLeftSections) _adjustLeft.Children.Add(_sectionCards[s]);
+            foreach (int s in AdjustRightSections) _adjustRight.Children.Add(_sectionCards[s]);
+        }
+        else
+        {
+            for (int s = 0; s < _sectionCards.Length; s++) _adjustOneColumn.Children.Add(_sectionCards[s]);
+        }
+        _adjustOneColumn.Visibility = two ? Visibility.Collapsed : Visibility.Visible;
+        _adjustTwoColumns.Visibility = two ? Visibility.Visible : Visibility.Collapsed;
+        // The scopes row (xwide): the histogram and the curve side by side.
+        bool scopes = cls == WidthXWide;
+        if (_adjustHistFrame is not null && _adjustCurveFrame is not null && _adjustScopes is not null &&
+            _adjustHistSlot is not null && _adjustCurveSlot is not null)
+        {
+            Detach(_adjustHistFrame);
+            Detach(_adjustCurveFrame);
+            if (scopes)
+            {
+                Grid.SetColumn(_adjustCurveFrame, 1);
+                Grid.SetColumn(_adjustHistFrame, 0);
+                _adjustScopes.Children.Add(_adjustHistFrame);
+                _adjustScopes.Children.Add(_adjustCurveFrame);
+            }
+            else
+            {
+                Grid.SetColumn(_adjustCurveFrame, 0);
+                _adjustHistSlot.Children.Add(_adjustHistFrame);
+                _adjustCurveSlot.Children.Add(_adjustCurveFrame);
+            }
+            _adjustScopes.Visibility = scopes ? Visibility.Visible : Visibility.Collapsed;
+        }
+        if (_histCanvas is not null && !scopes) _histCanvas.Height = cls == WidthCompact ? 72 : 96;
+        // Labels inline (regular, xwide) or above the slider (compact, wide).
+        bool inline = cls == WidthRegular || cls == WidthXWide;
+        if (_adjustRowGrids is not null)
+        {
+            foreach (Grid g in _adjustRowGrids) LayAdjustRow(g, inline);
+        }
+        QueueAdjustRedraw();
+    }
+
+    // A slider row: name, slider, value. Inline: one row, the name 92 wide.
+    // Above: the name and value on top, the slider under them.
+    private static void LayAdjustRow(Grid? g, bool inline)
+    {
+        if (g is null || g.Children.Count < 3 || g.ColumnDefinitions.Count < 3) return;
+        var name = (FrameworkElement)g.Children[0];
+        var slider = (FrameworkElement)g.Children[1];
+        var value = (FrameworkElement)g.Children[2];
+        g.ColumnDefinitions[0].Width = inline ? new GridLength(92) : GridLength.Auto;
+        Grid.SetRow(name, 0);
+        Grid.SetColumn(name, 0);
+        Grid.SetColumnSpan(name, inline ? 1 : 2);
+        Grid.SetRow(value, 0);
+        Grid.SetColumn(value, 2);
+        Grid.SetRow(slider, inline ? 0 : 1);
+        Grid.SetColumn(slider, inline ? 1 : 0);
+        Grid.SetColumnSpan(slider, inline ? 1 : 3);
+    }
+
+    // Shadows (left) or highlights (right) clipped: the corner triangle lights;
+    // a click is `C` (the blinkies on the photo).
+    private static Button ClipTriangle(bool left)
+    {
+        var shape = new Polygon
+        {
+            Points = left
+                ? new PointCollection { new Point(0, 0), new Point(12, 0), new Point(0, 12) }
+                : new PointCollection { new Point(0, 0), new Point(12, 0), new Point(12, 12) },
+            Fill = Brush(Body),
+            Opacity = 0.35,
+        };
+        var b = new Button
+        {
+            Content = shape,
+            Padding = new Thickness(3),
+            MinWidth = 0,
+            MinHeight = 0,
+            Background = Brush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = left ? HorizontalAlignment.Left : HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Tag = left ? "low" : "high",
+        };
+        b.Click += (_, _) => Send(Command.Clipping);
+        string what = left ? "Crushed shadows" : "Clipped highlights";
+        ToolTipService.SetToolTip(b, WithKey(what + ": show clipping on the photo", Command.Clipping));
+        AutomationProperties_SetName(b, left ? "Show crushed shadows" : "Show clipped highlights");
+        if (left) _clipLowMark = shape; else _clipHighMark = shape;
+        return b;
+    }
+    private static Polygon? _clipLowMark;
+    private static Polygon? _clipHighMark;
+
+    // One redraw of the curve and histogram on the next frame, however many
+    // SizeChanged a column drag sends before it.
+    private static void QueueAdjustRedraw()
+    {
+        if (_adjustRedrawQueued) return;
+        _adjustRedrawQueued = true;
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += AdjustRedrawTick;
+    }
+
+    private static void AdjustRedrawTick(object? sender, object e)
+    {
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= AdjustRedrawTick;
+        _adjustRedrawQueued = false;
+        FitCurveSquare();
+        RenderCurve();
+        RenderHistogram();
+    }
+
+    // The curve is a square as wide as the pane's content, at most 340
+    // (docs/plans/edit-refresh.md §2.6), never a fixed height.
+    private static void FitCurveSquare()
+    {
+        if (_curveCanvas is null) return;
+        double w = _curveCanvas.ActualWidth;
+        if (w <= 1) return;
+        // In the scopes row (xwide) the curve is half the pane, and the
+        // histogram beside it is as tall.
+        double side = _adjustWidthClass == WidthXWide ? w : Math.Min(w, CurveMaxSide);
+        if (Math.Abs(_curveCanvas.Height - side) > 0.5) _curveCanvas.Height = side;
+        if (_adjustWidthClass == WidthXWide && _histCanvas is not null && Math.Abs(_histCanvas.Height - side) > 0.5)
+            _histCanvas.Height = side;
+    }
+
     // A section's header (chevron, glyph and name to open or close it; its
     // reset; its Auto; Black & White's on switch) over its sliders.
-    private static UIElement BuildAdjustSection(int s, ref int tab)
+    private static Border BuildAdjustSection(int s, ref int tab)
     {
         AdjustSection section = AdjustSections[s];
         var outer = new StackPanel { Spacing = Space(2) };
@@ -384,9 +636,17 @@ public static partial class IslandHost
             Foreground = Brush(Title),
             VerticalAlignment = VerticalAlignment.Center,
         });
-        TextBlock name = Text(section.Name, Title, UiFontSize + 2);
+        TextBlock name = Text(section.Name, Title, UiFontSize);
         name.VerticalAlignment = VerticalAlignment.Center;
         title.Children.Add(name);
+        // The changed dot: a slider of this section is away from 0.
+        var changedDot = new Border
+        {
+            Width = 6, Height = 6, CornerRadius = new CornerRadius(3), Background = Brush(ChromeColour.Accent),
+            VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed,
+        };
+        _sectionDots![s] = changedDot;
+        title.Children.Add(changedDot);
         int index = s;
         Button toggle = ChromeButton(title, Pad(2, 4, 2, 4), () => ToggleSection(index),
                                      align: HorizontalAlignment.Stretch, contentAlign: HorizontalAlignment.Left,
@@ -414,7 +674,13 @@ public static partial class IslandHost
 
         if (section.HasAuto)
         {
-            Button auto = EditButton("AUTO", () => Send(Command.AdjustAuto, index), tip: $"Auto {section.Name}");
+            // A small capsule (the Mac's AutoPill): sentence case, a quiet fill
+            // at rest, no outline (docs/design/20 "Craft rules").
+            Button auto = ChromeButton(ButtonLabel("Auto", UiFontSize - 4), Pad(8, 2, 8, 2),
+                                       () => Send(Command.AdjustAuto, index), tip: $"Auto {section.Name}: one undo step");
+            auto.CornerRadius = new CornerRadius(999);
+            auto.MinWidth = 40;
+            auto.Background = Brush(ChromeColour.HoverWash);
             AutomationProperties_SetName(auto, $"Auto {section.Name}");
             auto.TabIndex = tab++;
             Grid.SetColumn(auto, 2);
@@ -444,8 +710,8 @@ public static partial class IslandHost
 
         var bodyStack = new StackPanel
         {
-            Spacing = Space(2),
-            Padding = Pad(14, 0, 0, 0),
+            Spacing = Space(4),
+            Padding = Pad(2, 4, 0, 0),
             Visibility = _sectionOpen[s] ? Visibility.Visible : Visibility.Collapsed,
         };
         if (s == LevelsSection || s == CurvesSection)
@@ -497,15 +763,9 @@ public static partial class IslandHost
             _redEyePick = EditButton("Fix red eyes", () => SendPick(_picking == 2 ? 0 : 2));
             _redEyePick.TabIndex = tab++;
             bodyStack.Children.Add(_redEyePick);
-            var size = new Slider { Minimum = -100, Maximum = 100, StepFrequency = 5, Value = _redEyeSize, TabIndex = tab++ };
-            AutomationProperties_SetName(size, "Red-eye size");
-            size.ValueChanged += (_, e) =>
-            {
-                _redEyeSize = e.NewValue;
-                if (_picking == 2) SendPick(2);
-            };
-            bodyStack.Children.Add(Text("Size", Body));
-            bodyStack.Children.Add(size);
+            // docs/plans/edit-refresh.md S3: the size, Find eyes and Done are the
+            // context bar's, below the photo, while the tool is armed.
+            bodyStack.Children.Add(Text("Size, Find eyes and Done are in the bar below the photo", Body, UiFontSize - 3));
             _redEyeCount = Text("", Body, UiFontSize - 2);
             bodyStack.Children.Add(_redEyeCount);
         }
@@ -515,15 +775,8 @@ public static partial class IslandHost
             _brushPick = EditButton("Brush over what to remove", () => SendPick(_picking == 3 ? 0 : 3));
             _brushPick.TabIndex = tab++;
             bodyStack.Children.Add(_brushPick);
-            var size = new Slider { Minimum = -100, Maximum = 100, StepFrequency = 5, Value = _brushSize, TabIndex = tab++ };
-            AutomationProperties_SetName(size, "Brush size");
-            size.ValueChanged += (_, e) =>
-            {
-                _brushSize = e.NewValue;
-                if (_picking == 3) SendPick(3);
-            };
-            bodyStack.Children.Add(Text("Size", Body));
-            bodyStack.Children.Add(size);
+            // S3: the size (and Erase) are the context bar's, below the photo.
+            bodyStack.Children.Add(Text("Size and Erase are in the bar below the photo", Body, UiFontSize - 3));
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
             _brushUndo = EditButton("Undo stroke", () => Send(Command.AdjustBrush, 0));
             _brushUndo.TabIndex = tab++;
@@ -551,38 +804,87 @@ public static partial class IslandHost
         }
         if (s == CurvesSection)
         {
-            _curveCanvas = new Canvas { Height = 220, Background = Brush(ChromeColour.Surface) };
+            // Its slot: the curve sits here, or (xwide) in the scopes row.
+            _adjustCurveSlot = new StackPanel();
+            bodyStack.Children.Add(_adjustCurveSlot);
+            // A square (FitCurveSquare): its width is the pane's content, at
+            // most 340; its height follows on the next frame. A Canvas measures
+            // to no width of its own, so it stretches across its frame's one
+            // column (capped below), never left-aligned to nothing.
+            _curveCanvas = new Canvas
+            {
+                Height = 260,
+                Background = Brush(ChromeColour.Surface),
+            };
             AutomationProperties_SetName(_curveCanvas, "Curve");
             _curveCanvas.PointerPressed += OnCurvePressed;
             _curveCanvas.PointerMoved += OnCurveMoved;
-            _curveCanvas.PointerReleased += (_, _) => _curveDrag = -1;
-            _curveCanvas.SizeChanged += (_, _) => RenderCurve();
-            bodyStack.Children.Add(new Border { CornerRadius = Corner(RadiusButton), Child = _curveCanvas });
-            bodyStack.Children.Add(Text("Drag the line to add a point · drag a point off the square to remove it",
+            _curveCanvas.PointerReleased += (_, e) =>
+            {
+                EndCurveDrag();
+                _curveCanvas?.ReleasePointerCapture(e.Pointer);
+            };
+            _curveCanvas.PointerCaptureLost += (_, _) => EndCurveDrag();
+            _curveCanvas.SizeChanged += (_, _) => QueueAdjustRedraw();
+            // The frame is a border, not a clip: a point on a corner is whole.
+            // One star column capped at 340: the frame is the content's width up
+            // to that, on the left (the Mac's .frame(maxWidth: 340, alignment: .leading)).
+            var curveFrame = new Grid();
+            curveFrame.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star),
+                MaxWidth = CurveMaxSide,
+            });
+            curveFrame.Children.Add(new Border
+            {
+                CornerRadius = Corner(RadiusButton),
+                BorderBrush = Brush(Hairline),
+                BorderThickness = new Thickness(1),
+                Child = _curveCanvas,
+            });
+            _curveReadout = Text("", Body, UiFontSize - 3);
+            _curveReadout.Margin = new Thickness(CurveInset + 2);
+            _curveReadout.IsHitTestVisible = false;
+            _curveReadout.HorizontalAlignment = HorizontalAlignment.Left;
+            _curveReadout.VerticalAlignment = VerticalAlignment.Top;
+            curveFrame.Children.Add(_curveReadout);
+            _adjustCurveFrame = curveFrame;
+            _adjustCurveSlot.Children.Add(curveFrame);
+            bodyStack.Children.Add(Text("Drag the line to add a point · double-click or drag a point off the square to remove it",
                                         Body, UiFontSize - 3));
         }
         foreach (int p in section.Params) bodyStack.Children.Add(BuildAdjustRow(p, tab++));
         _sectionBodies![s] = bodyStack;
         outer.Children.Add(bodyStack);
-        return outer;
+        // The section's card (the Mac's: a raised surface, radius 10, 12 DIP
+        // inset, no tonal border: docs/design/20 "Craft rules").
+        var card = new Border
+        {
+            Child = outer,
+            Padding = Pad(12, 8, 12, 8),
+            CornerRadius = Corner(10),
+            Background = Brush(ChromeColour.Surface2),
+        };
+        return card;
     }
 
     private static Border BuildAdjustRow(int p, int tabIndex)
     {
         AdjustSpec spec = AdjustSpecs[p];
-        var rowStack = new StackPanel { Spacing = Space(2) };
-        var head = new Grid();
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // name | slider | value, laid inline or with the name above
+        // (LayAdjustRow, by the width class): three cells of one Grid, moved,
+        // never rebuilt.
+        var grid = new Grid { ColumnSpacing = Space(8), RowSpacing = Space(0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         // The focused row's name is Title, the others Body (AdjustView.swift).
-        TextBlock name = Text(spec.Name, Body);
-        head.Children.Add(name);
+        TextBlock name = Text(spec.Name, Body, UiFontSize - 2, maxLines: 1);
+        name.TextTrimming = TextTrimming.CharacterEllipsis;
+        name.VerticalAlignment = VerticalAlignment.Center;
         _adjustNames![p] = name;
-        TextBlock readout = Text(spec.Format(0), Body);
-        Grid.SetColumn(readout, 1);
-        head.Children.Add(readout);
-        _adjustReadouts![p] = readout;
-        rowStack.Children.Add(head);
 
         var slider = new Slider
         {
@@ -593,6 +895,7 @@ public static partial class IslandHost
             LargeChange = spec.Step * 10,
             IsThumbToolTipEnabled = false,
             TabIndex = tabIndex,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         AutomationProperties_SetName(slider, spec.Name);
         slider.ValueChanged += (_, e) =>
@@ -611,23 +914,127 @@ public static partial class IslandHost
                 Send(Command.AdjustParam);
             }
         };
-        // Double-click a slider: that parameter back to 0.
+        // Double-click a slider (or its row): that parameter back to 0.
         slider.DoubleTapped += (_, _) => slider.Value = 0;
+        GradientTrack(slider, p);
         _adjustSliders![p] = slider;
-        rowStack.Children.Add(slider);
-        // The focused row carries a wash (the Mac's primary at 0.08,
-        // radius 6), so the keys below have a visible target.
+
+        // The value: click it to type a number (FakeInput; Enter sets it, Esc
+        // or leaving it puts the readout back).
+        TextBlock readout = Text(spec.Format(0), Body, UiFontSize - 2, maxLines: 1);
+        readout.TextAlignment = TextAlignment.Right;
+        _adjustReadouts![p] = readout;
+        Button value = ChromeButton(readout, Pad(4, 1, 4, 1), () => BeginValueEntry(p),
+                                    align: HorizontalAlignment.Right, contentAlign: HorizontalAlignment.Right,
+                                    name: $"{spec.Name} value", tip: "Click to type a value");
+        value.MinWidth = 64;
+        _adjustValueButtons![p] = value;
+
+        grid.Children.Add(name);
+        grid.Children.Add(slider);
+        grid.Children.Add(value);
+        _adjustRowGrids![p] = grid;
+        LayAdjustRow(grid, _adjustWidthClass == WidthRegular || _adjustWidthClass == WidthXWide || _adjustWidthClass < 0);
+        // The focused row carries a wash (the Mac's selection wash, radius 6), so
+        // the keys below have a visible target.
         var row = new Border
         {
-            Child = rowStack,
-            Padding = Pad(4, 2, 4, 2),
+            Child = grid,
+            Padding = Pad(6, 2, 4, 2),
             CornerRadius = Corner(6),
             Background = Brush(Colors.Transparent),
         };
+        row.DoubleTapped += (_, e) =>
+        {
+            if (e.OriginalSource is DependencyObject d && IsInside(d, value)) return;  // the value's own clicks
+            if (slider.IsEnabled) slider.Value = 0;
+        };
+        ToolTipService.SetToolTip(name, $"{spec.Name}: double-click the row to set it back to 0");
         slider.GotFocus += (_, _) => FocusAdjustRow(p, true);
         slider.LostFocus += (_, _) => FocusAdjustRow(p, false);
         _adjustRows![p] = row;
         return row;
+    }
+
+    private static bool IsInside(DependencyObject d, DependencyObject ancestor)
+    {
+        for (DependencyObject? at = d; at is not null; at = VisualTreeHelper.GetParent(at))
+            if (ReferenceEquals(at, ancestor)) return true;
+        return false;
+    }
+
+    // The value readout becomes a field in place; Enter sets the slider (which
+    // sends it, clamped and snapped by native), Esc or leaving puts it back.
+    private static void BeginValueEntry(int p)
+    {
+        if (_adjustValueButtons is null || _adjustSliders is null || _adjustRowGrids is null) return;
+        Button value = _adjustValueButtons[p];
+        Slider slider = _adjustSliders[p];
+        if (!slider.IsEnabled || value.Parent is not Grid g) return;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        double v = slider.Value;
+        var field = new FakeInput("", width: 72);
+        field.SetText(Math.Abs(Math.Round(v) - v) < 1e-4 ? Math.Round(v).ToString(inv) : v.ToString("0.0", inv));
+        Grid.SetRow(field, Grid.GetRow(value));
+        Grid.SetColumn(field, Grid.GetColumn(value));
+        AutomationProperties_SetName(field, $"{AdjustSpecs[p].Name}, type a value");
+        bool done = false;
+        void Finish(bool apply)
+        {
+            if (done) return;
+            done = true;
+            if (apply)
+            {
+                string t = field.Text.Replace("EV", "", StringComparison.OrdinalIgnoreCase).Replace(',', '.').Trim();
+                if (double.TryParse(t, System.Globalization.NumberStyles.Float, inv, out double typed))
+                    slider.Value = Math.Clamp(typed, slider.Minimum, slider.Maximum);
+            }
+            g.Children.Remove(field);
+            value.Visibility = Visibility.Visible;
+        }
+        field.Submitted += () => Guarded(() => Finish(true));
+        field.LostFocus += (_, _) => Guarded(() => Finish(false));
+        field.KeyDown += (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Escape) return;
+            e.Handled = true;
+            Guarded(() => Finish(false));
+            slider.Focus(FocusState.Keyboard);
+        };
+        value.Visibility = Visibility.Collapsed;
+        g.Children.Add(field);
+        field.Focus(FocusState.Programmatic);
+        field.SelectAll();
+    }
+
+    // Sliders whose track shows what they do to the picture: exposure dark to
+    // light, saturation and vibrance grey to colour, temperature cool to warm,
+    // tint green to magenta, a selective band's hue its neighbours either side.
+    // Lightweight resources on the one Slider (never a ControlTemplate).
+    private static void GradientTrack(Slider slider, int p)
+    {
+        Color[]? stops = p switch
+        {
+            0 => new[] { ColorHelper.FromArgb(255, 20, 20, 20), ColorHelper.FromArgb(255, 242, 242, 242) },
+            2 or 9 => new[] { ColorHelper.FromArgb(255, 140, 140, 140), TrackWarm, TrackTintM, TrackCool },
+            3 => new[] { TrackCool, ColorHelper.FromArgb(255, 217, 217, 217), TrackWarm },
+            4 => new[] { TrackTintG, ColorHelper.FromArgb(255, 217, 217, 217), TrackTintM },
+            _ when p >= 28 && p < 52 && (p - 28) % 3 == 0 => new[]
+            {
+                BandColours[((p - 28) / 3 + 7) % 8], BandColours[(p - 28) / 3], BandColours[((p - 28) / 3 + 1) % 8],
+            },
+            _ => null,
+        };
+        if (stops is null) return;
+        var brush = new LinearGradientBrush { StartPoint = new Point(0, 0.5), EndPoint = new Point(1, 0.5) };
+        for (int i = 0; i < stops.Length; i++)
+            brush.GradientStops.Add(new GradientStop { Color = stops[i], Offset = (double)i / (stops.Length - 1) });
+        foreach (string key in new[] { "SliderTrackFill", "SliderTrackFillPointerOver", "SliderTrackFillPressed" })
+            slider.Resources[key] = brush;
+        // The gradient is the track; no value fill over it.
+        foreach (string key in new[] { "SliderTrackValueFill", "SliderTrackValueFillPointerOver",
+                                       "SliderTrackValueFillPressed" })
+            slider.Resources[key] = Brush(Colors.Transparent);
     }
 
     private static void ToggleSection(int s)
@@ -640,8 +1047,8 @@ public static partial class IslandHost
 
     // Slice 3: what the next click on the photo does (shell::adjust_pick).
     // The size is the red-eye tool's, or the Remove brush's (mode 3).
-    private static void SendPick(int mode) =>
-        Send(Command.AdjustPick, mode * 1000 + (float)Math.Round((mode == 3 ? _brushSize : _redEyeSize) + 100));
+    // The size travels apart now (the context bar, [ ]): native ignores it.
+    private static void SendPick(int mode) => Send(Command.AdjustPick, mode * 1000 + 100);
 
     private static void PickChannel(int section, int channel)
     {
@@ -682,10 +1089,23 @@ public static partial class IslandHost
                + (-2 * ttt + 3 * tt) * pts[k + 1].Y + (ttt - tt) * h * m[k + 1];
     }
 
+    // The plot rect: the canvas less CurveInset on every side.
     private static Point CurveUnit(Point screen)
     {
-        double w = _curveCanvas!.ActualWidth, h = _curveCanvas.ActualHeight;
-        return new Point(screen.X / Math.Max(w, 1), 1 - screen.Y / Math.Max(h, 1));
+        double w = _curveCanvas!.ActualWidth - 2 * CurveInset, h = _curveCanvas.ActualHeight - 2 * CurveInset;
+        return new Point((screen.X - CurveInset) / Math.Max(w, 1), 1 - (screen.Y - CurveInset) / Math.Max(h, 1));
+    }
+
+    private static void EndCurveDrag()
+    {
+        _curveDrag = -1;
+        if (_curveReadout is not null) _curveReadout.Text = "";
+    }
+
+    private static void ShowCurveReadout(Point p)
+    {
+        if (_curveReadout is null) return;
+        _curveReadout.Text = $"{Math.Round(p.X * 255)} → {Math.Round(p.Y * 255)}";
     }
 
     private static void OnCurvePressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
@@ -700,6 +1120,18 @@ public static partial class IslandHost
             double dist = Math.Sqrt((pts[i].X - u.X) * (pts[i].X - u.X) + (pts[i].Y - u.Y) * (pts[i].Y - u.Y));
             if (dist < best) { best = dist; near = i; }
         }
+        // A double-click on an inner point removes it.
+        long nowMs = Environment.TickCount64;
+        if (near > 0 && near < pts.Count - 1 && near == _curveLastPress &&
+            nowMs - _curveLastPressMs <= DoubleClickMs())
+        {
+            _curveLastPress = -1;
+            pts.RemoveAt(near);
+            SendCurve(pts);
+            return;
+        }
+        _curveLastPress = near;
+        _curveLastPressMs = nowMs;
         if (near < 0)
         {
             if (pts.Count >= CurvePoints || u.X <= 0.02 || u.X >= 0.98) return;
@@ -711,6 +1143,16 @@ public static partial class IslandHost
         }
         _curveDrag = near;
         _curveCanvas.CapturePointer(e.Pointer);
+        if (near < pts.Count) ShowCurveReadout(pts[near]);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetDoubleClickTime();
+
+    private static long DoubleClickMs()
+    {
+        try { return GetDoubleClickTime(); }
+        catch (Exception) { return 500; }
     }
 
     private static void OnCurveMoved(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
@@ -724,7 +1166,7 @@ public static partial class IslandHost
         if (!end && (u.Y < -0.08 || u.Y > 1.08 || u.X < -0.08 || u.X > 1.08))
         {
             pts.RemoveAt(d);
-            _curveDrag = -1;
+            EndCurveDrag();
             SendCurve(pts);
             return;
         }
@@ -732,6 +1174,7 @@ public static partial class IslandHost
         double hi = d < pts.Count - 1 ? pts[d + 1].X - 1.0 / 64 : 1;
         double x = end ? pts[d].X : Math.Clamp(u.X, lo, hi);
         pts[d] = new Point(x, Math.Clamp(u.Y, 0, 1));
+        ShowCurveReadout(pts[d]);
         SendCurve(pts);
     }
 
@@ -752,8 +1195,11 @@ public static partial class IslandHost
     {
         if (_curveCanvas is null) return;
         _curveCanvas.Children.Clear();
-        double w = _curveCanvas.ActualWidth > 1 ? _curveCanvas.ActualWidth : 260;
-        double h = _curveCanvas.ActualHeight > 1 ? _curveCanvas.ActualHeight : 220;
+        double cw = _curveCanvas.ActualWidth > 1 ? _curveCanvas.ActualWidth : 260;
+        double ch = _curveCanvas.ActualHeight > 1 ? _curveCanvas.ActualHeight : 260;
+        // The plot: CurveInset inside the canvas on every side (CurveUnit's rect).
+        double ox = CurveInset, oy = CurveInset;
+        double w = Math.Max(cw - 2 * CurveInset, 1), h = Math.Max(ch - 2 * CurveInset, 1);
         Color[] tints =
         {
             ColorHelper.FromArgb(255, 210, 212, 218),
@@ -763,34 +1209,43 @@ public static partial class IslandHost
         };
         if (_histValid)
         {
+            // The channel's own histogram, in its tint.
             int c = _curvesChannel == 0 ? 3 : _curvesChannel - 1;
-            var hp = new PointCollection { new Point(0, h) };
+            var hp = new PointCollection { new Point(ox, oy + h) };
             for (int i = 0; i < HistogramBins; i++)
             {
-                hp.Add(new Point(w * (i + 0.5) / HistogramBins,
-                                 h - h * Math.Min(_histBins[c * HistogramBins + i], (ushort)1000) / 1000.0));
+                hp.Add(new Point(ox + w * (i + 0.5) / HistogramBins,
+                                 oy + h - h * Math.Min(_histBins[c * HistogramBins + i], (ushort)1000) / 1000.0));
             }
-            hp.Add(new Point(w, h));
-            _curveCanvas.Children.Add(new Polygon { Points = hp, Fill = Brush(Body), Opacity = 0.2 });
+            hp.Add(new Point(ox + w, oy + h));
+            _curveCanvas.Children.Add(new Polygon
+            {
+                Points = hp,
+                Fill = _curvesChannel == 0 ? Brush(Body) : Brush(tints[_curvesChannel]),
+                Opacity = _curvesChannel == 0 ? 0.2 : 0.25,
+            });
         }
         for (int k = 1; k < 4; k++)
         {
-            _curveCanvas.Children.Add(new Line { X1 = w * k / 4, X2 = w * k / 4, Y1 = 0, Y2 = h, Stroke = Brush(Body), Opacity = 0.2 });
-            _curveCanvas.Children.Add(new Line { X1 = 0, X2 = w, Y1 = h * k / 4, Y2 = h * k / 4, Stroke = Brush(Body), Opacity = 0.2 });
+            _curveCanvas.Children.Add(new Line { X1 = ox + w * k / 4, X2 = ox + w * k / 4, Y1 = oy, Y2 = oy + h, Stroke = Brush(Body), Opacity = 0.2 });
+            _curveCanvas.Children.Add(new Line { X1 = ox, X2 = ox + w, Y1 = oy + h * k / 4, Y2 = oy + h * k / 4, Stroke = Brush(Body), Opacity = 0.2 });
         }
+        _curveCanvas.Children.Add(new Rectangle { Width = w, Height = h, Stroke = Brush(Body), StrokeThickness = 0.5, Opacity = 0.35 });
+        Microsoft.UI.Xaml.Controls.Canvas.SetLeft(_curveCanvas.Children[^1], ox);
+        Microsoft.UI.Xaml.Controls.Canvas.SetTop(_curveCanvas.Children[^1], oy);
         List<Point> pts = CurvePointsOf(_curvesChannel);
         var line = new PointCollection();
         for (int s = 0; s <= 96; s++)
         {
             double x = s / 96.0;
-            line.Add(new Point(x * w, (1 - EvaluateCurve(pts, x)) * h));
+            line.Add(new Point(ox + x * w, oy + (1 - EvaluateCurve(pts, x)) * h));
         }
         _curveCanvas.Children.Add(new Polyline { Points = line, Stroke = Brush(tints[_curvesChannel]), StrokeThickness = 1.5 });
         foreach (Point p in pts)
         {
             var dot = new Ellipse { Width = 8, Height = 8, Fill = Brush(tints[_curvesChannel]) };
-            Microsoft.UI.Xaml.Controls.Canvas.SetLeft(dot, p.X * w - 4);
-            Microsoft.UI.Xaml.Controls.Canvas.SetTop(dot, (1 - p.Y) * h - 4);
+            Microsoft.UI.Xaml.Controls.Canvas.SetLeft(dot, ox + p.X * w - 4);
+            Microsoft.UI.Xaml.Controls.Canvas.SetTop(dot, oy + (1 - p.Y) * h - 4);
             _curveCanvas.Children.Add(dot);
         }
     }
@@ -801,7 +1256,7 @@ public static partial class IslandHost
     private static void FocusAdjustRow(int index, bool focused)
     {
         if (_adjustRows is null || _adjustNames is null || index >= _adjustRows.Length) return;
-        _adjustRows[index].Background = focused ? Brush(ChromeColour.HoverWash) : Brush(Colors.Transparent);
+        _adjustRows[index].Background = focused ? Brush(ChromeColour.SelectionWash) : Brush(Colors.Transparent);
         _adjustNames[index].Foreground = Brush(focused ? Title : Body);
     }
 
@@ -818,9 +1273,13 @@ public static partial class IslandHost
             case Windows.System.VirtualKey.Up:
             case Windows.System.VirtualKey.Down:
             {
-                // The sliders of the open sections, top to bottom.
+                // The sliders of the open sections, top to bottom: in two
+                // columns the left one, then the right (docs/plans/edit-refresh.md §2.5).
                 var rows = new List<int>();
-                for (int s = 0; s < AdjustSections.Length; s++)
+                IEnumerable<int> order = _adjustWidthClass >= WidthWide
+                    ? AdjustLeftSections.Concat(AdjustRightSections)
+                    : Enumerable.Range(0, AdjustSections.Length);
+                foreach (int s in order)
                 {
                     if (_sectionOpen[s]) rows.AddRange(AdjustSections[s].Params.Where(RowShown));
                 }
@@ -879,6 +1338,7 @@ public static partial class IslandHost
             for (int i = 0; i < _adjustSliders.Length; i++)
             {
                 _adjustSliders[i].IsEnabled = ready;
+                if (_adjustValueButtons?[i] is Button vb) vb.IsEnabled = ready;
                 if (Math.Abs(_adjustSliders[i].Value - _adjustValues[i]) > 1e-4)
                 {
                     _adjustSliders[i].Value = _adjustValues[i];
@@ -946,12 +1406,13 @@ public static partial class IslandHost
                 reset.Visibility = changed ? Visibility.Visible : Visibility.Collapsed;
                 reset.IsEnabled = ready;
             }
+            if (_sectionDots?[s] is Border dot) dot.Visibility = changed ? Visibility.Visible : Visibility.Collapsed;
             if (_sectionAutos?[s] is Button auto)
             {
                 // While a section's Auto runs it reads "…" and no Auto takes a
                 // second click (the Mac shows a spinner).
                 auto.IsEnabled = ready && _autoSection < 0;
-                auto.Content = ButtonLabel(_autoSection == s ? "…" : "AUTO", UiFontSize - 2, trim: true);
+                auto.Content = ButtonLabel(_autoSection == s ? "…" : "Auto", UiFontSize - 4);
             }
         }
         if (_adjustResetButton is not null) _adjustResetButton.IsEnabled = ready;
@@ -972,7 +1433,22 @@ public static partial class IslandHost
                 ? $"Clipped highlights {_clipHigh * 100:0.0} %   ·   crushed shadows {_clipLow * 100:0.0} %"
                 : "";
         }
+        if (_clipLowMark is not null)
+        {
+            bool lit = _histValid && _clipLow > 0;
+            _clipLowMark.Fill = lit ? Brush(ColorHelper.FromArgb(255, 90, 140, 240)) : Brush(Body);
+            _clipLowMark.Opacity = lit ? 1.0 : 0.35;
+        }
+        if (_clipHighMark is not null)
+        {
+            bool lit = _histValid && _clipHigh > 0;
+            _clipHighMark.Fill = lit ? Brush(ColorHelper.FromArgb(255, 235, 80, 80)) : Brush(Body);
+            _clipHighMark.Opacity = lit ? 1.0 : 0.35;
+        }
         if (!_histValid) return;
+        // The 300 is only for the first pass, before the canvas was measured;
+        // after that its SizeChanged redraws at the real width.
+        if (_histCanvas.ActualWidth <= 1 && _histMeasured) return;
         double w = _histCanvas.ActualWidth > 1 ? _histCanvas.ActualWidth : 300;
         double h = _histCanvas.Height;
         Color[] colours =

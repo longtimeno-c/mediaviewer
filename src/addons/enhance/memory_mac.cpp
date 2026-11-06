@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <mach/mach.h>
+#include <sys/sysctl.h>
 
 #include "addons/enhance/memory.h"
 
@@ -18,6 +19,13 @@ std::optional<std::uint64_t> available_memory() noexcept {
   // Free, plus what the system takes back without writing it out.
   const std::uint64_t pages = std::uint64_t{vm.free_count} + vm.inactive_count + vm.purgeable_count;
   return pages * page;
+}
+
+std::optional<std::uint64_t> total_memory() noexcept {
+  std::uint64_t bytes = 0;
+  std::size_t size = sizeof bytes;
+  if (sysctlbyname("hw.memsize", &bytes, &size, nullptr, 0) != 0) return std::nullopt;
+  return bytes;
 }
 
 }  // namespace mv::enhance

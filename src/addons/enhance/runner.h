@@ -10,6 +10,7 @@
 // failure leaves none.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -20,6 +21,7 @@
 #include <thread>
 
 #include "addons/enhance/diffusion.h"
+#include "addons/enhance/face_restore.h"
 #include "addons/enhance/remove.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
@@ -75,6 +77,9 @@ struct run_port {
   struct still {
     std::uint32_t width = 0, height = 0;
     std::vector<std::uint8_t> rgb;
+    // What write_still names the new photo: "<stem>-<suffix>.jpg" ([a-z0-9_-]).
+    // edit-refresh S6: Extend's is "extended".
+    std::string suffix = "enhance";
   };
   // [job thread] At full resolution, upright (seconds for a RAW).
   std::function<result<still>(const std::string& path)> open_still;
@@ -83,7 +88,7 @@ struct run_port {
 
   // ---- Restyle (docs/plans/edit-adjust.md slice 5b) ----
   // [job thread] The restyle model from its files in `models_dir`.
-  std::function<result<std::unique_ptr<restyle_model>>(const model_spec& spec, const std::string& models_dir)>
+  std::function<result<std::unique_ptr<restyle_model>>(const model_spec& spec, const std::string& models_dir, int threads)>
       load_restyle;
 
   // ---- Remove (docs/plans/edit-adjust.md slice 7) ----
@@ -92,6 +97,25 @@ struct run_port {
       load_inpaint;
   // [any thread] The brush over the photo at `path` (u, v, r triples); empty none.
   std::function<std::vector<float>(const std::string& path)> still_mask;
+
+  // ---- Restore faces (docs/plans/edit-refresh.md S10) ----
+  // [job thread] The AI pack's faces in a picture (the host table's
+  // still_faces): status::not_found without Local search,
+  // status::permission_denied while People is off.
+  faces_fn still_faces;
+  // [job thread] The face model `choice` names in the spec's io.models.
+  std::function<result<std::unique_ptr<face_restorer>>(const model_spec& spec, const std::string& models_dir,
+                                                       const std::string& choice, int threads)>
+      load_face;
+  // [job thread] write_still with its own name: "<stem>-<suffix>.jpg" (doc 29).
+  std::function<result<std::string>(const std::string& source, const still& pixels, const std::string& suffix)>
+      write_still_as;
+
+  // ---- Extend on the canvas (docs/plans/edit-refresh.md S6) ----
+  // [any thread] The frame the person dragged past the photo's edges: left,
+  // top, right, bottom, each a fraction of the edited picture's width or
+  // height (remove.h extend_from_fractions); all 0 when the host set none.
+  std::function<std::array<float, 4>(const std::string& path)> still_extend;
 };
 
 // The largest photo Enhance writes: 100 megapixels (a 4x of a 25 MP photo is
@@ -103,6 +127,9 @@ inline constexpr std::uint32_t kMaxStillEdge = 16384;
 inline constexpr std::uint32_t kMaxLongEdge = 3840;
 inline constexpr std::uint32_t kMaxShortEdge = 2160;
 
+// Restyle's tensor names from its spec (io.tensors); the defaults when absent.
+[[nodiscard]] restyle_io restyle_io_of(const model_spec& spec);
+
 class job_runner final : public runner {
  public:
   explicit job_runner(run_port port);
@@ -112,6 +139,7 @@ class job_runner final : public runner {
   [[nodiscard]] std::string check(const job_request& r) const override;
   void start(job_request r, job_events events) override;
   void cancel() override;
+  [[nodiscard]] std::optional<photo_size> measure(const std::string& path) override;
 
  private:
   void run(job_request r, job_events events);
@@ -120,6 +148,8 @@ class job_runner final : public runner {
   void run_still(job_request r, job_events events);
   void run_restyle(job_request r, job_events events);
   void run_remove(job_request r, job_events events);
+  void run_extend(job_request r, job_events events);
+  void run_faces(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

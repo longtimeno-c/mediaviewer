@@ -1,18 +1,53 @@
 {
  "kind": "still",
- "name": "Detail, fast",
- "summary": "Quick: about 9 seconds for a 12-megapixel photo on Apple silicon.",
- "credit": "Real-ESRGAN general x4v3, Xintao Wang et al. (BSD-3-Clause)",
- "weights": ["realesr-general-x4v3.onnx"],
- "run_bytes": 700000000,
+ "name": "Sharpen & restore",
+ "summary": "The sharpest restoration: at the same size the photo is shrunk to its detail, then rebuilt.",
+ "credit": "Real-HAT-GAN SRx4 sharper: HAT, Xiangyu Chen et al. (XPixelGroup); ONNX export by MahoCommerce. Apache-2.0.",
+ "weights": [
+  "Real_HAT_GAN_sharper.onnx"
+ ],
+ "run_bytes": 2500000000,
  "cpu": true,
  "knobs": [
-  {"id": "scale", "label": "Size", "type": "choice",
-   "options": [{"id": "1", "text": "Same size, more detail"}, {"id": "2", "text": "Twice the size"},
-               {"id": "4", "text": "Four times the size"}],
-   "default": "2", "help": "The new photo is at most 100 megapixels."},
-  {"id": "strength", "label": "Strength", "type": "slider", "min": 0, "max": 1, "step": 0.05, "default": 1,
-   "help": "How much of the model's picture replaces a plain enlargement."}
+  {
+   "id": "scale",
+   "label": "Size",
+   "type": "choice",
+   "options": [
+    {
+     "id": "1",
+     "text": "Same size (restored where its detail is)"
+    },
+    {
+     "id": "2",
+     "text": "Twice the size"
+    },
+    {
+     "id": "4",
+     "text": "Four times the size"
+    }
+   ],
+   "default": "1",
+   "help": "The new photo is at most 100 megapixels."
+  },
+  {
+   "id": "strength",
+   "label": "Strength",
+   "type": "slider",
+   "min": 0,
+   "max": 1,
+   "step": 0.05,
+   "default": 1,
+   "help": "How much of the model's picture replaces the photo (or a plain enlargement of it)."
+  }
  ],
- "io": {"runner": "tiles", "scale": 4, "tile": 256, "overlap": 16, "dims": ["h", "w"]}
+ "io": {
+  "runner": "tiles",
+  "scale": 4,
+  "tile": 192,
+  "overlap": 64,
+  "dims": [],
+  "output": "reconstruction",
+  "backend": "cpu"
+ }
 }

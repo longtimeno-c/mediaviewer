@@ -14,6 +14,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 
 #include "edit/clip_look.h"
@@ -73,7 +74,28 @@ struct canvas_map {
     return true;
   }
   [[nodiscard]] float aspect() const noexcept { return height > 0.0f ? width / height : 1.0f; }
+  // docs/plans/edit-refresh.md S3: the shown picture's long side on screen, in
+  // physical pixels (a tool's ring and dabs are sized against it).
+  [[nodiscard]] float screen_long_px() const noexcept {
+    return valid && zoom > 0.0f ? (width > height ? width : height) * zoom : 0.0f;
+  }
 };
+
+// S3: the clock both threads read for the tools' overlay deadlines
+// (edit_view::tool_label_until_ms, tool_pulse_until_ms).
+[[nodiscard]] inline std::uint64_t steady_ms() noexcept {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch())
+                                        .count());
+}
+
+// S3: the red-eye spots an edit_view carries (edit::kRedEyeSpots; asserted in
+// shell/canvas_tool.h, which this header must not include).
+inline constexpr int kToolSpots = 8;
+// docs/plans/edit-refresh.md S8: the faces the Faces tool draws (and chooses
+// from), and the bytes of each one's name label.
+inline constexpr int kToolFaces = 16;
+inline constexpr int kToolFaceName = 24;
 
 // PR 10: the edit geometry for one opened item, as the render thread needs it
 // (edit::geometry flattened to POD). The render thread places it against the
@@ -99,13 +121,67 @@ struct edit_view {
   gfx::adjust_vectors adjust_u;
   gfx::adjust_table adjust_t;  // slices 2-3: read when gfx::reads_table(adjust_u)
   // Slice 7: the Remove brush, drawn over the photo. `brush_rev` changes with
-  // every dab added or stroke undone; the cursor ring is at brush_cursor
+  // every dab added or stroke undone (and every mask build landing); the cursor ring is at brush_cursor
   // (the shown image's u, v, and the radius over its long side; u < 0 none).
   bool brush_on = false;
   std::uint32_t brush_rev = 0;
   std::uint32_t brush_count = 0;
   float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
   brush_dab brush[kBrushDabs] = {};
+  // docs/plans/edit-refresh.md S4a: `brush` holds only the dabs the lab's tint
+  // texture lacks (the stroke in progress, a build still in flight). The
+  // texture (shell/brush_mask.h, built on a worker, created immutable) holds
+  // the rest; it is drawn when `brush_mask` is set and it was built for this
+  // item and `brush_mask_epoch`.
+  std::uint8_t brush_mask = 0;
+  std::uint32_t brush_mask_epoch = 0;
+  // docs/plans/edit-refresh.md S3: the canvas tool's overlay (shell/tool_overlay.h).
+  // `tool` is shell::canvas_tool. The ring under the pointer is brush_cursor's
+  // u, v drawn at `tool_ring_px` (physical pixels, sized on screen, not in
+  // the picture), dashed while the brush erases. The red-eye spots are in
+  // the shown picture's uv with radii over its long side; `tool_hover_spot` is
+  // the one a click would remove (-1 none). The pulse marks a fix just made
+  // (until `tool_pulse_until_ms`), the size label shows `tool_label_px` until
+  // `tool_label_until_ms` (shell::steady_ms). Every change bumps brush_rev.
+  std::uint8_t tool = 0;
+  std::uint8_t tool_erase = 0;
+  std::uint8_t tool_dim = 0;  // put down with strokes kept: drawn dimmed
+  std::int8_t tool_hover_spot = -1;
+  float tool_ring_px = 0.0f;
+  float tool_label_px = 0.0f;
+  std::uint64_t tool_label_until_ms = 0;
+  std::uint32_t tool_spot_count = 0;
+  float tool_spots[kToolSpots][3] = {};
+  float tool_pulse[3] = {-1.0f, -1.0f, 0.0f};
+  std::uint64_t tool_pulse_until_ms = 0;
+  // docs/plans/edit-refresh.md S8: the Faces tool's boxes (shell/faces_tool.h),
+  // each face's edit region as the shown picture's uv x, y, w, h. Bit i of
+  // `tool_face_chosen` marks face i chosen, of `tool_face_busy` a fix running
+  // on it; `tool_face_hover` is the one under the pointer (-1 none). A named
+  // face carries its People name (UTF-8, NUL-terminated, cut whole). Every
+  // change bumps brush_rev.
+  std::uint32_t tool_face_count = 0;
+  std::uint32_t tool_face_chosen = 0;
+  std::uint32_t tool_face_busy = 0;
+  std::int8_t tool_face_hover = -1;
+  float tool_faces[kToolFaces][4] = {};
+  char tool_face_names[kToolFaces][kToolFaceName] = {};
+  // docs/plans/edit-refresh.md S6: Extend's frame (tool == extend): left, top,
+  // right, bottom past the shown picture's edges as fractions of its width /
+  // height (negative inside: a crop), the edge(s) under the pointer or held
+  // (shell::extend_handle bits), a side past the 25 % warning, and the
+  // readout: the result's pixels and its growth in permille.
+  float tool_extend[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  std::uint8_t tool_extend_handle = 0;
+  std::uint8_t tool_extend_warn = 0;
+  std::uint32_t tool_extend_w = 0;
+  std::uint32_t tool_extend_h = 0;
+  std::int32_t tool_extend_growth = 0;
+  // One-click Enhance (docs/design/29 "One click"): the working glow over the
+  // photo (tool_overlay.h draw_work_glow), on since `work_glow_on_ms` (0 off),
+  // fading out from `work_glow_off_ms` (0 none). shell::steady_ms.
+  std::uint64_t work_glow_on_ms = 0;
+  std::uint64_t work_glow_off_ms = 0;
 };
 
 struct input_snapshot {
@@ -181,6 +257,11 @@ struct input_snapshot {
   // render thread, which restarts the ground's five seconds.
   bool reduce_motion = false;
   std::uint32_t pointer_seq = 0;
+  // One-click Enhance: the host opened a run's result at this steady_ms (0
+  // never). The next new still to land within canvas::k_result_fade_window_ms
+  // cross-fades in over the one it replaces (canvas/refinement.h), once per
+  // stamp; nothing with reduce_motion.
+  std::uint64_t result_fade_ms = 0;
   // The welcome card's recent folders (labels only; the host keeps the paths
   // and hit-tests the rows). count 0 once anything is open. A change bumps
   // activity_seq for its one redraw.
@@ -195,6 +276,23 @@ struct input_snapshot {
   // `|` (issue #208, shell/compare.h): the previous still beside the current
   // one under one camera. A level; the render thread splits only over a still.
   bool compare = false;
+  // docs/design/20 "Compare" (shell/compare_source.h): the before/after split
+  // of the still on screen. `before_after` 0 off; 1 the before is this item
+  // with no edit (its own texture, an identity placement, no colour); 2 the
+  // before is the lab's side still `before_token` (an Enhance result's
+  // source), laid onto the picture's frame by `before_layout`
+  // (compare_layout) and `before_rect` (its place in the picture's uv, w 0 =
+  // by size). The divider sits `before_split` across the picture's visible
+  // span; `before_whole` (Y held) shows the before alone, with no divider;
+  // `before_hot`: the divider is hovered or held (the accent). Not over the
+  // `|` two-up or crop mode. A change is one redraw, never a refit.
+  std::uint8_t before_after = 0;
+  std::uint8_t before_layout = 0;
+  bool before_whole = false;
+  bool before_hot = false;
+  float before_split = 0.5f;
+  std::uint64_t before_token = 0;
+  float before_rect[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   bool info_overlay = false;    // O
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
@@ -268,7 +366,24 @@ struct input_snapshot {
 
   // Bumped by the UI thread when the swapchain must be rebuilt: a resize, a DPI
   // change, or the window moving to a monitor on a different adapter.
+  // Only a real window, DPI or backing change bumps it (docs/design/12,
+  // 2026-11-04 "refit_seq").
   std::uint32_t resize_seq = 0;
+  // The chrome moved the canvas rectangle (chrome_* above) without the
+  // window changing: a pane docked or undocked, the right column's edge
+  // dragged, the filmstrip or the bar's height. The render thread re-fits or
+  // re-fills the picture into the new rect and never touches the swapchain
+  // (no resize, no ResizeBuffers, no drawable size, no refresh probe).
+  std::uint32_t refit_seq = 0;
+  // docs/plans/edit-refresh.md S6: what fit frames, in the shown picture's uv
+  // (x, y, w, h): {0, 0, 1, 1} the picture; while Extend is armed, the photo
+  // and its frame past the edges with room around (shell/edit_workspace.h
+  // extend_fit). The host bumps refit_seq with a change; the render thread
+  // hands it to the camera (canvas::camera::set_fit_frame).
+  float fit_rect_uv[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+  // Non-zero while the user drags the right column's edge: the picture
+  // tracks the edge exactly (an immediate fit); on release it springs.
+  std::uint8_t chrome_live_resize = 0;
   std::uint32_t display_change_seq = 0;
   // PR 30 (docs/design/21): the window the canvas presents into, as an opaque host
   // handle (an HWND on Windows); 0 = the viewer's own window. The Video Editor

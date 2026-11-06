@@ -170,12 +170,14 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(d.m.remote[0].path == "audio/denoise.onnx");
   CHECK(d.m.remote_urls[0].find('?') == std::string::npos);
   const auto& c = d.m.slots;
-  REQUIRE(c.screens.size() == 2);
+  REQUIRE(c.screens.size() == 3);
   CHECK(c.screens[0].id == "enhance");
   CHECK(c.screens[0].place == mv::addon::screen_place::sheet);
   CHECK(c.screens[1].id == "settings");
   CHECK(c.screens[1].place == mv::addon::screen_place::settings);
-  // No command-bar button: the way in is the editors, the context menu and the command.
+  // docs/plans/edit-refresh.md S5: the tool panel docked in Edit's Enhance tab (API 12).
+  CHECK(c.screens[2].id == "tool");
+  CHECK(c.screens[2].place == mv::addon::screen_place::edit);
   REQUIRE(c.items.size() == 2);
   CHECK(c.items[0].id == "enhance");
   CHECK(c.items[0].slot == mv::addon::item_slot::context);
@@ -183,11 +185,19 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.items[1].id == "edit");  // the Video Editor's Enhance… (contribution API 11)
   CHECK(c.items[1].slot == mv::addon::item_slot::editor);
   CHECK(c.items[1].label == "Enhance…");
-  CHECK(c.api_min == 11);
-  REQUIRE(d.m.commands.size() == 1);
+  CHECK(c.api_min == 13);  // API 13: the progress line's detail and timed
+  // "open" (Ctrl+Shift+R / Cmd+Shift+R), the Edit strip wand menu's "restyle"
+  // and the Faces card's "faces" (docs/plans/edit-refresh.md S10), these two
+  // with no default key (docs/design/16). No command-bar button: the way in
+  // is the editors, the context menu and the command.
+  REQUIRE(d.m.commands.size() == 3);
   CHECK(d.m.commands[0].id == "open");
+  CHECK(d.m.commands[1].id == "restyle");
+  CHECK(d.m.commands[2].id == "faces");
   CHECK(d.m.commands[0].windows == "Ctrl+Shift+R");  // docs/design/16
   CHECK(d.m.commands[0].mac == "Cmd+Shift+R");
+  CHECK(d.m.commands[1].windows.empty());
+  CHECK(d.m.commands[2].windows.empty());
   CHECK(d.m.chrome.empty());
   CHECK(mv::addon::loads_for_slots(d.m));
 }

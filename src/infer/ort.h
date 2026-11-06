@@ -126,6 +126,12 @@ class session {
     std::size_t count = 0;
   };
   [[nodiscard]] result<std::vector<tensor_f32>> run_named(std::span<const named_input> inputs) const;
+  // Only the outputs `outputs` names, in that order (the rest are not
+  // computed past what those need): a graph whose other heads are large or
+  // not float (RestoreFormer++'s codebook indices; docs/plans/edit-refresh.md
+  // S10). An unknown name is invalid_arg.
+  [[nodiscard]] result<std::vector<tensor_f32>> run_named(std::span<const named_input> inputs,
+                                                          std::span<const std::string> outputs) const;
   [[nodiscard]] const std::vector<std::string>& input_names() const noexcept;
   [[nodiscard]] const std::vector<std::string>& output_names() const noexcept;
   // ORT's message for this thread's last failed open or run, with paths

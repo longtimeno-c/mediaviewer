@@ -23,7 +23,9 @@ private struct VolumeSliderRow: View {
       .accessibilityValue("\(Int((store.draggingVolume ?? store.volume) * 100)) percent")
       Image(systemName: "speaker.wave.3.fill").font(MVTheme.font(12))
     }
-    .padding(.horizontal, MVTheme.space(10))
+    // The frame-step buttons' label inset above it, so the speaker's ink lines
+    // up with their words (docs/design/20 "Craft rules": edges line up).
+    .padding(.horizontal, FlatButtonStyle.inset(compact: true))
     .padding(.vertical, MVTheme.space(4))
   }
 }
@@ -109,6 +111,7 @@ private struct MatchMarks: View {
 struct TransportView: View {
   @ObservedObject private var store = VideoStore.shared
   @State private var moreShown = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private static func clock(_ ms: Int64) -> String {
     let total = max(0, Int(ms / 1000))
@@ -144,7 +147,10 @@ struct TransportView: View {
         .help(Self.hint("Back 10 seconds", "Back 10 s"))
         .accessibilityLabel("Back 10 seconds")
       Button(action: { store.toggle() }) {
-        Image(systemName: store.playing ? "pause.fill" : "play.fill").frame(width: 18)
+        // The same control changes its icon on itself, a quick replace, not a cut.
+        Image(systemName: store.playing ? "pause.fill" : "play.fill")
+          .contentTransition(.symbolEffect(.replace))
+          .frame(width: 18)
       }
       .help(Self.hint(store.playing ? "Pause" : "Play", "Play / pause"))
       .accessibilityLabel(store.playing ? "Pause" : "Play")
@@ -173,17 +179,22 @@ struct TransportView: View {
         .accessibilityHidden(true)
 
       if store.trimArmed {
-        Text(store.trimPreviewing ? store.trimLabel + " · previewing" : store.trimLabel)
-          .font(MVTheme.font(12)).monospacedDigit()
-          .foregroundStyle(MVTheme.title)
-          .lineLimit(1)
-        // The keyed commands for the mouse: Return / ⇧Return in trim mode.
-        Button("Save") { store.run(TrimCommand.keyframe) }
-          .buttonStyle(FlatButtonStyle(compact: true))
-          .help("Keyframe trim: instant, no re-encode (Return)")
-        Button("Save exact") { store.run(TrimCommand.reencode) }
-          .buttonStyle(FlatButtonStyle(compact: true))
-          .help("Frame-accurate re-encode on the hardware encoder; slower (⇧Return)")
+        // Fades in as trim arms, and the scrubber gives it room as it does.
+        Group {
+          Text(store.trimPreviewing ? store.trimLabel + " · previewing" : store.trimLabel)
+            .font(MVTheme.font(12)).monospacedDigit()
+            .foregroundStyle(MVTheme.title)
+            .contentTransition(.numericText())
+            .lineLimit(1)
+          // The keyed commands for the mouse: Return / ⇧Return in trim mode.
+          Button("Save") { store.run(TrimCommand.keyframe) }
+            .buttonStyle(FlatButtonStyle(compact: true))
+            .help("Keyframe trim: instant, no re-encode (Return)")
+          Button("Save exact") { store.run(TrimCommand.reencode) }
+            .buttonStyle(FlatButtonStyle(compact: true))
+            .help("Frame-accurate re-encode on the hardware encoder; slower (⇧Return)")
+        }
+        .transition(.opacity)
       }
 
       Menu {
@@ -192,6 +203,7 @@ struct TransportView: View {
         }
       } label: {
         Text(String(format: "%.2gx", Double(store.rateX100) / 100)).font(MVTheme.font(12)).monospacedDigit()
+          .contentTransition(.numericText())
       }
       .menuStyle(.borderlessButton).fixedSize()
       .help(Self.speedHelp)
@@ -199,7 +211,9 @@ struct TransportView: View {
       .accessibilityValue(Self.rateText(store.rateX100))
 
       Button(action: { store.toggleMute() }) {
-        Image(systemName: store.muted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 18)
+        Image(systemName: store.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+          .contentTransition(.symbolEffect(.replace))
+          .frame(width: 18)
       }
       .help(Self.hint(store.muted ? "Unmute" : "Mute", "Mute"))
       .accessibilityLabel(store.muted ? "Unmute" : "Mute")
@@ -229,6 +243,12 @@ struct TransportView: View {
       }
     }
     .buttonStyle(.plain)
+    // A state a click sets changes over ~150 ms (play / pause, mute, speed,
+    // trim arming); Reduce Motion cuts. Nothing runs while the strip is still.
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.playing)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.muted)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.rateX100)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.trimArmed)
     .padding(.horizontal, 14)
     .frame(height: 44)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: MVTheme.radius(10)))

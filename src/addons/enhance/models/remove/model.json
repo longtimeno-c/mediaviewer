@@ -5,6 +5,12 @@
  "weights": ["lama_fp32.onnx"],
  "run_bytes": 1500000000,
  "cpu": true,
- "knobs": [],
+ "knobs": [
+  {"id": "extend", "label": "Extend", "type": "choice", "default": "wider",
+   "options": [{"id": "wider", "text": "Wider (an eighth each side)"}, {"id": "taller", "text": "Taller (an eighth top and bottom)"},
+               {"id": "all", "text": "All round (a tenth each side)"}, {"id": "16x9", "text": "To 16:9"},
+               {"id": "4x5", "text": "To 4:5 (portrait)"}, {"id": "square", "text": "To square"}],
+   "help": "The new edges are made from the photo by the model; the photo itself is not changed."}
+ ],
  "io": {"runner": "inpaint", "side": 512, "image": "image", "mask": "mask", "output": "output", "out_scale": 1}
 }

@@ -78,4 +78,20 @@ inline constexpr float kAutoNeutralNone = 0.35f;
                                                const colour& current, adjust_section section,
                                                const job_context* ctx = nullptr);
 
+// docs/plans/edit-refresh.md S2: several sections' Autos in one go, each read
+// from the colour the one before it left (light first, so colour judges the
+// toned picture). `sections` is a mask, bit i = adjust_section i; sections
+// without an Auto are skipped. One result, so the host lands it as one op.
+[[nodiscard]] constexpr std::uint32_t section_bit(adjust_section s) noexcept {
+  return 1u << static_cast<unsigned>(s);
+}
+// The header's one-click ✦ Auto: tone, then white balance. Black & white and
+// levels stay the user's (a one-click fix never turns a photo grey or moves
+// its end points behind their back).
+inline constexpr std::uint32_t kAutoEnhanceSections =
+    section_bit(adjust_section::light) | section_bit(adjust_section::colour);
+[[nodiscard]] result<auto_result> compute_auto_sections(const image::linear_image& working,
+                                                        const colour& current, std::uint32_t sections,
+                                                        const job_context* ctx = nullptr);
+
 }  // namespace mv::edit

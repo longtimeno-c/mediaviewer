@@ -68,6 +68,7 @@
     <!-- #509: a failed add-on attach names its throwing methods, never a path. -->
     <Compile Include="..\Shared\ExceptionFrames.cs" Link="Shared\ExceptionFrames.cs" />
     <Compile Include="..\Shared\GlowMath.cs" Link="Shared\GlowMath.cs" />
+    <Compile Include="..\Shared\ProgressWords.cs" Link="Shared\ProgressWords.cs" />
   </ItemGroup>
 
   <ItemGroup>

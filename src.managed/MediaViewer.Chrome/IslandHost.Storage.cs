@@ -19,6 +19,8 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     private static StackPanel? _storageRows;
+    // Thumbnails' Clear, which says "Clearing…" on itself while it runs.
+    private static Button? _storageClear;
     private static ComboBox? _thumbCap;
     private static bool _storageMeasuring;
 
@@ -133,10 +135,62 @@ public static partial class IslandHost
         });
     }
 
+    // Owner 2026-11-04: each add-on's storage is on its own page (Settings →
+    // Add-ons), Local search's pieces (ai-audio, ai-docs, ai-faces, ai-large,
+    // ai-cuda) with it; the Storage section shows their total. Store folder →
+    // bytes, from the last measurement.
+    private static readonly Dictionary<string, long> _storageAddons = new();
+
+    private static string StoragePageOf(string folder) =>
+        folder == "ai" || folder.StartsWith("ai-", StringComparison.Ordinal) ? LocalSearchPageId : folder;
+
+    private static string StoragePieceWords(string folder) => folder switch
+    {
+        "ai" => "Photo and video search: the add-on, its models and the index",
+        "ai-audio" => "Sound and speech search models",
+        "ai-docs" => "Document search model",
+        "ai-faces" => "People: the face models",
+        "ai-large" => "The large picture model (Maxxed)",
+        "ai-cuda" => "The NVIDIA graphics runtime",
+        "enhance" => "The add-on and the models it downloaded",
+        "places" => "The add-on and its place database",
+        _ => "The add-on and its data",
+    };
+
+    /// <summary>An add-on page's "On this PC" block, from the last measurement.</summary>
+    private static void FillAddonPageStorage(string page)
+    {
+        if (_addonPageStorage is null) return;
+        _addonPageStorage.Children.Clear();
+        var rows = _storageAddons.Where(kv => StoragePageOf(kv.Key) == page).OrderBy(kv => kv.Key).ToList();
+        if (rows.Count == 0) return;
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // The Mac's AddonStorageBlock: the heading and total at 15, pieces at 13.
+        head.Children.Add(Label("On this PC", TypeSize(15)));
+        TextBlock total = Label(MediaViewer.Shared.ByteSize.Text(rows.Sum(kv => kv.Value)), TypeSize(15));
+        Grid.SetColumn(total, 1);
+        head.Children.Add(total);
+        _addonPageStorage.Children.Add(head);
+        foreach (var (folder, bytes) in rows)
+        {
+            var line = new Grid { ColumnSpacing = Space(12) };
+            line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            line.Children.Add(Label(StoragePieceWords(folder), TypeSize(TypeNote), mute: true));
+            TextBlock size = Label(MediaViewer.Shared.ByteSize.Text(bytes), TypeSize(TypeNote), mute: true);
+            Grid.SetColumn(size, 1);
+            line.Children.Add(size);
+            _addonPageStorage.Children.Add(line);
+        }
+    }
+
     private static void FillStorageRows(string json)
     {
         if (_storageRows is null) return;
         _storageRows.Children.Clear();
+        _storageClear = null;
         if (string.IsNullOrEmpty(json))
         {
             _storageRows.Children.Add(Label("Sizes are not available."));
@@ -145,10 +199,18 @@ public static partial class IslandHost
         try
         {
             using JsonDocument doc = JsonDocument.Parse(json);
+            _storageAddons.Clear();
+            long addonTotal = 0;
             foreach (JsonElement row in doc.RootElement.GetProperty("rows").EnumerateArray())
             {
                 string id = row.GetProperty("id").GetString() ?? "";
                 long bytes = row.GetProperty("bytes").GetInt64();
+                if (id.StartsWith("addon:", StringComparison.Ordinal))
+                {
+                    _storageAddons[id["addon:".Length..]] = bytes;
+                    addonTotal += bytes;
+                    continue;  // on the add-on's own page
+                }
                 (string title, string detail) = StorageWords(id);
                 if (title.Length == 0) continue;
                 string size = MediaViewer.Shared.ByteSize.Text(bytes);
@@ -162,6 +224,7 @@ public static partial class IslandHost
                     clear.IsEnabled = bytes > 0;
                     AutomationProperties.SetName(clear, "Clear thumbnails");
                     right.Children.Add(clear);
+                    _storageClear = clear;
                     _storageRows.Children.Add(SettingsRow(title, detail, right));
                 }
                 else
@@ -169,6 +232,12 @@ public static partial class IslandHost
                     _storageRows.Children.Add(SettingsRow(title, detail, Label(size)));
                 }
             }
+            if (addonTotal > 0)
+            {
+                _storageRows.Children.Add(SettingsRow("Add-ons", "Each add-on's page (Settings → Add-ons) shows what it keeps.",
+                                                      Label(MediaViewer.Shared.ByteSize.Text(addonTotal))));
+            }
+            if (_addonPage.Length > 0) FillAddonPageStorage(_addonPage);
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException
                                        or FormatException)
@@ -182,10 +251,12 @@ public static partial class IslandHost
     {
         MediaViewerSession? session = _folderSession;
         if (session is null) return;
-        if (_storageRows is not null)
+        // The button says it on itself, as the Mac's; the rows stay where they
+        // are until the new sizes replace them (nothing collapses and regrows).
+        if (_storageClear is not null)
         {
-            _storageRows.Children.Clear();
-            _storageRows.Children.Add(Label("Clearing thumbnails…"));
+            SetButtonText(_storageClear, "Clearing…");
+            _storageClear.IsEnabled = false;
         }
         // Deletes thousands of files: a worker, never this thread.
         _ = Task.Run(() =>

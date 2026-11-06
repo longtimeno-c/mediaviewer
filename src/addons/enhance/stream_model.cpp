@@ -57,6 +57,11 @@ class onnx_tiles final : public tile_model {
  public:
   onnx_tiles(std::unique_ptr<infer::session> s, tile_shape shape) : s_(std::move(s)), shape_(std::move(shape)) {
     in_[0].shape = {1, 3, shape_.tile, shape_.tile};
+    if (!shape_.output.empty()) {
+      const auto& names = s_->output_names();
+      const auto it = std::find(names.begin(), names.end(), shape_.output);
+      if (it != names.end()) out_ = static_cast<std::size_t>(it - names.begin());
+    }
   }
   std::uint32_t tile() const noexcept override { return shape_.tile; }
   std::uint32_t scale() const noexcept override { return shape_.scale; }
@@ -66,8 +71,8 @@ class onnx_tiles final : public tile_model {
     in_[0].data.assign(in.begin(), in.end());
     auto r = s_->run(in_);
     if (!r) return err(r.error());
-    if (r->empty() || (*r)[0].data.size() != want * shape_.scale * shape_.scale) return err(status::corrupt);
-    out.swap((*r)[0].data);
+    if (r->size() <= out_ || (*r)[out_].data.size() != want * shape_.scale * shape_.scale) return err(status::corrupt);
+    out.swap((*r)[out_].data);
     return {};
   }
 
@@ -75,6 +80,7 @@ class onnx_tiles final : public tile_model {
   std::unique_ptr<infer::session> s_;
   tile_shape shape_;
   std::array<infer::tensor_f32, 1> in_;
+  std::size_t out_ = 0;
 };
 
 }  // namespace
@@ -88,11 +94,32 @@ std::optional<tile_shape> tile_shape_of(const model_spec& spec) {
   const auto overlap = whole(io, "overlap", 0, 256);
   const json::value* dims = io.find("dims");
   if (!scale || !tile || !overlap || 2 * *overlap >= *tile || !dims || dims->k != json::kind::array ||
-      dims->a.size() != 2 || dims->a[0].k != json::kind::string || dims->a[1].k != json::kind::string) {
+      (dims->a.size() != 2 && !dims->a.empty())) {
     return std::nullopt;
   }
-  return tile_shape{static_cast<std::uint32_t>(*scale), static_cast<std::uint32_t>(*tile),
-                    static_cast<std::uint32_t>(*overlap), dims->a[0].s, dims->a[1].s};
+  tile_shape t{static_cast<std::uint32_t>(*scale), static_cast<std::uint32_t>(*tile),
+               static_cast<std::uint32_t>(*overlap), {}, {}, {}, {}, false};
+  if (dims->a.size() == 2) {
+    if (dims->a[0].k != json::kind::string || dims->a[1].k != json::kind::string) return std::nullopt;
+    t.dim_h = dims->a[0].s;
+    t.dim_w = dims->a[1].s;
+  }
+  if (const json::value* fixed = io.find("fixed")) {
+    if (fixed->k != json::kind::object || fixed->o.size() > 8) return std::nullopt;
+    for (const auto& [name, v] : fixed->o) {
+      if (name.empty() || v.k != json::kind::number || !v.is_integer || v.i < 1 || v.i > 4096) return std::nullopt;
+      t.fixed.emplace_back(name, v.i);
+    }
+  }
+  if (const json::value* output = io.find("output")) {
+    if (output->k != json::kind::string || output->s.empty() || output->s.size() > 128) return std::nullopt;
+    t.output = output->s;
+  }
+  if (const json::value* backend = io.find("backend")) {
+    if (backend->k != json::kind::string || backend->s != "cpu") return std::nullopt;
+    t.cpu_only = true;
+  }
+  return t;
 }
 
 std::optional<stream_shape> stream_shape_of(const model_spec& spec) {
@@ -145,8 +172,9 @@ result<std::unique_ptr<tile_model>> runtime_holder::open_tiles(const model_spec&
   MV_TRY(infer::runtime * rt, runtime());
   const std::string file = models_dir + "/" + spec.weights.front();
   infer::session_options o;
-  o.fixed_dims = {{shape->dim_h, shape->tile}, {shape->dim_w, shape->tile}};
-  if (rt->has_provider(infer::backend::coreml)) {
+  if (!shape->dim_h.empty()) o.fixed_dims = {{shape->dim_h, shape->tile}, {shape->dim_w, shape->tile}};
+  o.fixed_dims.insert(o.fixed_dims.end(), shape->fixed.begin(), shape->fixed.end());
+  if (!shape->cpu_only && rt->has_provider(infer::backend::coreml)) {
     o.on = infer::backend::coreml;
     o.cache_dir_utf8 = cache_dir;
     if (auto s = infer::session::open(*rt, file, o); s && (*s)->on() == infer::backend::coreml) {

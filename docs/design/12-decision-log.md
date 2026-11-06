@@ -142,6 +142,107 @@ docks through `input_snapshot.chrome_right_px`, which narrows the rect the pictu
 The swapchain is never resized, only refitted. Panes hide under the gallery, Settings and
 chrome-off fullscreen.
 
+**`refit_seq`: chrome moves refit, only the window resizes (2026-11-04).** Docking was meant to
+be "a refit, not a swapchain resize", but both hosts bumped `resize_seq` for it, so every dock,
+filmstrip toggle, bar-height or page-sidebar change also ran `swapchain_.resize` /
+`layer_.resize` (the Mac reassigned `drawableSize` and re-probed the refresh each time).
+`input_snapshot.refit_seq` now carries every chrome-only change of the canvas rect, and both labs
+re-run only the fit or fill on it; `resize_seq` means a real window, DPI or backing change. While
+the right column's edge is dragged (`chrome_live_resize`) the refit is immediate, so the picture
+tracks the edge; on release it springs (ω = 18, ζ = 1). The Mac `metal_layer::resize` also
+returns early when the size and scale are unchanged. `--pane-drag-soak` measures the drag
+(docs/plans/edit-refresh.md S1). *Amended 2026-11-05:* the early return compares the layer's own
+`drawableSize` and `contentsScale`, not the values last set, and the Mac lab checks them on every
+frame it draws (`metal_layer::drifted`, two property reads; idle draws nothing) and re-sets them
+when they no longer match the canvas, with a warning in the log. Before the early return every
+chrome move re-set both, which hid any change made under the lab; after it, a layer that drifted
+stayed so (driving the app: the photo drawn larger than the canvas and cut off, Fit to Window not
+fixing it, brush dabs off the pointer). The same day: dragging the column's edge wide grew the
+window, because the transport's 720 and the tool bar's 640 preferred widths were
+`NSLayoutPriorityDefaultHigh`, above `NSLayoutPriorityWindowSizeStayPut`; they are now just under
+it.
+
+**The Edit tabs move to a 44 pt icon rail; the strip becomes a header (2026-11-04).** The tab
+row and Done left the strip for a rail at the window's right edge, beside the inspector, while
+the workspace is open (docs/plans/edit-refresh.md S2): Crop, Adjust (tab 1, the wire value
+kept), Enhance (tab 5, new) and Info, then the tools (Remove, Red-eye, Faces, Extend), then
+Undo, Compare and Done. A click on the active tab's icon folds the inspector to the rail (the
+picture refits into the wider rect); any icon unfolds it; a window too narrow for any inspector
+beside the canvas folds it too. The strip is now a header as tall as its content (the Mac
+hosts it with an intrinsic height; Windows sends `chrome_cmd_edit_strip_height`), so a theme's
+type scale or a narrow pane never clips it. ✦ Auto (`auto_enhance`, tone then white balance) is
+one undo step, and a second click right after takes it back.
+
+**One right column, 280–720 wide, the user's (2026-11-04).** The metadata, adjust, Jobs and Edit
+panes share one width (`shell/pane_width.h`): 360 by default (it was 360 pt on the Mac and
+min(half the client, 340 DIP) on Windows), dragged by its edge from 280 (or the theme's minimum,
+which density and type scale widen) to 720, never more than 60 % of the client and never so wide
+the canvas drops under 320. The preference is kept (Mac defaults `MVRightPaneWidth`, Windows
+`[view] right_pane_dip`), rounded to 4 and saved on release; a release within 6 of 360 or 560
+snaps to it; a double-click on the edge resets it. `pane_wider` / `pane_narrower` (±40) have no
+default key. The panes still float except the Edit workspace, which docks as before.
+
+**The transport's slot holds the canvas tool bar on a still (2026-11-04, owner call A).** A
+still has no transport, so while a canvas tool is armed (the Remove brush, red-eye, the
+white-balance picker; `shell/canvas_tool.h`) its context bar takes that slot: a 44 pt capsule
+centred on the canvas above the filmstrip (the Mac's `toolBarHost`; on Windows the transport's own
+island holds `IslandHost.ToolBar.cs`). Unlike the clip transport it does not float: the canvas
+leaves a 56 pt band for it (`kToolBarBand` in `chrome_bottom_px`, a `refit_seq` refit), so the bar
+never covers the photo and nothing new is drawn over the picture but the tool's own overlay
+(docs/plans/edit-refresh.md S3).
+
+**An add-on screen may dock inside the Edit pane (2026-11-05, owner call B).** Enhance's tools
+ran in a sheet over the viewer, which covered the photo being edited and lost the Edit context. A
+screen may now be in place `"edit"` (contribution API 13): drawn by the add-on screens' renderer
+inside the Edit workspace's Enhance tab, under the tool's card, never a window. Only the workspace
+opens it, with a command (`mv_slots_screen_command`): never `screen_show`, an item or a status
+click, so an add-on cannot put UI into the inspector on its own. Navigating (Show, Keep editing)
+stays the host's; the add-on's tree names the file, the host decides. The sheet is kept as the
+fallback for an add-on without one ([29](29-enhance.md) "Docked in Edit"; docs/plans/edit-refresh.md S5).
+
+**Extend fills at the model's side, two deep, then gives the detail back (2026-11-05).** "Quality over
+speed" (owner 2026-11-04) first grew Extend's tiles to 768 px and three deep, which made the
+margins visibly softer. Measured with the real LaMa ([29](29-enhance.md) "Extend": three tilings
+and the detail pass, on a 1280 and a 3840 photo), the mean of three different fills lost most of
+the detail and the 768-px tiles lost more by being shrunk to 512. Extend is back to tiles of at
+least the model's side, half overlapping, and wherever a tile is larger than the model's side
+Remove's detail transfer runs on it (`extend_detail`): the sharpest margins of every variant, with
+the best or level seams, at more time on large photos (99 s against 66 s for a 3840 px "all" on a
+loaded Mac). Quality over speed still holds: the change is for detail, not time.
+
+**Extend's frame is shell state; its margins reach Enhance by a host-table row (2026-11-05, owner
+call E).** Extend (docs/plans/edit-refresh.md S6) drags a frame past the photo's edges on the
+canvas. The edit stack never holds a rect past 0..1 ([07](07-photo-editing.md)): Fill lands the
+part of the frame over the photo as an ordinary crop op and hands the overhang to Enhance through
+`still_extend` (appended last, after S10's `still_faces`), as fractions of the cropped picture, so the add-on
+never sees the stack. A side warns past 25 % and stops at 50 % (the add-on grows a picture at most
+twice each way). The frame's margins are held to 16384 px a side and shrunk evenly to 100 MP
+rather than refused (a sheet preset over 100 MP is still refused), and the bar's readout uses the
+same sums, so the file is the size it showed. The result is `<stem>-extended.jpg` (it was
+`-enhance`). While a frame is being dragged the camera does not refit; it frames the photo and
+the frame (`fit_rect_uv`) when the drag ends, so the held edge never runs from the pointer.
+
+**One-click Enhance: no sheet and no panel in the Edit flow (2026-11-05, owner).** "Why does
+'enhance' open this window? It should just show quality / ETA and when clicked use an Apple
+Intelligence pattern over the image while it works, then open the new image", and "don't keep that
+sheet as a backup, remove it". Reverses S5's docked panel (owner call B, above) for the photo
+tools and the sheet as their fallback. Enhance's `edit` screen is now the Enhance tab's cards: each
+card draws its tool's compact choices, an estimate and one button from the add-on's tree; one click
+runs (downloading the model first when it is not here), the photo glows while it works, the tool
+bar under it carries the line and Cancel, and the new photo opens with Edit kept on the tab and a
+"Saved as … · Move to Trash" line. The strip's Enhance…, the ✦ popover / flyout, Enhance's palette
+rows and its context entry on the photo on screen open the tab; Enhance's sheet stays only where
+there is no Edit pane (an audio file, a clip, the Video Editor's Enhance…). The add-on's sheet
+code for a photo is unreachable from both hosts and kept only as the engine's shared view
+(docs/design/29 "One click").
+
+**The working glow is drawn over the photo (2026-11-05, owner; relaxes call A for a run only).**
+Call A keeps the photo clear of anything but the armed tool's own overlay. While a one-click run
+works on the photo, the present path also draws the working glow (`shell/tool_overlay.h`
+`draw_work_glow`, both labs): colour flowing round the photo's edges and a sheen crossing it,
+presenting each frame only while the run goes and for a 300 ms fade after (Reduce Motion: still, no
+presents). Nothing else floats over the photo; the run's words are the tool bar's.
+
 **The clip transport floats and auto-hides (2026-09-26).** Issue #38: one layout on both hosts,
 over the video rather than a reserved strip (auto-hiding a strip would refit the video on every
 wake). One portable rule, `shell/transport_autohide.h`: hide after 2.5 s idle while playing; held
@@ -813,6 +914,16 @@ manifest key at the next launch ("keybinds aren't saved between sessions"). A co
 index moves as add-ons come and go, so its remap is kept by `<add-on id>/<command id>`
 (`live_addon_key_remaps`; Windows `settings.ini [addon_keys]`, Mac `mv.addonKeys`), kept while its
 add-on is away, and put back when the add-on's rows are appended. Reset and a keymap pack clear it.
+
+**Tool mode: `[` `]` size the tool, `A` / `D` wait for the strokes (2026-11-04, owner calls D
+and G).** A canvas tool armed on a still is a key mode (`mode::tool`) that layers over browse.
+In it `[` `]` size the ring instead of rotating, `Backspace` / `Delete` clear strokes instead of
+trashing the photo, `Enter` applies, `Space` held pans instead of walking, and `Ctrl+Z` is one
+stroke or fix. Rotate, flip, crop and the Bin are refused while a tool is armed, so strokes are
+never silently wiped; while strokes are pending, walking away (`A` `D`, `←` `→`, `Home` `End`, the
+folder walks) is refused too and says so, once per press (`blocked_in_tool`). Plain `B` arms the
+brush; `Ctrl+B` stays the clip split. `Esc` puts the tool down after crop and before the pane,
+keeping the strokes (docs/plans/edit-refresh.md S3).
 
 ---
 
@@ -3004,6 +3115,50 @@ runner's thread (nearest samples at 960 pixels: a few milliseconds a time, not m
 separately); the hosts' drawing stays capped at 30 fps, only while shown, off with Reduce Motion /
 animations off. Not measured: the glow's CPU on either host, and Windows not run at all.
 
+**One progress language; the glow bar goes (2026-11-05, contribution API 14).** Partly reverses
+the progress half of "Enhance's sheet glows while it works" and the flowing bar of "Enhance's
+sheet, seen in the app" above. The owner, of the Edit pane: "improve the UI using lessons
+learned from Stageshow — like the progress bar for enhance etc… all ugly". Every bar the chromes
+draw is now one component per host (Mac `ProgressTrack` / `ProgressLine`, Windows `JobBar` /
+`ProgressLine`): a 3 pt track, an accent fill that eases forward and never back, a calm sweep when
+nothing is known, and one line under it ("Enhancing · 40 % · about 1 min left") with a quiet
+Cancel. A multicolour bar beside accent bars elsewhere was a second language, so a `progress`
+`"look": "glow"` is drawn as every bar; the glow round a `surface` stays, as does the working glow
+over the photo the owner asked for. API 13 adds a bar's `detail` (amounts in place of the
+percentage) and `timed` (the host estimates and says the time left, Driftwire's meter and words,
+`src.managed/Shared/ProgressWords.cs` and `ProgressWords.swift`), so the add-on's separate "time
+left" and "Downloading… 48 of 161 MB" text nodes went. The cost: Enhance asks for 13. The rest of
+the pass (header, rail, cards, Adjust) is in [20 "Craft rules"](20-edit-workspace.md#craft-rules).
+
+**The craft rules apply to every surface (2026-11-05).** The owner: "take a look at this skill
+[Stageshow] and apply it to all areas of this application". The Edit workspace's rules ([20 "Craft
+rules"](20-edit-workspace.md#craft-rules)) now hold for the whole chrome on both hosts, and gained
+what the rest of the app needed: cards are a fill with the hairline only in contrast modes; selection
+lifts or washes and the accent ring means where the keys act; typed glyphs become icons; state
+changes fade or slide over 150 ms and changing numbers roll in tabular digits, one shot and never
+while idle; corner notices share one card; long waits are a skeleton or the progress line, not a
+spinner. Visible reversals: the AI badge loses its sparkle (#345 drew one) and is the letters "AI";
+the Video Editor's playhead is the title colour, not red, its waveform the body colour, and the
+selected piece is shown by dimming the others instead of a 3 pt accent ring; Windows' Settings tabs slide as a segmented control; Mac Photos backup's
+live line drops the file name that changed many times a second. Cost: chrome animations on state
+changes only; nothing added to the canvas, the gallery's scroll path or idle. Not measured: no
+present-loop or browse soak was run for this pass, and neither host was looked at running.
+
+**A choice of model per kind meets one-click Enhance (2026-11-05, merging main's #570 into the
+Edit refresh).** Both lines changed Enhance at once. Kept from main: every `models/<kind>/<id>.json`
+is a model of its kind, chosen per kind (`model.<kind>`, keyed downloads `<kind>.<id>`), on the
+settings page, the sheet and now also the Enhance tab's card when the tool's kind has more than
+one; Real-ESRGAN x4plus for clips ("Detail, best") and for photos, its pins and licence as main
+made them. Kept from the refresh: the photo kind's default is Real-HAT-GAN ("Sharpen & restore";
+x4v3 is the video kind's only, so still's x4v3 pin is gone), and Enhance image's five choices stay
+kinds of their own (`detail`). So the photo kind's x4plus is named "Real-ESRGAN" beside HAT (main's
+"Detail, best" beside a "Detail, fast" that photos no longer have) and takes the same size and
+shrink to the detail as HAT. A download resumes at start only when a quit cut it short (the
+refresh's rule), per model now. The sheet's tile-by-tile reveal of a photo (main) is not drawn:
+a photo's run has no sheet since one-click, and the working glow over the photo stands for it.
+Renumbered after main's: ABI 0.36 (S5's docked screens) became 0.38, `chrome_cmd_faces` 1100 became
+1109.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.
@@ -3016,3 +3171,11 @@ animations off. Not measured: the glow's CPU on either host, and Windows not run
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.
+
+**Renumbered on the 2026-11-06 merge with main (edit-refresh).** Main's Places world map took ABI
+0.38 and contribution API 12 ("fill") first, so the Edit refresh's docked screens are ABI **0.39**,
+a screen in place `"edit"` contribution API **13** and the progress line's `detail` / `timed`
+**14** (Enhance's manifest asks for 14). Main's `search_this_person` and host-table row
+`open_list` keep their places; ours (`pane_wider` … `tool_faces`, `still_faces`, `still_extend`,
+the AI table's `faces_json`) follow them.
+

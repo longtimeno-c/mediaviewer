@@ -17,6 +17,7 @@
 #include "io/paths.h"
 #include "io/replace.h"
 #include "meta/meta.h"
+#include "shell/crop_drag.h"
 
 namespace mv::shell {
 namespace {
@@ -216,6 +217,25 @@ edit::placement edit_session::preview_placement() const {
   return edit::place(preview(), edit::size2{item_.width, item_.height}, {}, crop_);
 }
 
+edit_effect edit_session::crop_inside(const edit::rect& r) {
+  if (!has_item_ || crop_) return edit_effect::refused;
+  if (!(r.w > 0.0f && r.h > 0.0f) || !std::isfinite(r.x) || !std::isfinite(r.y)) return edit_effect::refused;
+  if (r.x <= 1e-6f && r.y <= 1e-6f && r.x + r.w >= 1.0f - 1e-6f && r.y + r.h >= 1.0f - 1e-6f) {
+    return edit_effect::none;
+  }
+  const edit::geometry g = export_geometry();
+  // What the picture on screen is cut from today (the angle's own fit when
+  // nothing is cropped), then the part of it the frame keeps.
+  const edit::rect now = edit::constrain_crop(g.crop, g.straighten, frame());
+  edit::rect next{now.x + r.x * now.w, now.y + r.y * now.h, r.w * now.w, r.h * now.h};
+  next = edit::constrain_crop(next, g.straighten, frame());
+  if (same_rect(next, now)) return edit_effect::none;
+  op o{op_kind::crop};
+  o.crop = next;
+  current().push(o);
+  return edit_effect::redraw;
+}
+
 edit::geometry edit_session::export_geometry() const {
   const edit::edit_stack* s = stack();
   return s ? edit::fold(*s) : edit::geometry{};
@@ -289,6 +309,29 @@ edit_effect edit_session::add_red_eye(const edit::red_eye_spot& s) {
   return edit_effect::redraw;
 }
 
+edit_effect edit_session::remove_red_eye(int index) {
+  if (!has_item_) return edit_effect::refused;
+  edit::colour c = colour();
+  if (index < 0 || index >= c.spot_count) return edit_effect::none;
+  for (int k = index; k + 1 < c.spot_count; ++k) {
+    c.spots[static_cast<std::size_t>(k)] = c.spots[static_cast<std::size_t>(k + 1)];
+  }
+  --c.spot_count;
+  c.spots[c.spot_count] = {};
+  return set_colour(c);
+}
+
+edit_effect edit_session::add_red_eyes(std::span<const edit::red_eye_spot> spots) {
+  if (!has_item_) return edit_effect::refused;
+  edit::colour c = colour();
+  for (const edit::red_eye_spot& s : spots) {
+    if (c.spot_count >= edit::kRedEyeSpots) break;
+    if (!(s.r > 0.0f) || !std::isfinite(s.x) || !std::isfinite(s.y)) continue;
+    c.spots[c.spot_count++] = {std::clamp(s.x, 0.0f, 1.0f), std::clamp(s.y, 0.0f, 1.0f), std::clamp(s.r, 0.001f, 0.1f)};
+  }
+  return set_colour(c);
+}
+
 edit_effect edit_session::set_colour(const edit::colour& c) {
   if (!has_item_) return edit_effect::refused;
   op o{op_kind::adjust_all};
@@ -314,33 +357,11 @@ void edit_session::begin_crop() {
   crop_ = true;
 }
 
-const char* crop_aspect_label(crop_aspect a) noexcept {
-  switch (a) {
-    case crop_aspect::free: return "Free";
-    case crop_aspect::original: return "Original";
-    case crop_aspect::square: return "1:1";
-    case crop_aspect::r4_3: return "4:3";
-    case crop_aspect::r3_2: return "3:2";
-    case crop_aspect::r16_9: return "16:9";
-    case crop_aspect::r5_4: return "5:4";
-    default: return "";
-  }
-}
-
 float edit_session::locked_ratio() const noexcept {
   const edit::size2 f = frame();
-  if (aspect_ == crop_aspect::free || f.w == 0 || f.h == 0) return 0.0f;
-  double pixels = 1.0;  // width / height, landscape spelling
-  switch (aspect_) {
-    case crop_aspect::original: pixels = static_cast<double>(f.w) / f.h; break;
-    case crop_aspect::r4_3: pixels = 4.0 / 3.0; break;
-    case crop_aspect::r3_2: pixels = 3.0 / 2.0; break;
-    case crop_aspect::r16_9: pixels = 16.0 / 9.0; break;
-    case crop_aspect::r5_4: pixels = 5.0 / 4.0; break;
-    default: break;  // square
-  }
-  if (aspect_ != crop_aspect::original && pixels < 1.0) pixels = 1.0 / pixels;
-  if (portrait_) pixels = 1.0 / pixels;
+  // Width over height in pixels (shell/crop_aspect.h), 0 for Free.
+  const double pixels = crop_aspect_pixels(aspect_, portrait_, f.w, f.h);
+  if (pixels <= 0.0) return 0.0f;
   // Normalised to the frame: w_n / h_n = (w_px / fw) / (h_px / fh).
   return static_cast<float>(pixels * f.h / f.w);
 }
@@ -404,6 +425,32 @@ edit_effect edit_session::set_crop_aspect(crop_aspect a, bool portrait) {
   if (a == crop_aspect::free) return changed || started ? edit_effect::redraw : edit_effect::none;
   draft_rect_ = fit_locked(draft_rect_);
   draft_auto_ = true;  // still the largest fit: a straighten keeps it so
+  return edit_effect::redraw;
+}
+
+edit_effect edit_session::drag_crop(const edit::rect& start, std::uint8_t handle, float du, float dv) {
+  if (!crop_ || handle == extend_none) return edit_effect::none;
+  const float k = locked_ratio();
+  const auto at = [&](float t) { return crop_drag_rect(start, handle, du * t, dv * t, k, kMinCrop); };
+  edit::rect r = at(1.0f);
+  if (draft_angle_ != 0.0f) {
+    // With an angle the rect stops where a corner of the rotated source would
+    // show: the furthest point along the drag that still fits.
+    const edit::size2 f = frame();
+    const auto fits = [&](const edit::rect& s) { return same_rect(edit::constrain_crop(s, draft_angle_, f), s); };
+    if (!fits(r)) {
+      float lo = 0.0f, hi = 1.0f;
+      for (int i = 0; i < 20; ++i) {
+        const float mid = (lo + hi) * 0.5f;
+        (fits(at(mid)) ? lo : hi) = mid;
+      }
+      r = at(lo);
+      if (!fits(r)) return edit_effect::none;
+    }
+  }
+  if (same_rect(r, draft_rect_)) return edit_effect::none;
+  draft_rect_ = r;
+  draft_auto_ = false;
   return edit_effect::redraw;
 }
 
@@ -650,7 +697,7 @@ expected run_rotation_write(const rotation_write& w) {
 }
 
 result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
-                               const edit::export_options& opt, const edit::colour& c) {
+                               const edit::export_options& opt, const edit::colour& c, std::string_view out_dir) {
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
   // HEIC, TIFF, RAW, WebP: the metadata comes from Exiv2 (meta/), which edit/
   // cannot call; JPEG and PNG are read by edit/ itself.
@@ -665,7 +712,9 @@ result<std::string> run_export(std::string_view source_path, const edit::geometr
   MV_TRY(edit::export_result r, edit::export_image(bytes, g, c, opt, nullptr, &carried));
 
   const std::size_t sep = source_path.find_last_of("/\\");
-  const std::string dir = sep == std::string_view::npos ? std::string() : std::string(source_path.substr(0, sep + 1));
+  const std::string dir = !out_dir.empty()                ? std::string(out_dir)
+                          : sep == std::string_view::npos ? std::string()
+                                                          : std::string(source_path.substr(0, sep + 1));
   const std::string_view name = sep == std::string_view::npos ? source_path : source_path.substr(sep + 1);
   const std::string wanted = edit::export_file_name(name, opt.encode.format);
   // write_new refuses an existing name, so a race between the check and the

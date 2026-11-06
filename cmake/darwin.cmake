@@ -606,6 +606,7 @@ add_library(mv_shell STATIC
   src/shell/text_select.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
+  src/shell/compare_source.h
   src/shell/video_timeline.cpp
   src/shell/video_timeline.h
   src/shell/edit_view.h
@@ -615,6 +616,12 @@ add_library(mv_shell STATIC
   # Slice 7: the Remove brush's strokes and mask, shared.
   src/shell/remove_brush.cpp
   src/shell/remove_brush.h
+  # docs/plans/edit-refresh.md S4a: the brush's committed strokes as a tint texture.
+  src/shell/brush_mask.cpp
+  src/shell/brush_mask.h
+  # docs/plans/edit-refresh.md S8: the Faces tool's cards and boxes.
+  src/shell/faces_tool.cpp
+  src/shell/faces_tool.h
   # PR 13 / 14: trim mode and the clip tools (shared with Windows), and the
   # clip job queue + keyframe index behind the Windows ABI, reused as is.
   src/shell/trim_state.cpp
@@ -974,16 +981,22 @@ if(MV_BUILD_TESTS)
     tests/test_adjust_size.cpp
     tests/test_adjust_size_export.cpp
     tests/test_edit_session.cpp
+    tests/test_crop_drag.cpp
+    tests/test_enhance_run.cpp
     # Issue #614: ⌘P's paper layout.
     tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp
+    tests/test_compare_source.cpp
+    tests/test_pane_width.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp
     tests/test_text_in_image.cpp
     tests/test_text_select.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp
+    tests/test_canvas_tool.cpp
     tests/test_remove_brush.cpp
+    tests/test_faces_tool.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp

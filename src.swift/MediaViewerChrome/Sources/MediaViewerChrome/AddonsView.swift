@@ -532,12 +532,16 @@ struct ImportAddonPage: View {
         }
       }
       if let phase = store.phase {
-        AddonProgressView(phase: phase)
+        AddonProgressView(phase: phase).transition(.opacity)
       } else if !store.message.isEmpty {
         Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+          .transition(.opacity)
       }
       AddonRestartButton()
     }
+    // The bar and the outcome take the same slot in turn, with a short fade.
+    .animation(.easeOut(duration: 0.15), value: store.phase == nil)
   }
 
   private func note(_ text: String) -> some View {
@@ -589,10 +593,14 @@ struct AddonAlertItem: View {
       Button {
         shown.toggle()
       } label: {
-        Text(alert.warn ? "\u{26A0} \(alert.title)" : alert.title)
-          .font(MVTheme.font(13))
-          .foregroundStyle(alert.warn ? MVTheme.accent : MVTheme.body)
-          .lineLimit(1)
+        // The warning is the icon set's triangle, not a typed "⚠" (docs/design/20 "Craft rules").
+        HStack(spacing: MVTheme.space(6)) {
+          if alert.warn {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12))
+          }
+          Text(alert.title).font(MVTheme.font(13)).lineLimit(1)
+        }
+        .foregroundStyle(alert.warn ? MVTheme.accent : MVTheme.body)
       }
       .buttonStyle(FlatButtonStyle())
       .help(alert.body)
@@ -627,68 +635,51 @@ struct AddonAlertItem: View {
   }
 }
 
-/// An add-on install's progress: a determinate bar and "412 MB of 1.08 GB"
-/// while downloading, then the checking / installing steps (indeterminate:
-/// hashing a gigabyte takes seconds and has no fraction to show). Whatever
-/// the phase the bar shows activity: an indeterminate phase sweeps a pulse
-/// across it (a still, dimmer bar with Reduce Motion), so a row never sits
-/// on a frozen 0 % (owner report, 2026-09-28).
+/// An add-on install's progress, in the one progress language (ProgressLine):
+/// "Downloading · 412 of 1080 MB · about 2 min left" while it downloads, then
+/// the checking and installing steps, whose bar sweeps (hashing a gigabyte
+/// takes seconds and has no fraction), so a row never sits on a frozen 0 %
+/// (owner report, 2026-09-28).
 struct AddonProgressView: View {
   let phase: AddonChannel.Phase
   var width: CGFloat? = 320
 
   var body: some View {
-    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-      ActivityBar(fraction: phase.fraction)
-      HStack {
-        Text(phase.text)
-        Spacer()
-        if let f = phase.fraction { Text("\(Int((f * 100).rounded(.down))) %").monospacedDigit() }
-      }
-      .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-    }
-    .frame(maxWidth: width, alignment: .leading)
-    .accessibilityElement(children: .combine)
+    ProgressLine(verb: phase.verb, fraction: phase.fraction, detail: phase.detail,
+                 key: phase.meterKey, timed: phase.meterKey != nil)
+      .frame(maxWidth: width, alignment: .leading)
   }
 }
 
-/// A thin capsule bar. With a fraction it fills to it; without one it is
-/// indeterminate: a soft accent pulse sweeps across (TimelineView, so it only
-/// ticks while on screen), or with Reduce Motion a still, half-strength fill.
+extension AddonChannel.Phase {
+  var verb: String {
+    switch self {
+    case .downloading(let done, _): return done <= 0 ? "Connecting" : "Downloading"
+    case .checking: return "Checking the download"
+    case .installing: return "Installing"
+    }
+  }
+  var detail: String? {
+    if case .downloading(let done, let total) = self, done > 0 { return ProgressWords.amounts(done, of: total) }
+    return nil
+  }
+  /// One download's meter: its size names it.
+  var meterKey: String? {
+    if case .downloading(_, let total) = self, total > 0 { return "addon-download-\(total)" }
+    return nil
+  }
+}
+
+/// A bar alone: the one progress track (ProgressLine.swift), kept under its
+/// old name for the views that draw a bar without words.
 struct ActivityBar: View {
   let fraction: Double?
-  var height: CGFloat = 6
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  var height: CGFloat = 3
 
   var body: some View {
-    GeometryReader { geo in
-      ZStack(alignment: .leading) {
-        Capsule().fill(Color.primary.opacity(0.10))
-        if let f = fraction {
-          Capsule().fill(MVTheme.accent)
-            .frame(width: max(height, geo.size.width * f))
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: f)
-        } else if reduceMotion {
-          Capsule().fill(MVTheme.accent.opacity(0.45))
-        } else {
-          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-            let period = 1.4
-            let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
-            let pulse = geo.size.width * 0.35
-            // An eased sweep from off the left edge to off the right edge.
-            let eased = 0.5 - 0.5 * cos(t * .pi)
-            LinearGradient(colors: [MVTheme.accent.opacity(0), MVTheme.accent, MVTheme.accent.opacity(0)],
-                           startPoint: .leading, endPoint: .trailing)
-              .frame(width: pulse)
-              .offset(x: -pulse + (geo.size.width + pulse) * eased)
-          }
-        }
-      }
-      .clipShape(Capsule())
-    }
-    .frame(height: height)
-    .accessibilityElement()
-    .accessibilityLabel("Progress")
-    .accessibilityValue(fraction.map { "\(Int(($0 * 100).rounded(.down))) percent" } ?? "In progress")
+    ProgressTrack(fraction: fraction, height: height)
+      .accessibilityElement()
+      .accessibilityLabel("Progress")
+      .accessibilityValue(fraction.map { ProgressWords.percent($0) } ?? "In progress")
   }
 }

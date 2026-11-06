@@ -72,6 +72,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
     v.sticky_zoom = true;
     v.ai_badge = false;  // #345: [view] ai_badge, on by default
     v.sort = 2 | 8;  // PR 9: size, descending
+    v.right_pane_dip = 520;  // docs/plans/edit-refresh.md §2.1: the column's width
     save_view_settings(store, v);
     save_destinations(store, {"D:\\Cull", "E:\\K\xC3\xA9" "ep"});  // non-ANSI survives
     save_recent_folders(store, {"F:\\DCIM\\100CANON", "D:\\Iceland"});  // PR 15 jump list
@@ -92,6 +93,15 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   REQUIRE(v.sticky_zoom);
   REQUIRE_FALSE(v.ai_badge);
   REQUIRE(v.sort == (2 | 8));
+  REQUIRE(v.right_pane_dip == 520);
+  // A hand-edited width comes back as one the column can take, rounded to 4;
+  // 0 (or nothing) is the default.
+  again.set_int("view", "right_pane_dip", 9001);
+  REQUIRE(load_view_settings(again).right_pane_dip == 720);
+  again.set_int("view", "right_pane_dip", 301);
+  REQUIRE(load_view_settings(again).right_pane_dip == 300);
+  again.set_int("view", "right_pane_dip", -5);
+  REQUIRE(load_view_settings(again).right_pane_dip == 0);
   // A hand-edited or future key is name, never an out-of-range order.
   again.set_int("view", "sort", 7);
   REQUIRE(load_view_settings(again).sort == 0);

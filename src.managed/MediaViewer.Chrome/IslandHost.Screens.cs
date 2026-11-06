@@ -5,6 +5,7 @@ using System.Text.Json;
 using MediaViewer.Interop;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
+using MediaViewer.Shared;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -301,6 +302,9 @@ public static partial class IslandHost
                 Button? self = null;
                 Button b = ScreenButton(label, () =>
                 {
+                    // S5: a host that draws the screen in its own page answers
+                    // some buttons itself (Enhance's docked Show / Keep editing).
+                    if (TakeScreenButton(at, id)) return;
                     if (copy.Length > 0 && self != null) CopyToClipboard(self, copy, label);
                     SendScreenEvent(at, id, SlotNative.EventClick, "");
                 }, JStr(n, "style"));
@@ -333,31 +337,61 @@ public static partial class IslandHost
                 var box = new ComboBox { Header = SText(JStr(n, "label"), Title, UiFontSize - 2), MinWidth = 160 };
                 string value = JStr(n, "value");
                 var ids = new List<string>();
+                var off = new HashSet<int>();
                 foreach (JsonElement o in JArr(n, "options"))
                 {
+                    // "disabled" (2026-11-04): shown, never chosen (Enhance's
+                    // quality above the performance level says what it needs).
+                    bool disabled = JFlag(o, "disabled");
+                    if (disabled) off.Add(ids.Count);
                     ids.Add(JStr(o, "id"));
-                    box.Items.Add(new ComboBoxItem { Content = JStr(o, "text") });
+                    box.Items.Add(new ComboBoxItem { Content = JStr(o, "text"), IsEnabled = !disabled });
                 }
                 box.SelectedIndex = ids.IndexOf(value);
+                int chosen = box.SelectedIndex;
                 box.SelectionChanged += (_, _) =>
                 {
-                    if (box.SelectedIndex >= 0 && box.SelectedIndex < ids.Count)
-                        SendScreenEvent(at, id, SlotNative.EventChange, JsonString(ids[box.SelectedIndex]));
+                    int i = box.SelectedIndex;
+                    if (i < 0 || i >= ids.Count || i == chosen) return;
+                    // A disabled option reached by the keyboard: back to the one chosen.
+                    if (off.Contains(i))
+                    {
+                        box.SelectedIndex = chosen;
+                        return;
+                    }
+                    chosen = i;
+                    SendScreenEvent(at, id, SlotNative.EventChange, JsonString(ids[i]));
                 };
                 return box;
             }
             case "slider":
             {
                 double lo = JNum(n, "min", 0), hi = JNum(n, "max", 1);
+                double? step = JNum(n, "step", 0) > 0 ? JNum(n, "step", 0) : null;
+                // docs/design/20 "Craft rules": the label left, the value right
+                // (a percentage of the range, or a count), never "1.50".
+                var head = new Grid { ColumnSpacing = Space(8) };
+                head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                TextBlock name = Text(JStr(n, "label"), Title, TypeSize(13), maxLines: 1);
+                name.TextTrimming = TextTrimming.CharacterEllipsis;
+                head.Children.Add(name);
+                TextBlock shown = Text("", Body, TypeSize(13), maxLines: 1);
+                Grid.SetColumn(shown, 1);
+                head.Children.Add(shown);
                 var s = new Slider
                 {
-                    Header = JStr(n, "label"),
+                    Header = head,
                     Minimum = lo,
                     Maximum = hi,
-                    StepFrequency = JNum(n, "step", 0) > 0 ? JNum(n, "step", 0) : (hi - lo) / 100,
+                    StepFrequency = step ?? (hi - lo) / 100,
                     Value = JNum(n, "value", lo),
                     MinWidth = 160,
                 };
+                AutomationProperties.SetName(s, JStr(n, "label"));
+                void Say() => shown.Text = ProgressWords.SliderValue(s.Value, lo, hi, step);
+                Say();
+                s.ValueChanged += (_, _) => Say();
                 // Reported when let go (pointer or key), not on every step of a drag.
                 void Report() => SendScreenEvent(at, id, SlotNative.EventChange, ScreenNumberJson(s.Value));
                 s.PointerCaptureLost += (_, _) => Report();
@@ -411,27 +445,23 @@ public static partial class IslandHost
             }
             case "progress" when JStr(n, "look") == "ring":
                 return ScreenRing(JNum(n, "value", -1), JNum(n, "size", 64));
-            case "progress" when JStr(n, "look") == "glow":
-                return BuildGlowBar(JNum(n, "value", -1));  // contribution API 10 (IslandHost.Glow.cs)
             case "tiles":
                 return BuildTiles(n, at, id);
             case "link":
                 return BuildLink(n);
             case "progress":
             {
+                // docs/design/20 "Craft rules": a bar ("bar" or API 10's "glow")
+                // is the one progress line, its label the verb. API 13: `detail`
+                // in place of the percentage, and `timed` for the time left,
+                // estimated here by node id so it survives the rebuilds.
                 double v = JNum(n, "value", -1);
-                var track = new Grid { Height = 6, MinWidth = 120, Background = Brush(Hairline), CornerRadius = new CornerRadius(3) };  // a pill: half its height
-                var fill = new Border
-                {
-                    Background = Brush(TrimAccent),
-                    CornerRadius = new CornerRadius(3),  // the bar's pill ends: half its height
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                };
-                track.Children.Add(fill);
-                // Indeterminate: a still third (no animation that would tick).
-                track.SizeChanged += (_, _) => fill.Width = track.ActualWidth * (v < 0 ? 0.33 : Math.Clamp(v, 0, 1));
-                AutomationProperties.SetHelpText(track, v < 0 ? "In progress" : $"{Math.Round(v * 100)} percent");
-                return track;
+                var line = new ProgressLine();
+                line.Root.MinWidth = 160;
+                string detail = JStr(n, "detail");
+                line.Show(JStr(n, "label"), v < 0 ? null : v, detail.Length > 0 ? detail : null,
+                          $"{at.Addon}/{at.Screen}/{id}", JFlag(n, "timed"));
+                return line.Root;
             }
             case "separator":
                 return new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) };
@@ -457,7 +487,16 @@ public static partial class IslandHost
             return;  // the clipboard is busy (another app holds it): the click still counts
         }
         object? before = b.Content;
-        b.Content = SText("✓ Copied", Title, UiFontSize - 2);
+        // The icon set's check, not a text glyph (the Mac's Label "checkmark"),
+        // in the button's own ink; the new label fades in on the button itself.
+        var done = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+        done.Children.Add(new FontIcon { Glyph = "", FontFamily = SymbolFont, FontSize = 12, Foreground = b.Foreground,
+                                         VerticalAlignment = VerticalAlignment.Center });
+        TextBlock words = SText("Copied", Title, UiFontSize - 2);
+        words.Foreground = b.Foreground;
+        done.Children.Add(words);
+        b.Content = done;
+        FadeInScreenContent(done);
         AutomationProperties.SetName(b, "Copied");
         DispatcherQueueTimer? t = b.DispatcherQueue?.CreateTimer();
         if (t == null) return;
@@ -466,9 +505,42 @@ public static partial class IslandHost
         t.Tick += (_, _) =>
         {
             b.Content = before;
+            if (before is UIElement back) FadeInScreenContent(back);
             AutomationProperties.SetName(b, label);
         };
         t.Start();
+    }
+
+    // A label that changed in place fades in (150 ms, ease out), the Mac's
+    // crossfade; with Windows' animations off it simply shows.
+    private static void FadeInScreenContent(UIElement e)
+    {
+        e.Opacity = 1;
+        if (!HostAnimationsEnabled()) return;
+        try
+        {
+            var fade = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+            {
+                From = 0,
+                To = 1,
+                Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                EasingFunction = new Microsoft.UI.Xaml.Media.Animation.CubicEase
+                {
+                    EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut,
+                },
+            };
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(fade, e);
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+            var board = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+            board.Children.Add(fade);
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            // Cosmetic: the label is there either way.
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            e.Opacity = 1;
+        }
     }
 
     /// <summary>
@@ -746,13 +818,20 @@ public static partial class IslandHost
 
     // ---- #442 additions: card, ring, tiles, code entry ------------------------------
 
+    // A Windows contrast theme paints the surface in the window colour: there the
+    // card's outline is what carries it (as Surface2, IslandHost.Theme.cs).
+    private static bool HighContrastOn => _accessibilitySettings?.HighContrast == true;
+
+    // "look": "card": the fill alone marks it (docs/design/20 "Craft rules": no
+    // redundant tonal border); a contrast theme keeps the outline. The Mac twin
+    // is CardLook.
     private static Border ScreenCard(UIElement content) => new()
     {
         Child = content,
         Padding = Pad(14),
         Background = Brush(ChromeColour.Surface),
         BorderBrush = Brush(Hairline),
-        BorderThickness = new Thickness(1),
+        BorderThickness = new Thickness(HighContrastOn ? 1 : 0),
         CornerRadius = Corner(10),
         HorizontalAlignment = HorizontalAlignment.Stretch,
     };
@@ -1003,15 +1082,19 @@ public static partial class IslandHost
             shown.Text = $"{label}: {ScreenNumberJson(value)}";
             SendScreenEvent(at, id, SlotNative.EventChange, ScreenNumberJson(value));
         }
-        Button minus = ScreenButton("−", () => Step(-step));
-        Button plus = ScreenButton("+", () => Step(step));
-        foreach (Button b in new[] { minus, plus })
+        Button minus = ScreenButton("", () => Step(-step));
+        Button plus = ScreenButton("", () => Step(step));
+        // The icon set's Remove and Add (the Mac's Stepper), not text glyphs; each
+        // named and tipped, as every icon-only control is.
+        foreach ((Button b, string glyph, string name) in new[]
+                 { (minus, "", $"Decrease {label}"), (plus, "", $"Increase {label}") })
         {
+            b.Content = new FontIcon { Glyph = glyph, FontFamily = SymbolFont, FontSize = 12, Foreground = b.Foreground };
             b.AllowFocusOnInteraction = true;
             b.IsTabStop = true;
+            AutomationProperties.SetName(b, name);
+            ToolTipService.SetToolTip(b, name);
         }
-        AutomationProperties.SetName(minus, $"Decrease {label}");
-        AutomationProperties.SetName(plus, $"Increase {label}");
         row.Children.Add(shown);
         row.Children.Add(minus);
         row.Children.Add(plus);
@@ -1039,7 +1122,8 @@ public static partial class IslandHost
             for (int c = 0; c < columns.Length; ++c)
             {
                 header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                TextBlock h = SText(JStr(columns[c], "title"), Body, UiFontSize - 4, bold: true);
+                // The body colour carries the header (the Mac's): no second weight step.
+                TextBlock h = SText(JStr(columns[c], "title"), Body, UiFontSize - 4);
                 Grid.SetColumn(h, c);
                 header.Children.Add(h);
             }
@@ -1067,7 +1151,8 @@ public static partial class IslandHost
             }
             else
             {
-                var col = new StackPanel { Spacing = Space(1) };
+                // A title over its detail reads as one item: the Mac's 2 pt gap.
+                var col = new StackPanel { Spacing = Space(2) };
                 col.Children.Add(SText(JStr(r, "text"), Title, UiFontSize - 2));
                 string detail = JStr(r, "detail");
                 if (detail.Length > 0) col.Children.Add(SText(detail, Body, UiFontSize - 4));
@@ -1827,10 +1912,12 @@ public static partial class IslandHost
     {
         var wanted = new HashSet<ScreenAt>();
         SyncSettingsScreen(list);  // a settings page is drawn in Settings, never a window
+        NoteEnhanceLevel(list);    // the Enhance tab's level chip reads Enhance's settings page
+        SyncEnhanceDock(list);     // S5: a docked Edit screen, in the Enhance tab
         foreach (JsonElement s in list.EnumerateArray())
         {
             string place = JStr(s, "place");
-            if (place == "settings") continue;
+            if (place == "settings" || place == "edit") continue;
             var at = new ScreenAt(JStr(s, "addon"), JStr(s, "id"));
             wanted.Add(at);
             long revision = (long)JNum(s, "revision", 0);

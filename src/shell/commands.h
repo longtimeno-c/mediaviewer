@@ -101,6 +101,10 @@ enum class mode : std::uint8_t {
   // playing. Layers over video like trim; only ← → differ (they skip ±2 s the
   // way Q / E do). With the strip up the arrows walk the folder.
   skim = 9,
+  // docs/plans/edit-refresh.md S3: a canvas tool armed on a still (the Remove
+  // brush, red-eye). Layers over browse: a key with no kTool row falls back to
+  // the browse row unless key_router's blocked_in_tool refuses it.
+  tool = 10,
   count
 };
 
@@ -118,8 +122,9 @@ inline constexpr mode_mask kRunner = 1 << 6;
 inline constexpr mode_mask kCrop = 1 << 7;
 inline constexpr mode_mask kTrim = 1 << 8;
 inline constexpr mode_mask kSkim = 1 << 9;
+inline constexpr mode_mask kTool = 1 << 10;
 inline constexpr mode_mask kAllModes =
-    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop | kTrim | kSkim;
+    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop | kTrim | kSkim | kTool;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
@@ -416,6 +421,34 @@ enum class command_id : std::uint16_t {
   // face is largest in the still or paused frame on screen. Appended; only
   // while the AI pack is loaded.
   search_this_person,
+  // docs/plans/edit-refresh.md S1: the right column 40 wider / narrower. No
+  // default key: the View menu and Settings (remappable).
+  pane_wider,
+  pane_narrower,
+  // docs/plans/edit-refresh.md S2: the Edit header's one-click ✦ Auto (tone,
+  // then white balance; edit::kAutoEnhanceSections), one undo step; again
+  // right after, it takes itself back. No default key: the Edit menu, the
+  // header and Settings (remappable).
+  auto_enhance,
+  // docs/plans/edit-refresh.md S3: canvas tools (shell/canvas_tool.h). Appended.
+  // In tool mode `[` `]` size the tool (they never rotate there), Ctrl/Cmd+Z
+  // and Ctrl/Cmd+Shift+Z undo / redo one stroke or spot, Backspace / Delete
+  // clear the strokes (never the Bin), Enter applies (Remove) or puts the
+  // tool down, and Space held pans. `B` on a still arms the Remove brush.
+  // tool_red_eye / tool_extend / tool_faces ship unbound (menus, the rail,
+  // Settings).
+  tool_smaller,
+  tool_bigger,
+  tool_undo,
+  tool_redo,
+  tool_clear,
+  tool_apply,
+  tool_pan,
+  tool_pan_release,
+  tool_brush,
+  tool_red_eye,
+  tool_extend,
+  tool_faces,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

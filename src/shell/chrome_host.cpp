@@ -313,6 +313,16 @@ expected chrome_host::load_now() noexcept {
   // PR 29, optional the same way: without it there is no Edit workspace.
   show_edit_pane_ = get_entry(L"ShowEditPane");
   set_edit_view_ = get_entry(L"SetEditView");
+  // docs/plans/edit-refresh.md S2, optional the same way: without them there is
+  // no icon rail and the panes show no edge feedback.
+  show_edit_rail_ = get_entry(L"ShowEditRail");
+  notify_ = get_entry(L"Notify");
+  // docs/plans/edit-refresh.md S3, optional the same way: without it there is
+  // no context bar (the keys still work).
+  set_tool_bar_ = get_entry(L"SetToolBar");
+  // docs/plans/edit-refresh.md S8, optional the same way: without it the
+  // Enhance tab has no Faces panel (the canvas boxes and the bar still work).
+  set_faces_panel_ = get_entry(L"SetFacesPanel");
   // PR 30 (docs/design/21): the Video Editor window. Optional, like the panes.
   attach_editor_ = get_entry(L"AttachVideoEditor");
   layout_editor_ = get_entry(L"LayoutVideoEditor");
@@ -661,6 +671,7 @@ expected chrome_host::attach_transport(HWND parent, void* context, chrome_comman
     if (detach_transport_) (void)detach_transport_(nullptr, 0);
     transport_attached_ = false;
     transport_visible_ = false;
+    tool_bar_visible_ = false;
   }
 
   chrome_filmstrip_args args{};
@@ -686,6 +697,8 @@ void chrome_host::resize_transport(int width, int client_height, int filmstrip_p
                                    std::uint32_t dpi) noexcept {
   if (!transport_attached_ || !resize_transport_) return;
   if (!transport_visible_) {
+    // S3: the island holds the tool bar, which layout_panels places.
+    if (tool_bar_visible_) return;
     show_transport(false, width, client_height, filmstrip_px, dpi);
     return;
   }
@@ -698,6 +711,12 @@ void chrome_host::resize_transport(int width, int client_height, int filmstrip_p
 void chrome_host::show_transport(bool visible, int width, int client_height, int filmstrip_px,
                                  std::uint32_t dpi) noexcept {
   if (!transport_attached_ || !show_transport_) return;
+  // S3: a clip takes the island back from the tool bar (a tool is for stills).
+  if (visible && tool_bar_visible_) {
+    chrome_tool_bar_args none{};
+    set_tool_bar(none);
+    tool_bar_visible_ = false;
+  }
   // A clip arrives with its controls up; the auto-hide rule parks them later.
   transport_parked_ = false;
   chrome_panel_args args = transport_rect(visible, false, width, client_height, filmstrip_px,
@@ -742,6 +761,7 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   adjust_visible_ = false;
   jobs_visible_ = false;
   edit_visible_ = false;
+  rail_visible_ = false;
   page_sidebar_visible_ = false;
   page_sidebar_sent_ = {-1, -1, -1};
 
@@ -836,6 +856,51 @@ void chrome_host::show_edit_pane(bool visible, int x, int y, int width, int heig
 void chrome_host::set_edit_view(const chrome_edit_args& args) noexcept {
   if (!attached_ || !set_edit_view_) return;
   (void)set_edit_view_(const_cast<chrome_edit_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_faces_panel(const chrome_faces_args& args) noexcept {
+  if (!attached_ || !set_faces_panel_) return;
+  (void)set_faces_panel_(const_cast<chrome_faces_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_edit_rail(bool visible, int x, int y, int width, int height) noexcept {
+  if (!panels_attached_ || !show_edit_rail_) return;
+  show_panel(show_edit_rail_, visible, x, y, width, height, false, y + height + 1);
+  rail_visible_ = visible;
+}
+
+void chrome_host::set_tool_bar(const chrome_tool_bar_args& args) noexcept {
+  if (!transport_attached_ || !set_tool_bar_) return;
+  (void)set_tool_bar_(const_cast<chrome_tool_bar_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
+}
+
+// The transport's island, with the tool bar in it: SetToolBar first, so
+// ShowTransport builds the bar and not the clip controls. Hiding parks the
+// island one client height down, as a hidden transport is.
+void chrome_host::show_tool_bar(const chrome_tool_bar_args& args, int x, int y, int width, int height,
+                                int client_height) noexcept {
+  if (!transport_attached_ || !set_tool_bar_ || !show_transport_ || !resize_transport_) return;
+  const bool visible = args.visible != 0;
+  if (!visible && !tool_bar_visible_) return;
+  set_tool_bar(args);
+  chrome_panel_args rect{};
+  rect.visible = visible ? 1 : 0;
+  rect.x = visible ? x : 0;
+  rect.y = visible ? y : client_height;
+  rect.width = visible ? std::max(width, 1) : 1;
+  rect.height = visible ? std::max(height, 1) : 1;
+  if (visible && tool_bar_visible_) {
+    (void)resize_transport_(&rect, static_cast<std::int32_t>(sizeof(rect)));  // a move, content kept
+    return;
+  }
+  (void)show_transport_(&rect, static_cast<std::int32_t>(sizeof(rect)));
+  tool_bar_visible_ = visible;
+}
+
+void chrome_host::notify(chrome_command id, float value) noexcept {
+  if (!attached_ || !notify_) return;
+  chrome_notify_args args{static_cast<std::int32_t>(id), value};
+  (void)notify_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::attach_editor(HWND editor, HWND viewer) noexcept {
@@ -1203,6 +1268,7 @@ void chrome_host::detach() noexcept {
     adjust_visible_ = false;
     jobs_visible_ = false;
     edit_visible_ = false;
+    rail_visible_ = false;
     ai_badge_visible_ = false;
     ai_badge_sent_ = false;
   }
@@ -1210,6 +1276,7 @@ void chrome_host::detach() noexcept {
     (void)detach_transport_(nullptr, 0);
     transport_attached_ = false;
     transport_visible_ = false;
+    tool_bar_visible_ = false;
   }
   if (gallery_attached_ && detach_gallery_) {
     (void)detach_gallery_(nullptr, 0);

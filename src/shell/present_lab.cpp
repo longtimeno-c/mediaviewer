@@ -3,7 +3,8 @@
 #include "shell/present_lab.h"
 #include "core/boot_timeline.h"
 #include "shell/video_report.h"
-#include "shell/brush_overlay.h"
+#include "shell/tool_overlay.h"
+#include "shell/compare_overlay.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
 #include "shell/af_focus.h"
@@ -18,6 +19,7 @@
 #include <avrt.h>
 
 #include <algorithm>
+#include <iterator>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -30,6 +32,7 @@
 #include "codec/format.h"
 #include "core/trace.h"
 #include "gfx/present_policy.h"
+#include "gfx/texture.h"
 
 namespace mv::shell {
 
@@ -145,6 +148,7 @@ expected present_lab::start(HWND window, const lab_options& options) noexcept {
   overlay_visible_ = options.overlay_visible;
   animating_ = options.start_animating;
   sweep_mode_ = options.soak_seconds > 0.0;
+  if (options.pane_drag_soak) drag_log_.arm();
 
   wake_event_ = ::CreateEventW(nullptr, FALSE /*auto-reset*/, FALSE, nullptr);
   if (!wake_event_) return err(status::internal);
@@ -166,6 +170,7 @@ void present_lab::stop() noexcept {
   running_.store(false, std::memory_order_release);
   wake();
   if (render_thread_.joinable()) render_thread_.join();
+  delete pending_brush_mask_.exchange(nullptr);  // S4a: a hand-off the thread never took
   if (wake_event_) {
     ::CloseHandle(wake_event_);
     wake_event_ = nullptr;
@@ -266,6 +271,48 @@ void present_lab::drop_working() noexcept {
   wake();
 }
 
+bool present_lab::upload_brush_mask(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                    std::uint64_t item, std::uint32_t epoch) noexcept {
+  if (!rgba || item == 0) return false;
+  gfx::com_ptr<ID3D11Device> device;
+  {
+    std::lock_guard<std::mutex> lock(upload_device_mutex_);
+    device = upload_device_;
+  }
+  if (!device) return false;
+  auto made = std::unique_ptr<brush_mask_texture>(new (std::nothrow) brush_mask_texture{});
+  if (!made) return false;
+  gfx::com_ptr<ID3D11Texture2D> tex;
+  const gfx::rgba8_level level{rgba, width, height};
+  if (gfx::create_overlay_texture(device.Get(), level, tex, made->srv) != status::ok) return false;
+  made->device = device.Get();
+  made->item = item;
+  made->epoch = epoch;
+  drop_brush_mask_.store(false, std::memory_order_release);
+  delete pending_brush_mask_.exchange(made.release());
+  wake();
+  return true;
+}
+
+void present_lab::drop_brush_mask() noexcept {
+  delete pending_brush_mask_.exchange(nullptr);
+  drop_brush_mask_.store(true, std::memory_order_release);
+  wake();
+}
+
+bool present_lab::take_brush_mask() noexcept {
+  bool changed = false;
+  if (drop_brush_mask_.exchange(false, std::memory_order_acq_rel)) {
+    changed = brush_mask_ != nullptr;
+    brush_mask_.reset();
+  }
+  if (brush_mask_texture* m = pending_brush_mask_.exchange(nullptr)) {
+    brush_mask_.reset(m);
+    changed = true;
+  }
+  return changed;
+}
+
 bool present_lab::take_working() noexcept {
   std::unique_lock<std::mutex> lock(working_mutex_, std::try_to_lock);
   if (!lock.owns_lock()) return false;  // a worker is handing one over: next frame
@@ -285,6 +332,8 @@ bool present_lab::take_working() noexcept {
 expected present_lab::rebuild_device() noexcept {
   if (warmed_up_) measurement_valid_ = false;
   working_.reset();  // PR 11: textures of the old device
+  brush_mask_.reset();  // S4a, likewise
+  delete pending_brush_mask_.exchange(nullptr);
   {
     std::lock_guard<std::mutex> lock(upload_device_mutex_);
     upload_device_.Reset();
@@ -298,6 +347,8 @@ expected present_lab::rebuild_device() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  result_fade_.cancel();
+  side_image_.reset();      // docs/design/20 "Compare": so does the split's before
   fade_from_.reset();
   refine_base_.reset();
   fade_.cancel();
@@ -512,9 +563,16 @@ void present_lab::render_thread_main() noexcept {
       canvas_window_now_.store(host == window_ ? 0 : snapshot.canvas_window, std::memory_order_release);
       if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
     }
+    // docs/plans/edit-refresh.md S6: what fit frames (Extend's frame past the
+    // photo's edges, with room around it). A change comes with refit_seq, so
+    // the fits below pick it up; no presents of its own.
+    (void)camera_.set_fit_frame(snapshot.fit_rect_uv[0], snapshot.fit_rect_uv[1], snapshot.fit_rect_uv[2],
+                                snapshot.fit_rect_uv[3]);
+    bool resized_now = false;
     if (snapshot.resize_seq != seen_resize_seq_ || resize_pending_) {
       seen_resize_seq_ = snapshot.resize_seq;
       resize_pending_ = false;
+      resized_now = true;
       redraw = true;
       if (auto r = swapchain_.resize(snapshot.width, snapshot.height); !r) {
         MV_LOG_WARN("present_lab: resize failed (%s); rebuilding", status_name(r.error()));
@@ -534,12 +592,31 @@ void present_lab::render_thread_main() noexcept {
         camera_.fill(media_width(), media_height(), view.w, view.h, true);
       }
     }
+    // docs/design/12 2026-11-04 (refit_seq): the chrome moved the canvas
+    // rectangle (a pane docked, the right column's edge, the filmstrip), the
+    // window did not. Only the fit or fill is re-run into the new rect: the
+    // swapchain, its buffers and the pacer's refresh are never touched. While
+    // the edge is dragged the picture tracks it exactly; on release it springs.
+    if (snapshot.refit_seq != seen_refit_seq_) {
+      seen_refit_seq_ = snapshot.refit_seq;
+      redraw = true;
+      const bool immediate = snapshot.chrome_live_resize != 0;
+      if (!resized_now && (current_image_ || current_video_.texture)) {
+        const auto view = usable_canvas(snapshot);
+        if (camera_.fit_mode()) {
+          camera_.fit(media_width(), media_height(), view.w, view.h, immediate);
+        } else if (camera_.fill_mode()) {
+          camera_.fill(media_width(), media_height(), view.w, view.h, immediate);
+        }
+      }
+    }
 
     if (snapshot.discard_media_seq != seen_discard_seq_) {
       seen_discard_seq_ = snapshot.discard_media_seq;
       open_error_ = false;
       current_image_.reset();
       previous_image_.reset();
+      result_fade_.cancel();
       fade_from_.reset();
       refine_base_.reset();
       fade_.cancel();
@@ -673,6 +750,21 @@ void present_lab::render_thread_main() noexcept {
             boot_full_due_ = ready->quality == image::gpu_quality::full;
             tiles_complete_seconds_ = -1.0;
             current_video_ = {};
+            // One-click Enhance: the host just opened a run's result. Fade it
+            // in over the photo it was made from (docs/design/20 "Craft
+            // rules"); any other new still cuts, and ends a fade still running.
+            {
+              const bool asked =
+                  snapshot.result_fade_ms != 0 && snapshot.result_fade_ms != seen_result_fade_ms_;
+              if (asked) seen_result_fade_ms_ = snapshot.result_fade_ms;
+              if (asked && current_image_ && current_image_->srv && !current_video_.texture &&
+                  !snapshot.reduce_motion &&
+                  steady_ms() - snapshot.result_fade_ms < canvas::k_result_fade_window_ms) {
+                result_fade_.begin(elapsed, canvas::k_result_fade_seconds);
+              } else {
+                result_fade_.cancel();
+              }
+            }
             // Hold-previous keeps the last *different* still; a re-publish of
             // the same texture is not an advance.
             if (current_image_ && current_image_->texture.Get() != ready->texture.Get()) {
@@ -717,6 +809,21 @@ void present_lab::render_thread_main() noexcept {
     }
     // PR 11: a working texture handed over (or dropped) is one more frame.
     if (take_working()) redraw = true;
+    // S4a: so is the brush's tint texture. Taken after the snapshot: the
+    // worker hands it over before the host publishes the view that stops
+    // drawing its dabs live, so no frame shows neither.
+    if (take_brush_mask()) redraw = true;
+    // docs/design/20 "Compare": the side still landing, or the split changing
+    // (a toggle, a drag of the divider, Y), is one frame each.
+    if (session_) {
+      std::uint64_t side_token = 0;
+      if (image::gpu_image* side = mv::abi::take_side_still(session_, &side_token)) {
+        side_image_.reset(side);
+        side_token_ = side_token;
+        if (snapshot.before_after == 2) redraw = true;
+      }
+    }
+    if (before_changed(snapshot)) redraw = true;
     // PR 10: the edit geometry of the still on screen changed (a turn, a
     // committed crop, crop mode's draft). A new picture size refits, as a new
     // item would; an overlay-only change just redraws — and so does a colour
@@ -766,7 +873,7 @@ void present_lab::render_thread_main() noexcept {
         open_error_status_ = why;
         if (current_video_.texture && current_video_.generation != generation) current_video_ = {};
         if (current_image_ && current_image_->view_generation != generation) {
-          current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
+          current_image_.reset(); previous_image_.reset(); anim_frame_.reset(); result_fade_.cancel();
           fade_from_.reset(); refine_base_.reset(); fade_.cancel(); refine_fade_abandoned();
         }
         redraw = true;
@@ -1109,6 +1216,41 @@ void present_lab::render_thread_main() noexcept {
       }
     }
 
+    // --pane-drag-soak: while the host drags the right column's edge, the
+    // --pan-soak path for 10 s, then fit, so the rest of the drag refits the
+    // picture live (the refit_seq branch above). Only the camera moves.
+    if (options_.pane_drag_soak && current_image_) {
+      const bool dragging_edge = snapshot.chrome_live_resize != 0;
+      const auto view = usable_canvas(snapshot);
+      const float w = media_width();
+      const float h = media_height();
+      if (dragging_edge && drag_pan_start_ < 0.0) {
+        drag_pan_start_ = elapsed;
+        camera_.set_zoom(1.0f, w, h, view.w, view.h);
+        camera_.carry(w, h, w, h, view.w, view.h);
+        camera_.drag_begin();
+      }
+      if (dragging_edge && !drag_pan_done_ && camera_.dragging()) {
+        const double t = elapsed - drag_pan_start_;
+        if (t >= 10.0) {
+          camera_.drag_end();
+          camera_.fit(w, h, view.w, view.h, true);
+          drag_pan_done_ = true;
+        } else {
+          const float ax = std::max(0.0f, (w - view.w) * 0.5f);
+          const float ay = std::max(0.0f, (h - view.h) * 0.5f);
+          const float want_x = w * 0.5f + ax * static_cast<float>(std::sin(t * 6.2831853 / 20.0));
+          const float want_y = h * 0.5f + ay * static_cast<float>(std::sin(t * 6.2831853 / 13.0));
+          const float z = camera_.zoom() > 0.0f ? camera_.zoom() : 1.0f;
+          camera_.drag_delta((camera_.pan_x() - want_x) * z, (camera_.pan_y() - want_y) * z);
+        }
+      }
+      if (!dragging_edge && camera_.dragging() && drag_pan_start_ >= 0.0 && !drag_pan_done_) {
+        camera_.drag_end();
+        drag_pan_done_ = true;
+      }
+    }
+
     // --- Should we present at all? --------------------------------------
     // docs/design/03 rule 4: idle means stop presenting entirely (0 % GPU on a static
     // image), and keep presenting for ~500 ms after the last input so a flick
@@ -1136,6 +1278,21 @@ void present_lab::render_thread_main() noexcept {
       ground_tick_ = ground_.step(ground_every_, elapsed);
       if (ground_tick_) redraw = true;
     }
+    // S3: the tool's size label and red-eye pulse fade on their own: draw
+    // until the deadline, then once more to clear, then idle again.
+    if (current_image_ && !current_video_.texture) {
+      const edit_view* tv = edit_for(*current_image_);
+      const std::uint64_t until = tv ? tool_hud_until(*tv) : 0;
+      // One-click Enhance: the working glow animates while the run goes (and
+      // fades), then once more to clear.
+      if (until > steady_ms() || (tv && work_glow_live(*tv, steady_ms(), snapshot.reduce_motion))) {
+        redraw = true;
+        tool_hud_drawn_ = true;
+      } else if (tool_hud_drawn_) {
+        redraw = true;
+        tool_hud_drawn_ = false;
+      }
+    }
     if (redraw) last_input_time_ = elapsed;
     const bool pan_tail = current_image_ && last_input_time_ >= 0.0 &&
                           (elapsed - last_input_time_) < 0.5;
@@ -1145,7 +1302,7 @@ void present_lab::render_thread_main() noexcept {
     // docs/design/03 rule 4's one labelled exception: blinkies animate, so a still with
     // them on presents until C turns them off. Everything else here idles.
     const bool blinkies = snapshot.clipping && current_image_ != nullptr;
-    const bool fading = fade_from_ && fade_.active(elapsed);
+    const bool fading = (fade_from_ && fade_.active(elapsed)) || result_fade_.active(elapsed);
     const bool live = video_active_ || video_loading || animating_ || camera_.moving() ||
                       pan_tail || blinkies || anim_live_ || fading;
     live_presenting_ = live;
@@ -1243,7 +1400,7 @@ void present_lab::render_thread_main() noexcept {
       const bool first_video = !current_video_.texture;
       if (mv::abi::poll_video(session_, static_cast<player::time_ns>(swapchain_.refresh_interval_seconds() * 1'000'000'000.0), frame, video_active_)) {
         // A clip is not a burst: do not keep a 4K still pinned behind it.
-        current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
+        current_image_.reset(); previous_image_.reset(); anim_frame_.reset(); result_fade_.cancel();
         fade_from_.reset(); refine_base_.reset(); fade_.cancel(); refine_fade_abandoned();
         current_video_ = std::move(frame);
         if (first_video) {
@@ -1272,6 +1429,19 @@ void present_lab::render_thread_main() noexcept {
     draw_view_overlays(snapshot);
     draw_crop_overlay(snapshot);
     if (overlay_visible_) draw_overlay(snapshot);
+    // docs/design/20 "Compare": the split this frame draws (none while hold `\`
+    // shows the previous still); the host hit-tests the divider against it.
+    const bool holding_previous = snapshot.hold_previous && !compare_split_.valid && previous_image_ &&
+                                  previous_image_->srv && current_image_;
+    const compare_frame before = holding_previous ? compare_frame{} : before_frame(snapshot);
+    {
+      std::lock_guard<std::mutex> lock(eye_mutex_);
+      compare_frame_ = before;
+    }
+    if (before.valid && !snapshot.before_whole) {
+      draw_compare_divider(ImGui::GetForegroundDrawList(), before, snapshot.dpi_scale, snapshot.home.accent,
+                           snapshot.before_hot);
+    }
 
     ImGui::Render();
 
@@ -1364,7 +1534,12 @@ void present_lab::render_thread_main() noexcept {
       const bool is_current = !show_previous && shown == current_image_.get();
       if (fade_from_ && !fade_.active(elapsed)) fade_from_.reset();
       const bool fade_now = is_current && fade_from_ && fade_from_->srv;
-      const float fade_alpha = fade_now ? fade_.alpha(elapsed) : 1.0f;
+      // One-click Enhance's result fading in over the photo it was made from:
+      // the old one under, everything new at the fade's alpha.
+      const bool result_now = is_current && !compare_split_.valid && shown != anim_frame_.get() &&
+                              result_fade_.active(elapsed) && previous_image_ && previous_image_->srv;
+      const float result_alpha = result_now ? result_fade_.alpha(elapsed) : 1.0f;
+      const float fade_alpha = (fade_now ? fade_.alpha(elapsed) : 1.0f) * result_alpha;
       const bool tiled = is_current && shown->tiles && !working;
       if (tiled) {
         // Tiles live in the source's pixels. The camera looks at the edited
@@ -1390,11 +1565,39 @@ void present_lab::render_thread_main() noexcept {
       // a tiled image), a sharper preview kept under the tiles, then tiles
       // coarse to fine. Every layer maps the same full-resolution rect.
       const auto draw_still = [&](const gfx::blit_params& p, bool with_tiles) {
+        if (result_now) {
+          // The photo it was made from, through its own placement; fitted
+          // when its size differs (an enlarged or extended result).
+          const image::gpu_image& prev = *previous_image_;
+          const edit_view* prev_edit = edit_for(prev);
+          const edit::placement pp = place_through(prev_edit, prev.width, prev.height);
+          gfx::blit_params op = p;
+          const auto prev_w = static_cast<float>(pp.cropped.w);
+          const auto prev_h = static_cast<float>(pp.cropped.h);
+          for (int i = 0; i < 6; ++i) op.uv_map[i] = pp.map.m[i];
+          const edit::affine prev_inverse = edit::invert(pp.map);
+          for (int i = 0; i < 6; ++i) op.uv_inverse[i] = prev_inverse.m[i];
+          op.clip_to_source = prev_edit && prev_edit->keep_frame;
+          op.source_w = static_cast<float>(prev.width);
+          op.source_h = static_cast<float>(prev.height);
+          apply_adjust(prev_edit, op);
+          if (prev_w != p.image_w || prev_h != p.image_h) {
+            op.zoom = canvas::camera::fit_zoom(prev_w, prev_h, p.window_w, p.window_h);
+            op.pan_x = prev_w * 0.5f;
+            op.pan_y = prev_h * 0.5f;
+          }
+          op.image_w = prev_w;
+          op.image_h = prev_h;
+          op.texture_w = static_cast<float>(prev.texture_width);
+          op.texture_h = static_cast<float>(prev.texture_height);
+          op.opacity = 1.0f;
+          blitter_.draw(device_.context(), prev.srv.Get(), op);
+        }
         if (fade_now) {
           gfx::blit_params fp = p;
           fp.texture_w = static_cast<float>(fade_from_->texture_width);
           fp.texture_h = static_cast<float>(fade_from_->texture_height);
-          fp.opacity = 1.0f;
+          fp.opacity = result_alpha;
           blitter_.draw(device_.context(), fade_from_->srv.Get(), fp);
         }
         gfx::blit_params cp = p;
@@ -1408,7 +1611,7 @@ void present_lab::render_thread_main() noexcept {
         }
         // Tiles join once the fade is over (80-250 ms); before that the
         // overview is what fades in.
-        const bool tiles_on = with_tiles && tiled && !fade_now && !tile_draws_.empty();
+        const bool tiles_on = with_tiles && tiled && !fade_now && !result_now && !tile_draws_.empty();
         if (tiles_on && shown->tiles->covers_view()) {
           // Issue #164: the drawn level's tiles cover every image pixel in
           // view, so the overview and any kept preview would be overdrawn.
@@ -1427,6 +1630,8 @@ void present_lab::render_thread_main() noexcept {
         if (tiles_on) blitter_.draw_tiles(device_.context(), tile_draws_, cp);
       };
       draw_still(bp, true);
+      // docs/design/20 "Compare": the before over the after's left part.
+      if (before.valid && !show_previous) draw_before(snapshot, before, elapsed, theme_rgb);
 
       // Hold Z: the same texture again, through a second viewport — a camera
       // change, not a decode. 100 %, or twice the zoom when already past it.
@@ -1482,6 +1687,8 @@ void present_lab::render_thread_main() noexcept {
     if (warmed_up_ && !options_.start_animating) ++idle_stats_.presents;
     if (hr == S_OK) {
       ++total_presents_;
+      drag_log_.on_present(qpc_seconds(qpc_now() - start_qpc), snapshot.chrome_live_resize != 0,
+                           swapchain_.refresh_interval_seconds());
       // Issue #486. First marks win, so these cost a load after launch.
       mv::boot::mark(mv::boot::stage::first_frame);
       if (boot_pixel_due_) mv::boot::mark(mv::boot::stage::first_pixel);
@@ -1543,6 +1750,8 @@ void present_lab::render_thread_main() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  result_fade_.cancel();
+  side_image_.reset();      // docs/design/20 "Compare": so does the split's before
   fade_from_.reset();
   refine_base_.reset();
   fade_.cancel();
@@ -1638,15 +1847,24 @@ void present_lab::note_still_landed() noexcept {
 void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || current_video_.texture || snapshot.blackout) return;
   const edit_view* v = edit_for(*current_image_);
-  // Slice 7: the Remove brush, the same body as the Mac's (brush_overlay.h).
-  if (v && v->brush_on && !v->crop_overlay) {
+  // docs/plans/edit-refresh.md S3: the canvas tools, the same body as the
+  // Mac's (tool_overlay.h).
+  if (v && tool_overlay_wanted(*v)) {
     const float pw = media_width(), ph = media_height(), zoom = camera_.zoom();
     const auto view = usable_canvas(snapshot);
     const float cx = view.x + view.w * 0.5f, cy = view.y + view.h * 0.5f;
-    draw_brush_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
-                       [&](float ix, float iy) {
-                         return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
-                       });
+    // S4a: the brush's tint, when it was built for this view on this device.
+    ImTextureID mask = 0;
+    if (brush_mask_ && brush_mask_->srv && brush_mask_->device == device_.d3d() && brush_mask_->item == v->item &&
+        brush_mask_->epoch == v->brush_mask_epoch) {
+      mask = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(brush_mask_->srv.Get()));
+    }
+    draw_tool_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
+                      snapshot.home.accent, steady_ms(), mask,
+                      [&](float ix, float iy) {
+                        return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
+                      },
+                      ImVec4(view.x, view.y, view.x + view.w, view.y + view.h), snapshot.reduce_motion);
     return;
   }
   if (!v || !v->crop_overlay) return;
@@ -1679,6 +1897,18 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
     fg->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), line, scale);
   }
   fg->AddRect(a, b, IM_COL32(255, 255, 255, 235), 0.0f, 0, 1.5f * scale);
+  // docs/design/20 Behaviour 4: handles at the corners and the middles of the
+  // edges, as Extend's frame draws them (a drag there resizes, inside moves).
+  {
+    const float k = 4.0f * scale;
+    const float mx = (a.x + b.x) * 0.5f, my = (a.y + b.y) * 0.5f;
+    for (const ImVec2 c : {a, ImVec2(mx, a.y), ImVec2(b.x, a.y), ImVec2(b.x, my), b, ImVec2(mx, b.y),
+                           ImVec2(a.x, b.y), ImVec2(a.x, my)}) {
+      fg->AddRectFilled(ImVec2(c.x - k - scale, c.y - k - scale), ImVec2(c.x + k + scale, c.y + k + scale),
+                        IM_COL32(0, 0, 0, 170));
+      fg->AddRectFilled(ImVec2(c.x - k, c.y - k), ImVec2(c.x + k, c.y + k), IM_COL32(255, 255, 255, 235));
+    }
+  }
   char label[96];
   std::snprintf(label, sizeof(label), "%u x %u   %+.1f\xC2\xB0   Enter apply   Esc cancel",
                 static_cast<unsigned>(std::lround(v->overlay[2] * pw)),
@@ -1782,6 +2012,101 @@ void present_lab::draw_compare_left(const input_snapshot& snapshot, double elaps
   bp.clipping = snapshot.clipping;
   bp.time_seconds = static_cast<float>(elapsed);
   blitter_.draw(device_.context(), prev->srv.Get(), bp);
+}
+
+bool present_lab::before_changed(const input_snapshot& s) noexcept {
+  before_seen now;
+  now.mode = s.before_after;
+  now.layout = s.before_layout;
+  now.whole = s.before_whole;
+  now.hot = s.before_hot;
+  now.split = s.before_split;
+  now.token = s.before_token;
+  for (int i = 0; i < 4; ++i) now.rect[i] = s.before_rect[i];
+  const bool same = now.mode == seen_before_.mode && now.layout == seen_before_.layout &&
+                    now.whole == seen_before_.whole && now.hot == seen_before_.hot &&
+                    now.split == seen_before_.split && now.token == seen_before_.token &&
+                    std::equal(std::begin(now.rect), std::end(now.rect), std::begin(seen_before_.rect));
+  seen_before_ = now;
+  return !same;
+}
+
+compare_frame present_lab::before_frame(const input_snapshot& s) const noexcept {
+  if (s.before_after == 0 || !current_image_ || !current_image_->srv || current_video_.texture ||
+      video_open_ || anim_frame_ || s.blackout || compare_split_.valid || s.edit[0].crop_overlay) {
+    return {};
+  }
+  if (s.before_after == 2 && (!side_image_ || !side_image_->srv || side_token_ != s.before_token)) return {};
+  const canvas_view view = usable_canvas(s);
+  const float z = camera_.zoom();
+  const float cx = view.x + view.w * 0.5f - camera_.pan_x() * z;
+  const float cy = view.y + view.h * 0.5f - camera_.pan_y() * z;
+  return compare_frame_of(view.x, view.y, view.w, view.h, cx, cy, cx + media_width() * z,
+                          cy + media_height() * z, s.before_whole ? 1.0f : s.before_split);
+}
+
+// The before: this still's own texture through an identity placement and no
+// colour (the photo with no edit), or the side still laid onto the after's
+// frame (an Enhance result's source, shell/compare_source.h source_map), under
+// the after's camera. Clipped by the viewport, not the camera: the blit
+// places pixels by SV_Position against the full view's origin and size, so a
+// narrower viewport only cuts it off at the divider. The overview of a tiled
+// still stands in for its tiles.
+void present_lab::draw_before(const input_snapshot& snapshot, const compare_frame& f, double elapsed,
+                              const float theme_rgb[3]) noexcept {
+  const bool by_source = snapshot.before_after == 2;
+  const image::gpu_image* b = by_source ? side_image_.get() : current_image_.get();
+  if (!f.valid || !b || !b->srv) return;
+  const canvas_view view = usable_canvas(snapshot);
+  const float right = snapshot.before_whole ? view.x + view.w : std::min(f.divider_x, view.x + view.w);
+  if (right - view.x < 1.0f) return;
+  const D3D11_VIEWPORT vp{view.x, view.y, right - view.x, view.h, 0.0f, 1.0f};
+  device_.context()->RSSetViewports(1, &vp);
+  const float after_w = media_width();
+  const float after_h = media_height();
+  gfx::blit_params bp{};
+  bp.pan_x = camera_.pan_x();
+  bp.pan_y = camera_.pan_y();
+  bp.zoom = camera_.zoom();
+  bp.window_w = view.w;
+  bp.window_h = view.h;
+  bp.origin_x = view.x;
+  bp.origin_y = view.y;
+  bp.texture_w = static_cast<float>(b->texture_width);
+  bp.texture_h = static_cast<float>(b->texture_height);
+  bp.source_w = static_cast<float>(b->width);
+  bp.source_h = static_cast<float>(b->height);
+  edit::affine map;
+  if (by_source) {
+    const compare_rect where{snapshot.before_rect[0], snapshot.before_rect[1], snapshot.before_rect[2],
+                             snapshot.before_rect[3]};
+    const compare_map m = source_map(after_w, after_h, static_cast<float>(b->width), static_cast<float>(b->height),
+                                     static_cast<compare_layout>(snapshot.before_layout), where);
+    for (int i = 0; i < 6; ++i) map.m[i] = m.m[i];
+    bp.clip_to_source = m.clip;
+    bp.image_w = after_w;
+    bp.image_h = after_h;
+  } else {
+    const edit::placement ip = place_through(nullptr, b->width, b->height);
+    map = ip.map;
+    bp.clip_to_source = false;
+    bp.image_w = static_cast<float>(ip.cropped.w);
+    bp.image_h = static_cast<float>(ip.cropped.h);
+    // A crop or a turn changed the frame: the same region, as the two-up
+    // links its halves.
+    const compare_camera cam = linked_camera(bp.pan_x, bp.pan_y, bp.zoom, after_w, after_h, bp.image_w,
+                                             bp.image_h, view.w, view.h);
+    bp.pan_x = cam.pan_x;
+    bp.pan_y = cam.pan_y;
+    bp.zoom = cam.zoom;
+  }
+  for (int i = 0; i < 6; ++i) bp.uv_map[i] = map.m[i];
+  const edit::affine inverse = edit::invert(map);
+  for (int i = 0; i < 6; ++i) bp.uv_inverse[i] = inverse.m[i];
+  for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
+  bp.clipping = snapshot.clipping;
+  bp.time_seconds = static_cast<float>(elapsed);
+  blitter_.draw(device_.context(), b->srv.Get(), bp);
 }
 
 // Text in images (docs/design/16): publish where the still is for the host's

@@ -755,7 +755,7 @@ jobs:
   macos:
     name: macOS universal disk image
     needs: [prepare, macos-build]
-    runs-on: macos-14
+    runs-on: macos-15  # GitHub retired macos-14 (2026-11: "not supported")
     timeout-minutes: 120
     defaults:
       run:

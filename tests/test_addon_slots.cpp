@@ -1285,7 +1285,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
-  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 13, "max": 14)")) == rejection::needs_update);
+  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 15, "max": 16)")) == rejection::needs_update);
   // editor_items (API 11): a labelled button with no symbol, target or opens,
   // and only under a range that reaches 11.
   {
@@ -1357,14 +1357,97 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
     s.replace(s.find(R"("opens": "explorer")"), 19, R"("opens": "prefs")");
     CHECK(check(k, s) == rejection::malformed);
   }
+  // docs/plans/edit-refresh.md S5: a screen docked in the Edit workspace
+  // (place "edit", contribution API 13): one, never opened by an item, never
+  // asked for by an add-on written for less. Unknown places stay refused.
+  const std::string docked = R"({"id": "explorer", "title": "Explorer", "place": "window", "width": 640, "height": 480},
+    {"id": "tool", "title": "Explorer", "place": "edit"})";
+  const auto at12 = [&](std::string s) {
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 13, "max": 13));
+    return s;
+  };
+  CHECK(check(k, with(screen, docked)) == rejection::malformed);  // API 4-5
+  {
+    std::string s = with(screen, docked);
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 12, "max": 13));
+    CHECK(check(k, s) == rejection::malformed);  // a range that starts before 13
+  }
+  {
+    const std::string m12 = slots_manifest("lib.bin", bytes, at12(with(screen, docked)));
+    const auto d12 = mv::addon::check_manifest(bytes_of(m12), k.sign(m12), k.pub, MV_ADDON_HOST_API);
+    REQUIRE(d12.trusted());
+    REQUIRE(d12.m.slots.screens.size() == 2);
+    CHECK(d12.m.slots.screens[1].place == mv::addon::screen_place::edit);
+  }
+  CHECK(check(k, at12(with(screen, docked + R"(, {"id": "more", "title": "More", "place": "edit"})"))) ==
+        rejection::malformed);  // two
+  {
+    std::string s = at12(with(screen, docked));
+    s.replace(s.find(R"("opens": "explorer")"), 19, R"("opens": "tool")");
+    CHECK(check(k, s) == rejection::malformed);  // an item cannot open it
+  }
+  CHECK(check(k, at12(with(R"("place": "window")", R"("place": "Edit")"))) == rejection::malformed);
+  CHECK(check(k, at12(with(R"("place": "window")", R"("place": "inspector")"))) == rejection::malformed);
   // An add-on with no screens or slots is unaffected.
   REQUIRE(check(k, "", 1, 1) == rejection::none);
+}
+
+TEST_CASE("a docked Edit screen opens only by the workspace's command, which follows its open",
+          "[addon][slots][screens]") {
+  using namespace mv::addon;
+  contributions c;
+  c.api_min = c.api_max = 12;
+  c.screens.push_back({"explorer", "Explorer", screen_place::window, 0, 0});
+  c.screens.push_back({"tool", "Tool", screen_place::edit, 0, 0});
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "docked");
+  fake_client* fc = client.get();
+  REQUIRE(r.attach("docked", "Docked", c, std::move(client)) == status::ok);
+  // Listed as place edit; never a status item's screen (it is not a window).
+  const auto contrib = mv::json::parse(r.contributions_json());
+  REQUIRE(contrib);
+  bool listed = false;
+  for (const auto& s : contrib->find("screens")->a) listed = listed || (*s.str("place") == "edit");
+  CHECK(listed);
+  // Neither the add-on nor a window command puts it up.
+  CHECK(r.show_screen("docked", "tool", true) == status::invalid_arg);
+  CHECK(mv::json::parse(r.screens_json())->a.empty());
+  // Only an object, only for a docked screen the add-on has.
+  CHECK(r.screen_command("docked", "tool", "/p/a.jpg", "[]", 340, 2) == status::invalid_arg);
+  CHECK(r.screen_command("docked", "tool", "/p/a.jpg", "not json", 340, 2) == status::invalid_arg);
+  CHECK(r.screen_command("docked", "tool", "/p/a.jpg", std::string(5000, ' ') + "{}", 340, 2) == status::invalid_arg);
+  CHECK(r.screen_command("docked", "explorer", "/p/a.jpg", "{}", 340, 2) == status::not_found);
+  CHECK(r.screen_command("nobody", "tool", "/p/a.jpg", "{}", 340, 2) == status::not_found);
+  CHECK(fc->opens == 0);
+  // The first command opens it (asked as MV_SLOT_PLACE_EDIT), then arrives.
+  REQUIRE(r.screen_command("docked", "tool", "/p/a.jpg", R"({"photo":"remove"})", 340, 2) == status::ok);
+  r.drain();
+  CHECK(fc->opens == 1);
+  const auto open = mv::json::parse(r.screens_json());
+  REQUIRE(open->a.size() == 1);
+  CHECK(*open->a[0].str("place") == "edit");
+  {
+    std::lock_guard lock(fc->m);
+    REQUIRE(fc->events.size() == 1);
+    CHECK(fc->events[0] == std::to_string(MV_SLOT_EVENT_COMMAND) + ":tool:{\"photo\":\"remove\"}");
+  }
+  // While open, a command does not open it again.
+  REQUIRE(r.screen_command("docked", "tool", "/p/a.jpg", R"({"photo":"remove","run":true})", 340, 2) == status::ok);
+  r.drain();
+  CHECK(fc->opens == 1);
+  // Its controls answer as a window's do; closing tells the add-on.
+  REQUIRE(r.send_event("docked", "tool", "sw", MV_SLOT_EVENT_CHANGE, "true") == status::ok);
+  REQUIRE(r.close_screen("docked", "tool") == status::ok);
+  r.drain();
+  CHECK(mv::json::parse(r.screens_json())->a.empty());
+  std::lock_guard lock(fc->m);
+  CHECK(fc->events.size() == 4);  // two commands, the change, the close
 }
 
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 12);
+  REQUIRE(mv::addon::kContributionApi == 14);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);

@@ -38,11 +38,12 @@ struct AIBadgeView: View {
   @FocusState private var focused: Bool
 
   var body: some View {
-    HStack(spacing: MVTheme.space(3)) {
-      Image(systemName: "sparkles").font(.system(size: 10, weight: .semibold))
-      Text("AI").font(.system(size: 11, weight: .semibold))
-    }
-    .foregroundStyle(MVTheme.title)
+    // The badge says what it is: the letters, no sparkle (docs/design/20
+    // "Craft rules": no sparkle, wand or star as AI decoration). The theme's
+    // face, as Windows' badge (IslandHost.AiBadge.cs).
+    Text("AI")
+      .font(MVTheme.font(13))
+      .foregroundStyle(MVTheme.title)
     .frame(width: AIBadgeView.width, height: AIBadgeView.height)
     .background(.regularMaterial, in: Capsule())
     .overlay(Capsule().strokeBorder(focused ? MVTheme.accent : MVTheme.hairline, lineWidth: focused ? 2 : 0.5))
@@ -60,13 +61,14 @@ struct AIBadgeView: View {
                                   set: { if !$0 { hovering = false } }),
              arrowEdge: .top) {
       VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-        Text(store.title).font(.callout.weight(.semibold)).foregroundStyle(MVTheme.title)
+        Text(store.title).font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
         if !store.evidence.isEmpty {
-          Text(store.evidence).font(.caption).foregroundStyle(MVTheme.body)
+          Text(store.evidence).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+            .lineSpacing(3)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
-      .padding(MVTheme.space(10))
+      .padding(MVTheme.space(12))
       .frame(maxWidth: 320, alignment: .leading)
     }
     .accessibilityElement(children: .ignore)

@@ -87,6 +87,14 @@ inline constexpr int k_refine_luma_full_levels = 40;
   return k_refine_fade_seconds + t * (k_refine_fade_max_seconds - k_refine_fade_seconds);
 }
 
+// One-click Enhance's payoff (docs/design/20 "Craft rules"): when the host
+// opens a run's result, the new photo cross-fades in over the one it was made
+// from as the working glow fades, instead of cutting. The host stamps the
+// request (input_snapshot.result_fade_ms); the next new still that lands
+// within the window takes it, once. Reduce Motion / animations off: a cut.
+inline constexpr double k_result_fade_seconds = 0.250;
+inline constexpr std::uint64_t k_result_fade_window_ms = 5000;
+
 struct crossfade {
   double start_seconds = -1.0;  // < 0: no fade
   double duration_seconds = k_refine_fade_seconds;

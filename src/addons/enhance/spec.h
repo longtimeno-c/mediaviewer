@@ -30,12 +30,44 @@ namespace mv::enhance {
 // `restyle` (docs/plans/edit-adjust.md slice 5b) changes a photo as a typed
 // request asks; a photo offers it beside `still`.
 // `remove` (slice 7) fills in what the person brushed over in Edit.
-enum class model_kind : std::uint8_t { still = 0, video = 1, audio = 2, restyle = 3, remove = 4 };
-inline constexpr std::array<model_kind, 5> kModelKinds{model_kind::still, model_kind::video, model_kind::audio,
-                                                       model_kind::restyle, model_kind::remove};
+// Enhance image (docs/plans/edit-refresh.md S7, owner 2026-11-04): a photo's
+// "More detail" offers five models, each its own kind so each is downloaded
+// only when chosen: `still` sharpens and restores (Real-HAT-GAN), `natural`
+// enlarges faithfully (RealWebPhoto), `denoise` (SCUNet), `deblur` and
+// `motion` (NAFNet REDS / GoPro) keep the size. `face` (S10, owner call C)
+// restores each face of a photo (face_restore.h). Appended: the values are
+// never stored (prefs and folders go by name).
+enum class model_kind : std::uint8_t {
+  still = 0, video = 1, audio = 2, restyle = 3, remove = 4,
+  natural = 5, denoise = 6, deblur = 7, motion = 8, face = 9,
+};
+inline constexpr std::array<model_kind, 10> kModelKinds{model_kind::still,   model_kind::video,   model_kind::audio,
+                                                        model_kind::restyle, model_kind::remove,  model_kind::natural,
+                                                        model_kind::denoise, model_kind::deblur,  model_kind::motion,
+                                                        model_kind::face};
 inline constexpr std::size_t kKindCount = kModelKinds.size();
 
-[[nodiscard]] const char* kind_name(model_kind k) noexcept;  // "still" | "video" | "audio" | "restyle" | "remove"
+// The photo's "More detail" choices, in the order the sheet offers them.
+inline constexpr std::array<model_kind, 5> kStillKinds{model_kind::still, model_kind::natural, model_kind::denoise,
+                                                       model_kind::deblur, model_kind::motion};
+// Remove motion blur is not offered (2026-11-05): S7 found the pinned
+// NAFNet-GoPro ONNX export defective (it blows up on about a third of photos;
+// restore_picture's guard then keeps the photo's own pixels, so the tool
+// does nothing). Its spec, pin and code stay, behind this flag, so a working
+// export can replace the pin and turn it back on. Off, it is not a choice, not
+// a Settings card (unless already downloaded, so it can be removed) and never
+// downloaded.
+inline constexpr bool kOfferMotionBlur = false;
+[[nodiscard]] constexpr bool kind_offered(model_kind k) noexcept {
+  return k != model_kind::motion || kOfferMotionBlur;
+}
+[[nodiscard]] constexpr bool still_family(model_kind k) noexcept {
+  return k == model_kind::still || k == model_kind::natural || k == model_kind::denoise ||
+         k == model_kind::deblur || k == model_kind::motion;
+}
+
+// "still" | "video" | "audio" | "restyle" | "remove" | "natural" | "denoise" | "deblur" | "motion" | "face"
+[[nodiscard]] const char* kind_name(model_kind k) noexcept;
 [[nodiscard]] std::optional<model_kind> kind_from(std::string_view name) noexcept;
 
 // One weights file is at most this (#297, owner 2026-10-10): a pin over it is

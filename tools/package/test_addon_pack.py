@@ -413,7 +413,7 @@ class EnhancePackTest(unittest.TestCase):
         self.assertNotIn("remote.json", shipped)
         self.assertEqual(m["remote"], [self.pin])
         c = m["contributes"]
-        self.assertEqual([s["place"] for s in c["screens"]], ["sheet", "settings"])
+        self.assertEqual([s["place"] for s in c["screens"]], ["sheet", "settings", "edit"])
         self.assertEqual(c["commands"][0]["windows"], "Ctrl+Shift+R")  # docs/design/16
 
     def test_a_pin_over_5_gb_fails_the_pack(self):

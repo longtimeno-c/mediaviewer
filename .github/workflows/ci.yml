@@ -71,7 +71,7 @@ jobs:
   mac-chrome:
     name: SwiftUI chrome
     if: github.event_name != 'schedule'
-    runs-on: macos-14
+    runs-on: macos-15  # GitHub retired macos-14 (2026-11: "not supported")
     timeout-minutes: 30
     defaults:
       run:

@@ -206,6 +206,15 @@ MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* ite
   }));
 }
 
+MV_API mv_status MV_CALL mv_slots_screen_command(const char* addon, const char* screen, const char* path_utf8,
+                                                 const char* value_json, float width_pt, float scale) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_screen_command", [&] {
+    MV_REQUIRE(addon && screen && value_json, "addon, screen and value required");
+    return mv::addon::default_slots().screen_command(addon, screen, path_utf8 ? std::string(path_utf8) : std::string(),
+                                                     value_json, width_pt, scale);
+  }));
+}
+
 MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command, const char* paths_json) {
   return static_cast<mv_status>(mv::abi::guard("mv_slots_command", [&] {
     MV_REQUIRE(addon && command, "addon and command required");

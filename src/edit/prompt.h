@@ -32,12 +32,20 @@ struct prompt_result {
   std::vector<std::string> applied;   // "Exposure +0.4", one per slider moved, in order
   std::vector<std::string> unknown;   // words that matched nothing
   std::vector<adjust_section> autos;  // sections whose Auto was asked for
+  bool recognised = false;            // a word named a slider (moved or already at its end) or an Auto
   [[nodiscard]] bool changed(const colour& current) const noexcept { return !(value == current); }
 };
 
 [[nodiscard]] prompt_result parse_prompt(std::string_view text, const colour& current);
 
-// "Exposure +0.4, Warmth +15" (or the unknown words), for the pane's note.
+// What the pane's note says when no word of the request moved anything.
+inline constexpr const char* kPromptNotRecognised =
+    "Didn't recognise that — try 'warmer', 'brighter', 'less noise'";
+
+// The pane's note: "Exposure +0.3 EV · Temperature +15 · Noise reduction +30"
+// (and "· not understood: …" for words left over), kPromptNotRecognised when
+// nothing was recognised, "Nothing to change: …" when the sliders are
+// already where the words say.
 [[nodiscard]] std::string prompt_summary(const prompt_result& r);
 
 }  // namespace mv::edit

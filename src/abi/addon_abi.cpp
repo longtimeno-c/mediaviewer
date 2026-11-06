@@ -9,6 +9,8 @@
 #include <mediaviewer/mediaviewer_addon.h>
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -277,6 +279,15 @@ MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* 
   }));
 }
 
+MV_API mv_status MV_CALL mv_edit_still_extend(const char* path_utf8, const float* ltrb) {
+  return static_cast<mv_status>(mv::abi::guard("mv_edit_still_extend", [&] {
+    std::array<float, 4> f{};
+    if (path_utf8 && ltrb) std::copy_n(ltrb, 4, f.begin());
+    mv::addon::media::set_still_extend(path_utf8 && ltrb ? path_utf8 : "", f);
+    return status::ok;
+  }));
+}
+
 MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_out, uint32_t cap,
                                              uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_open_closed_eyes", [&] {
@@ -287,6 +298,52 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
     if (pack) r = mv::addon::media::open_closed_eyes(path_utf8, *pack);
     return write_out(mv::addon::media::eyes_note(pack ? status::ok : pack.error(), r), note_out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_improve_faces", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
+    if (pack) r = mv::addon::media::improve_faces(path_utf8, *pack);
+    return write_out(mv::addon::media::faces_note(pack ? status::ok : pack.error(), r), note_out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_eyes_json", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    const std::string readable = mv::addon::media::readable_path(path_utf8, nullptr).value_or(path_utf8);
+    auto pack = mv::addon::ai_eyes_json(readable, "");
+    if (!pack) return pack.error();
+    return write_out(*pack, out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                         char* note_out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_adjust_faces", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    MV_REQUIRE(fix >= -1 && fix <= 1, "fix: -1 do all, 0 open eyes, 1 improve");
+    MV_REQUIRE(count == 0 || boxes, "boxes required");
+    MV_REQUIRE(count <= 64, "at most 64 faces");
+    using mv::addon::media::face_fix;
+    const auto f = static_cast<face_fix>(fix);
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
+    if (pack) {
+      // The faces the canvas chose, found again in this answer; NULL: every face.
+      const std::uint64_t mask =
+          boxes ? mv::addon::media::faces_mask_of(*pack, std::span<const float>(boxes, std::size_t{count} * 4))
+                : mv::addon::media::kAllFaces;
+      r = mv::addon::media::fix_faces(path_utf8, *pack, f, mask);
+    }
+    return write_out(mv::addon::media::fix_note(f, pack ? status::ok : pack.error(), r), note_out, cap, needed);
   }));
 }
 
@@ -746,6 +803,8 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
     svc.route = &mv::addon::media::route;              // #606
     svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
+    svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
+    svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);
@@ -771,6 +830,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       const auto* ai = static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE));
       mv::addon::publish_index_locations(mv::addon::ai_index_locations(ai));
       mv::addon::publish_ai_eyes(mv::addon::ai_eyes(ai));  // edit-adjust slice 6
+      mv::addon::publish_ai_faces(mv::addon::ai_faces(ai));  // edit-refresh S10: Restore faces
     }
   }
   const void* iface = it->second.addon->query(interface_id);

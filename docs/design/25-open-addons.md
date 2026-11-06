@@ -735,6 +735,15 @@ How it works:
   remembered devices) where a manifest `settings` page (contribution API 2, values kept by the
   host) would keep a second copy. Schema 1 manifests only; other makers' scripts do not have it.
   Mac `AddonSettingsScreen` (`AddonListView.swift`), Windows `IslandHost.AddonSettingsScreen.cs`.
+- **A screen docked in Edit** (2026-11-05, contribution API **12**; `MV_SLOT_PLACE_EDIT`): a
+  screen in place `"edit"` is drawn inside the Edit workspace's Enhance tab, under the tool's card,
+  by the same renderer, never in a window. Only the workspace opens it, with a command
+  (`mv_slots_screen_command`: opened on the file on screen if it is not open, then a command
+  event carrying one small JSON object); `screen_show` refuses it, an item's `"opens"` may not name
+  it and a status item's "only screen" skips it. At most one per add-on. The host may answer some
+  of its buttons itself (Enhance's Show and Keep editing navigate). Enhance's tool panel is the
+  only one ([29](29-enhance.md) "Docked in Edit"). Mac `DockedToolPanel` (`EnhanceHubView.swift`),
+  Windows `IslandHost.EnhanceDock.cs`.
 - **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
   is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
   side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
@@ -856,11 +865,33 @@ Two more (2026-10-28, Enhance; contribution API **10**):
   every six seconds; `still` holds them. Mac `GlowEdge`, Windows `WithGlow`
   (`IslandHost.Glow.cs`); the colours and timings are one table (`GlowMath.cs`, checked against
   `ScreenView.swift` by the C# tests).
-- **`progress` `"look": "glow"`**: a bar in the same colours with a highlight sweeping along it
-  every 2.4 s (not started: the whole bar, dimmed). Mac `GlowBar`, Windows `BuildGlowBar`.
+- **`progress` `"look": "glow"`**: accepted; since 2026-11-05 drawn as every bar, the one
+  progress line below (it was a bar in the glow's colours with a sweeping highlight).
 
 Both are the window's own drawing, never the canvas: 30 fps at most, only while the node is in the
 tree, and still with Reduce Motion (Mac) or animations off (Windows).
+
+One more (2026-11-05, the one progress language; contribution API **13**, docs/design/20
+"Craft rules"):
+
+- **`progress` `detail` and `timed`.** Every `progress` bar (`"bar"` or `"glow"`) is drawn as one
+  line: a 3-point track whose fill eases forward and never back (a smaller value is held unless it
+  falls by more than a quarter, a new run), a calm sweep while the value is −1, and one line under it,
+  `label` first as the verb: "Enhancing · 40 % · about 1 min left". `detail` (at most a label's
+  length) takes the percentage's place ("48 of 161 MB"); `timed: true` has the host estimate the
+  time left from how the value moves (by node id, so it survives rebuilds) and say it in
+  Driftwire's words, "Estimating…" until it can. Mac `ProgressLine`, Windows `ProgressLine`
+  (`IslandHost.Progress.cs`); the words and meter are `ProgressWords.swift` and
+  `src.managed/Shared/ProgressWords.cs`, the C# tests reading the Swift twin. A `slider` shows its
+  value right of its label as a percentage of its range, or a count when its step is a whole number.
+
+One more (2026-11-04, Enhance's performance level; contribution API **12**, the same step as the
+Edit pane's `place "edit"` above: an older core refuses a tree that uses it, and Enhance's manifest
+asks for 12 for both):
+
+- **A `choice` option's `"disabled": true`**: listed, never chosen. The core refuses a change to
+  it (`"[screens]"`); the Mac's Picker marks the item `.disabled` and ignores a choice of it, Windows' `ComboBoxItem` is
+  not enabled. The option's text says why (Enhance: *Best (needs Maxxed level)*).
 
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.

@@ -97,12 +97,30 @@ float camera::fill_zoom(float image_w, float image_h, float window_w, float wind
   return std::min(kMaxZoom, std::max(window_w / image_w, window_h / image_h));
 }
 
+bool camera::set_fit_frame(float x, float y, float w, float h) noexcept {
+  if (!std::isfinite(x) || !std::isfinite(y) || !(w > 0.0f) || !(h > 0.0f) || !std::isfinite(w) ||
+      !std::isfinite(h)) {
+    x = y = 0.0f;
+    w = h = 1.0f;
+  }
+  if (frame_[0] == x && frame_[1] == y && frame_[2] == w && frame_[3] == h) return false;
+  frame_[0] = x;
+  frame_[1] = y;
+  frame_[2] = w;
+  frame_[3] = h;
+  return true;
+}
+
+void camera::fit_target(float image_w, float image_h, float window_w, float window_h) noexcept {
+  target_zoom_ = fit_zoom(image_w * frame_[2], image_h * frame_[3], window_w, window_h);
+  target_pan_x_ = image_w * (frame_[0] + frame_[2] * 0.5f);
+  target_pan_y_ = image_h * (frame_[1] + frame_[3] * 0.5f);
+}
+
 void camera::fit(float image_w, float image_h, float window_w, float window_h,
                  bool immediate) noexcept {
   clear_rubber();
-  target_zoom_ = fit_zoom(image_w, image_h, window_w, window_h);
-  target_pan_x_ = image_w * 0.5f;
-  target_pan_y_ = image_h * 0.5f;
+  fit_target(image_w, image_h, window_w, window_h);
   fit_mode_ = true;
   fill_mode_ = false;
   if (immediate) {
@@ -230,10 +248,13 @@ void camera::refine(float old_w, float old_h, float new_w, float new_h, float wi
   if (rubber_fit_zoom_ > 0.0f) rubber_fit_zoom_ /= s;
 
   if (fit_mode_ || fill_mode_) {
-    target_zoom_ = fit_mode_ ? fit_zoom(new_w, new_h, window_w, window_h)
-                             : fill_zoom(new_w, new_h, window_w, window_h);
-    target_pan_x_ = new_w * 0.5f;
-    target_pan_y_ = new_h * 0.5f;
+    if (fit_mode_) {
+      fit_target(new_w, new_h, window_w, window_h);
+    } else {
+      target_zoom_ = fill_zoom(new_w, new_h, window_w, window_h);
+      target_pan_x_ = new_w * 0.5f;
+      target_pan_y_ = new_h * 0.5f;
+    }
     if (settled && !dragging_ && !rubber_held_) {
       pan_x_ = target_pan_x_;
       pan_y_ = target_pan_y_;

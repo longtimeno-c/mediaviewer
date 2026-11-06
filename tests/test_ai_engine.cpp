@@ -2738,6 +2738,70 @@ TEST_CASE("eyes: the same person's faces in the frames offered, with landmarks; 
   REQUIRE(donors);
   REQUIRE(donors->a.size() == 1);  // anna_2 only: not Ben, not the empty frame, not itself, not the missing file
   CHECK(donors->a[0].find("path")->s.find("anna_2.jpg") != std::string::npos);
+  // docs/plans/edit-refresh.md S8: who she is, for the Faces panel. Unnamed:
+  // no "name", and People's other photo of her (anna_2, not this one).
+  CHECK_FALSE(f.find("name"));
+  CHECK(f.integer("photos").value_or(-1) == 1);
+  REQUIRE(r.eng->person_rename(*f.integer("person"), "Anna"));
+  auto named = mv::json::parse(*r.eng->eyes_json(target, {}));
+  REQUIRE(named);
+  const mv::json::value& g = named->find("faces")->a[0];
+  REQUIRE(g.str("name"));
+  CHECK(*g.str("name") == "Anna");
+  CHECK(g.integer("photos").value_or(-1) == 1);
+}
+
+// docs/plans/edit-refresh.md S10 (mv_ai_api faces_json): Restore faces hands
+// pixels, never a path; with `other` each face's cosine to the same face changed.
+TEST_CASE("faces: a picture's faces and landmarks, and the guard's cosine to it changed; nothing while People is off",
+          "[ai][engine][faces]") {
+  rig r;
+  r.file("anna_1.jpg");
+  r.start();
+  const auto frame = [](std::uint8_t tag) {
+    mv::ai::rgb_frame f;
+    f.width = 64;
+    f.height = 48;
+    f.rgb.assign(std::size_t{64} * 48 * 3, 90);
+    f.rgb[2] = tag;  // the fake analyser's person
+    return f;
+  };
+  const mv::ai::rgb_frame anna = frame(11), ben = frame(22), nobody = frame(0);
+  const auto num = [](const mv::json::value* v) {
+    REQUIRE(v);
+    return v->is_integer ? static_cast<double>(v->i) : v->d;
+  };
+  CHECK_FALSE(r.eng->faces_json(anna, nullptr));  // People is off: nothing is read
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  const auto faces_of = [&](const mv::ai::rgb_frame& img, const mv::ai::rgb_frame* other) {
+    auto j = r.eng->faces_json(img, other);
+    REQUIRE(j);
+    auto doc = mv::json::parse(*j);
+    REQUIRE(doc);
+    REQUIRE(doc->find("faces"));
+    return doc->find("faces")->a;
+  };
+  const auto one = faces_of(anna, nullptr);
+  REQUIRE(one.size() == 1);
+  REQUIRE(one[0].find("lm"));
+  CHECK(one[0].find("lm")->a.size() == 10);
+  CHECK(std::abs(num(one[0].find("x")) - 0.25) < 1e-6);
+  CHECK_FALSE(one[0].find("sim"));  // only with `other`
+  CHECK(faces_of(nobody, nullptr).empty());
+  // The same person after the change: near 1. Another person: far. None: -1.
+  const auto same = faces_of(anna, &anna);
+  REQUIRE(same.size() == 1);
+  CHECK(num(same[0].find("sim")) > 0.99);
+  const auto other = faces_of(anna, &ben);
+  CHECK(num(other[0].find("sim")) < 0.1);
+  const auto gone = faces_of(anna, &nobody);
+  CHECK(num(gone[0].find("sim")) == -1.0);
+  // Another size is refused.
+  mv::ai::rgb_frame small = frame(11);
+  small.width = 32;
+  small.rgb.resize(std::size_t{32} * 48 * 3);
+  CHECK_FALSE(r.eng->faces_json(anna, &small));
 }
 
 TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leaves no vectors",

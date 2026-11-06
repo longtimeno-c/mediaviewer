@@ -28,15 +28,24 @@ enum class clip_target : std::uint8_t { picture = 0, sound = 1, both = 2 };
 // What Enhance does to a photo (slice 5b): more detail (the still model) or
 // a typed restyle.
 // remove (slice 7): fill in what was brushed in Edit, offered while it is.
-enum class photo_target : std::uint8_t { detail = 0, restyle = 1, remove = 2 };
-inline constexpr photo_target kPhotoTargets[] = {photo_target::detail, photo_target::restyle, photo_target::remove};
-[[nodiscard]] const char* photo_target_name(photo_target t) noexcept;  // "detail" | "restyle" | "remove"
+// extend (owner 2026-11-04): new edges around the photo, Remove's model.
+// faces (docs/plans/edit-refresh.md S10): each face restored, the face model.
+// Appended: stored by name, but other slices append too.
+enum class photo_target : std::uint8_t { detail = 0, restyle = 1, remove = 2, extend = 3, faces = 4 };
+inline constexpr photo_target kPhotoTargets[] = {photo_target::detail, photo_target::restyle, photo_target::remove,
+                                                 photo_target::extend, photo_target::faces};
+// "detail" | "restyle" | "remove" | "extend" | "faces"
+[[nodiscard]] const char* photo_target_name(photo_target t) noexcept;
 
 struct prefs {
   // values[kind][knob id], for a target of that kind.
   std::array<std::map<std::string, json::value>, kKindCount> values;
   clip_target target = clip_target::picture;
   photo_target photo = photo_target::detail;
+  // Enhance image's model (S7): one of kStillKinds; Sharpen & restore by default.
+  model_kind detail = model_kind::still;
+  // The performance level (tier.h tier_name), or "auto": the recommendation.
+  std::string tier = "auto";
   // The model each kind uses, by id; "" until the person chooses (model.json's).
   std::array<std::string, kKindCount> use;
   // The person clicked Install for these models (and did not Remove them),

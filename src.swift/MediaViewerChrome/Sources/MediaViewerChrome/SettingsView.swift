@@ -167,7 +167,9 @@ final class SettingsStore: ObservableObject {
 }
 
 // A separate label column keeps every switch on the same trailing edge,
-// including rows whose descriptions wrap at smaller window sizes.
+// including rows whose descriptions wrap at smaller window sizes. One surface:
+// the fill marks the row, no hairline around it, words 12 pt from its edge
+// (docs/design/20 "Craft rules"; IslandHost.Settings.cs SettingsRow).
 private struct SettingsRow<Content: View>: View {
   let title: String
   let detail: String
@@ -185,10 +187,41 @@ private struct SettingsRow<Content: View>: View {
         .labelsHidden()
         .accessibilityLabel(title)
     }
-    .padding(MVTheme.space(14))
+    .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+    .settingsCardOutline(MVTheme.radius(8))
+  }
+}
+
+/// Settings' cards are a fill, no hairline (docs/design/20 "Craft rules"); under
+/// Increase Contrast the outline comes back, as add-on screen cards do. The
+/// Windows twin is CardOutline (IslandHost.Settings.cs), a high-contrast theme's.
+struct SettingsCardOutline: ViewModifier {
+  let radius: CGFloat
+  @Environment(\.colorSchemeContrast) private var contrast
+
+  func body(content: Content) -> some View {
+    content.overlay {
+      if contrast == .increased {
+        RoundedRectangle(cornerRadius: radius).stroke(MVTheme.hairline, lineWidth: 1)
+      }
+    }
+  }
+}
+
+extension View {
+  func settingsCardOutline(_ radius: CGFloat) -> some View { modifier(SettingsCardOutline(radius: radius)) }
+}
+
+/// A group's title on the General page: 16 semibold, 12 pt above (Windows'
+/// SettingsSection). Add-ons' heading is one too (AddonListView.swift).
+struct SettingsSectionTitle: View {
+  let title: String
+  var body: some View {
+    Text(title).font(MVTheme.font(16)).fontWeight(.semibold)
+      .foregroundStyle(MVTheme.title).padding(.top, MVTheme.space(12))
+      .accessibilityAddTraits(.isHeader)
   }
 }
 
@@ -218,15 +251,29 @@ private struct SettingsButton: View {
   }
 }
 
+// A filled button: the text colour at 0.08 at rest, one step of its own fill
+// under the pointer (0.12, eased) and 0.16 pressed, as Windows' SettingsButton.
 private struct SettingsButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
+    SettingsButtonBody(configuration: configuration)
+  }
+}
+
+private struct SettingsButtonBody: View {
+  let configuration: ButtonStyleConfiguration
+  @State private var hover = false
+  @Environment(\.isEnabled) private var enabled
+
+  var body: some View {
     configuration.label
       .font(MVTheme.font())
-      .foregroundStyle(MVTheme.title)
+      .foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
       .padding(.horizontal, MVTheme.space(12)).padding(.vertical, MVTheme.space(7))
       .background(RoundedRectangle(cornerRadius: MVTheme.radius(6))
-        .fill(Color.primary.opacity(configuration.isPressed ? 0.16 : 0.08)))
+        .fill(MVTheme.title.opacity(configuration.isPressed ? 0.16 : hover && enabled ? 0.12 : 0.08)))
       .contentShape(Rectangle())
+      .onHover { hover = $0 }
+      .animation(.easeOut(duration: 0.15), value: hover)
   }
 }
 
@@ -333,6 +380,47 @@ final class StorageStore: ObservableObject {
     return nil
   }
 
+  /// An add-on store folder ("addon:AI Audio"), or nil for the app's own rows.
+  static func addonFolder(_ id: String) -> String? {
+    id.hasPrefix("addon:") ? String(id.dropFirst("addon:".count)) : nil
+  }
+
+  /// The add-on page a store folder belongs to (owner 2026-11-04: each add-on's
+  /// storage on its own page; Local search's pieces "AI Audio", "AI Documents",
+  /// "AI Faces" with it). On the Mac a folder is the add-on's manifest name.
+  static func page(ofFolder folder: String) -> String {
+    if folder == "AI" || folder.hasPrefix("AI ") { return AddonNav.localSearchPage }
+    switch folder {
+    case "Import": return AddonNav.importPage
+    case "Places": return "places"
+    case "Driftwire": return DriftwireStore.addonID
+    case "Enhance": return SlotAddonOffer.enhanceID
+    default: return folder.lowercased()
+    }
+  }
+
+  /// What a folder holds, in the add-on page's words.
+  static func pieceWords(_ folder: String) -> String {
+    switch folder {
+    case "AI": return "Photo and video search: the add-on, its models and the index"
+    case "AI Audio": return "Sound and speech search models"
+    case "AI Documents": return "Document search model"
+    case "AI Faces": return "People: the face models"
+    case "AI Large": return "The large picture model (Maxxed)"
+    case "Enhance": return "The add-on and the models it downloaded"
+    case "Places": return "The add-on and its place database"
+    default: return "The add-on and its data"
+    }
+  }
+
+  /// The rows on an add-on's page.
+  func rows(forPage page: String) -> [StorageRow] {
+    rows.filter { row in
+      guard let folder = Self.addonFolder(row.id) else { return false }
+      return Self.page(ofFolder: folder) == page
+    }
+  }
+
   static func sizeText(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
   }
@@ -348,11 +436,17 @@ private struct StorageSection: View {
         Text(storage.measuring ? "Measuring…" : "Sizes are not available.")
           .font(MVTheme.font()).foregroundStyle(MVTheme.body)
       }
-      ForEach(storage.rows) { row in
+      // Add-ons' storage is on each add-on's page (Settings → Add-ons); here,
+      // their total.
+      let addonBytes = storage.rows.filter { StorageStore.addonFolder($0.id) != nil }.reduce(Int64(0)) { $0 + $1.bytes }
+      ForEach(storage.rows.filter { StorageStore.addonFolder($0.id) == nil }) { row in
         if let w = StorageStore.words(row.id) {
           SettingsRow(title: w.title, detail: w.detail) {
             HStack(spacing: MVTheme.space(12)) {
-              Text(StorageStore.sizeText(row.bytes)).font(MVTheme.font()).foregroundStyle(MVTheme.body)
+              Text(StorageStore.sizeText(row.bytes)).font(MVTheme.font().monospacedDigit())
+                .foregroundStyle(MVTheme.body)
+                .contentTransition(.numericText())
+                .animation(.easeOut(duration: 0.15), value: row.bytes)
               if row.id == "thumbnails" {
                 SettingsButton(title: storage.clearing ? "Clearing…" : "Clear") { storage.clear() }
                   .disabled(storage.clearing || row.bytes == 0)
@@ -360,6 +454,14 @@ private struct StorageSection: View {
               }
             }
           }
+        }
+      }
+      if addonBytes > 0 {
+        SettingsRow(title: "Add-ons", detail: "Each add-on's page (Settings → Add-ons) shows what it keeps.") {
+          Text(StorageStore.sizeText(addonBytes)).font(MVTheme.font().monospacedDigit())
+            .foregroundStyle(MVTheme.body)
+            .contentTransition(.numericText())
+            .animation(.easeOut(duration: 0.15), value: addonBytes)
         }
       }
       SettingsRow(title: "Thumbnail cache limit",
@@ -404,10 +506,7 @@ struct SettingsView: View {
       : "Choose a shortcut to change it. Conflicts swap shortcuts."
   }
 
-  private func section(_ title: String) -> some View {
-    Text(title).font(MVTheme.font(16)).fontWeight(.semibold)
-      .foregroundStyle(MVTheme.title).padding(.top, MVTheme.space(12))
-  }
+  private func section(_ title: String) -> some View { SettingsSectionTitle(title: title) }
 
   private static let topAnchor = "settings.top"
 
@@ -504,8 +603,9 @@ struct SettingsView: View {
         PhotosBackupSection()
           .id(PhotosBackupStore.anchor)
         // Import and (Milestone H, docs/design/17) Local search, as items of one
-        // Add-ons section; Local search is absent on an Intel Mac.
-        AddonsSection().padding(.top, MVTheme.space(20))
+        // Add-ons section; Local search is absent on an Intel Mac. Its heading
+        // is a section's, as every other group's.
+        AddonsSection()
       }
       }
       }

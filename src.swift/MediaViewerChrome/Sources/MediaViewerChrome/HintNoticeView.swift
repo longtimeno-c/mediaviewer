@@ -17,6 +17,8 @@ final class HintNoticeStore: ObservableObject {
   static let shared = HintNoticeStore()
 
   @Published private(set) var text = ""
+  /// The card is in (faded in); false while it fades out and once it has gone.
+  @Published private(set) var visible = false
   /// The hosting view main_mac.mm pinned to the window's bottom-right corner:
   /// shown only while there is a hint, so it never takes a click otherwise.
   weak var host: NSView?
@@ -25,14 +27,38 @@ final class HintNoticeStore: ObservableObject {
   private init() {}
 
   /// The host: show `text` for eight seconds (each show starts the time
-  /// again), or hide the card when it is empty.
+  /// again), or fade the card out when it is empty (NoticeCard).
   func show(_ next: String) {
     timer?.invalidate()
     timer = nil
-    let fresh = !next.isEmpty && next != text
+    guard !next.isEmpty else {
+      guard visible else {
+        // Not in (yet): gone at once, so a pending entrance finds nothing to show.
+        host?.isHidden = true
+        if !text.isEmpty { text = "" }
+        return
+      }
+      withAnimation(NoticeCard.animation) { visible = false }
+      NoticeCard.afterFade { [weak self] in
+        // Shown again meanwhile: it stays.
+        guard let self, !self.visible else { return }
+        self.host?.isHidden = true
+        self.text = ""
+      }
+      return
+    }
+    let fresh = next != text || !visible
     if next != text { text = next }
-    host?.isHidden = next.isEmpty
-    guard !next.isEmpty else { return }
+    if !visible {
+      // Unhidden while faded out, then in on the next pass: an entrance, not a pop.
+      host?.isHidden = false
+      DispatchQueue.main.async { [weak self] in
+        MainActor.assumeIsolated {
+          guard let self, !self.text.isEmpty else { return }
+          withAnimation(NoticeCard.animation) { self.visible = true }
+        }
+      }
+    }
     if fresh {
       // Said once as it appears, not only when focused.
       NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
@@ -53,21 +79,20 @@ struct HintNoticeView: View {
   @ObservedObject private var store = HintNoticeStore.shared
 
   var body: some View {
-    HStack(spacing: 10) {
+    // The corner cards' look (NoticeCard, NoticeStore.swift): the words and
+    // the button 12 pt apart, even padding all round.
+    HStack(spacing: MVTheme.space(12)) {
       Text(store.text)
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+        .lineSpacing(3)
+        .contentTransition(.opacity)
         .fixedSize(horizontal: false, vertical: true)
-      Spacer(minLength: 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
       Button("Got it") { store.learned() }
+        .buttonStyle(NoticeButtonStyle())
         .help("Don't show this again")
     }
-    .padding(.horizontal, 14).padding(.vertical, 10)
-    .frame(width: HintNoticeView.width, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 10).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 10).stroke(MVTheme.hairline, lineWidth: 1))
-    .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
-    .padding(8)  // room for the shadow inside the hosting view
-    .fixedSize()
+    .noticeCard(width: HintNoticeView.width, visible: store.visible)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(store.text)
   }

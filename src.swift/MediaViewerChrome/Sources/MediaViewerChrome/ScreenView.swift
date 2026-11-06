@@ -172,17 +172,18 @@ struct ScreenNodeView: View {
         if node.string("look") == "ring" {
           // #442: a ring that fills, its percentage in the middle.
           ScreenRing(value: value, size: CGFloat(node.int("size") ?? 64))
-        } else if node.string("look") == "glow" {
-          // Contribution API 10: the glow colours, a shimmer while it moves.
-          GlowBar(value: value)
-        } else if value < 0 {
-          ProgressView().controlSize(.small)
         } else {
-          ProgressView(value: value).tint(MVTheme.accent)
+          // docs/design/20 "Craft rules": a bar ("bar" or API 10's "glow")
+          // is the one progress line, its label the verb. API 13: `detail`
+          // ("48 of 161 MB") in place of the percentage, and `timed` for the
+          // time left, estimated here from how the value moves (by node id,
+          // so it survives the tree's rebuilds).
+          ProgressLine(verb: node.label, fraction: value < 0 ? nil : value, detail: node.string("detail"),
+                       key: "\(address.addon)/\(address.screen)/\(node.id)", timed: node.bool("timed"))
         }
       }
       .accessibilityLabel(node.label)
-      .accessibilityValue(value < 0 ? "In progress" : "\(Int((value * 100).rounded())) percent")
+      .accessibilityValue(value < 0 ? "In progress" : ProgressWords.percent(value))
     case "separator":
       Rectangle().fill(MVTheme.hairline).frame(height: 1).accessibilityHidden(true)
     case "surface":
@@ -247,6 +248,17 @@ private struct ScreenRootInsetKey: EnvironmentKey {
   static let defaultValue: EdgeInsets? = nil
 }
 
+/// docs/plans/edit-refresh.md S5: a host that draws a screen inside its own
+/// page (Enhance's docked panel) answers some buttons itself: navigating is the
+/// viewer's. True when it took the click; the add-on then never hears of it.
+struct ScreenButtonHook {
+  var take: @MainActor (ScreenAddress, String) -> Bool = { _, _ in false }
+}
+
+private struct ScreenButtonHookKey: EnvironmentKey {
+  static let defaultValue = ScreenButtonHook()
+}
+
 /// The nearest scroller's way to bring a node into view, by its id.
 struct ScreenScrollTo {
   var go: @MainActor (String) -> Void = { _ in }
@@ -274,6 +286,12 @@ extension EnvironmentValues {
   var screenRootInset: EdgeInsets? {
     get { self[ScreenRootInsetKey.self] }
     set { self[ScreenRootInsetKey.self] = newValue }
+  }
+
+  /// S5: the docked panel's host buttons (Show, Keep editing).
+  var screenButtonHook: ScreenButtonHook {
+    get { self[ScreenButtonHookKey.self] }
+    set { self[ScreenButtonHookKey.self] = newValue }
   }
 
   /// "reveal": the enclosing scroller, to bring a stack into view.
@@ -427,16 +445,24 @@ struct ScreenButtonStyle: ButtonStyle {
 
 // MARK: #442 additions: card, ring, tiles, code entry
 
-/// "look": "card" on a stack: padding on a rounded surface with a hairline.
+/// "look": "card" on a stack: padding on a rounded surface. The fill alone marks
+/// it (docs/design/20 "Craft rules": no redundant tonal border); with Increase
+/// Contrast, where a theme's surface may sit close to its canvas, the hairline
+/// edge comes back. The Windows twin is ScreenCard.
 private struct CardLook: ViewModifier {
   let on: Bool
+  @Environment(\.colorSchemeContrast) private var contrast
   func body(content: Content) -> some View {
     if on {
       content
         .padding(MVTheme.space(14))
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(MVTheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1))
+        .overlay {
+          if contrast == .increased {
+            RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1)
+          }
+        }
     } else {
       content
     }
@@ -517,6 +543,8 @@ private struct RevealLook: ViewModifier {
 private struct ScreenRing: View {
   let value: Double
   let size: CGFloat
+  @Environment(\.screenWindow) private var window
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     let line = max(3, size / 14)
@@ -528,9 +556,14 @@ private struct ScreenRing: View {
         .rotationEffect(.degrees(-90))
         .animation(.easeOut(duration: 0.2), value: value)
       if value >= 0 && size >= 40 {
-        Text("\(Int((value * 100).rounded()))%")
-          .font(.system(size: size / 4.5, weight: .semibold, design: .rounded).monospacedDigit())
+        // The screen's own face (as the Windows twin's), proportional figures so
+        // the number centres on its digits, rolling in place as it climbs.
+        let pct = Int((value * 100).rounded())
+        Text("\(pct)%")
+          .font(screenFont(size / 4.5, .semibold, window: window))
           .foregroundStyle(MVTheme.title)
+          .contentTransition(.numericText(value: Double(pct)))
+          .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: pct)
       }
     }
     .frame(width: size, height: size)
@@ -558,7 +591,8 @@ private struct TilesNode: View {
         // Shown, not chosen (a sender on an offer): centred, no button.
         HStack(spacing: MVTheme.space(12)) {
           ForEach(items.indices, id: \.self) { i in
-            Tile(item: items[i], size: size, selected: false).accessibilityElement(children: .combine)
+            Tile(item: items[i], size: size, selected: false, interactive: false)
+              .accessibilityElement(children: .combine)
           }
         }
       } else {
@@ -597,8 +631,11 @@ private struct Tile: View {
   let item: [String: Any]
   let size: CGFloat
   let selected: Bool
+  /// A "static" set is shown, not chosen: no wash under the pointer.
+  var interactive = true
   @State private var hovered = false
   @Environment(\.isEnabled) private var enabled
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   static func name(_ item: [String: Any]) -> String {
     let text = item["text"] as? String ?? ""
@@ -611,9 +648,8 @@ private struct Tile: View {
     let mark = item["mark"] as? String
     VStack(spacing: MVTheme.space(6)) {
       ZStack {
-        Circle()
-          .fill(LinearGradient(colors: [MVTheme.accent.opacity(0.85), MVTheme.accent.opacity(0.55)],
-                               startPoint: .top, endPoint: .bottom))
+        // One opaque accent, as the Windows twin (no translucent gradient).
+        Circle().fill(MVTheme.accent)
         Text(item["initials"] as? String ?? "?")
           .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
           .foregroundStyle(.white)
@@ -625,8 +661,10 @@ private struct Tile: View {
             .rotationEffect(.degrees(-90))
             .padding(-6)
             .animation(.easeOut(duration: 0.2), value: progress)
-        } else if selected || hovered {
-          Circle().stroke(MVTheme.accent.opacity(selected ? 1 : 0.5), lineWidth: 2).padding(-5)
+        } else if selected {
+          // The chosen computer's ring; the pointer gets a wash, not a ring
+          // (docs/design/20 "Craft rules": a ring is not a hover state).
+          Circle().stroke(MVTheme.accent, lineWidth: 2).padding(-5)
         }
         if let mark {
           Image(systemName: mark == "done" ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
@@ -645,8 +683,13 @@ private struct Tile: View {
       }
     }
     .frame(width: size + 40)
+    .padding(.vertical, MVTheme.space(4))
+    // The Windows twin's flat button: a wash under the pointer, faded in.
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8))
+      .fill(hovered && enabled && interactive ? MVTheme.hoverWash : Color.clear))
     .opacity(enabled ? 1 : 0.55)
     .onHover { hovered = $0 }
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hovered)
   }
 }
 
@@ -1003,12 +1046,18 @@ private struct ChoiceNode: View {
   @State private var value = ""
 
   var body: some View {
+    let options = node.rows("options")
+    // "disabled" (2026-11-04): shown, never chosen (Enhance's quality above the
+    // performance level says what it needs).
+    let off = Set(options.filter { ($0["disabled"] as? Bool) == true }.compactMap { $0["id"] as? String })
     Picker(node.label, selection: Binding(get: { value }, set: { v in
+      guard !off.contains(v) else { return }
       value = v
       SlotStore.shared.send(address, node: node.id, kind: 2, value: v)
     })) {
-      ForEach(node.rows("options").compactMap { $0["id"] as? String }, id: \.self) { id in
-        Text(node.rows("options").first { ($0["id"] as? String) == id }?["text"] as? String ?? id).tag(id)
+      ForEach(options.compactMap { $0["id"] as? String }, id: \.self) { id in
+        Text(options.first { ($0["id"] as? String) == id }?["text"] as? String ?? id).tag(id)
+          .disabled(off.contains(id))
       }
     }
     .font(screenFont(14, window: window))
@@ -1027,8 +1076,16 @@ private struct SliderNode: View {
   var body: some View {
     let lo = node.double("min") ?? 0
     let hi = max(lo + 1e-9, node.double("max") ?? 1)
-    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
-      Text("\(node.label): \(format(value))").font(screenFont(13, window: window)).foregroundStyle(MVTheme.body)
+    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+      // docs/design/20 "Craft rules": the label left, the value right, in
+      // tabular digits (SliderWords: a percentage of the range, or a count).
+      HStack(spacing: MVTheme.space(8)) {
+        Text(node.label).foregroundStyle(MVTheme.title)
+        Spacer(minLength: MVTheme.space(8))
+        Text(format(value)).monospacedDigit().foregroundStyle(MVTheme.body)
+      }
+      .font(screenFont(13, window: window))
+      .lineLimit(1)
       Group {
         if let step = node.double("step"), step > 0 {
           Slider(value: $value, in: lo...hi, step: step) { Text(node.label) } onEditingChanged: { editing in
@@ -1049,7 +1106,9 @@ private struct SliderNode: View {
     .onChange(of: revision) { _, _ in value = node.double("value") ?? lo }
   }
 
-  private func format(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.2f", v) }
+  private func format(_ v: Double) -> String {
+    SliderWords.value(v, min: node.double("min") ?? 0, max: node.double("max") ?? 1, step: node.double("step"))
+  }
 }
 
 private struct NumberNode: View {
@@ -1067,8 +1126,9 @@ private struct NumberNode: View {
       value = min(hi, max(lo, v))
       SlotStore.shared.send(address, node: node.id, kind: 2, value: value)
     }), in: lo...hi, step: step) {
+      // A number that changes: tabular digits, so the stepper does not shift.
       Text("\(node.label): \(value == value.rounded() ? String(Int(value)) : String(value))")
-        .font(screenFont(14, window: window)).foregroundStyle(MVTheme.title)
+        .font(screenFont(14, window: window)).monospacedDigit().foregroundStyle(MVTheme.title)
     }
     .accessibilityLabel(node.label)
     .accessibilityValue(String(value))
@@ -1459,8 +1519,9 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   }
 
   func sync(_ screens: [SlotScreen]) {
-    // A settings page is drawn in Settings (AddonSettingsScreen), not here.
-    let screens = screens.filter { $0.place != "settings" }
+    // A settings page is drawn in Settings (AddonSettingsScreen), a docked Edit
+    // screen in the Enhance tab (EnhanceHubView, S5): not here.
+    let screens = screens.filter { $0.place != "settings" && $0.place != "edit" }
     let wanted = Set(screens.map { ScreenAddress(addon: $0.addon, screen: $0.screen) })
     for (address, window) in windows where !wanted.contains(address) {
       closingFromCore.insert(address)
@@ -1647,16 +1708,21 @@ private struct ButtonNode: View {
   let address: ScreenAddress
   @State private var copied = false
   @Environment(\.screenWindow) private var window
+  @Environment(\.screenButtonHook) private var hook
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Button {
+      if hook.take(address, node.id) { return }
       if let text = node.string("copy") {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        copied = true
+        // The label crossfades on the button itself, and back (Craft rules).
+        let fade: Animation? = reduceMotion ? nil : .easeOut(duration: 0.15)
+        withAnimation(fade) { copied = true }
         Task { @MainActor in
           try? await Task.sleep(nanoseconds: 1_500_000_000)
-          copied = false
+          withAnimation(fade) { copied = false }
         }
       }
       SlotStore.shared.send(address, node: node.id, kind: 1, value: nil)
@@ -1892,14 +1958,14 @@ enum GlowPalette {
 }
 
 /// The glow's timing, the same on both hosts (GlowMath.cs): seconds for each
-/// layer of the edge to go once round, for the halo to breathe in and out,
-/// and for the bar's colours to flow one length along it.
+/// layer of the edge to go once round, and for the halo to breathe in and
+/// out. (A progress bar's "glow" look is drawn as every bar since 2026-11-05:
+/// ProgressLine, docs/design/20 "Craft rules".)
 enum GlowTiming {
   static let turn = 6.0       // the crisp ring
   static let midTurn = 9.0    // the soft glow, the other way round
   static let haloTurn = 13.0  // the wide halo
   static let breath = 2.2
-  static let flow = 3.0
 
   /// 0 up to 1 over `period` seconds.
   static func phase(_ t: Double, _ period: Double) -> Double { t.truncatingRemainder(dividingBy: period) / period }
@@ -1953,61 +2019,3 @@ private struct GlowEdge: ViewModifier {
   }
 }
 
-/// A progress bar in the glow's colours, after Apple Intelligence's: the
-/// colours flow along it, a soft highlight sweeps across and a blurred copy
-/// glows beneath it while it moves (never with Reduce Motion). Not started
-/// (value < 0), the whole bar flows, dimmed.
-private struct GlowBar: View {
-  let value: Double
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  var body: some View {
-    GeometryReader { geo in
-      let filled = value < 0 ? geo.size.width : geo.size.width * min(1, max(0, value))
-      ZStack(alignment: .leading) {
-        Capsule().fill(MVTheme.hairline)
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { tl in
-          let t = reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate
-          let flow = GlowTiming.phase(t, GlowTiming.flow)
-          let sweep = reduceMotion ? -1 : GlowTiming.phase(t, 2.4)
-          let fill = Capsule().fill(flowing(flow, bar: geo.size.width, filled: filled))
-          ZStack {
-            fill.blur(radius: 5).opacity(value < 0 ? 0.25 : 0.55 + 0.2 * GlowTiming.breathe(t))
-            fill.overlay(shimmer(at: sweep)).clipShape(Capsule())
-          }
-          .frame(width: max(0, filled))
-          .opacity(value < 0 ? 0.6 : 1)
-        }
-      }
-    }
-    .frame(height: 8)
-    .frame(minWidth: 120)
-    .padding(.vertical, 3)
-  }
-
-  /// The palette twice over across twice the bar's width, slid along by
-  /// `flow` of that: the colours travel left to right and wrap without a
-  /// seam, at the same scale however far the bar is filled.
-  private func flowing(_ flow: Double, bar: CGFloat, filled: CGFloat) -> LinearGradient {
-    let colors = GlowPalette.colors + GlowPalette.colors.dropFirst()
-    let span = max(1, bar) * 2
-    let start = -span / 2 + CGFloat(flow) * span / 2
-    let w = max(1, filled)
-    return LinearGradient(colors: Array(colors), startPoint: UnitPoint(x: start / w, y: 0.5),
-                          endPoint: UnitPoint(x: (start + span) / w, y: 0.5))
-  }
-
-  @ViewBuilder private func shimmer(at phase: Double) -> some View {
-    if phase >= 0 {
-      // A band 30 % of the bar wide, from just off its left end to just off its right.
-      let centre = -0.15 + phase * 1.3
-      LinearGradient(stops: [
-        .init(color: .clear, location: 0),
-        .init(color: .clear, location: min(1, max(0, centre - 0.15))),
-        .init(color: .white.opacity(0.55), location: min(1, max(0, centre))),
-        .init(color: .clear, location: min(1, max(0, centre + 0.15))),
-        .init(color: .clear, location: 1),
-      ], startPoint: .leading, endPoint: .trailing)
-    }
-  }
-}

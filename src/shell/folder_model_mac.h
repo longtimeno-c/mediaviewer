@@ -62,6 +62,12 @@ class folder_model {
   };
   [[nodiscard]] expected open_list(std::string title_utf8, std::vector<list_entry> entries,
                                    job_system& jobs) noexcept;
+  // S0 (docs/plans/edit-refresh.md §5): a virtual entry added to the open list
+  // right after `after_path`, as a new library photo made from that item is.
+  // False when no list is open, `after_path` is not in it, or the entry is not
+  // virtual or already listed. The change is published like a
+  // relist (consume_changed, the notify). Any thread; no I/O.
+  bool insert_virtual(std::string_view after_path, list_entry entry);
 
   // [pool thread] A JPEG tile (<= image::kThumbLongEdge) for a virtual item,
   // or an error. Called by request_thumb for a path under `prefix` when the

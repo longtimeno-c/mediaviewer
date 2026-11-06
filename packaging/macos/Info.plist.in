@@ -53,7 +53,12 @@
   <!-- Local search's Photos library source (issue #72): the system prompt
        shows this once, from a click in Settings. Read-only, on this Mac only. -->
   <key>NSPhotoLibraryUsageDescription</key>
-  <string>Local search can find photos and videos in your Photos library by what they show. It reads only what is already on this Mac, never changes your library, and sends nothing anywhere.</string>
+  <string>Local search can find photos and videos in your Photos library by what they show. An edit you save from a library photo is added to the library as a new photo; nothing already there is changed, and nothing is sent anywhere.</string>
+  <!-- S0 (docs/plans/edit-refresh.md §5): a saved edit of a library photo is
+       added as a new photo. With read-write access already granted this is
+       never shown; it is asked on the Save click only when neither is. -->
+  <key>NSPhotoLibraryAddUsageDescription</key>
+  <string>An edit you save from a photo in your Photos library is added to the library as a new photo. Nothing already there is changed, and nothing is sent anywhere.</string>
   <!-- Cmd+E on a Photos library item (docs/design/26): the Automation prompt
        shows this once, the first time MediaViewer asks Photos to show a photo. -->
   <key>NSAppleEventsUsageDescription</key>
