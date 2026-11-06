@@ -83,59 +83,30 @@ public static partial class IslandHost
             Debug.WriteLine(ex);
         }
 
+        // Hierarchy from size and spacing, the Mac's About (CommandBarView.swift):
+        // the name at the bar's size, everything else at 13 in the body colour,
+        // the version 4 under the name, groups 12 apart (docs/design/20 "Craft rules").
         var name = new TextBlock
         {
             Text = "MediaViewer",
             Foreground = Brush(Title),
             FontFamily = UiFont,
-            FontSize = UiFontSize + 4,
-        };
-        var version = new TextBlock
-        {
-            Text = "Version …",
-            Foreground = Brush(Body),
-            FontFamily = UiFont,
             FontSize = UiFontSize,
         };
-        var copyright = new TextBlock
-        {
-            Text = "Copyright (C) 2026 longtimeno-c",
-            Foreground = Brush(Body),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Margin = Pad(0, 6, 0, 0),
-        };
-        var licence = new TextBlock
-        {
-            Text = "Licensed under GNU GPL v3 or later",
-            Foreground = Brush(Body),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-        };
+        var version = AboutLine("Version …", Pad(0, 4, 0, 0));
+        var copyright = AboutLine("Copyright (C) 2026 longtimeno-c", Pad(0, 12, 0, 0));
+        var licence = AboutLine("Licensed under GNU GPL v3 or later", Pad(0, 2, 0, 0));
         // CC-BY 4.0 asks for attribution wherever the data is used: the Places
         // add-on's place names (docs/design/27). Natural Earth is public domain.
-        var places = new TextBlock
-        {
-            Text = "Place names from GeoNames (geonames.org), CC BY 4.0. Borders from Natural Earth.",
-            Foreground = Brush(Body),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = Pad(0, 6, 0, 0),
-        };
-        var hint = new TextBlock
-        {
-            Text = "Everything works from the keyboard. Press ? for the shortcuts of what you are doing.",
-            Foreground = Brush(Body),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = Pad(0, 10, 0, 0),
-        };
+        var places = AboutLine("Place names from GeoNames (geonames.org), CC BY 4.0. Borders from Natural Earth.",
+                               Pad(0, 12, 0, 0));
+        var hint = AboutLine("Everything works from the keyboard. Press ? for the shortcuts of what you are doing.",
+                             Pad(0, 12, 0, 0));
 
         var sourceLink = AboutLink("Source code for this build (LGPL components)",
                                    () => OpenUri(RepoUrl + "/releases"));
-        var links = new StackPanel { Spacing = 0, Margin = Pad(-6, 8, 0, 0) };
+        // Pulled back by the links' own inset, so their words line up with the lines above.
+        var links = new StackPanel { Spacing = 0, Margin = new Thickness(-Space(AboutLinkInset), Space(8), 0, 0) };
         links.Children.Add(AboutLink("Licence (GPL-3.0-or-later)",
                                      () => OpenLocal(Path.Combine(dir, LicenceFile), RepoUrl + "/blob/main/LICENSE", textOnly: true)));
         links.Children.Add(AboutLink("Notice",
@@ -188,6 +159,21 @@ public static partial class IslandHost
         return root;
     }
 
+    // A line of About's small type: 13, the body colour, wrapping at a line
+    // height of at least 1.3.
+    private static TextBlock AboutLine(string text, Thickness margin) => new()
+    {
+        Text = text,
+        Foreground = Brush(Body),
+        FontFamily = UiFont,
+        FontSize = TypeSize(TypeSmall),
+        LineHeight = Math.Round(TypeSize(TypeSmall) * 1.35),
+        TextWrapping = TextWrapping.Wrap,
+        Margin = margin,
+    };
+
+    private const double AboutLinkInset = 6;
+
     private static HyperlinkButton AboutLink(string label, Action open)
     {
         var link = new HyperlinkButton
@@ -196,12 +182,12 @@ public static partial class IslandHost
             {
                 Text = label,
                 FontFamily = UiFont,
-                FontSize = UiFontSize,
+                FontSize = TypeSize(TypeSmall),
                 TextWrapping = TextWrapping.Wrap,
             },
-            Padding = Pad(6, 3, 6, 3),
+            Padding = Pad(AboutLinkInset, 3, AboutLinkInset, 3),
             FontFamily = UiFont,
-            FontSize = UiFontSize,
+            FontSize = TypeSize(TypeSmall),
             IsTabStop = true,
             AllowFocusOnInteraction = true,
         };

@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Windows.Graphics;
 using Windows.UI;
 
@@ -371,8 +372,16 @@ public static partial class IslandHost
     private static string _metaQuery = "";
 
     private static Border? _metaContent;
-    private static TextBlock? _metaLoadingText;
-    private static StackPanel? _metaTabs;
+    // docs/design/20 "Craft rules": the tabs are one segmented row (equal
+    // columns, the Mac's maxWidth .infinity tabs) over one wash that slides to
+    // the chosen tab. No "reading…" beside them: a tab's own body says
+    // "Reading…" while there is nothing yet (say it once).
+    private static Grid? _metaTabs;
+    private static Grid? _metaTabHost;
+    private static Border? _metaTabMark;
+    private static TranslateTransform? _metaTabSlide;
+    private static Storyboard? _metaTabEase;
+    private static int _metaTabDrawn = -1;
 
     // PR 29: which editor is open. Kept across a rebuild (a record landing,
     // a search keystroke) so typing is not lost; dropped on another item, on
@@ -397,8 +406,15 @@ public static partial class IslandHost
         _metaLast = "";
         _metaContent = null;
         _metaSlots = null;
-        _metaLoadingText = null;
         _metaTabs = null;
+        _metaTabHost = null;
+        _metaTabMark = null;
+        _metaTabSlide = null;
+        _metaTabEase?.Stop();
+        _metaTabEase = null;
+        _metaTabDrawn = -1;
+        _metaEditorDrawn = null;
+        _metaFadeEditor = false;
         _metaRevert = null;
         _metaFocusField = null;
         _metaCommentAsked = false;
@@ -424,14 +440,29 @@ public static partial class IslandHost
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var bar = new Grid { Padding = Pad(14, 0, 14, 8) };
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _metaTabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
-        bar.Children.Add(_metaTabs);
-        _metaLoadingText = Text("", Body);
-        Grid.SetColumn(_metaLoadingText, 1);
-        bar.Children.Add(_metaLoadingText);
+        // The Mac's tab row: 10 from the pane's edges, the tabs sharing the width.
+        var bar = new Grid { Padding = Pad(10, 0, 10, 8) };
+        _metaTabSlide = new TranslateTransform();
+        _metaTabMark = new Border
+        {
+            Background = Brush(ChromeColour.PressedWash),
+            CornerRadius = Corner(RadiusButton),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            RenderTransform = _metaTabSlide,
+            IsHitTestVisible = false,
+            Width = 0,
+        };
+        _metaTabs = new Grid { ColumnSpacing = Space(4) };
+        _metaTabHost = new Grid();
+        _metaTabHost.Children.Add(_metaTabMark);
+        _metaTabHost.Children.Add(_metaTabs);
+        _metaTabHost.SizeChanged += (_, _) =>
+        {
+            try { PlaceMetaTabMark(animate: false); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        };
+        bar.Children.Add(_metaTabHost);
         body.Children.Add(bar);
 
         _metaContent = new Border { BorderBrush = Brush(Hairline), BorderThickness = new Thickness(0, 1, 0, 0) };
@@ -464,13 +495,25 @@ public static partial class IslandHost
         }
         // A still has no streams: fall back if the tab it was on went away.
         if (!_metaIsClip && _metaTab == MetaTab.Streams) _metaTab = MetaTab.Summary;
-        if (_metaLoadingText is not null) _metaLoadingText.Text = _metaLoading ? "reading…" : "";
 
         _metaTabs.Children.Clear();
+        _metaTabs.ColumnDefinitions.Clear();
         MetaTabButtons.Clear();
         AddMetaTab("Summary", MetaTab.Summary);
         AddMetaTab("All tags", MetaTab.Tags);
         if (_metaIsClip) AddMetaTab("Streams", MetaTab.Streams);
+        PlaceMetaTabMark(animate: true);
+
+        // An editor that has just opened (not one rebuilt because a record
+        // landed) fades in; the first builder that draws it takes the flag.
+        string? editor = _metaEditingDate ? "date"
+            : _metaEditingLocation ? (_metaConfirmLocation ? "location-confirm" : "location")
+            : _metaAddingTag ? "add"
+            : _metaEditingComment ? "comment"
+            : _metaEditingKey is { } key ? "tag:" + key
+            : null;
+        _metaFadeEditor = editor is not null && editor != _metaEditorDrawn;
+        _metaEditorDrawn = editor;
 
         _metaFocusField = null;
         _metaRevert = null;
@@ -513,19 +556,27 @@ public static partial class IslandHost
     private static void AddMetaTab(string label, MetaTab tab)
     {
         bool on = _metaTab == tab;
+        // The Mac's compact FlatButtonStyle tab: 14 pt, 8 / 5 padding, its column's
+        // full width with the words centred. The chosen tab's wash is
+        // _metaTabMark, under the row, so it can slide.
         var b = new Button
         {
             Content = new TextBlock
             {
-                Text = label, FontFamily = UiFont, FontSize = UiFontSize,
+                Text = label, FontFamily = UiFont, FontSize = TypeBody,
                 Foreground = Brush(on ? Title : Body),
             },
-            Background = on ? Brush(ChromeColour.PressedWash) : Brush(Colors.Transparent),
+            Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = Pad(10, 3, 10, 3),
+            Padding = Pad(8, 5, 8, 5),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
             AllowFocusOnInteraction = false,
         };
+        FlattenButton(b);
         int index = MetaTabButtons.Count;
+        _metaTabs!.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(b, index);
         b.Click += (_, _) =>
         {
             _metaTab = tab;
@@ -556,14 +607,196 @@ public static partial class IslandHost
         _metaTabs!.Children.Add(b);
     }
 
-    // The summary's label column: the Mac's 100-wide labels (MetadataView.swift).
+    // The chosen tab's wash under its column. A new choice slides it there
+    // (150 ms, ease out: the Mac's matchedGeometryEffect); a resize, the first
+    // draw and Windows' animations off place it at once.
+    private static void PlaceMetaTabMark(bool animate)
+    {
+        if (_metaTabHost is not { } host || _metaTabMark is not { } mark || _metaTabSlide is not { } slide) return;
+        int count = MetaTabButtons.Count;
+        double width = host.ActualWidth;
+        if (count == 0 || width <= 0) return;
+        int at = Math.Min(count - 1, _metaTab == MetaTab.Summary ? 0 : _metaTab == MetaTab.Tags ? 1 : 2);
+        double gap = Space(4);
+        double column = Math.Max(0, (width - gap * (count - 1)) / count);
+        double x = at * (column + gap);
+        mark.Width = column;
+        bool move = animate && _metaTabDrawn >= 0 && _metaTabDrawn != at && HostAnimationsEnabled();
+        _metaTabDrawn = at;
+        _metaTabEase?.Stop();
+        _metaTabEase = null;
+        double from = slide.X;
+        slide.X = x;
+        if (!move || Math.Abs(from - x) < 0.5) return;
+        try
+        {
+            var travel = new DoubleAnimation
+            {
+                From = from,
+                To = x,
+                Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            Storyboard.SetTarget(travel, slide);
+            Storyboard.SetTargetProperty(travel, "X");
+            var board = new Storyboard();
+            board.Children.Add(travel);
+            board.Completed += (_, _) =>
+            {
+                // Hand the end back to the local value, so a later resize places it.
+                if (_metaTabEase != board) return;
+                _metaTabEase = null;
+                board.Stop();
+            };
+            _metaTabEase = board;
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            _metaTabEase = null;
+        }
+    }
+
+    // ---- motion: nothing pops (docs/design/20 "Craft rules") -----------------
+    //
+    // The pane is rebuilt from state, so an editor's rows are new elements:
+    // they arrive with a short fade and a few DIPs of travel (150 ms, the Mac's
+    // .opacity + .offset(y: -4) transition) and leave with the rebuild. Only a
+    // panel built for that purpose (never a button, whose opacity FlattenButton
+    // owns for its disabled dim) is faded. With Windows' animations off nothing moves.
+    private static string? _metaEditorDrawn;
+    private static bool _metaFadeEditor;
+
+    private static void Appear(FrameworkElement e, double rise = 4)
+    {
+        if (!HostAnimationsEnabled()) return;
+        var shift = new TranslateTransform { Y = -rise };
+        e.RenderTransform = shift;
+        e.Opacity = 0;
+        void Run(object sender, RoutedEventArgs args)
+        {
+            e.Loaded -= Run;
+            try
+            {
+                var fade = new DoubleAnimation
+                {
+                    From = 0, To = 1,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                };
+                Storyboard.SetTarget(fade, e);
+                Storyboard.SetTargetProperty(fade, "Opacity");
+                var travel = new DoubleAnimation
+                {
+                    From = -rise, To = 0,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                };
+                Storyboard.SetTarget(travel, shift);
+                Storyboard.SetTargetProperty(travel, "Y");
+                var board = new Storyboard();
+                board.Children.Add(fade);
+                board.Children.Add(travel);
+                board.Completed += (_, _) =>
+                {
+                    // The end becomes the local value; the board lets go of it.
+                    e.Opacity = 1;
+                    shift.Y = 0;
+                    board.Stop();
+                };
+                board.Begin();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                e.Opacity = 1;
+                shift.Y = 0;
+            }
+        }
+        e.Loaded += Run;
+    }
+
+    // An editor's own rows, once, when it opens.
+    private static void AppearIfNew(FrameworkElement e)
+    {
+        if (!_metaFadeEditor) return;
+        _metaFadeEditor = false;
+        Appear(e);
+    }
+
+    // A word that changes in place (a job's state) crossfades in its own slot.
+    private static void Refade(UIElement e)
+    {
+        if (!HostAnimationsEnabled()) return;
+        try
+        {
+            var fade = new DoubleAnimation
+            {
+                From = 0.2, To = 1,
+                Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            Storyboard.SetTarget(fade, e);
+            Storyboard.SetTargetProperty(fade, "Opacity");
+            var board = new Storyboard();
+            board.Children.Add(fade);
+            board.Completed += (_, _) =>
+            {
+                e.Opacity = 1;
+                board.Stop();
+            };
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            e.Opacity = 1;
+        }
+    }
+
+    // The summary's label column: the Mac's 100-wide labels (MetadataView.swift),
+    // and the 10 DIP gap before the values (the Mac's HStack spacing). An
+    // editor's rows start on the value column's edge.
     private const double MetaLabelWidth = 100;
+    private static double MetaColumnGap => Space(10);
+    private static Thickness MetaValueInset => new(MetaLabelWidth + MetaColumnGap, 0, 0, 0);
+
+    private static Grid MetaRowGrid()
+    {
+        var row = new Grid { ColumnSpacing = MetaColumnGap };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        return row;
+    }
 
     // A small flat button for the pane's editors (the Edit workspace's look).
     private static Button MetaButton(string label, Action click, string? tip = null, bool enabled = true)
     {
         Button b = EditButton(label, click, tip: tip);
         b.IsEnabled = enabled;
+        return b;
+    }
+
+    // An editor's Save: the selected wash at rest (the Mac's
+    // FlatButtonStyle(selected: true)), a surface whose edge meets the field's.
+    private static Button MetaSave(Action click)
+    {
+        Button b = MetaButton("Save", click, tip: "Enter");
+        SetSelected(b, true);
+        return b;
+    }
+
+    // A row's own action (Edit, Remove, Revert all): quiet, the body colour at
+    // 12, so the tag and its value stay the heaviest marks (the Mac's QuietButton).
+    private static Button MetaQuiet(string label, Action click, string? tip = null, bool enabled = true,
+                                    string? name = null)
+    {
+        Button b = QuietButton(label, click);
+        b.IsEnabled = enabled;
+        if (tip is not null) ToolTipService.SetToolTip(b, tip);
+        if (name is not null) AutomationProperties_SetName(b, name);
         return b;
     }
 
@@ -595,7 +828,8 @@ public static partial class IslandHost
             };
             return new ScrollViewer { Content = WithSlotSections(empty), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         }
-        var rows = new StackPanel { Spacing = Space(6), Padding = Pad(14, 10, 14, 14) };
+        // The Mac's card: 8 between rows, 14 all round.
+        var rows = new StackPanel { Spacing = Space(8), Padding = Pad(14) };
         foreach ((string label, string value) in _metaSummary)
         {
             if (IsDateRow(label))
@@ -613,10 +847,7 @@ public static partial class IslandHost
                 rows.Children.Add(BuildLabelRow(value));
                 continue;
             }
-            var row = new Grid();
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid row = MetaRowGrid();
             row.Children.Add(Text(label, Body, TypeBody));
             TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
             if (value.Length > 0) Selectable(v);
@@ -625,15 +856,15 @@ public static partial class IslandHost
             rows.Children.Add(row);
         }
         rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) });
-        var foot = new Grid();
+        var foot = new Grid { ColumnSpacing = Space(8) };
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock hint = Text("Edit any tag under All tags.", Body, UiFontSize - 3);
+        TextBlock hint = Text("Edit any tag under All tags.", Body, TypeCaption);
         hint.VerticalAlignment = VerticalAlignment.Center;
         foot.Children.Add(hint);
-        _metaRevert = MetaButton("Revert all", () => Send(Command.MetaRevert),
-                                 tip: "Put every tag back to how this file was before this session's first change",
-                                 enabled: _metaCanRevert);
+        _metaRevert = MetaQuiet("Revert all", () => Send(Command.MetaRevert),
+                                tip: "Put every tag back to how this file was before this session's first change",
+                                enabled: _metaCanRevert);
         Grid.SetColumn(_metaRevert, 1);
         foot.Children.Add(_metaRevert);
         rows.Children.Add(foot);
@@ -655,34 +886,46 @@ public static partial class IslandHost
 
     private static UIElement BuildLabelRow(string value)
     {
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock name = Text("Label", Body);
+        // The other rows' grid (it was 96 wide here, so its value sat 4 DIP off
+        // the column) and their 14 DIP type.
+        Grid row = MetaRowGrid();
+        TextBlock name = Text("Label", Body, TypeBody);
         name.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(name);
-        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
+        if (value.Length > 0) Selectable(v);
         v.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(v, 1);
         row.Children.Add(v);
-        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
+        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         foreach ((string label, Color colour) in LabelSwatches)
         {
             bool on = string.Equals(label, value, StringComparison.OrdinalIgnoreCase);
+            // The fill alone marks a swatch; the one set wears a check, not a
+            // ring (an outline means keyboard focus). Under the pointer it keeps
+            // its own colour, one step of it, never Windows' grey.
+            Color ink = label == "Yellow" ? Color.FromArgb(191, 0, 0, 0) : Colors.White;
             var dot = new Button
             {
-                Width = 18,
-                Height = 18,
+                Width = 16,
+                Height = 16,
                 Padding = new Thickness(0),
                 MinWidth = 0,
                 MinHeight = 0,
-                CornerRadius = new CornerRadius(9),  // a circle: half of 18, not a theme radius
+                CornerRadius = new CornerRadius(8),  // a circle: half of 16, not a theme radius
                 Background = Brush(colour),
-                BorderBrush = Brush(on ? ChromeColour.Title : ChromeColour.Hairline),
-                BorderThickness = new Thickness(on ? 2 : 1),
+                BorderThickness = new Thickness(0),
                 IsEnabled = _metaCanEdit,
+                Content = on
+                    ? new FontIcon { Glyph = "", FontFamily = IconFont, FontSize = 9, Foreground = new SolidColorBrush(ink) }
+                    : null,
             };
+            dot.Resources["ButtonBackgroundPointerOver"] = new SolidColorBrush(colour) { Opacity = 0.85 };
+            dot.Resources["ButtonBackgroundPressed"] = new SolidColorBrush(colour) { Opacity = 0.7 };
+            dot.Resources["ButtonBackgroundDisabled"] = new SolidColorBrush(colour) { Opacity = 0.4 };
+            foreach (string key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver",
+                                           "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled" })
+                dot.Resources[key] = Brush(Colors.Transparent);
             string target = label;
             dot.Click += (_, _) => SendTagEdits(new[] { (LabelTag, on ? (string?)null : target) });
             ToolTipService.SetToolTip(dot, on ? "Clear the " + label.ToLowerInvariant() + " label" : label);
@@ -707,10 +950,7 @@ public static partial class IslandHost
     {
         bool taken = rowLabel == "Date taken";
         var col = new StackPanel { Spacing = Space(6) };
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid row = MetaRowGrid();
         TextBlock label = Text(_metaEditingDate ? "Date taken" : rowLabel, Body, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(label);
@@ -728,7 +968,7 @@ public static partial class IslandHost
             _metaFocusField = box;
             col.Children.Add(row);
             var actions = Row(
-                MetaButton("Save", () => SaveMetaDate(_metaDraft), tip: "Enter"),
+                MetaSave(() => SaveMetaDate(_metaDraft)),
                 MetaButton("Remove", () =>
                 {
                     CancelMetaEdits();
@@ -740,7 +980,10 @@ public static partial class IslandHost
                     CancelMetaEdits();
                     RenderMeta();
                 }, tip: "Esc"));
-            actions.Margin = Pad(MetaLabelWidth, 0, 0, 0);
+            // Save's surface starts on the field's edge (the Mac's MetadataView).
+            actions.Spacing = Space(6);
+            actions.Margin = MetaValueInset;
+            AppearIfNew(actions);
             col.Children.Add(actions);
             return col;
         }
@@ -749,15 +992,15 @@ public static partial class IslandHost
         v.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(v, 1);
         row.Children.Add(v);
-        Button edit = MetaButton("Edit", () =>
+        Button edit = MetaQuiet("Edit", () =>
         {
             CancelMetaEdits();
             _metaEditingDate = true;
             _metaDraft = !taken ? "" : value.Length >= 19 ? value[..19] : value;
             RenderMeta();
         }, tip: taken ? "Change when this was taken; every date tag in the file moves together"
-                      : "Set when this was taken; the date shown is not written", enabled: _metaCanEdit);
-        AutomationProperties_SetName(edit, "Edit date taken");
+                      : "Set when this was taken; the date shown is not written", enabled: _metaCanEdit,
+           name: "Edit date taken");
         Grid.SetColumn(edit, 2);
         row.Children.Add(edit);
         col.Children.Add(row);
@@ -802,10 +1045,7 @@ public static partial class IslandHost
     private static UIElement BuildLocationRow(string value)
     {
         var col = new StackPanel { Spacing = Space(6) };
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid row = MetaRowGrid();
         TextBlock label = Text("Location", Body, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(label);
@@ -820,14 +1060,35 @@ public static partial class IslandHost
             row.Children.Add(box);
             col.Children.Add(row);
 
-            TextBlock note = Text("", Body, UiFontSize - 3);
-            note.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
+            // The note under the field, on the value column's edge: an error
+            // wears Segoe's warning glyph and the status red (the Mac's
+            // exclamationmark.triangle.fill and systemRed), not a typed "⚠".
+            var red = new SolidColorBrush(Color.FromArgb(255, 0xE5, 0x48, 0x4D));
+            // A grid, not a horizontal stack, so a long reason wraps in the pane.
+            var noteRow = new Grid { ColumnSpacing = Space(4), Margin = MetaValueInset };
+            noteRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            noteRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var warn = new FontIcon
+            {
+                Glyph = "", FontFamily = IconFont, FontSize = 11, Foreground = red,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = Pad(0, 2, 0, 0),
+            };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAccessibilityView(
+                warn, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+            TextBlock note = Text("", Body, TypeCaption);
+            Grid.SetColumn(note, 1);
+            noteRow.Children.Add(warn);
+            noteRow.Children.Add(note);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetLiveSetting(
                 note, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
             void Refresh()
             {
                 (string text, bool error) = LocationNote(_metaDraft);
-                note.Text = error ? "⚠ " + text : text;
+                note.Text = text;
+                note.Foreground = error ? red : Brush(Body);
+                warn.Visibility = error ? Visibility.Visible : Visibility.Collapsed;
+                noteRow.ColumnSpacing = error ? Space(4) : 0;  // no glyph: the words on the column's edge
                 AutomationProperties_SetName(note, error ? "Error: " + text : text);
             }
             Refresh();
@@ -843,23 +1104,31 @@ public static partial class IslandHost
                     System.Diagnostics.Debug.WriteLine(ex);  // never out of a XAML event
                 }
             };
-            col.Children.Add(note);
 
             if (_metaConfirmLocation)
             {
-                col.Children.Add(BuildLocationConfirm());
+                col.Children.Add(noteRow);
+                FrameworkElement confirm = BuildLocationConfirm();
+                AppearIfNew(confirm);
+                col.Children.Add(confirm);
                 return col;
             }
             box.Submitted += () => SaveMetaLocation(_metaDraft);
             var actions = Row(
-                MetaButton("Save", () => SaveMetaLocation(_metaDraft), tip: "Enter"),
+                MetaSave(() => SaveMetaLocation(_metaDraft)),
                 MetaButton("Cancel", () =>
                 {
                     CancelMetaEdits();
                     RenderMeta();
                 }, tip: "Esc"));
-            actions.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
-            col.Children.Add(actions);
+            actions.Spacing = Space(6);
+            actions.Margin = MetaValueInset;
+            // The note and the buttons arrive together, as one group.
+            var extras = new StackPanel { Spacing = Space(6) };
+            extras.Children.Add(noteRow);
+            extras.Children.Add(actions);
+            AppearIfNew(extras);
+            col.Children.Add(extras);
             _metaFocusField = box;
             return col;
         }
@@ -874,14 +1143,13 @@ public static partial class IslandHost
             : (_metaLocationFacts & MetaFactLocationInOriginal) != 0
                 ? "Change where this was taken. The original keeps its own; the new one goes in the XMP sidecar, which wins"
                 : "Change or remove where this was taken (decimal or degrees, minutes, seconds)";
-        Button edit = MetaButton("Edit", () =>
+        Button edit = MetaQuiet("Edit", () =>
         {
             CancelMetaEdits();
             _metaEditingLocation = true;
             _metaDraft = LocationStartText();
             RenderMeta();
-        }, tip: tip, enabled: canSet);
-        AutomationProperties_SetName(edit, "Edit location");
+        }, tip: tip, enabled: canSet, name: "Edit location");
         Grid.SetColumn(edit, 2);
         row.Children.Add(edit);
         col.Children.Add(row);
@@ -900,14 +1168,15 @@ public static partial class IslandHost
         {
             Spacing = Space(8),
             Padding = Pad(12),
-            Margin = new Thickness(MetaLabelWidth, 0, 0, 0),
+            Margin = MetaValueInset,
             Background = Brush(ChromeColour.Surface),
             CornerRadius = Corner(8),
         };
-        box.Children.Add(Text("Remove location from this file?", Title, bold: true));
+        // The pane's sizes: a 14 DIP question one weight step over a 13 DIP line.
+        box.Children.Add(Text("Remove location from this file?", Title, TypeBody, bold: true));
         // Revert all restores every tag as it was before this session's first
         // write to the file, until the app quits (meta::revert, docs/design/06).
-        box.Children.Add(Text(RemoveLocationMessage, Body, UiFontSize - 2));
+        box.Children.Add(Text(RemoveLocationMessage, Body, TypeSmall));
         AutomationProperties_SetName(box, "Remove location from this file? " + RemoveLocationMessage);
         Button cancel = MetaButton("Cancel", () =>
         {
@@ -922,7 +1191,11 @@ public static partial class IslandHost
             RenderMeta();
         }, tip: "Remove every GPS tag from this file");
         AutomationProperties_SetName(remove, "Remove location");
-        box.Children.Add(Row(cancel, remove));
+        // Flat buttons with no surface at rest: pulled back by their inset so
+        // Cancel's words line up with the question's.
+        StackPanel buttons = Row(cancel, remove);
+        buttons.Margin = new Thickness(-Space(8), 0, 0, 0);
+        box.Children.Add(buttons);
         cancel.Loaded += (_, _) =>
         {
             try
@@ -1025,11 +1298,14 @@ public static partial class IslandHost
             value.Submitted += AddMetaTag;
             form.Children.Add(key);
             form.Children.Add(value);
-            form.Children.Add(Row(addButton, MetaButton("Cancel", () =>
+            StackPanel formButtons = Row(addButton, MetaButton("Cancel", () =>
             {
                 CancelMetaEdits();
                 RenderMeta();
-            }, tip: "Esc")));
+            }, tip: "Esc"));
+            formButtons.Spacing = Space(6);
+            form.Children.Add(formButtons);
+            AppearIfNew(form);
             Grid.SetRow(form, 1);
             host.Children.Add(form);
             _metaFocusField = key;
@@ -1037,6 +1313,7 @@ public static partial class IslandHost
         else if (_metaEditingComment)
         {
             StackPanel form = BuildCommentForm();
+            AppearIfNew(form);
             Grid.SetRow(form, 1);
             host.Children.Add(form);
         }
@@ -1141,7 +1418,7 @@ public static partial class IslandHost
                     return header;
                 }
                 case TagListNote n:
-                    return Text(n.Text, Body);
+                    return Text(n.Text, Body, TypeBody);
                 default:
                     return new Grid();
             }
@@ -1172,8 +1449,10 @@ public static partial class IslandHost
     {
         // A background so the whole row, not only its label, takes the hover
         // that shows the untranslated key (the Mac's .help on the row).
-        var cell = new StackPanel { Margin = Pad(0, 2, 0, 2), Spacing = Space(2), Background = Brush(Colors.Transparent) };
-        var head = new Grid();
+        // The tag's name over its value, 4 DIP apart; 4 DIP of padding above and
+        // below keep the next tag further off than its value is (the Mac's row).
+        var cell = new StackPanel { Padding = Pad(0, 4, 0, 4), Spacing = Space(4), Background = Brush(Colors.Transparent) };
+        var head = new Grid { ColumnSpacing = Space(8) };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         TextBlock label = Text(t.Label, Title, TypeBody);
@@ -1186,11 +1465,10 @@ public static partial class IslandHost
             var glyph = new FontIcon
             {
                 Glyph = "",
-                FontFamily = new FontFamily("Segoe Fluent Icons,Segoe MDL2 Assets"),
-                FontSize = 12,
+                FontFamily = IconFont,
+                FontSize = 11,
                 Foreground = Brush(Body),
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = Pad(6, 0, 4, 0),
             };
             ToolTipService.SetToolTip(glyph, t.LockReason);
             AutomationProperties_SetName(glyph, "Read-only: " + t.LockReason);
@@ -1199,21 +1477,20 @@ public static partial class IslandHost
         }
         else if (!editing)
         {
-            Button edit = MetaButton("Edit", () =>
+            // Quiet actions: the tag and its value are the heaviest marks.
+            Button edit = MetaQuiet("Edit", () =>
             {
                 CancelMetaEdits();
                 _metaEditingKey = t.Raw;
                 _metaDraft = t.RawValue;
                 RenderMeta();
             }, tip: t.Access == "s" ? "Saved to the XMP sidecar; the original is never rewritten" : "Edit this tag",
-               enabled: _metaCanEdit);
-            AutomationProperties_SetName(edit, "Edit " + t.Label);
+               enabled: _metaCanEdit, name: "Edit " + t.Label);
             var buttons = Row(edit);
             if (t.Removable)
             {
-                Button remove = MetaButton("Remove", () => SendTagEdits(new[] { (t.Raw, (string?)null) }),
-                                           enabled: _metaCanEdit);
-                AutomationProperties_SetName(remove, "Remove " + t.Label);
+                Button remove = MetaQuiet("Remove", () => SendTagEdits(new[] { (t.Raw, (string?)null) }),
+                                          enabled: _metaCanEdit, name: "Remove " + t.Label);
                 buttons.Children.Add(remove);
             }
             Grid.SetColumn(buttons, 1);
@@ -1233,8 +1510,11 @@ public static partial class IslandHost
                 RenderMeta();
             };
             AutomationProperties_SetName(box, "New value for " + t.Label);
-            cell.Children.Add(box);
-            cell.Children.Add(Text("Enter saves · Esc cancels", Body, UiFontSize - 4));
+            var editor = new StackPanel { Spacing = Space(4) };
+            editor.Children.Add(box);
+            editor.Children.Add(Text("Enter saves · Esc cancels", Body, TypeCaption));
+            AppearIfNew(editor);
+            cell.Children.Add(editor);
             // The repeater builds this cell during layout, after RenderMeta's
             // FocusMetaFieldSoon has run, so the cell asks for focus itself.
             _metaFocusField = box;
@@ -1242,7 +1522,10 @@ public static partial class IslandHost
         }
         else
         {
-            TextBlock value = Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3);
+            // 13 DIP under the 14 DIP name, as on the Mac; a missing value is the
+            // disabled dash every other empty field shows.
+            TextBlock value = Text(t.Value.Length == 0 ? "—" : t.Value,
+                                   t.Value.Length == 0 ? ChromeColour.Disabled : Body, TypeSmall, maxLines: 3);
             if (t.Value.Length > 0) Selectable(value);
             cell.Children.Add(value);
         }
@@ -1258,19 +1541,22 @@ public static partial class IslandHost
     private static StackPanel BuildCommentForm()
     {
         var form = new StackPanel { Spacing = Space(6), Padding = Pad(10, 0, 10, 10) };
-        form.Children.Add(Text("Comment", Title));
+        // The tag rows' 14 DIP name, not a 16 DIP heading over them.
+        form.Children.Add(Text("Comment", Title, TypeBody));
         var box = new FakeInput("Comment");
         box.SetText(_metaDraft);
         box.Changed += () => _metaDraft = box.Text;
         box.Submitted += () => SaveMetaComment(box.Text);
         AutomationProperties_SetName(box, "Comment");
         form.Children.Add(box);
-        form.Children.Add(Row(MetaButton("Save", () => SaveMetaComment(_metaDraft), tip: "Enter"),
-                              MetaButton("Cancel", () =>
-                              {
-                                  CancelMetaEdits();
-                                  RenderMeta();
-                              }, tip: "Esc")));
+        StackPanel buttons = Row(MetaSave(() => SaveMetaComment(_metaDraft)),
+                                 MetaButton("Cancel", () =>
+                                 {
+                                     CancelMetaEdits();
+                                     RenderMeta();
+                                 }, tip: "Esc"));
+        buttons.Spacing = Space(6);
+        form.Children.Add(buttons);
         _metaFocusField = box;
         return form;
     }
@@ -1318,9 +1604,10 @@ public static partial class IslandHost
 
     private static UIElement BuildStreams()
     {
-        var col = new StackPanel { Spacing = Space(12), Padding = Pad(14, 10, 14, 14) };
+        // The Mac's inspector: 14 between streams and all round.
+        var col = new StackPanel { Spacing = Space(14), Padding = Pad(14) };
         StackPanel? current = null;
-        bool chapters = false;
+        StackPanel? chapters = null;
         int chapter = 0;
         foreach (string line in _metaStreamLines)
         {
@@ -1328,13 +1615,13 @@ public static partial class IslandHost
             switch (f[0])
             {
                 case "S" when f.Length >= 4:
-                    current = new StackPanel { Spacing = Space(4) };
+                    current = new StackPanel { Spacing = Space(6) };
                     current.Children.Add(Text($"#{f[1]}  {Capitalise(f[2])}  —  {f[3]}", Title, TypeBody));
                     col.Children.Add(current);
                     break;
                 case "F" when f.Length >= 3 && current is not null:
                 {
-                    var row = new Grid();
+                    var row = new Grid { ColumnSpacing = MetaColumnGap };
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                     row.Children.Add(Text(f[1], Body, TypeSmall));
@@ -1346,24 +1633,34 @@ public static partial class IslandHost
                 }
                 case "C" when f.Length >= 3:
                 {
-                    if (!chapters)
+                    // One group: the heading close over its rows, the rows a
+                    // list's pitch apart (not the 14 between streams).
+                    if (chapters is null)
                     {
-                        chapters = true;
-                        col.Children.Add(Text("Chapters", Title, TypeBody));
+                        chapters = new StackPanel { Spacing = Space(4) };
+                        TextBlock heading = Text("Chapters", Title, TypeBody);
+                        heading.Margin = Pad(0, 0, 0, 2);
+                        chapters.Children.Add(heading);
+                        col.Children.Add(chapters);
                     }
                     long.TryParse(f[1], out long ms);
                     var s = TimeSpan.FromMilliseconds(ms);
                     string stamp = $"{(int)s.TotalHours}:{s.Minutes:00}:{s.Seconds:00}";
                     // An untitled chapter is numbered, as on the Mac ("Chapter 3").
                     ++chapter;
-                    col.Children.Add(Text($"{stamp}   {(f[2].Length == 0 ? $"Chapter {chapter}" : f[2])}", Body));
+                    // The time and the title side by side, 10 apart (the Mac's
+                    // HStack); Segoe's figures are tabular, so the titles share an edge.
+                    var entry = new StackPanel { Orientation = Orientation.Horizontal, Spacing = MetaColumnGap };
+                    entry.Children.Add(Text(stamp, Body, TypeSmall));
+                    entry.Children.Add(Text(f[2].Length == 0 ? $"Chapter {chapter}" : f[2], Title, TypeSmall));
+                    chapters.Children.Add(entry);
                     break;
                 }
             }
         }
         if (_metaStreamLines.Count == 0)
         {
-            col.Children.Add(Text(_metaLoading ? "Reading…" : "No streams", Body));
+            col.Children.Add(Text(_metaLoading ? "Reading…" : "No streams", Body, TypeBody));
         }
         return new ScrollViewer { Content = WithSlotSections(col), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
@@ -1704,10 +2001,24 @@ public static partial class IslandHost
         string name = Path.GetFileName(parent.TrimEnd('\\', '/'));
         // The button is kept while it still says the same, so arrow-key focus
         // sitting on it survives a refresh.
-        string label = "↑  Up to " + (name.Length == 0 ? parent : name);
-        if (_treeUp.Child is Button { Content: TextBlock { Text: var shown } } && shown == label) return;
+        string label = "Up to " + (name.Length == 0 ? parent : name);
+        if (_treeUp.Child is Button { Tag: string shown } && shown == label) return;
         string target = parent;
-        Button up = FlatButton(Text(label, Body), Pad(0, 2, 8, 2));
+        // The icon set's Up arrow, not a typed "↑" (docs/design/20 "Craft rules"; the Mac's
+        // arrow.up.left).
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+        content.Children.Add(new FontIcon
+        {
+            Glyph = "\uE74A",  // Up
+            FontFamily = IconFont,
+            FontSize = TypeSize(TypeSmall),
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        content.Children.Add(Text(label, Body));
+        Button up = FlatButton(content, Pad(0, 2, 8, 2));
+        up.Tag = label;
+        AutomationProperties_SetName(up, label);
         up.Click += (_, _) => OpenTreePath(target);
         up.KeyDown += (_, e) => TreeArrow(up, e);
         _treeUp.Child = up;

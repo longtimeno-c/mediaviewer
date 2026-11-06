@@ -93,6 +93,17 @@ per piece, a draggable playhead that snaps to joins and marks, piece selection, 
 edges (the preview shows the edge frame). On Mac the playhead is its own layer, so the thumbnail
 canvas does not redraw while playing, and the timeline stops polling when the window closes.
 
+The look (2026-11-05, [20 "Craft rules"](20-edit-workspace.md#craft-rules), both hosts): while the
+clip is read (its thumbnails and audio, often more than a second) the timeline shows its own empty
+tracks at their real size with "Reading the clip…" 12 in, not a spinner; the real tracks fade in
+over them (150 ms; cut with Reduce Motion / animations off). The selected piece is shown by dimming
+the others under a 45 % wash of the window's background, never an outline; pieces have no
+hairline. The playhead is the title colour with a thin halo of the background (not red: red is a
+status colour); the waveform is the body colour, so the accent means only the marked range, whose
+band and brackets fade in and out. "No audio" is said once, in the first piece wide enough. The
+bar's look tools (turn left / right, crop, light, sound, save frame) are icons with tooltips on
+both hosts; Light's exposure reads in EV as Edit's Adjust pane does.
+
 Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (160 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104, its five light values at 120, mute, volume and fades at 140, speed at 156) on each
 edit and the playhead on the tick, and `chrome_editor_strip_args` once per clip. The island sends
 `editor_seek` (1023, program milliseconds), `editor_action` (1024, `chrome_editor_action`; 1–6, 14–16

@@ -19,6 +19,8 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     private static StackPanel? _storageRows;
+    // Thumbnails' Clear, which says "Clearing…" on itself while it runs.
+    private static Button? _storageClear;
     private static ComboBox? _thumbCap;
     private static bool _storageMeasuring;
 
@@ -165,18 +167,19 @@ public static partial class IslandHost
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.Children.Add(Label("On this PC", UiFontSize + 1));
-        TextBlock total = Label(MediaViewer.Shared.ByteSize.Text(rows.Sum(kv => kv.Value)), UiFontSize + 1);
+        // The Mac's AddonStorageBlock: the heading and total at 15, pieces at 13.
+        head.Children.Add(Label("On this PC", TypeSize(15)));
+        TextBlock total = Label(MediaViewer.Shared.ByteSize.Text(rows.Sum(kv => kv.Value)), TypeSize(15));
         Grid.SetColumn(total, 1);
         head.Children.Add(total);
         _addonPageStorage.Children.Add(head);
         foreach (var (folder, bytes) in rows)
         {
-            var line = new Grid();
+            var line = new Grid { ColumnSpacing = Space(12) };
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            line.Children.Add(Label(StoragePieceWords(folder), UiFontSize - 1, mute: true));
-            TextBlock size = Label(MediaViewer.Shared.ByteSize.Text(bytes), UiFontSize - 1, mute: true);
+            line.Children.Add(Label(StoragePieceWords(folder), TypeSize(TypeNote), mute: true));
+            TextBlock size = Label(MediaViewer.Shared.ByteSize.Text(bytes), TypeSize(TypeNote), mute: true);
             Grid.SetColumn(size, 1);
             line.Children.Add(size);
             _addonPageStorage.Children.Add(line);
@@ -187,6 +190,7 @@ public static partial class IslandHost
     {
         if (_storageRows is null) return;
         _storageRows.Children.Clear();
+        _storageClear = null;
         if (string.IsNullOrEmpty(json))
         {
             _storageRows.Children.Add(Label("Sizes are not available."));
@@ -220,6 +224,7 @@ public static partial class IslandHost
                     clear.IsEnabled = bytes > 0;
                     AutomationProperties.SetName(clear, "Clear thumbnails");
                     right.Children.Add(clear);
+                    _storageClear = clear;
                     _storageRows.Children.Add(SettingsRow(title, detail, right));
                 }
                 else
@@ -246,10 +251,12 @@ public static partial class IslandHost
     {
         MediaViewerSession? session = _folderSession;
         if (session is null) return;
-        if (_storageRows is not null)
+        // The button says it on itself, as the Mac's; the rows stay where they
+        // are until the new sizes replace them (nothing collapses and regrows).
+        if (_storageClear is not null)
         {
-            _storageRows.Children.Clear();
-            _storageRows.Children.Add(Label("Clearing thumbnails…"));
+            SetButtonText(_storageClear, "Clearing…");
+            _storageClear.IsEnabled = false;
         }
         // Deletes thousands of files: a worker, never this thread.
         _ = Task.Run(() =>

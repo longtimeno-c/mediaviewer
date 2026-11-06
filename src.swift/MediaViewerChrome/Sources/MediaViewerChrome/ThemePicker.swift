@@ -253,44 +253,61 @@ struct ThemePickerSheet: View {
   }
 
   private func card(_ choice: ThemeChoice, index: Int) -> some View {
-    let chosen = choice.key == selection
-    let current = index == cursor
-    let pending = choice.tokens == nil && !choice.key.isEmpty
-    let r = MVTheme.radius(10)
-    return Button {
+    ThemeCard(choice: choice, chosen: choice.key == selection, current: index == cursor,
+              dark: scheme == .dark) {
       cursor = index
       finish(choice.key)
-    } label: {
+    }
+    .id(choice.key)
+  }
+}
+
+/// One theme's card. Lift, don't ring (docs/design/20 "Craft rules"): the chosen
+/// theme's card is a lighter surface with a check, a hovered one a wash, both
+/// eased; the accent ring is the keyboard's cursor and nothing else. No
+/// hairline at rest: the fill marks the card. The Windows twin is ThemeCard in
+/// IslandHost.ThemePicker.cs.
+private struct ThemeCard: View {
+  let choice: ThemeChoice
+  let chosen: Bool
+  let current: Bool
+  let dark: Bool
+  let choose: () -> Void
+  @State private var hover = false
+
+  var body: some View {
+    let pending = choice.tokens == nil && !choice.key.isEmpty
+    let r = MVTheme.radius(10)
+    Button(action: choose) {
       VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-        ThemePreview(swatch: ThemeSwatch(choice.tokens, dark: scheme == .dark), pending: pending)
+        ThemePreview(swatch: ThemeSwatch(choice.tokens, dark: dark), pending: pending)
           .frame(height: 92)
         HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(4)) {
-          VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+          VStack(alignment: .leading, spacing: MVTheme.space(4)) {
             Text(choice.name).font(MVTheme.font(14)).foregroundStyle(MVTheme.title).lineLimit(1)
             Text(choice.detail).font(MVTheme.font(11)).foregroundStyle(MVTheme.body).lineLimit(1)
           }
           Spacer(minLength: 0)
-          if chosen {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(MVTheme.accent)
-          }
+          Image(systemName: "checkmark.circle.fill").font(.system(size: 13))
+            .foregroundStyle(MVTheme.accent)
+            .opacity(chosen ? 1 : 0)
+            .accessibilityHidden(true)
         }
       }
       .padding(MVTheme.space(8))
       .background(RoundedRectangle(cornerRadius: r).fill(MVTheme.surface))
       .overlay(RoundedRectangle(cornerRadius: r)
-        .stroke(chosen ? MVTheme.accent : current ? MVTheme.body : MVTheme.hairline,
-                lineWidth: chosen || current ? 2 : 1))
-      .overlay {
-        if current && chosen {
-          // Both: an outer ring for the keyboard, the accent for the choice.
-          RoundedRectangle(cornerRadius: r + 3).stroke(MVTheme.body, lineWidth: 1).padding(-3)
-        }
-      }
+        .fill(chosen ? MVTheme.raised : hover ? MVTheme.hoverWash : .clear))
+      .settingsCardOutline(r)
+      .overlay(RoundedRectangle(cornerRadius: r).stroke(MVTheme.accent, lineWidth: 2).opacity(current ? 1 : 0))
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .focusable(false)
-    .id(choice.key)
+    .onHover { hover = $0 }
+    .animation(.easeOut(duration: 0.15), value: hover)
+    .animation(.easeOut(duration: 0.15), value: current)
+    .animation(.easeOut(duration: 0.15), value: chosen)
     .accessibilityLabel(choice.name + ", " + choice.detail)
     .accessibilityAddTraits(chosen ? .isSelected : [])
   }
@@ -330,7 +347,8 @@ struct ThemePickerButton: View {
       .foregroundStyle(MVTheme.title)
       .padding(.horizontal, MVTheme.space(10)).padding(.vertical, MVTheme.space(6))
       .frame(width: 180)
-      .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(Color.primary.opacity(0.08)))
+      // The Settings buttons' fill, in the theme's text colour (SettingsButtonStyle).
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.title.opacity(0.08)))
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)

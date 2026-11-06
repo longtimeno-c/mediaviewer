@@ -158,6 +158,10 @@ private let backupLayouts: [(value: Int32, label: String)] = [
 
 struct PhotosBackupSection: View {
   @ObservedObject private var store = PhotosBackupStore.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// docs/design/20 "Craft rules": a change of state fades in its slot; Reduce Motion cuts.
+  private var quick: Animation? { reduceMotion ? nil : .easeOut(duration: 0.15) }
 
   private var layoutBinding: Binding<Int32> {
     Binding(get: { store.layout }, set: { store.setLayout($0) })
@@ -173,17 +177,19 @@ struct PhotosBackupSection: View {
     return min(1, Double(p.done + p.skipped + p.failed) / Double(p.total))
   }
 
-  private var progressLine: String {
+  /// The run's numbers for the shared progress line ("Backing up · 1,234 of
+  /// 5,678 · about 20 min left"). Short and fixed: the line's numbers never
+  /// truncate, so the file being copied (which changed many times a second)
+  /// is not among them; what was copied and what was already there is the
+  /// summary's to say when the run ends.
+  private var progressDetail: String {
     let p = store.run
-    if p.state == 1 { return "Listing your library…" }
     var parts = ["\(countText(p.done + p.skipped + p.failed)) of \(countText(p.total))"]
-    if p.done > 0 { parts.append("\(countText(p.done)) copied (\(bytesText(p.bytes)))") }
-    if p.skipped > 0 { parts.append("\(countText(p.skipped)) already there") }
     if p.failed > 0 { parts.append("\(countText(p.failed)) failed") }
-    let current = cString(p.current)
-    if !current.isEmpty { parts.append(current) }
     return parts.joined(separator: " · ")
   }
+
+  private var runOK: Bool { store.run.state == 3 && store.run.failed == 0 }
 
   private func summary(_ p: mv_chrome_photos_backup, prefix: String) -> String {
     var parts = [prefix]
@@ -215,12 +221,15 @@ struct PhotosBackupSection: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if store.running {
-              Button("Cancel") { store.cancel() }
-            } else {
-              Button(store.destination.isEmpty ? "Choose Folder…" : "Back Up Now") { store.start() }
-                .keyboardShortcut(.defaultAction)
+            // One button whose words change on itself, not two swapped in.
+            Button {
+              if store.running { store.cancel() } else { store.start() }
+            } label: {
+              Text(store.running ? "Cancel" : store.destination.isEmpty ? "Choose folder…" : "Back up now")
+                .contentTransition(.opacity)
             }
+            .keyboardShortcut(store.running ? nil : .defaultAction)
+            .animation(quick, value: store.running)
           }
           HStack(spacing: MVTheme.space(8)) {
             Image(systemName: "externaldrive").foregroundStyle(MVTheme.body)
@@ -244,30 +253,53 @@ struct PhotosBackupSection: View {
             Spacer(minLength: 0)
           }
           if store.running {
-            ActivityBar(fraction: progressFraction)  // the one progress track (ProgressLine.swift)
-            Text(progressLine).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-              .lineLimit(1).truncationMode(.middle)
+            // The shared progress line (ProgressLine.swift): the track, then one
+            // line with the time left once there is a rate. Cancel is the
+            // button above, so the line has none of its own (say it once).
+            ProgressLine(verb: store.run.state == 1 ? "Listing your library" : "Backing up",
+                         fraction: store.run.state == 1 ? nil : progressFraction,
+                         detail: store.run.state == 1 ? nil : progressDetail,
+                         key: "photos-backup")
+              .transition(.opacity)
           } else if store.run.state >= 3 {
-            HStack(spacing: MVTheme.space(8)) {
-              Image(systemName: store.run.state == 3 && store.run.failed == 0 ? "checkmark.circle" : "exclamationmark.triangle")
-                .foregroundStyle(store.run.state == 3 && store.run.failed == 0 ? Color.green : Color.orange)
-              Text(store.run.state == 5 ? cString(store.run.error) : summary(store.run, prefix: "This run"))
-                .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-              Button("Show Report") { store.showReport() }.controlSize(.small)
+            // The outcome takes the line's slot, as ProgressLine's own does: the
+            // track's room kept with the bar faded out, then the result.
+            VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+              ProgressTrack(fraction: 1, faded: true)
+              HStack(spacing: MVTheme.space(8)) {
+                Image(systemName: runOK ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                  .font(.system(size: 12))
+                  .foregroundStyle(runOK ? MVTheme.accent : MVTheme.warm)
+                  .accessibilityHidden(true)
+                Text(store.run.state == 5 ? cString(store.run.error) : summary(store.run, prefix: "This run"))
+                  .font(MVTheme.font(12).monospacedDigit()).foregroundStyle(MVTheme.title)
+                  .lineLimit(2)
+                Spacer(minLength: 0)
+                QuietButton(title: "Show report") { store.showReport() }
+              }
+              .frame(minHeight: 22)
             }
+            .transition(.opacity)
           } else if let last = store.last {
             Text(summary(last, prefix: "Last backup \(dateText(last.finished_unix))"))
               .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           }
           if store.startFailed {
-            Text("The backup could not start. Check that the folder can be written.")
-              .font(MVTheme.font(12)).foregroundStyle(.orange)
+            HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(6)) {
+              Image(systemName: "exclamationmark.circle.fill").font(.system(size: 12)).foregroundStyle(MVTheme.warm)
+                .accessibilityHidden(true)
+              Text("The backup could not start. Check that the folder can be written.")
+                .font(MVTheme.font(12)).foregroundStyle(MVTheme.title)
+            }
+            .transition(.opacity.combined(with: .offset(y: -4)))
           }
         }
+        .animation(quick, value: store.run.state)
+        .animation(quick, value: store.startFailed)
         .padding(MVTheme.space(14))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+        .settingsCardOutline(MVTheme.radius(8))  // fill only; the hairline under Increase Contrast, as SettingsRow
       }
     }
   }

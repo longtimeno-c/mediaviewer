@@ -4,6 +4,7 @@ using MediaViewer.Shared;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Animation;
 
 namespace MediaViewer.Chrome;
 
@@ -60,10 +61,9 @@ public static partial class IslandHost
     private static void BuildAddonsList(StackPanel into, FrameworkElement importPage, FrameworkElement localSearchPage,
                                         FrameworkElement slotsPage, FrameworkElement othersPage)
     {
-        TextBlock heading = Heading(AddonListWords.Heading);
-        heading.FontSize = TypeHeading;
-        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
-        into.Children.Add(heading);
+        // A group of the General page like the others: a section's heading
+        // (the Mac's SettingsSectionTitle).
+        into.Children.Add(SettingsSection(AddonListWords.Heading));
         into.Children.Add(BuildAddonsRestartRow());  // #510: "Restart to finish updating …"
         _addonListPanel = new StackPanel { Spacing = Space(6) };
         into.Children.Add(_addonListPanel);
@@ -105,15 +105,17 @@ public static partial class IslandHost
         _addonPageTitle.FontSize = TypeHeading;
         AutomationProperties.SetHeadingLevel(_addonPageTitle, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         view.Children.Add(_addonPageTitle);
-        // Every page's body in one card, as the Mac's AddonPageView.
+        // Every page's body in one card, as the Mac's AddonPageView: one surface,
+        // words 12 from its edge, no box inside it (its settings page and an
+        // install question draw none; docs/design/20 "Craft rules").
         _addonPageBody = new Border
         {
-            Padding = Pad(14),
+            Padding = Pad(12),
             Background = Brush(ChromeColour.Surface),
             CornerRadius = Corner(RadiusCard),
             BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(1),
         };
+        SettingsCard(_addonPageBody);
         view.Children.Add(_addonPageBody);
         // What the add-on keeps on this PC (IslandHost.Storage.cs).
         _addonPageStorage = new StackPanel { Spacing = Space(6) };
@@ -178,21 +180,29 @@ public static partial class IslandHost
                 AddonListRows[e.Id] = (row, state);
                 // The settings rows' card around the flat button: its hover
                 // wash shows inside it, and no template or resource is touched
-                // (both fail-fast or throw in these islands).
-                _addonListPanel.Children.Add(new Border
+                // (both fail-fast or throw in these islands). One surface, no
+                // hairline around it (the Mac's AddonListRow).
+                var card = new Border
                 {
                     Child = row,
                     Background = Brush(ChromeColour.Surface),
                     BorderBrush = Brush(Hairline),
-                    BorderThickness = new Thickness(1),
                     CornerRadius = Corner(RadiusCard),
-                });
+                };
+                SettingsCard(card);  // the outline only in a high-contrast theme
+                _addonListPanel.Children.Add(card);
             }
         }
         foreach (AddonListEntry e in entries)
         {
             if (!AddonListRows.TryGetValue(e.Id, out var r)) continue;
-            if (r.State.Text != e.Line) r.State.Text = e.Line;
+            if (r.State.Text != e.Line)
+            {
+                // A new state comes in in its own slot (the Mac's .contentTransition).
+                bool changed = r.State.Text.Length > 0;
+                r.State.Text = e.Line;
+                if (changed) SettingsFadeIn(r.State);
+            }
             AutomationProperties.SetName(r.Row, $"{e.Name}, {e.Line}");
         }
         if (_addonPage.Length > 0 && _addonPageTitle is not null)
@@ -229,11 +239,41 @@ public static partial class IslandHost
         Grid.SetColumn(chevron, 2);
         grid.Children.Add(chevron);
         string id = e.Id;
-        Button row = ChromeButton(grid, Pad(14, 12, 14, 12), () => OpenAddonPage(id),
+        Button row = ChromeButton(grid, Pad(12), () => OpenAddonPage(id),
                                   align: HorizontalAlignment.Stretch, contentAlign: HorizontalAlignment.Stretch);
         row.AllowFocusOnInteraction = true;
         row.CornerRadius = Corner(RadiusCard);
         return (row, state);
+    }
+
+    /// <summary>
+    /// A state that a click or a refresh set fades in over 150 ms rather than
+    /// switching in one frame (docs/design/20 "Craft rules"); at once with
+    /// animations off. One storyboard on a change, nothing while idle.
+    /// </summary>
+    private static void SettingsFadeIn(UIElement e)
+    {
+        if (!HostAnimationsEnabled()) return;
+        try
+        {
+            var fade = new DoubleAnimation
+            {
+                From = 0,
+                To = 1,
+                Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            Storyboard.SetTarget(fade, e);
+            Storyboard.SetTargetProperty(fade, "Opacity");
+            var board = new Storyboard();
+            board.Children.Add(fade);
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            e.Opacity = 1;
+        }
     }
 
     /// <summary>

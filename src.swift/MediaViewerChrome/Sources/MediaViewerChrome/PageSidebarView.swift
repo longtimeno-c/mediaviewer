@@ -158,7 +158,7 @@ struct PageSidebarView: View {
       ScrollView(.vertical, showsIndicators: true) {
         // Lazy: a 300-page document builds (and asks for) only the cells
         // near what is on screen.
-        LazyVStack(spacing: 10) {
+        LazyVStack(spacing: MVTheme.space(10)) {
           ForEach(0..<store.count, id: \.self) { page in
             PageSidebarCell(page: page, isCurrent: page == store.current, slot: store.slot(page))
               .id(page)
@@ -167,7 +167,7 @@ struct PageSidebarView: View {
               .onDisappear { store.disappeared(page) }
           }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, MVTheme.space(10))
         .frame(maxWidth: .infinity)
       }
       // The page on screen stays in view as the document scrolls; a page
@@ -197,6 +197,7 @@ private struct PageSidebarCell: View {
   let page: Int
   let isCurrent: Bool
   @ObservedObject var slot: PageThumbSlot
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(spacing: 4) {
@@ -213,14 +214,19 @@ private struct PageSidebarCell: View {
       }
       .frame(width: 104, height: 136)
       .padding(4)
-      .overlay(
+      // The page on screen lifts onto a lighter surface, as Preview's does;
+      // an accent ring would read as keyboard focus, which the strip never
+      // takes (docs/design/20 "Craft rules"). It fades as the page changes.
+      .background(
         RoundedRectangle(cornerRadius: MVTheme.radius(4))
-          .strokeBorder(isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
+          .fill(isCurrent ? MVTheme.raised : .clear)
       )
       Text("\(page + 1)")
         .font(MVTheme.font(11))
         .foregroundStyle(isCurrent ? MVTheme.title : MVTheme.body)
+        .monospacedDigit()
     }
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isCurrent)
     .contentShape(Rectangle())
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("Page \(page + 1)")

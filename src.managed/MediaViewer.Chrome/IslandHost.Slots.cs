@@ -796,8 +796,22 @@ public static partial class IslandHost
         if (_listOpen && _slotLocalRows.Count > 0)
         {
             string why = _slotLocalRows.Select(r => r.Why).Distinct().Count() == 1 ? _slotLocalRows[0].Why : "";
-            Button more = EditButton(why.Length > 0 ? $"+ {_slotLocalRows.Count} in {why}" : $"+ {_slotLocalRows.Count} more from add-ons",
-                AddSlotRowsToList, tip: "Add what other Local search providers matched to these results");
+            string words = why.Length > 0 ? $"{_slotLocalRows.Count} in {why}" : $"{_slotLocalRows.Count} more from add-ons";
+            Button more = EditButton(words, AddSlotRowsToList, tip: "Add what other Local search providers matched to these results");
+            // The icon set's plus, not a "+" typed into the words (the Mac's Label).
+            if (more.Content is TextBlock label)
+            {
+                more.Content = null;
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(5) };
+                row.Children.Add(new FontIcon
+                {
+                    Glyph = "\uE710", FontFamily = SymbolFont, FontSize = 12, Foreground = Brush(Title),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+                label.VerticalAlignment = VerticalAlignment.Center;
+                row.Children.Add(label);
+                more.Content = row;
+            }
             AutomationProperties.SetName(more, $"Add {_slotLocalRows.Count} more results from add-ons");
             _slotPathPanel.Children.Add(more);
         }
@@ -1270,24 +1284,27 @@ public static partial class IslandHost
 
     private static StackPanel SlotRemoveButtons(SlotAddonRow row)
     {
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (_slotConfirming == row.Id)
         {
             // #510 / #507: say exactly what each choice deletes (the Mac's words).
-            var confirm = new StackPanel { Spacing = Space(6) };
+            var confirm = new StackPanel { Spacing = Space(8) };
             TextBlock q = Note($"Remove {row.Name}? \"Remove everything\" also deletes its data folder and its settings. \"Remove, keep its data\" leaves both for a reinstall.");
             q.Foreground = Brush(Title);
             confirm.Children.Add(q);
             confirm.Children.Add(buttons);
-            buttons.Children.Add(EditButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));
-            buttons.Children.Add(EditButton("Remove everything", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, false); }));
-            buttons.Children.Add(EditButton("Cancel", () => { _slotConfirming = null; RefreshSlotSettings(); }));
+            // Filled, as Open and Update beside them: a control shows its
+            // surface at rest (docs/design/20 "Craft rules"), and the Mac's
+            // Settings buttons are filled too.
+            buttons.Children.Add(SettingsButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));
+            buttons.Children.Add(SettingsButton("Remove everything", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, false); }));
+            buttons.Children.Add(SettingsButton("Cancel", () => { _slotConfirming = null; RefreshSlotSettings(); }));
             FocusableButtons(buttons);
             return confirm;
         }
         else
         {
-            Button remove = EditButton("Remove…", () => { _slotConfirming = row.Id; RefreshSlotSettings(); });
+            Button remove = SettingsButton("Remove…", () => { _slotConfirming = row.Id; RefreshSlotSettings(); });
             AutomationProperties.SetName(remove, $"Remove {row.Name}");
             buttons.Children.Add(remove);
         }

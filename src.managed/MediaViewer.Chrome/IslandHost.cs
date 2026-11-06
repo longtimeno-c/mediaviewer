@@ -1217,6 +1217,27 @@ public static partial class IslandHost
     private static MenuFlyoutSeparator Sep() =>
         new() { Foreground = Brush(Hairline), Background = Brush(Hairline) };
 
+    // The chosen one of a set (Sort by, Show) or a setting that is on
+    // (Descending): Segoe Fluent's checkmark in the item's icon column, as the
+    // Mac's flyout shows an SF checkmark, never a "●" or "on"/"off" text glyph
+    // (docs/design/20 "Craft rules"). The column is the presenter's: it lines
+    // every item of the menu up when any carries an icon (as Share's do).
+    private static MenuFlyoutItem CheckItem(string text, bool on, Action action)
+    {
+        MenuFlyoutItem item = Item(text, null, action);
+        if (on)
+        {
+            item.Icon = new FontIcon
+            {
+                Glyph = "\uE73E",  // CheckMark
+                FontFamily = IconFont,
+                Foreground = Brush(Title),
+            };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(item, "Chosen");
+        }
+        return item;
+    }
+
     // Loading indicator. A decode that misses the viewer cache is not
     // instantaneous on a camera dump, and a viewer that shows the previous
     // photo with no sign that a new one is coming reads as a hang. This is the
@@ -1429,8 +1450,8 @@ public static partial class IslandHost
     private static readonly string[] SortNames =
         { "Name", "Date modified", "Size", "Type", "Date taken (EXIF)" };
 
-    // View > Sort by. Rebuilt each time the flyout opens so the marker is the
-    // order native actually applied, never a guess.
+    // View > Sort by. Rebuilt each time the flyout opens so the checkmark is
+    // the order native actually applied, never a guess.
     private static MenuFlyoutSubItem SortSubMenu(MenuFlyout owner)
     {
         var sub = new MenuFlyoutSubItem { Text = "Sort by" };
@@ -1440,11 +1461,11 @@ public static partial class IslandHost
             for (int k = 0; k < SortNames.Length; k++)
             {
                 int key = k;
-                sub.Items.Add(Item(SortNames[k], (_sortPacked & 7) == k ? "●" : null,
+                sub.Items.Add(CheckItem(SortNames[k], (_sortPacked & 7) == k,
                     () => Send(Command.SetSort, (_sortPacked & 8) | key)));
             }
             sub.Items.Add(Sep());
-            sub.Items.Add(Item("Descending", (_sortPacked & 8) != 0 ? "on" : "off",
+            sub.Items.Add(CheckItem("Descending", (_sortPacked & 8) != 0,
                 () => Send(Command.SetSort, _sortPacked ^ 8)));
         }
         owner.Opening += (_, _) => Fill();
@@ -1460,7 +1481,7 @@ public static partial class IslandHost
     private const int FirstCullFilter = 5;
 
     // View > Show (issue #206): a view of the folder, for this run only. Rebuilt
-    // on open so the marker is the filter native applied. "Marked" keeps the
+    // on open so the checkmark is the filter native applied. "Marked" keeps the
     // marks as they are when it is chosen. Picks / Not rejected / a colour
     // (issue #207) re-apply when chosen again.
     private static MenuFlyoutSubItem KindFilterSubMenu(MenuFlyout owner)
@@ -1473,7 +1494,7 @@ public static partial class IslandHost
             {
                 if (k == FirstCullFilter) sub.Items.Add(Sep());
                 int filter = k;
-                sub.Items.Add(Item(KindFilterNames[k], _kindFilter == k ? "●" : null,
+                sub.Items.Add(CheckItem(KindFilterNames[k], _kindFilter == k,
                     () => Send(Command.KindFilterSet, filter)));
             }
         }

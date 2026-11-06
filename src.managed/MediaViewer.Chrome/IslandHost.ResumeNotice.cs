@@ -43,6 +43,8 @@ public static partial class IslandHost
 
     private static DesktopWindowXamlSource? _resumeNotice;
     private static FrameworkElement? _resumeNoticeCard;
+    // The card's words and buttons: what fades in and out (NoticeCard, IslandHost.HintNotice.cs).
+    private static FrameworkElement? _resumeNoticeContent;
     // The launch read's roots, kept while the window cannot show them yet.
     private static List<UnfinishedRoot>? _resumeRootsWaiting;
     // The notice's Resume started (or joined) the pack's load: every held root
@@ -143,6 +145,7 @@ public static partial class IslandHost
             // Behind the card's rounded corners, the canvas colour (the AI badge's).
             _resumeNotice.Content = new Grid { Background = Brush(Canvas), Children = { _resumeNoticeCard } };
             PlaceCornerCards();  // the restart and hint cards stack above it (#510)
+            if (_resumeNoticeContent is not null) FadeNoticeContent(_resumeNoticeContent, show: true);
             // Said once as it appears, not only when focused.
             FrameworkElementAutomationPeer.FromElement(_resumeNoticeCard)?.RaiseNotificationEvent(
                 AutomationNotificationKind.ActionCompleted, AutomationNotificationProcessing.ImportantMostRecent,
@@ -161,51 +164,19 @@ public static partial class IslandHost
         if (_resumeRootsWaiting is List<UnfinishedRoot> roots) MaybeShowResumeNotice(roots);
     }
 
+    // The corner cards' look (NoticeCard, IslandHost.HintNotice.cs).
     private static FrameworkElement BuildResumeNoticeCard(string question)
     {
-        var stack = new StackPanel { Spacing = Space(8) };
-        stack.Children.Add(new TextBlock
-        {
-            Text = question,
-            FontFamily = UiFont,
-            FontSize = UiFontSize + 1,
-            Foreground = Brush(Title),
-            TextWrapping = TextWrapping.Wrap,
-        });
-        stack.Children.Add(new TextBlock
-        {
-            Text = "Local search stopped part-way last time. It stays paused until you resume it.",
-            FontFamily = UiFont,
-            FontSize = UiFontSize - 2,
-            Foreground = Brush(Body),
-            TextWrapping = TextWrapping.Wrap,
-        });
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = Space(8),
-            HorizontalAlignment = HorizontalAlignment.Right,
-        };
-        Button dismiss = TextButton("Dismiss", DismissResumeNotice);
+        var stack = new StackPanel { Spacing = Space(12) };
+        stack.Children.Add(NoticeWords(
+            new TextBlock { Text = question },
+            new TextBlock { Text = "Local search stopped part-way last time. It stays paused until you resume it." }));
+        Button dismiss = NoticeButton("Dismiss", DismissResumeNotice);
         ToolTipService.SetToolTip(dismiss, "Leave it paused. You can resume it from Settings → Add-ons → Local search.");
-        Button resume = TextButton("Resume", ResumeFromNotice);
-        foreach (Button b in new[] { dismiss, resume })
-        {
-            b.IsTabStop = true;
-            b.AllowFocusOnInteraction = true;
-            buttons.Children.Add(b);
-        }
-        stack.Children.Add(buttons);
-        var card = new Border
-        {
-            Width = ResumeNoticeWidth,
-            Padding = Pad(14),
-            CornerRadius = Corner(8),
-            BorderThickness = new Thickness(1),
-            BorderBrush = Brush(Hairline),
-            Background = Brush(ChromeColour.Surface),
-            Child = stack,
-        };
+        Button resume = NoticeButton("Resume", ResumeFromNotice, primary: true);
+        stack.Children.Add(NoticeButtons(dismiss, resume));
+        _resumeNoticeContent = stack;
+        Border card = NoticeCardBorder(ResumeNoticeWidth, stack);
         AutomationProperties.SetName(card, question);
         return card;
     }
@@ -264,22 +235,31 @@ public static partial class IslandHost
     {
         _resumeRootsWaiting = null;
         DesktopWindowXamlSource? island = _resumeNotice;
+        FrameworkElement? content = _resumeNoticeContent;
         _resumeNotice = null;
         _resumeNoticeCard = null;
+        _resumeNoticeContent = null;
         if (island is null) return;
-        // Parked at once; disposed after the click that closed it has returned
-        // (an island disposed inside its own button's Click is not safe).
-        try { MoveAt(island, 0, ClientHeightPx(), 1, 1); }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
         island.TakeFocusRequested -= OnTakeFocusRequested;
         RestoreCanvasFocus();
-        DispatcherQueueControllerTryEnqueue(() =>
+        // Its words fade out first (NoticeCard); then it is parked, and disposed
+        // after the click that closed it has returned (an island disposed
+        // inside its own button's Click is not safe), and the cards stacked
+        // above it come down.
+        void Gone()
         {
-            DesktopWindowXamlSource? gone = island;
-            DisposeSource(ref gone);
-        });
-        PlaceRestartNotice();  // the cards stacked above it come down
-        PlaceHintNotice();
+            try { MoveAt(island, 0, ClientHeightPx(), 1, 1); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                DesktopWindowXamlSource? gone = island;
+                DisposeSource(ref gone);
+            });
+            PlaceRestartNotice();
+            PlaceHintNotice();
+        }
+        if (content is not null) FadeNoticeContent(content, show: false, Gone);
+        else Gone();
     }
 
     /// <summary>Detach (the window is going): no island outlives it.</summary>
@@ -287,6 +267,7 @@ public static partial class IslandHost
     {
         _resumeRootsWaiting = null;
         _resumeNoticeCard = null;
+        _resumeNoticeContent = null;
         if (_resumeNotice is not null) _resumeNotice.TakeFocusRequested -= OnTakeFocusRequested;
         DisposeSource(ref _resumeNotice);
     }

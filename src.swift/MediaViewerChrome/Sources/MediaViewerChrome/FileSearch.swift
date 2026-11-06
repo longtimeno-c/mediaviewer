@@ -359,11 +359,17 @@ final class FileSearchStore: ObservableObject {
 struct FileSearchBar: View {
   @ObservedObject private var store = FileSearchStore.shared
   @FocusState private var focused: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
+    // The notes and the count change in their own slots: the count rolls,
+    // a note fades in and out (docs/design/20 "Craft rules"), never a jump.
+    let fade: Animation? = reduceMotion ? nil : .easeOut(duration: 0.15)
     HStack(spacing: MVTheme.space(8)) {
       Image(systemName: "magnifyingglass")
+        .font(.system(size: 13))
         .foregroundStyle(MVTheme.body)
+        .accessibilityHidden(true)
       TextField("Find files by name or tag in this folder", text: $store.text)
         .textFieldStyle(.plain)
         .font(MVTheme.font(14))
@@ -389,35 +395,46 @@ struct FileSearchBar: View {
         Text(store.tagNote)
           .font(MVTheme.font(12))
           .foregroundStyle(MVTheme.body)
+          .monospacedDigit()
+          .contentTransition(.numericText())
           .lineLimit(1)
           .fixedSize()
+          .transition(.opacity)
       } else if store.active && !store.providerNote.isEmpty {
         Text(store.providerNote)
           .font(MVTheme.font(12))
           .foregroundStyle(MVTheme.body)
           .lineLimit(1)
           .accessibilityLabel("Matched by an add-on: \(store.providerNote)")
+          .transition(.opacity)
       }
       if store.active {
         Text("\(store.shownCount) of \(store.totalCount)")
           .font(MVTheme.font(12))
           .foregroundStyle(MVTheme.body)
           .monospacedDigit()
+          .contentTransition(.numericText())
           .fixedSize()
+          .transition(.opacity)
       }
       Button {
         store.close()
         store.leaveField(toFirst: false)
       } label: {
         Image(systemName: "xmark.circle.fill")
+          .font(.system(size: 13))
       }
       .buttonStyle(.plain)
       .foregroundStyle(MVTheme.body)
       .help("Close file search (Esc)")
       .accessibilityLabel("Close file search")
     }
+    .animation(fade, value: store.shownCount)
+    .animation(fade, value: store.tagNote)
+    .animation(fade, value: store.providerNote)
+    .animation(fade, value: store.active)
     .padding(.horizontal, MVTheme.space(10))
-    .frame(height: 30)
+    .frame(height: 32)
     .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.surface))
     .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(focused ? MVTheme.accent : MVTheme.hairline,
                                                              lineWidth: 1))

@@ -532,12 +532,16 @@ struct ImportAddonPage: View {
         }
       }
       if let phase = store.phase {
-        AddonProgressView(phase: phase)
+        AddonProgressView(phase: phase).transition(.opacity)
       } else if !store.message.isEmpty {
         Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+          .transition(.opacity)
       }
       AddonRestartButton()
     }
+    // The bar and the outcome take the same slot in turn, with a short fade.
+    .animation(.easeOut(duration: 0.15), value: store.phase == nil)
   }
 
   private func note(_ text: String) -> some View {
@@ -589,10 +593,14 @@ struct AddonAlertItem: View {
       Button {
         shown.toggle()
       } label: {
-        Text(alert.warn ? "\u{26A0} \(alert.title)" : alert.title)
-          .font(MVTheme.font(13))
-          .foregroundStyle(alert.warn ? MVTheme.accent : MVTheme.body)
-          .lineLimit(1)
+        // The warning is the icon set's triangle, not a typed "⚠" (docs/design/20 "Craft rules").
+        HStack(spacing: MVTheme.space(6)) {
+          if alert.warn {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12))
+          }
+          Text(alert.title).font(MVTheme.font(13)).lineLimit(1)
+        }
+        .foregroundStyle(alert.warn ? MVTheme.accent : MVTheme.body)
       }
       .buttonStyle(FlatButtonStyle())
       .help(alert.body)

@@ -445,16 +445,24 @@ struct ScreenButtonStyle: ButtonStyle {
 
 // MARK: #442 additions: card, ring, tiles, code entry
 
-/// "look": "card" on a stack: padding on a rounded surface with a hairline.
+/// "look": "card" on a stack: padding on a rounded surface. The fill alone marks
+/// it (docs/design/20 "Craft rules": no redundant tonal border); with Increase
+/// Contrast, where a theme's surface may sit close to its canvas, the hairline
+/// edge comes back. The Windows twin is ScreenCard.
 private struct CardLook: ViewModifier {
   let on: Bool
+  @Environment(\.colorSchemeContrast) private var contrast
   func body(content: Content) -> some View {
     if on {
       content
         .padding(MVTheme.space(14))
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(MVTheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1))
+        .overlay {
+          if contrast == .increased {
+            RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1)
+          }
+        }
     } else {
       content
     }
@@ -535,6 +543,8 @@ private struct RevealLook: ViewModifier {
 private struct ScreenRing: View {
   let value: Double
   let size: CGFloat
+  @Environment(\.screenWindow) private var window
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     let line = max(3, size / 14)
@@ -546,9 +556,14 @@ private struct ScreenRing: View {
         .rotationEffect(.degrees(-90))
         .animation(.easeOut(duration: 0.2), value: value)
       if value >= 0 && size >= 40 {
-        Text("\(Int((value * 100).rounded()))%")
-          .font(.system(size: size / 4.5, weight: .semibold, design: .rounded).monospacedDigit())
+        // The screen's own face (as the Windows twin's), proportional figures so
+        // the number centres on its digits, rolling in place as it climbs.
+        let pct = Int((value * 100).rounded())
+        Text("\(pct)%")
+          .font(screenFont(size / 4.5, .semibold, window: window))
           .foregroundStyle(MVTheme.title)
+          .contentTransition(.numericText(value: Double(pct)))
+          .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: pct)
       }
     }
     .frame(width: size, height: size)
@@ -576,7 +591,8 @@ private struct TilesNode: View {
         // Shown, not chosen (a sender on an offer): centred, no button.
         HStack(spacing: MVTheme.space(12)) {
           ForEach(items.indices, id: \.self) { i in
-            Tile(item: items[i], size: size, selected: false).accessibilityElement(children: .combine)
+            Tile(item: items[i], size: size, selected: false, interactive: false)
+              .accessibilityElement(children: .combine)
           }
         }
       } else {
@@ -615,8 +631,11 @@ private struct Tile: View {
   let item: [String: Any]
   let size: CGFloat
   let selected: Bool
+  /// A "static" set is shown, not chosen: no wash under the pointer.
+  var interactive = true
   @State private var hovered = false
   @Environment(\.isEnabled) private var enabled
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   static func name(_ item: [String: Any]) -> String {
     let text = item["text"] as? String ?? ""
@@ -629,9 +648,8 @@ private struct Tile: View {
     let mark = item["mark"] as? String
     VStack(spacing: MVTheme.space(6)) {
       ZStack {
-        Circle()
-          .fill(LinearGradient(colors: [MVTheme.accent.opacity(0.85), MVTheme.accent.opacity(0.55)],
-                               startPoint: .top, endPoint: .bottom))
+        // One opaque accent, as the Windows twin (no translucent gradient).
+        Circle().fill(MVTheme.accent)
         Text(item["initials"] as? String ?? "?")
           .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
           .foregroundStyle(.white)
@@ -643,8 +661,10 @@ private struct Tile: View {
             .rotationEffect(.degrees(-90))
             .padding(-6)
             .animation(.easeOut(duration: 0.2), value: progress)
-        } else if selected || hovered {
-          Circle().stroke(MVTheme.accent.opacity(selected ? 1 : 0.5), lineWidth: 2).padding(-5)
+        } else if selected {
+          // The chosen computer's ring; the pointer gets a wash, not a ring
+          // (docs/design/20 "Craft rules": a ring is not a hover state).
+          Circle().stroke(MVTheme.accent, lineWidth: 2).padding(-5)
         }
         if let mark {
           Image(systemName: mark == "done" ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
@@ -663,8 +683,13 @@ private struct Tile: View {
       }
     }
     .frame(width: size + 40)
+    .padding(.vertical, MVTheme.space(4))
+    // The Windows twin's flat button: a wash under the pointer, faded in.
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8))
+      .fill(hovered && enabled && interactive ? MVTheme.hoverWash : Color.clear))
     .opacity(enabled ? 1 : 0.55)
     .onHover { hovered = $0 }
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hovered)
   }
 }
 
@@ -1037,8 +1062,9 @@ private struct NumberNode: View {
       value = min(hi, max(lo, v))
       SlotStore.shared.send(address, node: node.id, kind: 2, value: value)
     }), in: lo...hi, step: step) {
+      // A number that changes: tabular digits, so the stepper does not shift.
       Text("\(node.label): \(value == value.rounded() ? String(Int(value)) : String(value))")
-        .font(screenFont(14, window: window)).foregroundStyle(MVTheme.title)
+        .font(screenFont(14, window: window)).monospacedDigit().foregroundStyle(MVTheme.title)
     }
     .accessibilityLabel(node.label)
     .accessibilityValue(String(value))
@@ -1608,6 +1634,7 @@ private struct ButtonNode: View {
   @State private var copied = false
   @Environment(\.screenWindow) private var window
   @Environment(\.screenButtonHook) private var hook
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Button {
@@ -1615,10 +1642,12 @@ private struct ButtonNode: View {
       if let text = node.string("copy") {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        copied = true
+        // The label crossfades on the button itself, and back (Craft rules).
+        let fade: Animation? = reduceMotion ? nil : .easeOut(duration: 0.15)
+        withAnimation(fade) { copied = true }
         Task { @MainActor in
           try? await Task.sleep(nanoseconds: 1_500_000_000)
-          copied = false
+          withAnimation(fade) { copied = false }
         }
       }
       SlotStore.shared.send(address, node: node.id, kind: 1, value: nil)

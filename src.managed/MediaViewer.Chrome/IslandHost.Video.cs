@@ -294,7 +294,11 @@ public static partial class IslandHost
 
         Button more = IconButton(Glyph.More, "More: frame step, volume, audio track, loop", () => { });
         var panel = new StackPanel { Spacing = Space(10), Padding = Pad(12), MinWidth = 260 };
-        var steps = new StackPanel { Orientation = Orientation.Horizontal };
+        // The rows of text buttons pull back by the buttons' own inset, so their
+        // words line up with the headers under them (docs/design/20 "Craft rules":
+        // edges line up exactly), as the Mac's volume row lines up with its frame steps.
+        var buttonRowMargin = new Thickness(-ButtonPadding.Left, 0, 0, 0);
+        var steps = new StackPanel { Orientation = Orientation.Horizontal, Margin = buttonRowMargin };
         steps.Children.Add(TextButton("Previous frame", () => _folderSession?.VideoStep(-1)));
         steps.Children.Add(TextButton("Next frame", () => _folderSession?.VideoStep(1)));
         ToolTipService.SetToolTip(steps.Children[0], ",");
@@ -322,7 +326,7 @@ public static partial class IslandHost
                 Send(Command.VideoTrack, _audioTracks.SelectedIndex);
         };
         panel.Children.Add(_audioTracks);
-        var loop = new StackPanel { Orientation = Orientation.Horizontal };
+        var loop = new StackPanel { Orientation = Orientation.Horizontal, Margin = buttonRowMargin };
         loop.Children.Add(TextButton("Set A", () => Send(Command.VideoLoop, LoopActions.SetA)));
         loop.Children.Add(TextButton("Set B", () => Send(Command.VideoLoop, LoopActions.SetB)));
         loop.Children.Add(TextButton("Clear loop", () => Send(Command.VideoLoop, LoopActions.Clear)));
