@@ -80,18 +80,34 @@ class video_timeline {
   void end_trim();
   [[nodiscard]] bool trimming() const noexcept { return trim_index_ != kNoTrim; }
 
+  // The look (edit/clip_look.h): one for the whole edit, in the same history
+  // as the pieces, so undo takes back a turn like a cut. set_look sanitises
+  // and returns false when nothing changes; it leaves the marks alone. Within
+  // a drag (begin_look_drag .. end_look_drag) the drag is one undo step.
+  [[nodiscard]] const edit::clip::look& look() const noexcept { return look_; }
+  bool set_look(const edit::clip::look& next);
+  void begin_look_drag() noexcept { look_drag_ = true; look_pushed_ = false; }
+  void end_look_drag();
+
   bool undo();
   bool redo();
   [[nodiscard]] bool can_undo() const noexcept { return !undo_.empty(); }
   [[nodiscard]] bool can_redo() const noexcept { return !redo_.empty(); }
-  // True once anything was cut: the whole clip is not an edit worth exporting.
+  // True once anything was cut or the look is not the identity: the whole
+  // clip as it is is not an edit worth exporting.
   [[nodiscard]] bool edited() const noexcept;
   // Bumps on every change to the pieces (edits, trims, undo, redo). A host
   // compares it with the revision it last exported to know whether closing
   // would lose work.
   [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
 
-  // The export: clip::op::keep_ranges over the pieces.
+  // The pieces flattened (in0, out0, in1, out1, ...) for the player's sound
+  // look (mv_video_set_sound_look, core/sound_envelope.h).
+  [[nodiscard]] std::vector<time_ns> flat_pieces() const;
+  // Whether playback should hear the look (volume, mute or fades set).
+  [[nodiscard]] bool sound_shaped() const noexcept { return !look_.sound_identity(); }
+
+  // The export: clip::op::keep_ranges over the pieces, with the look.
   [[nodiscard]] edit::clip::request export_request(std::string source, bool exact) const;
 
   static constexpr time_ns kMinPiece = 40'000'000;  // 40 ms: about a frame at 25 fps
@@ -99,7 +115,14 @@ class video_timeline {
 
  private:
   static constexpr std::size_t kNoTrim = static_cast<std::size_t>(-1);
+  struct state {
+    std::vector<edit::clip::range> pieces;
+    edit::clip::look look;
+    friend bool operator==(const state&, const state&) = default;
+  };
   void push_history();
+  [[nodiscard]] state current() const { return {pieces_, look_}; }
+  void restore(state s);
   bool replace(std::vector<edit::clip::range> next);
 
   time_ns duration_ = 0;
@@ -109,9 +132,12 @@ class video_timeline {
   std::size_t trim_index_ = kNoTrim;
   edge trim_edge_ = edge::in;
   bool trim_pushed_ = false;  // the drag's one history entry is in
+  bool look_drag_ = false;
+  bool look_pushed_ = false;
   std::vector<edit::clip::range> pieces_;
-  std::vector<std::vector<edit::clip::range>> undo_;
-  std::vector<std::vector<edit::clip::range>> redo_;
+  edit::clip::look look_{};
+  std::vector<state> undo_;
+  std::vector<state> redo_;
 };
 
 // J K L (docs/design/16, docs/design/21): L plays forward, faster on each press (1x, 2x,

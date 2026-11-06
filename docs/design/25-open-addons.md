@@ -625,7 +625,10 @@ How it works:
 
 - **Manifest (schema 1).** `contributes.api {min, max}` names the contribution API range; then
   `screens`, `info_sections`, `search_providers`, `bar_items`, `path_items`, `context_menu`,
-  `status_items`, `tile_badges`, each an array of at most 16. A point outside the range is
+  `status_items`, `tile_badges`, and from API 11 `editor_items` (2026-11-02: a text button in the
+  Video Editor's bar, `{id, label}` only; choosing it is `MV_SLOT_EVENT_COMMAND` with
+  `{"path", "ranges_ns"}`, the clip and the edit's kept source ranges: `invoke_editor_item`,
+  `mv_slots_editor_item`), each an array of at most 16. A point outside the range is
   malformed; a range starting past this host (7 since #512) is "needs a newer MediaViewer". Naming any of
   them needs `host_api.min` 3, and an add-on that only fills slots may name no `chrome`. A
   stranger's schema 2 add-on naming one is `code_not_allowed` until PR 57.
@@ -776,6 +779,11 @@ How it works:
   menu-bar item / notification-area icon, after every window is closed. The registry holds them
   (`notices_json`); the hosts draw them. Driftwire is the one user
   ([28 "In the background"](28-driftwire.md#in-the-background-452)).
+
+**Command-bar items show their name beside their icon (2026-10-29, Enhance)**, on both hosts
+(`SlotBarItems`, `IslandHost.Slots.cs`), as the bar's own Open / View / Edit do: an icon alone
+among words was not found. The glow (contribution API 10) is drawn in three layers and its bar
+flows ([29](29-enhance.md#a-run)); the vocabulary is unchanged.
 
 **Windows rebuilds a screen window when its tree's revision moves**; while a pointer is down in
 the window the rebuild waits, and the release catches up (#511: a tree that moved between press

@@ -39,6 +39,7 @@ extern "C" {
 
 #include "core/crash_context.h"
 #include "core/result.h"
+#include "core/sound_envelope.h"
 #include "core/status.h"
 #include "gfx/colour_desc.h"
 #include "player/video_source.h"
@@ -387,6 +388,12 @@ struct video_pipeline {
   std::atomic<int> selected_audio{-1};
   std::atomic<time_ns> exact_target_ns{-1};
   std::atomic<time_ns> audio_target_ns{0};
+  // The Video Editor's sound look (core/sound_envelope.h): any thread sets it
+  // under the mutex and bumps the seq; the audio decode thread copies it when
+  // the seq moves (never holding the mutex across a decode).
+  std::mutex envelope_mu;
+  sound_envelope envelope;
+  std::atomic<std::uint32_t> envelope_seq{0};
   std::atomic<bool> video_done{false};
   frame_ring      ring;
 

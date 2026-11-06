@@ -374,6 +374,43 @@ enum class command_id : std::uint16_t {
   // the photo on screen with its edits baked, or the marks as a contact sheet.
   // Appended.
   print,
+  // docs/plans/edit-adjust.md slice 1: the full Adjust list. Island-only,
+  // appended. The sliders carry their value, in edit::adjust_param order from
+  // highlights; adjust_auto and adjust_reset_section carry an
+  // edit::adjust_section.
+  adjust_highlights,
+  adjust_shadows,
+  adjust_whites,
+  adjust_blacks,
+  adjust_vibrance,
+  adjust_mono,
+  adjust_mono_filter,
+  adjust_mono_tone,
+  adjust_vignette,
+  adjust_vignette_radius,
+  adjust_vignette_softness,
+  adjust_auto,           // a section's Auto (edit/auto_adjust.h), one undo step
+  adjust_reset_section,  // a section's sliders back to 0, one undo step
+  // Slice 2: Levels, island-only sliders in edit::adjust_param order from
+  // levels_black. (A curve travels as parked text, chrome_cmd_adjust_curve.)
+  adjust_levels_black,
+  adjust_levels_mid,
+  adjust_levels_white,
+  adjust_levels_red_black,
+  adjust_levels_red_mid,
+  adjust_levels_red_white,
+  adjust_levels_green_black,
+  adjust_levels_green_mid,
+  adjust_levels_green_white,
+  adjust_levels_blue_black,
+  adjust_levels_blue_mid,
+  adjust_levels_blue_white,
+  // Slice 3: what the next click on the photo does; the argument is
+  // shell::adjust_pick * 1000 + (the red-eye size + 100). Selective colour's
+  // sliders travel as parked text (chrome_cmd_adjust_param).
+  adjust_pick,
+  // Slice 6: Open closed eyes (a new file beside the still). Island-only.
+  adjust_open_eyes,
   // docs/design/17 "Reviewing a person" (2026-11-02): Ctrl+Shift+P, beside
   // Ctrl+Shift+F's "Find similar": the photos and moments of the person whose
   // face is largest in the still or paused frame on screen. Appended; only
@@ -532,6 +569,10 @@ void set_addon_commands(std::span<const addon_command_row> rows);
 [[nodiscard]] std::string addon_command_notes_json();
 // The row behind addon_cmd_n, or null when that slot is empty.
 [[nodiscard]] const addon_command_row* addon_command(command_id id) noexcept;
+// The slot `addon`'s command `id` is in now, or command_id::none (the add-on
+// is not loaded). docs/plans/edit-adjust.md slice 5: the Edit strip's
+// Enhance… runs Enhance's own "open" row.
+[[nodiscard]] command_id find_addon_command(std::string_view addon, std::string_view id) noexcept;
 // "Ctrl+Shift+I" / "Cmd+Shift+F7" (Cmd and Option are the Mac spellings of
 // Ctrl and Alt) to a key and modifiers; false for anything else. The inverse
 // of key_label for the keys it names.

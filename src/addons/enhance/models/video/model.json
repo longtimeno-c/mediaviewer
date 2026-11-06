@@ -1,6 +1,7 @@
 {
  "kind": "video",
- "name": "Detail",
+ "name": "Detail, fast",
+ "summary": "Quick enough for whole clips: about a fifth of a second a frame for 720p on Apple silicon.",
  "credit": "Real-ESRGAN general x4v3, Xintao Wang et al. (BSD-3-Clause)",
  "weights": ["realesr-general-x4v3.onnx"],
  "run_bytes": 600000000,
@@ -11,7 +12,10 @@
                {"id": "4", "text": "Four times the size"}],
    "default": "2", "help": "The new clip is at most 4K."},
   {"id": "strength", "label": "Strength", "type": "slider", "min": 0, "max": 1, "step": 0.05, "default": 1,
-   "help": "How much of the model's picture replaces a plain enlargement."}
+   "help": "How much of the model's picture replaces a plain enlargement. At 0 and the same size the model does not run."},
+  {"id": "brighten", "label": "Brighten dark scenes", "type": "choice",
+   "options": [{"id": "off", "text": "Off"}, {"id": "some", "text": "A little"}, {"id": "more", "text": "More"}],
+   "default": "off", "help": "Lifts the shadows of scenes that are too dark, and leaves well-lit ones alone. It also lifts the noise dark footage carries."}
  ],
  "io": {"runner": "tiles", "scale": 4, "tile": 256, "overlap": 16, "dims": ["h", "w"]}
 }

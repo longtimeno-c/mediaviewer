@@ -599,6 +599,10 @@ class ort_faces final : public face_analyzer {
       f.h = std::clamp(b.h / static_cast<float>(img.height), 0.0f, 1.0f - f.y);
       f.score = b.score;
       f.emb = std::move(*e);
+      for (std::size_t k = 0; k < 10; ++k) {
+        f.landmarks[k] = std::clamp(b.landmarks[k] / static_cast<float>(k % 2 == 0 ? img.width : img.height),
+                                    0.0f, 1.0f);
+      }
       out.push_back(std::move(f));
     }
     return out;

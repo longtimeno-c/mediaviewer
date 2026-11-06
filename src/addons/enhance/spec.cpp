@@ -87,6 +87,16 @@ std::optional<knob> read_knob(const json::value& v, model_kind own) {
     const auto def = v.boolean("default");
     if (!def) return std::nullopt;
     k.def_on = *def;
+  } else if (*type == "text") {
+    k.t = knob::type::text;
+    if (const std::string* def = v.str("default")) {
+      if (def->size() > kMaxKnobText) return std::nullopt;
+      k.def_text = *def;
+    }
+    if (const std::string* ph = v.str("placeholder")) {
+      if (!label_text(ph, 64)) return std::nullopt;
+      k.placeholder = *ph;
+    }
   } else {
     return std::nullopt;
   }
@@ -110,6 +120,8 @@ const char* kind_name(model_kind k) noexcept {
     case model_kind::still: return "still";
     case model_kind::video: return "video";
     case model_kind::audio: return "audio";
+    case model_kind::restyle: return "restyle";
+    case model_kind::remove: return "remove";
   }
   return "still";
 }
@@ -121,11 +133,26 @@ std::optional<model_kind> kind_from(std::string_view name) noexcept {
   return std::nullopt;
 }
 
-const knob* model_spec::find(std::string_view id) const noexcept {
+const knob* model_spec::find(std::string_view knob_id) const noexcept {
   for (const knob& k : knobs) {
-    if (k.id == id) return &k;
+    if (k.id == knob_id) return &k;
   }
   return nullptr;
+}
+
+std::string cache_dir_for(const std::string& models_dir, const std::string& id) {
+  return id.empty() || id == kDefaultModelId ? models_dir + "-cache" : models_dir + "-cache-" + id;
+}
+
+std::optional<std::string> model_id_of(std::string_view file_name) {
+  constexpr std::string_view ext = ".json";
+  if (file_name.size() <= ext.size() || file_name.substr(file_name.size() - ext.size()) != ext) return std::nullopt;
+  const std::string_view id = file_name.substr(0, file_name.size() - ext.size());
+  if (id.size() > 32) return std::nullopt;
+  for (const char c : id) {
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) return std::nullopt;
+  }
+  return std::string(id);
 }
 
 std::optional<model_spec> parse_spec(std::string_view json_text, model_kind expected) {
@@ -141,6 +168,10 @@ std::optional<model_spec> parse_spec(std::string_view json_text, model_kind expe
   if (const json::value* credit = doc->find("credit")) {
     if (!label_text(credit->k == json::kind::string ? &credit->s : nullptr, 200)) return std::nullopt;
     s.credit = credit->s;
+  }
+  if (const json::value* summary = doc->find("summary")) {
+    if (!label_text(summary->k == json::kind::string ? &summary->s : nullptr, 160)) return std::nullopt;
+    s.summary = summary->s;
   }
   const json::value* weights = doc->find("weights");
   if (!weights || weights->k != json::kind::array || weights->a.empty() || weights->a.size() > 8) {
@@ -189,6 +220,10 @@ json::value knob_value(const knob& k, const json::value* stored) {
       v.k = json::kind::boolean;
       v.b = k.def_on;
       break;
+    case knob::type::text:
+      v.k = json::kind::string;
+      v.s = k.def_text;
+      break;
   }
   return v;
 }
@@ -226,6 +261,9 @@ std::optional<json::value> check_knob_value(const knob& k, const json::value& v)
       return v;
     case knob::type::toggle:
       if (v.k != json::kind::boolean) return std::nullopt;
+      return v;
+    case knob::type::text:
+      if (v.k != json::kind::string || v.s.size() > kMaxKnobText) return std::nullopt;
       return v;
   }
   return std::nullopt;

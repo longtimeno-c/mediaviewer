@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 
 #include "core/json.h"
@@ -47,6 +48,25 @@ std::string encode_request(const request& r) {
     w.end_array();
   }
   w.end_array();
+  // The Video Editor's look, only when it is not the identity. Whole numbers:
+  // colour in thousandths, volume and speed in thousandths.
+  if (!r.look.identity()) {
+    const look& l = r.look;
+    w.key("look").begin_object();
+    w.key("turns").integer(l.turns);
+    w.key("flip_h").integer(l.flip_h ? 1 : 0);
+    w.key("flip_v").integer(l.flip_v ? 1 : 0);
+    w.key("crop").integer(static_cast<int>(l.crop));
+    w.key("light").begin_array();
+    for (const float v : l.light.v) w.integer(std::lround(v * 1000.0f));
+    w.end_array();
+    w.key("mute").integer(l.mute ? 1 : 0);
+    w.key("volume").integer(std::lround(l.volume * 1000.0f));
+    w.key("fade_in").integer(l.fade_in_ms);
+    w.key("fade_out").integer(l.fade_out_ms);
+    w.key("speed").integer(std::lround(l.speed * 1000.0f));
+    w.end_object();
+  }
   w.end_object();
   return w.take();
 }
@@ -98,6 +118,40 @@ bool decode_request(std::string_view line, request& out) {
       }
       r.ranges.push_back({g.a[0].i, g.a[1].i});
     }
+  }
+  if (const json::value* lv = v->find("look")) {
+    if (lv->k != json::kind::object) return false;
+    look l;
+    const auto num = [&](const char* key, std::int64_t lo, std::int64_t hi, std::int64_t& into) {
+      const auto n = lv->integer(key);
+      if (!n || *n < lo || *n > hi) return false;
+      into = *n;
+      return true;
+    };
+    std::int64_t turns = 0, fh = 0, fv = 0, crop = 0, mute = 0, vol = 0, fin = 0, fout = 0, speed = 0;
+    if (!num("turns", 0, 3, turns) || !num("flip_h", 0, 1, fh) || !num("flip_v", 0, 1, fv) ||
+        !num("crop", 0, static_cast<int>(crop_ratio::count) - 1, crop) || !num("mute", 0, 1, mute) ||
+        !num("volume", 0, 2000, vol) || !num("fade_in", 0, kMaxFadeMs, fin) || !num("fade_out", 0, kMaxFadeMs, fout) ||
+        !num("speed", 500, 2000, speed)) {
+      return false;
+    }
+    const json::value* light = lv->find("light");
+    if (!light || light->k != json::kind::array || light->a.size() != l.light.v.size()) return false;
+    for (std::size_t i = 0; i < light->a.size(); ++i) {
+      const json::value& t = light->a[i];
+      if (t.k != json::kind::number || !t.is_integer || t.i < -100000 || t.i > 100000) return false;
+      l.light.v[i] = static_cast<float>(t.i) / 1000.0f;
+    }
+    l.turns = static_cast<std::uint8_t>(turns);
+    l.flip_h = fh != 0;
+    l.flip_v = fv != 0;
+    l.crop = static_cast<crop_ratio>(crop);
+    l.mute = mute != 0;
+    l.volume = static_cast<float>(vol) / 1000.0f;
+    l.fade_in_ms = static_cast<std::int32_t>(fin);
+    l.fade_out_ms = static_cast<std::int32_t>(fout);
+    l.speed = static_cast<float>(speed) / 1000.0f;
+    r.look = sanitised(l);
   }
   out = std::move(r);
   return true;

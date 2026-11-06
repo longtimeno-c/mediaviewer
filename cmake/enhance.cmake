@@ -36,6 +36,12 @@ else()
 endif()
 
 add_library(mv_enhance_engine STATIC
+  ${_E}/diffusion.cpp
+  ${_E}/diffusion.h
+  ${_E}/remove.cpp
+  ${_E}/remove.h
+  ${_E}/brighten.cpp
+  ${_E}/brighten.h
   ${_E}/downloads.cpp
   ${_E}/downloads.h
   ${_E}/engine.cpp
@@ -140,7 +146,8 @@ function(mv_enhance_tests target)
   target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance.cpp")
   target_link_libraries(${target} PRIVATE mv_enhance_engine)
   target_compile_definitions(${target} PRIVATE
-    MV_ENHANCE_AUDIO_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/audio/model.json")
+    MV_ENHANCE_AUDIO_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/audio/model.json"
+    MV_ENHANCE_RESTYLE_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/restyle/model.json")
 endfunction()
 function(mv_enhance_addon_tests target)
   target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance_addon.cpp")

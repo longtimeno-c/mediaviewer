@@ -465,7 +465,7 @@ yet) and not in a slideshow.
 | `[` `]` | browse, crop | Rotate −90° / +90°. On a JPEG with nothing else in its stack, a lossless rewrite 0.4 s after the last key, atomically; the preview turns at once |
 | `H` / `V` | browse, crop | Flip horizontal / vertical (lossless on a JPEG, like rotate) |
 | `Shift+C` | browse | Crop / straighten mode |
-| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it. In it `↑` `↓` choose a slider, `←` `→` change it (`Shift` ×10), `0` zeroes it, `R` resets all (both hosts) |
+| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it. In it `↑` `↓` choose a slider of an open section, `←` `→` change it (`Shift` ×10), `0` zeroes it, `A` runs its section's Auto, `R` resets all (both hosts) |
 | `Ctrl+Z` / `Ctrl+R` | browse, crop | Undo the last edit / reset to the original |
 | `Ctrl+S` | browse | Export the edits to a new file beside the original (`<name>-edit.jpg`); never overwrites |
 | hold `Y` | browse | Show the original (edit stack untouched) |
@@ -554,6 +554,12 @@ awake: `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)` on Wi
 |---|---|---|
 | `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (with the viewer's marks for "Marked in viewer") |
 | `Ctrl+Shift+F7` | `⌘⇧F7` | Import the marked (else current) files now with the last preset |
+
+### Enhance (while the add-on is installed)
+
+| Windows | Mac | Command |
+|---|---|---|
+| `Ctrl+Shift+R` | `⌘⇧R` | Open the Enhance sheet for the marked (else current) file ([29](29-enhance.md)) |
 
 Inside the Import window (its own keys, not table rows): `Enter` imports (on a focused tile it
 opens that file in the viewer), `Ctrl+Enter` imports from anywhere, `Space` toggles a tile and

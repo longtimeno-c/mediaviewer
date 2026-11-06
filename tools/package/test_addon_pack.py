@@ -414,7 +414,7 @@ class EnhancePackTest(unittest.TestCase):
         self.assertEqual(m["remote"], [self.pin])
         c = m["contributes"]
         self.assertEqual([s["place"] for s in c["screens"]], ["sheet", "settings"])
-        self.assertNotIn("windows", c["commands"][0])
+        self.assertEqual(c["commands"][0]["windows"], "Ctrl+Shift+R")  # docs/design/16
 
     def test_a_pin_over_5_gb_fails_the_pack(self):
         (self.src / "remote.json").write_text(json.dumps([dict(self.pin, size=5_000_000_001)]))
@@ -435,8 +435,11 @@ class EnhancePackTest(unittest.TestCase):
         m = self.pack()
         self.assertEqual(m["arch"], "arm64")
         for r in m["remote"]:
-            spec = json.loads((ROOT / "src/addons/enhance/models" / r["path"].split("/")[0] / "model.json").read_text())
-            self.assertIn(r["path"].split("/", 1)[1], spec["weights"])
+            # Each pin is a weights file of one of its kind's models (models/<kind>/<id>.json).
+            kind, name = r["path"].split("/", 1)
+            weights = [w for f in (ROOT / "src/addons/enhance/models" / kind).glob("*.json")
+                       for w in json.loads(f.read_text())["weights"]]
+            self.assertIn(name, weights)
             self.assertLessEqual(r["size"], 5_000_000_000)
 
 
@@ -551,6 +554,21 @@ class PlacesPackTest(unittest.TestCase):
             r = subprocess.run([tool, str(staged), raw_public(self.key), "win-x64"], capture_output=True, text=True)
             self.assertEqual(r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stdout, "ok")
 
+
+    def test_openrail_is_allowed_for_remote_weights_only(self):
+        """Restyle's weights (OpenRAIL-M, owner 2026-11-03) may be pinned under
+        `remote`; a shipped file under that licence still fails the gate."""
+        self.assertFalse(addon_pack.licence_allowed("CreativeML-OpenRAIL-M"))
+        with tempfile.TemporaryDirectory() as d:
+            pin = {"url": "https://huggingface.co/owner/repo/resolve/0123abc/unet.onnx",
+                   "path": "restyle/unet.onnx", "size": 10, "sha256": "0" * 64,
+                   "licence": "CreativeML-OpenRAIL-M"}
+            Path(d, "remote.json").write_text(json.dumps([pin]), encoding="utf-8")
+            self.assertEqual(addon_pack.read_remote(Path(d))[0]["licence"], "CreativeML-OpenRAIL-M")
+            pin["licence"] = "CC-BY-NC-4.0"
+            Path(d, "remote.json").write_text(json.dumps([pin]), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                addon_pack.read_remote(Path(d))
 
 if __name__ == "__main__":
     unittest.main()

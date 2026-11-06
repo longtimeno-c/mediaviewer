@@ -39,6 +39,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -169,6 +170,16 @@ class slot_registry {
   // array of the files it targets ("[]" for none).
   status invoke_item(const std::string& addon_id, const std::string& item_id,
                      const std::string& paths_json);
+  // A Video Editor button (`editor_items`, contribution API 11) was chosen for
+  // the clip at `path`. `ranges_ns` are the edit's kept source ranges as
+  // (in, out) pairs in program order, empty when nothing is cut. The add-on
+  // gets a command event (node = the item id, value =
+  // {"path": "...", "ranges_ns": [in, out, ...]}). invalid_arg for an odd
+  // count, a range that is empty, negative or out of order, or more than
+  // kMaxEditorRanges pieces.
+  static constexpr std::size_t kMaxEditorRanges = 4096;
+  status invoke_editor_item(const std::string& addon_id, const std::string& item_id, const std::string& path,
+                            std::span<const std::int64_t> ranges_ns);
   // One of the add-on's manifest commands ran (the palette, a key, Settings'
   // Open). The add-on gets a command event (node = the command id, value =
   // `paths_json`, the files its payload names: the marks, or the marks or

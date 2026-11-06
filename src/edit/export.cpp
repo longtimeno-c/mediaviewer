@@ -11,6 +11,7 @@
 #include "codec/exif.h"
 #include "codec/format.h"
 #include "edit/bake.h"
+#include "edit/detail.h"
 #include "edit/geometry.h"
 #include "edit/lossless_jpeg.h"
 #include "image/linear.h"
@@ -101,6 +102,19 @@ metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_po
   return m;
 }
 
+result<codec::raster> edited_picture(std::span<const std::uint8_t> source, const geometry& g,
+                                     const colour& c, const job_context* ctx) {
+  if (g.identity() && c.identity()) return full_picture(source, ctx);
+  MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  if (c.has_detail()) {
+    MV_TRY(image::linear_image detailed, apply_detail(working, detail_of(c), ctx));
+    working = std::move(detailed);
+  }
+  const placement p = place(g, size2{working.width, working.height});
+  return bake(working, p, c, ctx);
+}
+
 result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
                                    const export_options& opt, const job_context* ctx,
                                    const metadata_blobs* carried) {
@@ -117,8 +131,14 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
   if (!c.identity()) {
     MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
     if (ctx && ctx->cancelled()) return err(status::cancelled);
+    // Slice 4: the detail pass at full resolution, as the canvas ran it on
+    // the preview (its radii scale with the picture).
+    if (c.has_detail()) {
+      MV_TRY(image::linear_image detailed, apply_detail(working, detail_of(c), ctx));
+      working = std::move(detailed);
+    }
     const placement p = place(g, size2{working.width, working.height});
-    MV_TRY(codec::raster out, bake(working, p, uniforms_of(c), ctx));
+    MV_TRY(codec::raster out, bake(working, p, c, ctx));
     working = image::linear_image{};  // release the full frame before encoding
     metadata_blobs meta = source_metadata(source, opt.policy, carried);
     patch_for_output(meta, out.width, out.height, true);

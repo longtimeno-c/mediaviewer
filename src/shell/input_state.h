@@ -13,9 +13,13 @@
 // threading model the one the plan describes.
 #pragma once
 
+#include <array>
 #include <cstdint>
 
+#include "edit/clip_look.h"
+#include "gfx/adjust_kernel.h"
 #include "shell/home_theme.h"
+#include "shell/remove_brush.h"
 #include "shell/welcome_layout.h"
 
 namespace mv::shell {
@@ -89,11 +93,19 @@ struct edit_view {
   bool crop_overlay = false;                 // crop mode: draw the draft rect
   float overlay[4] = {0.0f, 0.0f, 1.0f, 1.0f};  // normalised to the output frame
   // PR 11: the item's colour adjust as the blit's uniforms
-  // (edit::adjust_uniforms a0 / a1). `adjust` false = no colour op: the blit
+  // (edit::adjust_uniforms a0 .. a5). `adjust` false = no colour op: the blit
   // skips the kernel. A change is a redraw, never a refit or a decode.
   bool adjust = false;
-  float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
+  gfx::adjust_vectors adjust_u;
+  gfx::adjust_table adjust_t;  // slices 2-3: read when gfx::reads_table(adjust_u)
+  // Slice 7: the Remove brush, drawn over the photo. `brush_rev` changes with
+  // every dab added or stroke undone; the cursor ring is at brush_cursor
+  // (the shown image's u, v, and the radius over its long side; u < 0 none).
+  bool brush_on = false;
+  std::uint32_t brush_rev = 0;
+  std::uint32_t brush_count = 0;
+  float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
+  brush_dab brush[kBrushDabs] = {};
 };
 
 struct input_snapshot {
@@ -263,7 +275,29 @@ struct input_snapshot {
   // sets it to its preview window, and the render thread moves the one
   // swapchain there. The Mac host moves its view instead and leaves this 0.
   std::uint64_t canvas_window = 0;
+  // The Video Editor's look on the clip on the canvas (edit/clip_look.h,
+  // docs/plans/video-editor-look.md): its extra quarter turns, mirror (1
+  // left-right, 2 upside down) and crop (edit::clip::crop_ratio). All 0 when
+  // no editor is open.
+  std::uint8_t video_look_turns = 0;
+  std::uint8_t video_look_mirror = 0;
+  std::uint8_t video_look_crop = 0;
+  // Its light and colour (edit::colour values, PR 11's five sliders).
+  std::array<float, edit::kAdjustParamCount> video_look_light{};
 };
+
+// The look as the canvas needs it (geometry, light and colour).
+[[nodiscard]] inline edit::clip::look canvas_look_of(const input_snapshot& s) noexcept {
+  edit::clip::look l;
+  l.turns = static_cast<std::uint8_t>(s.video_look_turns & 3u);
+  l.flip_h = (s.video_look_mirror & 1u) != 0;
+  l.flip_v = (s.video_look_mirror & 2u) != 0;
+  l.crop = s.video_look_crop < static_cast<std::uint8_t>(edit::clip::crop_ratio::count)
+               ? static_cast<edit::clip::crop_ratio>(s.video_look_crop)
+               : edit::clip::crop_ratio::original;
+  l.light.v = s.video_look_light;
+  return l;
+}
 
 // Consumer-owned state: repeated reads of a snapshot never replay input.
 struct input_cursor {

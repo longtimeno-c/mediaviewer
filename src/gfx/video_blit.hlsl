@@ -14,8 +14,29 @@ cbuffer VideoCamera : register(b0) {
   float2 texture_size;  // the decoder's ALLOCATION, padded up to its alignment
   float2 origin;
   uint4  colour_a;      // x matrix, y transfer, z range, w bit_depth
-  uint4  colour_b;      // x primaries, y quarter turns clockwise, zw unused
+  uint4  colour_b;      // x primaries, y quarter turns clockwise, z mirror (1 h, 2 v), w unused
+  float4 crop;          // the Video Editor's crop of the turned picture: xy origin, zw size (0..1)
+  // The Video Editor's light and colour: PR 11's kernel and uniforms
+  // (edit::adjust_uniforms a0 .. a5, gfx/adjust_kernel.h); adj1.w > 0.5 runs it.
+  float4 adj0;
+  float4 adj1;
+  float4 adj2;
+  float4 adj3;
+  float4 adj4;
+  float4 adj5;
 };
+
+// The kernel's levels and curves table (gfx::adjust_table). The Video Editor
+// sets only PR 11's five sliders, so a5.w (table on) stays 0 and this is
+// never read; the blitter binds an identity table so the slot is never empty.
+cbuffer VideoLut : register(b1) {
+  float4 lut[200];  // gfx::kAdjustTableSize
+};
+#define MV_ADJUST_LUT_PARAM
+
+// PR 11's colour kernel, the same tokens as gfx/blit.hlsl and the export.
+#include "adjust_kernel_tokens.h"
+MV_ADJUST_KERNEL
 
 Texture2D<float>  luma_tex   : register(t0);
 Texture2D<float2> chroma_tex : register(t1);
@@ -112,12 +133,18 @@ float4 ps_main(VSOut vin) : SV_Target {
 
   // The camera frames the DISPLAYED picture: the coded frame turned by the
   // container's matrix (a portrait phone clip is coded landscape).
-  float2 shown_size = ((turns & 1) != 0) ? image_size.yx : image_size;
+  // The Video Editor's look (edit/clip_look.h) crops the turned picture and
+  // mirrors it; the camera frames what is left.
+  float2 turned_size = ((turns & 1) != 0) ? image_size.yx : image_size;
+  float2 shown_size = turned_size * crop.zw;
   float2 image_px = pan + (vin.pos.xy - (origin + window_size * 0.5)) / zoom;
   float2 uv = image_px / shown_size;
   if (any(uv < 0.0) || any(uv > 1.0)) {
     return float4(0.016, 0.018, 0.024, 1.0);
   }
+  uv = crop.xy + uv * crop.zw;
+  if ((colour_b.z & 1) != 0) uv.x = 1.0 - uv.x;
+  if ((colour_b.z & 2) != 0) uv.y = 1.0 - uv.y;
   // Back from the displayed picture to the coded frame: the inverse of a
   // clockwise turn. 90: shown (x, y) came from coded (y, 1 - x).
   if (turns == 1)      uv = float2(uv.y, 1.0 - uv.x);
@@ -193,6 +220,8 @@ float4 ps_main(VSOut vin) : SV_Target {
     linear_rgb = to_bt709(eotf_bt1886(saturate(rgb)), primaries);
   }
 
+  // No vignette on a clip: `pos` is the centre.
+  if (adj1.w > 0.5) linear_rgb = mv_adjust(linear_rgb, float4(0.0, 0.0, 0.0, 0.0), adj0, adj1, adj2, adj3, adj4, adj5);
   // The RTV is _SRGB, so the hardware encodes on write and this stays linear.
   return float4(saturate(linear_rgb), 1.0);
 }

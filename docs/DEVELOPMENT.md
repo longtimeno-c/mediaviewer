@@ -59,6 +59,10 @@ The order is:
 | Linux PR 1 | **OpenGL present lab on Wayland**: a raw xdg toplevel, EGL desktop GL on an sRGB surface, frame-callback pacing at `eglSwapInterval(0)`, `wp_presentation` statistics, idle → stop presenting, F3, `frametime` on Linux ([docs/design/10](design/10-roadmap.md#linux-pr-1--opengl-present-lab), [03](design/03-rendering.md#the-linux-present-path)) | Draft. Built and run in a Linux container under headless Weston only (GL and pixman renderers): `mv_tests` and the smoke pass, the report is labelled weaker and fails the gate as it must. The Windows and Mac builds now also compile the Linux pacer and its tests: CI's. Owed: the gate on a real session (Mutter or KWin, Mesa on Intel or AMD), a Linux GPU runner, both other PR 1 gates ([Where this actually is](#linux-pr-1-the-opengl-present-lab-on-wayland-2026-10-23)) |
 | #610 | **Clip thumbnails in Explorer and Finder**: MKV, WebM, AVI and TS (and, in Explorer, any clip MediaViewer is the default for, such as an AV1 or VP9 MP4 without a Store extension) get the filmstrip's poster instead of a generic icon; read through a seekable reader, never whole, under the handler's 4 s deadline and in-flight cap ([docs/design/09](design/09-build-and-test.md#windows-integration), [12](design/12-decision-log.md)) | Draft. The shared core (`shellext/thumb_poster`, `player::poster_frame` over a `byte_source`) built and its tests run on Linux, also under ASan / UBSan; the Windows handler and the Quick Look extension are written, not compiled here. Owed: both builds, the hands-on verify on both, both PR 1 gates ([Where this actually is](#clip-thumbnails-in-explorer-and-finder-issue-610-2026-11-02)) |
 | #614 | **Print** (`Ctrl+P` / `⌘P`, File ▸ Print…, the bar's Open): the photo on screen with its crop and adjusts baked, at fit or fill, or two or more marks as a 2×2 / 3×4 / 4×5 contact sheet (automatic: 12 marks are 3×4), file names off unless asked; the bake runs on the pool and nothing is written, so Cancel leaves no file ([docs/design/16 "Print"](design/16-commands.md#print)) | Draft. Core layout and bake written; `mv_tests "[print]"` layout cases and the router / command-table / snapshot tests pass on Linux. The bake tests (`test_edit_session.cpp`) and both host halves (PrintDlgEx + GDI on Windows, NSPrintOperation on the Mac) are written but not built here. Owed: both builds, the verify by hand (a cropped JPEG to PDF at fit matching the export, 12 marks as one 3×4 page, Cancel leaves no file, `?` lists the key), both PR 1 present-loop gates |
+| Video Editor look, slice 1 | **Turn, mirror, crop and Save frame in the Video Editor** ([plan](plans/video-editor-look.md), [docs/design/21](design/21-video-editor.md#the-look)): ⟲ ⟳, a Crop menu (mirror left to right / upside down; Original, 16:9, 9:16, 1:1, 4:3, 4:5) and Save frame (`Ctrl+Shift+S` / `⌘⇧S`) for the whole edit, in the cut's undo history; the canvas previews it; Export exact renders it in the helper; Export on keyframes carries a turn and mute only; ABI 0.36 `mv_clip_look` | Mac: `mv_tests "[look],[timeline],[clip],[abi]"` pass (the geometry against its definition, the history, Export exact turned and cropped to 180 × 320 with the cut's sound, mute, keyframe copy with a 90° matrix, Save frame, the wire); the app builds. Windows: the C# compiles; `main.cpp`, the HLSL and the island are CI's. Owed: clicking it in both apps, the PR 1 gates with the editor open, colour / sound / speed (slices 2–4) |
+| Video Editor look, slice 2 | **Light and colour in the Video Editor** ([docs/design/21](design/21-video-editor.md#the-look)): PR 11's five sliders for the whole clip, Auto (auto tone on the frame at the playhead) and Reset, in a Light popover / flyout; the canvas runs the photo kernel in the video blit (HLSL + MSL); Export exact and Save frame apply it through `colour_table` | Mac: `mv_tests "[look],[clip],[adjust]"` pass (the table against the kernel within 1 code on a 18³ grid; +1 EV exported within 3 codes of the expected lift on every frame; Save frame brighter; Auto lifts a dark frame, leaves a full one); the app builds. Windows: the C# compiles; `main.cpp`, the HLSL and the island are CI's. Owed: both apps clicked, the 4K playback soak with a colour look, the PR 1 gates |
+| Video Editor look, slice 3 | **Sound in the Video Editor** ([docs/design/21](design/21-video-editor.md#the-look)): Mute, Volume (0–200 %), Fade in / out (0–5 s) for the whole edit in a Sound popover / flyout; playback hears them (a gain on decoded audio by source time, `core/sound_envelope.h`; ABI 0.37 `mv_video_set_sound_look`); Export exact writes them; Export on keyframes writes mute only | Mac: `mv_tests "[sound]"` pass (the envelope through cuts; Export exact at 50 % is −6.02 dB ± 0.2 against 100 % on the fixture's 440 Hz tone, untouched between 1 s fades, the last 10 ms under −40 dB); the app builds. Windows: the C# compiles; `main.cpp` and `abi.cpp`'s new entry are CI's. Owed: both apps clicked and listened to; the PR 1 gates |
+| Video Editor look, slice 4 | **Speed in the Video Editor** ([docs/design/21](design/21-video-editor.md#the-look)): 0.5× / 1× / 2× for the whole edit from a menu in the bar; playback runs at it (the shuttle's rates scaled); Export exact puts the frames on the clip's frame grid and the sound through `atempo` | Mac: `mv_tests "[speed]"` passes (a 10 s edit at 2× is 150 frames, 5.000 s of picture, the sound 13 ms longer; 3 s at 0.5× is 6 s, in sync within 40 ms; keyframe Export refuses it); the app builds; the C# chrome's tests pass. Windows native is CI's. Owed: both apps clicked |
 | #617 | **Pinned folders and jump-list Tasks**: pin a folder from a welcome-card row's right-click menu and it stays first on the card, the jump list (its own "Pinned folders" category), the Dock menu and Open Recent however many folders are opened after it; the jump list gains New window, Open folder… and (with Import installed) Import… ([docs/design/10](design/10-roadmap.md#pr-15--os-integration)) | Draft. Shared rule and its tests built and run in a Linux container only; neither host built here. Owed: both host builds, both verifies, both PR 1 gates ([Where this actually is](#pinned-folders-and-jump-list-tasks-issue-617-2026-11-02)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -684,7 +688,7 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 | `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
-| `Shift+A` | adjust pane (PR 11): exposure, contrast, saturation, temperature, tint, histogram and clipping. It takes the keyboard: on Windows `Tab` walks the sliders and the arrows step them; on Mac `↑` `↓` pick a slider, `←` `→` step it (`⇧` ×10), `0` zeroes it, `R` resets. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
+| `Shift+A` | adjust pane (PR 11, grown by [edit-adjust](plans/edit-adjust.md) slice 1): Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White and Vignette sections, each with an Auto (not the vignette) and a reset, histogram and clipping. It takes the keyboard: `↑` `↓` pick a slider of an open section, `←` `→` step it (`⇧` ×10), `0` zeroes it, `A` runs its section's Auto, `R` resets all. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
 
 **Clips (PR 13 / 14, Windows and macOS).** Nothing here changes the
 clip: every result is a new file beside it, and a cancelled job leaves nothing behind.
@@ -2256,6 +2260,11 @@ Windows `IslandHost.Glow.cs`). A stable release packs Enhance as a preferred add
 `mediaviewer-addon-enhance-{win-x64,macos}.{zip,json,json.sig}` (the Mac pack arm64 only, signed
 and notarized by `macpack.py addon`) when that platform's pack is complete; a packing failure warns
 and the release publishes without it.
+Each kind may ship several models (`models/<kind>/<id>.json`; `model.json` is the default): photos
+and video offer "Detail, fast" (x4v3) and "Detail, best" (x4plus), chosen on the page or the sheet,
+each downloaded and removed on its own. The sheet opens from Enhance… in the context menu or
+`Ctrl+Shift+R` / `⌘⇧R` and downloads a missing model itself; a photo's run shows it redrawn tile by
+tile behind a glowing front.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:
@@ -2264,15 +2273,34 @@ library by the build), then sideload as any slot add-on:
 python3 tools/package/addon-pack.py pack --addon enhance --platform macos --src build/addons/enhance --version 0.1.0 --key <dev key> --out dist/addon
 ```
 
+In the Video Editor (2026-11-02) its `Enhance…` button (`editor_items`, contribution API 11) runs
+on the edit's kept pieces, which the host applies as it reads (`frames_keep` / `sound_keep`), and
+the video model's sheet has **Brighten dark scenes** (`brighten.h`; no model of its own).
+
 Tests: `build/bin/mv_import_tests "[enhance]"` (the engine and runner over fakes: downloads, the
-sheet, the sound pipeline's alignment and mix, the run gate), `build/bin/mv_ai_tests "[enhance],[still]"`
-(end to end through the host table's rows and FFmpeg), `build/bin/mv_tests "[sound],[picture]"`
+sheet, the sound pipeline's alignment and mix, the run gate, the editor's cut and Brighten), `build/bin/mv_ai_tests "[enhance],[still]"`
+(end to end through the host table's rows and FFmpeg, the editor's cut included), `build/bin/mv_tests "[sound],[picture]"`
 (the reader's channels, `sound_writer`, `frame_reader`, `picture_writer`), `python3 -m unittest test_addon_pack.EnhancePackTest
 test_github_release` in `tools/package`. With the model downloaded (from its pinned URL), the
 hidden cases run it for real:
 
 ```bash
 MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
+```
+
+**Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
+and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, and the run with a
+stand-in model). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
+
+**Restyle** (InstructPix2Pix, 2026-11-03) is not pinned yet. Export its files with
+`tools/package/restyle-export.py --out <dir>` (requirements-export.txt, about 2 GB download and
+16 GB of memory while exporting). It prints each file's size and SHA-256 for `remote.json` once
+the files are hosted. The unit cases (schedule, sizes, `carry_back`, the sheet's text knob) are in
+`build/bin/mv_import_tests "[restyle]"`. A real run, which takes about 200 s the first time Core ML
+compiles a size and then about 15 s:
+
+```bash
+MV_RESTYLE_DIR=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=512 MV_RESTYLE_H=320 build/bin/mv_import_tests "[.restyle-model]"
 ```
 
 ### The driftwire command line (2026-10-23)

@@ -48,6 +48,11 @@
 #include "addons/ai/vectors.h"
 #include "addons/ai/vocabulary.h"
 #include "core/json.h"
+#include "import_fixture.h"
+#include "image/linear.h"
+#include "codec/decode.h"
+#include "edit/eyes.h"
+#include "edit/encode.h"
 #include "infer/clip_tokenizer.h"
 #include "infer/models.h"
 #include "infer/ort.h"
@@ -1851,5 +1856,137 @@ TEST_CASE("the face model separates labelled people at its own thresholds", "[ai
   CHECK(worst_agree >= 0.99f);
 #else
   SKIP("a build without the host decoders");
+#endif
+}
+
+// docs/plans/edit-adjust.md slice 6 with the real People model (hidden: it
+// needs the staged pieces and real photos). Two photos of one person
+// (MV_AI_EYES_PERSON, an LFW folder): the first gets its eyes shut, painted
+// with its own skin at the landmarks the real YuNet finds; the real AdaFace
+// must call the second the same person; then the shipped job
+// (open_closed_eyes) must give the first the second's open eyes.
+// MV_AI_EYES_OUT, if set, keeps the three pictures there to look at.
+TEST_CASE("eyes: real YuNet and AdaFace on real photos of one person", "[.eyes-real]") {
+#if defined(MV_AI_TEST_DECODE)
+  const std::string pack = env("MV_AI_PACK_DIR");
+  const std::string faces = env("MV_AI_FACES_DIR");
+  const std::string person = env("MV_AI_EYES_PERSON");
+  if (pack.empty() || faces.empty() || person.empty()) {
+    SKIP("MV_AI_PACK_DIR, MV_AI_FACES_DIR and MV_AI_EYES_PERSON not set");
+  }
+  auto rt = mv::infer::runtime::load(pack);
+  REQUIRE(rt);
+  auto spec = mv::infer::read_face_spec(utf8(fs::path(faces) / "models" / "faces"));
+  REQUIRE(spec);
+  mv::infer::session_options cpu;
+  auto model = mv::infer::face_models::open(**rt, *spec, cpu);
+  REQUIRE(model);
+  std::vector<fs::path> photos;
+  for (const auto& f : fs::directory_iterator(person)) photos.push_back(f.path());
+  std::sort(photos.begin(), photos.end());
+  REQUIRE(photos.size() >= 2);
+  const fs::path out = env("MV_AI_EYES_OUT").empty() ? fs::temp_directory_path() / "mv_eyes_real" : fs::path(env("MV_AI_EYES_OUT"));
+  fs::create_directories(out);
+
+  // The face nearest the centre, as the pack's ort_faces reports it (0..1).
+  struct found {
+    mv::infer::face_box box;
+    std::vector<float> emb;
+    std::uint32_t w = 0, h = 0;
+  };
+  auto analyse = [&](const fs::path& p) -> found {
+    auto still = mv::addon::media::decode_still(utf8(p), 1024);
+    REQUIRE(still);
+    const mv::infer::rgb_view view{still->rgb.data(), still->width, still->height};
+    auto boxes = (*model)->detect(view);
+    REQUIRE(boxes);
+    REQUIRE_FALSE(boxes->empty());
+    const float cx = static_cast<float>(still->width) / 2, cy = static_cast<float>(still->height) / 2;
+    const auto near = std::min_element(boxes->begin(), boxes->end(), [&](const auto& a, const auto& b) {
+      return std::hypot(a.x + a.w / 2 - cx, a.y + a.h / 2 - cy) < std::hypot(b.x + b.w / 2 - cx, b.y + b.h / 2 - cy);
+    });
+    auto e = (*model)->embed(view, *near);
+    REQUIRE(e);
+    return {*near, std::move(*e), still->width, still->height};
+  };
+  auto lm_json = [](const found& f) {
+    std::string s = "[";
+    for (std::size_t k = 0; k < 10; ++k) {
+      if (k) s += ",";
+      s += std::to_string(f.box.landmarks[k] / static_cast<float>(k % 2 == 0 ? f.w : f.h));
+    }
+    return s + "]";
+  };
+
+  // Shut the first photo's eyes: each eye's almond filled with the skin just
+  // below it, and a line of lashes, at the real detector's eye centres.
+  const fs::path target = out / "target_shut.jpg", donor = out / "donor.jpg";
+  fs::copy_file(photos[1], donor, fs::copy_options::overwrite_existing);
+  {
+    const found open = analyse(photos[0]);
+    auto bytes = mv::test::read_bytes(photos[0]);
+    auto pic = mv::codec::decode(bytes);
+    REQUIRE(pic);
+    const float sx = static_cast<float>(pic->width) / static_cast<float>(open.w);
+    const float sy = static_cast<float>(pic->height) / static_cast<float>(open.h);
+    const float d = std::hypot((open.box.landmarks[2] - open.box.landmarks[0]) * sx,
+                               (open.box.landmarks[3] - open.box.landmarks[1]) * sy);
+    for (int eye = 0; eye < 2; ++eye) {
+      const float ex = open.box.landmarks[eye * 2] * sx, ey = open.box.landmarks[eye * 2 + 1] * sy;
+      int skin[3] = {0, 0, 0}, n = 0;
+      for (int y = static_cast<int>(ey + 0.3f * d); y < static_cast<int>(ey + 0.4f * d); ++y) {
+        for (int x = static_cast<int>(ex - 0.1f * d); x < static_cast<int>(ex + 0.1f * d); ++x) {
+          const std::uint8_t* p = &pic->rgba[(static_cast<std::size_t>(y) * pic->width + static_cast<std::size_t>(x)) * 4];
+          for (int k = 0; k < 3; ++k) skin[k] += p[k];
+          ++n;
+        }
+      }
+      REQUIRE(n > 0);
+      for (int y = static_cast<int>(ey - 0.16f * d); y <= static_cast<int>(ey + 0.16f * d); ++y) {
+        for (int x = static_cast<int>(ex - 0.3f * d); x <= static_cast<int>(ex + 0.3f * d); ++x) {
+          const float ux = (static_cast<float>(x) - ex) / (0.3f * d), uy = (static_cast<float>(y) - ey) / (0.16f * d);
+          if (ux * ux + uy * uy > 1.0f) continue;
+          std::uint8_t* p = &pic->rgba[(static_cast<std::size_t>(y) * pic->width + static_cast<std::size_t>(x)) * 4];
+          const bool lash = std::abs(static_cast<float>(y) - ey - 0.04f * d) < std::max(1.0f, 0.02f * d) && std::abs(ux) < 0.85f;
+          for (int k = 0; k < 3; ++k) p[k] = lash ? static_cast<std::uint8_t>(skin[k] / n / 4) : static_cast<std::uint8_t>(skin[k] / n);
+        }
+      }
+    }
+    mv::edit::encode_options o;
+    o.quality = 95;
+    auto shut = mv::edit::encode(*pic, o, {});
+    REQUIRE(shut);
+    mv::test::write_bytes(target, *shut);
+  }
+
+  const found t = analyse(target), dn = analyse(donor);
+  const float sim = mv::infer::dot(t.emb, dn.emb);
+  std::printf("eyes-real: %s: same-person similarity %.3f (model's line %.2f)\n", person.c_str(), sim,
+              spec->same_person);
+  CHECK(sim >= spec->same_person);  // eyes shut, still the same person to the model
+
+  mv::json::writer quoted;
+  quoted.string(utf8(donor));  // escaped, as the pack writes it
+  const std::string json = "{\"faces\":[{\"lm\":" + lm_json(t) + ",\"donors\":[{\"path\":" + quoted.take() +
+                           ",\"lm\":" + lm_json(dn) + ",\"sim\":" + std::to_string(sim) + "}]}]}";
+  auto r = mv::addon::media::open_closed_eyes(utf8(target), json);
+  REQUIRE(r);
+  CHECK(r->fixed == 1);
+  REQUIRE_FALSE(r->written.empty());
+  auto before = mv::image::decode_linear(mv::test::read_bytes(target));
+  auto after = mv::image::decode_linear(mv::test::read_bytes(fs::path(r->written)));
+  auto open_img = mv::image::decode_linear(mv::test::read_bytes(photos[0]));
+  REQUIRE(before);
+  REQUIRE(after);
+  REQUIRE(open_img);
+  mv::edit::face_landmarks lm{};
+  for (std::size_t k = 0; k < 10; ++k) lm[k] = t.box.landmarks[k] / static_cast<float>(k % 2 == 0 ? t.w : t.h);
+  const float shut_score = mv::edit::eye_openness(*before, lm), fixed_score = mv::edit::eye_openness(*after, lm),
+              orig_score = mv::edit::eye_openness(*open_img, lm);
+  std::printf("eyes-real: openness original %.3f, shut %.3f, fixed %.3f -> %s\n", orig_score, shut_score, fixed_score,
+              r->written.c_str());
+  CHECK(fixed_score > shut_score * mv::edit::kEyesBetter);
+#else
+  SKIP("needs the decode path (MV_AI_TEST_DECODE)");
 #endif
 }

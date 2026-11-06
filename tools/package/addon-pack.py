@@ -60,6 +60,11 @@ import zipfile
 ALLOWED_LICENCES = {"GPL-3.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
                     "Zlib", "ISC", "CC0-1.0", "CC-BY-4.0", "LicenseRef-PublicDomain",
                     "FTL", "IJG", "Unicode-3.0", "libpng-2.0", "LicenseRef-AGG-2.3"}
+# Weights a pack only points to (`remote`, fetched on request, never in the zip),
+# not code it ships: Enhance's Restyle (InstructPix2Pix) is CreativeML OpenRAIL-M,
+# accepted by the owner 2026-11-03 (docs/plans/edit-adjust.md owner call 2). Its
+# use restrictions are passed on with the model's credit.
+REMOTE_ONLY_LICENCES = {"CreativeML-OpenRAIL-M"}
 # PDFium as bblanchon/pdfium-binaries builds it (cmake/ai.cmake): PDFium itself
 # (BSD-3-Clause) and its licenses/ folder's parts, shipped in LICENSES/pdfium.
 PDFIUM_LICENCE = ("BSD-3-Clause AND BSD-2-Clause AND Apache-2.0 AND MIT AND Zlib AND FTL AND IJG"
@@ -440,7 +445,7 @@ def read_remote(src: Path, max_bytes: int = 0) -> list:
             raise ValueError(f"{r['path']}: needs a size and a SHA-256")
         if max_bytes and r["size"] > max_bytes:
             raise ValueError(f"{r['path']}: {r['size']} bytes is over the add-on's {max_bytes}-byte cap per file")
-        if not licence_allowed(r["licence"]):
+        if not licence_allowed(r["licence"]) and r["licence"] not in REMOTE_ONLY_LICENCES:
             raise ValueError(f"{r['path']} is licensed {r['licence']}: not one the pack may point to")
         if r["path"].startswith("/") or ".." in r["path"].split("/") or "\\" in r["path"] or r["path"].lower() in seen:
             raise ValueError(f"{r['path']}: not a safe relative path, or listed twice")

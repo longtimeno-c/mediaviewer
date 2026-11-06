@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Enhance (#297): what an installed model is and which knobs it has.
 //
-// Each model Enhance can run ships as models/<kind>/model.json in the add-on's
-// signed folder; its weights are not in the zip. They are files the add-on's
+// Each model Enhance can run ships as models/<kind>/<id>.json in the add-on's
+// signed folder: model.json is the one a kind uses until the person chooses
+// another of its kind (Settings -> Add-ons -> Enhance, or the sheet). Its
+// weights are not in the zip. They are files the add-on's
 // signed manifest pins under `remote` (Hugging Face URL, size, SHA-256,
 // licence) at "<kind>/<file>", fetched on the person's click into the
 // add-on's data folder (downloads.h). The sheet is built from the model, not
@@ -25,15 +27,22 @@
 namespace mv::enhance {
 
 // What a model enhances. A clip's picture is `video`, its sound `audio`.
-enum class model_kind : std::uint8_t { still = 0, video = 1, audio = 2 };
-inline constexpr std::array<model_kind, 3> kModelKinds{model_kind::still, model_kind::video, model_kind::audio};
+// `restyle` (docs/plans/edit-adjust.md slice 5b) changes a photo as a typed
+// request asks; a photo offers it beside `still`.
+// `remove` (slice 7) fills in what the person brushed over in Edit.
+enum class model_kind : std::uint8_t { still = 0, video = 1, audio = 2, restyle = 3, remove = 4 };
+inline constexpr std::array<model_kind, 5> kModelKinds{model_kind::still, model_kind::video, model_kind::audio,
+                                                       model_kind::restyle, model_kind::remove};
+inline constexpr std::size_t kKindCount = kModelKinds.size();
 
-[[nodiscard]] const char* kind_name(model_kind k) noexcept;  // "still" | "video" | "audio"
+[[nodiscard]] const char* kind_name(model_kind k) noexcept;  // "still" | "video" | "audio" | "restyle" | "remove"
 [[nodiscard]] std::optional<model_kind> kind_from(std::string_view name) noexcept;
 
 // One weights file is at most this (#297, owner 2026-10-10): a pin over it is
 // refused before anything is requested. Not a budget shared across kinds.
 inline constexpr std::uint64_t kMaxWeightsBytes = 5'000'000'000ull;
+
+inline constexpr std::size_t kMaxKnobText = 200;
 
 struct knob_option {
   std::string id;
@@ -41,7 +50,8 @@ struct knob_option {
 };
 
 struct knob {
-  enum class type : std::uint8_t { slider, choice, toggle };
+  // text (Restyle's request): a line of words, at most kMaxKnobText bytes.
+  enum class type : std::uint8_t { slider, choice, toggle, text };
   std::string id;     // [a-z0-9_]{1,32}, unique in its model
   std::string label;  // "Noise reduction"
   std::string help;   // may be empty
@@ -53,6 +63,9 @@ struct knob {
   std::string def_choice;
   // toggle
   bool def_on = false;
+  // text
+  std::string def_text;
+  std::string placeholder;
   // Which kinds of target it shows for ("still", "video", "audio"). The
   // model's own kind when the file names none.
   std::vector<model_kind> kinds;
@@ -60,8 +73,12 @@ struct knob {
 
 struct model_spec {
   model_kind kind = model_kind::still;
+  // Its file's name without ".json" ("model" for model.json): unique in its
+  // kind, set by whoever read the file (the file itself does not name it).
+  std::string id;
   std::string name;     // "Speech cleanup"
   std::string credit;   // "DeepFilterNet3 (MIT)": who made the weights, and their licence
+  std::string summary;  // what choosing it means ("Slower, more detail"); may be empty
   // The remote paths this model needs, relative to its kind ("denoise.onnx"
   // is the manifest's remote "audio/denoise.onnx").
   std::vector<std::string> weights;
@@ -76,10 +93,22 @@ struct model_spec {
   // the runner for that kind, opaque here.
   json::value io;
 
-  [[nodiscard]] const knob* find(std::string_view id) const noexcept;
+  [[nodiscard]] const knob* find(std::string_view knob_id) const noexcept;
 };
 
-// Parses and checks models/<kind>/model.json. Refused (nullopt) when it is not
+// The id model.json gets: the model a kind uses until the person chooses.
+inline constexpr const char* kDefaultModelId = "model";
+
+// Where a provider keeps what it compiled from a model's weights (Core ML's
+// cache) beside `models_dir`, the kind's weights folder: "<dir>-cache" for
+// model.json's, as before kinds had more than one, else "<dir>-cache-<id>".
+[[nodiscard]] std::string cache_dir_for(const std::string& models_dir, const std::string& id);
+
+// A model file's id from its name ("x4plus.json" -> "x4plus"); nullopt for a
+// name that is not [a-z0-9_-]{1,32} followed by ".json".
+[[nodiscard]] std::optional<std::string> model_id_of(std::string_view file_name);
+
+// Parses and checks models/<kind>/<id>.json (id is left empty). Refused (nullopt) when it is not
 // that kind's, names no weights, or any knob is malformed: an add-on whose
 // model.json does not parse offers that kind as not installed.
 [[nodiscard]] std::optional<model_spec> parse_spec(std::string_view json_text, model_kind expected);

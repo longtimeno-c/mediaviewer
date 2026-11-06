@@ -132,6 +132,7 @@ std::uint32_t slot_point_api(std::string_view key) noexcept {
       key == "tile_badges") {
     return kSlotsApi;
   }
+  if (key == "editor_items") return kEditorItemsApi;
   return 0;
 }
 
@@ -236,11 +237,12 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
       }
       c.badges.push_back(badge_contrib{*id, *label, *symbol});
     } else {
-      // bar_items, path_items, context_menu, status_items
+      // bar_items, path_items, context_menu, status_items, editor_items
       item_contrib item;
       item.slot = key == "bar_items"      ? item_slot::bar
                   : key == "path_items"   ? item_slot::path
                   : key == "context_menu" ? item_slot::context
+                  : key == "editor_items" ? item_slot::editor
                                           : item_slot::status;
       if (!only_keys(e, {"id", "label", "symbol", "opens", "target"})) return false;
       const std::string* label = required_text(e, "label", 48);
@@ -249,7 +251,7 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
       item.label = *label;
       if (const json::value* sym = e.find("symbol")) {
         if (sym->k != json::kind::string || !known_symbol(sym->s) || item.slot == item_slot::context ||
-            item.slot == item_slot::status) {
+            item.slot == item_slot::status || item.slot == item_slot::editor) {
           return false;
         }
         item.symbol = sym->s;
@@ -264,6 +266,15 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
           return false;
         }
         item.opens = opens->s;
+      }
+      if (item.slot == item_slot::editor) {
+        // A Video Editor button: a labelled text button that always gets the
+        // clip and its kept ranges, never opens a screen by itself.
+        if (e.find("opens") || e.find("target")) return false;
+        item.target = item_target::file;
+        if (!item_ids.insert(item.id).second) return false;
+        c.items.push_back(std::move(item));
+        continue;
       }
       if (const json::value* target = e.find("target")) {
         if (target->k != json::kind::string || !one_of(target->s, {"none", "file", "files", "folder"})) {

@@ -64,6 +64,33 @@ typedef enum mv_clip_job_state {
  * cuts (instant), 2 = exact (re-encoded, slower). Others ignore it.
  * Times are nanoseconds on the player's timeline (mv_video_position);
  * out_ns < 0 means the end of the clip. */
+/* ABI 0.36: the Video Editor's look (docs/plans/video-editor-look.md), one
+ * for the whole edit. Geometry: the picture turned by the clip's own display
+ * rotation plus `turns`, then mirrored, then cropped about its centre. */
+#define MV_CLIP_LOOK_FLIP_H 1u
+#define MV_CLIP_LOOK_FLIP_V 2u
+#define MV_CLIP_LOOK_MUTE 4u
+typedef enum mv_clip_crop {
+  MV_CLIP_CROP_ORIGINAL = 0,
+  MV_CLIP_CROP_16_9 = 1,
+  MV_CLIP_CROP_9_16 = 2,
+  MV_CLIP_CROP_1_1 = 3,
+  MV_CLIP_CROP_4_3 = 4,
+  MV_CLIP_CROP_4_5 = 5
+} mv_clip_crop;
+typedef struct mv_clip_look {
+  uint32_t struct_size; /* sizeof(mv_clip_look) */
+  uint32_t turns;       /* clockwise quarter turns on top of the clip's own, 0..3 */
+  uint32_t flags;       /* MV_CLIP_LOOK_* */
+  uint32_t crop;        /* mv_clip_crop */
+  float light[5];       /* exposure (EV, ±5), contrast, saturation, temperature, tint (±100); 0 = unchanged */
+  float volume;         /* 0..2; 1 = unchanged */
+  int32_t fade_in_ms;   /* 0..5000, on the program */
+  int32_t fade_out_ms;
+  float speed;          /* 0.5, 1 or 2 */
+  uint32_t reserved;
+} mv_clip_look;
+
 typedef struct mv_clip_request {
   uint32_t struct_size;       /* sizeof(mv_clip_request) */
   uint32_t op;                /* mv_clip_op */
@@ -79,6 +106,11 @@ typedef struct mv_clip_request {
   const int64_t* ranges_ns;
   uint32_t range_count;
   uint32_t reserved2;
+  /* ABI 0.36. KEEP_RANGES and FRAME: the Video Editor's look, read during the
+   * call only; NULL = none. KEEP_RANGES keyframe cuts (option 1) carry only a
+   * turn and mute (MV_ERR_INVALID_ARG for more); exact (option 2) renders it.
+   * FRAME applies its turn, mirror and crop. */
+  const mv_clip_look* look;
 } mv_clip_request;
 
 typedef struct mv_clip_progress {

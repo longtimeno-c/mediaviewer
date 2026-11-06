@@ -40,12 +40,19 @@ struct Camera {
   // corners in crop mode). The identity leaves every pixel as before.
   float4 map0;
   float4 map1;
-  // PR 11 colour adjust (edit::adjust_uniforms a0 / a1); adj1.w > 0.5 runs
+  // PR 11 colour adjust (edit::adjust_uniforms a0 .. a5); adj1.w > 0.5 runs
   // mv_adjust, which never reads adj1.w itself.
   float4 adj0;
   float4 adj1;
+  float4 adj2;
+  float4 adj3;
+  float4 adj4;
+  float4 adj5;
   float4 theme_background;  // the theme's canvas, linear RGB
 };
+
+// Slice 2: the levels and curves table is buffer(1) (gfx::adjust_table).
+#define MV_ADJUST_LUT_PARAM constant float4* lut,
 )";
 
 constexpr const char kMsl[] = R"(
@@ -105,9 +112,14 @@ static float2 image_px_at(constant Camera& cam, float2 screen) {
   return cam.pan + (screen - (cam.origin + cam.window_size * 0.5)) / cam.zoom;
 }
 
-static float4 finish(constant Camera& cam, float4 c, float2 screen, float2 image_px) {
+static float4 finish(constant Camera& cam, constant float4* lut, float4 c, float2 screen,
+                     float2 image_px) {
   // PR 11: the edit's colour, in linear light, before anything is composited.
-  if (cam.adj1.w > 0.5) c.rgb = mv_adjust(c.rgb, cam.adj0, cam.adj1);
+  // The vignette's place: offset from the output's centre, corner at 1.
+  if (cam.adj1.w > 0.5) {
+    float4 pos = float4((image_px - cam.image_size * 0.5) * (2.0 / length(cam.image_size)), 0.0, 0.0);
+    c.rgb = mv_adjust(lut, c.rgb, pos, cam.adj0, cam.adj1, cam.adj2, cam.adj3, cam.adj4, cam.adj5);
+  }
   float3 bg = background_at(cam, screen);
   float3 rgb = mix(bg, c.rgb, saturate(c.a));
 
@@ -127,6 +139,7 @@ static float4 finish(constant Camera& cam, float4 c, float2 screen, float2 image
 
 fragment float4 ps_main(VSOut vin [[stage_in]],
                         constant Camera& cam [[buffer(0)]],
+                        constant float4* lut [[buffer(1)]],
                         texture2d<float> img [[texture(0)]],
                         sampler samp_aniso [[sampler(0)]],
                         sampler samp_point [[sampler(1)]]) {
@@ -140,7 +153,7 @@ fragment float4 ps_main(VSOut vin [[stage_in]],
   if (cam.map0.w > 0.5 && (any(src < 0.0) || any(src > 1.0))) {
     return float4(background_at(cam, vin.pos.xy), cam.opacity);
   }
-  return finish(cam, sample_filtered(cam, img, samp_aniso, samp_point, src, cam.texture_size),
+  return finish(cam, lut, sample_filtered(cam, img, samp_aniso, samp_point, src, cam.texture_size),
                vin.pos.xy, image_px);
 }
 )";
@@ -156,12 +169,11 @@ struct alignas(16) camera_cb {
   float unused0, clipping, time, grid;  // unused0: the retired background mode (#408)
   float map0[4];
   float map1[4];
-  float adj0[4];
-  float adj1[4];
+  float adj[kAdjustVectors][4];  // adj0 .. adj5
   float theme_background[4];
 };
 
-static_assert(sizeof(camera_cb) == 144, "keep in sync with the MSL Camera struct");
+static_assert(sizeof(camera_cb) == 208, "keep in sync with the MSL Camera struct");
 
 }  // namespace
 
@@ -287,14 +299,21 @@ void blitter_mac::draw(void* encoder_ptr, void* texture_ptr, const blit_params_m
   cb.map1[1] = p.uv_map[4];
   cb.map1[2] = p.uv_map[5];
   cb.map1[3] = 0.0f;
-  for (int i = 0; i < 4; ++i) {
-    cb.adj0[i] = p.adjust0[i];
-    cb.adj1[i] = p.adjust1[i];
+  for (int v = 0; v < kAdjustVectors; ++v) {
+    for (int i = 0; i < 4; ++i) cb.adj[v][i] = p.adjust_u.a[v][i];
   }
-  cb.adj1[3] = p.adjust ? 1.0f : 0.0f;
+  cb.adj[1][3] = p.adjust ? 1.0f : 0.0f;
 
   [encoder setRenderPipelineState:pso];
   [encoder setFragmentBytes:&cb length:sizeof(cb) atIndex:0];
+  // Slice 2: the table, copied with the draw only while levels, a curve,
+  // selective colour or a red-eye fix is set; otherwise one row stands in
+  // (the kernel does not read it).
+  if (p.adjust && reads_table(p.adjust_u)) {
+    [encoder setFragmentBytes:&p.adjust_t length:sizeof(adjust_table) atIndex:1];
+  } else {
+    [encoder setFragmentBytes:&p.adjust_t length:16 atIndex:1];
+  }
   [encoder setFragmentTexture:texture atIndex:0];
   [encoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)sampler_aniso_ atIndex:0];
   [encoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)sampler_point_ atIndex:1];

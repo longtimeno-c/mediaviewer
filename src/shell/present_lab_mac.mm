@@ -3,6 +3,7 @@
 #include "shell/present_lab_mac.h"
 #include "shell/present_busy.h"
 #include "shell/video_report.h"
+#include "shell/brush_overlay.h"
 #include "shell/edit_view.h"
 #include "shell/af_focus.h"
 #include "shell/compare.h"
@@ -649,13 +650,37 @@ bool present_lab_mac::apply_compare_split(input_snapshot& snapshot,
   return true;
 }
 
+edit::clip::frame_geometry present_lab_mac::video_geometry() const noexcept {
+  if (!video_frame_) return {};
+  return edit::clip::geometry_of(video_frame_->width, video_frame_->height,
+                                 static_cast<int>(video_frame_->rotation & 3u) * 90, video_look_);
+}
+
+bool present_lab_mac::apply_video_look(const input_snapshot& snapshot) noexcept {
+  const edit::clip::look l = canvas_look_of(snapshot);
+  if (l == video_look_) return false;
+  const bool geometry = l.turns != video_look_.turns || l.crop != video_look_.crop;
+  video_look_ = l;
+  video_light_ = edit::uniforms_of(l.light);
+  if (float pw = 0, ph = 0; geometry && video_frame_ && picture_size(&pw, &ph)) {
+    // A fitted (or filled) clip stays fitted as it turns or its crop changes.
+    if (camera_.fit_mode()) {
+      camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), /*immediate=*/true);
+    } else if (camera_.fill_mode()) {
+      camera_.fill(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), /*immediate=*/true);
+    }
+  }
+  return true;
+}
+
 bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
   if (video_frame_) {
     // The picture as displayed: a clip with a 90 / 270 degree matrix is
     // coded landscape and shown portrait (video_source.h rotation).
-    const bool turned = (video_frame_->rotation & 1u) != 0;
-    *w = static_cast<float>(turned ? video_frame_->height : video_frame_->width);
-    *h = static_cast<float>(turned ? video_frame_->width : video_frame_->height);
+    // The Video Editor's look turns, mirrors and crops it further.
+    const edit::clip::frame_geometry g = video_geometry();
+    *w = static_cast<float>(g.out_w);
+    *h = static_cast<float>(g.out_h);
     return true;
   }
   if (current_image_) {
@@ -682,6 +707,20 @@ edit::placement present_lab_mac::place_image(const image::gpu_image_mac& img) co
 void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || video_frame_) return;
   const edit_view* v = edit_for(current_image_->item_id);
+  if (v && v->brush_on && !v->crop_overlay) {
+    float pw = 0.0f, ph = 0.0f;
+    if (!picture_size(&pw, &ph)) return;
+    const float win_w = usable_window_w(snapshot), win_h = usable_window_h(snapshot);
+    const float origin_x = canvas_origin_x(snapshot);
+    const float origin_y = static_cast<float>(snapshot.chrome_height_px);
+    const float zoom = camera_.zoom();
+    draw_brush_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
+                       [&](float ix, float iy) {
+                         return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
+                                       origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
+                       });
+    return;
+  }
   if (!v || !v->crop_overlay) return;
   float pw = 0.0f, ph = 0.0f;
   if (!picture_size(&pw, &ph)) return;
@@ -757,6 +796,17 @@ void present_lab_mac::retire_media() noexcept {
 // item_kind::clip and item_kind::animation to mode::video on Windows for the
 // same reason); everything else here only ever applies to a clip. Returns
 // true when it changed what should be on screen, so the caller redraws.
+void present_lab_mac::apply_sound_envelope(bool force) noexcept {
+  const std::uint32_t seq = envelope_seq_.load(std::memory_order_acquire);
+  if (!media_ || (!force && seq == seen_envelope_)) return;
+  // try_lock: the render thread never waits on the UI thread; a miss is
+  // picked up on the next frame.
+  std::unique_lock lock(envelope_mu_, std::try_to_lock);
+  if (!lock.owns_lock()) return;
+  media_->set_sound_envelope(envelope_);
+  seen_envelope_ = seq;
+}
+
 bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   static constexpr double kLadder[] = {0.25, 0.5, 1.0, 1.5, 2.0, 4.0};
   constexpr int kRungs = 6;
@@ -900,6 +950,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
     media_->set_loop(s.video_loop_a_ns, s.video_loop_b_ns);
     changed = true;
   }
+  apply_sound_envelope(false);
   if (s.video_mute_seq != seen_video_mute_) {
     if ((s.video_mute_seq - seen_video_mute_) & 1u) {
       video_muted_ = !video_muted_;
@@ -1367,6 +1418,7 @@ void present_lab_mac::render_thread_main() noexcept {
         // Before anything frames the camera: usable_window_w and
         // canvas_origin_x are then the right half while compare is up.
         if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
+        if (apply_video_look(snapshot)) redraw = true;
         if (!seen_home_valid_ || !(snapshot.home == seen_home_)) {
           seen_home_ = snapshot.home;
           seen_home_valid_ = true;
@@ -1631,6 +1683,7 @@ void present_lab_mac::render_thread_main() noexcept {
           speed_rung_ = 2;
           video_muted_ = false;
           media_->set_volume(video_volume_);
+          apply_sound_envelope(true);  // the editor's sound look, if any, on its clip
           if (moment_ms >= 0) {
             // Milestone H: a search result lands paused on its moment. The
             // exact seek decodes forward from the keyframe before it and
@@ -1671,6 +1724,7 @@ void present_lab_mac::render_thread_main() noexcept {
         const bool panned = input_cursor_.consume_pan(snapshot, pan_steps_x, pan_steps_y);
         // A still that just landed may start the split; refit before input.
         if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
+        if (apply_video_look(snapshot)) redraw = true;
         bool picture_framed = false;
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
@@ -1925,6 +1979,7 @@ void present_lab_mac::render_thread_main() noexcept {
 
         // A clip's first frame ends the split (a clip never splits).
         if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
+        if (apply_video_look(snapshot)) redraw = true;
         pacer_.frame_begin();
         const double now = monotonic_seconds();
         const float delta = static_cast<float>(now - last_frame);
@@ -2113,7 +2168,17 @@ void present_lab_mac::render_thread_main() noexcept {
           vp.origin_y = static_cast<float>(snapshot.chrome_height_px);
           vp.image_w = static_cast<float>(video_frame_->width);
           vp.image_h = static_cast<float>(video_frame_->height);
-          vp.rotation = video_frame_->rotation;
+          // The Video Editor's look: its turn on top of the clip's, mirror and crop.
+          const edit::clip::frame_geometry g = video_geometry();
+          const edit::clip::uv_crop uc = edit::clip::uv_crop_of(g);
+          vp.rotation = g.turns;
+          vp.mirror = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
+          vp.crop_x = uc.origin[0];
+          vp.crop_y = uc.origin[1];
+          vp.crop_w = uc.size[0];
+          vp.crop_h = uc.size[1];
+          vp.adjust = !video_look_.light.identity();
+          vp.adjust_u = video_light_;
           id<MTLTexture> luma_tex = (__bridge id<MTLTexture>)video_frame_->luma;
           vp.texture_w = static_cast<float>(luma_tex.width);
           vp.texture_h = static_cast<float>(luma_tex.height);

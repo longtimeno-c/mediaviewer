@@ -283,8 +283,8 @@ mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_background ps_5_0 kBlitPsBackground 
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_tile vs_5_0 kBlitVsTile "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_tile ps_5_0 kBlitPsTile "${_mv_kernel_tokens}")
 set(_mv_video_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/video_blit.hlsl")
-mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" vs_main vs_5_0 kVideoBlitVsMain)
-mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" ps_main ps_5_0 kVideoBlitPsMain)
+mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" vs_main vs_5_0 kVideoBlitVsMain "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" ps_main ps_5_0 kVideoBlitPsMain "${_mv_kernel_tokens}")
 
 # ---------------------------------------------------------------------------
 # mv_gfx — D3D11 device, swapchain, frame pacer
@@ -657,10 +657,18 @@ add_library(mv::meta ALIAS mv_meta)
 # ---------------------------------------------------------------------------
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
+  src/edit/clip_look.cpp
+  src/edit/clip_look.h
+  src/edit/clip_auto_light.cpp
+  src/edit/clip_auto_light.h
   src/edit/adjust.h
+  src/edit/auto_adjust.cpp
   src/edit/auto_tone.cpp
   src/edit/auto_tone.h
   src/edit/bake.cpp
+  src/edit/detail.cpp
+  src/edit/eyes.cpp
+  src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
   src/edit/histogram.h
@@ -700,6 +708,7 @@ add_library(mv_clip STATIC
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
   src/edit/clip_picture_io.cpp
+  src/edit/clip_look_run.cpp
   src/edit/clip_sample.h
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
@@ -899,6 +908,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/edit_view.h
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
+  src/shell/remove_brush.cpp
+  src/shell/remove_brush.h
   src/shell/trim_state.cpp
   src/shell/trim_state.h
   src/shell/open_request.cpp
@@ -1211,8 +1222,13 @@ if(MV_BUILD_TESTS)
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
+    # Slice 7: the Remove brush's strokes and mask.
+    tests/test_remove_brush.cpp
+    src/shell/remove_brush.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
+    tests/test_prompt.cpp
+    tests/test_eyes.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
     # #297: Enhance's sound in and out (edit/sound_writer.h).

@@ -27,6 +27,7 @@ class fake_source final : public media_source {
   void set_rate(double) noexcept override {}
   void set_volume(float) noexcept override {}
   void set_muted(bool) noexcept override {}
+  void set_sound_envelope(const mv::sound_envelope&) noexcept override {}
   void select_audio_track(std::uint32_t) noexcept override {}
   void set_loop(time_ns, time_ns) noexcept override {}
   video_frame* acquire_frame(std::uint32_t, time_ns) noexcept override { return nullptr; }

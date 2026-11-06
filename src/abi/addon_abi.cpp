@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "abi/addon_bridge.h"
 #include "abi/guard.h"
@@ -243,6 +244,49 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
     auto made = thumbnail(path_utf8);
     if (!made) return made.error();
     return write_out(*made, out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_edit_still_set(const char* path_utf8, const void* edit, uint32_t size) {
+  return static_cast<mv_status>(mv::abi::guard("mv_edit_still_set", [&] {
+    if (!path_utf8) {
+      mv::addon::media::clear_still_edit();
+      return status::ok;
+    }
+    struct blob {
+      mv::edit::geometry g;
+      mv::edit::colour c;
+    };
+    static_assert(std::is_trivially_copyable_v<blob>);
+    MV_REQUIRE(edit && size == sizeof(blob), "edit blob of this build's size required");
+    blob b;
+    std::memcpy(&b, edit, sizeof b);
+    mv::addon::media::set_still_edit(path_utf8, b.g, b.c);
+    return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* dabs, uint32_t count) {
+  return static_cast<mv_status>(mv::abi::guard("mv_edit_still_mask", [&] {
+    MV_REQUIRE(count == 0 || dabs, "dabs required");
+    MV_REQUIRE(count <= 4096, "at most 4096 dabs");
+    std::vector<float> v;
+    if (path_utf8 && count > 0) v.assign(dabs, dabs + std::size_t{count} * 3);
+    mv::addon::media::set_still_mask(path_utf8 ? path_utf8 : "", std::move(v));
+    return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_out, uint32_t cap,
+                                             uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_closed_eyes", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
+    if (pack) r = mv::addon::media::open_closed_eyes(path_utf8, *pack);
+    return write_out(mv::addon::media::eyes_note(pack ? status::ok : pack.error(), r), note_out, cap, needed);
   }));
 }
 
@@ -701,6 +745,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.full_still = &mv::addon::media::full_still;    // #297 slice 3
     svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
     svc.route = &mv::addon::media::route;              // #606
+    svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);
@@ -723,8 +768,9 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     // index.db), its index's coordinates serve every add-on's
     // locations_of_index (Places' place: over the whole index).
     if (std::string_view(id) == "ai") {
-      mv::addon::publish_index_locations(mv::addon::ai_index_locations(
-          static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE))));
+      const auto* ai = static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE));
+      mv::addon::publish_index_locations(mv::addon::ai_index_locations(ai));
+      mv::addon::publish_ai_eyes(mv::addon::ai_eyes(ai));  // edit-adjust slice 6
     }
   }
   const void* iface = it->second.addon->query(interface_id);

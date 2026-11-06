@@ -763,6 +763,7 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   // both read index.db), its index's coordinates serve every add-on's
   // locations_of_index (Places' place: over the whole index).
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
+  mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.
@@ -2108,6 +2109,15 @@ mv::addon::host_services slot_services() {
   svc.location = &read_location;
   svc.route = &mv::addon::media::route;  // #606: Places' route on the map and along it
   if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
+  // Enhance (#297) is a slot add-on: its runs read and write through these
+  // rows. Without them it loads, downloads its models and cannot run one.
+  // Windows passes them to every add-on (abi/addon_abi.cpp).
+  svc.open_sound = &mv::addon::media::open_sound;
+  svc.open_sound_writer = &mv::addon::media::open_sound_writer;
+  svc.open_frames = &mv::addon::media::open_frames;
+  svc.open_clip_writer = &mv::addon::media::open_clip_writer;
+  svc.full_still = &mv::addon::media::full_still;
+  svc.write_still = &mv::addon::media::write_still;
   return svc;
 }
 

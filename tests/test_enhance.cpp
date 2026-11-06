@@ -14,6 +14,7 @@
 // sound or both; values persist per kind; a kind with no installed model is
 // named, not offered.
 #include "catch_compat.h"
+#include <catch2/catch_approx.hpp>
 
 #include <atomic>
 #include <cmath>
@@ -30,6 +31,9 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include "addons/ai/sha256.h"
+#include "addons/enhance/diffusion.h"
+#include "addons/enhance/remove.h"
+#include "addons/enhance/brighten.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/preview.h"
@@ -39,7 +43,9 @@
 #include "addons/enhance/screens.h"
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
+#include "core/keep_ranges.h"
 #include "core/json.h"
+#include "infer/ort.h"
 #include "import_fixture.h"
 
 using namespace mv::enhance;
@@ -47,6 +53,7 @@ using mv::test::scratch_dir;
 using mv::test::utf8;
 using mv::test::write_bytes;
 using mv::test::write_text;
+using Catch::Approx;
 
 namespace {
 
@@ -125,6 +132,7 @@ struct fake_host {
   std::vector<std::string> logs;
   std::uint64_t free = 1ull << 40;
   mv::enhance::media_facts facts{true, true};
+  std::vector<float> brush;  // slice 7: the dabs the host holds over a photo
   // The preview's last pixels and how many were posted.
   std::uint32_t surface_w = 0, surface_h = 0;
   int surfaces = 0;
@@ -214,6 +222,10 @@ struct fixture {
       host.shown[screen] = show ? 1 : 0;
     };
     p.probe = [this](const std::string&) { return host.facts; };
+    p.brushed = [this](const std::string&) {
+      std::lock_guard lock(host.m);
+      return static_cast<std::uint32_t>(host.brush.size() / 3);
+    };
     p.free_disk = [this](const std::string&) -> std::optional<std::uint64_t> { return host.free; };
     auto shared = net;
     p.transport = [shared] { return std::make_unique<fake_net>(shared); };
@@ -303,6 +315,16 @@ TEST_CASE("enhance: model.json is read and checked", "[enhance]") {
     "knobs":[{"id":"n","label":"N","type":"choice","options":[{"id":"a","text":"A"}],"default":"b"}]})",
                          model_kind::audio));
 
+  // A model's id is its file's name.
+  CHECK(model_id_of("model.json") == "model");
+  CHECK(model_id_of("x4plus.json") == "x4plus");
+  CHECK_FALSE(model_id_of("X4.json"));
+  CHECK_FALSE(model_id_of(".json"));
+  CHECK_FALSE(model_id_of("a.onnx"));
+  CHECK_FALSE(model_id_of("../a.json"));
+  CHECK(parse_spec(R"({"kind":"audio","name":"x","summary":"Quick","weights":["a"],"run_bytes":1})",
+                   model_kind::audio)->summary == "Quick");
+
   // Values the sheet reports are checked against the knob.
   const knob& noise = s->knobs[0];
   CHECK(check_knob_value(noise, *mv::json::parse("0.5")));
@@ -340,19 +362,38 @@ TEST_CASE("enhance: prefs keep values per kind, the target and what was asked fo
   p.of(model_kind::audio)["noise"] = *mv::json::parse("0.25");
   p.of(model_kind::video)["scale"] = *mv::json::parse("\"1\"");
   p.target = clip_target::both;
-  p.want(model_kind::audio) = true;
+  p.wanted.insert("audio.model");
+  p.use_of(model_kind::video) = "best";
   const prefs q = prefs_from(prefs_json(p));
   CHECK(near(q.of(model_kind::audio).at("noise").d, 0.25));
   CHECK(q.of(model_kind::video).at("scale").s == "1");
   CHECK(q.of(model_kind::still).empty());
   CHECK(q.target == clip_target::both);
-  CHECK(q.want(model_kind::audio));
-  CHECK_FALSE(q.want(model_kind::video));
+  CHECK(q.want("audio.model"));
+  CHECK_FALSE(q.want("video.model"));
+  CHECK(q.use_of(model_kind::video) == "best");
+  CHECK(q.use_of(model_kind::still).empty());
+  // An enhance.json from before kinds had more than one model names the kind:
+  // its model.json.
+  const prefs old = prefs_from(R"({"wanted":["still","video"]})");
+  CHECK(old.want("still.model"));
+  CHECK(old.want("video.model"));
+  CHECK_FALSE(old.want("audio.model"));
+  // One written by main before the merge with #570: Remove and Restyle too,
+  // and the photo's choice.
+  const prefs mixed = prefs_from(R"({"photo":"remove","wanted":["remove","restyle","still.x4plus"]})");
+  CHECK(mixed.photo == photo_target::remove);
+  CHECK(mixed.want("remove.model"));
+  CHECK(mixed.want("restyle.model"));
+  CHECK(mixed.want("still.x4plus"));
+  CHECK(prefs_from(prefs_json(mixed)).wanted == mixed.wanted);
   // Junk is ignored, never fatal.
-  const prefs r = prefs_from(R"({"values":{"audio":{"noise":[1]},"fax":{}},"target":"x","wanted":["fax",3]})");
+  const prefs r = prefs_from(
+      R"({"values":{"audio":{"noise":[1]},"fax":{}},"target":"x","wanted":["fax",3,"audio.A B","fax.x"],"use":{"video":"../x","fax":"y"}})");
   CHECK(r.of(model_kind::audio).empty());
   CHECK(r.target == clip_target::picture);
-  CHECK_FALSE(r.want(model_kind::audio));
+  CHECK(r.wanted.empty());
+  CHECK(r.use_of(model_kind::video).empty());
 }
 
 TEST_CASE("enhance: sizes read as the install line says them", "[enhance]") {
@@ -383,7 +424,7 @@ TEST_CASE("enhance: nothing is requested before the click, then only that kind's
   }
   CHECK(mv::test::read_bytes(f.data / "models/audio/denoise.onnx") == f.audio_weights);
   CHECK(f.eng->download_status(model_kind::video).state == dl_state::absent);
-  CHECK(f.eng->current_prefs().want(model_kind::audio));
+  CHECK(f.eng->current_prefs().want("audio.model"));
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSettingsScreen)).has("remove.audio"); }));
   CHECK(parsed(f.host.tree(kSettingsScreen)).text("state.audio").rfind("Installed", 0) == 0);
 
@@ -391,7 +432,111 @@ TEST_CASE("enhance: nothing is requested before the click, then only that kind's
   f.eng->event(kSettingsScreen, "remove.audio", MV_SLOT_EVENT_CLICK, "");
   CHECK_FALSE(fs::exists(f.data / "models/audio/denoise.onnx"));
   CHECK(f.eng->download_status(model_kind::audio).state == dl_state::absent);
-  CHECK_FALSE(f.eng->current_prefs().want(model_kind::audio));
+  CHECK_FALSE(f.eng->current_prefs().want("audio.model"));
+}
+
+TEST_CASE("enhance: a kind with two models: choose one, each downloads on its own", "[enhance]") {
+  fixture f;
+  // A second video model beside model.json: bigger weights, its own pin.
+  const std::string best_url = "https://huggingface.co/mv-test/upscale/resolve/0123abcd/best.onnx";
+  const std::vector<std::uint8_t> best_weights = mv::test::pattern(120'000, 3);
+  {
+    const auto raw = mv::test::read_bytes(f.self / "manifest.json");
+    auto m = mv::json::parse(std::string(raw.begin(), raw.end()), 16);
+    REQUIRE(m);
+    mv::json::writer w;
+    w.begin_object().key("id").string("enhance").key("remote").begin_array();
+    for (const mv::json::value& r : m->find("remote")->a) {
+      w.begin_object();
+      for (const char* k : {"url", "path", "sha256", "licence"}) w.key(k).string(*r.str(k));
+      w.key("size").integer(*r.integer("size")).end_object();
+    }
+    w.begin_object().key("url").string(best_url).key("path").string("video/best.onnx")
+        .key("size").integer(static_cast<std::int64_t>(best_weights.size())).key("sha256").string(hex_of(best_weights))
+        .key("licence").string("BSD-3-Clause").end_object();
+    w.end_array().end_object();
+    write_text(f.self / "manifest.json", w.take());
+    std::string best = kVideoSpec;
+    best.replace(best.find("\"Detail\""), 8, "\"Detail, best\", \"summary\": \"Slower, finer\"");
+    best.replace(best.find("up.onnx"), 7, "best.onnx");
+    write_text(f.self / "models/video/best.json", best);
+    write_text(f.self / "models/video/Not An Id.json", kVideoSpec);  // not a model id: not offered
+    f.net->files[best_url] = best_weights;
+    f.restart();
+  }
+
+  // model.json's is the one in use until the person chooses.
+  REQUIRE(f.eng->spec(model_kind::video));
+  CHECK(f.eng->spec(model_kind::video)->id == "model");
+  f.eng->settings_opened(1);
+  {
+    parsed t(f.host.tree(kSettingsScreen));
+    REQUIRE(t.has("model.video"));
+    const auto& options = t.node("model.video")->find("options")->a;
+    REQUIRE(options.size() == 2);
+    CHECK(*options[0].str("id") == "model");
+    CHECK(*options[1].str("id") == "best");
+    CHECK(options[1].str("text")->find("not downloaded") != std::string::npos);
+    CHECK(*t.node("model.video")->str("value") == "model");
+    CHECK_FALSE(t.has("model.audio"));  // one audio model: nothing to choose
+  }
+  f.eng->event(kSettingsScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::video).state == dl_state::ready; }));
+
+  // Choosing the other: the sheet offers its Download, and clicking it there
+  // fetches only its pin.
+  f.eng->event(kSettingsScreen, "model.video", MV_SLOT_EVENT_CHANGE, "\"best\"");
+  f.eng->event(kSettingsScreen, "model.video", MV_SLOT_EVENT_CHANGE, "\"nope\"");  // not a model: ignored
+  CHECK(f.eng->current_prefs().use_of(model_kind::video) == "best");
+  CHECK(f.eng->spec(model_kind::video)->id == "best");
+  CHECK(f.eng->download_status(model_kind::video).state == dl_state::absent);
+  const fs::path clip = f.dir / "clip.mov";
+  write_bytes(clip, ftyp("qt  ", "qt  "));
+  f.host.facts = {true, false};
+  f.eng->sheet_opened(2, utf8(clip));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(*t.node("model.video")->str("value") == "best");
+    REQUIRE(t.has("install.video"));
+    CHECK(t.node("install.video")->str("label")->find("(1 MB)") != std::string::npos);
+    CHECK(t.node("run")->boolean("disabled").value_or(false));
+  }
+  f.eng->event(kSheetScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::video).state == dl_state::ready; }));
+  {
+    std::lock_guard lock(f.net->m);
+    REQUIRE(f.net->calls.size() == 2);
+    CHECK(f.net->calls[1].first == best_url);
+  }
+  CHECK(f.eng->current_prefs().want("video.best"));
+  CHECK(f.eng->current_prefs().want("video.model"));
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).has("k.video.scale"); }));
+
+  // Both are kept; the page names the one not in use, with its own Remove.
+  f.eng->settings_opened(3);
+  {
+    parsed t(f.host.tree(kSettingsScreen));
+    CHECK(t.text("other.video.model").find("Also downloaded") != std::string::npos);
+    CHECK(t.has("remove.video.model"));
+    CHECK(t.text("summary.video") == "Slower, finer");
+  }
+  // A compiled cache beside each: Remove takes the model's own.
+  fs::create_directories(f.data / "models/video-cache");
+  fs::create_directories(f.data / "models/video-cache-best");
+  CHECK(cache_dir_for("m/video", "model") == "m/video-cache");
+  CHECK(cache_dir_for("m/video", "best") == "m/video-cache-best");
+  f.eng->event(kSettingsScreen, "remove.video.model", MV_SLOT_EVENT_CLICK, "");
+  CHECK_FALSE(fs::exists(f.data / "models/video/up.onnx"));
+  CHECK_FALSE(fs::exists(f.data / "models/video-cache"));
+  CHECK(fs::exists(f.data / "models/video/best.onnx"));
+  CHECK(fs::exists(f.data / "models/video-cache-best"));
+  CHECK_FALSE(f.eng->current_prefs().want("video.model"));
+  CHECK(f.eng->download_status(model_kind::video).state == dl_state::ready);
+
+  // The choice and the downloads survive a restart.
+  f.restart();
+  CHECK(f.eng->spec(model_kind::video)->id == "best");
+  CHECK(f.eng->download_status(model_kind::video).state == dl_state::ready);
 }
 
 TEST_CASE("enhance: a cut download resumes with Range, also after a restart", "[enhance]") {
@@ -417,7 +562,7 @@ TEST_CASE("enhance: a cut download resumes with Range, also after a restart", "[
   g.restart();  // the engine stops its download (the part stays)
   g.net->cut = [](std::size_t) { return -1LL; };
   if (g.eng->download_status(model_kind::video).state != dl_state::ready) {
-    CHECK(g.eng->current_prefs().want(model_kind::video));
+    CHECK(g.eng->current_prefs().want("video.model"));
     g.eng->resume_wanted();
     REQUIRE(eventually([&] { return g.eng->download_status(model_kind::video).state == dl_state::ready; }));
   }
@@ -470,7 +615,8 @@ TEST_CASE("enhance: the sheet shows only the item's own knobs", "[enhance]") {
   {
     parsed t(f.host.tree(kSheetScreen));
     CHECK(t.text("file") == "song.mp3");
-    CHECK(t.text("missing.audio").find("not installed") != std::string::npos);
+    CHECK(t.text("missing.audio").find("not downloaded") != std::string::npos);
+    CHECK(t.has("install.audio"));  // downloaded from the sheet, not only from Settings
     CHECK_FALSE(t.has("k.audio.noise"));
     CHECK(t.node("run")->boolean("disabled").value_or(false));
     CHECK_FALSE(t.has("target"));
@@ -679,7 +825,7 @@ TEST_CASE("enhance: Enhance on an audio file runs the model and names the new fi
   std::atomic<bool> finished{false};
   std::atomic<std::uint64_t> free_memory{8ull << 30};
   run_port port;
-  port.open_sound = [&](const std::string& path, std::uint32_t rate) -> mv::result<run_port::reader> {
+  port.open_sound = [&](const std::string& path, std::uint32_t rate, std::span<const std::int64_t>) -> mv::result<run_port::reader> {
     CHECK(path == utf8(song));
     CHECK(rate == 48000u);
     run_port::reader r;
@@ -930,8 +1076,10 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
   std::vector<written_frame> frames;
   std::vector<float> sound;
   std::uint32_t clip_w = 0, clip_h = 0, clip_rate = 0;
+  std::vector<std::int64_t> sound_keep, frames_keep;
   run_port port;
-  port.open_sound = [&](const std::string&, std::uint32_t) -> mv::result<run_port::reader> {
+  port.open_sound = [&](const std::string&, std::uint32_t, std::span<const std::int64_t> keep) -> mv::result<run_port::reader> {
+    sound_keep.assign(keep.begin(), keep.end());
     run_port::reader r;
     r.channels = 2;
     r.total_frames = 14'400;
@@ -952,7 +1100,8 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
     return std::unique_ptr<frame_model>(new lag_model(480, 1440, 1.0f));
   };
   port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
-  port.open_frames = [&](const std::string&) -> mv::result<run_port::picture_reader> {
+  port.open_frames = [&](const std::string&, std::span<const std::int64_t> keep) -> mv::result<run_port::picture_reader> {
+    frames_keep.assign(keep.begin(), keep.end());
     run_port::picture_reader r;
     r.width = frame_w;
     r.height = frame_h;
@@ -1033,6 +1182,167 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
   f.eng->event(kSheetScreen, "k.video.scale", MV_SLOT_EVENT_CHANGE, "\"4\"");
   f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("larger than 4K") != std::string::npos; }));
+
+  // From the Video Editor: the edit's kept ranges reach both readers, and the
+  // open sheet moves to the edit at once.
+  frame_w = 40;
+  frame_h = 30;
+  f.eng->event(kSheetScreen, "k.video.scale", MV_SLOT_EVENT_CHANGE, "\"1\"");
+  const std::vector<std::int64_t> edit{0, 150'000'000, 250'000'000, 300'000'000};
+  f.eng->command({utf8(clip)}, edit);
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("edit") ==
+        "The edit from the Video Editor: 2 pieces, 0:00 in all. The new clip is the edit, enhanced; the original is "
+        "not changed.");
+  // The picture alone: the cut clip's own sound cannot be copied whole, so it
+  // is read through the cut and written again, as it was.
+  frames.clear();
+  sound.clear();
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"picture\"");
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(frames_keep == edit);
+  CHECK(sound_keep == edit);
+  CHECK(clip_rate == 48000u);
+  REQUIRE(sound.size() == pcm.size());
+  CHECK(sound[777] == pcm[777]);  // not run through the sound model
+  // The sound alone: its picture is written again, unchanged, at its own size.
+  frames.clear();
+  sound.clear();
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"sound\"");
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(clip_w == 40u);
+  CHECK(frames.size() == 3u);
+  REQUIRE(sound.size() == pcm.size());
+  CHECK(near(sound[777], pcm[777]));
+  // The context entry again: the whole clip, no edit.
+  f.eng->command({utf8(clip)});
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("edit"));
+}
+
+// ---- the Video Editor's cut and Brighten dark scenes (2026-11-02) ------------------
+
+TEST_CASE("enhance: the Video Editor's kept ranges, on frames and samples", "[enhance][edit]") {
+  mv::keep_ranges k;
+  CHECK_FALSE(k.set(std::vector<std::int64_t>{0, 10, 5}));         // odd
+  CHECK_FALSE(k.set(std::vector<std::int64_t>{0, 10, 5, 20}));     // overlapping
+  CHECK_FALSE(k.set(std::vector<std::int64_t>{10, 10}));           // empty
+  CHECK_FALSE(k.active());
+  REQUIRE(k.set(std::vector<std::int64_t>{1'000'000'000, 2'000'000'000, 5'000'000'000, 5'500'000'000}));
+  CHECK(k.kept_ns() == 1'500'000'000);
+  CHECK_FALSE(k.program_of(999'999'999));
+  CHECK(k.program_of(1'000'000'000) == 0);
+  CHECK(k.program_of(1'999'999'999) == 999'999'999);
+  CHECK_FALSE(k.program_of(2'000'000'000));  // out is exclusive
+  CHECK(k.program_of(5'250'000'000) == 1'250'000'000);
+  CHECK_FALSE(k.past_end(5'499'999'999));
+  CHECK(k.past_end(5'500'000'000));
+
+  // Sound at 1 kHz from 0 s, one channel: sample i is i / 1000 s, and holds i.
+  std::vector<float> pcm(6000);
+  for (std::size_t i = 0; i < pcm.size(); ++i) pcm[i] = static_cast<float>(i);
+  std::vector<float> out;
+  // In two reads, split inside the first range: nothing is lost or repeated.
+  k.keep_sound(std::span<const float>(pcm).first(1500), 0, 0, 1000, 1, out);
+  k.keep_sound(std::span<const float>(pcm).subspan(1500), 1500, 0, 1000, 1, out);
+  REQUIRE(out.size() == 1500u);
+  CHECK(out[0] == 1000.0f);
+  CHECK(out[999] == 1999.0f);
+  CHECK(out[1000] == 5000.0f);
+  CHECK(out[1499] == 5499.0f);
+
+  // Sound that starts after the first range does: the gap is silence, so the
+  // edit's sound still lines up with its pictures.
+  REQUIRE(k.set(std::vector<std::int64_t>{0, 1'000'000'000}));
+  out.clear();
+  k.keep_sound(std::span<const float>(pcm).first(2000), 0, 200'000'000, 1000, 1, out);
+  REQUIRE(out.size() == 1000u);
+  CHECK(out[199] == 0.0f);
+  CHECK(out[200] == 0.0f);  // the source's sample 0
+  CHECK(out[201] == 1.0f);
+  CHECK(out[999] == 799.0f);
+
+  // Stereo, and a range edge between samples (ceil: the first sample at or after it).
+  REQUIRE(k.set(std::vector<std::int64_t>{1'500'000, 3'000'000}));
+  std::vector<float> st{0, 0, 1, -1, 2, -2, 3, -3, 4, -4};
+  out.clear();
+  k.keep_sound(st, 0, 0, 1000, 2, out);
+  CHECK(out == std::vector<float>{2, -2});
+}
+
+namespace {
+std::vector<std::uint8_t> flat_rgb(std::uint32_t w, std::uint32_t h, std::uint8_t v) {
+  return std::vector<std::uint8_t>(std::size_t{w} * h * 3, v);
+}
+}  // namespace
+
+TEST_CASE("enhance: Brighten dark scenes lifts dark ones, leaves lit ones, and follows the scenes", "[enhance][edit]") {
+  // The curve: a lift of g at black, never past white, monotonic.
+  CHECK(brighten_curve(0.0, 3.0) == 0.0);
+  CHECK(near(brighten_curve(1.0, 3.0), 1.0));
+  CHECK(std::fabs(brighten_curve(0.01, 3.0) - 0.0294) < 1e-3);
+  for (double x = 0; x < 1; x += 0.01) CHECK(brighten_curve(x + 0.01, 4.0) > brighten_curve(x, 4.0));
+  CHECK(brighten_of("some") == brighten_amount::some);
+  CHECK(brighten_of("more") == brighten_amount::more);
+  CHECK(brighten_of("bright") == brighten_amount::off);
+
+  const std::uint32_t w = 64, h = 36;
+  std::vector<std::uint8_t> out;
+  {
+    // Off: the frame as it was.
+    brightener off(brighten_amount::off);
+    const auto dark = flat_rgb(w, h, 20);
+    (void)off.apply(dark, w, h, 0, out);
+    CHECK(out == dark);
+  }
+  {
+    // A lit scene (sRGB 140, about 0.26 linear): left alone.
+    brightener b(brighten_amount::more);
+    const auto lit = flat_rgb(w, h, 140);
+    const brighten_fit fit = b.apply(lit, w, h, 0, out);
+    CHECK(near(fit.gain, 1.0));
+    CHECK(out == lit);
+  }
+  {
+    // A night scene (sRGB 30, about 0.013 linear): lifted, more for "more",
+    // capped, and never clipped.
+    brightener some(brighten_amount::some), more(brighten_amount::more);
+    const auto night = flat_rgb(w, h, 30);
+    const brighten_fit fs = some.apply(night, w, h, 0, out);
+    const std::uint8_t lifted_some = out[0];
+    const brighten_fit fm = more.apply(night, w, h, 0, out);
+    CHECK(fs.cut);  // the first frame sets the gain at once
+    CHECK(near(fs.gain, 3.0));
+    CHECK(near(fm.gain, 6.0));
+    CHECK(lifted_some > 30);
+    CHECK(out[0] > lifted_some);
+    CHECK(out[0] < 255);
+  }
+  {
+    // Within one scene the gain eases (no jump when a light passes); at a cut
+    // it moves at once.
+    brightener b(brighten_amount::more);
+    std::vector<std::uint8_t> frame = flat_rgb(w, h, 30);
+    (void)b.apply(frame, w, h, 0, out);
+    // A light in a quarter of the frame: the scene is brighter, the same scene.
+    for (std::uint32_t y = 0; y < h / 2; ++y) {
+      for (std::uint32_t x = 0; x < w / 2; ++x) {
+        for (int c = 0; c < 3; ++c) frame[(std::size_t{y} * w + x) * 3 + c] = 200;
+      }
+    }
+    const brighten_fit eased = b.apply(frame, w, h, 33'333, out);
+    CHECK_FALSE(eased.cut);
+    CHECK(eased.target < 6.0);
+    CHECK(eased.gain > eased.target);  // still most of the way back at the old gain
+    CHECK(eased.gain < 6.0);
+    // Half a second later of the same frame: most of the way there.
+    const brighten_fit later = b.apply(frame, w, h, 533'333, out);
+    CHECK(std::abs(std::log(later.gain / later.target)) < std::abs(std::log(eased.gain / eased.target)) * 0.5);
+    // A cut to a lit scene: at once.
+    const brighten_fit cut = b.apply(flat_rgb(w, h, 150), w, h, 566'666, out);
+    CHECK(cut.cut);
+    CHECK(near(cut.gain, 1.0));
+  }
 }
 
 // ---- slice 3: a photo --------------------------------------------------------------
@@ -1111,6 +1421,120 @@ TEST_CASE("enhance: a photo through the sheet and the runner, within its limits"
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("free memory") != std::string::npos; }));
 }
 
+// Slice 7: Remove. A stand-in fills what is brushed with one grey.
+struct grey_fill final : inpaint_filler {
+  std::uint32_t side() const noexcept override { return 64; }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    CHECK(image.width == 64);
+    CHECK(mask.width == 64);
+    CHECK(std::count(mask.a.begin(), mask.a.end(), 255) > 0);
+    rgb8 out = image;
+    for (std::size_t i = 0; i < mask.a.size(); ++i) {
+      if (mask.a[i] == 255) out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = 128;
+    }
+    return out;
+  }
+};
+
+TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the rest the photo's own",
+          "[enhance][remove]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0003.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true, "knobs": [],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  // Nothing brushed: the photo's sheet has no Remove.
+  f.eng->sheet_opened(1, utf8(photo));
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("photo"));
+
+  // A dab at the centre of a 400 x 300 photo, radius 5% of 400 = 20 px.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.brush = {0.5f, 0.5f, 0.05f};
+  }
+  f.eng->sheet_opened(2, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(t.node("photo")->find("options")->a.size() == 2);  // More detail, Remove
+    CHECK(*t.node("photo")->str("value") == "remove");       // Remove… opened it
+    CHECK(t.text("missing.remove").find("not downloaded") != std::string::npos);
+  }
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+
+  const std::uint32_t w = 400, h = 300;
+  const std::vector<std::uint8_t> original = noise_rgb(w, h);
+  std::vector<std::uint8_t> written;
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string& dir) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    CHECK(dir.find("models/remove") != std::string::npos);
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [&](const std::string& path) {
+    CHECK(path == utf8(photo));
+    std::lock_guard lock(f.host.m);
+    return f.host.brush;
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = original;
+    return s;
+  };
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    CHECK(pic.width == w);
+    CHECK(pic.height == h);
+    written = pic.rgb;
+    return utf8(f.dir / "IMG_0003-enhance.jpg");
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+  f.eng->sheet_opened(3, utf8(photo));
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  REQUIRE(written.size() == original.size());
+  // The centre is the fill; a pixel well away from the dab is the photo's own.
+  CHECK(written[(150 * w + 200) * 3] == 128);
+  std::size_t changed_far = 0;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const float dx = static_cast<float>(x) + 0.5f - 200.0f, dy = static_cast<float>(y) + 0.5f - 150.0f;
+      if (dx * dx + dy * dy < 60.0f * 60.0f) continue;  // the dab, its feather and the resize's reach
+      const std::size_t i = (std::size_t{y} * w + x) * 3;
+      changed_far += written[i] != original[i] || written[i + 1] != original[i + 1] || written[i + 2] != original[i + 2];
+    }
+  }
+  CHECK(changed_far == 0);
+
+  // The brush cleared in Edit: refused before anything runs.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.brush.clear();
+  }
+  job_runner jr(port);
+  job_request req;
+  req.path = utf8(photo);
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = f.eng->spec(model_kind::remove);
+  req.parts.push_back(part);
+  CHECK(jr.check(req).find("Nothing is brushed") != std::string::npos);
+}
+
 // ---- the live preview and its glow (contribution API 10) ------------------------------
 
 TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "[enhance][preview]") {
@@ -1140,6 +1564,34 @@ TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "
   CHECK(shrink(before.rgb, 200, 50, 960).width == 200u);
 }
 
+TEST_CASE("enhance: a photo is shown being redrawn, behind a glowing front", "[enhance][preview]") {
+  // The original: grey, 100 x 100. The output being written: white, 200 x 200.
+  preview_image before;
+  before.width = before.height = 100;
+  before.rgb.assign(100 * 100 * 3, 100);
+  const std::vector<std::uint8_t> out(200 * 200 * 3, 250);
+  // The top half done, and the next band done to a quarter across.
+  const reveal_front at{0.5, 0.75, 0.25};
+  const preview_image p = partial_of(before, out, 200, 200, at);
+  REQUIRE(p.width == 100u);
+  const auto px = [&](std::uint32_t x, std::uint32_t y) { return p.rgb[(std::size_t{y} * 100 + x) * 3]; };
+  CHECK(px(50, 10) == 250);  // above the front: enhanced
+  CHECK(px(10, 60) == 250);  // in the band, left of x: enhanced
+  CHECK(px(60, 60) == 100);  // in the band, right of x: still the original
+  CHECK(px(50, 90) == 100);  // below the band: the original
+  // Composed: the part still to come is dimmer, and the front glows.
+  const auto bgra = compose_reveal(p, at, 200, 200);
+  REQUIRE(bgra.size() == 200u * 200u * 4);
+  const auto red = [&](std::uint32_t x, std::uint32_t y) { return bgra[(std::size_t{y} * 200 + x) * 4 + 2]; };
+  CHECK(red(100, 20) == 250);   // done, away from the front
+  CHECK(red(160, 190) < 100);   // still to come: dimmed
+  const std::uint8_t* line = &bgra[(std::size_t{150} * 200 + 20) * 4];  // the band's lower edge, left of x
+  CHECK((line[0] != 250 || line[1] != 250 || line[2] != 250));  // tinted by the glow
+  // Finished (the front past the end): the picture alone, nothing dimmed or tinted.
+  const auto done = compose_reveal(partial_of(before, out, 200, 200, {1, 1, 1}), {1, 1, 1}, 200, 200);
+  CHECK(done[(std::size_t{190} * 200 + 160) * 4 + 2] == 250);
+}
+
 TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it ends", "[enhance][preview]") {
   fixture f;
   const fs::path clip = f.dir / "clip.mov";
@@ -1157,7 +1609,7 @@ TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it end
   std::atomic<int> allowed{1};
   run_port port;
   port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
-  port.open_frames = [&](const std::string&) -> mv::result<run_port::picture_reader> {
+  port.open_frames = [&](const std::string&, std::span<const std::int64_t>) -> mv::result<run_port::picture_reader> {
     run_port::picture_reader r;
     r.width = 40;
     r.height = 30;
@@ -1193,12 +1645,20 @@ TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it end
     parsed t(f.host.tree(kSheetScreen));
     CHECK(*t.node("preview")->str("glow") == "moving");
     CHECK(*t.node("progress")->str("look") == "glow");
-    CHECK(t.node("preview")->find("marks")->a.size() == 2u);
+    CHECK(t.has("sides"));  // split from a clip's first frame, said in words under it
   }
   {
     std::lock_guard lock(f.host.m);
     CHECK(f.host.surface_w == 860u);  // the sheet's width at its backing scale
-    CHECK(f.host.surface_h == kPreviewHeight * 2);
+    // As tall as the clip's shape asks across the sheet, within 160-300 points;
+    // the tree says the same height.
+    CHECK(f.host.surface_h >= 160u * 2);
+    CHECK(f.host.surface_h <= 320u * 2);
+  }
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    std::lock_guard lock(f.host.m);
+    CHECK(static_cast<std::uint32_t>(*t.node("preview")->integer("height")) * 2 == f.host.surface_h);
   }
   allowed = 3;
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
@@ -1210,4 +1670,473 @@ TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it end
   // Another item: no preview from a run that was not its own.
   f.eng->sheet_opened(2, utf8(f.dir / "other.mov"), 430, 2);
   CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("preview"));
+}
+
+// ---- Restyle (docs/plans/edit-adjust.md slice 5b) ----------------------------------
+
+TEST_CASE("restyle: the Euler-ancestral schedule matches the reference pipeline's", "[enhance][restyle]") {
+  // diffusers 0.42 EulerAncestralDiscreteScheduler, InstructPix2Pix's config, 20 steps.
+  const euler_schedule s = make_euler_schedule(20);
+  REQUIRE(s.timesteps.size() == 20);
+  REQUIRE(s.sigmas.size() == 21);
+  CHECK(s.init == Approx(14.6146f).epsilon(1e-4));
+  CHECK(s.timesteps[0] == 999.0f);
+  CHECK(s.timesteps[1] == Approx(946.421f).epsilon(1e-5));
+  CHECK(s.timesteps[3] == Approx(841.263f).epsilon(1e-5));
+  CHECK(s.timesteps[19] == 0.0f);
+  CHECK(s.sigmas[1] == Approx(10.7469f).epsilon(1e-4));
+  CHECK(s.sigmas[3] == Approx(6.205f).epsilon(1e-3));
+  CHECK(s.sigmas[17] == Approx(0.35555f).epsilon(1e-3));
+  CHECK(s.sigmas[19] == Approx(0.02917f).epsilon(2e-3));
+  CHECK(s.sigmas[20] == 0.0f);
+  CHECK(make_euler_schedule(0).sigmas.empty());
+}
+
+TEST_CASE("restyle: sizes on eights, and a change carried back keeps the photo's detail", "[enhance][restyle]") {
+  std::uint32_t w = 0, h = 0;
+  restyle_size(4032, 3024, 512, w, h);
+  CHECK(w == 512);
+  CHECK(h == 384);
+  restyle_size(1000, 333, 512, w, h);
+  CHECK(w % 64 == 0);
+  CHECK(h % 64 == 0);
+  restyle_size(1600, 900, 512, w, h);
+  CHECK(w == 512);
+  CHECK(h == 320);  // 288 would not halve three times in the latent
+  // A full photo with fine detail (a checker), its small copy, and an "edit"
+  // that warmed the small copy: the result is warmer, and the checker is
+  // still there at full size.
+  rgb8 full;
+  full.width = 256;
+  full.height = 128;
+  full.rgb.resize(256 * 128 * 3);
+  for (std::uint32_t y = 0; y < 128; ++y) {
+    for (std::uint32_t x = 0; x < 256; ++x) {
+      const std::uint8_t v = ((x / 2 + y / 2) % 2) ? 160 : 100;
+      std::uint8_t* p = &full.rgb[(std::size_t{y} * 256 + x) * 3];
+      p[0] = p[1] = p[2] = v;
+    }
+  }
+  const rgb8 before = resize_rgb(full, 64, 32);
+  rgb8 after = before;
+  for (std::size_t i = 0; i < after.rgb.size(); i += 3) {
+    after.rgb[i] = static_cast<std::uint8_t>(std::min(255, after.rgb[i] + 40));
+    after.rgb[i + 2] = static_cast<std::uint8_t>(std::max(0, after.rgb[i + 2] - 40));
+  }
+  const rgb8 out = carry_back(full, before, after, 1.0f);
+  REQUIRE(out.width == 256);
+  const std::uint8_t* a = &out.rgb[(std::size_t{64} * 256 + 100) * 3];
+  const std::uint8_t* b = &out.rgb[(std::size_t{64} * 256 + 102) * 3];
+  CHECK(a[0] > a[2]);                    // warmer
+  CHECK(std::abs(int(a[1]) - int(b[1])) > 30);  // the checker survived
+  // Strength 0 is the photo itself.
+  CHECK(carry_back(full, before, after, 0.0f).rgb == full.rgb);
+}
+
+// Hidden: the exported model end to end (MV_RESTYLE_DIR: the ONNX files,
+// MV_ENHANCE_RUNTIME_DIR: libonnxruntime, MV_RESTYLE_PHOTO: a JPEG or PNG
+// decoded by the test's caller into MV_RESTYLE_RGB, a raw 8-bit RGB file of
+// MV_RESTYLE_W x MV_RESTYLE_H).
+TEST_CASE("restyle: the quality picks its size and the memory it needs", "[enhance][restyle]") {
+  const auto spec = parse_spec(R"json({
+    "kind": "restyle", "name": "Restyle", "weights": ["r.onnx"], "run_bytes": 8000, "cpu": false,
+    "knobs": [{"id": "prompt", "label": "Change", "type": "text", "default": ""},
+              {"id": "quality", "label": "Quality", "type": "choice", "default": "standard",
+               "options": [{"id": "standard", "text": "Standard"}, {"id": "best", "text": "Best"},
+                           {"id": "odd", "text": "Odd"}]}],
+    "io": {"runner": "diffusion", "edge": 512, "steps": 20,
+           "qualities": {"standard": {"edge": 512, "run_bytes": 8000}, "best": {"edge": 1024, "run_bytes": 24000},
+                         "odd": {"edge": 700}}}})json",
+                               model_kind::restyle);
+  REQUIRE(spec);
+  std::uint64_t free = 10000;
+  run_port port;
+  port.open_still = [](const std::string&) -> mv::result<run_port::still> { return mv::err(mv::status::io); };
+  port.write_still = [](const std::string&, const run_port::still&) -> mv::result<std::string> { return std::string(); };
+  port.load_restyle = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+    return mv::err(mv::status::unsupported_format);
+  };
+  port.free_memory = [&]() -> std::optional<std::uint64_t> { return free; };
+  job_runner jr(port);
+  job_request req;
+  req.path = "IMG_0002.JPG";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::restyle;
+  part.spec = &*spec;
+  part.values["prompt"] = *mv::json::parse("\"make it winter\"");
+  part.values["quality"] = *mv::json::parse("\"standard\"");
+  req.parts.push_back(part);
+  CHECK(jr.check(req).empty());
+  // Best needs its own memory, and says how to get under it.
+  req.parts[0].values["quality"] = *mv::json::parse("\"best\"");
+  const std::string refused = jr.check(req);
+  CHECK(refused.find("at this quality") != std::string::npos);
+  CHECK(refused.find("lower quality") != std::string::npos);
+  free = 30000;
+  CHECK(jr.check(req).empty());
+  // A quality with no memory of its own falls back to the spec's run_bytes.
+  free = 9000;
+  req.parts[0].values["quality"] = *mv::json::parse("\"odd\"");
+  CHECK(jr.check(req).empty());
+}
+
+// The model.json Enhance ships parses, and every quality it offers has an
+// edge the UNet can take and memory of its own.
+TEST_CASE("restyle: the shipped model's qualities", "[enhance][restyle]") {
+  const auto text = mv::test::read_bytes(MV_ENHANCE_RESTYLE_SPEC);
+  const auto spec = parse_spec(std::string_view(reinterpret_cast<const char*>(text.data()), text.size()),
+                               model_kind::restyle);
+  REQUIRE(spec);
+  const knob* q = spec->find("quality");
+  REQUIRE(q);
+  CHECK(q->def_choice == "standard");
+  const mv::json::value* qualities = spec->io.find("qualities");
+  REQUIRE(qualities);
+  std::int64_t last = 0;
+  for (const knob_option& o : q->options) {
+    const mv::json::value* one = qualities->find(o.id);
+    REQUIRE(one);
+    const auto edge = one->integer("edge");
+    REQUIRE(edge);
+    CHECK(*edge % 64 == 0);
+    CHECK(*edge > last);
+    last = *edge;
+    CHECK(one->integer("run_bytes").value_or(0) > 0);
+  }
+}
+
+TEST_CASE("remove: the box around a stroke, the crop, and only brushed pixels pasted back", "[enhance][remove]") {
+  mask8 mask;
+  mask.width = 1200;
+  mask.height = 800;
+  mask.a.assign(std::size_t{mask.width} * mask.height, 0);
+  CHECK_FALSE(remove_box(mask));
+  // A 40 x 20 stroke at (600, 400).
+  for (std::uint32_t y = 400; y < 420; ++y) {
+    for (std::uint32_t x = 600; x < 640; ++x) mask.a[std::size_t{y} * mask.width + x] = 255;
+  }
+  auto box = remove_box(mask);
+  REQUIRE(box);
+  // Context of at least kRemoveMinContext each side, square, inside the photo.
+  CHECK(box->width == box->height);
+  CHECK(box->x + kRemoveMinContext <= 600);
+  CHECK(box->x + box->width >= 640 + kRemoveMinContext);
+  CHECK(box->y + kRemoveMinContext <= 400);
+  CHECK(box->y + box->height >= 420 + kRemoveMinContext);
+
+  // At the photo's corner: shifted inside, still square where it fits.
+  mask8 corner = mask;
+  std::fill(corner.a.begin(), corner.a.end(), 0);
+  for (std::uint32_t y = 0; y < 30; ++y) {
+    for (std::uint32_t x = 1170; x < 1200; ++x) corner.a[std::size_t{y} * corner.width + x] = 255;
+  }
+  const auto edge = remove_box(corner);
+  REQUIRE(edge);
+  CHECK(edge->x + edge->width == 1200);
+  CHECK(edge->y == 0);
+  CHECK(edge->width == edge->height);
+  // A stroke taller than the photo allows square: as tall as the photo.
+  mask8 tall = mask;
+  std::fill(tall.a.begin(), tall.a.end(), 0);
+  for (std::uint32_t y = 10; y < 790; ++y) tall.a[std::size_t{y} * tall.width + 100] = 255;
+  const auto t = remove_box(tall);
+  REQUIRE(t);
+  CHECK(t->y == 0);
+  CHECK(t->height == 800);
+
+  rgb8 photo;
+  photo.width = mask.width;
+  photo.height = mask.height;
+  photo.rgb.resize(std::size_t{photo.width} * photo.height * 3);
+  for (std::size_t i = 0; i < photo.rgb.size(); ++i) photo.rgb[i] = static_cast<std::uint8_t>(i * 7 % 251);
+  const rgb8 original = photo;
+  const rgb8 crop = crop_rgb(photo, *box);
+  CHECK(crop.rgb[0] == photo.rgb[(std::size_t{box->y} * photo.width + box->x) * 3]);
+  const mask8 small = crop_mask(mask, *box, 512, 512);
+  CHECK(small.width == 512);
+  CHECK(std::count(small.a.begin(), small.a.end(), 255) > 0);
+  CHECK(std::all_of(small.a.begin(), small.a.end(), [](std::uint8_t v) { return v == 0 || v == 255; }));
+
+  rgb8 filled = crop;
+  std::fill(filled.rgb.begin(), filled.rgb.end(), std::uint8_t{200});
+  const std::uint32_t feather = 4;
+  paste_back(photo, *box, filled, mask, feather);
+  std::size_t changed_far = 0;
+  for (std::uint32_t y = 0; y < photo.height; ++y) {
+    for (std::uint32_t x = 0; x < photo.width; ++x) {
+      const std::size_t at = (std::size_t{y} * photo.width + x) * 3;
+      const bool brushed = mask.a[std::size_t{y} * photo.width + x] > 127;
+      const bool near = x + 2 * feather >= 600 && x < 640 + 2 * feather && y + 2 * feather >= 400 &&
+                        y < 420 + 2 * feather;
+      if (brushed) {
+        CHECK(photo.rgb[at] == 200);
+      } else if (!near) {
+        changed_far += photo.rgb[at] != original.rgb[at] || photo.rgb[at + 1] != original.rgb[at + 1] ||
+                       photo.rgb[at + 2] != original.rgb[at + 2];
+      }
+    }
+  }
+  CHECK(changed_far == 0);
+  // The feather: just outside the stroke is a blend, not the fill.
+  const std::size_t just_out = (std::size_t{410} * photo.width + 642) * 3;
+  CHECK(photo.rgb[just_out] != 200);
+  CHECK(photo.rgb[just_out] != original.rgb[just_out]);
+}
+
+// The real LaMa (MV_REMOVE_MODEL: lama_fp32.onnx) on a photo
+// (MV_RESTYLE_RGB / _W / _H, raw RGB): a hole brushed over its middle is
+// filled with something like its surroundings, and everything away from the
+// brush is the photo's own. MV_REMOVE_OUT keeps the result as raw RGB.
+TEST_CASE("remove: LaMa through ONNX Runtime", "[.remove-model]") {
+  const char* file = std::getenv("MV_REMOVE_MODEL");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  if (!file || !ort || !raw || !ws || !hs) SKIP("MV_REMOVE_MODEL / MV_ENHANCE_RUNTIME_DIR / MV_RESTYLE_RGB not set");
+  rgb8 full;
+  full.width = static_cast<std::uint32_t>(std::atoi(ws));
+  full.height = static_cast<std::uint32_t>(std::atoi(hs));
+  full.rgb = mv::test::read_bytes(raw);
+  REQUIRE(full.rgb.size() == std::size_t{full.width} * full.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  auto model = inpaint_model::open(**rt, file, inpaint_io{});
+  INFO(mv::infer::session::last_error());
+  REQUIRE(model);
+  // A stroke across the middle, radius 3% of the long side.
+  std::vector<float> dabs;
+  for (float u = 0.4f; u <= 0.6f; u += 0.005f) dabs.insert(dabs.end(), {u, 0.5f, 0.03f});
+  const mask8 mask = mask_from_dabs(dabs, full.width, full.height);
+  const auto box = remove_box(mask);
+  REQUIRE(box);
+  const std::uint32_t side = (*model)->side();
+  const rgb8 crop = crop_rgb(full, *box);
+  const auto t0 = std::chrono::steady_clock::now();
+  auto filled = (*model)->fill(resize_rgb(crop, side, side), crop_mask(mask, *box, side, side));
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  REQUIRE(filled);
+  rgb8 out = full;
+  paste_back(out, *box, resize_rgb(*filled, box->width, box->height), mask, 4);
+  // The fill's mean against the ring just outside the brush: close, and
+  // nothing like white or black.
+  double in_sum = 0, ring_sum = 0;
+  std::size_t in_n = 0, ring_n = 0, far_changed = 0;
+  const mask8 grown = mask_from_dabs([&] {
+    std::vector<float> g = dabs;
+    for (std::size_t i = 2; i < g.size(); i += 3) g[i] = 0.06f;
+    return g;
+  }(), full.width, full.height);
+  const mask8 far = mask_from_dabs([&] {
+    std::vector<float> g = dabs;
+    for (std::size_t i = 2; i < g.size(); i += 3) g[i] = 0.045f;
+    return g;
+  }(), full.width, full.height);
+  for (std::size_t i = 0; i < mask.a.size(); ++i) {
+    const double l = (out.rgb[i * 3] + out.rgb[i * 3 + 1] + out.rgb[i * 3 + 2]) / 3.0;
+    if (mask.a[i]) {
+      in_sum += l;
+      ++in_n;
+    } else if (grown.a[i]) {
+      ring_sum += l;
+      ++ring_n;
+    }
+    if (!far.a[i]) {
+      far_changed += out.rgb[i * 3] != full.rgb[i * 3] || out.rgb[i * 3 + 1] != full.rgb[i * 3 + 1] ||
+                     out.rgb[i * 3 + 2] != full.rgb[i * 3 + 2];
+    }
+  }
+  REQUIRE(in_n > 0);
+  REQUIRE(ring_n > 0);
+  const double in_mean = in_sum / in_n, ring_mean = ring_sum / ring_n;
+  std::printf("remove: %ux%u box filled at %u px in %.2f s on CPU; fill mean %.1f, surroundings %.1f\n", box->width,
+              box->height, side, s, in_mean, ring_mean);
+  CHECK(std::abs(in_mean - ring_mean) < 30.0);
+  CHECK(far_changed == 0);
+  if (const char* keep = std::getenv("MV_REMOVE_OUT")) write_bytes(std::string(keep), out.rgb);
+}
+
+TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
+  const char* dir = std::getenv("MV_RESTYLE_DIR");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  if (!dir || !ort || !raw || !ws || !hs) SKIP("MV_RESTYLE_DIR / MV_ENHANCE_RUNTIME_DIR / MV_RESTYLE_RGB not set");
+  rgb8 full;
+  full.width = static_cast<std::uint32_t>(std::atoi(ws));
+  full.height = static_cast<std::uint32_t>(std::atoi(hs));
+  full.rgb = mv::test::read_bytes(raw);
+  REQUIRE(full.rgb.size() == std::size_t{full.width} * full.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  scratch_dir cache("restyle_cache");
+  auto t0 = std::chrono::steady_clock::now();
+  auto model = restyle_model::open(**rt, dir, utf8(cache.root()));
+  REQUIRE(model);
+  // MV_RESTYLE_EDGE: a quality's long edge (768 High, 1024 Best), to measure it.
+  const char* edge_env = std::getenv("MV_RESTYLE_EDGE");
+  const std::uint32_t edge = edge_env ? static_cast<std::uint32_t>(std::atoi(edge_env)) : kRestyleEdge;
+  std::uint32_t w = 0, h = 0;
+  restyle_size(full.width, full.height, edge, w, h);
+  const rgb8 small = resize_rgb(full, w, h);
+  for (const char* prompt : {"make it black and white", "make it a snowy winter day"}) {
+    restyle_params p;
+    p.prompt = prompt;
+    t0 = std::chrono::steady_clock::now();
+    int last = -1;
+    auto out = (*model)->run(small, p, [&](int i, int) { last = i; return true; });
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    INFO("status " << mv::status_name(out ? mv::status::ok : out.error()) << ": " << mv::infer::session::last_error());
+    REQUIRE(out);
+    CHECK(last == 20);
+    double sat = 0, sat0 = 0;
+    for (std::size_t i = 0; i < out->rgb.size(); i += 3) {
+      auto spread = [](const std::uint8_t* q) { return std::max({q[0], q[1], q[2]}) - std::min({q[0], q[1], q[2]}); };
+      sat += spread(&out->rgb[i]);
+      sat0 += spread(&small.rgb[i]);
+    }
+    std::printf("restyle: \"%s\" at %ux%u in %.1f s on %s, colourfulness %.1f -> %.1f\n", prompt, w, h, s,
+                (*model)->on_gpu() ? "Core ML" : "CPU", sat0 / (out->rgb.size() / 3), sat / (out->rgb.size() / 3));
+    if (std::string(prompt).find("black") != std::string::npos) CHECK(sat < sat0 * 0.5);
+    const rgb8 back = carry_back(full, small, *out, 1.0f);
+    if (const char* keep = std::getenv("MV_RESTYLE_OUT")) {
+      const std::string base = std::string(keep) + "/" + (prompt[7] == 'i' ? "bw" : "snow");
+      std::vector<std::uint8_t> a(out->rgb), b(back.rgb);
+      write_bytes(base + "_small.rgb", a);
+      write_bytes(base + "_full.rgb", b);
+    }
+  }
+
+  // The same through the job runner, as the sheet's Run starts it (one
+  // model in memory at a time, so a peak measured is one run's).
+  model->reset();
+  run_port port;
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = full.width;
+    s.height = full.height;
+    s.rgb = full.rgb;
+    return s;
+  };
+  run_port::still written;
+  port.write_still = [&](const std::string&, const run_port::still& s) -> mv::result<std::string> {
+    written = s;
+    return std::string("/tmp/photo-enhance.jpg");
+  };
+  port.load_restyle = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+    return restyle_model::open(**rt, dir, utf8(cache.root()));
+  };
+  job_runner jr(port);
+  model_spec spec;
+  spec.kind = model_kind::restyle;
+  // The runner at the edge measured above, so it reuses that compile.
+  spec.io = *mv::json::parse("{\"edge\": " + std::to_string(edge) + "}");
+  job_request req;
+  req.path = "photo.jpg";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::restyle;
+  part.spec = &spec;
+  part.values["prompt"] = *mv::json::parse("\"make it black and white\"");
+  req.parts.push_back(part);
+  std::atomic<bool> done{false};
+  bool ok = false;
+  std::string name, message;
+  double last_progress = -2;
+  job_events ev;
+  ev.progress = [&](double f) { last_progress = f; };
+  ev.done = [&](bool k, const std::string& n, const std::string& m) {
+    ok = k;
+    name = n;
+    message = m;
+    done = true;
+  };
+  jr.start(req, ev);
+  for (int i = 0; i < 6000 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  INFO(message);
+  REQUIRE(done);
+  CHECK(ok);
+  CHECK(name == "photo-enhance.jpg");
+  CHECK(written.width == full.width);
+  CHECK(last_progress > 0.5);
+}
+
+TEST_CASE("restyle: offered on a photo once pinned, with a text knob, and an empty request refused",
+          "[enhance][restyle]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0002.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/restyle/model.json", R"json({
+    "kind": "restyle", "name": "Restyle", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": false,
+    "knobs": [{"id": "prompt", "label": "Change", "type": "text", "default": "", "placeholder": "make it winter"},
+              {"id": "keep", "label": "Keep the photo", "type": "slider", "min": 1, "max": 2.5, "default": 1.5}],
+    "io": {"runner": "diffusion", "edge": 512, "steps": 20}})json");
+  f.restart();
+  // Its model.json alone is not a model anyone can download: not offered.
+  f.eng->sheet_opened(3, utf8(photo));
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("photo"));
+
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "restyle/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "CreativeML OpenRAIL-M"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  f.eng->sheet_opened(4, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(t.node("photo")->find("options")->a.size() == 2);
+    CHECK_FALSE(t.has("k.restyle.prompt"));  // more detail by default
+  }
+  f.eng->event(kSheetScreen, "photo", MV_SLOT_EVENT_CHANGE, "\"restyle\"");
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("missing.restyle").find("not downloaded") != std::string::npos);
+  f.eng->event(kSettingsScreen, "install.restyle", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::restyle).state == dl_state::ready; }));
+  f.eng->sheet_opened(5, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("k.restyle.prompt"));
+    CHECK(*t.node("k.restyle.prompt")->str("type") == "text_field");
+    CHECK(*t.node("k.restyle.prompt")->str("placeholder") == "make it winter");
+    CHECK(t.has("k.restyle.keep"));
+  }
+  // The words are remembered; a request too long is refused.
+  f.eng->event(kSheetScreen, "k.restyle.prompt", MV_SLOT_EVENT_CHANGE, "\"make it a snowy winter day\"");
+  CHECK(f.eng->current_prefs().of(model_kind::restyle).at("prompt").s == "make it a snowy winter day");
+  f.eng->event(kSheetScreen, "k.restyle.prompt", MV_SLOT_EVENT_CHANGE, "\"" + std::string(300, 'x') + "\"");
+  CHECK(f.eng->current_prefs().of(model_kind::restyle).at("prompt").s == "make it a snowy winter day");
+  CHECK(f.eng->current_prefs().photo == photo_target::restyle);
+
+  // The runner: Restyle runs on a still once it can load the model, and
+  // an empty request is refused before anything starts.
+  run_port port;
+  port.open_still = [](const std::string&) -> mv::result<run_port::still> { return mv::err(mv::status::io); };
+  port.write_still = [](const std::string&, const run_port::still&) -> mv::result<std::string> { return std::string(); };
+  CHECK_FALSE(job_runner(port).supports(model_kind::restyle, item_kind::still));
+  port.load_restyle = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+    return mv::err(mv::status::unsupported_format);
+  };
+  job_runner jr(port);
+  CHECK(jr.supports(model_kind::restyle, item_kind::still));
+  CHECK_FALSE(jr.supports(model_kind::restyle, item_kind::media));
+  const model_spec* spec = f.eng->spec(model_kind::restyle);
+  REQUIRE(spec);
+  job_request req;
+  req.path = utf8(photo);
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::restyle;
+  part.spec = spec;
+  part.values["prompt"] = *mv::json::parse("\"   \"");
+  req.parts.push_back(part);
+  CHECK(jr.check(req).find("Type what to change") != std::string::npos);
+  req.parts[0].values["prompt"] = *mv::json::parse("\"make it winter\"");
+  CHECK(jr.check(req).empty());
 }

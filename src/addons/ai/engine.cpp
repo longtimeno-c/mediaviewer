@@ -7349,6 +7349,84 @@ std::uint64_t engine::search_this_person(const std::string& path, std::int64_t p
   });
 }
 
+result<std::string> engine::eyes_json(const std::string& path, const std::vector<std::string>& candidates) {
+  std::shared_ptr<face_analyzer> model;
+  {
+    std::lock_guard lock(models_m_);
+    model = faces_model_;
+    if (!faces_ || !model) return err(status::invalid_arg);  // People is off
+  }
+  // The edge the People pass reads at: what faces.db's faces were found at.
+  constexpr std::uint32_t kEdge = 1024;
+  MV_TRY(rgb_frame img, still_of(path, kEdge));
+  MV_TRY(std::vector<face_in> found, model->analyze(img));
+  struct other {
+    std::string path;
+    std::vector<face_in> faces;
+  };
+  std::vector<other> others;
+  for (const std::string& c : candidates) {
+    if (c.empty() || c == path) continue;
+    auto frame = still_of(c, kEdge);
+    if (!frame) continue;  // a candidate that will not read is no donor
+    auto faces = model->analyze(*frame);
+    if (!faces) continue;
+    others.push_back({c, std::move(*faces)});
+  }
+  const float same = model->same_person();
+  auto cosine = [](const std::vector<float>& a, const std::vector<float>& b) {
+    double s = 0;
+    for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) s += static_cast<double>(a[i]) * b[i];
+    return static_cast<float>(s);
+  };
+  auto landmarks = [](json::writer& w, const face_in& f) {
+    w.key("lm").begin_array();
+    for (const float v : f.landmarks) w.number(v);
+    w.end_array();
+  };
+  json::writer w;
+  w.begin_object().key("faces").begin_array();
+  for (const face_in& f : found) {
+    std::int64_t person = 0;
+    {
+      std::lock_guard lock(models_m_);
+      if (faces_) person = faces_->nearest_person(f.emb);
+    }
+    struct donor {
+      const std::string* path;
+      const face_in* face;
+      float sim;
+    };
+    std::vector<donor> donors;
+    for (const other& o : others) {
+      const face_in* best = nullptr;
+      float best_sim = same;
+      for (const face_in& g : o.faces) {
+        const float s = cosine(f.emb, g.emb);
+        if (s >= best_sim) {
+          best_sim = s;
+          best = &g;
+        }
+      }
+      if (best) donors.push_back({&o.path, best, best_sim});
+    }
+    std::sort(donors.begin(), donors.end(), [](const donor& a, const donor& b) { return a.sim > b.sim; });
+    w.begin_object();
+    w.key("x").number(f.x).key("y").number(f.y).key("w").number(f.w).key("h").number(f.h);
+    landmarks(w, f);
+    w.key("person").integer(person);
+    w.key("donors").begin_array();
+    for (const donor& d : donors) {
+      w.begin_object().key("path").string(*d.path);
+      landmarks(w, *d.face);
+      w.key("sim").number(d.sim).end_object();
+    }
+    w.end_array().end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
 result<std::string> engine::tile_of(const std::string& path, std::int64_t ms) const {
   if (is_photos_key(path)) {
     // A Photos still, or a clip Photos only has in iCloud: the chrome draws the

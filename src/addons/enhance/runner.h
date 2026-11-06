@@ -15,9 +15,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 
+#include "addons/enhance/diffusion.h"
+#include "addons/enhance/remove.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/sound_job.h"
@@ -34,8 +37,11 @@ struct run_port {
     std::function<expected(std::span<const float> interleaved)> write;
     std::function<result<std::string>()> finish;  // the new file's path; destroyed unfinished, nothing is left
   };
-  // [job thread] A file's sound at `rate`, its own channels.
-  std::function<result<reader>(const std::string& path, std::uint32_t rate)> open_sound;
+  // [job thread] A file's sound at `rate`, its own channels. `keep`: the
+  // Video Editor's kept source ranges ((in, out) ns pairs; empty: all of it),
+  // the sound then on the edit's own timeline.
+  std::function<result<reader>(const std::string& path, std::uint32_t rate, std::span<const std::int64_t> keep)>
+      open_sound;
   // [job thread] The new file beside `source`.
   std::function<result<writer>(const std::string& source, std::uint32_t rate, std::uint32_t channels)> create;
   // [job thread] The kind's model, from its weights in `models_dir`.
@@ -47,7 +53,8 @@ struct run_port {
   struct picture_reader {
     std::uint32_t width = 0, height = 0;
     bool hdr = false;
-    std::int64_t total_frames = 0;  // an estimate
+    std::int64_t total_frames = 0;  // an estimate, of the whole clip
+    std::int64_t duration_ms = 0;   // of the whole clip
     std::function<result<bool>(std::vector<std::uint8_t>& rgb, std::int64_t& pts_us)> next;
   };
   struct clip_writer {
@@ -55,7 +62,8 @@ struct run_port {
     std::function<expected(std::span<const float> interleaved)> sound;
     std::function<result<std::string>()> finish;
   };
-  std::function<result<picture_reader>(const std::string& path)> open_frames;
+  // `keep` as open_sound's: the frames' times are then the edit's.
+  std::function<result<picture_reader>(const std::string& path, std::span<const std::int64_t> keep)> open_frames;
   // `sound_rate` 0: the source's own sound is copied.
   std::function<result<clip_writer>(const std::string& source, std::uint32_t width, std::uint32_t height,
                                     std::uint32_t sound_rate, std::uint32_t sound_channels)>
@@ -72,6 +80,18 @@ struct run_port {
   std::function<result<still>(const std::string& path)> open_still;
   // [job thread] The new photo beside `source`; its path.
   std::function<result<std::string>(const std::string& source, const still& pixels)> write_still;
+
+  // ---- Restyle (docs/plans/edit-adjust.md slice 5b) ----
+  // [job thread] The restyle model from its files in `models_dir`.
+  std::function<result<std::unique_ptr<restyle_model>>(const model_spec& spec, const std::string& models_dir)>
+      load_restyle;
+
+  // ---- Remove (docs/plans/edit-adjust.md slice 7) ----
+  // [job thread] The inpainting model from its files in `models_dir`.
+  std::function<result<std::unique_ptr<inpaint_filler>>(const model_spec& spec, const std::string& models_dir)>
+      load_inpaint;
+  // [any thread] The brush over the photo at `path` (u, v, r triples); empty none.
+  std::function<std::vector<float>(const std::string& path)> still_mask;
 };
 
 // The largest photo Enhance writes: 100 megapixels (a 4x of a 25 MP photo is
@@ -98,6 +118,8 @@ class job_runner final : public runner {
   void run_sound(job_request r, job_events events);
   void run_picture(job_request r, job_events events);
   void run_still(job_request r, job_events events);
+  void run_restyle(job_request r, job_events events);
+  void run_remove(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

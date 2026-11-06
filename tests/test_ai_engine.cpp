@@ -302,6 +302,7 @@ class fake_faces final : public mv::ai::face_analyzer {
     f.emb[tag == 11 ? 0 : 1] = 1.0f;
     f.emb[2] = 0.05f;
     mv::infer::l2_normalise(f.emb);
+    f.landmarks = {0.32f, 0.33f, 0.48f, 0.33f, 0.4f, 0.42f, 0.34f, 0.5f, 0.46f, 0.5f};
     out.push_back(std::move(f));
     return out;
   }
@@ -2702,6 +2703,41 @@ TEST_CASE("people: one face is enough in a small folder, not across a large libr
   auto solo = mv::json::parse(r.eng->people_json(utf8(r.photos() / "solo"), MV_AI_SCOPE_TREE));
   REQUIRE(solo);
   CHECK(solo->a.size() == 1);  // but his own small folder shows him
+}
+
+TEST_CASE("eyes: the same person's faces in the frames offered, with landmarks; nothing while People is off",
+          "[ai][engine][faces][eyes]") {
+  rig r;
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.file("ben_1.jpg");
+  r.file("red_nobody.jpg");
+  r.start();
+  const std::string target = utf8(r.photos() / "anna_1.jpg");
+  const std::vector<std::string> offered = {utf8(r.photos() / "anna_2.jpg"), utf8(r.photos() / "ben_1.jpg"),
+                                            utf8(r.photos() / "red_nobody.jpg"), target,
+                                            utf8(r.photos() / "missing.jpg")};
+  CHECK_FALSE(r.eng->eyes_json(target, offered));  // People is off: no face data is read
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  auto j = r.eng->eyes_json(target, offered);
+  REQUIRE(j);
+  auto doc = mv::json::parse(*j);
+  REQUIRE(doc);
+  const mv::json::value* faces = doc->find("faces");
+  REQUIRE(faces);
+  REQUIRE(faces->a.size() == 1);
+  const mv::json::value& f = faces->a[0];
+  REQUIRE(f.find("lm"));
+  CHECK(f.find("lm")->a.size() == 10);
+  CHECK(std::abs(f.find("lm")->a[0].d - 0.32) < 1e-3);
+  CHECK(f.integer("person").value_or(0) != 0);  // Anna's People cluster
+  const mv::json::value* donors = f.find("donors");
+  REQUIRE(donors);
+  REQUIRE(donors->a.size() == 1);  // anna_2 only: not Ben, not the empty frame, not itself, not the missing file
+  CHECK(donors->a[0].find("path")->s.find("anna_2.jpg") != std::string::npos);
 }
 
 TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leaves no vectors",
