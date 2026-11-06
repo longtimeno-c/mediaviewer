@@ -85,6 +85,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private MediaViewer.Shared.FakeInput _query = null!;
     private Border _similarChip = null!;
     private TextBlock _similarText = null!;
+    private Button _removeSimilar = null!;
     private readonly ToggleButton[] _scopeChips = new ToggleButton[2];
     private readonly ToggleButton[] _kindChips = new ToggleButton[5];
     private readonly ToggleButton[] _findChips = new ToggleButton[4];
@@ -212,6 +213,7 @@ internal sealed class SearchWindow : Window, IDisposable
                       _look.LiveTint(AddonColour.Body, 36), _look.LiveTint(AddonColour.Body, 56), _look[AddonColour.Title]);
         AutomationProperties.SetName(removeSimilar, "Remove find similar");
         removeSimilar.Click += (_, _) => ClearSimilar(runQuery: true);
+        _removeSimilar = removeSimilar;
         var chipRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         chipRow.Children.Add(_similarText);
         chipRow.Children.Add(removeSimilar);
@@ -935,8 +937,10 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         bool on = _similar is not null;
         _similarChip.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-        _similarText.Text = on ? $"Similar to {_similar!.Value.Name}" +
-                                 (_similar.Value.PtsMs >= 0 ? $" at {Look.Moment(_similar.Value.PtsMs)}" : "") : "";
+        bool person = on && _similar!.Value.Person;
+        _similarText.Text = on ? (person ? "This person" : $"Similar to {_similar!.Value.Name}" +
+                                 (_similar!.Value.PtsMs >= 0 ? $" at {Look.Moment(_similar.Value.PtsMs)}" : "")) : "";
+        AutomationProperties.SetName(_removeSimilar, person ? "Remove this person" : "Remove find similar");
         _query.PlaceholderText = on
             ? "Or describe something else"
             : "Describe a photo or a moment, or name someone";
@@ -1065,8 +1069,11 @@ internal sealed class SearchWindow : Window, IDisposable
         ulong id;
         try
         {
+            // search_this_person and search_similar are [no-block]: each only
+            // queues the search, whose answer arrives through OnSearchDone.
             id = _similar is AiChrome.SimilarTo s
-                ? _api.SearchSimilar(s.Path, s.PtsMs, ScopeDir, _scope, SearchKinds)
+                ? s.Person ? _api.SearchThisPerson(s.Path, s.PtsMs)
+                           : _api.SearchSimilar(s.Path, s.PtsMs, ScopeDir, _scope, SearchKinds)
                 : _api.SearchText(q, ScopeDir, _scope, SearchKinds);
         }
         catch (MediaViewerException)
@@ -1262,6 +1269,12 @@ internal sealed class SearchWindow : Window, IDisposable
         if (_startedIndexing && _similar is null)
         {
             ShowIndexing();
+            return;
+        }
+        if (_similar is AiChrome.SimilarTo { Person: true })
+        {
+            // search_this_person answers 0 when no face is found in the picture.
+            ShowEmpty("No face found here.", "Try a photo or a moment where a face is clear.", icon: GlyphSearch);
             return;
         }
         if (_scope != MvAiScope.All && _chrome.Folder is not null && _chrome.Coverage == 0)
@@ -1519,7 +1532,9 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         if (_tiles.Count == 0 || _search == 0) return;
         int select = Math.Clamp(_sel, 0, _tiles.Count - 1);
-        string title = _similar is AiChrome.SimilarTo s ? $"Similar to {s.Name}" : _query.Text.Trim();
+        string title = _similar is AiChrome.SimilarTo s
+            ? s.Person ? "This person" : $"Similar to {s.Name}"
+            : _query.Text.Trim();
         if (title.Length == 0) title = "Search results";
         _chrome.SetActiveSearch(_search, _tiles.Where(t => t.Video).Select(t => t.Path));
         var paths = _tiles.Select(t => t.Path).ToList();

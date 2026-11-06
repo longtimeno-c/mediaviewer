@@ -411,6 +411,11 @@ enum class command_id : std::uint16_t {
   adjust_pick,
   // Slice 6: Open closed eyes (a new file beside the still). Island-only.
   adjust_open_eyes,
+  // docs/design/17 "Reviewing a person" (2026-11-02): Ctrl+Shift+P, beside
+  // Ctrl+Shift+F's "Find similar": the photos and moments of the person whose
+  // face is largest in the still or paused frame on screen. Appended; only
+  // while the AI pack is loaded.
+  search_this_person,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

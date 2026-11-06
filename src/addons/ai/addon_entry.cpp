@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <new>
 #include <string>
@@ -60,6 +61,35 @@ mv_status write_out(const std::string& text, char* out, uint32_t cap, uint32_t* 
 }
 
 engine& eng(void* ctx) { return *static_cast<addon_state*>(ctx)->eng; }
+
+// A JSON answer too large for the caller's buffer is asked for again at once
+// with `needed` (the chromes' buffer rule): the second call takes the text
+// the first one made rather than computing it again (a large person's review
+// is ~0.1 s). One per thread; `key` names the call and its arguments.
+mv_status write_out_once(const std::string& key, const std::function<std::string()>& make, char* out,
+                         uint32_t cap, uint32_t* needed) {
+  thread_local std::string last_key, last_text;
+  std::string text;
+  if (!last_key.empty() && last_key == key) {
+    text = std::move(last_text);
+    last_key.clear();
+  } else {
+    text = make();
+  }
+  const mv_status s = write_out(text, out, cap, needed);
+  if (s == MV_ERR_INVALID_ARG && !text.empty()) {
+    last_key = key;
+    last_text = std::move(text);
+  }
+  return s;
+}
+
+std::vector<std::int64_t> ids_of(const uint64_t* p, uint32_t n) {
+  std::vector<std::int64_t> out;
+  out.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) out.push_back(static_cast<std::int64_t>(p[i]));
+  return out;
+}
 std::string str(const char* s) { return s ? std::string(s) : std::string(); }
 
 mv_status MV_CALL t_status(void* ctx, mv_ai_status* out) {
@@ -274,6 +304,123 @@ mv_status MV_CALL t_people_dedupe(void* ctx, uint32_t* out_merged, uint32_t* out
     if (out_merged) *out_merged = r->merged;
     if (out_moved) *out_moved = r->moved;
     return MV_OK;
+  });
+}
+mv_status MV_CALL t_faces_assign(void* ctx, const uint64_t* faces, uint32_t count, uint64_t person,
+                                 uint32_t flags) {
+  return guard([&] {
+    if (!faces || count == 0) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).faces_assign(ids_of(faces, count), static_cast<std::int64_t>(person),
+                                   (flags & MV_AI_ASSIGN_PIN) != 0, (flags & MV_AI_ASSIGN_UNDO) != 0);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_faces_pin(void* ctx, const uint64_t* faces, uint32_t count, uint32_t pinned) {
+  return guard([&] {
+    if (!faces || count == 0) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).faces_pin(ids_of(faces, count), pinned != 0);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_faces_reject_json(void* ctx, const uint64_t* faces, uint32_t count, char* out, uint32_t cap,
+                                      uint32_t* needed) {
+  return guard([&] {
+    if (!faces || count == 0) return MV_ERR_INVALID_ARG;
+    // A write: done once, its answer kept for the retry with a larger buffer.
+    std::string key = "reject";
+    for (uint32_t i = 0; i < count; ++i) key += ":" + std::to_string(faces[i]);
+    mv_status failed = MV_OK;
+    const mv_status s = write_out_once(key, [&] {
+      auto r = eng(ctx).faces_reject_json(ids_of(faces, count));
+      if (!r) {
+        failed = to_mv(r.error());
+        return std::string();
+      }
+      return std::move(r.value());
+    }, out, cap, needed);
+    return failed != MV_OK ? failed : s;
+  });
+}
+mv_status MV_CALL t_person_rename_cover(void* ctx, uint64_t person, const char* name, uint64_t cover) {
+  return guard([&] {
+    if (!name) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).person_rename(static_cast<std::int64_t>(person), name, static_cast<std::int64_t>(cover));
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_person_merge_covers(void* ctx, uint64_t into, uint64_t from, uint64_t cover_into,
+                                        uint64_t cover_from, uint64_t* out_undo) {
+  return guard([&] {
+    auto r = eng(ctx).person_merge(static_cast<std::int64_t>(into), static_cast<std::int64_t>(from),
+                                   static_cast<std::int64_t>(cover_into), static_cast<std::int64_t>(cover_from));
+    if (!r) return to_mv(r.error());
+    if (out_undo) *out_undo = static_cast<uint64_t>(*r);
+    return MV_OK;
+  });
+}
+mv_status MV_CALL t_person_merge_undo(void* ctx, uint64_t token) {
+  return guard([&] {
+    auto r = eng(ctx).person_merge_undo(static_cast<std::int64_t>(token));
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_person_review_json(void* ctx, uint64_t person, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    return write_out_once("review:" + std::to_string(person),
+                          [&] { return eng(ctx).person_review_json(static_cast<std::int64_t>(person)); }, out, cap,
+                          needed);
+  });
+}
+mv_status MV_CALL t_unknown_faces_json(void* ctx, uint32_t offset, uint32_t limit, char* out, uint32_t cap,
+                                       uint32_t* needed) {
+  return guard([&] {
+    return write_out_once("unknown:" + std::to_string(offset) + ":" + std::to_string(limit),
+                          [&] { return eng(ctx).unknown_faces_json(offset, limit); }, out, cap, needed);
+  });
+}
+mv_status MV_CALL t_person_suggest_json(void* ctx, uint64_t person, uint32_t limit, char* out, uint32_t cap,
+                                        uint32_t* needed) {
+  return guard([&] {
+    return write_out_once("suggest:" + std::to_string(person) + ":" + std::to_string(limit),
+                          [&] { return eng(ctx).person_suggest_json(static_cast<std::int64_t>(person), limit); },
+                          out, cap, needed);
+  });
+}
+mv_status MV_CALL t_person_refine_json(void* ctx, uint64_t person, uint32_t flags, char* out, uint32_t cap,
+                                       uint32_t* needed) {
+  return guard([&] {
+    const bool dry = (flags & MV_AI_DRY_RUN) != 0;
+    mv_status failed = MV_OK;
+    const mv_status s = write_out_once(
+        std::string(dry ? "refine-look:" : "refine:") + std::to_string(person),
+        [&] {
+          auto r = eng(ctx).person_refine_json(static_cast<std::int64_t>(person), dry);
+          if (!r) {
+            failed = to_mv(r.error());
+            return std::string();
+          }
+          return std::move(r.value());
+        },
+        out, cap, needed);
+    return failed != MV_OK ? failed : s;
+  });
+}
+mv_status MV_CALL t_people_dedupe_json(void* ctx, uint32_t flags, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    const bool dry = (flags & MV_AI_DRY_RUN) != 0;
+    mv_status failed = MV_OK;
+    const mv_status s = write_out_once(
+        dry ? "dedupe-look" : "dedupe",
+        [&] {
+          auto r = eng(ctx).people_dedupe_json(dry);
+          if (!r) {
+            failed = to_mv(r.error());
+            return std::string();
+          }
+          return std::move(r.value());
+        },
+        out, cap, needed);
+    return failed != MV_OK ? failed : s;
   });
 }
 mv_status MV_CALL t_people_reanalyse(void* ctx) {
@@ -535,6 +682,17 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.each_location = &t_each_location;
     a.root_set_documents = &t_root_documents;  // #354
     a.eyes_json = &t_eyes_json;                // edit-adjust slice 6
+    a.faces_assign = &t_faces_assign;          // 2026-11-02, correcting people
+    a.faces_pin = &t_faces_pin;
+    a.faces_reject_json = &t_faces_reject_json;
+    a.person_rename_cover = &t_person_rename_cover;
+    a.person_merge_covers = &t_person_merge_covers;
+    a.person_merge_undo = &t_person_merge_undo;
+    a.person_review_json = &t_person_review_json;
+    a.unknown_faces_json = &t_unknown_faces_json;
+    a.person_suggest_json = &t_person_suggest_json;
+    a.person_refine_json = &t_person_refine_json;  // 2026-11-02, in detail
+    a.people_dedupe_json = &t_people_dedupe_json;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

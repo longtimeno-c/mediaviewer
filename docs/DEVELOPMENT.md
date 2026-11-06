@@ -898,9 +898,17 @@ person's fragments and names everyone with 3+ photos, and files the remaining 40
 LFW has only clear faces, so check a clustering or People-speed change on a real library too:
 copy its `faces.db` (`sqlite3 "file:<faces.db>?mode=ro" ".backup <copy>"`; opening migrates, so
 never the live one), then `MV_FACES_DB=<copy> mv_ai_tests "[.people-settle]"` (the settle, with
-people listed before and after) or `"[.people-api]"` (what each People read the chrome makes
-costs, then the copy's unfiled faces offered again through `add`: ms per face and where they
-went; it writes, so use a fresh copy per run). Delete the copy after: it is face data.
+people listed before and after, and the counts that must be 0: faces filed where they were
+rejected, rejections of what is gone, two people of one frame in one person) or `"[.people-api]"`
+(what each People read the chrome makes costs, the sheet's review, suggestions and unknown faces
+included, then the copy's unfiled faces offered again through `add`: ms per face and where they
+went; it writes, so use a fresh copy per run) or `"[.people-heldout]"` (a tenth of the named
+people's clear faces taken out and filed again: how many come back to their person;
+`MV_HELDOUT_WEAK=1` the weak ones, `MV_HELDOUT_SETTLE=1` then settles), `"[.people-unknown-order]"`
+(the unknown-faces queue's right and wrong one-click suggestions on held-out faces) or
+`"[.people-why]"` with `MV_PEOPLE_NAME` (a named person's settle verdicts, tallied). Compare
+with the base commit's `mv_ai_tests`
+built in its own worktree, runs alternated. Delete the copy after: it is face data.
 
 The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;

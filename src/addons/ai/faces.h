@@ -10,7 +10,12 @@
 //   meta(key, value)                 -- 'rerun': a re-run is under way
 //   people(id, name, created_at)
 //   rejected(face_id, person_id)     -- "not this person": never rejoins it
+//   rejected_at(asset_id, pts_ms, x, y, w, h, person_id)
+//                                    -- a rejection whose face was forgotten
+//                                       (its file changed): it rejoins the face
+//                                       found again in that box
 //   no_merge(a, b)                   -- a split: never merged back automatically
+//   merge_log(token, ...)            -- the user's merges this session, for undo
 //   scanned(asset_id, spec)          -- assets whose faces are done
 //
 // Boxes are fractions of the image (0..1), so a result can outline a face on
@@ -108,7 +113,111 @@ struct refine_stats {
   std::uint32_t evicted = 0, moved = 0, admitted = 0, regrouped = 0, groups = 0;
   std::uint32_t skipped = 0;  // the user (or a scan) changed the face meanwhile
   std::vector<std::int64_t> recheck_assets;  // stills worth re-analysing (flip-averaged)
+  std::vector<refine_move> applied;          // what was done, `to` the person it went to (0 nobody)
   [[nodiscard]] bool changed() const noexcept { return evicted + moved + admitted + regrouped > 0; }
+};
+
+// A face of a person, as the person's sheet reviews it (docs/design/17 "Reviewing
+// a person"): how well the person vouches for it, and who else might.
+struct face_review {
+  face_row face;
+  float quality = -1;     // < 0 unknown
+  float support = -1;     // by its own person's exemplars (-1: no evidence)
+  float rival = -1;       // the best other person's support (-1: nobody near)
+  std::int64_t rival_person = 0;
+  std::string rival_name;
+  bool doubtful_pin = false;  // pinned, but agrees with none of the person's other pins
+  bool check = false;         // worth a look: not pinned, and support is low or contested
+};
+
+// Where "not this person" sent faces (faces_db::reject).
+struct reject_result {
+  std::uint32_t unassigned = 0;
+  std::map<std::int64_t, std::uint32_t> to;  // person -> faces
+  std::uint32_t spread = 0;                   // frames of the same clip that went with them
+  // Every face that left, the ones asked about and the frames that went with
+  // them: (face, person it left, person it went to or 0, was pinned). An
+  // Undo puts each back.
+  struct moved {
+    std::int64_t face = 0, from = 0, to = 0;
+    bool pinned = false;
+  };
+  std::vector<moved> faces;
+};
+
+// An unassigned face worth a name, with the person it most resembles.
+struct loose_face {
+  face_row face;
+  float quality = -1;
+  std::int64_t suggest = 0;  // 0: nobody near
+  float score = -1;
+};
+
+// "Might also be X": unassigned faces, and unnamed people, that resemble X.
+struct person_suggestions {
+  std::vector<std::pair<face_row, float>> faces;
+  std::vector<std::pair<std::int64_t, float>> people;  // unnamed persons
+};
+
+// review_begin's copy: the person's faces and, for every other person, the
+// average (and the exemplars of those the user confirmed, where cached).
+struct review_snapshot {
+  std::uint32_t dim = 0;
+  refine_params rules;
+  float same_person = 0.3f;
+  std::int64_t person = 0;
+  bool named = false;
+  std::vector<face_row> rows;
+  std::vector<float> quality;           // parallel to rows; < 0 unknown
+  std::vector<refine_face> faces;       // those with a current vector (row = index into emb)
+  std::vector<std::size_t> face_row_of; // faces[i] is rows[face_row_of[i]]
+  std::vector<float> emb;
+  struct other {
+    std::int64_t id = 0;
+    std::string name;
+    std::vector<float> sum;  // unnormalised, n members
+    std::uint32_t n = 0;
+    person_proto proto;      // exemplars, when cached for a confirmed person
+  };
+  std::vector<other> others;
+  std::set<std::int64_t> frame_people;  // persons sharing a frame with this one (never its rivals)
+};
+
+struct suggest_snapshot {
+  std::uint32_t dim = 0;
+  refine_params rules;
+  float same_person = 0.3f;
+  std::int64_t person = 0;
+  std::vector<refine_face> own;  // the person's good faces (row = index into own_emb)
+  std::vector<float> own_emb;
+  std::vector<face_row> loose;   // unassigned usable faces it may claim
+  std::vector<float> loose_emb;
+  struct unnamed {
+    std::int64_t id = 0;
+    std::vector<float> sum;
+    std::uint32_t n = 0;
+  };
+  std::vector<unnamed> people;   // unnamed, unpinned people it may be, not kept apart from it
+};
+
+// loose_begin's copy: every unknown face clear enough to name, what keeps each
+// from someone (rejections, a frame together), and every person's average and
+// cached exemplars (with negatives).
+struct loose_snapshot {
+  std::uint32_t dim = 0;
+  refine_params rules;
+  float same_person = 0.3f;
+  std::vector<loose_face> rows;
+  std::vector<float> emb;                   // rows * dim
+  std::vector<std::vector<std::int64_t>> no;  // per row: persons it may not be
+  struct other {
+    std::int64_t id = 0;
+    std::vector<float> mean;  // sum / n
+    person_proto proto;       // cached exemplars and negatives, when there are
+    bool named = false;
+  };
+  std::vector<other> others;
+  std::uint64_t generation = 0;
 };
 
 struct person_row {
@@ -162,18 +271,61 @@ class faces_db {
                                                const std::set<std::int64_t>* assets = nullptr);
   [[nodiscard]] std::vector<face_row> faces_of(std::int64_t person);
   [[nodiscard]] result<face_row> face(std::int64_t id);
-  [[nodiscard]] expected rename(std::int64_t person, const std::string& name);
-  [[nodiscard]] expected merge(std::int64_t into, std::int64_t from);
+  // `cover` (0: the grid's cover order) is the face the user looked at: it is
+  // pinned, unless it is not this person's or is too poor to be an anchor.
+  [[nodiscard]] expected rename(std::int64_t person, const std::string& name, std::int64_t cover = 0);
+  // The user's merge; returns a token undo_merge takes (0: nothing to undo).
+  [[nodiscard]] result<std::int64_t> merge(std::int64_t into, std::int64_t from, std::int64_t cover_into = 0,
+                                           std::int64_t cover_from = 0);
+  // Puts the merge back: the faces that are still in `into` return to the
+  // person they came from, with its id, name, pins and corrections.
+  [[nodiscard]] expected undo_merge(std::int64_t token);
   // The duplicate pass (docs/design/17 "Merge duplicates"): `from` into `into`, as
   // merge, unless a split kept them apart (no_merge) or a face of one was
   // rejected from the other. Pins nothing: the user did not say so. False
   // when the pair is left alone.
-  [[nodiscard]] result<bool> merge_auto(std::int64_t into, std::int64_t from);
-  // Pairs (min, max) never merged automatically: a split kept them apart, or
-  // a face of one was rejected from the other. Sorted.
+  // `undo` (may be null): a token undo_merge takes.
+  [[nodiscard]] result<bool> merge_auto(std::int64_t into, std::int64_t from, std::int64_t* undo = nullptr);
+  // Pairs (min, max) never merged automatically: a split kept them apart, a
+  // face of one was rejected from the other, or both have a face in one
+  // photo or frame. Sorted.
   [[nodiscard]] std::vector<std::pair<std::int64_t, std::int64_t>> merge_blocks();
+  // "Not this person": each face leaves its person for good, with the frames
+  // of the same clip in that person that are the same face (a track), and is
+  // filed under another existing person it clearly matches, else nobody.
+  [[nodiscard]] result<reject_result> reject(std::span<const std::int64_t> faces);
   [[nodiscard]] expected reject(std::int64_t face);
   [[nodiscard]] result<std::int64_t> split(std::span<const std::int64_t> faces);
+  // "Move to": these faces are `person` (it must exist): they leave where they
+  // were (rejected from it), any rejection from `person` is withdrawn, and
+  // with `pin` they become the user's (anchors the refinement never moves).
+  // `undo`: the faces are put back where they were before the user's last
+  // action, so nothing is recorded against where they are now, and person 0
+  // leaves them unassigned.
+  [[nodiscard]] expected assign(std::span<const std::int64_t> faces, std::int64_t person, bool pin,
+                                bool undo = false);
+  // "Yes, this is X" (pin) / "Unpin": a face's place is the user's, or not.
+  [[nodiscard]] expected set_pinned(std::span<const std::int64_t> faces, bool pinned);
+  // Every face of a person with its review (face_review), doubtful first:
+  // review_begin reads the vectors under the lock, review_finish scores them
+  // with none held (a caller holding its own lock releases it in between).
+  [[nodiscard]] review_snapshot review_begin(std::int64_t person);
+  [[nodiscard]] static std::vector<face_review> review_finish(const review_snapshot& snap);
+  [[nodiscard]] std::vector<face_review> review(std::int64_t person) { return review_finish(review_begin(person)); }
+  // Unassigned usable faces, clearest first, each with its nearest person.
+  [[nodiscard]] std::vector<loose_face> loose_faces(std::uint32_t offset, std::uint32_t limit);
+  // The unknown-faces queue in full, in the order the user answers it best:
+  // suggested for a named person first (best score first), then for anyone,
+  // then clearest (docs/design/17 "Reviewing a person"). loose_begin under the
+  // lock, loose_finish with none held.
+  [[nodiscard]] loose_snapshot loose_begin();
+  [[nodiscard]] static std::vector<loose_face> loose_finish(const loose_snapshot& snap);
+  // Changes whenever a person's faces or the unknown faces change.
+  [[nodiscard]] std::uint64_t generation();
+  [[nodiscard]] std::uint64_t loose_count();
+  // "Might also be X": the same split as review.
+  [[nodiscard]] suggest_snapshot suggest_begin(std::int64_t person);
+  [[nodiscard]] static person_suggestions suggest_finish(const suggest_snapshot& snap, std::uint32_t limit);
   // Named people whose name matches (case-insensitive, whole name).
   [[nodiscard]] std::vector<std::int64_t> people_named(const std::string& name);
   // Every named person, (id, name): the query language's names (query.h).
@@ -181,9 +333,11 @@ class faces_db {
   // The person nearest a face vector, if within `same_person`: the online
   // matcher's scorer (exemplars over a shortlist), without the ambiguity rule.
   [[nodiscard]] std::int64_t nearest_person(std::span<const float> emb);
-  // The idle pass: merges clusters (not two named ones) whose faces resemble
-  // each other by `merge_at` on average (pairwise cosine; unless a split said
-  // not to). Returns how many merged.
+  // The idle pass: merges clusters whose faces resemble each other by
+  // `merge_at` on average (pairwise cosine), unless merge_blocks keeps them
+  // apart. Never two the user confirmed (a name or a pinned face), even by
+  // way of a third; a cluster joins a confirmed person only when that
+  // person's exemplars do not call it a stranger. Returns how many merged.
   [[nodiscard]] std::size_t consolidate(float merge_at);
 
   // Refinement (docs/design/17 "People refinement"), in three steps so the compute
@@ -227,7 +381,13 @@ class faces_db {
   bool exec(const char* sql);
   bool migrate();
   void load_locked();
-  std::int64_t assign_locked(std::span<const float> emb, float quality, const std::set<std::int64_t>& rejected);
+  std::int64_t assign_locked(std::span<const float> emb, float quality, const std::set<std::int64_t>& rejected,
+                             bool may_start = true);
+  // A weak clip frame's track (refine_params::track_ms): the one person the
+  // clear frames near it, that it resembles, are in; 0 none or several.
+  std::int64_t track_locked(std::int64_t asset, std::int64_t pts_ms, std::span<const float> emb,
+                            const std::set<std::int64_t>& no);
+  void join_locked(std::int64_t person, std::span<const float> emb);
   struct match {
     std::int64_t best = 0;
     float best_score = -2.0f, second = -2.0f;
@@ -236,7 +396,17 @@ class faces_db {
   const person_proto* exemplars_locked(std::int64_t person);
   void recompute_locked(std::int64_t person);
   expected merge_locked(std::int64_t into, std::int64_t from);
-  void pin_cover_locked(std::int64_t person);
+  result<std::int64_t> merge_logged_locked(std::int64_t into, std::int64_t from, std::int64_t cover_into,
+                                           std::int64_t cover_from, bool pin);
+  void remap_corrections_locked(std::int64_t into, std::int64_t from);
+  void drop_person_locked(std::int64_t person);
+  std::set<std::pair<std::int64_t, std::int64_t>> blocks_locked();
+  bool share_frame_locked(std::int64_t a, std::int64_t b);
+  // Two faces of one frame this alike are one face seen twice (a mirror, a
+  // screen): not two people (refine_people's rule).
+  [[nodiscard]] float twice_locked() const noexcept { return same_ + 2 * rules_.margin; }
+  void keep_rejections_locked(const char* where_faces, std::int64_t asset);
+  void pin_cover_locked(std::int64_t person, std::int64_t cover = 0);
   void touch_locked(std::int64_t person);
   void set_rerun_locked(bool on);
   void rules_current_locked();

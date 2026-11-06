@@ -18,6 +18,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <sqlite3.h>
@@ -671,8 +672,16 @@ TEST_CASE("dedupe through faces.db: merge_auto pins nothing and leaves a split p
   auto people = (*db)->people(1);
   REQUIRE(people.size() == 2);
   const std::int64_t first = people[0].id, second = people[1].id;
-  // merge_auto merges what it is told (the engine decides who) and pins nothing.
-  auto merged = (*db)->merge_auto(first, second);
+  // merge_auto merges what it is told (the engine decides who) and pins
+  // nothing; its token puts it back (Merge duplicates' Undo).
+  std::int64_t token = 0;
+  auto merged = (*db)->merge_auto(first, second, &token);
+  REQUIRE(merged);
+  CHECK(merged.value());
+  CHECK(token > 0);
+  REQUIRE((*db)->undo_merge(token));
+  CHECK((*db)->people(1).size() == 2);
+  merged = (*db)->merge_auto(first, second);
   REQUIRE(merged);
   CHECK(merged.value());
   people = (*db)->people(1);
@@ -791,7 +800,8 @@ TEST_CASE("faces.db: new faces are matched against a person's exemplars, so corr
   CHECK((*db)->people(1).size() == 1);
 }
 
-TEST_CASE("faces.db: the idle merge looks again only at people who changed", "[ai][faces][refine]") {
+TEST_CASE("faces.db: the idle merge looks again only at people who changed; never two of the user's",
+          "[ai][faces][refine]") {
   const std::string path = temp_db("consolidate.db");
   world w;
   const auto anna = w.direction();
@@ -809,16 +819,20 @@ TEST_CASE("faces.db: the idle merge looks again only at people who changed", "[a
   REQUIRE((*db)->rename(people[1].id, "Ann"));
   CHECK((*db)->consolidate(0.3f) == 0);  // two names: never merged
   CHECK((*db)->consolidate(0.3f) == 0);  // nothing changed: nothing looked at
-  // A name taken away makes that person new to the merge.
+  // A name taken away: her pinned cover still says the user looked at her.
   REQUIRE((*db)->rename(people[1].id, ""));
+  CHECK((*db)->consolidate(0.3f) == 0);
+  // Two more faces, each its own person, untouched: looked at against
+  // everyone, they merge with each other. (At this strict same_person the
+  // user's two call them strangers, so they stay out of those.)
+  for (int i = 0; i < 2; ++i) {
+    const mv::ai::face_in f = face_in_of(w, anna, 0.9f, 0.1f);
+    REQUIRE((*db)->add(102 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  CHECK((*db)->people(1).size() == 4);
   CHECK((*db)->consolidate(0.3f) == 1);
-  CHECK((*db)->people(1).size() == 1);
-  // A third face, its own person, is looked at against everyone.
-  const mv::ai::face_in f = face_in_of(w, anna, 0.9f, 0.1f);
-  REQUIRE((*db)->add(102, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
-  CHECK((*db)->people(1).size() == 2);
-  CHECK((*db)->consolidate(0.3f) == 1);
-  CHECK((*db)->people(1).size() == 1);
+  CHECK((*db)->people(1).size() == 3);
+  CHECK((*db)->consolidate(0.3f) == 0);
 }
 
 TEST_CASE("faces.db: people filed under older rules are settled again, once", "[ai][faces][refine]") {
@@ -945,7 +959,8 @@ TEST_CASE("a new face model inherits the user's people through a re-run", "[ai][
   }
   for (int i = 0; i < 3; ++i) {
     std::vector<mv::ai::face_in> found{face_in_of(w, ben_new, 0.85f, 0.1f)};
-    if (i == 0) found.push_back(face_in_of(w, ben_new, 0.9f, 0.6f));  // a second face, new here
+    // A second face, new here: someone who resembles Ben, in a photo with him.
+    if (i == 0) found.push_back(face_in_of(w, world::mix(ben_new, w.direction(), 0.45f), 0.9f, 0.6f));
     REQUIRE((*db)->add(200 + i, "b", -1, found));
     REQUIRE((*db)->mark_scanned(200 + i, "new/2"));
   }
@@ -978,8 +993,11 @@ TEST_CASE("a new face model inherits the user's people through a re-run", "[ai][
   CHECK(people[0].faces == 6);
   CHECK(people[0].cover.pinned);
   CHECK(people[1].name.empty());
-  CHECK(people[1].faces == 3);  // four faces, in three photos (200 has two)
-  CHECK((*db)->unassigned_count() == 0);
+  CHECK(people[1].faces == 3);  // three photos
+  // 200's second face is in a photo with Ben: someone else, never him.
+  std::size_t in_200 = 0;
+  for (const auto& f : (*db)->faces_of(people[1].id)) in_200 += f.asset == 200 ? 1 : 0;
+  CHECK(in_200 == 1);
 
   // Reopening with the same model: nothing more to re-run.
   db->reset();
@@ -1026,6 +1044,461 @@ TEST_CASE("re-analysing with the same model keeps every person and correction", 
   CHECK(people[0].faces == 4);
   CHECK(people[1].faces == 4);
   CHECK(((people[0].name == "Anna" && people[1].name == "Ben") || (people[0].name == "Ben" && people[1].name == "Anna")));
+}
+
+// ---- corrections that hold, and what a frame says (2026-11-02) ------------------------------
+
+TEST_CASE("refine: a lone pin another person explains is no anchor; a lone pin nobody explains still is",
+          "[ai][faces][refine]") {
+  world w;
+  const auto tristan = w.direction();
+  const auto lookalike = w.direction();
+  w.named = {1};
+  // Tristan, three pins that agree, and twelve faces of his.
+  for (int i = 0; i < 3; ++i) w.face(tristan, 1, 0.075f, 0.8f, true);
+  for (int i = 0; i < 12; ++i) w.face(tristan, 1);
+  // A merge pinned a lookalike's cover into him, and brought six of its faces.
+  const std::int64_t wrong_pin = w.face(lookalike, 1, 0.075f, 0.8f, true);
+  std::vector<std::int64_t> brought;
+  for (int i = 0; i < 6; ++i) brought.push_back(w.face(lookalike, 1));
+  // The lookalike is somebody: an unnamed person of eight faces.
+  for (int i = 0; i < 8; ++i) w.face(lookalike, 2);
+  const refine_output out = w.run();
+  CHECK(std::find(out.distrusted.begin(), out.distrusted.end(), wrong_pin) != out.distrusted.end());
+  CHECK(person_after(out, w, wrong_pin) == 1);  // pinned: never moved, only no longer believed
+  for (std::int64_t f : brought) CHECK(person_after(out, w, f) == 2);
+
+  // The same shape with no one to explain it: a side-on cover the user
+  // merged in on purpose keeps anchoring its faces.
+  world v;
+  const auto front = v.direction();
+  const auto side = v.direction();
+  v.named = {1};
+  for (int i = 0; i < 3; ++i) v.face(front, 1, 0.075f, 0.8f, true);
+  for (int i = 0; i < 12; ++i) v.face(front, 1);
+  const std::int64_t side_pin = v.face(side, 1, 0.075f, 0.8f, true);
+  std::vector<std::int64_t> sides;
+  for (int i = 0; i < 6; ++i) sides.push_back(v.face(side, 1));
+  const refine_output kept = v.run();
+  CHECK(kept.distrusted.empty());
+  CHECK(person_after(kept, v, side_pin) == 1);
+  for (std::int64_t f : sides) CHECK(person_after(kept, v, f) == 1);
+}
+
+TEST_CASE("refine: two faces of one frame are two people", "[ai][faces][refine]") {
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  const auto lookalike = world::mix(anna, w.direction(), 0.45f);
+  std::int64_t asset = 1;
+  const auto still = [&](const std::vector<float>& base, std::int64_t person, float noise = 0.075f) {
+    const std::int64_t id = w.face(base, person, noise);
+    w.at(id).asset = asset++;
+    return id;
+  };
+  for (int i = 0; i < 8; ++i) still(anna, 1);
+  for (int i = 0; i < 8; ++i) still(ben, 2);
+  // One photo, Anna and her lookalike, both filed under Anna: the better
+  // supported stays, the other leaves.
+  const std::int64_t real = w.face(anna, 1);
+  const std::int64_t twin = w.face(lookalike, 1);
+  w.at(real).asset = w.at(twin).asset = 500;
+  // One photo of Ben with a stranger who resembles Ben, the stranger unassigned:
+  // Ben is in the photo already, so the stranger never joins him.
+  const std::int64_t with_ben = w.face(ben, 2);
+  const std::int64_t near_ben = w.face(world::mix(ben, w.direction(), 0.45f), 0);
+  w.at(with_ben).asset = w.at(near_ben).asset = 501;
+  // Two clear unassigned faces of one frame, alike: never one new person.
+  const auto stranger = w.direction();
+  const std::int64_t s1 = w.face(stranger, 0);
+  const std::int64_t s2 = w.face(stranger, 0);
+  w.at(s1).asset = w.at(s2).asset = 502;
+  const refine_output out = w.run();
+  CHECK(person_after(out, w, real) == 1);
+  CHECK(person_after(out, w, twin) != 1);
+  CHECK(person_after(out, w, with_ben) == 2);
+  CHECK(person_after(out, w, near_ben) != 2);
+  const std::int64_t g1 = person_after(out, w, s1), g2 = person_after(out, w, s2);
+  CHECK((g1 == 0 || g1 != g2));
+}
+
+TEST_CASE("refine: a clip's own frames vouch for a face only when nothing else can", "[ai][faces][refine]") {
+  world w;
+  const auto boo = w.direction();
+  const auto other = w.direction();
+  // Boo: twelve photos. Someone else: eight photos of their own.
+  for (int i = 0; i < 12; ++i) w.at(w.face(boo, 1)).asset = 100 + i;
+  for (int i = 0; i < 8; ++i) w.at(w.face(other, 2)).asset = 200 + i;
+  // One clip of the other person, eight frames, filed under Boo: the frames
+  // vouch for each other, but Boo's photos do not, and theirs do.
+  std::vector<std::int64_t> clip;
+  for (int i = 0; i < 8; ++i) {
+    const std::int64_t id = w.face(other, 1);
+    w.at(id).asset = 300;
+    w.at(id).pts_ms = 1000 * i;
+    clip.push_back(id);
+  }
+  // A clip of a third person, in no photo: its frames are all it has.
+  const auto third = w.direction();
+  std::vector<std::int64_t> own_clip;
+  for (int i = 0; i < 6; ++i) {
+    const std::int64_t id = w.face(third, 3);
+    w.at(id).asset = 400;
+    w.at(id).pts_ms = 1000 * i;
+    own_clip.push_back(id);
+  }
+  const refine_output out = w.run();
+  for (std::int64_t f : clip) CHECK(person_after(out, w, f) == 2);
+  for (std::int64_t f : own_clip) CHECK(person_after(out, w, f) == 3);
+}
+
+TEST_CASE("refine: a weak clip frame follows the clear frames of its track", "[ai][faces][refine]") {
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  for (int i = 0; i < 8; ++i) w.at(w.face(anna, 1)).asset = 100 + i;
+  for (int i = 0; i < 8; ++i) w.at(w.face(ben, 2)).asset = 200 + i;
+  // A clip: clear frames of Anna at 0 and 4 s, a blurred one at 2 s nobody has.
+  for (std::int64_t ms : {0, 4000}) {
+    const std::int64_t id = w.face(anna, 1);
+    w.at(id).asset = 300;
+    w.at(id).pts_ms = ms;
+  }
+  const std::int64_t blurred = w.face(anna, 0, 0.075f, 0.2f);
+  w.at(blurred).asset = 300;
+  w.at(blurred).pts_ms = 2000;
+  // The same blur a minute later, far from any clear frame: stays nobody's.
+  const std::int64_t far = w.face(anna, 0, 0.075f, 0.2f);
+  w.at(far).asset = 300;
+  w.at(far).pts_ms = 60000;
+  // A blurred frame whose neighbours are Anna and Ben both: nobody's.
+  for (auto [base, person, ms] : {std::tuple{anna, 1, 0}, std::tuple{ben, 2, 1000}}) {
+    const std::int64_t id = w.face(base, person);
+    w.at(id).asset = 400;
+    w.at(id).pts_ms = ms;
+  }
+  const std::int64_t torn = w.face(world::mix(anna, ben, 0.5f), 0, 0.03f, 0.2f);
+  w.at(torn).asset = 400;
+  w.at(torn).pts_ms = 500;
+  refine_params p;
+  p.join = 0.30f;
+  const refine_output out = w.run(p);
+  CHECK(person_after(out, w, blurred) == 1);
+  CHECK(person_after(out, w, far) == 0);
+  CHECK(person_after(out, w, torn) == 0);
+}
+
+TEST_CASE("refine: rejections count against a person, unless the person vouches for them",
+          "[ai][faces][refine]") {
+  world w;
+  const auto anna = w.direction();
+  const auto lookalike = world::mix(anna, w.direction(), 0.5f);
+  for (int i = 0; i < 10; ++i) w.face(anna, 1);
+  // The user said "not Anna" of two lookalike faces (they are unassigned now);
+  // a third lookalike face is unassigned too.
+  for (int i = 0; i < 2; ++i) w.at(w.face(lookalike, 0)).rejected = {1};
+  const std::int64_t third = w.face(lookalike, 0);
+  // A face the user rejected from Anna that is plainly Anna: a slip, which
+  // must not keep her other faces out.
+  w.at(w.face(anna, 0)).rejected = {1};
+  const std::int64_t hers = w.face(anna, 0);
+  // A lookalike face still in Anna leaves: it is more like what she is not.
+  const std::int64_t inside = w.face(lookalike, 1);
+  refine_params p;
+  p.join = 0.30f;  // let the lookalike reach her on its own
+  p.core = 0.30f;
+  const refine_output out = w.run(p, false);
+  CHECK(person_after(out, w, third) == 0);
+  CHECK(person_after(out, w, hers) == 1);
+  CHECK(person_after(out, w, inside) != 1);
+  // A face rejected from its own person (a merge brought it back) leaves it.
+  world v;
+  const auto ben = v.direction();
+  for (int i = 0; i < 6; ++i) v.face(ben, 2);
+  const std::int64_t back = v.face(ben, 2);
+  v.at(back).rejected = {2};
+  CHECK(person_after(v.run(), v, back) == 0);
+}
+
+namespace {
+
+mv::ai::face_in box_in(world& w, const std::vector<float>& base, float x, float quality = 0.8f) {
+  mv::ai::face_in f = face_in_of(w, base, 0.9f, x);
+  f.quality = quality;
+  return f;
+}
+
+std::int64_t person_of(mv::ai::faces_db& db, std::int64_t face) {
+  const auto f = db.face(face);
+  return f ? f->person : -1;
+}
+
+std::vector<std::int64_t> face_ids(mv::ai::faces_db& db, std::int64_t person) {
+  std::vector<std::int64_t> out;
+  for (const auto& f : db.faces_of(person)) out.push_back(f.id);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("faces.db: two faces of one photo never join one person", "[ai][faces][refine]") {
+  const std::string path = temp_db("frame.db");
+  world w;
+  const auto anna = w.direction();
+  auto db = mv::ai::faces_db::open(path, mv::ai::face_tuning{}, kDim, "q/1");
+  REQUIRE(db);
+  for (int i = 0; i < 6; ++i) {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  const std::int64_t her = (*db)->people(1).at(0).id;
+  // A photo with her and a lookalike: the clearer is filed under her, the other not.
+  const auto twin = world::mix(anna, w.direction(), 0.3f);
+  std::vector<mv::ai::face_in> both{box_in(w, twin, 0.1f, 0.6f), box_in(w, anna, 0.6f, 0.9f)};
+  REQUIRE((*db)->add(200, "b", -1, both));
+  std::size_t hers = 0;
+  for (const auto& f : (*db)->faces_of(her)) hers += f.asset == 200 ? 1 : 0;
+  CHECK(hers == 1);
+  // Her in a mirror: the same face twice is still her, both times.
+  std::vector<mv::ai::face_in> mirror{box_in(w, anna, 0.1f, 0.8f), box_in(w, anna, 0.6f, 0.8f)};
+  mirror[1].emb = mirror[0].emb;  // one face, and its reflection
+  REQUIRE((*db)->add(201, "m", -1, mirror));
+  hers = 0;
+  for (const auto& f : (*db)->faces_of(her)) hers += f.asset == 201 ? 1 : 0;
+  CHECK(hers == 2);
+}
+
+TEST_CASE("faces.db: corrections survive merges, the idle merge and a changed file", "[ai][faces][refine]") {
+  const std::string path = temp_db("keep.db");
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  mv::ai::face_tuning strict;
+  strict.same_person = 0.99f;  // every face its own person: the test makes the people
+  auto db = mv::ai::faces_db::open(path, strict, kDim, "q/1");
+  REQUIRE(db);
+  std::int64_t asset = 100;
+  const auto one = [&](const std::vector<float>& base) {
+    const auto f = box_in(w, base, 0.1f);
+    REQUIRE((*db)->add(asset, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+    std::pair<std::int64_t, std::int64_t> found{0, 0};  // (person, face); no FAIL + return: MSVC's C4702
+    for (const auto& p : (*db)->people(1)) {
+      if (p.cover.asset == asset) found = {p.id, p.cover.id};
+    }
+    REQUIRE(found.first != 0);
+    ++asset;
+    return found;
+  };
+  const auto [a1, fa1] = one(anna);
+  const auto [a2, fa2] = one(anna);
+  const auto [b1, fb1] = one(ben);
+  // Ben's face filed under Anna by hand, then "not Anna": a rejection.
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{fb1}, a1, false));
+  REQUIRE((*db)->reject(fb1));
+  CHECK(person_of(**db, fb1) != a1);
+  // Merging her two halves keeps the rejection: Ben never comes back, and
+  // a merge that brings back a rejected face sends it away again.
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{fb1}, a2, false));
+  REQUIRE((*db)->merge(a1, a2));
+  CHECK(person_of(**db, fb1) == 0);
+  CHECK(person_of(**db, fa2) == a1);
+  // The file changed: Ben's face is forgotten and found again in the same
+  // box. The rejection binds the new row.
+  const std::int64_t ben_asset = (*db)->face(fb1)->asset;
+  REQUIRE((*db)->forget_asset(ben_asset));
+  CHECK_FALSE((*db)->face(fb1));
+  const auto again = box_in(w, ben, 0.1f);
+  REQUIRE((*db)->add(ben_asset, "a", -1, std::span<const mv::ai::face_in>(&again, 1)));
+  REQUIRE((*db)->mark_scanned(ben_asset, "q/1"));
+  std::int64_t found = 0;
+  for (const auto& l : (*db)->loose_faces(0, 100)) found = l.face.asset == ben_asset ? l.face.id : found;
+  for (const auto& p : (*db)->people(1)) {
+    for (const auto& f : (*db)->faces_of(p.id)) found = f.asset == ben_asset ? f.id : found;
+  }
+  REQUIRE(found != 0);
+  CHECK(person_of(**db, found) != a1);
+  const auto blocks = (*db)->merge_blocks();
+  (void)blocks;
+  // Reopening drops rejections of faces and people that are gone.
+  db->reset();
+  auto again_db = mv::ai::faces_db::open(path, strict, kDim, "q/1");
+  REQUIRE(again_db);
+  sqlite3* raw = nullptr;
+  REQUIRE(sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+  sqlite3_stmt* q = nullptr;
+  sqlite3_prepare_v2(raw, "SELECT COUNT(*) FROM rejected WHERE face_id NOT IN (SELECT id FROM faces)", -1, &q, nullptr);
+  REQUIRE(sqlite3_step(q) == SQLITE_ROW);
+  CHECK(sqlite3_column_int(q, 0) == 0);
+  sqlite3_finalize(q);
+  sqlite3_close(raw);
+}
+
+TEST_CASE("faces.db: undo puts a merge back, with its name, pins and corrections", "[ai][faces][refine]") {
+  const std::string path = temp_db("undo.db");
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  auto db = mv::ai::faces_db::open(path, mv::ai::face_tuning{}, kDim, "q/1");
+  REQUIRE(db);
+  for (int i = 0; i < 4; ++i) {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  for (int i = 0; i < 3; ++i) {
+    const auto f = box_in(w, ben, 0.1f);
+    REQUIRE((*db)->add(200 + i, "b", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  auto people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  const std::int64_t a = people[0].faces == 4 ? people[0].id : people[1].id;
+  const std::int64_t b = a == people[0].id ? people[1].id : people[0].id;
+  REQUIRE((*db)->rename(b, "Ben"));
+  const auto bens = face_ids(**db, b);
+  const auto token = (*db)->merge(a, b);
+  REQUIRE(token);
+  REQUIRE(token.value() > 0);
+  CHECK((*db)->people(1).size() == 1);
+  CHECK((*db)->people(1)[0].name == "Ben");  // the unnamed survivor took his name
+  REQUIRE((*db)->undo_merge(token.value()));
+  people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  CHECK(face_ids(**db, b) == bens);
+  for (const auto& p : people) {
+    if (p.id == b) CHECK(p.name == "Ben");
+    if (p.id == a) CHECK(p.name.empty());
+  }
+  // Anna's cover was pinned by the merge, and is not any more.
+  for (const auto& f : (*db)->faces_of(a)) CHECK_FALSE(f.pinned);
+  CHECK_FALSE((*db)->undo_merge(token.value()));  // once
+}
+
+TEST_CASE("faces.db: move to, yes, unpin and not this person", "[ai][faces][refine]") {
+  const std::string path = temp_db("assign.db");
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  auto db = mv::ai::faces_db::open(path, mv::ai::face_tuning{}, kDim, "q/1");
+  REQUIRE(db);
+  for (int i = 0; i < 5; ++i) {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  for (int i = 0; i < 5; ++i) {
+    const auto f = box_in(w, ben, 0.1f);
+    REQUIRE((*db)->add(200 + i, "b", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  auto people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  const std::int64_t a = people[0].id, b = people[1].id;
+  const std::int64_t f = face_ids(**db, a).front();
+  // Move to: the face is Ben's now, the user's (pinned), and not Anna's.
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, b, true));
+  CHECK(person_of(**db, f) == b);
+  CHECK((*db)->face(f)->pinned);
+  REQUIRE((*db)->set_pinned(std::vector<std::int64_t>{f}, false));
+  CHECK_FALSE((*db)->face(f)->pinned);
+  // Undo of a move: back to Anna, and nothing says it is not Ben.
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, a, false, true));
+  CHECK(person_of(**db, f) == a);
+  CHECK((*db)->merge_blocks().empty());
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, b, true));
+  // Undo of a Yes on an unknown face: back to nobody.
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, 0, false, true));
+  CHECK(person_of(**db, f) == 0);
+  CHECK_FALSE((*db)->assign(std::vector<std::int64_t>{f}, 0, false));  // nobody needs the undo flag
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, b, true));
+  CHECK_FALSE((*db)->assign(std::vector<std::int64_t>{f}, 999, true));  // no such person
+  // Not this person: it goes back to the only other person it matches, never
+  // to a new person of its own.
+  const auto r = (*db)->reject(std::vector<std::int64_t>{f});
+  REQUIRE(r);
+  CHECK(r->to.size() + r->unassigned == 1);
+  CHECK(person_of(**db, f) != b);
+  CHECK((*db)->people(1).size() == 2);
+
+  // A clip of Anna's lookalike filed under Anna: "not Anna" on one frame
+  // takes the frames of the same face with it.
+  const auto twin = world::mix(anna, w.direction(), 0.45f);
+  mv::ai::face_tuning loose;
+  loose.same_person = 0.05f;
+  const std::string path2 = temp_db("assign2.db");
+  auto db2 = mv::ai::faces_db::open(path2, loose, kDim, "q/1");
+  REQUIRE(db2);
+  for (int i = 0; i < 5; ++i) {
+    const auto g = box_in(w, anna, 0.1f);
+    REQUIRE((*db2)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&g, 1)));
+  }
+  for (int i = 0; i < 4; ++i) {
+    const auto g = box_in(w, twin, 0.1f);
+    REQUIRE((*db2)->add(300, "clip", 1000 * i, std::span<const mv::ai::face_in>(&g, 1)));
+  }
+  const auto all = (*db2)->people(1);
+  REQUIRE(all.size() == 1);
+  std::int64_t frame = 0;
+  for (const auto& g : (*db2)->faces_of(all[0].id)) frame = g.asset == 300 ? g.id : frame;
+  const auto spread = (*db2)->reject(std::vector<std::int64_t>{frame});
+  REQUIRE(spread);
+  CHECK(spread->spread == 3);
+  CHECK(spread->faces.size() == 4);
+  for (const auto& m : spread->faces) CHECK(m.from == all[0].id);
+  for (const auto& g : (*db2)->faces_of(all[0].id)) CHECK(g.asset != 300);
+}
+
+TEST_CASE("faces.db: a person's review puts the misfiled faces first; suggestions and unknown faces",
+          "[ai][faces][refine]") {
+  const std::string path = temp_db("review.db");
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  mv::ai::face_tuning t;
+  auto db = mv::ai::faces_db::open(path, t, kDim, "q/1");
+  REQUIRE(db);
+  for (int i = 0; i < 8; ++i) {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  for (int i = 0; i < 6; ++i) {
+    const auto f = box_in(w, ben, 0.1f);
+    REQUIRE((*db)->add(200 + i, "b", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  auto people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  const std::int64_t a = people[0].faces == 8 ? people[0].id : people[1].id;
+  const std::int64_t b = a == people[0].id ? people[1].id : people[0].id;
+  REQUIRE((*db)->rename(a, "Anna"));
+  // A Ben face misfiled under Anna by hand.
+  const std::int64_t misfiled = face_ids(**db, b).front();
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{misfiled}, a, false));
+  const auto review = (*db)->review(a);
+  REQUIRE(review.size() == 9);
+  CHECK(review.front().face.id == misfiled);
+  CHECK(review.front().check);
+  CHECK(review.front().rival_person == b);
+  for (std::size_t i = 1; i < review.size(); ++i) CHECK_FALSE(review[i].check);
+  // Unknown faces: a clear Anna face nobody filed comes with a suggestion.
+  {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(300, "c", -1, std::span<const mv::ai::face_in>(&f, 1)));
+    const std::int64_t id = (*db)->faces_of(a).back().id;
+    (void)id;
+  }
+  // Suggestions: an unnamed fragment of Anna's.
+  mv::ai::face_tuning strict = t;
+  strict.same_person = 0.99f;
+  db->reset();
+  db = mv::ai::faces_db::open(path, strict, kDim, "q/1");
+  REQUIRE(db);
+  for (int i = 0; i < 2; ++i) {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(400 + i, "d", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  db->reset();
+  db = mv::ai::faces_db::open(path, t, kDim, "q/1");
+  REQUIRE(db);
+  const auto sug = mv::ai::faces_db::suggest_finish((*db)->suggest_begin(a), 10);
+  CHECK(sug.people.size() == 2);
+  for (const auto& [id, score] : sug.people) CHECK(id != b);
+  CHECK((*db)->loose_count() == (*db)->loose_faces(0, 100).size());
 }
 
 // ---- the People bench (docs/design/17 "People model") ------------------------------------------
@@ -1128,6 +1601,43 @@ TEST_CASE("People settle: a copy of a real faces.db, before and after", "[.peopl
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   std::printf("merged %zu; settle %.0f ms\n", merged, ms);
   report("after");
+  // What must never be true (docs/design/17 "Corrections that hold"): a face filed
+  // under a person it was rejected from, a rejection naming a face or person
+  // that is gone, two faces of one frame in one person that are not one face
+  // twice (a mirror: cosine >= same_person + 2 margins).
+  db->reset();
+  sqlite3* raw = nullptr;
+  REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+  const auto count = [&](const char* sql) {
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw, sql, -1, &q, nullptr);
+    const long long n = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : -1;
+    sqlite3_finalize(q);
+    return n;
+  };
+  long long twins = 0;
+  {
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw, "SELECT a.emb, b.emb FROM faces a JOIN faces b ON b.asset_id = a.asset_id"
+                            " AND b.pts_ms = a.pts_ms AND b.person_id = a.person_id AND b.id > a.id",
+                       -1, &q, nullptr);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      const auto* x = static_cast<const float*>(sqlite3_column_blob(q, 0));
+      const auto* y = static_cast<const float*>(sqlite3_column_blob(q, 1));
+      if (!x || !y || sqlite3_column_bytes(q, 0) != sqlite3_column_bytes(q, 1)) continue;
+      double d = 0;
+      for (int i = 0; i < sqlite3_column_bytes(q, 0) / 4; ++i) d += static_cast<double>(x[i]) * y[i];
+      twins += d < t.same_person + 2 * t.margin ? 1 : 0;
+    }
+    sqlite3_finalize(q);
+  }
+  std::printf("never: filed where rejected %lld, rejections of what is gone %lld, two people of one frame in one"
+              " person %lld\n",
+              count("SELECT COUNT(*) FROM rejected r JOIN faces f ON f.id = r.face_id WHERE f.person_id = r.person_id"),
+              count("SELECT COUNT(*) FROM rejected WHERE face_id NOT IN (SELECT id FROM faces)"
+                    " OR person_id NOT IN (SELECT id FROM people)"),
+              twins);
+  sqlite3_close(raw);
 }
 
 // What the chrome's People reads cost on a copy of a real faces.db
@@ -1173,6 +1683,26 @@ TEST_CASE("People API: a copy of a real faces.db, call by call", "[.people-api]"
   time("person_count(2)", [&] { n = (*db)->person_count(2); });
   time("names()", [&] { n = (*db)->names().size(); });
   time("consolidate", [&] { n = (*db)->consolidate(t.merge_at); });
+  // The sheet's review, suggestions and the unknown faces (docs/design/17
+  // "Reviewing a person"): the lock is held for the *_begin half only.
+  std::int64_t largest = 0;
+  for (const auto& p : (*db)->people(2)) {
+    if (!p.name.empty()) {
+      largest = p.id;
+      break;
+    }
+  }
+  if (largest != 0) {
+    mv::ai::review_snapshot rs;
+    time("review_begin", [&] { rs = (*db)->review_begin(largest); });
+    time("review_finish", [&] { n = mv::ai::faces_db::review_finish(rs).size(); });
+    mv::ai::suggest_snapshot ss;
+    time("suggest_begin", [&] { ss = (*db)->suggest_begin(largest); });
+    time("suggest_finish", [&] { n = mv::ai::faces_db::suggest_finish(ss, 24).people.size(); });
+  }
+  time("loose_faces(0, 60)", [&] { n = (*db)->loose_faces(0, 60).size(); });
+  time("loose_count", [&] { n = (*db)->loose_count(); });
+  time("merge_blocks", [&] { n = (*db)->merge_blocks().size(); });
   std::printf("(last result %zu)\n", n);
 
   // Online filing (docs/design/17 "Online clustering"): the copy's unfiled,
@@ -1238,6 +1768,254 @@ TEST_CASE("People API: a copy of a real faces.db, call by call", "[.people-api]"
               " person %zu, a new one %zu; unfiled %zu\n",
               offers.size(), offers.empty() ? 0.0 : add_ms / static_cast<double>(offers.size()), to_named,
               to_known, to_new, offers.size() - to_named - to_known - to_new);
+}
+
+// What the named people teach (docs/design/17 "Corrections that hold"): a copy of a real
+// faces.db (MV_FACES_DB; this writes), a tenth of each named person's clear, unpinned faces taken
+// out (seeded) and filed again through `add` as the scan would, in their own photo or frame,
+// against the people the user named and corrected. How many come back to their person, go to
+// another named person, to someone else, or to nobody. Uses only calls the base code has, so the
+// same case runs on a base build.
+TEST_CASE("People held out: a named person's faces filed again", "[.people-heldout]") {
+  const char* file = std::getenv("MV_FACES_DB");
+  if (!file) {
+    WARN("MV_FACES_DB is not set");
+    return;
+  }
+  mv::ai::face_tuning t;
+  t.same_person = 0.30f;
+  t.keep = 0.20f;
+  t.keep_weak = 0.24f;
+  t.margin = 0.10f;
+  t.ambiguous = 0.04f;
+  t.merge_at = 0.32f;
+  const std::string spec = "yunet-2023mar+adaface-ir50-webface4m/1";
+  const bool weak = std::getenv("MV_HELDOUT_WEAK") != nullptr;
+  struct held {
+    std::int64_t person, asset, pts_ms;
+    mv::ai::face_in f;
+    std::string path;
+  };
+  std::vector<held> out;
+  {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw,
+                       "SELECT f.id, f.person_id, f.asset_id, f.pts_ms, f.x, f.y, f.w, f.h, f.score, f.quality, f.emb,"
+                       " f.path FROM faces f JOIN people p ON p.id = f.person_id WHERE p.name != '' AND f.pinned = 0"
+                       " AND f.spec = ?1 AND COALESCE(f.quality, 0) >= ?2 AND COALESCE(f.quality, 0) < ?3 ORDER BY f.id",
+                       -1, &q, nullptr);
+    sqlite3_bind_text(q, 1, spec.c_str(), -1, SQLITE_TRANSIENT);
+    // MV_HELDOUT_WEAK: the weak faces (0.10..0.35, clip frames mostly) instead of the clear ones.
+    sqlite3_bind_double(q, 2, weak ? 0.10 : 0.35);
+    sqlite3_bind_double(q, 3, weak ? 0.35 : 2.0);
+    std::vector<std::int64_t> gone;
+    std::uint64_t k = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      // Every tenth by a fixed hash of the id: the same faces on every build.
+      const auto id = static_cast<std::uint64_t>(sqlite3_column_int64(q, 0));
+      ++k;
+      if (((id * 2654435761ULL) >> 7) % 10 != 0) continue;
+      held h;
+      h.person = sqlite3_column_int64(q, 1);
+      h.asset = sqlite3_column_int64(q, 2);
+      h.pts_ms = sqlite3_column_int64(q, 3);
+      h.f.x = static_cast<float>(sqlite3_column_double(q, 4));
+      h.f.y = static_cast<float>(sqlite3_column_double(q, 5));
+      h.f.w = static_cast<float>(sqlite3_column_double(q, 6));
+      h.f.h = static_cast<float>(sqlite3_column_double(q, 7));
+      h.f.score = static_cast<float>(sqlite3_column_double(q, 8));
+      h.f.quality = static_cast<float>(sqlite3_column_double(q, 9));
+      const auto* b = static_cast<const float*>(sqlite3_column_blob(q, 10));
+      if (!b || sqlite3_column_bytes(q, 10) != 512 * 4) continue;
+      h.f.emb.assign(b, b + 512);
+      h.path = reinterpret_cast<const char*>(sqlite3_column_text(q, 11));
+      out.push_back(std::move(h));
+      gone.push_back(static_cast<std::int64_t>(id));
+    }
+    sqlite3_finalize(q);
+    sqlite3_exec(raw, "BEGIN", nullptr, nullptr, nullptr);
+    sqlite3_stmt* d = nullptr;
+    sqlite3_prepare_v2(raw, "DELETE FROM faces WHERE id = ?1", -1, &d, nullptr);
+    for (std::int64_t id : gone) {
+      sqlite3_reset(d);
+      sqlite3_bind_int64(d, 1, id);
+      sqlite3_step(d);
+    }
+    sqlite3_finalize(d);
+    sqlite3_exec(raw, "DELETE FROM rejected WHERE face_id NOT IN (SELECT id FROM faces); COMMIT", nullptr, nullptr,
+                 nullptr);
+    sqlite3_close(raw);
+    std::printf("held out %zu of %llu %s unpinned faces of named people\n", out.size(),
+                static_cast<unsigned long long>(k), weak ? "weak" : "clear");
+  }
+  auto db = mv::ai::faces_db::open(file, t, 512, spec);
+  REQUIRE(db);
+  std::map<std::int64_t, std::string> named;
+  for (const auto& [id, name] : (*db)->names()) named[id] = name;
+  std::size_t back = 0, other_named = 0, someone = 0, nobody = 0;
+  for (const held& h : out) {
+    REQUIRE((*db)->add(h.asset, h.path, h.pts_ms, std::span<const mv::ai::face_in>(&h.f, 1)));
+  }
+  // MV_HELDOUT_SETTLE: then the settle, as a re-run ends.
+  if (std::getenv("MV_HELDOUT_SETTLE")) {
+    for (int round = 0; round < 3; ++round) {
+      const mv::ai::refine_snapshot snap = (*db)->refine_begin(true);
+      refine_input in = input_of(snap);
+      in.dim = 512;
+      if (!(*db)->refine_commit(snap, mv::ai::refine_people(in, t.refine())).changed()) break;
+    }
+    (void)(*db)->consolidate(t.merge_at);
+  }
+  // Where each landed: the row in its frame with its box.
+  for (const held& h : out) {
+    std::int64_t to = -1;
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw, "SELECT COALESCE(person_id, 0) FROM faces WHERE asset_id = ?1 AND pts_ms = ?2 AND x = ?3"
+                            " AND y = ?4 ORDER BY id DESC LIMIT 1", -1, &q, nullptr);
+    sqlite3_bind_int64(q, 1, h.asset);
+    sqlite3_bind_int64(q, 2, h.pts_ms);
+    sqlite3_bind_double(q, 3, h.f.x);
+    sqlite3_bind_double(q, 4, h.f.y);
+    if (sqlite3_step(q) == SQLITE_ROW) to = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+    sqlite3_close(raw);
+    if (to == h.person) {
+      ++back;
+    } else if (to == 0) {
+      ++nobody;
+    } else if (named.count(to)) {
+      ++other_named;
+    } else {
+      ++someone;
+    }
+  }
+  std::printf("filed again: back to their person %zu, another named person %zu, someone unnamed %zu, nobody %zu"
+              " (of %zu)\n", back, other_named, someone, nobody, out.size());
+}
+
+// Why a named person's faces leave (MV_FACES_DB a copy, MV_PEOPLE_NAME the person): the
+// settle's rounds, each face's verdict tallied (aggregate counts and mean scores only).
+TEST_CASE("People why: a named person's faces through the settle, verdict by verdict", "[.people-why]") {
+  const char* file = std::getenv("MV_FACES_DB");
+  const char* who = std::getenv("MV_PEOPLE_NAME");
+  if (!file || !who) {
+    WARN("MV_FACES_DB and MV_PEOPLE_NAME are not set");
+    return;
+  }
+  mv::ai::face_tuning t;
+  t.same_person = 0.30f;
+  t.keep = 0.20f;
+  t.keep_weak = 0.24f;
+  t.margin = 0.10f;
+  t.ambiguous = 0.04f;
+  t.merge_at = 0.32f;
+  auto db = mv::ai::faces_db::open(file, t, 512, "yunet-2023mar+adaface-ir50-webface4m/1");
+  REQUIRE(db);
+  std::set<std::int64_t> his;
+  for (std::int64_t id : (*db)->people_named(who)) his.insert(id);
+  for (int round = 0; round < 3; ++round) {
+    const mv::ai::refine_snapshot snap = (*db)->refine_begin(true);
+    refine_input in = input_of(snap);
+    in.dim = 512;
+    const refine_output out = mv::ai::refine_people(in, t.refine());
+    struct tally {
+      std::size_t n = 0;
+      double own = 0, best = 0;
+    };
+    std::map<std::string, tally> by;
+    for (const refine_move& m : out.moves) {
+      if (!his.count(m.from)) continue;
+      const char* why = m.why == refine_why::move ? "move" : m.why == refine_why::evict ? "evict" : "regroup";
+      tally& x = by[std::string(why) + (m.to < 0 ? " to a new person" : m.to == 0 ? " to nobody" : " to someone")];
+      ++x.n;
+      x.own += m.own;
+      x.best += m.best;
+    }
+    std::printf("round %d: distrusted pins %zu\n", round, out.distrusted.size());
+    for (const auto& [k, x] : by) {
+      std::printf("  %-28s %5zu  own %.3f  best %.3f\n", k.c_str(), x.n, x.own / static_cast<double>(x.n),
+                  x.best / static_cast<double>(x.n));
+    }
+    const mv::ai::refine_stats st = (*db)->refine_commit(snap, out);
+    if (!st.changed()) break;
+  }
+}
+
+// The unknown faces' order (docs/design/17 "Reviewing a person"): a copy of a real
+// faces.db (MV_FACES_DB; this writes), a tenth of each named person's clear faces made
+// unknown (their person cleared). For the first pages of the queue, how many are held-out
+// faces whose suggestion is their own person (a right one-click Yes), how many suggest
+// someone else (a wrong Yes), clearest first against named-suggestion first.
+TEST_CASE("People unknown order: right one-click answers on the first pages", "[.people-unknown-order]") {
+  const char* file = std::getenv("MV_FACES_DB");
+  if (!file) {
+    WARN("MV_FACES_DB is not set");
+    return;
+  }
+  std::map<std::int64_t, std::int64_t> truth;  // face -> its person before
+  {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw, "SELECT f.id, f.person_id FROM faces f JOIN people p ON p.id = f.person_id WHERE p.name != ''"
+                            " AND f.pinned = 0 AND COALESCE(f.quality, 0) >= 0.35", -1, &q, nullptr);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      const auto id = static_cast<std::uint64_t>(sqlite3_column_int64(q, 0));
+      if (((id * 2654435761ULL) >> 7) % 10 == 0) truth[static_cast<std::int64_t>(id)] = sqlite3_column_int64(q, 1);
+    }
+    sqlite3_finalize(q);
+    sqlite3_exec(raw, "BEGIN", nullptr, nullptr, nullptr);
+    sqlite3_stmt* u = nullptr;
+    sqlite3_prepare_v2(raw, "UPDATE faces SET person_id = NULL WHERE id = ?1", -1, &u, nullptr);
+    for (const auto& [id, person] : truth) {
+      sqlite3_reset(u);
+      sqlite3_bind_int64(u, 1, id);
+      sqlite3_step(u);
+    }
+    sqlite3_finalize(u);
+    sqlite3_exec(raw, "COMMIT", nullptr, nullptr, nullptr);
+    sqlite3_close(raw);
+  }
+  mv::ai::face_tuning t;
+  t.same_person = 0.30f;
+  t.keep = 0.20f;
+  t.keep_weak = 0.24f;
+  t.margin = 0.10f;
+  t.ambiguous = 0.04f;
+  t.merge_at = 0.32f;
+  auto db = mv::ai::faces_db::open(file, t, 512, "yunet-2023mar+adaface-ir50-webface4m/1");
+  REQUIRE(db);
+  std::set<std::int64_t> named;
+  for (const auto& [id, name] : (*db)->names()) named.insert(id);
+  std::vector<mv::ai::loose_face> all = (*db)->loose_faces(0, 1u << 30);
+  const auto count = [&](const std::vector<mv::ai::loose_face>& order, std::size_t first) {
+    std::size_t right = 0, wrong = 0, ask = 0;
+    for (std::size_t i = 0; i < order.size() && i < first; ++i) {
+      const auto& l = order[i];
+      if (l.suggest != 0) ++ask;
+      const auto it = truth.find(l.face.id);
+      if (it == truth.end() || l.suggest == 0) continue;
+      (l.suggest == it->second ? right : wrong) += 1;
+    }
+    std::printf("  first %4zu: suggestions %4zu, right for a held-out face %4zu, wrong %zu\n", first, ask, right, wrong);
+  };
+  std::printf("unknown faces %zu, held out %zu\n", all.size(), truth.size());
+  std::printf("clearest first:\n");
+  for (std::size_t n : {60, 180, 600}) count(all, n);
+  std::printf("the queue's order (loose_begin / loose_finish):\n");
+  const auto t0 = std::chrono::steady_clock::now();
+  const mv::ai::loose_snapshot snap = (*db)->loose_begin();
+  const auto t1 = std::chrono::steady_clock::now();
+  const std::vector<mv::ai::loose_face> by = mv::ai::faces_db::loose_finish(snap);
+  const auto t2 = std::chrono::steady_clock::now();
+  for (std::size_t n : {60, 180, 600}) count(by, n);
+  std::printf("  begin (locked) %.1f ms, finish %.1f ms\n",
+              std::chrono::duration<double, std::milli>(t1 - t0).count(),
+              std::chrono::duration<double, std::milli>(t2 - t1).count());
 }
 
 TEST_CASE("People bench: real face vectors through faces.db, online and settled", "[.people-bench]") {

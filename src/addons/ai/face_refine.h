@@ -13,21 +13,38 @@
 // Per person, per pass:
 //   refs      the members worth trusting: pinned faces (the user's), then the
 //             good-quality ones, at most max_refs
-//   anchors   pinned faces, plus the medoid of the refs (unless the person has
-//             pins and the medoid does not resemble any of them)
+//   anchors   the usable pinned faces, plus the medoid of the refs (unless
+//             the person has pins and the medoid does not resemble any of
+//             them). A lone pin (it agrees with none of the person's other
+//             pins nor the medoid) that another person explains better by
+//             `margin` is distrusted when the person has other pins: not an
+//             anchor, still never moved (2026-11-02: a merge pinned an
+//             impostor's cover, and it held 153 faces of someone else)
 //   core      refs within `core` of an anchor: one hop, so no chaining
-//   exemplars pinned first, then the core, at most max_exemplars
-//   support(f, p) = mean of the top_k cosines of f to p's exemplars (not f)
+//   exemplars trusted pins first, then the core, at most max_exemplars and
+//             one per photo or clip (a clip's frames are one sighting)
+//   support(f, p) = mean of the top_k cosines of f to p's exemplars, not f,
+//             and not from f's own photo or clip while p has others
+//   negatives the faces the user said are not p ("not this person"):
+//             neg(f, p) is the same mean over them
 //
 // A face that is not pinned then
 //   moves    to another person b when support(f, b) >= join and beats both
-//            its own person and the runner-up by `margin` (never a weak face,
-//            never into a person the user rejected it from)
+//            its own person, the runner-up and neg(f, b) by `margin` (never a
+//            weak face, never into a person the user rejected it from, never
+//            into one that holds another face of its photo or frame)
 //   leaves   to unassigned when support(f, own) < keep (keep_weak if weak):
 //            a doubtful face is better filed under nobody than a wrong name;
 //            and always when it is unusable (quality < unusable_quality), or
-//            its person is unnamed, unpinned and has no face that is not weak
-//   joins    (unassigned) the clear winner, by the same join + margin test
+//            its person is unnamed, unpinned and has no face that is not weak,
+//            or the user rejected it from that person, or it resembles what
+//            the user rejected from that person more than the person (neg >=
+//            join), or a better face of its own frame is in that person (two
+//            faces in one frame are two people)
+//   joins    (unassigned) the clear winner, by the same join + margin test;
+//            a weak clip frame joins the person its track is in: the clear
+//            frames of its clip within track_ms that it resembles at `join`,
+//            all in one person
 // Passes repeat until nothing changes or `passes` run; a face changes at
 // most once per call. With `regroup`, unassigned good faces that are close to
 // each other (average linkage at `join`) become new unnamed people, which is
@@ -62,6 +79,10 @@ struct refine_params {
   std::uint32_t min_group = 2;      // a regrouped person needs this many faces
   std::uint32_t max_regroup = 4000; // unassigned faces considered for new people per call
   std::uint32_t max_recheck = 32;   // borderline faces returned for a better embedding
+  std::uint32_t max_negatives = 12; // rejected faces a person is checked against
+  // A weak clip frame follows its track: clear frames of the same clip this
+  // close in time (ms) that it resembles at `join`, when they agree on one person.
+  std::int64_t track_ms = 15000;
 };
 
 struct refine_face {
@@ -71,6 +92,10 @@ struct refine_face {
   bool pinned = false;      // the user put it there: never judged, always an anchor
   std::uint32_t row = 0;    // row of the embedding matrix (dim floats, L2-normalised)
   std::vector<std::int64_t> rejected;  // sorted: persons it must never join
+  // Its photo or clip, and the frame in it (-1: a still). asset < 0: unknown,
+  // every face its own sighting (the synthetic tests).
+  std::int64_t asset = -1;
+  std::int64_t pts_ms = -1;
 };
 
 // A person's prototype. Returned for the persons a call rebuilt; passed back
@@ -84,7 +109,15 @@ struct person_proto {
   bool weak_only = false;
   std::vector<float> exemplars;     // n * dim, L2-normalised
   std::vector<std::int64_t> exemplar_ids;
+  std::vector<std::int64_t> exemplar_assets;  // parallel to exemplar_ids; -1 unknown
   std::vector<float> core_mean;     // dim; unnormalised, so dot = mean pairwise cosine
+  std::uint32_t members = 0;        // the faces it was built from (refs, at most max_refs)
+  // Pinned faces that agree with none of the person's other pins (or are
+  // unusable): not anchors; the chrome offers to unpin them.
+  std::vector<std::int64_t> doubtful_pins;
+  // Faces the user rejected from this person (n * dim), at most max_negatives:
+  // filled by the caller that knows them (faces_db; refine_people from its faces).
+  std::vector<float> negatives;
 };
 
 enum class refine_why : std::uint8_t { evict, move, admit, regroup };
@@ -117,6 +150,7 @@ struct refine_output {
   std::uint32_t groups = 0;               // new people (to = -1 .. -groups)
   std::vector<person_proto> protos;       // the rebuilt persons, after the last move
   std::vector<std::int64_t> recheck;      // borderline faces worth a better embedding
+  std::vector<std::int64_t> distrusted;   // lone pins another person explains: not anchors
   std::uint32_t passes = 0;
 };
 
@@ -129,9 +163,13 @@ struct refine_output {
                                               std::span<const refine_face> faces, std::int64_t person,
                                               bool named, const refine_params& p);
 // support(v, p): the mean of the top_k cosines of `v` to p's exemplars,
-// skipping `self` (0 skips nothing). -1 when it has none.
+// skipping `self` (0 skips nothing) and, while p has exemplars from other
+// photos or clips, those of `self_asset` (< 0 skips none). -1 when it has none.
 [[nodiscard]] float exemplar_support(std::span<const float> v, const person_proto& p, std::int64_t self,
-                                     std::uint32_t top_k);
+                                     std::uint32_t top_k, std::int64_t self_asset = -1);
+// neg(v, p): the same mean over p's negatives (the faces rejected from p). -1
+// when it has none.
+[[nodiscard]] float negative_support(std::span<const float> v, const person_proto& p, std::uint32_t top_k);
 
 // ---- duplicates (docs/design/17 "Merge duplicates") ----------------------------------
 
