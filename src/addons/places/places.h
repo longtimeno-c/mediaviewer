@@ -47,6 +47,8 @@ inline constexpr float k_max_surface_px = 4096.0f;
 inline constexpr std::string_view k_map_caption = "No street detail \xE2\x80\x94 offline map";
 // #601: the folder map's toggle.
 inline constexpr std::string_view k_folder_toggle = "This folder";
+// The world map's window (docs/plans/places-world-map.md).
+inline constexpr std::string_view k_open_world = "Open map";
 
 // One file's section: what the host sent and what was worked out from it.
 struct section_state {

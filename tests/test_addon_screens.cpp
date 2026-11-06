@@ -333,6 +333,32 @@ TEST_CASE("events are checked against the tree before an add-on hears them", "[a
   REQUIRE(t.check_event("b", ev_click, "") == error::not_interactive);
 }
 
+TEST_CASE("a surface that fills reports its size (contribution API 12)", "[addon][screens]") {
+  using namespace mv::addon::screen;
+  tree t;
+  // A surface needs a height unless it fills its parent.
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"Map"})") == error::bad_prop);
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"Map","fill":"yes"})") == error::bad_prop);
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"Map","fill":true})") == error::none);
+  // The laid-out size, interactive or not: exactly width, height and scale.
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":1100,"height":680,"scale":2})") == error::none);
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":0,"height":680,"scale":2})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":1100,"height":30000,"scale":2})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":1100,"height":680,"scale":9})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":1100,"height":680})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":1100,"height":680,"scale":2,"x":1})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_resize, "") == error::bad_value);
+  // Not interactive: no zoom.
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":1.2,"x":0.5,"y":0.5})") == error::not_interactive);
+  REQUIRE(t.apply(R"([{"op":"set","id":"s","props":{"interactive":true}}])") == error::none);
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":1.2,"x":0.5,"y":0.5})") == error::none);
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":800,"height":600,"scale":1})") == error::none);
+  // A surface of a fixed height never reports one.
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"Map","height":160,"interactive":true})") ==
+          error::none);
+  REQUIRE(t.check_event("s", ev_resize, R"({"width":1100,"height":680,"scale":2})") == error::bad_value);
+}
+
 TEST_CASE("an interactive surface takes zoom, pan and double-click", "[addon][screens]") {
   using namespace mv::addon::screen;
   tree t;

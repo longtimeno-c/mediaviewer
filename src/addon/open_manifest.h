@@ -54,7 +54,10 @@ inline constexpr int kOpenManifestSchema = 2;
 //      (Enhance's sheet). No new point: a tree that uses them asks for 10.
 //  11  2026-11-02: `editor_items`, buttons in the Video Editor's bar that hand
 //      the add-on the clip and the edit's kept ranges (Enhance).
-inline constexpr std::uint32_t kContributionApi = 11;
+//  12  2026-11-04: a `surface` with "fill" (it takes its parent's room and the
+//      chrome reports the size, MV_SLOT_EVENT_RESIZE): the Places world map.
+//      No new point: a tree that uses it asks for 12.
+inline constexpr std::uint32_t kContributionApi = 12;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

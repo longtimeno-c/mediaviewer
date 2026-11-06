@@ -488,6 +488,53 @@ The full place database could not be built in that container (its downloads were
 cache miss on the full blob is the base map's own figure above (4.5–4.7 ms median, 20 ms max at
 2×) plus the layer. The folder walk is the host's `locations_in` and is not in this bench.
 
+### The world map
+
+Places' own window, `world` (contribution API 12; `docs/plans/places-world-map.md`, owner
+2026-11-04): the same offline map filling a resizable window that goes full screen (the green
+button on the Mac, F11 on Windows), from the whole world down to the section's town scale, with
+every geotagged item of the **library** on it. It opens from **Open map** under the section's map
+and from the command bar (**World Map**). Read-only, offline, nothing leaves the machine.
+
+- **What it shows.** Every asset of the Local search index with coordinates
+  (`locations_of_index`, index.db's own lat / lon: no file read); a clip is one dot at its first
+  fix (`ROUTE_POINT` rows are skipped). The pack loads on demand on both hosts, so a walk that
+  finds no index attached asks the host for it (slots change bit 128): the chrome starts the
+  pack as its search button would, without the panel, or says there is none
+  (`mv_slots_index_unavailable`); the walk waits up to 60 s for it on Places' worker, the window
+  saying "Finding your geotagged photos…". Without the AI pack, or when nothing indexed has a place,
+  it shows the folder of the file on screen (`locations_in`) and says so. At most 400 000 items,
+  kept compact (`world_points`: points apart from one buffer of paths). The file on screen when
+  it opened is the pin.
+- **The view** (`world_map.h/.cpp`). The section's projection and renderer, with the span cap a
+  field of the view (`map_view::max_span_deg`): the widest span is the one where the world's width
+  fills the picture's (`360 · H · cos(lat) / W`), and the last step out sits on the equator. The
+  first view frames the library's box (across 180° when that is narrower). A resize keeps the
+  ground per point. The backing scale is the display's, lowered so each side stays within
+  4096 px and the picture within 8 MP (a full-screen 5K window draws at about 1.5×).
+- **The surface fills** its window (`"fill": true`) and the chrome reports its laid-out size as
+  `MV_SLOT_EVENT_RESIZE` once a resize settles; the registry coalesces a run of them. The gestures
+  are the section's (pinch, wheel, drag, double-click, −/+); on the Mac a trackpad two-finger
+  scroll pans too, as nothing scrolls there.
+- **Dots** are the folder map's (`cluster_points`, the same grid and merge as `cluster_dots`,
+  with each point's dot for a click). **A click on a dot** shows its items (walk order, at most
+  10 000) in the viewer as a result list titled with the first item's place and the count
+  ("Sintra, Lisbon, Portugal (3)"), through the host table's `open_list`; the viewer comes
+  forward and the map stays open behind it.
+- **Idle.** Nothing ticks; closing the window drops the library's points and its picture cache.
+
+Measured (2026-11-04, M-series Mac, Release, the full place blob from the installed add-on,
+100 000 items round twelve cities, 1440 × 900 pt at 2× = 2880 × 1800 px, 15 runs,
+`mv_tests "places: the world map at 1440 x 900 pt and 2x"` in `[.perf-bench]`):
+
+| Span | Base map + dots (a cache miss), median / p90 / max | Dots only (base cached) |
+|---|---|---|
+| The world | 39.7 / 40.1 / 50.5 ms | 2.1 / 2.2 / 2.2 ms |
+| A country (9°) | 27.5 / 28.9 / 29.8 ms | 2.5 / 2.7 / 2.7 ms |
+| A town (0.3°) | 25.1 / 25.4 / 25.4 ms | 2.1 / 2.3 / 2.4 ms |
+
+All of it on Places' worker; the chrome moves the last picture during a gesture.
+
 ### Search by place
 
 The same add-on's search provider, `place:` and `in:` (#348 routes `in:` followed by a digit to

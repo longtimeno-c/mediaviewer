@@ -153,6 +153,8 @@ enum event_kind : std::uint32_t {
   ev_pan = 11,      // {"dx": -10..10, "dy": -10..10} -- the drag, in surface widths / heights
   ev_double = 12,   // {"x": 0..1, "y": 0..1} -- a double-click
   ev_tap = 14,      // {"x": 0..1, "y": 0..1} -- a single click (#601: a folder-map dot)
+  // A surface with "fill" (contribution API 12, docs/plans/places-world-map.md):
+  ev_resize = 15,   // {"width", "height": points 1..20000, "scale": 0.5..8} -- its laid-out size
 };
 
 // One node, checked: used by `tree` and exposed for tests.

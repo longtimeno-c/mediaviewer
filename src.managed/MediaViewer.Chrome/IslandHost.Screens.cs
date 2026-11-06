@@ -119,6 +119,8 @@ public static partial class IslandHost
         string id = JStr(n, "id");
         switch (JStr(n, "type"))
         {
+            case "stack" when JArr(n, "children").Any(IsFillSurface):
+                return BuildFillStack(n, at);
             case "stack" when JStr(n, "axis") == "horizontal" &&
                               JArr(n, "children").Any(c => JStr(c, "type") == "text_field"):
             {
@@ -1376,15 +1378,26 @@ public static partial class IslandHost
         double height = JNum(n, "height", 120);
         double width = JNum(n, "width", 0);
         string id = JStr(n, "id");
+        // API 12: a "fill" surface takes all the room its parent gives (its
+        // width / height are ignored) and reports its laid-out size.
+        bool fill = JFlag(n, "fill");
         var frame = new Grid
         {
-            Height = height,
             CornerRadius = Corner(6),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
             Background = Brush(ChromeColour.Surface),
         };
-        if (width > 0) frame.Width = width;
+        if (fill)
+        {
+            frame.HorizontalAlignment = HorizontalAlignment.Stretch;
+            frame.VerticalAlignment = VerticalAlignment.Stretch;
+        }
+        else
+        {
+            frame.Height = height;
+            if (width > 0) frame.Width = width;
+        }
         var content = new Grid();
         var transform = new CompositeTransform();
         content.RenderTransform = transform;
@@ -1393,8 +1406,12 @@ public static partial class IslandHost
             frame.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, frame.ActualWidth, frame.ActualHeight) };
 
         string surfaceId = JStr(n, "surface");
-        var image = new Image { Stretch = Stretch.UniformToFill };
+        // A fill surface's pixels were drawn for its reported size: stretched to
+        // the frame while a resize settles (the pin and names are placed in the
+        // same 0..1 frame), never a blank, until the add-on's redraw arrives.
+        var image = new Image { Stretch = fill ? Stretch.Fill : Stretch.UniformToFill };
         content.Children.Add(image);
+        if (fill) WatchFillSize(frame, at, id);
         // Registered so new pixels swap into this Image (RefreshSurfaces) without
         // rebuilding the node: a pinch or drag in progress keeps its transform.
         var liveEntry = new LiveSurface(image) { Revision = SetSurfacePixels(image, at, surfaceId) };
@@ -1623,10 +1640,168 @@ public static partial class IslandHost
     private static void ForgetSurfaces(ScreenAt at)
     {
         foreach (var key in LiveSurfaces.Keys.Where(k => k.At == at).ToList()) LiveSurfaces.Remove(key);
+        foreach (var key in FillReported.Keys.Where(k => k.At == at).ToList()) FillReported.Remove(key);
     }
 
     private static bool RectsOverlap(Windows.Foundation.Rect a, Windows.Foundation.Rect b) =>
         a.X < b.X + b.Width && b.X < a.X + a.Width && a.Y < b.Y + b.Height && b.Y < a.Y + a.Height;
+
+    // ---- a surface that fills (contribution API 12) ----------------------------------
+
+    private static bool IsFillSurface(JsonElement n) => JStr(n, "type") == "surface" && JFlag(n, "fill");
+
+    // A tree with a fill surface anywhere: its window is one big picture (the
+    // Places world map), resizable, maximisable and full screen (F11).
+    private static bool TreeHasFill(JsonElement n) =>
+        n.ValueKind == JsonValueKind.Object && (IsFillSurface(n) || JArr(n, "children").Any(TreeHasFill));
+
+    // A stack holding a fill surface: a Grid whose fill row (or column) takes the
+    // room the other children leave, as the Mac's VStack gives a frame with
+    // maxHeight .infinity. A StackPanel measures its children at an infinite
+    // height, so a fill surface in one would have nothing to fill.
+    private static UIElement BuildFillStack(JsonElement n, ScreenAt at)
+    {
+        bool horizontal = JStr(n, "axis") == "horizontal";
+        double spacing = JNum(n, "spacing", 8);
+        var grid = new Grid();
+        if (horizontal) grid.ColumnSpacing = spacing;
+        else grid.RowSpacing = spacing;
+        int k = 0;
+        foreach (JsonElement c in JArr(n, "children"))
+        {
+            bool fills = IsFillSurface(c);
+            GridLength length = fills ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+            var child = (FrameworkElement)BuildScreenNode(c, at);
+            if (horizontal)
+            {
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = length });
+                Grid.SetColumn(child, k++);
+                if (!fills) child.VerticalAlignment = VerticalAlignment.Center;
+            }
+            else
+            {
+                grid.RowDefinitions.Add(new RowDefinition { Height = length });
+                Grid.SetRow(child, k++);
+                if (!fills)
+                {
+                    child.HorizontalAlignment = JStr(n, "align") switch
+                    {
+                        "center" => HorizontalAlignment.Center,
+                        "end" => HorizontalAlignment.Right,
+                        "fill" => HorizontalAlignment.Stretch,
+                        _ => child.HorizontalAlignment,
+                    };
+                    if (child is TextBlock tb && JStr(n, "align") == "center") tb.TextAlignment = TextAlignment.Center;
+                }
+            }
+            if (fills)
+            {
+                child.HorizontalAlignment = HorizontalAlignment.Stretch;
+                child.VerticalAlignment = VerticalAlignment.Stretch;
+            }
+            grid.Children.Add(child);
+        }
+        return ScreenRevealed(JStr(n, "look") == "card" ? ScreenCard(grid) : grid, n, at);
+    }
+
+    // The size each fill surface last reported, by (screen, node): a rebuilt tree
+    // (every diff rebuilds a window) lays out at the same size and says nothing,
+    // so a redraw never asks for another redraw.
+    private static readonly Dictionary<(ScreenAt At, string Node), (int W, int H, double Scale)> FillReported = new();
+
+    // MV_SLOT_EVENT_RESIZE (15): the surface's laid-out size in DIPs and the
+    // display's rasterization scale, at first layout and again once a resize has
+    // settled (SizeChanged quiet for 150 ms, or the window moved to a display of
+    // another scale): never per frame of a drag.
+    private static void WatchFillSize(FrameworkElement frame, ScreenAt at, string node)
+    {
+        if (node.Length == 0) return;
+        var key = (at, node);
+        void Report()
+        {
+            if (!frame.IsLoaded || frame.XamlRoot is not { } root) return;
+            double w = frame.ActualWidth, h = frame.ActualHeight;
+            if (w < 1 || h < 1) return;
+            var size = ((int)Math.Round(Math.Clamp(w, 1, 20000)), (int)Math.Round(Math.Clamp(h, 1, 20000)),
+                        Math.Clamp(root.RasterizationScale, 0.5, 8));
+            if (FillReported.TryGetValue(key, out var was) && was == size) return;
+            string value = JsonSerializer.Serialize(new { width = size.Item1, height = size.Item2, scale = size.Item3 });
+            if (SlotNative.Event(at.Addon, at.Screen, node, 15, value)) FillReported[key] = size;
+        }
+        DispatcherQueueTimer? quiet = _dispatcher?.DispatcherQueue.CreateTimer();
+        if (quiet is not null)
+        {
+            quiet.Interval = TimeSpan.FromMilliseconds(150);
+            quiet.IsRepeating = false;
+            quiet.Tick += (_, _) => Report();
+        }
+        void Later()
+        {
+            if (quiet is null)
+            {
+                Report();
+                return;
+            }
+            quiet.Stop();
+            quiet.Start();
+        }
+        frame.SizeChanged += (_, _) =>
+        {
+            if (!FillReported.ContainsKey(key)) Report();  // the first layout: at once
+            else Later();
+        };
+        // A display of another scale changes no DIP size: XamlRoot.Changed says so.
+        void OnRootChanged(XamlRoot sender, XamlRootChangedEventArgs e) => Later();
+        XamlRoot? watched = null;
+        frame.Loaded += (_, _) =>
+        {
+            if (watched is not null || frame.XamlRoot is not { } root) return;
+            watched = root;
+            root.Changed += OnRootChanged;
+        };
+        frame.Unloaded += (_, _) =>
+        {
+            quiet?.Stop();
+            if (watched is null) return;
+            watched.Changed -= OnRootChanged;
+            watched = null;
+        };
+    }
+
+    // F11 (and Esc to leave): a fill window goes full screen and back to the
+    // overlapped presenter it had, with its floor, buttons and size.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Window, Microsoft.UI.Windowing.OverlappedPresenter> ScreenOverlapped = new();
+
+    private static bool ScreenFullScreen(ScreenAt at, bool? want)
+    {
+        if (!ScreenWindows.TryGetValue(at, out var open)) return false;
+        try
+        {
+            Microsoft.UI.Windowing.AppWindow aw = open.Window.AppWindow;
+            bool full = aw.Presenter.Kind == Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen;
+            bool next = want ?? !full;
+            if (next == full) return false;
+            if (next)
+            {
+                if (aw.Presenter is Microsoft.UI.Windowing.OverlappedPresenter op) ScreenOverlapped.AddOrUpdate(open.Window, op);
+                aw.SetPresenter(Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen);
+            }
+            else if (ScreenOverlapped.TryGetValue(open.Window, out var op))
+            {
+                aw.SetPresenter(op);
+            }
+            else
+            {
+                aw.SetPresenter(Microsoft.UI.Windowing.AppWindowPresenterKind.Overlapped);
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException or ArgumentException)
+        {
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            return false;
+        }
+    }
 
     // ---- windows, docked panes, sheets ---------------------------------------------
 
@@ -1783,12 +1958,23 @@ public static partial class IslandHost
         root.AddHandler(UIElement.PointerReleasedEvent, released, true);
         root.AddHandler(UIElement.PointerCanceledEvent, released, true);
         root.AddHandler(UIElement.PointerCaptureLostEvent, released, true);
-        // Esc closes a pane or a sheet, as the Done button does.
+        // Esc closes a pane or a sheet, as the Done button does. A fill window
+        // (API 12, the world map) goes full screen with F11; Esc leaves it.
+        bool fullScreenable = place == "window" && s.TryGetProperty("tree", out JsonElement t) && TreeHasFill(t);
         root.KeyDown += (_, e) =>
         {
             if (e.Key == Windows.System.VirtualKey.Escape && place != "window")
             {
                 SlotNative.CloseScreen(at.Addon, at.Screen);
+                e.Handled = true;
+            }
+            else if (fullScreenable && e.Key == Windows.System.VirtualKey.F11)
+            {
+                ScreenFullScreen(at, null);
+                e.Handled = true;
+            }
+            else if (fullScreenable && e.Key == Windows.System.VirtualKey.Escape && ScreenFullScreen(at, false))
+            {
                 e.Handled = true;
             }
         };
@@ -1846,6 +2032,11 @@ public static partial class IslandHost
     private static Window OpenScreenWindow(JsonElement s, ScreenAt at, string place)
     {
         string title = JStr(s, "title");
+        // API 12: a window of one fill surface (the Places world map) is a window
+        // of its own: resizable, maximisable, full screen with F11, not owned by
+        // the viewer, so the viewer can come in front of it (a list it opened)
+        // while it stays open behind.
+        bool fillWindow = place == "window" && s.TryGetProperty("tree", out JsonElement tree) && TreeHasFill(tree);
         var w = new Window { Title = title.Length > 0 ? title : "MediaViewer" };
         MediaViewer.Shared.AppIcon.Apply(w);
         IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(w);
@@ -1908,7 +2099,12 @@ public static partial class IslandHost
             {
                 op.PreferredMinimumWidth = minW;
                 op.PreferredMinimumHeight = minH;
-                op.IsMinimizable = place == "pane";  // an owned window minimises with the viewer
+                op.IsMinimizable = place == "pane" || fillWindow;  // an owned window minimises with the viewer
+                if (fillWindow)
+                {
+                    op.IsResizable = true;
+                    op.IsMaximizable = true;
+                }
             }
             // #508: the title bar in the window's own light or dark, not a light
             // bar over a dark page.
@@ -1916,7 +2112,7 @@ public static partial class IslandHost
             Windows.UI.Color bg = Brush(Canvas).Color;
             int dark = 0.2126 * bg.R + 0.7152 * bg.G + 0.0722 * bg.B < 128 ? 1 : 0;
             _ = SlotDwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int));
-            if (place != "pane" && _themeWindow != IntPtr.Zero) SlotSetWindowLongPtr(hwnd, SlotGwlpHwndParent, _themeWindow);
+            if (place != "pane" && !fillWindow && _themeWindow != IntPtr.Zero) SlotSetWindowLongPtr(hwnd, SlotGwlpHwndParent, _themeWindow);
             SlotSetProp(hwnd, "MediaViewer.AddonWindow", 1);
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or COMException)

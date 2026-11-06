@@ -76,6 +76,10 @@ enum slot_change : std::uint32_t {
   slot_changed_badges = 1u << 4,
   slot_changed_status = 1u << 5,
   slot_changed_notices = 1u << 6,  // #452: a notice, the keep-alive list or a permission ask
+  // An add-on asked for the Local search index and none is attached (the
+  // pack loads on demand): the host starts it, or calls
+  // decline_index_request (addon/index_locations.h). Places' world map.
+  slot_changed_index_wanted = 1u << 7,
 };
 
 struct surface_pixels {
@@ -266,6 +270,16 @@ class slot_registry {
   // path outside the folder or a screen that is not an info section.
   status open_item(const std::string& addon_id, const std::string& screen_id, std::uint64_t generation,
                    const std::string& path);
+  // 0.38 (host table open_list, docs/plans/places-world-map.md): one of
+  // `addon_id`'s open windows, panes or sheets (`screen_id`, under its
+  // `generation`) asks the viewer to show `paths` as a result list titled
+  // `title`, item `select` first. Kept with a growing revision in
+  // open_list_json; the chrome acts on each once. cancelled for a stale
+  // generation, invalid_arg for an info section, a bad path, count or title.
+  status open_list(const std::string& addon_id, const std::string& screen_id, std::uint64_t generation,
+                   std::string title, std::vector<std::string> paths, std::uint32_t select);
+  // {"revision","addon","title","paths":[..],"select"}, or {"revision":0}.
+  [[nodiscard]] std::string open_list_json() const;
   // #452 (host table notice_post / notice_authorize / keep_alive).
   struct notice_fields {
     std::string screen, title, body, action, action_label;
@@ -276,6 +290,9 @@ class slot_registry {
   status keep_alive(const std::string& addon_id, bool on, const std::string& screen_id, std::string label);
   // #510 (host table busy_post): "" ends it. In notices_json's "busy".
   status post_busy(const std::string& addon_id, std::string what);
+
+  // Tells the listener slot_changed_index_wanted (addon/index_locations.h).
+  void index_wanted() { notify(slot_changed_index_wanted); }
 
   // ---- for tests and the PR 59 verify --------------------------------------
   // Every call made into any add-on's client since construction.
@@ -338,6 +355,13 @@ class slot_registry {
   // next file is asked for. The revision only grows, so a chrome opens it once.
   std::string open_path_;
   std::uint64_t open_revision_ = 0;
+  // 0.38: the last list a window asked the viewer to show (open_list).
+  struct open_list_state {
+    std::uint64_t revision = 0;
+    std::string addon, title;
+    std::vector<std::string> paths;
+    std::uint32_t select = 0;
+  } open_list_;
   // Windows, panes and sheets that are open.
   std::map<std::pair<std::string, std::string>, screen_state> screens_;
   search_state search_[2];  // [0] files, [1] local

@@ -564,6 +564,22 @@ pane. The chrome moves the last bitmap during the gesture and the add-on re-draw
 scale (0.2°) with cities1000 town dots and names, never streets, and says so under the map. The pin
 never leaves the picture: a pan is clamped to keep the photo's point inside it.
 
+**Places gets a window: the world map of the whole library (2026-11-04, owner).** This amends the
+row above ("no bar, path or status item and no window") and the 2026-10-11 row's "clicking it opens
+nothing" (already relaxed by #601's folder-map dots). The owner asked for the map full screen, out to
+the whole world, with every geotagged item of the library on it and a click on a dot opening those
+photos. Places now contributes one window, `world` (`docs/plans/places-world-map.md`, folded into 27
+"The world map"), opened from an Open map button under the section's map and a World Map command;
+the section itself is unchanged and still the pane's last thing. The window's span runs past the
+section's 40° (`map_view::max_span_deg`) to the whole world's width; the section keeps 40°. A click
+shows the dot's items in the viewer as a result list, as Local search's results open (host table
+`open_list`, from a window only). Still read-only, still offline: the picture is drawn on Places'
+worker from its own data, the index's coordinates are read from index.db, nothing leaves the
+machine (rule 6). Measured on the full place blob with 100 000 items at 1440 × 900 pt and 2×: a
+settled gesture redraws in 25–40 ms median, 50 ms at most, off the UI and render threads; the
+canvas presents nothing. On Windows the map's window is not owned by the viewer, so the viewer can
+come in front of it when a click opens a list (it gets its own taskbar button).
+
 **Location is editable; blank removes, with a confirmation (owner, 2026-10-12, #352).** Summary's
 Location row has Edit instead of Remove: coordinates typed in, read by one core parser
 (`meta::parse_location`) on both hosts, and a blank save removes the location only after a

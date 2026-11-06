@@ -1967,6 +1967,25 @@ extern "C" void* mv_addon2_settings_view(const char* addon_id) {
 // indexing pill opens the search panel).
 extern "C" bool mv_addon2_run_command(const char* name) { return MvAddonsRunCommand(name); }
 
+// 0.38 (docs/plans/places-world-map.md): an add-on asked for the Local search
+// index (Places' world map) and none is attached. Start the pack as the search
+// button would, without opening its panel; or say there is none to start, so
+// the add-on stops waiting. [main-thread]; the installed check reads the
+// store's manifests, so it runs on addon_queue() (rule 1).
+extern "C" void mv_addon2_index_wanted(void) {
+  mac_addons& s = state();
+  if (s.ai.chrome || s.ai.loading) return;  // attached (published) or on its way
+  dispatch_async(addon_queue(), ^{
+    const bool installed = ai_installed_ok();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      mac_addons& st = state();
+      if (st.ai.chrome || st.ai.loading) return;
+      const bool started = installed && (st.reader ? reader_begin() : start_ai_load());
+      if (!started) mv::addon::decline_index_request();
+    });
+  });
+}
+
 // [main-thread][no-block] The command bar's indexing pill: mv.ai.1 status,
 // read directly (it never blocks).
 extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {

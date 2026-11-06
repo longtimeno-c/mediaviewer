@@ -785,6 +785,22 @@ mv_status MV_CALL t_open_item(void* host, const char* screen, uint64_t g, const 
   });
 }
 
+// 0.38: a window asks the viewer to show files as a list (the Places world map).
+mv_status MV_CALL t_open_list(void* host, const char* screen, uint64_t g, const char* title, const char* const* paths,
+                              uint32_t count, uint32_t select) {
+  return guarded([&] {
+    if (!screen || !title || !paths || count == 0 || count > 10000) return MV_ERR_INVALID_ARG;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (!paths[i]) return MV_ERR_INVALID_ARG;
+      list.emplace_back(paths[i]);
+    }
+    host_table& t = self(host);
+    return to_mv(t.slots().open_list(t.addon_id(), screen, g, title, std::move(list), select));
+  });
+}
+
 mv_status MV_CALL t_location_of(void* host, const char* path, mv_addon_location* out) {
   return guarded([&] {
     if (!path || !out) return MV_ERR_INVALID_ARG;
@@ -861,7 +877,13 @@ mv_status MV_CALL t_locations_of_index(void* host, uint64_t g, mv_addon_location
       return false;
     };
     const auto& svc = t.services().index_locations;
-    const expected r = svc ? svc(each) : each_index_location(each);
+    // No index attached yet (the pack loads on demand): ask the host to start
+    // it and wait for it, a bounded time, while the request is current.
+    const expected r =
+        svc ? svc(each)
+            : each_index_location_or_wait(
+                  each, [&] { return !t.slots().is_stale(t.addon_id(), g); }, std::chrono::seconds(60));
+    if (!r && r.error() == status::cancelled && t.slots().is_stale(t.addon_id(), g)) return MV_ERR_CANCELLED;
     if (stale) return MV_ERR_CANCELLED;
     if (r || stopped) return MV_OK;
     // Cancelled by neither: the index went mid-walk (the pack is going).
@@ -1478,6 +1500,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   if (svc_.route) api_.route_of = &t_route_of;  // #606
   api_.watch_tree = &t_watch_tree;
   if (svc_.still_mask) api_.still_mask = &t_still_mask;
+  api_.open_list = &t_open_list;  // 0.38
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

@@ -32,6 +32,7 @@
 
 #include "addons/places/map.h"
 #include "addons/places/places.h"
+#include "addons/places/world_map.h"
 #include "core/json.h"
 #include "geo/open.h"
 
@@ -294,8 +295,12 @@ TEST_CASE("places: the Place section is a label, the coordinates, the map and it
   const auto tree = mv::json::parse(out.tree_json);
   REQUIRE(tree);
   const auto& kids = tree->find("children")->a;
-  REQUIRE(kids.size() == 4);
+  REQUIRE(kids.size() == 5);
   CHECK(*kids[0].str("text") == "Sintra, Lisbon, Portugal");
+  // The world map's window opens from the section (docs/plans/places-world-map.md).
+  CHECK(*kids[4].str("type") == "button");
+  CHECK(*kids[4].str("id") == "open_world");
+  CHECK(*kids[4].str("label") == std::string(k_open_world));
   CHECK(*kids[1].str("text") == coords);
   CHECK(kids[1].boolean("copyable") == true);
   CHECK(*kids[2].str("type") == "surface");
@@ -818,7 +823,8 @@ TEST_CASE("places: This folder draws the folder on the map, and a click opens a 
   const auto tree = mv::json::parse(out.tree_json);
   REQUIRE(tree);
   const auto& kids = tree->find("children")->a;
-  REQUIRE(kids.size() == 5);
+  REQUIRE(kids.size() == 6);
+  CHECK(*kids[5].str("id") == "open_world");
   CHECK(*kids[4].str("type") == "toggle");
   CHECK(*kids[4].str("label") == std::string(k_folder_toggle));
   CHECK(kids[4].boolean("value") == false);
@@ -1038,5 +1044,218 @@ TEST_CASE("places: dump the map for a person to look at", "[.places-map-dump]") 
         if (!eng.zoom(st, +1, map, diff)) break;
       }
     }
+  }
+}
+
+// ---- the world map (docs/plans/places-world-map.md) ---------------------------------
+
+namespace {
+std::shared_ptr<world_points> world_fixture() {
+  auto p = std::make_shared<world_points>();
+  p->whole_index = true;
+  p->add("/trip/sintra.jpg", 38.7967, -9.3903);
+  p->add("/trip/lisbon.jpg", 38.7223, -9.1393);
+  p->add("/trip/cascais.jpg", 38.6979, -9.4215);
+  p->add("/japan/tokyo.jpg", 35.6762, 139.6503);
+  p->add("/usa/nyc.heic", 40.7128, -74.0060);
+  p->add("/aus/sydney.mov", -33.8688, 151.2093);
+  return p;
+}
+}  // namespace
+
+TEST_CASE("places: the world map zooms from the whole world to a town", "[places]") {
+  world_map wm([] { return &test_db(); });
+  world_state s;
+  wm.open(s, light_theme(), 1100, 720, 2, "/trip/sintra.jpg", route_point{38.7967, -9.3903});
+  CHECK(s.view.width == 2200);
+  CHECK(s.view.height == 1440);
+  CHECK(s.reading);
+  REQUIRE(s.pin);
+  // The library: framed whole (it spans the world), the pin is not a dot.
+  wm.set_points(s, world_fixture());
+  CHECK_FALSE(s.reading);
+  CHECK(s.pin_index == 0);
+  CHECK(s.view.span_deg > 100);
+  auto img = wm.picture(s);
+  REQUIRE(img);
+  CHECK(img->width == 2200);
+  std::uint32_t dotted = 0;
+  for (const map_dot& d : s.dots) dotted += d.count;
+  CHECK(dotted == 5);  // six items, less the pin
+  // Out to the whole world: the world's width fills the picture, on the equator.
+  int steps = 0;
+  while (wm.zoom(s, -1) && steps < 20) ++steps;
+  CHECK(steps < 20);
+  CHECK(s.view.lat == 0);
+  CHECK(s.view.span_deg == Catch::Approx(360.0 * 1440 / 2200));
+  CHECK(s.moved);
+  // In to a town and no further.
+  steps = 0;
+  while (wm.zoom(s, 1) && steps < 40) ++steps;
+  CHECK(steps < 40);
+  CHECK(s.view.span_deg == Catch::Approx(k_min_span_deg));
+  // A late walk does not reframe a map the person has moved.
+  const double span = s.view.span_deg;
+  wm.set_points(s, world_fixture());
+  CHECK(s.view.span_deg == span);
+  // The tree: a surface that fills, interactive; the diff parses.
+  const auto tree = mv::json::parse(wm.tree(s, img.get()));
+  REQUIRE(tree);
+  const auto& map = tree->find("children")->a[0];
+  CHECK(*map.str("type") == "surface");
+  CHECK(map.boolean("fill") == true);
+  CHECK(map.find("interactive"));
+  CHECK(mv::json::parse(wm.diff(s, img.get())));
+  CHECK(wm.tree(s, img.get()).find("6 photos and videos with a place") != std::string::npos);
+}
+
+TEST_CASE("places: a world-map window resizes at the same ground per point, within the pixel budget",
+          "[places]") {
+  world_map wm([] { return &test_db(); });
+  world_state s;
+  wm.open(s, light_theme(), 1100, 720, 2, "", std::nullopt);
+  CHECK_FALSE(s.pin);
+  wm.set_points(s, world_fixture());
+  REQUIRE(wm.zoom(s, 1));
+  const double before = s.view.span_deg;
+  CHECK_FALSE(wm.resize(s, 1100, 720, 2));
+  REQUIRE(wm.resize(s, 1100, 1080, 2));
+  CHECK(s.view.span_deg == Catch::Approx(before * 1080 / 720).epsilon(1e-6));
+  // A full-screen 5K window: a lower backing scale, never past 4096 px or 8 MP.
+  REQUIRE(wm.resize(s, 2560, 1440, 2));
+  CHECK(s.view.width <= 4096);
+  CHECK(s.view.height <= 4096);
+  CHECK(static_cast<double>(s.view.width) * s.view.height <= k_world_max_pixels * 1.01);
+  CHECK(s.view.scale < 2);
+  CHECK(wm.picture(s));
+}
+
+TEST_CASE("places: a click on a world-map dot hands over its items in walk order", "[places]") {
+  world_map wm([] { return &test_db(); });
+  world_state s;
+  wm.open(s, light_theme(), 1100, 720, 2, "", std::nullopt);
+  wm.set_points(s, world_fixture());
+  // The whole world: Lisbon's three are one dot.
+  while (wm.zoom(s, -1)) {
+  }
+  REQUIRE(wm.picture(s));
+  double x = 0, y = 0;
+  map_pixel(s.view, 38.75, -9.3, x, y);
+  const world_hit h = wm.tap(s, x / s.view.width, y / s.view.height);
+  REQUIRE(h.items == std::vector<std::uint32_t>{0, 1, 2});
+  CHECK(h.count == 3);
+  const std::string title = wm.title_of(s, h, settings{}.lookup());
+  CHECK(title.find("Portugal") != std::string::npos);
+  CHECK(title.find("(3)") != std::string::npos);
+  map_pixel(s.view, 35.6762, 139.6503, x, y);
+  const world_hit tokyo = wm.tap(s, x / s.view.width, y / s.view.height);
+  REQUIRE(tokyo.items == std::vector<std::uint32_t>{3});
+  CHECK(wm.title_of(s, tokyo, settings{}.lookup()).find('(') == std::string::npos);
+  // Open sea: nothing.
+  map_pixel(s.view, -40, -130, x, y);
+  CHECK(wm.tap(s, x / s.view.width, y / s.view.height).items.empty());
+}
+
+TEST_CASE("places: cluster_points gives every point its dot, as cluster_dots clusters", "[places]") {
+  std::vector<folder_item> items;
+  std::vector<route_point> pts;
+  std::uint32_t seed = 7;
+  const auto rnd = [&seed] {
+    seed = seed * 1664525u + 1013904223u;
+    return (seed >> 8) / 16777216.0;
+  };
+  for (int i = 0; i < 3000; ++i) {
+    const double lat = 36 + rnd() * 8, lon = -10 + rnd() * 14;
+    items.push_back({"/x/" + std::to_string(i), lat, lon});
+    pts.push_back({lat, lon});
+  }
+  map_view v;
+  v.lat = 40;
+  v.lon = -3;
+  v.width = 1200;
+  v.height = 800;
+  v.scale = 2;
+  v.span_deg = 9;
+  std::vector<map_dot> a, b;
+  std::vector<std::uint32_t> item_dot;
+  cluster_dots(v, items, 5, a);
+  cluster_points(v, pts, 5, b, &item_dot);
+  REQUIRE(a == b);
+  std::vector<std::uint32_t> counts(b.size(), 0);
+  for (std::size_t i = 0; i < item_dot.size(); ++i) {
+    if (i == 5) {
+      CHECK(item_dot[i] == k_no_dot);
+      continue;
+    }
+    if (item_dot[i] == k_no_dot) continue;
+    REQUIRE(item_dot[i] < b.size());
+    ++counts[item_dot[i]];
+  }
+  for (std::size_t d = 0; d < b.size(); ++d) CHECK(counts[d] == b[d].count);
+}
+
+TEST_CASE("places: world_points keeps paths compact and finds either separator", "[places]") {
+  world_points p;
+  p.add("C:\\Photos\\a.jpg", 1, 2);
+  p.add("/b/c.mov", 3, 4);
+  CHECK(p.size() == 2);
+  CHECK(p.path(1) == "/b/c.mov");
+  CHECK(p.path(2).empty());
+  CHECK(p.find("C:/Photos/a.jpg") == 0);
+  CHECK(p.find("/b/c.mov") == 1);
+  CHECK(p.find("/b/d.mov") == k_no_item);
+  CHECK(p.find("") == k_no_item);
+}
+
+TEST_CASE("places: the world map at 1440 x 900 pt and 2x", "[.perf-bench]") {
+  auto opened = mv::geo::open_database(full_blob());
+  if (!opened) SKIP("no full place database; set MV_GEO_BLOB or build mv_geo_data");
+  const auto& db = (*opened)->db();
+  // 100 000 items round twelve cities, as a travelled library.
+  auto pts = std::make_shared<world_points>();
+  pts->whole_index = true;
+  const double cities[][2] = {{38.72, -9.14}, {48.86, 2.35},   {51.51, -0.13},  {40.71, -74.0},
+                              {35.68, 139.65}, {-33.87, 151.2}, {46.5, 11.8},    {41.9, 12.5},
+                              {37.77, -122.4}, {-22.9, -43.2},  {1.35, 103.8},   {64.1, -21.9}};
+  std::uint32_t seed = 11;
+  const auto rnd = [&seed] {
+    seed = seed * 1664525u + 1013904223u;
+    return (seed >> 8) / 16777216.0 - 0.5;
+  };
+  for (int i = 0; i < 100000; ++i) {
+    const auto& c = cities[i % 12];
+    pts->add("/library/" + std::to_string(i) + ".jpg", c[0] + rnd() * 2, c[1] + rnd() * 2);
+  }
+  struct row {
+    const char* name;
+    double span;
+  };
+  const row rows[] = {{"world", 1000}, {"country (9 deg)", 9}, {"town (0.3 deg)", 0.3}};
+  for (const row& r : rows) {
+    std::vector<double> cold, dots;
+    for (int run = 0; run < 15; ++run) {
+      world_map wm([&db] { return &db; });
+      world_state s;
+      wm.open(s, light_theme(), 1440, 900, 2, "", std::nullopt);
+      wm.set_points(s, pts);
+      s.view.lat = r.span > 100 ? 0 : 46.5 + run * 0.01;
+      s.view.lon = r.span > 100 ? 0 : 11.8;
+      s.view.span_deg = r.span;
+      s.moved = true;
+      (void)wm.gesture(s, 1.0, 0.5, 0.5, 0, 0);  // clamps the view
+      const auto t0 = std::chrono::steady_clock::now();
+      auto img = wm.picture(s);
+      const auto t1 = std::chrono::steady_clock::now();
+      REQUIRE(img);
+      cold.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+      const auto t2 = std::chrono::steady_clock::now();
+      img = wm.picture(s);  // the base a cache hit: clustering and the dot copy
+      dots.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count());
+    }
+    std::sort(cold.begin(), cold.end());
+    std::sort(dots.begin(), dots.end());
+    std::printf("world map %-16s base+dots %6.1f / %6.1f / %6.1f ms   dots only %5.1f / %5.1f / %5.1f ms\n", r.name,
+                cold[cold.size() / 2], cold[cold.size() * 9 / 10], cold.back(), dots[dots.size() / 2],
+                dots[dots.size() * 9 / 10], dots.back());
   }
 }

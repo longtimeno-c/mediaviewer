@@ -24,10 +24,11 @@ namespace mv::addon {
 // the add-on's own page in Settings -> Add-ons, 9 = `reveal` on a screen stack
 // (2026-10-28): the host scrolls it into view and marks it, 10 = a surface's
 // `glow` and a progress bar's "glow" look (2026-10-28, Enhance), 11 =
-// `editor_items`, the Video Editor's bar (2026-11-02, Enhance). Points of an
+// `editor_items`, the Video Editor's bar (2026-11-02, Enhance), 12 = a surface
+// with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04, the Places world map). Points of an
 // API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 11;
+inline constexpr std::uint32_t kSlotsContributionApi = 12;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".

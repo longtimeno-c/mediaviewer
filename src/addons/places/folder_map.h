@@ -52,6 +52,7 @@ inline constexpr double k_folder_dot_max_pt = 8.5;
 // How far outside a dot a click still hits it, in points.
 inline constexpr double k_folder_hit_slop_pt = 5.0;
 inline constexpr std::size_t k_no_item = std::numeric_limits<std::size_t>::max();
+inline constexpr std::uint32_t k_no_dot = std::numeric_limits<std::uint32_t>::max();
 
 // One dot on the picture: a lone item or a cluster.
 struct map_dot {
@@ -79,6 +80,13 @@ struct dot_palette {
 // then dots that would overlap merged. Item `skip` (the file on screen: the
 // pin) is left out. Fills `out` (cleared first), largest count first.
 void cluster_dots(const map_view& v, std::span<const folder_item> items, std::size_t skip, std::vector<map_dot>& out);
+
+// The same for points with no path (the world map's library, kept compact):
+// every point clustered as cluster_dots does, no cap. With `item_dot`, point
+// i's dot (an index into `out`), or k_no_dot when it is off the picture or
+// `skip`: a click's dot gives its members.
+void cluster_points(const map_view& v, std::span<const route_point> points, std::size_t skip, std::vector<map_dot>& out,
+                    std::vector<std::uint32_t>* item_dot = nullptr);
 
 // Draws `dots` over a picture of `v` (BGRA, premultiplied, as render_map
 // writes it). Returns false for a bad size.

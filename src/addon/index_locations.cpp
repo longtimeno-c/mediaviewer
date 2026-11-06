@@ -19,6 +19,9 @@ struct source_state {
   index_location_source source;  // under m
   eyes_source eyes;              // under m (slice 6)
   std::uint32_t in_flight = 0;   // under m
+  std::condition_variable changed;  // a publish or a decline
+  index_wanted_fn wanted;           // under m
+  std::uint64_t declines = 0;       // under m
   // Bumped by every publish and retract; a call in flight compares it per row
   // without the lock.
   std::atomic<std::uint64_t> epoch{0};
@@ -52,6 +55,50 @@ void publish_index_locations(index_location_source source) {
   std::lock_guard lock(s.m);
   s.source = std::move(source);
   s.epoch.fetch_add(1, std::memory_order_acq_rel);
+  s.changed.notify_all();
+}
+
+void set_index_wanted_listener(index_wanted_fn fn) {
+  source_state& s = state();
+  std::lock_guard lock(s.m);
+  s.wanted = std::move(fn);
+}
+
+void decline_index_request() noexcept {
+  source_state& s = state();
+  std::lock_guard lock(s.m);
+  ++s.declines;
+  s.changed.notify_all();
+}
+
+expected each_index_location_or_wait(const index_location_visit& visit, const std::function<bool()>& keep_waiting,
+                                     std::chrono::milliseconds max) {
+  expected r = each_index_location(visit);
+  if (r || r.error() != status::not_found) return r;
+  source_state& s = state();
+  index_wanted_fn wanted;
+  std::uint64_t declines = 0;
+  {
+    std::lock_guard lock(s.m);
+    if (!s.wanted || s.source) return s.source ? each_index_location(visit) : r;
+    wanted = s.wanted;
+    declines = s.declines;
+  }
+  wanted();  // the host starts its pack (never blocks)
+  const auto deadline = std::chrono::steady_clock::now() + max;
+  for (;;) {
+    {
+      std::unique_lock lock(s.m);
+      s.changed.wait_for(lock, std::chrono::milliseconds(100),
+                         [&] { return s.source != nullptr || s.declines != declines; });
+      if (s.source) break;
+      if (s.declines != declines) return err(status::not_found);
+    }
+    // Outside the lock: keep_waiting may take the caller's own locks.
+    if (keep_waiting && !keep_waiting()) return err(status::cancelled);
+    if (std::chrono::steady_clock::now() >= deadline) return err(status::not_found);
+  }
+  return each_index_location(visit);
 }
 
 void retract_index_locations() noexcept {

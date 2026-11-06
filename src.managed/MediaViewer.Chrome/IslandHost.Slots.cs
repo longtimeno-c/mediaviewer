@@ -186,7 +186,12 @@ public static partial class IslandHost
     {
         if (bits.HasFlag(SlotChange.Contributions)) ReadSlotContributions();
         if (bits.HasFlag(SlotChange.Info)) ReadSlotInfo();
-        if (bits.HasFlag(SlotChange.Screens)) ReadSlotScreens();
+        if (bits.HasFlag(SlotChange.Screens))
+        {
+            ReadSlotScreens();
+            ReadSlotOpenList();
+        }
+        if (bits.HasFlag(SlotChange.IndexWanted)) StartAiForIndex();
         if (bits.HasFlag(SlotChange.Search)) ReadSlotSearch();
         if (bits.HasFlag(SlotChange.Badges)) ReadSlotBadges();
         if (bits.HasFlag(SlotChange.Status)) ReadSlotStatus();
@@ -343,6 +348,52 @@ public static partial class IslandHost
                     return;
                 }
             }
+        }
+        catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+    }
+
+    // ABI 0.38: an add-on (the Places world map) asked for the Local search
+    // index and none is attached: the pack starts as the search icon would
+    // start it, without opening the panel; a later window starts its reader.
+    // With no pack to start, the add-on is told so and stops waiting.
+    private static void StartAiForIndex()
+    {
+        if (SearchChrome is not null || AiStarting()) return;
+        if (_addonsElsewhere)
+        {
+            if (_readerStarted || _folderSession is null || !AiSlot.Usable) { SlotNative.IndexUnavailable(); return; }
+            EnsureReaderStarted();
+            return;
+        }
+        if (!StartAiOnDemand(open: false)) SlotNative.IndexUnavailable();
+    }
+
+    // ABI 0.38 (docs/plans/places-world-map.md): an add-on's window asked the
+    // viewer to show a list (the world map's click on a dot). Opened once per
+    // revision (the core's only grows) as a Local search result list is,
+    // titled with the place, its item `select` on the canvas, and the viewer
+    // brought forward (HostOpenList activates it). The JSON is small; no I/O.
+    private static long _slotOpenListRevision;
+
+    private static void ReadSlotOpenList()
+    {
+        string json = SlotNative.OpenListJson();
+        if (json.Length == 0) return;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object) return;
+            long revision = (long)JNum(r, "revision", 0);
+            if (revision <= _slotOpenListRevision) return;
+            _slotOpenListRevision = revision;
+            var paths = JArr(r, "paths")
+                .Where(e => e.ValueKind == JsonValueKind.String)
+                .Select(e => e.GetString() ?? "")
+                .Where(p => p.Length > 0)
+                .ToList();
+            if (paths.Count == 0) return;
+            HostOpenList(JStr(r, "title"), paths, null, (int)JNum(r, "select", 0), false);
         }
         catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
     }
