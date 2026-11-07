@@ -842,6 +842,12 @@ jobs:
             done
           fi
 
+      # The venv's Python is pinned: the runner's Homebrew python3 moved to 3.15
+      # (image 20261104), which the pinned torch has no wheel for.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       # A job-local venv: the runner's Homebrew Python owns packages such as
       # cryptography that pip cannot uninstall, so pinned versions go here.
       # requirements-export.txt: staging re-exports our own models (People embedder, #482 towers)
