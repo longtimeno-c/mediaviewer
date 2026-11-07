@@ -185,7 +185,7 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.items[1].id == "edit");  // the Video Editor's Enhance… (contribution API 11)
   CHECK(c.items[1].slot == mv::addon::item_slot::editor);
   CHECK(c.items[1].label == "Enhance…");
-  CHECK(c.api_min == 13);  // API 13: the progress line's detail and timed
+  CHECK(c.api_min == 14);  // API 14: the progress line's detail and timed
   // "open" (Ctrl+Shift+R / Cmd+Shift+R), the Edit strip wand menu's "restyle"
   // and the Faces card's "faces" (docs/plans/edit-refresh.md S10), these two
   // with no default key (docs/design/16). No command-bar button: the way in
