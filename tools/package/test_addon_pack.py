@@ -486,8 +486,12 @@ class PlacesPackTest(unittest.TestCase):
             self.assertEqual(lic["data/places.mvgeo"], "CC-BY-4.0 AND LicenseRef-PublicDomain")
             self.assertIn("LICENSES/NOTICE.txt", lic)
             self.assertNotIn("mv_places.pdb", lic)
-            # Owner, 2026-10-12: the Place section, search and settings; no bar item, no window.
-            self.assertEqual(sorted(m["contributes"]), ["api", "info_sections", "search_providers", "settings"])
+            # Owner, 2026-10-12: the Place section, search and settings; no bar item.
+            # #652: the World Map, one window and the command that opens it.
+            self.assertEqual(sorted(m["contributes"]),
+                             ["api", "commands", "info_sections", "screens", "search_providers", "settings"])
+            self.assertEqual([c["id"] for c in m["contributes"]["commands"]], ["world"])
+            self.assertEqual([(s["id"], s["place"]) for s in m["contributes"]["screens"]], [("world", "window")])
             self.assertEqual(m["contributes"]["info_sections"][0]["id"], "place")
             self.assertEqual(m["contributes"]["search_providers"][0]["prefixes"], ["place:", "in:"])
             keys = [i["key"] for s in m["contributes"]["settings"]["sections"] for i in s["items"]]
