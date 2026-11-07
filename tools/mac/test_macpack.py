@@ -55,6 +55,33 @@ class NotarizationTests(unittest.TestCase):
                 macpack.notarize(Path("app.zip"), "profile")
 
 
+class StapleRetryTests(unittest.TestCase):
+    """stapler's CloudKit lookup drops now and then (release run 42389957973)."""
+
+    def _codes(self, codes):
+        calls = []
+        def fake(cmd, check=False, **_):
+            calls.append(cmd)
+            return type("P", (), {"returncode": codes[len(calls) - 1], "stdout": ""})()
+        return calls, fake
+
+    def test_a_dropped_connection_is_retried(self):
+        calls, fake = self._codes([68, 68, 0])
+        waits = []
+        with patch.object(macpack.subprocess, "run", side_effect=fake):
+            macpack.staple(Path("A.app"), sleep=waits.append)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0], ["xcrun", "stapler", "staple", "A.app"])
+        self.assertEqual(waits, [30.0, 60.0])
+
+    def test_the_last_failure_still_fails(self):
+        calls, fake = self._codes([68] * 3)
+        with patch.object(macpack.subprocess, "run", side_effect=fake):
+            with self.assertRaises(SystemExit):
+                macpack.staple(Path("A.dmg"), attempts=3, sleep=lambda _: None)
+        self.assertEqual(len(calls), 3)
+
+
 class ReleaseSigningTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

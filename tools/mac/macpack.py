@@ -215,6 +215,26 @@ def run(cmd: list[str], *, capture: bool = False, check: bool = True, stdin: str
     return proc.stdout or ""
 
 
+def staple(path: Path, *, attempts: int = 5, wait: float = 30.0,
+           sleep: Callable[[float], None] = time.sleep) -> None:
+    """Staple the notarization ticket, retrying: stapler fetches it from Apple's
+    CloudKit, whose connection drops now and then (error 68, NSURLError -1005;
+    release run 42389957973 lost it twice in a row). The ticket is already issued,
+    so a retry is safe; the last failure still fails the build."""
+    cmd = ["xcrun", "stapler", "staple", str(path)]
+    for attempt in range(1, attempts + 1):
+        if attempt == attempts:
+            run(cmd)
+            return
+        print("+", " ".join(cmd), flush=True)
+        if subprocess.run(cmd, check=False).returncode == 0:
+            return
+        delay = wait * attempt
+        print(f"macpack: stapler failed (attempt {attempt}/{attempts}); retrying in {delay:.0f}s",
+              file=sys.stderr, flush=True)
+        sleep(delay)
+
+
 def otool_id(path: Path) -> str | None:
     out = subprocess.run(["otool", "-D", str(path)], text=True, capture_output=True).stdout
     lines = [l for l in out.splitlines()[1:] if l.strip()]
@@ -737,7 +757,7 @@ def cmd_release(args: argparse.Namespace) -> None:
             zipped = Path(tmp) / f"{APP_NAME}.zip"
             run(["ditto", "-c", "-k", "--keepParent", str(app), str(zipped)])
             notarize(zipped, args.notary_profile)
-        run(["xcrun", "stapler", "staple", str(app)])
+        staple(app)
         run(["spctl", "--assess", "--type", "execute", "--verbose=2", str(app)])
 
     # 3. First install: the branded disk image, GPL on mount (docs/design/13).
@@ -748,7 +768,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     codesign(dmg, args.identity, hardened=False)
     if not args.skip_notarize:
         notarize(dmg, args.notary_profile)
-        run(["xcrun", "stapler", "staple", str(dmg)])
+        staple(dmg)
         run(["spctl", "--assess", "--type", "open", "--context", "context:primary-signature",
              "--verbose=2", str(dmg)])
 
