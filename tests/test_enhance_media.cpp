@@ -1535,3 +1535,40 @@ TEST_CASE("faces: bench on real photos", "[.faces-bench]") {
   REQUIRE(r);
   std::printf("faces %d fixed %d written %s\n", r->faces, r->fixed, r->written.c_str());
 }
+
+TEST_CASE("faces: a fix also offers the chosen face's person's photos as donors", "[enhance][eyes]") {
+  // Two faces: person 7 (chosen) and person 9.
+  const std::string first =
+      "{\"faces\":[{\"x\":0.1,\"y\":0.1,\"w\":0.2,\"h\":0.3,\"lm\":[0.15,0.2,0.25,0.2,0.2,0.25,0.16,0.3,0.24,0.3],"
+      "\"person\":7,\"donors\":[]},{\"x\":0.6,\"y\":0.1,\"w\":0.2,\"h\":0.3,"
+      "\"lm\":[0.65,0.2,0.75,0.2,0.7,0.25,0.66,0.3,0.74,0.3],\"person\":9,\"donors\":[]}]}";
+  std::vector<std::string> asked;
+  const mv::addon::media::eyes_ask_fn ask = [&](const std::string&, const std::string& c) -> mv::result<std::string> {
+    asked.push_back(c);
+    return first;
+  };
+  std::vector<std::uint64_t> people;
+  mv::addon::media::set_person_photos([&](std::uint64_t person) -> mv::result<std::string> {
+    people.push_back(person);
+    // A clip frame (never offered), the photo itself, a frame already offered,
+    // a small face and a large one.
+    return std::string("[{\"face\":1,\"path\":\"/p/clip.mov\",\"pts_ms\":1200,\"box\":[0,0,0.9,0.9]},"
+                       "{\"face\":2,\"path\":\"/p/self.jpg\",\"pts_ms\":-1,\"box\":[0,0,0.8,0.8]},"
+                       "{\"face\":3,\"path\":\"/p/moment.jpg\",\"pts_ms\":-1,\"box\":[0,0,0.7,0.7]},"
+                       "{\"face\":4,\"path\":\"/p/small.jpg\",\"pts_ms\":-1,\"box\":[0,0,0.1,0.1]},"
+                       "{\"face\":5,\"path\":\"/p/large.jpg\",\"pts_ms\":-1,\"box\":[0,0,0.5,0.5]}]");
+  });
+  const std::vector<float> chosen{0.1f, 0.1f, 0.2f, 0.3f};  // face 0's box
+  auto r = mv::addon::media::eyes_answer("/p/self.jpg", "/p/moment.jpg\n", chosen, ask);
+  mv::addon::media::set_person_photos(nullptr);
+  REQUIRE(r);
+  REQUIRE(people.size() == 1);
+  CHECK(people[0] == 7);  // the chosen face's person only
+  REQUIRE(asked.size() == 2);
+  CHECK(asked[0] == "/p/moment.jpg\n");
+  CHECK(asked[1] == "/p/moment.jpg\n/p/large.jpg\n/p/small.jpg\n");  // largest first; no clip, self or repeat
+  // Without the hook: one question, the moment's frames.
+  asked.clear();
+  REQUIRE(mv::addon::media::eyes_answer("/p/self.jpg", "/p/moment.jpg\n", chosen, ask));
+  CHECK(asked.size() == 1);
+}

@@ -216,6 +216,23 @@ void set_face_redetect(face_redetect_fn fn);
 // probability each is open, -1 unknown. Donors are left as they are. The
 // answer unchanged when it does not parse or `still` is not valid.
 [[nodiscard]] std::string with_eyes_read(std::string_view pack_json, const image::linear_image& still);
+// 2026-11-07: more donors for a fix. The pack's own pick from People reads
+// only faces turned as this one is by YuNet's raw points, which miss on a
+// tilted face; most of a person's photos never reach the host. So the fix
+// asks the pack twice: once with the moment's frames, then again with the
+// chosen faces' people's largest still photos (set_person_photos: the pack's
+// person_faces_json) added as candidates, which the pack reads at any pose;
+// the host then judges the pose on points read again upright. kPeoplePhotos a
+// person, kPeoplePhotosAll in all. `boxes` as faces_mask_of's (empty: every
+// face); `ask` is ai_eyes_json. The first answer when there is nothing to add
+// or the second fails.
+using person_photos_fn = std::function<result<std::string>(std::uint64_t person)>;
+void set_person_photos(person_photos_fn fn);
+inline constexpr std::size_t kPeoplePhotos = 12;
+inline constexpr std::size_t kPeoplePhotosAll = 24;
+using eyes_ask_fn = std::function<result<std::string>(const std::string& path, const std::string& candidates)>;
+[[nodiscard]] result<std::string> eyes_answer(const std::string& path, const std::string& candidates,
+                                              std::span<const float> boxes, const eyes_ask_fn& ask);
 // The note for a fix's outcome (eyes_note / faces_note by the fix).
 [[nodiscard]] std::string fix_note(face_fix fix, status pack, const result<eyes_outcome>& r);
 // The faces of `pack_json` the canvas chose: `boxes` holds x, y, w, h (0..1

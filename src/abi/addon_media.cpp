@@ -823,6 +823,84 @@ edit::face_landmarks refine_landmarks(const image::linear_image& img, const edit
   return out;
 }
 
+namespace {
+struct person_photos_hook {
+  std::mutex m;
+  person_photos_fn fn;
+};
+person_photos_hook& person_photos() {
+  static person_photos_hook h;
+  return h;
+}
+}  // namespace
+
+void set_person_photos(person_photos_fn fn) {
+  person_photos_hook& h = person_photos();
+  const std::lock_guard<std::mutex> lock(h.m);
+  h.fn = std::move(fn);
+}
+
+result<std::string> eyes_answer(const std::string& path, const std::string& candidates, std::span<const float> boxes,
+                                const eyes_ask_fn& ask) {
+  MV_TRY(std::string first, ask(path, candidates));
+  person_photos_fn photos;
+  {
+    person_photos_hook& h = person_photos();
+    const std::lock_guard<std::mutex> lock(h.m);
+    photos = h.fn;
+  }
+  if (!photos) return first;
+  auto doc = json::parse(first);
+  const json::value* faces = doc ? doc->find("faces") : nullptr;
+  if (!faces || faces->k != json::kind::array) return first;
+  const std::uint64_t mask = boxes.empty() ? kAllFaces : faces_mask_of(first, boxes);
+  // Paths already offered (the photo itself, the moment's frames).
+  std::vector<std::string> have{path};
+  for (std::size_t a = 0, b; a < candidates.size(); a = b + 1) {
+    b = candidates.find('\n', a);
+    if (b == std::string::npos) b = candidates.size();
+    if (b > a) have.emplace_back(candidates.substr(a, b - a));
+  }
+  std::string extra;
+  std::size_t added = 0;
+  std::vector<std::int64_t> asked;
+  for (std::size_t i = 0; i < faces->a.size() && i < 64 && added < kPeoplePhotosAll; ++i) {
+    if ((mask & (std::uint64_t{1} << i)) == 0) continue;
+    const std::int64_t person = faces->a[i].integer("person").value_or(0);
+    if (person <= 0 || std::find(asked.begin(), asked.end(), person) != asked.end()) continue;
+    asked.push_back(person);
+    auto rows = photos(static_cast<std::uint64_t>(person));
+    if (!rows) continue;
+    auto list = json::parse(*rows);
+    if (!list || list->k != json::kind::array) continue;
+    // Their stills, largest face first.
+    std::vector<std::pair<double, std::string>> stills;
+    for (const json::value& r : list->a) {
+      const std::string* p = r.str("path");
+      const json::value* box = r.find("box");
+      const json::value* pts = r.find("pts_ms");
+      if (!p || (pts && pts->k == json::kind::number && (pts->is_integer ? pts->i : static_cast<std::int64_t>(pts->d)) >= 0)) {
+        continue;
+      }
+      double area = 0.0;
+      if (box && box->k == json::kind::array && box->a.size() == 4) area = box->a[2].d * box->a[3].d;
+      stills.emplace_back(area, *p);
+    }
+    std::stable_sort(stills.begin(), stills.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    std::size_t mine = 0;
+    for (const auto& [area, p] : stills) {
+      if (mine >= kPeoplePhotos || added >= kPeoplePhotosAll) break;
+      if (std::find(have.begin(), have.end(), p) != have.end()) continue;
+      have.push_back(p);
+      extra += p + "\n";
+      ++mine, ++added;
+    }
+  }
+  if (extra.empty()) return first;
+  auto second = ask(path, candidates + extra);
+  return second ? std::move(*second) : std::move(first);
+}
+
 std::string with_eyes_read(std::string_view pack_json, const image::linear_image& still) {
   auto doc = json::parse(pack_json);
   if (!doc || !still.valid()) return std::string(pack_json);

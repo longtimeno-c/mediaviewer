@@ -4712,6 +4712,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
       [](const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::uint32_t stride) {
         return mv::addon::ai_faces_json(rgb, w, h, stride, nullptr);
       });
+  // And a person's photos from People, offered to a fix as more donors
+  // (media::eyes_answer).
+  mv::addon::media::set_person_photos([](std::uint64_t person) { return mv::addon::ai_person_faces_json(person); });
   mv::addon::media::set_photos_hooks(
       [](const std::string& key, const mv::job_context* ctx) -> mv::result<std::string> {
         auto reported = std::make_shared<std::atomic<bool>>(false);
@@ -12514,7 +12517,7 @@ static double mv_wall_seconds() {
   _jobs.submit_at(mv::background_generation, [path, mode, weakSelf](const mv::job_context& ctx) -> mv::status {
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    auto pack = mv::addon::media::eyes_answer(path, candidates, {}, &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
     if (pack) {
       r = mode == 1 ? mv::addon::media::improve_faces(path, *pack, &ctx)
@@ -13410,7 +13413,7 @@ static double mv_wall_seconds() {
   _jobs.submit_at(mv::background_generation, [path, fix, boxes, weakSelf](const mv::job_context& ctx) -> mv::status {
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    auto pack = mv::addon::media::eyes_answer(path, candidates, boxes, &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
     if (pack) r = mv::addon::media::fix_faces(path, *pack, fix, mv::addon::media::faces_mask_of(*pack, boxes), &ctx);
     const std::string note = mv::addon::media::fix_note(fix, pack ? mv::status::ok : pack.error(), r);

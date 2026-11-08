@@ -768,6 +768,7 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
   mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
   mv::addon::publish_ai_faces(mv::addon::ai_faces(static_cast<const mv_ai_api*>(table)));  // edit-refresh S10
+  mv::addon::publish_ai_person_faces(mv::addon::ai_person_faces(static_cast<const mv_ai_api*>(table)));  // Faces donors
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.

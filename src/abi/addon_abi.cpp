@@ -299,6 +299,8 @@ void ensure_face_redetect() {
         [](const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::uint32_t stride) {
           return mv::addon::ai_faces_json(rgb, w, h, stride, nullptr);
         });
+    mv::addon::media::set_person_photos(
+        [](std::uint64_t person) { return mv::addon::ai_person_faces_json(person); });
     return true;
   }();
   (void)once;
@@ -312,7 +314,7 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
     ensure_face_redetect();
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    auto pack = mv::addon::media::eyes_answer(path_utf8, candidates, {}, &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
     if (pack) r = mv::addon::media::open_closed_eyes(path_utf8, *pack);
     return write_out(mv::addon::media::eyes_note(pack ? status::ok : pack.error(), r), note_out, cap, needed);
@@ -325,7 +327,7 @@ MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out,
     ensure_face_redetect();
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    auto pack = mv::addon::media::eyes_answer(path_utf8, candidates, {}, &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
     if (pack) r = mv::addon::media::improve_faces(path_utf8, *pack);
     return write_out(mv::addon::media::faces_note(pack ? status::ok : pack.error(), r), note_out, cap, needed);
@@ -363,7 +365,9 @@ MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, con
     const auto f = static_cast<face_fix>(fix);
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    auto pack = mv::addon::media::eyes_answer(
+        path_utf8, candidates, boxes ? std::span<const float>(boxes, std::size_t{count} * 4) : std::span<const float>(),
+        &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
     if (pack) {
       // The faces the canvas chose, found again in this answer; NULL: every face.
@@ -389,7 +393,9 @@ MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, 
     const auto f = static_cast<face_fix>(fix);
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    auto pack = mv::addon::media::eyes_answer(
+        path_utf8, candidates, boxes ? std::span<const float>(boxes, std::size_t{count} * 4) : std::span<const float>(),
+        &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
     if (pack) {
       const std::uint64_t mask =
@@ -894,6 +900,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       mv::addon::publish_index_locations(mv::addon::ai_index_locations(ai));
       mv::addon::publish_ai_eyes(mv::addon::ai_eyes(ai));  // edit-adjust slice 6
       mv::addon::publish_ai_faces(mv::addon::ai_faces(ai));  // edit-refresh S10: Restore faces
+      mv::addon::publish_ai_person_faces(mv::addon::ai_person_faces(ai));  // Faces donors (2026-11-07)
     }
   }
   const void* iface = it->second.addon->query(interface_id);
