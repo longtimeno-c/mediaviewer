@@ -196,19 +196,6 @@ bool eyes_readable(const image::linear_image& img, const face_landmarks& lm) noe
     }
     if (lid < 0.5f) return false;
   }
-  // The points on eyes, not brows: a brow, a band darker than the lid, a
-  // fifth to two fifths of an eye distance above at least one of them (YuNet
-  // can put a face's eye points on its brows, looking down; then there is
-  // only forehead above).
-  float brow_ratio = 1e9f;
-  for (const auto& [ex, ey] : {std::pair{rx, ry}, std::pair{lx, ly}}) {
-    auto band = [&](float up) { return box_mean(img, ex + s * up * d, ey - c * up * d, c, s, 0.2f * d, 0.03f * d); };
-    const float lid = band(0.12f);
-    float brow = 1e9f;
-    for (int i = 0; i < 8; ++i) brow = std::min(brow, band(0.2f + 0.22f * static_cast<float>(i) / 7.0f));
-    if (lid > 1e-6f) brow_ratio = std::min(brow_ratio, brow / lid);
-  }
-  if (!(brow_ratio < 0.72f)) return false;
   // Sharp enough to read: a band over both eyes, levelled and scaled so the
   // eyes are 64 px apart, its mean |Laplacian| over its mean grey (a blurred
   // face read 0.016; every blink of the owner's 0.034 or more).
@@ -248,6 +235,20 @@ bool looks_shut(const image::linear_image& img, const face_landmarks& lm) noexce
   if (!(d > 0.0f)) return false;
   const float c = (lx - rx) / d, s = (ly - ry) / d;
   const float mx = (rx + lx) * 0.5f, my = (ry + ly) * 0.5f;
+  // The points on eyes, not brows: a brow, a band darker than the lid, a
+  // fifth to two fifths of an eye distance above at least one of them (YuNet
+  // can put a face's eye points on its brows, looking down; then there is
+  // only forehead above). Only for a shut verdict: over an open eye the band
+  // just above is its dark upper lid, and open-eyed donors read unknown.
+  float brow_ratio = 1e9f;
+  for (const auto& [ex, ey] : {std::pair{rx, ry}, std::pair{lx, ly}}) {
+    auto band = [&](float up) { return box_mean(img, ex + s * up * d, ey - c * up * d, c, s, 0.2f * d, 0.03f * d); };
+    const float lid = band(0.12f);
+    float brow = 1e9f;
+    for (int i = 0; i < 8; ++i) brow = std::min(brow, band(0.2f + 0.22f * static_cast<float>(i) / 7.0f));
+    if (lid > 1e-6f) brow_ratio = std::min(brow_ratio, brow / lid);
+  }
+  if (!(brow_ratio < 0.72f)) return false;
   const float cheek = box_mean(img, mx - s * 0.75f * d, my + c * 0.75f * d, c, s, 0.5f * d, 0.12f * d);
   if (cheek > 1e-5f) {
     float under = 0.0f;
