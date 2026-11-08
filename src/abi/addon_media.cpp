@@ -1040,7 +1040,12 @@ result<int> fix_faces_in(image::linear_image& target, std::string_view pack_json
       const bool library = d.find("library") && d.find("library")->k == json::kind::boolean && d.find("library")->b;
       const float d_dist = std::hypot((r->lm[2] - r->lm[0]) * dw, (r->lm[3] - r->lm[1]) * dh);
       const float small = t_dist > 0.0f ? std::max(0.0f, 1.0f - d_dist / t_dist) : 0.0f;
-      out.push_back({pose + (library ? 0.04f : 0.0f) + 0.1f * small + 0.2f * (1.0f - r->open), r->img, r->lm});
+      // A frame of the same moment or evening first: the same light, camera
+      // and look. 0.15 outweighs any pose difference that passes (kPoseMatch
+      // 0.12): a closer-turned photo from another day pasted Tristan's eyes in
+      // soft and flat where the same evening's gave sharp ones (2026-11-08,
+      // IMG_2113, owner: "the eye still looks a bit wonky").
+      out.push_back({pose + (library ? 0.15f : 0.0f) + 0.1f * small + 0.2f * (1.0f - r->open), r->img, r->lm});
     }
     std::stable_sort(out.begin(), out.end(), [](const eyes_candidate& a, const eyes_candidate& b) {
       return a.cost < b.cost;

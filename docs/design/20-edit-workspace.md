@@ -413,8 +413,9 @@ animation or with the workspace closed it goes down.
   its own, read inside the face only, never a ring of hair and background), and refuses a donor
   whose colour sits patchily under this photo's (`kLookPatchy`: face paint, a coloured spot),
   trying the next best (up to six). **Open eyes** takes, of the donors whose eyes the model reads
-  open, the one turned most as this face is (both read again upright), a same-moment frame
-  ahead of another day's, not much smaller; its ellipse (0.44 × 0.27 eye distances) covers a
+  open, a frame of the same moment or evening first (its light, camera and look: a
+  closer-turned photo from another day gave Tristan soft, flat eyes), then the one turned
+  most as this face is (both read again upright), not much smaller; its ellipse (0.44 × 0.27 eye distances) covers a
   shut eye's whole lash line; its light comes from the skin of the ring around it alone (brows,
   lashes, hair and glare left out) and is laid smoothly inward (a membrane), so the eye meets
   the skin all the way round. Donors are tried best first (up to six) and **a result is kept
