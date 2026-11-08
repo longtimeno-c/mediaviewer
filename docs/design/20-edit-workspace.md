@@ -398,9 +398,11 @@ animation or with the workspace closed it goes down.
      folders these sent every sunglasses face but mirrored and glare-lit lenses, every tiny or
      profile face, and the four open faces whose points had strayed onto a brow or cheek to
      unknown, and no blink. Then a brow above at least one point (a face looking down can
-     have its points on its brows) and a sharp enough eye band (`eyes_readable`). Over all 284
-     photos of the two folders: 14 faces badged, 10 real blinks, 1 glance down, and 3 wrong
-     (two glare-lit sunglasses, one face whose points sit on the hairline).
+     have its points on its brows) and a sharp enough eye band (`eyes_readable`). A shut
+     reading also needs skin under the points and eyes no greyer than the cheeks
+     (`looks_shut`: a lens, or the real eye under points on a brow; an open eye's whites are
+     grey, so only for "shut"). Over all 284 photos of the two folders: 11 faces badged, every
+     one shut or shut to a slit; no sunglasses, profile, blur or open eye badged.
   Open eyes stays on every face: on a face the person chose it takes the most open donor at
   their pose whatever the model says; the wand's every-face run fixes only badged faces.
 - **How a face is put in (2026-11-07).** Eye patches are read along the eye line (a tilted

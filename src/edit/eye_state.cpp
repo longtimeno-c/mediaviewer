@@ -144,6 +144,26 @@ float box_mean(const image::linear_image& img, float cx, float cy, float c, floa
   }
   return sum / static_cast<float>(n);
 }
+// The mean saturation (HSV S of the sRGB colour) of a box like box_mean's.
+float box_saturation(const image::linear_image& img, float cx, float cy, float c, float s, float hw,
+                     float hh) noexcept {
+  float sum = 0.0f;
+  int n = 0;
+  for (int j = -2; j <= 2; ++j) {
+    for (int i = -4; i <= 4; ++i) {
+      const float a = static_cast<float>(i) / 4.0f * hw, b = static_cast<float>(j) / 2.0f * hh;
+      const int xi = std::clamp(static_cast<int>(cx + c * a - s * b), 0, static_cast<int>(img.width) - 1);
+      const int yi = std::clamp(static_cast<int>(cy + s * a + c * b), 0, static_cast<int>(img.height) - 1);
+      const std::uint16_t* p = img.rgba.data() + (static_cast<std::size_t>(yi) * img.width + xi) * 4;
+      const float r = srgb(image::half_to_float(p[0])), g = srgb(image::half_to_float(p[1])),
+                  bl = srgb(image::half_to_float(p[2]));
+      const float hi = std::max({r, g, bl}), lo = std::min({r, g, bl});
+      sum += hi > 0.0f ? (hi - lo) / hi : 0.0f;
+      ++n;
+    }
+  }
+  return sum / static_cast<float>(n);
+}
 }  // namespace
 
 bool eyes_readable(const image::linear_image& img, const face_landmarks& lm) noexcept {
@@ -214,6 +234,43 @@ bool eyes_readable(const image::linear_image& img, const face_landmarks& lm) noe
   return n > 0 && mean > 1.0 && (lap / n) / (mean / n) >= 0.025;
 }
 
+// What a shut verdict needs besides the model's (2026-11-07, the last three
+// wrong badges over 284 of the owner's photos): skin under the points (a
+// band 0.17..0.27 below at least 0.6 of the cheeks' light; not more lens, not
+// the real eye under points sitting on a brow: 0.18 and 0.51, blinks 0.83 or
+// more), and eyes no greyer than 0.72 of the cheeks' saturation (a lens over
+// a sunlit face 0.65, blinks 0.82 or more). Only for a shut verdict: an open
+// eye's whites are grey.
+bool looks_shut(const image::linear_image& img, const face_landmarks& lm) noexcept {
+  const float w = static_cast<float>(img.width), h = static_cast<float>(img.height);
+  const float rx = lm[0] * w, ry = lm[1] * h, lx = lm[2] * w, ly = lm[3] * h;
+  const float d = std::hypot(lx - rx, ly - ry);
+  if (!(d > 0.0f)) return false;
+  const float c = (lx - rx) / d, s = (ly - ry) / d;
+  const float mx = (rx + lx) * 0.5f, my = (ry + ly) * 0.5f;
+  const float cheek = box_mean(img, mx - s * 0.75f * d, my + c * 0.75f * d, c, s, 0.5f * d, 0.12f * d);
+  if (cheek > 1e-5f) {
+    float under = 0.0f;
+    for (const auto& [ex, ey] : {std::pair{rx, ry}, std::pair{lx, ly}}) {
+      for (const float off : {0.17f, 0.22f, 0.27f}) {
+        under = std::max(under,
+                         box_mean(img, ex - s * off * d, ey + c * off * d, c, s, 0.18f * d, 0.03f * d) / cheek);
+      }
+    }
+    if (under < 0.6f) return false;
+  }
+  // Not judged on a grey picture.
+  const float cheek_sat = box_saturation(img, mx - s * 0.75f * d, my + c * 0.75f * d, c, s, 0.5f * d, 0.12f * d);
+  if (cheek_sat > 0.08f) {
+    float eye_sat = 0.0f;
+    for (const auto& [ex, ey] : {std::pair{rx, ry}, std::pair{lx, ly}}) {
+      eye_sat = std::max(eye_sat, box_saturation(img, ex, ey, c, s, 0.25f * d, 0.12f * d));
+    }
+    if (eye_sat < 0.72f * cheek_sat) return false;
+  }
+  return true;
+}
+
 eye_state read_eye_state(const image::linear_image& img, const face_landmarks& lm) noexcept {
   eye_state out;
   if (!img.valid() || !eyes_readable(img, lm)) return out;
@@ -254,6 +311,8 @@ eye_state read_eye_state(const image::linear_image& img, const face_landmarks& l
     }
     *eyes[e] = static_cast<float>(sum / n);
   }
+  // Read shut: only if the face looks it (looks_shut); else not known.
+  if (out.known() && out.open() < kEyeOpen && !looks_shut(img, lm)) return eye_state{};
   return out;
 }
 

@@ -61,6 +61,9 @@ inline constexpr float kEyeFixedOpen = 0.9f;
 // brows; one blink with faint brows went too. And sharp enough: a band over
 // both eyes, levelled to 64 px between them, whose mean |Laplacian| is at
 // least 0.025 of its mean grey (a blurred face read 0.016, blinks 0.034 up).
+// A shut reading also needs skin under the points and eyes no greyer than
+// the cheeks (eye_state.cpp looks_shut: a lens, or the real eye under points
+// on a brow), else the eyes are unknown.
 inline constexpr float kEyeReadMinPx = 45.0f;
 [[nodiscard]] bool eyes_readable(const image::linear_image& img, const face_landmarks& lm) noexcept;
 
