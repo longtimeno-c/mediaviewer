@@ -95,9 +95,45 @@ inline constexpr float kFaceRegionGrow = 0.12f;
 [[nodiscard]] std::array<float, 4> face_region(const std::array<float, 4>& box, const face_landmarks& lm, float w,
                                                float h) noexcept;
 
+// Where each pasted eye should go, in target eye distances along the eye line
+// (owner 2026-11-08: "it's the direction the pupils are looking").
+// transfer_eyes lines up the two faces' eye points, but a shut eye's point is
+// not where its iris would be, and the donor's iris was aimed for the donor's
+// head. So the iris goes where an iris looking at the camera sits on this face:
+// kOuterToIris in from the outer end of the eye's dark line, plus
+// kOuterToIrisTurn times the head's turn (a turned head foreshortens the far
+// eye). `patch` moves the whole eye; `slide` then moves the iris inside its
+// opening, kGazeFollow times the difference in head turn. `lands` is where the
+// paste alone puts the iris. An eye whose iris or line cannot be read stays as
+// the paste puts it (0, 0).
+struct iris_aim {
+  struct eye {
+    float lands = 0.0f, patch = 0.0f, slide = 0.0f;
+  };
+  eye right, left;
+};
+[[nodiscard]] iris_aim aim_irises(const image::linear_image& target, const face_landmarks& target_lm,
+                                  const image::linear_image& donor, const face_landmarks& donor_lm) noexcept;
+// What aim_irises reads of one face's eyes, for the bench and the tests: the
+// outer end of each eye's dark line and its iris, in eye distances along the eye
+// line from its landmark (NaN when unread), and the head's turn.
+struct eye_line_read {
+  float right_end, right_iris, left_end, left_iris, turn;
+};
+[[nodiscard]] eye_line_read read_eye_lines(const image::linear_image& img, const face_landmarks& lm) noexcept;
+// Fitted 2026-11-08 over 168 open eyes of the owner's photos, robustly (the
+// inner 80 %, residual 0.08: people do not all look at the lens):
+// outward * (end - iris) = kOuterToIris + kOuterToIrisTurn * outward * turn.
+inline constexpr float kOuterToIris = 0.265f;
+inline constexpr float kOuterToIrisTurn = -0.278f;
+inline constexpr float kGazeFollow = 0.15f;
+inline constexpr float kEyeShiftMax = 0.07f;
+inline constexpr float kIrisSlideMax = 0.05f;
+
 // `target` with both eyes of the face at `target_lm` replaced by those of the
-// donor face at `donor_lm` in `donor`. Refused (invalid_arg) when either
-// face's eyes are under 12 px apart: nothing to transfer.
+// donor face at `donor_lm` in `donor`, each iris re-aimed for this face
+// (aim_irises). Refused (invalid_arg) when either face's eyes are under 12 px
+// apart: nothing to transfer.
 [[nodiscard]] expected transfer_eyes(image::linear_image& target, const face_landmarks& target_lm,
                                      const image::linear_image& donor, const face_landmarks& donor_lm) noexcept;
 

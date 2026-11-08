@@ -1993,6 +1993,90 @@ TEST_CASE("eyes: real YuNet and AdaFace on real photos of one person", "[.eyes-r
 #endif
 }
 
+// 2026-11-08: what edit::aim_irises reads, over every open-eyed face of the
+// folders in MV_AIM_DIRS (separated by ':'), one line a face, to set
+// kSocketHalf and kGazeFollow from real eyes. Shut faces are marked. Needs
+// MV_AI_PACK_DIR and MV_AI_FACES_DIR as below (the embedder is not used).
+TEST_CASE("faces: what the eye aim reads over folders of photos", "[.iris-aim-bench]") {
+#if defined(MV_AI_TEST_DECODE)
+  const std::string pack_dir = env("MV_AI_PACK_DIR"), faces = env("MV_AI_FACES_DIR"), dirs = env("MV_AIM_DIRS");
+  if (pack_dir.empty() || faces.empty() || dirs.empty()) SKIP("set the MV_ variables");
+  auto rt = mv::infer::runtime::load(pack_dir);
+  REQUIRE(rt);
+  auto spec = mv::infer::read_face_spec(utf8(fs::path(faces) / "models" / "faces"));
+  REQUIRE(spec);
+  mv::infer::session_options cpu;
+  auto model = mv::infer::face_models::open(**rt, *spec, cpu);
+  REQUIRE(model);
+  mv::infer::face_models* m = model->get();
+  mv::addon::media::set_face_redetect(
+      [m](const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::uint32_t) -> mv::result<std::string> {
+        auto found = m->detect(mv::infer::rgb_view{rgb, w, h});
+        if (!found) return mv::err(found.error());
+        mv::json::writer out;
+        out.begin_object().key("faces").begin_array();
+        for (const auto& f : *found) {
+          out.begin_object();
+          out.key("x").number(f.x / w).key("y").number(f.y / h).key("w").number(f.w / w).key("h").number(f.h / h);
+          out.key("lm").begin_array();
+          for (int i = 0; i < 10; ++i) out.number(f.landmarks[i] / static_cast<float>(i % 2 ? h : w));
+          out.end_array().end_object();
+        }
+        out.end_array().end_object();
+        return out.take();
+      });
+  std::stringstream list(dirs);
+  for (std::string dir; std::getline(list, dir, ':');) {
+    for (const auto& entry : fs::directory_iterator(fs::path(dir))) {
+      const std::string name = utf8(entry.path().filename());
+      std::string ext = utf8(entry.path().extension());
+      std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if ((ext != ".jpg" && ext != ".jpeg" && ext != ".heic") || name.find("-eyes") != std::string::npos ||
+          name.find("-faces") != std::string::npos || name.find("-extended") != std::string::npos ||
+          name.find("-enhance") != std::string::npos) {
+        continue;
+      }
+      const std::string path = utf8(entry.path());
+      auto st = mv::addon::media::decode_still(path, 1024);
+      if (!st) continue;
+      auto found = m->detect(mv::infer::rgb_view{st->rgb.data(), st->width, st->height});
+      if (!found || found->empty()) continue;
+      mv::json::writer w;
+      w.begin_object().key("faces").begin_array();
+      for (const auto& f : *found) {
+        const float W = static_cast<float>(st->width), H = static_cast<float>(st->height);
+        w.begin_object().key("x").number(f.x / W).key("y").number(f.y / H).key("w").number(f.w / W).key("h").number(f.h / H);
+        w.key("lm").begin_array();
+        for (int i = 0; i < 10; ++i) w.number(f.landmarks[i] / (i % 2 ? H : W));
+        w.end_array().key("quality").number(0.3).key("donors").begin_array().end_array().end_object();
+      }
+      w.end_array().end_object();
+      auto bytes = mv::io::read_all(path);
+      if (!bytes) continue;
+      auto still = mv::image::decode_linear(*bytes);
+      if (!still) continue;
+      auto rd = mv::json::parse(mv::addon::media::with_eyes_read(w.take(), *still));
+      if (!rd) continue;
+      for (const auto& f : rd->find("faces")->a) {
+        const mv::json::value* e = f.find("eyes");
+        if (!e || e->a.size() != 2 || e->a[0].d < 0 || e->a[1].d < 0) continue;  // unreadable
+        mv::edit::face_landmarks lm{};
+        const auto& v = f.find("lm")->a;
+        for (std::size_t i = 0; i < 10; ++i) lm[i] = static_cast<float>(v[i].d);
+        const float dist = std::hypot((lm[2] - lm[0]) * still->width, (lm[3] - lm[1]) * still->height);
+        const auto r = mv::edit::read_eye_lines(*still, lm);
+        std::printf("AIMREAD %s x %.3f y %.3f d %.1f open %.2f %.2f turn %.3f R %.3f %.3f L %.3f %.3f\n", name.c_str(),
+                    f.find("x")->d, f.find("y")->d, dist, e->a[0].d, e->a[1].d, r.turn, r.right_end, r.right_iris,
+                    r.left_end, r.left_iris);
+      }
+    }
+  }
+  mv::addon::media::set_face_redetect(nullptr);
+#else
+  SKIP("needs MV_AI_TEST_DECODE");
+#endif
+}
+
 // 2026-11-07: a face fix on a real photo with the pack's own YuNet as the
 // re-detect (media::set_face_redetect), as the app runs it. MV_AI_PACK_DIR
 // (ONNX Runtime), MV_AI_FACES_DIR (a folder with models/faces: model.json and

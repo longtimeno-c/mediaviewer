@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <tuple>
 #include <vector>
 
 #include "image/half.h"
@@ -520,6 +522,213 @@ bool paste_region(image::linear_image& target, const image::linear_image& donor,
 }
 }  // namespace
 
+namespace {
+// Where things sit along the eye line, in eye distances from the eye's
+// landmark. Read on a grid of kAimGrid samples an eye distance, so it costs the
+// same at any size.
+constexpr int kAimGrid = 120;
+
+// The outer end of an eye's dark line (`outward` -1 or +1 along the eye line):
+// a shut eye's lashes, an open eye's upper lid. The outer end, because the
+// line is strong there and fades toward the nose (a tear duct is pink). NaN when
+// no line reads.
+float read_outer_end(const image::linear_image& img, float cx, float cy, float d, float c, float sn, int outward) {
+  // Across: wide enough for a lash line that slopes away from the eye line; a
+  // brow starts further up.
+  constexpr int kHalfU = kAimGrid * 55 / 100, kHalfV = kAimGrid * 20 / 100;
+  const int columns = 2 * kHalfU + 1, rows_i = 2 * kHalfV + 1;
+  const auto rows = static_cast<std::size_t>(rows_i), cols = static_cast<std::size_t>(columns);
+  const float none = std::numeric_limits<float>::quiet_NaN();
+  // Row by row, so a blur runs on one plane: [row * cols + column].
+  std::vector<float> l(rows * cols), wide, cover(rows * cols, 1.0f);
+  const float step = d / kAimGrid;
+  float mean_light = 0.0f;
+  for (int j = -kHalfV; j <= kHalfV; ++j) {
+    for (int i = -kHalfU; i <= kHalfU; ++i) {
+      const float u = static_cast<float>(i) * step, v = static_cast<float>(j) * step;
+      const float value = lightness(bilinear(img, cx + u * c - v * sn, cy + u * sn + v * c));
+      l[static_cast<std::size_t>(j + kHalfV) * cols + static_cast<std::size_t>(i + kHalfU)] = value;
+      mean_light += value;
+    }
+  }
+  mean_light /= static_cast<float>(l.size());
+  if (mean_light <= 1e-3f) return none;
+  // Darker than its surroundings, not just dark: lashes stand out of the skin
+  // around them; the inside of hair or a shadow does not.
+  wide = l;
+  for (int pass = 0; pass < 2; ++pass) {
+    box_blur(wide, columns, rows_i, kAimGrid / 10);
+    box_blur(cover, columns, rows_i, kAimGrid / 10);
+  }
+  std::vector<float> depth(cols, 0.0f);
+  std::vector<int> line_row(cols, 0);
+  for (std::size_t x = 0; x < cols; ++x) {
+    float deepest = 0.0f;
+    int at_row = 0;
+    const auto under = [&](std::size_t y) {
+      const std::size_t o = y * cols + x;
+      return wide[o] / std::max(cover[o], 1e-3f) - l[o];
+    };
+    for (std::size_t y = 0; y < rows; ++y) {
+      if (under(y) > deepest) deepest = under(y), at_row = static_cast<int>(y);
+    }
+    std::size_t thick = 0;
+    for (std::size_t y = 0; y < rows; ++y) thick += under(y) > 0.5f * deepest ? 1 : 0;
+    // Dark most of the way across is the edge of hair, not a thin line.
+    depth[x] = thick * 2 > rows ? 0.0f : deepest;
+    line_row[x] = at_row;
+  }
+  std::vector<float> sorted = depth;
+  const std::size_t top = sorted.size() * 85 / 100;
+  std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(top), sorted.end());
+  const float deep = sorted[top];
+  if (deep < 0.06f * mean_light) return none;
+  const float dark = 0.35f * deep;
+  // From the deepest column near the landmark, out along the line, row by row:
+  // where the darkest row jumps, the run has left the eye for a brow's tail.
+  int seed = kHalfU;
+  float best = -1.0f;
+  for (int i = kHalfU - kAimGrid / 6; i <= kHalfU + kAimGrid / 6; ++i) {
+    if (depth[static_cast<std::size_t>(i)] > best) best = depth[static_cast<std::size_t>(i)], seed = i;
+  }
+  if (best < dark) return none;
+  int last = seed, gap = 0;
+  for (int i = seed + outward; i >= 0 && i < columns && gap <= 3; i += outward) {
+    const auto at = static_cast<std::size_t>(i);
+    if (depth[at] >= dark && std::abs(line_row[at] - line_row[static_cast<std::size_t>(last)]) <= 6 + 2 * gap) {
+      last = i, gap = 0;
+    } else {
+      ++gap;
+    }
+  }
+  return static_cast<float>(last - kHalfU) / kAimGrid;
+}
+
+// The iris: the dark disc between two brighter flanks (the whites), best
+// contrast along the line. NaN when nothing stands out.
+float read_iris_along(const image::linear_image& img, float cx, float cy, float d, float c, float sn) {
+  constexpr int kHalfU = kAimGrid * 38 / 100, kHalfV = kAimGrid * 7 / 100, kReach = kAimGrid / 5;
+  constexpr int kRadius = kAimGrid * 9 / 100, kFlank = kAimGrid / 10;
+  const int columns = 2 * kHalfU + 1;
+  std::vector<float> line(static_cast<std::size_t>(columns));
+  std::vector<float> all;
+  all.reserve(static_cast<std::size_t>(columns) * (2 * kHalfV + 1));
+  const float step = d / kAimGrid;
+  for (int i = -kHalfU; i <= kHalfU; ++i) {
+    for (int j = -kHalfV; j <= kHalfV; ++j) {
+      const float u = static_cast<float>(i) * step, v = static_cast<float>(j) * step;
+      all.push_back(lightness(bilinear(img, cx + u * c - v * sn, cy + u * sn + v * c)));
+    }
+  }
+  std::vector<float> sorted = all;
+  std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
+  const float median = sorted[sorted.size() / 2];
+  if (median <= 1e-3f) return std::numeric_limits<float>::quiet_NaN();
+  const auto rows = static_cast<std::size_t>(2 * kHalfV + 1);
+  for (std::size_t x = 0; x < line.size(); ++x) {
+    float sum = 0.0f;
+    // A catchlight is not the iris's own brightness.
+    for (std::size_t y = 0; y < rows; ++y) sum += std::min(all[x * rows + y], median);
+    line[x] = sum / static_cast<float>(rows);
+  }
+  const auto mean = [&](int from, int to) {
+    float sum = 0.0f;
+    for (int i = from; i <= to; ++i) sum += line[static_cast<std::size_t>(i + kHalfU)];
+    return sum / static_cast<float>(to - from + 1);
+  };
+  float best = 0.0f;
+  int at = 0;
+  for (int centre = -kReach; centre <= kReach; ++centre) {
+    const float inside = mean(centre - kRadius, centre + kRadius);
+    const float near = mean(centre - kRadius - kFlank, centre - kRadius - 2);
+    const float far = mean(centre + kRadius + 2, centre + kRadius + kFlank);
+    // Both flanks brighter than the iris, but only half each: the white
+    // on the outer side is often narrow and shaded.
+    if (std::min(near, far) <= inside) continue;
+    const float flanks = 0.5f * (near + far);
+    if (flanks - inside > best) best = flanks - inside, at = centre;
+  }
+  if (best < 0.04f * median) return std::numeric_limits<float>::quiet_NaN();
+  // The middle of the disc, finer than the search's steps: the centre of how far
+  // each sample falls under the whites.
+  const float level = 0.5f * (mean(at - kRadius - kFlank, at - kRadius - 2) + mean(at + kRadius + 2, at + kRadius + kFlank));
+  float sum = 0.0f, weight = 0.0f;
+  for (int i = std::max(at - kRadius - 2, -kHalfU); i <= std::min(at + kRadius + 2, kHalfU); ++i) {
+    const float w = std::max(0.0f, level - line[static_cast<std::size_t>(i + kHalfU)]);
+    sum += w * static_cast<float>(i), weight += w;
+  }
+  if (weight > 0.0f) return sum / weight / kAimGrid;
+  return static_cast<float>(at) / kAimGrid;
+}
+
+// The head's turn: the nose along the eye line from the eyes' midpoint, in eye
+// distances.
+float head_turn(const face_landmarks& lm, float w, float h) noexcept {
+  const float rx = lm[0] * w, ry = lm[1] * h, lx = lm[2] * w, ly = lm[3] * h;
+  const float vx = lx - rx, vy = ly - ry, d = std::hypot(vx, vy);
+  if (d <= 0.0f) return 0.0f;
+  const float nx = lm[4] * w - (rx + lx) * 0.5f, ny = lm[5] * h - (ry + ly) * 0.5f;
+  return (nx * vx + ny * vy) / (d * d);
+}
+
+// The slide's reach, in eye distances from where the iris lands: along the
+// line, and the rows it holds in full and where it has faded.
+constexpr float kIrisSlideHalf = 0.30f, kIrisSlideRows = 0.08f, kIrisSlideFade = 0.15f;
+// How fast the slide goes from nothing at its ends to full over the iris.
+constexpr float kIrisSlideFlat = 1.5f;
+}  // namespace
+
+eye_line_read read_eye_lines(const image::linear_image& img, const face_landmarks& lm) noexcept {
+  const float none = std::numeric_limits<float>::quiet_NaN();
+  eye_line_read out{none, none, none, none, 0.0f};
+  if (!img.valid()) return out;
+  const eye_pts e = eyes_of(img, lm);
+  if (e.d < 12.0f) return out;
+  try {
+    out.right_end = read_outer_end(img, e.rx, e.ry, e.d, e.c(), e.s(), -1);
+    out.left_end = read_outer_end(img, e.lx, e.ly, e.d, e.c(), e.s(), 1);
+    out.right_iris = read_iris_along(img, e.rx, e.ry, e.d, e.c(), e.s());
+    out.left_iris = read_iris_along(img, e.lx, e.ly, e.d, e.c(), e.s());
+    out.turn = head_turn(lm, static_cast<float>(img.width), static_cast<float>(img.height));
+  } catch (...) {
+    return {none, none, none, none, 0.0f};  // out of memory: nothing read
+  }
+  return out;
+}
+
+iris_aim aim_irises(const image::linear_image& target, const face_landmarks& target_lm,
+                    const image::linear_image& donor, const face_landmarks& donor_lm) noexcept {
+  if (!target.valid() || !donor.valid()) return {};
+  const eye_pts t = eyes_of(target, target_lm), s = eyes_of(donor, donor_lm);
+  if (t.d < 12.0f || s.d < 12.0f) return {};
+  try {
+    const float yaw = head_turn(target_lm, static_cast<float>(target.width), static_cast<float>(target.height));
+    const float donor_yaw = head_turn(donor_lm, static_cast<float>(donor.width), static_cast<float>(donor.height));
+    // Past this the head is near profile (or the nose was not given): the fit
+    // says nothing about it.
+    if (std::abs(yaw) > 0.45f || std::abs(donor_yaw) > 0.45f) return {};
+    const auto one = [&](float tx, float ty, float sx, float sy, int outward) {
+      iris_aim::eye out;
+      const float iris = read_iris_along(donor, sx, sy, s.d, s.c(), s.s());
+      if (!std::isfinite(iris)) return out;
+      out.lands = iris;
+      const float end = read_outer_end(target, tx, ty, t.d, t.c(), t.s(), outward);
+      // Beyond these it has run into a brow's tail or the shadow at the temple.
+      if (!std::isfinite(end) || std::abs(end) < 0.15f || std::abs(end) > 0.40f) return out;
+      // Where an iris looking at the camera sits on this face, measured from
+      // its eye's outer end. The eye moves as far as it needs, less what the
+      // iris does inside the opening for the difference in head turn.
+      const float wanted = end - static_cast<float>(outward) * kOuterToIris - kOuterToIrisTurn * yaw;
+      out.slide = std::clamp(kGazeFollow * (donor_yaw - yaw), -kIrisSlideMax, kIrisSlideMax);
+      out.patch = std::clamp(wanted - iris - out.slide, -kEyeShiftMax, kEyeShiftMax);
+      return out;
+    };
+    return {one(t.rx, t.ry, s.rx, s.ry, -1), one(t.lx, t.ly, s.lx, s.ly, 1)};
+  } catch (...) {
+    return {};  // out of memory: the donor's place
+  }
+}
+
 expected transfer_eyes(image::linear_image& target, const face_landmarks& target_lm,
                        const image::linear_image& donor, const face_landmarks& donor_lm) noexcept {
   if (!target.valid() || !donor.valid()) return err(status::invalid_arg);
@@ -541,8 +750,25 @@ expected transfer_eyes(image::linear_image& target, const face_landmarks& target
   // lashes under the new one, 2026-11-07).
   const float a = 0.44f * t.d, b = 0.27f * t.d;
   const float cosr = tvx / t.d, sinr = tvy / t.d;   // along the eye line
-  for (const auto& [cx, cy] : {std::pair{t.rx, t.ry}, std::pair{t.lx, t.ly}}) {
-    (void)paste_region(target, donor, to_donor, scale, cx, cy, a, b, cosr, sinr);
+  const iris_aim aim = aim_irises(target, target_lm, donor, donor_lm);
+  for (const auto& [cx, cy, eye] : {std::tuple{t.rx, t.ry, aim.right}, std::tuple{t.lx, t.ly, aim.left}}) {
+    // The whole eye moves onto this face's socket. The iris then slides inside
+    // the opening and the whites give way to it, down to nothing toward the
+    // corners and above and below the lids (near level, so it does not show on
+    // them). All in the paste's one resample.
+    const float patch = eye.patch * t.d, slide = eye.slide * t.d, lands = (eye.lands + eye.patch) * t.d;
+    const float hu = std::min(kIrisSlideHalf * t.d, a - std::abs(lands) - 1.0f);
+    const float in = kIrisSlideRows * t.d, out = kIrisSlideFade * t.d;
+    auto aimed = [&, cx = cx, cy = cy, patch, slide, lands, hu, in, out](float x, float y, float& dx, float& dy) {
+      const float ux = (x - cx) * cosr + (y - cy) * sinr;
+      const float uy = -(x - cx) * sinr + (y - cy) * cosr;
+      const float along_w =
+          hu > 0.0f ? std::clamp((1.0f - std::abs(ux - lands - slide) / hu) * kIrisSlideFlat, 0.0f, 1.0f) : 0.0f;
+      const float across_w = std::clamp((out - std::abs(uy)) / (out - in), 0.0f, 1.0f);
+      const float move = patch + slide * along_w * across_w;
+      to_donor(x - move * cosr, y - move * sinr, dx, dy);
+    };
+    (void)paste_region(target, donor, aimed, scale, cx, cy, a, b, cosr, sinr);
   }
   return {};
 }

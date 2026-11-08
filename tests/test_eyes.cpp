@@ -246,3 +246,86 @@ TEST_CASE("eyes: a face's edit region holds its box and the whole-face ellipse, 
   CHECK(g[0] == Approx(box[0] - edit::kFaceRegionGrow * box[2]));
   CHECK(g[2] == Approx(box[2] * (1 + 2 * edit::kFaceRegionGrow)));
 }
+
+// Owner 2026-11-08: "it's the direction the pupils are looking". The eye goes
+// on this face's own socket, read from its dark line, not on its eye point.
+namespace {
+// The middle of the darkest run in row `y` between x0 and x1 (the iris).
+float dark_middle(const image::linear_image& img, int y, int x0, int x1) {
+  float sum = 0.0f, weight = 0.0f;
+  for (int x = x0; x <= x1; ++x) {
+    if (red_at(img, x, y) < 0.15f) sum += static_cast<float>(x), weight += 1.0f;
+  }
+  return weight > 0.0f ? sum / weight : -1.0f;
+}
+}  // namespace
+
+TEST_CASE("eyes: a shut eye's point off its socket still gets the iris on the socket", "[eyes][aim]") {
+  const face shut{200, 150, 120, 0.0f, false, 1.0f};
+  const face open{200, 150, 120, 0.0f, true, 1.0f};
+  auto target = draw(400, 300, shut);
+  const auto donor = draw(400, 300, open);
+  auto t = five(target, shut);
+  const auto d = five(donor, open);
+  // The detector puts the left eye's point 7 px toward the temple of where it
+  // is: without the read the iris would land there (267).
+  t[2] += 7.0f / 400.0f;
+  const auto aim = edit::aim_irises(target, t, donor, d);
+  CHECK(aim.left.lands == Approx(0.0f).margin(0.02f));
+  CHECK(aim.left.patch < -0.05f);
+  CHECK(aim.left.patch >= -edit::kEyeShiftMax);
+  // Moving the point moved the eyes' midpoint a little: a slight "turn".
+  CHECK(aim.left.slide == Approx(0.0f).margin(0.006f));
+  REQUIRE(edit::transfer_eyes(target, t, donor, d));
+  CHECK(dark_middle(target, 150, 235, 295) == Approx(260.0f).margin(3.0f));
+}
+
+TEST_CASE("eyes: the iris slides for the difference in head turn, at most kIrisSlideMax", "[eyes][aim]") {
+  const face shut{200, 150, 120, 0.0f, false, 1.0f};
+  const face open{200, 150, 120, 0.0f, true, 1.0f};
+  const auto target = draw(400, 300, shut);
+  const auto donor = draw(400, 300, open);
+  const auto t = five(target, shut);
+  auto d = five(donor, open);
+  // The donor's nose 0.1 of an eye distance along the eye line.
+  d[4] += 12.0f / 400.0f;
+  auto aim = edit::aim_irises(target, t, donor, d);
+  CHECK(aim.left.slide == Approx(edit::kGazeFollow * 0.1f).margin(1e-3f));
+  CHECK(aim.right.slide == Approx(aim.left.slide).margin(1e-5f));
+  // A head turned further (0.4): the slide stops at its limit.
+  d[4] += 36.0f / 400.0f;
+  aim = edit::aim_irises(target, t, donor, d);
+  CHECK(aim.left.slide == Approx(edit::kIrisSlideMax));
+  // Near profile, the fit says nothing: nothing moves.
+  d[4] += 60.0f / 400.0f;
+  aim = edit::aim_irises(target, t, donor, d);
+  CHECK(aim.left.slide == 0.0f);
+  CHECK(aim.left.patch == 0.0f);
+}
+
+TEST_CASE("eyes: an eye that cannot be read stays where the paste puts it", "[eyes][aim]") {
+  const face shut{200, 150, 120, 0.0f, false, 1.0f};
+  const auto target = draw(400, 300, shut);
+  // A donor with no iris to read.
+  const auto no_iris = draw(400, 300, shut);
+  const auto t = five(target, shut);
+  const auto none = edit::aim_irises(target, t, no_iris, five(no_iris, shut));
+  CHECK(none.left.patch == 0.0f);
+  CHECK(none.left.slide == 0.0f);
+  CHECK(none.right.patch == 0.0f);
+  // A target with no eye line: bare skin.
+  image::linear_image bare = target;
+  for (std::size_t i = 0; i < bare.rgba.size(); i += 4) {
+    bare.rgba[i] = image::float_to_half(0.45f);
+    bare.rgba[i + 1] = image::float_to_half(0.30f);
+    bare.rgba[i + 2] = image::float_to_half(0.22f);
+  }
+  const face open{200, 150, 120, 0.0f, true, 1.0f};
+  const auto donor = draw(400, 300, open);
+  const auto flat = edit::aim_irises(bare, t, donor, five(donor, open));
+  CHECK(flat.left.patch == 0.0f);
+  CHECK(flat.left.slide == 0.0f);
+  // Nothing valid: nothing moved.
+  const auto empty = edit::aim_irises(image::linear_image{}, t, donor, five(donor, open));
+  CHECK(empty.left.lands == 0.0f);
+}

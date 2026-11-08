@@ -418,7 +418,20 @@ animation or with the workspace closed it goes down.
   most as this face is (both read again upright), not much smaller; its ellipse (0.44 × 0.27 eye distances) covers a
   shut eye's whole lash line; its light comes from the skin of the ring around it alone (brows,
   lashes, hair and glare left out) and is laid smoothly inward (a membrane), so the eye meets
-  the skin all the way round. Donors are tried best first (up to six) and **a result is kept
+  the skin all the way round. **The eye is aimed for this face (2026-11-08, owner: "it's the
+  direction the pupils are looking"; `edit::aim_irises`).** The paste lines up the two faces' eye
+  points, but a shut eye's point is not where its iris would be (up to a tenth of an eye distance
+  off on IMG_2113) and the donor's iris was aimed for the donor's head. So the iris goes where an
+  iris looking at the camera sits on this face: `kOuterToIris` (0.265 eye distances) in from the
+  outer end of the eye's dark line, read as darker than its surroundings and followed row by row
+  (the inner end fades at the tear duct; hair and a brow's tail are refused), plus
+  `kOuterToIrisTurn` (−0.278) times the head's turn, because a turned head foreshortens the far
+  eye. Both were fitted over 168 open eyes of the owner's photos (`mv_ai_tests
+  "[.iris-aim-bench]"`, `MV_AIM_DIRS`; residual 0.08, since people do not all look at the lens).
+  The eye moves there as a whole (`patch`, at most 0.07), and the iris then slides inside the
+  opening by `kGazeFollow` (0.15, from IMG_2069 alone) times the difference in head turn. An eye
+  whose iris or line cannot be read, or whose line ends outside 0.15–0.40, stays where the paste
+  puts it. Donors are tried best first (up to six) and **a result is kept
   only if its eyes then read clearly open** (`kEyeFixedOpen` 0.9 on the more open eye; soft
   slits from a small, dim donor read about 0.65); Improve keeps a face that had shut eyes only
   on the same terms. No donor that passes: no file, and the note says so. The **same moment**
