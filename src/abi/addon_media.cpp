@@ -7,18 +7,21 @@
 #include "abi/addon_media.h"
 
 #include <algorithm>
+#include <deque>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iterator>
 #include <mutex>
+#include <optional>
 
 #include "codec/decode.h"
 #include "core/json.h"
 #include "edit/bake.h"
 #include "edit/clip_sample.h"
 #include "edit/export.h"
+#include "edit/eye_state.h"
 #include "edit/eyes.h"
 #include "edit/picture_io.h"
 #include "edit/sound_writer.h"
@@ -532,16 +535,31 @@ std::vector<std::string> burst_neighbours(const std::string& path) {
     const std::u8string u = p.u8string();
     return std::string(reinterpret_cast<const char*>(u.data()), u.size());
   };
+  // By when each was taken (EXIF), else when each file was written: a
+  // folder copied off a phone has every file written minutes apart, the
+  // burst's frames among them (2026-11-07, IMG_2113: its neighbour one second
+  // later by the camera was four minutes away by the file).
+  const std::optional<std::int64_t> taken0 = meta::read_date_taken(path);
   const auto t0 = fs::last_write_time(self, ec);
-  if (ec) return out;
+  if (ec && !taken0) return out;
   std::vector<std::pair<double, std::string>> near;
   for (const fs::directory_entry& e : fs::directory_iterator(self.parent_path(), ec)) {
     std::error_code ec2;
     if (!e.is_regular_file(ec2) || e.path() == self) continue;
-    const auto t = e.last_write_time(ec2);
-    if (ec2) continue;
-    const double dt = std::abs(std::chrono::duration<double>(t - t0).count());
-    if (dt <= kBurstSeconds) near.emplace_back(dt, utf8(e.path()));
+    double dt = 0.0;
+    if (taken0) {
+      const std::optional<std::int64_t> taken = meta::read_date_taken(utf8(e.path()));
+      if (!taken) continue;
+      dt = std::abs(static_cast<double>(*taken - *taken0));
+    } else {
+      const auto t = e.last_write_time(ec2);
+      if (ec2) continue;
+      dt = std::abs(std::chrono::duration<double>(t - t0).count());
+    }
+    // By capture time the same occasion counts too (the same day's party,
+    // trip): nearest first, so the moment's frames still lead. File times
+    // say nothing of the occasion; only the moment for them.
+    if (dt <= (taken0 ? kOccasionSeconds : kBurstSeconds)) near.emplace_back(dt, utf8(e.path()));
   }
   std::sort(near.begin(), near.end());
   for (std::size_t i = 0; i < near.size() && i < kBurstFrames; ++i) out.push_back(std::move(near[i].second));
@@ -677,15 +695,190 @@ const char* face_fix_suffix(face_fix fix) noexcept {
   return fix == face_fix::open_eyes ? "eyes" : "faces";
 }
 
+namespace {
+struct redetect_hook {
+  std::mutex m;
+  face_redetect_fn fn;
+};
+redetect_hook& redetect() {
+  static redetect_hook h;
+  return h;
+}
+
+std::uint8_t srgb8(float c) noexcept {
+  c = std::clamp(std::isfinite(c) ? c : 0.0f, 0.0f, 1.0f);
+  const float e = c <= 0.0031308f ? 12.92f * c : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+  return static_cast<std::uint8_t>(std::lround(e * 255.0f));
+}
+
+// A parsed value written back out as it was.
+void write_value(json::writer& w, const json::value& v) {
+  switch (v.k) {
+    case json::kind::null: w.null(); break;
+    case json::kind::boolean: w.boolean(v.b); break;
+    case json::kind::number:
+      if (v.is_integer) w.integer(v.i);
+      else w.number(v.d);
+      break;
+    case json::kind::string: w.string(v.s); break;
+    case json::kind::array:
+      w.begin_array();
+      for (const json::value& e : v.a) write_value(w, e);
+      w.end_array();
+      break;
+    case json::kind::object:
+      w.begin_object();
+      for (const auto& [k, e] : v.o) {
+        w.key(k);
+        write_value(w, e);
+      }
+      w.end_object();
+      break;
+  }
+}
+}  // namespace
+
+void set_face_redetect(face_redetect_fn fn) {
+  redetect_hook& h = redetect();
+  const std::lock_guard<std::mutex> lock(h.m);
+  h.fn = std::move(fn);
+}
+
+edit::face_landmarks refine_landmarks(const image::linear_image& img, const edit::face_landmarks& lm) {
+  face_redetect_fn fn;
+  {
+    redetect_hook& h = redetect();
+    const std::lock_guard<std::mutex> lock(h.m);
+    fn = h.fn;
+  }
+  if (!fn || !img.valid()) return lm;
+  const float w = static_cast<float>(img.width), h = static_cast<float>(img.height);
+  const float rx = lm[0] * w, ry = lm[1] * h, lx = lm[2] * w, ly = lm[3] * h;
+  const float d = std::hypot(lx - rx, ly - ry);
+  if (!(d >= 8.0f)) return lm;
+  const float c = (lx - rx) / d, s = (ly - ry) / d;
+  // The face upright: a square 3.2 eye distances a side, about half an eye
+  // distance below the eyes' middle, 320 px, four samples a pixel.
+  constexpr int kSide = 320;
+  const float mx = (rx + lx) * 0.5f - 0.5f * d * s, my = (ry + ly) * 0.5f + 0.5f * d * c;
+  const float st = 3.2f * d / static_cast<float>(kSide);
+  std::vector<std::uint8_t> rgb(static_cast<std::size_t>(kSide) * kSide * 3);
+  auto px = [&](int x, int y, int k) {
+    x = std::clamp(x, 0, static_cast<int>(img.width) - 1);
+    y = std::clamp(y, 0, static_cast<int>(img.height) - 1);
+    return image::half_to_float(img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4 + k]);
+  };
+  for (int v = 0; v < kSide; ++v) {
+    for (int u = 0; u < kSide; ++u) {
+      float acc[3] = {0, 0, 0};
+      for (const float oy : {-0.25f, 0.25f}) {
+        for (const float ox : {-0.25f, 0.25f}) {
+          const float a = (static_cast<float>(u) - kSide / 2 + ox) * st, b = (static_cast<float>(v) - kSide / 2 + oy) * st;
+          const float sx = mx + c * a - s * b, sy = my + s * a + c * b;
+          const float fx = std::floor(sx), fy = std::floor(sy);
+          const int x0 = static_cast<int>(fx), y0 = static_cast<int>(fy);
+          const float ax = sx - fx, ay = sy - fy;
+          for (int k = 0; k < 3; ++k) {
+            acc[k] += (px(x0, y0, k) * (1 - ax) + px(x0 + 1, y0, k) * ax) * (1 - ay) +
+                      (px(x0, y0 + 1, k) * (1 - ax) + px(x0 + 1, y0 + 1, k) * ax) * ay;
+          }
+        }
+      }
+      std::uint8_t* o = rgb.data() + (static_cast<std::size_t>(v) * kSide + u) * 3;
+      for (int k = 0; k < 3; ++k) o[k] = srgb8(acc[k] * 0.25f);
+    }
+  }
+  auto answer = fn(rgb.data(), kSide, kSide, kSide * 3);
+  if (!answer) return lm;
+  auto doc = json::parse(*answer);
+  const json::value* faces = doc ? doc->find("faces") : nullptr;
+  if (!faces || faces->k != json::kind::array) return lm;
+  // The face nearest the square's middle; its eyes back on the picture.
+  const json::value* best = nullptr;
+  float best_d = 0.3f;
+  for (const json::value& f : faces->a) {
+    const float fx = json_number(f, "x", 0.0f) + 0.5f * json_number(f, "w", 0.0f);
+    const float fy = json_number(f, "y", 0.0f) + 0.5f * json_number(f, "h", 0.0f);
+    const float dd = std::hypot(fx - 0.5f, fy - 0.5f);
+    edit::face_landmarks probe{};
+    if (dd < best_d && read_landmarks(f.find("lm"), probe)) best_d = dd, best = &f;
+  }
+  if (!best) return lm;
+  edit::face_landmarks up{};
+  (void)read_landmarks(best->find("lm"), up);
+  edit::face_landmarks out{};
+  for (int i = 0; i < 5; ++i) {
+    const float a = (up[2 * i] * kSide - kSide / 2) * st, b = (up[2 * i + 1] * kSide - kSide / 2) * st;
+    out[2 * i] = (mx + c * a - s * b) / w;
+    out[2 * i + 1] = (my + s * a + c * b) / h;
+  }
+  // Kept only when it is the same face: the eyes near the old ones, about as
+  // far apart.
+  const float nrx = out[0] * w, nry = out[1] * h, nlx = out[2] * w, nly = out[3] * h;
+  const float nd = std::hypot(nlx - nrx, nly - nry);
+  if (nd < 0.6f * d || nd > 1.6f * d || std::hypot(nrx - rx, nry - ry) > 0.45f * d ||
+      std::hypot(nlx - lx, nly - ly) > 0.45f * d) {
+    return lm;
+  }
+  return out;
+}
+
+std::string with_eyes_read(std::string_view pack_json, const image::linear_image& still) {
+  auto doc = json::parse(pack_json);
+  if (!doc || !still.valid()) return std::string(pack_json);
+  json::value* faces = nullptr;
+  for (auto& [k, v] : doc->o) {
+    if (k == "faces" && v.k == json::kind::array) faces = &v;
+  }
+  if (!faces) return std::string(pack_json);
+  for (json::value& f : faces->a) {
+    if (f.k != json::kind::object) continue;
+    edit::face_landmarks lm{};
+    if (!read_landmarks(f.find("lm"), lm)) continue;
+    lm = refine_landmarks(still, lm);
+    // Read again from there: points that do not hold still were not on the
+    // eyes (a brow, a cheek, hair: 2026-11-07, four open faces read shut
+    // that way). Their eyes are unknown, never shut.
+    const edit::face_landmarks again = refine_landmarks(still, lm);
+    const float w = static_cast<float>(still.width), h = static_cast<float>(still.height);
+    const float d = std::hypot((lm[2] - lm[0]) * w, (lm[3] - lm[1]) * h);
+    const bool steady = std::hypot((again[0] - lm[0]) * w, (again[1] - lm[1]) * h) <= 0.12f * d &&
+                        std::hypot((again[2] - lm[2]) * w, (again[3] - lm[3]) * h) <= 0.12f * d;
+    const edit::eye_state e = steady ? edit::read_eye_state(still, lm) : edit::eye_state{};
+    for (auto& [k, v] : f.o) {
+      if (k != "lm") continue;
+      for (std::size_t i = 0; i < lm.size() && i < v.a.size(); ++i) v.a[i].d = lm[i], v.a[i].is_integer = false;
+    }
+    json::value eyes;
+    eyes.k = json::kind::array;
+    for (const float p : {e.right, e.left}) {
+      json::value n;
+      n.k = json::kind::number;
+      n.d = p;
+      eyes.a.push_back(n);
+    }
+    std::erase_if(f.o, [](const auto& kv) { return kv.first == "eyes"; });
+    f.o.emplace_back("eyes", std::move(eyes));
+  }
+  json::writer w;
+  write_value(w, *doc);
+  return w.take();
+}
+
 result<int> fix_faces_in(image::linear_image& target, std::string_view pack_json, face_fix fix,
                          std::uint64_t faces_mask, const job_context* ctx, int* found) {
-  auto doc = json::parse(pack_json);
+  if (!json::parse(pack_json)) return err(status::invalid_arg);
+  // Each face's points read again upright and its eyes read (with_eyes_read).
+  const std::string read = target.valid() ? with_eyes_read(pack_json, target) : std::string(pack_json);
+  auto doc = json::parse(read);
   if (!doc) return err(status::invalid_arg);
   const json::value* faces = doc->find("faces");
   if (!faces || faces->k != json::kind::array) return err(status::invalid_arg);
   if (found) *found = static_cast<int>(faces->a.size());
   if (!target.valid()) return err(status::invalid_arg);
-  std::vector<std::pair<std::string, image::linear_image>> donors;  // decoded once each
+  // Decoded once each. A deque: the pointers handed out stay good while later
+  // donors are added (a vector's growth moved the images under them).
+  std::deque<std::pair<std::string, image::linear_image>> donors;
   auto donor_image = [&](const std::string& p) -> const image::linear_image* {
     for (const auto& [k, img] : donors) {
       if (k == p) return &img;
@@ -700,68 +893,126 @@ result<int> fix_faces_in(image::linear_image& target, std::string_view pack_json
     return &donors.back().second;
   };
   const float tw = static_cast<float>(target.width), th = static_cast<float>(target.height);
-  // A donor's eyes for a face: the most open, by kEyesBetter over these. Of
-  // the same moment, the three most alike are enough. From the person's other
-  // photos (People, "library"), any of them whose head is turned as this one
-  // is (pose_distance), since one from another day rarely is.
-  auto eyes_donor = [&](const json::value& f, const edit::face_landmarks& t, edit::face_landmarks& out_lm)
-      -> const image::linear_image* {
-    const json::value* list = f.find("donors");
-    if (!list || list->k != json::kind::array) return nullptr;
-    const image::linear_image* best = nullptr;
-    float best_open = edit::eye_openness(target, t) * edit::kEyesBetter;
-    int seen_moment = 0;
-    for (const json::value& d : list->a) {
-      const bool library = d.find("library") && d.find("library")->k == json::kind::boolean && d.find("library")->b;
-      if (!library && ++seen_moment > 3) continue;
-      const std::string* dp = d.str("path");
-      edit::face_landmarks lm{};
-      if (!dp || !read_landmarks(d.find("lm"), lm)) continue;
-      const image::linear_image* img = donor_image(*dp);
-      if (!img) continue;
-      if (library && edit::pose_distance(t, tw, th, lm, static_cast<float>(img->width),
-                                         static_cast<float>(img->height)) > edit::kPoseMatch) {
-        continue;
-      }
-      const float open = edit::eye_openness(*img, lm);
-      if (open > best_open && open > 0.0f) {
-        best_open = open;
-        best = img;
-        out_lm = lm;
-      }
+  // A donor face's points read again upright, and how open its eyes are:
+  // once each (both fixes of Do all ask).
+  struct donor_read {
+    const image::linear_image* img = nullptr;
+    edit::face_landmarks lm{};
+    float open = -1.0f;
+  };
+  std::vector<std::pair<std::pair<std::string, edit::face_landmarks>, donor_read>> donor_reads;
+  auto read_donor = [&](const json::value& d) -> std::optional<donor_read> {
+    const std::string* dp = d.str("path");
+    edit::face_landmarks lm{};
+    if (!dp || !read_landmarks(d.find("lm"), lm)) return std::nullopt;
+    for (const auto& [k, r] : donor_reads) {
+      if (k.first == *dp && k.second == lm) return r;
     }
-    return best;
+    donor_read r;
+    r.img = donor_image(*dp);
+    if (!r.img) return std::nullopt;
+    r.lm = refine_landmarks(*r.img, lm);
+    r.open = edit::read_eye_state(*r.img, r.lm).open();
+    donor_reads.push_back({{*dp, lm}, r});
+    return r;
+  };
+  auto eyes_of_face = [](const json::value& f) {
+    edit::eye_state e;
+    const json::value* v = f.find("eyes");
+    if (v && v->k == json::kind::array && v->a.size() == 2) {
+      e.right = static_cast<float>(v->a[0].d);
+      e.left = static_cast<float>(v->a[1].d);
+    }
+    return e;
+  };
+  // Open eyes on faces the person chose on the canvas (not the wand's every
+  // face, not Do all): they asked for these eyes, so the most open donor at
+  // their pose is taken whatever the model reads here. Otherwise only a face
+  // whose eyes the model reads as shut (edit::eyes_closed) is given new ones.
+  const bool chosen = fix == face_fix::open_eyes && faces_mask != kAllFaces;
+  // A donor's eyes for a face: the most open whose eyes read open
+  // (edit::kEyeOpen), of the same moment's frames (burst_neighbours) and the
+  // person's other photos (People), each with its head turned as this one is
+  // (pose_distance), on both faces' points read again upright.
+  // The donors for a face's eyes, best first: of those whose eyes read open
+  // (over edit::kEyeOpen, and over this face's own when it was not chosen),
+  // the ones turned most as this face is, a frame of the same moment ahead of
+  // a photo from another day, not much smaller (its eyes would come out soft).
+  struct eyes_candidate {
+    float cost;
+    const image::linear_image* img;
+    edit::face_landmarks lm;
+  };
+  auto eyes_donors = [&](const json::value& f, const edit::face_landmarks& t) {
+    std::vector<eyes_candidate> out;
+    const json::value* list = f.find("donors");
+    if (!list || list->k != json::kind::array) return out;
+    const edit::eye_state here = eyes_of_face(f);
+    // Not chosen (the wand, Do all): only eyes read shut; open or unreadable
+    // ones are left as they are.
+    if (!chosen && !edit::eyes_closed(here)) return out;
+    const float floor_open = std::max(edit::kEyeOpen, chosen ? 0.0f : here.open());
+    const float t_dist = std::hypot((t[2] - t[0]) * tw, (t[3] - t[1]) * th);
+    for (const json::value& d : list->a) {
+      const std::optional<donor_read> r = read_donor(d);
+      if (!r) continue;
+      const float dw = static_cast<float>(r->img->width), dh = static_cast<float>(r->img->height);
+      const float pose = edit::pose_distance(t, tw, th, r->lm, dw, dh);
+      if (pose > edit::kPoseMatch || !(r->open >= floor_open)) continue;
+      const bool library = d.find("library") && d.find("library")->k == json::kind::boolean && d.find("library")->b;
+      const float d_dist = std::hypot((r->lm[2] - r->lm[0]) * dw, (r->lm[3] - r->lm[1]) * dh);
+      const float small = t_dist > 0.0f ? std::max(0.0f, 1.0f - d_dist / t_dist) : 0.0f;
+      out.push_back({pose + (library ? 0.04f : 0.0f) + 0.1f * small + 0.2f * (1.0f - r->open), r->img, r->lm});
+    }
+    std::stable_sort(out.begin(), out.end(), [](const eyes_candidate& a, const eyes_candidate& b) {
+      return a.cost < b.cost;
+    });
+    return out;
+  };
+  // A fix whose eyes were read (known) must leave them reading open: the
+  // result is read with the same model before it is kept (2026-11-07: donors
+  // whose eyes read open could still paste in eyes that looked shut, small,
+  // dim or under a lid). A face whose eyes cannot be read (chosen anyway) is
+  // kept as the paste leaves it.
+  auto opened = [](const image::linear_image& crop, const edit::face_landmarks& local, const edit::eye_state& was) {
+    if (!was.known()) return true;
+    // Clearly open, not just over the line: soft slits pasted from a small,
+    // dim donor read 0.65 (2026-11-07, two of the owner's shots); every
+    // result that looked right read 0.97 or more.
+    return edit::read_eye_state(crop, local).open() >= edit::kEyeFixedOpen;
   };
   // A clearly better face of the same person: the pack's quality up by
   // kFaceBetter, or the same quality with the eyes open where these are shut.
-  auto face_donor = [&](const json::value& f, const edit::face_landmarks& t, edit::face_landmarks& out_lm)
-      -> const image::linear_image* {
+  // Best first: a donor refused at the paste (its colour patchy against this
+  // photo's) gives way to the next.
+  struct face_candidate {
+    float score;
+    const image::linear_image* img;
+    edit::face_landmarks lm;
+  };
+  auto face_donors = [&](const json::value& f, const edit::face_landmarks& t) {
+    std::vector<face_candidate> out;
     const json::value* list = f.find("donors");
-    if (!list || list->k != json::kind::array) return nullptr;
+    if (!list || list->k != json::kind::array) return out;
     constexpr float kFaceBetter = 0.08f;
-    const float here_open = edit::eye_openness(target, t);
-    float best_score = json_number(f, "quality", 0.5f) + kFaceBetter;
-    const image::linear_image* best = nullptr;
+    const bool shut_here = edit::eyes_closed(eyes_of_face(f));
+    const float floor_score = json_number(f, "quality", 0.5f) + kFaceBetter;
     for (const json::value& d : list->a) {
-      const std::string* dp = d.str("path");
-      edit::face_landmarks lm{};
-      if (!dp || !read_landmarks(d.find("lm"), lm)) continue;
-      const image::linear_image* img = donor_image(*dp);
-      if (!img) continue;
-      if (edit::pose_distance(t, tw, th, lm, static_cast<float>(img->width), static_cast<float>(img->height)) >
-          edit::kPoseMatch) {
+      const std::optional<donor_read> r = read_donor(d);
+      if (!r) continue;
+      if (edit::pose_distance(t, tw, th, r->lm, static_cast<float>(r->img->width),
+                              static_cast<float>(r->img->height)) > edit::kPoseMatch) {
         continue;
       }
       float score = json_number(d, "quality", 0.5f);
-      const float open = edit::eye_openness(*img, lm);
-      if (open > here_open * edit::kEyesBetter && open > 0.0f) score += 0.15f;  // shut here, open there
-      if (score > best_score) {
-        best_score = score;
-        best = img;
-        out_lm = lm;
-      }
+      if (shut_here && r->open >= edit::kEyeOpen) score += 0.15f;  // shut here, open there
+      if (r->open >= 0.0f && r->open < edit::kEyeOpen) score -= 0.15f;  // a face with shut eyes is no better
+      if (score > floor_score) out.push_back({score, r->img, r->lm});
     }
-    return best;
+    std::stable_sort(out.begin(), out.end(), [](const face_candidate& x, const face_candidate& y) {
+      return x.score > y.score;
+    });
+    return out;
   };
   int fixed = 0;
   for (std::size_t i = 0; i < faces->a.size(); ++i) {
@@ -771,19 +1022,30 @@ result<int> fix_faces_in(image::linear_image& target, std::string_view pack_json
     edit::face_landmarks t{};
     if (!read_landmarks(f.find("lm"), t)) continue;
     const std::array<float, 4> box = face_box(f, t);
-    edit::face_landmarks dlm{};
     bool done = false;
     if (fix == face_fix::improve || fix == face_fix::do_all) {
-      if (const image::linear_image* d = face_donor(f, t, dlm)) {
+      constexpr std::size_t kFaceTries = 6;
+      const std::vector<face_candidate> ranked = face_donors(f, t);
+      for (std::size_t k = 0; k < ranked.size() && k < kFaceTries && !done; ++k) {
+        if (ctx && ctx->cancelled()) return err(status::cancelled);
+        const face_candidate& c = ranked[k];
+        const edit::eye_state was = eyes_of_face(f);
         done = fix_in_region(target, t, box, [&](image::linear_image& crop, const edit::face_landmarks& local) {
-          return edit::transfer_face(crop, local, *d, dlm).has_value();
+          if (!edit::transfer_face(crop, local, *c.img, c.lm)) return false;
+          // Shut eyes before: a better face must not keep them shut.
+          return !edit::eyes_closed(was) || opened(crop, local, was);
         });
       }
     }
     if (!done && (fix == face_fix::open_eyes || fix == face_fix::do_all)) {
-      if (const image::linear_image* d = eyes_donor(f, t, dlm)) {
+      constexpr std::size_t kEyesTries = 6;
+      const edit::eye_state was = eyes_of_face(f);
+      const std::vector<eyes_candidate> ranked = eyes_donors(f, t);
+      for (std::size_t k = 0; k < ranked.size() && k < kEyesTries && !done; ++k) {
+        if (ctx && ctx->cancelled()) return err(status::cancelled);
+        const eyes_candidate& c = ranked[k];
         done = fix_in_region(target, t, box, [&](image::linear_image& crop, const edit::face_landmarks& local) {
-          return edit::transfer_eyes(crop, local, *d, dlm).has_value();
+          return edit::transfer_eyes(crop, local, *c.img, c.lm).has_value() && opened(crop, local, was);
         });
       }
     }

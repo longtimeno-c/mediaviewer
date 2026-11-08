@@ -820,6 +820,11 @@ bool start_ai_load() {
         return;
       }
       sm.ai.loading = false;
+      // Whatever came of it, said once it is settled (attached or not): a
+      // waiting Faces read reads again (main_mac.mm kMvAiLoadEnded).
+      struct load_ended {
+        ~load_ended() { [[NSNotificationCenter defaultCenter] postNotificationName:@"MvAiLoadEnded" object:nil]; }
+      } on_settled;
       const bool asked = sm.ai.open_when_attached;
       sm.ai.open_when_attached = false;
       sm.ai.tried_at = std::chrono::steady_clock::now();
@@ -1815,6 +1820,8 @@ extern "C" bool mv_addon2_elsewhere(void) { return state().reader; }
 // #292), or in a later window its reader if it is due (see reader_begin), so
 // Local search's own view can show. False when nothing is on its way.
 extern "C" bool mv_addon2_ai_wake(void) { return state().reader ? reader_begin() : ai_begin(); }
+
+bool MvAddonsWakeAi() { return mv_addon2_ai_wake(); }
 
 // Installed and verified, not loaded, nothing on its way: the first search
 // (or Settings) starts it. The search icon offers Local search meanwhile.

@@ -229,11 +229,13 @@ TEST_CASE("eyes: a face's edit region holds its box and the whole-face ellipse, 
   // The box, grown kFaceRegionGrow each side...
   CHECK(r[0] <= box[0] - edit::kFaceRegionGrow * box[2] + 1e-6f);
   CHECK(r[0] + r[2] >= box[0] + box[2] * (1 + edit::kFaceRegionGrow) - 1e-6f);
-  // ...and the ellipse: half width 1.05 eye distances about the nose.
+  // ...and the ellipse: half axes kFaceHalfWidth / kFaceHalfHeight eye
+  // distances about the nose.
   const float cx = 200.f + (150.f - 200.f) * 0.0f;  // the nose is level with the eyes' middle in x
-  CHECK(r[0] * 400 <= cx - 105.f + 0.5f);
-  CHECK((r[0] + r[2]) * 400 >= cx + 105.f - 0.5f);
-  CHECK(r[1] * 300 <= 200.f + (150.f - 200.f) * 0.1f - 125.f + 0.5f);
+  const float hw = 100.f * edit::kFaceHalfWidth, hh = 100.f * edit::kFaceHalfHeight;
+  CHECK(r[0] * 400 <= cx - hw + 0.5f);
+  CHECK((r[0] + r[2]) * 400 >= cx + hw - 0.5f);
+  CHECK(r[1] * 300 <= 200.f + (150.f - 200.f) * 0.1f - hh + 0.5f);
   // Clamped to the picture.
   CHECK(r[0] >= 0.0f);
   CHECK(r[1] >= 0.0f);

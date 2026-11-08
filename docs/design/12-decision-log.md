@@ -761,6 +761,27 @@ alone picks the wrong person in a group shot. The generative alternative (eyes d
 person's other photos) was not taken: gigabytes of weights, minutes on Windows' CPU, eyes that may
 not be theirs, and identity models under non-commercial licences.
 
+**No *Eyes closed* tag; Open eyes on every face (2026-11-07).** S8 tagged faces whose eyes "look
+shut" (`edit::eyes_look_shut`, brightness in a patch about each eye) and offered Open eyes only
+there. On the owner's photos it was wrong both ways: two smiling, open-eyed faces tagged, the one
+shut pair (a tilted head) not, so the fix wasn't offered where it was needed. Measured over 43
+faces: no brightness rule (axis-aligned or along the eye line), Vision's eye contours or
+MediaPipe's blink score separated a blink from a big smile or flash red-eye. A wrong tag is worse
+than none: the tag goes, Open eyes is offered on every face, and on faces the person chose it
+takes the most open donor at their pose rather than second-guessing them. Revisit when the AI
+pack carries an eye-state model.
+
+***Eyes closed* comes back, from a model (2026-11-07, later the same day).** The owner asked for
+closed eyes to be detected. The row above failed for two reasons found since: YuNet's eye points
+sit a quarter of an eye distance off on a tilted face (every rule read the brow or the cheek), and
+brightness cannot tell a blink from a squint. Now each face is read again upright by the pack's
+own detector, and each eye by OpenVINO's open-closed-eye-0001 (Apache-2.0, 46 KB, run in plain
+C++ in `edit/eye_state`) on grey, contrast-standardised crops. On 68 labelled faces of the owner's
+it separates every shut face (≤ 0.57) from every open one (≥ 0.68), red eye and squints included.
+Open eyes stays on every face; the badge chooses the shut faces. Not MediaPipe's blendshapes
+(they false-alarm on smiles, and need a TFLite runtime), not a model trained on CEW
+(research-only licence) or on the owner's own photos (their faces would ship in the weights).
+
 **Detail is a CPU pass, not a kernel term (2026-11-02).** Definition, brilliance, sharpen and
 noise reduction need neighbours. They run on the working image on a worker after the slider
 settles and replace the working texture; the export runs the same code at full size. Not a GPU

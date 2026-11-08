@@ -951,6 +951,16 @@ people's clear faces taken out and filed again: how many come back to their pers
 with the base commit's `mv_ai_tests`
 built in its own worktree, runs alternated. Delete the copy after: it is face data.
 
+The Faces tool's eyes (docs/design/20, *Eyes closed*): `mv_tests "[eye-state]"` checks the C++
+eye model against its ONNX original; `"[.eye-state-bench]"` with `MV_EYE_STATE_LIST` (lines of
+`"path" x0 y0 x1 y1`, the eye centres in pixels) prints each eye's reading on real photos. A fix on
+a real photo with the pack's own detector: `mv_ai_tests "[.faces-real-bench]"` with
+`MV_AI_PACK_DIR`, `MV_AI_FACES_DIR` (a folder with `models/faces`: `model.json`, `yunet.onnx`,
+`adaface.onnx`), `MV_FACES_PHOTO` (a copy: the result is written beside it), `MV_FACES_PACK` (a
+saved eyes_json answer), `MV_FACES_FIX`, `MV_FACES_MASK`, and `MV_FACES_MOMENT_OF` (the photo's
+real path) to add its same-moment frames as the pack would. The eye model's weights are
+regenerated with `tools/eyes/export_eye_state.py` (needs the `onnx` package).
+
 The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
 everyone shows only when no folder is open (docs/design/17 "People in the open folder", amended

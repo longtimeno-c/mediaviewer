@@ -32,6 +32,7 @@
 #include "addon/store.h"
 #include "core/json.h"
 #include "image/thumb.h"
+#include "image/linear.h"
 #include "io/file.h"
 #include "io/file_ops.h"
 #include "io/file_port.h"
@@ -288,10 +289,27 @@ MV_API mv_status MV_CALL mv_edit_still_extend(const char* path_utf8, const float
   }));
 }
 
+namespace {
+// 2026-11-07: a face's points read again upright by the pack's detector
+// (media::refine_landmarks). Once, in the core, for the hosts that reach the
+// fixes through these entries (Windows); the Mac host sets the same at launch.
+void ensure_face_redetect() {
+  static const bool once = [] {
+    mv::addon::media::set_face_redetect(
+        [](const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::uint32_t stride) {
+          return mv::addon::ai_faces_json(rgb, w, h, stride, nullptr);
+        });
+    return true;
+  }();
+  (void)once;
+}
+}  // namespace
+
 MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_out, uint32_t cap,
                                              uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_open_closed_eyes", [&] {
     MV_REQUIRE(path_utf8, "path required");
+    ensure_face_redetect();
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
     auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
@@ -304,6 +322,7 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
 MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out, uint32_t cap, uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_improve_faces", [&] {
     MV_REQUIRE(path_utf8, "path required");
+    ensure_face_redetect();
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
     auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
@@ -316,10 +335,19 @@ MV_API mv_status MV_CALL mv_improve_faces(const char* path_utf8, char* note_out,
 MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t cap, uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_eyes_json", [&] {
     MV_REQUIRE(path_utf8, "path required");
+    ensure_face_redetect();
     const std::string readable = mv::addon::media::readable_path(path_utf8, nullptr).value_or(path_utf8);
     auto pack = mv::addon::ai_eyes_json(readable, "");
     if (!pack) return pack.error();
-    return write_out(*pack, out, cap, needed);
+    // Each face's points read again upright and its eyes read ("eyes"): the
+    // Faces panel's "Eyes closed" badge.
+    std::string answer = *pack;
+    if (answer.find("\"lm\"") != std::string::npos) {
+      if (auto bytes = mv::io::read_all(readable)) {
+        if (auto still = mv::image::decode_linear(*bytes)) answer = mv::addon::media::with_eyes_read(answer, *still);
+      }
+    }
+    return write_out(answer, out, cap, needed);
   }));
 }
 
@@ -327,6 +355,7 @@ MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, con
                                          char* note_out, uint32_t cap, uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_adjust_faces", [&] {
     MV_REQUIRE(path_utf8, "path required");
+    ensure_face_redetect();
     MV_REQUIRE(fix >= -1 && fix <= 1, "fix: -1 do all, 0 open eyes, 1 improve");
     MV_REQUIRE(count == 0 || boxes, "boxes required");
     MV_REQUIRE(count <= 64, "at most 64 faces");
@@ -344,6 +373,40 @@ MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, con
       r = mv::addon::media::fix_faces(path_utf8, *pack, f, mask);
     }
     return write_out(mv::addon::media::fix_note(f, pack ? status::ok : pack.error(), r), note_out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                            char* note_out, uint32_t cap, uint32_t* needed, char* written_out,
+                                            uint32_t written_cap, uint32_t* written_needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_adjust_faces_to", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    ensure_face_redetect();
+    MV_REQUIRE(fix >= -1 && fix <= 1, "fix: -1 do all, 0 open eyes, 1 improve");
+    MV_REQUIRE(count == 0 || boxes, "boxes required");
+    MV_REQUIRE(count <= 64, "at most 64 faces");
+    using mv::addon::media::face_fix;
+    const auto f = static_cast<face_fix>(fix);
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path_utf8)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path_utf8, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? status::ok : pack.error());
+    if (pack) {
+      const std::uint64_t mask =
+          boxes ? mv::addon::media::faces_mask_of(*pack, std::span<const float>(boxes, std::size_t{count} * 4))
+                : mv::addon::media::kAllFaces;
+      r = mv::addon::media::fix_faces(path_utf8, *pack, f, mask);
+    }
+    // The fix has run (and may have written a file): never "call again". A
+    // buffer too short is left empty, its `needed` saying how long it was.
+    const std::string note = mv::addon::media::fix_note(f, pack ? status::ok : pack.error(), r);
+    if (write_out(note, note_out, cap, needed) != status::ok && note_out && cap > 0) note_out[0] = '\0';
+    const std::string written = r ? r->written : std::string();
+    if (write_out(written, written_out, written_cap, written_needed) != status::ok && written_out &&
+        written_cap > 0) {
+      written_out[0] = '\0';
+    }
+    return status::ok;
   }));
 }
 

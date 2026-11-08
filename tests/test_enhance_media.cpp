@@ -873,6 +873,8 @@ std::vector<std::uint8_t> face_jpeg(std::uint32_t w, std::uint32_t h, float cx, 
       p[0] = 200, p[1] = 150, p[2] = 125;
       for (float side : {-0.5f, 0.5f}) {
         const float ux = static_cast<float>(x) - (cx + side * d), uy = static_cast<float>(y) - cy;
+        // A brow over each eye (edit::eyes_readable looks for one).
+        if (uy > -0.36f * d && uy < -0.28f * d && std::abs(ux) < 0.28f * d) p[0] = 70, p[1] = 50, p[2] = 40;
         if (open) {
           if ((ux / (0.25f * d)) * (ux / (0.25f * d)) + (uy / (0.11f * d)) * (uy / (0.11f * d)) < 1.0f) {
             p[0] = p[1] = p[2] = 235;
@@ -900,6 +902,46 @@ std::string lm_json(float w, float h, float cx, float cy, float d) {
 
 }  // namespace
 
+namespace {
+// A JPEG with an EXIF DateTimeOriginal (`stamp`, "YYYY:MM:DD HH:MM:SS"): an
+// APP1 after SOI holding IFD0 -> Exif IFD -> 0x9003, little-endian.
+std::vector<std::uint8_t> with_taken(std::vector<std::uint8_t> jpeg, const char* stamp) {
+  std::vector<std::uint8_t> t = {'I', 'I', 42, 0, 8, 0, 0, 0,
+                                 1, 0, 0x69, 0x87, 4, 0, 1, 0, 0, 0, 26, 0, 0, 0, 0, 0, 0, 0,
+                                 1, 0, 0x03, 0x90, 2, 0, 20, 0, 0, 0, 44, 0, 0, 0, 0, 0, 0, 0};
+  for (int i = 0; i < 19; ++i) t.push_back(static_cast<std::uint8_t>(stamp[i]));
+  t.push_back(0);
+  const std::size_t len = 2 + 6 + t.size();
+  std::vector<std::uint8_t> app1 = {0xFF, 0xE1, static_cast<std::uint8_t>(len >> 8), static_cast<std::uint8_t>(len & 0xFF),
+                                    'E', 'x', 'i', 'f', 0, 0};
+  app1.insert(app1.end(), t.begin(), t.end());
+  jpeg.insert(jpeg.begin() + 2, app1.begin(), app1.end());
+  return jpeg;
+}
+}  // namespace
+
+TEST_CASE("eyes: the same moment is when the photos were taken, not when the files were written", "[enhance][eyes]") {
+  scratch_dir s("moment");
+  // Copied off a phone: every file written minutes apart, in another order.
+  const fs::path a = s / "IMG_0300.JPG", b = s / "IMG_0301.JPG", c = s / "IMG_0302.JPG";
+  mv::test::write_bytes(a, with_taken(face_jpeg(64, 48, 32, 24, 16, false), "2026:10:09 10:42:37"));
+  mv::test::write_bytes(b, with_taken(face_jpeg(64, 48, 32, 24, 16, true), "2026:10:09 10:42:38"));
+  mv::test::write_bytes(c, with_taken(face_jpeg(64, 48, 32, 24, 16, true), "2026:10:10 20:30:00"));  // another day
+  const auto t0 = fs::last_write_time(a);
+  fs::last_write_time(b, t0 + std::chrono::seconds(240));
+  fs::last_write_time(c, t0 + std::chrono::seconds(5));
+  const std::vector<std::string> near = mv::addon::media::burst_neighbours(utf8(a));
+  REQUIRE(near.size() == 1);
+  CHECK(near[0] == utf8(b));
+  // The same evening, later: the occasion's frame follows the moment's.
+  const fs::path d = s / "IMG_0303.JPG";
+  mv::test::write_bytes(d, with_taken(face_jpeg(64, 48, 32, 24, 16, true), "2026:10:09 13:10:00"));
+  const std::vector<std::string> both = mv::addon::media::burst_neighbours(utf8(a));
+  REQUIRE(both.size() == 2);
+  CHECK(both[0] == utf8(b));
+  CHECK(both[1] == utf8(d));
+}
+
 TEST_CASE("eyes: a shut-eyed photo becomes a new file with a neighbour's open eyes", "[enhance][eyes]") {
   scratch_dir s("open_eyes");
   const fs::path shut = s / "IMG_0101.JPG", open = s / "IMG_0102.JPG", far = s / "IMG_0200.JPG";
@@ -907,10 +949,11 @@ TEST_CASE("eyes: a shut-eyed photo becomes a new file with a neighbour's open ey
   mv::test::write_bytes(open, face_jpeg(400, 300, 210, 145, 124, true));
   mv::test::write_bytes(far, face_jpeg(400, 300, 200, 150, 120, true));
   const auto before = mv::test::read_bytes(shut);
-  // The burst: the open frame was taken 2 s later, the far one a minute on.
+  // The burst: the open frame was taken 2 s later, the far one five minutes
+  // on (outside kBurstSeconds). No EXIF stamp here: the files' times decide.
   const auto t0 = fs::last_write_time(shut);
   fs::last_write_time(open, t0 + std::chrono::seconds(2));
-  fs::last_write_time(far, t0 + std::chrono::seconds(60));
+  fs::last_write_time(far, t0 + std::chrono::seconds(300));
   const std::vector<std::string> near = mv::addon::media::burst_neighbours(utf8(shut));
   REQUIRE(near.size() == 1);
   CHECK(near[0] == utf8(open));
@@ -980,6 +1023,8 @@ std::vector<std::uint8_t> faces_jpeg(std::uint32_t w, std::uint32_t h, std::init
       for (const drawn_face& f : faces) {
         for (float side : {-0.5f, 0.5f}) {
           const float ux = static_cast<float>(x) - (f.cx + side * f.d), uy = static_cast<float>(y) - f.cy;
+          // A brow over each eye (edit::eyes_readable looks for one).
+          if (uy > -0.36f * f.d && uy < -0.28f * f.d && std::abs(ux) < 0.28f * f.d) p[0] = 70, p[1] = 50, p[2] = 40;
           if (f.open) {
             if ((ux / (0.25f * f.d)) * (ux / (0.25f * f.d)) + (uy / (0.11f * f.d)) * (uy / (0.11f * f.d)) < 1.0f) {
               p[0] = p[1] = p[2] = 235;
@@ -1469,4 +1514,24 @@ TEST_CASE("enhance: Real-ESRGAN on a 12 MP photo", "[.enhance-model]") {
   INFO(a.message);
   REQUIRE(a.ok);
   WARN("4032 x 3024 to 6048 x 8064 (upright) in " << secs << " s");
+}
+
+// A bench for the face fixes on real photos (hidden): MV_FACES_PHOTO the
+// photo, MV_FACES_PACK a file holding eyes_json's answer for it (its donors'
+// paths and landmarks), MV_FACES_FIX -1 / 0 / 1 (default 1, Improve) and
+// MV_FACES_MASK the chosen faces (default every face). The fix runs as the
+// Faces tool runs it; the new file's path is printed. Look at the result.
+TEST_CASE("faces: bench on real photos", "[.faces-bench]") {
+  const char* photo = std::getenv("MV_FACES_PHOTO");
+  const char* pack_path = std::getenv("MV_FACES_PACK");
+  if (!photo || !pack_path) SKIP("set MV_FACES_PHOTO and MV_FACES_PACK");
+  const auto bytes = mv::test::read_bytes(pack_path);
+  const std::string pack(bytes.begin(), bytes.end());
+  const char* fix_env = std::getenv("MV_FACES_FIX");
+  const char* mask_env = std::getenv("MV_FACES_MASK");
+  const auto fix = static_cast<mv::addon::media::face_fix>(fix_env ? std::atoi(fix_env) : 1);
+  const std::uint64_t mask = mask_env ? std::strtoull(mask_env, nullptr, 10) : mv::addon::media::kAllFaces;
+  const auto r = mv::addon::media::fix_faces(photo, pack, fix, mask);
+  REQUIRE(r);
+  std::printf("faces %d fixed %d written %s\n", r->faces, r->fixed, r->written.c_str());
 }

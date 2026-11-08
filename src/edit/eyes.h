@@ -56,8 +56,23 @@ inline constexpr float kPoseMatch = 0.12f;
 // landmarks, its light, glints, sharpness and grain matched to the target's as
 // transfer_eyes does, feathered into the face around it. invalid_arg for a
 // face under 24 px between the eyes or a donor at another pose.
+//
+// The light and colour come from this photo area by area (the donor times
+// this photo's blur of the face over its own), so a donor lit by a coloured
+// spot, or with paint on its cheeks, does not carry that over: when the
+// donor's colour differs from this photo's in patches (the spread of the
+// red/green and blue/green ratios over the face's middle over kLookPatchy, in
+// log units) it is refused, invalid_arg, and the next donor may be tried.
 [[nodiscard]] expected transfer_face(image::linear_image& target, const face_landmarks& target_lm,
                                      const image::linear_image& donor, const face_landmarks& donor_lm);
+// The whole-face ellipse's half axes, in eye distances: cheek to cheek, and
+// brows to chin (not the hairline: a donor's hair is not this photo's).
+inline constexpr float kFaceHalfWidth = 1.05f;
+inline constexpr float kFaceHalfHeight = 1.12f;
+// 2026-11-07, IMG_2113 against five photos of the same person: clean donors
+// 0.041-0.047; one with flag paint on both cheeks 0.094 (paint showed); one
+// in other light 0.089 (washed out).
+inline constexpr float kLookPatchy = 0.07f;
 
 // docs/plans/edit-refresh.md S8: whether a face's eyes look shut on their own,
 // with no donor to compare against (the Faces panel offers Open eyes only

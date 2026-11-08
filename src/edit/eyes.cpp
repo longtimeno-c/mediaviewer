@@ -37,7 +37,18 @@ float lightness(const px3& p) noexcept {
 
 struct eye_pts {
   float rx, ry, lx, ly, d;  // pixels; d = distance between the eyes
+  [[nodiscard]] float c() const noexcept { return d > 0.0f ? (lx - rx) / d : 1.0f; }
+  [[nodiscard]] float s() const noexcept { return d > 0.0f ? (ly - ry) / d : 0.0f; }
 };
+
+// The pixel (x, y) steps from (cx, cy) in the eye line's frame: x along the
+// line between the eyes (c, sn its direction), y across it. A tilted head's
+// patch is read as an upright one's (a shut eye's lashes stay one row).
+px3 along(const image::linear_image& img, float cx, float cy, float c, float sn, int x, int y) noexcept {
+  const float fx = static_cast<float>(x), fy = static_cast<float>(y);
+  return at(img, static_cast<int>(std::lround(cx + fx * c - fy * sn)),
+            static_cast<int>(std::lround(cy + fx * sn + fy * c)));
+}
 
 eye_pts eyes_of(const image::linear_image& img, const face_landmarks& lm) noexcept {
   const float w = static_cast<float>(img.width), h = static_cast<float>(img.height);
@@ -54,14 +65,12 @@ struct eye_read {
   float rows = 0.0f;
 };
 
-eye_read read_eye(const image::linear_image& img, float cx, float cy, float d) noexcept {
+eye_read read_eye(const image::linear_image& img, float cx, float cy, float d, float c, float sn) noexcept {
   const int hw = std::max(2, static_cast<int>(0.28f * d)), hh = std::max(2, static_cast<int>(0.16f * d));
   std::vector<float> v;
   v.reserve(static_cast<std::size_t>((2 * hw + 1) * (2 * hh + 1)));
   for (int y = -hh; y <= hh; ++y) {
-    for (int x = -hw; x <= hw; ++x) {
-      v.push_back(lightness(at(img, static_cast<int>(cx) + x, static_cast<int>(cy) + y)));
-    }
+    for (int x = -hw; x <= hw; ++x) v.push_back(lightness(along(img, cx, cy, c, sn, x, y)));
   }
   std::vector<float> sorted = v;
   std::sort(sorted.begin(), sorted.end());
@@ -82,8 +91,8 @@ eye_read read_eye(const image::linear_image& img, float cx, float cy, float d) n
   return {spread, static_cast<float>(rows) / static_cast<float>(2 * hh + 1)};
 }
 
-float one_eye(const image::linear_image& img, float cx, float cy, float d) noexcept {
-  const eye_read r = read_eye(img, cx, cy, d);
+float one_eye(const image::linear_image& img, float cx, float cy, float d, float c, float sn) noexcept {
+  const eye_read r = read_eye(img, cx, cy, d, c, sn);
   return r.spread * r.rows;
 }
 
@@ -93,7 +102,7 @@ float eye_openness(const image::linear_image& img, const face_landmarks& lm) noe
   if (!img.valid()) return 0.0f;
   const eye_pts e = eyes_of(img, lm);
   if (e.d < 4.0f) return 0.0f;
-  return std::min(one_eye(img, e.rx, e.ry, e.d), one_eye(img, e.lx, e.ly, e.d));
+  return std::min(one_eye(img, e.rx, e.ry, e.d, e.c(), e.s()), one_eye(img, e.lx, e.ly, e.d, e.c(), e.s()));
 }
 
 namespace {
@@ -101,14 +110,12 @@ namespace {
 // middle third darker than 55 % of the patch's median lightness (its skin): the
 // iris and lids of an open eye, a line of lashes of a shut one. -1 when the
 // patch has nothing dark at all (nothing to read).
-float dark_rows(const image::linear_image& img, float cx, float cy, float d) {
+float dark_rows(const image::linear_image& img, float cx, float cy, float d, float c, float sn) {
   const int hw = std::max(2, static_cast<int>(0.28f * d)), hh = std::max(2, static_cast<int>(0.16f * d));
   std::vector<float> v;
   v.reserve(static_cast<std::size_t>((2 * hw + 1) * (2 * hh + 1)));
   for (int y = -hh; y <= hh; ++y) {
-    for (int x = -hw; x <= hw; ++x) {
-      v.push_back(lightness(at(img, static_cast<int>(cx) + x, static_cast<int>(cy) + y)));
-    }
+    for (int x = -hw; x <= hw; ++x) v.push_back(lightness(along(img, cx, cy, c, sn, x, y)));
   }
   std::vector<float> sorted = v;
   std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
@@ -132,7 +139,7 @@ bool eyes_look_shut(const image::linear_image& img, const face_landmarks& lm) no
   const eye_pts e = eyes_of(img, lm);
   if (e.d < 8.0f) return false;  // too small to tell
   try {
-    const float r = dark_rows(img, e.rx, e.ry, e.d), l = dark_rows(img, e.lx, e.ly, e.d);
+    const float r = dark_rows(img, e.rx, e.ry, e.d, e.c(), e.s()), l = dark_rows(img, e.lx, e.ly, e.d, e.c(), e.s());
     // A patch with nothing dark is not read as shut (no eye there to read).
     auto shut = [](float rows) { return rows >= 0.0f && rows < kShutRows; };
     return shut(r) || shut(l);
@@ -147,11 +154,12 @@ std::array<float, 4> face_region(const std::array<float, 4>& box, const face_lan
   float x1 = box[0] + box[2] * (1.0f + kFaceRegionGrow), y1 = box[1] + box[3] * (1.0f + kFaceRegionGrow);
   if (w > 0.0f && h > 0.0f) {
     // transfer_face's ellipse: about the nose nudged toward the eyes, half
-    // axes 1.05 and 1.25 eye distances, turned with the eye line.
+    // axes kFaceHalfWidth and kFaceHalfHeight eye distances, turned with the
+    // eye line.
     const float rx = lm[0] * w, ry = lm[1] * h, lx = lm[2] * w, ly = lm[3] * h;
     const float vx = lx - rx, vy = ly - ry, d = std::sqrt(vx * vx + vy * vy);
     if (d > 0.0f && std::isfinite(d)) {
-      const float c = vx / d, s = vy / d, a = 1.05f * d, b = 1.25f * d;
+      const float c = vx / d, s = vy / d, a = kFaceHalfWidth * d, b = kFaceHalfHeight * d;
       const float ex = (rx + lx) * 0.5f, ey = (ry + ly) * 0.5f;
       const float cx = lm[4] * w + (ex - lm[4] * w) * 0.1f, cy = lm[5] * h + (ey - lm[5] * h) * 0.1f;
       const float hx = std::sqrt(a * a * c * c + b * b * s * s), hy = std::sqrt(a * a * s * s + b * b * c * c);
@@ -165,14 +173,51 @@ std::array<float, 4> face_region(const std::array<float, 4>& box, const face_lan
 }
 
 namespace {
+// Box blur, `radius` each side, in place over a w x h plane (outside = 0).
+void box_blur(std::vector<float>& v, int w, int h, int radius) {
+  std::vector<float> line(static_cast<std::size_t>(std::max(w, h)));
+  for (int y = 0; y < h; ++y) {
+    float sum = 0.0f;
+    float* row = v.data() + static_cast<std::size_t>(y) * w;
+    for (int x = -radius; x <= radius; ++x) sum += (x >= 0 && x < w) ? row[x] : 0.0f;
+    for (int x = 0; x < w; ++x) {
+      line[static_cast<std::size_t>(x)] = sum;
+      const int out = x - radius, in = x + radius + 1;
+      if (out >= 0) sum -= row[out];
+      if (in < w) sum += row[in];
+    }
+    std::copy(line.begin(), line.begin() + w, row);
+  }
+  for (int x = 0; x < w; ++x) {
+    float sum = 0.0f;
+    for (int y = -radius; y <= radius; ++y) sum += (y >= 0 && y < h) ? v[static_cast<std::size_t>(y) * w + x] : 0.0f;
+    for (int y = 0; y < h; ++y) {
+      line[static_cast<std::size_t>(y)] = sum;
+      const int out = y - radius, in = y + radius + 1;
+      if (out >= 0) sum -= v[static_cast<std::size_t>(out) * w + x];
+      if (in < h) sum += v[static_cast<std::size_t>(in) * w + x];
+    }
+    for (int y = 0; y < h; ++y) v[static_cast<std::size_t>(y) * w + x] = line[static_cast<std::size_t>(y)];
+  }
+}
+
 // One region of the target replaced by the donor's, through `to_donor`
 // (target pixel -> donor pixel, `scale` donor pixels a target pixel): an
 // ellipse at (cx, cy) with half axes a (along cosr, sinr) and b, feathered over
-// its outer 35 %, the donor's look matched to the target's on the ring of
-// skin between 1.1 and 1.6 of it.
+// its outer 35 %. The donor's look is matched to the target's:
+//   eyes (`local` false)  on the ring of skin between 1.1 and 1.6 of the
+//                         ellipse, one gain and offset per channel;
+//   a face (`local` true) area by area: both faces blurred inside the ellipse
+//                         alone (about a third of an eye distance), the donor
+//                         times this photo's blur over its own. Its features
+//                         stay, this photo's light and colour come with them,
+//                         and a ring of hair, collar and background is never
+//                         read. A donor whose colour differs from this photo's
+//                         in patches (face paint, a coloured spot) is refused:
+//                         false, nothing written.
 template <class ToDonor>
-void paste_region(image::linear_image& target, const image::linear_image& donor, ToDonor to_donor, float scale,
-                  float cx, float cy, float a, float b, float cosr, float sinr) {
+bool paste_region(image::linear_image& target, const image::linear_image& donor, ToDonor to_donor, float scale,
+                  float cx, float cy, float a, float b, float cosr, float sinr, bool local = false) {
   // The donor's look matched to the target's, measured on the ring of skin
   // between 1.1 and 1.6 of the ellipse (owner 2026-11-04: the light, the
   // glints and the glare follow the photo): per channel mean and spread;
@@ -185,13 +230,16 @@ void paste_region(image::linear_image& target, const image::linear_image& donor,
     int n = 0;
   } tl, dl;
   const auto luma = [](const px3& q) { return 0.2126f * q.r + 0.7152f * q.g + 0.0722f * q.b; };
-  const int rx = static_cast<int>(1.7f * a) + 2;
+  // Measured on the ring for eyes, inside the face for a face. The square
+  // walked is the ellipse's own (its long half axis may be b).
+  const float ring_in = local ? 0.0f : 1.1f, ring_out = local ? 1.0f : 1.6f;
+  const int rx = static_cast<int>(ring_out * std::max(a, b)) + 2;
   for (int y = static_cast<int>(cy) - rx; y <= static_cast<int>(cy) + rx; ++y) {
     for (int x = static_cast<int>(cx) - rx; x <= static_cast<int>(cx) + rx; ++x) {
       const float ux = (static_cast<float>(x) - cx) * cosr + (static_cast<float>(y) - cy) * sinr;
       const float uy = -(static_cast<float>(x) - cx) * sinr + (static_cast<float>(y) - cy) * cosr;
       const float q = std::sqrt((ux / a) * (ux / a) + (uy / b) * (uy / b));
-      if (q < 1.1f || q > 1.6f) continue;
+      if (q < ring_in || q > ring_out) continue;
       float dx = 0, dy = 0;
       to_donor(static_cast<float>(x), static_cast<float>(y), dx, dy);
       const px3 tp = at(target, x, y), dp = bilinear(donor, dx, dy);
@@ -223,18 +271,12 @@ void paste_region(image::linear_image& target, const image::linear_image& donor,
     const double n = tl.n;
     for (int k = 0; k < 3; ++k) {
       const double tm = tl.m[k] / n, dm = dl.m[k] / n;
-      const double ts = std::sqrt(std::max(0.0, tl.sq[k] / n - tm * tm));
-      const double ds = std::sqrt(std::max(0.0, dl.sq[k] / n - dm * dm));
-      // src' = (src - dm) * spread + tm, the spread ratio kept sane.
-      const float spread = ds > 1e-5 ? std::clamp(static_cast<float>(ts / ds), 0.5f, 2.0f) : 1.0f;
-      gain[k] = dm > 1e-6 ? std::clamp(spread, 0.5f, 2.0f) : 1.0f;
-      offset[k] = static_cast<float>(tm - dm * gain[k]);
-      // Never a darker eye than a mean match would give: the mean match
-      // as a floor when the spread would invert the tone.
-      if (dm > 1e-6 && (tm / dm < 0.6 || tm / dm > 1.6)) {
-        gain[k] = std::clamp(static_cast<float>(tm / dm), 0.6f, 1.6f);
-        offset[k] = 0.0f;
-      }
+      // The skin's colour, as a ratio: src' = src * tm / dm. A spread match
+      // (src - dm) * ts / ds + tm washed a donor's eyes out against dim,
+      // warm skin (2026-11-07, IMG_2113): its whites and lids came out pale
+      // and cold. The ratio keeps the donor's contrast in this light.
+      gain[k] = dm > 1e-6 ? std::clamp(static_cast<float>(tm / dm), 0.25f, 4.0f) : 1.0f;
+      offset[k] = 0.0f;
     }
     const auto peak = [](std::vector<float>& v) {
       const std::size_t i = v.size() * 98 / 100;
@@ -253,21 +295,185 @@ void paste_region(image::linear_image& target, const image::linear_image& donor,
     // Grain: what the target's detail has beyond the donor's, as noise.
     if (tlap > dlap * 1.15) grain = static_cast<float>((tlap - dlap) * 0.25);
   }
-  // The ellipse, feathered over its outer 35 %.
-  const int r = static_cast<int>(a) + 2;
-  for (int y = static_cast<int>(cy) - r; y <= static_cast<int>(cy) + r; ++y) {
+  // The ellipse's square (its long half axis each way), feathered over its
+  // outer 35 %.
+  const int r = static_cast<int>(std::max(a, b)) + 2;
+  const int x0 = static_cast<int>(cx) - r, y0 = static_cast<int>(cy) - r, side = 2 * r + 1;
+  const auto q_at = [&](int x, int y) {
+    const float ux = (static_cast<float>(x) - cx) * cosr + (static_cast<float>(y) - cy) * sinr;
+    const float uy = -(static_cast<float>(x) - cx) * sinr + (static_cast<float>(y) - cy) * cosr;
+    return std::sqrt((ux / a) * (ux / a) + (uy / b) * (uy / b));
+  };
+  // This photo's light over the donor's, per channel and pixel, on a square
+  // around the ellipse (fx0, fy0, fside):
+  //   a face  both blurred inside the ellipse alone (about a third of an eye
+  //           distance): its features stay, this photo's light comes with them;
+  //   eyes    both blurred over the ring of skin around the ellipse alone, wide
+  //           enough to reach the middle: the light inside follows the skin
+  //           next to it all the way round. One gain for the whole eye left a
+  //           lighter or darker patch wherever the donor's light fell
+  //           differently over the brow or the cheek (2026-11-07, IMG_2113).
+  std::vector<float> ratio;
+  int fx0 = x0, fy0 = y0, fside = side;
+  {
+    // Eyes read the ring's skin only: the inside's (a shut eye's lid, even
+    // only the ellipse's outer rim) laid over the donor's whites and iris
+    // took their contrast (2026-11-07).
+    const float in = local ? 0.0f : 1.0f, out = local ? 1.0f : ring_out;
+    if (!local) {
+      const int fr = static_cast<int>(out * std::max(a, b)) + 2;
+      fx0 = static_cast<int>(cx) - fr, fy0 = static_cast<int>(cy) - fr, fside = 2 * fr + 1;
+    }
+    // Eyes: skin only. Brows, lashes and hair on the ring are not this photo's
+    // light against the donor's (a brow over the donor's skin read as a lid
+    // to lighten, 2026-11-07): a pixel darker than 60 % of either ring's
+    // median, or brighter than twice it (glare), is left out.
+    float t_med = 0.0f, d_med = 0.0f;
+    if (!local && !tl.lum.empty()) {
+      auto median = [](std::vector<float> v) {
+        std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2), v.end());
+        return v[v.size() / 2];
+      };
+      t_med = median(tl.lum), d_med = median(dl.lum);
+    }
+    const std::size_t n = static_cast<std::size_t>(fside) * static_cast<std::size_t>(fside);
+    std::vector<float> m(n, 0.0f), tb[3], db[3];
+    for (int k = 0; k < 3; ++k) tb[k].assign(n, 0.0f), db[k].assign(n, 0.0f);
+    for (int j = 0; j < fside; ++j) {
+      const int y = fy0 + j;
+      if (y < 0 || y >= static_cast<int>(target.height)) continue;
+      for (int i = 0; i < fside; ++i) {
+        const int x = fx0 + i;
+        if (x < 0 || x >= static_cast<int>(target.width)) continue;
+        const float q = q_at(x, y);
+        if (q < in || q >= out) continue;
+        float dx = 0, dy = 0;
+        to_donor(static_cast<float>(x), static_cast<float>(y), dx, dy);
+        const px3 tp = at(target, x, y), dp = bilinear(donor, dx, dy);
+        if (t_med > 0.0f && d_med > 0.0f) {
+          const float lt = luma(tp), ld = luma(dp);
+          if (lt < 0.6f * t_med || ld < 0.6f * d_med || lt > 2.0f * t_med || ld > 2.0f * d_med) continue;
+        }
+        const std::size_t o = static_cast<std::size_t>(j) * fside + i;
+        m[o] = 1.0f;
+        tb[0][o] = tp.r, tb[1][o] = tp.g, tb[2][o] = tp.b;
+        db[0][o] = dp.r, db[1][o] = dp.g, db[2][o] = dp.b;
+      }
+    }
+    // Eyes: the ring's own ratio, lightly smoothed (a tenth of the long half
+    // axis), before the wide blur below takes over.
+    std::vector<float> ms, tbs[3], dbs[3];
+    if (!local) {
+      ms = m;
+      for (int k = 0; k < 3; ++k) tbs[k] = tb[k], dbs[k] = db[k];
+      const int small = std::max(1, static_cast<int>(0.1f * std::max(a, b)));
+      for (int pass = 0; pass < 2; ++pass) {
+        box_blur(ms, fside, fside, small);
+        for (int k = 0; k < 3; ++k) box_blur(tbs[k], fside, fside, small), box_blur(dbs[k], fside, fside, small);
+      }
+    }
+    // Three box passes, near a Gaussian: a third of an eye distance for a
+    // face; for eyes, about the long half axis, so the ring reaches the middle.
+    const int box = local ? std::max(1, static_cast<int>(0.33f * std::min(a, b) * 0.58f))
+                          : std::max(1, static_cast<int>(0.6f * std::max(a, b)));
+    for (int pass = 0; pass < 3; ++pass) {
+      box_blur(m, fside, fside, box);
+      for (int k = 0; k < 3; ++k) box_blur(tb[k], fside, fside, box), box_blur(db[k], fside, fside, box);
+    }
+    ratio.assign(n * 3, 1.0f);
+    // How evenly the donor's colour sits under this photo's (a face): the
+    // spread of the red/green and blue/green ratios over the face's middle.
+    double sum[2] = {0, 0}, sq[2] = {0, 0};
+    int count = 0;
+    for (int j = 0; j < fside; ++j) {
+      for (int i = 0; i < fside; ++i) {
+        const std::size_t o = static_cast<std::size_t>(j) * fside + i;
+        float rk[3];
+        if (m[o] <= 1e-4f) {
+          for (int k = 0; k < 3; ++k) ratio[o * 3 + static_cast<std::size_t>(k)] = local ? 1.0f : gain[k];
+          continue;
+        }
+        for (int k = 0; k < 3; ++k) {
+          const float t = tb[k][o] / m[o], d = db[k][o] / m[o];
+          rk[k] = std::clamp((t + 1e-4f) / (d + 1e-4f), 0.25f, 4.0f);
+          ratio[o * 3 + static_cast<std::size_t>(k)] = rk[k];
+        }
+        if (local && q_at(fx0 + i, fy0 + j) < 0.85f) {
+          const double cr = std::log(rk[0] / rk[1]), cb = std::log(rk[2] / rk[1]);
+          sum[0] += cr, sum[1] += cb, sq[0] += cr * cr, sq[1] += cb * cb;
+          ++count;
+        }
+      }
+    }
+    if (local && count > 16) {
+      double spread = 0.0;
+      for (int k = 0; k < 2; ++k) {
+        const double mean = sum[k] / count;
+        spread = std::max(spread, std::sqrt(std::max(0.0, sq[k] / count - mean * mean)));
+      }
+      if (spread > kLookPatchy) return false;
+    }
+    if (!local) {
+      // A membrane: the ring's skin keeps its own ratio, every other pixel
+      // inside the ring's edge relaxes to the mean of its neighbours, from the
+      // wide blur's field. The eye then meets the skin round it exactly, all
+      // the way round (the wide blur alone left the eyes a shade light where
+      // the cheek below outweighed the lid above, 2026-11-07).
+      std::vector<std::uint8_t> fixed_px(n, 0);
+      for (int j = 0; j < fside; ++j) {
+        for (int i = 0; i < fside; ++i) {
+          const std::size_t o = static_cast<std::size_t>(j) * fside + i;
+          const float q = q_at(fx0 + i, fy0 + j);
+          if (q >= ring_out) {
+            fixed_px[o] = 1;  // outside: the wide field, held
+          } else if (q >= 1.0f && ms[o] > 0.5f) {
+            fixed_px[o] = 1;
+            for (int k = 0; k < 3; ++k) {
+              ratio[o * 3 + static_cast<std::size_t>(k)] =
+                  std::clamp((tbs[k][o] / ms[o] + 1e-4f) / (dbs[k][o] / ms[o] + 1e-4f), 0.25f, 4.0f);
+            }
+          }
+        }
+      }
+      std::vector<float> next = ratio;
+      for (int it = 0; it < 240; ++it) {
+        for (int j = 1; j + 1 < fside; ++j) {
+          for (int i = 1; i + 1 < fside; ++i) {
+            const std::size_t o = static_cast<std::size_t>(j) * fside + i;
+            if (fixed_px[o]) continue;
+            for (std::size_t k = 0; k < 3; ++k) {
+              next[o * 3 + k] = 0.25f * (ratio[(o - 1) * 3 + k] + ratio[(o + 1) * 3 + k] +
+                                         ratio[(o - static_cast<std::size_t>(fside)) * 3 + k] +
+                                         ratio[(o + static_cast<std::size_t>(fside)) * 3 + k]);
+            }
+          }
+        }
+        ratio.swap(next);
+        for (std::size_t o = 0; o < n; ++o) {
+          if (fixed_px[o]) {
+            for (std::size_t k = 0; k < 3; ++k) next[o * 3 + k] = ratio[o * 3 + k];
+          }
+        }
+      }
+    }
+    gain[0] = gain[1] = gain[2] = 1.0f;
+    offset[0] = offset[1] = offset[2] = 0.0f;
+  }
+  for (int y = y0; y < y0 + side; ++y) {
     if (y < 0 || y >= static_cast<int>(target.height)) continue;
-    for (int x = static_cast<int>(cx) - r; x <= static_cast<int>(cx) + r; ++x) {
+    for (int x = x0; x < x0 + side; ++x) {
       if (x < 0 || x >= static_cast<int>(target.width)) continue;
-      const float ux = (static_cast<float>(x) - cx) * cosr + (static_cast<float>(y) - cy) * sinr;
-      const float uy = -(static_cast<float>(x) - cx) * sinr + (static_cast<float>(y) - cy) * cosr;
-      const float q = std::sqrt((ux / a) * (ux / a) + (uy / b) * (uy / b));
+      const float q = q_at(x, y);
       if (q >= 1.0f) continue;
-      float alpha = std::clamp((1.0f - q) / 0.35f, 0.0f, 1.0f);
+      float alpha = std::clamp((1.0f - q) / (local ? 0.35f : 0.3f), 0.0f, 1.0f);
       alpha = alpha * alpha * (3.0f - 2.0f * alpha);
       float dx = 0, dy = 0;
       to_donor(static_cast<float>(x), static_cast<float>(y), dx, dy);
       px3 dp = bilinear(donor, dx, dy);
+      if (!ratio.empty()) {
+        const float* rk = ratio.data() + (static_cast<std::size_t>(y - fy0) * fside + static_cast<std::size_t>(x - fx0)) * 3;
+        dp.r *= rk[0], dp.g *= rk[1], dp.b *= rk[2];
+      }
       if (soften > 0.0f) {
         px3 sum{0, 0, 0};
         for (int oy = -1; oy <= 1; ++oy) {
@@ -275,6 +481,11 @@ void paste_region(image::linear_image& target, const image::linear_image& donor,
             const px3 nb = bilinear(donor, dx + ox * scale, dy + oy * scale);
             sum.r += nb.r, sum.g += nb.g, sum.b += nb.b;
           }
+        }
+        if (!ratio.empty()) {
+          const float* rk =
+              ratio.data() + (static_cast<std::size_t>(y - fy0) * fside + static_cast<std::size_t>(x - fx0)) * 3;
+          sum.r *= rk[0], sum.g *= rk[1], sum.b *= rk[2];
         }
         dp.r += (sum.r / 9.0f - dp.r) * soften;
         dp.g += (sum.g / 9.0f - dp.g) * soften;
@@ -305,6 +516,7 @@ void paste_region(image::linear_image& target, const image::linear_image& donor,
       }
     }
   }
+  return true;
 }
 }  // namespace
 
@@ -324,10 +536,13 @@ expected transfer_eyes(image::linear_image& target, const face_landmarks& target
     dx = s.rx + ca * ox - sa * oy;
     dy = s.ry + sa * ox + ca * oy;
   };
-  const float a = 0.34f * t.d, b = 0.21f * t.d;  // the ellipse's half axes
+  // The ellipse's half axes: wide and tall enough to take a shut eye's whole
+  // lash line and lids (0.34 x 0.21 left the ends of a tilted shut eye's
+  // lashes under the new one, 2026-11-07).
+  const float a = 0.44f * t.d, b = 0.27f * t.d;
   const float cosr = tvx / t.d, sinr = tvy / t.d;   // along the eye line
   for (const auto& [cx, cy] : {std::pair{t.rx, t.ry}, std::pair{t.lx, t.ly}}) {
-    paste_region(target, donor, to_donor, scale, cx, cy, a, b, cosr, sinr);
+    (void)paste_region(target, donor, to_donor, scale, cx, cy, a, b, cosr, sinr);
   }
   return {};
 }
@@ -393,11 +608,14 @@ expected transfer_face(image::linear_image& target, const face_landmarks& target
   const float vx = tx[1] - tx[0], vy = ty[1] - ty[0], d = std::sqrt(vx * vx + vy * vy);
   if (d < 24.0f) return err(status::invalid_arg);
   const float cosr = vx / d, sinr = vy / d;
-  // The face's middle: the nose, nudged toward the eyes; half width 1.05 eye
-  // distances, half height 1.25 (brows to chin).
+  // The face's middle: the nose, nudged toward the eyes; half width
+  // kFaceHalfWidth eye distances, half height kFaceHalfHeight (brows to chin).
   const float ex = (tx[0] + tx[1]) * 0.5f, ey = (ty[0] + ty[1]) * 0.5f;
   const float cx = tx[2] + (ex - tx[2]) * 0.1f, cy = ty[2] + (ey - ty[2]) * 0.1f;
-  paste_region(target, donor, to_donor, scale, cx, cy, 1.05f * d, 1.25f * d, cosr, sinr);
+  if (!paste_region(target, donor, to_donor, scale, cx, cy, kFaceHalfWidth * d, kFaceHalfHeight * d, cosr, sinr,
+                    true)) {
+    return err(status::invalid_arg);  // its colour differs from this photo's in patches
+  }
   return {};
 }
 
