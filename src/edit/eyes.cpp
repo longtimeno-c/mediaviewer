@@ -607,8 +607,10 @@ float read_outer_end(const image::linear_image& img, float cx, float cy, float d
 // The iris: the dark disc between two brighter flanks (the whites), best
 // contrast along the line. NaN when nothing stands out.
 float read_iris_along(const image::linear_image& img, float cx, float cy, float d, float c, float sn) {
-  constexpr int kHalfU = kAimGrid * 38 / 100, kHalfV = kAimGrid * 7 / 100, kReach = kAimGrid / 5;
+  constexpr int kHalfU = kAimGrid * 38 / 100, kHalfV = kAimGrid * 7 / 100;
   constexpr int kRadius = kAimGrid * 9 / 100, kFlank = kAimGrid / 10;
+  // As far as a disc and its flanks stay inside the samples.
+  constexpr int kReach = kHalfU - kRadius - kFlank;
   const int columns = 2 * kHalfU + 1;
   std::vector<float> line(static_cast<std::size_t>(columns));
   std::vector<float> all;
