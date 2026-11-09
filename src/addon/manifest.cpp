@@ -159,12 +159,13 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
       if (!only_keys(e, {"id", "title", "place", "width", "height"})) return false;
       const std::string* title = required_text(e, "title", 48);
       const std::string* place = e.str("place");
-      if (!title || !place || !one_of(*place, {"window", "pane", "sheet", "settings", "edit"})) return false;
+      if (!title || !place || !one_of(*place, {"window", "pane", "sheet", "settings", "edit", "embed"})) return false;
       screen_contrib s;
       s.id = *id;
       s.title = *title;
       s.place = *place == "window"     ? screen_place::window
                 : *place == "pane"     ? screen_place::pane
+                : *place == "embed"    ? screen_place::embed
                 : *place == "sheet"    ? screen_place::sheet
                 : *place == "settings" ? screen_place::settings
                                        : screen_place::edit;

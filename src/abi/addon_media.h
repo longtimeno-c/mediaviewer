@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -87,6 +88,27 @@ namespace media {
 using photos_resolve_fn = std::function<result<std::string>(const std::string& key, const job_context* ctx)>;
 using photos_add_fn = std::function<result<std::string>(const std::string& file, const std::string& source)>;
 void set_photos_hooks(photos_resolve_fn resolve, photos_add_fn add);
+// docs/design/30: what a picker reads of the library. The Mac host sets these
+// at launch: `list` the library, newest first (not_found when it was not
+// added), and `tile` a JPEG of the item from the Mac's own cached rendition,
+// long edge at most `max_edge`, never the network.
+using photos_list_fn = std::function<expected(const std::function<bool(const mv_addon_library_item&)>& visit)>;
+using photos_tile_fn = std::function<result<std::vector<std::uint8_t>>(const std::string& key, std::uint32_t max_edge)>;
+void set_photos_browse_hooks(photos_list_fn list, photos_tile_fn tile);
+[[nodiscard]] expected library_items(const std::function<bool(const mv_addon_library_item&)>& visit);
+// A picture to choose an item by (the host table's item_preview_rgb).
+[[nodiscard]] result<rgb_image> item_preview(const std::string& path, std::uint32_t max_long_edge);
+// The file behind `path` (the host table's library_file).
+[[nodiscard]] result<std::string> library_file(const std::string& path);
+// A tile for a thumbnail_grid: a library item's or a clip's JPEG path.
+// nullopt for anything else (a still: the viewer's own thumbnail).
+[[nodiscard]] std::optional<result<std::string>> grid_tile(const std::string& path);
+// A new JPEG in `dir` with no source metadata (the host table's still_write_into).
+[[nodiscard]] result<std::string> write_still_into(const rgb_image& pixels, const std::string& dir, const std::string& stem);
+// docs/design/30: the Edit workspace's colour chain on 8-bit sRGB RGB, in place
+// (values by adjust_param wire id), and what its Auto would set.
+[[nodiscard]] expected adjust_rgb(std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::span<const float> values);
+[[nodiscard]] expected adjust_auto(const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::span<float> out);
 // The file to read for `path`: itself, or a Photos key's file.
 [[nodiscard]] result<std::string> readable_path(const std::string& path, const job_context* ctx = nullptr);
 [[nodiscard]] bool is_photos_key(std::string_view path) noexcept;

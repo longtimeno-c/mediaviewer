@@ -28,6 +28,7 @@ const char* place_name(screen_place p) noexcept {
     case screen_place::window: return "window";
     case screen_place::pane: return "pane";
     case screen_place::sheet: return "sheet";
+    case screen_place::embed: return "embed";
     case screen_place::settings: return "settings";
     case screen_place::edit: return "edit";
   }
@@ -40,6 +41,7 @@ std::uint32_t place_code(screen_place p) noexcept {
     case screen_place::window: return MV_SLOT_PLACE_WINDOW;
     case screen_place::pane: return MV_SLOT_PLACE_PANE;
     case screen_place::sheet: return MV_SLOT_PLACE_SHEET;
+    case screen_place::embed: return MV_SLOT_PLACE_EMBED;
     case screen_place::settings: return MV_SLOT_PLACE_SETTINGS;
     case screen_place::edit: return MV_SLOT_PLACE_EDIT;
   }
@@ -1678,6 +1680,56 @@ status slot_registry::open_list(const std::string& addon_id, const std::string& 
   }
   notify(slot_changed_screens);
   return status::ok;
+}
+
+status slot_registry::embed_open(const std::string& addon_id, const std::string& screen_id, std::uint64_t generation,
+                                  const std::string& target_addon, const std::string& target_screen, std::string path,
+                                  float width_pt) {
+  if (!list_path_ok(path)) return status::invalid_arg;
+  status st = status::not_found;
+  {
+    std::lock_guard lock(m_);
+    status why = status::ok;
+    if (!addressed(addon_id, screen_id, generation, why)) return why;
+    auto it = addons_.find(target_addon);
+    if (it == addons_.end()) return status::not_found;
+    for (const screen_contrib& s : it->second->c.screens) {
+      if (s.id != target_screen || s.place != screen_place::embed) continue;
+      st = open_screen_locked(*it->second, s, path, last_theme_, width_pt, 0, last_scale_);
+      break;
+    }
+    if (st == status::ok) {
+      if (edit_watch_.addon != addon_id || edit_watch_.screen != screen_id) edit_watch_ = {addon_id, screen_id, {}};
+      if (std::find(edit_watch_.paths.begin(), edit_watch_.paths.end(), path) == edit_watch_.paths.end()) {
+        if (edit_watch_.paths.size() >= 64) edit_watch_.paths.erase(edit_watch_.paths.begin());
+        edit_watch_.paths.push_back(std::move(path));
+      }
+    }
+  }
+  if (st == status::ok) notify(slot_changed_screens);
+  return st;
+}
+
+void slot_registry::note_item_saved(const std::string& source, const std::string& result) {
+  if (result.empty() || source == result) return;
+  std::lock_guard lock(m_);
+  const auto watched = std::find(edit_watch_.paths.begin(), edit_watch_.paths.end(), source);
+  if (watched == edit_watch_.paths.end()) return;
+  auto it = addons_.find(edit_watch_.addon);
+  if (it == addons_.end()) return;
+  // A second run starts from the first one's result.
+  *watched = result;
+  json::writer v;
+  v.begin_object().key("source").string(source).key("result").string(result).end_object();
+  enqueue(*it->second, {}, [screen = edit_watch_.screen, value = v.take()](slot_client& c) {
+    mv_slot_event ev{};
+    ev.struct_size = sizeof ev;
+    ev.kind = MV_SLOT_EVENT_ITEM_SAVED;
+    ev.screen_id = screen.c_str();
+    ev.node_id = "";
+    ev.value_json = value.c_str();
+    c.event(ev);
+  });
 }
 
 std::string slot_registry::open_list_json() const {

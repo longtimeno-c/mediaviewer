@@ -799,6 +799,8 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 include("${CMAKE_SOURCE_DIR}/cmake/ai.cmake")
 # Enhance (#297): its own add-on over the AI pack's model downloader.
 include("${CMAKE_SOURCE_DIR}/cmake/enhance.cmake")
+# Instagram Post (docs/design/30).
+include("${CMAKE_SOURCE_DIR}/cmake/instagram.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/ai-chrome-win.cmake" OPTIONAL)
 # copybench: the copy engine headless, base vs new (docs/design/12 2026-10-01).
 add_executable(copybench tools/copybench/main.cpp)
@@ -1468,6 +1470,7 @@ if(MV_BUILD_TESTS)
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
   mv_driftwire_tests(mv_import_tests)
+  mv_instagram_tests(mv_import_tests)
   mv_enhance_tests(mv_import_tests)
   mv_enhance_addon_tests(mv_import_tests)
   mv_asan_runtime_beside(mv_import_tests)

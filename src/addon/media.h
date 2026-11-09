@@ -124,6 +124,11 @@ struct picture_out {
   std::uint32_t sound_rate = 0;  // 0: the source's sound, copied
   std::uint32_t sound_channels = 0;
   std::string suffix;
+  // docs/design/30: the output's folder and whole stem (empty: beside the
+  // source, "<stem>-<suffix>"), and a rotation in place of the source's.
+  std::string out_dir;
+  std::string out_stem;
+  int rotation = -1;
 };
 
 class picture_sink {

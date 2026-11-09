@@ -43,6 +43,8 @@ namespace mv::enhance {
 
 inline constexpr const char* kSheetScreen = "enhance";
 inline constexpr const char* kSettingsScreen = "settings";
+// docs/design/30: the sheet's options drawn inside another add-on's window.
+inline constexpr const char* kPanelScreen = "panel";
 // S5: the docked tool panel (manifest place "edit", contribution API 13).
 inline constexpr const char* kToolScreen = "tool";
 // The preview surface's height, in points (its width is the sheet's).

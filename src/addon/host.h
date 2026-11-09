@@ -145,6 +145,18 @@ struct host_services {
   // hosts), thinned to at most the given points. Empty leaves the table's
   // route_of NULL. An empty vector: a still, or a clip without a fix.
   std::function<result<std::vector<mv_addon_route_point>>(const std::string& path, std::uint32_t max_points)> route;
+  // docs/design/30 (Instagram Post). Empty leaves the table's row NULL.
+  // The Mac Photos library, newest first; the visitor returning false stops.
+  std::function<expected(const std::function<bool(const mv_addon_library_item&)>& visit)> library_items;
+  std::function<result<rgb_image>(const std::string& path, std::uint32_t max_edge)> item_preview;
+  std::function<result<std::string>(const std::string& path)> library_file;
+  // Empty: the pack's search as each host publishes it (addon/index_locations.h).
+  std::function<result<std::vector<std::string>>(const std::string& query, const std::string& scope)> index_search;
+  std::function<result<std::string>(const rgb_image& pixels, const std::string& dir, const std::string& stem)>
+      write_still_into;
+  // The Edit workspace's colour chain and its Auto, on 8-bit sRGB RGB.
+  std::function<expected(std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::span<const float> values)> adjust_rgb;
+  std::function<expected(const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::span<float> out)> adjust_auto;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

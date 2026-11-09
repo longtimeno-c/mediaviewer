@@ -4688,6 +4688,22 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // original only iCloud has shows its progress in the notice while it comes
   // (the job's cancel stops it), and the new photo is listed beside its
   // source (Show, or the arrow, reaches it).
+  // docs/design/30: the Instagram Post picker reads the library, newest first.
+  mv::addon::media::set_photos_browse_hooks(
+      [](const std::function<bool(const mv_addon_library_item&)>& visit) -> mv::expected {
+        if (!mv::shell::photos::available()) return mv::err(mv::status::not_found);
+        MV_TRY(std::vector<mv::shell::photos::item> items, mv::shell::photos::enumerate());
+        for (auto it = items.rbegin(); it != items.rend(); ++it) {
+          mv_addon_library_item row{};
+          row.key_utf8 = it->key.c_str();
+          row.name_utf8 = it->name.c_str();
+          row.created_unix = it->created;
+          row.is_video = it->video ? 1 : 0;
+          if (!visit(row)) break;
+        }
+        return {};
+      },
+      [](const std::string& key, std::uint32_t max_edge) { return mv::shell::photos::thumb_jpeg(key, max_edge); });
   mv::addon::media::set_photos_hooks(
       [](const std::string& key, const mv::job_context* ctx) -> mv::result<std::string> {
         auto reported = std::make_shared<std::atomic<bool>>(false);

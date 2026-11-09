@@ -720,7 +720,9 @@ public static partial class IslandHost
     // (the core keeps the one open; the window is the chrome's to raise).
     private static void OpenSlotScreen(string addon, string screen)
     {
-        SlotNative.OpenScreen(addon, screen, "", SlotTheme(), 0, 0, (float)SlotScale());
+        // Instagram Post chooses from the folder open in the viewer.
+        string path = addon == InstagramId && _openedFolder.Length > 0 ? _openedFolder + "\\" : "";
+        SlotNative.OpenScreen(addon, screen, path, SlotTheme(), 0, 0, (float)SlotScale());
         if (ScreenWindows.TryGetValue(new ScreenAt(addon, screen), out var open)) open.Window.Activate();
     }
 
@@ -988,6 +990,7 @@ public static partial class IslandHost
         if (row.Id == PlacesChannel.Id) return PlacesChannel;
         if (row.Id == DriftwireId) return DriftwireSlot;
         if (row.Id == EnhanceId) return EnhanceSlot;
+        if (row.Id == InstagramId) return InstagramSlot;
         if (!SlotChannels.TryGetValue(row.Id, out AddonSlot? slot))
         {
             slot = new AddonSlot(row.Id, row.Name, null, null);
@@ -1061,6 +1064,17 @@ public static partial class IslandHost
             {
                 (Border card, StackPanel body) = AddonCard("Enhance");
                 BuildEnhanceOffer(body);
+                _slotSettingsPanel.Children.Add(card);
+            }
+        }
+        // docs/design/30: Instagram Post, offered with one click while it is not installed.
+        if (!InstagramInstalled)
+        {
+            if (InstagramSlot.Offer.Kind == OfferKind.Unknown) probe.Add(InstagramSlot);
+            if (only == InstagramId)
+            {
+                (Border card, StackPanel body) = AddonCard(InstagramName);
+                BuildInstagramOffer(body);
                 _slotSettingsPanel.Children.Add(card);
             }
         }

@@ -248,6 +248,10 @@ The optional **Driftwire** add-on sends photos, video and audio to another Media
 - **Encrypted for the long run.** Every send is sealed end to end with a post-quantum handshake, so a recording made today cannot be opened later.
 - **From a terminal, too.** *driftwire* brings the same sends to a terminal on Linux, macOS and Windows and talks to Driftwire in MediaViewer: the code shows in big digits, nothing is saved until you answer, and what happened stays in your scrollback. [One line installs it](#driftwire-on-the-command-line), with no MediaViewer needed.
 
+## Instagram Post: a carousel, ready to post
+
+The optional **Instagram Post** add-on builds a carousel from your Photos library or the folder you have open. Choose up to 20 photos and clips, set the shape (1:1, 4:5, 3:4, 16:9 or 1.91:1) and change it whenever you like, frame each one, adjust and enhance photos right there, and export files at Instagram's sizes. Nothing is uploaded and your originals are never changed.
+
 ## Enhance: sharper photos and video, cleaner sound, on this computer
 
 The optional **Enhance** add-on writes a restored copy of what is on screen: a photo or an old phone clip at twice the size with the detail filled in, or the wind, hiss and room noise taken out of a voice memo, an interview or a clip's soundtrack.

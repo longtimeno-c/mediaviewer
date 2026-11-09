@@ -106,6 +106,11 @@ mv::enhance::engine_port make_port(const mv_host_api* h) {
     return h->surface_post(h->host, screen, surface, gen, bgra.data(), w, ht, w * 4) == MV_OK;
   };
   p.probe = [h](const std::string& path) { return probe(h, path); };
+  if (h->struct_size >= offsetof(mv_host_api, item_saved) + sizeof(h->item_saved) && h->item_saved) {
+    p.saved = [h](const std::string& source, const std::string& result) {
+      (void)h->item_saved(h->host, source.c_str(), result.c_str());
+    };
+  }
   // Slice 7: how much is brushed over a photo (the sheet offers Remove then).
   if (h->struct_size >= offsetof(mv_host_api, still_mask) + sizeof(h->still_mask) && h->still_mask) {
     p.brushed = [h](const std::string& path) {
@@ -178,6 +183,10 @@ mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
     }
     if (std::strcmp(r->screen_id, mv::enhance::kToolScreen) == 0) {
       g->eng->tool_opened(r->generation, r->path_utf8 ? r->path_utf8 : "", r->width_pt, r->scale);
+      return MV_OK;
+    }
+    if (std::strcmp(r->screen_id, mv::enhance::kPanelScreen) == 0) {
+      g->eng->sheet_opened(r->generation, r->path_utf8 ? r->path_utf8 : "", r->width_pt, r->scale, true);
       return MV_OK;
     }
     if (std::strcmp(r->screen_id, mv::enhance::kSheetScreen) != 0) return MV_ERR_INVALID_ARG;

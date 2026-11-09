@@ -303,6 +303,7 @@ public static partial class IslandHost
                 "import" => ("Import", "The add-on."),
                 "driftwire" => ("Driftwire", "The add-on."),
                 "enhance" => ("Enhance", "The add-on and the models it downloaded."),
+                "instagram" => (InstagramName, "The add-on."),
                 _ => (folder, "An add-on and its data."),
             };
         }

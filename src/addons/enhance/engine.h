@@ -44,6 +44,8 @@ struct media_facts {
 };
 
 struct engine_port {
+  // docs/design/30: a run from the embedded panel made `result` from `source`.
+  std::function<void(const std::string& source, const std::string& result)> saved;
   // screen_post: false when the generation is stale.
   std::function<bool(const char* screen, std::uint64_t generation, const std::string& tree)> post;
   // surface_post: BGRA (premultiplied, sRGB) for a surface of a screen.
@@ -145,7 +147,8 @@ class engine {
   void settings_opened(std::uint64_t generation);
   // `width_pt` / `scale`: the sheet's content width and backing scale, for
   // the preview's pixels.
-  void sheet_opened(std::uint64_t generation, const std::string& path, float width_pt = 420, float scale = 2);
+  void sheet_opened(std::uint64_t generation, const std::string& path, float width_pt = 420, float scale = 2,
+                    bool panel = false);
   // S5: the docked panel (place "edit") opened on `path`, `width_pt` wide.
   void tool_opened(std::uint64_t generation, const std::string& path, float width_pt = 340, float scale = 2);
   // S5: the Edit workspace's command to it, enhance/tool:
@@ -240,6 +243,7 @@ class engine {
   mutable std::mutex m_;
   prefs prefs_;
   std::uint64_t settings_gen_ = 0;
+  const char* sheet_screen_ = kSheetScreen;  // or kPanelScreen, drawn in another add-on's window
   std::uint64_t sheet_gen_ = 0;
   std::uint64_t tool_gen_ = 0;  // S5: the docked panel's generation, 0 closed
   std::string pending_path_;  // from a command, for the sheet it opens

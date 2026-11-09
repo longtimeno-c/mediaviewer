@@ -170,7 +170,8 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(d.m.remote[0].path == "audio/denoise.onnx");
   CHECK(d.m.remote_urls[0].find('?') == std::string::npos);
   const auto& c = d.m.slots;
-  REQUIRE(c.screens.size() == 3);
+  REQUIRE(c.screens.size() == 4);
+  CHECK(c.screens[3].id == "panel");  // docs/design/30: drawn in Instagram Post's window
   CHECK(c.screens[0].id == "enhance");
   CHECK(c.screens[0].place == mv::addon::screen_place::sheet);
   CHECK(c.screens[1].id == "settings");
@@ -185,7 +186,7 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.items[1].id == "edit");  // the Video Editor's Enhance… (contribution API 11)
   CHECK(c.items[1].slot == mv::addon::item_slot::editor);
   CHECK(c.items[1].label == "Enhance…");
-  CHECK(c.api_min == 14);  // API 14: the progress line's detail and timed
+  CHECK(c.api_min == 15);  // API 15: the progress line's detail and timed
   // "open" (Ctrl+Shift+R / Cmd+Shift+R), the Edit strip wand menu's "restyle"
   // and the Faces card's "faces" (docs/plans/edit-refresh.md S10), these two
   // with no default key (docs/design/16). No command-bar button: the way in

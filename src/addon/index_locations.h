@@ -87,6 +87,15 @@ void publish_ai_eyes(eyes_source source);
 // The table's eyes_json row as a source; empty for an older pack.
 [[nodiscard]] eyes_source ai_eyes(const mv_ai_api* api);
 
+// docs/design/30: Local search answered for an add-on, published and retracted
+// with the eyes. The paths are the index's own keys, best first, one per asset.
+using search_source = std::function<result<std::vector<std::string>>(const std::string& query, const std::string& scope)>;
+void publish_ai_search(search_source source);
+// Waits a bounded time for the pack when it has not started (the listener
+// above). status::not_found when there is none.
+[[nodiscard]] result<std::vector<std::string>> ai_search_paths(const std::string& query, const std::string& scope);
+[[nodiscard]] search_source ai_search(const mv_ai_api* api);
+
 // docs/plans/edit-refresh.md S10: the pack's faces_json row (Restore faces'
 // landmarks and its identity guard), published and retracted with the eyes.
 // `other` may be null; both are `stride`-byte rows of 8-bit RGB.

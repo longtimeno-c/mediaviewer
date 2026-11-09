@@ -237,11 +237,10 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
                                                  uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_slots_thumbnail_path", [&] {
     MV_REQUIRE(path_utf8, "path required");
-    std::string lower(path_utf8);
-    for (char& c : lower) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-    for (const char* ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts"}) {
-      const std::size_t n = std::strlen(ext);
-      if (lower.size() >= n && lower.compare(lower.size() - n, n, ext) == 0) return status::unsupported_format;
+    // docs/design/30: a clip's first frame, from the moments cache.
+    if (auto tile = mv::addon::media::grid_tile(path_utf8)) {
+      if (!*tile) return tile->error();
+      return write_out(**tile, out, cap, needed);
     }
     auto made = thumbnail(path_utf8);
     if (!made) return made.error();
@@ -798,6 +797,11 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.open_sound = &mv::addon::media::open_sound;                  // #297
     svc.open_sound_writer = &mv::addon::media::open_sound_writer;  // #297
     svc.open_frames = &mv::addon::media::open_frames;            // #297 slice 5
+    svc.item_preview = &mv::addon::media::item_preview;          // docs/design/30
+    svc.library_file = &mv::addon::media::library_file;
+    svc.write_still_into = &mv::addon::media::write_still_into;
+    svc.adjust_rgb = &mv::addon::media::adjust_rgb;
+    svc.adjust_auto = &mv::addon::media::adjust_auto;
     svc.open_clip_writer = &mv::addon::media::open_clip_writer;  // #297 slice 5
     svc.full_still = &mv::addon::media::full_still;    // #297 slice 3
     svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
@@ -831,6 +835,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       mv::addon::publish_index_locations(mv::addon::ai_index_locations(ai));
       mv::addon::publish_ai_eyes(mv::addon::ai_eyes(ai));  // edit-adjust slice 6
       mv::addon::publish_ai_faces(mv::addon::ai_faces(ai));  // edit-refresh S10: Restore faces
+      mv::addon::publish_ai_search(mv::addon::ai_search(ai));  // docs/design/30
     }
   }
   const void* iface = it->second.addon->query(interface_id);

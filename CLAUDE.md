@@ -58,6 +58,7 @@ Read `docs/design/README.md` first, then the doc for the area you are touching:
 | `docs/design/27-places.md` | Places: offline reverse geocoding (`src/geo`, `tools/geo`), the place database, the label rule, the Places add-on. Read before touching GPS → place names, place search or the map |
 | `docs/design/28-driftwire.md` | Driftwire (#410, #413): sending files to a MediaViewer nearby (beacon, sealed link, code, verified receive, Bluetooth), the gallery's Shift-click range, drag-out and share icon. Read before touching the add-on, the network or Bluetooth ports, or the gallery's selection |
 | `docs/design/29-enhance.md` | Enhance (#297): a restored copy of the item on screen from a model downloaded on request; the sheet, per-kind model downloads, the host's sound rows and `edit/sound_writer.h`. Read before touching the add-on, its models or the sound rows |
+| `docs/design/30-instagram-post.md` | Instagram Post: a carousel from Photos or the open folder, exported at the post's shape; the picker host rows and API 15 vocabulary. Read before touching the add-on or those rows |
 | `docs/design/25-open-addons.md` | PRs 55–60 (PR 55 built; owner calls made 2026-10-03: script sandbox, no network, any add-on licence): add-ons from anyone, installed from a file or a link and signed by their publisher; the contribution model (themes first). Read before any third-party add-on, theme or contribution-point work |
 | `docs/plans/` | Forward plans not yet built (e.g. `audio-and-documents.md`, `linux.md`) |
 

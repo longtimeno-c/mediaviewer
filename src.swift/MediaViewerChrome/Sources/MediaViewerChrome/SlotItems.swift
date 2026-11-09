@@ -320,6 +320,9 @@ final class SlotAddonOffer: ObservableObject {
   /// (its models run on ONNX Runtime, like Local search).
   static let enhanceID = "enhance"
   static let enhanceSupported = mv_addon2_supported("enhance")
+  /// Instagram Post (docs/design/30): offered before it is installed, everywhere.
+  static let instagramID = "instagram"
+  static let instagramName = "Instagram Post"
   private static var others: [String: SlotAddonOffer] = [:]
 
   /// The channel of an installed slot add-on, made once per id.
@@ -525,6 +528,12 @@ struct SlotAddonsSection: View {
           installed.reload()
         }
       }
+      if shows(SlotAddonOffer.instagramID) && !installed.rows.contains(where: { $0.id == SlotAddonOffer.instagramID }) {
+        SlotAddonInstallOffer(offer: SlotAddonOffer.channel(id: SlotAddonOffer.instagramID, name: SlotAddonOffer.instagramName),
+                              fallback: "Choose up to 20 photos and clips, set the shape, and export files ready to post.") {
+          installed.reload()
+        }
+      }
       ForEach(installed.rows.filter { $0.id != "places" && shows($0.id) }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {
           // On its page the heading names it (#510).
@@ -543,7 +552,11 @@ struct SlotAddonsSection: View {
           let elsewhere = mv_addon2_elsewhere()
           if confirming != row.id, row.loaded, let screen = slots.windowScreens[row.id] {
             HStack {
-              Button("Open \(row.name)") { slots.openScreen(addon: row.id, screen: screen) }
+              Button("Open \(row.name)") {
+                // Instagram Post chooses from the folder open in the viewer.
+                slots.openScreen(addon: row.id, screen: screen,
+                                 path: row.id == SlotAddonOffer.instagramID ? SlotTargets.folder() + "/" : "")
+              }
               if !elsewhere { removeButtons(row) }
             }
           } else if !elsewhere {

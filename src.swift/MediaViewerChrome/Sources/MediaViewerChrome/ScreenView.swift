@@ -99,6 +99,7 @@ struct ScreenNodeView: View {
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     if node.hidden {
@@ -120,7 +121,26 @@ struct ScreenNodeView: View {
       let spacing = CGFloat(node.int("spacing") ?? 8)
       Group {
         if node.string("axis") == "horizontal" {
-          HStack(alignment: .center, spacing: spacing) { ForEach(node.children) { child($0) } }
+          if node.string("justify") == "between", let first = node.children.first {
+            // API 15: the first child set apart from the rest.
+            HStack(alignment: .center, spacing: spacing) {
+              child(first)
+              Spacer(minLength: spacing)
+              ForEach(node.children.dropFirst()) { child($0) }
+            }
+          } else if node.bool("animate") {
+            // API 15 (docs/design/30): a child arrives where it was made, its
+            // neighbours make room, and a new size eases. Every change here
+            // has a cause: the person chose, moved or removed something.
+            HStack(alignment: .center, spacing: spacing) {
+              ForEach(node.children) {
+                child($0).transition(.scale(scale: 0.92).combined(with: .opacity))
+              }
+            }
+            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1), value: revision)
+          } else {
+            HStack(alignment: .center, spacing: spacing) { ForEach(node.children) { child($0) } }
+          }
         } else {
           VStack(alignment: horizontalAlignment, spacing: spacing) { ForEach(node.children) { child($0) } }
             .frame(maxWidth: node.string("align") == "fill" || node.string("look") == "card" ? .infinity : nil,
@@ -192,6 +212,8 @@ struct ScreenNodeView: View {
       TilesNode(node: node, address: address, revision: revision)
     case "link":
       LinkNode(node: node)
+    case "embed":
+      EmbedNode(node: node)
     default:
       EmptyView()
     }
@@ -202,6 +224,21 @@ struct ScreenNodeView: View {
     case "center": return .center
     case "end": return .trailing
     default: return .leading
+    }
+  }
+}
+
+/// API 15 (docs/design/30): another add-on's place-"embed" screen, as it posts it.
+/// Its events go to that add-on, because the address is its own.
+private struct EmbedNode: View {
+  let node: ScreenNode
+  @ObservedObject private var slots = SlotStore.shared
+
+  var body: some View {
+    let address = ScreenAddress(addon: node.string("addon") ?? "", screen: node.string("screen") ?? "")
+    if let screen = slots.screens.first(where: { $0.addon == address.addon && $0.screen == address.screen }),
+       let tree = screen.tree {
+      ScreenNodeView(node: tree, address: address, revision: screen.revision)
     }
   }
 }
@@ -1050,7 +1087,7 @@ private struct ChoiceNode: View {
     // "disabled" (2026-11-04): shown, never chosen (Enhance's quality above the
     // performance level says what it needs).
     let off = Set(options.filter { ($0["disabled"] as? Bool) == true }.compactMap { $0["id"] as? String })
-    Picker(node.label, selection: Binding(get: { value }, set: { v in
+    let picker = Picker(node.label, selection: Binding(get: { value }, set: { v in
       guard !off.contains(v) else { return }
       value = v
       SlotStore.shared.send(address, node: node.id, kind: 2, value: v)
@@ -1058,6 +1095,14 @@ private struct ChoiceNode: View {
       ForEach(options.compactMap { $0["id"] as? String }, id: \.self) { id in
         Text(options.first { ($0["id"] as? String) == id }?["text"] as? String ?? id).tag(id)
           .disabled(off.contains(id))
+      }
+    }
+    Group {
+      // API 15: every option in sight, for a handful of short ones.
+      if node.string("look") == "segmented" {
+        picker.pickerStyle(.segmented).labelsHidden().fixedSize()
+      } else {
+        picker
       }
     }
     .font(screenFont(14, window: window))
@@ -1072,6 +1117,7 @@ private struct SliderNode: View {
   let address: ScreenAddress
   let revision: Int
   @State private var value = 0.0
+  @State private var dragging = false
 
   var body: some View {
     let lo = node.double("min") ?? 0
@@ -1089,10 +1135,12 @@ private struct SliderNode: View {
       Group {
         if let step = node.double("step"), step > 0 {
           Slider(value: $value, in: lo...hi, step: step) { Text(node.label) } onEditingChanged: { editing in
+            dragging = editing
             if !editing { SlotStore.shared.send(address, node: node.id, kind: 2, value: value) }
           }
         } else {
           Slider(value: $value, in: lo...hi) { Text(node.label) } onEditingChanged: { editing in
+            dragging = editing
             if !editing { SlotStore.shared.send(address, node: node.id, kind: 2, value: value) }
           }
         }
@@ -1103,7 +1151,11 @@ private struct SliderNode: View {
       .accessibilityValue(format(value))
     }
     .onAppear { value = node.double("value") ?? lo }
-    .onChange(of: revision) { _, _ in value = node.double("value") ?? lo }
+    .onChange(of: revision) { _, _ in if !dragging { value = node.double("value") ?? lo } }
+    // API 15: "live" reports every step of the drag.
+    .onChange(of: value) { _, now in
+      if dragging && node.bool("live") { SlotStore.shared.send(address, node: node.id, kind: 2, value: now) }
+    }
   }
 
   private func format(_ v: Double) -> String {
@@ -1354,6 +1406,10 @@ private struct ThumbnailGridNode: View {
   var body: some View {
     let tile = CGFloat(node.int("tile") ?? 128)
     let items = node.rows("items")
+    // API 15: a chosen tile says its place in the selection's order.
+    let order: [String: Int] = node.bool("numbered")
+      ? Dictionary((node.props["selection"] as? [String] ?? []).enumerated().map { ($1, $0 + 1) }, uniquingKeysWith: { a, _ in a })
+      : [:]
     GeometryReader { geo in
       let cols = max(1, Int((geo.size.width - 16 + 8) / (tile + 8)))
       ScrollViewReader { proxy in
@@ -1366,9 +1422,34 @@ private struct ThumbnailGridNode: View {
                 .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(
                   selection.contains(path) ? MVTheme.accent : (focused && i == cursor ? MVTheme.hairline : .clear),
                   lineWidth: 2))
+                .overlay(alignment: .topTrailing) {
+                  if let n = order[path] {
+                    Text("\(n)").font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                      .frame(minWidth: 20, minHeight: 20)
+                      .background(Circle().fill(MVTheme.accent))
+                      .padding(MVTheme.space(5))
+                      .accessibilityHidden(true)
+                  }
+                }
+                .overlay(alignment: .bottomLeading) {
+                  if (items[i]["badge"] as? String) == "video" {
+                    Image(systemName: "play.fill").font(.system(size: 10)).foregroundStyle(.white)
+                      .shadow(color: .black.opacity(0.5), radius: 2)
+                      .padding(MVTheme.space(6))
+                      .accessibilityHidden(true)
+                  }
+                }
                 .id(i)
-                .onTapGesture(count: 2) { SlotStore.shared.send(address, node: node.id, kind: 5, value: path) }
+                // API 15: a numbered grid is for choosing, so a click needn't wait
+                // to see whether it becomes a double-click.
+                .gesture(node.bool("numbered") ? nil : TapGesture(count: 2).onEnded {
+                  SlotStore.shared.send(address, node: node.id, kind: 5, value: path)
+                })
                 .onTapGesture {
+                  cursor = i
+                  select(path, items: items)
+                }
+                .accessibilityAction {
                   cursor = i
                   select(path, items: items)
                 }
@@ -1378,6 +1459,8 @@ private struct ThumbnailGridNode: View {
           .padding(MVTheme.space(8))
         }
         .focusable()
+        // API 15: the tile under the keyboard shows it; no ring round the whole pane.
+        .focusEffectDisabled(node.bool("numbered"))
         .focused($focused)
         .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
           guard !items.isEmpty else { return .ignored }
@@ -1521,7 +1604,7 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   func sync(_ screens: [SlotScreen]) {
     // A settings page is drawn in Settings (AddonSettingsScreen), a docked Edit
     // screen in the Enhance tab (EnhanceHubView, S5): not here.
-    let screens = screens.filter { $0.place != "settings" && $0.place != "edit" }
+    let screens = screens.filter { $0.place != "settings" && $0.place != "edit" && $0.place != "embed" }
     let wanted = Set(screens.map { ScreenAddress(addon: $0.addon, screen: $0.screen) })
     for (address, window) in windows where !wanted.contains(address) {
       closingFromCore.insert(address)

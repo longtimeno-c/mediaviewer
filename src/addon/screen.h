@@ -62,6 +62,9 @@ enum class node_type : std::uint8_t {
   // "connecting", and never with Reduce Motion / animations off. Not
   // interactive.
   link,
+  // API 15 (docs/design/30): another add-on's place-"embed" screen, drawn here
+  // once embed_open has opened it. "heading" titles it only when it has a tree.
+  embed,
 };
 
 [[nodiscard]] const char* type_name(node_type t) noexcept;

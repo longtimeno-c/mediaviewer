@@ -885,6 +885,8 @@ One more (2026-11-05, the one progress language; contribution API **13**, docs/d
   `src.managed/Shared/ProgressWords.cs`, the C# tests reading the Swift twin. A `slider` shows its
   value right of its label as a percentage of its range, or a count when its step is a whole number.
 
+Five more (2026-11-09, Instagram Post; contribution API **15**, [30](30-instagram-post.md)): a thumbnail grid's `numbered` (a chosen tile shows its place in `selection`), a row's `badge` (`video`) and `fill`; a stack's `animate` (children ease in, make room, resize) and `justify: between`; a choice's `look: segmented`. On Windows `animate` is a fade-in of what is new.
+
 One more (2026-11-04, Enhance's performance level; contribution API **12**, the same step as the
 Edit pane's `place "edit"` above: an older core refuses a tree that uses it, and Enhance's manifest
 asks for 12 for both):

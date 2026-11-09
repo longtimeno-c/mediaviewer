@@ -371,6 +371,7 @@ final class StorageStore: ObservableObject {
       case "import": return ("Import", "The add-on.")
       case "driftwire": return ("Driftwire", "The add-on.")
       case "enhance": return ("Enhance", "The add-on and the models it downloaded.")
+      case "instagram": return ("Instagram Post", "The add-on.")
       default: return (folder, "An add-on and its data.")
       }
     }
@@ -395,6 +396,7 @@ final class StorageStore: ObservableObject {
     case "Places": return "places"
     case "Driftwire": return DriftwireStore.addonID
     case "Enhance": return SlotAddonOffer.enhanceID
+    case "Instagram Post": return SlotAddonOffer.instagramID
     default: return folder.lowercased()
     }
   }
