@@ -32,7 +32,7 @@ namespace mv::addon {
 // `timed` (2026-11-05, docs/design/20 "Craft rules"). Points of an
 // API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 14;
+inline constexpr std::uint32_t kSlotsContributionApi = 15;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".
@@ -44,6 +44,7 @@ inline constexpr std::uint32_t kEditorItemsApi = 11;
 // The contribution API from which a screen may be in place "edit" (13 since the
 // merge with main's 12, the Places world map's "fill").
 inline constexpr std::uint32_t kEditScreenApi = 13;
+inline constexpr std::uint32_t kEmbedScreenApi = 15;  // place "embed", docs/design/30
 // The host function table version that carries the screen / slot calls
 // (mediaviewer_addon.h, v3). A manifest naming a point needs host_api.min >= this.
 inline constexpr std::uint32_t kSlotsHostApi = 3;
@@ -56,7 +57,7 @@ inline constexpr std::uint32_t kSlotsHostApi = 3;
 // under the tool the person chose; only the chrome opens it, with a command
 // (slot_registry::screen_command), never the add-on's screen_show or an item.
 // At most one per add-on.
-enum class screen_place : std::uint8_t { info_section, window, pane, sheet, settings, edit };
+enum class screen_place : std::uint8_t { info_section, window, pane, sheet, settings, edit, embed };
 
 // The glyphs a chrome item or badge may name: each host maps them to its own
 // symbol set (SF Symbols / Segoe Fluent Icons). An add-on ships no icon file

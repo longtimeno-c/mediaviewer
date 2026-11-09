@@ -293,6 +293,7 @@ public static partial class IslandHost
             if (kv.Length != 2) continue;
             AddonSlot? slot = Array.Find(AddonSlots, s => s.Id == kv[0])
                 ?? (kv[0] == PlacesChannel.Id ? PlacesChannel : kv[0] == DriftwireId ? DriftwireSlot
+                    : kv[0] == InstagramId ? InstagramSlot
                     : SlotAddonRows.FirstOrDefault(r => r.Id == kv[0]) is { } row ? SlotChannelFor(row) : null);
             if (slot is null) continue;
             if (kv[1].StartsWith("update:", StringComparison.Ordinal))

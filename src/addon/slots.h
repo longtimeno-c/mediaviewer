@@ -290,6 +290,13 @@ class slot_registry {
                    std::string title, std::vector<std::string> paths, std::uint32_t select);
   // {"revision","addon","title","paths":[..],"select"}, or {"revision":0}.
   [[nodiscard]] std::string open_list_json() const;
+  // 0.40 (docs/design/30): opens `target_addon`'s embed screen on `path` for an
+  // `embed` node of `addon_id`'s window, and remembers who asked, so
+  // note_item_saved can tell them what was made from it.
+  status embed_open(const std::string& addon_id, const std::string& screen_id, std::uint64_t generation,
+                    const std::string& target_addon, const std::string& target_screen, std::string path,
+                    float width_pt);
+  void note_item_saved(const std::string& source, const std::string& result);
   // #452 (host table notice_post / notice_authorize / keep_alive).
   struct notice_fields {
     std::string screen, title, body, action, action_label;
@@ -372,6 +379,11 @@ class slot_registry {
     std::vector<std::string> paths;
     std::uint32_t select = 0;
   } open_list_;
+  // 0.40: the add-on and screen that embedded another on an item.
+  struct edit_watch_state {
+    std::string addon, screen;
+    std::vector<std::string> paths;  // a run keeps going when the person moves on
+  } edit_watch_;
   // Windows, panes and sheets that are open.
   std::map<std::pair<std::string, std::string>, screen_state> screens_;
   search_state search_[2];  // [0] files, [1] local

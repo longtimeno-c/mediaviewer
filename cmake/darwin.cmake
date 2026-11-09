@@ -520,6 +520,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/script.cmake")
 # The Places add-on (docs/design/27): libmv_places.dylib in build/addons/places,
 # packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/instagram.cmake")
 # The Driftwire add-on (docs/design/28): libmv_driftwire.dylib in
 # build/addons/driftwire, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
@@ -1120,6 +1121,7 @@ if(MV_BUILD_TESTS)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
+  mv_instagram_tests(mv_import_tests)
   mv_driftwire_tests(mv_import_tests)
   if(TARGET mv_enhance)
     mv_enhance_tests(mv_import_tests)

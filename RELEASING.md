@@ -30,7 +30,7 @@ bump the version, commit changes, or push them for you.
 |---|---|---|
 | `artifacts` (default) | Unsigned installers in Actions artifacts, retained 30 days | None |
 | `preview` | Both installers and signed update feeds as a **Pre-release**, for the Preview update channel | Same as stable |
-| `stable` | Both installers, signed update feeds, and the Import, Driftwire, Places and Local search add-ons, marked **Latest**; then the driftwire package repository on GitHub Pages, when `MV_DRIFTWIRE_REPO` is `1` | Windows manifest key + all six Mac secrets; Azure optional; the repository's key when it is on |
+| `stable` | Both installers, signed update feeds, and the Import, Driftwire, Places, Instagram Post and Local search add-ons, marked **Latest**; then the driftwire package repository on GitHub Pages, when `MV_DRIFTWIRE_REPO` is `1` | Windows manifest key + all six Mac secrets; Azure optional; the repository's key when it is on |
 
 After the updated workflow is on `main`, the equivalent commands are:
 
@@ -322,6 +322,9 @@ database into `data/` and `pack --addon places` signs the manifest. It is prefer
 refuses a partial pack or one that does not match its manifest. A failure while staging or packing
 Places does not fail the release (the place database is built from upstream dumps whose pins go
 stale). Preview and artifacts runs do not pack it. Import stays required (`MV_RELEASE_ADDONS=1`).
+
+**Instagram Post ([docs/design/30](docs/design/30-instagram-post.md))** is packed the same way, code only:
+`mediaviewer-addon-instagram-*` on Windows and macOS. Preferred, not required.
 
 To pack by hand (the key file holds the private key, hex; never commit it or echo it into a log):
 

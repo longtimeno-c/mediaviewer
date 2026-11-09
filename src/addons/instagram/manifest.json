@@ -1,0 +1,9 @@
+{
+ "description": "Build a carousel for Instagram: choose up to 20 photos and clips from your Photos library or the open folder, set the shape, frame each one, and export files ready to post. Nothing is uploaded, and your originals are never changed.",
+ "contributes": {
+  "api": {"min": 15, "max": 15},
+  "screens": [{"id": "compose", "title": "Instagram Post", "place": "window", "width": 1120, "height": 800}],
+  "context_menu": [{"id": "add", "label": "Add to Instagram Post…", "target": "files"}],
+  "commands": [{"id": "open", "name": "Instagram Post…", "modes": "all", "payload": "marked_or_current"}]
+ }
+}

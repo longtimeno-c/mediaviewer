@@ -148,8 +148,13 @@ struct AddonsSection: View {
                                        SlotAddonOffer.channel(id: SlotAddonOffer.enhanceID, name: "Enhance"),
                                        "Enhance")))
     }
+    list.append(Entry(id: SlotAddonOffer.instagramID, name: SlotAddonOffer.instagramName,
+                      line: slotLine(slots.rows.first { $0.id == SlotAddonOffer.instagramID },
+                                     SlotAddonOffer.channel(id: SlotAddonOffer.instagramID, name: SlotAddonOffer.instagramName),
+                                     SlotAddonOffer.instagramName)))
     let rest = slots.rows.filter {
       $0.id != "places" && $0.id != DriftwireStore.addonID && $0.id != SlotAddonOffer.enhanceID
+        && $0.id != SlotAddonOffer.instagramID
     }
       .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     for row in rest {
@@ -188,6 +193,9 @@ struct AddonsSection: View {
     guard !mv_addon2_elsewhere() else { return }
     if SlotAddonOffer.enhanceSupported && !slots.rows.contains(where: { $0.id == SlotAddonOffer.enhanceID }) {
       SlotAddonOffer.channel(id: SlotAddonOffer.enhanceID, name: "Enhance").probe()
+    }
+    if !slots.rows.contains(where: { $0.id == SlotAddonOffer.instagramID }) {
+      SlotAddonOffer.channel(id: SlotAddonOffer.instagramID, name: SlotAddonOffer.instagramName).probe()
     }
     for row in slots.rows where row.id != "places" {
       SlotAddonOffer.channel(id: row.id, name: row.name).probe()
@@ -248,6 +256,7 @@ struct AddonPageView: View {
     case "places": return "Places"
     case DriftwireStore.addonID: return "Driftwire"
     case SlotAddonOffer.enhanceID: return "Enhance"
+    case SlotAddonOffer.instagramID: return SlotAddonOffer.instagramName
     default: return installed.rows.first { $0.id == id }?.name ?? id
     }
   }

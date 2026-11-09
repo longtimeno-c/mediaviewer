@@ -122,6 +122,26 @@ public static partial class IslandHost
         {
             case "stack" when JArr(n, "children").Any(IsFillSurface):
                 return BuildFillStack(n, at);
+            case "stack" when JStr(n, "axis") == "horizontal" && JStr(n, "justify") == "between":
+            {
+                // API 15: the first child set apart from the rest, as the Mac's Spacer.
+                var row = new Grid { ColumnSpacing = JNum(n, "spacing", 8) };
+                int col = 0;
+                foreach (JsonElement c in JArr(n, "children"))
+                {
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    var child = (FrameworkElement)BuildScreenNode(c, at);
+                    child.VerticalAlignment = VerticalAlignment.Center;
+                    Grid.SetColumn(child, col++);
+                    row.Children.Add(child);
+                    if (col == 1)
+                    {
+                        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                        col++;
+                    }
+                }
+                return row;
+            }
             case "stack" when JStr(n, "axis") == "horizontal" &&
                               JArr(n, "children").Any(c => JStr(c, "type") == "text_field"):
             {
@@ -176,7 +196,13 @@ public static partial class IslandHost
                         if (fe is TextBlock tb && JStr(n, "align") == "center") tb.TextAlignment = TextAlignment.Center;
                     }
                     panel.Children.Add(child);
+                    // API 15: what arrived since the last revision fades in where it is.
+                    if (JFlag(n, "animate") && child is FrameworkElement arriving && IsNewScreenChild(at, id, JStr(c, "id")))
+                    {
+                        SettingsFadeIn(arriving);
+                    }
                 }
+                if (JFlag(n, "animate")) KeepScreenChildren(at, id, JArr(n, "children").Select(c => JStr(c, "id")));
                 // "look": "card" (#442): a rounded surface, as Settings' cards; "reveal"
                 // (API 9): brought into view and marked when its token moves.
                 return ScreenRevealed(JStr(n, "look") == "card" ? ScreenCard(panel) : panel, n, at);
@@ -287,6 +313,8 @@ public static partial class IslandHost
             }
             case "thumbnail":
                 return SlotThumb(JStr(n, "path"), JNum(n, "size", 96), JStr(n, "label"));
+            case "embed":
+                return BuildEmbed(n);
             case "thumbnail_grid":
                 return BuildThumbnailGrid(n, at, id);
             case "list":
@@ -331,6 +359,22 @@ public static partial class IslandHost
                 };
                 t.Toggled += (_, _) => SendScreenEvent(at, id, SlotNative.EventChange, t.IsOn ? "true" : "false");
                 return InlineToggle(JStr(n, "label"), t);
+            }
+            case "choice" when JStr(n, "look") == "segmented":
+            {
+                // API 15: every option in sight, the chosen one filled.
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
+                AutomationProperties.SetName(row, JStr(n, "label"));
+                string value = JStr(n, "value");
+                foreach (JsonElement o in JArr(n, "options"))
+                {
+                    string option = JStr(o, "id");
+                    row.Children.Add(ScreenButton(JStr(o, "text"), () =>
+                    {
+                        if (option != value) SendScreenEvent(at, id, SlotNative.EventChange, JsonString(option));
+                    }, option == value ? "primary" : "plain"));
+                }
+                return row;
             }
             case "choice":
             {
@@ -395,6 +439,7 @@ public static partial class IslandHost
                 // Reported when let go (pointer or key), not on every step of a drag.
                 void Report() => SendScreenEvent(at, id, SlotNative.EventChange, ScreenNumberJson(s.Value));
                 s.PointerCaptureLost += (_, _) => Report();
+                if (JFlag(n, "live")) s.ValueChanged += (_, _) => Report();  // API 15
                 s.KeyUp += (_, e) =>
                 {
                     if (e.Key is Windows.System.VirtualKey.Left or Windows.System.VirtualKey.Right
@@ -1310,7 +1355,17 @@ public static partial class IslandHost
     // A virtualised grid: ItemsRepeater realises only what is in view, and each
     // tile asks for its thumbnail as it is realised. Arrow keys move between
     // realised tiles; Space selects, Enter activates.
-    private sealed record SlotTileVm(string Path, string Label, int Index);
+    private sealed record SlotTileVm(string Path, string Label, int Index, bool Video = false);
+
+    // API 15: the children of an "animate" stack at its last build, by screen and
+    // stack, so only what is new fades in when a revision rebuilds the content.
+    private static readonly Dictionary<(ScreenAt, string), HashSet<string>> ScreenChildren = new();
+
+    private static bool IsNewScreenChild(ScreenAt at, string stack, string child) =>
+        ScreenChildren.TryGetValue((at, stack), out HashSet<string>? had) && !had.Contains(child);
+
+    private static void KeepScreenChildren(ScreenAt at, string stack, IEnumerable<string> children) =>
+        ScreenChildren[(at, stack)] = new HashSet<string>(children, StringComparer.Ordinal);
 
     private static UIElement BuildThumbnailGrid(JsonElement n, ScreenAt at, string id)
     {
@@ -1322,7 +1377,13 @@ public static partial class IslandHost
         {
             string path = JStr(item, "path");
             string label = JStr(item, "label");
-            vms.Add(new SlotTileVm(path, label.Length > 0 ? label : Path.GetFileName(path), vms.Count));
+            vms.Add(new SlotTileVm(path, label.Length > 0 ? label : Path.GetFileName(path), vms.Count, JStr(item, "badge") == "video"));
+        }
+        // API 15: a chosen tile says its place in the selection's order.
+        var order = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (JFlag(n, "numbered"))
+        {
+            foreach (JsonElement s in JArr(n, "selection")) order.TryAdd(s.GetString() ?? "", order.Count + 1);
         }
         var realised = new Dictionary<int, Button>();
         ScrollViewer? scroller = null;
@@ -1351,7 +1412,7 @@ public static partial class IslandHost
             UIElement? target = repeater.GetOrCreateElement(to);
             target?.StartBringIntoView();
             if (target is Button b) b.Focus(FocusState.Keyboard);
-        }, () => scroller is null ? 1 : Math.Max(1, (int)((scroller.ViewportWidth + 8) / (tile + 8))));
+        }, () => scroller is null ? 1 : Math.Max(1, (int)((scroller.ViewportWidth + 8) / (tile + 8))), order);
         scroller = new ScrollViewer
         {
             Content = repeater,
@@ -1363,6 +1424,12 @@ public static partial class IslandHost
             // Never taller than the window it is in; a few rows until that is known.
             MaxHeight = Math.Max(tile + 16, 4 * (tile + 8)),
         };
+        // API 15: a grid that fills sits in a row that bounds it.
+        if (JFlag(n, "fill"))
+        {
+            scroller.MaxHeight = double.PositiveInfinity;
+            return scroller;
+        }
         ScrollViewer bounded = scroller;
         void FitWindow()
         {
@@ -1391,16 +1458,58 @@ public static partial class IslandHost
     }
 
     private sealed class SlotTileFactory(double tile, Action<SlotTileVm> select, Action<SlotTileVm> activate,
-        HashSet<string> selected, Dictionary<int, Button> realised, Action<int, int> move, Func<int> columns)
+        HashSet<string> selected, Dictionary<int, Button> realised, Action<int, int> move, Func<int> columns,
+        Dictionary<string, int> order)
         : IElementFactory
     {
         public UIElement GetElement(ElementFactoryGetArgs args)
         {
             var vm = (SlotTileVm)args.Data;
             FrameworkElement thumb = SlotThumb(vm.Path, tile, vm.Label);
+            FrameworkElement content = thumb;
+            if (vm.Video || order.ContainsKey(vm.Path))
+            {
+                var stacked = new Grid();
+                stacked.Children.Add(thumb);
+                if (order.TryGetValue(vm.Path, out int place))
+                {
+                    stacked.Children.Add(new Border
+                    {
+                        Width = 20,
+                        Height = 20,
+                        CornerRadius = new CornerRadius(10),
+                        Background = Brush(TrimAccent),
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        VerticalAlignment = VerticalAlignment.Top,
+                        Margin = new Thickness(5),
+                        Child = new TextBlock
+                        {
+                            Text = place.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            FontSize = 11,
+                            Foreground = Brush(Colors.White),
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                        },
+                    });
+                }
+                if (vm.Video)
+                {
+                    stacked.Children.Add(new FontIcon
+                    {
+                        Glyph = "\uE768",
+                        FontFamily = SymbolFont,
+                        FontSize = 11,
+                        Foreground = Brush(Colors.White),
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        VerticalAlignment = VerticalAlignment.Bottom,
+                        Margin = new Thickness(6),
+                    });
+                }
+                content = stacked;
+            }
             var b = new Button
             {
-                Content = thumb,
+                Content = content,
                 Padding = new Thickness(0),
                 Background = Brush(Colors.Transparent),
                 BorderBrush = Brush(TrimAccent),
@@ -1442,7 +1551,8 @@ public static partial class IslandHost
             if (args.Element is Button { DataContext: SlotTileVm vm } b)
             {
                 realised.Remove(vm.Index);
-                if (b.Content is Border { Child: Image img }) img.Tag = null;  // a late thumbnail paints nothing
+                Border? tile2 = b.Content as Border ?? (b.Content as Grid)?.Children[0] as Border;
+                if (tile2 is { Child: Image img }) img.Tag = null;  // a late thumbnail paints nothing
             }
         }
     }
@@ -1733,7 +1843,8 @@ public static partial class IslandHost
 
     // ---- a surface that fills (contribution API 12) ----------------------------------
 
-    private static bool IsFillSurface(JsonElement n) => JStr(n, "type") == "surface" && JFlag(n, "fill");
+    private static bool IsFillSurface(JsonElement n) =>
+        JStr(n, "type") is "surface" or "thumbnail_grid" or "split" && JFlag(n, "fill") && !JFlag(n, "hidden");
 
     // A tree with a fill surface anywhere: its window is one big picture (the
     // Places world map), resizable, maximisable and full screen (F11).
@@ -1908,19 +2019,41 @@ public static partial class IslandHost
 
     // UI thread: the open screens as the core lists them; a window per screen,
     // built from its tree and rebuilt when the tree's revision moves.
+    private static JsonElement? _screenList;  // the core's list, for `embed` nodes
+
+    // API 15 (docs/design/30): another add-on's place-"embed" screen, its events its own.
+    private static UIElement BuildEmbed(JsonElement n)
+    {
+        string addon = JStr(n, "addon"), screen = JStr(n, "screen");
+        if (_screenList is { } list)
+        {
+            foreach (JsonElement s in list.EnumerateArray())
+            {
+                if (JStr(s, "addon") == addon && JStr(s, "id") == screen && s.TryGetProperty("tree", out JsonElement tree))
+                {
+                    return BuildScreenNode(tree, new ScreenAt(addon, screen));
+                }
+            }
+        }
+        return new Grid();
+    }
+
     private static void SyncScreenWindows(JsonElement list)
     {
         var wanted = new HashSet<ScreenAt>();
         SyncSettingsScreen(list);  // a settings page is drawn in Settings, never a window
         NoteEnhanceLevel(list);    // the Enhance tab's level chip reads Enhance's settings page
         SyncEnhanceDock(list);     // S5: a docked Edit screen, in the Enhance tab
+        _screenList = list.Clone();
+        long embedded = list.EnumerateArray().Where(e => JStr(e, "place") == "embed").Sum(e => (long)JNum(e, "revision", 0));
         foreach (JsonElement s in list.EnumerateArray())
         {
             string place = JStr(s, "place");
-            if (place == "settings" || place == "edit") continue;
+            if (place == "settings" || place == "edit" || place == "embed") continue;
             var at = new ScreenAt(JStr(s, "addon"), JStr(s, "id"));
             wanted.Add(at);
-            long revision = (long)JNum(s, "revision", 0);
+            // API 15: a window also rebuilds when a screen it embeds moves.
+            long revision = (long)JNum(s, "revision", 0) + embedded;
             if (!ScreenWindows.TryGetValue(at, out var open))
             {
                 Window w = OpenScreenWindow(s, at, place);

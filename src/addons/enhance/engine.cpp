@@ -508,7 +508,7 @@ sheet_view engine::sheet_locked(bool docked, std::optional<photo_target> as) con
 
 void engine::post_sheet_locked() {
   if (!port_.post) return;
-  if (sheet_gen_ != 0 && !port_.post(kSheetScreen, sheet_gen_, sheet_tree(sheet_locked()))) sheet_gen_ = 0;
+  if (sheet_gen_ != 0 && !port_.post(sheet_screen_, sheet_gen_, sheet_tree(sheet_locked()))) sheet_gen_ = 0;
   // One-click (owner 2026-11-05): the tool screen is the Enhance tab's cards.
   if (tool_gen_ != 0) {
     const std::vector<card_view> cards = cards_locked();
@@ -752,7 +752,8 @@ void engine::settings_opened(std::uint64_t generation) {
   post_settings_locked();
 }
 
-void engine::sheet_opened(std::uint64_t generation, const std::string& request_path, float width_pt, float scale) {
+void engine::sheet_opened(std::uint64_t generation, const std::string& request_path, float width_pt, float scale,
+                          bool panel) {
   std::string path;
   std::vector<std::int64_t> keep;
   {
@@ -772,6 +773,7 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
   const item_facts f = read_item(path);
   std::lock_guard lock(m_);
   sheet_gen_ = generation;
+  sheet_screen_ = panel ? kPanelScreen : kSheetScreen;
   if (width_pt >= 100 && width_pt <= 2000) sheet_width_pt_ = width_pt;
   if (scale >= 1 && scale <= 4) sheet_scale_ = scale;
   if (!running_) {
@@ -927,8 +929,8 @@ void engine::closed(const std::string& screen) {
     }
     if (screen == kToolScreen && run_state_ != run_state::running) run_state_ = run_state::idle;
     if (screen == kSettingsScreen) settings_gen_ = 0;
-    if (screen == kSheetScreen || screen == kToolScreen) {
-      (screen == kSheetScreen ? sheet_gen_ : tool_gen_) = 0;
+    if (screen == kSheetScreen || screen == kPanelScreen || screen == kToolScreen) {
+      (screen == kToolScreen ? tool_gen_ : sheet_gen_) = 0;
       status_.clear();
       if (screen == kToolScreen) forget_result_locked();
       // Leaving the sheet (or the docked panel: the host closes it when the
@@ -1118,7 +1120,7 @@ void engine::run(bool docked) {
       w.key("props").begin_object().key("text").string(eta_.empty() ? std::string("Working…") : eta_).end_object();
       w.end_object().end_array();
       // The two nodes alone; a refused diff re-posts it whole.
-      if (!port_.diff || !port_.diff(kSheetScreen, sheet_gen_, w.str())) whole = true;
+      if (!port_.diff || !port_.diff(sheet_screen_, sheet_gen_, w.str())) whole = true;
     }
     if (tool_gen_ != 0) {
       // One-click: the tool bar's line and its bar.
@@ -1164,7 +1166,7 @@ void engine::run(bool docked) {
       posted_height_ = h_pt;
       post_sheet_locked();
     }
-    (void)port_.surface(kSheetScreen, "preview", sheet_gen_, bgra, ow, oh);
+    (void)port_.surface(sheet_screen_, "preview", sheet_gen_, bgra, ow, oh);
   };
   ev.preview = [post_preview](preview_image before, preview_image after) {
     const bool split = !before.empty() && !after.empty();
@@ -1196,6 +1198,9 @@ void engine::run(bool docked) {
         if (slash != std::string::npos) result_path_ = path_.substr(0, slash + 1) + output;
       }
       result_name_ = library_key(output) ? std::string() : output;
+      if (std::string_view(sheet_screen_) == kPanelScreen && port_.saved && !result_path_.empty()) {
+        port_.saved(path_, result_path_);  // docs/design/30
+      }
       // status_ keeps "Saved as …" for the sheet; the docked panel's row
       // says it in its own words (tool_tree hides the status while it shows).
     }
@@ -1316,7 +1321,7 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
       }
     }
   }
-  if (screen != kSheetScreen && screen != kToolScreen) return;
+  if (screen != kSheetScreen && screen != kPanelScreen && screen != kToolScreen) return;
   const bool docked = screen == kToolScreen;
   if (docked && kind == MV_SLOT_EVENT_CLICK) {
     // One-click (owner 2026-11-05): a card's one button, its download's Stop,

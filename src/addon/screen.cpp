@@ -18,7 +18,7 @@ struct node_type_info {
   const char* name;
 };
 
-constexpr std::array<node_type_info, 21> kTypes{{
+constexpr std::array<node_type_info, 22> kTypes{{
     {node_type::stack, "stack"},
     {node_type::grid, "grid"},
     {node_type::scroll, "scroll"},
@@ -40,6 +40,7 @@ constexpr std::array<node_type_info, 21> kTypes{{
     {node_type::surface, "surface"},
     {node_type::tiles, "tiles"},
     {node_type::link, "link"},
+    {node_type::embed, "embed"},
 }};
 
 bool container(node_type t) noexcept {
@@ -255,7 +256,10 @@ error check_props(node& n, std::size_t& items) {
           ok = (key == "axis" && one_of(v, {"vertical", "horizontal"})) ||
                (key == "spacing" && int_in(v, 0, 64)) ||
                (key == "align" && one_of(v, {"start", "center", "end", "fill"})) ||
-               (key == "look" && one_of(v, {"plain", "card"})) || (key == "reveal" && str_max(v, 64));
+               (key == "look" && one_of(v, {"plain", "card"})) || (key == "reveal" && str_max(v, 64)) ||
+               // API 15 (docs/design/30): children ease as they come, go, move and
+               // resize; "between" sets the first child apart from the rest.
+               (key == "animate" && v.k == json::kind::boolean) || (key == "justify" && one_of(v, {"start", "between"}));
           break;
         case node_type::grid:
           ok = (key == "columns" && int_in(v, 1, 12)) || (key == "spacing" && int_in(v, 0, 64));
@@ -266,7 +270,7 @@ error check_props(node& n, std::size_t& items) {
           break;
         case node_type::split:
           ok = (key == "axis" && one_of(v, {"vertical", "horizontal"})) ||
-               (key == "fraction" && num_in(v, 0.05, 0.95));
+               (key == "fraction" && num_in(v, 0.05, 0.95)) || (key == "fill" && v.k == json::kind::boolean);
           break;
         case node_type::text:
           ok = (key == "text" && str_max(v, kMaxText, true)) ||
@@ -282,9 +286,11 @@ error check_props(node& n, std::size_t& items) {
           ok = (key == "path" && file_path(v)) || (key == "size" && int_in(v, 16, 512));
           break;
         case node_type::thumbnail_grid:
-          ok = (key == "items" && rows(v, {"path"}, {"id", "label"}, "path", items, true)) ||
+          ok = (key == "items" && rows(v, {"path"}, {"id", "label", "badge"}, "path", items, true)) ||
                (key == "tile" && int_in(v, 48, 512)) ||
                (key == "selection" && string_array(v, kMaxItems, 4096)) ||
+               (key == "numbered" && v.k == json::kind::boolean) ||
+               (key == "fill" && v.k == json::kind::boolean) ||
                (key == "multi" && v.k == json::kind::boolean);
           break;
         case node_type::list:
@@ -324,6 +330,9 @@ error check_props(node& n, std::size_t& items) {
                (key == "symbol" && v.k == json::kind::string && known_symbol(v.s)) ||
                (key == "copy" && v.k == json::kind::string && !v.s.empty() && plain(v.s, kMaxText));
           break;
+        case node_type::embed:
+          ok = ((key == "addon" || key == "screen") && v.k == json::kind::string && id_text(v.s));
+          break;
         case node_type::toggle:
           ok = key == "value" && v.k == json::kind::boolean;
           break;
@@ -335,11 +344,15 @@ error check_props(node& n, std::size_t& items) {
             ok = v.k == json::kind::array && !v.a.empty() && v.a.size() <= 256 &&
                  choice_rows(v, ignored);
           } else {
-            ok = key == "value" && str_max(v, 256);
+            ok = (key == "value" && str_max(v, 256)) || (key == "look" && one_of(v, {"menu", "segmented"}));
           }
           break;
         case node_type::slider:
         case node_type::number:
+          if (key == "live") {  // API 15: every step of a drag, not only the last
+            ok = v.k == json::kind::boolean;
+            break;
+          }
           ok = (key == "min" || key == "max" || key == "step" || key == "value") &&
                num_in(v, -1e12, 1e12);
           break;
@@ -435,6 +448,9 @@ error check_props(node& n, std::size_t& items) {
       break;
     case node_type::thumbnail:
       if (!has("path")) return error::bad_prop;
+      break;
+    case node_type::embed:
+      if (!has("addon") || !has("screen")) return error::bad_prop;
       break;
     case node_type::thumbnail_grid:
     case node_type::list:

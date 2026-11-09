@@ -3,12 +3,17 @@
 #include "addon/index_locations.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <set>
+#include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace mv::addon {
 namespace {
@@ -19,6 +24,7 @@ struct source_state {
   index_location_source source;  // under m
   eyes_source eyes;              // under m (slice 6)
   faces_source faces;            // under m (edit-refresh S10)
+  search_source search;          // under m (docs/design/30)
   std::uint32_t in_flight = 0;   // under m
   std::condition_variable changed;  // a publish or a decline
   index_wanted_fn wanted;           // under m
@@ -111,6 +117,7 @@ void retract_index_locations() noexcept {
     s.source = nullptr;
     s.eyes = nullptr;
     s.faces = nullptr;
+    s.search = nullptr;
     s.epoch.fetch_add(1, std::memory_order_acq_rel);
   }
 }
@@ -241,6 +248,81 @@ faces_source ai_faces(const mv_ai_api* api) {
     if (st == MV_ERR_INVALID_ARG && needed <= out.size()) return err(status::permission_denied);
     if (st != MV_OK) return err(static_cast<status>(st));
     out.resize(std::strlen(out.c_str()));
+    return out;
+  };
+}
+
+void publish_ai_search(search_source source) {
+  source_state& s = state();
+  std::lock_guard lock(s.m);
+  s.search = std::move(source);
+}
+
+result<std::vector<std::string>> ai_search_paths(const std::string& query, const std::string& scope) {
+  source_state& s = state();
+  search_source search;
+  bool asked = false;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+  for (;;) {
+    {
+      std::lock_guard lock(s.m);
+      if (s.search) {
+        search = s.search;
+        ++s.in_flight;
+        break;
+      }
+      if (asked && std::chrono::steady_clock::now() >= until) return err(status::not_found);
+      if (!asked && !s.wanted) return err(status::not_found);
+    }
+    if (!asked) {
+      asked = true;
+      index_wanted_fn wanted;
+      {
+        std::lock_guard lock(s.m);
+        wanted = s.wanted;
+      }
+      if (wanted) wanted();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  struct leave {
+    source_state& s;
+    ~leave() {
+      std::lock_guard lock(s.m);
+      if (--s.in_flight == 0) s.idle.notify_all();
+    }
+  } on_leave{s};
+  return search(query, scope);
+}
+
+search_source ai_search(const mv_ai_api* api) {
+  if (!api || !api->search_text || !api->result_count || !api->result_path || !api->search_release) return nullptr;
+  return [api](const std::string& query, const std::string& scope) -> result<std::vector<std::string>> {
+    const std::uint32_t kind = MV_AI_KIND_PHOTOS | MV_AI_KIND_VIDEOS;
+    const std::uint32_t where = scope.empty() ? MV_AI_SCOPE_ALL : MV_AI_SCOPE_FOLDER;
+    std::uint64_t id = 0;
+    const mv_status st = api->search_text(api->ctx, query.c_str(), scope.empty() ? nullptr : scope.c_str(), where, kind, &id);
+    if (st != MV_OK) return err(static_cast<status>(st));
+    // search_text runs on the pack's worker and reports through the session's
+    // queue, which an add-on does not read. The rows are sorted when it ends:
+    // a count that has held for three polls is the end.
+    std::uint32_t count = 0;
+    int held = 0;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    while (held < 3 && std::chrono::steady_clock::now() < until) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(80));
+      std::uint32_t now = 0;
+      (void)api->result_count(api->ctx, id, &now);
+      held = now > 0 && now == count ? held + 1 : 0;
+      count = now;
+    }
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    char path[4096];
+    for (std::uint32_t i = 0; i < count; ++i) {
+      if (api->result_path(api->ctx, id, i, path, sizeof path) == MV_OK && seen.insert(path).second) out.emplace_back(path);
+    }
+    (void)api->search_release(api->ctx, id);
     return out;
   };
 }

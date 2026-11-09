@@ -519,6 +519,17 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
         with self.assertRaisesRegex(ValueError, 'Incomplete enhance'):
             release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
 
+    def test_stable_carries_instagram_when_packed_and_publishes_without_it(self):
+        # docs/design/30: preferred, on both platforms.
+        self.stable_assets()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertFalse(any('instagram' in name for name in names))
+        self.write_addon('instagram')
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        for platform in release.ADDON_PLATFORMS:
+            for name in release.addon_asset_names(platform, 'instagram'):
+                self.assertIn(name, names)
+
     def test_stable_rejects_a_partial_places_pack(self):
         self.stable_assets()
         (self.folder / 'mediaviewer-addon-places-win-x64.zip').write_bytes(b'addon')

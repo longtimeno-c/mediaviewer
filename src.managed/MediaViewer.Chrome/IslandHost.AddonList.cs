@@ -148,8 +148,10 @@ public static partial class IslandHost
         list.Add(new(DriftwireId, "Driftwire", Slot(driftwire, DriftwireSlot, "Driftwire")));
         SlotAddonRow? enhance = SlotAddonRows.FirstOrDefault(r => r.Id == EnhanceId);
         list.Add(new(EnhanceId, "Enhance", Slot(enhance, EnhanceSlot, "Enhance")));
+        SlotAddonRow? instagram = SlotAddonRows.FirstOrDefault(r => r.Id == InstagramId);
+        list.Add(new(InstagramId, InstagramName, Slot(instagram, InstagramSlot, InstagramName)));
         foreach (SlotAddonRow row in SlotAddonRows.Where(r => r.Id != PlacesChannel.Id && r.Id != DriftwireId &&
-                                                              r.Id != EnhanceId)
+                                                              r.Id != EnhanceId && r.Id != InstagramId)
                                                   .OrderBy(r => r.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             list.Add(new(row.Id, row.Name, Slot(row, SlotChannelFor(row), row.Name)));

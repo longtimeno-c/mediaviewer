@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstring>
 #include <optional>
 #include <string_view>
@@ -1212,6 +1213,11 @@ mv_status MV_CALL t_clip_write_open(void* host, const char* source, const mv_add
     po.sound_rate = o->sound_rate;
     po.sound_channels = o->sound_channels;
     po.suffix = o->suffix_ascii;
+    if (o->struct_size >= offsetof(mv_addon_clip_out, reserved2) + sizeof(o->reserved2)) {
+      if (o->out_dir_utf8) po.out_dir = o->out_dir_utf8;
+      if (o->out_stem_utf8) po.out_stem = o->out_stem_utf8;
+      po.rotation = o->rotation;
+    }
     auto w = fn(source, po);
     if (!w) return to_mv(w.error());
     auto box = std::make_unique<clip_writer_box>();
@@ -1360,6 +1366,115 @@ mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* r
                   static_cast<std::size_t>(w) * 3);
     }
     auto r = fn(source, img, suffix);
+    if (!r) return to_mv(r.error());
+    return out ? copy_out(*r, out, cap) : MV_OK;
+  });
+}
+
+mv_status MV_CALL t_embed_open(void* host, const char* screen, uint64_t g, const char* addon, const char* target,
+                               const char* path, float width) {
+  return guarded([&] {
+    if (!screen || !addon || !target || !path) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().embed_open(t.addon_id(), screen, g, addon, target, path, width));
+  });
+}
+
+mv_status MV_CALL t_embed_close(void* host, const char* addon, const char* target) {
+  return guarded([&] {
+    if (!addon || !target) return MV_ERR_INVALID_ARG;
+    return to_mv(self(host).slots().close_screen(addon, target));
+  });
+}
+
+mv_status MV_CALL t_item_saved(void* host, const char* source, const char* result) {
+  return guarded([&] {
+    if (!source || !result) return MV_ERR_INVALID_ARG;
+    self(host).slots().note_item_saved(source, result);
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_adjust_rgb(void* host, uint8_t* rgb, uint32_t w, uint32_t h, const float* values, uint32_t count) {
+  return guarded([&] {
+    if (!rgb || !values || w == 0 || h == 0) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().adjust_rgb;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    const expected r = fn(rgb, w, h, std::span<const float>(values, count));
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_adjust_auto(void* host, const uint8_t* rgb, uint32_t w, uint32_t h, float* out, uint32_t count) {
+  return guarded([&] {
+    if (!rgb || !out || w == 0 || h == 0) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().adjust_auto;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    const expected r = fn(rgb, w, h, std::span<float>(out, count));
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+// docs/design/30: a picker's rows (Instagram Post).
+mv_status MV_CALL t_library_items(void* host, mv_addon_library_fn visit, void* user) {
+  return guarded([&] {
+    if (!visit) return MV_ERR_INVALID_ARG;
+    const expected r = self(host).services().library_items(
+        [&](const mv_addon_library_item& item) { return visit(user, &item) != 0; });
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_item_preview_rgb(void* host, const char* path, uint32_t max_edge, uint8_t* out, uint64_t cap,
+                                     uint32_t* w, uint32_t* h) {
+  return guarded([&] {
+    if (!path || !w || !h) return MV_ERR_INVALID_ARG;
+    auto img = self(host).services().item_preview(path, max_edge);
+    if (!img) return to_mv(img.error());
+    *w = img->width;
+    *h = img->height;
+    if (!out || cap < img->rgb.size()) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, img->rgb.data(), img->rgb.size());
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_library_file(void* host, const char* path, char* out, uint32_t cap) {
+  return guarded([&] {
+    if (!path || !out) return MV_ERR_INVALID_ARG;
+    auto r = self(host).services().library_file(path);
+    return r ? copy_out(*r, out, cap) : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_index_search(void* host, const char* query, const char* scope, mv_addon_path_fn visit, void* user) {
+  return guarded([&] {
+    if (!query || !visit) return MV_ERR_INVALID_ARG;
+    const auto& svc = self(host).services().index_search;
+    auto r = svc ? svc(query, scope ? scope : "") : ai_search_paths(query, scope ? scope : "");
+    if (!r) return to_mv(r.error());
+    for (const std::string& p : *r) {
+      if (visit(user, p.c_str()) == 0) return MV_ERR_CANCELLED;
+    }
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_still_write_into(void* host, const uint8_t* rgb, uint32_t w, uint32_t h, uint32_t stride,
+                                     const char* dir, const char* stem, char* out, uint32_t cap) {
+  return guarded([&] {
+    if (!rgb || !dir || !stem || w == 0 || h == 0 || w > 65535 || h > 65535 || stride < w * 3) {
+      return MV_ERR_INVALID_ARG;
+    }
+    rgb_image img;
+    img.width = w;
+    img.height = h;
+    img.rgb.resize(static_cast<std::size_t>(w) * h * 3);
+    for (uint32_t y = 0; y < h; ++y) {
+      std::memcpy(img.rgb.data() + static_cast<std::size_t>(y) * w * 3, rgb + static_cast<std::size_t>(y) * stride,
+                  static_cast<std::size_t>(w) * 3);
+    }
+    auto r = self(host).services().write_still_into(img, dir, stem);
     if (!r) return to_mv(r.error());
     return out ? copy_out(*r, out, cap) : MV_OK;
   });
@@ -1532,6 +1647,17 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.open_list = &t_open_list;  // 0.38
   if (svc_.still_faces) api_.still_faces = &t_still_faces;  // edit-refresh S10
   if (svc_.still_extend) api_.still_extend = &t_still_extend;  // edit-refresh S6
+  // docs/design/30.
+  if (svc_.library_items) api_.library_items = &t_library_items;
+  if (svc_.item_preview) api_.item_preview_rgb = &t_item_preview_rgb;
+  if (svc_.library_file) api_.library_file = &t_library_file;
+  api_.index_search = &t_index_search;
+  api_.embed_open = &t_embed_open;
+  api_.embed_close = &t_embed_close;
+  api_.item_saved = &t_item_saved;
+  if (svc_.adjust_rgb) api_.adjust_rgb = &t_adjust_rgb;
+  if (svc_.adjust_auto) api_.adjust_auto = &t_adjust_auto;
+  if (svc_.write_still_into) api_.still_write_into = &t_still_write_into;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

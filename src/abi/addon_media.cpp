@@ -16,6 +16,7 @@
 
 #include "codec/decode.h"
 #include "core/json.h"
+#include "edit/auto_adjust.h"
 #include "edit/bake.h"
 #include "edit/clip_sample.h"
 #include "edit/export.h"
@@ -337,6 +338,9 @@ result<std::unique_ptr<picture_sink>> open_clip_writer(const std::string& source
   o.sound_rate = out.sound_rate;
   o.sound_channels = out.sound_channels;
   o.suffix = out.suffix;
+  o.out_dir = out.out_dir;
+  o.out_stem = out.out_stem;
+  o.rotation = out.rotation;
   MV_TRY(auto w, edit::clip::picture_writer::open(source, o));
   return std::unique_ptr<picture_sink>(new adapter(std::move(w)));
 }
@@ -391,6 +395,164 @@ void set_photos_hooks(photos_resolve_fn resolve, photos_add_fn add) {
   const std::lock_guard<std::mutex> lock(h.m);
   h.resolve = std::move(resolve);
   h.add = std::move(add);
+}
+
+namespace {
+struct browse_hooks {
+  std::mutex m;
+  photos_list_fn list;
+  photos_tile_fn tile;
+};
+browse_hooks& browse() {
+  static browse_hooks h;
+  return h;
+}
+bool is_clip_name(std::string_view path) {
+  std::string lower(path.substr(path.size() > 8 ? path.size() - 8 : 0));
+  for (char& c : lower) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+  for (std::string_view ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts"}) {
+    if (lower.size() >= ext.size() && lower.compare(lower.size() - ext.size(), ext.size(), ext) == 0) return true;
+  }
+  return false;
+}
+photos_tile_fn tile_hook() {
+  browse_hooks& h = browse();
+  const std::lock_guard<std::mutex> lock(h.m);
+  return h.tile;
+}
+}  // namespace
+
+void set_photos_browse_hooks(photos_list_fn list, photos_tile_fn tile) {
+  browse_hooks& h = browse();
+  const std::lock_guard<std::mutex> lock(h.m);
+  h.list = std::move(list);
+  h.tile = std::move(tile);
+}
+
+expected library_items(const std::function<bool(const mv_addon_library_item&)>& visit) {
+  photos_list_fn list;
+  {
+    browse_hooks& h = browse();
+    const std::lock_guard<std::mutex> lock(h.m);
+    list = h.list;
+  }
+  if (!list) return err(status::not_found);
+  return list(visit);
+}
+
+result<rgb_image> item_preview(const std::string& path, std::uint32_t max_long_edge) {
+  if (is_photos_key(path)) {
+    const photos_tile_fn tile = tile_hook();
+    if (!tile) return err(status::not_found);
+    MV_TRY(std::vector<std::uint8_t> jpeg, tile(path, max_long_edge));
+    MV_TRY(auto img, image::decode_bytes(jpeg, nullptr, 1));
+    if (img.width == 0 || img.height == 0) return err(status::corrupt);
+    return fit_rgb(img.rgba.data(), img.width, img.height, max_long_edge);
+  }
+  if (is_clip_name(path)) return video_frame(path, 0, max_long_edge);
+  return decode_still(path, max_long_edge);
+}
+
+result<std::string> library_file(const std::string& path) { return readable_path(path); }
+
+std::optional<result<std::string>> grid_tile(const std::string& path) {
+  if (is_photos_key(path)) {
+    const photos_tile_fn tile = tile_hook();
+    if (!tile) return result<std::string>(err(status::not_found));
+    auto jpeg = tile(path, 512);
+    if (!jpeg) return result<std::string>(err(jpeg.error()));
+    auto dir = staging_dir();
+    if (!dir) return result<std::string>(err(dir.error()));
+    // The tile's name: the key's own characters, so one item is one file.
+    std::string name = "tile-";
+    for (char c : path.substr(7)) name.push_back((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ? c : '_');
+    const std::string file = *dir + name + ".jpg";
+    if (!io::file_exists(file) && !io::write_new(file, *jpeg) && !io::file_exists(file)) {
+      return result<std::string>(err(status::io));
+    }
+    return result<std::string>(file);
+  }
+  if (!is_clip_name(path)) return std::nullopt;
+  if (auto hit = moment_thumbnail(path, 0, nullptr)) return result<std::string>(std::move(*hit));
+  auto frame = video_frame(path, 0, 512);
+  if (!frame) return result<std::string>(err(frame.error()));
+  return moment_thumbnail(path, 0, &*frame);
+}
+
+namespace {
+result<image::linear_image> linear_of(const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h) {
+  const std::size_t px = static_cast<std::size_t>(w) * h;
+  std::vector<std::uint8_t> rgba(px * 4, 255);
+  for (std::size_t i = 0; i < px; ++i) {
+    rgba[i * 4] = rgb[i * 3];
+    rgba[i * 4 + 1] = rgb[i * 3 + 1];
+    rgba[i * 4 + 2] = rgb[i * 3 + 2];
+  }
+  return image::linear_from_srgb8(rgba, w, h, codec::format_family::jpeg);
+}
+}  // namespace
+
+expected adjust_rgb(std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::span<const float> values) {
+  edit::colour c;
+  const std::size_t n = std::min<std::size_t>(values.size(), edit::kAdjustParamCount);
+  for (std::size_t i = 0; i < n; ++i) c.v[i] = edit::clamp_param(static_cast<edit::adjust_param>(i), values[i]);
+  if (c.identity()) return {};
+  MV_TRY(image::linear_image working, linear_of(rgb, w, h));
+  const edit::placement p = edit::place(edit::geometry{}, edit::size2{w, h});
+  MV_TRY(codec::raster out, edit::bake(working, p, c));
+  if (out.width != w || out.height != h) return err(status::internal);
+  const std::size_t px = static_cast<std::size_t>(w) * h;
+  for (std::size_t i = 0; i < px; ++i) {
+    rgb[i * 3] = out.rgba[i * 4];
+    rgb[i * 3 + 1] = out.rgba[i * 4 + 1];
+    rgb[i * 3 + 2] = out.rgba[i * 4 + 2];
+  }
+  return {};
+}
+
+expected adjust_auto(const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::span<float> out) {
+  MV_TRY(image::linear_image working, linear_of(rgb, w, h));
+  MV_TRY(edit::auto_result a, edit::compute_auto_sections(working, edit::colour{}, edit::kAutoEnhanceSections));
+  const std::size_t n = std::min<std::size_t>(out.size(), edit::kAdjustParamCount);
+  for (std::size_t i = 0; i < n; ++i) out[i] = a.value.v[i];
+  return {};
+}
+
+result<std::string> write_still_into(const rgb_image& pixels, const std::string& dir_in, const std::string& stem) {
+  if (dir_in.empty() || stem.empty() || stem.size() > 64 ||
+      !std::all_of(stem.begin(), stem.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+      })) {
+    return err(status::invalid_arg);
+  }
+  codec::raster pic;
+  pic.width = pixels.width;
+  pic.height = pixels.height;
+  pic.tagged_srgb = true;
+  const std::size_t px = static_cast<std::size_t>(pixels.width) * pixels.height;
+  if (pixels.rgb.size() < px * 3) return err(status::invalid_arg);
+  pic.rgba.assign(px * 4, 255);
+  for (std::size_t i = 0; i < px; ++i) {
+    pic.rgba[i * 4] = pixels.rgb[i * 3];
+    pic.rgba[i * 4 + 1] = pixels.rgb[i * 3 + 1];
+    pic.rgba[i * 4 + 2] = pixels.rgb[i * 3 + 2];
+  }
+  edit::export_options opt;
+  opt.encode.format = edit::image_format::jpeg;
+  opt.encode.quality = 92;
+  opt.policy = edit::metadata_policy::none;
+  MV_TRY(edit::export_result r, edit::export_pixels({}, pic, opt, nullptr));
+  std::string dir = dir_in;
+  if (dir.back() != '/' && dir.back() != '\\') dir.push_back('/');
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    const std::string file =
+        io::unique_name(stem + ".jpg", [&](std::string_view candidate) { return io::file_exists(dir + std::string(candidate)); });
+    if (file.empty()) return err(status::io);
+    const std::string out = dir + file;
+    if (io::write_new(out, r.bytes)) return out;
+    if (!io::file_exists(out)) return err(status::io);
+  }
+  return err(status::io);
 }
 
 bool is_photos_key(std::string_view path) noexcept { return path.size() > 7 && path.substr(0, 7) == "photos:"; }

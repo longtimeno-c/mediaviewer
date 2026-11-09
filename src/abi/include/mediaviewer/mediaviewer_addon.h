@@ -240,9 +240,26 @@ typedef struct mv_addon_clip_out {
   uint32_t sound_channels;
   uint32_t reserved;
   const char* suffix_ascii; /* [a-z0-9_-]{1,32} */
+  /* 0.40 (Instagram Post): read only when struct_size covers them. NULL or ""
+   * keeps a clip beside its source under "<stem>-<suffix>". */
+  const char* out_dir_utf8;  /* the folder the new clip goes in */
+  const char* out_stem_utf8; /* its whole stem, [A-Za-z0-9_-]{1,64} */
+  int32_t rotation;          /* >= 0: this display rotation, the frames were turned already; < 0 the source's */
+  uint32_t reserved2;
 } mv_addon_clip_out;
 
 /* #297 (Enhance, slice 3): a photo at full resolution, and a new photo. */
+/* 0.40 (Instagram Post): one item of the Mac Photos library (library_items). */
+typedef struct mv_addon_library_item {
+  const char* key_utf8;   /* "photos:<id>" */
+  const char* name_utf8;  /* the file as shot */
+  int64_t created_unix;
+  uint32_t is_video;
+  uint32_t reserved;
+} mv_addon_library_item;
+/* Return non-zero to continue, zero to stop. */
+typedef int32_t(MV_CALL* mv_addon_library_fn)(void* user, const mv_addon_library_item* item);
+
 typedef struct mv_addon_still_info {
   uint32_t struct_size;     /* the caller's sizeof */
   uint32_t width;           /* upright: what still_pixels returns */
@@ -447,6 +464,9 @@ typedef struct mv_slot_search_row {
  * workspace's Enhance tab, opened only by the Edit workspace with a command
  * (mv_slots_screen_command); never by screen_show (MV_ERR_INVALID_ARG) or an item. */
 #define MV_SLOT_PLACE_EDIT 5u
+/* API 15 (docs/design/30): drawn only where another add-on's `embed` node names
+ * it; opened only with embed_open. */
+#define MV_SLOT_PLACE_EMBED 6u
 
 /* A window, pane, sheet, settings page or docked Edit screen of the add-on's
  * opened (manifest screens[]). */
@@ -506,6 +526,10 @@ typedef struct mv_slot_badges_request {
  * add-on draws for that size, at a scale it lowers to keep each side within
  * 4096 px. */
 #define MV_SLOT_EVENT_RESIZE 15u
+/* 0.40 (docs/design/30): an add-on drawn through embed_open made a new file or
+ * library photo from the item it was given: value_json = {"source": path, "result": path}.
+ * screen_id is the screen that asked; node_id is "". Not checked against a tree. */
+#define MV_SLOT_EVENT_ITEM_SAVED 16u
 
 /* 0.33 (#452): a system notification an add-on asks for (notice_post). The
  * host shows it unless the screen it is about is the window in front of an
@@ -1027,6 +1051,53 @@ typedef struct mv_host_api {
    * uses its own preset). Appended after still_faces, last: read only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* still_extend)(void* host, const char* path_utf8, float* out_ltrb);
+  /* ---- a picker's rows (0.40, docs/design/30, Instagram Post) -------------------- */
+  /* [worker-thread] The Mac Photos library, newest first, when the person has
+   * added it (docs/design/26). MV_ERR_NOT_FOUND when not added or not readable;
+   * never prompts. NULL on a host without a library. Keys are paths: never log
+   * them (rule 6). */
+  mv_status(MV_CALL* library_items)(void* host, mv_addon_library_fn visit, void* user);
+  /* [worker-thread] A picture to choose by: a still's first-pixel decode, a
+   * clip's first frame, or a library item's local rendition (never the
+   * network). 8-bit sRGB RGB, long edge <= max_long_edge, as decode_still_rgb
+   * for its buffer rule. */
+  mv_status(MV_CALL* item_preview_rgb)(void* host, const char* path_utf8, uint32_t max_long_edge, uint8_t* out_rgb,
+                                       uint64_t cap, uint32_t* out_width, uint32_t* out_height);
+  /* [worker-thread] The file to read for a library item: where Photos keeps
+   * it, or the original fetched from iCloud (the person asked for this item).
+   * A path that is not a library key comes back as it is. */
+  mv_status(MV_CALL* library_file)(void* host, const char* path_utf8, char* out_utf8, uint32_t capacity);
+  /* [worker-thread] What Local search answers for `query_utf8`, best first,
+   * one call per asset (a clip once): the index's own keys. `scope_utf8` is a
+   * folder (not below it), "photos:" for the library, or "" for everything.
+   * Waits for the pack to start when it has not yet. MV_ERR_NOT_FOUND without
+   * Local search. `visit` is an mv_addon_path_fn, never with NULL here. */
+  mv_status(MV_CALL* index_search)(void* host, const char* query_utf8, const char* scope_utf8, mv_addon_path_fn visit,
+                                   void* user);
+  /* [worker-thread] A new JPEG (quality 92, sRGB) in `dir_utf8` named
+   * "<stem>.jpg", the first free name; none of any source's metadata. `stem`
+   * is [A-Za-z0-9_-]{1,64}. Nothing is overwritten. */
+  mv_status(MV_CALL* still_write_into)(void* host, const uint8_t* rgb, uint32_t width, uint32_t height, uint32_t stride,
+                                       const char* dir_utf8, const char* stem_ascii, char* out_path_utf8,
+                                       uint32_t capacity);
+  /* [any-thread][no-block] Draws another add-on's "embed" screen inside one of
+   * this add-on's windows, on `path_utf8`: opens `target_screen` of
+   * `target_addon` so an `embed` node naming it has a tree to show. What that
+   * add-on then makes from the item comes back as MV_SLOT_EVENT_ITEM_SAVED.
+   * MV_ERR_NOT_FOUND when that add-on or screen is not installed. */
+  mv_status(MV_CALL* embed_open)(void* host, const char* screen_id, uint64_t generation, const char* target_addon,
+                                 const char* target_screen, const char* path_utf8, float width_pt);
+  mv_status(MV_CALL* embed_close)(void* host, const char* target_addon, const char* target_screen);
+  /* [any-thread][no-block] This add-on, drawn in another's window, made
+   * `result_utf8` from `source_utf8`; whoever embedded it hears. */
+  mv_status(MV_CALL* item_saved)(void* host, const char* source_utf8, const char* result_utf8);
+  /* [worker-thread] The Edit workspace's own colour chain on 8-bit sRGB RGB, in
+   * place. `values` are mv's adjust parameters by wire id, 0 for unchanged. */
+  mv_status(MV_CALL* adjust_rgb)(void* host, uint8_t* rgb, uint32_t width, uint32_t height, const float* values,
+                                 uint32_t count);
+  /* [worker-thread] What the Edit workspace's Auto would set for this picture. */
+  mv_status(MV_CALL* adjust_auto)(void* host, const uint8_t* rgb, uint32_t width, uint32_t height, float* out_values,
+                                  uint32_t count);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1366,8 +1437,11 @@ MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, con
  * 11 `editor_items`, the Video Editor's bar (2026-11-02);
  * 12 a `surface` with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04);
  * 13 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04);
- * 14 a progress bar's "detail" and "timed" (2026-11-05). */
-#define MV_ADDON_CONTRIBUTION_API 14
+ * 14 a progress bar's "detail" and "timed" (2026-11-05);
+ * 15 a thumbnail grid's "numbered" and a row's "badge", a stack's "animate"
+ *    and "justify", a choice's "look": "segmented", a slider's "live", a
+ *    split's "fill", the `embed` node and place "embed" (docs/design/30). */
+#define MV_ADDON_CONTRIBUTION_API 15
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

@@ -906,7 +906,7 @@ public static partial class IslandHost
     {
         if (slot == ImportSlot) RefreshAddonRow();
         else if (slot == DriftwireSlot) RefreshDriftwireOffer();  // #410
-        else if (slot == PlacesChannel || slot == EnhanceSlot || IsSlotChannel(slot)) RefreshSlotSettings();
+        else if (slot == PlacesChannel || slot == EnhanceSlot || slot == InstagramSlot || IsSlotChannel(slot)) RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 

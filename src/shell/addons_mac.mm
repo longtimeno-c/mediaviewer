@@ -768,6 +768,7 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
   mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
   mv::addon::publish_ai_faces(mv::addon::ai_faces(static_cast<const mv_ai_api*>(table)));  // edit-refresh S10
+  mv::addon::publish_ai_search(mv::addon::ai_search(static_cast<const mv_ai_api*>(table)));  // docs/design/30
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.
@@ -2137,6 +2138,12 @@ mv::addon::host_services slot_services() {
   svc.open_sound = &mv::addon::media::open_sound;
   svc.open_sound_writer = &mv::addon::media::open_sound_writer;
   svc.open_frames = &mv::addon::media::open_frames;
+  svc.library_items = &mv::addon::media::library_items;  // docs/design/30
+  svc.item_preview = &mv::addon::media::item_preview;
+  svc.library_file = &mv::addon::media::library_file;
+  svc.write_still_into = &mv::addon::media::write_still_into;
+  svc.adjust_rgb = &mv::addon::media::adjust_rgb;
+  svc.adjust_auto = &mv::addon::media::adjust_auto;
   svc.open_clip_writer = &mv::addon::media::open_clip_writer;
   svc.full_still = &mv::addon::media::full_still;
   svc.write_still = &mv::addon::media::write_still;
@@ -2299,6 +2306,8 @@ extern "C" bool mv_chrome_slot_addon_reload(const char* id) {
 }
 
 std::string MvAddonsThumbnailPath(const std::string& path) {
+  // docs/design/30: a library item's tile and a clip's first frame.
+  if (auto tile = mv::addon::media::grid_tile(path)) return *tile ? **tile : std::string();
   auto made = thumbnail(path);
   return made ? *made : std::string();
 }

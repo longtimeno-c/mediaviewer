@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
-    addon-pack.py pack [--addon import|places|driftwire|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
+    addon-pack.py pack [--addon import|places|driftwire|instagram|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
     addon-pack.py ceiling dist/mediaviewer-addon-ai*-<platform>.json
     addon-pack.py stage-places --src build/addons/places [--downloads <cache> | --blob <places.mvgeo>]
@@ -155,6 +155,21 @@ ADDONS = {
                    "linked in on macOS, the app's own copies on Windows.\n"
                    "Files move only to a MediaViewer the person there accepted, over the local network\n"
                    "or Bluetooth. No account, no cloud, no internet relay.\n"),
+    },
+    # Instagram Post (docs/design/30): a carousel from Photos or the open folder.
+    # Code only; the host draws its window from its manifest and trees.
+    "instagram": {
+        "name": "Instagram Post",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/instagram/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_instagram.dll", "chrome": "", "include": ["mv_instagram.dll"]},
+            "macos": {"native": "libmv_instagram.dylib", "chrome": "", "include": ["libmv_instagram.dylib"]},
+        },
+        "licences": [],
+        "notice": ("Instagram Post add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "It writes files on this computer and uploads nothing. Instagram is a trademark of\n"
+                   "Meta Platforms, Inc.; this add-on is not affiliated with or endorsed by it.\n"),
     },
     # Enhance (#297): a restored copy of the photo, clip or audio file on screen. Code
     # and each kind's models/<kind>/model.json; the weights are never in the zip: the
