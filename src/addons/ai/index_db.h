@@ -107,6 +107,25 @@ struct sqlite3;
 
 namespace mv::ai {
 
+// An sqlite3_open_v2 URI (SQLITE_OPEN_URI) for a database nothing can ever
+// change, in a generation the publisher signed (docs/plans/mobile.md §5):
+// immutable=1 takes no locks and looks for no journal.
+[[nodiscard]] inline std::string immutable_uri(const std::string& path_utf8) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  std::string out = "file:";
+  for (const char ch : path_utf8) {
+    const auto c = static_cast<unsigned char>(ch);
+    if (c == '?' || c == '#' || c == '%' || c == ' ' || c < 0x20) {
+      out += '%';
+      out += kHex[c >> 4];
+      out += kHex[c & 0xF];
+    } else {
+      out += ch;
+    }
+  }
+  return out + "?immutable=1";
+}
+
 // 3: a document (#354, schema 9); 4: an audio file (#355, schema 8).
 enum class asset_kind : std::uint8_t { photo = 1, video = 2, document = 3, audio = 4 };
 // `locked` (#354): a password-protected document. Not retried, not failed.
@@ -307,10 +326,15 @@ class index_db {
   // snapshot while the app goes on indexing. A missing file (nothing indexed
   // yet) is status::not_found; an index of another schema is
   // status::unsupported_format.
-  [[nodiscard]] static result<std::unique_ptr<index_db>> open_read_only(const std::string& path_utf8);
+  [[nodiscard]] static result<std::unique_ptr<index_db>> open_read_only(const std::string& path_utf8, bool immutable = false);
   // PRAGMA data_version: changes when another connection commits. A reader
   // polls it to learn the app has indexed more.
   [[nodiscard]] std::int64_t data_version();
+  // What a phone's catalogue would carry, as one string: the rows that matter,
+  // never `seen`, so a walk that finds nothing leaves it the same.
+  [[nodiscard]] std::string content_stamp(const std::string& spec);
+  // A catalogue's stored place labels (docs/plans/mobile.md §5).
+  void each_place(const std::function<void(const std::string& path, const std::string& label)>& visit);
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
 
   // ---- roots ------------------------------------------------------------------

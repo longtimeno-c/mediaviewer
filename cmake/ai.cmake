@@ -271,6 +271,7 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/index_db.cpp
   ${R}/src/addons/ai/index_db.h
   ${R}/src/addons/ai/catalog.cpp
+  ${R}/src/addons/ai/nfc.cpp
   ${R}/src/addons/ai/catalog.h
   ${R}/src/addons/driftwire/secrets.h
   # iOS: mv_driftwire_engine carries secrets_file.cpp and secrets_ios.cpp (linked below).

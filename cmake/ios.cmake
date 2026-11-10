@@ -29,6 +29,9 @@ set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
 
+# The phone's catalogue and search (docs/plans/mobile.md M5 and M6's local half).
+include("${CMAKE_CURRENT_LIST_DIR}/mobile.cmake")
+
 # ---- the checks --------------------------------------------------------------
 # Built for both SDKs, so a device build proves its link too; run on the
 # Simulator (tools/ios/run-simulator-smoke.sh).
@@ -39,6 +42,11 @@ target_include_directories(mv_ios_core_smoke SYSTEM PRIVATE "${MV_ORT_INCLUDE}")
 set_target_properties(mv_ios_core_smoke PROPERTIES MACOSX_BUNDLE FALSE)
 
 find_program(MV_PYTHON3 python3 NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+
+# The parity set's Simulator half (docs/plans/mobile.md §9; tools/ios/run-parity.sh).
+add_executable(mv_mobile_parity "${CMAKE_SOURCE_DIR}/tools/ios/mobile_parity.cpp")
+target_link_libraries(mv_mobile_parity PRIVATE mv_mobile_search mv_ai_engine mv_infer mv_driftwire_engine)
+set_target_properties(mv_mobile_parity PROPERTIES MACOSX_BUNDLE FALSE)
 
 # Which ONNX Runtime slice this build links, for the telemetry pin below.
 get_target_property(_ort_library mv_ort_static IMPORTED_LOCATION)

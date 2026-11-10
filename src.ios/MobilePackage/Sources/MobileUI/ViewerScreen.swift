@@ -365,7 +365,9 @@ struct DetailsScreen: View {
             InfoRow(label: "Format", value: details.formatName)
             InfoRow(label: "Size", value: ProgressWords.size(details.fileBytes))
           }
-          InfoRow(label: "Dimensions", value: "\(item.pixelWidth) × \(item.pixelHeight)")
+          if item.pixelWidth > 0 {
+            InfoRow(label: "Dimensions", value: "\(item.pixelWidth) × \(item.pixelHeight)")
+          }
         }
       }
       .padding(Theme.inset)

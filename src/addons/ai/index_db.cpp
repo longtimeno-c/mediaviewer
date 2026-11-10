@@ -415,15 +415,18 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
   return d;
 }
 
-result<std::unique_ptr<index_db>> index_db::open_read_only(const std::string& path) {
+result<std::unique_ptr<index_db>> index_db::open_read_only(const std::string& path, bool immutable) {
   std::unique_ptr<index_db> d(new index_db());
   d->path_ = path;
-  const int rc = sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
+  const int rc = immutable ? sqlite3_open_v2(immutable_uri(path).c_str(), &d->db_,
+                                             SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI, nullptr)
+                           : sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
   // No index yet (the app has not indexed anything): not_found, so a second
   // window says "nothing indexed yet" rather than "needs an update".
   if (rc == SQLITE_CANTOPEN) return err(status::not_found);
   if (rc != SQLITE_OK) return err(status::unsupported_format);
   sqlite3_busy_timeout(d->db_, 5000);
+  if (immutable) sqlite3_db_config(d->db_, SQLITE_DBCONFIG_DEFENSIVE, 1, nullptr);
   // An index this build cannot read as it is (older or newer): the app
   // migrates it, never a reader.
   if (d->meta("schema") != std::to_string(kSchemaVersion)) return err(status::unsupported_format);
@@ -434,6 +437,31 @@ std::int64_t index_db::data_version() {
   std::lock_guard lock(m_);
   stmt s(db_, "PRAGMA data_version");
   return s.step_row() ? s.i64(0) : 0;
+}
+
+std::string index_db::content_stamp(const std::string& spec) {
+  std::lock_guard lock(m_);
+  std::string out;
+  {
+    stmt s(db_, "SELECT COUNT(*), TOTAL(mtime), TOTAL(size), TOTAL(tags), TOTAL(id) FROM assets");
+    if (s.step_row()) {
+      out = std::to_string(s.i64(0)) + "," + std::to_string(s.real(1)) + "," + std::to_string(s.real(2)) + "," +
+            std::to_string(s.real(3)) + "," + std::to_string(s.real(4));
+    }
+  }
+  for (const char* q : {"SELECT COUNT(*) FROM frames WHERE spec = ?1", "SELECT COUNT(*) FROM speech",
+                        "SELECT COUNT(*) FROM cues", "SELECT COUNT(*) FROM passages"}) {
+    stmt s(db_, q);
+    if (std::string_view(q).find("?1") != std::string_view::npos) s.bind(1, spec);
+    if (s.step_row()) out += "," + std::to_string(s.i64(0));
+  }
+  return out;
+}
+
+void index_db::each_place(const std::function<void(const std::string&, const std::string&)>& visit) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT path, place FROM assets WHERE place IS NOT NULL AND place != ''");
+  while (s.step_row()) visit(s.text(0), s.text(1));
 }
 
 std::vector<root_row> index_db::roots() {

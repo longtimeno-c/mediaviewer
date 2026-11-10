@@ -537,6 +537,14 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # all (the Intel leg of the universal release links x64 dependencies only).
 if(MV_MAC_VCPKG_ARCH STREQUAL "arm64")
   include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/mobile.cmake")
+  # The desktop half of the phone's parity test (tools/ios/run-parity.sh).
+  add_executable(mv_mobile_parity_desktop "${CMAKE_SOURCE_DIR}/tools/ios/mobile_parity_desktop.mm")
+  target_link_libraries(mv_mobile_parity_desktop PRIVATE mv_ai_engine mv_infer mv_geo_open mv_geo
+    unofficial::sqlite3::sqlite3 "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO"
+    "-framework UniformTypeIdentifiers" "-framework AVFoundation" "-framework CoreMedia")
+  target_include_directories(mv_mobile_parity_desktop SYSTEM PRIVATE "${MV_ORT_INCLUDE}")
+  set_target_properties(mv_mobile_parity_desktop PROPERTIES OSX_ARCHITECTURES "arm64")
   # Enhance (#297): its own add-on over the AI pack's model downloader.
   include("${CMAKE_CURRENT_LIST_DIR}/enhance.cmake")
 endif()
@@ -1171,9 +1179,10 @@ if(MV_BUILD_TESTS)
       # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
       tests/test_ai_ocr.cpp
       tests/test_nle.cpp
+      tests/test_mobile_search.cpp  # docs/plans/mobile.md M5
     )
     target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
-      Catch2::Catch2WithMain)
+      mv_mobile_search mv_mobile_test_fixture Catch2::Catch2WithMain)
     target_include_directories(mv_ai_tests PRIVATE src tests)
     target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
       MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")

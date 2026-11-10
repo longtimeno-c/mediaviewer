@@ -5,8 +5,15 @@
 import Foundation
 
 public struct MediaID: Hashable, Sendable {
+  /// The core's id for the item: in the catalogue, the decimal `assets.id`.
   public let raw: String
-  public init(_ raw: String) { self.raw = raw }
+  /// Which opened catalogue the id belongs to (0: not from one). A new generation can reuse an
+  /// id for another picture, so two generations' items are never equal.
+  public let catalogue: UInt64
+  public init(_ raw: String, catalogue: UInt64 = 0) {
+    self.raw = raw
+    self.catalogue = catalogue
+  }
 }
 
 public enum MediaKind: Hashable, Sendable { case photo, clip }
@@ -20,9 +27,12 @@ public struct MediaItem: Identifiable, Hashable, Sendable {
   /// Clips only.
   public let duration: TimeInterval?
   public let fileName: String
+  /// The shape when `pixelWidth` is 0: the catalogue knows a picture's shape from its tile, not
+  /// its size.
+  public let aspectHint: Double?
 
   public init(id: MediaID, kind: MediaKind, capturedAt: Date, pixelWidth: Int, pixelHeight: Int,
-              duration: TimeInterval?, fileName: String) {
+              duration: TimeInterval?, fileName: String, aspectHint: Double? = nil) {
     self.id = id
     self.kind = kind
     self.capturedAt = capturedAt
@@ -30,10 +40,12 @@ public struct MediaItem: Identifiable, Hashable, Sendable {
     self.pixelHeight = pixelHeight
     self.duration = duration
     self.fileName = fileName
+    self.aspectHint = aspectHint
   }
 
   public var aspect: Double {
-    pixelHeight > 0 ? Double(pixelWidth) / Double(pixelHeight) : 1
+    if pixelHeight > 0 { return Double(pixelWidth) / Double(pixelHeight) }
+    return aspectHint ?? 1
   }
 }
 

@@ -1,0 +1,4 @@
+module CMobileSearch {
+  header "../../../../../src/mobile/mv_mobile_search.h"
+  export *
+}
