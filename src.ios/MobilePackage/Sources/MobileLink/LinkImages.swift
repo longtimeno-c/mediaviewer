@@ -120,18 +120,32 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     try Task.checkCancellation()
     guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
 
+    let target = try await originalFile(link: link, asset: asset) { done, total in
+      continuation.yield(.loading(doneBytes: done, totalBytes: total))
+    }
+    let longest = Int(max(fittingPixels.width, fittingPixels.height))
+    let decoded = await withCheckedContinuation { (out: CheckedContinuation<UIImage?, Never>) in
+      decodeQueue.async {
+        guard let source = CGImageSourceCreateWithURL(target as CFURL, nil) else { out.resume(returning: nil); return }
+        out.resume(returning: Self.image(from: source, maxPixels: longest))
+      }
+    }
+    guard let decoded else { throw MediaFailure.cannotDecode(format: Self.formatName(of: item.fileName)) }
+    continuation.yield(.image(decoded, isOriginal: true))
+  }
+
+  /// The whole original on the phone, from the store when it is already here. One fetch per
+  /// original however many ask; its own part file; checked for its size.
+  private func originalFile(link: LinkHandle, asset: Int64,
+                            progress: @escaping (Int64, Int64) -> Void) async throws -> URL {
     var info = mv_asset_info()
     guard mv_asset_read(link.raw, asset, &info) == 0 else { throw MediaFailure.originalGone }
     let total = Int64(info.size)
-    continuation.yield(.loading(doneBytes: 0, totalBytes: total))
     let size = info.size
-    // One fetch per original however many viewers ask; its own part file; checked for its size.
-    let target: URL
+    progress(0, total)
     do {
-      target = try await originals.file(key: "\(asset)-\(size)", size: size) { part in
-        let status = await Self.readOriginal(link: link, asset: asset, size: size, to: part) { done in
-          continuation.yield(.loading(doneBytes: done, totalBytes: total))
-        }
+      return try await originals.file(key: "\(asset)-\(size)", size: size) { part in
+        let status = await Self.readOriginal(link: link, asset: asset, size: size, to: part) { done in progress(done, total) }
         switch status {
         case 0: return
         case 11: throw CancellationError()
@@ -143,15 +157,26 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     } catch is OriginalStoreError {
       throw MediaFailure.synologyUnreachable  // cut short: the next look asks again
     }
-    let longest = Int(max(fittingPixels.width, fittingPixels.height))
-    let decoded = await withCheckedContinuation { (out: CheckedContinuation<UIImage?, Never>) in
-      decodeQueue.async {
-        guard let source = CGImageSourceCreateWithURL(target as CFURL, nil) else { out.resume(returning: nil); return }
-        out.resume(returning: Self.image(from: source, maxPixels: longest))
+  }
+
+  /// The original as a file on the phone, for saving a copy to Photos.
+  public func original(for item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error> {
+    AsyncThrowingStream { continuation in
+      let task = Task.detached(priority: .userInitiated) { [self] in
+        do {
+          guard let asset = assetID(item.id) else { throw MediaFailure.originalGone }
+          guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
+          let file = try await originalFile(link: link, asset: asset) { done, total in
+            continuation.yield(.progress(TransferProgress(doneBytes: done, totalBytes: total)))
+          }
+          continuation.yield(.finished(file))
+          continuation.finish()
+        } catch {
+          continuation.finish(throwing: error)
+        }
       }
+      continuation.onTermination = { _ in task.cancel() }
     }
-    guard let decoded else { throw MediaFailure.cannotDecode(format: Self.formatName(of: item.fileName)) }
-    continuation.yield(.image(decoded, isOriginal: true))
   }
 
   /// Writes the whole original to `part`, which the store then checks and moves in.

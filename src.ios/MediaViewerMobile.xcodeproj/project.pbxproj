@@ -27,6 +27,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AA0000000000000000000036 /* MediaViewer.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = MediaViewer.xcconfig; path = Config/MediaViewer.xcconfig; sourceTree = "<group>"; };
 		AA0000000000000000000033 /* MediaViewerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MediaViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000031 /* MediaViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MediaViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000032 /* MediaViewerFixtures.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MediaViewerFixtures.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -73,6 +74,7 @@
 		AA0000000000000000000061 = {
 			isa = PBXGroup;
 			children = (
+				AA0000000000000000000036 /* MediaViewer.xcconfig */,
 				AA0000000000000000000041 /* App/MediaViewer */,
 				AA0000000000000000000042 /* App/MediaViewerFixtures */,
 				AA0000000000000000000043 /* UITests */,
@@ -331,23 +333,20 @@
 		};
 		AA00000000000000000000B1 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 1;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer saves copies you ask for to your Photos.";
-				INFOPLIST_FILE = App/Info/Common.plist;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
+				INFOPLIST_FILE = App/Info/MediaViewer.plist;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
@@ -409,7 +408,6 @@
 					"SystemConfiguration",
 				);
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -417,23 +415,20 @@
 		};
 		AA00000000000000000000B2 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 1;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer saves copies you ask for to your Photos.";
-				INFOPLIST_FILE = App/Info/Common.plist;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
+				INFOPLIST_FILE = App/Info/MediaViewer.plist;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
@@ -495,7 +490,6 @@
 					"SystemConfiguration",
 				);
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -509,7 +503,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
 				INFOPLIST_FILE = App/Info/Common.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -531,7 +524,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
 				INFOPLIST_FILE = App/Info/Common.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (

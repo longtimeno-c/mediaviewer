@@ -6,6 +6,7 @@ import SwiftUI
 public struct RootView: View {
   @State private var model: AppModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @AppStorage(Preferences.appearance) private var appearance = "dark"
 
   public init(model: AppModel) { _model = State(initialValue: model) }
 
@@ -21,10 +22,15 @@ public struct RootView: View {
     }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.stage)
     .environment(model)
-    .preferredColorScheme(.dark)
+    .preferredColorScheme(chosenScheme(appearance))
     .tint(Theme.accent)
     .fullScreenCover(isPresented: $model.isScanning) {
       ScanScreen().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
+    }
+    // The link MediaViewer shows beside its code, for when the camera cannot be used (§11.1).
+    .onOpenURL { url in
+      guard url.scheme == "mediaviewer", url.host == "pair" else { return }
+      model.scanned(url.absoluteString)
     }
     .task { await model.run() }
   }
@@ -39,23 +45,23 @@ struct MainTabs: View {
     @Bindable var model = model
     TabView(selection: $model.tab) {
       Tab("Library", systemImage: "photo.on.rectangle.angled", value: AppModel.Tab.library) {
-        LibraryScreen().modifier(TransferStrip(activity: model.transfer))
+        LibraryScreen().transferStrip(model)
       }
       Tab("Search", systemImage: "magnifyingglass", value: AppModel.Tab.search, role: .search) {
-        SearchScreen().modifier(TransferStrip(activity: model.transfer))
+        SearchScreen().transferStrip(model)
       }
       if !model.people.isEmpty || model.peopleFailed {
         Tab("People", systemImage: "person.2", value: AppModel.Tab.people) {
-          PeopleScreen().modifier(TransferStrip(activity: model.transfer))
+          PeopleScreen().transferStrip(model)
         }
       }
-      Tab("Connection", systemImage: "externaldrive.connected.to.line.below", value: AppModel.Tab.connection) {
-        ConnectionScreen().modifier(TransferStrip(activity: model.transfer))
+      Tab("Settings", systemImage: "gearshape", value: AppModel.Tab.connection) {
+        SettingsScreen().transferStrip(model)
       }
     }
     .tabViewStyle(.sidebarAdaptable)
     .modifier(TabBarShrinks())
-    .modifier(TransferAccessory(activity: model.transfer))
+    .transferAccessory(model)
     .environment(\.viewerNamespace, viewerNamespace)
     .fullScreenCover(item: $model.viewer) { request in
       ViewerScreen(request: request, namespace: viewerNamespace)
@@ -77,6 +83,27 @@ private struct TabBarShrinks: ViewModifier {
   }
 }
 
+// Backup (release 1.1, docs/plans/mobile.md §10b) is not in this release: its slot above the tab
+// bar compiles only with MV_BACKUP, which no build defines yet.
+private extension View {
+  func transferStrip(_ model: AppModel) -> some View {
+    #if MV_BACKUP
+    modifier(TransferStrip(activity: model.transfer))
+    #else
+    self
+    #endif
+  }
+
+  func transferAccessory(_ model: AppModel) -> some View {
+    #if MV_BACKUP
+    modifier(TransferAccessory(activity: model.transfer))
+    #else
+    self
+    #endif
+  }
+}
+
+#if MV_BACKUP
 /// The slot above the tab bar, there only while something is running (iOS 26.1 and later).
 private struct TransferAccessory: ViewModifier {
   let activity: TransferActivity?
@@ -137,3 +164,4 @@ private struct TransferLine: View {
       .fixedSize(horizontal: true, vertical: false)
   }
 }
+#endif

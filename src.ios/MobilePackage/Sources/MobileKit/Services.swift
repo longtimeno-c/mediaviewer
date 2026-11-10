@@ -28,6 +28,9 @@ public protocol ImageLadder: Sendable {
   /// The best picture already in memory or `tiny.pack`. Called on the main thread for first paint,
   /// so it must return within a frame.
   func cachedImage(for id: MediaID) -> UIImage?
+  /// What is already on the phone, quickly and without the network, painted while `thumbnail`
+  /// is still on its way. nil when the ladder has nothing quicker than `thumbnail`.
+  func placeholder(for item: MediaItem) async -> UIImage?
   /// A grid-sized picture.
   func thumbnail(for item: MediaItem) async -> UIImage?
   /// Each better picture as it arrives, in place of the last. Throws `MediaFailure` when the
@@ -35,6 +38,10 @@ public protocol ImageLadder: Sendable {
   func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error>
   /// §8.2 net lane 2: the viewer's ±2.
   func prefetch(_ items: [MediaItem], fittingPixels: CGSize)
+}
+
+public extension ImageLadder {
+  func placeholder(for item: MediaItem) async -> UIImage? { nil }
 }
 
 public enum SearchCapability: Hashable, Sendable {
@@ -102,10 +109,19 @@ public protocol PhotoSaver: Sendable {
   func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error>
 }
 
+#if MV_BACKUP
+/// Backup (release 1.1, §10b): compiled only with MV_BACKUP, which no build defines yet.
 public protocol TransferMonitor: Sendable {
   /// What is running now (nil when nothing is), then every change.
   func activity() -> AsyncStream<TransferActivity?>
 }
+
+/// Nothing running.
+public struct NoBackup: TransferMonitor {
+  public init() {}
+  public func activity() -> AsyncStream<TransferActivity?> { AsyncStream { $0.finish() } }
+}
+#endif
 
 /// Everything the screens need, handed in at launch.
 public struct Services: Sendable {
@@ -116,11 +132,23 @@ public struct Services: Sendable {
   public let sync: CatalogueSync
   public let clips: ClipService
   public let saver: PhotoSaver
-  public let transfers: TransferMonitor
+  #if MV_BACKUP
+  public private(set) var transfers: TransferMonitor = NoBackup()
+  #endif
 
+  #if MV_BACKUP
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,
               saver: PhotoSaver, transfers: TransferMonitor) {
+    self.init(library: library, images: images, search: search, connection: connection, sync: sync,
+              clips: clips, saver: saver)
+    self.transfers = transfers
+  }
+  #endif
+
+  public init(library: LibraryStore, images: ImageLadder, search: SearchService,
+              connection: ConnectionService, sync: CatalogueSync, clips: ClipService,
+              saver: PhotoSaver) {
     self.library = library
     self.images = images
     self.search = search
@@ -128,6 +156,5 @@ public struct Services: Sendable {
     self.sync = sync
     self.clips = clips
     self.saver = saver
-    self.transfers = transfers
   }
 }

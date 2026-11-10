@@ -5,9 +5,9 @@
 import XCTest
 
 final class AccessibilityTests: XCTestCase {
-  private func launched(_ state: String) -> XCUIApplication {
+  private func launched(_ state: String, appearance: String = "dark") -> XCUIApplication {
     let app = XCUIApplication()
-    app.launchArguments = ["-fixtureState", state, "-fixtureChrome", "NO"]
+    app.launchArguments = ["-fixtureState", state, "-fixtureChrome", "NO", "-appearance", appearance]
     app.launch()
     return app
   }
@@ -53,12 +53,13 @@ final class AccessibilityTests: XCTestCase {
     var found: [String] = []
     let states = ["welcome", "connect.confirm", "firstCopy.running", "library", "search.recents", "viewer", "clip",
                   "connection", "people", "firstCopy.noSpace", "library.failed"]
-    for state in states {
-      let app = launched(state)
+    // Both looks: contrast is checked against each one's colours. The viewer and clip stay dark.
+    for (state, appearance) in states.flatMap({ s in ["dark", "light"].map { (s, $0) } }) {
+      let app = launched(state, appearance: appearance)
       sleep(8)
       try app.performAccessibilityAudit { issue in
         let element = issue.element.map { "\($0.elementType.rawValue) '\($0.label)'" } ?? "no element"
-        found.append("AUDIT \(state) [\(issue.auditType.rawValue)] \(element): \(issue.compactDescription)")
+        found.append("AUDIT \(state) \(appearance) [\(issue.auditType.rawValue)] \(element): \(issue.compactDescription)")
         // Reported, not failed: the date and duration badges are capped on purpose because they
         // sit over photos, and these two checks also flag text the large-type screens show growing
         // normally. Contrast, touch areas and the rest fail the test.

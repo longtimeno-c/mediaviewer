@@ -34,8 +34,10 @@ final class FixtureWorld: @unchecked Sendable {
   var personFailures = 0
   var foldersFail = false
   var searchFails = false
+  #if MV_BACKUP
   /// Stand-in backup: nil runs nothing, otherwise how many ticks it runs for.
   var transferTicks: Int?
+  #endif
   var recents = ["boats at sunset", "mountains by a lake", "birthday cake", "receipt from the hardware shop"]
   var downloadedClips: Set<MediaID> = []
   private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
@@ -61,15 +63,21 @@ final class FixtureWorld: @unchecked Sendable {
     ConnectionSnapshot(hasLibrary: true,
                        synology: .reachable(address: "home-nas.synology.me", overInternet: true),
                        macNearby: false,
-                       catalogue: CatalogueInfo(source: source, updatedAt: Date().addingTimeInterval(-age), itemCount: FixtureLibrary.itemCount),
+                       catalogue: CatalogueInfo(source: source, updatedAt: Date().addingTimeInterval(-age), itemCount: FixtureLibrary.itemCount, epoch: 1),
                        cacheBytes: 1_240_000_000)
   }
 
   func services() -> Services {
     let images = FixtureImages(world: self)
+    #if MV_BACKUP
     return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
                     connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
                     clips: FixtureClips(world: self), saver: FixtureSaver(), transfers: FixtureTransfers(world: self))
+    #else
+    return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
+                    connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
+                    clips: FixtureClips(world: self), saver: FixtureSaver())
+    #endif
   }
 }
 
@@ -558,6 +566,7 @@ struct FixtureClips: ClipService {
   }
 }
 
+#if MV_BACKUP
 /// A phone backup in the words of §10b, so the slot above the tab bar can be checked before the
 /// backup itself exists (release 1.1).
 struct FixtureTransfers: TransferMonitor {
@@ -588,6 +597,7 @@ struct FixtureTransfers: TransferMonitor {
     }
   }
 }
+#endif
 
 struct FixtureSaver: PhotoSaver {
   func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error> {

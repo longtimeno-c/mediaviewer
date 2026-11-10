@@ -38,6 +38,9 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryOwnNetwork = "library.ownNetwork"
   case libraryServiceTooOld = "library.serviceTooOld"
   case libraryPublisherChanged = "library.publisherChanged"
+  case libraryRevoked = "library.revoked"
+  case libraryHandedOver = "library.handedOver"
+  case settingsLight = "settings.light"
   case libraryEmpty = "library.empty"
   case libraryFolder = "library.folder"
   case libraryNewCatalogue = "library.newCatalogue"
@@ -46,8 +49,10 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryFailed = "library.failed"
   case libraryUnreachableThenStale = "library.unreachableThenStale"
   case libraryFolderEmpty = "library.folderEmpty"
+  #if MV_BACKUP
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
+  #endif
   case searchRecents = "search.recents"
   case searchTyping = "search.typing"
   case searchResults = "search.results"
@@ -136,6 +141,13 @@ final class FixtureRun {
       snapshot = .with(.serviceTooOld)
     case .libraryPublisherChanged, .connectionPublisherChanged:
       snapshot = .with(.publisherChanged)
+    case .libraryRevoked:
+      snapshot = .with(.deviceRevoked)
+    case .libraryHandedOver:
+      let base = FixtureWorld.connected()
+      let raised = base.catalogue.map { CatalogueInfo(source: $0.source, updatedAt: $0.updatedAt, itemCount: $0.itemCount, epoch: 2) }
+      snapshot = ConnectionSnapshot(hasLibrary: true, synology: base.synology, macNearby: false, catalogue: raised,
+                                    cacheBytes: base.cacheBytes)
     case .connectionFromMac:
       snapshot = FixtureWorld.connected(source: .nearbyMac)
     default:
@@ -176,8 +188,10 @@ final class FixtureRun {
     case .clipGone: world.clipMode = .fails(.originalGone)
     case .peopleNone: world.hasPeople = false
     case .libraryEmpty: world.libraryEmpty = true
+    #if MV_BACKUP
     case .libraryBackup: world.transferTicks = 3600
     case .libraryBackupEnds: world.transferTicks = 8
+    #endif
     default: break
     }
     self.world = world
@@ -190,6 +204,9 @@ final class FixtureRun {
     }
     model = AppModel(services: world.services(), scanner: FixtureScanSurface())
     UserDefaults.standard.removeObject(forKey: "catalogueStaleNoticeSeen")
+    // The phone saw epoch 1 before; the hand-over state then sees 2.
+    UserDefaults.standard.set(NSNumber(value: UInt64(1)), forKey: "catalogueEpochSeen")
+    UserDefaults.standard.set(state == .settingsLight ? "light" : "dark", forKey: Preferences.appearance)
     UserDefaults.standard.set(state != .viewerNoFilmstrip, forKey: Preferences.filmstrip)
   }
 
@@ -263,6 +280,7 @@ final class FixtureRun {
       model.tab = .search
       model.search.setText("zzz purple giraffe")
     case .people: model.tab = .people
+    case .settingsLight: model.tab = .connection
     case .connection, .connectionFromMac, .connectionUnreachable, .connectionOwnNetwork, .connectionServiceTooOld,
          .connectionPublisherChanged:
       model.tab = .connection

@@ -18,6 +18,8 @@ struct MediaTile: View {
   let entry: GridEntry
   let images: ImageLadder
   @State private var loaded: UIImage?
+  /// The thumbnail could not be had: a quiet glyph says what the tile is instead of an empty square.
+  @State private var missing = false
 
   var body: some View {
     let shown = loaded ?? images.cachedImage(for: entry.item.id)
@@ -26,20 +28,33 @@ struct MediaTile: View {
       .overlay {
         if let shown {
           Image(uiImage: shown).resizable().interpolation(.medium).scaledToFill()
+        } else if missing {
+          Image(systemName: entry.item.kind == .clip ? "film" : "photo")
+            .font(.title2)
+            .foregroundStyle(Theme.body.opacity(0.6))
+            .accessibilityHidden(true)
         }
       }
       .clipped()
       .overlay(alignment: .bottomTrailing) { badge }
       .contentShape(Rectangle())
-      .task(id: entry.item.id) { loaded = await images.thumbnail(for: entry.item) }
+      .task(id: entry.item.id) {
+        missing = false
+        loaded = nil
+        if images.cachedImage(for: entry.item.id) == nil {
+          loaded = await images.placeholder(for: entry.item)
+        }
+        if let sharper = await images.thumbnail(for: entry.item) { loaded = sharper }
+        if loaded == nil, images.cachedImage(for: entry.item.id) == nil, !Task.isCancelled { missing = true }
+      }
   }
 
   @ViewBuilder
   private var badge: some View {
-    if let label = badgeText {
+    if entry.item.kind == .clip || entry.moment != nil {
       HStack(spacing: 3) {
         Image(systemName: "play.fill").font(.system(size: 8))
-        Text(label).font(.caption2.monospacedDigit().weight(.medium))
+        if let label = badgeText { Text(label).font(.caption2.monospacedDigit().weight(.medium)) }
       }
       .foregroundStyle(.white)
       .padding(.horizontal, 5)

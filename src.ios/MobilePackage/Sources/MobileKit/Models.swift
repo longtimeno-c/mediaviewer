@@ -197,6 +197,8 @@ public enum MediaFailure: Error, Hashable, Sendable {
   case cannotDecode(format: String)
   case serviceTooOld
   case publisherChanged
+  /// The person has not let MediaViewer add to Photos.
+  case photosNotAllowed
 }
 
 // MARK: Connection
@@ -219,6 +221,8 @@ public enum SynologyState: Hashable, Sendable {
   case reachableOnlyOnItsOwnNetwork
   case serviceTooOld
   case publisherChanged
+  /// The computer removed this phone from the library.
+  case deviceRevoked
 }
 
 public struct CatalogueInfo: Hashable, Sendable {
@@ -226,11 +230,14 @@ public struct CatalogueInfo: Hashable, Sendable {
   public let source: Source
   public let updatedAt: Date
   public let itemCount: Int
+  /// Rises when a new computer takes the library over with the old one's signature (§5, rule 5).
+  public let epoch: UInt64
 
-  public init(source: Source, updatedAt: Date, itemCount: Int) {
+  public init(source: Source, updatedAt: Date, itemCount: Int, epoch: UInt64 = 0) {
     self.source = source
     self.updatedAt = updatedAt
     self.itemCount = itemCount
+    self.epoch = epoch
   }
 }
 
@@ -355,6 +362,7 @@ public struct SearchFilterOptions: Hashable, Sendable {
   public static let none = SearchFilterOptions(people: [], places: [], dates: [], cameras: [])
 }
 
+#if MV_BACKUP
 /// Long work that carries on while the person uses the app, such as a phone backup. It shows above
 /// the tab bar only while it runs.
 public struct TransferActivity: Hashable, Sendable {
@@ -371,6 +379,7 @@ public struct TransferActivity: Hashable, Sendable {
     self.fraction = fraction
   }
 }
+#endif
 
 public enum CopyFailure: Error, Hashable, Sendable {
   case synologyUnreachable

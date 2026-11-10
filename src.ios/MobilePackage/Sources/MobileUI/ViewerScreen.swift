@@ -274,12 +274,17 @@ private struct FilmstripCell: View {
   let side: CGFloat
   let isCurrent: Bool
   @State private var loaded: UIImage?
+  @State private var missing = false
 
   var body: some View {
     Theme.surface
       .overlay {
         if let image = loaded ?? images.cachedImage(for: entry.item.id) {
           Image(uiImage: image).resizable().interpolation(.medium).scaledToFill()
+        } else if missing {
+          Image(systemName: entry.item.kind == .clip ? "film" : "photo")
+            .font(.system(size: 14))
+            .foregroundStyle(Theme.body.opacity(0.6))
         }
       }
       .frame(width: side, height: side)
@@ -297,7 +302,15 @@ private struct FilmstripCell: View {
       .opacity(isCurrent ? 1 : 0.55)
       .scaleEffect(isCurrent ? 1.08 : 1)
       .animation(.easeOut(duration: 0.15), value: isCurrent)
-      .task(id: entry.item.id) { loaded = await images.thumbnail(for: entry.item) }
+      .task(id: entry.item.id) {
+        missing = false
+        loaded = nil
+        if images.cachedImage(for: entry.item.id) == nil {
+          loaded = await images.placeholder(for: entry.item)
+        }
+        if let sharper = await images.thumbnail(for: entry.item) { loaded = sharper }
+        if loaded == nil, images.cachedImage(for: entry.item.id) == nil, !Task.isCancelled { missing = true }
+      }
   }
 }
 

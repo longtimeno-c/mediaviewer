@@ -132,8 +132,10 @@ public final class AppModel {
   public private(set) var peopleFailed = false
   /// A new catalogue arrived while a scan was on screen.
   private var reloadNeeded = false
+  #if MV_BACKUP
   /// Long work still running, shown above the tab bar.
   public private(set) var transfer: TransferActivity?
+  #endif
   public let library: LibraryModel
   public let search: SearchModel
 
@@ -143,6 +145,7 @@ public final class AppModel {
     self.services = services
     self.scanner = scanner
     let now = services.connection.current
+    Self.noteFirstEpoch(of: now.catalogue)
     connection = now
     // A library paired but never copied (the app was killed mid-copy) goes back to the copy.
     stage = !now.hasLibrary ? .welcome : now.catalogue == nil ? .firstCopy : .main
@@ -161,18 +164,23 @@ public final class AppModel {
   public func run() async {
     await withTaskGroup(of: Void.self) { group in
       group.addTask { await self.followConnection() }
+      #if MV_BACKUP
       group.addTask { await self.followTransfers() }
+      #endif
     }
   }
 
+  #if MV_BACKUP
   private func followTransfers() async {
     for await activity in services.transfers.activity() { transfer = activity }
   }
+  #endif
 
   private func followConnection() async {
     for await snapshot in services.connection.updates() {
       if snapshot.synology != connection.synology { dismissedNotices.removeAll() }
       let newCatalogue = snapshot.catalogue != nil && snapshot.catalogue != connection.catalogue
+      Self.noteFirstEpoch(of: snapshot.catalogue)
       connection = snapshot
       guard stage == .main else {
         if newCatalogue { reloadNeeded = true }
@@ -259,6 +267,7 @@ public final class AppModel {
   func forgetLibrary() {
     Task {
       await services.connection.forget()
+      UserDefaults.standard.removeObject(forKey: Self.epochKey)
       resetLibraryState()
       tab = .library
       connection = services.connection.current
@@ -289,6 +298,8 @@ public final class AppModel {
   public var libraryNotice: LibraryNotice? {
     let first: LibraryNotice?
     switch connection.synology {
+    case .deviceRevoked:
+      first = LibraryNotice(id: "revoked", message: FailureCopy.deviceRevoked, canDismiss: false, action: .scan)
     case .publisherChanged:
       first = LibraryNotice(id: "publisher", message: FailureCopy.publisherChanged, canDismiss: false, action: .scan)
     case .serviceTooOld:
@@ -300,12 +311,13 @@ public final class AppModel {
     case .reachable:
       first = nil
     }
-    // The stale-catalogue card waits its turn behind anything more serious.
-    return [first, staleNotice].compactMap { $0 }.first { !dismissedNotices.contains($0.id) }
+    // The stale-catalogue and hand-over cards wait their turn behind anything more serious.
+    return [first, handoverNotice, staleNotice].compactMap { $0 }.first { !dismissedNotices.contains($0.id) }
   }
 
   public func dismiss(_ notice: LibraryNotice) {
     dismissedNotices.insert(notice.id)
+    if notice.id.hasPrefix("handover"), let epoch = connection.catalogue?.epoch { Self.epochSeen = epoch }
     if notice.id.hasPrefix("stale") { Self.staleSeen = notice.id }
   }
 
@@ -317,6 +329,29 @@ public final class AppModel {
     let id = "stale-\(Int(catalogue.updatedAt.timeIntervalSince1970))"
     guard Self.staleSeen != id else { return nil }
     return LibraryNotice(id: id, message: FailureCopy.catalogueStale(days: days), canDismiss: true, action: nil)
+  }
+
+  /// Said once when a new computer took the library over with the old one's signature (§5, rule 5).
+  /// The first catalogue a phone sees sets the mark silently.
+  /// Epoch 0 is a catalogue an earlier build kept without its epoch: unknown, never "handed over".
+  private var handoverNotice: LibraryNotice? {
+    guard let epoch = connection.catalogue?.epoch, epoch > 0, let seen = Self.epochSeen, seen > 0, epoch > seen else {
+      return nil
+    }
+    return LibraryNotice(id: "handover-\(epoch)", message: FailureCopy.libraryHandedOver, canDismiss: true, action: nil)
+  }
+
+  /// The first known epoch is taken as the one the person paired with, silently. Not from the
+  /// notice's getter, which runs while a view is drawn.
+  private static func noteFirstEpoch(of info: CatalogueInfo?) {
+    guard let epoch = info?.epoch, epoch > 0, (epochSeen ?? 0) == 0 else { return }
+    epochSeen = epoch
+  }
+
+  private static let epochKey = "catalogueEpochSeen"
+  private static var epochSeen: UInt64? {
+    get { (UserDefaults.standard.object(forKey: epochKey) as? NSNumber)?.uint64Value }
+    set { UserDefaults.standard.set(newValue.map { NSNumber(value: $0) }, forKey: epochKey) }
   }
 
   private static let staleKey = "catalogueStaleNoticeSeen"

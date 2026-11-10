@@ -9,7 +9,7 @@ import SwiftUI
 
 @main
 struct MediaViewerApp: App {
-  @State private var model = AppModel(services: PendingCore.services(), scanner: CameraScanSurface())
+  @State private var model = AppModel(services: LiveServices.services(), scanner: CameraScanSurface())
 
   init() { LinkConnection.registerBackgroundWork() }
 
