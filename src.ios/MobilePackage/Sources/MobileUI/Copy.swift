@@ -11,6 +11,8 @@ public enum FailureCopy {
   }
   public static let originalGone = "This file isn't on the NAS any more."
   public static let notThereYet = "This one hasn't reached your Synology yet."
+  public static let folderNotOnNAS =
+    "Your Synology isn't sharing the folder this came from. Add it in MediaViewer on your computer, named the same as its shared folder."
   public static let ownNetworkOnly =
     "Your Synology can't be reached from the internet. Your provider may not give that building a public address."
   public static let serviceTooOld = "The MediaViewer service on your Synology needs updating."
@@ -49,6 +51,7 @@ public enum FailureCopy {
     case .synologyUnreachable: return synologyUnreachable
     case .originalGone: return originalGone
     case .notThereYet: return notThereYet
+    case .folderNotOnNAS: return folderNotOnNAS
     case .cannotDecode(let format): return cannotDecode(format)
     case .serviceTooOld: return serviceTooOld
     case .publisherChanged: return publisherChanged

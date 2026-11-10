@@ -160,7 +160,10 @@ struct rig {
   std::uint16_t port = 0;
   std::string payload;
 
-  explicit rig(std::size_t payload_bytes = 300000) : payload(payload_bytes, 'x') {
+  std::string photos_label = "Photos";
+
+  explicit rig(std::size_t payload_bytes = 300000, std::string label = "Photos")
+      : payload(payload_bytes, 'x'), photos_label(std::move(label)) {
     REQUIRE(sodium_init() >= 0);
     fs::create_directories(data);
     fs::create_directories(photos);
@@ -184,7 +187,7 @@ struct rig {
     o.max_pending = 32;
     o.cfg.port = 0;
     o.cfg.name = "NAS";
-    o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", "Photos", photos.string()});
+    o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
     auto s = serve::server::start(o);
@@ -475,6 +478,55 @@ TEST_CASE("the generation view reads files and moments from catalog.db", "[mobil
   REQUIRE(moments.size() == 1);
   CHECK(moments[0].text == "hello world");
   CHECK_FALSE((*view)->file(999));
+}
+
+TEST_CASE("the C ABI reads an original, and says when no service folder matches its share", "[mobile-link]") {
+  const auto open_synced = [](rig& r) {
+    r.pair_now();
+    const auto cfg = r.sync_config();
+    const auto service = r.config();
+    const std::string cache = (r.dir.root / "thumbs").string();
+    mv_link_config c{};
+    c.library_dir = cfg.library_dir.c_str();
+    c.cache_dir = cache.c_str();
+    c.library_id = cfg.library_id.c_str();
+    c.local = service.local.c_str();
+    c.public_name = service.public_name.c_str();
+    c.device_name = service.device_name.c_str();
+    c.identity = service.identity.data();
+    c.access_key = service.access_key.data();
+    c.device_key = service.device_key.data();
+    c.publisher_key = cfg.publisher_key.data();
+    mv_mobile_link* l = mv_link_open(&c);
+    REQUIRE(l);
+    mv_route_report report{};
+    REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+    mv_sync_report sync{};
+    REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
+    return l;
+  };
+  std::string got;
+  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+    return 1;
+  };
+
+  SECTION("a folder labelled with the share's name") {
+    rig r;
+    auto* l = open_synced(r);
+    CHECK(mv_asset_folder_check(l, 1) == MV_LINK_OK);
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_OK);
+    CHECK(got == std::string(70000, 'p'));
+    mv_link_close(l);
+  }
+  SECTION("a folder labelled something else is said to be missing, not gone") {
+    rig r(300000, "Pictures");
+    auto* l = open_synced(r);
+    CHECK(mv_asset_folder_check(l, 1) == MV_LINK_NO_FOLDER);
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_NO_FOLDER);
+    CHECK(got.empty());
+    mv_link_close(l);
+  }
 }
 
 namespace {

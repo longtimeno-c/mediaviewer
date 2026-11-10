@@ -27,6 +27,8 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     guard let asset = Int64(item.id.raw), let link = connection.link else { return .unavailable(.synologyUnreachable) }
     var info = mv_asset_info()
     guard mv_asset_read(link.raw, asset, &info) == 0 else { return .unavailable(.originalGone) }
+    // Before AVPlayer gets it: a player error could not say which folder is missing.
+    if await onLinkQueue({ mv_asset_folder_check(link.raw, asset) }) == 18 { return .unavailable(.folderNotOnNAS) }
     let ext = (item.fileName as NSString).pathExtension.lowercased()
     guard ["mp4", "mov", "m4v"].contains(ext) else {
       return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(info.size))
@@ -139,6 +141,7 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     case 0: return target
     case 11: throw CancellationError()
     case 9: throw MediaFailure.originalGone
+    case 18: throw MediaFailure.folderNotOnNAS
     default: throw MediaFailure.synologyUnreachable
     }
   }

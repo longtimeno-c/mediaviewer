@@ -133,6 +133,39 @@ void reload_view(mv_mobile_link* l) {
   l->view = std::move(next);
 }
 
+// The service folder and relative path of an asset. A catalogue root is matched
+// to the service folder labelled with its share's name; a miss asks the service
+// again, in case the folder has just been added.
+mv_link_status resolve_asset(mv_mobile_link* l, std::int64_t asset, std::string& root, std::string& rel) {
+  std::optional<asset_file> f;
+  std::map<std::string, generation_view::root_ref> roots;
+  {
+    std::shared_lock lock(l->view_m);
+    if (!l->view) return MV_LINK_NOT_FOUND;
+    f = l->view->file(asset);
+    roots = l->view->roots();
+  }
+  if (!f) return MV_LINK_NOT_FOUND;
+  const auto ref = roots.find(f->uuid);
+  if (ref == roots.end()) return MV_LINK_NOT_FOUND;
+  {
+    std::lock_guard lock(l->roots_m);
+    auto found = l->label_to_root.find(ref->second.share);
+    if (!l->roots_known || found == l->label_to_root.end()) {
+      auto listed = l->session->roots();
+      if (!listed) return status_of_read(listed.error());
+      l->label_to_root.clear();
+      for (const auto& r : *listed) l->label_to_root[r.label] = r.id;
+      l->roots_known = true;
+      found = l->label_to_root.find(ref->second.share);
+    }
+    if (found == l->label_to_root.end()) return MV_LINK_NO_FOLDER;
+    root = found->second;
+  }
+  rel = ref->second.sub.empty() ? f->rel : ref->second.sub + "/" + f->rel;
+  return MV_LINK_OK;
+}
+
 template <typename Fn>
 auto catch_all(Fn fn) noexcept -> decltype(fn()) {
   try {
@@ -396,37 +429,21 @@ int32_t mv_file_read(mv_mobile_link* l, int64_t asset, uint64_t at, uint64_t len
                      mv_sink_fn sink, void* ctx) {
   return catch_all([&]() -> int32_t {
     if (!l || !sink) return MV_LINK_INVALID;
-    std::optional<asset_file> f;
-    std::map<std::string, generation_view::root_ref> roots;
-    {
-      std::shared_lock lock(l->view_m);
-      if (!l->view) return MV_LINK_NOT_FOUND;
-      f = l->view->file(asset);
-      roots = l->view->roots();
-    }
-    if (!f) return MV_LINK_NOT_FOUND;
-    const auto ref = roots.find(f->uuid);
-    if (ref == roots.end()) return MV_LINK_NOT_FOUND;
-    std::string root;
-    {
-      std::lock_guard lock(l->roots_m);
-      if (!l->roots_known) {
-        auto listed = l->session->roots();
-        if (!listed) return status_of_read(listed.error());
-        l->label_to_root.clear();
-        for (const auto& r : *listed) l->label_to_root[r.label] = r.id;
-        l->roots_known = true;
-      }
-      const auto found = l->label_to_root.find(ref->second.share);
-      if (found == l->label_to_root.end()) return MV_LINK_NOT_FOUND;  // the NAS has no folder of that name yet
-      root = found->second;
-    }
-    const std::string rel = ref->second.sub.empty() ? f->rel : ref->second.sub + "/" + f->rel;
+    std::string root, rel;
+    if (const auto found = resolve_asset(l, asset, root, rel); found != MV_LINK_OK) return found;
     auto done = l->session->read_range(
         root, rel, at, length,
         [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
         cancel ? cancel->flag.get() : nullptr, bulk != 0);
     return done ? MV_LINK_OK : status_of_read(done.error());
+  });
+}
+
+int32_t mv_asset_folder_check(mv_mobile_link* l, int64_t asset) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return MV_LINK_INVALID;
+    std::string root, rel;
+    return resolve_asset(l, asset, root, rel);
   });
 }
 

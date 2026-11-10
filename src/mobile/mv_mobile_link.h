@@ -37,6 +37,7 @@ typedef enum mv_link_status {
   MV_LINK_UP_TO_DATE = 15,
   MV_LINK_COPY_AVAILABLE = 16,
   MV_LINK_INTERNAL = 17,
+  MV_LINK_NO_FOLDER = 18,     /* the service has no folder named for this file's share */
 } mv_link_status;
 
 /* ---- pairing ------------------------------------------------------------- */
@@ -167,6 +168,9 @@ int32_t mv_asset_read(mv_mobile_link* link, int64_t asset, mv_asset_info* out);
 /* BLOCKS. Range read of an original. length UINT64_MAX means to the end. */
 int32_t mv_file_read(mv_mobile_link* link, int64_t asset, uint64_t at, uint64_t length, int32_t bulk, mv_cancel* cancel,
                      mv_sink_fn sink, void* ctx);
+
+/* BLOCKS. Whether the service names the folder this asset is in: OK or MV_LINK_NO_FOLDER. */
+int32_t mv_asset_folder_check(mv_mobile_link* link, int64_t asset);
 
 int32_t mv_moments_get(mv_mobile_link* link, int64_t asset, mv_moment_fn fn, void* ctx);
 

@@ -179,6 +179,8 @@ public enum MediaFailure: Error, Hashable, Sendable {
   case synologyUnreachable
   case originalGone
   case notThereYet
+  /// The NAS service has no folder named for the share this file is on.
+  case folderNotOnNAS
   /// ImageIO cannot decode it; `format` is the name a person knows ("Sony ARW").
   case cannotDecode(format: String)
   case serviceTooOld

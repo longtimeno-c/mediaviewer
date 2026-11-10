@@ -131,6 +131,7 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
       case 0: break
       case 11: throw CancellationError()
       case 9: throw MediaFailure.originalGone
+      case 18: throw MediaFailure.folderNotOnNAS
       default: throw MediaFailure.synologyUnreachable
       }
     }
