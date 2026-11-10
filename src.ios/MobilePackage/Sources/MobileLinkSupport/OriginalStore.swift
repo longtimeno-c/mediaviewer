@@ -16,12 +16,14 @@ public actor OriginalStore {
   private let limit: Int64
   // One fetch per file. Each caller waits on a continuation of its own, so a caller that is
   // cancelled returns at once; the fetch stops when the last caller has gone.
+  // `token` names one fetch: an old fetch winding down after its callers left must never answer
+  // the callers of a newer one for the same file.
   private struct Entry {
+    let token: UUID
     var task: Task<Void, Never>
     var waiters: [UUID: CheckedContinuation<URL, Error>] = [:]
   }
   private var inFlight: [String: Entry] = [:]
-  private var cancelledEarly: Set<UUID> = []  // a cancel that arrived before its caller registered
 
   public init(dir: URL, limitBytes: Int64) {
     self.dir = dir
@@ -39,6 +41,7 @@ public actor OriginalStore {
     }
     if inFlight[key] == nil {
       let dir = self.dir
+      let token = UUID()
       let task = Task {
         let result: Result<URL, Error>
         do {
@@ -54,9 +57,9 @@ public actor OriginalStore {
         } catch {
           result = .failure(error)
         }
-        await self.finish(key, result)
+        await self.finish(key, token, result)
       }
-      inFlight[key] = Entry(task: task)
+      inFlight[key] = Entry(token: token, task: task)
     }
     let id = UUID()
     let url = try await withTaskCancellationHandler {
@@ -70,12 +73,9 @@ public actor OriginalStore {
     return url
   }
 
+  // Runs inside withCheckedThrowingContinuation, in the same turn of the actor as file(): a cancel's
+  // Task needs the actor too, so it always finds this caller registered or already answered.
   private func register(_ key: String, _ id: UUID, _ continuation: CheckedContinuation<URL, Error>, target: URL, size: UInt64) {
-    if cancelledEarly.remove(id) != nil {
-      continuation.resume(throwing: CancellationError())
-      leaveIfEmpty(key)
-      return
-    }
     guard inFlight[key] != nil else {
       // Finished between the start and now: the file is there, or the fetch failed.
       if Self.size(of: target) == size {
@@ -89,10 +89,8 @@ public actor OriginalStore {
   }
 
   private func cancel(_ key: String, _ id: UUID) {
-    guard let continuation = inFlight[key]?.waiters.removeValue(forKey: id) else {
-      cancelledEarly.insert(id)
-      return
-    }
+    // Already answered (the fetch ended first): nothing to do, and nothing to remember.
+    guard let continuation = inFlight[key]?.waiters.removeValue(forKey: id) else { return }
     continuation.resume(throwing: CancellationError())
     leaveIfEmpty(key)
   }
@@ -103,8 +101,8 @@ public actor OriginalStore {
     inFlight[key] = nil
   }
 
-  private func finish(_ key: String, _ result: Result<URL, Error>) {
-    guard let entry = inFlight.removeValue(forKey: key) else { return }
+  private func finish(_ key: String, _ token: UUID, _ result: Result<URL, Error>) {
+    guard inFlight[key]?.token == token, let entry = inFlight.removeValue(forKey: key) else { return }
     for continuation in entry.waiters.values { continuation.resume(with: result) }
   }
 

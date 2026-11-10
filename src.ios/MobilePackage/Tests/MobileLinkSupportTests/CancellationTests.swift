@@ -45,6 +45,37 @@ final class CancellationTests: XCTestCase {
     XCTAssertTrue(sawCancel.isSet, "The fetch never saw the cancel")
   }
 
+  /// Viewer A opens a RAW and leaves, which cancels its fetch; viewer B opens the same RAW and starts
+  /// a new one; A's fetch then winds down. B must get its file, not A's cancellation.
+  func testAnOldCancelledFetchNeverAnswersANewCaller() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = OriginalStore(dir: dir, limitBytes: 1 << 30)
+    let slowToStop: @Sendable (URL) async throws -> Void = { _ in
+      do {
+        try await Task.sleep(for: .seconds(30))
+      } catch {
+        // Closing a socket and a file takes a moment after the cancel.
+        try? await Task.sleep(for: .milliseconds(400))
+        throw error
+      }
+    }
+    let quick: @Sendable (URL) async throws -> Void = { part in
+      try await Task.sleep(for: .milliseconds(800))
+      FileManager.default.createFile(atPath: part.path, contents: Data(count: 9))
+    }
+    let a = Task { try await store.file(key: "2-9", size: 9, fetch: slowToStop) }
+    try await Task.sleep(for: .milliseconds(100))
+    a.cancel()
+    _ = await a.result
+    let b = Task { try await store.file(key: "2-9", size: 9, fetch: quick) }
+    switch await b.result {
+    case .success(let url): XCTAssertEqual(try Data(contentsOf: url).count, 9)
+    case .failure(let error): XCTFail("B got the old fetch's answer: \(error)")
+    }
+  }
+
   /// LinkConnection's "Waiting for Wi-Fi" loop (CopyGate) run as the first copy runs it, under
   /// TrackedWork: Forget (stopAndWait, and the forgotten flag) ends it at once, and nothing
   /// copies after.

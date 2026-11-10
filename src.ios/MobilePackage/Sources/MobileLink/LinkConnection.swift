@@ -29,7 +29,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var copyCancel: LinkCancel?
   // Everything that writes into the library: Forget cancels it and waits before deleting.
   private let work = TrackedWork()
-  private var continued: AnyObject?  // BGContinuedProcessingTask, on iOS 26
+  private let continued = ContinuedCopy()  // the BGContinuedProcessingTask's bookkeeping (iOS 26)
   private var opened: Task<Void, Never>?
 
   private let monitor = NWPathMonitor()
@@ -489,33 +489,28 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     request.strategy = .fail
     // Refused where the system does not allow it (the Simulator, or one already running): the
     // copy still runs while the app is open.
-    try? BGTaskScheduler.shared.submit(request)
+    do {
+      try BGTaskScheduler.shared.submit(request)
+      continued.asked()
+    } catch {}
   }
 
   @available(iOS 26.0, *)
   fileprivate func adopt(_ task: BGContinuedProcessingTask) {
-    lock.withLock { continued = task }
     task.expirationHandler = { [weak self] in
       guard let self else { return }
+      // The copy ends, and its defer completes the task (Apple's rule: completed even when expired).
       self.lock.withLock { self.copyCancel }?.fire()
-      self.lock.withLock { self.continued = nil }
     }
+    continued.adopt(SystemContinuedTask(task))
   }
 
   private func reportContinued(done: UInt64, total: UInt64) {
-    guard #available(iOS 26.0, *) else { return }
-    guard let task = lock.withLock({ continued as? BGContinuedProcessingTask }) else { return }
-    task.progress.totalUnitCount = Int64(total)
-    task.progress.completedUnitCount = Int64(done)
+    continued.progress(done: Int64(done), total: Int64(total))
   }
 
   private func finishContinued(success: Bool) {
-    guard #available(iOS 26.0, *) else { return }
-    let task = lock.withLock { () -> BGContinuedProcessingTask? in
-      defer { continued = nil }
-      return continued as? BGContinuedProcessingTask
-    }
-    task?.setTaskCompleted(success: success)
+    continued.finished(success: success)
   }
 }
 
@@ -568,6 +563,17 @@ enum OutsideRoute {
     var host = String(text[..<colon])
     if host.hasPrefix("[") && host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
     return host.isEmpty ? nil : (host, port)
+  }
+}
+
+@available(iOS 26.0, *)
+private final class SystemContinuedTask: ContinuedTaskHandle {
+  private let task: BGContinuedProcessingTask
+  init(_ task: BGContinuedProcessingTask) { self.task = task }
+  func complete(success: Bool) { task.setTaskCompleted(success: success) }
+  func progress(done: Int64, total: Int64) {
+    task.progress.totalUnitCount = total
+    task.progress.completedUnitCount = done
   }
 }
 
