@@ -686,6 +686,80 @@ TEST_CASE("link: Forget cuts reads on a swapped-out client and wakes readers wai
   CHECK_FALSE(s.connect(again));  // and nothing connects again
 }
 
+TEST_CASE("link: Forget alone wakes a reader waiting for a stream, while every stream is held", "[mobile-link]") {
+  rig r;
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  // 31 reads whose sinks do not return until released: their streams never end by themselves.
+  std::mutex hold_m;
+  std::condition_variable hold_cv;
+  bool release = false;
+  std::atomic<int> holding{0};
+  std::vector<std::thread> holders;
+  for (int i = 0; i < 31; ++i) {
+    holders.emplace_back([&] {
+      bool first = true;
+      (void)s.read_range("c2c2c2c2c2c2c2c2", "current.json", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+        if (first) {
+          first = false;
+          ++holding;
+          std::unique_lock lock(hold_m);
+          hold_cv.wait(lock, [&] { return release; });
+        }
+        return true;
+      }, nullptr, false);
+    });
+  }
+  for (int i = 0; i < 500 && holding.load() < 31; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  REQUIRE(holding.load() == 31);
+  std::atomic<bool> waiter_done{false};
+  mv::expected waited = {};
+  std::thread waiter([&] {
+    waited = s.read_range("c2c2c2c2c2c2c2c2", "current.json", 0, UINT64_MAX,
+                          [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false);
+    waiter_done = true;
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK_FALSE(waiter_done.load());  // no stream is free
+  s.shut_down();
+  for (int i = 0; i < 100 && !waiter_done.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(waiter_done.load());  // shut_down alone woke it; the 31 still hold their streams
+  waiter.join();
+  CHECK_FALSE(waited);
+  {
+    std::lock_guard lock(hold_m);
+    release = true;
+  }
+  hold_cv.notify_all();
+  for (auto& t : holders) t.join();
+}
+
+TEST_CASE("link: Forget cuts reads on a client dropped after an error", "[mobile-link]") {
+  rig r(6 * 1024 * 1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  std::atomic<bool> started{false}, finished{false};
+  std::thread reader([&] {
+    (void)s.read_range("c2c2c2c2c2c2c2c2", "gen/000001/extra.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+      started = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(150));  // the whole file takes many seconds
+      return true;
+    }, nullptr, false);
+    finished = true;
+  });
+  while (!started) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  // An io error on another request drops the client from live_ while the read above still runs on it.
+  s.drop_for_test();
+  const auto t0 = std::chrono::steady_clock::now();
+  s.shut_down();
+  reader.join();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+}
+
 TEST_CASE("sync: bytes stop when they may not move, resume when they may, and a half-done install finishes", "[mobile-link]") {
   rig r(6 * 1024 * 1024);
   r.pair_now();

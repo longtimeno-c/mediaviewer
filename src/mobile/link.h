@@ -106,6 +106,15 @@ class link_session final : public remote_file {
   void disconnect() noexcept;
   // "Forget this library": disconnects and refuses every later connect.
   void shut_down() noexcept;
+  // The tests: what an io error on the live client does (dropped()), without the error.
+  void drop_for_test() noexcept {
+    std::shared_ptr<driftwire::serve::client> c;
+    {
+      std::lock_guard lock(m_);
+      c = live_;
+    }
+    if (c) dropped(c);
+  }
   [[nodiscard]] bool connected() const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;

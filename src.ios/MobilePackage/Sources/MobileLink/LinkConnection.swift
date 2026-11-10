@@ -430,16 +430,20 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
 
     if continuesAfterLeaving { submitContinuedTask() }
-    defer { lock.withLock { copyCancel = nil } }
+    // However this ends (done, failed, cancelled while waiting for Wi-Fi), the system's
+    // continued task hears it, or it would never complete.
+    var succeeded = false
+    defer {
+      finishContinued(success: succeeded)
+      lock.withLock { copyCancel = nil }
+    }
     var started = false
     while true {
       // Size first; nothing moves over mobile data unless the person asked (§8.4).
-      while !overMobileData && !mayCopyQuietly {
-        continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes)))
-        try Task.checkCancellation()
-        if lock.withLock({ forgotten }) { throw CancellationError() }
-        try await Task.sleep(for: .milliseconds(500))
-      }
+      try await CopyGate.wait(
+        mayMove: { [weak self] in overMobileData || (self?.mayCopyQuietly ?? false) },
+        stopped: { [weak self] in self?.lock.withLock { self?.forgotten ?? true } ?? true },
+        waiting: { continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes))) })
       let cancel = LinkCancel()
       lock.withLock { copyCancel = cancel }
       if check.done_bytes > 0 || started {
@@ -456,21 +460,17 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       } onCancel: { cancel.fire() }
       switch status {
       case 0, 15:
-        finishContinued(success: true)
+        succeeded = true
         if let info = await catalogueNow(link: link) { publishCatalogue(info) }
         return
       case 19: continue  // left Wi-Fi: wait for it, then pick up where it stopped
       case 11:
-        finishContinued(success: false)
         throw CancellationError()
       case 12:
-        finishContinued(success: false)
         throw CopyFailure.catalogueRejected
       case 13:
-        finishContinued(success: false)
         throw CopyFailure.notEnoughSpace(neededBytes: Int64(report.needed_bytes))
       default:
-        finishContinued(success: false)
         throw CopyFailure.synologyUnreachable
       }
     }
