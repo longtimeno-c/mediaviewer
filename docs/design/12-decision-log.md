@@ -1427,6 +1427,17 @@ media; hidden, system, packages and empty files are skipped) and reports groups.
 
 ---
 
+**Destinations are volume keys, not absolute paths (2026-11-10).** `import.db` keyed `library`,
+`seq` and the journal on the destination's absolute path, so a share back at `/Volumes/photos-1`
+or a re-lettered drive looked new: every file re-read to dedupe, renamed files copied again, `{seq}`
+restarted, and an interrupted job never resumed. Rows now carry a volume identity plus the folder
+inside the volume. Not `volume_id` alone: a Mac share's fsid changes at each mount, so a share goes
+by its mount source, and Windows' network `device_key` now resolves a drive letter to its UNC name
+(it was the path). Not the ABI: `mv_addon_volume` already has both fields. Absolute rows migrate
+only after a file check, because a stale mount point or another disk at the same path must not
+adopt them; offline rows are never rewritten or dropped. Details: [18](18-import.md) "Destination
+identity".
+
 ## Local search (AI add-on)
 
 **Runtime (2026-09-24).** ONNX Runtime; GPU through vendor providers shipped as optional pieces
@@ -1898,6 +1909,23 @@ nothing is noticed before the pack loads (#292), and a held root is not watched 
 **Not measured:** idle CPU with watched roots, and the PR 1 gates during a large copy into a
 watched root, on either platform; the Windows watcher has been compiled only by CI.
 
+**A walk deletes only what it can vouch for, and a damaged `.mvindex` is refused (2026-11-09,
+audit in `docs/plans/mobile.md` §1).** Reading the code showed a share dropping mid-walk could
+delete index rows: a subfolder that failed to open was skipped, a `readdir` error looked like the
+end of the folder, and `end_root_scan` then removed everything unseen, embeddings and face rows
+with it. `io::walk_files` now reports an `incomplete` listing unless each failure was a refused
+permission or a folder really gone (checked against the root's device or attributes after the
+walk, since an unmounted share also reads as "not found"). Only `walk_files2` hears it, as
+`MV_ERR_IO` after the files; Import's and Driftwire's walks behave as before, so a failing card
+still gives up what it can. The engine adds what was listed and deletes nothing. A refused folder
+is complete for the walk but keeps its rows: `keep_unlistable` lists the nearest existing folder of
+each unseen row and spares those that cannot list (one listing per folder, unseen rows only).
+Not exercised against a real share dropping: the tests use a refused folder and a walk made to
+fail. `.mvindex` import noted no read errors, so a damaged file committed as a shorter one, with
+assets marked done and no vectors; row loops now note any failed step and the transaction rolls
+back. Export checks its last writes, flushes each commit and passes `quick_check` before it takes
+its name.
+
 ## Final Cut Pro search (Mac)
 
 **Mac-only, over a shared reader (2026-09-28).** FCP is Mac-only, so the extension and agent have
@@ -1953,6 +1981,12 @@ person reads). An installed Sharepoint does not update itself into Driftwire (a 
 menu offers Driftwire's one-click install, and Sharepoint is removed in Settings → Add-ons. Its
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
+
+**A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
+(`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
+anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,
+[28](28-driftwire.md#the-nas-service-driftwire-serve)) now rather than wait for spike S5, which
+still decides the package format. This records only that; the details of the service are in 28.
 
 **Nearby handshakes carry no long-term key; the name is off the air with the window closed; the Mac
 keeps secrets in the data protection keychain (owner, 2026-10-20, #501).** Protocol 2 used the

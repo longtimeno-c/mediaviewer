@@ -150,6 +150,7 @@ private func dateText(_ unix: Int64) -> String {
 /// The layouts, in backup::layout's numbering, with what each writes.
 private let backupLayouts: [(value: Int32, label: String)] = [
   (1, "Year — 2024/IMG_0001.HEIC"),
+  (5, "Year and month — 2024/05/IMG_0001.HEIC"),
   (0, "Year and day — 2024/2024-05-17/IMG_0001.HEIC"),
   (2, "Year, month and day — 2024/05/17/IMG_0001.HEIC"),
   (3, "Day — 2024-05-17/IMG_0001.HEIC"),

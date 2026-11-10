@@ -83,13 +83,15 @@ mv_status MV_CALL t_walk(void*, const char* root, int32_t depth, mv_addon_walk_f
 mv_status MV_CALL t_walk2(void*, const char* root, int32_t depth, mv_addon_walk2_fn visit, void* user) {
   return guarded([&] {
     if (!root || !visit) return MV_ERR_INVALID_ARG;
+    bool incomplete = false;
     auto r = io::walk_files(root, depth, [&](const io::tree_entry& e) {
       mv_addon_file_entry2 fe{sizeof(mv_addon_file_entry2), e.cloud_only ? MV_ADDON_FILE_CLOUD_ONLY : 0u,
                               e.path_utf8.c_str(), e.relative_utf8.c_str(), e.name_utf8.c_str(),
                               e.size, e.mtime_unix};
       return visit(user, &fe) != 0;
-    });
-    return r ? MV_OK : to_mv(r.error());
+    }, &incomplete);
+    if (!r) return to_mv(r.error());
+    return incomplete ? MV_ERR_IO : MV_OK;  // what could be listed has been
   });
 }
 

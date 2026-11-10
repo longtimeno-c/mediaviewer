@@ -319,6 +319,35 @@ slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/
 `F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
 cursor off the window.
 
+### iOS (the search and Driftwire engines)
+
+The engines the iPhone app links statically (`mv_ai_engine`, `mv_infer`, `mv_driftwire_engine`), from the
+root `CMakeLists.txt` through `cmake/ios.cmake`, with their own small manifest (`tools/ios/vcpkg.json`) and the
+`arm64-ios` / `arm64-ios-simulator` triplets. The chrome in `src.ios` will link these when it lands. Xcode with the iOS SDK and a
+Simulator runtime, CMake ≥ 3.28, Ninja, vcpkg. The minimum iOS is set in the root `CMakeLists.txt` and both
+triplets, so change them together.
+
+```sh
+cmake -S . -B build-ios-sim -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build-ios-sim
+tools/ios/run-simulator-smoke.sh "$PWD/build-ios-sim/bin/mv_ios_core_smoke"
+```
+
+`CMAKE_OSX_SYSROOT=iphoneos` builds for a device. The smoke runs in a Simulator of its own, which it deletes:
+ONNX Runtime without `dlopen` on a real graph, an index and a text search through a fake model, the Driftwire
+engine and its ports over loopback.
+
+The default target runs `tools/ios/licence_check.py` on the installed ports, ONNX Runtime's licence file and the
+smoke program. It fails on a GPL-family or non-permissive licence, an undeclared one, a non-system library or a known
+(L)GPL symbol. It does not see the app until the app's build calls it: `build-ios-*/ios-licence-check.sh --binary
+MediaViewer.app`, before the app is stripped. CI's `ios-core` job builds both SDKs and runs the smoke.
+
+ONNX Runtime's static build carries Microsoft's telemetry uploader. `src/infer/ort_static_ios.cpp` sets
+`ORT_DISABLE_TELEMETRY` before the runtime starts so the uploader is never made. `tools/ios/ort_telemetry_pin.py`
+fails the build if the collector addresses or that variable's name change, or if `MV_ORT_VERSION` moves: on a bump,
+re-read `core/platform/posix/telemetry.cc` and update the pin.
+
 ### Linux (Linux PR 1)
 
 The present lab, `frametime` and the portable tests, from the root `CMakeLists.txt` (it includes
@@ -538,6 +567,29 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
    on **Update ready — restart** or on quit.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
+
+### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
+
+The interface only, so far: the core behind it (`src/mobile`) is not built. Screens are in
+`src.ios/MobilePackage` (`MobileKit` holds the protocols the core will implement, `MobileUI` the
+screens). Two apps share them. `MediaViewer` is the real one and links no stand-in data.
+`MediaViewerFixtures` runs the screens on generated pictures and a generated clip; its
+`MobileFixtures` package does not compile outside Debug, so it cannot reach a release.
+
+```bash
+cd src.ios
+xcodebuild -project MediaViewerMobile.xcodeproj -scheme MediaViewerFixtures -configuration Debug \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' CODE_SIGNING_ALLOWED=NO build
+```
+
+Every state in the plan's §11 has a name (`FixtureState` in `FixtureStates.swift`). In the running
+fixtures app the ladybug button lists them. To start in one, and without the button for screenshots:
+
+```bash
+xcrun simctl launch --terminate-running-process booted io.github.longtimeno-c.mediaviewer.mobile.fixtures -fixtureState library.stale -fixtureChrome NO
+```
+
+The Simulator has no camera, so the fixtures app's scan screen lists the codes it could have read.
 
 ### The `driftwire` command line (docs/design/28)
 
@@ -1372,6 +1424,12 @@ build/bin/mv_import_tests "[cli][e2e]"        # POSIX: two mv_driftwire_cli_test
 # "<address or name>:47614#<key>" (it prints the key) in Driftwire's "Your own relay server (optional)" on
 # the receiving computer. Only a holder of the key can wait there.
 build/bin/mv-driftwire-relay --port 47614      # --key-file F (or MV_RELAY_KEY; else it makes a key and prints it once) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
+# The NAS service (docs/design/28 "The NAS service"), any host; a Mac or Linux box stands in for the NAS here.
+# DIR/serve.json names the port and the folders; DIR/secrets is made 0700. The device key is the phone's public key.
+build/bin/driftwire serve --data DIR init                # prints the identity and, once, the library access key
+build/bin/driftwire serve --data DIR add "My phone" <64-hex-public-key>
+build/bin/driftwire serve --data DIR                     # needs no terminal; revoke with: serve --data DIR revoke "My phone"
+build/bin/mv_import_tests "[driftwire-serve]"            # the service over loopback
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
 python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --src build/addons/driftwire \
   --version 1.0.0 --key <key file> --out dist/
@@ -1379,7 +1437,7 @@ python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --sr
 # tools/fuzz/fuzz_driftwire.cpp with clang-cl in the fuzz job); S=src/addons/driftwire
 /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -O1 -g -fsanitize=fuzzer,address -isysroot $(xcrun --show-sdk-path) \
   -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_driftwire.cpp $S/wire.cpp $S/noise.cpp \
-  $S/cpace.cpp $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
+  $S/cpace.cpp $S/channel.cpp $S/serve_wire.cpp $S/serve.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
   $S/net_posix.cpp $S/machine_mac.cpp $S/bencode.cpp $S/sha1.cpp $S/dht_item.cpp $S/dht.cpp $S/udp_hub.cpp \
   $S/known.cpp $S/secrets_file.cpp $S/splice.cpp $S/relay.cpp $S/internet.cpp $S/meet.cpp \
   src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \

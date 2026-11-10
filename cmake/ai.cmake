@@ -77,8 +77,44 @@ function(mv_fetch_ort name ext sha out_dir)
   set(${out_dir} "${_dir}" PARENT_SCOPE)
 endfunction()
 
-mv_fetch_ort(${_ort_name} ${_ort_ext} ${_ort_sha} MV_ORT_DIR)
-set(MV_ORT_INCLUDE "${MV_ORT_DIR}/include")
+if(IOS)
+  # An app may not load downloaded code: Microsoft's static xcframework (the
+  # onnxruntime-c CocoaPods archive, MIT), linked into the app. It has no
+  # include/ folder, so mv_fetch_ort's layout does not fit it.
+  set(_ort_name "pod-archive-onnxruntime-c-${MV_ORT_VERSION}")
+  set(_ort_sha "e6f1670c14406fd9f082bb400ab197a9b0a9646058ca6366e440642e2b54a2ea")
+  set(MV_ORT_DIR "${CMAKE_BINARY_DIR}/_ort/${_ort_name}")
+  if(NOT EXISTS "${MV_ORT_DIR}/Headers/onnxruntime_c_api.h")
+    set(_dl "${CMAKE_BINARY_DIR}/_ort/${_ort_name}.zip")
+    if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_ort_name}.zip")
+      set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_ort_name}.zip")  # offline / CI cache
+    else()
+      message(STATUS "Fetching ${_ort_name}.zip (ONNX Runtime, MIT)")
+      file(DOWNLOAD "https://download.onnxruntime.ai/${_ort_name}.zip" "${_dl}"
+           EXPECTED_HASH SHA256=${_ort_sha} TLS_VERIFY ON)
+    endif()
+    file(SHA256 "${_dl}" _got)
+    if(NOT _got STREQUAL _ort_sha)
+      message(FATAL_ERROR "${_ort_name}.zip: SHA-256 ${_got}, expected ${_ort_sha}")
+    endif()
+    file(ARCHIVE_EXTRACT INPUT "${_dl}" DESTINATION "${MV_ORT_DIR}")
+  endif()
+  set(MV_ORT_INCLUDE "${MV_ORT_DIR}/Headers")
+  if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    set(_ort_slice "ios-arm64_x86_64-simulator")
+  else()
+    set(_ort_slice "ios-arm64")
+  endif()
+  add_library(mv_ort_static STATIC IMPORTED)
+  set_target_properties(mv_ort_static PROPERTIES IMPORTED_LOCATION
+    "${MV_ORT_DIR}/onnxruntime.xcframework/${_ort_slice}/onnxruntime.framework/onnxruntime")
+  # What the archive's own objects need.
+  target_link_libraries(mv_ort_static INTERFACE "-framework Foundation" "-framework CoreML"
+                        "-framework UIKit" "-framework Network")
+else()
+  mv_fetch_ort(${_ort_name} ${_ort_ext} ${_ort_sha} MV_ORT_DIR)
+  set(MV_ORT_INCLUDE "${MV_ORT_DIR}/include")
+endif()
 
 # ---- PDFium, pinned (#354) ------------------------------------------------------
 # A PDF's text for Local search (docs/plans/document-search.md §2, owner call 2):
@@ -97,7 +133,7 @@ else()
   set(_pdfium_sha "0b43f405477cf2cfc4dbff06905093c3309756c6bca1fb9da99234a2ca97fed2")
 endif()
 set(MV_PDFIUM_DIR "${CMAKE_BINARY_DIR}/_pdfium/${_pdfium_name}-${MV_PDFIUM_RELEASE}")
-if(NOT EXISTS "${MV_PDFIUM_DIR}/include/fpdf_text.h")
+if(NOT IOS AND NOT EXISTS "${MV_PDFIUM_DIR}/include/fpdf_text.h")  # iOS: pdf_none.cpp
   set(_pdfium_dl "${CMAKE_BINARY_DIR}/_pdfium/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")
   if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")
     set(_pdfium_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")  # offline / CI cache
@@ -124,15 +160,21 @@ else()
 endif()
 
 # ---- mv_infer -----------------------------------------------------------------
+set(MV_AI_PDF ${R}/src/addons/ai/pdf_pdfium.cpp)
 if(WIN32)
   set(MV_INFER_DYLIB ${R}/src/infer/ort_dylib_win.cpp)
   set(MV_AI_PLATFORM ${R}/src/addons/ai/platform_win.cpp)
+elseif(IOS)
+  # The phone answers queries and indexes nothing (docs/plans/mobile.md 8.1).
+  set(MV_INFER_DYLIB ${R}/src/infer/ort_static_ios.cpp)
+  set(MV_AI_PLATFORM ${R}/src/addons/ai/platform_ios.cpp)
+  set(MV_AI_PDF ${R}/src/addons/ai/pdf_none.cpp)
 else()
   set(MV_INFER_DYLIB ${R}/src/infer/ort_dylib_posix.cpp)
   set(MV_AI_PLATFORM ${R}/src/addons/ai/platform_posix.cpp)
 endif()
 # The Photos library source (issue #72): PhotoKit on the Mac, none elsewhere.
-if(APPLE)
+if(APPLE AND NOT IOS)
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/photos_mac.mm)
 else()
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/photos_none.cpp)
@@ -141,7 +183,7 @@ endif()
 # Drive on the Mac (src/addons/ai/cloud_files.h).
 if(WIN32)
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_win.cpp)
-elseif(APPLE)
+elseif(APPLE AND NOT IOS)
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_mac.mm)
 else()
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_none.cpp)
@@ -152,7 +194,7 @@ endif()
 # Enhance (#297) fetches its weights with the same code.
 if(WIN32)
   set(MV_FETCH_PLATFORM ${R}/src/addons/ai/fetch_win.cpp)
-elseif(APPLE)
+elseif(APPLE AND NOT IOS)
   set(MV_FETCH_PLATFORM ${R}/src/addons/ai/fetch_mac.mm)
 else()
   set(MV_FETCH_PLATFORM ${R}/src/addons/ai/fetch_none.cpp)
@@ -165,7 +207,7 @@ if(WIN32)
   # C++/WinRT throws hresult_error, which ocr_win.cpp catches at its edge
   # (/EHsc, as CMake's default); /bigobj for the projection's headers.
   set_source_files_properties(${R}/src/addons/ai/ocr_win.cpp PROPERTIES COMPILE_OPTIONS "/bigobj;/EHsc")
-elseif(APPLE)
+elseif(APPLE AND NOT IOS)
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/ocr_mac.mm)
 else()
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/ocr_none.cpp)
@@ -194,6 +236,9 @@ target_include_directories(mv_infer SYSTEM PRIVATE "${MV_ORT_INCLUDE}")
 target_link_libraries(mv_infer PUBLIC mv_project_options)
 if(NOT WIN32)
   target_link_libraries(mv_infer PRIVATE ${CMAKE_DL_LIBS})
+endif()
+if(IOS)
+  target_link_libraries(mv_infer PUBLIC mv_ort_static)
 endif()
 set_target_properties(mv_infer PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
@@ -225,6 +270,14 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/host.h
   ${R}/src/addons/ai/index_db.cpp
   ${R}/src/addons/ai/index_db.h
+  ${R}/src/addons/ai/catalog.cpp
+  ${R}/src/addons/ai/catalog.h
+  ${R}/src/addons/driftwire/secrets.h
+  # iOS: mv_driftwire_engine carries secrets_file.cpp and secrets_ios.cpp (linked below).
+  $<$<NOT:$<PLATFORM_ID:iOS>>:${R}/src/addons/driftwire/secrets_file.cpp>
+  $<$<PLATFORM_ID:Windows>:${R}/src/addons/driftwire/secrets_win.cpp>
+  $<$<PLATFORM_ID:Darwin>:${R}/src/addons/driftwire/secrets_mac.cpp>
+  $<$<PLATFORM_ID:Linux>:${R}/src/addons/driftwire/secrets_linux.cpp>
   ${R}/src/addons/ai/vectors.cpp
   ${R}/src/addons/ai/vectors.h
   ${R}/src/addons/ai/vocabulary.cpp
@@ -253,7 +306,7 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/passages.cpp
   ${R}/src/addons/ai/passages.h
   ${R}/src/addons/ai/pdf_reader.h
-  ${R}/src/addons/ai/pdf_pdfium.cpp
+  ${MV_AI_PDF}
   ${MV_AI_PLATFORM}
   ${R}/src/abi/include/mediaviewer/mediaviewer_ai.h
 )
@@ -263,17 +316,30 @@ set_source_files_properties(${R}/src/addons/ai/pdf_pdfium.cpp PROPERTIES INCLUDE
 target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_model_fetch mv_project_options PRIVATE ${MV_SQLITE_TARGET})
 find_package(Threads REQUIRED)
 target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
-if(APPLE)
-  target_link_libraries(mv_ai_engine PRIVATE "-framework CoreFoundation" "-framework IOKit"
+# The catalogue's Ed25519 signature (docs/plans/mobile.md §5).
+target_link_libraries(mv_ai_engine PRIVATE ${MV_SODIUM_TARGET})
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mv_ai_engine PRIVATE ${CMAKE_DL_LIBS})  # secrets_linux.cpp
+endif()
+if(APPLE AND NOT IOS)
+  target_link_libraries(mv_ai_engine PRIVATE "-framework Security" "-framework CoreFoundation" "-framework IOKit"
                         "-framework Foundation" "-framework AppKit" "-framework Photos"
                         "-framework AVFoundation" "-framework Network" "-framework Vision"
                         "-framework CoreGraphics")
 endif()
+if(IOS)
+  target_link_libraries(mv_ai_engine PRIVATE mv_driftwire_engine)  # secrets::os_store
+endif()
 if(WIN32)
-  target_link_libraries(mv_ai_engine PRIVATE dxgi)  # machine() (#482)
+  target_link_libraries(mv_ai_engine PRIVATE dxgi advapi32 crypt32)  # machine() (#482); the signing key
 endif()
 set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
+# iOS links the engine statically: no add-on module, no pack, no editing-app host.
+if(IOS)
+  return()
+endif()
 
 # ---- mv_ai (the add-on) -----------------------------------------------------------
 add_library(mv_ai MODULE "${R}/src/addons/ai/addon_entry.cpp")

@@ -64,6 +64,11 @@ class host {
   };
   [[nodiscard]] result<stat_result> stat(const std::string& path) const;
   [[nodiscard]] expected make_directories(const std::string& dir) const;
+  // The volume a path is on: its mount point and what identifies the device.
+  [[nodiscard]] result<mv_addon_volume> volume_of(const std::string& path) const;
+  // One read, written to a new file, hashed while read and read back uncached.
+  [[nodiscard]] expected copy_verified(const std::string& from, const std::string& to,
+                                       const std::function<bool()>& cancelled) const;
   [[nodiscard]] expected remove_file(const std::string& path) const;
 
   [[nodiscard]] result<rgb_frame> decode_still(const std::string& path, std::uint32_t max_edge) const;

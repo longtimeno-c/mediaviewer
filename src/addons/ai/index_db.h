@@ -359,6 +359,12 @@ class index_db {
                                                        std::int64_t generation);
   // Deletes `root`'s assets not seen in `generation` (removed files). Returns
   // their ids so the search matrix can drop them.
+  // The rows of `root` the walk of `generation` has not seen (with `trees`,
+  // only those under these folders), and a way to spare some of them from
+  // end_scan (a folder the walk was refused).
+  [[nodiscard]] result<std::vector<std::pair<std::int64_t, std::string>>> unseen_assets(
+      std::int64_t root, std::int64_t generation, const std::vector<std::string>* trees = nullptr);
+  [[nodiscard]] expected mark_seen(const std::vector<std::int64_t>& ids, std::int64_t generation);
   [[nodiscard]] result<std::vector<std::int64_t>> end_scan(std::int64_t root, std::int64_t generation);
   // end_scan for a walk of some folders only (docs/plans/index-watcher.md):
   // deletes `root`'s assets not seen in `generation` that are files of a

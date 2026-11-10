@@ -380,7 +380,11 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
   (`engine_deps::tree_quiet_s` / `tree_max_wait_s`). A changed folder's own files are walked
   (`scan_dirs`, `walk_files2` at depth 0, the same pairing as a full walk); a folder that came,
   was renamed or may have gone is walked to the root's depth, or, gone, takes its rows with it
-  (`index_db::end_scan_dirs` removes only rows under walked folders). More than 64 folders, or
+  (`index_db::end_scan_dirs` removes only rows under walked folders). A walk removes a row only
+  when it can vouch for the absence (2026-11-09, [12](12-decision-log.md#local-search-ai-add-on)):
+  a walk that failed part way (`walk_files2` returns `MV_ERR_IO` after listing what it could)
+  adds what it found, deletes nothing and marks the root "error" until the next walk; a folder
+  refused to the walk keeps its rows (`engine::keep_unlistable`). More than 64 folders, or
   lost events (`MV_ADDON_TREE_OVERFLOW`), and the root is walked whole. A held root is not
   watched: Resume walks it whole. A root on a network share is watched but keeps the 15-minute
   walk (a server can stop telling without an error); every other watched root is walked whole

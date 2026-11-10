@@ -380,6 +380,7 @@ TEST_CASE("each layout writes its own folders", "[shell][photos_backup]") {
   const expectation cases[] = {
       {bk::layout::year, y + "/IMG_0001.HEIC"},
       {bk::layout::year_day, y + "/" + ymd + "/IMG_0001.HEIC"},
+      {bk::layout::year_month, y + "/" + local(kDay1, "%m") + "/IMG_0001.HEIC"},
       {bk::layout::year_month_day, y + "/" + local(kDay1, "%m") + "/" + local(kDay1, "%d") + "/IMG_0001.HEIC"},
       {bk::layout::day, ymd + "/IMG_0001.HEIC"},
       {bk::layout::flat, "IMG_0001.HEIC"},

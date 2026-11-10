@@ -10,6 +10,7 @@
 //   driftwire code
 //   driftwire devices
 //   driftwire update
+//   driftwire serve [init | devices | add NAME KEY | revoke NAME-OR-KEY] [--data DIR]
 //   driftwire --help | --version
 //   common: --save-to DIR, --name NAME (this run only), --plain, --no-color, --verbose
 //
@@ -33,7 +34,11 @@
 
 namespace mv::driftwire::cli {
 
-enum class command : std::uint8_t { session, send, receive, code, devices, update, help, version };
+enum class command : std::uint8_t { session, send, receive, code, devices, update, serve, help, version };
+
+// `driftwire serve`: the service itself (no terminal, docs/design/28 "The NAS
+// service"), or one of its local chores.
+enum class serve_action : std::uint8_t { run, init, devices, add, revoke };
 
 struct args {
   command cmd = command::session;
@@ -45,6 +50,9 @@ struct args {
   bool plain = false;
   bool no_color = false;
   bool verbose = false;  // the engine's log lines (never a path, a name or an address) in the transcript
+  serve_action serve = serve_action::run;
+  std::string serve_key;  // add: the device's key; revoke: a name or key
+  std::string data;       // serve --data DIR: its folder, as given
   // The test build's.
   bool test_loopback = false;
   std::string test_data;

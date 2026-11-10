@@ -34,6 +34,20 @@ foreach(candidate IN ITEMS "$ENV{VCPKG_ROOT}" "$ENV{VCPKG_INSTALLATION_ROOT}"
   endif()
 endforeach()
 
+# iOS (docs/plans/mobile.md 8.1; cmake/ios.cmake): its own small manifest, and
+# the triplet that matches the SDK. Both are read when project() loads vcpkg.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tools/ios" CACHE PATH "iOS vcpkg manifest")
+  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "iOS: Apple silicon only")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "18.0" CACHE STRING
+      "Keep in step with tools/vcpkg/triplets/arm64-ios*.cmake")
+  if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    set(VCPKG_TARGET_TRIPLET "arm64-ios-simulator" CACHE STRING "vcpkg triplet")
+  else()
+    set(VCPKG_TARGET_TRIPLET "arm64-ios" CACHE STRING "vcpkg triplet")
+  endif()
+endif()
+
 # Linux PR 1 needs two packages (imgui, Catch2) and builds without vcpkg too:
 # cmake/linux.cmake finds them as CONFIG packages first (vcpkg, CI) and falls
 # back to a source tree (MV_IMGUI_SOURCE_DIR) and the system. Windows and
@@ -59,6 +73,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 option(MV_BUILD_TESTS "Build the core test suite" ON)
 option(MV_ASAN "Build with AddressSanitizer (docs/design/09 CI configuration)" OFF)
 
+# The iPhone core (docs/plans/mobile.md): engines only, no viewer.
+if(IOS)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ios.cmake")
+  return()
+endif()
 # PR 16: Apple Silicon present lab. Windows targets are not defined on Darwin.
 if(APPLE)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/darwin.cmake")

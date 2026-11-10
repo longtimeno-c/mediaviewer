@@ -18,8 +18,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 #if defined(__APPLE__)
-#include <net/route.h>
+#include <TargetConditionals.h>
 #include <sys/sysctl.h>
+#if TARGET_OS_OSX
+#include <net/route.h>
+#endif
 #endif
 
 #include <algorithm>
@@ -337,7 +340,7 @@ result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms) {
   return std::unique_ptr<link>(std::make_unique<tcp_link>(fd));
 }
 
-result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only) {
+result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only, int backlog) {
   // Dual stack where IPv6 exists; IPv4 alone where it does not.
   int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
   sockaddr_storage s{};
@@ -362,7 +365,7 @@ result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopb
   }
   close_on_exec(fd);
   (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 || ::listen(fd, 8) != 0 ||
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 || ::listen(fd, backlog) != 0 ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&s), &len) != 0) {
     ::close(fd);
     return err(status::io);
@@ -424,7 +427,11 @@ std::vector<subnet> local_subnets() {
 }
 
 std::optional<address> default_gateway() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_OSX
+  // iOS has no <net/route.h> and its sandbox hides the routing table. The
+  // gateway is for mapping a port on the router, which only a receiver asks for.
+  return std::nullopt;
+#elif defined(__APPLE__)
   // The routing table's default IPv4 route (what `route -n get default` reads).
   int mib[6] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY};
   std::size_t len = 0;

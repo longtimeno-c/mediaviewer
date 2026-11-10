@@ -53,6 +53,14 @@ endif()
 if(WIN32)
   set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
+elseif(IOS)
+  # No module on iOS, so the engine carries what the module would compile in:
+  # the file port, BLAKE3 hashing and (no bearer yet) the empty Bluetooth port.
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_ios.cpp ${_S}/secrets_ios.cpp ${_S}/power_ios.cpp
+      ${_S}/bt_none.cpp
+      ${MV_SOURCE_ROOT}/src/io/file_port.cpp ${MV_SOURCE_ROOT}/src/io/file_port_mac.cpp
+      ${MV_SOURCE_ROOT}/src/io/content_hash.cpp)
+  set(_driftwire_bt "")
 elseif(APPLE)
   set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
@@ -90,6 +98,9 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/known.h ${_S}/known.cpp
   ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
+  ${_S}/serve_wire.cpp ${_S}/serve_wire.h
+  ${_S}/serve.cpp ${_S}/serve.h
+  ${_S}/serve_client.cpp ${_S}/serve_client.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -108,6 +119,8 @@ if(WIN32)
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
   # PowerCreateRequest is kernel32's (#530), linked by default.
   target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32)
+elseif(IOS)
+  target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework Security")
 elseif(APPLE)
   # Security: the Keychain (#472 PR 4). IOKit: staying awake during a transfer (#530).
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"
@@ -115,6 +128,11 @@ elseif(APPLE)
 else()
   # dlopen: libsecret (secrets_linux.cpp), libsystemd (power_linux.cpp).
   target_link_libraries(mv_driftwire_engine PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
+# iOS links the engine statically: no add-on module, relay or command line.
+if(IOS)
+  return()
 endif()
 
 if(WIN32)
@@ -190,6 +208,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_known.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
@@ -274,6 +293,7 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/args.cpp ${_C}/args.h
   ${_C}/host.cpp ${_C}/host.h
   ${_C}/session.cpp ${_C}/session.h
+  ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
 )
