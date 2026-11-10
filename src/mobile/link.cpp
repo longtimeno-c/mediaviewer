@@ -338,7 +338,11 @@ bool link_session::connected() const {
 
 void link_session::dropped(const std::shared_ptr<serve::client>& c) noexcept {
   std::lock_guard lock(m_);
-  if (live_ == c) live_.reset();
+  if (live_ != c) return;
+  // Other reads may still be on it: Forget must be able to cut them, as for a swapped-out client.
+  std::erase_if(retired_, [](const auto& w) { return w.expired(); });
+  retired_.push_back(live_);
+  live_.reset();
 }
 
 result<std::shared_ptr<serve::client>> link_session::client(const cancel_flag* cancel) {

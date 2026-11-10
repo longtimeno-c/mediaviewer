@@ -29,7 +29,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var copyCancel: LinkCancel?
   // Everything that writes into the library: Forget cancels it and waits before deleting.
   private let work = TrackedWork()
-  private var continued: AnyObject?  // BGContinuedProcessingTask, on iOS 26
+  private let continued = ContinuedCopy()  // the BGContinuedProcessingTask's bookkeeping (iOS 26)
   private var opened: Task<Void, Never>?
 
   private let monitor = NWPathMonitor()
@@ -430,16 +430,23 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
 
     if continuesAfterLeaving { submitContinuedTask() }
-    defer { lock.withLock { copyCancel = nil } }
+    // However this ends (done, failed, cancelled while waiting for Wi-Fi), the system's
+    // continued task hears it, or it would never complete.
+    var succeeded = false
+    defer {
+      finishContinued(success: succeeded)
+      lock.withLock { copyCancel = nil }
+    }
     var started = false
     while true {
       // Size first; nothing moves over mobile data unless the person asked (§8.4).
-      while !overMobileData && !mayCopyQuietly {
-        continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes)))
-        try Task.checkCancellation()
-        if lock.withLock({ forgotten }) { throw CancellationError() }
-        try await Task.sleep(for: .milliseconds(500))
-      }
+      try await CopyGate.wait(
+        mayMove: { [weak self] in overMobileData || (self?.mayCopyQuietly ?? false) },
+        stopped: { [weak self] in
+          guard let self else { return true }
+          return self.lock.withLock { self.forgotten } || self.continued.isExpired
+        },
+        waiting: { continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes))) })
       let cancel = LinkCancel()
       lock.withLock { copyCancel = cancel }
       if check.done_bytes > 0 || started {
@@ -456,21 +463,17 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       } onCancel: { cancel.fire() }
       switch status {
       case 0, 15:
-        finishContinued(success: true)
+        succeeded = true
         if let info = await catalogueNow(link: link) { publishCatalogue(info) }
         return
       case 19: continue  // left Wi-Fi: wait for it, then pick up where it stopped
       case 11:
-        finishContinued(success: false)
         throw CancellationError()
       case 12:
-        finishContinued(success: false)
         throw CopyFailure.catalogueRejected
       case 13:
-        finishContinued(success: false)
         throw CopyFailure.notEnoughSpace(neededBytes: Int64(report.needed_bytes))
       default:
-        finishContinued(success: false)
         throw CopyFailure.synologyUnreachable
       }
     }
@@ -489,33 +492,32 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     request.strategy = .fail
     // Refused where the system does not allow it (the Simulator, or one already running): the
     // copy still runs while the app is open.
-    try? BGTaskScheduler.shared.submit(request)
+    continued.asking()  // first: the hand-over can come before submit returns
+    do {
+      try BGTaskScheduler.shared.submit(request)
+    } catch {
+      continued.submitFailed()
+    }
   }
 
   @available(iOS 26.0, *)
   fileprivate func adopt(_ task: BGContinuedProcessingTask) {
-    lock.withLock { continued = task }
     task.expirationHandler = { [weak self] in
       guard let self else { return }
+      // The copy ends (a transfer by its cancel, the Wi-Fi wait by the expired flag), and its defer
+      // completes the task: Apple's rule, completed even when expired.
+      self.continued.expire()
       self.lock.withLock { self.copyCancel }?.fire()
-      self.lock.withLock { self.continued = nil }
     }
+    continued.adopt(SystemContinuedTask(task))
   }
 
   private func reportContinued(done: UInt64, total: UInt64) {
-    guard #available(iOS 26.0, *) else { return }
-    guard let task = lock.withLock({ continued as? BGContinuedProcessingTask }) else { return }
-    task.progress.totalUnitCount = Int64(total)
-    task.progress.completedUnitCount = Int64(done)
+    continued.progress(done: Int64(done), total: Int64(total))
   }
 
   private func finishContinued(success: Bool) {
-    guard #available(iOS 26.0, *) else { return }
-    let task = lock.withLock { () -> BGContinuedProcessingTask? in
-      defer { continued = nil }
-      return continued as? BGContinuedProcessingTask
-    }
-    task?.setTaskCompleted(success: success)
+    continued.finished(success: success)
   }
 }
 
@@ -568,6 +570,17 @@ enum OutsideRoute {
     var host = String(text[..<colon])
     if host.hasPrefix("[") && host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
     return host.isEmpty ? nil : (host, port)
+  }
+}
+
+@available(iOS 26.0, *)
+private final class SystemContinuedTask: ContinuedTaskHandle {
+  private let task: BGContinuedProcessingTask
+  init(_ task: BGContinuedProcessingTask) { self.task = task }
+  func complete(success: Bool) { task.setTaskCompleted(success: success) }
+  func progress(done: Int64, total: Int64) {
+    task.progress.totalUnitCount = total
+    task.progress.completedUnitCount = done
   }
 }
 
