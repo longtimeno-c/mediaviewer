@@ -404,6 +404,10 @@ typedef struct mv_addon_route_point {
  * Return non-zero to continue, zero to stop. */
 typedef int32_t(MV_CALL* mv_addon_path_fn)(void* user, const char* path_utf8);
 
+/* One place label (place_labels): `index` into the points asked about; `label_utf8`
+ * "Sintra, Lisbon, Portugal", or "" for a point with none. Non-zero to continue. */
+typedef int32_t(MV_CALL* mv_addon_label_fn)(void* user, uint32_t index, const char* label_utf8);
+
 /* Asks for an info-pane section's tree for the file on screen. */
 typedef struct mv_slot_info_request {
   uint32_t struct_size;
@@ -546,6 +550,19 @@ typedef struct mv_addon_slots {
   mv_status(MV_CALL* badges)(void* addon, const mv_slot_badges_request* request);
   void(MV_CALL* event)(void* addon, const mv_slot_event* event);
 } mv_addon_slots;
+
+/* The answer to the host's place_labels (2026-11-10), its own interface so no
+ * add-on that fills mv.slots.1 has to change. The label the Info pane would
+ * show at a GPS point, "" for none. On the add-on's slot worker. `*needed` is
+ * the bytes including the NUL; MV_ERR_INVALID_ARG when `capacity` is less.
+ * MV_ERR_NOT_FOUND: no place database. */
+#define MV_PLACE_LABELS_INTERFACE "mv.place_labels.1"
+typedef struct mv_addon_place_labels {
+  uint32_t struct_size;
+  uint32_t reserved;
+  mv_status(MV_CALL* place_label)(void* addon, double lat, double lon, char* out_utf8, uint32_t capacity,
+                                  uint32_t* needed);
+} mv_addon_place_labels;
 
 typedef struct mv_host_api {
   uint32_t struct_size;
@@ -1029,6 +1046,24 @@ typedef struct mv_host_api {
    * uses its own preset). Appended after still_faces, last: read only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* still_extend)(void* host, const char* path_utf8, float* out_ltrb);
+  /* ---- the phone's catalogue (docs/plans/mobile.md §5, docs/design/17) -------- */
+  /* [any-thread, CPU only] A smaller JPEG of a JPEG, long edge at most
+   * `max_edge` (8..512), `quality` 1..100: decoded at a DCT scale and averaged
+   * down, never enlarged; an image already small enough is encoded again at
+   * this quality. `*out_size` is always the bytes needed; MV_ERR_INVALID_ARG
+   * with it larger than `capacity`: call again. MV_ERR_CORRUPT: not a JPEG.
+   * Appended after still_extend: read this and place_labels only when
+   * `struct_size` covers them and the pointer is non-NULL. */
+  mv_status(MV_CALL* jpeg_shrink)(void* host, const uint8_t* jpeg, uint64_t jpeg_size, uint32_t max_edge,
+                                  uint32_t quality, uint8_t* out, uint64_t capacity, uint64_t* out_size);
+  /* [worker-thread] Place labels for GPS points, as the loaded add-on that
+   * answers `place:` (Places) names them, under the person's own settings.
+   * `visit` is called on the caller's thread, once per point in order; 0 stops
+   * it (MV_ERR_CANCELLED). Blocks until done. MV_ERR_NOT_FOUND when no loaded
+   * add-on can (Places is not installed, or too old). Nothing is sent
+   * anywhere: the labels come from the database on this machine (rule 6). */
+  mv_status(MV_CALL* place_labels)(void* host, const mv_addon_route_point* points, uint32_t count,
+                                   mv_addon_label_fn visit, void* user);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u

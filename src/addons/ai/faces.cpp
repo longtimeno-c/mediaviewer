@@ -971,6 +971,16 @@ std::vector<person_row> faces_db::people(std::uint32_t min_faces, const std::set
   return out;
 }
 
+std::string faces_db::people_stamp() {
+  std::lock_guard lock(m_);
+  std::string out;
+  stmt s(db_, "SELECT (SELECT COUNT(*) FROM people WHERE name != ''),"
+              " (SELECT COALESCE(group_concat(id || ':' || name), '') FROM people WHERE name != ''),"
+              " (SELECT COUNT(*) FROM faces WHERE person_id IN (SELECT id FROM people WHERE name != ''))");
+  if (s.step_row()) out = std::to_string(s.i64(0)) + "/" + s.text(1) + "/" + std::to_string(s.i64(2));
+  return out;
+}
+
 std::vector<face_row> faces_db::faces_of(std::int64_t person) {
   std::lock_guard lock(m_);
   std::vector<face_row> out;

@@ -15,7 +15,10 @@
 #include <mediaviewer/mediaviewer_ai.h>
 #include <sqlite3.h>
 
+#include "abi/addon_media.h"
 #include "addons/ai/catalog.h"
+#include "addons/ai/nfc.h"
+#include "codec/decode.h"
 #include "addons/ai/sha256.h"
 
 #include <algorithm>
@@ -754,6 +757,10 @@ struct rig {
   std::map<std::string, std::string> moment_thumbs;
   std::map<std::string, std::vector<std::uint8_t>> jpegs;  // path#ms -> bytes
   std::mutex thumbs_m;
+  std::atomic<int> thumbnails_made{0};
+  std::function<void(const std::string& name)> thumb_hook;  // the thumbnail-maker's fake, inside it
+  std::vector<std::vector<std::pair<double, double>>> label_batches;  // every place_labels batch
+  bool places_answer = true;
   std::atomic<bool> busy{false};
   std::atomic<bool> on_battery{false};  // the fake power source
   std::atomic<int> battery_percent{100};
@@ -826,6 +833,10 @@ struct rig {
       const std::string name = utf8(fs::path(path).filename());
       if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
       std::lock_guard lock(thumbs_m);
+      ++thumbnails_made;
+      if (thumb_hook) {
+        thumb_hook(name);
+      }
       std::vector<std::uint8_t>& jpeg = jpegs[path + "#-1"];
       if (jpeg.empty()) jpeg = {0xFF, 0xD8, 9};
       std::string out = path + ".thumb.jpg";
@@ -1015,6 +1026,18 @@ struct rig {
       if (!keep_going()) return mv::err(mv::status::cancelled);
       return places(place);
     };
+    // The phone's catalogue: a tile that says it was shrunk; a Sintra label for geo files.
+    svc.jpeg_shrink = [](std::span<const std::uint8_t> j, std::uint32_t edge,
+                         std::uint32_t) -> mv::result<std::vector<std::uint8_t>> {
+      if (j.size() < 2 || j[0] != 0xFF || j[1] != 0xD8) return mv::err(mv::status::corrupt);
+      return std::vector<std::uint8_t>{0xFF, 0xD8, static_cast<std::uint8_t>(edge)};
+    };
+    svc.place_labels = [this](std::span<const std::pair<double, double>> at)
+        -> mv::result<std::vector<std::string>> {
+      if (!places_answer) return mv::err(mv::status::not_found);
+      label_batches.emplace_back(at.begin(), at.end());
+      return std::vector<std::string>(at.size(), "Sintra, Lisbon, Portugal");
+    };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
     api = *table->api();
@@ -1056,6 +1079,16 @@ struct rig {
       fs::create_directories(dir / "keys");
       return mv::driftwire::secrets::file_store(utf8(dir / "keys"));
     };
+    d.text_tower_files = [this](const std::string&) {
+      fs::create_directories(dir / "tower");
+      write_bytes(dir / "tower" / "text.onnx", pattern(64, 3));
+      write_bytes(dir / "tower" / "vocab.json", pattern(32, 5));
+      return std::vector<std::string>{utf8(dir / "tower" / "text.onnx"), utf8(dir / "tower" / "vocab.json")};
+    };
+    d.phone_quiet_s = phone_quiet;
+    d.phone_min_interval_s = phone_interval;
+    d.phone_share_poll_s = phone_poll;
+    d.phone_thumb_budget_s = phone_budget;
     d.qualities = [] { return std::vector<std::uint32_t>{1, 2}; };
     d.model_name = [](std::uint32_t q) { return q == 1 ? std::string("Fake fast") : std::string("Fake high"); };
     d.backend_available = [](mv::infer::backend) { return false; };
@@ -1212,6 +1245,12 @@ struct rig {
   }
 
   bool no_key_store = false;
+  // The publisher's timing; the defaults are far enough apart that a test
+  // which does not ask for automatic publishing never sees one.
+  double phone_quiet = 3600;
+  double phone_interval = 3600;
+  double phone_poll = 3600;
+  double phone_budget = 0;
   fs::path photos() const { return dir / "Photos"; }
   void file(const std::string& rel, std::size_t size = 16) { write_bytes(photos() / rel, pattern(size, 7)); }
 
@@ -5983,6 +6022,610 @@ TEST_CASE("publishing again adds a generation and leaves the last one until it i
     CHECK(read_all(base / "current.json") == first);
   }
 }
+
+
+
+// ---- Phone access, M2 (docs/plans/mobile.md §5, §6) ------------------------------------
+
+std::vector<std::uint8_t> file_bytes(const fs::path& p) {
+  const std::string s = read_all(p);
+  return std::vector<std::uint8_t>(s.begin(), s.end());
+}
+
+// Index a folder, publish once, and say where it went.
+struct phone_rig {
+  rig a;
+  fs::path nas;
+  fs::path base;
+  void index() {
+    a.start();
+    REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+    REQUIRE(a.idle());
+    nas = a.dir / "NAS";
+    fs::create_directories(nas);
+    base = nas / ".mediaviewer";
+  }
+  mv::json::value publish(const std::string& want = "") {
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    auto d = phone_done(a);
+    REQUIRE(*d.str("error") == want);
+    return d;
+  }
+  fs::path gen(int n = 1) const {
+    char name[8];
+    std::snprintf(name, sizeof name, "%06d", n);
+    return base / "gen" / name;
+  }
+  mv::json::value manifest(int n = 1) const { return *mv::json::parse(read_all(gen(n) / "manifest.json")); }
+  std::vector<std::pair<std::int64_t, std::string>> assets(int n = 1) const {
+    std::vector<std::pair<std::int64_t, std::string>> out;
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open_v2(utf8(gen(n) / "catalog.db").c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, "SELECT id, path FROM assets ORDER BY id", -1, &q, nullptr) == SQLITE_OK);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      out.emplace_back(sqlite3_column_int64(q, 0), reinterpret_cast<const char*>(sqlite3_column_text(q, 1)));
+    }
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    return out;
+  }
+  // The phone's view of a generation's search files.
+  std::unique_ptr<engine> reader(rig& phone, int n = 1) {
+    const fs::path data = phone.dir / "data";
+    fs::create_directories(data);
+    fs::copy_file(gen(n) / "catalog.db", data / "index.db", fs::copy_options::overwrite_existing);
+    fs::copy_file(gen(n) / "settings.json", data / "settings.json", fs::copy_options::overwrite_existing);
+    if (fs::exists(gen(n) / "faces.db")) {
+      fs::copy_file(gen(n) / "faces.db", data / "faces.db", fs::copy_options::overwrite_existing);
+    }
+    return phone.start_reader();
+  }
+};
+
+std::string only_cell(const fs::path& db_file, const char* sql) {
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open_v2(utf8(db_file).c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+  sqlite3_stmt* q = nullptr;
+  REQUIRE(sqlite3_prepare_v2(db, sql, -1, &q, nullptr) == SQLITE_OK);
+  std::string out;
+  if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) {
+    out = reinterpret_cast<const char*>(sqlite3_column_text(q, 0));
+  }
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  return out;
+}
+
+TEST_CASE("every asset has a tile, and thumbnail packs are named by content and shared", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.a.file("green_field.jpg");
+  p.a.file("nested/blue_sea.jpg");
+  p.a.file("broken_file.jpg");
+  p.index();
+  auto done = p.publish();
+  CHECK(*done.integer("thumbs_made") == 3);
+
+  const auto rows = p.assets();
+  REQUIRE(rows.size() == 4);
+  const auto idx = file_bytes(p.gen() / "thumbs.idx");
+  const auto tiny = file_bytes(p.gen() / "tiny.pack");
+  int tiles = 0;
+  std::set<std::string> packs;
+  for (const auto& [id, path] : rows) {
+    auto where = mv::ai::catalog::find_thumb(idx, id);
+    REQUIRE(where);
+    auto t = mv::ai::catalog::find_tiny(tiny, id);
+    REQUIRE(t);
+    if (path.find("broken") != std::string::npos) {
+      CHECK_FALSE(where->has_value());  // no picture: no entry, and not asked again
+      CHECK_FALSE(t->has_value());
+      continue;
+    }
+    REQUIRE(where->has_value());
+    REQUIRE(t->has_value());
+    CHECK(std::vector<std::uint8_t>((*t)->begin(), (*t)->end()) == std::vector<std::uint8_t>{0xFF, 0xD8, 64});
+    const auto pack = file_bytes(p.base / "thumbs" / (*where)->pack);
+    REQUIRE((*where)->offset + (*where)->length <= pack.size());
+    CHECK(pack[(*where)->offset] == 0xFF);
+    CHECK(pack[(*where)->offset + 1] == 0xD8);
+    packs.insert((*where)->pack);
+    ++tiles;
+  }
+  CHECK(tiles == 3);
+  REQUIRE(packs.size() == 1);
+  CHECK(mv::ai::catalog::find_tiny(tiny, 99999).value() == std::nullopt);
+  CHECK_FALSE(mv::ai::catalog::find_tiny(std::vector<std::uint8_t>(8, 0), 1));
+
+  // Its name is its hash, and the manifest says so under the signature.
+  auto m = p.manifest();
+  REQUIRE(m.find("thumb_packs")->a.size() == 1);
+  const auto& row = m.find("thumb_packs")->a[0];
+  const std::string hash = *mv::ai::sha256_file_hex(utf8(p.base / "thumbs" / *row.str("name")));
+  CHECK(*row.str("sha256") == hash);
+  CHECK(*row.str("name") == "t-" + hash.substr(0, 32) + ".pack");
+  CHECK(*row.str("path") == "thumbs/" + *row.str("name"));
+
+  // The next generation makes nothing again and names the same pack.
+  const int made = p.a.thumbnails_made.load();
+  p.publish();
+  CHECK(p.a.thumbnails_made.load() == made);
+  auto next = p.manifest(2);
+  CHECK(*next.find("thumb_packs")->a[0].str("name") == *row.str("name"));
+  CHECK(fs::directory_iterator(p.base / "thumbs")->path().filename() == *row.str("name"));
+}
+
+TEST_CASE("thumbnails made before a cancel are kept, and the viewer comes first", "[ai][engine][phone]") {
+  phone_rig p;
+  for (int i = 0; i < 40; ++i) p.a.file("pic_" + std::to_string(i) + ".jpg");
+  p.index();
+  std::atomic<int> n{0};
+  SECTION("a cancel keeps what was made") {
+    p.a.thumb_hook = [&](const std::string&) {
+      if (++n == 20) p.a.eng->phone_cancel();
+    };
+    p.publish("cancelled");
+    CHECK_FALSE(fs::exists(p.base / "current.json"));
+    const int first = p.a.thumbnails_made.load();
+    CHECK(first >= 20);
+    CHECK(first < 40);
+    p.a.thumb_hook = nullptr;
+    auto done = p.publish();
+    CHECK(p.a.thumbnails_made.load() == 40);  // the rest, not all of it again
+    CHECK(*done.integer("thumbs_made") >= 40 - first);
+    CHECK(p.manifest().integer("thumbs").value_or(0) == 40);
+  }
+  SECTION("while the viewer is busy no thumbnail is made") {
+    p.a.busy = true;
+    REQUIRE(p.a.eng->phone_publish(utf8(p.nas)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(p.a.thumbnails_made.load() == 0);
+    p.a.busy = false;
+    REQUIRE(*phone_done(p.a).str("error") == "");
+    CHECK(p.a.thumbnails_made.load() == 40);
+  }
+  SECTION("a budget publishes what is ready and carries on next time") {
+    p.a.phone_budget = 0.05;
+    p.a.start();
+    p.a.thumb_hook = [&](const std::string&) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); };
+    auto done = p.publish();
+    CHECK(done.boolean("thumbs_left") == true);
+    const auto tiles = p.manifest().integer("thumbs").value_or(0);
+    CHECK(tiles > 0);
+    CHECK(tiles < 40);
+  }
+}
+
+TEST_CASE("people travel as names and links, never as embeddings", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("anna_red.jpg");
+  p.a.file("anna_blue.jpg");
+  p.a.file("ben_green.jpg");
+  p.a.start();
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(p.a.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (p.a.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(p.a.idle());
+  auto list = mv::json::parse(p.a.eng->people_json());
+  REQUIRE(list);
+  std::int64_t anna = 0;
+  for (const auto& v : list->a) {
+    if (*v.integer("faces") == 2) anna = *v.integer("id");
+  }
+  REQUIRE(anna != 0);
+  REQUIRE(p.a.eng->person_rename(anna, "Anna"));
+  p.nas = p.a.dir / "NAS";
+  fs::create_directories(p.nas);
+  p.base = p.nas / ".mediaviewer";
+  p.publish();
+
+  const fs::path file = p.gen() / "faces.db";
+  REQUIRE(fs::exists(file));
+  CHECK(only_cell(file, "SELECT COUNT(*) FROM people") == "1");  // the named one
+  CHECK(only_cell(file, "SELECT COUNT(*) FROM faces") == "2");
+  CHECK(only_cell(file, "SELECT COALESCE(SUM(length(emb)), 0) FROM faces") == "0");
+  CHECK(only_cell(file, "SELECT COALESCE(SUM(w + h), 0) FROM faces") == "0.0");
+  CHECK(only_cell(file, "SELECT path FROM faces LIMIT 1").rfind("/", 0) == 0);
+  CHECK(only_cell(file, "SELECT path FROM faces LIMIT 1").find(utf8(p.a.photos())) == std::string::npos);
+  auto settings = mv::json::parse(read_all(p.gen() / "settings.json"));
+  CHECK(settings->boolean("faces") == true);
+  CHECK(*p.manifest().integer("people") == 1);
+
+  rig phone;
+  auto rd = p.reader(phone);
+  auto id = rd->search_text("@anna", {}, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(rd->wait_search(id, kSettleMs));
+  std::set<std::string> found;
+  for (int i = 0; auto q = rd->result_path(id, i); ++i) found.insert(utf8(fs::path(*q).filename()));
+  CHECK(found == std::set<std::string>{"anna_red.jpg", "anna_blue.jpg"});
+}
+
+TEST_CASE("place labels are stored at publish and answer place terms on the phone", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_geo_pt.jpg");
+  p.a.file("green_plain.jpg");
+  p.a.start();
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // the tag backfill
+  p.nas = p.a.dir / "NAS";
+  fs::create_directories(p.nas);
+  p.base = p.nas / ".mediaviewer";
+
+  SECTION("with Places") {
+    p.publish();
+    CHECK(only_cell(p.gen() / "catalog.db", "SELECT place FROM assets WHERE path LIKE '%geo%'") == "Sintra, Lisbon, Portugal");
+    CHECK(only_cell(p.gen() / "catalog.db", "SELECT COUNT(place) FROM assets") == "1");
+    CHECK(*p.manifest().integer("places") == 1);
+    CHECK_FALSE(p.a.label_batches.empty());
+    rig phone;
+    phone.places = nullptr;  // not installed there
+    auto rd = p.reader(phone);
+    for (const auto& [term, want] : std::vector<std::pair<std::string, bool>>{
+             {"place:portugal", true}, {"place:lisbon", true}, {"place:Sint", true}, {"place:spain", false}, {"place:sin", false}}) {
+      auto id = rd->search_text(term, {}, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+      REQUIRE(rd->wait_search(id, kSettleMs));
+      INFO(term);
+      CHECK(rd->result_path(id, 0).has_value() == want);
+    }
+  }
+  SECTION("without Places the catalogue simply has none") {
+    p.a.places_answer = false;
+    p.publish();
+    CHECK(only_cell(p.gen() / "catalog.db", "SELECT COUNT(place) FROM assets") == "0");
+  }
+}
+
+TEST_CASE("the manifest vouches for every shared file, and the text tower is on the share", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.publish();
+  auto m = p.manifest();
+  const std::string spec = *m.str("active_spec");
+  CHECK(*m.str("model_spec") == spec);
+  const auto& files = m.find("model_files")->a;
+  REQUIRE(files.size() == 2);
+  std::set<std::string> names;
+  for (const auto& f : files) {
+    names.insert(*f.str("name"));
+    const fs::path there = p.base / *f.str("path");
+    REQUIRE(fs::exists(there));
+    CHECK(there.parent_path() == p.base / "models" / fs::path(spec));
+    CHECK(*mv::ai::sha256_file_hex(utf8(there)) == *f.str("sha256"));
+    CHECK(there.filename().string().rfind(f.str("sha256")->substr(0, 16), 0) == 0);
+  }
+  CHECK(names == std::set<std::string>{"text.onnx", "vocab.json"});
+  REQUIRE(m.find("preview_packs"));
+  CHECK(m.find("preview_packs")->a.empty());  // the setting is off by default
+  // The manifest is what the signature covers.
+  auto cur = mv::json::parse(read_all(p.base / "current.json"));
+  CHECK(*cur->str("manifest_sha256") == *mv::ai::sha256_file_hex(utf8(p.gen() / "manifest.json")));
+}
+
+TEST_CASE("a quiet scan publishes at most hourly, and nothing runs when nothing changed", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.a.phone_quiet = 0.1;
+  p.a.phone_interval = 0.2;
+  p.index();
+  p.publish();
+  const auto runs = [&] { return *mv::json::parse(p.a.eng->phone_json())->integer("runs"); };
+  const auto gen = [&] { return *mv::json::parse(p.a.eng->phone_json())->integer("generation"); };
+
+  SECTION("a walk that finds nothing publishes nothing") {
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    const auto before = runs();
+    REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+    REQUIRE(p.a.idle());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(gen() == 1);
+    CHECK(runs() == before);
+  }
+  SECTION("a new file is published once the scan is quiet") {
+    p.a.file("green_field.jpg");
+    REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+    REQUIRE(p.a.idle());
+    REQUIRE(wait_for([&] { return gen() == 2; }, kSettleMs));
+    CHECK(p.assets(2).size() == 2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(gen() == 2);  // and once
+  }
+  SECTION("no more often than the interval") {
+    p.a.phone_interval = 3600;
+    p.a.start();  // a restart keeps the time of the last attempt
+    REQUIRE(wait_for([&] { return *mv::json::parse(p.a.eng->phone_json())->integer("generation") == 1; }, kSettleMs));
+    p.a.file("green_field.jpg");
+    REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+    REQUIRE(p.a.idle());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(gen() == 1);
+  }
+  SECTION("a scan that ends during a publish is not missed") {
+    std::atomic<bool> held{true};
+    std::atomic<int> arrived{0};
+    p.a.file("yellow_one.jpg");
+    REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+    REQUIRE(p.a.idle());
+    p.a.thumb_hook = [&](const std::string&) {
+      ++arrived;
+      while (held) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    };
+    REQUIRE(wait_for([&] { return arrived.load() > 0; }, kSettleMs));  // publishing, and stamped
+    p.a.file("yellow_two.jpg");
+    REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+    REQUIRE(p.a.idle());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // the tick sees it while running
+    held = false;
+    REQUIRE(wait_for([&] { return gen() == 3; }, kSettleMs));
+    CHECK(p.assets(3).size() == 3);
+  }
+  SECTION("turned off, nothing runs") {
+    REQUIRE(p.a.eng->set_setting("phone_auto", "0"));
+    p.a.file("green_field.jpg");
+    REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+    REQUIRE(p.a.idle());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(gen() == 1);
+  }
+}
+
+TEST_CASE("a generation waits while the share is away and the newest arrives on return", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.a.phone_quiet = 0.1;
+  p.a.phone_interval = 0.1;
+  p.a.phone_poll = 0.2;
+  p.index();
+  p.publish();
+  const fs::path away = p.a.dir / "NAS-away";
+  fs::rename(p.nas, away);
+  const auto state = [&] { return *mv::json::parse(p.a.eng->phone_json()); };
+
+  p.a.file("green_field.jpg");
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(wait_for([&] { return state().integer("waiting").value_or(0) == 2; }, kSettleMs));
+  CHECK(*state().integer("generation") == 1);
+
+  p.a.file("nested/blue_sea.jpg");
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(wait_for([&] { return state().integer("waiting").value_or(0) == 3; }, kSettleMs));
+  CHECK(fs::exists(p.a.dir / "data" / "phone" / "gen" / "3"));
+  CHECK_FALSE(fs::exists(p.a.dir / "data" / "phone" / "gen" / "2"));  // only the newest waits
+
+  fs::rename(away, p.nas);
+  REQUIRE(wait_for([&] { return *state().integer("generation") == 3; }, kSettleMs));
+  CHECK(*state().integer("waiting") == 0);
+  CHECK(p.assets(3).size() == 3);
+  CHECK(*mv::json::parse(read_all(p.base / "current.json"))->integer("generation") == 3);
+  CHECK_FALSE(fs::exists(p.gen(2)));  // never delivered
+
+  SECTION("a share that lost a pack gets it rebuilt rather than a broken generation") {
+    fs::remove_all(p.base / "thumbs");
+    const int made = p.a.thumbnails_made.load();
+    p.publish();
+    CHECK(p.a.thumbnails_made.load() >= made);
+    auto m = p.manifest(4);
+    for (const auto& f : m.find("thumb_packs")->a) CHECK(fs::exists(p.base / *f.str("path")));
+  }
+}
+
+TEST_CASE("paths a phone sees are NFC, with the disk's bytes kept", "[ai][engine][phone]") {
+  CHECK(mv::ai::nfc("cafe\xCC\x81") == "caf\xC3\xA9");                      // e + U+0301 -> é
+  CHECK(mv::ai::nfc("caf\xC3\xA9") == "caf\xC3\xA9");                       // already
+  CHECK(mv::ai::nfc("plain.jpg") == "plain.jpg");
+  CHECK(mv::ai::nfc("\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB") == "\xED\x95\x9C");  // Hangul jamo -> 한
+  CHECK(mv::ai::nfc("a\xCC\xA3\xCC\x87") == "\xE1\xBA\xA1\xCC\x87");        // a + dot below + dot above, ordered
+  CHECK(mv::ai::nfc("a\xCC\x87\xCC\xA3") == "\xE1\xBA\xA1\xCC\x87");        // the other order, the same text
+  const std::string bad = "caf\xC3(\xFF.jpg";
+  CHECK(mv::ai::nfc(bad) == bad);                                           // not text: left alone
+
+  phone_rig p;
+  const std::string nfd = "cafe\xCC\x81 menu.jpg";
+  const std::string nfc_name = "caf\xC3\xA9 menu.jpg";
+  const auto native = [](const std::string& s) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size())); };
+  write_bytes(p.a.photos() / native(nfd), pattern(16, 7));
+  p.a.file("plain.jpg");
+  p.index();
+
+  SECTION("an accented name") {
+    p.publish();
+    const std::string db = utf8(p.gen() / "catalog.db");
+    const std::string root = *p.manifest().find("roots")->a[0].str("id");
+    CHECK(only_cell(db, "SELECT path FROM assets WHERE path LIKE '%menu%'") == "/" + root + "/" + nfc_name);
+    CHECK(only_cell(db, "SELECT disk_path FROM assets WHERE path LIKE '%menu%'") == "/" + root + "/" + nfd);
+    CHECK(only_cell(db, "SELECT COUNT(disk_path) FROM assets") == "1");  // NULL when they are the same
+  }
+  SECTION("two files that differ only in form are both kept") {
+    // A share that is not normalisation-insensitive can hold both; this one cannot, so the index says so.
+    const fs::path index = p.a.dir / "data" / "index.db";
+    {
+      sqlite3* db = nullptr;
+      REQUIRE(sqlite3_open(utf8(index).c_str(), &db) == SQLITE_OK);
+      const std::string other = utf8(p.a.photos() / native(nfc_name));
+      char* sql = sqlite3_mprintf("UPDATE assets SET path = %Q WHERE path LIKE '%%plain%%'", other.c_str());
+      REQUIRE(sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+      sqlite3_free(sql);
+      sqlite3_close(db);
+    }
+    p.publish();
+    CHECK(p.assets().size() == 2);
+    CHECK(only_cell(p.gen() / "catalog.db", "SELECT COUNT(*) FROM assets WHERE path LIKE '%menu%'") == "2");
+  }
+}
+
+TEST_CASE("exact ties rank by asset then time, on every machine", "[ai][engine][phone]") {
+  using hit = mv::ai::vector_store::hit;
+  std::vector<hit> v{{9, 5, 0.5f, 0}, {2, 7, 0.5f, 0}, {2, 3, 0.5f, 0}, {4, 0, 0.9f, 0}};
+  std::sort(v.begin(), v.end(), &mv::ai::vector_store::ranked_before);
+  CHECK(v[0].asset == 4);
+  CHECK(std::make_pair(v[1].asset, v[1].pts_ms) == std::make_pair<std::int64_t, std::int64_t>(2, 3));
+  CHECK(std::make_pair(v[2].asset, v[2].pts_ms) == std::make_pair<std::int64_t, std::int64_t>(2, 7));
+  CHECK(v[3].asset == 9);
+
+  // Identical pictures: the desktop and the phone agree.
+  phone_rig p;
+  for (const char* n : {"red_c.jpg", "red_a.jpg", "red_b.jpg"}) p.a.file(n);
+  p.index();
+  p.publish();
+  const auto desk = p.a.search("red");
+  rig phone;
+  auto rd = p.reader(phone);
+  auto id = rd->search_text("red", {}, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(rd->wait_search(id, kSettleMs));
+  std::vector<std::string> got;
+  for (int i = 0; auto q = rd->result_path(id, i); ++i) got.push_back(utf8(fs::path(*q).filename()));
+  std::vector<std::string> want;
+  for (const auto& [name, _] : desk) want.push_back(name);
+  CHECK(got == want);
+}
+
+TEST_CASE("a pack goes only when unnamed and unused for 30 days", "[ai][engine][phone]") {
+  scratch_dir dir{"retention"};
+  const fs::path base = dir / ".mediaviewer";
+  fs::create_directories(base / "gen" / "000001");
+  fs::create_directories(base / "thumbs");
+  const std::string state = utf8(dir / "state.json");
+  { std::ofstream(base / "thumbs" / "t-kept.pack") << "x"; }
+  { std::ofstream(base / "thumbs" / "t-gone.pack") << "x"; }
+  {
+    std::ofstream out(base / "gen" / "000001" / "manifest.json", std::ios::binary);
+    out << R"({"thumb_packs":[{"name":"t-kept.pack","path":"thumbs/t-kept.pack"}]})";
+  }
+  const std::int64_t day = 86400, t0 = 1'000'000'000;
+  mv::ai::catalog::retain_shared(utf8(base), state, t0);
+  CHECK(fs::exists(base / "thumbs" / "t-gone.pack"));  // unused starts counting now
+  mv::ai::catalog::retain_shared(utf8(base), state, t0 + 29 * day);
+  CHECK(fs::exists(base / "thumbs" / "t-gone.pack"));
+  mv::ai::catalog::retain_shared(utf8(base), state, t0 + 31 * day);
+  CHECK_FALSE(fs::exists(base / "thumbs" / "t-gone.pack"));
+  CHECK(fs::exists(base / "thumbs" / "t-kept.pack"));
+
+  // Named again before the month is out: the clock stops.
+  { std::ofstream(base / "thumbs" / "t-back.pack") << "x"; }
+  mv::ai::catalog::retain_shared(utf8(base), state, t0 + 40 * day);
+  {
+    std::ofstream out(base / "gen" / "000001" / "manifest.json", std::ios::binary | std::ios::trunc);
+    out << R"({"thumb_packs":[{"name":"t-kept.pack","path":"thumbs/t-kept.pack"},{"name":"t-back.pack","path":"thumbs/t-back.pack"}]})";
+  }
+  mv::ai::catalog::retain_shared(utf8(base), state, t0 + 45 * day);
+  CHECK(fs::exists(base / "thumbs" / "t-back.pack"));
+
+  // A manifest that cannot be read might name anything.
+  { std::ofstream(base / "thumbs" / "t-old.pack") << "x"; }
+  fs::resize_file(base / "gen" / "000001" / "manifest.json", 0);
+  mv::ai::catalog::retain_shared(utf8(base), state, t0 + 400 * day);
+  CHECK(fs::exists(base / "thumbs" / "t-kept.pack"));
+  CHECK(fs::exists(base / "thumbs" / "t-old.pack"));
+}
+
+TEST_CASE("jpeg_shrink makes a real small JPEG, about the size the plan counted", "[ai][engine][phone]") {
+  const auto src = file_bytes(fs::path(MV_AI_TEST_DATA) / ".." / "seeds" / "jpeg" / "baseline.jpg");
+  REQUIRE_FALSE(src.empty());
+  auto small = mv::addon::media::jpeg_shrink(src, 64, 72);
+  REQUIRE(small);
+  auto dim = mv::codec::jpeg_dimensions(*small);
+  REQUIRE(dim);
+  CHECK(std::max(dim->width, dim->height) <= 64);
+  CHECK(small->size() < 8192);
+  CHECK_FALSE(mv::addon::media::jpeg_shrink(std::vector<std::uint8_t>{1, 2, 3}, 64, 72));
+}
+
+// ---- the publisher's cost (CLAUDE.md "Performance is the product") -------------------
+// `mv_ai_tests "[.perf-bench][phone-cost]"` prints JSON. The same text builds against
+// the commit before the publisher's trigger, so runs can alternate.
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/resource.h>
+#include <unistd.h>
+struct cost_mark {
+  double cpu = 0;
+  std::uint64_t wakeups = 0;
+};
+static cost_mark cost_now() {
+  rusage u{};
+  getrusage(RUSAGE_SELF, &u);
+  rusage_info_v4 r{};
+  proc_pid_rusage(getpid(), RUSAGE_INFO_V4, reinterpret_cast<rusage_info_t*>(&r));
+  cost_mark m;
+  m.cpu = u.ru_utime.tv_sec + u.ru_utime.tv_usec * 1e-6 + u.ru_stime.tv_sec + u.ru_stime.tv_usec * 1e-6;
+  m.wakeups = r.ri_pkg_idle_wkups + r.ri_interrupt_wkups;
+  return m;
+}
+TEST_CASE("perf: what the publisher adds at scale", "[.perf-bench][phone-scale]") {
+  // The 64 px tile, on every JPEG in the repo's seeds.
+  std::uint64_t bytes = 0, count = 0;
+  double seconds = 0;
+  const char* tile_dir = std::getenv("MV_TILE_DIR");  // real photographs, when given
+  for (const auto& e : fs::recursive_directory_iterator(tile_dir ? fs::path(tile_dir) : fs::path(MV_AI_TEST_DATA) / ".." / "seeds")) {
+    if (e.path().extension() != ".jpg") continue;
+    const auto src = file_bytes(e.path());
+    const auto t0 = std::chrono::steady_clock::now();
+    auto t = mv::addon::media::jpeg_shrink(src, 64, 72);
+    seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (t) {
+      bytes += t->size();
+      ++count;
+    }
+  }
+  // The check a scan's end pays, on a 100 k asset index.
+  scratch_dir dir{"phone-scale"};
+  const std::string file = utf8(dir / "index.db");
+  std::string stamp;
+  double stamp_ms = 0;
+  {
+    auto db = mv::ai::index_db::open(file);
+    REQUIRE(db);
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(file.c_str(), &raw) == SQLITE_OK);
+    sqlite3_exec(raw, "BEGIN; INSERT INTO roots(id, path, recursive) VALUES(1, '/a', 1);"
+                      "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<100000)"
+                      " INSERT INTO assets(path, root_id, mtime, size, kind) SELECT '/a/some/long/enough/path/file_' || x || '.jpg', 1, 1700000000+x, 5000000+x, 0 FROM c;"
+                      "COMMIT;", nullptr, nullptr, nullptr);
+    sqlite3_close(raw);
+    for (int i = 0; i < 5; ++i) {
+      const auto t0 = std::chrono::steady_clock::now();
+      stamp = (*db)->content_stamp("spec");
+      stamp_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+  }
+  std::printf("{\"tiles\":%llu,\"tile_bytes_mean\":%.0f,\"tile_ms_mean\":%.2f,\"stamp_ms_100k\":%.1f}\n",
+              static_cast<unsigned long long>(count), count ? static_cast<double>(bytes) / static_cast<double>(count) : 0.0,
+              count ? seconds * 1000 / static_cast<double>(count) : 0.0, stamp_ms);
+}
+
+TEST_CASE("perf: publisher idle cost and scan throughput", "[.perf-bench][phone-cost]") {
+  rig r;
+  for (int i = 0; i < 40; ++i) r.file("seed_" + std::to_string(i) + ".jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle(60000));
+  const fs::path nas = r.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(r.eng->phone_publish(utf8(nas)));
+  REQUIRE(*phone_done(r).str("error") == "");
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  const cost_mark a = cost_now();
+  std::this_thread::sleep_for(std::chrono::seconds(30));
+  const cost_mark b = cost_now();
+  std::vector<double> scans;
+  for (int run = 0; run < 3; ++run) {
+    const std::string sub = "batch_" + std::to_string(run);
+    for (int i = 0; i < 2000; ++i) r.file(sub + "/img_" + std::to_string(i) + ".jpg");
+    const auto t0 = std::chrono::steady_clock::now();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+    REQUIRE(r.idle(120000));
+    scans.push_back(2000.0 / std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  }
+  std::sort(scans.begin(), scans.end());
+  std::printf("{\"idle_cpu_pct\":%.4f,\"idle_wakeups_per_s\":%.3f,\"scan_files_per_s_median\":%.1f}\n",
+              (b.cpu - a.cpu) / 30.0 * 100.0, static_cast<double>(b.wakeups - a.wakeups) / 30.0, scans[1]);
+}
+#endif
 
 TEST_CASE("documents travel only when ticked, with their text and meaning (.mvindex v2, #354 D3)",
           "[ai][engine][transfer][documents]") {

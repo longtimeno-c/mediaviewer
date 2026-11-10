@@ -599,10 +599,27 @@ mv_status MV_CALL search(void*, const mv_slot_search_request* r) {
   });
 }
 
+// The label a phone's catalogue stores for a file (docs/plans/mobile.md §5): the
+// one the Info pane shows, under the person's own settings.
+mv_status MV_CALL place_label(void*, double lat, double lon, char* out, uint32_t capacity, uint32_t* needed) {
+  return guard([&] {
+    if (!out || !needed) return MV_ERR_INVALID_ARG;
+    const mv::geo::database* db = database();
+    if (!db) return MV_ERR_NOT_FOUND;
+    const mv::geo::place p = db->lookup(lat, lon, read_settings().lookup());
+    *needed = static_cast<uint32_t>(p.label.size() + 1);
+    if (capacity < *needed) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, p.label.c_str(), p.label.size() + 1);
+    return MV_OK;
+  });
+}
+
 const mv_addon_slots kSlots{sizeof(mv_addon_slots), 0, &info_section, &search, &screen_open, nullptr, &on_event};
+const mv_addon_place_labels kLabels{sizeof(mv_addon_place_labels), 0, &place_label};
 
 const void* MV_CALL query(void*, const char* id) {
   if (id && std::strcmp(id, MV_SLOTS_INTERFACE) == 0) return &kSlots;
+  if (id && std::strcmp(id, MV_PLACE_LABELS_INTERFACE) == 0) return &kLabels;
   return nullptr;
 }
 

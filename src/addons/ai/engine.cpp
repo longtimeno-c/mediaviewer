@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/engine.h"
 
-#include "addons/ai/catalog.h"
-
 #include <ctime>
 #include <random>
+#include <unordered_map>
 
 #include "addons/ai/machine.h"
 
@@ -753,6 +752,13 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       if (x < 0 || x > 2) return err(status::invalid_arg);
       reload = settings_.quality != static_cast<std::uint32_t>(x);
       settings_.quality = static_cast<std::uint32_t>(x);
+    } else if (key == "phone_auto") {
+      // Publishing after a scan goes quiet; "Publish now" is always there.
+      {
+        std::lock_guard pl(phone_m_);
+        phone_.auto_on = x != 0;
+      }
+      (void)save_phone_state();
     } else if (key == "pause_on_battery_percent") {
       settings_.battery_percent = static_cast<int>(std::clamp(x, 0.0, 100.0));
     } else if (key == "index_cap_bytes") {
@@ -2534,6 +2540,7 @@ void engine::control_loop() {
       last_state = state;
     }
     if (people_changed_.exchange(false)) post(MV_ADDON_EVENT_AI_PEOPLE);
+    phone_tick(walked || backstop);
     std::unique_lock lock(control_m_);
     control_cv_.wait_for(lock, std::chrono::milliseconds(more_tags ? 0 : 1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
@@ -5413,6 +5420,45 @@ std::string random_id() {
 
 }  // namespace
 
+// Where each shared file of a built generation comes from, beside it, so a
+// generation that waits for the share can still be delivered after a restart.
+bool write_shared_list(const std::string& file, const std::vector<catalog::shared_file>& list) {
+  json::writer w;
+  w.begin_array();
+  for (const catalog::shared_file& f : list) {
+    w.begin_object();
+    w.key("source").string(f.source);
+    w.key("rel").string(f.rel);
+    w.key("size").integer(static_cast<std::int64_t>(f.size));
+    w.end_object();
+  }
+  w.end_array();
+  std::ofstream out(fs_path(file), std::ios::binary | std::ios::trunc);
+  out << w.str();
+  out.flush();
+  return static_cast<bool>(out);
+}
+
+std::vector<catalog::shared_file> read_shared_list(const std::string& file) {
+  std::ifstream in(fs_path(file), std::ios::binary);
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  std::vector<catalog::shared_file> out;
+  const auto doc = json::parse(ss.str(), 4);
+  if (!doc || doc->k != json::kind::array) return out;
+  for (const json::value& v : doc->a) {
+    catalog::shared_file f;
+    const std::string* source = v.str("source");
+    const std::string* rel = v.str("rel");
+    if (!source || !rel) continue;
+    f.source = *source;
+    f.rel = *rel;
+    f.size = static_cast<std::uint64_t>(std::max<std::int64_t>(0, v.integer("size").value_or(0)));
+    out.push_back(std::move(f));
+  }
+  return out;
+}
+
 void engine::load_phone_state() {
   std::ifstream in(fs_path(join(data_dir_, "phone/state.json")), std::ios::binary);
   if (!in) return;
@@ -5430,6 +5476,25 @@ void engine::load_phone_state() {
   if (const std::string* s = doc->str("fingerprint")) phone_.fingerprint = *s;
   phone_.published_unix = doc->integer("published").value_or(0);
   phone_.assets = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("assets").value_or(0)));
+  phone_.auto_on = doc->boolean("auto").value_or(true);
+  phone_.waiting = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("waiting").value_or(0)));
+  phone_.waiting_assets = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("waiting_assets").value_or(0)));
+  phone_.waiting_created = doc->integer("waiting_created").value_or(0);
+  if (const std::string* s = doc->str("stamp")) phone_.stamp = *s;
+  if (const std::string* s = doc->str("waiting_stamp")) phone_.waiting_stamp = *s;
+  phone_.thumbs_left = doc->boolean("thumbs_left").value_or(false);
+  if (const json::value* v = doc->find("last_attempt"); v && v->k == json::kind::number) phone_.last_attempt = v->d;
+  if (const json::value* list = doc->find("kept_roots"); list && list->k == json::kind::array) {
+    for (const json::value& v : list->a) {
+      catalog::root_map m;
+      m.id = v.integer("id").value_or(0);
+      if (const std::string* x = v.str("path")) m.path = *x;
+      if (const std::string* x = v.str("uuid")) m.uuid = *x;
+      if (const std::string* x = v.str("share")) m.share = *x;
+      if (const std::string* x = v.str("sub")) m.sub = *x;
+      phone_.roots.push_back(std::move(m));
+    }
+  }
   if (const json::value* roots = doc->find("roots"); roots && roots->k == json::kind::object) {
     for (const auto& [key, v] : roots->o) {
       if (v.k == json::kind::string) phone_.root_ids[key] = v.s;
@@ -5450,6 +5515,25 @@ bool engine::save_phone_state() const {
     w.key("fingerprint").string(phone_.fingerprint);
     w.key("published").integer(phone_.published_unix);
     w.key("assets").integer(static_cast<std::int64_t>(phone_.assets));
+    w.key("auto").boolean(phone_.auto_on);
+    w.key("waiting").integer(static_cast<std::int64_t>(phone_.waiting));
+    w.key("waiting_assets").integer(static_cast<std::int64_t>(phone_.waiting_assets));
+    w.key("waiting_created").integer(phone_.waiting_created);
+    w.key("stamp").string(phone_.stamp);
+    w.key("waiting_stamp").string(phone_.waiting_stamp);
+    w.key("thumbs_left").boolean(phone_.thumbs_left);
+    w.key("last_attempt").number(phone_.last_attempt);
+    w.key("kept_roots").begin_array();
+    for (const catalog::root_map& m : phone_.roots) {
+      w.begin_object();
+      w.key("id").integer(m.id);
+      w.key("path").string(m.path);
+      w.key("uuid").string(m.uuid);
+      w.key("share").string(m.share);
+      w.key("sub").string(m.sub);
+      w.end_object();
+    }
+    w.end_array();
     w.key("roots").begin_object();
     for (const auto& [key, uuid] : phone_.root_ids) w.key(key).string(uuid);
     w.end_object();
@@ -5485,7 +5569,7 @@ expected engine::phone_publish(const std::string& destination) {
   phone_thread_ = std::thread([this, destination] {
     // Off the ABI's guard: nothing may leave this thread, or the app goes with it.
     try {
-      run_phone_publish(destination);
+      run_phone_publish(destination, false);
     } catch (...) {
       std::lock_guard done(phone_m_);
       phone_.running = false;
@@ -5496,7 +5580,12 @@ expected engine::phone_publish(const std::string& destination) {
   return {};
 }
 
-void engine::phone_cancel() noexcept { phone_cancel_ = true; }
+void engine::phone_cancel() noexcept {
+  phone_cancel_ = true;
+  // The person said stop: neither the next poll nor the next quiet scan undoes it at once.
+  phone_cancelled_at_ =
+      std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
 
 std::string engine::phone_json() const {
   json::writer w;
@@ -5511,11 +5600,217 @@ std::string engine::phone_json() const {
   w.key("fingerprint").string(phone_.fingerprint);
   w.key("published").integer(phone_.published_unix);
   w.key("assets").integer(static_cast<std::int64_t>(phone_.assets));
+  w.key("waiting").integer(static_cast<std::int64_t>(phone_.waiting));
+  w.key("auto").boolean(phone_.auto_on);
+  w.key("runs").integer(static_cast<std::int64_t>(phone_.runs));
+  w.key("thumbs_made").integer(static_cast<std::int64_t>(phone_.thumbs_made));
+  w.key("thumbs_left").boolean(phone_.thumbs_left);
   w.end_object();
   return w.take();
 }
 
-void engine::run_phone_publish(const std::string& destination) {
+void engine::phone_publish_auto() {
+  // The control thread: starting a thread is all it does here.
+  std::lock_guard lock(phone_m_);
+  if (phone_.running) return;
+  if (phone_thread_.joinable()) phone_thread_.join();
+  const std::string destination = phone_.destination;
+  phone_.running = true;
+  phone_.fraction = 0;
+  phone_.phase = "building";
+  phone_.error.clear();
+  phone_cancel_ = false;
+  phone_thread_ = std::thread([this, destination] {
+    try {
+      run_phone_publish(destination, true);
+    } catch (...) {
+      std::lock_guard done(phone_m_);
+      phone_.running = false;
+      phone_.phase.clear();
+      phone_.error = "failed";
+    }
+  });
+}
+
+void engine::phone_deliver_waiting() {
+  std::lock_guard lock(phone_m_);
+  if (phone_.running || phone_.waiting == 0) return;
+  if (phone_thread_.joinable()) phone_thread_.join();
+  phone_.running = true;
+  phone_.fraction = 0;
+  phone_.phase = "sending";
+  phone_.error.clear();
+  phone_cancel_ = false;
+  phone_thread_ = std::thread([this] {
+    try {
+      run_phone_deliver();
+    } catch (...) {
+      std::lock_guard done(phone_m_);
+      phone_.running = false;
+      phone_.phase.clear();
+      phone_.error = "failed";
+    }
+  });
+}
+
+std::string engine::phone_stamp() const {
+  // What a generation would carry. Rows only: a walk that finds nothing moves
+  // `seen` and nothing here. Runs when a scan has just ended, never on a timer.
+  // "" while People is on and its database is not open yet: not comparable.
+  bool people = false;
+  {
+    std::lock_guard lock(settings_m_);
+    people = settings_.faces;
+  }
+  std::string names;
+  {
+    std::lock_guard lock(models_m_);
+    if (people && !faces_) return {};
+    if (faces_) names = faces_->people_stamp();
+  }
+  return db_->content_stamp(db_->meta("active_spec")) + "|" + names;
+}
+
+// The control loop's tick. Nothing here waits, and it adds no wakeup: the loop
+// runs anyway. While nothing changed it is a lock and a few comparisons.
+void engine::phone_tick(bool walked) {
+  if (options_.read_only) return;
+  std::uint64_t waiting = 0;
+  std::string published_stamp;
+  bool thumbs_left = false;
+  double last_attempt = 0;
+  bool running = false;
+  {
+    std::lock_guard lock(phone_m_);
+    if (!phone_.auto_on || phone_.destination.empty()) return;
+    if (phone_.generation == 0 && phone_.waiting == 0) return;  // never turned on
+    running = phone_.running;
+    waiting = phone_.waiting;
+    // What is on its way counts: a change is against the newest generation built.
+    published_stamp = waiting != 0 ? phone_.waiting_stamp : phone_.stamp;
+    thumbs_left = phone_.thumbs_left;
+    last_attempt = phone_.last_attempt;
+  }
+  const double t = now_s();
+  bool idle = false;
+  {
+    std::lock_guard wl(work_m_);
+    idle = queue_exhausted_ && busy_workers_ == 0;
+  }
+  // Noted even while a publish runs: its stamp was taken before this scan.
+  if (walked) phone_check_ = true;
+  if (!idle) {
+    phone_was_busy_ = true;
+    phone_quiet_since_ = 0;
+    return;
+  }
+  if (phone_was_busy_) {
+    phone_was_busy_ = false;
+    phone_check_ = true;
+  }
+  if (running) return;
+  if (phone_recheck_.exchange(false)) phone_check_ = true;
+  if (phone_check_) {
+    const std::string stamp = phone_stamp();
+    if (!stamp.empty()) {
+      phone_check_ = false;
+      phone_changed_ = stamp != published_stamp;
+      if (phone_changed_) phone_quiet_since_ = t;
+    }
+  }
+  const double now_wall = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+  if (now_wall - phone_cancelled_at_.load() < deps_.phone_min_interval_s) return;
+  // Anything newer goes first: what it builds is what should arrive.
+  const bool quiet = !phone_changed_ || (phone_quiet_since_ != 0 && t - phone_quiet_since_ >= deps_.phone_quiet_s);
+  if ((phone_changed_ || thumbs_left) && quiet && now_wall - last_attempt >= deps_.phone_min_interval_s &&
+      !power_state().on_battery) {  // as indexing: background work waits for power
+    phone_changed_ = false;
+    phone_publish_auto();
+    return;
+  }
+  if (waiting != 0 && t >= phone_next_poll_) {
+    phone_next_poll_ = t + deps_.phone_share_poll_s;
+    phone_deliver_waiting();
+  }
+}
+
+result<std::vector<std::string>> engine::stored_place_matches(const std::string& place) {
+  const std::string want = text::fold(place);
+  if (want.size() < 2) return std::vector<std::string>{};
+  const bool prefix = want.size() >= 4;
+  std::unordered_map<std::string, bool> known;
+  std::vector<std::string> out;
+  db_->each_place([&](const std::string& path, const std::string& label) {
+    auto [it, fresh] = known.try_emplace(label, false);
+    if (fresh) {
+      // As Places rules: a whole name of the label, or the start of one from
+      // four letters; a point at sea is no place to look for.
+      const std::string folded = text::fold(label);
+      if (!folded.starts_with("at sea")) {
+        std::size_t i = 0;
+        while (i <= folded.size() && !it->second) {
+          std::size_t end = folded.find(',', i);
+          if (end == std::string::npos) end = folded.size();
+          std::size_t a = i, b = end;
+          while (a < b && folded[a] == ' ') ++a;
+          while (b > a && folded[b - 1] == ' ') --b;
+          const std::string_view part(folded.data() + a, b - a);
+          it->second = part == want || (prefix && part.starts_with(want));
+          i = end + 1;
+        }
+      }
+    }
+    if (it->second) out.push_back(path);
+  });
+  return out;
+}
+
+void engine::fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots, bool& left) {
+  left = false;
+  auto wants = store.missing(join(data_dir_, "index.db"), roots);
+  if (!wants || wants->empty()) return;
+  const auto cancelled = [this] { return stopping_.load() || phone_cancel_.load(); };
+  catalog::thumb_fill_io io;
+  io.jpeg512 = [this](const catalog::thumb_want& w) {
+    transfer::thumb_want t;
+    t.path = w.path;
+    t.pts_ms = -1;
+    t.video = w.kind == 2;
+    t.duration_ms = w.duration_ms;
+    return export_thumb(t, phone_cancel_);
+  };
+  if (host_.has_jpeg_shrink()) {
+    io.tiny = [this](std::span<const std::uint8_t> jpeg) {
+      return host_.jpeg_shrink(jpeg, catalog::kTinyEdge, catalog::kTinyQuality);
+    };
+  }
+  // As Import yields: for as long as the viewer wants the machine.
+  io.yield = [this, cancelled] {
+    while (!cancelled() && host_.should_yield()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  };
+  const catalog::control c{cancelled, [this](double f) {
+                             std::lock_guard lock(phone_m_);
+                             phone_.phase = "thumbnails";
+                             phone_.fraction = f;
+                           },
+                           {}};
+  // On its own thread, so only this work runs at the OS's lowest priority and
+  // the copy to the share does not.
+  result<catalog::thumb_fill_result> done = err(status::internal);
+  const bool background = options_.background_threads;
+  std::thread worker([&] {
+    if (background) platform::enter_background();
+    done = store.fill(*wants, io, c, deps_.phone_thumb_budget_s);
+  });
+  worker.join();
+  if (done) {
+    std::lock_guard lock(phone_m_);
+    phone_.thumbs_made += done->made;
+  }
+  left = !done || !done->complete;
+}
+
+void engine::run_phone_publish(const std::string& destination, bool automatic) {
   const auto finish = [&](const std::string& why) {
     std::lock_guard lock(phone_m_);
     phone_.running = false;
@@ -5529,11 +5824,16 @@ void engine::run_phone_publish(const std::string& destination) {
   };
   std::string library_id;
   std::map<std::string, std::string> ids;
+  std::vector<catalog::root_map> kept_roots;
   {
     std::lock_guard lock(phone_m_);
     if (phone_.library_id.empty()) phone_.library_id = random_id();
     library_id = phone_.library_id;
     ids = phone_.root_ids;
+    kept_roots = phone_.roots;
+    phone_.last_attempt =
+        std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    ++phone_.runs;
   }
   const std::string active = db_->meta("active_spec");
   if (active.empty()) return finish("no_index");
@@ -5560,44 +5860,100 @@ void engine::run_phone_publish(const std::string& destination) {
     phone_.fingerprint = catalog::fingerprint(public_key);
   }
 
-  auto there = host_.volume_of(destination);
-  if (!there) return finish("unreachable");
-  auto published = catalog::published_generation(destination, library_id, public_key);
-  if (!published) return finish(published.error() == status::permission_denied ? "other_library" : "unreachable");
+  // Away is not an error yet: the Mac is carried. A library that has reached
+  // the share before builds from what it knew then, and waits.
+  std::optional<mv_addon_volume> there;
+  if (auto v = host_.volume_of(destination)) there = *v;
+  auto published = there ? catalog::published_generation(destination, library_id, public_key)
+                         : result<std::uint64_t>(err(status::io));
+  if (!published && published.error() == status::permission_denied) return finish("other_library");
+  const bool reachable = there && published;
+  if (!reachable && kept_roots.empty()) return finish("unreachable");
 
-  // Only what the NAS holds: a folder on this Mac's own disk, or the Photos
-  // library, is nothing a phone could ever open from the share.
   std::vector<catalog::root_map> roots;
-  for (const root_row& r : db_->roots()) {
-    if (!r.enabled || is_photos_key(r.path)) continue;
-    auto v = host_.volume_of(r.path);
-    if (!v || std::string_view(v->device_key) != std::string_view(there->device_key)) continue;
-    catalog::root_map m;
-    m.id = r.id;
-    m.path = r.path;
-    const std::string key = std::to_string(r.id);
-    auto it = ids.find(key);
-    if (it == ids.end()) it = ids.emplace(key, random_id()).first;
-    m.uuid = it->second;
-    // "dev://me@nas.local/Photos": the share's name and nothing about who mounted it.
-    std::string_view device(v->device_key);
-    while (!device.empty() && (device.back() == '/' || device.back() == '\\')) device.remove_suffix(1);
-    const std::size_t slash = device.find_last_of("/\\");
-    m.share = std::string(slash == std::string_view::npos ? device : device.substr(slash + 1));
-    std::string sub = r.path.substr(std::min(r.path.size(), std::string_view(v->root_utf8).size()));
-    std::replace(sub.begin(), sub.end(), '\\', '/');
-    while (!sub.empty() && sub.front() == '/') sub.erase(sub.begin());
-    m.sub = std::move(sub);
-    roots.push_back(std::move(m));
+  if (reachable) {
+    // Only what the NAS holds: a folder on this Mac's own disk, or the Photos
+    // library, is nothing a phone could ever open from the share.
+    for (const root_row& r : db_->roots()) {
+      if (!r.enabled || is_photos_key(r.path)) continue;
+      auto v = host_.volume_of(r.path);
+      if (!v || std::string_view(v->device_key) != std::string_view(there->device_key)) continue;
+      catalog::root_map m;
+      m.id = r.id;
+      m.path = r.path;
+      const std::string key = std::to_string(r.id);
+      auto it = ids.find(key);
+      if (it == ids.end()) it = ids.emplace(key, random_id()).first;
+      m.uuid = it->second;
+      // "dev://me@nas.local/Photos": the share's name and nothing about who mounted it.
+      std::string_view device(v->device_key);
+      while (!device.empty() && (device.back() == '/' || device.back() == '\\')) device.remove_suffix(1);
+      const std::size_t slash = device.find_last_of("/\\");
+      m.share = std::string(slash == std::string_view::npos ? device : device.substr(slash + 1));
+      std::string sub = r.path.substr(std::min(r.path.size(), std::string_view(v->root_utf8).size()));
+      std::replace(sub.begin(), sub.end(), '\\', '/');
+      while (!sub.empty() && sub.front() == '/') sub.erase(sub.begin());
+      m.sub = std::move(sub);
+      roots.push_back(std::move(m));
+    }
+  } else {
+    const auto rows = db_->roots();
+    for (const catalog::root_map& m : kept_roots) {
+      const bool still = std::any_of(rows.begin(), rows.end(), [&](const root_row& r) { return r.id == m.id && r.enabled; });
+      if (still) roots.push_back(m);
+    }
   }
   if (roots.empty()) return finish("no_folders");
+
+  // Stamped before the snapshot: what lands during the build is seen as a
+  // change by the next quiet scan, never lost.
+  const std::string stamp = phone_stamp();  // "" (People still loading) never reads as "the same"
+  bool nothing_new = false;
+  {
+    std::lock_guard lock(phone_m_);
+    nothing_new = automatic && stamp == (phone_.waiting != 0 ? phone_.waiting_stamp : phone_.stamp);
+  }
+
+  const std::string local = join(data_dir_, "phone/gen");
+  std::uint64_t made_before = 0;
+  {
+    std::lock_guard lock(phone_m_);
+    made_before = phone_.thumbs_made;
+  }
+  std::unique_ptr<catalog::thumb_store> thumbs;
+  if (auto opened = catalog::thumb_store::open(join(data_dir_, "phone/thumbs"))) thumbs = std::move(*opened);
+  bool thumbs_left = false;
+  if (thumbs) {
+    std::vector<std::int64_t> root_ids;
+    for (const catalog::root_map& r : roots) root_ids.push_back(r.id);
+    if (reachable) {
+      (void)thumbs->reconcile(destination);
+      fill_phone_thumbs(*thumbs, root_ids, thumbs_left);
+    }
+  }
+  std::uint64_t made_after = 0;
+  {
+    std::lock_guard lock(phone_m_);
+    made_after = phone_.thumbs_made;
+    if (reachable) phone_.thumbs_left = thumbs_left;  // away, nothing was tried: what was left still is
+  }
+  // An hourly run for thumbnails that made none has nothing to tell a phone.
+  if (nothing_new && made_after == made_before) return finish(reachable ? "" : "unreachable");
+  if (stopping_ || phone_cancel_) {
+    (void)save_phone_state();
+    return finish("cancelled");
+  }
+  if (thumbs) {
+    if (const expected sealed = thumbs->seal(); !sealed) return finish("failed");
+  }
 
   std::uint64_t generation = 0;
   std::uint64_t epoch = 1;
   {
     std::lock_guard lock(phone_m_);
     phone_.root_ids = ids;
-    generation = std::max(phone_.high_water, *published) + 1;
+    phone_.roots = roots;
+    generation = std::max(phone_.high_water, published ? *published : 0) + 1;
     phone_.high_water = generation;  // saved below, before the NAS sees it
     epoch = phone_.epoch;
   }
@@ -5612,7 +5968,6 @@ void engine::run_phone_publish(const std::string& destination) {
   };
   catalog::build_options b;
   b.index_db = join(data_dir_, "index.db");
-  const std::string local = join(data_dir_, "phone/gen");
   b.out_dir = join(local, std::to_string(generation));
   b.library_id = library_id;
   b.generation = generation;
@@ -5620,6 +5975,7 @@ void engine::run_phone_publish(const std::string& destination) {
   b.created_unix = static_cast<std::int64_t>(std::time(nullptr));
   b.active_spec = active;
   b.labels_file = join(data_dir_, "labels.f32");
+  bool people = false;
   {
     json::writer w;
     std::lock_guard lock(settings_m_);
@@ -5627,52 +5983,155 @@ void engine::run_phone_publish(const std::string& destination) {
     w.key("audio_files").boolean(settings_.audio_files);
     w.key("document_files").boolean(settings_.document_files);
     w.key("tier").string(settings_.tier);
+    people = settings_.faces;
+    w.key("faces").boolean(people);
     w.end_object();
     b.settings_json = w.take();
   }
   b.roots = roots;
+  b.thumbs = thumbs.get();
+  if (people) b.faces_db = join(data_dir_, "faces.db");
+  b.place_labels = [this](std::span<const std::pair<double, double>> points) -> result<std::vector<std::string>> {
+    std::vector<mv_addon_route_point> at;
+    at.reserve(points.size());
+    for (const auto& p : points) at.push_back({p.first, p.second});
+    return host_.place_labels(at);
+  };
+  b.model_spec = active;
+  if (deps_.text_tower_files) b.model_files = deps_.text_tower_files(active);
   auto built = catalog::build(b, building);
   if (!built) return finish(built.error() == status::cancelled ? "cancelled" : "failed");
+  if (!write_shared_list(b.out_dir + ".shared.json", built->shared)) return finish("failed");
 
+  // Only the newest waits: a phone gains nothing from an older one.
+  {
+    std::error_code ec;
+    const std::string keep = std::to_string(generation);
+    for (std::filesystem::directory_iterator it(fs_path(local), ec), end; !ec && it != end; it.increment(ec)) {
+      const auto name = it->path().filename();
+      if (name != fs_path(keep) && name != fs_path(keep + ".shared.json")) {
+        std::error_code e2;
+        std::filesystem::remove_all(it->path(), e2);
+      }
+    }
+  }
+  {
+    std::lock_guard lock(phone_m_);
+    phone_.waiting = generation;
+    phone_.waiting_stamp = stamp;
+    phone_.waiting_assets = built->assets;
+    phone_.waiting_created = b.created_unix;
+    phone_.destination = destination;
+    phone_.auto_on = true;
+  }
   // The library's identity reaches this disk before it can reach the NAS: a
   // quit during the first delivery must not leave a folder this library no
   // longer recognises as its own.
   if (!save_phone_state()) return finish("failed");
 
+  if (!reachable) return finish("unreachable");
+  thumbs.reset();  // no database stays open across the copy
+  deliver_phone_generation(secret, public_key, library_id, finish, set_progress);
+}
+
+void engine::run_phone_deliver() {
+  const auto finish = [&](const std::string& why) {
+    std::lock_guard lock(phone_m_);
+    phone_.running = false;
+    phone_.phase.clear();
+    phone_.error = why;
+  };
+  const auto set_progress = [this](const char* phase, double f) {
+    std::lock_guard lock(phone_m_);
+    phone_.phase = phase;
+    phone_.fraction = f;
+  };
+  auto keys = deps_.key_store ? deps_.key_store() : driftwire::secrets::os_store("MediaViewer Local search");
+  if (!keys) return finish("no_key_store");
+  auto secret = keys->get("catalogue-signing-key");
+  if (!secret) return finish("no_key_store");
+  const std::vector<std::uint8_t> public_key = catalog::public_of(*secret);
+  if (public_key.empty()) return finish("no_key_store");
+  std::string library_id, destination;
+  {
+    std::lock_guard lock(phone_m_);
+    library_id = phone_.library_id;
+    destination = phone_.destination;
+  }
+  std::error_code ec;
+  if (!std::filesystem::is_directory(fs_path(destination), ec)) return finish("unreachable");
+  deliver_phone_generation(*secret, public_key, library_id, finish, set_progress);
+}
+
+void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, const std::vector<std::uint8_t>& public_key,
+                                      const std::string& library_id, const std::function<void(const std::string&)>& finish,
+                                      const std::function<void(const char*, double)>& set_progress) {
+  std::uint64_t generation = 0, epoch = 1, assets = 0;
+  std::int64_t created = 0;
+  std::string stamp, destination;
+  {
+    std::lock_guard lock(phone_m_);
+    generation = phone_.waiting;
+    epoch = phone_.epoch;
+    stamp = phone_.waiting_stamp;
+    assets = phone_.waiting_assets;
+    created = phone_.waiting_created;
+    destination = phone_.destination;
+  }
+  const std::string local = join(data_dir_, "phone/gen");
+  const std::string gen_dir = join(local, std::to_string(generation));
   catalog::deliver_options d;
-  d.gen_dir = b.out_dir;
+  d.gen_dir = gen_dir;
   d.destination = destination;
   d.library_id = library_id;
   d.generation = generation;
   d.epoch = epoch;
   d.public_key = public_key;
-  d.secret_key = std::move(secret);
-  d.now_unix = b.created_unix;
+  d.secret_key = secret;
+  d.now_unix = static_cast<std::int64_t>(std::time(nullptr));
+  d.shared = read_shared_list(gen_dir + ".shared.json");
+  d.retention_file = join(data_dir_, "phone/unused.json");
   d.make_directories = [this](const std::string& dir) { return host_.make_directories(dir); };
   d.copy = [this](const std::string& from, const std::string& to) {
     return host_.copy_verified(from, to, [this] { return stopping_.load() || phone_cancel_.load(); });
   };
-  const catalog::control sending{building.cancelled, [&](double f) { set_progress("sending", f); }, building.yield};
+  const catalog::control sending{
+      [this] { return stopping_.load() || phone_cancel_.load(); },
+      [&](double f) { set_progress("sending", f); },
+      [this] {
+        for (int i = 0; i < 500 && !stopping_ && !phone_cancel_ && host_.should_yield(); ++i) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+      },
+  };
   if (const expected sent = catalog::deliver(d, sending); !sent) {
-    // A generation that never became current is replaced by the next run's.
     if (sent.error() == status::cancelled) return finish("cancelled");
+    if (sent.error() == status::not_found || sent.error() == status::invalid_arg) {
+      // A pack on neither side, or the share is ahead of this number: this
+      // generation can never land. The next run builds another.
+      {
+        std::lock_guard lock(phone_m_);
+        phone_.waiting = 0;
+        phone_.waiting_stamp.clear();
+        phone_.stamp.clear();
+      }
+      (void)save_phone_state();
+      phone_recheck_ = true;  // the next tick compares, and a new build follows
+      return finish("unreachable");
+    }
     return finish(sent.error() == status::permission_denied ? "other_library" : "unreachable");
   }
+  if (auto store = catalog::thumb_store::open(join(data_dir_, "phone/thumbs"))) (void)(*store)->delivered();
   {
     std::lock_guard lock(phone_m_);
     phone_.generation = generation;
-    phone_.published_unix = b.created_unix;
-    phone_.assets = built->assets;
+    phone_.published_unix = created;
+    phone_.assets = assets;
+    phone_.waiting = 0;
+    phone_.stamp = stamp;
+    phone_.waiting_stamp.clear();
   }
   (void)save_phone_state();  // the share has it: the next run reads the number there
-  // Only the newest stays on this machine.
-  std::error_code ec;
-  for (std::filesystem::directory_iterator it(fs_path(local), ec), end; !ec && it != end; it.increment(ec)) {
-    if (it->path().filename() != fs_path(std::to_string(generation))) {
-      std::error_code e2;
-      std::filesystem::remove_all(it->path(), e2);
-    }
-  }
   finish("");
 }
 
@@ -5839,7 +6298,7 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
   if (o.face_spec.empty()) o.faces = false;
   if (o.thumbs && host_.has_thumbnail_bytes()) {
-    o.thumb = [this](const transfer::thumb_want& w) { return export_thumb(w); };
+    o.thumb = [this](const transfer::thumb_want& w) { return export_thumb(w, transfer_cancel_); };
   }
   transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
   auto r = transfer::write(job.file, o, c);
@@ -5866,14 +6325,14 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   return w.take();
 }
 
-result<std::vector<std::uint8_t>> engine::export_thumb(const transfer::thumb_want& w) {
+result<std::vector<std::uint8_t>> engine::export_thumb(const transfer::thumb_want& w, const std::atomic<bool>& cancel) {
   if (auto hit = host_.thumbnail_jpeg(w.path, w.pts_ms)) return hit;
   // Never made here (the file or moment was never on screen): made now, as
   // the viewer and a result tile would, between the viewer's busy spells.
-  for (int i = 0; i < 500 && !stopping_ && !transfer_cancel_ && host_.should_yield(); ++i) {
+  for (int i = 0; i < 500 && !stopping_ && !cancel && host_.should_yield(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
-  if (stopping_ || transfer_cancel_) return err(status::cancelled);
+  if (stopping_ || cancel) return err(status::cancelled);
   if (w.pts_ms < 0 && !w.video) {
     if (auto made = host_.thumbnail(w.path); !made) return err(made.error());
     return host_.thumbnail_jpeg(w.path, -1);
@@ -6307,7 +6766,8 @@ void engine::finish(search_state& st) {
   // commit order, a reader's loads from the database, and the two must rank
   // alike (docs/design/23).
   std::sort(st.rows.begin(), st.rows.end(), [](const result_row& a, const result_row& b) {
-    return a.rank != b.rank ? a.rank > b.rank : a.asset < b.asset;
+    if (a.rank != b.rank) return a.rank > b.rank;
+    return a.asset != b.asset ? a.asset < b.asset : a.pts_ms < b.pts_ms;
   });
   st.row_of.clear();
   for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
@@ -7088,7 +7548,11 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
       if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT);
     }
   }
-  std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
+  std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) {
+    if (std::get<0>(a) != std::get<0>(b)) return std::get<0>(a) > std::get<0>(b);
+    if (std::get<1>(a) != std::get<1>(b)) return std::get<1>(a) < std::get<1>(b);
+    return std::get<2>(a) < std::get<2>(b);
+  });
   if (found.size() > 2000) found.resize(2000);
   for (auto& [rank, asset, start, text, match] : found) {
     std::string snippet = text.size() > 160 ? text.substr(0, 157) + "..." : text;
@@ -7120,7 +7584,10 @@ void engine::merge_documents(search_state& st, const std::string& query,
     if (rank >= 0) found.push_back(hit{rank, p.asset, p.page, p.text});
     return true;
   });
-  std::stable_sort(found.begin(), found.end(), [](const hit& a, const hit& b) { return a.rank > b.rank; });
+  std::stable_sort(found.begin(), found.end(), [](const hit& a, const hit& b) {
+    if (a.rank != b.rank) return a.rank > b.rank;
+    return a.asset != b.asset ? a.asset < b.asset : a.page < b.page;
+  });
   if (found.size() > 2000) found.resize(2000);
   for (hit& h : found) {
     add_row(st, h.asset, h.page, h.rank / 2.0f, h.rank, MV_AI_MATCH_TEXT, passage_snippet(h.text, want));
@@ -7294,6 +7761,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       };
       const auto keys_in = [&](const std::string& place) -> std::optional<std::set<std::string>> {
         auto paths = host_.place_matches(place, keep_going);
+        // A phone has no Places: the labels the catalogue stores answer instead.
+        if (!paths && paths.error() == status::not_found && options_.read_only) paths = stored_place_matches(place);
         if (!paths) return std::nullopt;
         std::set<std::string> keys;
         for (const std::string& p : *paths) keys.insert(path_key(p));
@@ -7503,7 +7972,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
           if (allowed->count(f.asset)) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
         }
       }
-      std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+      std::sort(hits.begin(), hits.end(), &vector_store::ranked_before);
       return hits;
     };
     // A lone word that starts a name: those people first ("Trist" while it is
@@ -7673,7 +8142,7 @@ std::uint64_t engine::search_person(std::int64_t person, const std::string& scop
     for (const face_row& f : faces) {
       if (allow(f.asset)) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
     }
-    std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    std::sort(hits.begin(), hits.end(), &vector_store::ranked_before);
     group(st, hits, false, 0);
     finish(st);
   });
@@ -7704,7 +8173,7 @@ std::uint64_t engine::search_this_person(const std::string& path, std::int64_t p
     }
     std::vector<vector_store::hit> hits;
     for (const face_row& f : faces) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
-    std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    std::sort(hits.begin(), hits.end(), &vector_store::ranked_before);
     group(st, hits, false, 0);
     finish(st);
   });

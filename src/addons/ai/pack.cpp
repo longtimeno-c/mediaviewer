@@ -873,6 +873,20 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     const auto tower = p->tower(quality);
     return tower ? tower->spec_key() : std::string();
   };
+  // What a phone copies to answer from this tower (docs/plans/mobile.md §5).
+  d.text_tower_files = [p](const std::string& spec) -> std::vector<std::string> {
+    p->ensure();
+    for (const std::uint32_t q : p->qualities()) {
+      const auto tower = p->tower(q);
+      if (!tower || tower->spec_key() != spec) continue;
+      std::vector<std::string> files;
+      for (const std::string* f : {&tower->model_json, &tower->text_file, &tower->vocab_file, &tower->merges_file}) {
+        if (!f->empty()) files.push_back(*f);  // not every tokenizer has merges
+      }
+      return files;
+    }
+    return {};
+  };
   d.open_clip_text = [p](std::uint32_t quality) -> result<loaded_clip> {
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
