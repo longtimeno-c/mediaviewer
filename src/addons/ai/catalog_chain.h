@@ -90,17 +90,5 @@ struct pair_payload {
 };
 [[nodiscard]] std::string pair_url(const pair_payload& p);
 
-// What both screens show and the person compares before pairing (§7.4, §12):
-// a fake QR would have to match it, and it covers every field of the QR that
-// decides where the phone connects and whom it trusts, not only the
-// publisher key a share already shows. SHA-256 over
-// "mediaviewer.pair.check.v1", u64le(len) + library_id, u64le(len) +
-// library_name, then the publisher key, the service identity and the access
-// key (32 bytes each). The first 100 bits, most significant first, in
-// Crockford base32, as "XXXXX-XXXXX-XXXXX-XXXXX". "" when a key is not 32 bytes.
-[[nodiscard]] std::string pair_check(std::string_view library_id, std::string_view library_name,
-                                     std::span<const std::uint8_t> publisher_key,
-                                     std::span<const std::uint8_t> service_identity,
-                                     std::span<const std::uint8_t> access_key);
 
 }  // namespace mv::ai::catalog

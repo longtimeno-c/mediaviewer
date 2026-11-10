@@ -10,6 +10,7 @@
 #include "addons/driftwire/advert.h"
 #include "addons/driftwire/desk.h"
 #include "addons/driftwire/known.h"
+#include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/serve_client.h"
 
@@ -587,6 +588,40 @@ TEST_CASE("phone pairing: the nearby service closes anyone not on this network",
 }
 
 // ---- small pure pieces ------------------------------------------------------------------------
+
+TEST_CASE("phone pairing: the check code is the shared one, over every field that decides trust", "[phone-pairing]") {
+  key32 pub, id, access;
+  for (std::size_t i = 0; i < 32; ++i) {
+    pub[i] = static_cast<std::uint8_t>(i);
+    id[i] = static_cast<std::uint8_t>(0x40 + i);
+    access[i] = static_cast<std::uint8_t>(0x80 + i);
+  }
+  // Computed apart from this code (Python's hashlib), and the phone checks the same vector.
+  const std::string code = mv::driftwire::pairing_check("lib-1", pub, id, access);
+  CHECK(code == "4M00-H4RW-ERX1-DFY2");
+  auto flip = [](key32 k) {
+    k[31] ^= 1;
+    return k;
+  };
+  CHECK(mv::driftwire::pairing_check("lib-2", pub, id, access) != code);
+  CHECK(mv::driftwire::pairing_check("lib-1", flip(pub), id, access) != code);
+  CHECK(mv::driftwire::pairing_check("lib-1", pub, flip(id), access) != code);
+  CHECK(mv::driftwire::pairing_check("lib-1", pub, id, flip(access)) != code);
+}
+
+TEST_CASE("phone pairing: the route gives the check code for the service it claimed", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  key32 publisher;
+  randombytes_buf(publisher.data(), publisher.size());
+  const std::string request = "{\"library_id\":\"lib-1\",\"publisher_key\":\"" + sp::key_hex(publisher) + "\"}";
+  auto r = desk::route_request(*mac.d, "ai", "pair", request);
+  REQUIRE(r);
+  const auto doc = mv::json::parse(*r, 4);
+  REQUIRE(doc);
+  CHECK(*doc->str("check") == mv::driftwire::pairing_check("lib-1", publisher, n.identity, n.access));
+}
 
 TEST_CASE("phone pairing: addresses a phone could never reach are named", "[phone-pairing]") {
   const auto a = [](const char* text) {

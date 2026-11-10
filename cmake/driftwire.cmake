@@ -102,6 +102,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/serve.cpp ${_S}/serve.h
   ${_S}/serve_client.cpp ${_S}/serve_client.h
   ${_S}/desk.cpp ${_S}/desk.h ${_S}/advert.h
+  ${_S}/pair_check.cpp ${_S}/pair_check.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h

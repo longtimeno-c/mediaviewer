@@ -1617,9 +1617,10 @@ names; nothing about it is logged or sent.
 The Phone access card (`PhoneLinkView.swift`) asks and watches; `engine_phone_link.cpp` does the work on a
 thread of its own, made at the first request, reaching the network through Driftwire
 ([28](28-driftwire.md#claiming-and-pairing-phone-access)). The QR is `catalog::pair_url`, made once the
-service has taken a code, good for five minutes. Beside it is the check code (`catalog::pair_check`: 100 bits of a
-domain-separated SHA-256 over the library id and name, the publisher key, the service identity and the access
-key), which the phone computes from the QR alone and the person compares before it pairs. While it shows, the phones are polled every two seconds
+service has taken a code, good for five minutes. Beside it is the check code (`driftwire::pairing_check`, `pair_check.h`: 80
+bits of a domain-separated BLAKE2b over the library id, the publisher key, the service identity and the access
+key). Driftwire computes it for the card, the phone computes it from the QR alone, and the person compares the
+two before the phone pairs. While it shows, the phones are polled every two seconds
 on one held session; when one appears the code comes down and the card names it. Without Driftwire the
 card offers it. Without Local search there is no card: that page's own install row is the offer.
 

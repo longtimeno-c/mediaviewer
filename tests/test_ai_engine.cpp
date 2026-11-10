@@ -7212,7 +7212,7 @@ struct fake_driftwire {
   std::vector<std::pair<std::string, std::string>> devices;
   std::vector<std::string> calls;
   std::mutex m;
-  mv::result<std::string> operator()(const std::string& target, const std::string& method, const std::string&) {
+  mv::result<std::string> operator()(const std::string& target, const std::string& method, const std::string& json) {
     std::lock_guard lock(m);
     calls.push_back(method);
     if (target != "driftwire") return mv::err(mv::status::not_found);
@@ -7229,6 +7229,7 @@ struct fake_driftwire {
       return w.take();
     }
     if (method == "pair") {
+      const auto asked = mv::json::parse(json, 4);
       mv::json::writer w;
       w.begin_object()
           .key("local").string("192.168.1.5:7878")
@@ -7237,6 +7238,7 @@ struct fake_driftwire {
           .key("access_key").string(std::string(64, 'b'))
           .key("code").string(std::string(32, 'c'))
           .key("expires").integer(static_cast<std::int64_t>(std::time(nullptr)) + 300)
+          .key("check").string("check:" + *asked->str("library_id") + ":" + *asked->str("publisher_key"))
           .end_object();
       return w.take();
     }
@@ -7294,17 +7296,8 @@ TEST_CASE("phone link: a code is one QR with the library, the key and the servic
   CHECK(doc->str("publisher_key")->size() == 64);
   CHECK(*doc->find("service")->str("local") == "192.168.1.5:7878");
   CHECK(*doc->str("code") == std::string(32, 'c'));
-  // The same check code the phone computes from the QR alone.
-  const auto bytes = [](const std::string& hex) {
-    std::vector<std::uint8_t> out(32);
-    std::size_t n = 0;
-    REQUIRE(sodium_hex2bin(out.data(), 32, hex.data(), hex.size(), nullptr, &n, nullptr) == 0);
-    return out;
-  };
-  CHECK(*v.str("qr_fingerprint") ==
-        mv::ai::catalog::pair_check(*doc->str("library_id"), *doc->str("library_name"), bytes(*doc->str("publisher_key")),
-                                    bytes(*doc->find("service")->str("identity")), bytes(*doc->str("access_key"))));
-  CHECK(v.str("qr_fingerprint")->size() == 23);
+  // Driftwire's check code, for this library and key (the fake echoes what it was asked).
+  CHECK(*v.str("qr_fingerprint") == "check:" + *doc->str("library_id") + ":" + *doc->str("publisher_key"));
   CHECK(v.integer("qr_expires") > static_cast<std::int64_t>(std::time(nullptr)));
 
   // The phone redeems it: the Mac shows it and takes the code down.

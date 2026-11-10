@@ -14,6 +14,7 @@
 
 #include "addons/driftwire/advert.h"
 #include "addons/driftwire/known.h"
+#include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/serve_client.h"
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
@@ -610,6 +611,10 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     w.key("access_key").string(key_hex(p.service.access_key));
     w.key("code").string(p.code);
     w.key("expires").integer(p.expires_unix);
+    // What both screens show (pair_check.h): only when the caller says whose library this is.
+    if (const auto publisher = parse_key_hex(text("publisher_key")); publisher && !text("library_id").empty()) {
+      w.key("check").string(pairing_check(text("library_id"), *publisher, p.service.identity, p.service.access_key));
+    }
     w.end_object();
     return w.take();
   }

@@ -293,33 +293,3 @@ TEST_CASE("phone chain: a nearby copy is signed, whole, and keeps the one before
   CHECK(cat::verify_current(slurp(n / "current.json"), a.pub)->generation == 9);
 }
 
-TEST_CASE("phone chain: the check code covers every field that decides trust", "[phone-chain]") {
-  REQUIRE(sodium_init() >= 0);
-  std::vector<std::uint8_t> pub(32), id(32), access(32);
-  for (std::size_t i = 0; i < 32; ++i) {
-    pub[i] = static_cast<std::uint8_t>(i);
-    id[i] = static_cast<std::uint8_t>(0x40 + i);
-    access[i] = static_cast<std::uint8_t>(0x80 + i);
-  }
-  const std::string code = cat::pair_check("lib-1", "Photos", pub, id, access);
-  // The shared vector the phone tests against too (docs/plans/mobile.md §7.4).
-  CHECK(code == "SY9JJ-BKCR9-T8E2N-CNBB8");
-  REQUIRE(code.size() == 23);
-  CHECK(code[5] == '-');
-  CHECK(code[11] == '-');
-  CHECK(code[17] == '-');
-  CHECK(code.find_first_of("ILOU") == std::string::npos);
-  // Each field changes it.
-  auto flip = [](std::vector<std::uint8_t> v) {
-    v[31] ^= 1;
-    return v;
-  };
-  CHECK(cat::pair_check("lib-2", "Photos", pub, id, access) != code);
-  CHECK(cat::pair_check("lib-1", "Photo", pub, id, access) != code);
-  CHECK(cat::pair_check("lib-1", "Photos", flip(pub), id, access) != code);
-  CHECK(cat::pair_check("lib-1", "Photos", pub, flip(id), access) != code);
-  CHECK(cat::pair_check("lib-1", "Photos", pub, id, flip(access)) != code);
-  // Field boundaries cannot slide: the lengths are covered.
-  CHECK(cat::pair_check("lib-1P", "hotos", pub, id, access) != code);
-  CHECK(cat::pair_check("lib-1", "Photos", std::vector<std::uint8_t>(31), id, access).empty());
-}

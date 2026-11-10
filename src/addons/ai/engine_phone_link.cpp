@@ -410,8 +410,13 @@ void engine::phone_link_do(const std::string& request) {
     if (library_id.empty()) return fail("not_published");
     auto secret = phone_signing_key(false);
     if (!secret) return fail("not_published");
+    const auto publisher = catalog::public_of(*secret);
     json::writer w;
-    w.begin_object().key("ttl_ms").integer(kPairTtlMs).end_object();
+    w.begin_object()
+        .key("ttl_ms").integer(kPairTtlMs)
+        .key("library_id").string(library_id)
+        .key("publisher_key").string(catalog::to_hex(publisher))
+        .end_object();
     auto answer = phone_route("pair", w.str());
     if (!answer) return fail(error_name(answer.error()));
     const auto a = json::parse(*answer, 4);
@@ -419,7 +424,7 @@ void engine::phone_link_do(const std::string& request) {
     catalog::pair_payload p;
     p.library_id = library_id;
     p.library_name = last_part(destination);
-    p.publisher_key = catalog::public_of(*secret);
+    p.publisher_key = publisher;
     const auto field = [&](const char* k) -> std::string {
       const std::string* v = a->str(k);
       return v ? *v : std::string();
@@ -438,8 +443,14 @@ void engine::phone_link_do(const std::string& request) {
     link_.added.clear();
     link_.qr_url = url;
     link_.qr_library = p.library_name;
-    link_.qr_fingerprint = catalog::pair_check(p.library_id, p.library_name, p.publisher_key,
-                                               key_bytes(p.service_identity_hex), key_bytes(p.access_key_hex));
+    link_.qr_fingerprint = field("check");  // Driftwire's pairing_check: the phone computes the same
+    if (link_.qr_fingerprint.empty()) {
+      // A Driftwire too old to say it: no code to compare is no code to show.
+      link_.qr_url.clear();
+      link_.qr_expires = 0;
+      link_.error = "no_driftwire";
+      return;
+    }
     link_.qr_expires = p.expires;
     return;
   }
