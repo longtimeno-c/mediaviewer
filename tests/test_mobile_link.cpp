@@ -298,6 +298,7 @@ TEST_CASE("pairing check: 80 bits over the library, both keys and the access key
   CHECK(base[4] == '-');
   CHECK(base == dw::pairing_check("lib", a, b, c));
   CHECK(base == "VPBV-CGPD-2FSJ-CY83");  // the vector the desktop checks too (also from Python hashlib)
+  CHECK(dw::pairing_check("lib-1", a, b, c) == "4M00-H4RW-ERX1-DFY2");  // the Mac branch's shared vector
   key32 flip = b;
   flip[31] ^= 1;
   CHECK(dw::pairing_check("lib", a, flip, c) != base);  // another service
