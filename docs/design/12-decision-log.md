@@ -1446,9 +1446,13 @@ only reads the variable. Child processes inherit it, which is what we want.
 
 Windows has no such uploader: ORT writes ETW events, which leave the machine only if the OS's
 diagnostic-data service collects them. The ETW provider is registered in Microsoft's telemetry
-group and ignores this variable, so `DisableTelemetryEvents` stays the only switch, with two gaps
-read from ORT's source and not measured: `ProcessInfo` is written inside `CreateEnv`, before the
-call, and ORT's ETW enable callback can turn events back on when a trace session starts.
+group and ignores this variable, so `DisableTelemetryEvents` is the only switch. `ProcessInfo` is
+written inside `CreateEnv`, so `runtime::load` on Windows now makes the call first, with a null env:
+ORT 1.30 ignores the argument and sets a process-wide flag, so this has to be rechecked whenever
+`MV_ORT_VERSION` moves. One gap stays, because only a `--no_telemetry` build of ORT would close it:
+ORT's ETW enable callback sets the flag from the trace session's state, so a session started after
+the call turns events back on. All of this is from ORT's source at the pinned tag; none of it has
+been run on Windows. The null-env call was run against the Mac dylib, which shares that C API code.
 
 **3 GB ceiling for the AI family (2026-09-25).** The base viewer's 250 MB limit does not apply to
 the optional pack. Installed pieces may total up to 3 GB; `index.db` and thumbnails are user data,

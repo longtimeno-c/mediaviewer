@@ -182,11 +182,17 @@ result<std::unique_ptr<runtime>> runtime::load(const std::string& dir_utf8) {
   p->api = base->GetApi(ORT_API_VERSION);
   if (!p->api) return err(status::unsupported_format);  // an older ORT than the header
   p->version = base->GetVersionString ? base->GetVersionString() : "";
+#if defined(_WIN32)
+  // CreateEnv writes ORT's ProcessInfo event to ETW, and this is the only
+  // switch Windows has, so it goes first. The call needs no OrtEnv in the
+  // pinned ORT (it sets a process-wide flag and ignores the argument); recheck
+  // that when MV_ORT_VERSION moves.
+  (void)ok(p->api, p->api->DisableTelemetryEvents(nullptr));
+#endif
   if (!ok(p->api, p->api->CreateEnv(ORT_LOGGING_LEVEL_ERROR, "mv-ai", &p->env))) {
     return err(status::internal);
   }
-  // Windows' only switch (ETW has no uploader to stop). Elsewhere dylib::open
-  // has already kept the uploader from being created.
+  // Elsewhere dylib::open has already kept the uploader from being created.
   (void)ok(p->api, p->api->DisableTelemetryEvents(p->env));
   char** names = nullptr;
   int n = 0;

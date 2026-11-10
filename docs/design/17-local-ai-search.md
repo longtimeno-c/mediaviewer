@@ -129,8 +129,8 @@ ORT's telemetry is off on every OS, but not by the same switch. Outside Windows,
 carry Microsoft's 1DS uploader, and `dylib::open` sets `ORT_DISABLE_TELEMETRY=1` before `dlopen`, so
 the uploader, its event queue and its device id are never created. Every load goes through it,
 Enhance's too. On Windows ORT reports through ETW, which has no uploader of its own and ignores that
-variable; `DisableTelemetryEvents` after `CreateEnv` is the only switch, and it is not airtight
-(`12-decision-log.md`, 2026-11-10).
+variable; `DisableTelemetryEvents`, called before `CreateEnv` and again after it, is the only
+switch, and it is not airtight (`12-decision-log.md`, 2026-11-10).
 
 The interface:
 
