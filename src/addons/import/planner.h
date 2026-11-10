@@ -49,6 +49,12 @@ bool apply_selection(plan_result& plan, int unit, const std::string* day, bool s
 [[nodiscard]] std::string plan_to_json(const scan_result& scan, const plan_result& plan,
                                        double bytes_per_second);
 
+// Moves absolute-path library and {seq} rows for `root` to its volume key, if
+// `root` really is that destination now: one of its indexed files is there at
+// its size. An offline root, or another disk at the recorded path, stays as it is.
+void adopt_legacy_root(const host& h, library_index& idx, const dest_locator& loc,
+                       const std::string& root);
+
 // A preview of names for a preset with no card: three sample units.
 [[nodiscard]] std::string preview_json(const preset& p, const std::string& default_library);
 
