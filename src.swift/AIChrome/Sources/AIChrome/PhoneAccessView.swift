@@ -18,7 +18,6 @@ final class PhoneAccessModel: ObservableObject {
   @Published private(set) var destination = ""
   @Published private(set) var published: Int64 = 0
   @Published private(set) var assets: Int64 = 0
-  @Published private(set) var fingerprint = ""
   let link: PhoneLinkModel
 
   init(table: AITable) {
@@ -49,8 +48,6 @@ final class PhoneAccessModel: ObservableObject {
     if p != published { published = p }
     let a = int64(obj["assets"])
     if a != assets { assets = a }
-    let k = obj["fingerprint"] as? String ?? ""
-    if k != fingerprint { fingerprint = k }
     if !destination.isEmpty { link.poll() }
   }
 
@@ -95,8 +92,10 @@ final class PhoneAccessModel: ObservableObject {
     guard published > 0 else { return "Not published yet." }
     let when = Date(timeIntervalSince1970: TimeInterval(published))
     let ago = RelativeDateTimeFormatter().localizedString(for: when, relativeTo: Date())
-    let key = fingerprint.isEmpty ? "" : " · key \(fingerprint)"
-    return "Published \(ago) · \(countText(UInt64(max(0, assets)))) files\(key)"
+    // No key here: the one value to compare with a phone is the check code
+    // beside the QR (pairing_check), and a second one would teach people to
+    // skip the comparison.
+    return "Published \(ago) · \(countText(UInt64(max(0, assets)))) files"
   }
 }
 
