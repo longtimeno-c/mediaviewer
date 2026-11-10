@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <optional>
 #if defined(_WIN32)
 #include <io.h>
 #else
@@ -79,18 +80,45 @@ const char* error_name(status s) noexcept {
 // not yet confirmed by a share that reads back, and a code left on the NAS.
 void engine::phone_link_load_flags() {
   const std::string file = data_dir_ + "/phone/link.json";
+  // Read whole: its size, then exactly that many bytes. A read that fails is
+  // tried once more after a moment (a file being replaced, a disk that hiccuped).
+  const auto read_whole = [&]() -> std::optional<std::string> {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(fs_path(file), ec);
+    if (ec || size > 64 * 1024) return std::nullopt;
+    std::ifstream in(fs_path(file), std::ios::binary);
+    if (!in) return std::nullopt;
+    std::string text(static_cast<std::size_t>(size), '\0');
+    in.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (in.gcount() != static_cast<std::streamsize>(text.size())) return std::nullopt;
+    return text;
+  };
   std::error_code ec;
-  if (!std::filesystem::exists(fs_path(file), ec)) return;  // nothing ever handed over, nothing left
-  const auto doc = json::parse(slurp(file), 4);
-  std::lock_guard lock(phone_link_m_);
-  if (!doc || doc->k != json::kind::object) {
-    // There and unreadable: fail closed. Signing nearby copies with a key
-    // that may have been handed away is worse than not serving nearby; the
-    // next refresh that reads this key on the share clears it.
-    link_.handed_over = true;
-    link_.other_publisher = true;
+  const bool there = std::filesystem::exists(fs_path(file), ec);
+  if (!ec && !there) {
+    // Never written: nothing handed over, nothing left. The one case that is open.
+    std::lock_guard lock(phone_link_m_);
+    link_.flags_read = true;
     return;
   }
+  auto text = read_whole();
+  if (!text) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    text = read_whole();
+  }
+  const auto doc = text ? json::parse(*text, 4) : std::nullopt;
+  std::lock_guard lock(phone_link_m_);
+  if (!doc || doc->k != json::kind::object) {
+    // There and not read, or read and not ours to understand: fail closed.
+    // Signing nearby copies with a key that may have been handed away is worse
+    // than not serving nearby. Nothing is written over it until a read
+    // succeeds (a later run), so a passing failure cannot erase a hand-over.
+    link_.handed_over = true;
+    link_.other_publisher = true;
+    link_.flags_read = false;
+    return;
+  }
+  link_.flags_read = true;
   link_.handed_over = doc->boolean("handed_over").value_or(false);
   link_.code_left = doc->boolean("code_left").value_or(false);
   link_.code_left_until = doc->integer("code_left_until").value_or(0);
@@ -102,6 +130,12 @@ void engine::phone_link_save_flags() {
   std::int64_t until = 0;
   {
     std::lock_guard lock(phone_link_m_);
+    // The file there could not be read: never overwritten blind, except to
+    // record a hand-over, which is the side a failed read assumes anyway.
+    if (!link_.flags_read && !link_.handed_over) {
+      link_.flags_unsaved = true;
+      return;
+    }
     handed = link_.handed_over;
     left = link_.code_left;
     until = link_.code_left_until;
@@ -135,6 +169,7 @@ void engine::phone_link_save_flags() {
   // The engine has no log of its own; the card's state says it, once.
   std::lock_guard lock(phone_link_m_);
   link_.flags_unsaved = !ok;
+  if (ok) link_.flags_read = true;  // what is there now is what this wrote
 }
 
 result<std::string> engine::phone_route(const char* method, const std::string& json) {
@@ -168,6 +203,7 @@ expected engine::phone_link(const std::string& request_json) {
   const auto doc = json::parse(request_json, 4);
   if (!doc || !doc->str("do")) return err(status::invalid_arg);
   std::lock_guard lock(phone_link_m_);
+  if (stopping_.load()) return err(status::cancelled);  // checked again where the thread is taken
   link_.busy = *doc->str("do");  // from now, so a poll right after this sees it
   link_requests_.push_back(request_json);
   if (!phone_link_thread_.joinable()) phone_link_thread_ = std::thread([this] { phone_link_loop(); });
@@ -237,7 +273,19 @@ void engine::phone_link_loop() {
       if (poll) {
         phone_link_do("{\"do\":\"poll\"}");
       } else {
+        const auto doc = json::parse(request, 4);
+        const bool pairing = doc && doc->str("do") && *doc->str("do") == "pair";
+        {
+          // Set by this thread alone, around the one request that makes a
+          // code: `busy` follows whatever is queued next and cannot say so.
+          std::lock_guard lock(phone_link_m_);
+          link_.pairing = pairing;
+        }
         phone_link_do(request);
+        {
+          std::lock_guard lock(phone_link_m_);
+          link_.pairing = false;
+        }
         // The owner's session is kept only while a code shows: one forwarded
         // service, a few session slots, and a Mac that may sit here for days.
         bool showing = false;
@@ -274,6 +322,7 @@ void engine::phone_link_tick() {
   }
   if (!used) return;
   std::lock_guard lock(phone_link_m_);
+  if (stopping_.load()) return;  // phone_link_stop takes the thread under this lock
   // A phone revoked here while the NAS was away keeps the NAS's door open
   // until the NAS hears it: ask again, backing off, until it has.
   const auto now = std::chrono::steady_clock::now();
@@ -303,18 +352,23 @@ void engine::phone_link_refresh(bool phones_only) {
     std::lock_guard lock(phone_link_m_);
     // Never while a code is showing or being made: the withdraw would take
     // the new one down (the service holds one code at a time).
-    left = link_.code_left && link_.qr_expires == 0 && link_.busy != "pair";
+    left = link_.code_left && link_.qr_expires == 0 && !link_.pairing;
     // The NAS drops a code by itself once its lifetime is over.
     lapsed = link_.code_left && static_cast<std::int64_t>(std::time(nullptr)) >= link_.code_left_until;
   }
   // A code was showing when Local search last stopped: it goes now. A
-  // definite answer (done, refused, not owned, not there) settles it; only a
-  // NAS out of reach leaves it for the next refresh, and never past the code's
+  // definite answer (done, refused, not owned) settles it; a NAS out of reach
+  // or not ready leaves it for the next refresh, and never past the code's
   // own lifetime.
   bool settled = lapsed;
   if (left && !lapsed) {
     const auto r = phone_route("pair_stop", "{}");
-    settled = r || (r.error() != status::io && r.error() != status::timeout && r.error() != status::cancelled);
+    // Out of reach, or not able to answer yet: the NAS away, too busy for
+    // another session, or Driftwire not registered yet at startup. The
+    // lifetime above still bounds how long it is asked.
+    const mv::status e = r ? mv::status::ok : r.error();
+    settled = r || (e != status::io && e != status::timeout && e != status::cancelled && e != status::busy &&
+                    e != status::not_found);
   }
   if (left && settled) {
     {

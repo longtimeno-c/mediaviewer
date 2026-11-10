@@ -529,21 +529,42 @@ void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
   transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   phone_cancel_ = true;
-  if (phone_thread_.joinable()) phone_thread_.join();
-  phone_link_stop();
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
-  // Through the lock, so a thread about to wait (an immutable reader's has no
-  // timeout) cannot miss this.
-  { std::lock_guard lock(control_m_); }
-  control_cv_.notify_all();
-  work_cv_.notify_all();
-  search_cv_.notify_all();
-  fetch_cv_.notify_all();
+  // Every wake goes through the lock, so a thread about to wait (an immutable
+  // reader's has no timeout) cannot miss it. Each loop checks stopping_ under
+  // its own mutex before it waits. Taking
+  // that mutex once, after stopping_ is set, means a loop is either still
+  // before its check (and sees stopping_) or parked (and gets the notify):
+  // a notify sent with no lock can fall between the two, and a loop that
+  // waits with no timeout then never wakes, and stop() never returns.
+  const auto wake = [](std::mutex& m, std::condition_variable& cv) {
+    { std::lock_guard lock(m); }
+    cv.notify_all();
+  };
+  wake(control_m_, control_cv_);
+  wake(work_m_, work_cv_);
+  wake(search_m_, search_cv_);
+  wake(fetch_m_, fetch_cv_);
   if (fetch_thread_.joinable()) fetch_thread_.join();  // a download in flight cancels (stopping_)
-  dl_stop_ = true;
+  {
+    std::lock_guard lock(dl_m_);
+    dl_stop_ = true;
+  }
   dl_cv_.notify_all();
   if (download_thread_.joinable()) download_thread_.join();  // a model download stops between chunks
   if (control_.joinable()) control_.join();
+  // Phone access after the control thread: its tick starts both threads, and
+  // a tick between their joins and its own would start one nobody joins.
+  // Taken out under the lock their starters hold, which see stopping_ there.
+  {
+    std::thread t;
+    {
+      std::lock_guard lock(phone_m_);
+      t = std::move(phone_thread_);
+    }
+    if (t.joinable()) t.join();
+  }
+  phone_link_stop();
   // After the control thread (which sets it): no change is called in after this.
   if (watching_) {
     (void)host_.watch_tree({}, nullptr, nullptr);
@@ -5588,6 +5609,7 @@ expected engine::phone_publish(const std::string& destination) {
   if (options_.read_only) return err(status::unsupported_format);
   if (destination.empty()) return err(status::invalid_arg);
   std::lock_guard lock(phone_m_);
+  if (stopping_.load()) return err(status::cancelled);  // stop() takes the thread under this lock
   if (phone_.running) return err(status::busy);
   if (phone_thread_.joinable()) phone_thread_.join();  // the last one has finished
   phone_.running = true;
@@ -5642,7 +5664,7 @@ std::string engine::phone_json() const {
 void engine::phone_publish_auto() {
   // The control thread: starting a thread is all it does here.
   std::lock_guard lock(phone_m_);
-  if (phone_.running) return;
+  if (stopping_.load() || phone_.running) return;
   if (phone_thread_.joinable()) phone_thread_.join();
   const std::string destination = phone_.destination;
   phone_.running = true;
@@ -5664,7 +5686,7 @@ void engine::phone_publish_auto() {
 
 void engine::phone_deliver_waiting() {
   std::lock_guard lock(phone_m_);
-  if (phone_.running || phone_.waiting == 0) return;
+  if (stopping_.load() || phone_.running || phone_.waiting == 0) return;
   if (phone_thread_.joinable()) phone_thread_.join();
   phone_.running = true;
   phone_.fraction = 0;
