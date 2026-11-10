@@ -4,6 +4,10 @@
 
 #include "addons/ai/machine.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include <algorithm>
 #include <numeric>
 #include <cctype>
@@ -5235,6 +5239,8 @@ namespace {
 std::string machine_label() {
 #if defined(_WIN32)
   std::string os = "Windows";
+#elif defined(__APPLE__) && !TARGET_OS_OSX
+  std::string os = "iOS";
 #elif defined(__APPLE__)
   std::string os = "macOS";
 #else

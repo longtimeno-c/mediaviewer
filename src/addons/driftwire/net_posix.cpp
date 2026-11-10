@@ -18,8 +18,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 #if defined(__APPLE__)
-#include <net/route.h>
+#include <TargetConditionals.h>
 #include <sys/sysctl.h>
+#if TARGET_OS_OSX
+#include <net/route.h>
+#endif
 #endif
 
 #include <algorithm>
@@ -424,7 +427,11 @@ std::vector<subnet> local_subnets() {
 }
 
 std::optional<address> default_gateway() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_OSX
+  // iOS has no <net/route.h> and its sandbox hides the routing table. The
+  // gateway is for mapping a port on the router, which only a receiver asks for.
+  return std::nullopt;
+#elif defined(__APPLE__)
   // The routing table's default IPv4 route (what `route -n get default` reads).
   int mib[6] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY};
   std::size_t len = 0;

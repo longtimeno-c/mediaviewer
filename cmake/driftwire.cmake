@@ -53,6 +53,14 @@ endif()
 if(WIN32)
   set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
+elseif(IOS)
+  # No module on iOS, so the engine carries what the module would compile in:
+  # the file port, BLAKE3 hashing and (no bearer yet) the empty Bluetooth port.
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_ios.cpp ${_S}/secrets_ios.cpp ${_S}/power_ios.cpp
+      ${_S}/bt_none.cpp
+      ${MV_SOURCE_ROOT}/src/io/file_port.cpp ${MV_SOURCE_ROOT}/src/io/file_port_mac.cpp
+      ${MV_SOURCE_ROOT}/src/io/content_hash.cpp)
+  set(_driftwire_bt "")
 elseif(APPLE)
   set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
@@ -108,6 +116,8 @@ if(WIN32)
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
   # PowerCreateRequest is kernel32's (#530), linked by default.
   target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32)
+elseif(IOS)
+  target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework Security")
 elseif(APPLE)
   # Security: the Keychain (#472 PR 4). IOKit: staying awake during a transfer (#530).
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"
@@ -115,6 +125,11 @@ elseif(APPLE)
 else()
   # dlopen: libsecret (secrets_linux.cpp), libsystemd (power_linux.cpp).
   target_link_libraries(mv_driftwire_engine PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
+# iOS links the engine statically: no add-on module, relay or command line.
+if(IOS)
+  return()
 endif()
 
 if(WIN32)
