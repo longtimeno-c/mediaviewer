@@ -303,6 +303,30 @@ TEST_CASE("phone pairing: a made-up code is refused and no code is not a pairing
   CHECK(n.phone(phone, p->code));
 }
 
+TEST_CASE("phone pairing: a phone already paired that scans again goes on, and spends that code", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  auto first = mac.d->start_pairing();
+  REQUIRE(first);
+  const key32 phone = random_key();
+  REQUIRE(n.phone(phone, first->code));
+  // A second scan, from the same phone, with a new code.
+  auto again = mac.d->start_pairing();
+  REQUIRE(again);
+  auto c = n.phone(phone, again->code);
+  REQUIRE(c);
+  CHECK((*c)->roots());
+  // That code is gone: no other device can use it.
+  serve::refusal why = serve::refusal::none;
+  const key32 other = random_key();
+  CHECK_FALSE(n.phone(other, again->code, &why));
+  CHECK(why == serve::refusal::bad_code);
+  CHECK_FALSE(n.has_device(other));
+  // A paired phone holding a stale code is still a paired phone.
+  CHECK(n.phone(phone, first->code));
+}
+
 // ---- who may administer ----------------------------------------------------------------------
 
 TEST_CASE("phone pairing: only the owner's session can administer", "[phone-pairing]") {

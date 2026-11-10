@@ -438,7 +438,8 @@ void engine::phone_link_do(const std::string& request) {
     link_.added.clear();
     link_.qr_url = url;
     link_.qr_library = p.library_name;
-    link_.qr_fingerprint = catalog::fingerprint(p.publisher_key);
+    link_.qr_fingerprint = catalog::pair_check(p.library_id, p.library_name, p.publisher_key,
+                                               key_bytes(p.service_identity_hex), key_bytes(p.access_key_hex));
     link_.qr_expires = p.expires;
     return;
   }

@@ -7294,12 +7294,17 @@ TEST_CASE("phone link: a code is one QR with the library, the key and the servic
   CHECK(doc->str("publisher_key")->size() == 64);
   CHECK(*doc->find("service")->str("local") == "192.168.1.5:7878");
   CHECK(*doc->str("code") == std::string(32, 'c'));
-  // The same fingerprint the phone will show.
-  std::vector<std::uint8_t> key(32);
-  std::size_t n = 0;
-  REQUIRE(sodium_hex2bin(key.data(), 32, doc->str("publisher_key")->data(), 64, nullptr, &n, nullptr) == 0);
-  CHECK(*v.str("qr_fingerprint") == mv::ai::catalog::fingerprint(key));
-  CHECK(*v.str("qr_fingerprint") == *mv::json::parse(a.eng->phone_json())->str("fingerprint"));
+  // The same check code the phone computes from the QR alone.
+  const auto bytes = [](const std::string& hex) {
+    std::vector<std::uint8_t> out(32);
+    std::size_t n = 0;
+    REQUIRE(sodium_hex2bin(out.data(), 32, hex.data(), hex.size(), nullptr, &n, nullptr) == 0);
+    return out;
+  };
+  CHECK(*v.str("qr_fingerprint") ==
+        mv::ai::catalog::pair_check(*doc->str("library_id"), *doc->str("library_name"), bytes(*doc->str("publisher_key")),
+                                    bytes(*doc->find("service")->str("identity")), bytes(*doc->str("access_key"))));
+  CHECK(v.str("qr_fingerprint")->size() == 23);
   CHECK(v.integer("qr_expires") > static_cast<std::int64_t>(std::time(nullptr)));
 
   // The phone redeems it: the Mac shows it and takes the code down.

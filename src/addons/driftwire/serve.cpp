@@ -659,8 +659,10 @@ void server::state::session(conn& c) {
   message m;
   // The first message after ident: what the client can do.
   auto first = ch.receive(m, kServeHelloMs);
-  // A phone scanning again that is already paired: the code is not spent.
+  // A phone that is already paired and scans again: it is told so and goes on.
+  // A code it carries is spent here, so that code can pair nothing else.
   if (first && m.type == msg::serve_pair) {
+    if (const auto p = parse_pair(m.text())) (void)take_code(p->code);
     if (!ch.send(msg::serve_paired, std::string_view("{}"))) return;
     first = ch.receive(m, kServeHelloMs);
   }

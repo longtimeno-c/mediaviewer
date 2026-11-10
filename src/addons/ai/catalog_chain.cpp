@@ -334,6 +334,38 @@ expected prepare_nearby(const nearby_options& o) {
   return {};
 }
 
+std::string pair_check(std::string_view library_id, std::string_view library_name,
+                       std::span<const std::uint8_t> publisher_key, std::span<const std::uint8_t> service_identity,
+                       std::span<const std::uint8_t> access_key) {
+  (void)sodium_init();
+  if (publisher_key.size() != 32 || service_identity.size() != 32 || access_key.size() != 32) return {};
+  const auto length = [](std::uint64_t v) {
+    std::string s(8, '\0');
+    for (int i = 0; i < 8; ++i) s[static_cast<std::size_t>(i)] = static_cast<char>((v >> (8 * i)) & 0xFFu);
+    return s;
+  };
+  std::string m = "mediaviewer.pair.check.v1";
+  m += length(library_id.size());
+  m += library_id;
+  m += length(library_name.size());
+  m += library_name;
+  for (const auto key : {publisher_key, service_identity, access_key}) m.append(reinterpret_cast<const char*>(key.data()), key.size());
+  unsigned char h[crypto_hash_sha256_BYTES];
+  crypto_hash_sha256(h, reinterpret_cast<const unsigned char*>(m.data()), m.size());
+  static constexpr char kAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  std::string out;
+  for (int i = 0; i < 20; ++i) {
+    unsigned v = 0;
+    for (int b = 0; b < 5; ++b) {
+      const int bit = i * 5 + b;
+      v = (v << 1) | ((h[bit / 8] >> (7 - bit % 8)) & 1u);
+    }
+    if (i != 0 && i % 5 == 0) out += '-';
+    out += kAlphabet[v];
+  }
+  return out;
+}
+
 std::string pair_url(const pair_payload& p) {
   (void)sodium_init();
   json::writer w;

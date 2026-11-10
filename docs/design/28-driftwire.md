@@ -1370,7 +1370,8 @@ Removing a named folder cuts every other session, so nothing keeps reading it.
 
 **Pairing.** The owner hands the service a single-use code with a lifetime measured on the service's
 clock. A device not yet paired redeems it with `serve_pair` before `serve_hello`; a used, expired or
-made-up code is `bad-code`, and the phone is told to scan again. Codes are in memory, hashed, at most
+made-up code is `bad-code`, and the phone is told to scan again. A phone already paired that scans again is
+answered `serve_paired` and goes on, and a code it carries is spent so it pairs nothing else. Codes are in memory, hashed, at most
 `kMaxPairCodes`, and a restart forgets them. The desktop learns the phone from the service's device list,
 which is its own list too (`phone_devices`), so one scan pairs with both. A revoke takes the phone off the
 desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`) and sent

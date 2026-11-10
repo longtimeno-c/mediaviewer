@@ -251,7 +251,7 @@ struct PhoneLinkSection: View {
         .accessibilityLabel("Code for your phone to scan")
       VStack(alignment: .leading, spacing: 6) {
         Text("Scan with MediaViewer on your phone").font(AITheme.font(14)).foregroundStyle(AITheme.title)
-        Text("Your phone will show \(s.qrLibrary) and this key. Check they match before you confirm.")
+        Text("Your phone will show \(s.qrLibrary) and this code. Check they match before you confirm.")
           .font(AITheme.font(12)).foregroundStyle(AITheme.body)
           .fixedSize(horizontal: false, vertical: true)
         Text(s.qrFingerprint).font(AITheme.font(13).monospacedDigit()).foregroundStyle(AITheme.title)
