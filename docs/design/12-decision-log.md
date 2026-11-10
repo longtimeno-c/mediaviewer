@@ -1959,6 +1959,12 @@ menu offers Driftwire's one-click install, and Sharepoint is removed in Settings
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
 
+**A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
+(`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
+anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,
+[28](28-driftwire.md#the-nas-service-driftwire-serve)) now rather than wait for spike S5, which
+still decides the package format. This records only that; the details of the service are in 28.
+
 **Nearby handshakes carry no long-term key; the name is off the air with the window closed; the Mac
 keeps secrets in the data protection keychain (owner, 2026-10-20, #501).** Protocol 2 used the
 machine's identity as the static of every XX handshake, so anyone in range could connect, read message 2 and leave with a key that followed

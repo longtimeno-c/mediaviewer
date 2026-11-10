@@ -68,6 +68,11 @@ struct pattern {
 [[nodiscard]] const pattern& xx_psk3();      // Noise_XXpsk3_25519_ChaChaPoly_BLAKE2b
 [[nodiscard]] const pattern& xx_hfs_psk0();  // Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b
 
+// How many ML-KEM-768 encapsulations this process has done (the "ekem1" a
+// responder writes). `driftwire serve` must do none for a stranger (serve.h);
+// its tests read this to prove it.
+[[nodiscard]] std::uint64_t kem_encapsulations() noexcept;
+
 // Noise's CipherState: ChaChaPoly (IETF), the nonce a 64-bit counter.
 class cipher_state {
  public:

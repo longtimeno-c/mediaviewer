@@ -340,7 +340,7 @@ result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms) {
   return std::unique_ptr<link>(std::make_unique<tcp_link>(fd));
 }
 
-result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only) {
+result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only, int backlog) {
   // Dual stack where IPv6 exists; IPv4 alone where it does not.
   int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
   sockaddr_storage s{};
@@ -365,7 +365,7 @@ result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopb
   }
   close_on_exec(fd);
   (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 || ::listen(fd, 8) != 0 ||
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 || ::listen(fd, backlog) != 0 ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&s), &len) != 0) {
     ::close(fd);
     return err(status::io);

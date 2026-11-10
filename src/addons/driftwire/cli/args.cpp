@@ -47,6 +47,9 @@ std::string help_text() {
          "                               closing when that receive ends\n"
          "  driftwire devices            list the devices this computer remembers\n"
          "  driftwire update             update driftwire the way it was installed\n"
+         "  driftwire serve              run the NAS service (no terminal needed), serving the\n"
+         "         [--data DIR]          folders in DIR/serve.json to paired devices; serve init\n"
+         "                               makes its keys, serve devices|add|revoke its pairings\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -111,6 +114,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--once" && flag) {
         a.once = true;
         want_once = true;
+      } else if (t.name == "--data") {
+        if (!value(a.data, "a folder")) return out;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -145,6 +150,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.cmd = command::devices;
       } else if (s == "update") {
         a.cmd = command::update;
+      } else if (s == "serve") {
+        a.cmd = command::serve;
       } else if (s == "help") {
         help = true;
       } else {
@@ -193,6 +200,25 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         return out;
       }
       break;
+    case command::serve: {
+      if (words.empty()) break;
+      const std::string& what = words.front();
+      if (what == "init" && words.size() == 1) {
+        a.serve = serve_action::init;
+      } else if (what == "devices" && words.size() == 1) {
+        a.serve = serve_action::devices;
+      } else if (what == "add" && words.size() == 3) {
+        a.serve = serve_action::add;
+        a.name = words[1];
+        a.serve_key = words[2];
+      } else if (what == "revoke" && words.size() == 2) {
+        a.serve = serve_action::revoke;
+        a.serve_key = words[1];
+      } else {
+        out.error = "serve takes init, devices, add NAME KEY or revoke NAME-OR-KEY";
+      }
+      return out;
+    }
     case command::session:
     case command::help:
     case command::version:
