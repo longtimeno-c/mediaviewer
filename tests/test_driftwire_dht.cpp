@@ -158,6 +158,12 @@ TEST_CASE("driftwire dht: an item is sealed to the code, padded, and refused whe
 
 #include "addons/driftwire/udp_hub.h"
 
+#if defined(__APPLE__)
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 namespace {
 struct hub_pair {
   std::shared_ptr<sp::udp_hub> a, b;
@@ -202,6 +208,42 @@ bool stream_through(hub_pair& h, std::size_t bytes, double* mb_s = nullptr, cons
 // hub then runs on IPv4 alone (open_udp_dual), as it would in the product.
 bool has_ipv6_loopback() { return static_cast<bool>(sp::net::open_udp(true, 1, true)); }
 }  // namespace
+
+#if defined(__APPLE__)
+// macOS picks a dual-stack socket's ephemeral port without looking at IPv4
+// sockets, and the IPv4 socket then takes every IPv4 datagram for that port:
+// the hub would hear IPv4 peers never. Other programs hold such sockets (homed
+// did, in the failure that found this).
+TEST_CASE("driftwire dht: an ephemeral UDP port is not shared with an IPv4 socket", "[driftwire]") {
+  constexpr int kHeld = 1500;  // about 9 % of the ephemeral range: a collision every 11 binds without the fix
+  sp::net::reserve_sockets(kHeld + 16);
+  std::vector<int> held;
+  for (int i = 0; i < kHeld; ++i) {
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    REQUIRE(fd >= 0);
+    held.push_back(fd);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(i % 2 ? INADDR_ANY : INADDR_LOOPBACK);  // both forms shadow a dual-stack socket
+    REQUIRE(::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0);
+  }
+  auto tx = sp::net::open_udp_dual(0, true);
+  REQUIRE(tx);
+  int lost = 0;
+  for (int i = 0; i < 200; ++i) {
+    auto rx = sp::net::open_udp_dual(0, true);
+    REQUIRE(rx);
+    const std::uint8_t ping[] = {'p'};
+    REQUIRE((*tx)->send_to(ping, {"127.0.0.1", (*rx)->port()}));
+    std::uint8_t back[4];
+    sp::net::endpoint from;
+    auto n = (*rx)->receive_from(back, 300, from);
+    if (!n || *n != 1) ++lost;
+  }
+  for (const int fd : held) ::close(fd);
+  CHECK(lost == 0);
+}
+#endif
 
 TEST_CASE("driftwire dht: a stream over the UDP hub delivers every byte in order, lossy or not", "[driftwire]") {
   hub_pair h;

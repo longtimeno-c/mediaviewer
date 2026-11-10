@@ -28,12 +28,13 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <vector>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 #include "addons/driftwire/wire.h"
 
@@ -766,6 +767,28 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   return std::unique_ptr<tcp_rendezvous>(std::make_unique<tcp_meet>(fd, s, len, dual));
 }
 
+#if defined(__APPLE__)
+namespace {
+// An IPv4 socket bound to an ephemeral port no IPv4 socket holds, and that
+// port; -1 when none. See open_udp_dual.
+std::pair<int, std::uint16_t> held_ipv4_port() noexcept {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) return {-1, 0};
+  close_on_exec(fd);
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(INADDR_ANY);
+  socklen_t len = sizeof a;
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
+      ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
+    ::close(fd);
+    return {-1, 0};
+  }
+  return {fd, ntohs(a.sin_port)};
+}
+}  // namespace
+#endif
+
 result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only, int buffer_bytes) {
   const int fd = ::socket(AF_INET6, SOCK_DGRAM, 0);
   if (fd < 0 && errno == EAFNOSUPPORT) {
@@ -807,7 +830,23 @@ result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopb
   a.sin6_addr = in6addr_any;
   (void)loopback_only;
   socklen_t len = sizeof a;
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
+  bool bound = false;
+#if defined(__APPLE__)
+  // The kernel picks a dual-stack socket's ephemeral port without looking at
+  // IPv4 sockets, and an IPv4 socket on that port then takes every IPv4
+  // datagram for it: this socket would hear IPv4 peers never. So the port comes
+  // from the IPv4 side, held while this socket binds it. A few tries: an IPv6
+  // socket may hold the port IPv4 offers.
+  for (int tries = 0; port == 0 && !bound && tries < 16; ++tries) {
+    const auto [guard, free_port] = held_ipv4_port();
+    if (guard < 0) break;
+    a.sin6_port = htons(free_port);
+    bound = ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0;
+    ::close(guard);
+  }
+  if (!bound) a.sin6_port = htons(port);
+#endif
+  if ((!bound && ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0) ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
     ::close(fd);
     return err(status::io);
