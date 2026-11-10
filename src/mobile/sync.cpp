@@ -433,6 +433,8 @@ sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan
     if (it->path().filename() != name) {
       std::error_code e2;
       fs::remove_all(it->path(), e2);
+      // The search engine's work folder for that generation goes with it.
+      fs::remove_all(library / "engine" / it->path().filename(), e2);
     }
   }
   std::set<fs::path> kept_models;
