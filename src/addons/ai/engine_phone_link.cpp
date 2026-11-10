@@ -71,8 +71,11 @@ const char* error_name(status s) noexcept {
 }  // namespace
 
 result<std::string> engine::phone_route(const char* method, const std::string& json) {
-  // Stopping: no new wait on the NAS, so stop never sits through one bound after another.
-  if (stopping_.load()) return err(status::cancelled);
+  // Stopping: no new wait on the NAS, so stop never sits through one bound
+  // after another. What only tidies this Mac (or withdraws a code) still goes:
+  // Driftwire keeps running after Local search stops.
+  const std::string_view m(method);
+  if (stopping_.load() && m != "nearby_stop" && m != "release" && m != "pair_stop") return err(status::cancelled);
   auto r = host_.addon_request("driftwire", method, json);
   if (!r && r.error() == status::not_found && std::string_view(method) == "status") {
     std::lock_guard lock(phone_link_m_);
@@ -113,6 +116,21 @@ void engine::phone_link_stop() noexcept {
     phone_link_cv_.notify_all();
   }
   if (t.joinable()) t.join();
+  // Local search going (an update, a removal, quitting): Driftwire may stay,
+  // and must not go on serving a catalogue nobody here keeps up to date, or a
+  // code nobody here watches. Both are on this Mac or one bounded request.
+  bool nearby = false, showing = false;
+  {
+    std::lock_guard lock(phone_link_m_);
+    nearby = link_.nearby;
+    showing = link_.qr_expires != 0;
+  }
+  try {
+    if (nearby) (void)phone_route("nearby_stop", "{}");
+    if (showing) (void)phone_route("pair_stop", "{}");
+    if (nearby || showing) (void)phone_route("release", "{}");
+  } catch (...) {
+  }
 }
 
 void engine::phone_link_loop() {
@@ -591,9 +609,23 @@ void engine::phone_link_do(const std::string& request) {
     if (!secret) return fail("no_key_store");
     const auto to = key_bytes(request_seen->public_key);
     if (to.empty()) return fail("failed");
-    if (auto r = catalog::hand_over(destination, *secret, to); !r) return fail(r.error() == status::permission_denied ? "refused" : "unreachable");
-    phone_link_refresh();
+    auto moved = catalog::hand_over(destination, *secret, to);
+    if (!moved) return fail(moved.error() == status::permission_denied ? "refused" : "unreachable");
+    if (deps_.phone_link_after_hand_over) deps_.phone_link_after_hand_over();
+    {
+      // What hand_over wrote is the truth now, whether or not the share reads
+      // back on the next try: this desktop is no longer the publisher.
+      std::lock_guard lock(phone_link_m_);
+      link_.other_publisher = true;
+      link_.other_fingerprint = catalog::fingerprint(to);
+    }
     phone_link_prepare_nearby();  // its key is not the library's now: the nearby copy goes
+    phone_link_refresh();
+    {
+      std::lock_guard lock(phone_link_m_);
+      link_.other_publisher = true;  // a refresh that could not read the share does not undo it
+      if (link_.other_fingerprint.empty()) link_.other_fingerprint = catalog::fingerprint(to);
+    }
     return;
   }
   fail("failed");

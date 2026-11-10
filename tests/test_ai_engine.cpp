@@ -17,6 +17,7 @@
 
 #include "abi/addon_media.h"
 #include <sodium.h>
+#include <sys/stat.h>
 
 #include "addons/ai/catalog.h"
 #include "addons/ai/catalog_chain.h"
@@ -1095,6 +1096,7 @@ struct rig {
     };
     d.phone_quiet_s = phone_quiet;
     d.phone_link_retry_s = link_retry;
+    d.phone_link_after_hand_over = after_hand_over;
     d.phone_min_interval_s = phone_interval;
     d.phone_share_poll_s = phone_poll;
     d.phone_thumb_budget_s = phone_budget;
@@ -1259,6 +1261,7 @@ struct rig {
   // which does not ask for automatic publishing never sees one.
   double phone_quiet = 3600;
   double link_retry = 30;
+  std::function<void()> after_hand_over;
   double phone_interval = 3600;
   double phone_poll = 3600;
   double phone_budget = 0;
@@ -7505,4 +7508,70 @@ TEST_CASE("phone link: the share never moves this desktop's library or epoch bac
   CHECK(link_done(a).boolean("mismatch") == true);
   REQUIRE(a.eng->phone_publish(utf8(nas)));
   CHECK(*phone_done(a).str("error") == "other_library");
+}
+
+TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be read back", "[ai][engine][phone-link]") {
+  rig a, b;
+  fake_driftwire da, db;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  const fs::path nas = a.dir / "NAS";
+  // The share drops just after the hand-over is written (an SMB hiccup).
+  a.after_hand_over = [&] { ::chmod(utf8(nas / ".mediaviewer/library.json").c_str(), 0); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  {
+    std::lock_guard lock(da.m);
+    da.devices.emplace_back("iPhone", std::string(64, 'd'));
+  }
+  b.start();
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(b);
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  (void)phone_done(b);
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto asked = link_done(a);
+  REQUIRE_FALSE(asked.str("asking_key")->empty());
+  {
+    std::lock_guard lock(da.m);
+    da.calls.clear();
+  }
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  const auto after = link_done(a);
+  ::chmod(utf8(nas / ".mediaviewer/library.json").c_str(), 0644);
+  CHECK(after.boolean("other_publisher") == true);
+  std::lock_guard lock(da.m);
+  CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby_stop")) != da.calls.end());
+  CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby")) == da.calls.end());
+}
+
+TEST_CASE("phone link: Local search stopping takes its nearby copy and its code down", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  a.eng->stop();
+  std::lock_guard lock(d.m);
+  CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("pair_stop")) != d.calls.end());
+  CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("release")) != d.calls.end());
 }

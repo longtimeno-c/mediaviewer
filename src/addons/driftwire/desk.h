@@ -41,6 +41,7 @@ inline constexpr const char* kPendingName = "phone_revoke_pending";  // revoked 
 void forget(secrets::store& store);
 
 inline constexpr int kConnectMs = 5000;
+inline constexpr int kClaimTotalMs = 27000;  // under the host's 30 s per request
 inline constexpr int kDefaultPairTtlMs = 300000;
 
 // "host:port", "[v6]:port". nullopt: not that shape, or port 0.

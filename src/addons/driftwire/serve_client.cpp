@@ -23,10 +23,6 @@ namespace {
 
 constexpr int kAnswerMs = 8000;     // the caps
 constexpr int kRequestMs = 15000;   // a list, stat or roots
-// The proof written and read back: the service's own 12 s and a margin. With
-// the connect and the first answer the whole claim stays inside the host's
-// 30 s for one add-on asking another.
-constexpr int kClaimMs = 14000;
 
 // How far a read may be consumed before more credit goes out: half a window.
 constexpr std::uint32_t kCreditRefill = 2;
@@ -439,17 +435,22 @@ result<std::string> client::admin(const std::string& request_json, end_code* cod
 
 result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
                            const std::array<std::uint8_t, 32>& device_key, const std::string& name,
-                           const std::function<bool(std::string_view nonce)>& prove) {
+                           const std::function<bool(std::string_view nonce)>& prove,
+                           std::chrono::steady_clock::time_point deadline) {
+  const auto left_ms = [&] {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+    return static_cast<int>(std::max<std::int64_t>(0, ms));
+  };
   channel::options opts;
   opts.access_key = key;
   opts.static_key = device_key;
   auto ch = channel::open_library(l, "0000000000000000", name, opts);
-  if (!ch) return err(ch.error());
+  if (!ch) return err(status::permission_denied);  // silence: owned, not its network, or no token here
   json::writer w;
   w.begin_object().key("name").string(name).end_object();
   (void)(*ch)->send(msg::serve_claim, w.str());
   message m;
-  if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
+  if (auto r = (*ch)->receive(m, std::min(kAnswerMs, left_ms())); !r) return err(status::permission_denied);
   if (m.type != msg::serve_claim_check) return err(status::permission_denied);
   const auto check = json::parse(m.text(), 4);
   const std::string* nonce = check ? check->str("nonce") : nullptr;
@@ -458,7 +459,10 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
     return err(status::permission_denied);
   }
   (void)(*ch)->send(msg::serve_claim, w.str());
-  if (auto r = (*ch)->receive(m, kClaimMs); !r) return err(r.error());
+  if (auto r = (*ch)->receive(m, left_ms()); !r) {
+    // The proof is on the share: the service may yet take it. The caller asks.
+    return err(r.error() == status::timeout ? status::timeout : status::io);
+  }
   if (m.type != msg::serve_claimed) return err(status::permission_denied);
   const auto doc = json::parse(m.text(), 6);
   const std::string* access = doc ? doc->str("access_key") : nullptr;

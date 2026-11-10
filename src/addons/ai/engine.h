@@ -279,6 +279,8 @@ struct engine_deps {
   double phone_thumb_budget_s = 1800;
   // A revoke the NAS has not heard: asked again after this, doubling to an hour.
   double phone_link_retry_s = 30;
+  // The tests: right after a hand-over is written, before anything reads it back.
+  std::function<void()> phone_link_after_hand_over;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
   std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
   double tree_max_wait_s = 10;

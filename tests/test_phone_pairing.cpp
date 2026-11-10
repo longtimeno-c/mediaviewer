@@ -33,6 +33,8 @@ key32 random_key() {
   return k;
 }
 
+std::chrono::steady_clock::time_point soon() { return std::chrono::steady_clock::now() + std::chrono::seconds(25); }
+
 key32 public_of(const key32& priv) {
   key32 pub;
   crypto_scalarmult_base(pub.data(), priv.data());
@@ -207,29 +209,29 @@ TEST_CASE("phone pairing: a claim needs the token that is on the share", "[phone
     put_file(n.share / serve::kClaimProofFile, nonce);
     return true;
   };
-  auto no_file = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Thief", write_proof);
+  auto no_file = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Thief", write_proof, soon());
   CHECK_FALSE(no_file);
   CHECK_FALSE(n.store->exists(serve::kOwnerName));
   // The right file, a wrong token.
   put_file(n.share / serve::kClaimTokenFile, token);
-  auto wrong = serve::claim(n.connect(), serve::claim_key(std::string(64, 'd')), random_key(), "Thief", write_proof);
+  auto wrong = serve::claim(n.connect(), serve::claim_key(std::string(64, 'd')), random_key(), "Thief", write_proof, soon());
   CHECK_FALSE(wrong);
   CHECK_FALSE(n.store->exists(serve::kOwnerName));
   // And what the file says, works.
   const key32 device = random_key();
   // Someone who can read the share but not write it: holds the token, cannot answer.
   auto reader = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Reader",
-                             [](std::string_view) { return true; });
+                             [](std::string_view) { return true; }, soon());
   CHECK_FALSE(reader);
   CHECK_FALSE(n.store->exists(serve::kOwnerName));
   // An answer that is not the nonce asked for.
   auto stale = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Reader", [&](std::string_view) {
     put_file(n.share / serve::kClaimProofFile, std::string(64, '0'));
     return true;
-  });
+  }, soon());
   CHECK_FALSE(stale);
   CHECK_FALSE(n.store->exists(serve::kOwnerName));
-  auto right = serve::claim(n.connect(), serve::claim_key(token), device, "Mac", write_proof);
+  auto right = serve::claim(n.connect(), serve::claim_key(token), device, "Mac", write_proof, soon());
   REQUIRE(right);
   CHECK(right->access_key == n.access);
   CHECK(right->identity == n.identity);

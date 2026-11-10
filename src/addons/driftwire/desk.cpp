@@ -333,13 +333,21 @@ expected desk::claim(const std::string& share_folder, const std::string& local, 
   fs::create_directories(file.parent_path(), ec);
   if (ec || !write(file, token)) return err(status::io);
 
+  // The whole claim, from the connect, ends inside the host's 30 s for one
+  // add-on asking another: connect up to 5 s, the handshake up to its own 8 s,
+  // then what is left for the answer, the proof and the reply.
+  // The service gives the proof write 12 s of that. A claim the network still
+  // makes slower than this comes back as status::timeout, and the card asks
+  // the service whether it went through (engine_phone_link.cpp, "claim").
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kClaimTotalMs);
   auto l = st_->connect_to(local);
   if (!l) return err(status::io);
   auto answer = serve::claim(std::shared_ptr<link>(std::move(*l)), serve::claim_key(token), key, st_->o.device_name,
-                             [&](std::string_view nonce) { return write(proof, nonce); });
+                             [&](std::string_view nonce) { return write(proof, nonce); }, deadline);
   // Silence and a refusal are the same thing from here: it has an owner, or
-  // this is not its own network, and the service never says which.
-  if (!answer) return err(status::permission_denied);
+  // this is not its own network, and the service never says which. A timeout
+  // after the proof was written is not a refusal: it is passed on.
+  if (!answer) return err(answer.error() == status::timeout ? status::timeout : status::permission_denied);
   service_info s;
   s.local = local;
   s.public_name = public_name;
