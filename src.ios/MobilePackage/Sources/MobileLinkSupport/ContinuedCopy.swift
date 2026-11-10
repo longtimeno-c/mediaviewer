@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The bookkeeping between a first copy and the system's continued-processing task (iOS 26,
-// docs/plans/mobile.md §8.4). The system hands the task over some time after it was asked for,
-// maybe after the copy already ended; whichever comes second completes it, so it never waits forever.
+// docs/plans/mobile.md §8.4). One rule: a task that no live copy owns is completed at once. A copy
+// is live from `submit` to `finished`; a hand-over while one is live belongs to it and is completed
+// when it finishes; a hand-over at any other time is completed as it arrives.
 import Foundation
 
 /// The system's task, or a test's stand-in.
@@ -12,92 +13,83 @@ public protocol ContinuedTaskHandle: AnyObject {
 }
 
 public final class ContinuedCopy: @unchecked Sendable {
-  private enum State {
-    case idle
-    case asked                        // submitted; the system has not handed it over yet
-    case running(ContinuedTaskHandle)
-    case ended(success: Bool)          // the copy ended before the hand-over
-  }
   private let lock = NSLock()
-  private var state = State.idle
+  private var live = false                  // a copy runs and owns any hand-over
+  private var held: ContinuedTaskHandle?    // only ever while `live`
+  private var lastOutcome: Bool?            // the latest copy's, for a hand-over that comes late
   private var expiredFlag = false
 
   public init() {}
 
-  /// Called before submitting the request: the system may hand the task over on its own queue
-  /// before submit even returns, and that hand-over must find this copy waiting for it. A task
-  /// still held from an earlier copy is completed here, never one adopted for this copy.
-  public func asking() {
+  /// A copy starts: it becomes live first, then asks, because the system may hand the task over on
+  /// its own queue before `request` even returns. A refused request changes nothing: the copy still
+  /// runs, only in the foreground. Returns whether the request was accepted.
+  @discardableResult
+  public func submit(_ request: () throws -> Void) -> Bool {
     lock.lock()
-    var leftover: ContinuedTaskHandle?
-    if case .running(let old) = state { leftover = old }
-    state = .asked
+    let leftover = held
+    held = nil
+    live = true
     expiredFlag = false
+    lastOutcome = nil
     lock.unlock()
-    leftover?.complete(success: false)
+    leftover?.complete(success: false)  // an earlier copy that never finished
+    do {
+      try request()
+      return true
+    } catch {
+      return false
+    }
   }
 
-  /// The request was refused: nothing will be handed over for it.
-  public func submitFailed() {
+  /// The system's hand-over.
+  public func adopt(_ task: ContinuedTaskHandle) {
     lock.lock()
-    defer { lock.unlock() }
-    if case .asked = state { state = .idle }
+    if live {
+      let previous = held
+      held = task
+      lock.unlock()
+      previous?.complete(success: false)
+      return
+    }
+    let outcome = lastOutcome ?? false
+    lock.unlock()
+    task.complete(success: outcome)  // nobody owns it
   }
 
-  /// The system took the time back. Whoever runs the copy stops at once (the Wi-Fi wait included)
-  /// and then calls `finished`, which completes the task, as Apple requires even after expiry.
+  public func progress(done: Int64, total: Int64) {
+    lock.lock()
+    let task = held
+    lock.unlock()
+    task?.progress(done: done, total: total)
+  }
+
+  /// The copy ended, however it ended.
+  public func finished(success: Bool) {
+    lock.lock()
+    let task = held
+    held = nil
+    live = false
+    lastOutcome = success
+    lock.unlock()
+    task?.complete(success: success)
+  }
+
+  /// The system took the time back. The live copy stops (the Wi-Fi wait included, through
+  /// `isExpired`) and its `finished` completes the task, as Apple requires even after expiry.
+  /// With no live copy there is nothing held: a hand-over then was completed as it came.
   public func expire() {
     lock.lock()
-    defer { lock.unlock() }
     expiredFlag = true
+    let orphan = live ? nil : held
+    if !live { held = nil }
+    lock.unlock()
+    orphan?.complete(success: false)
   }
 
   public var isExpired: Bool {
     lock.lock()
     defer { lock.unlock() }
     return expiredFlag
-  }
-
-  /// The system's hand-over. Completed at once when the copy has already ended.
-  public func adopt(_ task: ContinuedTaskHandle) {
-    lock.lock()
-    let ended: Bool?
-    switch state {
-    case .ended(let success):
-      ended = success
-      state = .idle
-    case .asked, .idle:
-      ended = nil
-      state = .running(task)
-    case .running(let old):
-      ended = nil
-      old.complete(success: false)
-      state = .running(task)
-    }
-    lock.unlock()
-    if let ended { task.complete(success: ended) }
-  }
-
-  public func progress(done: Int64, total: Int64) {
-    lock.lock()
-    defer { lock.unlock() }
-    if case .running(let task) = state { task.progress(done: done, total: total) }
-  }
-
-  /// The copy ended, however it ended.
-  public func finished(success: Bool) {
-    lock.lock()
-    var task: ContinuedTaskHandle?
-    switch state {
-    case .running(let running):
-      task = running
-      state = .idle
-    case .asked:
-      state = .ended(success: success)  // the hand-over may still come
-    case .idle, .ended:
-      break
-    }
-    lock.unlock()
-    task?.complete(success: success)
   }
 }

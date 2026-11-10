@@ -449,6 +449,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
         waiting: { continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes))) })
       let cancel = LinkCancel()
       lock.withLock { copyCancel = cancel }
+      // An expiry between the gate and here fired the previous cancel, or none: never lose it.
+      if continued.isExpired { throw CancellationError() }
       if check.done_bytes > 0 || started {
         continuation.yield(.resuming(doneBytes: Int64(check.done_bytes), totalBytes: Int64(check.total_bytes)))
       } else {
@@ -490,14 +492,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     let request = BGContinuedProcessingTaskRequest(identifier: copyTaskIdentifier, title: "Copying your library",
                                                    subtitle: "MediaViewer is bringing your catalogue to this phone.")
     request.strategy = .fail
-    // Refused where the system does not allow it (the Simulator, or one already running): the
-    // copy still runs while the app is open.
-    continued.asking()  // first: the hand-over can come before submit returns
-    do {
-      try BGTaskScheduler.shared.submit(request)
-    } catch {
-      continued.submitFailed()
-    }
+    // Refused (the Simulator, or one already running): the copy still runs while the app is open.
+    continued.submit { try BGTaskScheduler.shared.submit(request) }
   }
 
   @available(iOS 26.0, *)
