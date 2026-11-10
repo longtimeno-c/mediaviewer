@@ -397,6 +397,9 @@ class engine {
   // ---- search ------------------------------------------------------------------
   [[nodiscard]] std::uint64_t search_text(const std::string& query, const std::string& scope_dir,
                                           std::uint32_t scope, std::uint32_t kinds);
+  // A reader: whether search_text can answer this query now, before (or
+  // without) its tower: names, dates, places, words said, files. [no-block]
+  [[nodiscard]] bool answerable_now(const std::string& query);
   [[nodiscard]] std::uint64_t search_similar(const std::string& path, std::int64_t pts_ms,
                                              const std::string& scope_dir, std::uint32_t scope,
                                              std::uint32_t kinds);
@@ -977,6 +980,8 @@ class engine {
   loaded_docs docs_;      // #354 D3: empty model: no ai-docs piece
   vector_store meanings_; // its passage vectors (pts: the passage id)
   std::int64_t reader_meaning_ = 0;  // a reader: the last passage id taken
+  // A reader: people and transcripts are in, so searches that need no tower answer.
+  std::atomic<bool> catalogue_ready_{false};
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)

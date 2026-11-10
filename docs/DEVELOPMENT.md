@@ -661,7 +661,9 @@ tools/ios/run-parity.sh <nas>/.mediaviewer/gen/000001 <nas>/.mediaviewer <pack> 
 `publish` makes `queries.local.txt` from the catalogue's own names, places and cameras, so those
 stay out of the repo. Numbers from this are Simulator numbers, not phone numbers. Both sides run
 without the sound text tower, which the manifest does not carry; `MV_PARITY_WITH_SOUND=1` keeps it
-on the desktop side. `RealCatalogueTests` drives the real app and is skipped unless
+on the desktop side. The run fails below 200 queries, on a query listed twice, and when the
+two desktop runs disagree. `place:` is covered only through the labels the catalogue stores: the
+desktop app answers it through the Places add-on, which neither half loads. `RealCatalogueTests` drives the real app and is skipped unless
 `TEST_RUNNER_MV_REAL_CATALOGUE` names a folder for its screenshots.
 
 ## Run

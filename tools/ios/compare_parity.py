@@ -16,6 +16,8 @@ def load(path):
     with open(path, encoding="utf-8") as f:
         for line in f:
             doc = json.loads(line)
+            if doc["query"] in answers:
+                raise SystemExit(f"{path}: {doc['query']!r} twice: every query counts once")
             answers[doc["query"]] = doc
     return answers
 
@@ -24,7 +26,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("desktop")
     ap.add_argument("phone")
-    ap.add_argument("--min-queries", type=int, default=50)
+    # docs/plans/mobile.md M5's verify line: the 200-query parity set.
+    ap.add_argument("--min-queries", type=int, default=200)
     ap.add_argument("--score-delta", type=float, default=1e-4)
     a = ap.parse_args()
     desktop, phone = load(a.desktop), load(a.phone)

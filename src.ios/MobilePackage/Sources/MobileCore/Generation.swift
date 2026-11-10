@@ -14,9 +14,17 @@ public enum CatalogueOpenFailure: Error, Hashable, Sendable {
 }
 
 final class Generation: @unchecked Sendable {
+  private static let serials = NSLock()
+  nonisolated(unsafe) private static var lastSerial: UInt64 = 0
+
   let raw: OpaquePointer
   let directory: URL
+  /// This opening's own number, for `MediaID.catalogue`: unique while the app runs.
+  let serial: UInt64
+  let epoch: UInt64
   let number: UInt64
+  private let warmLock = NSLock()
+  private var warmed = false
   let createdUnix: Int64
   let itemCount: Int
 
@@ -43,14 +51,37 @@ final class Generation: @unchecked Sendable {
     }
     raw = opened
     self.directory = directory
+    serial = Self.serials.withLock {
+      Self.lastSerial += 1
+      return Self.lastSerial
+    }
     var info = mv_mobile_library_info()
     mv_mobile_library_info_get(opened, &info)
+    epoch = info.epoch
     number = info.generation
     createdUnix = info.created_unix
     itemCount = Int(info.assets)
   }
 
-  deinit { mv_mobile_library_close(raw) }
+  /// True once: the caller then starts what follows the first paint.
+  func claimWarmUp() -> Bool {
+    warmLock.withLock {
+      defer { warmed = true }
+      return !warmed
+    }
+  }
+
+  /// (epoch, generation) only goes up (§5 rule 7).
+  func isNewer(than other: Generation) -> Bool {
+    (epoch, number) > (other.epoch, other.number)
+  }
+
+  deinit {
+    // Closing stops the engine and joins its threads: never on whichever thread let go last,
+    // which can be the main one.
+    let raw = raw
+    DispatchQueue.global(qos: .utility).async { mv_mobile_library_close(raw) }
+  }
 }
 
 /// The catalogue's wall clock (a date taken, read as UTC) as a `Date` that formats to the same
@@ -60,9 +91,9 @@ func capturedDate(wallSeconds: Int64) -> Date {
   return utc.addingTimeInterval(-TimeInterval(TimeZone.current.secondsFromGMT(for: utc)))
 }
 
-func mediaItem(_ row: mv_mobile_row) -> MediaItem {
+func mediaItem(_ row: mv_mobile_row, in generation: Generation) -> MediaItem {
   let name = row.file_name.map { String(decoding: UnsafeBufferPointer(start: UnsafeRawPointer($0).assumingMemoryBound(to: UInt8.self), count: Int(row.file_name_len)), as: UTF8.self) } ?? ""
-  return MediaItem(id: MediaID(String(row.asset_id)),
+  return MediaItem(id: MediaID(String(row.asset_id), catalogue: generation.serial),
                    kind: row.kind == MV_MOBILE_KIND_CLIP ? .clip : .photo,
                    capturedAt: capturedDate(wallSeconds: row.wall_seconds),
                    pixelWidth: 0, pixelHeight: 0,
@@ -91,7 +122,7 @@ final class CoreMediaList: MediaList, @unchecked Sendable {
     ranges.reserveCapacity(total)
     for i in 0..<total {
       var month = mv_mobile_month()
-      mv_mobile_list_month_at(opened, UInt32(i), &month)
+      guard mv_mobile_list_month_at(opened, UInt32(i), &month) == MV_MOBILE_OK else { continue }
       ranges.append(MonthRange(key: Int(month.key), date: capturedDate(wallSeconds: month.wall_seconds),
                                range: Int(month.first)..<Int(month.first + month.count)))
     }
@@ -102,8 +133,8 @@ final class CoreMediaList: MediaList, @unchecked Sendable {
 
   func item(at index: Int) -> MediaItem {
     var row = mv_mobile_row()
-    mv_mobile_list_row_at(raw, UInt32(index), &row)
-    return mediaItem(row)
+    _ = mv_mobile_list_row_at(raw, UInt32(index), &row)  // an index from `count`: always one of ours
+    return mediaItem(row, in: generation)
   }
 }
 

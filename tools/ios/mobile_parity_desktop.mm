@@ -206,7 +206,7 @@ void write_local_queries(const std::string& gen, const std::string& out_path) {
     out << "place:" << quoted(part) << "\n";
     out << "place:" << quoted(part) << " snow\n";
   });
-  each(gen + "/catalog.db", "SELECT camera, COUNT(*) FROM assets WHERE camera IS NOT NULL GROUP BY camera ORDER BY 2 DESC LIMIT 5", [&](sqlite3_stmt* s) {
+  each(gen + "/catalog.db", "SELECT camera, COUNT(*) FROM assets WHERE camera IS NOT NULL AND camera != '' GROUP BY camera ORDER BY 2 DESC LIMIT 5", [&](sqlite3_stmt* s) {
     out << "camera:" << quoted(text(s, 0)) << "\n";
   });
   each(gen + "/catalog.db", "SELECT strftime('%Y', taken_at, 'unixepoch'), COUNT(*) FROM assets WHERE taken_at IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 4", [&](sqlite3_stmt* s) {

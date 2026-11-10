@@ -5,7 +5,11 @@
  * Opaque handles, POD, a status code from every call that can fail. Nothing throws across it.
  *
  * Threads: every call may block (SQLite, the disk, the model) unless it says [no-block], and so
- * never belongs on the main thread. A library is safe to use from several threads at once. */
+ * never belongs on the main thread. A library is safe to use from several threads at once.
+ *
+ * No correlation id (docs/design/14's rule for the host ABI): the phone has no crash-report
+ * pipeline to tie one to yet (docs/plans/mobile.md §12). Add one with that pipeline, as the
+ * last parameter of every call that can fail. */
 #ifndef MV_MOBILE_SEARCH_H
 #define MV_MOBILE_SEARCH_H
 
@@ -58,6 +62,7 @@ mv_mobile_status mv_mobile_library_open(const mv_mobile_open_options* options, m
 void mv_mobile_library_close(mv_mobile_library* library);
 
 typedef struct mv_mobile_library_info {
+  uint64_t epoch;       /* (epoch, generation) only goes up: compare both */
   uint64_t generation;
   int64_t created_unix;
   uint32_t assets;    /* photos and clips */
@@ -105,14 +110,15 @@ void mv_mobile_list_close(mv_mobile_list* list);
 /* [no-block] */
 uint32_t mv_mobile_list_count(const mv_mobile_list* list);
 uint32_t mv_mobile_list_month_count(const mv_mobile_list* list);
-void mv_mobile_list_month_at(const mv_mobile_list* list, uint32_t index, mv_mobile_month* out);
-void mv_mobile_list_row_at(const mv_mobile_list* list, uint32_t index, mv_mobile_row* out);
+/* MV_MOBILE_ERR_INVALID_ARG for an index past the end. [no-block] */
+mv_mobile_status mv_mobile_list_month_at(const mv_mobile_list* list, uint32_t index, mv_mobile_month* out);
+mv_mobile_status mv_mobile_list_row_at(const mv_mobile_list* list, uint32_t index, mv_mobile_row* out);
 
 /* [no-block] */
 mv_mobile_status mv_mobile_library_row(const mv_mobile_library* library, int64_t asset_id, mv_mobile_row* out);
 /* Reads the shape of each asset's tile once, for mv_mobile_row. Touches all of tiny.pack, so call
  * it at low priority after the first paint. */
-void mv_mobile_library_fill_aspects(mv_mobile_library* library);
+mv_mobile_status mv_mobile_library_fill_aspects(mv_mobile_library* library);
 
 /* ---- folders, people, details, filters -------------------------------------------------- */
 
@@ -200,7 +206,8 @@ typedef struct mv_mobile_hit {
   uint32_t more_in_clip;
 } mv_mobile_hit;
 
-/* Waits for the model if it is still warming up, then answers. One query at a time, newest wins:
+/* Waits for the model if it is still warming up and the query needs it (a name, a date, a place,
+ * words said or a file name do not), then answers. One query at a time, newest wins:
  * a run that a newer run or mv_mobile_search_cancel overtakes returns MV_MOBILE_ERR_CANCELLED.
  * kinds 0: every kind. timeout_ms 0: no limit. */
 mv_mobile_status mv_mobile_search_run(mv_mobile_library* library, const char* query_utf8, uint32_t kinds,
@@ -211,7 +218,7 @@ void mv_mobile_search_cancel(mv_mobile_library* library);
 void mv_mobile_results_close(mv_mobile_results* results);
 /* [no-block] */
 uint32_t mv_mobile_results_count(const mv_mobile_results* results);
-void mv_mobile_results_at(const mv_mobile_results* results, uint32_t index, mv_mobile_hit* out);
+mv_mobile_status mv_mobile_results_at(const mv_mobile_results* results, uint32_t index, mv_mobile_hit* out);
 /* Valid as long as the results. "" when there is none. */
 const char* mv_mobile_results_path(const mv_mobile_results* results, uint32_t index);
 const char* mv_mobile_results_snippet(const mv_mobile_results* results, uint32_t index);

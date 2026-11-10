@@ -59,6 +59,39 @@ public final class LocalCatalogue: @unchecked Sendable {
   private let lock = NSLock()
   private var current: Generation?
   private var opening: Task<Generation, Error>?
+  /// Every generation still held by a list or a result, by serial, so an item from before a swap
+  /// still finds its own tiles.
+  private var open: [UInt64: WeakGeneration] = [:]
+  private let warmQueue = DispatchQueue(label: "mediaviewer.catalogue.warm", qos: .utility)
+
+  private struct WeakGeneration { weak var value: Generation? }
+
+  private func register(_ g: Generation) {
+    lock.withLock {
+      open = open.filter { $0.value.value != nil }
+      open[g.serial] = WeakGeneration(value: g)
+    }
+  }
+
+  func generation(serial: UInt64) -> Generation? {
+    lock.withLock { open[serial]?.value }
+  }
+
+  /// After a tile has painted: the shapes from the tiles, then the model, on a queue of their
+  /// own so neither competes with the first paint (§9 "Readiness").
+  func afterFirstPaint(_ g: Generation) {
+    guard g.claimWarmUp() else { return }
+    let queue = warmQueue
+    // Two turns of the main queue: past the update that puts the tile on screen.
+    DispatchQueue.main.async {
+      DispatchQueue.main.async {
+        queue.async {
+          _ = mv_mobile_library_fill_aspects(g.raw)
+          _ = mv_mobile_search_start(g.raw)
+        }
+      }
+    }
+  }
 
   public init(location: LibraryLocation) {
     self.location = location
@@ -79,6 +112,7 @@ public final class LocalCatalogue: @unchecked Sendable {
     }
     do {
       let opened = try await task.value
+      register(opened)
       // Only the open still in force: a swap meanwhile has already set the newer one.
       lock.withLock { if opening == task { current = opened } }
       return opened
@@ -105,7 +139,10 @@ public final class LocalCatalogue: @unchecked Sendable {
     let new = try await Task.detached(priority: .userInitiated) { () throws -> Generation in
       try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory))
     }.value
+    register(new)
+    // Two swaps can finish out of order: the newer (epoch, generation) stays in force.
     lock.withLock {
+      if let current, !new.isNewer(than: current) { return }
       current = new
       opening = Task { new }
     }
@@ -115,9 +152,6 @@ public final class LocalCatalogue: @unchecked Sendable {
     guard let g = try? await generation() else { return nil }
     return Self.info(of: g)
   }
-
-  /// Which generation tiles belong to: an asset id can mean another picture in the next one.
-  var generationNumber: UInt64 { lock.withLock { current?.number ?? 0 } }
 
   /// What is known without waiting: nil until the generation has opened.
   public var infoIfOpen: CatalogueInfo? { lock.withLock { current.map(Self.info(of:)) } }
@@ -144,12 +178,6 @@ private struct CoreLibrary: LibraryStore {
     case .everything: list = try CoreMediaList(generation: g, scope: MV_MOBILE_SCOPE_EVERYTHING, key: nil)
     case .folder(let f): list = try CoreMediaList(generation: g, scope: MV_MOBILE_SCOPE_FOLDER, key: f.id)
     case .person(let p): list = try CoreMediaList(generation: g, scope: MV_MOBILE_SCOPE_PERSON, key: p.id)
-    }
-    // After the grid's first paint and out of its way: shapes from the tiles, and the model
-    // loading, so the first search rarely waits for it (§9).
-    Task.detached(priority: .utility) {
-      mv_mobile_library_fill_aspects(g.raw)
-      _ = mv_mobile_search_start(g.raw)
     }
     return list
   }
@@ -200,7 +228,7 @@ private struct CoreLibrary: LibraryStore {
 private func itemFor(_ g: Generation, asset: Int64) throws -> MediaItem {
   var row = mv_mobile_row()
   guard mv_mobile_library_row(g.raw, asset, &row) == MV_MOBILE_OK else { throw CatalogueOpenFailure.unreadable }
-  return mediaItem(row)
+  return mediaItem(row, in: g)
 }
 
 private struct PersonRow {
@@ -228,8 +256,6 @@ private func peopleRows(_ g: Generation) throws -> [PersonRow] {
 private final class CoreImages: ImageLadder, @unchecked Sendable {
   let catalogue: LocalCatalogue
   private let cache: NSCache<NSString, UIImage>
-  private let shownLock = NSLock()
-  private var shownGeneration: UInt64 = 0
 
   init(catalogue: LocalCatalogue) {
     self.catalogue = catalogue
@@ -238,27 +264,20 @@ private final class CoreImages: ImageLadder, @unchecked Sendable {
     cache = c
   }
 
-  /// A generation swap empties the cache: ids can be reused.
-  private func dropTilesOfOlderGenerations() {
-    let number = catalogue.generationNumber
-    let changed = shownLock.withLock {
-      defer { shownGeneration = number }
-      return shownGeneration != number
-    }
-    if changed { cache.removeAllObjects() }
-  }
+  /// A tile is its generation's: the same asset id in the next one can be another picture.
+  private static func key(_ id: MediaID) -> NSString { "\(id.catalogue)/\(id.raw)" as NSString }
 
-  func cachedImage(for id: MediaID) -> UIImage? {
-    dropTilesOfOlderGenerations()
-    return cache.object(forKey: id.raw as NSString)
-  }
+  func cachedImage(for id: MediaID) -> UIImage? { cache.object(forKey: Self.key(id)) }
 
   func thumbnail(for item: MediaItem) async -> UIImage? {
-    dropTilesOfOlderGenerations()
-    if let hit = cache.object(forKey: item.id.raw as NSString) { return hit }
-    guard let g = try? await catalogue.generation(), let id = Int64(item.id.raw), let image = Self.decode(g, id) else { return nil }
+    let key = Self.key(item.id)
+    if let hit = cache.object(forKey: key) { return hit }
+    // The item's own generation, still held by the list it came from; never the newest.
+    guard let g = catalogue.generation(serial: item.id.catalogue), let id = Int64(item.id.raw),
+          let image = Self.decode(g, id) else { return nil }
     let cost = (image.cgImage?.bytesPerRow ?? 256) * (image.cgImage?.height ?? 256)
-    cache.setObject(image, forKey: item.id.raw as NSString, cost: cost)
+    cache.setObject(image, forKey: key, cost: cost)
+    catalogue.afterFirstPaint(g)
     return image
   }
 
@@ -286,7 +305,7 @@ private final class CoreImages: ImageLadder, @unchecked Sendable {
 
   func prefetch(_ items: [MediaItem], fittingPixels: CGSize) {
     for item in items {
-      guard cache.object(forKey: item.id.raw as NSString) == nil else { continue }
+      guard cache.object(forKey: Self.key(item.id)) == nil else { continue }
       Task.detached(priority: .utility) { [self] in _ = await thumbnail(for: item) }
     }
   }
@@ -387,7 +406,7 @@ private final class CoreSearch: SearchService, @unchecked Sendable {
     hits.reserveCapacity(Int(n))
     for i in 0..<n {
       var hit = mv_mobile_hit()
-      mv_mobile_results_at(results, i, &hit)
+      guard mv_mobile_results_at(results, i, &hit) == MV_MOBILE_OK else { continue }
       guard let item = try? itemFor(g, asset: hit.asset_id) else { continue }
       hits.append(SearchHit(item: item, moment: moment(of: hit, results: results, index: i)))
     }

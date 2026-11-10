@@ -29,6 +29,7 @@ struct model_file {
 };
 
 struct manifest {
+  std::uint64_t epoch = 1;
   std::uint64_t generation = 0;
   std::int64_t created_unix = 0;
   std::string active_spec;
@@ -93,6 +94,11 @@ struct filter_options {
 // Reads the shape of a JPEG from its header; nullopt when `jpeg` is not one.
 [[nodiscard]] std::optional<std::pair<std::uint16_t, std::uint16_t>> jpeg_size(std::span<const std::uint8_t> jpeg);
 
+// A catalogue path longer or deeper than this is refused as corrupt (no file
+// system the publisher reads allows more than 1024 bytes of path on macOS).
+inline constexpr std::size_t kMaxPath = 4096;
+inline constexpr std::size_t kMaxDepth = 256;
+
 class catalogue {
  public:
   ~catalogue();
@@ -139,7 +145,8 @@ class catalogue {
   catalogue() = default;
   [[nodiscard]] expected read_rows();
   [[nodiscard]] listing list_of(std::vector<std::uint32_t> indices) const;
-  [[nodiscard]] std::uint32_t folder_of_dir(std::string_view dir);
+  // nullopt past kMaxPath bytes or kMaxDepth folders: the generation is refused.
+  [[nodiscard]] std::optional<std::uint32_t> folder_of_dir(std::string_view dir);
 
   std::string dir_;
   manifest manifest_;

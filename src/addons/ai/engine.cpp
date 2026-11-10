@@ -2614,6 +2614,37 @@ bool engine::load_reader() {
     std::lock_guard lock(settings_m_);
     s = settings_;
   }
+  // People and transcripts need no model: they go in first, so a search by
+  // name, date, place or words said answers while the tower is still loading
+  // (docs/plans/mobile.md §9, "Readiness"), or when it cannot load at all.
+  std::uint32_t quality = 0;
+  for (std::uint32_t q : deps_.qualities()) {
+    if (!deps_.clip_spec_key || deps_.clip_spec_key(q) == active) {
+      quality = q;
+      break;
+    }
+  }
+  // People: names and faces only (search, the query language). The reader
+  // clusters nothing, so the threshold and width it is opened with are unused.
+  std::unique_ptr<faces_db> people;
+  if (s.faces) {
+    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) people = std::move(*f);
+  }
+  reader_speech_spec_ = deps_.speech_spec_key && quality != 0 ? deps_.speech_spec_key(quality) : std::string();
+  {
+    std::lock_guard lock(models_m_);
+    faces_ = std::move(people);
+    speech_ = {};
+    speech_.spec_key = reader_speech_spec_;
+  }
+  if (!reader_speech_spec_.empty()) {
+    load_speech(reader_speech_spec_);
+  } else {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.clear();
+  }
+  catalogue_ready_ = true;
+
   // The tower whose vectors are in the index answers; the reader never
   // changes which (the app decides, and a migration it finishes shows up as
   // a new active_spec).
@@ -2631,12 +2662,6 @@ bool engine::load_reader() {
   for (const std::string& p : answer.meta.generic_prompts) {
     if (auto v = answer.model->embed_text(p)) answer.generic.push_back(std::move(*v));
   }
-  // People: names and faces only (search, the query language). The reader
-  // clusters nothing, so the threshold and width it is opened with are unused.
-  std::unique_ptr<faces_db> people;
-  if (s.faces) {
-    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) people = std::move(*f);
-  }
   loaded_sound sound;
   if (deps_.open_sound_text) {
     if (auto so = deps_.open_sound_text()) {
@@ -2647,8 +2672,6 @@ bool engine::load_reader() {
       }
     }
   }
-  // Speech needs no model: the transcripts are rows, matched as words.
-  reader_speech_spec_ = deps_.speech_spec_key ? deps_.speech_spec_key(answer.meta.quality) : std::string();
   loaded_clip old;
   begin_answer_swap();
   {
@@ -2656,10 +2679,7 @@ bool engine::load_reader() {
     old = std::move(answer_);
     build_ = answer;  // what status reads; a reader builds nothing
     answer_ = std::move(answer);
-    faces_ = std::move(people);
     sound_ = std::move(sound);
-    speech_ = {};
-    speech_.spec_key = reader_speech_spec_;
     publish_pieces_locked();
   }
   reader_frame_ = 0;
@@ -2678,12 +2698,6 @@ bool engine::load_reader() {
   }
   load_docs(true);  // #354 D3: the passage vectors, with the ai-docs piece
   load_labels();    // the label bar answers here as it does in the app
-  if (!reader_speech_spec_.empty()) {
-    load_speech(reader_speech_spec_);
-  } else {
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
-  }
   end_answer_swap();
   old = {};
   return true;
@@ -7726,10 +7740,24 @@ std::vector<vector_store::hit> engine::picture_hits(const std::string& text,
   return {};
 }
 
+bool engine::answerable_now(const std::string& query_text) {
+  if (models_ready_) return true;
+  if (!catalogue_ready_) return false;
+  std::vector<query::person_name> names;
+  {
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      for (auto& [id, name] : faces_->names()) names.push_back({id, std::move(name)});
+    }
+  }
+  const query::plan plan = query::resolve(query::parse(query_text), names);
+  return plan.text.empty() && plan.not_text.empty();
+}
+
 std::uint64_t engine::search_text(const std::string& query_text, const std::string& scope_dir,
                                   std::uint32_t scope, std::uint32_t kinds) {
   return submit([this, query_text, scope_dir, scope, kinds](search_state& st) {
-    if (!models_ready_) return;
+    if (!models_ready_ && !catalogue_ready_) return;
     std::uint32_t precision;
     {
       std::lock_guard lock(settings_m_);
@@ -7760,6 +7788,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
     }
     if (plan.impossible) return;
+    // A reader whose tower is not in yet answers only what needs none.
+    if (!models_ready_ && (!plan.text.empty() || !plan.not_text.empty())) return;
     // #441: which place a place: / in: term names is the Places add-on's
     // answer (the host's place_matches, over the whole index), intersected
     // here with the rest of the query: in every place named, in none left

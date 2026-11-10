@@ -7,6 +7,8 @@
 #include <sqlite3.h>
 
 #include <array>
+#include <chrono>
+#include <thread>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -49,7 +51,9 @@ struct generation_fixture {
   fs::path gen;
   std::string uuid = "aaaaaaaa-0000-4000-8000-000000000001";
 
-  explicit generation_fixture(const std::string& name, const std::string& spec = "clip-vit-l14/fp16/pre1") {
+  // `extra_rel`: one more photo, at this path under the root (a hostile path, say).
+  explicit generation_fixture(const std::string& name, const std::string& spec = "clip-vit-l14/fp16/pre1",
+                              const std::string& extra_rel = "") {
     root = fs::temp_directory_path() / ("mv-mobile-test-" + name + "-" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
     fs::remove_all(root);
     fs::create_directories(root);
@@ -64,6 +68,10 @@ struct generation_fixture {
                 "(2, '" + pictures.string() + "/trip/b.jpg', 7, 200, 22, 1, 0, 2000000, 'Cam A', 'Ortisei, South Tyrol, Italy'),"
                 "(3, '" + pictures.string() + "/trip/day1/c.mov', 7, 300, 33, 2, 9000, 1500000, 'Cam B', NULL),"
                 "(4, '" + pictures.string() + "/trip/day1/d.pdf', 7, 400, 44, 4, 0, NULL, NULL, NULL);");
+    if (!extra_rel.empty()) {
+      exec(index, "INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms) VALUES"
+                  "(5, '" + pictures.string() + "/" + extra_rel + "', 7, 500, 55, 1, 0);");
+    }
 
     auto store = cat::thumb_store::open((root / "thumbs").string());
     REQUIRE(store);
@@ -175,7 +183,7 @@ TEST_CASE("a generation opens as the phone's grid: newest first, folders, tiles"
   REQUIRE(mv_mobile_list_open(lib, MV_MOBILE_SCOPE_EVERYTHING, nullptr, &list) == MV_MOBILE_OK);
   REQUIRE(mv_mobile_list_count(list) == 3);
   mv_mobile_row r{};
-  mv_mobile_list_row_at(list, 0, &r);
+  REQUIRE(mv_mobile_list_row_at(list, 0, &r) == MV_MOBILE_OK);
   CHECK(row_name(r) == "b.jpg");
   CHECK(r.kind == MV_MOBILE_KIND_PHOTO);
   mv_mobile_list_row_at(list, 1, &r);
@@ -299,4 +307,69 @@ TEST_CASE("a new generation opens beside the old one and the old one's rows outl
   CHECK(row_name(r) == "b.jpg");
   mv_mobile_list_close(list);
   mv_mobile_library_close(second);
+}
+
+TEST_CASE("a catalogue path too deep or too long is refused, never walked on the stack", "[mobile]") {
+  std::string deep;
+  for (int i = 0; i < 3000; ++i) deep += "a/";  // 6 KB, 3000 folders: the review's crash
+  generation_fixture g("deep", "clip-vit-l14/fp16/pre1", deep + "x.jpg");
+  mv_mobile_status st = MV_MOBILE_OK;
+  CHECK(g.open(&st) == nullptr);
+  CHECK(st == MV_MOBILE_ERR_CORRUPT);
+
+  // Opened on a thread with a small stack, as the review's was: refused, not crashed.
+  std::thread small([&] { CHECK(g.open(&st) == nullptr); });
+  small.join();
+
+  std::string fine;
+  for (int i = 0; i < 100; ++i) fine += "f" + std::to_string(i) + "/";
+  generation_fixture ok("deep-ok", "clip-vit-l14/fp16/pre1", fine + "y.jpg");
+  mv_mobile_library* lib = ok.open(&st);
+  REQUIRE(st == MV_MOBILE_OK);
+  mv_mobile_library_info info{};
+  REQUIRE(mv_mobile_library_info_get(lib, &info) == MV_MOBILE_OK);
+  CHECK(info.assets == 4);
+  mv_mobile_library_close(lib);
+}
+
+TEST_CASE("names, dates and files answer without a model; meaning waits for one", "[mobile]") {
+  // The fixture's text.onnx is no model, and no runtime is laid out here: the tower never loads.
+  generation_fixture g("no-model");
+  mv_mobile_library* lib = g.open();
+  REQUIRE(lib);
+  REQUIRE(mv_mobile_search_start(lib) == MV_MOBILE_OK);
+  for (int i = 0; i < 500 && mv_mobile_search_state(lib) == MV_MOBILE_SEARCH_WARMING; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  CHECK(mv_mobile_search_state(lib) == MV_MOBILE_SEARCH_FAILED);
+
+  const auto paths = [&](const char* q, mv_mobile_status* st) {
+    std::vector<std::string> out;
+    mv_mobile_results* r = nullptr;
+    *st = mv_mobile_search_run(lib, q, 0, 10000, &r);
+    if (*st != MV_MOBILE_OK) return out;
+    for (uint32_t i = 0; i < mv_mobile_results_count(r); ++i) out.push_back(mv_mobile_results_path(r, i));
+    mv_mobile_results_close(r);
+    return out;
+  };
+  mv_mobile_status st = MV_MOBILE_ERR_INTERNAL;
+  CHECK(paths("in:1970", &st).size() == 4);  // the document too: kinds 0 is every kind
+  CHECK(st == MV_MOBILE_OK);
+  const auto by_file = paths("file:c", &st);
+  CHECK(st == MV_MOBILE_OK);
+  REQUIRE(by_file.size() == 1);
+  CHECK(by_file[0] == "/" + g.uuid + "/trip/day1/c.mov");
+  CHECK(paths("place:Ortisei", &st).size() == 2);
+  CHECK(st == MV_MOBILE_OK);
+  // A picture's meaning needs the tower: an error, never a silent "nothing found".
+  CHECK(paths("mountains", &st).empty());
+  CHECK(st == MV_MOBILE_ERR_IO);
+
+  mv_mobile_row row{};
+  CHECK(mv_mobile_library_row(lib, 1, &row) == MV_MOBILE_OK);
+  mv_mobile_list* list = nullptr;
+  REQUIRE(mv_mobile_list_open(lib, MV_MOBILE_SCOPE_EVERYTHING, nullptr, &list) == MV_MOBILE_OK);
+  CHECK(mv_mobile_list_row_at(list, 99, &row) == MV_MOBILE_ERR_INVALID_ARG);
+  mv_mobile_list_close(list);
+  mv_mobile_library_close(lib);
 }

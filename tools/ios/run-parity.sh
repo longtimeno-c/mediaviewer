@@ -16,7 +16,10 @@ queries=()
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do queries+=("$1"); shift; done
 shift
 work="${1:?}"
-cat "${queries[@]}" > "$work/queries.txt"
+cat "${queries[@]}" | grep -v '^#' | grep -v '^$' > "$work/queries.txt"
+if [ -n "$(sort "$work/queries.txt" | uniq -d)" ]; then
+  echo "a query is listed twice:"; sort "$work/queries.txt" | uniq -d; exit 1
+fi
 for run in desktop-run desktop-run2; do
   mkdir -p "$work/$run"
   ln -sfn "$(dirname "$pack")/data/fetched" "$work/$run/fetched"
@@ -30,8 +33,12 @@ xcrun simctl bootstatus "$udid" -b >/dev/null
 echo "== desktop engine"
 "$desktop" search "$gen" "$pack" "$addons" "$work/desktop-run" "$kinds" "$work/queries.txt" "$work/desktop.jsonl"
 echo "== desktop engine, second run (ties and map order)"
-"$desktop" search "$gen" "$pack" "$addons" "$work/desktop-run2" "$kinds" "$work/queries.txt" "$work/desktop2.jsonl" || true
+"$desktop" search "$gen" "$pack" "$addons" "$work/desktop-run2" "$kinds" "$work/queries.txt" "$work/desktop2.jsonl"
+echo "== desktop against itself"
+/usr/bin/python3 -I "$(dirname "$0")/compare_parity.py" "$work/desktop.jsonl" "$work/desktop2.jsonl"
 echo "== the phone's engine, in the Simulator"
 xcrun simctl spawn "$udid" "$sim" "$gen" "$library" "$work/phone-work" "$kinds" "$work/queries.txt" "$work/phone.jsonl"
-echo "== compare"
+echo "== the phone against the desktop"
+# Not covered: the desktop app answers place: through the Places add-on (place_matches). Both
+# halves here have no Places provider and answer from the labels the catalogue stores.
 /usr/bin/python3 -I "$(dirname "$0")/compare_parity.py" "$work/desktop.jsonl" "$work/phone.jsonl"

@@ -217,6 +217,10 @@ struct search_engine::impl {
   std::unique_ptr<ai::engine> eng;
   std::mutex one_at_a_time;
   std::atomic<std::uint64_t> newest{0};
+  // The engine's search a cancelled run left behind (under one_at_a_time):
+  // the next run waits for it rather than queueing behind it, so typing never
+  // stacks up one full encode and scan per keystroke.
+  std::uint64_t in_engine = 0;
 };
 
 search_engine::~search_engine() {
@@ -280,25 +284,40 @@ result<std::vector<hit>> search_engine::run(const std::string& query, std::uint3
   impl& i = *impl_;
   const std::uint64_t ticket = i.newest.fetch_add(1) + 1;
   std::lock_guard lock(i.one_at_a_time);
-  if (i.newest.load() != ticket) return err(status::cancelled);
   const auto start = std::chrono::steady_clock::now();
   const auto out_of_time = [&] {
     return timeout_ms != 0 &&
            std::chrono::steady_clock::now() - start > std::chrono::milliseconds(timeout_ms);
   };
-  while (current() == state::warming) {
-    if (i.newest.load() != ticket) return err(status::cancelled);
+  const auto overtaken = [&] { return i.newest.load() != ticket; };
+  // What an overtaken run left in the engine finishes first; a run overtaken
+  // meanwhile submits nothing.
+  while (i.in_engine != 0 && !i.eng->wait_search(i.in_engine, 20)) {
+    if (overtaken()) return err(status::cancelled);
+    if (out_of_time()) return err(status::timeout);
+  }
+  if (i.in_engine != 0) {
+    i.eng->search_release(i.in_engine);
+    i.in_engine = 0;
+  }
+  if (overtaken()) return err(status::cancelled);
+  // A query that needs no tower (a name, a date, a place, words said) does not
+  // wait for it (docs/plans/mobile.md §9, "Readiness").
+  while (current() == state::warming && !i.eng->answerable_now(query)) {
+    if (overtaken()) return err(status::cancelled);
     if (out_of_time()) return err(status::timeout);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
-  if (current() == state::failed) return err(status::io);
+  if (current() == state::failed && !i.eng->answerable_now(query)) return err(status::io);
 
   const std::uint64_t id = i.eng->search_text(query, std::string(), MV_AI_SCOPE_ALL,
                                               kinds == 0 ? static_cast<std::uint32_t>(MV_AI_KIND_ALL) : kinds);
+  i.in_engine = id;
   while (!i.eng->wait_search(id, 20)) {
-    if (i.newest.load() != ticket) return err(status::cancelled);  // the engine's slot is simply left to age out
+    if (overtaken()) return err(status::cancelled);  // left in i.in_engine for the next run
     if (out_of_time()) return err(status::timeout);
   }
+  i.in_engine = 0;
   std::vector<hit> out;
   auto count = i.eng->result_count(id);
   if (!count) return err(count.error());

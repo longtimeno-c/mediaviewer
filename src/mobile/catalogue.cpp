@@ -102,6 +102,7 @@ result<manifest> read_manifest(const std::string& dir, const std::string& librar
   const auto generation = doc->integer("generation");
   if (!generation || *generation <= 0) return err(status::corrupt);
   m.generation = static_cast<std::uint64_t>(*generation);
+  m.epoch = static_cast<std::uint64_t>(std::max<std::int64_t>(1, doc->integer("epoch").value_or(1)));
   m.created_unix = doc->integer("created").value_or(0);
   m.active_spec = field(*doc, "active_spec");
   m.model_spec = field(*doc, "model_spec");
@@ -208,28 +209,44 @@ result<std::unique_ptr<catalogue>> catalogue::open(const std::string& generation
   return c;
 }
 
-std::uint32_t catalogue::folder_of_dir(std::string_view dir) {
-  std::string key(dir);
-  if (auto it = folder_by_key_.find(key); it != folder_by_key_.end()) return it->second;
-  // "/<root uuid>" is a top-level folder; everything below it has a parent.
+std::optional<std::uint32_t> catalogue::folder_of_dir(std::string_view dir) {
+  if (dir.size() > kMaxPath) return std::nullopt;
+  if (auto it = folder_by_key_.find(std::string(dir)); it != folder_by_key_.end()) return it->second;
+  // The nearest folder already known, then each missing one below it, in a
+  // loop: a path is data from the share, and its depth is no limit of ours.
+  std::vector<std::size_t> ends;  // where each missing folder's key ends, deepest first
   std::int32_t parent = -1;
-  std::string name(leaf(dir));
-  const std::size_t slash = dir.rfind('/');
-  if (slash != std::string_view::npos && slash > 0) {
-    parent = static_cast<std::int32_t>(folder_of_dir(dir.substr(0, slash)));
-  } else {
-    for (const manifest::root& r : manifest_.roots) {
-      if (r.uuid == name) {
-        name = !r.sub.empty() ? std::string(leaf(r.sub)) : r.share;
-        break;
-      }
+  std::size_t end = dir.size();
+  for (;;) {
+    ends.push_back(end);
+    if (ends.size() > kMaxDepth) return std::nullopt;
+    const std::size_t slash = dir.substr(0, end).rfind('/');
+    if (slash == std::string_view::npos || slash == 0) break;
+    end = slash;
+    if (auto it = folder_by_key_.find(std::string(dir.substr(0, end))); it != folder_by_key_.end()) {
+      parent = static_cast<std::int32_t>(it->second);
+      break;
     }
   }
-  const auto index = static_cast<std::uint32_t>(folders_.size());
-  folders_.push_back(folder{key, std::move(name), parent, 0, false});
-  folder_by_key_.emplace(std::move(key), index);
-  if (parent >= 0) folders_[static_cast<std::size_t>(parent)].has_subfolders = true;
-  return index;
+  for (auto e = ends.rbegin(); e != ends.rend(); ++e) {
+    const std::string_view key = dir.substr(0, *e);
+    std::string name(leaf(key));
+    if (parent < 0) {
+      // "/<root uuid>": a top-level folder, named after its share and sub.
+      for (const manifest::root& r : manifest_.roots) {
+        if (r.uuid == name) {
+          name = !r.sub.empty() ? std::string(leaf(r.sub)) : r.share;
+          break;
+        }
+      }
+    }
+    const auto index = static_cast<std::uint32_t>(folders_.size());
+    folders_.push_back(folder{std::string(key), std::move(name), parent, 0, false});
+    folder_by_key_.emplace(std::string(key), index);
+    if (parent >= 0) folders_[static_cast<std::size_t>(parent)].has_subfolders = true;
+    parent = static_cast<std::int32_t>(index);
+  }
+  return static_cast<std::uint32_t>(parent);
 }
 
 expected catalogue::read_rows() {
@@ -247,7 +264,9 @@ expected catalogue::read_rows() {
     r.name_length = static_cast<std::uint16_t>(std::min<std::size_t>(name.size(), 0xFFFF));
     names_.append(name.substr(0, r.name_length));
     const std::size_t slash = path.rfind('/');
-    r.folder = folder_of_dir(slash == std::string::npos ? std::string_view() : std::string_view(path).substr(0, slash));
+    const auto folder = folder_of_dir(slash == std::string::npos ? std::string_view() : std::string_view(path).substr(0, slash));
+    if (!folder) return err(status::corrupt);  // deeper or longer than any real library's
+    r.folder = *folder;
     rows_.push_back(r);
   }
   std::sort(rows_.begin(), rows_.end(), [](const row& a, const row& b) {

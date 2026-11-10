@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mobile/mv_mobile_search.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -21,8 +22,15 @@ using mv::mobile::search_engine;
 struct mv_mobile_library {
   std::shared_ptr<catalogue> cat;
   std::string work_dir;
-  std::mutex start_m;
+  std::mutex start_m;   // one start at a time; held across it
+  std::atomic<bool> starting{false};
+  mutable std::mutex engine_m;  // only to read or publish `engine`: never held across work
   std::shared_ptr<search_engine> engine;  // set once
+
+  std::shared_ptr<search_engine> current_engine() const {
+    std::lock_guard lock(engine_m);
+    return engine;
+  }
 };
 
 struct mv_mobile_list {
@@ -119,6 +127,7 @@ mv_mobile_status mv_mobile_library_info_get(const mv_mobile_library* l, mv_mobil
   return guard([&]() -> mv_mobile_status {
     if (!l || !out) return MV_MOBILE_ERR_INVALID_ARG;
     const auto& m = l->cat->info();
+    out->epoch = m.epoch;
     out->generation = m.generation;
     out->created_unix = m.created_unix;
     out->assets = static_cast<uint32_t>(l->cat->rows().size());
@@ -152,27 +161,39 @@ void mv_mobile_list_close(mv_mobile_list* list) { delete list; }
 uint32_t mv_mobile_list_count(const mv_mobile_list* l) { return l ? static_cast<uint32_t>(l->listing->indices.size()) : 0; }
 uint32_t mv_mobile_list_month_count(const mv_mobile_list* l) { return l ? static_cast<uint32_t>(l->listing->months.size()) : 0; }
 
-void mv_mobile_list_month_at(const mv_mobile_list* l, uint32_t index, mv_mobile_month* out) {
-  if (!l || !out || index >= l->listing->months.size()) return;
-  const auto& m = l->listing->months[index];
-  *out = mv_mobile_month{m.key, m.wall_seconds, m.first, m.count};
+mv_mobile_status mv_mobile_list_month_at(const mv_mobile_list* l, uint32_t index, mv_mobile_month* out) {
+  return guard([&]() -> mv_mobile_status {
+    if (!l || !out || index >= l->listing->months.size()) return MV_MOBILE_ERR_INVALID_ARG;
+    const auto& m = l->listing->months[index];
+    *out = mv_mobile_month{m.key, m.wall_seconds, m.first, m.count};
+    return MV_MOBILE_OK;
+  });
 }
 
-void mv_mobile_list_row_at(const mv_mobile_list* l, uint32_t index, mv_mobile_row* out) {
-  if (!l || !out || index >= l->listing->indices.size()) return;
-  fill_row(*l->cat, l->cat->rows()[l->listing->indices[index]], out);
+mv_mobile_status mv_mobile_list_row_at(const mv_mobile_list* l, uint32_t index, mv_mobile_row* out) {
+  return guard([&]() -> mv_mobile_status {
+    if (!l || !out || index >= l->listing->indices.size()) return MV_MOBILE_ERR_INVALID_ARG;
+    fill_row(*l->cat, l->cat->rows()[l->listing->indices[index]], out);
+    return MV_MOBILE_OK;
+  });
 }
 
 mv_mobile_status mv_mobile_library_row(const mv_mobile_library* l, int64_t id, mv_mobile_row* out) {
-  if (!l || !out) return MV_MOBILE_ERR_INVALID_ARG;
-  const auto* r = l->cat->row_of(id);
-  if (!r) return MV_MOBILE_ERR_NOT_FOUND;
-  fill_row(*l->cat, *r, out);
-  return MV_MOBILE_OK;
+  return guard([&]() -> mv_mobile_status {
+    if (!l || !out) return MV_MOBILE_ERR_INVALID_ARG;
+    const auto* r = l->cat->row_of(id);
+    if (!r) return MV_MOBILE_ERR_NOT_FOUND;
+    fill_row(*l->cat, *r, out);
+    return MV_MOBILE_OK;
+  });
 }
 
-void mv_mobile_library_fill_aspects(mv_mobile_library* l) {
-  if (l) l->cat->fill_aspects();
+mv_mobile_status mv_mobile_library_fill_aspects(mv_mobile_library* l) {
+  return guard([&]() -> mv_mobile_status {
+    if (!l) return MV_MOBILE_ERR_INVALID_ARG;
+    l->cat->fill_aspects();
+    return MV_MOBILE_OK;
+  });
 }
 
 mv_mobile_status mv_mobile_library_folders(mv_mobile_library* l, const char* parent, mv_mobile_folder_fn visit, void* user) {
@@ -249,9 +270,12 @@ mv_mobile_status mv_mobile_search_start(mv_mobile_library* l) {
     if (!l) return MV_MOBILE_ERR_INVALID_ARG;
     if (!mv::mobile::tower_supported(l->cat->info().active_spec)) return MV_MOBILE_ERR_UNSUPPORTED_TOWER;
     std::lock_guard lock(l->start_m);
-    if (l->engine) return MV_MOBILE_OK;
+    if (l->current_engine()) return MV_MOBILE_OK;
+    l->starting = true;
     auto started = search_engine::start(l->cat, l->work_dir);
+    l->starting = false;
     if (!started) return map_status(started.error());
+    std::lock_guard publish(l->engine_m);
     l->engine = std::shared_ptr<search_engine>(std::move(*started));
     return MV_MOBILE_OK;
   });
@@ -260,14 +284,16 @@ mv_mobile_status mv_mobile_search_start(mv_mobile_library* l) {
 uint32_t mv_mobile_search_state(const mv_mobile_library* l) {
   if (!l) return MV_MOBILE_SEARCH_OFF;
   if (!mv::mobile::tower_supported(l->cat->info().active_spec)) return MV_MOBILE_SEARCH_UNSUPPORTED;
-  // Starting holds this lock across the catalogue read: that is warming.
-  std::unique_lock lock(const_cast<mv_mobile_library*>(l)->start_m, std::try_to_lock);
-  if (!lock.owns_lock()) return MV_MOBILE_SEARCH_WARMING;
-  if (!l->engine) return MV_MOBILE_SEARCH_OFF;
-  switch (l->engine->current()) {
-    case search_engine::state::warming: return MV_MOBILE_SEARCH_WARMING;
-    case search_engine::state::ready: return MV_MOBILE_SEARCH_READY;
-    default: return MV_MOBILE_SEARCH_FAILED;
+  try {
+    const auto engine = l->current_engine();
+    if (!engine) return l->starting ? MV_MOBILE_SEARCH_WARMING : MV_MOBILE_SEARCH_OFF;
+    switch (engine->current()) {
+      case search_engine::state::warming: return MV_MOBILE_SEARCH_WARMING;
+      case search_engine::state::ready: return MV_MOBILE_SEARCH_READY;
+      default: return MV_MOBILE_SEARCH_FAILED;
+    }
+  } catch (...) {
+    return MV_MOBILE_SEARCH_FAILED;
   }
 }
 
@@ -275,11 +301,7 @@ mv_mobile_status mv_mobile_search_run(mv_mobile_library* l, const char* query, u
   return guard([&]() -> mv_mobile_status {
     if (!l || !query || !out) return MV_MOBILE_ERR_INVALID_ARG;
     if (!mv::mobile::tower_supported(l->cat->info().active_spec)) return MV_MOBILE_ERR_UNSUPPORTED_TOWER;
-    std::shared_ptr<search_engine> engine;
-    {
-      std::lock_guard lock(l->start_m);
-      engine = l->engine;
-    }
+    const auto engine = l->current_engine();
     if (!engine) return MV_MOBILE_ERR_NOT_FOUND;
     auto run = engine->run(query, kinds, timeout_ms);
     if (!run) return map_status(run.error());
@@ -292,21 +314,20 @@ mv_mobile_status mv_mobile_search_run(mv_mobile_library* l, const char* query, u
 
 void mv_mobile_search_cancel(mv_mobile_library* l) {
   if (!l) return;
-  std::shared_ptr<search_engine> engine;
-  {
-    std::lock_guard lock(l->start_m);
-    engine = l->engine;
+  try {
+    if (const auto engine = l->current_engine()) engine->cancel();
+  } catch (...) {
   }
-  if (engine) engine->cancel();
 }
 
 void mv_mobile_results_close(mv_mobile_results* r) { delete r; }
 uint32_t mv_mobile_results_count(const mv_mobile_results* r) { return r ? static_cast<uint32_t>(r->hits.size()) : 0; }
 
-void mv_mobile_results_at(const mv_mobile_results* r, uint32_t i, mv_mobile_hit* out) {
-  if (!r || !out || i >= r->hits.size()) return;
+mv_mobile_status mv_mobile_results_at(const mv_mobile_results* r, uint32_t i, mv_mobile_hit* out) {
+  if (!r || !out || i >= r->hits.size()) return MV_MOBILE_ERR_INVALID_ARG;
   const auto& h = r->hits[i];
   *out = mv_mobile_hit{h.asset, h.pts_ms, h.score, h.kind, h.match, h.more_in_clip};
+  return MV_MOBILE_OK;
 }
 
 const char* mv_mobile_results_path(const mv_mobile_results* r, uint32_t i) {
