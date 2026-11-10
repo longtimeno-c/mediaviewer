@@ -7,6 +7,7 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -126,6 +127,12 @@ class link_session final : public remote_file {
   mutable std::mutex m_;          // guards live_
   std::shared_ptr<driftwire::serve::client> live_;
   route_report last_report_;  // under m_
+
+  // The service ends any stream past kMaxStreams with "too many": the rest wait here.
+  class stream_slot;
+  std::mutex streams_m_;
+  std::condition_variable streams_cv_;
+  std::size_t streams_ = 0;  // under streams_m_
   bool shut_ = false;         // under m_
 };
 

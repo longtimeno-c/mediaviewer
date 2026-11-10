@@ -342,7 +342,29 @@ result<std::shared_ptr<serve::client>> link_session::client(const cancel_flag* c
   return err(status::io);
 }
 
+class link_session::stream_slot {
+ public:
+  explicit stream_slot(link_session& s) : s_(s) {
+    std::unique_lock lock(s_.streams_m_);
+    s_.streams_cv_.wait(lock, [this] { return s_.streams_ < serve::kMaxStreams; });
+    ++s_.streams_;
+  }
+  ~stream_slot() {
+    {
+      std::lock_guard lock(s_.streams_m_);
+      --s_.streams_;
+    }
+    s_.streams_cv_.notify_one();
+  }
+  stream_slot(const stream_slot&) = delete;
+  stream_slot& operator=(const stream_slot&) = delete;
+
+ private:
+  link_session& s_;
+};
+
 result<std::vector<serve::root_info>> link_session::roots() {
+  stream_slot slot(*this);
   auto c = client(nullptr);
   if (!c) return err(c.error());
   auto r = (*c)->roots();
@@ -351,6 +373,7 @@ result<std::vector<serve::root_info>> link_session::roots() {
 }
 
 result<std::vector<serve::list_entry>> link_session::list(const std::string& root, const std::string& rel) {
+  stream_slot slot(*this);
   auto c = client(nullptr);
   if (!c) return err(c.error());
   auto r = (*c)->list(root, rel);
@@ -359,6 +382,7 @@ result<std::vector<serve::list_entry>> link_session::list(const std::string& roo
 }
 
 result<serve::stat_info> link_session::stat(const std::string& root, const std::string& rel) {
+  stream_slot slot(*this);
   auto c = client(nullptr);
   if (!c) return err(c.error());
   auto r = (*c)->stat(root, rel);
@@ -368,6 +392,7 @@ result<serve::stat_info> link_session::stat(const std::string& root, const std::
 
 expected link_session::read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                   std::uint64_t length, const byte_sink& sink, const cancel_flag* cancel, bool bulk) {
+  stream_slot slot(*this);
   auto c = client(cancel);
   if (!c) return err(c.error());
   if (cancel && cancel->stopped()) return err(status::cancelled);

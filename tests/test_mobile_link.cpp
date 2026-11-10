@@ -640,13 +640,13 @@ TEST_CASE("link: readers after a drop share one new connection", "[mobile-link]"
   s.disconnect();
   std::atomic<int> ok{0};
   std::vector<std::thread> readers;
-  for (int i = 0; i < 40; ++i) {
+  for (int i = 0; i < 60; ++i) {  // more than the service's 32 streams a session
     readers.emplace_back([&] {
       if (s.stat("c2c2c2c2c2c2c2c2", "current.json")) ++ok;
     });
   }
   for (auto& t : readers) t.join();
-  CHECK(ok.load() == 40);
+  CHECK(ok.load() == 60);
 }
 
 TEST_CASE("sync: bytes stop when they may not move, resume when they may, and a half-done install finishes", "[mobile-link]") {
