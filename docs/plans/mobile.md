@@ -346,8 +346,9 @@ and, from 1.1, write on the backup folder under a storage limit the person sets.
 is done from the desktop card.
 
 **Setting it up (proposal, S5 confirms).** The person installs the package on the Synology. The
-desktop then claims the service by writing a one-time token into `.mediaviewer/` over SMB, which
-proves it can write to the share. The service accepts a claim only while it has no owner and only
+desktop then claims the service by writing a one-time token into `.mediaviewer/` over SMB, then
+writing back a nonce the service sends, which proves it can read and write the share (built
+2026-11-10, `docs/design/28` "Claiming and pairing"). The service accepts a claim only while it has no owner and only
 from its own network. The claiming desktop can then add and revoke devices and change the named
 folders.
 

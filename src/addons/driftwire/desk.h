@@ -107,6 +107,14 @@ class desk {
 
   // A single-use code the service will take for `ttl_ms`.
   [[nodiscard]] result<pairing> start_pairing(int ttl_ms = kDefaultPairTtlMs);
+  // Withdraws the code waiting on the service (Cancel, or it ran out here).
+  [[nodiscard]] expected stop_pairing();
+  // Whether the last code is still waiting on the service: false once a phone
+  // used it (a re-scan adds nothing to the list) or it ran out. As last read
+  // by refresh_devices.
+  [[nodiscard]] bool pairing_waiting();
+  // Revokes made here that the service has not heard yet.
+  [[nodiscard]] std::size_t revokes_pending();
 
   // The phones here, as last read.
   [[nodiscard]] std::vector<device_row> devices();

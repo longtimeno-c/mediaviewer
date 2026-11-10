@@ -1629,6 +1629,9 @@ of records, each signed by the key it leaves. A new desktop writes `takeover.req
 its name and key, and its person hands over, which signs the record and raises the epoch. The new desktop
 finds its key on the share and adopts the library id and epoch. A phone calls `follow_chain` from the key it
 pinned. With the old desktop gone, Start over writes the new key with no record, and each phone scans again.
+The share only ever moves a desktop forward: a library.json naming another library, or a lower epoch, after
+a restore or an edit, is shown on the card ("The share doesn't match this Mac") and never adopted. A desktop
+whose key the share no longer names signs no nearby copy.
 
 **The nearby copy** (`phone/nearby/`, `prepare_nearby`): the newest generation, hard-linked, with its own
 signed `current.json`, the previous one kept for a phone mid-copy, and the text tower. Thumbnail packs stay

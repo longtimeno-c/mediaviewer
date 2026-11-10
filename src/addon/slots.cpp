@@ -773,6 +773,7 @@ result<std::string> slot_registry::addon_request(const std::string& target, cons
   c->caller = caller;
   c->method = method;
   c->json = json;
+  if (target == caller) return err(status::invalid_arg);  // its own worker would wait on itself
   std::unique_lock lock(m_);
   const auto it = addons_.find(target);
   if (it == addons_.end()) return err(status::not_found);
@@ -783,7 +784,13 @@ result<std::string> slot_registry::addon_request(const std::string& target, cons
     c->done = true;
     private_cv_.notify_all();
   });
-  while (!c->done && addons_.count(target) != 0) private_cv_.wait_for(lock, std::chrono::milliseconds(50));
+  // Bounded, so a caller stopping (an add-on unloading) never waits on a
+  // network that hangs; the answer, if it comes later, goes nowhere.
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (!c->done && addons_.count(target) != 0 && std::chrono::steady_clock::now() < until) {
+    private_cv_.wait_for(lock, std::chrono::milliseconds(50));
+  }
+  if (!c->done && addons_.count(target) != 0) return err(status::timeout);
   if (!c->done || c->st == status::unsupported_format) return err(status::not_found);
   if (c->st != status::ok) return err(c->st);
   return std::move(c->out);

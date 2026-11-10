@@ -1356,7 +1356,11 @@ table (`route_request`, [18](18-import.md#add-ons-calling-add-ons)), and refuses
 (`net::on_link`, loopback included), it looks for `.mediaviewer/claim.token` under its named folders:
 64 hex digits the desktop wrote over the share. A hello that opens under the key derived from that
 token (`claim_key`, `channel::hello_opens_under`, one AEAD) becomes a claim channel. Everyone else
-gets the silence a wrong access key gets, and from outside no file is read. The claimant's device
+gets the silence a wrong access key gets, and from outside no file is read. The token proves the desktop
+can read the share; the service then sends a nonce, and the claim goes through only once that nonce is in
+`.mediaviewer/claim.proof` beside it, which proves the desktop can also write there (a read-only account
+cannot claim). What is not proven: that the desktop is the share's owner, or a person's own computer;
+anyone who can write the share on the NAS's own network, before the owner does, can claim it. The claimant's device
 key is stored as `owner`; the answer carries the access key, and `<folder>/.mediaviewer` becomes a
 named folder labelled `Catalogue` (a hidden name cannot be reached any other way). The desktop deletes
 the token whatever happens. There is no expiry on the token: anyone who can read it could also write
@@ -1369,13 +1373,14 @@ with their NAS paths, which no phone is told). Anyone else's `serve_admin` is an
 Removing a named folder cuts every other session, so nothing keeps reading it.
 
 **Pairing.** The owner hands the service a single-use code with a lifetime measured on the service's
-clock. A device not yet paired redeems it with `serve_pair` before `serve_hello`; a used, expired or
+clock; a new code withdraws the one before, and Cancel or expiry on the card withdraws it (`pair_cancel`).
+The device list says whether a code is still waiting, so the card takes down one a re-scan used. A device not yet paired redeems it with `serve_pair` before `serve_hello`; a used, expired or
 made-up code is `bad-code`, and the phone is told to scan again. A phone already paired that scans again is
 answered `serve_paired` and goes on, and a code it carries is spent so it pairs nothing else. Codes are in memory, hashed, at most
 `kMaxPairCodes`, and a restart forgets them. The desktop learns the phone from the service's device list,
 which is its own list too (`phone_devices`), so one scan pairs with both. A revoke takes the phone off the
-desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`) and sent
-at the next refresh.
+desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`), and Local
+search asks again by itself, from 30 s and doubling to an hour, until the service has it.
 
 **Nearby.** `desk::start_nearby` runs a second `serve::server` on the Mac over the local copy, `lan_only`,
 never claimable, with its keys in memory so its timer never wakes the Keychain. It takes the same access key

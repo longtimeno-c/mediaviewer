@@ -277,6 +277,8 @@ struct engine_deps {
   double phone_min_interval_s = 3600;
   double phone_share_poll_s = 30;
   double phone_thumb_budget_s = 1800;
+  // A revoke the NAS has not heard: asked again after this, doubling to an hour.
+  double phone_link_retry_s = 30;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
   std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
   double tree_max_wait_s = 10;
@@ -1284,6 +1286,11 @@ class engine {
     std::uint64_t prepared = 0;       // the generation the nearby copy holds
     std::uint64_t tried = 0;          // the last one the tick asked to copy
     bool other_publisher = false;     // another desktop's key is on the share
+    bool mismatch = false;            // the share's library.json goes back on what this desktop publishes
+    bool code_waiting = false;        // the code shown is still on the service
+    std::int64_t pending = 0;         // revokes the NAS has not heard
+    double retry_s = 0;               // until the next try, doubling
+    std::chrono::steady_clock::time_point retry_at{};
     std::string other_fingerprint;
     std::string asking_name, asking_key, asking_fingerprint;  // another desktop wants this library
   };

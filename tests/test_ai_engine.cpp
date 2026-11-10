@@ -1094,6 +1094,7 @@ struct rig {
       return std::vector<std::string>{utf8(dir / "tower" / "text.onnx"), utf8(dir / "tower" / "vocab.json")};
     };
     d.phone_quiet_s = phone_quiet;
+    d.phone_link_retry_s = link_retry;
     d.phone_min_interval_s = phone_interval;
     d.phone_share_poll_s = phone_poll;
     d.phone_thumb_budget_s = phone_budget;
@@ -1257,6 +1258,7 @@ struct rig {
   // The publisher's timing; the defaults are far enough apart that a test
   // which does not ask for automatic publishing never sees one.
   double phone_quiet = 3600;
+  double link_retry = 30;
   double phone_interval = 3600;
   double phone_poll = 3600;
   double phone_budget = 0;
@@ -7209,6 +7211,8 @@ mv::json::value link_done(rig& r) {
 // What the Driftwire add-on would answer, without a network.
 struct fake_driftwire {
   bool claimed = true;
+  int pending = 0;     // revokes the NAS has not heard yet
+  bool waiting = true;  // the code shown is still waiting on the service
   std::vector<std::pair<std::string, std::string>> devices;
   std::vector<std::string> calls;
   std::mutex m;
@@ -7218,12 +7222,12 @@ struct fake_driftwire {
     if (target != "driftwire") return mv::err(mv::status::not_found);
     if (method == "status") {
       mv::json::writer w;
-      w.begin_object().key("claimed").boolean(claimed).key("local").string("192.168.1.5:7878").key("public").string("nas.example.com:7878").key("machine").string("Studio Mac").end_object();
+      w.begin_object().key("claimed").boolean(claimed).key("pending_revokes").integer(pending).key("local").string("192.168.1.5:7878").key("public").string("nas.example.com:7878").key("machine").string("Studio Mac").end_object();
       return w.take();
     }
     if (method == "devices") {
       mv::json::writer w;
-      w.begin_object().key("reachable").boolean(true).key("devices").begin_array();
+      w.begin_object().key("reachable").boolean(true).key("code_waiting").boolean(waiting).key("devices").begin_array();
       for (const auto& [n, k] : devices) w.begin_object().key("name").string(n).key("key").string(k).end_object();
       w.end_array().end_object();
       return w.take();
@@ -7373,6 +7377,116 @@ TEST_CASE("phone link: a takeover asked on the share, allowed, then published", 
   CHECK(followed->epoch == 2);
   CHECK(mv::ai::catalog::to_hex(followed->public_key) != mv::ai::catalog::to_hex(pinned));
   // The old desktop is locked out now.
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  CHECK(*phone_done(a).str("error") == "other_library");
+}
+
+TEST_CASE("phone link: Cancel, expiry and a new code withdraw the code on the service", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const auto count = [&](const char* m) {
+    std::lock_guard lock(d.m);
+    return std::count(d.calls.begin(), d.calls.end(), std::string(m));
+  };
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  (void)link_done(a);
+  const auto before = count("pair_stop");
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair_stop\"}"));
+  (void)link_done(a);
+  CHECK(count("pair_stop") == before + 1);
+  // A code the service no longer holds (spent by a re-scan) comes down from the card.
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  CHECK_FALSE(link_done(a).str("qr")->empty());
+  {
+    std::lock_guard lock(d.m);
+    d.waiting = false;
+  }
+  REQUIRE(wait_for([&] { return mv::json::parse(a.eng->phone_link_json())->str("qr")->empty(); }, 8000));
+}
+
+TEST_CASE("phone link: a revoke the NAS missed is retried until it lands", "[ai][engine][phone-link]") {
+  rig a;
+  a.link_retry = 0.2;
+  fake_driftwire d;
+  d.pending = 1;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const auto devices_asked = [&] {
+    std::lock_guard lock(d.m);
+    return std::count(d.calls.begin(), d.calls.end(), std::string("devices"));
+  };
+  // Nobody touches the card: the engine keeps trying by itself.
+  REQUIRE(wait_for([&] { return devices_asked() >= 3; }, 15000));
+  {
+    std::lock_guard lock(d.m);
+    d.pending = 0;
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  const auto settled = devices_asked();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(devices_asked() == settled);  // and stops once the NAS has it
+}
+
+TEST_CASE("phone link: the share never moves this desktop's library or epoch backwards", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const fs::path lib = nas / ".mediaviewer/library.json";
+  auto doc = mv::json::parse(read_all(lib), 4);
+  const std::string id = *doc->str("library_id");
+  const std::string key = *doc->str("public_key");
+  const auto rewrite = [&](const std::string& library, int epoch) {
+    std::ofstream f(lib, std::ios::binary | std::ios::trunc);
+    f << "{\"format\":1,\"library_id\":\"" << library << "\",\"public_key\":\"" << key << "\",\"epoch\":" << epoch << "}";
+  };
+  const auto current_epoch = [&] { return *mv::json::parse(read_all(nas / ".mediaviewer/current.json"), 4)->integer("epoch"); };
+
+  // Moving up is how a takeover lands: taken.
+  rewrite(id, 5);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("mismatch") == false);
+  a.file("green_field.jpg");
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  publish_to(a, nas);
+  CHECK(current_epoch() == 5);
+
+  // A restored or edited file that goes back: refused, and the card says so.
+  rewrite(id, 3);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("mismatch") == true);
+  a.file("blue_sea.jpg");
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  (void)phone_done(a);
+  CHECK(current_epoch() == 5);
+
+  // Another library's id under this key: never adopted over a library phones already follow.
+  rewrite("someone-else", 9);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("mismatch") == true);
   REQUIRE(a.eng->phone_publish(utf8(nas)));
   CHECK(*phone_done(a).str("error") == "other_library");
 }

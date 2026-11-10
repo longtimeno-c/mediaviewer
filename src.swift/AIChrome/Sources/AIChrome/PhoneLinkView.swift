@@ -53,6 +53,7 @@ final class PhoneLinkModel: ObservableObject {
     var qrExpires: Int64 = 0
     var added: [String] = []
     var otherPublisher = false
+    var mismatch = false
     var otherFingerprint = ""
     var askingName = ""
     var askingKey = ""
@@ -99,6 +100,7 @@ final class PhoneLinkModel: ObservableObject {
     s.qrExpires = int64(o["qr_expires"])
     s.added = o["added"] as? [String] ?? []
     s.otherPublisher = o["other_publisher"] as? Bool ?? false
+    s.mismatch = o["mismatch"] as? Bool ?? false
     s.otherFingerprint = o["other_fingerprint"] as? String ?? ""
     s.askingName = o["asking_name"] as? String ?? ""
     s.askingKey = o["asking_key"] as? String ?? ""
@@ -138,6 +140,21 @@ final class PhoneLinkModel: ObservableObject {
     }
   }
 
+  /// The work under way, in a few words, for the progress line; nil for the
+  /// quick ones and the two-second poll under a code.
+  var busyText: String? {
+    switch state.busy {
+    case "claim": return "Claiming the service"
+    case "pair": return "Asking the NAS for a code"
+    case "refresh": return "Checking the NAS"
+    case "revoke": return "Removing the phone"
+    case "add_folder", "remove_folder": return "Changing the shared folders"
+    case "set_addresses": return "Checking the address"
+    case "takeover_ask", "takeover_allow", "takeover_restart": return "Updating the library"
+    default: return nil
+    }
+  }
+
   var warningText: String? {
     switch state.warning {
     case "private": return "This name points to a private address, so your phone can't reach it from outside."
@@ -166,6 +183,12 @@ struct PhoneLinkSection: View {
           Button("Get Driftwire…") { model.getDriftwire() }
         }
       } else {
+        if let line = model.busyText { SweepLine(text: line) }
+        if s.mismatch {
+          row("The share doesn't match this Mac", detail: "Its library.json names another library or an older epoch, perhaps after a restore. This Mac goes on publishing its own; phones will refuse what doesn't match until it is fixed.") {
+            EmptyView()
+          }
+        }
         if s.otherPublisher { otherPublisher }
         if !s.askingName.isEmpty { asking }
         if !s.claimed { claim } else { claimed }
@@ -286,7 +309,9 @@ struct PhoneLinkSection: View {
       HStack(spacing: 8) {
         TextField(newPath.isEmpty ? "Label" : PhoneLinkModel.shareLabel(forPath: newPath), text: $newLabel)
           .textFieldStyle(.roundedBorder).frame(width: 120)
+          .accessibilityLabel("Name of the new shared folder")
         TextField("Folder on the NAS, like /volume1/Video", text: $newPath).textFieldStyle(.roundedBorder)
+          .accessibilityLabel("Path of the new shared folder on the NAS")
         Button("Add") {
           let label = newLabel.isEmpty ? PhoneLinkModel.shareLabel(forPath: newPath) : newLabel
           model.send(["do": "add_folder", "label": label, "path": newPath])
@@ -338,6 +363,7 @@ struct PhoneLinkSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
       TextField(hint, text: text, onCommit: onCommit)
         .textFieldStyle(.roundedBorder).frame(width: 240).font(AITheme.font(12))
+        .accessibilityLabel(title)
     }
     .padding(12)
   }
@@ -375,5 +401,35 @@ private struct QRImage: View {
       let t = text
       image = await Task.detached(priority: .userInitiated) { PhoneQR.image(for: t, side: 432) }.value
     }
+  }
+}
+
+/// The progress language's line with no fraction (docs/design/20 "Craft
+/// rules"): a 3 pt rounded track, a calm 1.8 s accent sweep, one line under it.
+/// The sweep runs with Reduce Motion too, as the rules say.
+private struct SweepLine: View {
+  let text: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      TimelineView(.animation) { context in
+        GeometryReader { geo in
+          let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
+          let width = geo.size.width * 0.3
+          ZStack(alignment: .leading) {
+            Capsule().fill(AITheme.hairline)
+            Capsule().fill(AITheme.accent)
+              .frame(width: width)
+              .offset(x: (geo.size.width + width) * phase - width)
+          }
+          .clipShape(Capsule())
+        }
+      }
+      .frame(height: 3)
+      Text(text).font(AITheme.font(12)).foregroundStyle(AITheme.body)
+    }
+    .padding(12)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(text)
   }
 }

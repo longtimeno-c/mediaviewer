@@ -160,6 +160,7 @@ struct desk::state {
   std::optional<service_info> info;
   bool loaded = false;
   std::unique_ptr<serve::client> admin;  // kept through a pairing, so polling is one connection
+  bool waiting = false;                   // the last code is still on the service
 
   // The nearby service.
   mutable std::mutex nearby_m;
@@ -311,27 +312,31 @@ expected desk::claim(const std::string& share_folder, const std::string& local, 
   MV_TRY(const key32 key, st_->device_key());
 
   const fs::path file = fs_path(share_folder) / fs_path(serve::kClaimTokenFile);
+  const fs::path proof = fs_path(share_folder) / fs_path(serve::kClaimProofFile);
+  // Whatever happens from here, neither file stays on the share; this is in
+  // place before either is written, so a write that fails halfway goes too.
+  struct remove_files {
+    fs::path a, b;
+    ~remove_files() {
+      std::error_code e;
+      fs::remove(a, e);
+      fs::remove(b, e);
+    }
+  } gone{file, proof};
+  const auto write = [](const fs::path& p, std::string_view text) {
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    return static_cast<bool>(out.flush());
+  };
   const std::string token = random_hex(32);
   std::error_code ec;
   fs::create_directories(file.parent_path(), ec);
-  if (ec) return err(status::io);
-  {
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    out.write(token.data(), static_cast<std::streamsize>(token.size()));
-    if (!out.flush()) return err(status::io);
-  }
-  // Whatever happens next, the token does not stay on the share.
-  struct remove_token {
-    fs::path p;
-    ~remove_token() {
-      std::error_code e;
-      fs::remove(p, e);
-    }
-  } gone{file};
+  if (ec || !write(file, token)) return err(status::io);
 
   auto l = st_->connect_to(local);
   if (!l) return err(status::io);
-  auto answer = serve::claim(std::shared_ptr<link>(std::move(*l)), serve::claim_key(token), key, st_->o.device_name);
+  auto answer = serve::claim(std::shared_ptr<link>(std::move(*l)), serve::claim_key(token), key, st_->o.device_name,
+                             [&](std::string_view nonce) { return write(proof, nonce); });
   // Silence and a refusal are the same thing from here: it has an owner, or
   // this is not its own network, and the service never says which.
   if (!answer) return err(status::permission_denied);
@@ -375,11 +380,31 @@ result<pairing> desk::start_pairing(int ttl_ms) {
   w.begin_object().key("do").string("pair_code").key("code").string(code).key("ttl_ms").integer(ttl_ms).end_object();
   MV_TRY(const std::string done, st_->ask(w.str()));
   (void)done;
+  st_->waiting = true;
   pairing p;
   p.service = *st_->info;
   p.code = code;
   p.expires_unix = static_cast<std::int64_t>(std::time(nullptr)) + (ttl_ms + 999) / 1000;
   return p;
+}
+
+expected desk::stop_pairing() {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  MV_TRY(const std::string done, st_->ask("{\"do\":\"pair_cancel\"}"));
+  (void)done;
+  st_->waiting = false;
+  return {};
+}
+
+bool desk::pairing_waiting() {
+  std::lock_guard lock(st_->m);
+  return st_->waiting;
+}
+
+std::size_t desk::revokes_pending() {
+  std::lock_guard lock(st_->m);
+  return st_->pending().size();
 }
 
 void desk::release() {
@@ -405,6 +430,7 @@ result<std::vector<device_row>> desk::refresh_devices() {
   const auto doc = json::parse(text, 6);
   const json::value* list = doc ? doc->find("devices") : nullptr;
   if (!list || list->k != json::kind::array) return err(status::corrupt);
+  st_->waiting = doc->boolean("code_waiting").value_or(false);
   std::vector<device_row> rows;
   for (const auto& v : list->a) {
     const std::string* name = v.str("name");
@@ -560,9 +586,9 @@ std::string desk::library_tag(std::string_view library_id) {
 
 namespace {
 
-std::string devices_json(const std::vector<device_row>& rows, bool reachable) {
+std::string devices_json(const std::vector<device_row>& rows, bool reachable, bool waiting) {
   json::writer w;
-  w.begin_object().key("reachable").boolean(reachable).key("devices").begin_array();
+  w.begin_object().key("reachable").boolean(reachable).key("code_waiting").boolean(waiting).key("devices").begin_array();
   for (const auto& r : rows) w.begin_object().key("name").string(r.name).key("key").string(key_hex(r.key)).end_object();
   w.end_array().end_object();
   return w.take();
@@ -586,6 +612,7 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     w.key("local").string(s ? s->local : std::string());
     w.key("public").string(s ? s->public_name : std::string());
     w.key("machine").string(net::machine_name());
+    w.key("pending_revokes").integer(static_cast<std::int64_t>(d.revokes_pending()));
     w.end_object();
     return w.take();
   }
@@ -620,9 +647,9 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
   }
   if (method == "devices") {
     auto rows = d.refresh_devices();
-    if (rows) return devices_json(*rows, true);
+    if (rows) return devices_json(*rows, true, d.pairing_waiting());
     if (rows.error() != status::io && rows.error() != status::timeout) return err(rows.error());
-    return devices_json(d.devices(), false);
+    return devices_json(d.devices(), false, d.pairing_waiting());
   }
   if (method == "revoke") {
     const auto key = parse_key_hex(text("key"));
@@ -664,6 +691,10 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     json::writer w;
     w.begin_object().key("port").integer(d.nearby_port()).end_object();
     return w.take();
+  }
+  if (method == "pair_stop") {
+    MV_TRY_VOID(d.stop_pairing());
+    return std::string("{}");
   }
   if (method == "release") {
     d.release();

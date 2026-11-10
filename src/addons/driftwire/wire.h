@@ -152,6 +152,9 @@ enum class msg : std::uint8_t {
   serve_paired = 34,   // {} (service): it is paired now; serve_hello follows as usual
   serve_claim = 35,    // {"name"} (the claiming desktop), only on a channel opened under the claim key
   serve_claimed = 36,  // {"access_key","roots":[...]} (service)
+  // {"nonce"} (service), after serve_claim: the desktop writes it to
+  // .mediaviewer/claim.proof on the share and sends serve_claim again.
+  serve_claim_check = 37,
 };
 
 // "123 456": six digits from both public keys (client = the sender).

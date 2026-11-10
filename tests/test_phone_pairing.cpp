@@ -202,17 +202,34 @@ TEST_CASE("phone pairing: a claim needs the token that is on the share", "[phone
   nas n;
   const std::string token(64, 'c');
   // A claimant that cannot write the share: nothing is there for its key.
-  auto no_file = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Thief");
+  // Writing the share's answer: what the desktop does with the service's nonce.
+  const auto write_proof = [&](std::string_view nonce) {
+    put_file(n.share / serve::kClaimProofFile, nonce);
+    return true;
+  };
+  auto no_file = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Thief", write_proof);
   CHECK_FALSE(no_file);
   CHECK_FALSE(n.store->exists(serve::kOwnerName));
   // The right file, a wrong token.
   put_file(n.share / serve::kClaimTokenFile, token);
-  auto wrong = serve::claim(n.connect(), serve::claim_key(std::string(64, 'd')), random_key(), "Thief");
+  auto wrong = serve::claim(n.connect(), serve::claim_key(std::string(64, 'd')), random_key(), "Thief", write_proof);
   CHECK_FALSE(wrong);
   CHECK_FALSE(n.store->exists(serve::kOwnerName));
   // And what the file says, works.
   const key32 device = random_key();
-  auto right = serve::claim(n.connect(), serve::claim_key(token), device, "Mac");
+  // Someone who can read the share but not write it: holds the token, cannot answer.
+  auto reader = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Reader",
+                             [](std::string_view) { return true; });
+  CHECK_FALSE(reader);
+  CHECK_FALSE(n.store->exists(serve::kOwnerName));
+  // An answer that is not the nonce asked for.
+  auto stale = serve::claim(n.connect(), serve::claim_key(token), random_key(), "Reader", [&](std::string_view) {
+    put_file(n.share / serve::kClaimProofFile, std::string(64, '0'));
+    return true;
+  });
+  CHECK_FALSE(stale);
+  CHECK_FALSE(n.store->exists(serve::kOwnerName));
+  auto right = serve::claim(n.connect(), serve::claim_key(token), device, "Mac", write_proof);
   REQUIRE(right);
   CHECK(right->access_key == n.access);
   CHECK(right->identity == n.identity);
@@ -326,6 +343,45 @@ TEST_CASE("phone pairing: a phone already paired that scans again goes on, and s
   CHECK_FALSE(n.has_device(other));
   // A paired phone holding a stale code is still a paired phone.
   CHECK(n.phone(phone, first->code));
+}
+
+TEST_CASE("phone pairing: a new code replaces the one waiting, and cancelling withdraws it", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  auto first = mac.d->start_pairing();
+  REQUIRE(first);
+  auto second = mac.d->start_pairing();
+  REQUIRE(second);
+  serve::refusal why = serve::refusal::none;
+  const key32 a = random_key(), b = random_key();
+  CHECK_FALSE(n.phone(a, first->code, &why));  // a photo of the first QR
+  CHECK(why == serve::refusal::bad_code);
+  // Cancel on the card: the one showing is withdrawn too.
+  REQUIRE(mac.d->stop_pairing());
+  why = serve::refusal::none;
+  CHECK_FALSE(n.phone(b, second->code, &why));
+  CHECK(why == serve::refusal::bad_code);
+  CHECK_FALSE(n.has_device(a));
+  CHECK_FALSE(n.has_device(b));
+}
+
+TEST_CASE("phone pairing: the Mac can tell when its code has been used", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  const key32 phone = random_key();
+  auto first = mac.d->start_pairing();
+  REQUIRE(first);
+  REQUIRE(n.phone(phone, first->code));
+  auto again = mac.d->start_pairing();
+  REQUIRE(again);
+  CHECK(mac.d->pairing_waiting() == true);
+  REQUIRE(n.phone(phone, again->code));  // a re-scan by a phone already paired: nothing new in the list
+  auto list = mac.d->refresh_devices();  // what the card's poll reads
+  REQUIRE(list);
+  CHECK(list->size() == 1);
+  CHECK(mac.d->pairing_waiting() == false);
 }
 
 // ---- who may administer ----------------------------------------------------------------------
@@ -764,6 +820,7 @@ TEST_CASE("phone pairing: the real program is claimed, keeps it across a restart
     running r;
     start(r);
     REQUIRE(mac.d->claim(utf8(share), "[::1]:" + std::to_string(r.port), ""));
+    CHECK_FALSE(fs::exists(share / serve::kClaimProofFile));
     auto roots = mac.d->roots();
     REQUIRE(roots);
     CHECK(roots->size() == 2);

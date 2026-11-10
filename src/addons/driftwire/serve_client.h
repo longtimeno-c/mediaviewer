@@ -8,6 +8,8 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <string_view>
 #include <memory>
 #include <optional>
 #include <string>
@@ -103,7 +105,10 @@ struct claim_answer {
   std::array<std::uint8_t, 32> identity{};
   std::vector<root_info> roots;
 };
+// `prove` writes the service's nonce to kClaimProofFile on the share, so the
+// service sees this desktop can write there, not only read the token.
 [[nodiscard]] result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
-                                         const std::array<std::uint8_t, 32>& device_key, const std::string& name);
+                                         const std::array<std::uint8_t, 32>& device_key, const std::string& name,
+                                         const std::function<bool(std::string_view nonce)>& prove);
 
 }  // namespace mv::driftwire::serve

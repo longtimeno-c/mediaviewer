@@ -23,6 +23,7 @@ namespace {
 
 constexpr int kAnswerMs = 8000;     // the caps
 constexpr int kRequestMs = 15000;   // a list, stat or roots
+constexpr int kClaimMs = 25000;     // the service reading the proof back over its own disk
 
 // How far a read may be consumed before more credit goes out: half a window.
 constexpr std::uint32_t kCreditRefill = 2;
@@ -434,7 +435,8 @@ result<std::string> client::admin(const std::string& request_json, end_code* cod
 }
 
 result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
-                           const std::array<std::uint8_t, 32>& device_key, const std::string& name) {
+                           const std::array<std::uint8_t, 32>& device_key, const std::string& name,
+                           const std::function<bool(std::string_view nonce)>& prove) {
   channel::options opts;
   opts.access_key = key;
   opts.static_key = device_key;
@@ -445,6 +447,15 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
   (void)(*ch)->send(msg::serve_claim, w.str());
   message m;
   if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
+  if (m.type != msg::serve_claim_check) return err(status::permission_denied);
+  const auto check = json::parse(m.text(), 4);
+  const std::string* nonce = check ? check->str("nonce") : nullptr;
+  if (!nonce || nonce->size() != 64 || !prove || !prove(*nonce)) {
+    (*ch)->shutdown();
+    return err(status::permission_denied);
+  }
+  (void)(*ch)->send(msg::serve_claim, w.str());
+  if (auto r = (*ch)->receive(m, kClaimMs); !r) return err(r.error());
   if (m.type != msg::serve_claimed) return err(status::permission_denied);
   const auto doc = json::parse(m.text(), 6);
   const std::string* access = doc ? doc->str("access_key") : nullptr;

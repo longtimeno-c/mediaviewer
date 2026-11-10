@@ -168,6 +168,17 @@ void engine::phone_link_tick() {
   }
   if (!used) return;
   std::lock_guard lock(phone_link_m_);
+  // A phone revoked here while the NAS was away keeps the NAS's door open
+  // until the NAS hears it: ask again, backing off, until it has.
+  const auto now = std::chrono::steady_clock::now();
+  if (link_tick_seen_ && link_.pending > 0 && now >= link_.retry_at && link_requests_.empty() && link_.busy.empty()) {
+    link_.retry_s = link_.retry_s <= 0 ? deps_.phone_link_retry_s : std::min(link_.retry_s * 2, 3600.0);
+    link_.retry_at = now + std::chrono::milliseconds(static_cast<std::int64_t>(link_.retry_s * 1000));
+    link_requests_.push_back("{\"do\":\"refresh\"}");
+    if (!phone_link_thread_.joinable()) phone_link_thread_ = std::thread([this] { phone_link_loop(); });
+    phone_link_cv_.notify_all();
+    return;
+  }
   const bool first = !link_tick_seen_;
   // One try per generation: no paired phone, or a copy that failed, is not
   // asked about again on every tick. A phone added later asks by itself.
@@ -193,6 +204,12 @@ void engine::phone_link_refresh(bool phones_only) {
     std::lock_guard lock(phone_link_m_);
     link_.driftwire = true;
     link_.claimed = claimed;
+    const std::int64_t pending = s ? s->integer("pending_revokes").value_or(0) : 0;
+    if (pending > 0 && link_.pending == 0) {
+      link_.retry_s = 0;  // a new one: the first retry comes soon
+      link_.retry_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<std::int64_t>(deps_.phone_link_retry_s * 1000));
+    }
+    link_.pending = pending;
     if (s) {
       if (const std::string* v = s->str("local")) link_.local = *v;
       if (const std::string* v = s->str("public")) link_.public_name = *v;
@@ -212,6 +229,7 @@ void engine::phone_link_refresh(bool phones_only) {
       std::lock_guard lock(phone_link_m_);
       link_.devices = std::move(rows);
       link_.reachable = doc && doc->boolean("reachable").value_or(false);
+      link_.code_waiting = doc && doc->boolean("code_waiting").value_or(false);
     }
     if (phones_only) return;  // the two-second poll under a showing code
     if (auto r = phone_route("roots", "{}")) {
@@ -241,18 +259,31 @@ void engine::phone_link_refresh(bool phones_only) {
   auto secret = phone_signing_key(false);
   std::string mine;
   if (secret) mine = catalog::to_hex(catalog::public_of(*secret));
-  bool other = false;
+  bool other = false, mismatch = false;
   std::string other_fp;
   if (lib) {
     if (lib->public_key == mine) {
-      // A takeover this desktop asked for has landed: the library is its own now.
+      // A takeover this desktop asked for has landed, or a key move raised the
+      // epoch. Only ever forward: a restored or edited file that names another
+      // library, or an older epoch, would make every phone refuse what this
+      // desktop publishes, so it is shown instead of followed.
       bool adopted = false;
       {
         std::lock_guard lock(phone_m_);
-        if (phone_.library_id != lib->library_id || phone_.epoch != lib->epoch) {
+        const bool never_published = phone_.generation == 0 && phone_.waiting == 0;
+        if (lib->library_id == phone_.library_id) {
+          if (lib->epoch > phone_.epoch) {
+            phone_.epoch = lib->epoch;
+            adopted = true;
+          } else if (lib->epoch < phone_.epoch) {
+            mismatch = true;
+          }
+        } else if (never_published || phone_.library_id.empty()) {
           phone_.library_id = lib->library_id;
           phone_.epoch = lib->epoch;
           adopted = true;
+        } else {
+          mismatch = true;
         }
       }
       if (adopted) (void)save_phone_state();
@@ -273,6 +304,7 @@ void engine::phone_link_refresh(bool phones_only) {
     }
   }
   std::lock_guard lock(phone_link_m_);
+  link_.mismatch = mismatch;
   link_.other_publisher = other;
   link_.other_fingerprint = other_fp;
   link_.asking_name = asking_name;
@@ -293,7 +325,8 @@ void engine::phone_link_prepare_nearby() {
   bool any = false;
   {
     std::lock_guard lock(phone_link_m_);
-    any = link_.claimed && !link_.devices.empty();
+    // Handed over: this desktop's key signs nothing a phone should take now.
+    any = link_.claimed && !link_.devices.empty() && !link_.other_publisher;
     if (!any && link_.nearby) link_.nearby = false;
   }
   if (!any) {
@@ -359,11 +392,27 @@ void engine::phone_link_do(const std::string& request) {
     }
     if (expires != 0 && now >= expires) {
       clear_qr();
+      (void)phone_route("pair_stop", "{}");
       (void)phone_route("release", "{}");
       return;
     }
     phone_link_refresh(true);
     std::lock_guard lock(phone_link_m_);
+    if (!link_.code_waiting && link_.qr_expires != 0) {
+      // Used by a phone already paired (a re-scan), or gone from the service:
+      // a code it would not take again does not stay on the card.
+      bool any_new = false;
+      for (const auto& d : link_.devices) {
+        any_new = any_new || std::find(link_before_.begin(), link_before_.end(), d.key) == link_before_.end();
+      }
+      if (!any_new) {
+        link_.qr_url.clear();
+        link_.qr_library.clear();
+        link_.qr_fingerprint.clear();
+        link_.qr_expires = 0;
+        return;
+      }
+    }
     bool landed = false;
     for (const auto& d : link_.devices) {
       if (std::find(link_before_.begin(), link_before_.end(), d.key) == link_before_.end()) {
@@ -452,10 +501,12 @@ void engine::phone_link_do(const std::string& request) {
       return;
     }
     link_.qr_expires = p.expires;
+    link_.code_waiting = true;
     return;
   }
   if (what == "pair_stop") {
     clear_qr();
+    (void)phone_route("pair_stop", "{}");  // a photo of it pairs nothing now
     (void)phone_route("release", "{}");
     return;
   }
@@ -566,6 +617,7 @@ std::string engine::phone_link_json() const {
   w.end_array();
   w.key("nearby").boolean(link_.nearby);
   w.key("other_publisher").boolean(link_.other_publisher);
+  w.key("mismatch").boolean(link_.mismatch);
   w.key("other_fingerprint").string(link_.other_fingerprint);
   w.key("asking_name").string(link_.asking_name);
   w.key("asking_key").string(link_.asking_key);

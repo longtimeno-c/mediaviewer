@@ -34,6 +34,8 @@ using clock = std::chrono::steady_clock;
 // A hello that is not all there this soon is not a phone's (it is about 1.2 KB).
 constexpr int kHelloMs = 3000;
 constexpr int kServeHelloMs = 5000;
+// The desktop writing the claim's nonce over SMB, at most.
+constexpr int kClaimProofMs = 20000;
 // First messages remembered as seen, against a replay of a recorded one. Only
 // ones that opened under the key go in, so a stranger cannot flush it.
 constexpr std::size_t kSeenFirsts = 4096;
@@ -966,6 +968,30 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     return;
   }
   (void)c;
+  // The token proves this desktop can read the share; anyone with a read-only
+  // account could. Now it must write: a nonce of ours, into the same folder.
+  std::array<std::uint8_t, 32> nonce_bytes{};
+  randombytes_buf(nonce_bytes.data(), nonce_bytes.size());
+  const std::string nonce = key_hex(nonce_bytes);
+  {
+    json::writer w;
+    w.begin_object().key("nonce").string(nonce).end_object();
+    if (!ch->send(msg::serve_claim_check, w.str()) || !ch->receive(m, kClaimProofMs) || m.type != msg::serve_claim) {
+      (void)ch->cancel(kCancelWaitMs, "protocol");
+      return;
+    }
+    io::file_reader f;
+    std::array<std::uint8_t, 64> got{};
+    bool proven = f.open_beneath(folder, kClaimProofFile) && f.size() >= got.size() && f.size() <= got.size() + 2;
+    if (proven) {
+      auto n = f.read_at(0, got);
+      proven = n && *n == got.size() && sodium_memcmp(got.data(), nonce.data(), got.size()) == 0;
+    }
+    if (!proven) {
+      (void)ch->cancel(kCancelWaitMs, "not-written");
+      return;
+    }
+  }
   std::unique_lock lock(claim_m);
   // Two desktops at once: the first through this lock is the owner.
   if (store->exists(kOwnerName)) {
@@ -1061,8 +1087,15 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
   const auto device_key = [&]() -> std::optional<std::array<std::uint8_t, 32>> { return parse_key_hex(text("key")); };
 
   if (*what == "devices") {
+    bool waiting = false;
+    {
+      std::lock_guard lock(codes_m);
+      const auto now = clock::now();
+      std::erase_if(codes, [&](const waiting_code& w) { return w.deadline <= now; });
+      waiting = !codes.empty();
+    }
     json::writer w;
-    w.begin_object().key("devices").begin_array();
+    w.begin_object().key("code_waiting").boolean(waiting).key("devices").begin_array();
     for (const auto& d : known::load(*store)) {
       w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key)).end_object();
     }
@@ -1096,11 +1129,16 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     const std::string code = text("code");
     const auto ttl = doc->integer("ttl_ms");
     if (!lower_hex(code, kPairCodeChars) || !ttl || *ttl <= 0 || *ttl > kMaxPairTtlMs) return {end_code::bad_request, {}};
+    // One code at a time: a new one withdraws the last, so a photo of an
+    // older QR is worth nothing once the card has moved on.
     std::lock_guard lock(codes_m);
-    const auto now = clock::now();
-    std::erase_if(codes, [&](const waiting_code& w) { return w.deadline <= now; });
-    if (codes.size() >= kMaxPairCodes) codes.erase(codes.begin());  // the oldest: nobody is scanning that one now
-    codes.push_back({code_hash(code), now + std::chrono::milliseconds(*ttl)});
+    codes.clear();
+    codes.push_back({code_hash(code), clock::now() + std::chrono::milliseconds(*ttl)});
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "pair_cancel") {
+    std::lock_guard lock(codes_m);
+    codes.clear();
     return {end_code::ok, "{}"};
   }
   if (*what == "roots") {

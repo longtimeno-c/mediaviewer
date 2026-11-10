@@ -55,6 +55,7 @@ inline constexpr const char* kOwnerName = "owner";
 // §7.2 claiming. The desktop writes 64 hex digits to this file under a named
 // folder, over the share, then opens a library channel keyed from them.
 inline constexpr const char* kClaimTokenFile = ".mediaviewer/claim.token";
+inline constexpr const char* kClaimProofFile = ".mediaviewer/claim.proof";
 inline constexpr const char* kCatalogueFolder = ".mediaviewer";
 inline constexpr const char* kCatalogueLabel = "Catalogue";
 [[nodiscard]] std::array<std::uint8_t, 32> claim_key(std::string_view token_hex);
