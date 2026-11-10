@@ -6857,6 +6857,9 @@ TEST_CASE("delivery says when the share is full, and waits longer each failure",
     CHECK(*state().integer("waiting") == 0);
   }
   SECTION("failures back off, and the signing key is not read for it") {
+#if defined(_WIN32)
+    SKIP("POSIX permissions");
+#endif
     p.publish();
     fs::permissions(p.base / "gen", fs::perms::owner_read | fs::perms::owner_exec);
     auto done = p.publish("unreachable");
@@ -7002,6 +7005,105 @@ TEST_CASE("a pack is forgotten only when both sides clearly lack it", "[ai][engi
   CHECK(rows() == "1");
   REQUIRE((*store)->reconcile(utf8(p.nas)));
   CHECK(rows() == "1");  // still on the share
+}
+
+
+TEST_CASE("a share that lost its thumbs folder gets it back", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.publish();
+  const fs::path thumbs = p.a.dir / "data" / "phone" / "thumbs";
+  for (const auto& e : fs::directory_iterator(thumbs)) {
+    if (e.path().extension() == ".pack") fs::remove(e.path());  // delivered: kept only on the share
+  }
+  fs::remove_all(p.base / "thumbs");  // and now not there either
+  p.publish();
+  auto m = p.manifest(2);
+  REQUIRE(m.find("thumb_packs")->a.size() == 1);
+  CHECK(fs::exists(p.base / *m.find("thumb_packs")->a[0].str("path")));
+  CHECK(*m.integer("thumbs") == 1);
+}
+
+TEST_CASE("reconcile forgets nothing when one stat fails or the share goes mid-way", "[ai][engine][phone]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#endif
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.publish();
+  const fs::path thumbs = p.a.dir / "data" / "phone" / "thumbs";
+  for (const auto& e : fs::directory_iterator(thumbs)) {
+    if (e.path().extension() == ".pack") fs::remove(e.path());
+  }
+  const auto rows = [&] { return only_cell(thumbs / "ledger.db", "SELECT COUNT(*) FROM thumbs WHERE pack IS NOT NULL"); };
+  auto store = mv::ai::catalog::thumb_store::open(utf8(thumbs));
+  REQUIRE(store);
+  SECTION("the folder lists, but its pack cannot be looked at") {
+    fs::permissions(p.base / "thumbs", fs::perms::owner_read);  // r--: listed, never stat'ed
+    CHECK_FALSE((*store)->reconcile(utf8(p.nas)));
+    fs::permissions(p.base / "thumbs", fs::perms::owner_all);
+    CHECK(rows() == "1");
+  }
+  SECTION("the share goes between the listing and the stats") {
+    const fs::path away = p.a.dir / "NAS-away";
+    CHECK_FALSE((*store)->reconcile(utf8(p.nas), [&] { fs::rename(p.nas, away); }));
+    fs::rename(away, p.nas);
+    CHECK(rows() == "1");
+  }
+}
+
+TEST_CASE("a generation's arrival is when it became current, and failure counts are pruned", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.publish();
+  const fs::path data = p.a.dir / "data" / "phone";
+  // Delivered by hand with a clock taken long before the copy.
+  const auto st = *mv::json::parse(read_all(data / "state.json"));
+  mv::ai::catalog::deliver_options d;
+  d.gen_dir = utf8(data / "gen" / "1");
+  d.destination = utf8(p.a.dir / "NAS2");
+  fs::create_directories(p.a.dir / "NAS2");
+  d.library_id = *st.str("library_id");
+  d.generation = 1;
+  const auto keys = mv::ai::catalog::make_keypair();
+  d.public_key = keys.first;
+  d.secret_key = keys.second;
+  d.now_unix = 1;
+  d.arrivals_file = utf8(p.a.dir / "arrivals2.json");
+  d.make_directories = [](const std::string& dir) -> mv::expected {
+    std::error_code ec;
+    fs::create_directories(fs::path(std::u8string(reinterpret_cast<const char8_t*>(dir.data()), dir.size())), ec);
+    return {};
+  };
+  d.copy = [](const std::string& from, const std::string& to) -> mv::expected {
+    std::error_code ec;
+    fs::copy_file(fs::path(from), fs::path(to), ec);
+    return ec ? mv::expected(mv::err(mv::status::io)) : mv::expected{};
+  };
+  REQUIRE(mv::ai::catalog::deliver(d, {}));
+  const auto arrived = *mv::json::parse(read_all(p.a.dir / "arrivals2.json"));
+  CHECK(*arrived.integer("1") > 1'000'000'000);
+
+  // A file that ended with no picture, and one deleted, leave no count behind.
+  for (int i = 0; i < 3; ++i) p.a.file("truncated_" + std::to_string(i) + ".jpg");
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(wait_for([&] { return p.a.status().assets_done == 4; }, kSettleMs));
+  for (int i = 0; i < 3; ++i) p.publish();  // the third run records them as pictureless
+  fs::remove(p.a.photos() / "truncated_0.jpg");
+  p.a.file("truncated_new.jpg");
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(wait_for([&] {
+    const auto rows = p.a.search("file:truncated");
+    return rows.size() == 3 && std::none_of(rows.begin(), rows.end(), [](const auto& r) { return r.first == "truncated_0.jpg"; });
+  }, kSettleMs));
+  p.publish();
+  CHECK(only_cell(data / "thumbs" / "ledger.db", "SELECT group_concat(path) FROM fails").find("truncated_new") != std::string::npos);
+  CHECK(only_cell(data / "thumbs" / "ledger.db", "SELECT COUNT(*) FROM fails") == "1");
 }
 
 // ---- the publisher's cost (CLAUDE.md "Performance is the product") -------------------

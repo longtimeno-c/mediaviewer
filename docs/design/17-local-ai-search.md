@@ -1682,7 +1682,9 @@ not run on battery. A generation built while the share is away waits in `phone/g
 newest, with `waiting` in `phone_json`. While one waits, the control loop asks every 30 s, on the
 publisher's thread and not on battery, whether the share is there. A delivery that fails waits
 30 s, doubling to an hour, until the share or its free space changes. A pack is forgotten only
-when both sides list and neither has it; a stat that fails forgets nothing. A file whose tile keeps
+when neither side has it: the share's `thumbs/` lists without it, or is plainly absent from a
+`.mediaviewer/` that lists (a new destination, or one someone emptied), and the share still looks
+the same once the packs are checked. A stat that fails forgets nothing. A file whose tile keeps
 failing is counted by size and date, so a changed file starts a new count and still stops. A generation the share has
 no room for reports `no_space` and `needs_bytes` without copying anything.
 

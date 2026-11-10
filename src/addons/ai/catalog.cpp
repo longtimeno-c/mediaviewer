@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <set>
@@ -867,7 +868,7 @@ void tidy(const deliver_options& o, const std::string& gen_root) {
   // so the grace runs from then, not from when this one was written.
   for (std::size_t i = 0; i + 2 < gens.size(); ++i) {
     const auto next = arrived.upper_bound(gens[i]);
-    if (next != arrived.end() && o.now_unix - next->second >= o.keep_seconds) {
+    if (next != arrived.end() && std::time(nullptr) - next->second >= o.keep_seconds) {
       fs::remove_all(fs_path(gen_root + "/" + gen_name(gens[i])), ec);
     }
   }
@@ -1008,7 +1009,9 @@ expected deliver(const deliver_options& o, const control& c) {
   MV_TRY_VOID(put_durable(o, w.str(), base + "/current.json"));
   {
     auto arrived = read_arrivals(o.arrivals_file);
-    arrived[o.generation] = o.now_unix;
+    // When it really became current: a long copy must not shorten the
+    // predecessor's grace, which runs from here.
+    arrived[o.generation] = static_cast<std::int64_t>(std::time(nullptr));
     write_arrivals(o.arrivals_file, arrived);
   }
   report(c, 1.0);
@@ -1136,7 +1139,11 @@ result<std::vector<thumb_want>> thumb_store::missing(const std::string& index_db
     if (!a.bind(1, index_db).run()) return err(status::io);
   }
   std::vector<thumb_want> out;
-  bool ok = exec(db, "DELETE FROM thumbs WHERE path NOT IN (SELECT path FROM src.assets)");
+  bool ok = exec(db, "DELETE FROM thumbs WHERE path NOT IN (SELECT path FROM src.assets)") &&
+            exec(db, "DELETE FROM fails WHERE path NOT IN (SELECT path FROM src.assets)") &&
+            // A tile or a "no picture" row of this very file ends its count.
+            exec(db, "DELETE FROM fails WHERE EXISTS (SELECT 1 FROM thumbs t WHERE t.path = fails.path"
+                     " AND t.size = fails.size AND t.mtime = fails.mtime)");
   if (ok) {
     std::string in;
     for (const std::int64_t r : roots) in += (in.empty() ? "" : ",") + std::to_string(r);
@@ -1178,8 +1185,9 @@ result<thumb_fill_result> thumb_store::fill(std::span<const thumb_want> wants, c
   }
   // Only a tile of this very file ends its count: an old tile of a file that
   // has since changed says nothing about the new one.
+  // A tile or a "no picture" row of this very file ends its count.
   (void)exec(db, "DELETE FROM fails WHERE EXISTS (SELECT 1 FROM thumbs t WHERE t.path = fails.path"
-                 " AND t.size = fails.size AND t.mtime = fails.mtime AND t.pack IS NOT NULL)");
+                 " AND t.size = fails.size AND t.mtime = fails.mtime)");
   stmt ins(db, "INSERT OR REPLACE INTO thumbs(path, size, mtime, pack, offset, length, jpeg, tiny) VALUES(?1, ?2, ?3, NULL, 0, ?4, ?5, ?6)");
   stmt set_tiny(db, "UPDATE thumbs SET tiny = ?2 WHERE path = ?1");
   // Counted once per run, and from one only if the file has not changed.
@@ -1370,30 +1378,41 @@ expected thumb_store::delivered(std::uint64_t fold_bytes) {
   return {};
 }
 
-expected thumb_store::reconcile(const std::string& destination) {
+expected thumb_store::reconcile(const std::string& destination, const std::function<void()>& after_listing) {
   sqlite3* db = db_->db;
-  const std::string there = base_of(destination) + "/thumbs/";
+  const std::string base = base_of(destination);
+  const std::string there = base + "/thumbs/";
   // Forgetting a pack costs hours of work again, so only a clear "not there"
-  // on both sides counts: the share's folder must list, and no stat may fail.
+  // on both sides counts: the share's folder lists, or is plainly absent from
+  // a .mediaviewer that lists (a new destination, or someone removed it), and
+  // no stat fails.
   const auto lists = [](const std::string& dir) {
     std::error_code e;
     fs::directory_iterator it(fs_path(dir), e);
     return !e;
   };
-  if (!lists(there) || !lists(dir_)) return err(status::io);
+  const auto absent = [&] {
+    std::error_code e;
+    const fs::file_status st = fs::symlink_status(fs_path(there), e);
+    return st.type() == fs::file_type::not_found && lists(base);
+  };
+  const bool gone = absent();
+  if ((!gone && !lists(there)) || !lists(dir_)) return err(status::io);
+  if (after_listing) after_listing();
   std::vector<std::string> lost;
   {
     stmt q(db, "SELECT name FROM packs");
     while (q.next()) {
       std::error_code a, b;
-      const bool shared = fs::exists(fs_path(there + q.text(0)), a);
+      const bool shared = !gone && fs::exists(fs_path(there + q.text(0)), a);
       const bool local = fs::exists(fs_path(dir_ + "/" + q.text(0)), b);
       if (a || b) return err(status::io);
       if (!shared && !local) lost.push_back(q.text(0));
     }
     if (q.failed) return err(status::io);
   }
-  if (!lost.empty() && !lists(there)) return err(status::io);  // still the share we asked
+  // Still the share we asked: what it said a moment ago still holds.
+  if (!lost.empty() && (gone ? !absent() : !lists(there))) return err(status::io);
   for (const std::string& name : lost) {
     stmt del(db, "DELETE FROM thumbs WHERE pack = ?1");
     stmt gone(db, "DELETE FROM packs WHERE name = ?1");

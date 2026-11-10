@@ -6212,7 +6212,9 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
       std::error_code e;
       for (std::filesystem::recursive_directory_iterator f(it->path(), e), stop; !e && f != stop; f.increment(e)) {
         std::error_code e3;
-        if (f->is_regular_file(e3)) dead += static_cast<std::uint64_t>(f->file_size(e3));
+        if (!f->is_regular_file(e3) || e3) continue;
+        const auto size = f->file_size(e3);
+        if (!e3) dead += static_cast<std::uint64_t>(size);  // on error it is uintmax_t(-1)
       }
     }
     const std::uint64_t room = v->free_bytes + dead;

@@ -207,7 +207,8 @@ class thumb_store {
   // small enough to be folded into the next.
   [[nodiscard]] expected delivered(std::uint64_t fold_bytes = kFoldBytes);
   // Forgets packs on neither side, so their tiles are made again.
-  [[nodiscard]] expected reconcile(const std::string& destination);
+  // `after_listing` (tests): the share changes between the listing and the stats.
+  [[nodiscard]] expected reconcile(const std::string& destination, const std::function<void()>& after_listing = {});
   [[nodiscard]] result<std::string> hash_of(const std::string& file);  // cached by size and mtime
   [[nodiscard]] const std::string& ledger_path() const noexcept { return ledger_; }
   [[nodiscard]] const std::string& dir() const noexcept { return dir_; }
