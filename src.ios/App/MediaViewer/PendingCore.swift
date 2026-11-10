@@ -21,7 +21,7 @@ enum PendingCore {
 
     // One stat at launch so the first screen is the right one (§8.4).
     var current: ConnectionSnapshot {
-      let installed = FileManager.default.fileExists(atPath: LibraryLocation.standard.root.appendingPathComponent("gen").path)
+      let installed = FileManager.default.fileExists(atPath: LibraryLocation.standard.installedFile.path)
       guard installed else { return .noLibrary }
       // A catalogue is here, so the library shows at once; its date and count follow once it
       // has opened (`updates`). Nil would send the person to the first copy.

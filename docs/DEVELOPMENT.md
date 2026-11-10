@@ -644,7 +644,8 @@ Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
 
 The real app links `src/mobile` through `tools/ios/build-core.sh`, a build phase that makes
 `build-ios-<sdk>/` from CMake. It reads an installed generation from
-`Application Support/Library/gen/<N>/`, with the manifest's shared files beside `gen/`.
+`Application Support/library/gen/<epoch>-<generation>/`, the one `library/installed.json` names, with
+the manifest's shared files beside `gen/`.
 
 The parity test runs the desktop engine, over the real AI pack, and the phone engine, in a Simulator
 of its own, on one published generation, and compares rows and order:

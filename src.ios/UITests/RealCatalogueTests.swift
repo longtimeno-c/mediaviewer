@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // docs/plans/mobile.md M5 and M6's local half, through the real app and a real installed
 // generation. Skipped unless TEST_RUNNER_MV_REAL_CATALOGUE names a folder for its screenshots:
-// the real app must be installed with a generation in Application Support/Library first.
+// the real app must be installed with a generation in Application Support/library first.
 import XCTest
 
 final class RealCatalogueTests: XCTestCase {

@@ -10,37 +10,38 @@ import ImageIO
 import MobileKit
 import UIKit
 
-/// Where the phone keeps a library, as the NAS lays it out (§5): `<root>/gen/000123/`, the shared
-/// `models/`, and the engine's own work folders in `<root>/engine/`. Excluded from iCloud backup
+/// Where the phone keeps a library, as the sync installs it: `<root>/gen/<epoch>-<generation>/`,
+/// the manifest's shared `models/` under the root, `<root>/installed.json` naming the generation
+/// in force, and the engine's own work folders in `<root>/engine/`. Excluded from iCloud backup
 /// (§8.3): a catalogue of the whole library must not go there.
 public struct LibraryLocation: Sendable {
   public let root: URL
 
   public init(root: URL) { self.root = root }
 
-  /// `Application Support/Library`. Cheap: no disk.
+  /// `Application Support/library`. Cheap: no disk.
   public static var standard: LibraryLocation {
     let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    return LibraryLocation(root: support.appendingPathComponent("Library", isDirectory: true))
+    return LibraryLocation(root: support.appendingPathComponent("library", isDirectory: true))
   }
+
+  /// The file the sync replaces atomically when a generation has landed.
+  public var installedFile: URL { root.appendingPathComponent("installed.json") }
 
   var generations: URL { root.appendingPathComponent("gen", isDirectory: true) }
   func work(for generation: URL) -> URL {
     root.appendingPathComponent("engine", isDirectory: true).appendingPathComponent(generation.lastPathComponent, isDirectory: true)
   }
 
-  /// The highest-numbered generation with a manifest. Reads the disk.
-  public func newestGeneration() -> URL? {
-    guard let names = try? FileManager.default.contentsOfDirectory(atPath: generations.path) else { return nil }
-    let numbered = names.compactMap { name -> (UInt64, String)? in
-      guard let n = UInt64(name), name.allSatisfy(\.isNumber) else { return nil }
-      return (n, name)
-    }.sorted { $0.0 > $1.0 }
-    for (_, name) in numbered {
-      let dir = generations.appendingPathComponent(name, isDirectory: true)
-      if FileManager.default.fileExists(atPath: dir.appendingPathComponent("manifest.json").path) { return dir }
-    }
-    return nil
+  private struct Installed: Decodable { let dir: String }
+
+  /// The generation `installed.json` names, if it has a manifest. Reads the disk.
+  public func installedGeneration() -> URL? {
+    guard let data = try? Data(contentsOf: installedFile),
+          let dir = (try? JSONDecoder().decode(Installed.self, from: data))?.dir,
+          !dir.isEmpty, dir != ".", dir != "..", !dir.contains("/") else { return nil }
+    let url = generations.appendingPathComponent(dir, isDirectory: true)
+    return FileManager.default.fileExists(atPath: url.appendingPathComponent("manifest.json").path) ? url : nil
   }
 
   /// Marks the folder never to go to iCloud (§8.3).
@@ -69,7 +70,7 @@ public final class LocalCatalogue: @unchecked Sendable {
       if let opening { return opening }
       let root = location
       let made = Task.detached(priority: .userInitiated) { () throws -> Generation in
-        guard let directory = root.newestGeneration() else { throw CatalogueOpenFailure.notInstalled }
+        guard let directory = root.installedGeneration() else { throw CatalogueOpenFailure.notInstalled }
         root.excludeFromBackup()
         return try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory))
       }
@@ -87,8 +88,18 @@ public final class LocalCatalogue: @unchecked Sendable {
     }
   }
 
-  /// Opens `directory` and makes it the one in force. The sync calls this when a generation has
-  /// landed. Whoever holds the old one keeps it until they let go.
+  /// Opens what `installed.json` now names: call this on the "catalogue changed" signal.
+  public func reloadInstalled() async throws {
+    let root = location
+    let directory = try await Task.detached(priority: .userInitiated) { () throws -> URL in
+      guard let found = root.installedGeneration() else { throw CatalogueOpenFailure.notInstalled }
+      return found
+    }.value
+    try await swap(to: directory)
+  }
+
+  /// Opens `directory` and makes it the one in force. Whoever holds the old one keeps it until
+  /// they let go.
   public func swap(to directory: URL) async throws {
     let root = location
     let new = try await Task.detached(priority: .userInitiated) { () throws -> Generation in
