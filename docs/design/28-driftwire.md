@@ -1352,8 +1352,9 @@ link. The tests check that no 32-byte run of the file passes through either rela
 The Driftwire add-on holds the desktop's side of a phone. Local search asks for it through the host
 table (`route_request`, [18](18-import.md#add-ons-calling-add-ons)), and refuses any other caller.
 
-**Claiming.** While a service has no owner, and only for a connection from its own network
-(`net::on_link`, loopback included), it looks for `.mediaviewer/claim.token` under its named folders:
+**Claiming.** Only for a connection from its own network (`net::on_link`, loopback included), and only
+while the service has no owner or, once it has, for a hello the access key does not open (so a phone's
+session never reads the share), it looks for `.mediaviewer/claim.token` under its named folders:
 64 hex digits the desktop wrote over the share. A hello that opens under the key derived from that
 token (`claim_key`, `channel::hello_opens_under`, one AEAD) becomes a claim channel. Everyone else
 gets the silence a wrong access key gets, and from outside no file is read. The token proves the desktop
@@ -1366,6 +1367,9 @@ named folder labelled `Catalogue` (a hidden name cannot be reached any other way
 the token whatever happens. There is no expiry on the token: anyone who can read it could also write
 one. Behind a NAT that rewrites sources, an outside connection can look local, and the token is then
 the only gate. `driftwire serve disown` forgets the owner when that desktop is gone.
+Owned, a claim is answered only for the owner's own device key (with a fresh token and proof), with the same
+keys and nothing changed: a claim whose answer was lost can fetch them again. Anyone else's claim on an owned
+service ends with the link closed and nothing said, as a wrong key does.
 
 **Who may do what.** A phone holds a read-only grant. The owner's session alone is granted
 `kAdminOp` and sends `serve_admin` (devices, add or revoke a device, a pairing code, the named folders,

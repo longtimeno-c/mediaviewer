@@ -7218,6 +7218,7 @@ struct fake_driftwire {
   bool claimed = true;
   int pending = 0;     // revokes the NAS has not heard yet
   bool waiting = true;  // the code shown is still waiting on the service
+  int claim_timeouts = 0;  // claims answered status::timeout before one goes through
   std::vector<std::pair<std::string, std::string>> devices;
   std::vector<std::string> calls;
   std::mutex m;
@@ -7252,6 +7253,13 @@ struct fake_driftwire {
       return w.take();
     }
     if (method == "roots") return std::string("{\"roots\":[]}");
+    if (method == "claim") {
+      if (claim_timeouts > 0) {
+        --claim_timeouts;
+        return mv::err(mv::status::timeout);
+      }
+      return std::string("{}");
+    }
     return std::string("{}");
   }
 };
@@ -7589,4 +7597,110 @@ TEST_CASE("phone link: Local search stopping lets go of the NAS without waiting 
   // Only what is on this Mac: quitting never waits on the NAS (the code lapses there).
   CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == d.calls.end());
   CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("release")) != d.calls.end());
+}
+
+TEST_CASE("phone link: a claim that timed out is claimed once more", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  d.claim_timeouts = 1;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"claim\",\"local\":\"nas.local:7878\"}"));
+  const auto v = link_done(a);
+  CHECK(*v.str("error") == "");
+  std::lock_guard lock(d.m);
+  CHECK(std::count(d.calls.begin(), d.calls.end(), std::string("claim")) == 2);
+}
+
+TEST_CASE("phone link: a hand-over survives a restart, and handing back clears it", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
+  rig a, b;
+  fake_driftwire da, db;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  const fs::path nas = a.dir / "NAS";
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  b.start();
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  (void)phone_done(b);
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  auto asked = link_done(a);
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  REQUIRE(link_done(a).boolean("other_publisher") == true);
+
+  // Local search restarts while the share cannot be read: still handed over.
+  const std::string lib = utf8(nas / ".mediaviewer/library.json");
+  ::chmod(lib.c_str(), 0);
+  a.eng.reset();
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == true);
+  ::chmod(lib.c_str(), 0644);
+
+  // b hands the library back: a's key is on the share again, and a publishes.
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(a);
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  auto back = link_done(b);
+  REQUIRE_FALSE(back.str("asking_key")->empty());
+  mv::json::writer w2;
+  w2.begin_object().key("do").string("takeover_allow").key("key").string(*back.str("asking_key")).end_object();
+  REQUIRE(b.eng->phone_link(w2.str()));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == false);
+  // And that stays so after another restart.
+  a.eng.reset();
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == false);
+#endif
+}
+
+TEST_CASE("phone link: a code left showing at quit is withdrawn at the next start", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  a.eng.reset();
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  std::lock_guard lock(d.m);
+  CHECK(std::count(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == 1);
 }

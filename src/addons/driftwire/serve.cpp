@@ -757,13 +757,15 @@ void server::state::serve_connection(conn* c) {
     channel::options o;
     o.access_key = access_key;
     o.static_key = identity;
-    // Only while nobody owns it and only from its own network: anyone else
-    // gets the same silence as a wrong key, and no file on the share is read.
+    // A claim: only from its own network, and the share is read only while
+    // nobody owns the service, or (owned) for a hello the access key does not
+    // open, so a phone's session never touches it. Owned, a claim is the
+    // owner's own claiming again after its answer was lost; anyone else's
+    // ends in the same silence as a wrong key.
     std::string claim_folder;
     bool claiming = false;
-    // Owned, this is still open to the owner itself, with a fresh token and
-    // proof: a claim whose answer was lost must be able to fetch its keys.
-    if (claimable && on_own_network(c->from)) {
+    if (claimable && on_own_network(c->from) &&
+        (!store->exists(kOwnerName) || !channel::hello_opens_under(*h, access_key, identity))) {
       for (const auto& [key, folder] : claim_tokens()) {
         if (channel::hello_opens_under(*h, key, identity)) {
           o.access_key = key;
@@ -975,6 +977,15 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     return;
   }
   (void)c;
+  // Owned and not its owner: closed with nothing said, before any challenge,
+  // so this ends as a refusal and never as "it may have gone through".
+  if (store->exists(kOwnerName)) {
+    const auto held = owner();
+    if (!held || *held != *peer) {
+      ch->shutdown();
+      return;
+    }
+  }
   // The token proves this desktop can read the share; anyone with a read-only
   // account could. Now it must write: a nonce of ours, into the same folder.
   std::array<std::uint8_t, 32> nonce_bytes{};
@@ -1007,7 +1018,7 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     const auto held = owner();
     lock.unlock();
     if (!held || *held != *peer) {
-      (void)ch->cancel(kCancelWaitMs, "claimed");
+      ch->shutdown();  // no word: whether it is owned is not said to anyone but its owner
       return;
     }
     send_claimed(*ch);

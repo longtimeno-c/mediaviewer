@@ -439,7 +439,7 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
                            std::chrono::steady_clock::time_point deadline) {
   const auto left_ms = [&] {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-    return static_cast<int>(std::max<std::int64_t>(1, ms));  // 1: the channel reads 0 as no limit at all
+    return static_cast<int>(std::max<std::int64_t>(1, ms));  // at least 1: the channel reads 0 as one poll and returns at once
   };
   channel::options opts;
   opts.access_key = key;

@@ -1290,6 +1290,7 @@ class engine {
     bool other_publisher = false;     // another desktop's key is on the share
     bool mismatch = false;            // the share's library.json goes back on what this desktop publishes
     bool handed_over = false;         // this desktop signed the library away; until the share names its key again
+    bool code_left = false;           // a code was on screen when Local search last stopped
     bool code_waiting = false;        // the code shown is still on the service
     std::int64_t pending = 0;         // revokes the NAS has not heard
     double retry_s = 0;               // until the next try, doubling
@@ -1303,6 +1304,8 @@ class engine {
   void phone_link_prepare_nearby();
   void phone_link_tick();
   void phone_link_stop() noexcept;
+  void phone_link_load_flags();
+  void phone_link_save_flags();
   [[nodiscard]] result<std::string> phone_route(const char* method, const std::string& json);
   [[nodiscard]] result<std::vector<std::uint8_t>> phone_signing_key(bool make);
   mutable std::mutex phone_link_m_;

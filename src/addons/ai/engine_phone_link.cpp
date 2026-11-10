@@ -70,6 +70,37 @@ const char* error_name(status s) noexcept {
 
 }  // namespace
 
+// What must survive Local search restarting (phone/link.json): a hand-over
+// not yet confirmed by a share that reads back, and a code left on the NAS.
+void engine::phone_link_load_flags() {
+  const auto doc = json::parse(slurp(data_dir_ + "/phone/link.json"), 4);
+  if (!doc) return;
+  std::lock_guard lock(phone_link_m_);
+  link_.handed_over = doc->boolean("handed_over").value_or(false);
+  link_.code_left = doc->boolean("code_left").value_or(false);
+  if (link_.handed_over) link_.other_publisher = true;
+}
+
+void engine::phone_link_save_flags() {
+  bool handed = false, left = false;
+  {
+    std::lock_guard lock(phone_link_m_);
+    handed = link_.handed_over;
+    left = link_.code_left;
+  }
+  json::writer w;
+  w.begin_object().key("handed_over").boolean(handed).key("code_left").boolean(left).end_object();
+  const std::string file = data_dir_ + "/phone/link.json";
+  std::error_code ec;
+  std::filesystem::create_directories(fs_path(data_dir_ + "/phone"), ec);
+  {
+    std::ofstream out(fs_path(file + ".part"), std::ios::binary | std::ios::trunc);
+    out << w.str();
+    if (!out.flush()) return;
+  }
+  std::filesystem::rename(fs_path(file + ".part"), fs_path(file), ec);
+}
+
 result<std::string> engine::phone_route(const char* method, const std::string& json) {
   // Stopping: no new wait on the NAS, so stop never sits through one bound
   // after another. What only tidies this Mac (or withdraws a code) still goes:
@@ -120,7 +151,8 @@ void engine::phone_link_stop() noexcept {
   // and must not go on serving a catalogue nobody here keeps up to date. Both
   // calls are on this Mac. A code showing is not withdrawn here: that is a
   // round trip to a NAS that may not answer, and quitting must not wait on
-  // it; the NAS lets the code lapse within its five minutes.
+  // it. It is written down and withdrawn at the next start; the NAS lets it
+  // lapse within five minutes anyway.
   bool nearby = false, showing = false;
   {
     std::lock_guard lock(phone_link_m_);
@@ -128,6 +160,14 @@ void engine::phone_link_stop() noexcept {
     showing = link_.qr_expires != 0;
   }
   try {
+    if (showing) {
+      // Withdrawn at the next start (phone_link_refresh), not now.
+      {
+        std::lock_guard lock(phone_link_m_);
+        link_.code_left = true;
+      }
+      phone_link_save_flags();
+    }
     if (nearby) (void)phone_route("nearby_stop", "{}");
     if (nearby || showing) (void)phone_route("release", "{}");
   } catch (...) {
@@ -135,6 +175,7 @@ void engine::phone_link_stop() noexcept {
 }
 
 void engine::phone_link_loop() {
+  phone_link_load_flags();  // before the first request: a small file, read once per run
   for (;;) {
     std::string request;
     bool poll = false;
@@ -213,6 +254,19 @@ void engine::phone_link_tick() {
 }
 
 void engine::phone_link_refresh(bool phones_only) {
+  bool left = false;
+  {
+    std::lock_guard lock(phone_link_m_);
+    left = link_.code_left && link_.qr_expires == 0;
+  }
+  // A code was showing when Local search last stopped: it goes now.
+  if (left && phone_route("pair_stop", "{}")) {
+    {
+      std::lock_guard lock(phone_link_m_);
+      link_.code_left = false;
+    }
+    phone_link_save_flags();
+  }
   auto status_json = phone_route("status", "{}");
   if (!status_json) {
     std::lock_guard lock(phone_link_m_);
@@ -332,9 +386,16 @@ void engine::phone_link_refresh(bool phones_only) {
       }
     }
   }
+  const bool cleared = handed_over && lib && lib->public_key == mine;
+  if (cleared) {
+    {
+      std::lock_guard lock(phone_link_m_);
+      link_.handed_over = false;
+    }
+    phone_link_save_flags();
+  }
   std::lock_guard lock(phone_link_m_);
   link_.mismatch = mismatch;
-  if (handed_over && lib && lib->public_key == mine) link_.handed_over = false;
   if (link_.handed_over) other = true;
   if (!other) link_.other_fingerprint.clear();
   link_.other_publisher = other;
@@ -635,6 +696,7 @@ void engine::phone_link_do(const std::string& request) {
       link_.handed_over = true;
       link_.other_fingerprint = catalog::fingerprint(to);
     }
+    phone_link_save_flags();
     phone_link_prepare_nearby();  // its key is not the library's now: the nearby copy goes
     phone_link_refresh();
     return;
