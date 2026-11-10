@@ -1346,6 +1346,55 @@ link. The tests check that no 32-byte run of the file passes through either rela
 - **Tor** (option 11) was evaluated, not built, and dropped for now
   ([plan](../plans/driftwire-tor-spike.md), [12](12-decision-log.md#driftwire)).
 
+## Claiming and pairing (phone access)
+
+`desk.*`, `advert*`, the owner's half of `serve.*`; plan: `docs/plans/mobile.md` §7.2, §7.4, §7.5.
+The Driftwire add-on holds the desktop's side of a phone. Local search asks for it through the host
+table (`route_request`, [18](18-import.md#add-ons-calling-add-ons)), and refuses any other caller.
+
+**Claiming.** Only for a connection from its own network (`net::on_link`, loopback included), and only
+while the service has no owner or, once it has, for a hello the access key does not open (so a phone's
+session never reads the share), it looks for `.mediaviewer/claim.token` under its named folders:
+64 hex digits the desktop wrote over the share. A hello that opens under the key derived from that
+token (`claim_key`, `channel::hello_opens_under`, one AEAD) becomes a claim channel. Everyone else
+gets the silence a wrong access key gets, and from outside no file is read. The token proves the desktop
+can read the share; the service then sends a nonce, and the claim goes through only once that nonce is in
+`.mediaviewer/claim.proof` beside it, which proves the desktop can also write there (a read-only account
+cannot claim). What is not proven: that the desktop is the share's owner, or a person's own computer;
+anyone who can write the share on the NAS's own network, before the owner does, can claim it. The claimant's device
+key is stored as `owner`; the answer carries the access key, and `<folder>/.mediaviewer` becomes a
+named folder labelled `Catalogue` (a hidden name cannot be reached any other way). The desktop deletes
+the token whatever happens. There is no expiry on the token: anyone who can read it could also write
+one. Behind a NAT that rewrites sources, an outside connection can look local, and the token is then
+the only gate. `driftwire serve disown` forgets the owner when that desktop is gone.
+Owned, a claim is answered only for the owner's own device key (with a fresh token and proof), with the same
+keys and nothing changed: a claim whose answer was lost can fetch them again. Anyone else's claim on an owned
+service ends with the link closed and no reason given, before any challenge. That is not the silence of a
+wrong key: the handshake completes first, so the caller can tell owned (closed) from unowned (a challenge)
+from no token (no handshake). Only a caller that can write the token on the share learns it.
+
+**Who may do what.** A phone holds a read-only grant. The owner's session alone is granted
+`kAdminOp` and sends `serve_admin` (devices, add or revoke a device, a pairing code, the named folders,
+with their NAS paths, which no phone is told). Anyone else's `serve_admin` is answered `refused`.
+Removing a named folder cuts every other session, so nothing keeps reading it.
+
+**Pairing.** The owner hands the service a single-use code with a lifetime measured on the service's
+clock; a new code withdraws the one before, and Cancel or expiry on the card withdraws it (`pair_cancel`).
+The device list says whether a code is still waiting, so the card takes down one a re-scan used. A device not yet paired redeems it with `serve_pair` before `serve_hello`; a used, expired or
+made-up code is `bad-code`, and the phone is told to scan again. A phone already paired that scans again is
+answered `serve_paired` and goes on, and a code it carries is spent so it pairs nothing else. Codes are in memory, hashed, at most
+`kMaxPairCodes`, and a restart forgets them. The desktop learns the phone from the service's device list,
+which is its own list too (`phone_devices`), so one scan pairs with both. A revoke takes the phone off the
+desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`), and Local
+search asks again by itself, from 30 s and doubling to an hour, until the service has it.
+
+**Nearby.** `desk::start_nearby` runs a second `serve::server` on the Mac over the local copy, `lan_only`,
+never claimable, with its keys in memory so its timer never wakes the Keychain. It takes the same access key
+and the same device list, and is advertised as `_mediaviewer._tcp` (TXT `v=1`, `lib=` the first 16 hex of the
+library id's SHA-256; `advert_mac.cpp`). The phone reads it exactly as it reads the NAS, so a paired phone
+needs no Accept and a dropped transfer resumes by `read_range`. Its identity is made per run and nothing
+pins it: the catalogue's signature is the trust. Windows and Linux have `advert_none.cpp`, so no advert yet.
+
 ## The NAS service (`driftwire serve`)
 
 `serve.h`, `serve_wire.h`, `serve_client.h`, `channel::open_library`; plan: `docs/plans/mobile.md`
@@ -1802,6 +1851,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
+| Phone access | `desk.*` (claim, devices, codes, nearby, the route), `advert*` (Bonjour) |
 | The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |

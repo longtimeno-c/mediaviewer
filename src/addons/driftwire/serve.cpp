@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <list>
@@ -34,8 +35,8 @@ using clock = std::chrono::steady_clock;
 // A hello that is not all there this soon is not a phone's (it is about 1.2 KB).
 constexpr int kHelloMs = 3000;
 constexpr int kServeHelloMs = 5000;
-// How long a device not on the list has to say it is pairing.
-constexpr int kPairWaitMs = 2000;
+// The desktop writing the claim's nonce over SMB, at most.
+constexpr int kClaimProofMs = 12000;
 // First messages remembered as seen, against a replay of a recorded one. Only
 // ones that opened under the key go in, so a stranger cannot flush it.
 constexpr std::size_t kSeenFirsts = 4096;
@@ -89,6 +90,7 @@ struct stream {
 struct conn {
   std::shared_ptr<link> l;
   std::string source, block;
+  net::address from;
   std::chrono::steady_clock::time_point born = std::chrono::steady_clock::now();
   bool pending_released = false;  // the connection's thread's own
   // 0: its hello has not all arrived; 1: it has, the handshake is running;
@@ -99,14 +101,104 @@ struct conn {
   std::unique_ptr<channel> ch;  // under m (set once)
   std::array<std::uint8_t, 32> device{};
   bool has_device = false;  // under m
+  bool is_owner = false;    // set before its session starts
   std::atomic<bool> done{false};
   std::thread t;
 };
 
+struct waiting_code {
+  std::array<std::uint8_t, 32> hash{};
+  clock::time_point deadline;
+};
+
+std::array<std::uint8_t, 32> code_hash(std::string_view code) {
+  std::array<std::uint8_t, 32> h{};
+  crypto_generichash(h.data(), h.size(), reinterpret_cast<const unsigned char*>(code.data()), code.size(), nullptr, 0);
+  return h;
+}
+
+bool lower_hex(std::string_view s, std::size_t n) noexcept {
+  return s.size() == n && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+std::string new_root_id() {
+  std::array<std::uint8_t, 8> b{};
+  randombytes_buf(b.data(), b.size());
+  std::string out(16, '0');
+  sodium_bin2hex(out.data(), out.size() + 1, b.data(), b.size());
+  return out;
+}
+
 }  // namespace
 
 struct server::state {
-  config cfg;
+  // The named folders change while sessions run (the owner's add_root and
+  // remove_root): each request takes a snapshot, and a session keeps none.
+  mutable std::mutex cfg_m;
+  std::shared_ptr<const config> cfg_now;  // under cfg_m
+  std::string service_name;
+  [[nodiscard]] std::shared_ptr<const config> cfg() const {
+    std::lock_guard lock(cfg_m);
+    return cfg_now;
+  }
+  bool claimable = false, lan_only = false;
+  std::function<bool(const net::address&)> own_network;
+  std::function<bool(const config&)> save_config;
+  std::string devices_lock;
+  std::mutex devices_m, claim_m;
+  std::mutex codes_m;
+  std::vector<waiting_code> codes;  // under codes_m
+  // Codes taken whose device is not saved yet: still "waiting" to the owner,
+  // so the desktop never sees a spent code before the phone it added.
+  int redeeming = 0;  // under codes_m
+
+  [[nodiscard]] bool on_own_network(const net::address& a) const {
+    if (own_network) return own_network(a);
+    const auto nets = net::local_subnets();
+    return net::on_link(a, nets);
+  }
+  [[nodiscard]] std::optional<std::array<std::uint8_t, 32>> owner() const {
+    auto v = store->get(kOwnerName);
+    if (!v || v->size() != 32) return std::nullopt;
+    std::array<std::uint8_t, 32> k;
+    std::memcpy(k.data(), v->data(), k.size());
+    return k;
+  }
+  // Single use: it is gone from the list before anything else can look.
+  [[nodiscard]] bool take_code(std::string_view code, bool redeem = false) {
+    if (!lower_hex(code, kPairCodeChars)) return false;
+    const auto want = code_hash(code);
+    const auto now = clock::now();
+    std::lock_guard lock(codes_m);
+    std::erase_if(codes, [&](const waiting_code& c) { return c.deadline <= now; });
+    for (auto it = codes.begin(); it != codes.end(); ++it) {
+      if (sodium_memcmp(it->hash.data(), want.data(), want.size()) == 0) {
+        codes.erase(it);
+        if (redeem) ++redeeming;
+        return true;
+      }
+    }
+    return false;
+  }
+  // The file lock against `serve add` / `serve revoke`, when there is one.
+  [[nodiscard]] std::unique_ptr<net::instance_lock> lock_devices() const {
+    return devices_lock.empty() ? nullptr : net::try_lock_instance(devices_lock);
+  }
+  [[nodiscard]] bool may_change_devices(std::unique_ptr<net::instance_lock>& held) const {
+    held = lock_devices();
+    return devices_lock.empty() || held != nullptr;
+  }
+  [[nodiscard]] bool add_device(const std::string& name, const std::array<std::uint8_t, 32>& key, bool& full);
+  [[nodiscard]] bool publish_config(config next);
+  // Every session but `except`: the named folders changed under it.
+  void cut_sessions(const conn* except);
+  // The claim keys on the share, each with the named folder it was found under.
+  [[nodiscard]] std::vector<std::pair<std::array<std::uint8_t, 32>, std::string>> claim_tokens() const;
+  void run_claim(conn& c, std::unique_ptr<channel> ch, const std::string& folder);
+  void send_claimed(channel& ch);
+  [[nodiscard]] bool redeem(channel& ch, const std::array<std::uint8_t, 32>& peer);
+  [[nodiscard]] std::pair<end_code, std::string> admin(conn& c, std::string_view request);
+
   secrets::store* store = nullptr;
   bool loopback_only = false;
   int max_sessions = 8;
@@ -140,8 +232,6 @@ struct server::state {
   std::atomic<std::uint64_t> n_evicted{0};
   std::atomic<std::uint64_t> n_accepted{0}, n_over{0}, n_hello{0}, n_key{0}, n_replay{0}, n_unpaired{0}, n_sessions{0};
   std::atomic<std::uint64_t> n_paired{0}, n_bad_codes{0};
-  std::string devices_lock;
-  std::mutex pair_m;  // one redemption at a time: spending a code, then adding the device
 
   ~state() {
     sodium_memzero(identity.data(), identity.size());
@@ -179,9 +269,6 @@ struct server::state {
   void serve_connection(conn* c);
   void release_pending(conn& c);
   void session(conn& c);
-  // The first message of a device not on the list: a code puts it on, and the
-  // session goes on. False: it was told why and closed.
-  [[nodiscard]] bool try_pair(channel& ch, const std::array<std::uint8_t, 32>& device);
   void watch_loop();
   void cut_unpaired();
 };
@@ -193,7 +280,10 @@ namespace {
 class session_state {
  public:
   using send_fn = std::function<bool(msg, std::span<const std::uint8_t>)>;
-  session_state(send_fn send, const config& cfg, std::uint32_t ops) : send_(std::move(send)), cfg_(cfg), ops_(ops) {}
+  using config_fn = std::function<std::shared_ptr<const config>()>;
+  using admin_fn = std::function<std::pair<end_code, std::string>(std::string_view)>;
+  session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {})
+      : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)) {}
 
   // The reader thread's: a message from the client. False: end the session.
   bool on_message(const message& m) {
@@ -258,6 +348,14 @@ class session_state {
           }
         }
         return true;
+      }
+      case msg::serve_admin: {
+        const auto a = parse_admin(m.body);
+        if (!a) return false;
+        // Only an owner's session has the handler; to anyone else the answer is no.
+        if (!admin_ || (ops_ & kAdminOp) == 0) return send_end(a->id, end_code::refused);
+        const auto [code, json] = admin_(a->json);
+        return send_end(a->id, code, json);
       }
       default:
         return false;  // anything else after the hello is not this protocol
@@ -373,8 +471,8 @@ class session_state {
     return send_(msg::stream_end, encode_end(id, code, json));
   }
 
-  const root_config* find_root(const std::string& id) const noexcept {
-    for (const auto& r : cfg_.roots) {
+  static const root_config* find_root(const config& cfg, const std::string& id) noexcept {
+    for (const auto& r : cfg.roots) {
       if (r.id == id) return &r;
     }
     return nullptr;
@@ -391,12 +489,14 @@ class session_state {
       }
     } opening_done{*this};
     if ((ops_ & op_bit(r.kind)) == 0) return send_end(r.id, end_code::unsupported);
+    // This request's view of the named folders, held until it has opened.
+    const auto cfg = cfg_();
     if (r.kind == op::roots) {
       std::vector<root_info> out;
-      for (const auto& c : cfg_.roots) out.push_back({c.id, c.label});
+      for (const auto& c : cfg->roots) out.push_back({c.id, c.label});
       return send_end(r.id, end_code::ok, roots_json(out));
     }
-    const root_config* root = find_root(r.root);
+    const root_config* root = find_root(*cfg, r.root);
     // Before any file is looked at.
     if (!root || (!r.rel.empty() && !safe_relative(r.rel))) return send_end(r.id, end_code::refused);
     if (r.kind == op::read_range && r.rel.empty()) return send_end(r.id, end_code::refused);
@@ -528,8 +628,9 @@ class session_state {
   }
 
   send_fn send_;
-  const config& cfg_;
+  config_fn cfg_;
   const std::uint32_t ops_;
+  admin_fn admin_;
   std::mutex m_;
   std::condition_variable cv_;
   bool stopping_ = false;                         // under m_
@@ -545,7 +646,8 @@ class session_state {
 }  // namespace
 
 void drive_requests(const config& cfg, std::uint32_t ops, std::span<const std::uint8_t> input) {
-  session_state s([](msg, std::span<const std::uint8_t>) { return true; }, cfg, ops);
+  const auto held = std::make_shared<const config>(cfg);
+  session_state s([](msg, std::span<const std::uint8_t>) { return true; }, [&held] { return held; }, ops);
   std::thread pump([&s] { s.pump(); });
   message m;
   while (input.size() >= 3) {
@@ -564,11 +666,12 @@ void drive_requests(const config& cfg, std::uint32_t ops, std::span<const std::u
 void server::state::session(conn& c) {
   channel& ch = *c.ch;
   message m;
-  // The first message after ident: what the client can do. A device already on
-  // the list that pairs again (a re-scan, or a pairing whose answer it never
-  // heard) is told it is paired, spends no code, and goes on.
+  // The first message after ident: what the client can do.
   auto first = ch.receive(m, kServeHelloMs);
+  // A phone that is already paired and scans again: it is told so and goes on.
+  // A code it carries is spent here, so that code can pair nothing else.
   if (first && m.type == msg::serve_pair) {
+    if (const auto p = parse_pair(m.text())) (void)take_code(p->code);
     if (!ch.send(msg::serve_paired, std::string_view("{}"))) return;
     first = ch.receive(m, kServeHelloMs);
   }
@@ -581,7 +684,7 @@ void server::state::session(conn& c) {
   std::uint32_t version = kVersion;
   if (hello) {
     version = std::clamp(hello->version, kMinVersion, kVersion);
-    if (hello->min_version <= kVersion && hello->version >= kMinVersion) ops = hello->ops & kAllOps;
+    if (hello->min_version <= kVersion && hello->version >= kMinVersion) ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0));
   }
   if (!ch.send(msg::serve_caps, caps_json(version, ops))) return;
   if (ops == 0) {
@@ -590,8 +693,10 @@ void server::state::session(conn& c) {
     (void)ch.cancel(kCancelWaitMs, "versions");
     return;
   }
-  session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); }, cfg,
-                  ops);
+  session_state::admin_fn admin_handler;
+  if (c.is_owner) admin_handler = [this, &c](std::string_view request) { return admin(c, request); };
+  session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); },
+                  [this] { return cfg(); }, ops, std::move(admin_handler));
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
     try {
@@ -654,23 +759,46 @@ void server::state::serve_connection(conn* c) {
     channel::options o;
     o.access_key = access_key;
     o.static_key = identity;
+    // A claim: only from its own network, and the share is read only while
+    // nobody owns the service, or (owned) for a hello the access key does not
+    // open, so a phone's session never touches it. Owned, a claim is the
+    // owner's own claiming again after its answer was lost; anyone else's
+    // ends in the same silence as a wrong key.
+    std::string claim_folder;
+    bool claiming = false;
+    if (claimable && on_own_network(c->from) &&
+        (!store->exists(kOwnerName) || !channel::hello_opens_under(*h, access_key, identity))) {
+      for (const auto& [key, folder] : claim_tokens()) {
+        if (channel::hello_opens_under(*h, key, identity)) {
+          o.access_key = key;
+          claim_folder = folder;
+          claiming = true;
+          break;
+        }
+      }
+    }
     o.fresh_first = [this](std::span<const std::uint8_t> first) { return fresh(first); };
-    auto ch = channel::open_library_server(c->l, std::move(*h), "0000000000000000", cfg.name, o);
+    auto ch = channel::open_library_server(c->l, std::move(*h), "0000000000000000", service_name, o);
     release_pending(*c);
     if (!ch) {
       if (ch.error() == status::permission_denied) n_key.fetch_add(1);
       c->l->shutdown();
       return;
     }
+    if (claiming) {
+      run_claim(*c, std::move(*ch), claim_folder);
+      return;
+    }
     opened = std::move(*ch);
   }
   const auto peer = opened->peer_key();
-  if (!peer) {
+  const auto owner_key = peer ? owner() : std::nullopt;
+  c->is_owner = peer && owner_key && *owner_key == *peer;
+  if (!peer || (!c->is_owner && !paired(*peer) && !redeem(*opened, *peer))) {
     n_unpaired.fetch_add(1);
-    (void)opened->cancel(kCancelWaitMs, "not-paired");
+    (void)opened->cancel(kCancelWaitMs, "not-paired");  // says nothing new after a bad code's own reason
     return;
   }
-  if (!paired(*peer) && !try_pair(*opened, *peer)) return;
   const int before = sessions.fetch_add(1);
   // Held to the end of this function, however it ends.
   struct slot {
@@ -693,47 +821,6 @@ void server::state::serve_connection(conn* c) {
     std::lock_guard lock(c->m);
     c->has_device = false;
   }
-}
-
-bool server::state::try_pair(channel& ch, const std::array<std::uint8_t, 32>& device) {
-  // A client that is not pairing sends serve_hello (or nothing) here, and is
-  // told what it always was. It holds the access key, or it would not be here.
-  message m;
-  if (auto r = ch.receive(m, kPairWaitMs); !r || m.type != msg::serve_pair) {
-    n_unpaired.fetch_add(1);
-    (void)ch.cancel(kCancelWaitMs, "not-paired");
-    return false;
-  }
-  const auto ask = parse_pair(m.text());
-  bool ok = false;
-  bool full = false;
-  if (ask) {
-    std::lock_guard lock(pair_m);
-    std::unique_ptr<net::instance_lock> held;
-    for (int tries = 0; !devices_lock.empty() && !held && tries < 20; ++tries) {
-      held = net::try_lock_instance(devices_lock);
-      if (!held) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    if (devices_lock.empty() || held) {
-      // Read before the code is spent, so a list that cannot be read costs no code.
-      auto devices = known::load(*store);
-      full = devices.size() >= known::kMaxDevices;
-      if (!full && redeem_pair_code(*store, ask->code, std::time(nullptr))) {
-        known::device d;
-        d.name = ask->name.substr(0, known::kMaxName);
-        d.key = device;
-        devices.push_back(std::move(d));
-        ok = known::save(*store, devices);
-      }
-    }
-  }
-  if (!ok) {
-    n_bad_codes.fetch_add(1);
-    (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "bad-code");
-    return false;
-  }
-  n_paired.fetch_add(1);
-  return ch.send(msg::serve_paired, std::string_view("{}")).has_value();
 }
 
 void server::state::reap() {
@@ -817,6 +904,8 @@ void server::state::accept_loop() {
     // over its limit does not spend its neighbours' budget.
     room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
            pending.load() < 2 * max_pending;
+    // The desktop's nearby service: this network only, and silently.
+    if (room && lan_only && !on_own_network(from)) room = false;
     // The global budget is last, and only for a connection that gets in, so
     // what the per-address limits drop never spends it. Full: the oldest
     // connection still saying nothing makes way (from kMinHelloAge), else
@@ -834,6 +923,7 @@ void server::state::accept_loop() {
     c->l = std::shared_ptr<link>(std::move(*accepted));
     c->source = source;
     c->block = block;
+    c->from = from;
     pending.fetch_add(1);
     {
       std::lock_guard lock(source_m);
@@ -856,6 +946,315 @@ void server::state::accept_loop() {
   }
 }
 
+std::vector<std::pair<std::array<std::uint8_t, 32>, std::string>> server::state::claim_tokens() const {
+  std::vector<std::pair<std::array<std::uint8_t, 32>, std::string>> out;
+  const auto now = cfg();
+  for (const root_config& r : now->roots) {
+    io::file_reader f;
+    if (!f.open_beneath(r.path, kClaimTokenFile)) continue;
+    if (f.size() < 64 || f.size() > 66) continue;
+    std::array<std::uint8_t, 66> buf;
+    auto got = f.read_at(0, std::span<std::uint8_t>(buf).first(static_cast<std::size_t>(f.size())));
+    if (!got || *got < 64) continue;
+    const std::string_view token(reinterpret_cast<const char*>(buf.data()), 64);
+    if (!lower_hex(token, 64)) continue;
+    out.emplace_back(claim_key(token), r.path);
+  }
+  return out;
+}
+
+bool server::state::publish_config(config next) {
+  if (save_config && !save_config(next)) return false;
+  auto made = std::make_shared<const config>(std::move(next));
+  std::lock_guard lock(cfg_m);
+  cfg_now = std::move(made);
+  return true;
+}
+
+void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::string& folder) {
+  message m;
+  const auto peer = ch->peer_key();
+  if (!peer || !ch->receive(m, kServeHelloMs) || m.type != msg::serve_claim) {
+    (void)ch->cancel(kCancelWaitMs, "protocol");
+    return;
+  }
+  (void)c;
+  // Owned and not its owner: closed with no reason given, before any
+  // challenge, so this ends as a refusal and never as "it may have gone
+  // through". The caller can still tell this from a challenge (unowned) or a
+  // failed handshake (no token), but only a caller that could write the token
+  // on the share gets this far.
+  if (store->exists(kOwnerName)) {
+    const auto held = owner();
+    if (!held || *held != *peer) {
+      ch->shutdown();
+      return;
+    }
+  }
+  // The token proves this desktop can read the share; anyone with a read-only
+  // account could. Now it must write: a nonce of ours, into the same folder.
+  std::array<std::uint8_t, 32> nonce_bytes{};
+  randombytes_buf(nonce_bytes.data(), nonce_bytes.size());
+  const std::string nonce = key_hex(nonce_bytes);
+  {
+    json::writer w;
+    w.begin_object().key("nonce").string(nonce).end_object();
+    if (!ch->send(msg::serve_claim_check, w.str()) || !ch->receive(m, kClaimProofMs) || m.type != msg::serve_claim) {
+      (void)ch->cancel(kCancelWaitMs, "protocol");
+      return;
+    }
+    io::file_reader f;
+    std::array<std::uint8_t, 64> got{};
+    bool proven = f.open_beneath(folder, kClaimProofFile) && f.size() >= got.size() && f.size() <= got.size() + 2;
+    if (proven) {
+      auto n = f.read_at(0, got);
+      proven = n && *n == got.size() && sodium_memcmp(got.data(), nonce.data(), got.size()) == 0;
+    }
+    if (!proven) {
+      (void)ch->cancel(kCancelWaitMs, "not-written");
+      return;
+    }
+  }
+  std::unique_lock lock(claim_m);
+  // Two desktops at once: the first through this lock is the owner. The owner
+  // claiming again (its first answer was lost) gets the same answer; nothing
+  // changes.
+  if (store->exists(kOwnerName)) {
+    const auto held = owner();
+    lock.unlock();
+    if (!held || *held != *peer) {
+      ch->shutdown();  // a racing claim lost: no reason given (see above for what the caller can tell)
+      return;
+    }
+    send_claimed(*ch);
+    return;
+  }
+  const std::string catalogue = folder + "/" + kCatalogueFolder;
+  config next = *cfg();
+  if (std::none_of(next.roots.begin(), next.roots.end(), [&](const root_config& r) { return r.path == catalogue; }) &&
+      next.roots.size() < kMaxRoots) {
+    next.roots.push_back({new_root_id(), kCatalogueLabel, catalogue});
+  }
+  if (!publish_config(std::move(next))) {
+    lock.unlock();
+    (void)ch->cancel(kCancelWaitMs, "error");
+    return;
+  }
+  if (!store->put(kOwnerName, *peer) || !owner()) {
+    lock.unlock();
+    (void)ch->cancel(kCancelWaitMs, "error");
+    return;
+  }
+  lock.unlock();
+  send_claimed(*ch);
+}
+
+void server::state::send_claimed(channel& ch) {
+  std::vector<root_info> list;
+  for (const auto& r : cfg()->roots) list.push_back({r.id, r.label});
+  json::writer w;
+  w.begin_object();
+  w.key("access_key").string(key_hex(access_key));
+  w.key("roots").raw(roots_json(list));
+  w.end_object();
+  (void)ch.send(msg::serve_claimed, w.str());
+  ch.flush(kCancelWaitMs);
+  (void)ch.cancel(kCancelWaitMs, "done");
+}
+
+bool server::state::add_device(const std::string& name, const std::array<std::uint8_t, 32>& key, bool& full) {
+  full = false;
+  std::lock_guard lock(devices_m);
+  std::unique_ptr<net::instance_lock> held;
+  if (!may_change_devices(held)) return false;
+  auto v = store->exists(known::kDevicesName) ? store->get(known::kDevicesName) : std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{}};
+  if (!v) return false;  // a list that cannot be read is never replaced
+  std::vector<known::device> devices;
+  if (store->exists(known::kDevicesName)) {
+    auto decoded = known::decode(*v);
+    if (!decoded) return false;
+    devices = std::move(*decoded);
+  }
+  for (auto& d : devices) {
+    if (d.key == key) {
+      d.name = name;
+      return known::save(*store, devices);
+    }
+  }
+  if (devices.size() >= known::kMaxDevices) {
+    full = true;
+    return false;
+  }
+  known::device d;
+  d.name = name;
+  d.key = key;
+  devices.push_back(std::move(d));
+  return known::save(*store, devices);
+}
+
+bool server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer) {
+  // Its first word decides, even with no code waiting: a phone holding an
+  // expired or used one is told so and asks for a new scan.
+  message m;
+  if (!ch.receive(m, kServeHelloMs) || m.type != msg::serve_pair) return false;
+  const auto p = parse_pair(m.text());
+  // Taken and counted as redeeming under one lock, so the owner's devices
+  // answer sees the code waiting or the phone saved, never neither.
+  bool taken = p && take_code(p->code, true);
+  // A code from `driftwire serve pair-code` (no desktop) is kept in the store instead.
+  if (p && !taken && redeem_pair_code(*store, p->code, std::time(nullptr))) {
+    std::lock_guard lock(codes_m);
+    ++redeeming;
+    taken = true;
+  }
+  if (!taken) {
+    n_bad_codes.fetch_add(1);
+    (void)ch.cancel(kCancelWaitMs, "bad-code");
+    return false;
+  }
+  struct done_redeeming {
+    state& s;
+    ~done_redeeming() {
+      std::lock_guard lock(s.codes_m);
+      --s.redeeming;
+    }
+  } counted{*this};
+  bool full = false;
+  if (!add_device(p->name.empty() ? std::string("Phone") : p->name, peer, full)) {
+    (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "error");
+    return false;
+  }
+  n_paired.fetch_add(1);
+  return ch.send(msg::serve_paired, std::string_view("{}")).has_value();
+}
+
+std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view request) {
+  const auto doc = json::parse(request, 4);
+  const std::string* what = doc ? doc->str("do") : nullptr;
+  if (!what) return {end_code::bad_request, {}};
+  const auto text = [&](const char* k) -> std::string {
+    const std::string* v = doc->str(k);
+    return v ? *v : std::string();
+  };
+  const auto device_key = [&]() -> std::optional<std::array<std::uint8_t, 32>> { return parse_key_hex(text("key")); };
+
+  if (*what == "devices") {
+    bool waiting = false;
+    {
+      std::lock_guard lock(codes_m);
+      const auto now = clock::now();
+      std::erase_if(codes, [&](const waiting_code& w) { return w.deadline <= now; });
+      waiting = !codes.empty() || redeeming > 0;
+    }
+    json::writer w;
+    w.begin_object().key("code_waiting").boolean(waiting).key("devices").begin_array();
+    for (const auto& d : known::load(*store)) {
+      w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key)).end_object();
+    }
+    w.end_array().end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "add_device") {
+    const auto key = device_key();
+    if (!key) return {end_code::bad_request, {}};
+    bool full = false;
+    if (!add_device(text("name"), *key, full)) return {full ? end_code::too_many : end_code::error, {}};
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "revoke") {
+    const auto key = device_key();
+    if (!key) return {end_code::bad_request, {}};
+    {
+      std::lock_guard lock(devices_m);
+      std::unique_ptr<net::instance_lock> held;
+      if (!may_change_devices(held)) return {end_code::error, {}};
+      auto devices = known::load(*store);
+      const auto before = devices.size();
+      std::erase_if(devices, [&](const known::device& d) { return d.key == *key; });
+      if (devices.size() == before) return {end_code::not_found, {}};
+      if (!known::save(*store, devices) || known::load(*store).size() != devices.size()) return {end_code::error, {}};
+    }
+    cut_unpaired();
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "pair_code") {
+    const std::string code = text("code");
+    const auto ttl = doc->integer("ttl_ms");
+    if (!lower_hex(code, kPairCodeChars) || !ttl || *ttl <= 0 || *ttl > kMaxPairTtlMs) return {end_code::bad_request, {}};
+    // One code at a time: a new one withdraws the last, so a photo of an
+    // older QR is worth nothing once the card has moved on.
+    std::lock_guard lock(codes_m);
+    codes.clear();
+    codes.push_back({code_hash(code), clock::now() + std::chrono::milliseconds(*ttl)});
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "pair_cancel") {
+    std::lock_guard lock(codes_m);
+    codes.clear();
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "roots") {
+    // To the owner alone: the NAS's own paths, which no phone is ever told.
+    json::writer w;
+    w.begin_object().key("roots").begin_array();
+    for (const auto& r : cfg()->roots) {
+      w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
+    }
+    w.end_array().end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "add_root") {
+    std::string label = text("label");
+    const std::string path = text("path");
+    const bool absolute = !path.empty() && (path.front() == '/' || (path.size() > 2 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')));
+    if (!absolute || label.empty() || label.size() > kMaxLabelBytes) return {end_code::bad_request, {}};
+    std::error_code ec;
+    if (!std::filesystem::is_directory(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())), ec)) {
+      return {end_code::not_found, {}};
+    }
+    std::lock_guard lock(claim_m);  // one change of the folders at a time
+    config next = *cfg();
+    if (next.roots.size() >= kMaxRoots) return {end_code::too_many, {}};
+    const std::string id = new_root_id();
+    next.roots.push_back({id, std::move(label), path});
+    if (!publish_config(std::move(next))) return {end_code::error, {}};
+    json::writer w;
+    w.begin_object().key("id").string(id).end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "remove_root") {
+    const std::string id = text("id");
+    {
+      std::lock_guard lock(claim_m);
+      config next = *cfg();
+      const auto before = next.roots.size();
+      std::erase_if(next.roots, [&](const root_config& r) { return r.id == id; });
+      if (next.roots.size() == before) return {end_code::not_found, {}};
+      if (next.roots.empty()) return {end_code::refused, {}};  // a service must serve something
+      if (!publish_config(std::move(next))) return {end_code::error, {}};
+    }
+    cut_sessions(&c);  // a read of that folder stops now, and the phone comes back without it
+    return {end_code::ok, "{}"};
+  }
+  return {end_code::unsupported, {}};
+}
+
+void server::state::cut_sessions(const conn* except) {
+  std::vector<std::shared_ptr<conn>> live;
+  {
+    std::lock_guard all(conns_m);
+    for (auto& c : conns) {
+      if (c.get() == except) continue;
+      std::lock_guard lock(c->m);
+      if (c->has_device && c->ch) {
+        c->has_device = false;
+        live.push_back(c);
+      }
+    }
+  }
+  for (auto& c : live) (void)c->ch->cancel(kCancelWaitMs, "folders-changed");
+}
+
 void server::state::cut_unpaired() {
   const auto devices = known::load(*store);
   // The cuts wait on sockets, so they happen with no lock held; each conn is
@@ -866,7 +1265,7 @@ void server::state::cut_unpaired() {
     for (auto& c : conns) {
       std::lock_guard lock(c->m);
       if (!c->has_device || !c->ch) continue;
-      if (std::none_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == c->device; })) {
+      if (!c->is_owner && std::none_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == c->device; })) {
         c->has_device = false;
         revoked.push_back(c);
       }
@@ -894,11 +1293,16 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   std::unique_ptr<server> srv(new server());
   srv->st_ = std::make_unique<state>();
   state& st = *srv->st_;
-  st.cfg = o.cfg;
+  st.cfg_now = std::make_shared<const config>(o.cfg);
+  st.service_name = o.cfg.name;
+  st.claimable = o.claimable;
+  st.lan_only = o.lan_only;
+  st.own_network = o.own_network;
+  st.save_config = o.save_config;
+  st.devices_lock = o.devices_lock;
   st.store = o.store;
   st.loopback_only = o.loopback_only;
   st.max_sessions = o.max_sessions;
-  st.devices_lock = o.devices_lock;
   st.max_pending = o.max_pending;
   st.per_minute = o.per_minute;
   st.limits = source_limit(o.per_minute, std::chrono::minutes(1), kLimitSources);
@@ -929,6 +1333,8 @@ result<std::unique_ptr<server>> server::start(const options& o) {
 
 std::uint16_t server::port() const noexcept { return st_->port; }
 
+std::vector<root_config> server::roots() const { return st_->cfg()->roots; }
+
 counters server::stats() const noexcept {
   counters c;
   c.accepted = st_->n_accepted.load();
@@ -937,11 +1343,18 @@ counters server::stats() const noexcept {
   c.no_key = st_->n_key.load();
   c.replayed = st_->n_replay.load();
   c.not_paired = st_->n_unpaired.load();
-  c.sessions = st_->n_sessions.load();
-  c.evicted = st_->n_evicted.load();
   c.paired = st_->n_paired.load();
   c.bad_codes = st_->n_bad_codes.load();
+  c.sessions = st_->n_sessions.load();
+  c.evicted = st_->n_evicted.load();
   return c;
+}
+
+std::array<std::uint8_t, 32> claim_key(std::string_view token_hex) {
+  static const unsigned char label[] = "mediaviewer.driftwire.claim.v1";
+  std::array<std::uint8_t, 32> k{};
+  crypto_generichash(k.data(), k.size(), reinterpret_cast<const unsigned char*>(token_hex.data()), token_hex.size(), label, sizeof label - 1);
+  return k;
 }
 
 void server::recheck_devices() noexcept {
@@ -981,13 +1394,7 @@ server::~server() { stop(); }
 
 namespace {
 
-constexpr std::size_t kPairCodeRow = 8 + crypto_generichash_BYTES;  // expiry, hash
-
-std::array<std::uint8_t, crypto_generichash_BYTES> code_hash(std::string_view code) {
-  std::array<std::uint8_t, crypto_generichash_BYTES> h{};
-  crypto_generichash(h.data(), h.size(), reinterpret_cast<const unsigned char*>(code.data()), code.size(), nullptr, 0);
-  return h;
-}
+constexpr std::size_t kPairCodeRow = 8 + 32;  // expiry, code_hash
 
 std::int64_t row_expiry(const std::uint8_t* row) noexcept {
   std::uint64_t v = 0;

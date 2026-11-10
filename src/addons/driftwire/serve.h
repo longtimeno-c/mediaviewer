@@ -36,6 +36,8 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "addons/driftwire/net.h"
 #include "addons/driftwire/secrets.h"
@@ -44,13 +46,24 @@
 
 namespace mv::driftwire::serve {
 
-// In the store: the 32-byte library access key. The identity and the paired
-// devices are known.h's (kIdentityName, kDevicesName).
+// In the store: the 32-byte library access key, and the public key of the
+// desktop that claimed this service. The identity and the paired devices are
+// known.h's (kIdentityName, kDevicesName).
 inline constexpr const char* kAccessKeyName = "library_access_key";
-// In the store: the pairing codes not yet used (a hash and an expiry each).
+// In the store: the pairing codes `driftwire serve pair-code` made and not yet used (a hash and an
+// expiry each). The desktop's codes (the owner's pair_code) are held in memory instead.
 inline constexpr const char* kPairCodesName = "library_pair_codes";
 inline constexpr std::size_t kPairCodesKept = 16;
 inline constexpr std::int64_t kDefaultPairCodeSeconds = 600;
+inline constexpr const char* kOwnerName = "owner";
+
+// §7.2 claiming. The desktop writes 64 hex digits to this file under a named
+// folder, over the share, then opens a library channel keyed from them.
+inline constexpr const char* kClaimTokenFile = ".mediaviewer/claim.token";
+inline constexpr const char* kClaimProofFile = ".mediaviewer/claim.proof";
+inline constexpr const char* kCatalogueFolder = ".mediaviewer";
+inline constexpr const char* kCatalogueLabel = "Catalogue";
+[[nodiscard]] std::array<std::uint8_t, 32> claim_key(std::string_view token_hex);
 
 // How often the paired list is read again, for revocations.
 inline constexpr int kDevicesRecheckMs = 2000;
@@ -62,10 +75,10 @@ struct counters {
   std::uint64_t no_key = 0;         // did not open under the access key
   std::uint64_t replayed = 0;       // opened, but a first message seen before
   std::uint64_t not_paired = 0;     // held the key, device not paired or revoked
-  std::uint64_t sessions = 0;       // admitted
-  std::uint64_t evicted = 0;        // a waiting hello closed to make room for a newer connection
   std::uint64_t paired = 0;         // devices added by a pairing code
   std::uint64_t bad_codes = 0;      // pairing codes that were wrong, spent or expired
+  std::uint64_t sessions = 0;       // admitted
+  std::uint64_t evicted = 0;        // a waiting hello closed to make room for a newer connection
 };
 
 // The fuzz harness: one session's handling of what an admitted client sends,
@@ -84,11 +97,17 @@ class server {
     int per_minute = 30;              // connections per address (a /64 for IPv6); a /48 gets four times this
     int per_source_pending = 2;       // handshakes in progress per address (a /64 for IPv6)
     int per_block_pending = 4;        // and per IPv6 /48
-    // Taken while a pairing code adds a device, so `serve add` and `revoke`
-    // cannot lose it (empty: the tests, one process).
-    std::string devices_lock;
     // The tests: a listener of their own instead of the configured port.
     std::function<std::unique_ptr<net::listener>()> make_listener;
+    // Who may do what (docs/design/28 "Claiming and pairing").
+    bool claimable = false;   // an owner may be taken on (the service, not the desktop's nearby one)
+    bool lan_only = false;    // anyone not on own_network is closed at once (the nearby one)
+    // Whether an address is on this service's own network. Empty: net::on_link.
+    std::function<bool(const net::address&)> own_network;
+    // A change of the named folders, written before it takes effect.
+    std::function<bool(const config&)> save_config;
+    // Taken around every change of the paired list ("": none), against `serve add`.
+    std::string devices_lock;
   };
 
   // Listens and returns. status::not_found when the store has no usable
@@ -101,6 +120,7 @@ class server {
 
   [[nodiscard]] std::uint16_t port() const noexcept;
   [[nodiscard]] counters stats() const noexcept;
+  [[nodiscard]] std::vector<root_config> roots() const;
   // Reads the paired list now and cuts sessions no longer on it (it is also
   // read on a timer and for every new connection).
   void recheck_devices() noexcept;

@@ -438,6 +438,14 @@ same way (2026-10-11, issue #292): it verifies it at launch but loads it only at
 or Settings → Local search → Start now ([17](17-local-ai-search.md) "Starting on demand"); Import
 still loads at launch.
 
+## Add-ons calling add-ons
+
+Add-ons link nothing of each other. One asks another through the host table: `addon_request(id, method,
+json, reply)` lands on the other's slot worker through its `mv.request.1` interface, with the caller's id
+filled in by the host so the answering add-on can decide who it serves. The answer's JSON comes back on the
+caller's thread. `MV_ERR_NOT_FOUND` means that add-on is not there, and the caller offers to install it.
+Phone access is the first user: Local search asks Driftwire (`desk::route_request`).
+
 ## Commands
 
 Rows in the shared command table (`src/shell/command_table.cpp`), present only while Import is

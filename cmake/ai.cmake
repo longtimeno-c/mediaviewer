@@ -273,6 +273,9 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/catalog.cpp
   ${R}/src/addons/ai/nfc.cpp
   ${R}/src/addons/ai/catalog.h
+  ${R}/src/addons/ai/catalog_chain.cpp
+  ${R}/src/addons/ai/engine_phone_link.cpp
+  ${R}/src/addons/ai/catalog_chain.h
   ${R}/src/addons/driftwire/secrets.h
   # iOS: mv_driftwire_engine carries secrets_file.cpp and secrets_ios.cpp (linked below).
   $<$<NOT:$<PLATFORM_ID:iOS>>:${R}/src/addons/driftwire/secrets_file.cpp>

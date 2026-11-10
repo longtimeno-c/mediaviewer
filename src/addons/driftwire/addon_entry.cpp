@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "addons/driftwire/desk.h"
 #include "addons/driftwire/engine.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/net.h"
@@ -213,6 +214,21 @@ struct addon_state {
   // when Keep receiving was on (the loader's thread, after first pixel).
   // Declared last: it stops before the bridge it calls goes.
   std::unique_ptr<engine> eng;
+  // Phone access (desk.h), made at Local search's first request; its secrets
+  // are this machine's OS store, as the engine's are.
+  std::unique_ptr<mv::driftwire::secrets::store> desk_store;
+  std::unique_ptr<mv::driftwire::desk::desk> desk;
+
+  mv::driftwire::desk::desk* get_desk() {
+    if (desk) return desk.get();
+    desk_store = mv::driftwire::secrets::os_store();
+    if (!desk_store) return nullptr;
+    mv::driftwire::desk::desk::options o;
+    o.store = desk_store.get();
+    o.device_name = mv::driftwire::net::machine_name();
+    desk = std::make_unique<mv::driftwire::desk::desk>(std::move(o));
+    return desk.get();
+  }
 
   engine& get(std::optional<mv::driftwire::prefs> initial = std::nullopt) {
     if (!eng) {
@@ -321,7 +337,25 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
 
 const mv_addon_slots kSlots{sizeof(mv_addon_slots), 0, nullptr, nullptr, &screen_open, nullptr, &on_event};
 
+// Local search reaching the service on the NAS and the nearby service, through
+// the host (docs/design/18 "Add-ons calling add-ons"). On this add-on's worker.
+mv_status MV_CALL handle_request(void*, const char* caller, const char* method, const char* request_json,
+                                 mv_addon_reply_fn reply, void* user) {
+  return guard([&] {
+    if (!caller || !method || !reply) return MV_ERR_INVALID_ARG;
+    auto* d = g->get_desk();
+    if (!d) return MV_ERR_UNSUPPORTED_FORMAT;  // this machine has no secret store
+    auto r = mv::driftwire::desk::route_request(*d, caller, method, request_json ? request_json : "{}");
+    if (!r) return static_cast<mv_status>(r.error());
+    reply(user, r->c_str());
+    return MV_OK;
+  });
+}
+
+const mv_addon_request_api kRequests{sizeof(mv_addon_request_api), 0, &handle_request};
+
 const void* MV_CALL query(void*, const char* id) {
+  if (id && std::strcmp(id, MV_REQUEST_INTERFACE) == 0) return &kRequests;
   if (id && std::strcmp(id, MV_SLOTS_INTERFACE) == 0) return &kSlots;
   return nullptr;
 }

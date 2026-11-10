@@ -407,4 +407,73 @@ result<std::vector<list_entry>> client::list(const std::string& root, const std:
   return *parsed;
 }
 
+result<std::string> client::admin(const std::string& request_json, end_code* code) {
+  open_request r;
+  auto slot = st_->open_slot(r);
+  if (auto s = st_->ch->send(msg::serve_admin, encode_admin(r.id, request_json)); !s) {
+    st_->remove(r.id);
+    return err(s.error());
+  }
+  auto done = finish(st_, slot, r.id, code);
+  st_->remove(r.id);
+  if (!done) return err(done.error());
+  switch (*done) {
+    case end_code::ok:
+      return slot->end_json;
+    case end_code::not_found:
+      return err(status::not_found);
+    case end_code::bad_request:
+      return err(status::invalid_arg);
+    case end_code::too_many:
+      return err(status::busy);
+    case end_code::error:
+      return err(status::io);
+    default:
+      return err(status::permission_denied);
+  }
+}
+
+result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
+                           const std::array<std::uint8_t, 32>& device_key, const std::string& name,
+                           const std::function<bool(std::string_view nonce)>& prove,
+                           std::chrono::steady_clock::time_point deadline) {
+  const auto left_ms = [&] {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+    return static_cast<int>(std::max<std::int64_t>(1, ms));  // at least 1: the channel reads 0 as one poll and returns at once
+  };
+  channel::options opts;
+  opts.access_key = key;
+  opts.static_key = device_key;
+  auto ch = channel::open_library(l, "0000000000000000", name, opts);
+  if (!ch) return err(status::permission_denied);  // silence: owned, not its network, or no token here
+  json::writer w;
+  w.begin_object().key("name").string(name).end_object();
+  (void)(*ch)->send(msg::serve_claim, w.str());
+  message m;
+  if (auto r = (*ch)->receive(m, std::min(kAnswerMs, left_ms())); !r) return err(status::permission_denied);
+  if (m.type != msg::serve_claim_check) return err(status::permission_denied);
+  const auto check = json::parse(m.text(), 4);
+  const std::string* nonce = check ? check->str("nonce") : nullptr;
+  if (!nonce || nonce->size() != 64 || !prove || !prove(*nonce)) {
+    (*ch)->shutdown();
+    return err(status::permission_denied);
+  }
+  (void)(*ch)->send(msg::serve_claim, w.str());
+  if (auto r = (*ch)->receive(m, left_ms()); !r) {
+    // The proof is on the share: the service may have taken it, whatever
+    // happened to its answer. The caller claims once more to find out.
+    return err(status::timeout);
+  }
+  if (m.type != msg::serve_claimed) return err(status::permission_denied);
+  const auto doc = json::parse(m.text(), 6);
+  const std::string* access = doc ? doc->str("access_key") : nullptr;
+  const auto parsed = access ? parse_key_hex(*access) : std::nullopt;
+  const auto peer = (*ch)->peer_key();
+  if (!parsed || !peer) return err(status::corrupt);
+  claim_answer out;
+  out.access_key = *parsed;
+  out.identity = *peer;
+  return out;
+}
+
 }  // namespace mv::driftwire::serve

@@ -146,10 +146,15 @@ enum class msg : std::uint8_t {
   stream_end = 29,     // u32 stream, u8 end_code, then {...} (service): the stream's last word
   stream_credit = 30,  // u32 stream, u32 more bytes it may send (client)
   stream_cancel = 31,  // u32 stream (client): nothing more of it; a stream_end may already be crossing it
-  // Pairing: the ids and meanings shared with the desktop (docs/plans/mobile.md M3).
-  // A device with the access key and not on the list; serve_hello follows.
-  serve_pair = 33,    // {"code","name"} (client), instead of serve_hello
-  serve_paired = 34,  // {} (service): it is paired now
+  // The desktop that claimed the service, and pairing (serve.h "Who may do what").
+  serve_admin = 32,    // u32 stream, then {"do",...} (owner): answered by that stream's stream_end
+  serve_pair = 33,     // {"code","name"} (a device not paired yet), instead of serve_hello
+  serve_paired = 34,   // {} (service): it is paired now; serve_hello follows as usual
+  serve_claim = 35,    // {"name"} (the claiming desktop), only on a channel opened under the claim key
+  serve_claimed = 36,  // {"access_key","roots":[...]} (service)
+  // {"nonce"} (service), after serve_claim: the desktop writes it to
+  // .mediaviewer/claim.proof on the share and sends serve_claim again.
+  serve_claim_check = 37,
 };
 
 // "123 456": six digits from both public keys (client = the sender).

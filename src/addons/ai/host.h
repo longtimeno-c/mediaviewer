@@ -148,6 +148,9 @@ class host {
   // Place labels for GPS points, one per point ("" for none). not_found when
   // nothing here can name a place: Places is not installed, or the host is older.
   [[nodiscard]] result<std::vector<std::string>> place_labels(std::span<const mv_addon_route_point> points) const;
+  // One request to another loaded add-on (docs/design/18). status::not_found:
+  // it is not installed or too old. [worker-thread]
+  [[nodiscard]] result<std::string> addon_request(const char* addon_id, const char* method, const std::string& json) const;
 
   // #354: a document's text from the host (a DOCX; a PDF is the pack's own,
   // pdf_reader.h), a paragraph at a time with its page. An older host has

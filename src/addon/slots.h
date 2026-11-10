@@ -68,11 +68,18 @@ class slot_client {
     (void)lat, (void)lon, (void)out;
     return status::unsupported_format;
   }
+  // A request from another add-on (mv.request.1); unsupported_format when this
+  // add-on takes none.
+  virtual status request(const char* caller, const char* method, const char* json, std::string& out) {
+    (void)caller, (void)method, (void)json, (void)out;
+    return status::unsupported_format;
+  }
 };
 
 // Over a native add-on's mv.slots.1 table (which lives until its shutdown).
 [[nodiscard]] std::unique_ptr<slot_client> native_slot_client(void* addon, const mv_addon_slots* table,
-                                                              const mv_addon_place_labels* labels = nullptr);
+                                                              const mv_addon_place_labels* labels = nullptr,
+                                                              const mv_addon_request_api* requests = nullptr);
 
 // What changed, for the listener.
 enum slot_change : std::uint32_t {
@@ -171,6 +178,11 @@ class slot_registry {
   // prefix, one request on its worker for the whole batch: `out[i]` is
   // points[i]'s, "" for none. not_found when none declares it, it detaches
   // meanwhile, or it has no labels to give.
+  // One add-on asking another, on the answering add-on's worker (docs/design/18
+  // "Add-ons calling add-ons"). status::not_found when `target` is not attached,
+  // detaches before answering, or takes no requests.
+  [[nodiscard]] result<std::string> addon_request(const std::string& target, const std::string& caller,
+                                                  const std::string& method, const std::string& json);
   [[nodiscard]] expected provider_labels(const std::string& prefix, std::span<const std::pair<double, double>> points,
                                          std::vector<std::string>& out);
   // The gallery shows `folder`: one badges request per add-on with badges.

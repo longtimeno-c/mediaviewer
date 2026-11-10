@@ -57,8 +57,10 @@ inline constexpr std::size_t kMaxLabelBytes = 64;
 // A listing, at most (a folder bigger than this says "truncated").
 inline constexpr std::size_t kMaxListBytes = 16u * 1024 * 1024;
 
-enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3 };
+enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4 };
+// What a phone can use. `admin` is apart: granted only to the owner's session.
 inline constexpr std::uint32_t kAllOps = (1u << 4) - 1;
+inline constexpr std::uint32_t kAdminOp = 1u << 4;
 [[nodiscard]] const char* op_name(op o) noexcept;
 [[nodiscard]] std::optional<op> parse_op(std::string_view name) noexcept;
 [[nodiscard]] constexpr std::uint32_t op_bit(op o) noexcept { return 1u << static_cast<unsigned>(o); }
@@ -93,14 +95,9 @@ struct caps_msg {
 [[nodiscard]] std::optional<caps_msg> parse_caps(std::string_view json);
 
 // ---- serve_pair ----------------------------------------------------------------------------
-// A single-use code, redeemed once by a device the service has not seen.
+// A single-use code, redeemed once by a device the service has not seen (the message
+// itself is below, with the claim and the owner's requests).
 inline constexpr std::size_t kMaxPairCodeBytes = 128;
-struct pair_msg {
-  std::string code;
-  std::string name;
-};
-[[nodiscard]] std::string pair_json(std::string_view code, std::string_view name);
-[[nodiscard]] std::optional<pair_msg> parse_pair(std::string_view json);
 
 // ---- stream_open ---------------------------------------------------------------------------
 struct open_request {
@@ -172,6 +169,28 @@ struct list_entry {
 [[nodiscard]] std::string list_line(const list_entry& e);
 // A whole listing's bytes (a line that is not one fails the whole).
 [[nodiscard]] std::optional<std::vector<list_entry>> parse_listing(std::string_view lines);
+
+// ---- pairing, claiming and the owner's requests -------------------------------------------
+// A single-use pairing code: 32 lowercase hex digits.
+inline constexpr std::size_t kPairCodeChars = 32;
+inline constexpr std::size_t kMaxPairCodes = 8;     // waiting at once
+inline constexpr std::int64_t kMaxPairTtlMs = 600000;
+
+// serve_pair: the code the QR carried and what the phone calls itself.
+[[nodiscard]] std::string pair_json(std::string_view code, std::string_view name);
+struct pair_msg {
+  std::string code;
+  std::string name;
+};
+[[nodiscard]] std::optional<pair_msg> parse_pair(std::string_view json);
+
+// serve_admin's frame: u32 stream, then the JSON of the request.
+[[nodiscard]] std::vector<std::uint8_t> encode_admin(std::uint32_t id, std::string_view json);
+struct admin_msg {
+  std::uint32_t id = 0;
+  std::string_view json;
+};
+[[nodiscard]] std::optional<admin_msg> parse_admin(std::span<const std::uint8_t> body) noexcept;
 
 // ---- the service's configuration (a file the desktop writes at setup) ----------------------
 struct root_config {

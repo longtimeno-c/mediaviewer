@@ -346,8 +346,9 @@ and, from 1.1, write on the backup folder under a storage limit the person sets.
 is done from the desktop card.
 
 **Setting it up (proposal, S5 confirms).** The person installs the package on the Synology. The
-desktop then claims the service by writing a one-time token into `.mediaviewer/` over SMB, which
-proves it can write to the share. The service accepts a claim only while it has no owner and only
+desktop then claims the service by writing a one-time token into `.mediaviewer/` over SMB, then
+writing back a nonce the service sends, which proves it can read and write the share (built
+2026-11-10, `docs/design/28` "Claiming and pairing"). The service accepts a claim only while it has no owner and only
 from its own network. The claiming desktop can then add and revoke devices and change the named
 folders.
 
@@ -761,7 +762,7 @@ the catalogue boundary (N7).
 
 ### M2 — Publisher (desktop, both platforms)
 
-**Built (2026-11-10, Mac; the Windows halves share this code and compile only in CI):** everything the phone needs from the catalogue, in `docs/design/17-local-ai-search.md` "The phone's catalogue": thumbnail packs, `thumbs.idx` and `tiny.pack`, names-only `faces.db`, stored place labels, hashes of every shared file in the signed manifest, the text tower on the share, the trigger after a quiet scan, generations that wait for the share, NFC names, the ranking tie-break, retention for shared files. **Still to do:** moving the key to another desktop (epoch changes), the kill-point and takeover clauses of the verify line below, the QR code, the Windows card, a settings control for `phone_auto`, and previews (the manifest and retention carry them; nothing makes them yet).
+**Built (2026-11-10, Mac; the Windows halves share this code and compile only in CI):** everything the phone needs from the catalogue, in `docs/design/17-local-ai-search.md` "The phone's catalogue": thumbnail packs, `thumbs.idx` and `tiny.pack`, names-only `faces.db`, stored place labels, hashes of every shared file in the signed manifest, the text tower on the share, the trigger after a quiet scan, generations that wait for the share, NFC names, the ranking tie-break, retention for shared files. **Built since (2026-11-10, Mac):** the host-table route, claiming and device admin, the QR, nearby sync, moving the key, the address warning (`docs/design/28` "Claiming and pairing", `docs/design/17` "Setting a phone up"). **Still to do:** the kill-point clause of the verify line below, the Windows card, a settings control for `phone_auto`, and previews (the manifest and retention carry them; nothing makes them yet).
 
 §5 and §6, including the label-bar fix, place labels, the root UUID map, the settings card, the
 epoch and key history, and the host-table route between the AI and Driftwire add-ons (§7.5).

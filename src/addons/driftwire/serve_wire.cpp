@@ -13,10 +13,11 @@ namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 4> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 5> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
-                                                             {op::read_range, "read_range"}}};
+                                                             {op::read_range, "read_range"},
+                                                             {op::admin, "admin"}}};
 
 void put_u32(std::uint8_t* p, std::uint32_t v) noexcept {
   for (int i = 0; i < 4; ++i) p[i] = static_cast<std::uint8_t>(v >> (8 * i));
@@ -71,27 +72,6 @@ std::optional<op> parse_op(std::string_view name) noexcept {
     if (name == n) return k;
   }
   return std::nullopt;
-}
-
-std::string pair_json(std::string_view code, std::string_view name) {
-  json::writer w;
-  w.begin_object();
-  w.key("code").string(code);
-  w.key("name").string(name);
-  w.end_object();
-  return w.str();
-}
-
-std::optional<pair_msg> parse_pair(std::string_view text) {
-  if (text.size() > kMaxRequestBytes) return std::nullopt;
-  const auto doc = json::parse(text, 4);
-  if (!doc) return std::nullopt;
-  const std::string* code = doc->str("code");
-  const std::string* name = doc->str("name");
-  if (!code || !name || code->empty() || code->size() > kMaxPairCodeBytes || name->size() > kMaxLabelBytes) {
-    return std::nullopt;
-  }
-  return pair_msg{*code, *name};
 }
 
 std::string hello_json(std::uint32_t ops) {
@@ -340,6 +320,39 @@ std::optional<std::vector<list_entry>> parse_listing(std::string_view lines) {
     lines.remove_prefix(nl + 1);
   }
   return out;
+}
+
+std::string pair_json(std::string_view code, std::string_view name) {
+  json::writer w;
+  w.begin_object().key("code").string(code).key("name").string(clean_name(std::string(name))).end_object();
+  return w.take();
+}
+
+std::optional<pair_msg> parse_pair(std::string_view text) {
+  if (text.size() > kMaxRequestBytes) return std::nullopt;
+  const auto doc = json::parse(text, 4);
+  const std::string* code = doc ? doc->str("code") : nullptr;
+  if (!code || code->size() != kPairCodeChars) return std::nullopt;
+  pair_msg out;
+  out.code = *code;
+  if (const std::string* name = doc->str("name")) out.name = clean_name(*name);
+  return out;
+}
+
+std::vector<std::uint8_t> encode_admin(std::uint32_t id, std::string_view text) {
+  std::vector<std::uint8_t> out(4 + text.size());
+  put_u32(out.data(), id);
+  std::memcpy(out.data() + 4, text.data(), text.size());
+  return out;
+}
+
+std::optional<admin_msg> parse_admin(std::span<const std::uint8_t> body) noexcept {
+  if (body.size() < 4 || body.size() > 4 + kMaxRequestBytes) return std::nullopt;
+  admin_msg m;
+  m.id = get_u32(body.data());
+  if (m.id == 0) return std::nullopt;
+  m.json = std::string_view(reinterpret_cast<const char*>(body.data()) + 4, body.size() - 4);
+  return m;
 }
 
 result<config> parse_config(std::string_view text, bool any_port) {

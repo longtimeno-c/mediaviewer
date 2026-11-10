@@ -807,6 +807,12 @@ typedef struct mv_ai_api {
   mv_status(MV_CALL* phone_cancel)(void* ctx);
   /* {"running","phase","fraction","error","destination","generation","published","assets"} */
   mv_status(MV_CALL* phone_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
+  /* Setting a phone up: one JSON request {"do":...}, run on the pack's own
+   * thread, watched through phone_link_json (docs/plans/mobile.md §7.2, §7.4).
+   * Appended: read each only when `struct_size` covers it and it is non-NULL.
+   * [no-block] */
+  mv_status(MV_CALL* phone_link)(void* ctx, const char* request_json);
+  mv_status(MV_CALL* phone_link_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

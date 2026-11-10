@@ -177,6 +177,11 @@ class channel {
   // status::permission_denied when the first message does not open under
   // the key or is a replay.
   [[nodiscard]] static result<hello> read_library_hello(link& l, std::chrono::steady_clock::time_point deadline);
+  // Whether a hello read by read_library_hello opens under `key`: one AEAD,
+  // nothing sent and the link untouched. So a service can tell which of two
+  // keys a hello is for before open_library_server, which closes on a wrong one.
+  [[nodiscard]] static bool hello_opens_under(const hello& h, const std::array<std::uint8_t, 32>& key,
+                                              const std::array<std::uint8_t, 32>& static_key);
   [[nodiscard]] static result<std::unique_ptr<channel>> open_library_server(std::shared_ptr<link> l, hello h,
                                                                             std::string_view my_id,
                                                                             std::string_view my_name,
