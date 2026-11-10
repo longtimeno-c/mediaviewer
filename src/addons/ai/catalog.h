@@ -132,6 +132,7 @@ struct deliver_options {
   std::int64_t keep_seconds = 2 * 3600;  // an older generation, once its successor has been out this long
   std::vector<shared_file> shared;  // copied first; those the share already has are left
   std::string retention_file;       // here: when each unused shared file was last named
+  std::string arrivals_file;        // here: when each generation became current, by this clock
   // Verified copy to a new file in an existing folder.
   std::function<expected(const std::string& from, const std::string& to)> copy;
   std::function<expected(const std::string& dir)> make_directories;

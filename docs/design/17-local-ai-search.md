@@ -1681,11 +1681,15 @@ tick, so it adds no wakeup; while nothing changed it is one lock and a few compa
 not run on battery. A generation built while the share is away waits in `phone/gen/`, only the
 newest, with `waiting` in `phone_json`. While one waits, the control loop asks every 30 s, on the
 publisher's thread and not on battery, whether the share is there. A delivery that fails waits
-30 s, doubling to an hour, until the share or its free space changes. A generation the share has
+30 s, doubling to an hour, until the share or its free space changes. A pack is forgotten only
+when both sides list and neither has it; a stat that fails forgets nothing. A file whose tile keeps
+failing is counted by size and date, so a changed file starts a new count and still stops. A generation the share has
 no room for reports `no_space` and `needs_bytes` without copying anything.
 
 **Retention (§5 rule 4).** The newest two generations stay, and an older one until 2 hours after
-its successor arrived. A shared file no retained generation names, and unnamed for 30 days, goes;
+the next generation became current, by this Mac's clock (`phone/arrivals.json`): the share's file
+times are another clock, and a folder that never became current starts no grace. A dead run's part
+folder is removed before a delivery, and the room check counts it as free. A shared file no retained generation names, and unnamed for 30 days, goes;
 a thumbnail pack under the fold size goes after 2 hours, because folding replaces it routinely.
 `phone/unused.json` remembers since when, and an unreadable manifest deletes nothing that round.
 

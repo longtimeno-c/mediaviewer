@@ -1913,9 +1913,11 @@ new-waiting 3 {"idle_cpu_pct":0.0378,"idle_wakeups_per_s":5.000,"scan_files_per_
 new-thumbs_left 3 {"idle_cpu_pct":0.0373,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
 ```
 
-Idle is the same within runs in every state: 0.0357 to 0.0367 % CPU on the base, 0.0365 to 0.0375 %
-new, 0.0376 to 0.0378 % with a generation waiting (one 30 s poll may fall in the window), 0.0373 to
-0.0395 % with thumbnails left; 5.0 wakeups per second in each. Scan 1485 to 2418 files per second
+Idle CPU rose slightly: 0.0357 to 0.0367 % on the base, 0.0365 to 0.0375 % new (the ranges barely
+overlap), 0.0376 to 0.0378 % with a generation waiting and 0.0373 to 0.0395 % with thumbnails left.
+Neither of those two overlaps the base; the increase is about 0.001 to 0.003 percentage points.
+Wakeups were 5.0 per second in every state. The bench is 30 s, so it holds at most one 30 s share
+poll, and it leaves out the stamp after a scan, a publish itself, and anything at library scale. Scan 1485 to 2418 files per second
 on the base, 2145 to 2354 new. The machine's load rose to about 60 during the last runs, so the
 scan rows are noisy. The vector comparator: 1.70 to 1.76 ms base, 1.65 to 1.75 ms new, six runs
 each. The stamp, once per finished scan and on no timer: about 400 ms at 100 k assets and 1 M

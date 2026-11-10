@@ -5697,12 +5697,13 @@ std::vector<std::int64_t> engine::phone_carried_roots() {
     bool on = std::any_of(kept.begin(), kept.end(), [&](const catalog::root_map& m) { return m.id == r.id; });
     if (!on && !device.empty()) {
       // A folder added since: asked once, and not at all while its volume is away.
-      const auto known = phone_root_on_share_.find(r.path);
+      const std::string key = device + '\n' + r.path;  // another share is another question
+      const auto known = phone_root_on_share_.find(key);
       if (known != phone_root_on_share_.end()) {
         on = known->second;
       } else if (auto v = host_.volume_of(r.path)) {
         on = device == std::string_view(v->device_key);
-        phone_root_on_share_[r.path] = on;
+        phone_root_on_share_[key] = on;
       }
     }
     if (on) out.push_back(r.id);
@@ -6202,18 +6203,32 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
     auto v = host_.volume_of(destination);
     if (!v) return false;
     const std::uint64_t need = phone_bytes_needed(gen_dir, d.shared, destination);
+    // A dead run's part folder is ours and deliver() removes it first: its room counts.
+    std::uint64_t dead = 0;
+    std::error_code ec;
+    const std::string gen_root = destination + "/.mediaviewer/gen";
+    for (std::filesystem::directory_iterator it(fs_path(gen_root), ec), end; !ec && it != end; it.increment(ec)) {
+      if (it->path().extension() != ".part") continue;
+      std::error_code e;
+      for (std::filesystem::recursive_directory_iterator f(it->path(), e), stop; !e && f != stop; f.increment(e)) {
+        std::error_code e3;
+        if (f->is_regular_file(e3)) dead += static_cast<std::uint64_t>(f->file_size(e3));
+      }
+    }
+    const std::uint64_t room = v->free_bytes + dead;
     {
       std::lock_guard lock(phone_m_);
-      phone_.needs_bytes = v->free_bytes < need ? need : 0;
+      phone_.needs_bytes = room < need ? need : 0;
       phone_.last_free = v->free_bytes;
     }
-    return v->free_bytes < need;
+    return room < need;
   };
   if (out_of_room()) {
     note_phone_delivery_failed("no_space");
     return finish("no_space");
   }
   d.retention_file = join(data_dir_, "phone/unused.json");
+  d.arrivals_file = join(data_dir_, "phone/arrivals.json");
   d.make_directories = [this](const std::string& dir) { return host_.make_directories(dir); };
   d.copy = [this](const std::string& from, const std::string& to) {
     return host_.copy_verified(from, to, [this] { return stopping_.load() || phone_cancel_.load(); });

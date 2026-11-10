@@ -826,28 +826,49 @@ std::string gen_name(std::uint64_t g) {
 
 // Every generation but the newest two goes once it is old enough, and so does
 // a part folder a dead run left. Failing to tidy never fails a publish.
+// When each generation became current, by this machine's clock: the share's
+// file times are another clock, and a folder that never became current is no
+// successor at all.
+std::map<std::uint64_t, std::int64_t> read_arrivals(const std::string& file) {
+  std::map<std::uint64_t, std::int64_t> out;
+  if (file.empty()) return out;
+  if (const auto doc = json::parse(slurp(file), 4); doc && doc->k == json::kind::object) {
+    for (const auto& [g, v] : doc->o) {
+      std::uint64_t n = 0;
+      const auto [stop, why] = std::from_chars(g.data(), g.data() + g.size(), n);
+      if (why == std::errc{} && stop == g.data() + g.size() && v.k == json::kind::number) out[n] = v.i;
+    }
+  }
+  return out;
+}
+
+void write_arrivals(const std::string& file, const std::map<std::uint64_t, std::int64_t>& at) {
+  if (file.empty()) return;
+  json::writer w;
+  w.begin_object();
+  for (const auto& [g, when] : at) w.key(std::to_string(g)).integer(when);
+  w.end_object();
+  std::error_code ec;
+  if (write_text(file + ".tmp", w.str())) fs::rename(fs_path(file + ".tmp"), fs_path(file), ec);
+}
+
+// Every generation but the newest two goes once the next one that became
+// current has been current long enough; a dead run's part folder goes too.
+// Failing to tidy never fails a publish.
 void tidy(const deliver_options& o, const std::string& gen_root) {
   const auto gens = generations_in(gen_root);
-  const auto stale = [&](const fs::path& p) {
-    std::error_code ec;
-    const auto when = fs::last_write_time(p, ec);
-    if (ec) return false;
-    const auto age = fs::file_time_type::clock::now() - when;
-    return std::chrono::duration_cast<std::chrono::seconds>(age).count() >= o.keep_seconds;
-  };
+  auto arrived = read_arrivals(o.arrivals_file);
+  for (auto it = arrived.begin(); it != arrived.end();) {
+    it = std::binary_search(gens.begin(), gens.end(), it->first) ? std::next(it) : arrived.erase(it);
+  }
+  write_arrivals(o.arrivals_file, arrived);
   std::error_code ec;
   // A reader may have started on a generation until the one after it arrived,
   // so the grace runs from then, not from when this one was written.
   for (std::size_t i = 0; i + 2 < gens.size(); ++i) {
-    if (stale(fs_path(gen_root + "/" + gen_name(gens[i + 1])))) {
+    const auto next = arrived.upper_bound(gens[i]);
+    if (next != arrived.end() && o.now_unix - next->second >= o.keep_seconds) {
       fs::remove_all(fs_path(gen_root + "/" + gen_name(gens[i])), ec);
-    }
-  }
-  for (fs::directory_iterator it(fs_path(gen_root), ec), end; !ec && it != end; it.increment(ec)) {
-    const std::string name = utf8_of(it->path().filename());
-    if (name.size() > 5 && name.ends_with(".part") && name != gen_name(o.generation) + ".part" && stale(it->path())) {
-      std::error_code e2;
-      fs::remove_all(it->path(), e2);
     }
   }
 }
@@ -901,7 +922,14 @@ expected deliver(const deliver_options& o, const control& c) {
   const std::string done = gen_root + "/" + name;
   MV_TRY_VOID(o.make_directories(gen_root));
   std::error_code ec;
-  fs::remove_all(fs_path(part), ec);
+  // Any part folder is a run that died: one publisher writes here (§5 rule 5),
+  // and its room is what this one needs.
+  for (fs::directory_iterator it(fs_path(gen_root), ec), end; !ec && it != end; it.increment(ec)) {
+    if (utf8_of(it->path().filename()).ends_with(".part")) {
+      std::error_code e2;
+      fs::remove_all(it->path(), e2);
+    }
+  }
   ec.clear();
   MV_TRY_VOID(o.make_directories(part));
 
@@ -978,6 +1006,11 @@ expected deliver(const deliver_options& o, const control& c) {
   w.key("signature").string(to_hex(signature));
   w.end_object();
   MV_TRY_VOID(put_durable(o, w.str(), base + "/current.json"));
+  {
+    auto arrived = read_arrivals(o.arrivals_file);
+    arrived[o.generation] = o.now_unix;
+    write_arrivals(o.arrivals_file, arrived);
+  }
   report(c, 1.0);
   tidy(o, gen_root);
   if (!o.retention_file.empty()) retain_shared(base, o.retention_file, o.now_unix);
@@ -1143,7 +1176,10 @@ result<thumb_fill_result> thumb_store::fill(std::span<const thumb_want> wants, c
     if (!q.next()) return err(status::io);
     tail = static_cast<std::uint64_t>(q.i64(0));
   }
-  (void)exec(db, "DELETE FROM fails WHERE path IN (SELECT path FROM thumbs)");
+  // Only a tile of this very file ends its count: an old tile of a file that
+  // has since changed says nothing about the new one.
+  (void)exec(db, "DELETE FROM fails WHERE EXISTS (SELECT 1 FROM thumbs t WHERE t.path = fails.path"
+                 " AND t.size = fails.size AND t.mtime = fails.mtime AND t.pack IS NOT NULL)");
   stmt ins(db, "INSERT OR REPLACE INTO thumbs(path, size, mtime, pack, offset, length, jpeg, tiny) VALUES(?1, ?2, ?3, NULL, 0, ?4, ?5, ?6)");
   stmt set_tiny(db, "UPDATE thumbs SET tiny = ?2 WHERE path = ?1");
   // Counted once per run, and from one only if the file has not changed.
@@ -1337,6 +1373,14 @@ expected thumb_store::delivered(std::uint64_t fold_bytes) {
 expected thumb_store::reconcile(const std::string& destination) {
   sqlite3* db = db_->db;
   const std::string there = base_of(destination) + "/thumbs/";
+  // Forgetting a pack costs hours of work again, so only a clear "not there"
+  // on both sides counts: the share's folder must list, and no stat may fail.
+  const auto lists = [](const std::string& dir) {
+    std::error_code e;
+    fs::directory_iterator it(fs_path(dir), e);
+    return !e;
+  };
+  if (!lists(there) || !lists(dir_)) return err(status::io);
   std::vector<std::string> lost;
   {
     stmt q(db, "SELECT name FROM packs");
@@ -1344,10 +1388,12 @@ expected thumb_store::reconcile(const std::string& destination) {
       std::error_code a, b;
       const bool shared = fs::exists(fs_path(there + q.text(0)), a);
       const bool local = fs::exists(fs_path(dir_ + "/" + q.text(0)), b);
+      if (a || b) return err(status::io);
       if (!shared && !local) lost.push_back(q.text(0));
     }
     if (q.failed) return err(status::io);
   }
+  if (!lost.empty() && !lists(there)) return err(status::io);  // still the share we asked
   for (const std::string& name : lost) {
     stmt del(db, "DELETE FROM thumbs WHERE pack = ?1");
     stmt gone(db, "DELETE FROM packs WHERE name = ?1");

@@ -786,7 +786,9 @@ struct rig {
   std::map<std::string, std::vector<std::uint8_t>> jpegs;  // path#ms -> bytes
   std::mutex thumbs_m;
   std::atomic<int> thumbnails_made{0};
-  std::atomic<std::uint64_t> nas_free{UINT64_MAX};  // the share's free space; UINT64_MAX: the real one
+  std::atomic<std::uint64_t> nas_free{UINT64_MAX};
+  std::set<std::string> fail_now;  // names whose tiles fail as a truncated file's do
+  std::mutex fail_m;  // the share's free space; UINT64_MAX: the real one
   std::function<void(const std::string& name)> thumb_hook;  // the thumbnail-maker's fake, inside it
   std::vector<std::vector<std::pair<double, double>>> label_batches;  // every place_labels batch
   bool places_answer = true;
@@ -1059,6 +1061,10 @@ struct rig {
       if (thumb_hook) thumb_hook(name);
       if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
       if (name.find("truncated") != std::string::npos) return mv::err(mv::status::io);
+      {
+        std::lock_guard lock(fail_m);
+        if (fail_now.count(name)) return mv::err(mv::status::io);
+      }
       return std::vector<std::uint8_t>{0xFF, 0xD8, 9};
     };
     // The phone's catalogue: a tile that says it was shrunk; a Sintra label for geo files.
@@ -6735,7 +6741,16 @@ TEST_CASE("older generations go two hours after their successor arrived", "[ai][
   p.publish();
   p.publish();
   p.publish();
-  fs::last_write_time(p.gen(2), fs::file_time_type::clock::now() - std::chrono::hours(3));
+  // The share's clock says nothing: only when this Mac saw each become current.
+  fs::last_write_time(p.gen(3), fs::file_time_type::clock::now() - std::chrono::hours(300));
+  const fs::path file = p.a.dir / "data" / "phone" / "arrivals.json";
+  auto arrived = *mv::json::parse(read_all(file));
+  REQUIRE(arrived.find("2"));
+  {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << R"({"1":)" << *arrived.integer("1") << R"(,"2":)" << (*arrived.integer("2") - 3 * 3600) << R"(,"3":)"
+        << *arrived.integer("3") << "}";
+  }
   p.publish();
   CHECK_FALSE(fs::exists(p.gen(1)));
   CHECK(fs::exists(p.gen(2)));  // its successor is new
@@ -6914,6 +6929,79 @@ TEST_CASE("the small findings: tiny backfill, the off switch, pack names", "[ai]
     REQUIRE(dim);
     CHECK(std::max(dim->width, dim->height) <= 512);
   }
+}
+
+
+TEST_CASE("a file that changes and then keeps failing still stops being asked", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("clip.jpg");
+  p.index();
+  p.publish();  // a tile of the old file
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));  // another mtime, too
+  p.a.file("clip.jpg", 64);  // changed, and now unreadable
+  {
+    std::lock_guard lock(p.a.fail_m);
+    p.a.fail_now.insert("clip.jpg");
+  }
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  // Until the rescan has seen the change, nothing is asked; then at most three runs.
+  bool seen = false, left = true;
+  int runs_left = 0;
+  for (int i = 0; i < 12 && (left || !seen); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    left = p.publish().boolean("thumbs_left").value_or(false);
+    seen = seen || left;
+    runs_left += left ? 1 : 0;
+  }
+  REQUIRE(seen);
+  CHECK_FALSE(left);
+  CHECK(runs_left == 2);
+  const int asked = p.a.thumbnails_made.load();
+  p.publish();
+  CHECK(p.a.thumbnails_made.load() == asked);
+}
+
+TEST_CASE("a dead run's part folder is room, not a full share", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.publish();
+  p.a.file("green_field.jpg");
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  const fs::path dead = p.base / "gen" / "000007.part";
+  fs::create_directories(dead);
+  { std::ofstream(dead / "catalog.db") << "x"; }
+  fs::resize_file(dead / "catalog.db", 64u << 20);
+  p.a.nas_free = 1;  // the share is full, of that
+  p.publish();
+  CHECK_FALSE(fs::exists(dead));
+  CHECK(*mv::json::parse(read_all(p.base / "current.json"))->integer("generation") == 2);
+}
+
+TEST_CASE("a pack is forgotten only when both sides clearly lack it", "[ai][engine][phone]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#endif
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.publish();
+  const fs::path thumbs = p.a.dir / "data" / "phone" / "thumbs";
+  for (const auto& e : fs::directory_iterator(thumbs)) {
+    if (e.path().extension() == ".pack") fs::remove(e.path());  // only the share has it now
+  }
+  const auto rows = [&] { return only_cell(thumbs / "ledger.db", "SELECT COUNT(*) FROM thumbs WHERE pack IS NOT NULL"); };
+  REQUIRE(rows() == "1");
+  auto store = mv::ai::catalog::thumb_store::open(utf8(thumbs));
+  REQUIRE(store);
+  fs::permissions(p.base / "thumbs", fs::perms::none);  // a stat that fails is not "not there"
+  CHECK_FALSE((*store)->reconcile(utf8(p.nas)));
+  fs::permissions(p.base / "thumbs", fs::perms::owner_all);
+  CHECK(rows() == "1");
+  REQUIRE((*store)->reconcile(utf8(p.nas)));
+  CHECK(rows() == "1");  // still on the share
 }
 
 // ---- the publisher's cost (CLAUDE.md "Performance is the product") -------------------
