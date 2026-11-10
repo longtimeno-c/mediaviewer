@@ -568,6 +568,29 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
+### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
+
+The interface only, so far: the core behind it (`src/mobile`) is not built. Screens are in
+`src.ios/MobilePackage` (`MobileKit` holds the protocols the core will implement, `MobileUI` the
+screens). Two apps share them. `MediaViewer` is the real one and links no stand-in data.
+`MediaViewerFixtures` runs the screens on generated pictures and a generated clip; its
+`MobileFixtures` package does not compile outside Debug, so it cannot reach a release.
+
+```bash
+cd src.ios
+xcodebuild -project MediaViewerMobile.xcodeproj -scheme MediaViewerFixtures -configuration Debug \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' CODE_SIGNING_ALLOWED=NO build
+```
+
+Every state in the plan's §11 has a name (`FixtureState` in `FixtureStates.swift`). In the running
+fixtures app the ladybug button lists them. To start in one, and without the button for screenshots:
+
+```bash
+xcrun simctl launch --terminate-running-process booted io.github.longtimeno-c.mediaviewer.mobile.fixtures -fixtureState library.stale -fixtureChrome NO
+```
+
+The Simulator has no camera, so the fixtures app's scan screen lists the codes it could have read.
+
 ### The `driftwire` command line (docs/design/28)
 
 Every build that includes `cmake/driftwire.cmake` builds it: the Windows root, the Mac build and
