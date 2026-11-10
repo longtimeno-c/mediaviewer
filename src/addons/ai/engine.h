@@ -276,7 +276,9 @@ struct engine_deps {
   double phone_quiet_s = 120;
   double phone_min_interval_s = 3600;
   double phone_share_poll_s = 30;
-  double phone_retry_base_s = 30;  // a failed delivery waits this, doubling, to an hour
+  double phone_retry_base_s = 30;
+  // Tests: runs as the phone state is about to be written.
+  std::function<void()> phone_save_hook;  // a failed delivery waits this, doubling, to an hour
   double phone_thumb_budget_s = 1800;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
   std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
@@ -1258,6 +1260,10 @@ class engine {
   };
   void load_phone_state();
   [[nodiscard]] bool save_phone_state() const;
+  [[nodiscard]] bool write_phone_state(const phone_view& v) const;
+  void finish_phone(const std::function<void(phone_view&)>& change, const std::string& error);
+  bool start_phone_thread(const char* phase, const std::function<bool(const phone_view&)>& admit,
+                          std::function<void()> body);
   void run_phone_publish(const std::string& destination, bool automatic);
   void run_phone_deliver();
   void deliver_phone_generation(const std::vector<std::uint8_t>& secret, const std::vector<std::uint8_t>& public_key,
@@ -1277,6 +1283,7 @@ class engine {
   [[nodiscard]] result<std::vector<std::string>> stored_place_matches(const std::string& place);
   mutable std::mutex phone_m_;
   mutable std::mutex phone_save_m_;  // taken before phone_m_
+  bool phone_stopped_ = false;       // under phone_m_: stop() has taken the thread
   phone_view phone_;
   std::atomic<bool> phone_cancel_{false};
   std::thread phone_thread_;

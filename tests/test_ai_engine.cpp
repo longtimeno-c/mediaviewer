@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <functional>
 #include <map>
 #include <optional>
@@ -1136,6 +1137,9 @@ struct rig {
     d.phone_share_poll_s = phone_poll;
     d.phone_thumb_budget_s = phone_budget;
     d.phone_retry_base_s = phone_retry;
+    d.phone_save_hook = [this] {
+      if (slow_save) std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    };
     d.qualities = [] { return std::vector<std::uint32_t>{1, 2}; };
     d.model_name = [](std::uint32_t q) { return q == 1 ? std::string("Fake fast") : std::string("Fake high"); };
     d.backend_available = [](mv::infer::backend) { return false; };
@@ -1299,6 +1303,7 @@ struct rig {
   double phone_poll = 3600;
   double phone_budget = 0;
   double phone_retry = 30;
+  std::atomic<bool> slow_save{false};
   fs::path photos() const { return dir / "Photos"; }
   void file(const std::string& rel, std::size_t size = 16) { write_bytes(photos() / rel, pattern(size, 7)); }
 
@@ -7104,6 +7109,25 @@ TEST_CASE("a generation's arrival is when it became current, and failure counts 
   p.publish();
   CHECK(only_cell(data / "thumbs" / "ledger.db", "SELECT group_concat(path) FROM fails").find("truncated_new") != std::string::npos);
   CHECK(only_cell(data / "thumbs" / "ledger.db", "SELECT COUNT(*) FROM fails") == "1");
+}
+
+
+TEST_CASE("a publish asked for the moment the last one ends never waits on it", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.a.slow_save = true;  // the state write takes a while
+  for (int round = 0; round < 3; ++round) {
+    REQUIRE(p.a.eng->phone_publish(utf8(p.nas)));
+    REQUIRE(wait_for([&] { return mv::json::parse(p.a.eng->phone_json())->boolean("running") == false; }, kSettleMs));
+    // At once, from another thread, with a deadline: a join under the state
+    // lock would never come back.
+    auto next = std::async(std::launch::async, [&] { return static_cast<bool>(p.a.eng->phone_publish(utf8(p.nas))); });
+    REQUIRE(next.wait_for(std::chrono::seconds(20)) == std::future_status::ready);
+    CHECK(next.get());
+    REQUIRE(*phone_done(p.a).str("error") == "");
+  }
+  p.a.slow_save = false;
 }
 
 // ---- the publisher's cost (CLAUDE.md "Performance is the product") -------------------

@@ -525,7 +525,16 @@ void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
   transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   phone_cancel_ = true;
-  if (phone_thread_.joinable()) phone_thread_.join();
+  {
+    // Moved out under the lock, joined without it (start_phone_thread).
+    std::thread phone;
+    {
+      std::lock_guard lock(phone_m_);
+      phone_stopped_ = true;
+      phone = std::move(phone_thread_);
+    }
+    if (phone.joinable()) phone.join();
+  }
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
   control_cv_.notify_all();
   work_cv_.notify_all();
@@ -5512,29 +5521,97 @@ bool engine::save_phone_state() const {
   // run that just ended and the next one may both save, and the older
   // snapshot must never land last (it could lower high_water).
   std::lock_guard saving(phone_save_m_);
-  json::writer w;
+  phone_view v;
   {
     std::lock_guard lock(phone_m_);
+    v = phone_;
+  }
+  return write_phone_state(v);
+}
+
+// A run's last step: its state is on disk before anyone can see the run has
+// ended, and the new state and the end appear together. Nothing of the run
+// happens after `running` reads false, so whoever starts the next one may
+// join this thread at once.
+void engine::finish_phone(const std::function<void(phone_view&)>& change, const std::string& error) {
+  std::lock_guard saving(phone_save_m_);
+  phone_view v;
+  {
+    std::lock_guard lock(phone_m_);
+    v = phone_;
+  }
+  change(v);
+  (void)write_phone_state(v);
+  std::lock_guard lock(phone_m_);
+  change(phone_);
+  phone_.running = false;
+  phone_.phase.clear();
+  phone_.error = error;
+}
+
+// The one way a publisher thread starts. The old thread is joined with no
+// lock held: it may still take phone_m_ on its way out.
+bool engine::start_phone_thread(const char* phase, const std::function<bool(const phone_view&)>& admit,
+                                std::function<void()> body) {
+  std::thread old;
+  {
+    std::lock_guard lock(phone_m_);
+    if (phone_.running || phone_stopped_) return false;
+    if (admit && !admit(phone_)) return false;
+    phone_.running = true;
+    phone_.fraction = 0;
+    phone_.phase = phase;
+    phone_.error.clear();
+    phone_cancel_ = false;
+    old = std::move(phone_thread_);
+  }
+  if (old.joinable()) old.join();  // it has ended: `running` was false
+  std::thread next([this, run = std::move(body)] {
+    if (options_.background_threads) platform::enter_background();  // §6: background only
+    // Off the ABI's guard: nothing may leave this thread, or the app goes with it.
+    try {
+      run();
+    } catch (...) {
+      std::lock_guard done(phone_m_);
+      phone_.running = false;
+      phone_.phase.clear();
+      phone_.error = "failed";
+    }
+  });
+  std::unique_lock lock(phone_m_);
+  if (phone_stopped_) {  // stop() came between: it found no thread to wait for
+    lock.unlock();
+    next.join();
+    return true;
+  }
+  phone_thread_ = std::move(next);
+  return true;
+}
+
+bool engine::write_phone_state(const phone_view& v) const {
+  if (deps_.phone_save_hook) deps_.phone_save_hook();
+  json::writer w;
+  {
     w.begin_object();
-    w.key("library_id").string(phone_.library_id);
-    w.key("destination").string(phone_.destination);
-    w.key("generation").integer(static_cast<std::int64_t>(phone_.generation));
-    w.key("high_water").integer(static_cast<std::int64_t>(phone_.high_water));
-    w.key("epoch").integer(static_cast<std::int64_t>(phone_.epoch));
-    w.key("fingerprint").string(phone_.fingerprint);
-    w.key("published").integer(phone_.published_unix);
-    w.key("assets").integer(static_cast<std::int64_t>(phone_.assets));
-    w.key("auto").boolean(phone_.auto_on);
-    w.key("waiting").integer(static_cast<std::int64_t>(phone_.waiting));
-    w.key("waiting_assets").integer(static_cast<std::int64_t>(phone_.waiting_assets));
-    w.key("waiting_created").integer(phone_.waiting_created);
-    w.key("stamp").string(phone_.stamp);
-    w.key("waiting_stamp").string(phone_.waiting_stamp);
-    w.key("thumbs_left").boolean(phone_.thumbs_left);
-    w.key("share_device").string(phone_.share_device);
-    w.key("last_attempt").number(phone_.last_attempt);
+    w.key("library_id").string(v.library_id);
+    w.key("destination").string(v.destination);
+    w.key("generation").integer(static_cast<std::int64_t>(v.generation));
+    w.key("high_water").integer(static_cast<std::int64_t>(v.high_water));
+    w.key("epoch").integer(static_cast<std::int64_t>(v.epoch));
+    w.key("fingerprint").string(v.fingerprint);
+    w.key("published").integer(v.published_unix);
+    w.key("assets").integer(static_cast<std::int64_t>(v.assets));
+    w.key("auto").boolean(v.auto_on);
+    w.key("waiting").integer(static_cast<std::int64_t>(v.waiting));
+    w.key("waiting_assets").integer(static_cast<std::int64_t>(v.waiting_assets));
+    w.key("waiting_created").integer(v.waiting_created);
+    w.key("stamp").string(v.stamp);
+    w.key("waiting_stamp").string(v.waiting_stamp);
+    w.key("thumbs_left").boolean(v.thumbs_left);
+    w.key("share_device").string(v.share_device);
+    w.key("last_attempt").number(v.last_attempt);
     w.key("kept_roots").begin_array();
-    for (const catalog::root_map& m : phone_.roots) {
+    for (const catalog::root_map& m : v.roots) {
       w.begin_object();
       w.key("id").integer(m.id);
       w.key("path").string(m.path);
@@ -5545,7 +5622,7 @@ bool engine::save_phone_state() const {
     }
     w.end_array();
     w.key("roots").begin_object();
-    for (const auto& [key, uuid] : phone_.root_ids) w.key(key).string(uuid);
+    for (const auto& [key, uuid] : v.root_ids) w.key(key).string(uuid);
     w.end_object();
     w.end_object();
   }
@@ -5567,28 +5644,14 @@ bool engine::save_phone_state() const {
 expected engine::phone_publish(const std::string& destination) {
   if (options_.read_only) return err(status::unsupported_format);
   if (destination.empty()) return err(status::invalid_arg);
-  std::lock_guard lock(phone_m_);
-  if (phone_.running) return err(status::busy);
-  if (phone_thread_.joinable()) phone_thread_.join();  // the last one has finished
-  phone_.running = true;
-  phone_.fraction = 0;
-  phone_.phase = "building";
-  phone_.error.clear();
-  phone_.destination = destination;
-  phone_cancel_ = false;
-  phone_thread_ = std::thread([this, destination] {
-    if (options_.background_threads) platform::enter_background();  // §6: background only
-    // Off the ABI's guard: nothing may leave this thread, or the app goes with it.
-    try {
-      run_phone_publish(destination, false);
-    } catch (...) {
-      std::lock_guard done(phone_m_);
-      phone_.running = false;
-      phone_.phase.clear();
-      phone_.error = "failed";
-    }
-  });
-  return {};
+  const bool started = start_phone_thread(
+      "building",
+      [&](const phone_view&) {
+        phone_.destination = destination;  // under phone_m_, held by the caller
+        return true;
+      },
+      [this, destination] { run_phone_publish(destination, false); });
+  return started ? expected{} : err(status::busy);
 }
 
 void engine::phone_cancel() noexcept {
@@ -5624,48 +5687,17 @@ std::string engine::phone_json() const {
 
 void engine::phone_publish_auto() {
   // The control thread: starting a thread is all it does here.
-  std::lock_guard lock(phone_m_);
-  if (phone_.running) return;
-  if (phone_thread_.joinable()) phone_thread_.join();
-  const std::string destination = phone_.destination;
-  phone_.running = true;
-  phone_.fraction = 0;
-  phone_.phase = "building";
-  phone_.error.clear();
-  phone_cancel_ = false;
-  phone_thread_ = std::thread([this, destination] {
-    if (options_.background_threads) platform::enter_background();
-    try {
-      run_phone_publish(destination, true);
-    } catch (...) {
-      std::lock_guard done(phone_m_);
-      phone_.running = false;
-      phone_.phase.clear();
-      phone_.error = "failed";
-    }
-  });
+  std::string destination;
+  {
+    std::lock_guard lock(phone_m_);
+    destination = phone_.destination;
+  }
+  (void)start_phone_thread("building", {}, [this, destination] { run_phone_publish(destination, true); });
 }
 
 void engine::phone_deliver_waiting() {
-  std::lock_guard lock(phone_m_);
-  if (phone_.running || phone_.waiting == 0) return;
-  if (phone_thread_.joinable()) phone_thread_.join();
-  phone_.running = true;
-  phone_.fraction = 0;
-  phone_.phase = "sending";
-  phone_.error.clear();
-  phone_cancel_ = false;
-  phone_thread_ = std::thread([this] {
-    if (options_.background_threads) platform::enter_background();
-    try {
-      run_phone_deliver();
-    } catch (...) {
-      std::lock_guard done(phone_m_);
-      phone_.running = false;
-      phone_.phase.clear();
-      phone_.error = "failed";
-    }
-  });
+  (void)start_phone_thread("sending", [](const phone_view& v) { return v.waiting != 0; },
+                           [this] { run_phone_deliver(); });
 }
 
 std::string engine::phone_stamp(std::span<const std::int64_t> roots) const {
@@ -6074,27 +6106,19 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
       }
     }
   }
+  const auto waits = [&](phone_view& v) {
+    v.waiting = generation;
+    v.waiting_stamp = stamp;
+    v.waiting_assets = built->assets;
+    v.waiting_created = b.created_unix;
+    v.destination = destination;
+  };
+  // With the share away the run ends here: saved, then waiting and ended in one
+  // step, so nobody sees it waiting while a publish still says busy.
+  if (!reachable) return finish_phone(waits, "unreachable");
   {
-    // What a caller sees changes at once: with the share away, the run ends
-    // in the same step as the generation starts waiting, so nobody sees one
-    // waiting while a publish still says busy.
     std::lock_guard lock(phone_m_);
-    phone_.waiting = generation;
-    phone_.waiting_stamp = stamp;
-    phone_.waiting_assets = built->assets;
-    phone_.waiting_created = b.created_unix;
-    phone_.destination = destination;
-    if (!reachable) {
-      phone_.running = false;
-      phone_.phase.clear();
-      phone_.error = "unreachable";
-    }
-  }
-  if (!reachable) {
-    // Nothing reaches the NAS this run, so a failed save loses only this
-    // waiting generation, never a number the share has seen.
-    (void)save_phone_state();
-    return;
+    waits(phone_);
   }
   // The library's identity reaches this disk before it can reach the NAS: a
   // quit during the first delivery must not leave a folder this library no
@@ -6271,43 +6295,36 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
       // A pack on neither side, or the share is ahead of this number: this
       // generation can never land. The next run builds another.
       phone_recheck_ = true;  // the next tick compares, and a new build follows
-      {
-        std::lock_guard lock(phone_m_);
-        phone_.waiting = 0;
-        phone_.waiting_stamp.clear();
-        phone_.stamp.clear();
-        phone_.running = false;
-        phone_.phase.clear();
-        phone_.error = "unreachable";
-      }
-      (void)save_phone_state();
-      return;
+      return finish_phone(
+          [](phone_view& v) {
+            v.waiting = 0;
+            v.waiting_stamp.clear();
+            v.stamp.clear();
+          },
+          "unreachable");
     }
     const std::string why = sent.error() == status::permission_denied ? "other_library" : "unreachable";
     note_phone_delivery_failed(why);
     return finish(why);
   }
   if (auto store = catalog::thumb_store::open(join(data_dir_, "phone/thumbs"))) (void)(*store)->delivered();
-  {
-    std::lock_guard lock(phone_m_);
-    phone_.generation = generation;
-    phone_.published_unix = created;
-    phone_.assets = assets;
-    phone_.waiting = 0;
-    phone_.stamp = stamp;
-    phone_.waiting_stamp.clear();
-    phone_.retries = 0;
-    phone_.retry_at = 0;
-    phone_.deliver_error.clear();
-    phone_.needs_bytes = 0;
-    // The new generation and the end of the run are one change: a publish
-    // asked for the moment it shows is never told "busy".
-    phone_.running = false;
-    phone_.phase.clear();
-    phone_.error.clear();
-  }
-  (void)save_phone_state();  // the share has it: the next run reads the number there
+  // The share has it: saved, then the new generation and the end of the run
+  // appear together, so a publish asked for the moment it shows is never busy.
   (void)finish;
+  finish_phone(
+      [&](phone_view& v) {
+        v.generation = generation;
+        v.published_unix = created;
+        v.assets = assets;
+        v.waiting = 0;
+        v.stamp = stamp;
+        v.waiting_stamp.clear();
+        v.retries = 0;
+        v.retry_at = 0;
+        v.deliver_error.clear();
+        v.needs_bytes = 0;
+      },
+      "");
 }
 
 void engine::set_transfer_progress(double f) {
