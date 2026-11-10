@@ -632,6 +632,26 @@ std::vector<std::uint8_t> from_hex(std::string_view hex) {
 
 }  // namespace
 
+std::string signed_current_json(const current_info& c, std::span<const std::uint8_t> secret_key) {
+  if (secret_key.size() != crypto_sign_ed25519_SECRETKEYBYTES) return {};
+  const std::string message = signed_message(c);
+  std::vector<std::uint8_t> signature(crypto_sign_ed25519_BYTES);
+  if (crypto_sign_ed25519_detached(signature.data(), nullptr, reinterpret_cast<const unsigned char*>(message.data()),
+                                   message.size(), secret_key.data()) != 0) {
+    return {};
+  }
+  json::writer w;
+  w.begin_object();
+  w.key("format").integer(kFormat);
+  w.key("library_id").string(c.library_id);
+  w.key("epoch").integer(static_cast<std::int64_t>(c.epoch));
+  w.key("generation").integer(static_cast<std::int64_t>(c.generation));
+  w.key("manifest_sha256").string(c.manifest_sha256);
+  w.key("signature").string(to_hex(signature));
+  w.end_object();
+  return w.take();
+}
+
 result<current_info> verify_current(std::string_view text, std::span<const std::uint8_t> public_key) {
   (void)sodium_init();
   if (public_key.size() != crypto_sign_ed25519_PUBLICKEYBYTES) return err(status::invalid_arg);

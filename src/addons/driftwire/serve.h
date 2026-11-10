@@ -36,6 +36,8 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "addons/driftwire/net.h"
 #include "addons/driftwire/secrets.h"
@@ -44,9 +46,18 @@
 
 namespace mv::driftwire::serve {
 
-// In the store: the 32-byte library access key. The identity and the paired
-// devices are known.h's (kIdentityName, kDevicesName).
+// In the store: the 32-byte library access key, and the public key of the
+// desktop that claimed this service. The identity and the paired devices are
+// known.h's (kIdentityName, kDevicesName).
 inline constexpr const char* kAccessKeyName = "library_access_key";
+inline constexpr const char* kOwnerName = "owner";
+
+// §7.2 claiming. The desktop writes 64 hex digits to this file under a named
+// folder, over the share, then opens a library channel keyed from them.
+inline constexpr const char* kClaimTokenFile = ".mediaviewer/claim.token";
+inline constexpr const char* kCatalogueFolder = ".mediaviewer";
+inline constexpr const char* kCatalogueLabel = "Catalogue";
+[[nodiscard]] std::array<std::uint8_t, 32> claim_key(std::string_view token_hex);
 
 // How often the paired list is read again, for revocations.
 inline constexpr int kDevicesRecheckMs = 2000;
@@ -80,6 +91,15 @@ class server {
     int per_block_pending = 4;        // and per IPv6 /48
     // The tests: a listener of their own instead of the configured port.
     std::function<std::unique_ptr<net::listener>()> make_listener;
+    // Who may do what (docs/design/28 "Claiming and pairing").
+    bool claimable = false;   // an owner may be taken on (the service, not the desktop's nearby one)
+    bool lan_only = false;    // anyone not on own_network is closed at once (the nearby one)
+    // Whether an address is on this service's own network. Empty: net::on_link.
+    std::function<bool(const net::address&)> own_network;
+    // A change of the named folders, written before it takes effect.
+    std::function<bool(const config&)> save_config;
+    // Taken around every change of the paired list ("": none), against `serve add`.
+    std::string devices_lock;
   };
 
   // Listens and returns. status::not_found when the store has no usable
@@ -92,6 +112,7 @@ class server {
 
   [[nodiscard]] std::uint16_t port() const noexcept;
   [[nodiscard]] counters stats() const noexcept;
+  [[nodiscard]] std::vector<root_config> roots() const;
   // Reads the paired list now and cuts sessions no longer on it (it is also
   // read on a timer and for every new connection).
   void recheck_devices() noexcept;

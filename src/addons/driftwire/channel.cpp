@@ -207,7 +207,7 @@ bool valid_type(std::uint8_t raw, std::uint32_t version, bool library) noexcept 
   if (library) {
     return raw == static_cast<std::uint8_t>(msg::ident) || raw == static_cast<std::uint8_t>(msg::cancel) ||
            raw == static_cast<std::uint8_t>(msg::ping) ||
-           (raw >= static_cast<std::uint8_t>(msg::serve_hello) && raw <= static_cast<std::uint8_t>(msg::stream_cancel));
+           (raw >= static_cast<std::uint8_t>(msg::serve_hello) && raw <= static_cast<std::uint8_t>(msg::serve_claimed));
   }
   const auto last = version >= 2 ? msg::places : msg::ping;  // places: #472 PR 5
   // #472 relays (relay.h): their own range, protocol 2 only.
@@ -674,6 +674,13 @@ result<std::unique_ptr<channel>> channel::open_library_server(std::shared_ptr<li
     return err(r.error());
   }
   return opened;
+}
+
+bool channel::hello_opens_under(const hello& h, const std::array<std::uint8_t, 32>& key,
+                                const std::array<std::uint8_t, 32>& static_key) {
+  noise::handshake hs(noise::xx_hfs_psk0(), false, prologue(kPrologueLibrary, kKindLibrary), static_key, key);
+  std::vector<std::uint8_t> payload;
+  return hs.read_message(h.body, payload) && payload.empty();
 }
 
 result<std::unique_ptr<channel>> channel::open_library_v2(std::unique_ptr<channel> c, bool client, const hello* theirs,

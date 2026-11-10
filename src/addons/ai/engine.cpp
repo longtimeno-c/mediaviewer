@@ -530,6 +530,7 @@ void engine::stop() noexcept {
   transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   phone_cancel_ = true;
   if (phone_thread_.joinable()) phone_thread_.join();
+  phone_link_stop();
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
   control_cv_.notify_all();
   work_cv_.notify_all();
@@ -5680,6 +5681,7 @@ std::string engine::phone_stamp() const {
 // The control loop's tick. Nothing here waits, and it adds no wakeup: the loop
 // runs anyway. While nothing changed it is a lock and a few comparisons.
 void engine::phone_tick(bool walked) {
+  phone_link_tick();
   if (options_.read_only) return;
   std::uint64_t waiting = 0;
   std::string published_stamp;

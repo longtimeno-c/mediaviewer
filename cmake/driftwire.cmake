@@ -51,24 +51,24 @@ endif()
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp)
+  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp ${_S}/advert_none.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
 elseif(IOS)
   # No module on iOS, so the engine carries what the module would compile in:
   # the file port, BLAKE3 hashing and (no bearer yet) the empty Bluetooth port.
   set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_ios.cpp ${_S}/secrets_ios.cpp ${_S}/power_ios.cpp
-      ${_S}/bt_none.cpp
+      ${_S}/bt_none.cpp ${_S}/advert_none.cpp
       ${MV_SOURCE_ROOT}/src/io/file_port.cpp ${MV_SOURCE_ROOT}/src/io/file_port_mac.cpp
       ${MV_SOURCE_ROOT}/src/io/content_hash.cpp)
   set(_driftwire_bt "")
 elseif(APPLE)
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp)
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp ${_S}/advert_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
 else()
   # Linux: the Secret Service (libsecret) and logind (libsystemd / libelogind)
   # are loaded at run time, so there is nothing to build against; no
   # Bluetooth bearer yet (bt_none.cpp: Wi-Fi and the internet only).
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/secrets_linux.cpp ${_S}/power_linux.cpp)
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/secrets_linux.cpp ${_S}/power_linux.cpp ${_S}/advert_none.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
 endif()
 
@@ -101,6 +101,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/serve_wire.cpp ${_S}/serve_wire.h
   ${_S}/serve.cpp ${_S}/serve.h
   ${_S}/serve_client.cpp ${_S}/serve_client.h
+  ${_S}/desk.cpp ${_S}/desk.h ${_S}/advert.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -209,6 +210,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"

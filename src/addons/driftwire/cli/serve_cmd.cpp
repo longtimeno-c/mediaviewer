@@ -25,6 +25,7 @@
 #include "addons/driftwire/secrets.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/transfer.h"
+#include "core/json.h"
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -84,6 +85,29 @@ bool load_devices(secrets::store& store, std::vector<known::device>& out) {
   return true;
 }
 
+// Whole and renamed in, owner-only: the running service is the only writer.
+bool write_config(const std::string& path, const serve::config& c) {
+  json::writer w;
+  w.begin_object().key("port").integer(c.port).key("name").string(c.name).key("roots").begin_array();
+  for (const auto& r : c.roots) {
+    w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
+  }
+  w.end_array().end_object();
+  const std::string tmp = path + ".part";
+  {
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    f.write(w.str().data(), static_cast<std::streamsize>(w.str().size()));
+    if (!f.flush()) return false;
+  }
+#if !defined(_WIN32)
+  if (::chmod(tmp.c_str(), 0600) != 0) return false;
+#endif
+  std::error_code ec;
+  std::filesystem::rename(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(tmp.data()), tmp.size())),
+                          std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())), ec);
+  return !ec;
+}
+
 int run_service(const args& a, bool test_hooks, const std::string& data, secrets::store& store) {
   if (!only_mine_writes(data) || !only_mine_writes(data + "/" + kConfigFile)) {
     return fail(std::string("the data folder and ") + kConfigFile + " must be writable by this user alone.", 1);
@@ -102,6 +126,9 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   o.cfg = std::move(*cfg);
   o.store = &store;
   o.loopback_only = test_hooks && a.test_loopback;
+  o.claimable = true;
+  o.devices_lock = data + "/serve-devices.lock";
+  o.save_config = [path = data + "/" + kConfigFile](const serve::config& c) { return write_config(path, c); };
   auto srv = serve::server::start(o);
   if (!srv) {
     if (srv.error() == status::not_found) return fail("no access key yet: run `driftwire serve init` first.", 1);
@@ -181,6 +208,14 @@ int run_revoke(const args& a, secrets::store& store, const std::string& data) {
   return 0;
 }
 
+// The desktop that claimed this service is gone: it can be claimed again.
+int run_disown(secrets::store& store) {
+  if (!store.exists(serve::kOwnerName)) return fail("it has no owner.", 1);
+  if (!store.erase(serve::kOwnerName)) return fail("could not forget the owner.", 1);
+  print("disowned; restart not needed\n");
+  return 0;
+}
+
 int run_devices(secrets::store& store) {
   const auto devices = known::load(store);
   if (devices.empty()) {
@@ -219,6 +254,8 @@ int run_serve(const args& a, bool test_hooks) {
       return run_add(a, *store, data);
     case serve_action::revoke:
       return run_revoke(a, *store, data);
+    case serve_action::disown:
+      return run_disown(*store);
   }
   return 2;
 }

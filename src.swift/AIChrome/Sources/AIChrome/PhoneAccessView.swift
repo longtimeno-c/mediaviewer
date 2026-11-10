@@ -19,8 +19,12 @@ final class PhoneAccessModel: ObservableObject {
   @Published private(set) var published: Int64 = 0
   @Published private(set) var assets: Int64 = 0
   @Published private(set) var fingerprint = ""
+  let link: PhoneLinkModel
 
-  init(table: AITable) { self.table = table }
+  init(table: AITable) {
+    self.table = table
+    link = PhoneLinkModel(table: table)
+  }
 
   /// A pack built before these entries were appended has no Phone access.
   var available: Bool {
@@ -47,6 +51,7 @@ final class PhoneAccessModel: ObservableObject {
     if a != assets { assets = a }
     let k = obj["fingerprint"] as? String ?? ""
     if k != fingerprint { fingerprint = k }
+    if !destination.isEmpty { link.poll() }
   }
 
   func choose() {
@@ -115,6 +120,7 @@ struct PhoneAccessSection: View {
         ProgressView(value: min(1, max(0, model.fraction)))
           .padding(.horizontal, 12).padding(.bottom, 12)
       }
+      if !model.destination.isEmpty && model.link.available { PhoneLinkSection(model: model.link) }
     }
   }
 

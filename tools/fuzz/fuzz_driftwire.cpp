@@ -280,10 +280,12 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       (void)mv::driftwire::serve::parse_cancel(in);
       (void)mv::driftwire::serve::parse_data(in);
       (void)mv::driftwire::serve::parse_end(in);
+      (void)mv::driftwire::serve::parse_admin(in);
       break;
     }
     case 32:
       (void)mv::driftwire::serve::parse_hello(text);
+      (void)mv::driftwire::serve::parse_pair(text);
       (void)mv::driftwire::serve::parse_caps(text);
       (void)mv::driftwire::serve::parse_roots(text);
       (void)mv::driftwire::serve::parse_stat(text);

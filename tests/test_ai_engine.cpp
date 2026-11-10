@@ -16,7 +16,10 @@
 #include <sqlite3.h>
 
 #include "abi/addon_media.h"
+#include <sodium.h>
+
 #include "addons/ai/catalog.h"
+#include "addons/ai/catalog_chain.h"
 #include "addons/ai/nfc.h"
 #include "codec/decode.h"
 #include "addons/ai/sha256.h"
@@ -1038,6 +1041,11 @@ struct rig {
       label_batches.emplace_back(at.begin(), at.end());
       return std::vector<std::string>(at.size(), "Sintra, Lisbon, Portugal");
     };
+    svc.addon_request = [this](const std::string& target, const std::string& method, const std::string& json)
+        -> mv::result<std::string> {
+      if (!route) return mv::err(mv::status::not_found);
+      return route(target, method, json);
+    };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
     api = *table->api();
@@ -1245,6 +1253,7 @@ struct rig {
   }
 
   bool no_key_store = false;
+  std::function<mv::result<std::string>(const std::string&, const std::string&, const std::string&)> route;
   // The publisher's timing; the defaults are far enough apart that a test
   // which does not ask for automatic publishing never sees one.
   double phone_quiet = 3600;
@@ -7178,4 +7187,194 @@ TEST_CASE("an index from before tiers keeps the Default tier without asking", "[
   r.start();
   REQUIRE(wait_for([&] { return std::string(r.status().tier_utf8) == "default"; }, kSettleMs));
   CHECK((r.status().flags & MV_AI_STATUS_TIER_UNCHOSEN) == 0);
+}
+
+// ---- Phone access: the route to Driftwire, the QR, moving the key (docs/plans/mobile.md) -----
+
+namespace {
+
+mv::json::value link_done(rig& r) {
+  mv::json::value v;
+  REQUIRE(wait_for(
+      [&] {
+        auto t = mv::json::parse(r.eng->phone_link_json());
+        if (!t || !t->str("busy") || !t->str("busy")->empty()) return false;
+        v = *t;
+        return true;
+      },
+      kSettleMs));
+  return v;
+}
+
+// What the Driftwire add-on would answer, without a network.
+struct fake_driftwire {
+  bool claimed = true;
+  std::vector<std::pair<std::string, std::string>> devices;
+  std::vector<std::string> calls;
+  std::mutex m;
+  mv::result<std::string> operator()(const std::string& target, const std::string& method, const std::string&) {
+    std::lock_guard lock(m);
+    calls.push_back(method);
+    if (target != "driftwire") return mv::err(mv::status::not_found);
+    if (method == "status") {
+      mv::json::writer w;
+      w.begin_object().key("claimed").boolean(claimed).key("local").string("192.168.1.5:7878").key("public").string("nas.example.com:7878").key("machine").string("Studio Mac").end_object();
+      return w.take();
+    }
+    if (method == "devices") {
+      mv::json::writer w;
+      w.begin_object().key("reachable").boolean(true).key("devices").begin_array();
+      for (const auto& [n, k] : devices) w.begin_object().key("name").string(n).key("key").string(k).end_object();
+      w.end_array().end_object();
+      return w.take();
+    }
+    if (method == "pair") {
+      mv::json::writer w;
+      w.begin_object()
+          .key("local").string("192.168.1.5:7878")
+          .key("public").string("nas.example.com:7878")
+          .key("identity").string(std::string(64, 'a'))
+          .key("access_key").string(std::string(64, 'b'))
+          .key("code").string(std::string(32, 'c'))
+          .key("expires").integer(static_cast<std::int64_t>(std::time(nullptr)) + 300)
+          .end_object();
+      return w.take();
+    }
+    if (method == "roots") return std::string("{\"roots\":[]}");
+    return std::string("{}");
+  }
+};
+
+std::string qr_json(const std::string& url) {
+  const std::string prefix = "mediaviewer://pair#";
+  REQUIRE(url.starts_with(prefix));
+  std::string out(url.size(), '\0');
+  std::size_t len = 0;
+  REQUIRE(sodium_base642bin(reinterpret_cast<unsigned char*>(out.data()), out.size(), url.data() + prefix.size(),
+                            url.size() - prefix.size(), nullptr, &len, nullptr, sodium_base64_VARIANT_URLSAFE_NO_PADDING) == 0);
+  out.resize(len);
+  return out;
+}
+
+void publish_to(rig& a, const fs::path& nas) {
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  REQUIRE(*phone_done(a).str("error") == "");
+}
+
+}  // namespace
+
+TEST_CASE("phone link: with Driftwire missing, the card is told", "[ai][engine][phone-link]") {
+  rig a;
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("driftwire") == false);
+}
+
+TEST_CASE("phone link: a code is one QR with the library, the key and the service", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  const auto v = link_done(a);
+  REQUIRE(v.str("error"));
+  CHECK(*v.str("error") == "");
+  const auto doc = mv::json::parse(qr_json(*v.str("qr")), 4);
+  REQUIRE(doc);
+  CHECK(doc->integer("v") == 1);
+  CHECK(*doc->str("library_name") == "Photos");
+  CHECK_FALSE(doc->str("library_id")->empty());
+  CHECK(doc->str("publisher_key")->size() == 64);
+  CHECK(*doc->find("service")->str("local") == "192.168.1.5:7878");
+  CHECK(*doc->str("code") == std::string(32, 'c'));
+  // The same fingerprint the phone will show.
+  std::vector<std::uint8_t> key(32);
+  std::size_t n = 0;
+  REQUIRE(sodium_hex2bin(key.data(), 32, doc->str("publisher_key")->data(), 64, nullptr, &n, nullptr) == 0);
+  CHECK(*v.str("qr_fingerprint") == mv::ai::catalog::fingerprint(key));
+  CHECK(*v.str("qr_fingerprint") == *mv::json::parse(a.eng->phone_json())->str("fingerprint"));
+  CHECK(v.integer("qr_expires") > static_cast<std::int64_t>(std::time(nullptr)));
+
+  // The phone redeems it: the Mac shows it and takes the code down.
+  {
+    std::lock_guard lock(d.m);
+    d.devices.emplace_back("iPhone", std::string(64, 'd'));
+  }
+  mv::json::value after;
+  REQUIRE(wait_for(
+      [&] {
+        auto t = mv::json::parse(a.eng->phone_link_json());
+        if (!t || t->find("added")->a.empty()) return false;
+        after = *t;
+        return true;
+      },
+      8000));
+  CHECK(after.find("added")->a[0].s == "iPhone");
+  CHECK(after.str("qr")->empty());
+}
+
+TEST_CASE("phone link: a takeover asked on the share, allowed, then published", "[ai][engine][phone-link]") {
+  rig a, b;
+  fake_driftwire da, db;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const auto first_doc = mv::json::parse(read_all(nas / ".mediaviewer/library.json"), 4);
+  REQUIRE(first_doc);
+  const std::string library = *first_doc->str("library_id");
+  std::vector<std::uint8_t> pinned(32);
+  std::size_t n = 0;
+  REQUIRE(sodium_hex2bin(pinned.data(), 32, first_doc->str("public_key")->data(), 64, nullptr, &n, nullptr) == 0);
+
+  b.file("blue_sea.jpg");
+  b.start();
+  REQUIRE(b.eng->index_folder(utf8(b.photos()), true));
+  REQUIRE(b.idle());
+  // Its index is about these photos' folder; the share is the same place.
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  CHECK(*phone_done(b).str("error") == "other_library");
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(b).boolean("other_publisher") == true);
+
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  CHECK(*link_done(b).str("error") == "");
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto asked = link_done(a);
+  REQUIRE(*asked.str("asking_name") == "Studio Mac");
+
+  // The old desktop's person agrees: its key signs the move.
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  CHECK(*link_done(a).str("error") == "");
+
+  // The new one finds its key on the share and takes the library over.
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(b).boolean("other_publisher") == false);
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  // No folder of b's is on this NAS in the test; what matters is the identity.
+  const std::string after_error = *phone_done(b).str("error");
+  CHECK(after_error != "other_library");
+
+  const std::string doc = read_all(nas / ".mediaviewer/library.json");
+  auto followed = mv::ai::catalog::follow_chain(doc, library, pinned, 1);
+  REQUIRE(followed);
+  CHECK(followed->epoch == 2);
+  CHECK(mv::ai::catalog::to_hex(followed->public_key) != mv::ai::catalog::to_hex(pinned));
+  // The old desktop is locked out now.
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  CHECK(*phone_done(a).str("error") == "other_library");
 }

@@ -10,7 +10,7 @@
 //   driftwire code
 //   driftwire devices
 //   driftwire update
-//   driftwire serve [init | devices | add NAME KEY | revoke NAME-OR-KEY] [--data DIR]
+//   driftwire serve [init | devices | add NAME KEY | revoke NAME-OR-KEY | disown] [--data DIR]
 //   driftwire --help | --version
 //   common: --save-to DIR, --name NAME (this run only), --plain, --no-color, --verbose
 //
@@ -38,7 +38,7 @@ enum class command : std::uint8_t { session, send, receive, code, devices, updat
 
 // `driftwire serve`: the service itself (no terminal, docs/design/28 "The NAS
 // service"), or one of its local chores.
-enum class serve_action : std::uint8_t { run, init, devices, add, revoke };
+enum class serve_action : std::uint8_t { run, init, devices, add, revoke, disown };
 
 struct args {
   command cmd = command::session;

@@ -20,7 +20,7 @@
 namespace mv::driftwire::serve {
 
 // Why a connection could not be used.
-enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy };
+enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy, bad_code, too_many };
 
 class client {
  public:
@@ -31,6 +31,8 @@ class client {
     std::string id = "0000000000000000";                       // 16 hex digits
     std::string name = "client";
     std::uint32_t ops = kAllOps;                               // what this client can use
+    std::string pair_code;                                     // from the QR: redeemed before serve_hello
+    std::string device_name;                                   // what the desktop shows (with pair_code)
   };
 
   // Handshakes over `l`, says what it can do, reads what the service can.
@@ -78,6 +80,10 @@ class client {
                                                      end_code* code = nullptr);
   [[nodiscard]] result<stat_info> stat(const std::string& root, const std::string& rel, end_code* code = nullptr);
 
+  // One request of the owner's (kAdminOp in `ops`). The answer's JSON. Refused,
+  // or not the owner: status::permission_denied; `code` says how it ended.
+  [[nodiscard]] result<std::string> admin(const std::string& request_json, end_code* code = nullptr);
+
   // Ends the session.
   void close() noexcept;
   [[nodiscard]] bool closed() const noexcept;
@@ -89,5 +95,15 @@ class client {
   struct state;
   std::shared_ptr<state> st_;
 };
+
+// §7.2: opens a channel under the claim key and asks to be the owner. The
+// service's answer, or status::permission_denied / io when it said nothing.
+struct claim_answer {
+  std::array<std::uint8_t, 32> access_key{};
+  std::array<std::uint8_t, 32> identity{};
+  std::vector<root_info> roots;
+};
+[[nodiscard]] result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
+                                         const std::array<std::uint8_t, 32>& device_key, const std::string& name);
 
 }  // namespace mv::driftwire::serve

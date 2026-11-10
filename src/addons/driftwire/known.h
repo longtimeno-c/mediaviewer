@@ -67,6 +67,8 @@ struct device {
 [[nodiscard]] std::vector<std::uint8_t> encode(const std::vector<device>& devices);
 [[nodiscard]] std::optional<std::vector<device>> decode(std::span<const std::uint8_t> bytes);
 [[nodiscard]] std::vector<device> load(secrets::store& store);
+// The same, from another name in the store (the desktop's list of phones).
+[[nodiscard]] std::vector<device> load_named(secrets::store& store, const char* name);
 [[nodiscard]] bool save(secrets::store& store, const std::vector<device>& devices);
 // Remove everything (#507): the remembered devices, this machine's identity
 // and the relay server's key (#500) go from the store. True when none is left.

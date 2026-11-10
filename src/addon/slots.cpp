@@ -69,8 +69,9 @@ const char* target_name(item_target t) noexcept {
 
 class native_client final : public slot_client {
  public:
-  native_client(void* addon, const mv_addon_slots* t, const mv_addon_place_labels* labels)
-      : addon_(addon), t_(t), labels_(labels) {}
+  native_client(void* addon, const mv_addon_slots* t, const mv_addon_place_labels* labels,
+                const mv_addon_request_api* requests)
+      : addon_(addon), t_(t), labels_(labels), requests_(requests) {}
   status info_section(const mv_slot_info_request& r) override {
     return has(offsetof(mv_addon_slots, info_section), t_->info_section)
                ? static_cast<status>(t_->info_section(addon_, &r))
@@ -110,6 +111,14 @@ class native_client final : public slot_client {
     }
     return status::internal;
   }
+  status request(const char* caller, const char* method, const char* json, std::string& out) override {
+    if (!requests_ || requests_->struct_size < offsetof(mv_addon_request_api, handle) + sizeof(requests_->handle) ||
+        !requests_->handle) {
+      return status::unsupported_format;
+    }
+    const auto reply = [](void* user, const char* text) { *static_cast<std::string*>(user) = text ? text : ""; };
+    return static_cast<status>(requests_->handle(addon_, caller, method, json, reply, &out));
+  }
 
  private:
   template <typename F>
@@ -119,6 +128,7 @@ class native_client final : public slot_client {
   void* addon_;
   const mv_addon_slots* t_;
   const mv_addon_place_labels* labels_;
+  const mv_addon_request_api* requests_;
 };
 
 // Latin-1 Supplement and Latin Extended-A letters to their base letter, for
@@ -132,8 +142,9 @@ static_assert(sizeof(kFoldLatin) == 0x180 - 0xC0 + 1, "one letter per code point
 }  // namespace
 
 std::unique_ptr<slot_client> native_slot_client(void* addon, const mv_addon_slots* table,
-                                                const mv_addon_place_labels* labels) {
-  return std::make_unique<native_client>(addon, table, labels);
+                                                const mv_addon_place_labels* labels,
+                                                const mv_addon_request_api* requests) {
+  return std::make_unique<native_client>(addon, table, labels, requests);
 }
 
 std::optional<mv_addon_location> parse_location_text(std::string_view text) noexcept {
@@ -747,6 +758,35 @@ result<std::vector<std::string>> slot_registry::provider_paths(const std::string
       return paths;
     }
   }
+}
+
+result<std::string> slot_registry::addon_request(const std::string& target, const std::string& caller,
+                                                 const std::string& method, const std::string& json) {
+  // Shared with the task: it may still run after the add-on detached and this
+  // wait gave up.
+  struct call {
+    std::string caller, method, json, out;
+    status st = status::ok;
+    bool done = false;
+  };
+  auto c = std::make_shared<call>();
+  c->caller = caller;
+  c->method = method;
+  c->json = json;
+  std::unique_lock lock(m_);
+  const auto it = addons_.find(target);
+  if (it == addons_.end()) return err(status::not_found);
+  enqueue(*it->second, "request:" + std::to_string(next_generation()), [this, c](slot_client& client) {
+    const status st = client.request(c->caller.c_str(), c->method.c_str(), c->json.c_str(), c->out);
+    std::lock_guard done_lock(m_);
+    c->st = st;
+    c->done = true;
+    private_cv_.notify_all();
+  });
+  while (!c->done && addons_.count(target) != 0) private_cv_.wait_for(lock, std::chrono::milliseconds(50));
+  if (!c->done || c->st == status::unsupported_format) return err(status::not_found);
+  if (c->st != status::ok) return err(c->st);
+  return std::move(c->out);
 }
 
 expected slot_registry::provider_labels(const std::string& prefix, std::span<const std::pair<double, double>> points,

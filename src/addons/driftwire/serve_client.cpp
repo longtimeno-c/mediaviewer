@@ -154,15 +154,32 @@ result<std::unique_ptr<client>> client::open(std::shared_ptr<link> l, const opti
     (*ch)->shutdown();
     return err(status::permission_denied);
   }
+  const auto refused = [&why](const message& m) {
+    const auto doc = json::parse(m.text(), 4);
+    const std::string* text = doc ? doc->str("why") : nullptr;
+    if (why && text) {
+      *why = *text == "busy"       ? refusal::busy
+             : *text == "bad-code" ? refusal::bad_code
+             : *text == "too-many" ? refusal::too_many
+                                   : refusal::not_paired;
+    }
+  };
+  message m;
+  if (!o.pair_code.empty()) {
+    (void)(*ch)->send(msg::serve_pair, pair_json(o.pair_code, o.device_name));
+    if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
+    if (m.type == msg::cancel) {
+      refused(m);
+      return err(status::permission_denied);
+    }
+    if (m.type != msg::serve_paired) return err(status::corrupt);
+  }
   // Not checked here: a service that refused this device has said so and may
   // already be closing, and the refusal is what the receive below reads.
   (void)(*ch)->send(msg::serve_hello, hello_json(o.ops));
-  message m;
   if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
   if (m.type == msg::cancel) {
-    const auto doc = json::parse(m.text(), 4);
-    const std::string* text = doc ? doc->str("why") : nullptr;
-    if (why && text) *why = *text == "busy" ? refusal::busy : refusal::not_paired;
+    refused(m);
     return err(status::permission_denied);
   }
   if (m.type != msg::serve_caps) return err(status::corrupt);
@@ -388,6 +405,56 @@ result<std::vector<list_entry>> client::list(const std::string& root, const std:
   auto parsed = parse_listing(slot->collected);
   if (!parsed) return err(status::corrupt);
   return *parsed;
+}
+
+result<std::string> client::admin(const std::string& request_json, end_code* code) {
+  open_request r;
+  auto slot = st_->open_slot(r);
+  if (auto s = st_->ch->send(msg::serve_admin, encode_admin(r.id, request_json)); !s) {
+    st_->remove(r.id);
+    return err(s.error());
+  }
+  auto done = finish(st_, slot, r.id, code);
+  st_->remove(r.id);
+  if (!done) return err(done.error());
+  switch (*done) {
+    case end_code::ok:
+      return slot->end_json;
+    case end_code::not_found:
+      return err(status::not_found);
+    case end_code::bad_request:
+      return err(status::invalid_arg);
+    case end_code::too_many:
+      return err(status::busy);
+    case end_code::error:
+      return err(status::io);
+    default:
+      return err(status::permission_denied);
+  }
+}
+
+result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
+                           const std::array<std::uint8_t, 32>& device_key, const std::string& name) {
+  channel::options opts;
+  opts.access_key = key;
+  opts.static_key = device_key;
+  auto ch = channel::open_library(l, "0000000000000000", name, opts);
+  if (!ch) return err(ch.error());
+  json::writer w;
+  w.begin_object().key("name").string(name).end_object();
+  (void)(*ch)->send(msg::serve_claim, w.str());
+  message m;
+  if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
+  if (m.type != msg::serve_claimed) return err(status::permission_denied);
+  const auto doc = json::parse(m.text(), 6);
+  const std::string* access = doc ? doc->str("access_key") : nullptr;
+  const auto parsed = access ? parse_key_hex(*access) : std::nullopt;
+  const auto peer = (*ch)->peer_key();
+  if (!parsed || !peer) return err(status::corrupt);
+  claim_answer out;
+  out.access_key = *parsed;
+  out.identity = *peer;
+  return out;
 }
 
 }  // namespace mv::driftwire::serve

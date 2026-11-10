@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/known.h"
 
+#include "addons/driftwire/desk.h"
+
 #include <sodium.h>
 
 #include <algorithm>
@@ -103,6 +105,14 @@ std::vector<device> load(secrets::store& store) {
   return d ? std::move(*d) : std::vector<device>{};
 }
 
+std::vector<device> load_named(secrets::store& store, const char* name) {
+  auto v = store.get(name);
+  if (!v) return {};
+  auto d = decode(*v);
+  sodium_memzero(v->data(), v->size());
+  return d ? std::move(*d) : std::vector<device>{};
+}
+
 bool save(secrets::store& store, const std::vector<device>& devices) {
   if (devices.empty()) {
     (void)store.erase(kDevicesName);
@@ -115,6 +125,7 @@ bool save(secrets::store& store, const std::vector<device>& devices) {
 }
 
 bool forget(secrets::store& store) {
+  desk::forget(store);
   (void)store.erase(kDevicesName);
   (void)store.erase(kIdentityName);
   (void)store.erase(kRelayKeyName);

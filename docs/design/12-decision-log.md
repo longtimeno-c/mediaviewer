@@ -8,6 +8,17 @@ Trade-offs for the D1–D9 decisions are in [01-decisions.md](01-decisions.md).
 
 ---
 
+## Phone access
+
+**Nearby sync is the NAS's protocol, pulled by the phone (2026-11-10).** `docs/plans/mobile.md` §7.5 describes
+the Mac sending files as a Driftwire transfer that skips Accept. Instead the Mac runs a LAN-only
+`serve::server` over a local copy and the phone reads it as it reads the NAS. The phone needs no second
+receive path, resume is `read_range`, and "newest wins" is the check it already does on `current.json`.
+The Mac's identity is not in the QR, so nothing pins it; the catalogue's signature is the trust.
+
+**Claim tokens do not expire (2026-11-10).** Reading one needs access to the share, and that access could write a
+new one, so an expiry adds nothing, while comparing a NAS clock with a file's time could lock a person out.
+
 ## Architecture and threading
 
 **Shell is native; chrome is hosted (2026-09-06).** The Win32 window and the D3D11 swapchain

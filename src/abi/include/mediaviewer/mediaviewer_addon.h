@@ -556,6 +556,18 @@ typedef struct mv_addon_slots {
  * show at a GPS point, "" for none. On the add-on's slot worker. `*needed` is
  * the bytes including the NUL; MV_ERR_INVALID_ARG when `capacity` is less.
  * MV_ERR_NOT_FOUND: no place database. */
+typedef void(MV_CALL* mv_addon_reply_fn)(void* user, const char* json_utf8);
+#define MV_REQUEST_INTERFACE "mv.request.1"
+typedef struct mv_addon_request_api {
+  uint32_t struct_size;
+  uint32_t reserved;
+  /* On the add-on's slot worker. `caller_id` is the asking add-on's id, from
+   * the host, so an add-on can answer only those it knows. `reply` once, with
+   * the answer's JSON, before returning MV_OK. */
+  mv_status(MV_CALL* handle)(void* addon, const char* caller_id, const char* method, const char* request_json,
+                             mv_addon_reply_fn reply, void* user);
+} mv_addon_request_api;
+
 #define MV_PLACE_LABELS_INTERFACE "mv.place_labels.1"
 typedef struct mv_addon_place_labels {
   uint32_t struct_size;
@@ -1064,6 +1076,17 @@ typedef struct mv_host_api {
    * anywhere: the labels come from the database on this machine (rule 6). */
   mv_status(MV_CALL* place_labels)(void* host, const mv_addon_route_point* points, uint32_t count,
                                    mv_addon_label_fn visit, void* user);
+  /* ---- add-ons calling add-ons (docs/design/18 "Add-ons calling add-ons") ------ */
+  /* [worker-thread] One request to the loaded add-on `addon_id`, answered on
+   * its slot worker: the only way one add-on reaches another. `method` and
+   * `request_json` mean what that add-on documents; the host tells it who is
+   * asking. `reply` gets the answer's JSON once, on the caller's thread,
+   * before this returns. Blocks until answered. MV_ERR_NOT_FOUND: that add-on
+   * is not installed, not loaded, too old for this, or does not know the
+   * method (the caller offers to install it). Appended after place_labels:
+   * read only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* addon_request)(void* host, const char* addon_id, const char* method, const char* request_json,
+                                    mv_addon_reply_fn reply, void* user);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
