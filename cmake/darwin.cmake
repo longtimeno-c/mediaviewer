@@ -445,6 +445,7 @@ add_library(mv_edit STATIC
   src/edit/bake.cpp
   src/edit/detail.cpp
   src/edit/eyes.cpp
+  src/edit/eye_state.cpp
   src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -1001,6 +1002,7 @@ if(MV_BUILD_TESTS)
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp
     tests/test_eyes.cpp
+    tests/test_eye_state.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp

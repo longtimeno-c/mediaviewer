@@ -27,6 +27,11 @@ void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx);
 // for the former. False: do what ⌘F does without Local search (not
 // installed; or a reader tried less than 10 s ago, the note then in the bar).
 bool MvAddonsSearchOnDemand();
+// A tool that needs the AI pack (Faces) while it waits on demand: start it, as
+// Settings' Start now does (the pack in the first window, the reader in a later
+// one). True when a load is on its way; when it settles, attached or not,
+// "MvAiLoadEnded" is posted on the default NSNotificationCenter (main thread).
+bool MvAddonsWakeAi();
 // Ctrl+Shift+I / ⌘⇧I: the Import window, with the viewer's marks.
 void MvAddonsOpenImport(const std::vector<std::string>& marks);
 // ⌘⇧F7: import these now with the last preset.

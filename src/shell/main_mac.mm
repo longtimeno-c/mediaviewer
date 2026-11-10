@@ -977,6 +977,10 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)enhanceTool:(const std::string&)photo run:(BOOL)run;
 - (void)enhanceTool:(const std::string&)photo run:(BOOL)run faces:(const std::vector<float>&)faces;
 - (void)enhanceShowResult:(const std::string&)path keep:(BOOL)keep;
+- (void)selectResult:(const std::string&)path;
+- (void)facesResultOpen:(const std::string&)written from:(const std::string&)source boxes:(std::vector<float>)boxes;
+- (void)facesAiSettled;
+- (void)facesReadAgain:(std::uint64_t)item;
 - (void)enhanceDockClose;
 // One-click Enhance (docs/design/29 "One click"): the Enhance tab's cards on
 // the photo on screen, the run the chrome read from them, and Enhance's
@@ -3868,6 +3872,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // screen (read once per item when the tool is armed), which are chosen, the
   // one under the pointer and the fix running (shell/faces_tool.h).
   mv::shell::faces_tool _faces;
+  bool _facesAwaitAi;  // facesFetch started Local search: a no-pack read waits for it
+  bool _facesWokeAi;   // once: a load that failed is not started again by every read
+  int _facesPeopleRetries;  // after that load: People's model comes a moment after the pack
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -4482,6 +4489,17 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                                                         [weakSelf paneThemeChanged];
                                                       }];
   }
+  // Faces started Local search (facesFetch): when the load settles, attached
+  // or not, the faces are read again (addons_mac.h MvAddonsWakeAi).
+  {
+    __weak MvLabApp* weakSelf = self;
+    (void)[NSNotificationCenter.defaultCenter addObserverForName:@"MvAiLoadEnded"
+                                                          object:nil
+                                                           queue:NSOperationQueue.mainQueue
+                                                      usingBlock:^(NSNotification*) {
+                                                        [weakSelf facesAiSettled];
+                                                      }];
+  }
   self.canvasTrailingDocked = [self.canvasGuide.trailingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor];
   // The clip job queue. Its completions arrive on its workers and hop to the
   // main queue here (docs/design/14: the core never calls the host's dispatcher).
@@ -4688,6 +4706,15 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // original only iCloud has shows its progress in the notice while it comes
   // (the job's cancel stops it), and the new photo is listed beside its
   // source (Show, or the arrow, reaches it).
+  // 2026-11-07: a face's points read again upright by the pack's detector
+  // (media::refine_landmarks), for the Faces tool's eyes and fixes.
+  mv::addon::media::set_face_redetect(
+      [](const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::uint32_t stride) {
+        return mv::addon::ai_faces_json(rgb, w, h, stride, nullptr);
+      });
+  // And a person's photos from People, offered to a fix as more donors
+  // (media::eyes_answer).
+  mv::addon::media::set_person_photos([](std::uint64_t person) { return mv::addon::ai_person_faces_json(person); });
   mv::addon::media::set_photos_hooks(
       [](const std::string& key, const mv::job_context* ctx) -> mv::result<std::string> {
         auto reported = std::make_shared<std::atomic<bool>>(false);
@@ -9541,6 +9568,17 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // Kept editing, the cards follow the new photo when it shows (its notice
   // stays: "Saved as …").
   if (!keep) [self enhanceDockClose];
+  [self selectResult:path];
+  if (keep) {
+    const mv::shell::workspace_action a = _ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
+    if (mv::shell::apply_step(_ws, {a, mv::shell::edit_tab::enhance})) [self syncWorkspace];
+  }
+}
+
+// A result on screen: selected where it is listed, else once the relist (or
+// the library's insert) lists it. Edit, its tab and an armed tool stay as
+// they are (they follow the item).
+- (void)selectResult:(const std::string&)path {
   const bool library = mv::shell::photos::is_key(path);
   bool found = false;
   for (std::size_t i = 0; i < _items.size(); ++i) {
@@ -9562,10 +9600,21 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       [self openDir:dir select:path navigation:YES];
     }
   }
-  if (keep) {
-    const mv::shell::workspace_action a = _ws.open ? mv::shell::workspace_action::select : mv::shell::workspace_action::open;
-    if (mv::shell::apply_step(_ws, {a, mv::shell::edit_tab::enhance})) [self syncWorkspace];
-  }
+}
+
+// A face fix's new file (the Faces tool's or the wand's): it opens at once,
+// Edit, its tab and the Faces tool kept as they are, the same faces chosen
+// (`boxes`, the run's), Compare against the photo it was made from, and the
+// result cross-fading in (docs/design/20 "Craft rules": open the result).
+- (void)facesResultOpen:(const std::string&)written from:(const std::string&)source boxes:(std::vector<float>)boxes {
+  if (written.empty()) return;
+  mv::shell::note_result(written, source);
+  // Walked away while it ran: the notice says where it went; no jump back.
+  if (_items.empty() || _index.current() >= _items.size() || _items[_index.current()].path_utf8 != source) return;
+  _faces.carry = std::move(boxes);
+  _snap.result_fade_ms = mv::shell::steady_ms();
+  [self publish];
+  [self selectResult:written];
 }
 
 // The Crop pane's buttons and slider: stills only, once the pixels are known.
@@ -12468,7 +12517,7 @@ static double mv_wall_seconds() {
   _jobs.submit_at(mv::background_generation, [path, mode, weakSelf](const mv::job_context& ctx) -> mv::status {
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    auto pack = mv::addon::media::eyes_answer(path, candidates, {}, &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
     if (pack) {
       r = mode == 1 ? mv::addon::media::improve_faces(path, *pack, &ctx)
@@ -12477,8 +12526,12 @@ static double mv_wall_seconds() {
     const mv::status ps = pack ? mv::status::ok : pack.error();
     const std::string note =
         mode == 1 ? mv::addon::media::faces_note(ps, r) : mv::addon::media::eyes_note(ps, r);
+    const std::string written = r ? r->written : std::string();
     dispatch_async(dispatch_get_main_queue(), ^{
-      [weakSelf eyesLanded:note];
+      MvLabApp* app = weakSelf;
+      if (!app) return;
+      [app eyesLanded:note];
+      [app facesResultOpen:written from:path boxes:{}];
     });
     return mv::status::ok;
   });
@@ -13254,6 +13307,13 @@ static double mv_wall_seconds() {
   const std::uint64_t item = _itemId;
   _faces.looking(item);
   ++_editGeneration;
+  // Local search waits on demand until something needs it (issue #292): Faces
+  // does, so it starts it here, as Settings' Start now would, and its read
+  // waits for it instead of saying "Needs Local search".
+  if (!_facesWokeAi && MvAddonsWakeAi()) {
+    _facesWokeAi = true;
+    _facesAwaitAi = true;
+  }
   const std::string path = _items[_index.current()].path_utf8;
   __weak MvLabApp* weakSelf = self;
   _jobs.submit_at(mv::background_generation, [path, item, weakSelf](const mv::job_context& ctx) -> mv::status {
@@ -13270,8 +13330,11 @@ static double mv_wall_seconds() {
             if (auto img = mv::image::decode_linear(*bytes, &ctx)) still = std::move(*img);
           }
         }
-        *scan = mv::shell::read_faces(json ? mv::status::ok : json.error(),
-                                      json ? std::string_view(*json) : std::string_view(), still ? &*still : nullptr);
+        // Each face's points read again upright and its eyes read: the
+        // "Eyes closed" badge (media::with_eyes_read).
+        const std::string read =
+            json && still ? mv::addon::media::with_eyes_read(*json, *still) : (json ? *json : std::string());
+        *scan = mv::shell::read_faces(json ? mv::status::ok : json.error(), read, still ? &*still : nullptr);
       } catch (...) {
         *scan = {};  // out of memory: failed
       }
@@ -13285,9 +13348,38 @@ static double mv_wall_seconds() {
 }
 
 - (void)facesLanded:(std::uint64_t)item scan:(std::shared_ptr<mv::shell::faces_scan>)scan {
+  // Read before the pack it started attached: stay "Looking for faces…" and
+  // read again when the load settles (facesAiSettled).
+  if (_facesAwaitAi && scan->status == mv::shell::faces_status::no_pack && _faces.item == item) return;
+  // The pack Faces started has attached, but People's model loads after it
+  // (seconds): "Needs People" would be wrong. Read again shortly, a few times.
+  if (_facesPeopleRetries > 0 && scan->status == mv::shell::faces_status::people_off && _faces.item == item) {
+    --_facesPeopleRetries;
+    __weak MvLabApp* weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      [weakSelf facesReadAgain:item];
+    });
+    return;
+  }
   if (!_faces.landed(item, std::move(*scan))) return;  // another photo's
   [self brushPublish];
   ++_editGeneration;  // the panel, the bar
+}
+
+// The Local search load Faces started settled: read this photo's faces again
+// (attached, they come; not, the panel says why).
+- (void)facesAiSettled {
+  if (!_facesAwaitAi) return;
+  _facesAwaitAi = false;
+  _facesPeopleRetries = 10;
+  [self facesReadAgain:_faces.item];
+}
+
+// A read that waited (facesLanded) goes again, if the tool is still on that photo.
+- (void)facesReadAgain:(std::uint64_t)item {
+  if (item != _itemId || _faces.item != item || _faces.status != mv::shell::faces_status::looking) return;
+  _faces.status = mv::shell::faces_status::idle;  // so the read goes again
+  if ([self facesArmed] && [self adjustStill]) [self facesFetch];
 }
 
 // A fix from the panel or the bar: `action` (shell::face_action, or
@@ -13321,12 +13413,16 @@ static double mv_wall_seconds() {
   _jobs.submit_at(mv::background_generation, [path, fix, boxes, weakSelf](const mv::job_context& ctx) -> mv::status {
     std::string candidates;
     for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
-    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    auto pack = mv::addon::media::eyes_answer(path, candidates, boxes, &mv::addon::ai_eyes_json);
     mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
     if (pack) r = mv::addon::media::fix_faces(path, *pack, fix, mv::addon::media::faces_mask_of(*pack, boxes), &ctx);
     const std::string note = mv::addon::media::fix_note(fix, pack ? mv::status::ok : pack.error(), r);
+    const std::string written = r ? r->written : std::string();
     dispatch_async(dispatch_get_main_queue(), ^{
-      [weakSelf facesRunLanded:note];
+      MvLabApp* app = weakSelf;
+      if (!app) return;
+      [app facesRunLanded:note];
+      [app facesResultOpen:written from:path boxes:boxes];
     });
     return mv::status::ok;
   });

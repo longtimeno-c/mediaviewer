@@ -340,7 +340,7 @@ animation or with the workspace closed it goes down.
   (`find_red_eyes`, on the pool); without People it says how to turn it on.
 - **Faces** (docs/plans/edit-refresh.md S8, `shell/faces_tool.h`): armed, the photo's faces are
   read once per item on the pool (the pack's `eyes_json` with no candidates, then the still
-  decoded for each face's thumbnail and `edit::eyes_look_shut`). The canvas draws one box per
+  decoded for each face's thumbnail). The canvas draws one box per
   face: its **edit region** (`edit::face_region`: the detector's box grown 12 % a side, joined
   with the whole-face ellipse), corner brackets, a numbered badge the panel shares, the person's
   People name in a pill below, the accent and a faint wash when chosen, a dashed edge while a fix
@@ -349,8 +349,8 @@ animation or with the workspace closed it goes down.
   **Do all** · Done, on the chosen faces. The **Faces panel** (Mac `FacesPanelView.swift`,
   Windows `IslandHost.Faces.cs`) sits first in the Enhance tab while the tool is armed: each
   face's thumbnail (a click toggles it), its name from People (or *Unnamed person* / *Not in
-  People yet*), "from 37 photos of Anna" (People's other stills of them), an *Eyes closed* tag,
-  and its own fixes, **Open eyes** (only where the eyes look shut), **Improve face** and, while
+  People yet*), "from 37 photos of Anna" (People's other stills of them), and its own fixes,
+  **Open eyes**, **Improve face** and, while
   Enhance has its `faces` command, **Restore face** (S10's model, one click: it runs on that face's box, or on the chosen faces'
   boxes, sent in the `enhance/tool` command as `"faces": [x, y, w, h, …]`, with the glow and the
   tool bar's line as every one-click run; Enhance matches them to its own read of the faces by the
@@ -369,9 +369,83 @@ animation or with the workspace closed it goes down.
   `faces_mask`; each face is fixed on a crop and written back inside its edit region only, faded
   to nothing at its edge, so **every pixel outside the chosen boxes is bit for bit the
   original's** (`mv_ai_tests "[faces-mask]"`). Results are `<stem>-eyes.jpg` (Open eyes) or
-  `<stem>-faces.jpg` (Improve, Do all), beside the photo, never over it. Windows reaches it all
-  through `mv_eyes_json` and `mv_adjust_faces` (`main.cpp` `faces_fetch`, `adjust_faces`, the twin
-  of the Mac's `-facesFetch` / `-adjustFaces:` / `-facesRun:action:`).
+  `<stem>-faces.jpg` (Improve, Do all), beside the photo, never over it, and **the result opens at
+  once** with Edit, its tab and the Faces tool kept as they were and the same faces chosen
+  (`faces_tool::carry`, matched by box), Compare against the photo it was made from; walked away
+  while it ran, nothing jumps. Windows reaches it all through `mv_eyes_json` and
+  `mv_adjust_faces_to` (`main.cpp` `faces_fetch`, `adjust_faces`, `faces_result_open`, the twin of
+  the Mac's `-facesFetch` / `-adjustFaces:` / `-facesRun:action:` / `-facesResultOpen:`).
+- ***Eyes closed*, from a model (2026-11-07, owner: "detect closed eyes and fix them
+  naturally").** Two steps, `addon::media::with_eyes_read` (the Mac's `-facesFetch`; Windows
+  through `mv_eyes_json`, which now answers with it):
+  1. **Each face read again upright.** YuNet's eye points are a quarter of an eye distance off on
+     a tilted face (on the brow or the cheek). A square of the face, turned level by its eye line,
+     goes back to the pack's own detector (`mv_ai_api` `faces_json`, the host's
+     `set_face_redetect` hook) and its five points come back to the picture
+     (`refine_landmarks`); kept only near the old ones.
+  2. **Each eye read by a small learned model** (`edit/eye_state`): OpenVINO's
+     open-closed-eye-0001 (Apache-2.0, ~11 k weights compiled in, plain C++, no runtime), each
+     eye square to the eye line at three sizes, grey with its brightness and contrast
+     standardised (the model was trained on infrared eyes; standardising is what lets it read red
+     eye, dim bar light and squints), four contrasts, mirrored: the mean is `eyes`: [right,
+     left]. **Both eyes under `kEyeOpen` (0.63)** is the badge; a wink is not. On 68 of the
+     owner's faces labelled by eye, every shut face read ≤ 0.57 and every open one ≥ 0.68
+     (`mv_tests "[.eye-state-bench]"`). The faces badged start chosen alone.
+  3. **Only eyes that can be read** (`edit::eyes_readable`; otherwise unknown, never shut): at
+     least 45 px apart, inside the picture, the face not turned to profile or seen steeply from
+     below (by the nose), no dark glasses (both lids lens-dark against the cheeks), and points
+     that hold still when read upright a second time. Over every photo in two of the owner's
+     folders these sent every sunglasses face but mirrored and glare-lit lenses, every tiny or
+     profile face, and the four open faces whose points had strayed onto a brow or cheek to
+     unknown, and no blink. Then a brow above at least one point (a face looking down can
+     have its points on its brows) and a sharp enough eye band (`eyes_readable`). A shut
+     reading also needs skin under the points and eyes no greyer than the cheeks
+     (`looks_shut`: a lens, or the real eye under points on a brow; an open eye's whites are
+     grey, so only for "shut"). Over all 284 photos of the two folders: 11 faces badged, every
+     one shut or shut to a slit; no sunglasses, profile, blur or open eye badged.
+  Open eyes stays on every face: on a face the person chose it takes the most open donor at
+  their pose whatever the model says; the wand's every-face run fixes only badged faces.
+- **How a face is put in (2026-11-07).** Eye patches are read along the eye line (a tilted
+  head's lashes are one row). The pasted ellipse is walked to its own extent (`max(a, b)`; a
+  square of `a` cut the face's top and bottom with a hard edge) and stops at the brows
+  (`kFaceHalfWidth` 1.05, `kFaceHalfHeight` 1.12 eye distances). Improve takes its light and
+  colour from this photo **area by area** (the donor times this photo's blur of the face over
+  its own, read inside the face only, never a ring of hair and background), and refuses a donor
+  whose colour sits patchily under this photo's (`kLookPatchy`: face paint, a coloured spot),
+  trying the next best (up to six). **Open eyes** takes, of the donors whose eyes the model reads
+  open, a frame of the same moment or evening first (its light, camera and look: a
+  closer-turned photo from another day gave Tristan soft, flat eyes), then the one turned
+  most as this face is (both read again upright), not much smaller; its ellipse (0.44 × 0.27 eye distances) covers a
+  shut eye's whole lash line; its light comes from the skin of the ring around it alone (brows,
+  lashes, hair and glare left out) and is laid smoothly inward (a membrane), so the eye meets
+  the skin all the way round. **The eye is aimed for this face (2026-11-08, owner: "it's the
+  direction the pupils are looking"; `edit::aim_irises`).** The paste lines up the two faces' eye
+  points, but a shut eye's point is not where its iris would be (up to a tenth of an eye distance
+  off on IMG_2113) and the donor's iris was aimed for the donor's head. So the iris goes where an
+  iris looking at the camera sits on this face: `kOuterToIris` (0.265 eye distances) in from the
+  outer end of the eye's dark line, read as darker than its surroundings and followed row by row
+  (the inner end fades at the tear duct; hair and a brow's tail are refused), plus
+  `kOuterToIrisTurn` (−0.278) times the head's turn, because a turned head foreshortens the far
+  eye. Both were fitted over 168 open eyes of the owner's photos (`mv_ai_tests
+  "[.iris-aim-bench]"`, `MV_AIM_DIRS`; residual 0.08, since people do not all look at the lens).
+  The eye moves there as a whole (`patch`, at most 0.07), and the iris then slides inside the
+  opening by `kGazeFollow` (0.15, from IMG_2069 alone) times the difference in head turn. An eye
+  whose iris or line cannot be read, or whose line ends outside 0.15–0.40, stays where the paste
+  puts it. Donors are tried best first (up to six) and **a result is kept
+  only if its eyes then read clearly open** (`kEyeFixedOpen` 0.9 on the more open eye; soft
+  slits from a small, dim donor read about 0.65); Improve keeps a face that had shut eyes only
+  on the same terms. No donor that passes: no file, and the note says so. The **same moment**
+  is the folder's photos taken within two minutes by EXIF capture time, then the same
+  occasion's (within six hours, nearest first; `burst_neighbours`, `kOccasionSeconds`; a
+  copied folder's file times are minutes apart, so file times count for the moment only):
+  those are asked of the pack as candidates, so even the installed pack offers them. `mv_ai_tests "[.faces-bench]"` runs a fix on a real photo (`MV_FACES_PHOTO`,
+  `MV_FACES_PACK`, `MV_FACES_FIX`, `MV_FACES_MASK`); `"[.faces-real-bench]"` does it with the
+  pack's own detector (`MV_AI_PACK_DIR`, `MV_AI_FACES_DIR`, and `MV_FACES_MOMENT_OF` to add the
+  same moment's frames as the pack would).
+- **Faces starts Local search.** Local search waits on demand until something needs it
+  (#292): opening the Faces tool starts it, as Settings' Start now would (`MvAddonsWakeAi`;
+  Windows `StartAiOnDemand`), and the panel says *Looking for faces…* until it is up and
+  People's model has loaded (a few retries), not *Needs Local search*.
 - **Presents:** the overlay animates only to its deadlines (the label, the pulse): the labs draw
   until then and once more to clear. An armed tool with the pointer still presents nothing.
 

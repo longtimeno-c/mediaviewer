@@ -1023,6 +1023,8 @@ void enhance_cards_sync(app_state* app) noexcept;
 void enhance_cards_follow(app_state* app, const std::string& path) noexcept;
 bool enhance_open_tab_for(app_state* app, const std::vector<std::string>& paths);
 void enhance_open_result(app_state* app, const std::string& path, bool keep = true);
+void faces_result_open(app_state* app, const std::string& written, const std::string& source,
+                       std::vector<float> boxes);
 void set_editor_open(app_state* app, bool open);  // PR 30
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index);
@@ -2646,6 +2648,9 @@ struct adjust_job_result {
   bool eyes = false;          // slice 6: Open closed eyes finished; `note` says how
   bool faces_run = false;     // S8: with `eyes`, the Faces tool's fix finished
   std::string note;
+  std::string written;        // with `eyes`: the fix's new file ("" none), opened at once
+  std::string source;         // the photo it was made from
+  std::vector<float> boxes;   // the faces it ran on (the new photo chooses them again)
   mv::edit::detail_params params;
   std::uint64_t token = 0;
   bool ok = false;
@@ -3534,19 +3539,26 @@ void adjust_faces(app_state* app, int face, int fix, bool all) {
     r->eyes = true;
     r->faces_run = !all;
     try {
-      std::uint32_t needed = 0;
-      std::string note(512, '\0');
+      // One call: the fix runs once (a short buffer comes back "", never "call again").
+      std::uint32_t needed = 0, written_needed = 0;
+      std::string note(2048, '\0'), written(32768, '\0');
       const float* b = all ? nullptr : boxes.data();
       const auto count = static_cast<std::uint32_t>(all ? 0 : boxes.size() / 4);
-      mv_status st = mv_adjust_faces(path.c_str(), fix, b, count, note.data(), static_cast<std::uint32_t>(note.size()),
-                                     &needed);
-      if (st != MV_OK && needed > note.size()) {
-        note.assign(needed, '\0');
-        st = mv_adjust_faces(path.c_str(), fix, b, count, note.data(), static_cast<std::uint32_t>(note.size()), &needed);
+      const mv_status st = mv_adjust_faces_to(path.c_str(), fix, b, count, note.data(),
+                                              static_cast<std::uint32_t>(note.size()), &needed, written.data(),
+                                              static_cast<std::uint32_t>(written.size()), &written_needed);
+      if (st == MV_OK) {
+        note.resize(std::strlen(note.c_str()));
+        written.resize(std::strlen(written.c_str()));
+        if (note.empty()) note = "Faces fixed";
+      } else {
+        note = "Could not fix the faces of this photo";
+        written.clear();
       }
-      if (st == MV_OK) note.resize(std::strlen(note.c_str()));
-      else note = "Could not fix the faces of this photo";
       r->note = std::move(note);
+      r->written = std::move(written);
+      r->source = path;
+      r->boxes = boxes;
     } catch (...) {
       r->note = "Could not fix the faces of this photo";
     }
@@ -4251,6 +4263,7 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
       sync_faces_panel(app);
     }
     notice_show(app, r->note);  // seen on any tab (the bar or the wand ran it)
+    faces_result_open(app, r->written, r->source, std::move(r->boxes));
     return;
   }
   if (r->detail) {
@@ -5794,6 +5807,29 @@ void enhance_open_result(app_state* app, const std::string& path, bool keep) {
 }
 
 void enhance_show_result(app_state* app, bool keep) { enhance_open_result(app, app->chrome.take_tree_path(), keep); }
+
+// A face fix's new file (the Faces tool's or the wand's; the Mac's
+// -facesResultOpen:from:boxes:): it opens at once, Edit, its tab and the Faces
+// tool kept as they are, the same faces chosen (`boxes`), Compare against the
+// photo it was made from, the result cross-fading in. Walked away while it
+// ran, the notice says where it went and nothing jumps.
+void faces_result_open(app_state* app, const std::string& written, const std::string& source,
+                       std::vector<float> boxes) {
+  if (written.empty()) return;
+  mv::shell::note_result(written, source);
+  if (current_item_path(app) != source) return;
+  app->faces.carry = std::move(boxes);
+  app->input.result_fade_ms = mv::shell::steady_ms();
+  publish(app);
+  const std::uint32_t n = folder_count(app);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    if (item_path_at(app, i) != written) continue;
+    folder_select(app, i);
+    return;
+  }
+  const std::wstring wide = wide_from_utf8(written);
+  if (!wide.empty()) open_path(app, wide);
+}
 
 void run_edit_action(app_state* app, int action) {
   switch (static_cast<mv::shell::chrome_edit_action>(action)) {

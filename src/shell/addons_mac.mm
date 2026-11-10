@@ -768,6 +768,7 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
   mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
   mv::addon::publish_ai_faces(mv::addon::ai_faces(static_cast<const mv_ai_api*>(table)));  // edit-refresh S10
+  mv::addon::publish_ai_person_faces(mv::addon::ai_person_faces(static_cast<const mv_ai_api*>(table)));  // Faces donors
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.
@@ -820,6 +821,11 @@ bool start_ai_load() {
         return;
       }
       sm.ai.loading = false;
+      // Whatever came of it, said once it is settled (attached or not): a
+      // waiting Faces read reads again (main_mac.mm kMvAiLoadEnded).
+      struct load_ended {
+        ~load_ended() { [[NSNotificationCenter defaultCenter] postNotificationName:@"MvAiLoadEnded" object:nil]; }
+      } on_settled;
       const bool asked = sm.ai.open_when_attached;
       sm.ai.open_when_attached = false;
       sm.ai.tried_at = std::chrono::steady_clock::now();
@@ -1815,6 +1821,8 @@ extern "C" bool mv_addon2_elsewhere(void) { return state().reader; }
 // #292), or in a later window its reader if it is due (see reader_begin), so
 // Local search's own view can show. False when nothing is on its way.
 extern "C" bool mv_addon2_ai_wake(void) { return state().reader ? reader_begin() : ai_begin(); }
+
+bool MvAddonsWakeAi() { return mv_addon2_ai_wake(); }
 
 // Installed and verified, not loaded, nothing on its way: the first search
 // (or Settings) starts it. The search icon offers Local search meanwhile.

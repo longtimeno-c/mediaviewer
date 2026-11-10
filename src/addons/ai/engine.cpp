@@ -7375,8 +7375,12 @@ float pose_apart(const std::array<float, 10>& a, float aw, float ah, const std::
   for (int i = 0; i < 3; ++i) sum += std::hypot(fa[2 * i] - fb[2 * i], fa[2 * i + 1] - fb[2 * i + 1]);
   return sum / 3.0f;
 }
-// edit/eyes.h kPoseMatch: a donor further than this looks the wrong way.
-constexpr float kPoseMatch = 0.12f;
+// A first cut only, wider than edit/eyes.h kPoseMatch: YuNet's points on a
+// tilted face can be a quarter of an eye distance off, so the host reads each
+// donor again upright and judges the pose itself (addon_media.cpp
+// refine_landmarks). At 0.12 here a tilted face kept one donor in 64
+// (2026-11-07).
+constexpr float kPoseMatch = 0.22f;
 }  // namespace
 
 result<std::string> engine::eyes_json(const std::string& path, const std::vector<std::string>& candidates) {
@@ -7475,7 +7479,7 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
     // largest faces first, each read once, kept when the head is turned as
     // this one is. Stops at kLibraryKeep such faces or kLibraryRead photos.
     // The whole-face fix wants them even when a frame of the moment exists.
-    constexpr std::size_t kLibraryRead = 64, kLibraryKeep = 6;
+    constexpr std::size_t kLibraryRead = 64, kLibraryKeep = 10;
     if (person != 0 && std::find(library_read.begin(), library_read.end(), person) == library_read.end()) {
       library_read.push_back(person);
       std::vector<face_row> rows;

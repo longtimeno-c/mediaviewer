@@ -54,7 +54,10 @@ struct face_action_row {
   bool enhance = false;    // Enhance's (its docked panel runs it), offered only with Enhance's "faces"
 };
 inline constexpr std::array<face_action_row, kFaceActionCount> kFaceActions{{
-    {face_action::open_eyes, "Open eyes", "Opening eyes from another photo…", true},
+    // Offered on every face: the eye model (edit/eye_state.h) badges the
+    // faces it reads as shut and chooses them, but the person may know
+    // better; on a face they chose the fix trusts them (media::fix_faces_in).
+    {face_action::open_eyes, "Open eyes", "Opening eyes from another photo…", false},
     {face_action::improve, "Improve face", "Looking for a better photo of this face…", false},
     {face_action::restore, "Restore face", "Restoring in Enhance…", false, true},
 }};
@@ -99,7 +102,7 @@ struct face_card {
   std::int64_t person = 0;  // People's cluster, 0 none
   std::string name;         // People's name, "" unnamed
   std::uint32_t photos = 0; // People's other photos of them (the donors' pool)
-  bool shut = false;        // the eyes look shut (edit::eyes_look_shut)
+  bool shut = false;        // both eyes read shut (edit::eyes_closed): the panel's "Eyes closed" badge
   std::uint32_t thumb_w = 0, thumb_h = 0;
   std::vector<std::uint8_t> thumb;  // sRGB RGBA8, opaque
 };
@@ -142,11 +145,17 @@ struct faces_tool {
   int running_action = 0;    // face_action, or kFaceDoAll
   std::uint64_t run_item = 0;  // the photo the fix runs on (a walk leaves it running there)
   std::uint32_t revision = 0;  // bumps with every change the panel shows
+  // A fix's result opens with the tool still armed (the "keep editing" open):
+  // the boxes the fix ran on (x, y, w, h each, 0..1), so the new photo's read
+  // chooses the same faces instead of every face. The next read that lands
+  // takes it.
+  std::vector<float> carry;
 
   // A read starts for `photo`: what was there goes.
   void looking(std::uint64_t photo) noexcept;
-  // The read for `photo` landed; every face starts chosen. False when it is
-  // for another photo (dropped).
+  // The read for `photo` landed; every face starts chosen, or, with `carry`,
+  // the faces at those boxes (by overlap). False when it is for another photo
+  // (dropped).
   bool landed(std::uint64_t photo, faces_scan scan);
   // Forget everything (the tool went down on another photo, a walk).
   void clear() noexcept;
