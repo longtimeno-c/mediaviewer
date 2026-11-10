@@ -100,25 +100,45 @@ public final class LocalCatalogue: @unchecked Sendable {
     self.location = location
   }
 
+  /// Tests only: runs on the opening thread before a generation opens, to hold an open open.
+  nonisolated(unsafe) static var beforeOpen: (@Sendable (URL) -> Void)?
+
+  private static func open(_ directory: URL, in root: LibraryLocation) throws -> Generation {
+    beforeOpen?(directory)
+    return try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory))
+  }
+
+  /// Puts `g` in force unless a newer (epoch, generation) already is: opens can finish in any
+  /// order, and the newest always wins.
+  private func offer(_ g: Generation) {
+    register(g)
+    lock.withLock {
+      if let current, !g.isNewer(than: current) { return }
+      current = g
+    }
+  }
+
+  private func inForce() -> Generation? { lock.withLock { current } }
+
   /// The generation in force, opening it on first use.
   func generation() async throws -> Generation {
+    if let g = inForce() { return g }
     let task: Task<Generation, Error> = lock.withLock {
       if let opening { return opening }
       let root = location
-      let made = Task.detached(priority: .userInitiated) { () throws -> Generation in
+      let made = Task.detached(priority: .userInitiated) { [self] () throws -> Generation in
         guard let directory = root.installedGeneration() else { throw CatalogueOpenFailure.notInstalled }
         root.excludeFromBackup()
-        return try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory))
+        let g = try Self.open(directory, in: root)
+        offer(g)  // inside the task: whoever awaits it finds it already offered
+        return g
       }
       opening = made
       return made
     }
     do {
       let opened = try await task.value
-      register(opened)
-      // Only the open still in force: a swap meanwhile has already set the newer one.
-      lock.withLock { if opening == task { current = opened } }
-      return opened
+      return inForce() ?? opened
     } catch {
       lock.withLock { if opening == task { opening = nil } }
       throw error
@@ -135,20 +155,16 @@ public final class LocalCatalogue: @unchecked Sendable {
     try await swap(to: directory)
   }
 
-  /// Opens `directory` and makes it the one in force. Whoever holds the old one keeps it until
-  /// they let go.
+  /// Opens `directory` and puts it in force, unless a newer generation is. Whoever holds the old
+  /// one keeps it until they let go.
   public func swap(to directory: URL) async throws {
+    // A first open still in flight is compared too: it may be the newer one.
+    if let pending = lock.withLock({ current == nil ? opening : nil }) { _ = try? await pending.value }
     let root = location
     let new = try await Task.detached(priority: .userInitiated) { () throws -> Generation in
-      try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory))
+      try Self.open(directory, in: root)
     }.value
-    register(new)
-    // Two swaps can finish out of order: the newer (epoch, generation) stays in force.
-    lock.withLock {
-      if let current, !new.isNewer(than: current) { return }
-      current = new
-      opening = Task { new }
-    }
+    offer(new)
   }
 
   public func info() async -> CatalogueInfo? {
@@ -273,7 +289,18 @@ private final class CoreImages: ImageLadder, @unchecked Sendable {
 
   func cachedImage(for id: MediaID) -> UIImage? { cache.object(forKey: Self.key(id)) }
 
+  /// The paint path (a tile, a face, a poster on screen): the first one for the generation in
+  /// force starts what waits for the first paint.
   func thumbnail(for item: MediaItem) async -> UIImage? {
+    let image = tile(for: item)
+    if image != nil, let g = catalogue.generation(serial: item.id.catalogue), g === catalogue.generationInForce() {
+      catalogue.afterFirstPaint(g)
+    }
+    return image
+  }
+
+  /// A tile into the cache, and nothing else: prefetch's path.
+  private func tile(for item: MediaItem) -> UIImage? {
     let key = Self.key(item.id)
     if let hit = cache.object(forKey: key) { return hit }
     // The item's own generation, still held by the list it came from; never the newest.
@@ -281,7 +308,6 @@ private final class CoreImages: ImageLadder, @unchecked Sendable {
           let image = Self.decode(g, id) else { return nil }
     let cost = (image.cgImage?.bytesPerRow ?? 256) * (image.cgImage?.height ?? 256)
     cache.setObject(image, forKey: key, cost: cost)
-    catalogue.afterFirstPaint(g)
     return image
   }
 
@@ -310,7 +336,7 @@ private final class CoreImages: ImageLadder, @unchecked Sendable {
   func prefetch(_ items: [MediaItem], fittingPixels: CGSize) {
     for item in items {
       guard cache.object(forKey: Self.key(item.id)) == nil else { continue }
-      Task.detached(priority: .utility) { [self] in _ = await thumbnail(for: item) }
+      Task.detached(priority: .utility) { [self] in _ = tile(for: item) }
     }
   }
 }

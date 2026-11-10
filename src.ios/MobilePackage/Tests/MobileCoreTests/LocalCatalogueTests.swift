@@ -23,7 +23,12 @@ final class LocalCatalogueTests: XCTestCase {
 
   /// A library as the sync installs one: gen/1-1 (variant 0) and gen/1-2 (variant 1, the same
   /// asset ids with another file, place and tile), installed.json naming the first.
-  private func library() throws -> (LibraryLocation, first: URL, second: URL) {
+  override func tearDown() {
+    LocalCatalogue.beforeOpen = nil
+    super.tearDown()
+  }
+
+  private func library(installed: Int = 1) throws -> (LibraryLocation, first: URL, second: URL) {
     let root = scratch.appendingPathComponent("library", isDirectory: true)
     try FileManager.default.createDirectory(at: root.appendingPathComponent("gen"), withIntermediateDirectories: true)
     var dirs: [URL] = []
@@ -39,7 +44,7 @@ final class LocalCatalogueTests: XCTestCase {
       }
       dirs.append(to)
     }
-    try Data(#"{"library_id":"library","epoch":1,"generation":1,"dir":"1-1"}"#.utf8)
+    try Data(#"{"library_id":"library","epoch":1,"generation":\#(installed),"dir":"1-\#(installed)"}"#.utf8)
       .write(to: root.appendingPathComponent("installed.json"))
     return (LibraryLocation(root: root), dirs[0], dirs[1])
   }
@@ -99,5 +104,38 @@ final class LocalCatalogueTests: XCTestCase {
       state = mv_mobile_search_state(g.raw)
     }
     XCTAssertNotEqual(state, MV_MOBILE_SEARCH_OFF, "the first tile starts the engine")
+  }
+
+  /// An older swap landing while the first open (of a newer generation) is still in flight.
+  func testAnOlderSwapDuringTheFirstOpenDoesNotWin() async throws {
+    let (location, first, second) = try library(installed: 2)
+    let slow = second.lastPathComponent
+    LocalCatalogue.beforeOpen = { dir in if dir.lastPathComponent == slow { Thread.sleep(forTimeInterval: 0.4) } }
+    let catalogue = LocalCatalogue(location: location)
+    let opening = Task { try await catalogue.generation() }
+    try await Task.sleep(for: .milliseconds(100))  // the first open is inside its slow part
+    try await catalogue.swap(to: first)
+    XCTAssertEqual(catalogue.generationInForce()?.number, 2, "the newer first open is in force once the swap returns")
+    _ = try await opening.value
+    XCTAssertEqual(catalogue.generationInForce()?.number, 2)
+  }
+
+  /// Prefetch and an old generation's tiles are not a first paint of the generation in force.
+  func testOnlyAPaintInTheGenerationInForceWarmsUp() async throws {
+    let (location, _, second) = try library()
+    let catalogue = LocalCatalogue(location: location)
+    let before = try await catalogue.library.list(in: .everything)
+    let old = try XCTUnwrap(catalogue.generationInForce())
+    catalogue.images.prefetch((0..<before.count).map { before.item(at: $0) }, fittingPixels: CGSize(width: 64, height: 64))
+    try await Task.sleep(for: .milliseconds(500))
+    XCTAssertEqual(mv_mobile_search_state(old.raw), MV_MOBILE_SEARCH_OFF, "prefetch is not a paint")
+
+    try await catalogue.swap(to: second)
+    let new = try XCTUnwrap(catalogue.generationInForce())
+    _ = await catalogue.images.thumbnail(for: try item(named: "a.jpg", in: before))
+    try await Task.sleep(for: .milliseconds(500))
+    XCTAssertEqual(mv_mobile_search_state(old.raw), MV_MOBILE_SEARCH_OFF, "an old generation's tile starts nothing")
+    XCTAssertEqual(mv_mobile_search_state(new.raw), MV_MOBILE_SEARCH_OFF)
+    withExtendedLifetime(before) {}
   }
 }

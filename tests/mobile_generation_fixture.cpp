@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "addons/ai/catalog.h"
+#include "addons/ai/faces.h"
 #include "addons/ai/index_db.h"
 
 namespace {
@@ -179,6 +180,18 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
       return 2;
     }
 
+    // One named person, on asset 1 (variant 1 names them differently).
+    const fs::path faces = root / "faces.db";
+    {
+      auto made = mv::ai::faces_db::open(faces.string(), mv::ai::face_tuning{}, 128, "fixture-faces/pre1");
+      if (!made) return 2;
+    }
+    if (!exec(faces, std::string("INSERT INTO people(id, name, created_at) VALUES(1, '") + (b ? "Bruno" : "Anna") + "', 1);"
+                     "INSERT INTO faces(id, asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, spec) VALUES"
+                     "(1, 1, '" + p + "/" + first + "', -1, 0, 0, 1, 1, 0.9, 1, zeroblob(512), 'fixture-faces/pre1');")) {
+      return 2;
+    }
+
     auto store = cat::thumb_store::open((root / "thumbs").string());
     if (!store) return 3;
     const std::vector<std::int64_t> roots{7};
@@ -210,7 +223,8 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
     o.generation = generation;
     o.created_unix = 1700000000;
     o.active_spec = spec;
-    o.settings_json = R"({"audio_files":true,"document_files":true,"tier":"default","faces":false})";
+    o.settings_json = R"({"audio_files":true,"document_files":true,"tier":"default","faces":true})";
+    o.faces_db = faces.string();
     o.roots = {cat::root_map{7, p, "aaaaaaaa-0000-4000-8000-000000000001", "Photos", ""}};
     o.thumbs = store->get();
     o.model_spec = spec;

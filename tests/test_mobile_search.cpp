@@ -273,6 +273,13 @@ TEST_CASE("names, dates and files answer without a model; meaning waits for one"
   CHECK(by_file[0] == "/" + g.uuid + "/trip/day1/c.mov");
   CHECK(paths("place:Ortisei", &st).size() == 2);
   CHECK(st == MV_MOBILE_OK);
+  // A name: faces.db is read before the tower, so people answer without it.
+  for (const char* q : {"@Anna", "person:Anna"}) {
+    const auto by_name = paths(q, &st);
+    CHECK(st == MV_MOBILE_OK);
+    REQUIRE(by_name.size() == 1);
+    CHECK(by_name[0] == "/" + g.uuid + "/a.jpg");
+  }
   // A picture's meaning needs the tower: an error, never a silent "nothing found".
   CHECK(paths("mountains", &st).empty());
   CHECK(st == MV_MOBILE_ERR_IO);

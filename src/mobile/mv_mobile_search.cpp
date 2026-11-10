@@ -283,7 +283,13 @@ mv_mobile_status mv_mobile_search_start(mv_mobile_library* l) {
     if (!mv::mobile::tower_supported(l->cat->info().active_spec)) return MV_MOBILE_ERR_UNSUPPORTED_TOWER;
     std::lock_guard lock(l->start_m);
     if (l->current_engine()) return MV_MOBILE_OK;
+    // Cleared on every way out, a throw included, and only after the engine is
+    // published: state never reads OFF in between, nor WARMING for ever.
     l->starting = true;
+    struct clear_starting {
+      std::atomic<bool>& flag;
+      ~clear_starting() { flag = false; }
+    } guard_starting{l->starting};
     std::function<void()> hook;
     {
       std::lock_guard held(g_hook_m);
@@ -291,7 +297,6 @@ mv_mobile_status mv_mobile_search_start(mv_mobile_library* l) {
     }
     if (hook) hook();
     auto started = search_engine::start(l->cat, l->work_dir);
-    l->starting = false;
     if (!started) return map_status(started.error());
     std::lock_guard publish(l->engine_m);
     l->engine = std::shared_ptr<search_engine>(std::move(*started));
