@@ -1276,6 +1276,7 @@ class engine {
   [[nodiscard]] std::string phone_stamp(std::span<const std::int64_t> roots) const;
   [[nodiscard]] result<std::vector<std::string>> stored_place_matches(const std::string& place);
   mutable std::mutex phone_m_;
+  mutable std::mutex phone_save_m_;  // taken before phone_m_
   phone_view phone_;
   std::atomic<bool> phone_cancel_{false};
   std::thread phone_thread_;

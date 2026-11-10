@@ -1391,10 +1391,20 @@ expected thumb_store::reconcile(const std::string& destination, const std::funct
     fs::directory_iterator it(fs_path(dir), e);
     return !e;
   };
+  // Not found, and a listing of .mediaviewer that has no such entry: Windows
+  // also reports a dropped network path as "not found", and a listing that
+  // fails or still names it is no proof.
   const auto absent = [&] {
     std::error_code e;
-    const fs::file_status st = fs::symlink_status(fs_path(there), e);
-    return st.type() == fs::file_type::not_found && lists(base);
+    if (fs::symlink_status(fs_path(there), e).type() != fs::file_type::not_found) return false;
+    std::error_code le;
+    fs::directory_iterator it(fs_path(base), le), end;
+    if (le) return false;
+    for (; it != end; it.increment(le)) {
+      if (le) return false;
+      if (it->path().filename() == fs_path("thumbs")) return false;
+    }
+    return !le;
   };
   const bool gone = absent();
   if ((!gone && !lists(there)) || !lists(dir_)) return err(status::io);
@@ -1415,8 +1425,8 @@ expected thumb_store::reconcile(const std::string& destination, const std::funct
   if (!lost.empty() && (gone ? !absent() : !lists(there))) return err(status::io);
   for (const std::string& name : lost) {
     stmt del(db, "DELETE FROM thumbs WHERE pack = ?1");
-    stmt gone(db, "DELETE FROM packs WHERE name = ?1");
-    if (!del.bind(1, name).run() || !gone.bind(1, name).run()) return err(status::io);
+    stmt drop_pack(db, "DELETE FROM packs WHERE name = ?1");
+    if (!del.bind(1, name).run() || !drop_pack.bind(1, name).run()) return err(status::io);
   }
   return {};
 }

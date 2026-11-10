@@ -5508,6 +5508,10 @@ void engine::load_phone_state() {
 }
 
 bool engine::save_phone_state() const {
+  // One writer at a time, each writing what is current when it holds this: a
+  // run that just ended and the next one may both save, and the older
+  // snapshot must never land last (it could lower high_water).
+  std::lock_guard saving(phone_save_m_);
   json::writer w;
   {
     std::lock_guard lock(phone_m_);
@@ -6071,19 +6075,32 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
     }
   }
   {
+    // What a caller sees changes at once: with the share away, the run ends
+    // in the same step as the generation starts waiting, so nobody sees one
+    // waiting while a publish still says busy.
     std::lock_guard lock(phone_m_);
     phone_.waiting = generation;
     phone_.waiting_stamp = stamp;
     phone_.waiting_assets = built->assets;
     phone_.waiting_created = b.created_unix;
     phone_.destination = destination;
+    if (!reachable) {
+      phone_.running = false;
+      phone_.phase.clear();
+      phone_.error = "unreachable";
+    }
+  }
+  if (!reachable) {
+    // Nothing reaches the NAS this run, so a failed save loses only this
+    // waiting generation, never a number the share has seen.
+    (void)save_phone_state();
+    return;
   }
   // The library's identity reaches this disk before it can reach the NAS: a
   // quit during the first delivery must not leave a folder this library no
   // longer recognises as its own.
   if (!save_phone_state()) return finish("failed");
 
-  if (!reachable) return finish("unreachable");
   thumbs.reset();  // no database stays open across the copy
   deliver_phone_generation(secret, public_key, library_id, finish, set_progress);
 }
@@ -6253,15 +6270,18 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
     if (sent.error() == status::not_found || sent.error() == status::invalid_arg) {
       // A pack on neither side, or the share is ahead of this number: this
       // generation can never land. The next run builds another.
+      phone_recheck_ = true;  // the next tick compares, and a new build follows
       {
         std::lock_guard lock(phone_m_);
         phone_.waiting = 0;
         phone_.waiting_stamp.clear();
         phone_.stamp.clear();
+        phone_.running = false;
+        phone_.phase.clear();
+        phone_.error = "unreachable";
       }
       (void)save_phone_state();
-      phone_recheck_ = true;  // the next tick compares, and a new build follows
-      return finish("unreachable");
+      return;
     }
     const std::string why = sent.error() == status::permission_denied ? "other_library" : "unreachable";
     note_phone_delivery_failed(why);
@@ -6280,9 +6300,14 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
     phone_.retry_at = 0;
     phone_.deliver_error.clear();
     phone_.needs_bytes = 0;
+    // The new generation and the end of the run are one change: a publish
+    // asked for the moment it shows is never told "busy".
+    phone_.running = false;
+    phone_.phase.clear();
+    phone_.error.clear();
   }
   (void)save_phone_state();  // the share has it: the next run reads the number there
-  finish("");
+  (void)finish;
 }
 
 void engine::set_transfer_progress(double f) {

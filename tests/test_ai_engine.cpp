@@ -6299,7 +6299,7 @@ TEST_CASE("people travel as names and links, never as embeddings", "[ai][engine]
   auto id = rd->search_text("@anna", {}, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
   REQUIRE(rd->wait_search(id, kSettleMs));
   std::set<std::string> found;
-  for (int i = 0; auto q = rd->result_path(id, i); ++i) found.insert(utf8(fs::path(*q).filename()));
+  for (std::uint32_t i = 0; auto q = rd->result_path(id, i); ++i) found.insert(utf8(fs::path(*q).filename()));
   CHECK(found == std::set<std::string>{"anna_red.jpg", "anna_blue.jpg"});
 }
 
@@ -6539,7 +6539,7 @@ TEST_CASE("exact ties rank by asset then time, on every machine", "[ai][engine][
   auto id = rd->search_text("red", {}, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
   REQUIRE(rd->wait_search(id, kSettleMs));
   std::vector<std::string> got;
-  for (int i = 0; auto q = rd->result_path(id, i); ++i) got.push_back(utf8(fs::path(*q).filename()));
+  for (std::uint32_t i = 0; auto q = rd->result_path(id, i); ++i) got.push_back(utf8(fs::path(*q).filename()));
   std::vector<std::string> want;
   for (const auto& [name, _] : desk) want.push_back(name);
   CHECK(got == want);
@@ -7123,7 +7123,7 @@ static cost_mark cost_now() {
   rusage_info_v4 r{};
   proc_pid_rusage(getpid(), RUSAGE_INFO_V4, reinterpret_cast<rusage_info_t*>(&r));
   cost_mark m;
-  m.cpu = u.ru_utime.tv_sec + u.ru_utime.tv_usec * 1e-6 + u.ru_stime.tv_sec + u.ru_stime.tv_usec * 1e-6;
+  m.cpu = static_cast<double>(u.ru_utime.tv_sec + u.ru_stime.tv_sec) + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) * 1e-6;
   m.wakeups = r.ri_pkg_idle_wkups + r.ri_interrupt_wkups;
   return m;
 }
