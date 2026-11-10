@@ -14,7 +14,8 @@ public enum OriginalStoreError: Error, Equatable {
 public actor OriginalStore {
   private let dir: URL
   private let limit: Int64
-  private var inFlight: [String: Task<URL, Error>] = [:]
+  // One fetch per file; it is cancelled when the last viewer that wanted it has gone.
+  private var inFlight: [String: (task: Task<URL, Error>, waiters: Int)] = [:]
 
   public init(dir: URL, limitBytes: Int64) {
     self.dir = dir
@@ -22,30 +23,58 @@ public actor OriginalStore {
   }
 
   /// The file named `key`, `size` bytes long: from the cache, from a fetch already running, or from
-  /// `fetch`, which writes the whole file to the URL it is given.
+  /// `fetch`, which writes the whole file to the URL it is given. Cancelling the caller stops the
+  /// fetch once no other caller still wants the file.
   public func file(key: String, size: UInt64, fetch: @escaping @Sendable (URL) async throws -> Void) async throws -> URL {
     let target = dir.appendingPathComponent(key)
     if Self.size(of: target) == size {
       Self.touch(target)
       return target
     }
-    if let running = inFlight[key] { return try await running.value }
-    let dir = self.dir
-    let task = Task<URL, Error> {
-      let part = dir.appendingPathComponent("\(key).\(UUID().uuidString).part")
-      defer { try? FileManager.default.removeItem(at: part) }
-      try await fetch(part)
-      let got = Self.size(of: part) ?? 0
-      guard got == size else { throw OriginalStoreError.short(expected: size, got: got) }
-      try? FileManager.default.removeItem(at: target)
-      do { try FileManager.default.moveItem(at: part, to: target) } catch { throw OriginalStoreError.notMoved }
-      return target
+    let task: Task<URL, Error>
+    if let running = inFlight[key] {
+      task = running.task
+      inFlight[key]?.waiters += 1
+    } else {
+      let dir = self.dir
+      task = Task<URL, Error> {
+        let part = dir.appendingPathComponent("\(key).\(UUID().uuidString).part")
+        defer { try? FileManager.default.removeItem(at: part) }
+        try await fetch(part)
+        try Task.checkCancellation()
+        let got = Self.size(of: part) ?? 0
+        guard got == size else { throw OriginalStoreError.short(expected: size, got: got) }
+        try? FileManager.default.removeItem(at: target)
+        do { try FileManager.default.moveItem(at: part, to: target) } catch { throw OriginalStoreError.notMoved }
+        return target
+      }
+      inFlight[key] = (task, 1)
     }
-    inFlight[key] = task
-    defer { inFlight[key] = nil }
-    let url = try await task.value
+    let result: Result<URL, Error> = await withTaskCancellationHandler {
+      do { return .success(try await task.value) } catch { return .failure(error) }
+    } onCancel: {
+      Task { await self.leave(key, task: task, cancelled: true) }
+    }
+    leave(key, task: task, cancelled: false)
+    let url = try result.get()
     trim()
     return url
+  }
+
+  /// One caller is done with `key`. The last to leave by cancelling stops the fetch.
+  private func leave(_ key: String, task: Task<URL, Error>, cancelled: Bool) {
+    guard var entry = inFlight[key], entry.task == task else { return }
+    if cancelled {
+      entry.waiters -= 1
+      if entry.waiters <= 0 {
+        task.cancel()
+        inFlight[key] = nil
+      } else {
+        inFlight[key] = entry
+      }
+    } else {
+      inFlight[key] = nil  // finished: callers still waiting hold the task and read its result
+    }
   }
 
   /// Oldest first, until the cache is under its limit. Files being written are not counted.

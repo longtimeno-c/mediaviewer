@@ -296,6 +296,10 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     // Swapped, never closed here: reads already running on the old client hold
     // it and finish on it; it closes when the last of them lets go.
     previous = std::move(live_);
+    if (previous) {
+      std::erase_if(retired_, [](const auto& w) { return w.expired(); });
+      retired_.push_back(previous);  // closed by shut_down if a read still holds it then
+    }
     live_ = std::move(*c);
     last_report_ = report;
   }
@@ -303,11 +307,18 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
 }
 
 void link_session::shut_down() noexcept {
+  std::vector<std::shared_ptr<serve::client>> still_reading;
   {
     std::lock_guard lock(m_);
     shut_ = true;
+    for (auto& w : retired_) {
+      if (auto c = w.lock()) still_reading.push_back(std::move(c));
+    }
+    retired_.clear();
   }
+  for (auto& c : still_reading) c->close();
   disconnect();
+  streams_cv_.notify_all();
 }
 
 void link_session::disconnect() noexcept {
@@ -342,29 +353,45 @@ result<std::shared_ptr<serve::client>> link_session::client(const cancel_flag* c
   return err(status::io);
 }
 
+// One below the service's limit: it frees a slot only after the end of a stream has gone out.
+constexpr std::size_t kClientStreams = serve::kMaxStreams - 1;
+
 class link_session::stream_slot {
  public:
-  explicit stream_slot(link_session& s) : s_(s) {
+  stream_slot(link_session& s, const cancel_flag* cancel) : s_(s) {
     std::unique_lock lock(s_.streams_m_);
-    s_.streams_cv_.wait(lock, [this] { return s_.streams_ < serve::kMaxStreams; });
+    while (s_.streams_ >= kClientStreams) {
+      if ((cancel && cancel->stopped()) || s_.is_shut()) return;
+      s_.streams_cv_.wait_for(lock, std::chrono::milliseconds(50));
+    }
     ++s_.streams_;
+    held_ = true;
   }
   ~stream_slot() {
+    if (!held_) return;
     {
       std::lock_guard lock(s_.streams_m_);
       --s_.streams_;
     }
     s_.streams_cv_.notify_one();
   }
+  [[nodiscard]] bool held() const noexcept { return held_; }
   stream_slot(const stream_slot&) = delete;
   stream_slot& operator=(const stream_slot&) = delete;
 
  private:
   link_session& s_;
+  bool held_ = false;
 };
 
+bool link_session::is_shut() const {
+  std::lock_guard lock(m_);
+  return shut_;
+}
+
 result<std::vector<serve::root_info>> link_session::roots() {
-  stream_slot slot(*this);
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
   auto c = client(nullptr);
   if (!c) return err(c.error());
   auto r = (*c)->roots();
@@ -373,7 +400,8 @@ result<std::vector<serve::root_info>> link_session::roots() {
 }
 
 result<std::vector<serve::list_entry>> link_session::list(const std::string& root, const std::string& rel) {
-  stream_slot slot(*this);
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
   auto c = client(nullptr);
   if (!c) return err(c.error());
   auto r = (*c)->list(root, rel);
@@ -382,7 +410,8 @@ result<std::vector<serve::list_entry>> link_session::list(const std::string& roo
 }
 
 result<serve::stat_info> link_session::stat(const std::string& root, const std::string& rel) {
-  stream_slot slot(*this);
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
   auto c = client(nullptr);
   if (!c) return err(c.error());
   auto r = (*c)->stat(root, rel);
@@ -392,7 +421,8 @@ result<serve::stat_info> link_session::stat(const std::string& root, const std::
 
 expected link_session::read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                   std::uint64_t length, const byte_sink& sink, const cancel_flag* cancel, bool bulk) {
-  stream_slot slot(*this);
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
   auto c = client(cancel);
   if (!c) return err(c.error());
   if (cancel && cancel->stopped()) return err(status::cancelled);

@@ -7,6 +7,7 @@ import BackgroundTasks
 import CMobileLink
 import Foundation
 import MobileKit
+import MobileLinkSupport
 import Network
 import UIKit
 
@@ -26,7 +27,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var connectGeneration = 0
   private var forgotten = false
   private var copyCancel: LinkCancel?
-  private var copyTask: Task<Void, Never>?
+  // Everything that writes into the library: Forget cancels it and waits before deleting.
+  private let work = TrackedWork()
   private var continued: AnyObject?  // BGContinuedProcessingTask, on iOS 26
   private var opened: Task<Void, Never>?
 
@@ -247,6 +249,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.handle = handle
       self.forgotten = false
     }
+    work.reopen()
     publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
     continuation.yield(.passed(.synology))
 
@@ -282,7 +285,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       $0 = ConnectionSnapshot(hasLibrary: true, synology: Self.state(status, report), macNearby: false,
                               catalogue: info ?? $0.catalogue, cacheBytes: cache)
     }
-    if status == 0 { Task { await self.quietSync(link) } }
+    if status == 0 { work.run(priority: .utility) { [weak self] in await self?.quietSync(link) } }
   }
 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
@@ -303,17 +306,18 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   }
 
   public func forget() async {
-    // Stop first, wait, then delete: a copy still running must not write into a wiped library.
-    let (link, cancel, task) = lock.withLock { () -> (LinkHandle?, LinkCancel?, Task<Void, Never>?) in
+    // Stop first, wait, then delete: a copy still running (or waiting for Wi-Fi) must not write
+    // into a wiped library, and must not keep Forget waiting.
+    let (link, cancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?) in
       forgotten = true
-      let out = (handle, copyCancel, copyTask)
+      let out = (handle, copyCancel)
       handle = nil
       record = nil
       return out
     }
     cancel?.fire()
     if let link { mv_link_shut_down(link.raw) }
-    await task?.value
+    await work.stopAndWait()
     await onLinkQueue {
       mv_library_remove(LinkFolders.library.path)
       try? FileManager.default.removeItem(at: LinkFolders.thumbs)
@@ -390,21 +394,16 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   public func firstCopy(overMobileData: Bool) -> AsyncThrowingStream<CopyEvent, Error> {
     AsyncThrowingStream { continuation in
-      let failure = FailureBox()
-      let task = Task.detached(priority: .userInitiated) { [self] in
+      let task = work.run { [self] in
         do {
           try await runCopy(overMobileData: overMobileData, continuation: continuation)
+          continuation.finish()
         } catch {
-          failure.error = error
+          continuation.finish(throwing: error)
         }
       }
-      // Forget waits on this task, so it is the one that ends the stream.
-      let watcher = Task.detached {
-        await task.value
-        if let error = failure.error { continuation.finish(throwing: error) } else { continuation.finish() }
-      }
-      lock.withLock { copyTask = watcher }
-      continuation.onTermination = { _ in task.cancel() }
+      if task == nil { continuation.finish(throwing: CancellationError()) }  // forgotten meanwhile
+      continuation.onTermination = { _ in task?.cancel() }
     }
   }
 
@@ -438,6 +437,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       while !overMobileData && !mayCopyQuietly {
         continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes)))
         try Task.checkCancellation()
+        if lock.withLock({ forgotten }) { throw CancellationError() }
         try await Task.sleep(for: .milliseconds(500))
       }
       let cancel = LinkCancel()
@@ -523,7 +523,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 /// mobile data, or Wi-Fi only right now, says it skipped the test rather than testing Wi-Fi.
 enum OutsideRoute {
   static func test(publicName: String) async -> OutsideRouteResult {
-    guard hasCellular(), let (host, port) = split(publicName) else { return .skippedNoMobileData }
+    // No public name: the service was set up for its own network only.
+    guard let (host, port) = split(publicName) else { return .reachableOnlyOnItsOwnNetwork }
+    guard await hasCellular() else { return .skippedNoMobileData }
     return await withCheckedContinuation { continuation in
       let parameters = NWParameters.tcp
       parameters.requiredInterfaceType = .cellular
@@ -546,21 +548,19 @@ enum OutsideRoute {
     }
   }
 
-  private static func hasCellular() -> Bool {
-    let monitor = NWPathMonitor(requiredInterfaceType: .cellular)
-    let semaphore = DispatchSemaphore(value: 0)
-    let flag = OnceFlag()
-    var satisfied = false
-    monitor.pathUpdateHandler = { path in
-      if flag.take() {
-        satisfied = path.status == .satisfied
-        semaphore.signal()
+  private static func hasCellular() async -> Bool {
+    await withCheckedContinuation { continuation in
+      let monitor = NWPathMonitor(requiredInterfaceType: .cellular)
+      let queue = DispatchQueue(label: "mediaviewer.link.cellular")
+      let once = OnceFlag()
+      monitor.pathUpdateHandler = { path in
+        if once.take() { monitor.cancel(); continuation.resume(returning: path.status == .satisfied) }
+      }
+      monitor.start(queue: queue)
+      queue.asyncAfter(deadline: .now() + 1) {
+        if once.take() { monitor.cancel(); continuation.resume(returning: false) }
       }
     }
-    monitor.start(queue: DispatchQueue(label: "mediaviewer.link.cellular"))
-    _ = semaphore.wait(timeout: .now() + 1)
-    monitor.cancel()
-    return satisfied
   }
 
   private static func split(_ text: String) -> (String, NWEndpoint.Port)? {
@@ -577,7 +577,6 @@ private final class OnceFlag: @unchecked Sendable {
   func take() -> Bool { lock.withLock { defer { taken = true }; return !taken } }
 }
 
-private final class FailureBox: @unchecked Sendable { var error: Error? }
 
 private final class CopyCallbacks: @unchecked Sendable {
   private let progress: ((UInt64, UInt64) -> Void)?

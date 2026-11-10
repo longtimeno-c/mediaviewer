@@ -120,6 +120,7 @@ class link_session final : public remote_file {
   // The live client, connecting first if there is none.
   [[nodiscard]] result<std::shared_ptr<driftwire::serve::client>> client(const cancel_flag* cancel);
   void dropped(const std::shared_ptr<driftwire::serve::client>& c) noexcept;
+  [[nodiscard]] bool is_shut() const;
   [[nodiscard]] expected race_locked(route_report& report, const cancel_flag* cancel, int timeout_ms);  // connect_m_ held
 
   service_config config_;
@@ -127,8 +128,10 @@ class link_session final : public remote_file {
   mutable std::mutex m_;          // guards live_
   std::shared_ptr<driftwire::serve::client> live_;
   route_report last_report_;  // under m_
+  std::vector<std::weak_ptr<driftwire::serve::client>> retired_;  // under m_: swapped out, maybe still read
 
-  // The service ends any stream past kMaxStreams with "too many": the rest wait here.
+  // The service ends any stream past kMaxStreams with "too many", and frees a slot a moment after
+  // its end reaches us: one below that, and the rest wait here (or until cancelled or shut down).
   class stream_slot;
   std::mutex streams_m_;
   std::condition_variable streams_cv_;

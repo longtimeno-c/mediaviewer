@@ -650,6 +650,42 @@ TEST_CASE("link: readers after a drop share one new connection", "[mobile-link]"
   CHECK(ok.load() == 60);
 }
 
+TEST_CASE("link: Forget cuts reads on a swapped-out client and wakes readers waiting for a stream", "[mobile-link]") {
+  rig r(6 * 1024 * 1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  const std::string file = "gen/000001/extra.bin";
+  std::atomic<int> finished{0}, started{0};
+  std::vector<std::thread> readers;
+  // 40 slow reads: 31 hold every stream the client allows, the rest wait for one.
+  for (int i = 0; i < 40; ++i) {
+    readers.emplace_back([&] {
+      bool counted = false;
+      (void)s.read_range("c2c2c2c2c2c2c2c2", file, 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+        if (!counted) {
+          counted = true;
+          ++started;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));  // a whole file takes many seconds
+        return true;
+      }, nullptr, false);
+      ++finished;
+    });
+  }
+  for (int i = 0; i < 500 && started.load() < 31; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(started.load() == 31);  // never more than 31 at once
+  mob::route_report again;
+  REQUIRE(s.reconnect(again));  // the 31 now run on a client that is no longer the live one
+  const auto t0 = std::chrono::steady_clock::now();
+  s.shut_down();
+  for (auto& t : readers) t.join();
+  CHECK(finished.load() == 40);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+  CHECK_FALSE(s.connect(again));  // and nothing connects again
+}
+
 TEST_CASE("sync: bytes stop when they may not move, resume when they may, and a half-done install finishes", "[mobile-link]") {
   rig r(6 * 1024 * 1024);
   r.pair_now();
