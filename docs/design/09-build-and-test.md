@@ -72,8 +72,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    Mac-only.
 2. **ABI smoke test from C#** (`src.managed/MediaViewer.AbiSmokeTest`): `SafeHandle`
    lifetimes, struct layouts, completion drain against the built core. Structs C# mirrors by
-   hand (`MvAiStatus`, `MvAiResult`) are compared field for field with `tools/abi-layout`'s
-   dump of the native layout, so a mirror that misses an appended field fails CI.
+   hand (`MvAiStatus`, `MvAiResult`, the `MvAiApi` function table) are compared field for field
+   with `tools/abi-layout`'s dump of the native layout, so a mirror that misses an appended
+   field fails CI.
    **Chrome contract tests** (issue #153). Neither chrome is linked into a test: the WinUI
    chrome is a class library the host loads through hostfxr, and the SwiftUI package calls
    bridge functions that resolve only in the app's final link. So

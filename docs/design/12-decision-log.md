@@ -1298,7 +1298,9 @@ only what the chrome declared, and the chrome zeroes the rest, so an older or ne
 attach. The size check is dropped for `mv_ai_status`. `mv_ai_result` keeps its exact check, because
 it comes back as an array with no `struct_size`, so its size is the stride. Drift is now caught
 in CI: `tools/abi-layout` prints the offset and size of each field as MSVC lays them out, and the
-ABI smoke test compares them, both ways, with the C# mirror.
+ABI smoke test compares them, both ways, with the C# mirror. **2026-11-10:** the `mv_ai_api` table
+is compared too. 0.1.41's `MvAiApi` lacked `eyes_json`, so every People correction entry after it
+called its neighbour, and opening the People grid crashed the app.
 
 **Developer key (2026-09-26).** `MV_ADDON_DEV_PUBLIC_KEY` lets a developer build trust a local key
 so a pack can be sideloaded; with it, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR` keep the run out of

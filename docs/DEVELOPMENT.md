@@ -1135,8 +1135,8 @@ ctest --test-dir build -C Release --output-on-failure
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
 # the ABI, end to end from C#: SafeHandle, struct layout, completion drain. The
-# second argument is mv_abi_layout's dump: the AI structs' C# mirrors are then
-# compared field for field with the native layout (skipped without it; CI passes it)
+# second argument is mv_abi_layout's dump: the C# mirrors of the AI structs and function
+# table are then compared field for field with the native layout (skipped without it; CI passes it)
 cmake --build build --config Release --target mv_abi_layout
 build\bin\Release\mv_abi_layout.exe > build\abi-layout.txt
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
