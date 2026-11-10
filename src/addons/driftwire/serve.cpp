@@ -980,8 +980,9 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
   // Owned and not its owner: closed with no reason given, before any
   // challenge, so this ends as a refusal and never as "it may have gone
   // through". The caller can still tell this from a challenge (unowned) or a
-  // failed handshake (no token), but only a caller that could write the token
-  // on the share gets this far.
+  // failed handshake (no token), but only a caller that can read the token on
+  // the share gets this far: reading it is enough to learn whether the
+  // service is owned (claiming still needs the write proof).
   if (store->exists(kOwnerName)) {
     const auto held = owner();
     if (!held || *held != *peer) {

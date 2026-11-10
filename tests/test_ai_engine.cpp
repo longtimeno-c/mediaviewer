@@ -7225,7 +7225,9 @@ struct fake_driftwire {
   std::vector<std::pair<std::string, std::string>> devices;
   std::vector<std::string> calls;
   std::mutex m;
+  std::function<void()> on_pair;  // runs before "pair" is answered, outside the lock (a test holds it there)
   mv::result<std::string> operator()(const std::string& target, const std::string& method, const std::string& json) {
+    if (method == "pair" && on_pair) on_pair();
     std::lock_guard lock(m);
     calls.push_back(method);
     if (target != "driftwire") return mv::err(mv::status::not_found);
@@ -7802,5 +7804,76 @@ TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definit
       (void)link_done(a);
     }
     CHECK(count_of(d, "pair_stop") == 1);  // asked once; that answer settles it
+  }
+}
+
+TEST_CASE("phone link: a request queued while a code is made does not let the old debt withdraw it", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  quit_with_a_code(a, d);
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::io;  // the old code could not be withdrawn
+  }
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::ok;
+  }
+  // The pair is held at the NAS while something else is queued behind it.
+  std::mutex gate_m;
+  std::condition_variable gate_cv;
+  bool reached = false, open = false;
+  d.on_pair = [&] {
+    std::unique_lock g(gate_m);
+    reached = true;
+    gate_cv.notify_all();
+    gate_cv.wait(g, [&] { return open; });
+  };
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  {
+    std::unique_lock g(gate_m);
+    REQUIRE(gate_cv.wait_for(g, std::chrono::seconds(10), [&] { return reached; }));
+  }
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));  // busy now says "refresh"
+  {
+    std::lock_guard g(gate_m);
+    open = true;
+  }
+  gate_cv.notify_all();
+  const auto v = link_done(a);
+  d.on_pair = {};
+  CHECK_FALSE(v.str("qr")->empty());
+  CHECK(count_of(d, "pair_stop") == 0);
+}
+
+TEST_CASE("phone link: a busy or not-yet-loaded Driftwire does not settle a code left at quit", "[ai][engine][phone-link]") {
+  for (const auto transient : {mv::status::busy, mv::status::not_found}) {
+    rig a;
+    fake_driftwire d;
+    a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+    quit_with_a_code(a, d);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = transient;
+    }
+    a.start();
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = mv::status::ok;
+      d.calls.clear();
+    }
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    CHECK(count_of(d, "pair_stop") == 1);  // still owed, and asked again
   }
 }

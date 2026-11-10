@@ -1371,7 +1371,9 @@ Owned, a claim is answered only for the owner's own device key (with a fresh tok
 keys and nothing changed: a claim whose answer was lost can fetch them again. Anyone else's claim on an owned
 service ends with the link closed and no reason given, before any challenge. That is not the silence of a
 wrong key: the handshake completes first, so the caller can tell owned (closed) from unowned (a challenge)
-from no token (no handshake). Only a caller that can write the token on the share learns it.
+from no token (no handshake). Reading the token on the share is enough to learn it; claiming still needs the
+write proof. A claim that crashes before its cleanup leaves the token on the share until the next claim
+replaces and removes it.
 
 **Who may do what.** A phone holds a read-only grant. The owner's session alone is granted
 `kAdminOp` and sends `serve_admin` (devices, add or revoke a device, a pairing code, the named folders,

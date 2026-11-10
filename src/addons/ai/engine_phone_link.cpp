@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <optional>
 #if defined(_WIN32)
 #include <io.h>
 #else
@@ -81,7 +82,18 @@ void engine::phone_link_load_flags() {
   const std::string file = data_dir_ + "/phone/link.json";
   std::error_code ec;
   if (!std::filesystem::exists(fs_path(file), ec)) return;  // nothing ever handed over, nothing left
-  const auto doc = json::parse(slurp(file), 4);
+  // Read it, once more if the read itself failed (a file being replaced, a
+  // disk that hiccuped). Only a file read whole that does not parse fails closed.
+  std::optional<std::string> text;
+  for (int attempt = 0; attempt < 2 && !text; ++attempt) {
+    std::ifstream in(fs_path(file), std::ios::binary);
+    if (!in) continue;
+    std::ostringstream s;
+    s << in.rdbuf();
+    if (!in.bad()) text = s.str();
+  }
+  if (!text) return;  // not read: as before, nothing assumed
+  const auto doc = json::parse(*text, 4);
   std::lock_guard lock(phone_link_m_);
   if (!doc || doc->k != json::kind::object) {
     // There and unreadable: fail closed. Signing nearby copies with a key
@@ -237,7 +249,19 @@ void engine::phone_link_loop() {
       if (poll) {
         phone_link_do("{\"do\":\"poll\"}");
       } else {
+        const auto doc = json::parse(request, 4);
+        const bool pairing = doc && doc->str("do") && *doc->str("do") == "pair";
+        {
+          // Set by this thread alone, around the one request that makes a
+          // code: `busy` follows whatever is queued next and cannot say so.
+          std::lock_guard lock(phone_link_m_);
+          link_.pairing = pairing;
+        }
         phone_link_do(request);
+        {
+          std::lock_guard lock(phone_link_m_);
+          link_.pairing = false;
+        }
         // The owner's session is kept only while a code shows: one forwarded
         // service, a few session slots, and a Mac that may sit here for days.
         bool showing = false;
@@ -303,18 +327,23 @@ void engine::phone_link_refresh(bool phones_only) {
     std::lock_guard lock(phone_link_m_);
     // Never while a code is showing or being made: the withdraw would take
     // the new one down (the service holds one code at a time).
-    left = link_.code_left && link_.qr_expires == 0 && link_.busy != "pair";
+    left = link_.code_left && link_.qr_expires == 0 && !link_.pairing;
     // The NAS drops a code by itself once its lifetime is over.
     lapsed = link_.code_left && static_cast<std::int64_t>(std::time(nullptr)) >= link_.code_left_until;
   }
   // A code was showing when Local search last stopped: it goes now. A
-  // definite answer (done, refused, not owned, not there) settles it; only a
-  // NAS out of reach leaves it for the next refresh, and never past the code's
+  // definite answer (done, refused, not owned) settles it; a NAS out of reach
+  // or not ready leaves it for the next refresh, and never past the code's
   // own lifetime.
   bool settled = lapsed;
   if (left && !lapsed) {
     const auto r = phone_route("pair_stop", "{}");
-    settled = r || (r.error() != status::io && r.error() != status::timeout && r.error() != status::cancelled);
+    // Out of reach, or not able to answer yet: the NAS away, too busy for
+    // another session, or Driftwire not registered yet at startup. The
+    // lifetime above still bounds how long it is asked.
+    const mv::status e = r ? mv::status::ok : r.error();
+    settled = r || (e != status::io && e != status::timeout && e != status::cancelled && e != status::busy &&
+                    e != status::not_found);
   }
   if (left && settled) {
     {

@@ -1297,6 +1297,7 @@ class engine {
     std::int64_t code_left_until = 0; // unix seconds: the NAS has dropped it by then anyway
     bool flags_unsaved = false;       // phone/link.json could not be written
     bool flags_dirty = false;         // to be written once the lock is let go
+    bool pairing = false;             // the link thread's own: it is making a code now
     bool code_waiting = false;        // the code shown is still on the service
     std::int64_t pending = 0;         // revokes the NAS has not heard
     double retry_s = 0;               // until the next try, doubling
