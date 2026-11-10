@@ -20,7 +20,7 @@
 namespace mv::driftwire::serve {
 
 // Why a connection could not be used.
-enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy };
+enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy, bad_code, too_many };
 
 class client {
  public:
@@ -31,6 +31,8 @@ class client {
     std::string id = "0000000000000000";                       // 16 hex digits
     std::string name = "client";
     std::uint32_t ops = kAllOps;                               // what this client can use
+    std::string pair_code;                                     // from the QR: redeemed before serve_hello
+    std::string device_name;                                   // what the desktop shows (with pair_code)
   };
 
   // Handshakes over `l`, says what it can do, reads what the service can.

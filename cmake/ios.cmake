@@ -28,6 +28,7 @@ set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 
 include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/mobile-link.cmake")
 
 # ---- the checks --------------------------------------------------------------
 # Built for both SDKs, so a device build proves its link too; run on the

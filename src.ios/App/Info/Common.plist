@@ -6,6 +6,11 @@
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<!-- One window for 1.0: the app has one model of what is on screen. -->
+	<!-- The first copy, kept going after the person leaves the app on iOS 26 (docs/plans/mobile.md 8.4). -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>io.github.longtimeno-c.mediaviewer.mobile.first-copy</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

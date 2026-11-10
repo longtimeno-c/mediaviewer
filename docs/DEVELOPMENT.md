@@ -4631,3 +4631,11 @@ native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never t
 decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
 modify an original; nothing about a user's files leaves the machine; never require a Store
 codec pack.
+
+## The iPhone app's link (src/mobile, src.ios)
+
+The core: `mv_mobile_link_tests "[mobile-link]"` (the Mac build's `build/bin`), filter by tag. The app:
+build `build-ios-sim/` (`cmake/ios.cmake`), then the `MediaViewer` scheme. End to end against
+`driftwire serve` on loopback in a Simulator of your own: `tools/ios/link-e2e.sh <udid> <folder>`
+after copying the built `MediaViewer.app` into `<folder>`. Codes for a service come from
+`driftwire serve pair-code [SECONDS]` until the desktop claim lands.

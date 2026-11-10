@@ -1,0 +1,181 @@
+/* Copyright (C) 2026 longtimeno-c
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * The C ABI between the iOS host and the link core (docs/plans/mobile.md §7, §8):
+ * pairing, the routes, catalogue sync, thumbnails and range reads. Opaque
+ * handles, POD structs, a status from every call. Calls marked BLOCKS wait on the
+ * network and are for worker threads only; nothing else in this header waits.
+ * Callbacks run on the calling thread or a core worker, never the main thread
+ * unless the caller was on it. Thread-safe unless noted.
+ */
+#ifndef MV_MOBILE_LINK_H
+#define MV_MOBILE_LINK_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum mv_link_status {
+  MV_LINK_OK = 0,
+  MV_LINK_INVALID = 1,        /* not a code of ours, or a bad argument */
+  MV_LINK_EXPIRED = 2,        /* the code's time has passed */
+  MV_LINK_UNREACHABLE = 3,    /* no route answered */
+  MV_LINK_WRONG_SERVICE = 4,  /* answered with a key that is not the pinned one */
+  MV_LINK_NOT_PAIRED = 5,     /* this device is not, or no longer, on the list */
+  MV_LINK_BAD_CODE = 6,       /* the single-use code was wrong, spent or expired */
+  MV_LINK_TOO_OLD = 7,        /* the service needs updating */
+  MV_LINK_BUSY = 8,
+  MV_LINK_NOT_FOUND = 9,      /* not on the NAS, or not in this catalogue */
+  MV_LINK_DENIED = 10,        /* outside the named folders */
+  MV_LINK_CANCELLED = 11,
+  MV_LINK_REJECTED = 12,      /* a bad signature, library or hash: nothing was installed */
+  MV_LINK_NO_SPACE = 13,
+  MV_LINK_OLDER = 14,         /* the NAS's catalogue is older than this phone's: kept out */
+  MV_LINK_UP_TO_DATE = 15,
+  MV_LINK_COPY_AVAILABLE = 16,
+  MV_LINK_INTERNAL = 17,
+} mv_link_status;
+
+/* ---- pairing ------------------------------------------------------------- */
+
+/* The scanned code, parsed and not yet trusted. */
+typedef struct mv_pair_info {
+  char library_id[128];
+  char library_name[256];
+  uint8_t publisher_key[32];
+  char local[256];
+  char public_name[256];
+  uint8_t identity[32];
+  uint8_t access_key[32];
+  char code[256];
+  int64_t expires;
+  char fingerprint[32]; /* compare with the desktop's */
+} mv_pair_info;
+
+typedef struct mv_route_failure {
+  char address[256];
+  int32_t problem; /* 0 unreachable, 1 wrong service, 2 not paired, 3 too old, 4 busy, 5 bad code */
+} mv_route_failure;
+
+typedef struct mv_route_report {
+  char address[256]; /* the one that answered; empty when none did */
+  int32_t over_internet;
+  int32_t failure_count;
+  mv_route_failure failures[4];
+} mv_route_report;
+
+typedef struct mv_cancel mv_cancel;
+mv_cancel* mv_cancel_new(void);
+void mv_cancel_fire(mv_cancel* c);
+void mv_cancel_free(mv_cancel* c);
+
+/* MV_LINK_EXPIRED when now_unix is past the code's expiry. */
+int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out);
+
+/* A new X25519 device key. */
+int32_t mv_device_key_new(uint8_t private_key[32], uint8_t public_key[32]);
+
+/* BLOCKS. Redeems the code on the first route that answers. */
+int32_t mv_pair_redeem(const mv_pair_info* info, const uint8_t device_key[32], const char* device_name,
+                       mv_cancel* cancel, mv_route_report* report);
+/* BLOCKS. Does the public route answer? 1 yes, 0 no. */
+int32_t mv_pair_public_answers(const mv_pair_info* info, const uint8_t device_key[32], const char* device_name);
+
+/* ---- the library's connection -------------------------------------------- */
+
+typedef struct mv_mobile_link mv_mobile_link;
+
+typedef struct mv_link_config {
+  const char* library_dir; /* Application Support/library */
+  const char* cache_dir;   /* Caches/thumbs */
+  const char* library_id;
+  const char* local;
+  const char* public_name;
+  const char* device_name;
+  const uint8_t* identity;      /* 32 bytes: the pinned service key */
+  const uint8_t* access_key;    /* 32 */
+  const uint8_t* device_key;    /* 32: private */
+  const uint8_t* publisher_key; /* 32: pinned at pairing */
+  uint64_t thumb_cache_bytes;
+} mv_link_config;
+
+mv_mobile_link* mv_link_open(const mv_link_config* config);
+void mv_link_close(mv_mobile_link* link);
+
+/* BLOCKS. Races the routes and keeps the connection. */
+int32_t mv_link_connect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
+int32_t mv_link_is_connected(const mv_mobile_link* link);
+void mv_link_disconnect(mv_mobile_link* link);
+
+/* ---- catalogue sync ------------------------------------------------------ */
+
+typedef struct mv_sync_report {
+  int32_t outcome; /* mv_link_status: UP_TO_DATE, OLDER, COPY_AVAILABLE, OK (installed), or the failure */
+  uint64_t epoch;
+  uint64_t generation;
+  uint64_t total_bytes;
+  uint64_t done_bytes;
+  uint64_t needed_bytes; /* with NO_SPACE */
+} mv_sync_report;
+
+typedef void (*mv_sync_progress_fn)(void* ctx, uint64_t done_bytes, uint64_t total_bytes);
+
+/* BLOCKS. Reads current.json and, when newer, the manifest. Safe on any network. */
+int32_t mv_sync_check(mv_mobile_link* link, mv_sync_report* report);
+/* BLOCKS. Copies the checked generation with resume and swaps it in. */
+int32_t mv_sync_copy(mv_mobile_link* link, mv_cancel* cancel, mv_sync_progress_fn progress, void* ctx,
+                     mv_sync_report* report);
+
+typedef struct mv_catalogue_info {
+  int32_t present;
+  uint64_t epoch;
+  uint64_t generation;
+  uint64_t created_unix;
+  uint64_t asset_count;
+  char dir[1024]; /* the installed generation's folder */
+} mv_catalogue_info;
+int32_t mv_catalogue_read(mv_mobile_link* link, mv_catalogue_info* out);
+
+/* Removes the library's files; forget the keys separately. */
+void mv_library_remove(const char* library_dir);
+
+/* ---- pictures and files, by assets.id ------------------------------------ */
+
+typedef void (*mv_bytes_fn)(void* ctx, const uint8_t* data, size_t size);
+typedef void (*mv_done_fn)(void* ctx, int32_t status, const uint8_t* data, size_t size);
+/* Return 0 to stop the read. */
+typedef int32_t (*mv_sink_fn)(void* ctx, uint64_t offset, const uint8_t* data, size_t size);
+typedef void (*mv_moment_fn)(void* ctx, int64_t start_ms, int32_t kind, const char* text);
+
+/* Local and fast: the 64 px tile. MV_LINK_NOT_FOUND when none exists. */
+int32_t mv_tiny_get(mv_mobile_link* link, int64_t asset, mv_bytes_fn fn, void* ctx);
+/* Queues a JPEG-512. lane 0 on screen, 1 prefetch. *out_cancel is the caller's to free. */
+int32_t mv_thumb_request(mv_mobile_link* link, int64_t asset, int32_t lane, mv_done_fn done, void* ctx,
+                         mv_cancel** out_cancel);
+uint64_t mv_thumb_bytes_used(const mv_mobile_link* link);
+
+typedef struct mv_asset_info {
+  uint64_t size;
+  int32_t kind;
+  int64_t duration_ms;
+} mv_asset_info;
+int32_t mv_asset_read(mv_mobile_link* link, int64_t asset, mv_asset_info* out);
+
+/* BLOCKS. Range read of an original. length UINT64_MAX means to the end. */
+int32_t mv_file_read(mv_mobile_link* link, int64_t asset, uint64_t at, uint64_t length, int32_t bulk, mv_cancel* cancel,
+                     mv_sink_fn sink, void* ctx);
+
+int32_t mv_moments_get(mv_mobile_link* link, int64_t asset, mv_moment_fn fn, void* ctx);
+
+/* Until the search session's library store lands: every photo and clip, newest first. */
+typedef void (*mv_listed_asset_fn)(void* ctx, int64_t asset, int32_t kind, int64_t taken_at, int64_t duration_ms, const char* name);
+int32_t mv_assets_list(mv_mobile_link* link, mv_listed_asset_fn fn, void* ctx);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MV_MOBILE_LINK_H */

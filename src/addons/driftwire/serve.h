@@ -47,6 +47,10 @@ namespace mv::driftwire::serve {
 // In the store: the 32-byte library access key. The identity and the paired
 // devices are known.h's (kIdentityName, kDevicesName).
 inline constexpr const char* kAccessKeyName = "library_access_key";
+// In the store: the pairing codes not yet used (a hash and an expiry each).
+inline constexpr const char* kPairCodesName = "library_pair_codes";
+inline constexpr std::size_t kPairCodesKept = 16;
+inline constexpr std::int64_t kDefaultPairCodeSeconds = 600;
 
 // How often the paired list is read again, for revocations.
 inline constexpr int kDevicesRecheckMs = 2000;
@@ -60,6 +64,8 @@ struct counters {
   std::uint64_t not_paired = 0;     // held the key, device not paired or revoked
   std::uint64_t sessions = 0;       // admitted
   std::uint64_t evicted = 0;        // a waiting hello closed to make room for a newer connection
+  std::uint64_t paired = 0;         // devices added by a pairing code
+  std::uint64_t bad_codes = 0;      // pairing codes that were wrong, spent or expired
 };
 
 // The fuzz harness: one session's handling of what an admitted client sends,
@@ -78,6 +84,9 @@ class server {
     int per_minute = 30;              // connections per address (a /64 for IPv6); a /48 gets four times this
     int per_source_pending = 2;       // handshakes in progress per address (a /64 for IPv6)
     int per_block_pending = 4;        // and per IPv6 /48
+    // Taken while a pairing code adds a device, so `serve add` and `revoke`
+    // cannot lose it (empty: the tests, one process).
+    std::string devices_lock;
     // The tests: a listener of their own instead of the configured port.
     std::function<std::unique_ptr<net::listener>()> make_listener;
   };
@@ -102,6 +111,13 @@ class server {
   struct state;
   std::unique_ptr<state> st_;
 };
+
+// Makes a pairing code that works once, for `seconds`, and keeps only its hash
+// (the oldest goes past kPairCodesKept). Empty when it could not be kept.
+[[nodiscard]] std::string issue_pair_code(secrets::store& store, std::int64_t seconds, std::int64_t now_unix);
+// Spends `code` if it is good. False for a wrong, spent or expired one, or a
+// store that cannot be rewritten (a code that could be spent twice is no use).
+[[nodiscard]] bool redeem_pair_code(secrets::store& store, std::string_view code, std::int64_t now_unix);
 
 // First-run setup: makes this service's identity and library access key in
 // `store` if they are not there. `made` true when the key was new: the only

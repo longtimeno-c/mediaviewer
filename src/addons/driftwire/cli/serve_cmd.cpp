@@ -10,6 +10,8 @@
 #include <csignal>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -102,6 +104,7 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   o.cfg = std::move(*cfg);
   o.store = &store;
   o.loopback_only = test_hooks && a.test_loopback;
+  o.devices_lock = data + "/serve-devices.lock";
   auto srv = serve::server::start(o);
   if (!srv) {
     if (srv.error() == status::not_found) return fail("no access key yet: run `driftwire serve init` first.", 1);
@@ -181,6 +184,23 @@ int run_revoke(const args& a, secrets::store& store, const std::string& data) {
   return 0;
 }
 
+// A single-use code for the QR (M3); only its hash is kept. Printed alone, for
+// the desktop to read.
+int run_pair_code(const args& a, secrets::store& store, const std::string& data) {
+  std::int64_t seconds = serve::kDefaultPairCodeSeconds;
+  if (!a.serve_key.empty()) {
+    const auto parsed = std::strtoll(a.serve_key.c_str(), nullptr, 10);
+    if (parsed <= 0 || parsed > 24 * 3600) return fail("the code lasts between 1 and 86400 seconds.", 2);
+    seconds = parsed;
+  }
+  const auto lock = net::try_lock_instance(data + "/serve-devices.lock");
+  if (!lock) return fail("the device list is being changed by something else; try again.", 1);
+  const std::string code = serve::issue_pair_code(store, seconds, std::time(nullptr));
+  if (code.empty()) return fail("could not keep the code.", 1);
+  print(code + "\n");
+  return 0;
+}
+
 int run_devices(secrets::store& store) {
   const auto devices = known::load(store);
   if (devices.empty()) {
@@ -219,6 +239,8 @@ int run_serve(const args& a, bool test_hooks) {
       return run_add(a, *store, data);
     case serve_action::revoke:
       return run_revoke(a, *store, data);
+    case serve_action::pair_code:
+      return run_pair_code(a, *store, data);
   }
   return 2;
 }

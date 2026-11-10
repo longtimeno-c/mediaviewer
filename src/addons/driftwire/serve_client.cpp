@@ -154,15 +154,32 @@ result<std::unique_ptr<client>> client::open(std::shared_ptr<link> l, const opti
     (*ch)->shutdown();
     return err(status::permission_denied);
   }
+  const auto refused = [&why](const message& m) {
+    const auto doc = json::parse(m.text(), 4);
+    const std::string* text = doc ? doc->str("why") : nullptr;
+    if (why && text) {
+      *why = *text == "busy"       ? refusal::busy
+             : *text == "bad-code" ? refusal::bad_code
+             : *text == "too-many" ? refusal::too_many
+                                   : refusal::not_paired;
+    }
+  };
+  message m;
+  if (!o.pair_code.empty()) {
+    (void)(*ch)->send(msg::serve_pair, pair_json(o.pair_code, o.device_name));
+    if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
+    if (m.type == msg::cancel) {
+      refused(m);
+      return err(status::permission_denied);
+    }
+    if (m.type != msg::serve_paired) return err(status::corrupt);
+  }
   // Not checked here: a service that refused this device has said so and may
   // already be closing, and the refusal is what the receive below reads.
   (void)(*ch)->send(msg::serve_hello, hello_json(o.ops));
-  message m;
   if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
   if (m.type == msg::cancel) {
-    const auto doc = json::parse(m.text(), 4);
-    const std::string* text = doc ? doc->str("why") : nullptr;
-    if (why && text) *why = *text == "busy" ? refusal::busy : refusal::not_paired;
+    refused(m);
     return err(status::permission_denied);
   }
   if (m.type != msg::serve_caps) return err(status::corrupt);

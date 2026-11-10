@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		AA0000000000000000000011 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000021 /* MobileKit */; };
 		AA0000000000000000000012 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000022 /* MobileUI */; };
+		AA0000000000000000000016 /* MobileLink in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000026 /* MobileLink */; };
 		AA0000000000000000000013 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000023 /* MobileKit */; };
 		AA0000000000000000000014 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000024 /* MobileUI */; };
 		AA0000000000000000000015 /* MobileFixtures in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000025 /* MobileFixtures */; };
@@ -43,6 +44,7 @@
 			files = (
 				AA0000000000000000000011 /* MobileKit in Frameworks */,
 				AA0000000000000000000012 /* MobileUI in Frameworks */,
+				AA0000000000000000000016 /* MobileLink in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -108,6 +110,7 @@
 			packageProductDependencies = (
 				AA0000000000000000000021 /* MobileKit */,
 				AA0000000000000000000022 /* MobileUI */,
+				AA0000000000000000000026 /* MobileLink */,
 			);
 			productName = MediaViewer;
 			productReference = AA0000000000000000000031 /* MediaViewer.app */;
@@ -294,6 +297,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = ("$(SRCROOT)/../build-ios-sim", "$(SRCROOT)/../build-ios-sim/vcpkg_installed/arm64-ios-simulator/lib");
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = ("$(SRCROOT)/../build-ios-device", "$(SRCROOT)/../build-ios-device/vcpkg_installed/arm64-ios/lib");
+				OTHER_LDFLAGS = ("-lmv_mobile_link", "-lmv_ai_engine", "-lmv_driftwire_engine", "-lmv_infer", "-lmv_model_fetch", "-lsodium", "-lblake3", "-lsqlite3", "-lc++");
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer saves copies you ask for to your Photos.";
 				INFOPLIST_FILE = App/Info/Common.plist;
@@ -318,6 +324,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = ("$(SRCROOT)/../build-ios-sim", "$(SRCROOT)/../build-ios-sim/vcpkg_installed/arm64-ios-simulator/lib");
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = ("$(SRCROOT)/../build-ios-device", "$(SRCROOT)/../build-ios-device/vcpkg_installed/arm64-ios/lib");
+				OTHER_LDFLAGS = ("-lmv_mobile_link", "-lmv_ai_engine", "-lmv_driftwire_engine", "-lmv_infer", "-lmv_model_fetch", "-lsodium", "-lblake3", "-lsqlite3", "-lc++");
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer saves copies you ask for to your Photos.";
 				INFOPLIST_FILE = App/Info/Common.plist;
@@ -457,6 +466,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		AA0000000000000000000026 /* MobileLink */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileLink;
+		};
 		AA0000000000000000000021 /* MobileKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MobileKit;

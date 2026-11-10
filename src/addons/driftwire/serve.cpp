@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -33,6 +34,8 @@ using clock = std::chrono::steady_clock;
 // A hello that is not all there this soon is not a phone's (it is about 1.2 KB).
 constexpr int kHelloMs = 3000;
 constexpr int kServeHelloMs = 5000;
+// How long a device not on the list has to say it is pairing.
+constexpr int kPairWaitMs = 2000;
 // First messages remembered as seen, against a replay of a recorded one. Only
 // ones that opened under the key go in, so a stranger cannot flush it.
 constexpr std::size_t kSeenFirsts = 4096;
@@ -136,6 +139,9 @@ struct server::state {
 
   std::atomic<std::uint64_t> n_evicted{0};
   std::atomic<std::uint64_t> n_accepted{0}, n_over{0}, n_hello{0}, n_key{0}, n_replay{0}, n_unpaired{0}, n_sessions{0};
+  std::atomic<std::uint64_t> n_paired{0}, n_bad_codes{0};
+  std::string devices_lock;
+  std::mutex pair_m;  // one redemption at a time: spending a code, then adding the device
 
   ~state() {
     sodium_memzero(identity.data(), identity.size());
@@ -173,6 +179,9 @@ struct server::state {
   void serve_connection(conn* c);
   void release_pending(conn& c);
   void session(conn& c);
+  // The first message of a device not on the list: a code puts it on, and the
+  // session goes on. False: it was told why and closed.
+  [[nodiscard]] bool try_pair(channel& ch, const std::array<std::uint8_t, 32>& device);
   void watch_loop();
   void cut_unpaired();
 };
@@ -649,11 +658,12 @@ void server::state::serve_connection(conn* c) {
     opened = std::move(*ch);
   }
   const auto peer = opened->peer_key();
-  if (!peer || !paired(*peer)) {
+  if (!peer) {
     n_unpaired.fetch_add(1);
     (void)opened->cancel(kCancelWaitMs, "not-paired");
     return;
   }
+  if (!paired(*peer) && !try_pair(*opened, *peer)) return;
   const int before = sessions.fetch_add(1);
   // Held to the end of this function, however it ends.
   struct slot {
@@ -676,6 +686,47 @@ void server::state::serve_connection(conn* c) {
     std::lock_guard lock(c->m);
     c->has_device = false;
   }
+}
+
+bool server::state::try_pair(channel& ch, const std::array<std::uint8_t, 32>& device) {
+  // A client that is not pairing sends serve_hello (or nothing) here, and is
+  // told what it always was. It holds the access key, or it would not be here.
+  message m;
+  if (auto r = ch.receive(m, kPairWaitMs); !r || m.type != msg::serve_pair) {
+    n_unpaired.fetch_add(1);
+    (void)ch.cancel(kCancelWaitMs, "not-paired");
+    return false;
+  }
+  const auto ask = parse_pair(m.text());
+  bool ok = false;
+  bool full = false;
+  if (ask) {
+    std::lock_guard lock(pair_m);
+    std::unique_ptr<net::instance_lock> held;
+    for (int tries = 0; !devices_lock.empty() && !held && tries < 20; ++tries) {
+      held = net::try_lock_instance(devices_lock);
+      if (!held) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (devices_lock.empty() || held) {
+      // Read before the code is spent, so a list that cannot be read costs no code.
+      auto devices = known::load(*store);
+      full = devices.size() >= known::kMaxDevices;
+      if (!full && redeem_pair_code(*store, ask->code, std::time(nullptr))) {
+        known::device d;
+        d.name = ask->name.substr(0, known::kMaxName);
+        d.key = device;
+        devices.push_back(std::move(d));
+        ok = known::save(*store, devices);
+      }
+    }
+  }
+  if (!ok) {
+    n_bad_codes.fetch_add(1);
+    (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "bad-code");
+    return false;
+  }
+  n_paired.fetch_add(1);
+  return ch.send(msg::serve_paired, std::string_view("{}")).has_value();
 }
 
 void server::state::reap() {
@@ -840,6 +891,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.store = o.store;
   st.loopback_only = o.loopback_only;
   st.max_sessions = o.max_sessions;
+  st.devices_lock = o.devices_lock;
   st.max_pending = o.max_pending;
   st.per_minute = o.per_minute;
   st.limits = source_limit(o.per_minute, std::chrono::minutes(1), kLimitSources);
@@ -880,6 +932,8 @@ counters server::stats() const noexcept {
   c.not_paired = st_->n_unpaired.load();
   c.sessions = st_->n_sessions.load();
   c.evicted = st_->n_evicted.load();
+  c.paired = st_->n_paired.load();
+  c.bad_codes = st_->n_bad_codes.load();
   return c;
 }
 
@@ -917,6 +971,77 @@ void server::stop() noexcept {
 }
 
 server::~server() { stop(); }
+
+namespace {
+
+constexpr std::size_t kPairCodeRow = 8 + crypto_generichash_BYTES;  // expiry, hash
+
+std::array<std::uint8_t, crypto_generichash_BYTES> code_hash(std::string_view code) {
+  std::array<std::uint8_t, crypto_generichash_BYTES> h{};
+  crypto_generichash(h.data(), h.size(), reinterpret_cast<const unsigned char*>(code.data()), code.size(), nullptr, 0);
+  return h;
+}
+
+std::int64_t row_expiry(const std::uint8_t* row) noexcept {
+  std::uint64_t v = 0;
+  for (int i = 7; i >= 0; --i) v = (v << 8) | row[i];
+  return static_cast<std::int64_t>(v);
+}
+
+// The stored rows still in date; an unreadable value is an empty list only
+// when it is absent (a value that is there and bad is refused by the caller).
+std::vector<std::uint8_t> live_rows(secrets::store& store, std::int64_t now_unix, bool* bad = nullptr) {
+  std::vector<std::uint8_t> kept;
+  if (bad) *bad = false;
+  if (!store.exists(kPairCodesName)) return kept;
+  auto got = store.get(kPairCodesName);
+  if (!got || got->size() % kPairCodeRow != 0) {
+    if (bad) *bad = true;
+    return kept;
+  }
+  for (std::size_t at = 0; at < got->size(); at += kPairCodeRow) {
+    if (row_expiry(got->data() + at) > now_unix) kept.insert(kept.end(), got->begin() + static_cast<std::ptrdiff_t>(at), got->begin() + static_cast<std::ptrdiff_t>(at + kPairCodeRow));
+  }
+  sodium_memzero(got->data(), got->size());
+  return kept;
+}
+
+}  // namespace
+
+std::string issue_pair_code(secrets::store& store, std::int64_t seconds, std::int64_t now_unix) {
+  if (sodium_init() < 0 || seconds <= 0) return {};
+  bool bad = false;
+  auto rows = live_rows(store, now_unix, &bad);
+  if (bad) return {};
+  std::array<std::uint8_t, 16> raw{};
+  randombytes_buf(raw.data(), raw.size());
+  char hex[33];
+  sodium_bin2hex(hex, sizeof hex, raw.data(), raw.size());
+  std::string code(hex);
+  sodium_memzero(raw.data(), raw.size());
+  const auto h = code_hash(code);
+  const auto expiry = static_cast<std::uint64_t>(now_unix + seconds);
+  for (int i = 0; i < 8; ++i) rows.push_back(static_cast<std::uint8_t>(expiry >> (8 * i)));
+  rows.insert(rows.end(), h.begin(), h.end());
+  if (rows.size() > kPairCodesKept * kPairCodeRow) rows.erase(rows.begin(), rows.end() - static_cast<std::ptrdiff_t>(kPairCodesKept * kPairCodeRow));
+  if (!store.put(kPairCodesName, rows)) return {};
+  return code;
+}
+
+bool redeem_pair_code(secrets::store& store, std::string_view code, std::int64_t now_unix) {
+  if (code.empty() || code.size() > kMaxPairCodeBytes || sodium_init() < 0) return false;
+  bool bad = false;
+  auto rows = live_rows(store, now_unix, &bad);
+  if (bad) return false;
+  const auto h = code_hash(code);
+  for (std::size_t at = 0; at < rows.size(); at += kPairCodeRow) {
+    if (sodium_memcmp(rows.data() + at + 8, h.data(), h.size()) == 0) {
+      rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(at), rows.begin() + static_cast<std::ptrdiff_t>(at + kPairCodeRow));
+      return store.put(kPairCodesName, rows);
+    }
+  }
+  return false;
+}
 
 bool set_up(secrets::store& store, std::array<std::uint8_t, 32>& identity_public, std::array<std::uint8_t, 32>& access_key,
             bool& made) {

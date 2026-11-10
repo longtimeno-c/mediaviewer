@@ -1359,6 +1359,7 @@ driftwire serve init                      makes the identity and library access 
 driftwire serve devices                   lists paired devices
 driftwire serve add NAME KEY              pairs a device by its public key (64 hex digits)
 driftwire serve revoke NAME-OR-KEY        revokes one; a running session is cut within 2 s
+driftwire serve pair-code [SECONDS]       prints a single-use pairing code for the QR (default 600 s)
 ```
 
 `serve.json`, normally written by the desktop at setup:
@@ -1397,7 +1398,11 @@ everyone:
    hello opens too, but is not worth a reply, and only messages that opened are remembered, so
    a stranger cannot flush the ring. The ring is memory: after a restart a recording works once
    more (one ML-KEM and one reply each, never a session, since message 3 needs the device's key).
-5. After the handshake the client's device key (`peer_key`) must be in the paired list, read fresh
+5. A device not on the list that holds the access key may send one `serve_pair` message with a
+   single-use code from `serve pair-code` (only its hash is stored, with an expiry): a good one
+   adds its key to the list and the session goes on as `serve_paired`, anything else is
+   `{"why":"bad-code"}`. A pairing code never reaches a device without the access key.
+6. After the handshake the client's device key (`peer_key`) must be in the paired list, read fresh
    for every connection. Not paired or revoked: sealed `msg::cancel` with `{"why":"not-paired"}`,
    then closed. A running session is checked against the list every 2 s and cut with
    `{"why":"revoked"}`.
@@ -1410,7 +1415,7 @@ service only reads the keys; `init` makes them. `serve.json` and the data folder
 by this user alone. There is no keyring on a NAS. Paired devices hold a
 read-only grant on the named folders; a write path for the backup folder waits for 1.1.
 
-**The protocol.** A library channel takes only message ids 25–31 (`wire.h`), plus ident, ping and
+**The protocol.** A library channel takes only message ids 25–31 and 33–34 (`wire.h`), plus ident, ping and
 cancel, and no other channel takes them. After ident the client sends `serve_hello` (protocol
 versions and operation names), the service answers `serve_caps` with what both have, and neither
 sends an operation the other did not list. An operation name the service does not know answers
@@ -1457,8 +1462,6 @@ No address, path or file name is ever logged.
   operation (a capability; only while there is no owner, and only from the NAS's own network, the
   plan says), and the `add` / `revoke` / folder changes as owner operations over the channel. Today
   those are the local command line.
-- **Pairing from the QR** (M3): a single-use code the service accepts for a device key it has not
-  seen. Today a device is added with `driftwire serve add`, or by the desktop writing the list.
 - Rejoin on a library channel, per-stream priorities beyond interactive and bulk, and the phone's
   `remote_file` wrapper (M3).
 

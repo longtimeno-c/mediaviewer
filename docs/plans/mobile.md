@@ -777,12 +777,16 @@ unattended signed updates, capability negotiation, device revocation from the de
 
 ### M3 — Connect (iOS)
 
+**Built (2026-11-10, in `src/mobile/link*`, `sync*` and `src.ios/.../MobileLink`):** `remote_file` over the library channel, the route race by name, the Keychain, `mv_mobile_link.h`, pairing and the QR parser. Proven in the Simulator against `driftwire serve` on loopback (`tools/ios/link-e2e.sh`). Not proven yet: the camera (no camera in the Simulator), a real NAT64 network, mobile data, a device.
+
 Project, CI, Driftwire engine on iOS, `remote_file` over the link, QR pairing as the only setup,
 the mobile-data reachability test, Keychain.
 
 > **Verify:** From a clean install, one scan pairs with the Mac and the Synology; the phone then connects from mobile data with the Mac powered off, and connects by name on an IPv6-only NAT64 network; a wrong-signature `current.json` is refused.
 
 ### M4 — Catalogue sync (iOS)
+
+**Built (2026-11-10):** copy, signature and manifest checks, swap, resume, the never-lower rule, Wi-Fi by default, `BGContinuedProcessingTask` for the first copy. Not proven: leaving the app during a copy (needs a device), and `BGProcessingTask` for automatic sync is not built.
 
 Copy, verify, swap, resume, background task, first copy as a continued task on iOS 26, model copy,
 Wi-Fi by default.

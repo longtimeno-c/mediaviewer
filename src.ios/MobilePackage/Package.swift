@@ -5,6 +5,7 @@
 //
 //   MobileKit       The small protocols the real core drops in behind, and their value types.
 //   MobileUI        Every screen. Knows only MobileKit.
+//   MobileLink      The real services over src/mobile's C ABI (mv_mobile_link.h).
 //   MobileFixtures  Stand-in services, generated pictures, the state gallery. Debug only: it does
 //                   not compile outside DEBUG, and only the MediaViewerFixtures app links it.
 import PackageDescription
@@ -16,11 +17,15 @@ let package = Package(
     .library(name: "MobileKit", targets: ["MobileKit"]),
     .library(name: "MobileUI", targets: ["MobileUI"]),
     .library(name: "MobileFixtures", targets: ["MobileFixtures"]),
+    .library(name: "MobileLink", targets: ["MobileLink"]),
   ],
   targets: [
     .target(name: "MobileKit"),
     .target(name: "MobileUI", dependencies: ["MobileKit"]),
     .target(name: "MobileFixtures", dependencies: ["MobileKit", "MobileUI"]),
+    // The real connection, sync, pictures and clips (src/mobile/link*, sync*), linked by the app.
+    .target(name: "CMobileLink", publicHeadersPath: "include"),
+    .target(name: "MobileLink", dependencies: ["MobileKit", "CMobileLink"]),
   ],
   swiftLanguageModes: [.v5]
 )
