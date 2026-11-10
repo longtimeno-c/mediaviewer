@@ -5,6 +5,7 @@
 // the app's Team ID and loads under library validation (docs/design/17).
 #include <dlfcn.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "infer/ort.h"
@@ -12,6 +13,15 @@
 namespace mv::infer::dylib {
 
 void* open(const std::string& path_utf8) noexcept {
+  // Rule 6. Official ORT builds outside Windows carry Microsoft's 1DS
+  // uploader, and only this variable stops it being created. ORT reads it once,
+  // when its platform Env is constructed, which can be any time from dlopen on.
+  // DisableTelemetryEvents (runtime::load) comes too late: the uploader and its
+  // device id already exist. A second load finds "1" and leaves the environment
+  // alone.
+  constexpr const char* kOff = "ORT_DISABLE_TELEMETRY";
+  const char* now = std::getenv(kOff);
+  if (!now || std::strcmp(now, "1") != 0) (void)setenv(kOff, "1", 1);
   return dlopen(path_utf8.c_str(), RTLD_NOW | RTLD_LOCAL);
 }
 

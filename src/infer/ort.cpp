@@ -185,6 +185,8 @@ result<std::unique_ptr<runtime>> runtime::load(const std::string& dir_utf8) {
   if (!ok(p->api, p->api->CreateEnv(ORT_LOGGING_LEVEL_ERROR, "mv-ai", &p->env))) {
     return err(status::internal);
   }
+  // Windows' only switch (ETW has no uploader to stop). Elsewhere dylib::open
+  // has already kept the uploader from being created.
   (void)ok(p->api, p->api->DisableTelemetryEvents(p->env));
   char** names = nullptr;
   int n = 0;

@@ -1431,6 +1431,25 @@ media; hidden, system, packages and empty files are skipped) and reports groups.
 (CUDA, OpenVINO) with CPU always underneath, and Core ML on the Mac. No DirectML, so no D3D12. A
 download from Settings, never in the base installer. Indexes are local to one machine.
 
+**ONNX Runtime's uploader is never created outside Windows (2026-11-10).** `DisableTelemetryEvents`
+after `CreateEnv` was not enough. ORT 1.30's official macOS and Linux builds carry Microsoft's 1DS
+uploader, and by the time that call runs the uploader, its event queue and its device id exist and
+the once-per-process `ProcessInfo` event (hardware, OS, app name, hashed device id, no paths) is
+queued. Observed on the Mac with the AI 0.1.41 pack's dylib through the old `runtime::load`: a TLS
+connection to a `*.events.data.microsoft.com` collector within about ten seconds, about 6.7 KB up
+and 9.9 KB down, ORT's `onnxruntime.db` open in the process, and four threads. `dylib::open` now
+sets `ORT_DISABLE_TELEMETRY=1` before `dlopen`, overwriting any other value, because ORT reads it
+once when its platform Env is constructed. Over seven minutes each with the AI and Enhance packs:
+no socket, no network bytes, no `onnxruntime.db` open, one thread, and no ORT folder created in an
+empty home. `setenv` runs on the loading thread, while other threads may be running; a later load
+only reads the variable. Child processes inherit it, which is what we want.
+
+Windows has no such uploader: ORT writes ETW events, which leave the machine only if the OS's
+diagnostic-data service collects them. The ETW provider is registered in Microsoft's telemetry
+group and ignores this variable, so `DisableTelemetryEvents` stays the only switch, with two gaps
+read from ORT's source and not measured: `ProcessInfo` is written inside `CreateEnv`, before the
+call, and ORT's ETW enable callback can turn events back on when a trace session starts.
+
 **3 GB ceiling for the AI family (2026-09-25).** The base viewer's 250 MB limit does not apply to
 the optional pack. Installed pieces may total up to 3 GB; `index.db` and thumbnails are user data,
 outside it. CI rejects an oversized combination and the installer refuses it. Raised to 5 GB on
