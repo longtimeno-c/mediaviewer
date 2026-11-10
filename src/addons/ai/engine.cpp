@@ -530,12 +530,24 @@ void engine::stop() noexcept {
   transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   phone_cancel_ = true;
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
-  control_cv_.notify_all();
-  work_cv_.notify_all();
-  search_cv_.notify_all();
-  fetch_cv_.notify_all();
+  // Each loop checks stopping_ under its own mutex before it waits. Taking
+  // that mutex once, after stopping_ is set, means a loop is either still
+  // before its check (and sees stopping_) or parked (and gets the notify):
+  // a notify sent with no lock can fall between the two, and a loop that
+  // waits with no timeout then never wakes, and stop() never returns.
+  const auto wake = [](std::mutex& m, std::condition_variable& cv) {
+    { std::lock_guard lock(m); }
+    cv.notify_all();
+  };
+  wake(control_m_, control_cv_);
+  wake(work_m_, work_cv_);
+  wake(search_m_, search_cv_);
+  wake(fetch_m_, fetch_cv_);
   if (fetch_thread_.joinable()) fetch_thread_.join();  // a download in flight cancels (stopping_)
-  dl_stop_ = true;
+  {
+    std::lock_guard lock(dl_m_);
+    dl_stop_ = true;
+  }
   dl_cv_.notify_all();
   if (download_thread_.joinable()) download_thread_.join();  // a model download stops between chunks
   if (control_.joinable()) control_.join();

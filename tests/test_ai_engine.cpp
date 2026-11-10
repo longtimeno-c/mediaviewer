@@ -7948,3 +7948,50 @@ TEST_CASE("phone link: a link.json that cannot be read is never taken as no hand
   CHECK(link_done(a).boolean("other_publisher") == false);
 #endif
 }
+
+TEST_CASE("phone link: a hand-over is written down even when link.json could not be read", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
+  fake_driftwire da, db;
+  rig a, b;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  const fs::path nas = a.dir / "NAS";
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  // a restarts with a link.json it cannot read.
+  a.eng.reset();
+  const fs::path link = a.dir / "data" / "phone" / "link.json";
+  fs::create_directories(link.parent_path());
+  {
+    std::ofstream f(link, std::ios::binary | std::ios::trunc);
+    f << "{\"handed_over\":false}";
+  }
+  ::chmod(utf8(link).c_str(), 0);
+  a.start();
+  b.start();
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  (void)phone_done(b);
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto asked = link_done(a);
+  REQUIRE_FALSE(asked.str("asking_key")->empty());
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  CHECK(*link_done(a).str("error") == "");
+  ::chmod(utf8(link).c_str(), 0644);
+  // The hand-over is on disk: a restart with the share unreadable still knows it.
+  const auto saved = mv::json::parse(read_all(link), 4);
+  REQUIRE(saved);
+  CHECK(saved->boolean("handed_over") == true);
+#endif
+}

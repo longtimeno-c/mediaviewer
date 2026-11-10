@@ -130,8 +130,10 @@ void engine::phone_link_save_flags() {
   std::int64_t until = 0;
   {
     std::lock_guard lock(phone_link_m_);
-    if (!link_.flags_read) {
-      link_.flags_unsaved = true;  // the file there could not be read: never overwritten blind
+    // The file there could not be read: never overwritten blind, except to
+    // record a hand-over, which is the side a failed read assumes anyway.
+    if (!link_.flags_read && !link_.handed_over) {
+      link_.flags_unsaved = true;
       return;
     }
     handed = link_.handed_over;
@@ -167,6 +169,7 @@ void engine::phone_link_save_flags() {
   // The engine has no log of its own; the card's state says it, once.
   std::lock_guard lock(phone_link_m_);
   link_.flags_unsaved = !ok;
+  if (ok) link_.flags_read = true;  // what is there now is what this wrote
 }
 
 result<std::string> engine::phone_route(const char* method, const std::string& json) {
