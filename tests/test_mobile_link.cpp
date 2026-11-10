@@ -16,6 +16,7 @@
 
 #include "addons/ai/catalog.h"
 #include "addons/driftwire/known.h"
+#include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/secrets.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/transfer.h"
@@ -242,7 +243,9 @@ TEST_CASE("link payload: only a well-formed code of ours parses", "[mobile-link]
   const auto good = mob::parse_pair_payload(payload_text(r, 2000000000));
   REQUIRE(good);
   CHECK(good->library_name == "Family");
-  CHECK(good->fingerprint == catalog::fingerprint(r.pub.pub));
+  key32 pub_key{};
+  std::copy(r.pub.pub.begin(), r.pub.pub.end(), pub_key.begin());
+  CHECK(good->fingerprint == dw::pairing_check(r.pub.library_id, pub_key, r.identity, r.access));
   CHECK(good->local == r.config().local);
   CHECK(good->identity == r.identity);
 
@@ -270,8 +273,39 @@ TEST_CASE("link payload: only a well-formed code of ours parses", "[mobile-link]
   mv_pair_info info;
   CHECK(mv_pair_parse(payload_text(r, std::time(nullptr) - 1).c_str(), std::time(nullptr), &info) == MV_LINK_EXPIRED);
   CHECK(mv_pair_parse(payload_text(r, std::time(nullptr) + 60).c_str(), std::time(nullptr), &info) == MV_LINK_OK);
-  CHECK(std::string(info.fingerprint) == catalog::fingerprint(r.pub.pub));
+  CHECK(std::string(info.fingerprint) == good->fingerprint);
+  // Control and direction characters in a name are refused, as is a port of six digits.
+  CHECK_FALSE(mob::parse_pair_payload(coded(R"({"v":1,"library_id":"x","library_name":"a\u202Eb","publisher_key":")" +
+                                           catalog::to_hex(r.pub.pub) + R"(","access_key":")" + catalog::to_hex(r.access) +
+                                           R"(","code":"c","expires":9,"service":{"local":"a:1","public":"","identity":")" +
+                                           catalog::to_hex(r.identity) + R"("}})")));
+  std::string host;
+  std::uint16_t port = 0;
+  CHECK_FALSE(mob::split_host_port("a:000080", host, port));
+  CHECK(mob::split_host_port("[::1]:8080", host, port));
   CHECK(mv_pair_parse("nonsense", 0, &info) == MV_LINK_INVALID);
+}
+
+TEST_CASE("pairing check: 80 bits over the library, both keys and the access key", "[mobile-link]") {
+  key32 a{}, b{}, c{};
+  for (std::size_t i = 0; i < 32; ++i) {
+    a[i] = static_cast<std::uint8_t>(i);
+    b[i] = static_cast<std::uint8_t>(0x40 + i);
+    c[i] = static_cast<std::uint8_t>(0x80 + i);
+  }
+  const std::string base = dw::pairing_check("lib", a, b, c);
+  REQUIRE(base.size() == 19);  // 16 characters and three dashes
+  CHECK(base[4] == '-');
+  CHECK(base == dw::pairing_check("lib", a, b, c));
+  CHECK(base == "VPBV-CGPD-2FSJ-CY83");  // the vector the desktop checks too (also from Python hashlib)
+  key32 flip = b;
+  flip[31] ^= 1;
+  CHECK(dw::pairing_check("lib", a, flip, c) != base);  // another service
+  flip = c;
+  flip[0] ^= 1;
+  CHECK(dw::pairing_check("lib", a, b, flip) != base);  // another access key
+  CHECK(dw::pairing_check("lib2", a, b, c) != base);
+  CHECK(dw::pairing_check("lib", b, a, c) != base);
 }
 
 TEST_CASE("pairing: a good code once; a used code, a wrong service and no access key do not", "[mobile-link]") {
@@ -282,6 +316,10 @@ TEST_CASE("pairing: a good code once; a used code, a wrong service and no access
   REQUIRE(mob::pair_device(r.config(), code, report));
   CHECK(r.srv->stats().paired == 1);
   CHECK_FALSE(report.address.empty());
+
+  // A device already paired that pairs again (a re-scan) is answered, and spends nothing.
+  mob::route_report again;
+  CHECK(mob::pair_device(r.config(), "00000000000000000000000000000000", again));
 
   // Spent.
   mob::route_report twice;
@@ -502,7 +540,7 @@ TEST_CASE("the C ABI reads an original, and says when no service folder matches 
     mv_route_report report{};
     REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
     mv_sync_report sync{};
-    REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
+    REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
     return l;
   };
   std::string got;
@@ -519,6 +557,36 @@ TEST_CASE("the C ABI reads an original, and says when no service folder matches 
     CHECK(got == std::string(70000, 'p'));
     mv_link_close(l);
   }
+  SECTION("two copies at once: one copies, the other finds it done") {
+    rig r(6 * 1024 * 1024);
+    r.pair_now();
+    const auto cfg = r.sync_config();
+    const auto service = r.config();
+    const std::string cache = (r.dir.root / "thumbs").string();
+    mv_link_config c{};
+    c.library_dir = cfg.library_dir.c_str();
+    c.cache_dir = cache.c_str();
+    c.library_id = cfg.library_id.c_str();
+    c.local = service.local.c_str();
+    c.public_name = service.public_name.c_str();
+    c.device_name = service.device_name.c_str();
+    c.identity = service.identity.data();
+    c.access_key = service.access_key.data();
+    c.device_key = service.device_key.data();
+    c.publisher_key = cfg.publisher_key.data();
+    mv_mobile_link* l = mv_link_open(&c);
+    REQUIRE(l);
+    int32_t a = -1, b = -1;
+    std::thread first([&] { mv_sync_report rep{}; a = mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &rep); });
+    std::thread second([&] { mv_sync_report rep{}; b = mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &rep); });
+    first.join();
+    second.join();
+    CHECK(((a == MV_LINK_OK && b == MV_LINK_UP_TO_DATE) || (a == MV_LINK_UP_TO_DATE && b == MV_LINK_OK)));
+    const auto installed = mob::read_installed(cfg.library_dir);
+    REQUIRE(installed);
+    CHECK(fs::exists(fs::path(cfg.library_dir) / "gen" / installed->dir / "catalog.db"));
+    mv_link_close(l);
+  }
   SECTION("a folder labelled something else is said to be missing, not gone") {
     rig r(300000, "Pictures");
     auto* l = open_synced(r);
@@ -527,6 +595,102 @@ TEST_CASE("the C ABI reads an original, and says when no service folder matches 
     CHECK(got.empty());
     mv_link_close(l);
   }
+}
+
+TEST_CASE("link: a live link is kept on connect, and a reconnect lets reads finish on the old one", "[mobile-link]") {
+  rig r(6 * 1024 * 1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  const std::string file = "gen/000001/extra.bin";
+  const auto expected_size = r.payload.size() + 1;
+  for (const bool swap : {false, true}) {
+    std::atomic<std::uint64_t> got{0};
+    std::atomic<bool> started{false};
+    mv::expected done = mv::err(mv::status::internal);
+    std::thread reader([&] {
+      done = s.read_range("c2c2c2c2c2c2c2c2", file, 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+        got += b.size();
+        started = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        return true;
+      }, nullptr, false);
+    });
+    while (!started) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    mob::route_report again;
+    // The foreground and a network change, in the middle of a read.
+    if (swap) {
+      REQUIRE(s.reconnect(again));
+    } else {
+      REQUIRE(s.connect(again));
+    }
+    reader.join();
+    CHECK(done);
+    CHECK(got.load() == expected_size);
+  }
+}
+
+TEST_CASE("link: readers after a drop share one new connection", "[mobile-link]") {
+  rig r;
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  s.disconnect();
+  std::atomic<int> ok{0};
+  std::vector<std::thread> readers;
+  for (int i = 0; i < 40; ++i) {
+    readers.emplace_back([&] {
+      if (s.stat("c2c2c2c2c2c2c2c2", "current.json")) ++ok;
+    });
+  }
+  for (auto& t : readers) t.join();
+  CHECK(ok.load() == 40);
+}
+
+TEST_CASE("sync: bytes stop when they may not move, resume when they may, and a half-done install finishes", "[mobile-link]") {
+  rig r(6 * 1024 * 1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  auto cfg = r.sync_config();
+  const fs::path library = cfg.library_dir;
+
+  // Mobile data from the start: nothing moves.
+  auto plan = mob::check_catalogue(s, cfg);
+  REQUIRE(plan.outcome == mob::sync_outcome::copy_available);
+  std::uint64_t moved = 0;
+  auto out = mob::copy_catalogue(s, cfg, plan, [&](std::uint64_t d, std::uint64_t) { moved = d; }, nullptr, [] { return false; });
+  CHECK(out == mob::sync_outcome::waiting);
+  CHECK(moved == 0);
+
+  // Wi-Fi goes away in the middle: it stops there, and nothing is installed.
+  std::atomic<bool> on_wifi{true};
+  plan = mob::check_catalogue(s, cfg);
+  out = mob::copy_catalogue(s, cfg, plan, [&](std::uint64_t d, std::uint64_t) {
+    moved = d;
+    if (d > 1024 * 1024) on_wifi = false;
+  }, nullptr, [&] { return on_wifi.load(); });
+  CHECK(out == mob::sync_outcome::waiting);
+  CHECK(moved < 3 * 1024 * 1024);
+  CHECK_FALSE(fs::exists(library / "installed.json"));
+
+  // Back on Wi-Fi: it picks up and installs.
+  plan = mob::check_catalogue(s, cfg);
+  CHECK(plan.done_bytes > 1024 * 1024);
+  REQUIRE(mob::copy_catalogue(s, cfg, plan, nullptr, nullptr, [] { return true; }) == mob::sync_outcome::installed);
+
+  // A crash after the folder's rename and before the record's: no second download.
+  fs::remove(library / "installed.json");
+  plan = mob::check_catalogue(s, cfg);
+  REQUIRE(plan.outcome == mob::sync_outcome::copy_available);
+  moved = 0;
+  CHECK(mob::copy_catalogue(s, cfg, plan, [&](std::uint64_t d, std::uint64_t) { moved = std::max(moved, d - plan.done_bytes); },
+                            nullptr) == mob::sync_outcome::installed);
+  CHECK(moved == 0);
+  CHECK(mob::read_installed(cfg.library_dir)->generation == 1);
 }
 
 namespace {
@@ -557,7 +721,6 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
   fake_packs remote;
   remote.gate_open = false;
   mob::thumb_cache cache((d.root / "thumbs").string(), 1 << 20, remote);
-  cache.set_catalogue_root("root");
 
   const auto want = [&](std::uint64_t at, std::uint32_t len) {
     catalog::thumb_location w;
@@ -575,10 +738,11 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
     ++done_count;
     done_cv.notify_all();
   };
-  // Queued together while the reader is held, so they merge.
+  // Queued together before any worker may read (no catalogue root yet), so they merge into one.
   auto a = cache.request(want(0, 1000), 0, record);
   auto b = cache.request(want(1000, 1000), 0, record);
   auto c = cache.request(want(5000, 1000), 0, record);
+  cache.set_catalogue_root("root");
   {
     std::lock_guard lock(remote.m);
     remote.gate_open = true;
@@ -588,12 +752,44 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
     std::unique_lock lock(done_m);
     REQUIRE(done_cv.wait_for(lock, std::chrono::seconds(5), [&] { return done_count == 3; }));
   }
-  CHECK(remote.reads.load() <= 2);  // the first may have started alone; the rest join one read
+  CHECK(remote.reads.load() == 1);
   const int reads_before = remote.reads.load();
 
   // On disk now: no network.
   auto again = cache.request(want(0, 1000), 0, record);
   CHECK(remote.reads.load() == reads_before);
+
+  // A request cancelled while it waits hears so, once.
+  {
+    std::lock_guard lock(remote.m);
+    remote.gate_open = false;
+  }
+  std::atomic<int> told{0};
+  std::atomic<bool> cancelled{false};
+  // Two in flight hold the workers at the gate; the third waits in the queue and is cancelled.
+  (void)cache.request(want(900000, 1000), 0, [](auto) {});
+  (void)cache.request(want(950000, 1000), 0, [](auto) {});
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  auto waiting = cache.request(want(700000, 1000), 1, [&](mv::result<std::vector<std::uint8_t>> r) {
+    ++told;
+    cancelled = !r && r.error() == mv::status::cancelled;
+  });
+  waiting->stop.store(true);
+  {
+    std::lock_guard lock(remote.m);
+    remote.gate_open = true;
+  }
+  remote.cv.notify_all();
+  for (int i = 0; i < 200 && told.load() == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(told.load() == 1);
+  CHECK(cancelled.load());
+  // A want that could never be a tile fails alone.
+  catalog::thumb_location bad = want(0, 1000);
+  bad.pack = "../etc";
+  bool refused = false;
+  (void)cache.request(bad, 0, [&](mv::result<std::vector<std::uint8_t>> r) { refused = !r; });
+  CHECK(refused);
 
   // Under its budget however much arrives.
   for (int i = 0; i < 400; ++i) {

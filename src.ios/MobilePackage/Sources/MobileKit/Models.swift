@@ -272,6 +272,8 @@ public enum OutsideRouteResult: Hashable, Sendable {
 public enum PairingEvent: Hashable, Sendable {
   case working(PairingStep)
   case passed(PairingStep)
+  /// Not done by this build (the Mac step until nearby sync exists).
+  case skipped(PairingStep)
   case outsideRoute(OutsideRouteResult)
 }
 

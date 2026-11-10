@@ -49,6 +49,7 @@ enum class sync_outcome : std::uint8_t {
   no_space,
   unreachable,    // the NAS could not be read
   cancelled,
+  waiting,        // copy(): `allowed` said no (mobile data without the person's say-so); resumes later
 };
 
 struct sync_file {
@@ -72,6 +73,9 @@ struct sync_plan {
 };
 
 using sync_progress = std::function<void(std::uint64_t done, std::uint64_t total)>;
+// Asked before each file and with each chunk: may bytes move now? (§8.4: not
+// over mobile data unless the person said so.) Empty: always.
+using sync_allowed = std::function<bool()>;
 
 // Reads only current.json and, when it is newer, the manifest: safe over any
 // connection. Never touches the installed catalogue.
@@ -80,7 +84,8 @@ using sync_progress = std::function<void(std::uint64_t done, std::uint64_t total
 // Brings a checked plan down and swaps it in. outcome is installed, or the
 // reason it is not; the previous catalogue is untouched unless installed.
 [[nodiscard]] sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan& plan,
-                                          const sync_progress& progress, const cancel_flag* cancel);
+                                          const sync_progress& progress, const cancel_flag* cancel,
+                                          const sync_allowed& allowed = {});
 
 // Everything this phone holds of the library: "Forget this library".
 void remove_library(const std::string& library_dir);

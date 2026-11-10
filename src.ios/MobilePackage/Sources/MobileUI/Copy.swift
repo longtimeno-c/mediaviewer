@@ -40,7 +40,7 @@ public enum FailureCopy {
 
   public static let notMatched =
     "Nothing was paired. Scan the code again from MediaViewer on your own computer."
-  public static let noMobileData = "This iPad has no mobile data, so the route from outside wasn't tested."
+  public static let noMobileData = "No mobile data right now, so the route from outside wasn't tested."
 
   public static func cannotDecode(_ format: String) -> String {
     "This phone can't open \(format) files. Showing the thumbnail."

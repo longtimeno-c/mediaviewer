@@ -195,6 +195,7 @@ bool split_host_port(std::string_view text, std::string& host, std::uint16_t& po
     p = text.substr(colon + 1);
   }
   if (h.empty() || h.size() > 255) return false;
+  if (p.empty() || p.size() > 5) return false;
   unsigned v = 0;
   const auto [stop, why] = std::from_chars(p.data(), p.data() + p.size(), v);
   if (why != std::errc{} || stop != p.data() + p.size() || v == 0 || v > 65535) return false;
@@ -235,15 +236,6 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
   return {};
 }
 
-bool public_route_answers(const service_config& c, int timeout_ms) {
-  if (c.public_name.empty()) return false;
-  service_config only = c;
-  only.local.clear();
-  link_session s(std::move(only));
-  route_report r;
-  return static_cast<bool>(s.connect(r, nullptr, timeout_ms));
-}
-
 // ---- link_session ------------------------------------------------------------------------------
 
 link_session::link_session(service_config c) : config_(std::move(c)) {}
@@ -254,9 +246,26 @@ expected link_session::connect(route_report& report, const cancel_flag* cancel, 
   std::lock_guard single(connect_m_);
   {
     std::lock_guard lock(m_);
-    if (live_) live_->close();
-    live_.reset();
+    if (shut_) return err(status::cancelled);
+    // A live link is kept: foregrounding never cuts a copy, a clip or a read.
+    if (live_ && !live_->closed()) {
+      report = last_report_;
+      return {};
+    }
   }
+  return race_locked(report, cancel, timeout_ms);
+}
+
+expected link_session::reconnect(route_report& report, const cancel_flag* cancel, int timeout_ms) {
+  std::lock_guard single(connect_m_);
+  {
+    std::lock_guard lock(m_);
+    if (shut_) return err(status::cancelled);
+  }
+  return race_locked(report, cancel, timeout_ms);
+}
+
+expected link_session::race_locked(route_report& report, const cancel_flag* cancel, int timeout_ms) {
   const auto targets = targets_of(config_);
   if (targets.empty()) return err(status::invalid_arg);
   const auto opts = options_for(config_);
@@ -277,9 +286,28 @@ expected link_session::connect(route_report& report, const cancel_flag* cancel, 
     }
     return err(c.error());
   }
-  std::lock_guard lock(m_);
-  live_ = std::move(*c);
+  std::shared_ptr<serve::client> previous;
+  {
+    std::lock_guard lock(m_);
+    if (shut_) {
+      (*c)->close();
+      return err(status::cancelled);
+    }
+    // Swapped, never closed here: reads already running on the old client hold
+    // it and finish on it; it closes when the last of them lets go.
+    previous = std::move(live_);
+    live_ = std::move(*c);
+    last_report_ = report;
+  }
   return {};
+}
+
+void link_session::shut_down() noexcept {
+  {
+    std::lock_guard lock(m_);
+    shut_ = true;
+  }
+  disconnect();
 }
 
 void link_session::disconnect() noexcept {
@@ -308,7 +336,7 @@ result<std::shared_ptr<serve::client>> link_session::client(const cancel_flag* c
     if (live_ && !live_->closed()) return live_;
   }
   route_report report;
-  if (auto c = connect(report, cancel); !c) return err(c.error());
+  if (auto c = connect(report, cancel); !c) return err(c.error());  // single-flight: re-checks under connect_m_
   std::lock_guard lock(m_);
   if (live_) return live_;
   return err(status::io);

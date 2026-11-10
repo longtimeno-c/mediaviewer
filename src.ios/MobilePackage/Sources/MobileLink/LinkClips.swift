@@ -16,7 +16,7 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   private static let scheme = "mvlink"
   private var loaders: [Int64: ClipLoader] = [:]
   private let lock = NSLock()
-  private var measuredMbps: Int?
+  private var measured: (epoch: Int, mbps: Int)?  // per route: a network change measures again
 
   public init(connection: LinkConnection, images: LinkImages) {
     self.connection = connection
@@ -24,7 +24,7 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   }
 
   public func route(for item: MediaItem) async -> ClipRoute {
-    guard let asset = Int64(item.id.raw), let link = connection.link else { return .unavailable(.synologyUnreachable) }
+    guard let asset = Int64(item.id.raw), let link = await connection.awaitLink() else { return .unavailable(.synologyUnreachable) }
     var info = mv_asset_info()
     guard mv_asset_read(link.raw, asset, &info) == 0 else { return .unavailable(.originalGone) }
     // Before AVPlayer gets it: a player error could not say which folder is missing.
@@ -52,7 +52,8 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
 
   /// What a clip can count on: measured once per connection, from the file itself, on the first play.
   private func throughput(link: LinkHandle, asset: Int64, size: UInt64) async -> Int? {
-    if let known = lock.withLock({ measuredMbps }) { return known }
+    let epoch = connection.epoch
+    if let known = lock.withLock({ measured }), known.epoch == epoch { return known.mbps }
     let result: Int? = await onLinkQueue {
       let probe = min(size, 4 << 20)
       var got: UInt64 = 0
@@ -67,12 +68,12 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
       let seconds = max(CACurrentMediaTime() - started, 0.001)
       return Int(Double(got) * 8 / seconds / 1_000_000)
     }
-    if let result { lock.withLock { measuredMbps = result } }
+    if let result { lock.withLock { measured = (epoch, result) } }
     return result
   }
 
   public func moments(for item: MediaItem) async -> [Moment] {
-    guard let asset = Int64(item.id.raw), let link = connection.link else { return [] }
+    guard let asset = Int64(item.id.raw), let link = await connection.awaitLink() else { return [] }
     final class Collector { var rows: [Moment] = [] }
     let collector = Collector()
     _ = mv_moments_get(link.raw, asset, { ctx, start, kind, text in
@@ -112,7 +113,7 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   }
 
   private func runDownload(item: MediaItem, report: @escaping (Int64, Int64) -> Void) async throws -> URL {
-    guard let asset = Int64(item.id.raw), let link = connection.link else { throw MediaFailure.synologyUnreachable }
+    guard let asset = Int64(item.id.raw), let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
     var info = mv_asset_info()
     guard mv_asset_read(link.raw, asset, &info) == 0 else { throw MediaFailure.originalGone }
     let target = LinkFolders.clips.appendingPathComponent(item.fileName)

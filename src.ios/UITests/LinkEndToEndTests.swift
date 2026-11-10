@@ -39,7 +39,12 @@ final class LinkEndToEndTests: XCTestCase {
     let grid = app.collectionViews.firstMatch
     let deadline = Date().addingTimeInterval(120)
     var sawRetry = false
+    let carryOn = app.buttons["Continue"]  // the Simulator has no mobile data: the outside test is skipped
     while Date() < deadline {
+      if carryOn.exists {
+        save("1b-outside-skipped")
+        carryOn.tap()
+      }
       if again.exists {
         sawRetry = true
         save("2-interrupted")

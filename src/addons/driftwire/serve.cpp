@@ -564,8 +564,15 @@ void drive_requests(const config& cfg, std::uint32_t ops, std::span<const std::u
 void server::state::session(conn& c) {
   channel& ch = *c.ch;
   message m;
-  // The first message after ident: what the client can do.
-  if (auto r = ch.receive(m, kServeHelloMs); !r || m.type != msg::serve_hello) {
+  // The first message after ident: what the client can do. A device already on
+  // the list that pairs again (a re-scan, or a pairing whose answer it never
+  // heard) is told it is paired, spends no code, and goes on.
+  auto first = ch.receive(m, kServeHelloMs);
+  if (first && m.type == msg::serve_pair) {
+    if (!ch.send(msg::serve_paired, std::string_view("{}"))) return;
+    first = ch.receive(m, kServeHelloMs);
+  }
+  if (!first || m.type != msg::serve_hello) {
     (void)ch.cancel(kCancelWaitMs, "protocol");
     return;
   }

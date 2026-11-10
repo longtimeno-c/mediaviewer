@@ -8,6 +8,7 @@ import CMobileLink
 import Foundation
 import ImageIO
 import MobileKit
+import MobileLinkSupport
 import UIKit
 import UniformTypeIdentifiers
 
@@ -16,6 +17,7 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   private let memory = NSCache<NSNumber, UIImage>()
   private let tiles = NSCache<NSNumber, UIImage>()
   private let decodeQueue = DispatchQueue(label: "mediaviewer.link.decode", qos: .userInitiated, attributes: .concurrent)
+  private let originals = OriginalStore(dir: LinkFolders.originals, limitBytes: 1 << 30)
 
   public init(connection: LinkConnection) {
     self.connection = connection
@@ -59,7 +61,7 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   }
 
   private func requestThumb(asset: Int64, lane: Int32) async -> Data? {
-    guard let link = connection.link else { return nil }
+    guard let link = await connection.awaitLink() else { return nil }
     let box = ContinuationBox()
     let handle = CancelHandle()
     return await withTaskCancellationHandler {
@@ -116,24 +118,30 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     if let tile = cachedImage(for: item.id) { continuation.yield(.image(tile, isOriginal: false)) }
     if let thumb = await thumbnail(for: item) { continuation.yield(.image(thumb, isOriginal: false)) }
     try Task.checkCancellation()
-    guard let link = connection.link else { throw MediaFailure.synologyUnreachable }
+    guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
 
     var info = mv_asset_info()
     guard mv_asset_read(link.raw, asset, &info) == 0 else { throw MediaFailure.originalGone }
     let total = Int64(info.size)
-    let target = LinkFolders.originals.appendingPathComponent("\(asset)-\(info.size)")
-    if !FileManager.default.fileExists(atPath: target.path) {
-      continuation.yield(.loading(doneBytes: 0, totalBytes: total))
-      let status = await readOriginal(link: link, asset: asset, size: info.size, to: target) { done in
-        continuation.yield(.loading(doneBytes: done, totalBytes: total))
+    continuation.yield(.loading(doneBytes: 0, totalBytes: total))
+    let size = info.size
+    // One fetch per original however many viewers ask; its own part file; checked for its size.
+    let target: URL
+    do {
+      target = try await originals.file(key: "\(asset)-\(size)", size: size) { part in
+        let status = await Self.readOriginal(link: link, asset: asset, size: size, to: part) { done in
+          continuation.yield(.loading(doneBytes: done, totalBytes: total))
+        }
+        switch status {
+        case 0: return
+        case 11: throw CancellationError()
+        case 9: throw MediaFailure.originalGone
+        case 18: throw MediaFailure.folderNotOnNAS
+        default: throw MediaFailure.synologyUnreachable
+        }
       }
-      switch status {
-      case 0: break
-      case 11: throw CancellationError()
-      case 9: throw MediaFailure.originalGone
-      case 18: throw MediaFailure.folderNotOnNAS
-      default: throw MediaFailure.synologyUnreachable
-      }
+    } catch is OriginalStoreError {
+      throw MediaFailure.synologyUnreachable  // cut short: the next look asks again
     }
     let longest = Int(max(fittingPixels.width, fittingPixels.height))
     let decoded = await withCheckedContinuation { (out: CheckedContinuation<UIImage?, Never>) in
@@ -144,45 +152,23 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     }
     guard let decoded else { throw MediaFailure.cannotDecode(format: Self.formatName(of: item.fileName)) }
     continuation.yield(.image(decoded, isOriginal: true))
-    Self.trimOriginals()
   }
 
-  private func readOriginal(link: LinkHandle, asset: Int64, size: UInt64, to target: URL, progress: @escaping (Int64) -> Void) async -> Int32 {
+  /// Writes the whole original to `part`, which the store then checks and moves in.
+  private static func readOriginal(link: LinkHandle, asset: Int64, size: UInt64, to part: URL, progress: @escaping (Int64) -> Void) async -> Int32 {
     await withLinkCancel { cancel in
       await onLinkQueue {
-        let part = target.appendingPathExtension("part")
         guard FileManager.default.createFile(atPath: part.path, contents: nil), let file = try? FileHandle(forWritingTo: part) else { return 13 }
         defer { try? file.close() }
         let writer = FileWriter(file: file, progress: progress)
         let box = Unmanaged.passRetained(writer)
-        let status = mv_file_read(link.raw, asset, 0, size, 1, cancel.raw, { ctx, offset, data, length in
+        let status = mv_file_read(link.raw, asset, 0, size, 1, cancel.raw, { ctx, _, data, length in
           guard let ctx, let data else { return 0 }
           return Unmanaged<FileWriter>.fromOpaque(ctx).takeUnretainedValue().write(Data(bytes: data, count: length)) ? 1 : 0
         }, box.toOpaque())
         box.release()
-        if status == 0 { try? FileManager.default.moveItem(at: part, to: target) } else { try? FileManager.default.removeItem(at: part) }
         return status
       }
-    }
-  }
-
-  private static func trimOriginals() {
-    let fm = FileManager.default
-    guard let names = try? fm.contentsOfDirectory(at: LinkFolders.originals, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return }
-    var total = 0
-    var entries: [(URL, Date, Int)] = []
-    for url in names {
-      guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]), let date = values.contentModificationDate else { continue }
-      let size = values.fileSize ?? 0
-      total += size
-      entries.append((url, date, size))
-    }
-    entries.sort { $0.1 > $1.1 }
-    var allowed = 1 << 30
-    for entry in entries where total > allowed {
-      if allowed > 0 { allowed = 1 << 30 }
-      try? fm.removeItem(at: entry.0)
-      total -= entry.2
     }
   }
 

@@ -38,6 +38,7 @@ typedef enum mv_link_status {
   MV_LINK_COPY_AVAILABLE = 16,
   MV_LINK_INTERNAL = 17,
   MV_LINK_NO_FOLDER = 18,     /* the service has no folder named for this file's share */
+  MV_LINK_WAITING = 19,       /* the copy stopped because bytes may not move now (mobile data) */
 } mv_link_status;
 
 /* ---- pairing ------------------------------------------------------------- */
@@ -82,8 +83,6 @@ int32_t mv_device_key_new(uint8_t private_key[32], uint8_t public_key[32]);
 /* BLOCKS. Redeems the code on the first route that answers. */
 int32_t mv_pair_redeem(const mv_pair_info* info, const uint8_t device_key[32], const char* device_name,
                        mv_cancel* cancel, mv_route_report* report);
-/* BLOCKS. Does the public route answer? 1 yes, 0 no. */
-int32_t mv_pair_public_answers(const mv_pair_info* info, const uint8_t device_key[32], const char* device_name);
 
 /* ---- the library's connection -------------------------------------------- */
 
@@ -106,8 +105,13 @@ typedef struct mv_link_config {
 mv_mobile_link* mv_link_open(const mv_link_config* config);
 void mv_link_close(mv_mobile_link* link);
 
-/* BLOCKS. Races the routes and keeps the connection. */
+/* BLOCKS. Keeps a live connection (the report says how it was reached); races the routes only when
+ * there is none. Never cuts reads in flight. */
 int32_t mv_link_connect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
+/* BLOCKS. The network changed: races again and swaps the winner in; reads in flight finish on the old one. */
+int32_t mv_link_reconnect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
+/* "Forget this library": cuts every read and refuses every later connect. Close it afterwards. */
+void mv_link_shut_down(mv_mobile_link* link);
 int32_t mv_link_is_connected(const mv_mobile_link* link);
 void mv_link_disconnect(mv_mobile_link* link);
 
@@ -123,12 +127,15 @@ typedef struct mv_sync_report {
 } mv_sync_report;
 
 typedef void (*mv_sync_progress_fn)(void* ctx, uint64_t done_bytes, uint64_t total_bytes);
+/* Asked before each file and with each chunk: 1 bytes may move now, 0 they may not (MV_LINK_WAITING). */
+typedef int32_t (*mv_sync_allowed_fn)(void* ctx);
 
 /* BLOCKS. Reads current.json and, when newer, the manifest. Safe on any network. */
 int32_t mv_sync_check(mv_mobile_link* link, mv_sync_report* report);
-/* BLOCKS. Copies the checked generation with resume and swaps it in. */
-int32_t mv_sync_copy(mv_mobile_link* link, mv_cancel* cancel, mv_sync_progress_fn progress, void* ctx,
-                     mv_sync_report* report);
+/* BLOCKS. Copies the newest generation with resume and swaps it in. One copy per library at a
+ * time: a second waits, then finds it up to date. `allowed` may be NULL (always). */
+int32_t mv_sync_copy(mv_mobile_link* link, mv_cancel* cancel, mv_sync_allowed_fn allowed, mv_sync_progress_fn progress,
+                     void* ctx, mv_sync_report* report);
 
 typedef struct mv_catalogue_info {
   int32_t present;

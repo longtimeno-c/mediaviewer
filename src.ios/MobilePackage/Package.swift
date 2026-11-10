@@ -25,7 +25,9 @@ let package = Package(
     .target(name: "MobileFixtures", dependencies: ["MobileKit", "MobileUI"]),
     // The real connection, sync, pictures and clips (src/mobile/link*, sync*), linked by the app.
     .target(name: "CMobileLink", publicHeadersPath: "include"),
-    .target(name: "MobileLink", dependencies: ["MobileKit", "CMobileLink"]),
+    .target(name: "MobileLinkSupport"),
+    .target(name: "MobileLink", dependencies: ["MobileKit", "CMobileLink", "MobileLinkSupport"]),
+    .testTarget(name: "MobileLinkSupportTests", dependencies: ["MobileLinkSupport"]),
   ],
   swiftLanguageModes: [.v5]
 )

@@ -12,7 +12,7 @@ public struct InterimLibrary: LibraryStore {
   public init(connection: LinkConnection) { self.connection = connection }
 
   public func list(in scope: LibraryScope) async throws -> any MediaList {
-    guard let link = connection.link else { return ArrayMediaList([]) }
+    guard let link = await connection.awaitLink() else { return ArrayMediaList([]) }
     return await onLinkQueue {
       final class Rows { var items: [MediaItem] = [] }
       let rows = Rows()

@@ -679,6 +679,7 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 | Hostile Wi-Fi impersonating the NAS | The sealed handshake proves the paired identity, and no password exists to capture |
 | A photographed QR code | The pairing code is single-use and short-lived, and the Mac shows each added phone |
 | Replay of an old signed catalogue | `(epoch, generation)` only goes up (§5, rule 7) |
+| A swapped JPEG-512 tile | Not checked per tile: a pack's hash is in the signed manifest, but the phone reads tiles by range and cannot hash the pack. A tile reaches only ImageIO, from a service the phone proved is the paired one, so the threat is someone who can write the share and swaps a pack in place. A per-tile hash in `thumbs.idx` would close it (open). |
 | An unclaimed service on the NAS | Claimed only once, only from its own network, and only by a desktop that can write to the share (§7.2) |
 | The review grant leaks | It opens only the review server's sample photos and is revocable |
 | Lost phone | iOS data protection, Keychain device-only, optional Face ID, "Forget this library" wipes everything; revoking the phone from the desktop removes it from both the NAS service and the Mac's paired devices |

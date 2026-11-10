@@ -34,9 +34,9 @@ class thumb_cache {
   // The catalogue root every pack is under (service root id); empty pauses reads.
   void set_catalogue_root(std::string root);
 
-  // `lane` 0: on screen, 1: prefetch. `done` runs on a worker. Cancel the
-  // returned flag to drop a want nobody needs now: a want shared with a live
-  // one stays alive for that one.
+  // `lane` 0: on screen, 1: prefetch. `done` runs exactly once, on a worker or
+  // the caller's thread, with the bytes or why not (status::cancelled once the
+  // returned flag is set). A want shared with a live one stays alive for that one.
   std::shared_ptr<cancel_flag> request(const ai::catalog::thumb_location& where, int lane, done_fn done);
 
   [[nodiscard]] std::uint64_t bytes_used() const;

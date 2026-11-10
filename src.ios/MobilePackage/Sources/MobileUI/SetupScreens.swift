@@ -441,6 +441,7 @@ struct ConnectScreen: View {
         switch event {
         case .working(let step): steps[step] = .working
         case .passed(let step): steps[step] = .passed
+        case .skipped(let step): steps[step] = .skipped
         case .outsideRoute(let result):
           switch result {
           case .reachable:

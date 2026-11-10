@@ -89,17 +89,22 @@ struct route_report {
 [[nodiscard]] expected pair_device(const service_config& c, std::string_view code, route_report& report,
                                    const cancel_flag* cancel = nullptr, int timeout_ms = 5000);
 
-// Tries only the public route, for the "works from outside" answer.
-[[nodiscard]] bool public_route_answers(const service_config& c, int timeout_ms = 4000);
 
 class link_session final : public remote_file {
  public:
   explicit link_session(service_config c);
   ~link_session() override;
 
-  // Races the routes now, whatever the current state; re-resolves the names.
+  // Keeps a live link (and says how it was reached); races the routes only
+  // when there is none. Single-flight: concurrent callers share one race.
   [[nodiscard]] expected connect(route_report& report, const cancel_flag* cancel = nullptr, int timeout_ms = 5000);
+  // The network changed: races again and swaps the winner in. Reads running on
+  // the old client finish on it. On failure the old client stays.
+  [[nodiscard]] expected reconnect(route_report& report, const cancel_flag* cancel = nullptr, int timeout_ms = 5000);
+  // Cuts everything now (reads end with status::io).
   void disconnect() noexcept;
+  // "Forget this library": disconnects and refuses every later connect.
+  void shut_down() noexcept;
   [[nodiscard]] bool connected() const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;
@@ -114,11 +119,14 @@ class link_session final : public remote_file {
   // The live client, connecting first if there is none.
   [[nodiscard]] result<std::shared_ptr<driftwire::serve::client>> client(const cancel_flag* cancel);
   void dropped(const std::shared_ptr<driftwire::serve::client>& c) noexcept;
+  [[nodiscard]] expected race_locked(route_report& report, const cancel_flag* cancel, int timeout_ms);  // connect_m_ held
 
   service_config config_;
   mutable std::mutex connect_m_;  // single-flight connect; held across the race, on a worker
   mutable std::mutex m_;          // guards live_
   std::shared_ptr<driftwire::serve::client> live_;
+  route_report last_report_;  // under m_
+  bool shut_ = false;         // under m_
 };
 
 }  // namespace mv::mobile

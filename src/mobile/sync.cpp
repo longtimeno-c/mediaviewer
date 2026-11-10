@@ -320,96 +320,13 @@ sync_plan check_catalogue(remote_file& remote, const sync_config& c) {
   return plan;
 }
 
-sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan& plan, const sync_progress& progress,
-                            const cancel_flag* cancel) {
-  if (plan.outcome != sync_outcome::copy_available) return plan.outcome;
+namespace {
+
+// Writes the record naming generation `name` (already in gen/), then tidies.
+sync_outcome finish_install(const sync_config& c, sync_plan& plan, const std::string& name) {
   std::error_code ec;
   const fs::path library = c.library_dir;
-  const std::string name = gen_dir_name(plan.epoch, plan.generation);
-  const fs::path staging = library / "staging" / name;
-  fs::create_directories(staging, ec);
-  if (ec) return sync_outcome::no_space;
-  // A half-copied older generation is no use now.
-  for (fs::directory_iterator it(library / "staging", ec), end; !ec && it != end; it.increment(ec)) {
-    if (it->path().filename() != name) {
-      std::error_code e2;
-      fs::remove_all(it->path(), e2);
-    }
-  }
-  ec.clear();
-  const std::uint64_t needed = plan.total_bytes - std::min(plan.done_bytes, plan.total_bytes);
-  if (const auto room = free_bytes(library); room != 0 && needed + kSpaceMargin > room) {
-    plan.outcome = sync_outcome::no_space;
-    plan.needed_bytes = needed;
-    return plan.outcome;
-  }
-
-  std::uint64_t done_total = plan.done_bytes;
-  if (progress) progress(done_total, plan.total_bytes);
-  for (const sync_file& f : plan.files) {
-    const fs::path final_path = f.model ? library / f.local_rel : staging / f.local_rel;
-    if (fs::file_size(final_path, ec) == f.size && !ec) continue;
-    ec.clear();
-    fs::create_directories(final_path.parent_path(), ec);
-    if (ec) return sync_outcome::no_space;
-    const fs::path part = final_path.string() + ".part";
-    std::uint64_t have = fs::file_size(part, ec);
-    if (ec || have > f.size) {
-      if (!ec) fs::remove(part, ec);
-      have = 0;
-      ec.clear();
-    }
-    if (have < f.size) {
-      const int fd = ::open(part.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
-      if (fd < 0) return sync_outcome::no_space;
-      bool write_failed = false;
-      std::uint64_t at = have;
-      auto got = remote.read_range(
-          plan.catalogue_root, f.remote_rel, at, f.size - at,
-          [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
-            if (offset != at) return false;
-            if (::write(fd, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
-              write_failed = true;
-              return false;
-            }
-            at += bytes.size();
-            done_total += bytes.size();
-            if (progress) progress(done_total, plan.total_bytes);
-            return true;
-          },
-          cancel, true);
-#if defined(F_FULLFSYNC)
-      (void)::fcntl(fd, F_FULLFSYNC);
-#else
-      (void)::fsync(fd);
-#endif
-      ::close(fd);
-      if (write_failed) return sync_outcome::no_space;
-      if (!got) return outcome_of_read(got.error());
-      if (at != f.size) return sync_outcome::unreachable;  // cut short: the next run resumes
-    }
-    if (cancel && cancel->stopped()) return sync_outcome::cancelled;
-    const auto hash = sha256_file_hex(part);
-    if (!hash || *hash != f.sha256) {
-      std::error_code e2;
-      fs::remove(part, e2);  // nothing of a bad file is resumed
-      return sync_outcome::rejected;
-    }
-    fs::rename(part, final_path, ec);
-    if (ec) return sync_outcome::no_space;
-  }
-  if (!write_atomic(staging / "manifest.json", plan.manifest_text)) return sync_outcome::no_space;
-
-  // The commit: one rename of the folder, then one of the record.
   const fs::path gen_root = library / "gen";
-  fs::create_directories(gen_root, ec);
-  ec.clear();
-  const fs::path installed_dir = gen_root / name;
-  fs::remove_all(installed_dir, ec);
-  ec.clear();
-  fs::rename(staging, installed_dir, ec);
-  if (ec) return sync_outcome::no_space;
-
   const auto prior = read_installed(c.library_dir);
   installed_state next;
   next.library_id = c.library_id;
@@ -450,6 +367,118 @@ sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan
   }
   plan.outcome = sync_outcome::installed;
   return plan.outcome;
+}
+
+}  // namespace
+
+sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan& plan, const sync_progress& progress,
+                            const cancel_flag* cancel, const sync_allowed& allowed) {
+  if (plan.outcome != sync_outcome::copy_available) return plan.outcome;
+  std::error_code ec;
+  const fs::path library = c.library_dir;
+  const std::string name = gen_dir_name(plan.epoch, plan.generation);
+  const fs::path staging = library / "staging" / name;
+  const fs::path gen_root = library / "gen";
+  const fs::path installed_dir = gen_root / name;
+  const auto may_move = [&] { return !allowed || allowed(); };
+
+  // A crash between the folder's rename and the record's: the generation is
+  // all here, so only the record is missing.
+  {
+    std::ifstream had(installed_dir / "manifest.json", std::ios::binary);
+    if (had) {
+      const std::string text((std::istreambuf_iterator<char>(had)), std::istreambuf_iterator<char>());
+      if (text == plan.manifest_text) return finish_install(c, plan, name);
+    }
+  }
+  fs::create_directories(staging, ec);
+  if (ec) return sync_outcome::no_space;
+  // A half-copied older generation is no use now.
+  for (fs::directory_iterator it(library / "staging", ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->path().filename() != name) {
+      std::error_code e2;
+      fs::remove_all(it->path(), e2);
+    }
+  }
+  ec.clear();
+  const std::uint64_t needed = plan.total_bytes - std::min(plan.done_bytes, plan.total_bytes);
+  if (const auto room = free_bytes(library); room != 0 && needed + kSpaceMargin > room) {
+    plan.outcome = sync_outcome::no_space;
+    plan.needed_bytes = needed;
+    return plan.outcome;
+  }
+
+  std::uint64_t done_total = plan.done_bytes;
+  if (progress) progress(done_total, plan.total_bytes);
+  for (const sync_file& f : plan.files) {
+    const fs::path final_path = f.model ? library / f.local_rel : staging / f.local_rel;
+    if (fs::file_size(final_path, ec) == f.size && !ec) continue;
+    if (!may_move()) return sync_outcome::waiting;
+    ec.clear();
+    fs::create_directories(final_path.parent_path(), ec);
+    if (ec) return sync_outcome::no_space;
+    const fs::path part = final_path.string() + ".part";
+    std::uint64_t have = fs::file_size(part, ec);
+    if (ec || have > f.size) {
+      if (!ec) fs::remove(part, ec);
+      have = 0;
+      ec.clear();
+    }
+    if (have < f.size) {
+      const int fd = ::open(part.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+      if (fd < 0) return sync_outcome::no_space;
+      bool write_failed = false;
+      bool paused = false;
+      std::uint64_t at = have;
+      auto got = remote.read_range(
+          plan.catalogue_root, f.remote_rel, at, f.size - at,
+          [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+            if (offset != at) return false;
+            if (!may_move()) {
+              paused = true;
+              return false;
+            }
+            if (::write(fd, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
+              write_failed = true;
+              return false;
+            }
+            at += bytes.size();
+            done_total += bytes.size();
+            if (progress) progress(done_total, plan.total_bytes);
+            return true;
+          },
+          cancel, true);
+#if defined(F_FULLFSYNC)
+      (void)::fcntl(fd, F_FULLFSYNC);
+#else
+      (void)::fsync(fd);
+#endif
+      ::close(fd);
+      if (write_failed) return sync_outcome::no_space;
+      if (paused) return sync_outcome::waiting;
+      if (!got) return outcome_of_read(got.error());
+      if (at != f.size) return sync_outcome::unreachable;  // cut short: the next run resumes
+    }
+    if (cancel && cancel->stopped()) return sync_outcome::cancelled;
+    const auto hash = sha256_file_hex(part);
+    if (!hash || *hash != f.sha256) {
+      std::error_code e2;
+      fs::remove(part, e2);  // nothing of a bad file is resumed
+      return sync_outcome::rejected;
+    }
+    fs::rename(part, final_path, ec);
+    if (ec) return sync_outcome::no_space;
+  }
+  if (!write_atomic(staging / "manifest.json", plan.manifest_text)) return sync_outcome::no_space;
+
+  // The commit: one rename of the folder, then one of the record.
+  fs::create_directories(gen_root, ec);
+  ec.clear();
+  fs::remove_all(installed_dir, ec);
+  ec.clear();
+  fs::rename(staging, installed_dir, ec);
+  if (ec) return sync_outcome::no_space;
+  return finish_install(c, plan, name);
 }
 
 void remove_library(const std::string& library_dir) {

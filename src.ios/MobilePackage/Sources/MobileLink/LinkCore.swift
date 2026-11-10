@@ -94,29 +94,28 @@ func withLinkCancel<T>(_ body: (LinkCancel) async -> T) async -> T {
   }
 }
 
-/// The three folders the core and caches use, all excluded from iCloud backup (§8.3).
+/// The folders the core and caches use, all excluded from iCloud backup (§8.3). Naming them touches
+/// nothing; `prepare()` makes them, and runs on every open, since Forget removes them.
 enum LinkFolders {
-  static let library: URL = {
-    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    return prepared(base.appendingPathComponent("library", isDirectory: true))
-  }()
-
-  static let thumbs: URL = prepared(cache("thumbs"))
-  static let originals: URL = prepared(cache("originals"))
-  static let clips: URL = prepared(cache("clips"))
+  static let library: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("library", isDirectory: true)
+  static let thumbs = cache("thumbs")
+  static let originals = cache("originals")
+  static let clips = cache("clips")
 
   private static func cache(_ name: String) -> URL {
     FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent(name, isDirectory: true)
   }
 
-  private static func prepared(_ url: URL) -> URL {
-    let fm = FileManager.default
-    try? fm.createDirectory(at: url, withIntermediateDirectories: true,
-                            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
-    var u = url
-    var values = URLResourceValues()
-    values.isExcludedFromBackup = true
-    try? u.setResourceValues(values)
-    return url
+  /// Off the main thread only.
+  static func prepare() {
+    for url in [library, thumbs, originals, clips] {
+      try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
+                                               attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+      var u = url
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      try? u.setResourceValues(values)
+    }
   }
 }

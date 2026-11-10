@@ -6,7 +6,7 @@
 
 #include <vector>
 
-#include "addons/ai/catalog.h"
+#include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
 #include "mobile/link.h"
@@ -17,7 +17,33 @@ namespace {
 
 constexpr std::string_view kPrefix = "mediaviewer://pair#";
 constexpr int kVersion = 1;
-constexpr std::size_t kMaxText = 256;
+// One less than the ABI's fields (mv_pair_info), so nothing is ever cut short.
+constexpr std::size_t kMaxId = 127, kMaxName = 255, kMaxAddress = 255, kMaxCode = 255;
+
+// Text a person reads or a path is built from: no control characters (NUL
+// included), no direction overrides that could make one name look like another.
+bool clean_text(const std::string& s) {
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    const auto c = static_cast<unsigned char>(s[i]);
+    if (c < 0x20 || c == 0x7f) return false;
+    if (c == 0xC2 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) >= 0x80 &&
+        static_cast<unsigned char>(s[i + 1]) <= 0x9f) {
+      return false;  // C1 controls
+    }
+    if (c == 0xD8 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0x9C) return false;  // U+061C
+    if (c == 0xE2 && i + 2 < s.size()) {
+      const auto b1 = static_cast<unsigned char>(s[i + 1]), b2 = static_cast<unsigned char>(s[i + 2]);
+      // U+200B..U+200F, U+202A..U+202E, U+2066..U+2069
+      if (b1 == 0x80 && ((b2 >= 0x8B && b2 <= 0x8F) || (b2 >= 0xAA && b2 <= 0xAE))) return false;
+      if (b1 == 0x81 && b2 >= 0xA6 && b2 <= 0xA9) return false;
+    }
+  }
+  return true;
+}
+
+bool text_ok(const std::string* s, std::size_t max, bool may_be_empty = false) {
+  return s && (may_be_empty || !s->empty()) && s->size() <= max && clean_text(*s);
+}
 
 bool key_of(const std::string* hex, std::array<std::uint8_t, 32>& out) {
   if (!hex) return false;
@@ -57,13 +83,13 @@ result<pair_payload> parse_pair_payload(std::string_view text) {
   const std::string* code = doc->str("code");
   const auto expires = doc->integer("expires");
   const json::value* service = doc->find("service");
-  if (!id || id->empty() || id->size() > kMaxText || !name || name->empty() || name->size() > kMaxText || !code ||
-      code->empty() || code->size() > kMaxText || !expires || !service) {
+  if (!text_ok(id, kMaxId) || !text_ok(name, kMaxName) || !text_ok(code, kMaxCode) || !expires || !service) {
     return err(status::invalid_arg);
   }
   const std::string* local = service->str("local");
   const std::string* pub = service->str("public");
-  if (!local || !pub || !address_ok(*local) || !address_ok(*pub) || (local->empty() && pub->empty()) ||
+  if (!text_ok(local, kMaxAddress, true) || !text_ok(pub, kMaxAddress, true) || !address_ok(*local) ||
+      !address_ok(*pub) || (local->empty() && pub->empty()) ||
       !key_of(service->str("identity"), p.identity) || !key_of(doc->str("publisher_key"), p.publisher_key) ||
       !key_of(doc->str("access_key"), p.access_key)) {
     return err(status::invalid_arg);
@@ -74,7 +100,7 @@ result<pair_payload> parse_pair_payload(std::string_view text) {
   p.public_name = *pub;
   p.code = *code;
   p.expires = *expires;
-  p.fingerprint = ai::catalog::fingerprint(p.publisher_key);
+  p.fingerprint = driftwire::pairing_check(p.library_id, p.publisher_key, p.identity, p.access_key);
   return p;
 }
 

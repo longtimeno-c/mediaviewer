@@ -25,7 +25,7 @@ struct pair_payload {
   std::array<std::uint8_t, 32> access_key{};
   std::string code;
   std::int64_t expires = 0;
-  std::string fingerprint;  // catalog::fingerprint of publisher_key
+  std::string fingerprint;  // driftwire::pairing_check over the library, both keys and the access key
 };
 
 inline constexpr std::size_t kMaxPayloadBytes = 4096;

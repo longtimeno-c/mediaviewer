@@ -33,8 +33,7 @@ struct mv_mobile_link {
   std::unique_ptr<link_session> session;
   std::unique_ptr<thumb_cache> thumbs;
 
-  std::mutex plan_m;
-  sync_plan plan;  // under plan_m: the checked generation
+  std::mutex copy_m;  // one copy per library at a time
 
   mutable std::shared_mutex view_m;
   std::unique_ptr<generation_view> view;  // under view_m
@@ -96,6 +95,7 @@ mv_link_status status_of_outcome(sync_outcome o) {
     case sync_outcome::no_space: return MV_LINK_NO_SPACE;
     case sync_outcome::unreachable: return MV_LINK_UNREACHABLE;
     case sync_outcome::cancelled: return MV_LINK_CANCELLED;
+    case sync_outcome::waiting: return MV_LINK_WAITING;
   }
   return MV_LINK_INTERNAL;
 }
@@ -233,13 +233,6 @@ int32_t mv_pair_redeem(const mv_pair_info* info, const uint8_t device_key[32], c
   });
 }
 
-int32_t mv_pair_public_answers(const mv_pair_info* info, const uint8_t device_key[32], const char* device_name) {
-  return catch_all([&]() -> int32_t {
-    if (!info || !device_key) return 0;
-    return public_route_answers(service_of(info, device_key, device_name)) ? 1 : 0;
-  });
-}
-
 mv_mobile_link* mv_link_open(const mv_link_config* c) {
   try {
     if (!c || !c->library_dir || !c->cache_dir || !c->library_id || !c->identity || !c->access_key || !c->device_key ||
@@ -277,13 +270,28 @@ int32_t mv_link_connect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* r
     route_report r;
     auto done = l->session->connect(r, cancel ? cancel->flag.get() : nullptr);
     fill_report(r, report);
+    if (!done) return status_of_route(done.error(), r);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_link_reconnect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return MV_LINK_INVALID;
+    route_report r;
+    auto done = l->session->reconnect(r, cancel ? cancel->flag.get() : nullptr);
+    fill_report(r, report);
     {
       std::lock_guard lock(l->roots_m);
-      l->roots_known = false;  // the service may have changed its folders
+      l->roots_known = false;
     }
     if (!done) return status_of_route(done.error(), r);
     return MV_LINK_OK;
   });
+}
+
+void mv_link_shut_down(mv_mobile_link* l) {
+  if (l) l->session->shut_down();
 }
 
 int32_t mv_link_is_connected(const mv_mobile_link* l) { return l && l->session->connected() ? 1 : 0; }
@@ -306,44 +314,39 @@ int32_t mv_sync_check(mv_mobile_link* l, mv_sync_report* report) {
     if (plan.outcome == sync_outcome::copy_available || plan.outcome == sync_outcome::up_to_date) {
       if (!plan.catalogue_root.empty()) l->thumbs->set_catalogue_root(plan.catalogue_root);
     }
-    std::lock_guard lock(l->plan_m);
-    l->plan = std::move(plan);
     return report->outcome;
   });
 }
 
-int32_t mv_sync_copy(mv_mobile_link* l, mv_cancel* cancel, mv_sync_progress_fn progress, void* ctx, mv_sync_report* report) {
+int32_t mv_sync_copy(mv_mobile_link* l, mv_cancel* cancel, mv_sync_allowed_fn allowed, mv_sync_progress_fn progress,
+                     void* ctx, mv_sync_report* report) {
   return catch_all([&]() -> int32_t {
     if (!l) return MV_LINK_INVALID;
-    sync_plan plan;
-    {
-      std::lock_guard lock(l->plan_m);
-      plan = l->plan;
+    if (report) std::memset(report, 0, sizeof *report);
+    // One copy per library: two would share staging, and the second's tidy could
+    // remove what the first just installed. The check is made inside the lock,
+    // against installed.json as it is now.
+    std::lock_guard one(l->copy_m);
+    sync_plan plan = check_catalogue(*l->session, l->sync);
+    if (report) {
+      report->epoch = plan.epoch;
+      report->generation = plan.generation;
+      report->total_bytes = plan.total_bytes;
+      report->done_bytes = plan.done_bytes;
     }
     if (plan.outcome != sync_outcome::copy_available) {
-      plan = check_catalogue(*l->session, l->sync);
-      if (plan.outcome != sync_outcome::copy_available) {
-        if (report) {
-          std::memset(report, 0, sizeof *report);
-          report->outcome = status_of_outcome(plan.outcome);
-          report->epoch = plan.epoch;
-          report->generation = plan.generation;
-        }
-        return status_of_outcome(plan.outcome);
-      }
+      if (report) report->outcome = status_of_outcome(plan.outcome);
+      return status_of_outcome(plan.outcome);
     }
     const auto outcome = copy_catalogue(
         *l->session, l->sync, plan,
         [&](std::uint64_t done, std::uint64_t total) {
           if (progress) progress(ctx, done, total);
         },
-        cancel ? cancel->flag.get() : nullptr);
+        cancel ? cancel->flag.get() : nullptr,
+        [&] { return !allowed || allowed(ctx) != 0; });
     if (report) {
-      std::memset(report, 0, sizeof *report);
       report->outcome = status_of_outcome(outcome);
-      report->epoch = plan.epoch;
-      report->generation = plan.generation;
-      report->total_bytes = plan.total_bytes;
       report->needed_bytes = plan.needed_bytes;
     }
     if (outcome == sync_outcome::installed) reload_view(l);
@@ -450,9 +453,13 @@ int32_t mv_asset_folder_check(mv_mobile_link* l, int64_t asset) {
 int32_t mv_moments_get(mv_mobile_link* l, int64_t asset, mv_moment_fn fn, void* ctx) {
   return catch_all([&]() -> int32_t {
     if (!l || !fn) return MV_LINK_INVALID;
-    std::shared_lock lock(l->view_m);
-    if (!l->view) return MV_LINK_NOT_FOUND;
-    for (const auto& m : l->view->moments(asset)) fn(ctx, m.start_ms, m.kind, m.text.c_str());
+    std::vector<moment_row> rows;
+    {
+      std::shared_lock lock(l->view_m);
+      if (!l->view) return MV_LINK_NOT_FOUND;
+      rows = l->view->moments(asset);
+    }
+    for (const auto& m : rows) fn(ctx, m.start_ms, m.kind, m.text.c_str());
     return MV_LINK_OK;
   });
 }
@@ -460,11 +467,14 @@ int32_t mv_moments_get(mv_mobile_link* l, int64_t asset, mv_moment_fn fn, void* 
 int32_t mv_assets_list(mv_mobile_link* l, mv_listed_asset_fn fn, void* ctx) {
   return catch_all([&]() -> int32_t {
     if (!l || !fn) return MV_LINK_INVALID;
-    std::shared_lock lock(l->view_m);
-    if (!l->view) return MV_LINK_NOT_FOUND;
-    l->view->for_each_asset([&](const generation_view::listed_asset& a) {
-      fn(ctx, a.id, a.kind, a.taken_at, a.duration_ms, a.name.c_str());
-    });
+    // Rows first, callbacks after: the lock is never held across the host's code.
+    std::vector<generation_view::listed_asset> rows;
+    {
+      std::shared_lock lock(l->view_m);
+      if (!l->view) return MV_LINK_NOT_FOUND;
+      l->view->for_each_asset([&](const generation_view::listed_asset& a) { rows.push_back(a); });
+    }
+    for (const auto& a : rows) fn(ctx, a.id, a.kind, a.taken_at, a.duration_ms, a.name.c_str());
     return MV_LINK_OK;
   });
 }

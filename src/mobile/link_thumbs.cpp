@@ -14,6 +14,18 @@ namespace fs = std::filesystem;
 namespace {
 constexpr std::uint64_t kMergeGap = 32 * 1024;    // a gap worth reading through
 constexpr std::uint64_t kMaxMerged = 2 * 1024 * 1024;
+constexpr std::uint32_t kMaxTile = 8u * 1024 * 1024;  // a JPEG-512 is tens of kilobytes
+constexpr std::size_t kMaxPackName = 64;
+
+// thumbs.idx comes from the signed catalogue, but a name still becomes a path.
+bool plausible(const ai::catalog::thumb_location& w) {
+  if (w.length == 0 || w.length > kMaxTile || w.pack.empty() || w.pack.size() > kMaxPackName || w.pack.front() == '.') {
+    return false;
+  }
+  return std::all_of(w.pack.begin(), w.pack.end(), [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+  });
+}
 
 // Pack name, offset and length together are what the pack says is this tile;
 // a pack is named by its hash, so this key can never name other bytes.
@@ -62,6 +74,10 @@ thumb_cache::~thumb_cache() {
   cv_.notify_all();
   worker_a_.join();
   worker_b_.join();
+  // Whatever was still queued hears that it will not come.
+  for (auto& w : queue_) {
+    for (auto& [flag, done] : w->waiters) done(err(status::cancelled));
+  }
 }
 
 void thumb_cache::set_catalogue_root(std::string root) {
@@ -76,6 +92,10 @@ std::string thumb_cache::path_of(const std::string& name) const { return dir_ + 
 
 std::shared_ptr<cancel_flag> thumb_cache::request(const ai::catalog::thumb_location& where, int lane, done_fn done) {
   auto flag = std::make_shared<cancel_flag>();
+  if (!plausible(where)) {
+    done(err(status::corrupt));  // this want fails; the worker and the others go on
+    return flag;
+  }
   const std::string key = key_of(where);
   // A disk hit needs no queue and no network, on the caller's own thread.
   auto cached = read_whole(path_of(key));
@@ -110,18 +130,26 @@ void thumb_cache::worker() {
   scan();
   for (;;) {
     std::vector<std::shared_ptr<want>> batch;
+    std::vector<done_fn> dropped;  // told "cancelled" outside the lock: every request hears once
     std::string root;
     {
       std::unique_lock lock(m_);
       cv_.wait(lock, [this] { return stop_ || (!queue_.empty() && !root_.empty()); });
-      if (stop_) return;
+      if (stop_) break;
       root = root_;
       // Abandoned wants go first, so a fast scroll leaves nothing behind.
-      std::erase_if(queue_, [this](const std::shared_ptr<want>& w) {
+      std::erase_if(queue_, [this, &dropped](const std::shared_ptr<want>& w) {
         if (!w->abandoned()) return false;
+        for (auto& [flag, done] : w->waiters) dropped.push_back(std::move(done));
+        w->waiters.clear();
         by_key_.erase(w->key);
         return true;
       });
+    }
+    for (auto& done : dropped) done(err(status::cancelled));
+    {
+      std::unique_lock lock(m_);
+      if (stop_) break;
       if (queue_.empty()) continue;
       // The lead: what is on screen before anything else, then the oldest.
       auto lead = std::min_element(queue_.begin(), queue_.end(), [](const auto& a, const auto& b) { return a->lane < b->lane; });
@@ -199,7 +227,11 @@ void thumb_cache::worker() {
         waiters = std::move(w->waiters);
       }
       for (auto& [flag, done] : waiters) {
-        if (!flag->stopped()) done(out.has_value() ? result<std::vector<std::uint8_t>>(*out) : result<std::vector<std::uint8_t>>(err(out.error())));
+        if (flag->stopped()) {
+          done(err(status::cancelled));
+        } else {
+          done(out.has_value() ? result<std::vector<std::uint8_t>>(*out) : result<std::vector<std::uint8_t>>(err(out.error())));
+        }
       }
     }
     if (!stored.empty()) {
