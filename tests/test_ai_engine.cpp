@@ -1099,6 +1099,7 @@ struct rig {
     d.phone_quiet_s = phone_quiet;
     d.phone_link_retry_s = link_retry;
     d.phone_link_after_hand_over = after_hand_over;
+    d.phone_link_code_ttl_s = code_ttl;
     d.phone_min_interval_s = phone_interval;
     d.phone_share_poll_s = phone_poll;
     d.phone_thumb_budget_s = phone_budget;
@@ -1264,6 +1265,7 @@ struct rig {
   double phone_quiet = 3600;
   double link_retry = 30;
   std::function<void()> after_hand_over;
+  double code_ttl = 300;
   double phone_interval = 3600;
   double phone_poll = 3600;
   double phone_budget = 0;
@@ -7219,6 +7221,7 @@ struct fake_driftwire {
   int pending = 0;     // revokes the NAS has not heard yet
   bool waiting = true;  // the code shown is still waiting on the service
   int claim_timeouts = 0;  // claims answered status::timeout before one goes through
+  mv::status pair_stop_error = mv::status::ok;  // what pair_stop answers (ok: done)
   std::vector<std::pair<std::string, std::string>> devices;
   std::vector<std::string> calls;
   std::mutex m;
@@ -7253,6 +7256,7 @@ struct fake_driftwire {
       return w.take();
     }
     if (method == "roots") return std::string("{\"roots\":[]}");
+    if (method == "pair_stop" && pair_stop_error != mv::status::ok) return mv::err(pair_stop_error);
     if (method == "claim") {
       if (claim_timeouts > 0) {
         --claim_timeouts;
@@ -7703,4 +7707,100 @@ TEST_CASE("phone link: a code left showing at quit is withdrawn at the next star
   (void)link_done(a);
   std::lock_guard lock(d.m);
   CHECK(std::count(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == 1);
+}
+
+namespace {
+
+// Quits with a code showing, then starts again: what the next start sees.
+void quit_with_a_code(rig& a, fake_driftwire& d) {
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  a.eng.reset();
+  std::lock_guard lock(d.m);
+  d.calls.clear();
+}
+
+std::size_t count_of(fake_driftwire& d, const char* method) {
+  std::lock_guard lock(d.m);
+  return static_cast<std::size_t>(std::count(d.calls.begin(), d.calls.end(), std::string(method)));
+}
+
+}  // namespace
+
+TEST_CASE("phone link: a pair after a failed stale withdraw keeps its code", "[ai][engine][phone-link]") {
+  rig a;
+  fake_driftwire d;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  quit_with_a_code(a, d);
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::io;  // the NAS is briefly away
+  }
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  CHECK(count_of(d, "pair_stop") >= 1);  // tried (once per refresh, the start's own too), failed, still owed
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::ok;
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  const auto v = link_done(a);
+  CHECK_FALSE(v.str("qr")->empty());
+  CHECK(count_of(d, "pair_stop") == 0);  // the new code is not withdrawn by the old debt
+  // And the debt is gone: a later look withdraws nothing.
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair_stop\"}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  CHECK(count_of(d, "pair_stop") == 0);
+}
+
+TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definite answer", "[ai][engine][phone-link]") {
+  SECTION("the NAS stays away past the code's lifetime") {
+    rig a;
+    a.code_ttl = 1;
+    fake_driftwire d;
+    a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+    quit_with_a_code(a, d);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = mv::status::io;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+    a.start();
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    CHECK(count_of(d, "pair_stop") == 0);  // nothing left to withdraw: the NAS dropped it
+  }
+  SECTION("the NAS answers no (another owner, the service gone)") {
+    rig a;
+    fake_driftwire d;
+    a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+    quit_with_a_code(a, d);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = mv::status::permission_denied;
+    }
+    a.start();
+    for (int i = 0; i < 3; ++i) {
+      REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+      (void)link_done(a);
+    }
+    CHECK(count_of(d, "pair_stop") == 1);  // asked once; that answer settles it
+  }
 }

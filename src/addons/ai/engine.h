@@ -279,6 +279,9 @@ struct engine_deps {
   double phone_thumb_budget_s = 1800;
   // A revoke the NAS has not heard: asked again after this, doubling to an hour.
   double phone_link_retry_s = 30;
+  // How long a pairing code lives on the NAS (and a code left at quit is
+  // worth withdrawing).
+  double phone_link_code_ttl_s = 300;
   // The tests: right after a hand-over is written, before anything reads it back.
   std::function<void()> phone_link_after_hand_over;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
@@ -1291,6 +1294,9 @@ class engine {
     bool mismatch = false;            // the share's library.json goes back on what this desktop publishes
     bool handed_over = false;         // this desktop signed the library away; until the share names its key again
     bool code_left = false;           // a code was on screen when Local search last stopped
+    std::int64_t code_left_until = 0; // unix seconds: the NAS has dropped it by then anyway
+    bool flags_unsaved = false;       // phone/link.json could not be written
+    bool flags_dirty = false;         // to be written once the lock is let go
     bool code_waiting = false;        // the code shown is still on the service
     std::int64_t pending = 0;         // revokes the NAS has not heard
     double retry_s = 0;               // until the next try, doubling

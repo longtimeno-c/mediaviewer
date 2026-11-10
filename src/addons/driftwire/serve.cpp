@@ -977,8 +977,11 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     return;
   }
   (void)c;
-  // Owned and not its owner: closed with nothing said, before any challenge,
-  // so this ends as a refusal and never as "it may have gone through".
+  // Owned and not its owner: closed with no reason given, before any
+  // challenge, so this ends as a refusal and never as "it may have gone
+  // through". The caller can still tell this from a challenge (unowned) or a
+  // failed handshake (no token), but only a caller that could write the token
+  // on the share gets this far.
   if (store->exists(kOwnerName)) {
     const auto held = owner();
     if (!held || *held != *peer) {
@@ -1018,7 +1021,7 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     const auto held = owner();
     lock.unlock();
     if (!held || *held != *peer) {
-      ch->shutdown();  // no word: whether it is owned is not said to anyone but its owner
+      ch->shutdown();  // a racing claim lost: no reason given (see above for what the caller can tell)
       return;
     }
     send_claimed(*ch);

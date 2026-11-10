@@ -1369,7 +1369,9 @@ one. Behind a NAT that rewrites sources, an outside connection can look local, a
 the only gate. `driftwire serve disown` forgets the owner when that desktop is gone.
 Owned, a claim is answered only for the owner's own device key (with a fresh token and proof), with the same
 keys and nothing changed: a claim whose answer was lost can fetch them again. Anyone else's claim on an owned
-service ends with the link closed and nothing said, as a wrong key does.
+service ends with the link closed and no reason given, before any challenge. That is not the silence of a
+wrong key: the handshake completes first, so the caller can tell owned (closed) from unowned (a challenge)
+from no token (no handshake). Only a caller that can write the token on the share learns it.
 
 **Who may do what.** A phone holds a read-only grant. The owner's session alone is granted
 `kAdminOp` and sends `serve_admin` (devices, add or revoke a device, a pairing code, the named folders,

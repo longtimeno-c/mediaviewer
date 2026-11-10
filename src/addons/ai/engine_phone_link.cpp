@@ -7,8 +7,14 @@
 // One request at a time on the thread made here. It waits on the NAS and the
 // Keychain, so none of this runs on the UI, the render or the control thread;
 // the card asks (phone_link) and watches (phone_link_json).
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include <fstream>
 #include <sstream>
 
@@ -23,7 +29,6 @@ std::vector<catalog::shared_file> read_shared_list(const std::string& file);
 
 namespace {
 
-constexpr int kPairTtlMs = 300000;
 constexpr int kPairPollMs = 2000;
 constexpr const char* kKeyName = "catalogue-signing-key";
 
@@ -73,32 +78,63 @@ const char* error_name(status s) noexcept {
 // What must survive Local search restarting (phone/link.json): a hand-over
 // not yet confirmed by a share that reads back, and a code left on the NAS.
 void engine::phone_link_load_flags() {
-  const auto doc = json::parse(slurp(data_dir_ + "/phone/link.json"), 4);
-  if (!doc) return;
+  const std::string file = data_dir_ + "/phone/link.json";
+  std::error_code ec;
+  if (!std::filesystem::exists(fs_path(file), ec)) return;  // nothing ever handed over, nothing left
+  const auto doc = json::parse(slurp(file), 4);
   std::lock_guard lock(phone_link_m_);
+  if (!doc || doc->k != json::kind::object) {
+    // There and unreadable: fail closed. Signing nearby copies with a key
+    // that may have been handed away is worse than not serving nearby; the
+    // next refresh that reads this key on the share clears it.
+    link_.handed_over = true;
+    link_.other_publisher = true;
+    return;
+  }
   link_.handed_over = doc->boolean("handed_over").value_or(false);
   link_.code_left = doc->boolean("code_left").value_or(false);
+  link_.code_left_until = doc->integer("code_left_until").value_or(0);
   if (link_.handed_over) link_.other_publisher = true;
 }
 
 void engine::phone_link_save_flags() {
   bool handed = false, left = false;
+  std::int64_t until = 0;
   {
     std::lock_guard lock(phone_link_m_);
     handed = link_.handed_over;
     left = link_.code_left;
+    until = link_.code_left_until;
   }
   json::writer w;
-  w.begin_object().key("handed_over").boolean(handed).key("code_left").boolean(left).end_object();
+  w.begin_object()
+      .key("handed_over").boolean(handed)
+      .key("code_left").boolean(left)
+      .key("code_left_until").integer(until)
+      .end_object();
   const std::string file = data_dir_ + "/phone/link.json";
+  const std::string part = file + ".part";
   std::error_code ec;
   std::filesystem::create_directories(fs_path(data_dir_ + "/phone"), ec);
-  {
-    std::ofstream out(fs_path(file + ".part"), std::ios::binary | std::ios::trunc);
-    out << w.str();
-    if (!out.flush()) return;
+  // Whole, on the disk, then renamed in: a crash leaves the old file or this one.
+  bool ok = false;
+  if (FILE* f = std::fopen(part.c_str(), "wb")) {
+    const std::string& text = w.str();
+    ok = std::fwrite(text.data(), 1, text.size(), f) == text.size() && std::fflush(f) == 0;
+#if defined(_WIN32)
+    ok = ok && _commit(_fileno(f)) == 0;
+#else
+    ok = ok && ::fsync(::fileno(f)) == 0;
+#endif
+    ok = std::fclose(f) == 0 && ok;
   }
-  std::filesystem::rename(fs_path(file + ".part"), fs_path(file), ec);
+  if (ok) {
+    std::filesystem::rename(fs_path(part), fs_path(file), ec);
+    ok = !ec;
+  }
+  // The engine has no log of its own; the card's state says it, once.
+  std::lock_guard lock(phone_link_m_);
+  link_.flags_unsaved = !ok;
 }
 
 result<std::string> engine::phone_route(const char* method, const std::string& json) {
@@ -165,6 +201,7 @@ void engine::phone_link_stop() noexcept {
       {
         std::lock_guard lock(phone_link_m_);
         link_.code_left = true;
+        link_.code_left_until = static_cast<std::int64_t>(std::time(nullptr)) + static_cast<std::int64_t>(deps_.phone_link_code_ttl_s) + 1;
       }
       phone_link_save_flags();
     }
@@ -210,6 +247,13 @@ void engine::phone_link_loop() {
         }
         if (!showing) (void)phone_route("release", "{}");
       }
+      bool dirty = false;
+      {
+        std::lock_guard lock(phone_link_m_);
+        dirty = link_.flags_dirty;
+        link_.flags_dirty = false;
+      }
+      if (dirty) phone_link_save_flags();
     } catch (...) {
       std::lock_guard lock(phone_link_m_);
       link_.error = "failed";
@@ -254,13 +298,25 @@ void engine::phone_link_tick() {
 }
 
 void engine::phone_link_refresh(bool phones_only) {
-  bool left = false;
+  bool left = false, lapsed = false;
   {
     std::lock_guard lock(phone_link_m_);
-    left = link_.code_left && link_.qr_expires == 0;
+    // Never while a code is showing or being made: the withdraw would take
+    // the new one down (the service holds one code at a time).
+    left = link_.code_left && link_.qr_expires == 0 && link_.busy != "pair";
+    // The NAS drops a code by itself once its lifetime is over.
+    lapsed = link_.code_left && static_cast<std::int64_t>(std::time(nullptr)) >= link_.code_left_until;
   }
-  // A code was showing when Local search last stopped: it goes now.
-  if (left && phone_route("pair_stop", "{}")) {
+  // A code was showing when Local search last stopped: it goes now. A
+  // definite answer (done, refused, not owned, not there) settles it; only a
+  // NAS out of reach leaves it for the next refresh, and never past the code's
+  // own lifetime.
+  bool settled = lapsed;
+  if (left && !lapsed) {
+    const auto r = phone_route("pair_stop", "{}");
+    settled = r || (r.error() != status::io && r.error() != status::timeout && r.error() != status::cancelled);
+  }
+  if (left && settled) {
     {
       std::lock_guard lock(phone_link_m_);
       link_.code_left = false;
@@ -564,7 +620,7 @@ void engine::phone_link_do(const std::string& request) {
     const auto publisher = catalog::public_of(*secret);
     json::writer w;
     w.begin_object()
-        .key("ttl_ms").integer(kPairTtlMs)
+        .key("ttl_ms").integer(static_cast<std::int64_t>(deps_.phone_link_code_ttl_s * 1000))
         .key("library_id").string(library_id)
         .key("publisher_key").string(catalog::to_hex(publisher))
         .end_object();
@@ -603,6 +659,13 @@ void engine::phone_link_do(const std::string& request) {
       return;
     }
     link_.qr_expires = p.expires;
+    // A new code is the one on the service now: nothing left from before to withdraw.
+    const bool was_left = link_.code_left;
+    link_.code_left = false;
+    if (was_left) {
+      // Saved outside the lock, below.
+      link_.flags_dirty = true;
+    }
     link_.code_waiting = true;
     return;
   }
@@ -732,6 +795,7 @@ std::string engine::phone_link_json() const {
   w.key("nearby").boolean(link_.nearby);
   w.key("other_publisher").boolean(link_.other_publisher);
   w.key("mismatch").boolean(link_.mismatch);
+  w.key("flags_unsaved").boolean(link_.flags_unsaved);
   w.key("other_fingerprint").string(link_.other_fingerprint);
   w.key("asking_name").string(link_.asking_name);
   w.key("asking_key").string(link_.asking_key);
