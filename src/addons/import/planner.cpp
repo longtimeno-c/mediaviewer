@@ -47,13 +47,19 @@ bool ensure_hash(const host& h, library_index& idx, const scan_result& scan, sou
 }
 
 // The hash of a file already at a destination: the index's when its size and
-// mtime still match, else read once and indexed. A missing file drops its row.
+// mtime still match, else read once and indexed. A missing file drops its row,
+// but only when its folder answers: a share that is offline says nothing about
+// what is on it, and the row is the only memory of a file renamed since.
 std::optional<digest> destination_hash(const host& h, library_index& idx, const std::string& root,
                                        const std::string& rel, const std::atomic<bool>& cancel) {
   const std::string full = join_native(root, rel);
   auto st = h.stat(full);
   if (!st || st->is_directory) {
-    idx.drop(root, rel);
+    const std::size_t slash = full.find_last_of("/\\");
+    if (slash != std::string::npos) {
+      const auto folder = h.stat(full.substr(0, slash));
+      if (folder && folder->is_directory) idx.drop(root, rel);
+    }
     return std::nullopt;
   }
   if (auto row = idx.by_path(root, rel); row && row->size == st->size && row->mtime == st->mtime) {

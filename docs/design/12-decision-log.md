@@ -1875,6 +1875,23 @@ nothing is noticed before the pack loads (#292), and a held root is not watched 
 **Not measured:** idle CPU with watched roots, and the PR 1 gates during a large copy into a
 watched root, on either platform; the Windows watcher has been compiled only by CI.
 
+**A walk deletes only what it can vouch for, and a damaged `.mvindex` is refused (2026-11-09,
+audit in `docs/plans/mobile.md` §1).** Reading the code showed a share dropping mid-walk could
+delete index rows: a subfolder that failed to open was skipped, a `readdir` error looked like the
+end of the folder, and `end_root_scan` then removed everything unseen, embeddings and face rows
+with it. `io::walk_files` now reports an `incomplete` listing unless each failure was a refused
+permission or a folder really gone (checked against the root's device or attributes after the
+walk, since an unmounted share also reads as "not found"). Only `walk_files2` hears it, as
+`MV_ERR_IO` after the files; Import's and Driftwire's walks behave as before, so a failing card
+still gives up what it can. The engine adds what was listed and deletes nothing. A refused folder
+is complete for the walk but keeps its rows: `keep_unlistable` lists the nearest existing folder of
+each unseen row and spares those that cannot list (one listing per folder, unseen rows only).
+Not exercised against a real share dropping: the tests use a refused folder and a walk made to
+fail. `.mvindex` import noted no read errors, so a damaged file committed as a shorter one, with
+assets marked done and no vectors; row loops now note any failed step and the transaction rolls
+back. Export checks its last writes, flushes each commit and passes `quick_check` before it takes
+its name.
+
 ## Final Cut Pro search (Mac)
 
 **Mac-only, over a shared reader (2026-09-28).** FCP is Mac-only, so the extension and agent have

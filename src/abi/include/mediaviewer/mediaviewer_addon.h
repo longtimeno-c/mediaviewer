@@ -690,7 +690,9 @@ typedef struct mv_host_api {
   /* [worker-thread] walk_files, with the files only a cloud provider has
    * (OneDrive online-only, evicted iCloud Drive) listed too and flagged
    * MV_ADDON_FILE_CLOUD_ONLY. walk_files leaves those out: everything it lists
-   * can be read without the network. Appended: read it only when
+   * can be read without the network. MV_ERR_IO after files were visited
+   * means the listing is partial (a share dropped mid-walk): what was visited
+   * is real, and what was not may still exist. Appended: read it only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* walk_files2)(void* host, const char* root_utf8, int32_t max_depth,
                                   mv_addon_walk2_fn visit, void* user);

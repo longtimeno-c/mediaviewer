@@ -207,6 +207,31 @@ result<host::stat_result> host::stat(const std::string& path) const {
   return r;
 }
 
+result<mv_addon_volume> host::volume_of(const std::string& path) const {
+  mv_addon_volume v{};
+  const mv_status s = api_->volume_of(api_->host, path.c_str(), &v);
+  if (s != MV_OK) return err(to_status(s));
+  return v;
+}
+
+expected host::copy_verified(const std::string& from, const std::string& to,
+                             const std::function<bool()>& cancelled) const {
+  const char* target = to.c_str();
+  mv_addon_copy_request req{};
+  req.source_utf8 = from.c_str();
+  req.targets_utf8 = &target;
+  req.target_count = 1;
+  req.read_back = 1;
+  req.retries = 1;
+  req.user = const_cast<void*>(static_cast<const void*>(&cancelled));
+  req.is_cancelled = [](void* user) -> int32_t { return (*static_cast<const std::function<bool()>*>(user))() ? 1 : 0; };
+  mv_addon_copy_result out{};
+  const mv_status s = api_->copy_verified(api_->host, &req, &out);
+  if (s != MV_OK) return err(to_status(s));
+  if (out.outcome[0] == MV_COPY_CANCELLED) return err(status::cancelled);
+  return out.outcome[0] == MV_COPY_VERIFIED ? expected{} : err(status::io);
+}
+
 expected host::make_directories(const std::string& dir) const {
   const mv_status s = api_->make_directories(api_->host, dir.c_str());
   return s == MV_OK ? expected{} : err(to_status(s));

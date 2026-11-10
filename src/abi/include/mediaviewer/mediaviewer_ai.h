@@ -798,6 +798,15 @@ typedef struct mv_ai_api {
    * when `struct_size` covers it and the pointer is non-NULL. [worker-thread] */
   mv_status(MV_CALL* faces_json)(void* ctx, const uint8_t* rgb, uint32_t width, uint32_t height, uint32_t stride,
                                  const uint8_t* other_rgb, char* out, uint32_t cap, uint32_t* needed);
+  /* ---- phone access (docs/plans/mobile.md §5, §6) --------------------------------- */
+  /* Builds a catalogue generation beside the index and delivers it to
+   * `destination_utf8`/.mediaviewer, on the pack's own thread while indexing goes
+   * on. MV_ERR_BUSY while one runs. Appended: read each only when `struct_size`
+   * covers it and the pointer is non-NULL. [no-block] */
+  mv_status(MV_CALL* phone_publish)(void* ctx, const char* destination_utf8);
+  mv_status(MV_CALL* phone_cancel)(void* ctx);
+  /* {"running","phase","fraction","error","destination","generation","published","assets"} */
+  mv_status(MV_CALL* phone_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

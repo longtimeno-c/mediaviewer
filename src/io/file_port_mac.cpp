@@ -581,18 +581,55 @@ expected file_writer::close() {
 // ---------------------------------------------------------------------------
 namespace {
 
+// How far a walk's listing can be trusted.
+struct walk_trust {
+  bool incomplete = false;  // something failed that says nothing about the files
+  bool vanished = false;    // a name it had just listed was gone: check the root after
+};
+
+void note_walk_failure(walk_trust& t, int error) {
+  switch (error) {
+    case EACCES:
+    case EPERM:
+    case ELOOP:
+    case ENAMETOOLONG:
+      return;  // this folder, for good: the walk is as complete as it can be
+    case ENOENT:
+    case ENOTDIR:
+      t.vanished = true;
+      return;
+    default:
+      t.incomplete = true;  // EIO, ENOTCONN, ETIMEDOUT, ESTALE, EHOSTDOWN, ...
+  }
+}
+
 bool walk_dir(const std::string& dir, const std::string& rel, int depth, int max_depth,
-              std::vector<tree_entry>& out) {
+              std::vector<tree_entry>& out, walk_trust& trust) {
   DIR* d = ::opendir(dir.c_str());
-  if (!d) return depth > 0;  // an unreadable subfolder is skipped; the root is an error
+  if (!d) {
+    if (depth == 0) return false;  // the root is an error
+    note_walk_failure(trust, errno);
+    return true;  // a subfolder is skipped
+  }
   std::vector<std::string> subdirs;
-  while (dirent* ent = ::readdir(d)) {
+  for (;;) {
+    errno = 0;
+    dirent* ent = ::readdir(d);
+    if (!ent) {
+      // End of the folder leaves errno alone; a failed read looks the same
+      // otherwise, and the rest of the folder would be taken for absent.
+      if (errno != 0) trust.incomplete = true;
+      break;
+    }
     const std::string_view name(ent->d_name);
     // ".", "..", AppleDouble "._x", ".Spotlight-V100", ".Trashes": all hidden.
     if (name.empty() || name.front() == '.') continue;
     const std::string path = join_path(dir, name);
     struct stat st{};
-    if (::lstat(path.c_str(), &st) != 0) continue;
+    if (::lstat(path.c_str(), &st) != 0) {
+      note_walk_failure(trust, errno);
+      continue;
+    }
     const std::string child_rel = rel.empty() ? std::string(name) : rel + "/" + std::string(name);
     if (S_ISDIR(st.st_mode)) {
       if (!is_package(name) && depth < max_depth) subdirs.push_back(std::string(name));
@@ -616,7 +653,7 @@ bool walk_dir(const std::string& dir, const std::string& rel, int depth, int max
   ::closedir(d);
   for (const std::string& sub : subdirs) {
     const std::string child_rel = rel.empty() ? sub : rel + "/" + sub;
-    walk_dir(join_path(dir, sub), child_rel, depth + 1, max_depth, out);
+    walk_dir(join_path(dir, sub), child_rel, depth + 1, max_depth, out, trust);
   }
   return true;
 }
@@ -683,12 +720,23 @@ result<std::vector<std::string>> child_directories(std::string_view utf8_dir) {
 }
 
 expected walk_files(std::string_view utf8_root, int max_depth,
-                    const std::function<bool(const tree_entry&)>& visit) {
+                    const std::function<bool(const tree_entry&)>& visit, bool* incomplete) {
   if (utf8_root.empty()) return err(status::invalid_arg);
+  const std::string root(utf8_root);
+  struct stat before{};
+  const bool had_root = ::stat(root.c_str(), &before) == 0;
   std::vector<tree_entry> entries;
-  if (!walk_dir(std::string(utf8_root), std::string(), 0, max_depth, entries)) {
+  walk_trust trust;
+  if (!walk_dir(root, std::string(), 0, max_depth, entries, trust)) {
     return err(status::io);
   }
+  if (trust.vanished) {
+    // A folder deleted under the walk, or the whole share unmounted under it,
+    // which also reads as "no such file": the root is on another device now.
+    struct stat after{};
+    if (!had_root || ::stat(root.c_str(), &after) != 0 || after.st_dev != before.st_dev) trust.incomplete = true;
+  }
+  if (incomplete) *incomplete = trust.incomplete;
   std::sort(entries.begin(), entries.end(), [](const tree_entry& a, const tree_entry& b) {
     return a.relative_utf8 < b.relative_utf8;
   });

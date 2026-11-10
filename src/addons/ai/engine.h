@@ -39,6 +39,7 @@
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
 #include "addons/ai/cloud_files.h"
+#include "addons/driftwire/secrets.h"
 #include "addons/ai/pdf_reader.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
@@ -176,6 +177,8 @@ struct engine_deps {
   // Null when the ai-faces piece is not installed.
   // The embedder on a compute choice (mv_ai_compute), self-tested against CPU.
   std::function<result<std::unique_ptr<face_analyzer>>(std::uint32_t compute)> open_faces;
+  // Where the catalogue's signing key is kept. Unset: this OS's secret store.
+  std::function<std::unique_ptr<driftwire::secrets::store>()> key_store;
   // Audio: an error when the ai-audio piece is not installed.
   std::function<result<loaded_sound>(std::uint32_t compute)> open_sound;
   std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
@@ -469,6 +472,12 @@ class engine {
   // What a file holds and whether its vectors can answer here. [worker-thread]
   [[nodiscard]] result<std::string> inspect_export(const std::string& file);
   [[nodiscard]] std::string transfer_json() const;
+  // docs/plans/mobile.md §5, §6: builds a catalogue generation here and delivers
+  // it to `destination`'s .mediaviewer folder, on its own thread while indexing
+  // goes on. status::busy while one is running. phone_json reports it. [no-block]
+  [[nodiscard]] expected phone_publish(const std::string& destination);
+  void phone_cancel() noexcept;
+  [[nodiscard]] std::string phone_json() const;
   void transfer_cancel() noexcept;
 
   // ---- for tests -----------------------------------------------------------------
@@ -693,7 +702,7 @@ class engine {
   };
   [[nodiscard]] expected walk_dir(const root_row& root, const std::string& dir, int depth, walk_kinds kinds,
                                   std::int64_t gen, std::vector<index_db::seen_file>& batch,
-                                  std::vector<std::int64_t>& changed, bool& failed);
+                                  std::vector<std::int64_t>& changed, bool& failed, std::uint64_t* listed = nullptr);
   // docs/plans/index-watcher.md: walks only the folders the host said
   // changed (MV_ADDON_TREE_* flags; a folder gone takes its rows with it).
   void scan_dirs(const root_row& root, const std::map<std::string, std::uint32_t>& dirs);
@@ -710,6 +719,7 @@ class engine {
   bool see_batch(const root_row& root, std::vector<index_db::seen_file>& batch, std::int64_t gen,
                  std::vector<std::int64_t>& changed);
   // A scan's end: removed assets leave every index, changed ones their vectors.
+  void keep_unlistable(const root_row& root, std::int64_t gen, const std::vector<std::string>* trees = nullptr);
   void end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed);
   // end_root_scan's part after the index: `gone` and `changed` leave the
   // matrices, faces and text rows.
@@ -1195,6 +1205,32 @@ class engine {
     std::string outcome;      // the finished job's counts, a JSON object
   } transfer_;
   std::atomic<bool> transfer_cancel_{false};
+
+  // Phone access: one publish at a time, on its own thread, so a share that
+  // hangs holds up only this and never the control thread.
+  struct phone_view {
+    bool running = false;
+    std::string phase;   // "building" / "sending"
+    double fraction = 0;
+    std::string error;   // "" / unreachable / other_library / no_index / no_folders / cancelled / failed
+    std::string library_id;
+    std::string destination;
+    std::uint64_t generation = 0;   // the last one that became current
+    std::uint64_t high_water = 0;   // the highest ever used: never used twice
+    std::uint64_t epoch = 1;
+    std::string public_key_hex;
+    std::string fingerprint;
+    std::int64_t published_unix = 0;
+    std::uint64_t assets = 0;
+    std::map<std::string, std::string> root_ids;  // index root id -> stable id
+  };
+  void load_phone_state();
+  [[nodiscard]] bool save_phone_state() const;
+  void run_phone_publish(const std::string& destination);
+  mutable std::mutex phone_m_;
+  phone_view phone_;
+  std::atomic<bool> phone_cancel_{false};
+  std::thread phone_thread_;
   std::atomic<bool> transferring_{false};  // workers wait (an import)
   std::deque<std::pair<std::string, std::vector<float>>> text_cache_;
 };

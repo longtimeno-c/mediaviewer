@@ -260,8 +260,17 @@ struct tree_entry {
 // with `cloud_only` set on those not on this machine. `max_depth` bounds recursion
 // (a card is shallow; a network share might not be). `visit` returning false
 // stops the walk and the call returns status::cancelled.
+//
+// A subfolder that cannot be opened is skipped. `incomplete`, when given, says
+// whether the listing can be trusted to be everything there is (2026-11-09):
+// it is set when a folder failed to list for any reason but a refused
+// permission or a folder that has really gone (a share dropping mid-walk, a
+// read error, a timeout). What was listed is still visited, and the call still
+// succeeds: the caller decides. One that deletes what the walk did not list
+// must not do so while this is set.
 [[nodiscard]] expected walk_files(std::string_view utf8_root, int max_depth,
-                                  const std::function<bool(const tree_entry&)>& visit);
+                                  const std::function<bool(const tree_entry&)>& visit,
+                                  bool* incomplete = nullptr);
 
 enum class entry_kind : std::uint8_t {
   file,       // a regular file

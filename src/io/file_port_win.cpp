@@ -649,8 +649,30 @@ std::wstring long_form(const std::wstring& path) {
   return path;
 }
 
+// How far a walk's listing can be trusted (file_port.h walk_files).
+struct walk_trust {
+  bool incomplete = false;  // something failed that says nothing about the files
+  bool vanished = false;    // a name it had just listed was gone: check the root after
+};
+
+void note_walk_failure(walk_trust& t, DWORD error) {
+  switch (error) {
+    case ERROR_ACCESS_DENIED:
+    case ERROR_INVALID_NAME:
+    case ERROR_FILENAME_EXCED_RANGE:
+    case ERROR_DIRECTORY:
+      return;  // this folder, for good: the walk is as complete as it can be
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      t.vanished = true;
+      return;
+    default:
+      t.incomplete = true;  // ERROR_BAD_NETPATH, ERROR_NETNAME_DELETED, ERROR_SEM_TIMEOUT, ...
+  }
+}
+
 bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int max_depth,
-              std::vector<tree_entry>& out) {
+              std::vector<tree_entry>& out, walk_trust& trust) {
   std::wstring glob = dir;
   if (!glob.empty() && glob.back() != L'\\' && glob.back() != L'/') glob.push_back(L'\\');
   const std::wstring prefix = glob;
@@ -658,7 +680,11 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
   WIN32_FIND_DATAW fd{};
   HANDLE find = ::FindFirstFileExW(long_form(glob).c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
                                    nullptr, FIND_FIRST_EX_LARGE_FETCH);
-  if (find == INVALID_HANDLE_VALUE) return depth > 0;
+  if (find == INVALID_HANDLE_VALUE) {
+    if (depth == 0) return false;  // the root is an error
+    note_walk_failure(trust, ::GetLastError());
+    return true;  // a subfolder is skipped
+  }
   std::vector<std::wstring> subdirs;
   do {
     const std::wstring_view name(fd.cFileName);
@@ -691,10 +717,12 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
                     (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE)) != 0;
     out.push_back(std::move(e));
   } while (::FindNextFileW(find, &fd));
+  // Read before FindClose can touch it: a listing cut short ends the same loop.
+  if (::GetLastError() != ERROR_NO_MORE_FILES) trust.incomplete = true;
   ::FindClose(find);
   for (const std::wstring& sub : subdirs) {
     const std::string sub8 = narrow(sub);
-    walk_dir(prefix + sub, rel.empty() ? sub8 : rel + "/" + sub8, depth + 1, max_depth, out);
+    walk_dir(prefix + sub, rel.empty() ? sub8 : rel + "/" + sub8, depth + 1, max_depth, out, trust);
   }
   return true;
 }
@@ -777,11 +805,18 @@ result<std::vector<std::string>> child_directories(std::string_view utf8_dir) {
 }
 
 expected walk_files(std::string_view utf8_root, int max_depth,
-                    const std::function<bool(const tree_entry&)>& visit) {
+                    const std::function<bool(const tree_entry&)>& visit, bool* incomplete) {
   const std::wstring root = wide(utf8_root);
   if (root.empty()) return err(status::invalid_arg);
   std::vector<tree_entry> entries;
-  if (!walk_dir(root, std::string(), 0, max_depth, entries)) return err(status::io);
+  walk_trust trust;
+  if (!walk_dir(root, std::string(), 0, max_depth, entries, trust)) return err(status::io);
+  // A folder deleted under the walk, or the whole share gone, which can also
+  // read as "not found": the root answers only in the first case.
+  if (trust.vanished && ::GetFileAttributesW(long_form(root).c_str()) == INVALID_FILE_ATTRIBUTES) {
+    trust.incomplete = true;
+  }
+  if (incomplete) *incomplete = trust.incomplete;
   std::sort(entries.begin(), entries.end(), [](const tree_entry& a, const tree_entry& b) {
     return a.relative_utf8 < b.relative_utf8;
   });

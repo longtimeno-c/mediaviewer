@@ -330,6 +330,38 @@ TEST_CASE("re-importing writes zero bytes and does not re-read the destination",
   }
 }
 
+// The audit of 2026-11-09: a destination that is offline says nothing about
+// whether its files still exist.
+TEST_CASE("a destination that is offline keeps its ledger rows", "[import][engine]") {
+  rig r;
+  r.make_card();
+  auto [plan_id, plan] = r.plan(r.card(), r.preset());
+  r.run(plan_id);
+
+  const fs::path away = r.dir / "NAS-unmounted";
+  fs::rename(r.dest(), away);
+  {
+    auto [offline, pl] = r.plan(r.card(), r.preset(R"(,"selection":"all")"));
+    (void)offline;
+    (void)pl;
+  }
+  REQUIRE_FALSE(fs::exists(r.dest()));
+  fs::rename(away, r.dest());
+
+  r.wrap.hashes = 0;
+  auto [again, plan2] = r.plan(r.card(), r.preset(R"(,"selection":"all")"));
+  (void)again;
+  CHECK(totals(plan2, "duplicates") == 5);
+  CHECK(r.wrap.hashes == 0);  // the ledger still knew: nothing read again
+
+  SECTION("a file really gone from a reachable destination is forgotten") {
+    fs::remove(r.dest() / "2026/2026-09-21/IMG_0002.JPG");
+    auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"selection":"all")"));
+    (void)pid;
+    CHECK(totals(pl, "selected_units") == 1);
+  }
+}
+
 TEST_CASE("new since last import is a lookup, and the default selection", "[import][engine]") {
   rig r;
   r.make_card();

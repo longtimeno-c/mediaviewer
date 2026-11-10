@@ -15,6 +15,9 @@
 #include <mediaviewer/mediaviewer_ai.h>
 #include <sqlite3.h>
 
+#include "addons/ai/catalog.h"
+#include "addons/ai/sha256.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -652,6 +655,14 @@ struct cloud_world {
   std::set<std::string> online_only;
   std::vector<std::string> log;  // "hydrate x" / "dehydrate x", in order
   std::atomic<bool> unmetered{true};
+  // A walk that lost part of a share: these names are not listed, and the
+  // walk then reports the failure, as the host does after listing what it could.
+  std::set<std::string> walk_misses;
+  std::atomic<bool> walk_fails{false};
+  bool walk_missed(const std::string& name) {
+    std::lock_guard lock(m);
+    return walk_misses.count(name) != 0;
+  }
   bool is_online_only(const std::string& name) {
     std::lock_guard lock(m);
     return online_only.count(name) != 0;
@@ -696,6 +707,7 @@ std::vector<std::pair<std::string, int>> g_walk_log;
 
 int32_t MV_CALL flag_cloud(void* user, const mv_addon_file_entry2* e) {
   auto* c = static_cast<walk2_ctx*>(user);
+  if (e->name_utf8 && c->world->walk_missed(e->name_utf8)) return 1;
   mv_addon_file_entry2 x = *e;
   if (e->name_utf8 && c->world->is_online_only(e->name_utf8)) x.flags |= MV_ADDON_FILE_CLOUD_ONLY;
   return c->visit(c->user, &x);
@@ -713,7 +725,8 @@ mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, 
     g_walk_log.emplace_back(root ? root : "", depth);
   }
   walk2_ctx c{world, visit, user};
-  return real(host, root, depth, &flag_cloud, &c);
+  const mv_status walked = real(host, root, depth, &flag_cloud, &c);
+  return walked == MV_OK && world->walk_fails.load() ? MV_ERR_IO : walked;
 }
 
 // #405: a host from before the rating and exposure fields: its tag_facts
@@ -1038,6 +1051,11 @@ struct rig {
 
   mv::ai::engine_deps deps() {
     mv::ai::engine_deps d;
+    d.key_store = [this]() -> std::unique_ptr<mv::driftwire::secrets::store> {
+      if (no_key_store) return nullptr;
+      fs::create_directories(dir / "keys");
+      return mv::driftwire::secrets::file_store(utf8(dir / "keys"));
+    };
     d.qualities = [] { return std::vector<std::uint32_t>{1, 2}; };
     d.model_name = [](std::uint32_t q) { return q == 1 ? std::string("Fake fast") : std::string("Fake high"); };
     d.backend_available = [](mv::infer::backend) { return false; };
@@ -1193,6 +1211,7 @@ struct rig {
     return rd;
   }
 
+  bool no_key_store = false;
   fs::path photos() const { return dir / "Photos"; }
   void file(const std::string& rel, std::size_t size = 16) { write_bytes(photos() / rel, pattern(size, 7)); }
 
@@ -1372,6 +1391,91 @@ TEST_CASE("an edited file is re-queued and a reopened tree queues only its delta
   REQUIRE(r.eng->root_rescan(1));
   REQUIRE(r.idle());
   CHECK(r.search("red").size() == 1);
+}
+
+// The audit of 2026-11-09: a walk that could not read part of a share is not
+// proof that the files in that part are gone.
+TEST_CASE("a folder the walk may not read keeps its index rows", "[ai][engine]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#endif
+  rig r;
+  r.file("red_car.jpg");
+  r.file("locked/green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  REQUIRE(r.status().assets_total == 2);
+
+  fs::permissions(r.photos() / "locked", fs::perms::none);
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  fs::permissions(r.photos() / "locked", fs::perms::owner_all);
+  CHECK(r.status().assets_total == 2);
+  CHECK(r.search("green").size() == 1);
+
+  SECTION("a folder really deleted still drops out") {
+    fs::remove_all(r.photos() / "locked");
+    REQUIRE(r.eng->root_rescan(1));
+    REQUIRE(r.idle());
+    CHECK(r.status().assets_total == 1);
+  }
+}
+
+TEST_CASE("a root that suddenly lists nothing keeps its rows and says it cannot be read", "[ai][engine]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  // An empty mount point looks like this: a clean listing of nothing. (Files
+  // deleted while watched are reported one by one and do drop out.)
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->walk_misses = {"red_car.jpg", "green_field.jpg"};
+  }
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_total == 2);
+  CHECK(wait_for([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }, kSettleMs));
+}
+
+TEST_CASE("a folder replaced by a file drops its rows", "[ai][engine]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.file("old/green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  fs::remove_all(r.photos() / "old");
+  r.file("old");
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_total == 1);
+}
+
+TEST_CASE("a walk that fails part way adds what it found and deletes nothing", "[ai][engine]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  REQUIRE(r.status().assets_total == 2);
+
+  r.file("blue_sea.jpg");
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->walk_misses.insert("green_field.jpg");
+  }
+  r.cloud->walk_fails = true;
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_total == 3);
+  CHECK(r.search("green").size() == 1);
+  CHECK(r.search("blue").size() == 1);
+  CHECK(wait_for([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }, kSettleMs));
 }
 
 // docs/plans/index-watcher.md: the host watches a remembered folder's tree,
@@ -5606,6 +5710,278 @@ TEST_CASE("an index exported on one machine answers on another without embedding
   auto p = b.eng->result_path(path, 0);
   REQUIRE(p);
   CHECK(fs::path(*p).parent_path() == there);  // B's paths, not A's
+}
+
+// A page of the file's `table` overwritten: the header and the other tables
+// still read, so nothing fails until a row loop reaches it.
+void wreck_table(const std::string& file, const char* table) {
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+  sqlite3_stmt* q = nullptr;
+  REQUIRE(sqlite3_prepare_v2(db, "SELECT rootpage, (SELECT page_size FROM pragma_page_size()) FROM sqlite_master "
+                                 "WHERE type = 'table' AND name = ?1", -1, &q, nullptr) == SQLITE_OK);
+  sqlite3_bind_text(q, 1, table, -1, SQLITE_STATIC);
+  REQUIRE(sqlite3_step(q) == SQLITE_ROW);
+  const std::int64_t page = sqlite3_column_int64(q, 0);
+  const std::int64_t size = sqlite3_column_int64(q, 1);
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  REQUIRE(page > 1);
+  std::fstream f(fs::path(file), std::ios::in | std::ios::out | std::ios::binary);
+  f.seekp((page - 1) * size);
+  const std::string junk(static_cast<std::size_t>(size), '\xEE');
+  f.write(junk.data(), static_cast<std::streamsize>(junk.size()));
+}
+
+TEST_CASE("a damaged .mvindex is refused and leaves the index untouched", "[ai][engine][transfer]") {
+  rig a;
+  a.file("red_car.jpg");
+  a.file("green_field.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(a.idle());
+  const std::string file = utf8(a.dir / "library.mvindex");
+  REQUIRE(a.eng->export_index(file, {}, 0));
+  REQUIRE(*transfer_done(a).integer("status") == 0);
+
+  rig b;
+  const fs::path there = b.dir / "NAS" / "Photos";
+  copy_library(a, there);
+  b.start();
+  REQUIRE(b.idle());
+  auto info = mv::json::parse(*b.eng->inspect_export(file));
+  REQUIRE(info);
+  const std::int64_t file_root = *info->find("roots")->a[0].integer("id");
+
+  wreck_table(file, "frames");
+  REQUIRE(b.eng->import_index(file, map_json(file_root, there), 0));
+  CHECK(*transfer_done(b).integer("status") != 0);
+  REQUIRE(b.idle());
+  // Nothing was marked done with its vectors missing: the folder is indexed
+  // here from its files instead, as if the import had never been tried.
+  CHECK(b.fast->images_embedded.load() == 2);
+  CHECK(b.status().assets_done == 2);
+  CHECK(b.status().frames_indexed == 2);
+}
+
+// ---- Phone access (docs/plans/mobile.md §5, §6) --------------------------------------
+
+mv::json::value phone_done(rig& r) {
+  mv::json::value v;
+  REQUIRE(wait_for(
+      [&] {
+        auto t = mv::json::parse(r.eng->phone_json());
+        if (!t || t->boolean("running") == true) return false;
+        v = *t;
+        return true;
+      },
+      kSettleMs));
+  return v;
+}
+
+std::string read_all(const fs::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+TEST_CASE("a published catalogue is complete, verified and read as the app's own index", "[ai][engine][phone]") {
+  rig a;
+  a.file("red_car.jpg");
+  a.file("green_field.jpg");
+  a.file("nested/blue_sea.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  auto done = phone_done(a);
+  REQUIRE(*done.str("error") == "");
+  CHECK(*done.integer("generation") == 1);
+  CHECK(*done.integer("assets") == 3);
+
+  const fs::path base = nas / ".mediaviewer";
+  auto current = mv::json::parse(read_all(base / "current.json"));
+  REQUIRE(current);
+  REQUIRE(*current->integer("generation") == 1);
+  const fs::path gen = base / "gen" / "000001";
+  REQUIRE(fs::is_directory(gen));
+  CHECK_FALSE(fs::exists(base / "gen" / "000001.part"));
+  CHECK_FALSE(fs::exists(gen / "catalog.db-wal"));
+  CHECK(*mv::ai::sha256_file_hex(utf8(gen / "manifest.json")) == *current->str("manifest_sha256"));
+
+  auto manifest = mv::json::parse(read_all(gen / "manifest.json"));
+  REQUIRE(manifest);
+  CHECK(*manifest->integer("frames") == 3);
+  for (const auto& f : manifest->find("files")->a) {
+    CHECK(*mv::ai::sha256_file_hex(utf8(gen / *f.str("name"))) == *f.str("sha256"));
+  }
+  // Nothing of this machine: no path, and no user.
+  const std::string catalogue = read_all(gen / "catalog.db") + read_all(gen / "manifest.json");
+  CHECK(catalogue.find(utf8(a.photos())) == std::string::npos);
+
+  // The phone's view: the files alone, under the reader's own names.
+  rig phone;
+  const fs::path data = phone.dir / "data";
+  fs::create_directories(data);
+  fs::copy_file(gen / "catalog.db", data / "index.db");
+  fs::copy_file(gen / "settings.json", data / "settings.json");
+  auto rd = phone.start_reader();
+  mv_ai_status st{};
+  rd->status(st);
+  CHECK(st.frames_indexed == 3);
+  auto id = rd->search_text("green", {}, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(rd->wait_search(id, kSettleMs));
+  auto p = rd->result_path(id, 0);
+  REQUIRE(p);
+  const std::string root = *manifest->find("roots")->a[0].str("id");
+  CHECK(*p == "/" + root + "/green_field.jpg");
+}
+
+TEST_CASE("a catalogue is believed only under the key that signed it", "[ai][engine][phone]") {
+  rig a;
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  auto done = phone_done(a);
+  REQUIRE(*done.str("error") == "");
+  CHECK_FALSE(done.str("fingerprint")->empty());
+
+  const fs::path base = nas / ".mediaviewer";
+  auto library = mv::json::parse(read_all(base / "library.json"));
+  REQUIRE(library);
+  const std::string hex = *library->str("public_key");
+  REQUIRE(hex.size() == 64);
+  std::vector<std::uint8_t> key;
+  for (std::size_t i = 0; i < 32; ++i) key.push_back(static_cast<std::uint8_t>(std::stoi(hex.substr(i * 2, 2), nullptr, 16)));
+  const std::string current = read_all(base / "current.json");
+
+  auto ok = mv::ai::catalog::verify_current(current, key);
+  REQUIRE(ok);
+  CHECK(ok->generation == 1);
+  CHECK(ok->epoch == 1);
+  CHECK(ok->manifest_sha256 == *mv::ai::sha256_file_hex(utf8(base / "gen" / "000001" / "manifest.json")));
+
+  SECTION("no field can be changed") {
+    std::string older = current;
+    const auto at = older.find("\"generation\":1");
+    REQUIRE(at != std::string::npos);
+    older.replace(at, 14, "\"generation\":9");
+    CHECK(mv::ai::catalog::verify_current(older, key).error() == mv::status::permission_denied);
+
+    std::string other = current;
+    const auto manifest = other.find("\"manifest_sha256\":\"") + 19;
+    other[manifest] = other[manifest] == 'a' ? 'b' : 'a';
+    CHECK(mv::ai::catalog::verify_current(other, key).error() == mv::status::permission_denied);
+  }
+  SECTION("another key is refused") {
+    const auto stranger = mv::ai::catalog::make_keypair();
+    CHECK(mv::ai::catalog::verify_current(current, stranger.first).error() == mv::status::permission_denied);
+  }
+  SECTION("the key stays the same from one generation to the next") {
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    REQUIRE(*phone_done(a).str("error") == "");
+    auto next = mv::ai::catalog::verify_current(read_all(base / "current.json"), key);
+    REQUIRE(next);
+    CHECK(next->generation == 2);
+  }
+  SECTION("a publisher with another key cannot take the folder over") {
+    REQUIRE(fs::remove_all(a.dir / "keys") > 0);
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    CHECK(*phone_done(a).str("error") == "other_library");
+    CHECK(read_all(base / "current.json") == current);
+  }
+  SECTION("a number is never used twice, even after the share loses it") {
+    fs::remove(base / "current.json");
+    fs::remove_all(base / "gen");
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    CHECK(*phone_done(a).str("error") == "");
+    auto next = mv::ai::catalog::verify_current(read_all(base / "current.json"), key);
+    REQUIRE(next);
+    CHECK(next->generation == 2);
+  }
+}
+
+TEST_CASE("a machine with nowhere to keep the key does not publish", "[ai][engine][phone]") {
+  rig a;
+  a.file("red_car.jpg");
+  a.no_key_store = true;
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  CHECK(*phone_done(a).str("error") == "no_key_store");
+  CHECK_FALSE(fs::exists(nas / ".mediaviewer"));
+}
+
+TEST_CASE("publishing again adds a generation and leaves the last one until it is whole", "[ai][engine][phone]") {
+  rig a;
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  REQUIRE(*phone_done(a).str("error") == "");
+  const fs::path base = nas / ".mediaviewer";
+  const std::string first = read_all(base / "current.json");
+
+  SECTION("a second one goes up by one and the same root keeps its id") {
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    auto done = phone_done(a);
+    REQUIRE(*done.str("error") == "");
+    CHECK(*done.integer("generation") == 2);
+    CHECK(fs::is_directory(base / "gen" / "000001"));
+    auto m1 = mv::json::parse(read_all(base / "gen" / "000001" / "manifest.json"));
+    auto m2 = mv::json::parse(read_all(base / "gen" / "000002" / "manifest.json"));
+    CHECK(*m1->find("roots")->a[0].str("id") == *m2->find("roots")->a[0].str("id"));
+  }
+  SECTION("a folder that cannot be written keeps the current generation") {
+#if defined(_WIN32)
+    SKIP("POSIX permissions");
+#endif
+    fs::permissions(base / "gen", fs::perms::owner_read | fs::perms::owner_exec);
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    auto done = phone_done(a);
+    fs::permissions(base / "gen", fs::perms::owner_all);
+    CHECK(*done.str("error") == "unreachable");
+    CHECK(*done.integer("generation") == 1);
+    CHECK(read_all(base / "current.json") == first);
+  }
+  SECTION("a run that died before it became current does not block the next") {
+    fs::create_directories(base / "gen" / "000002");
+    { std::ofstream(base / "gen" / "000002" / "leftover") << "x"; }
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    auto done = phone_done(a);
+    CHECK(*done.str("error") == "");
+    CHECK(*done.integer("generation") == 2);
+    CHECK_FALSE(fs::exists(base / "gen" / "000002" / "leftover"));
+    CHECK(fs::exists(base / "gen" / "000002" / "catalog.db"));
+  }
+  SECTION("an unreadable library file is a read problem, not someone else's library") {
+    fs::resize_file(base / "library.json", 0);
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    CHECK(*phone_done(a).str("error") == "unreachable");
+  }
+  SECTION("another library's folder is refused") {
+    {
+      std::ofstream out(base / "library.json", std::ios::binary | std::ios::trunc);
+      out << R"({"format":1,"library_id":"someone-else","public_key":"00"})";
+    }
+    REQUIRE(a.eng->phone_publish(utf8(nas)));
+    CHECK(*phone_done(a).str("error") == "other_library");
+    CHECK(read_all(base / "current.json") == first);
+  }
 }
 
 TEST_CASE("documents travel only when ticked, with their text and meaning (.mvindex v2, #354 D3)",

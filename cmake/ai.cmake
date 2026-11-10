@@ -225,6 +225,13 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/host.h
   ${R}/src/addons/ai/index_db.cpp
   ${R}/src/addons/ai/index_db.h
+  ${R}/src/addons/ai/catalog.cpp
+  ${R}/src/addons/ai/catalog.h
+  ${R}/src/addons/driftwire/secrets.h
+  ${R}/src/addons/driftwire/secrets_file.cpp
+  $<$<PLATFORM_ID:Windows>:${R}/src/addons/driftwire/secrets_win.cpp>
+  $<$<PLATFORM_ID:Darwin>:${R}/src/addons/driftwire/secrets_mac.cpp>
+  $<$<PLATFORM_ID:Linux>:${R}/src/addons/driftwire/secrets_linux.cpp>
   ${R}/src/addons/ai/vectors.cpp
   ${R}/src/addons/ai/vectors.h
   ${R}/src/addons/ai/vocabulary.cpp
@@ -263,14 +270,19 @@ set_source_files_properties(${R}/src/addons/ai/pdf_pdfium.cpp PROPERTIES INCLUDE
 target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_model_fetch mv_project_options PRIVATE ${MV_SQLITE_TARGET})
 find_package(Threads REQUIRED)
 target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
+# The catalogue's Ed25519 signature (docs/plans/mobile.md §5).
+target_link_libraries(mv_ai_engine PRIVATE ${MV_SODIUM_TARGET})
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mv_ai_engine PRIVATE ${CMAKE_DL_LIBS})  # secrets_linux.cpp
+endif()
 if(APPLE)
-  target_link_libraries(mv_ai_engine PRIVATE "-framework CoreFoundation" "-framework IOKit"
+  target_link_libraries(mv_ai_engine PRIVATE "-framework Security" "-framework CoreFoundation" "-framework IOKit"
                         "-framework Foundation" "-framework AppKit" "-framework Photos"
                         "-framework AVFoundation" "-framework Network" "-framework Vision"
                         "-framework CoreGraphics")
 endif()
 if(WIN32)
-  target_link_libraries(mv_ai_engine PRIVATE dxgi)  # machine() (#482)
+  target_link_libraries(mv_ai_engine PRIVATE dxgi advapi32 crypt32)  # machine() (#482); the signing key
 endif()
 set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)

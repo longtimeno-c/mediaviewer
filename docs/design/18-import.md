@@ -183,6 +183,8 @@ runs scans, plans and card arrivals in order; each job runs on its own thread.
 - **Priority:** a background import waits between buffers while the present loop is presenting
   (Windows: `mv_present_set_busy` from the lab; Mac: `g_present_busy` from the Metal loop; both
   stay set for 2 s after a dropped frame). Fast never waits.
+- **Offline destinations:** a ledger row is dropped only when the file's folder answers and the
+  file is not in it; a share that is offline says nothing about what is on it (2026-11-09).
 - **Privacy:** hashes, paths, names and reports stay on the machine.
 - **Ports:** volume arrival, eject and uncached read-back live in `io/volume_{win,mac}.cpp` and
   `io/file_port_{win,mac}.cpp` behind portable headers. Windows uses `WM_DEVICECHANGE` and

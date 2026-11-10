@@ -579,6 +579,22 @@ mv_status MV_CALL t_photos_access(void* ctx, uint32_t* out) {
     return MV_OK;
   });
 }
+mv_status MV_CALL t_phone_publish(void* ctx, const char* destination) {
+  return guard([&] {
+    if (!destination) return MV_ERR_INVALID_ARG;
+    const auto r = eng(ctx).phone_publish(destination);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_phone_cancel(void* ctx) {
+  return guard([&] {
+    eng(ctx).phone_cancel();
+    return MV_OK;
+  });
+}
+mv_status MV_CALL t_phone_json(void* ctx, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] { return write_out(eng(ctx).phone_json(), out, cap, needed); });
+}
 mv_status MV_CALL t_export_index(void* ctx, const char* dest, const uint64_t* roots, uint32_t count,
                                  uint32_t flags, uint64_t* out_job) {
   return guard([&] {
@@ -696,6 +712,9 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.person_refine = &t_person_refine;
     a.result_duration = &t_result_duration;
     a.export_index = &t_export_index;
+    a.phone_publish = &t_phone_publish;
+    a.phone_cancel = &t_phone_cancel;
+    a.phone_json = &t_phone_json;
     a.inspect_export = &t_inspect_export;
     a.import_index = &t_import_index;
     a.transfer_json = &t_transfer_json;

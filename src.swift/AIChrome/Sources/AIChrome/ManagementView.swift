@@ -202,6 +202,7 @@ final class ManagementModel: ObservableObject {
 
   /// Settings → Import and export (docs/design/17 "Sharing an index").
   let transfer: IndexTransferModel
+  let phone: PhoneAccessModel
   /// A later MediaViewer window's reader (AITable.readOnly): the view shows
   /// only what works there — People and their photos — and says where the
   /// rest is.
@@ -213,6 +214,7 @@ final class ManagementModel: ObservableObject {
     photosSupported = table.hasPhotos
     photosAccess = PhotosLibrary.status
     transfer = IndexTransferModel(table: table)
+    phone = PhoneAccessModel(table: table)
     transfer.changed = { [weak self] in
       guard let self else { return }
       self.reloadSettings()
@@ -296,6 +298,7 @@ final class ManagementModel: ObservableObject {
     let fetch = FetchLine.from(s)
     if fetch != live.fetch { live.fetch = fetch }
     transfer.poll()
+    phone.poll()
   }
 
   func setPaused(_ paused: Bool) {
@@ -1266,6 +1269,9 @@ struct ManagementView: View {
           IndexTransferSection(model: model.transfer, roots: model.folderRoots,
                                peopleOn: model.facesOn && model.facesReady, docsOn: model.documentFiles)
         }
+      }
+      if model.phone.available {
+        section("Phone access") { PhoneAccessSection(model: model.phone) }
       }
       section("People") {
         row("Find people in your photos",

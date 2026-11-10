@@ -636,6 +636,50 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
   return out;
 }
 
+result<std::vector<std::pair<std::int64_t, std::string>>> index_db::unseen_assets(
+    std::int64_t root, std::int64_t generation, const std::vector<std::string>* trees) {
+  std::lock_guard lock(m_);
+  std::vector<std::pair<std::int64_t, std::string>> out;
+  if (!trees) {
+    stmt q(db_, "SELECT id, path FROM assets WHERE root_id = ?1 AND seen != ?2");
+    q.bind(1, root).bind(2, generation);
+    while (q.step_row()) out.emplace_back(q.i64(0), q.text(1));
+    return out;
+  }
+  // The same range on the path as end_scan_dirs: both separators, bounded by
+  // the next character up.
+  stmt q(db_, "SELECT id, path FROM assets WHERE root_id = ?1 AND seen != ?2 AND path > ?3 AND path < ?4");
+  for (const std::string& dir : *trees) {
+    for (const char sep : {'/', '\\'}) {
+      std::string lo = dir;
+      while (lo.size() > 1 && (lo.back() == '/' || lo.back() == '\\')) lo.pop_back();
+      std::string hi = lo;
+      lo.push_back(sep);
+      hi.push_back(static_cast<char>(sep + 1));
+      q.reset();
+      q.bind(1, root).bind(2, generation).bind(3, lo).bind(4, hi);
+      while (q.step_row()) out.emplace_back(q.i64(0), q.text(1));
+    }
+  }
+  return out;
+}
+
+expected index_db::mark_seen(const std::vector<std::int64_t>& ids, std::int64_t generation) {
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  stmt u(db_, "UPDATE assets SET seen = ?1 WHERE id = ?2");
+  bool ok = true;
+  for (const std::int64_t id : ids) {
+    u.reset();
+    ok = u.bind(1, generation).bind(2, id).run() && ok;
+  }
+  if (!ok || !exec("COMMIT")) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return {};
+}
+
 result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int64_t generation) {
   std::lock_guard lock(m_);
   std::vector<std::int64_t> gone;
