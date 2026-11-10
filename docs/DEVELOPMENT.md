@@ -1362,6 +1362,12 @@ build/bin/mv_import_tests "[cli][e2e]"        # POSIX: two mv_driftwire_cli_test
 # "<address or name>:47614#<key>" (it prints the key) in Driftwire's "Your own relay server (optional)" on
 # the receiving computer. Only a holder of the key can wait there.
 build/bin/mv-driftwire-relay --port 47614      # --key-file F (or MV_RELAY_KEY; else it makes a key and prints it once) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
+# The NAS service (docs/design/28 "The NAS service"), any host; a Mac or Linux box stands in for the NAS here.
+# DIR/serve.json names the port and the folders; DIR/secrets is made 0700. The device key is the phone's public key.
+build/bin/driftwire serve --data DIR init                # prints the identity and, once, the library access key
+build/bin/driftwire serve --data DIR add "My phone" <64-hex-public-key>
+build/bin/driftwire serve --data DIR                     # needs no terminal; revoke with: serve --data DIR revoke "My phone"
+build/bin/mv_import_tests "[driftwire-serve]"            # the service over loopback
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
 python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --src build/addons/driftwire \
   --version 1.0.0 --key <key file> --out dist/
@@ -1369,7 +1375,7 @@ python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --sr
 # tools/fuzz/fuzz_driftwire.cpp with clang-cl in the fuzz job); S=src/addons/driftwire
 /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -O1 -g -fsanitize=fuzzer,address -isysroot $(xcrun --show-sdk-path) \
   -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_driftwire.cpp $S/wire.cpp $S/noise.cpp \
-  $S/cpace.cpp $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
+  $S/cpace.cpp $S/channel.cpp $S/serve_wire.cpp $S/serve.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
   $S/net_posix.cpp $S/machine_mac.cpp $S/bencode.cpp $S/sha1.cpp $S/dht_item.cpp $S/dht.cpp $S/udp_hub.cpp \
   $S/known.cpp $S/secrets_file.cpp $S/splice.cpp $S/relay.cpp $S/internet.cpp $S/meet.cpp \
   src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \

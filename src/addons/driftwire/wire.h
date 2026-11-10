@@ -135,6 +135,17 @@ enum class msg : std::uint8_t {
   // Any protocol; a receiver before #498 ends the link on it, as it already
   // did on the one message that would not fit.
   offer_more = 24,
+  // `driftwire serve` (serve.h, docs/design/28 "The NAS service"), only ever
+  // on a library channel (channel::open_library): a peer that has not
+  // negotiated them, or any other kind of channel, ends the link on them, so
+  // none is sent to one. The formats are in serve_wire.h.
+  serve_hello = 25,    // {"v","min","ops":[...]} (client), the first message after ident
+  serve_caps = 26,     // {"v","ops":[...],"chunk","bulk_chunk"} (service), the answer
+  stream_open = 27,    // u32 stream, then {"op",...} (client)
+  stream_data = 28,    // u32 stream, u64 offset, then bytes (service)
+  stream_end = 29,     // u32 stream, u8 end_code, then {...} (service): the stream's last word
+  stream_credit = 30,  // u32 stream, u32 more bytes it may send (client)
+  stream_cancel = 31,  // u32 stream (client): nothing more of it; a stream_end may already be crossing it
 };
 
 // "123 456": six digits from both public keys (client = the sender).

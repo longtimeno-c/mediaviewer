@@ -161,6 +161,19 @@ inline constexpr bool kHasHiddenFlag = true;
 inline constexpr bool kHasHiddenFlag = false;
 #endif
 
+// `driftwire serve`: what `relative_slash` ('/'-separated; empty is `root`
+// itself) names under `root`, reached one part at a time from `root` and never
+// through a link at any part (status::permission_denied). A part that is ".",
+// ".." or empty is status::invalid_arg, and anything missing status::io. Each
+// part is resolved against the folder already reached, so swapping a folder
+// for a link after it was checked changes nothing (POSIX: openat on open
+// descriptors; Windows: every folder of the walk held open, which keeps it
+// from being renamed). `root` itself is trusted. A cloud placeholder is not
+// downloaded.
+[[nodiscard]] result<file_stat> stat_beneath(std::string_view root, std::string_view relative_slash);
+[[nodiscard]] result<std::vector<dir_child>> list_beneath(std::string_view root, std::string_view relative_slash,
+                                                          bool with_directories = false);
+
 enum class read_mode : std::uint8_t {
   sequential,  // the source read: the OS may read ahead
   uncached,    // the verify read-back: from the device, never the page cache
@@ -185,6 +198,10 @@ class file_reader {
   // folder swapped for a link) is status::corrupt. An unknown `expect` checks
   // only the link.
   [[nodiscard]] expected open_same(std::string_view utf8_path, const file_id& expect);
+  // `driftwire serve`: a sequential open of the regular file `relative_slash`
+  // names under `root`, as stat_beneath reaches it. Nothing but a regular file
+  // opens (a folder, a device or a pipe is status::io, and never blocks).
+  [[nodiscard]] expected open_beneath(std::string_view root, std::string_view relative_slash);
   // Fills up to `into.size()` bytes; 0 at end of file. For read_mode::uncached
   // `into` must be an aligned_buffer's memory (aligned, a kIoAlign multiple).
   [[nodiscard]] result<std::size_t> read(std::span<std::uint8_t> into);
@@ -291,6 +308,9 @@ enum class entry_kind : std::uint8_t {
 [[nodiscard]] std::string native_relative(std::string_view relative_slash);
 
 namespace detail {
+// `relative_slash` split at '/' into parts for the *_beneath calls; false for
+// an empty, "." or ".." part or one with a backslash. Empty gives no parts.
+[[nodiscard]] bool relative_parts(std::string_view relative_slash, std::vector<std::string_view>& parts);
 // Bench only (tools/copybench --rtt-us): each request the port sends (open,
 // read, write, flush, rename, stat ...) first waits `micros`, as it would on
 // a network share, so the deep copy path's effect shows on a local disk. 0,

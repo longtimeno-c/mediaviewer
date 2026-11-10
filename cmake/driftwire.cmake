@@ -90,6 +90,9 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/known.h ${_S}/known.cpp
   ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
+  ${_S}/serve_wire.cpp ${_S}/serve_wire.h
+  ${_S}/serve.cpp ${_S}/serve.h
+  ${_S}/serve_client.cpp ${_S}/serve_client.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -190,6 +193,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_known.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
@@ -274,6 +278,7 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/args.cpp ${_C}/args.h
   ${_C}/host.cpp ${_C}/host.h
   ${_C}/session.cpp ${_C}/session.h
+  ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
 )

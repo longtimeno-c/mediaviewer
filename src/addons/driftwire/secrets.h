@@ -17,8 +17,11 @@
 //                    KWallet, KeePassXC) through libsecret loaded at run
 //                    time, items "<service>" / <name>, each value sealed as
 //                    on Windows. None without a session bus or a keyring.
-//   secrets_file.cpp a file per name in a folder, for the tests (it says so;
-//                    it is not a secret store)
+//   secrets_file.cpp a file per name in a folder, for the tests and for
+//                    `driftwire serve` (a headless service has no keyring):
+//                    not a keychain, but owner-only on POSIX (each value 0600,
+//                    written whole and renamed in; a value someone else could
+//                    read or that is a link is refused on the way back).
 //
 // Values are small (at most kMaxValue bytes: Credential Manager's limit, less DPAPI).
 // Every call is on a worker; none is on the UI or render thread.
@@ -44,6 +47,10 @@ class store {
   [[nodiscard]] virtual bool put(const std::string& name, std::span<const std::uint8_t> value) = 0;
   [[nodiscard]] virtual std::optional<std::vector<std::uint8_t>> get(const std::string& name) = 0;
   virtual bool erase(const std::string& name) = 0;
+  // Whether anything is kept under `name`, readable or not: get() cannot tell
+  // a value that is missing from one it refused, and only the first may be
+  // made anew.
+  [[nodiscard]] virtual bool exists(const std::string& name) { return get(name).has_value(); }
 };
 
 // Who the items belong to: the add-on in MediaViewer, and the driftwire
@@ -56,8 +63,14 @@ inline constexpr const char* kCliService = "Driftwire CLI";
 [[nodiscard]] std::unique_ptr<store> os_store(const std::string& service);
 // The add-on's: os_store(kAppService).
 [[nodiscard]] std::unique_ptr<store> os_store();
-// A folder of files (the tests).
+// A folder of files (the tests, and `driftwire serve`).
 [[nodiscard]] std::unique_ptr<store> file_store(const std::string& folder);
+// Makes `folder` if needed and says whether it is this user's alone: on POSIX
+// a real folder (no link), owned by this user, with no access for group or
+// others (one made here is 0700). A folder that fails is refused, never
+// chmod-ed: its files may already have been read. On Windows the per-user
+// profile's own ACL is what protects it; this only makes the folder.
+[[nodiscard]] bool owner_only_folder(const std::string& folder);
 #if defined(__APPLE__)
 // os_store() under another service name (the tests). Removes that service's
 // items from the login keychain first; nullptr without the entitlement.

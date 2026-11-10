@@ -109,6 +109,16 @@ struct channel_options {
   // #472 PR 2, the receiver: the secret of the code it showed, which an
   // internet hello must know. Empty: an internet hello is refused.
   std::optional<std::vector<std::uint8_t>> internet_secret;  // a direct code's 6 bytes, a word code's 32
+  // `driftwire serve` (open_library, open_library_server): the 32-byte
+  // library access key. Wiped with every copy.
+  std::optional<std::array<std::uint8_t, 32>> access_key;
+  // The service: called with a first message that opened under the access
+  // key, before any ML-KEM work. False ends the handshake: a recording of a
+  // real client's message opens too, and must not cost the work or a reply.
+  // The caller's memory of them is all there is: after a restart a recording
+  // of a real client's first message opens again (one ML-KEM and one reply
+  // each, never a session: message 3 needs the device's key).
+  std::function<bool(std::span<const std::uint8_t>)> fresh_first;
 
   // #501: the static's private half and the code are wiped with every copy.
   channel_options() = default;
@@ -150,6 +160,27 @@ class channel {
                                                                       std::span<const std::uint8_t> secret,
                                                                       std::string_view my_id, std::string_view my_name,
                                                                       const options& opts = {});
+  // `driftwire serve`, the client: Noise_XXhfs+psk0 keyed by opts.access_key
+  // (needed), this side's device key from opts.static_key. No code: the key
+  // comes from the QR. peer_key() is the service's identity, for the caller
+  // to compare with the one it pinned. A wrong key gets silence: the link
+  // closes (status::io) with nothing said.
+  [[nodiscard]] static result<std::unique_ptr<channel>> open_library(std::shared_ptr<link> l, std::string_view my_id,
+                                                                     std::string_view my_name, const options& opts);
+  // The service's half, in two steps like read_hello and open_server but
+  // apart from them: read_library_hello takes this hello and no other (the
+  // whole of what a stranger can make it parse, then the first message's
+  // AEAD in open_library_server), so a listener for the service cannot be
+  // reached by any older kind of hello. It waits for every byte of the hello
+  // before judging any, so a wrong prefix does not close any sooner.
+  // status::corrupt for anything else;
+  // status::permission_denied when the first message does not open under
+  // the key or is a replay.
+  [[nodiscard]] static result<hello> read_library_hello(link& l, std::chrono::steady_clock::time_point deadline);
+  [[nodiscard]] static result<std::unique_ptr<channel>> open_library_server(std::shared_ptr<link> l, hello h,
+                                                                            std::string_view my_id,
+                                                                            std::string_view my_name,
+                                                                            const options& opts);
   // The server in two steps: the hello first (a rejoin goes to the live
   // channel it names, accept_rejoin), then a new channel from it. An
   // internet hello needs opts.internet_secret; a wrong code is
@@ -167,7 +198,10 @@ class channel {
   [[nodiscard]] bool punched() const noexcept { return punched_.load(); }
   [[nodiscard]] std::uint32_t version() const noexcept { return version_; }
   // Protocol 2: the session can move to another link.
-  [[nodiscard]] bool resumable() const noexcept { return version_ >= 2; }
+  [[nodiscard]] bool resumable() const noexcept { return version_ >= 2 && !library_; }
+  // A `driftwire serve` channel (open_library): only it takes the message ids
+  // from 25 up, and it is never rejoined: a client reconnects and asks again.
+  [[nodiscard]] bool library() const noexcept { return library_; }
   // Opened with an internet code (#472 PR 2): the peer is a new device,
   // known only by the code; code() is the check, not a code to type.
   [[nodiscard]] bool internet() const noexcept { return internet_; }
@@ -275,6 +309,9 @@ class channel {
   [[nodiscard]] static result<std::unique_ptr<channel>> open_v2(std::unique_ptr<channel> c, bool client,
                                                                 const hello* theirs, const options& opts,
                                                                 std::chrono::steady_clock::time_point deadline);
+  [[nodiscard]] static result<std::unique_ptr<channel>> open_library_v2(std::unique_ptr<channel> c, bool client,
+                                                                        const hello* theirs, const options& opts,
+                                                                        std::chrono::steady_clock::time_point deadline);
   [[nodiscard]] static result<std::unique_ptr<channel>> open_internet_v2(std::unique_ptr<channel> c, bool client,
                                                                          const hello* theirs,
                                                                          std::span<const std::uint8_t> secret,
@@ -314,6 +351,7 @@ class channel {
 
   std::uint32_t version_ = kProtocolVersion;
   bool internet_ = false;
+  bool library_ = false;
   std::optional<std::array<std::uint8_t, 32>> peer_key_;
   std::atomic<transport> via_{transport::wifi};
   std::atomic<bool> punched_{false};
