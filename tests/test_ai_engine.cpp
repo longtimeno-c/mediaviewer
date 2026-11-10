@@ -7357,11 +7357,27 @@ TEST_CASE("phone link: a takeover asked on the share, allowed, then published", 
   const auto asked = link_done(a);
   REQUIRE(*asked.str("asking_name") == "Studio Mac");
 
+  // A has a phone, so it serves nearby until it hands over.
+  {
+    std::lock_guard lock(da.m);
+    da.devices.emplace_back("iPhone", std::string(64, 'd'));
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(da.m);
+    da.calls.clear();
+  }
   // The old desktop's person agrees: its key signs the move.
   mv::json::writer w;
   w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
   REQUIRE(a.eng->phone_link(w.str()));
   CHECK(*link_done(a).str("error") == "");
+  // The old desktop stops offering its own catalogue nearby: its key is not the library's now.
+  {
+    std::lock_guard lock(da.m);
+    CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby_stop")) != da.calls.end());
+  }
 
   // The new one finds its key on the share and takes the library over.
   REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));

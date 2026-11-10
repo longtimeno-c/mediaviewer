@@ -23,7 +23,10 @@ namespace {
 
 constexpr int kAnswerMs = 8000;     // the caps
 constexpr int kRequestMs = 15000;   // a list, stat or roots
-constexpr int kClaimMs = 25000;     // the service reading the proof back over its own disk
+// The proof written and read back: the service's own 12 s and a margin. With
+// the connect and the first answer the whole claim stays inside the host's
+// 30 s for one add-on asking another.
+constexpr int kClaimMs = 14000;
 
 // How far a read may be consumed before more credit goes out: half a window.
 constexpr std::uint32_t kCreditRefill = 2;

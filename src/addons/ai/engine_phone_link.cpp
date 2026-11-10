@@ -71,6 +71,8 @@ const char* error_name(status s) noexcept {
 }  // namespace
 
 result<std::string> engine::phone_route(const char* method, const std::string& json) {
+  // Stopping: no new wait on the NAS, so stop never sits through one bound after another.
+  if (stopping_.load()) return err(status::cancelled);
   auto r = host_.addon_request("driftwire", method, json);
   if (!r && r.error() == status::not_found && std::string_view(method) == "status") {
     std::lock_guard lock(phone_link_m_);
@@ -446,8 +448,14 @@ void engine::phone_link_do(const std::string& request) {
     if (destination.empty()) return fail("no_folder");
     json::writer w;
     w.begin_object().key("share").string(destination).key("local").string(text("local")).key("public").string(text("public")).end_object();
-    if (auto r = phone_route("claim", w.str()); !r) return fail(error_name(r.error()));
+    auto r = phone_route("claim", w.str());
+    if (!r && r.error() != status::timeout) return fail(error_name(r.error()));
+    // A slow claim may still have gone through: the service says which.
     phone_link_refresh();
+    if (!r) {
+      std::lock_guard lock(phone_link_m_);
+      if (!link_.claimed) link_.error = "unreachable";
+    }
     return;
   }
   if (what == "pair") {
@@ -585,6 +593,7 @@ void engine::phone_link_do(const std::string& request) {
     if (to.empty()) return fail("failed");
     if (auto r = catalog::hand_over(destination, *secret, to); !r) return fail(r.error() == status::permission_denied ? "refused" : "unreachable");
     phone_link_refresh();
+    phone_link_prepare_nearby();  // its key is not the library's now: the nearby copy goes
     return;
   }
   fail("failed");

@@ -35,7 +35,7 @@ using clock = std::chrono::steady_clock;
 constexpr int kHelloMs = 3000;
 constexpr int kServeHelloMs = 5000;
 // The desktop writing the claim's nonce over SMB, at most.
-constexpr int kClaimProofMs = 20000;
+constexpr int kClaimProofMs = 12000;
 // First messages remembered as seen, against a replay of a recorded one. Only
 // ones that opened under the key go in, so a stranger cannot flush it.
 constexpr std::size_t kSeenFirsts = 4096;
@@ -147,6 +147,9 @@ struct server::state {
   std::mutex devices_m, claim_m;
   std::mutex codes_m;
   std::vector<waiting_code> codes;  // under codes_m
+  // Codes taken whose device is not saved yet: still "waiting" to the owner,
+  // so the desktop never sees a spent code before the phone it added.
+  int redeeming = 0;  // under codes_m
 
   [[nodiscard]] bool on_own_network(const net::address& a) const {
     if (own_network) return own_network(a);
@@ -161,7 +164,7 @@ struct server::state {
     return k;
   }
   // Single use: it is gone from the list before anything else can look.
-  [[nodiscard]] bool take_code(std::string_view code) {
+  [[nodiscard]] bool take_code(std::string_view code, bool redeem = false) {
     if (!lower_hex(code, kPairCodeChars)) return false;
     const auto want = code_hash(code);
     const auto now = clock::now();
@@ -170,6 +173,7 @@ struct server::state {
     for (auto it = codes.begin(); it != codes.end(); ++it) {
       if (sodium_memcmp(it->hash.data(), want.data(), want.size()) == 0) {
         codes.erase(it);
+        if (redeem) ++redeeming;
         return true;
       }
     }
@@ -1064,10 +1068,19 @@ bool server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer
   message m;
   if (!ch.receive(m, kServeHelloMs) || m.type != msg::serve_pair) return false;
   const auto p = parse_pair(m.text());
-  if (!p || !take_code(p->code)) {
+  // Taken and counted as redeeming under one lock, so the owner's devices
+  // answer sees the code waiting or the phone saved, never neither.
+  if (!p || !take_code(p->code, true)) {
     (void)ch.cancel(kCancelWaitMs, "bad-code");
     return false;
   }
+  struct done_redeeming {
+    state& s;
+    ~done_redeeming() {
+      std::lock_guard lock(s.codes_m);
+      --s.redeeming;
+    }
+  } counted{*this};
   bool full = false;
   if (!add_device(p->name.empty() ? std::string("Phone") : p->name, peer, full)) {
     (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "error");
@@ -1092,7 +1105,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       std::lock_guard lock(codes_m);
       const auto now = clock::now();
       std::erase_if(codes, [&](const waiting_code& w) { return w.deadline <= now; });
-      waiting = !codes.empty();
+      waiting = !codes.empty() || redeeming > 0;
     }
     json::writer w;
     w.begin_object().key("code_waiting").boolean(waiting).key("devices").begin_array();
