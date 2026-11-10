@@ -34,6 +34,7 @@
 
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include "addons/ai/catalog.h"
 #include "addons/ai/faces.h"
 #include "addons/ai/fetch.h"
 #include "addons/ai/host.h"
@@ -269,6 +270,15 @@ struct engine_deps {
   // changed are walked once the changes have been quiet this long, or this
   // long after the first at most (a long copy).
   double tree_quiet_s = 2;
+  // Phone access (docs/plans/mobile.md §6): a scan quiet this long publishes,
+  // at most this often; a generation waiting for its share is offered this
+  // often; thumbnails work this long before the catalogue goes out anyway.
+  double phone_quiet_s = 120;
+  double phone_min_interval_s = 3600;
+  double phone_share_poll_s = 30;
+  double phone_thumb_budget_s = 1800;
+  // The answering text tower's files, for a phone (a tower of this spec), or none.
+  std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
   double tree_max_wait_s = 10;
 };
 
@@ -897,7 +907,7 @@ class engine {
   void run_transfer(transfer_job job);  // control thread
   [[nodiscard]] std::string run_export(const transfer_job& job, mv::status& st);
   // An export's thumbnail: the viewer's cached one, else made now.
-  [[nodiscard]] result<std::vector<std::uint8_t>> export_thumb(const transfer::thumb_want& w);
+  [[nodiscard]] result<std::vector<std::uint8_t>> export_thumb(const transfer::thumb_want& w, const std::atomic<bool>& cancel);
   [[nodiscard]] std::string run_import(const transfer_job& job, mv::status& st);
   // The picture specs a file's rows may land under here, and the Quality to
   // adopt (0 none) when this index is empty and the file's tower is carried.
@@ -1223,14 +1233,43 @@ class engine {
     std::int64_t published_unix = 0;
     std::uint64_t assets = 0;
     std::map<std::string, std::string> root_ids;  // index root id -> stable id
+    bool auto_on = true;           // a quiet scan publishes (the person turned it on by publishing)
+    std::uint64_t runs = 0;        // publishes started, either way
+    std::uint64_t thumbs_made = 0;
+    bool thumbs_left = false;      // the last run stopped short: the next hour carries on
+    std::uint64_t waiting = 0;     // built here, not on the share yet
+    std::uint64_t waiting_assets = 0;
+    std::int64_t waiting_created = 0;
+    std::string stamp;             // the index as the current generation has it
+    std::string waiting_stamp;
+    double last_attempt = 0;       // wall clock: at most hourly survives a restart
+    std::vector<catalog::root_map> roots;  // as last seen on the share, for building while it is away
   };
   void load_phone_state();
   [[nodiscard]] bool save_phone_state() const;
-  void run_phone_publish(const std::string& destination);
+  void run_phone_publish(const std::string& destination, bool automatic);
+  void run_phone_deliver();
+  void deliver_phone_generation(const std::vector<std::uint8_t>& secret, const std::vector<std::uint8_t>& public_key,
+                                const std::string& library_id, const std::function<void(const std::string&)>& finish,
+                                const std::function<void(const char*, double)>& set_progress);
+  void phone_publish_auto();
+  void phone_deliver_waiting();
+  void phone_tick(bool walked);
+  void fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots, bool& left);
+  [[nodiscard]] std::string phone_stamp() const;
+  [[nodiscard]] result<std::vector<std::string>> stored_place_matches(const std::string& place);
   mutable std::mutex phone_m_;
   phone_view phone_;
   std::atomic<bool> phone_cancel_{false};
   std::thread phone_thread_;
+  // The control thread's alone (phone_tick).
+  bool phone_check_ = true;      // compare the index with the published stamp, once
+  bool phone_was_busy_ = false;
+  bool phone_changed_ = false;
+  double phone_quiet_since_ = 0;
+  double phone_next_poll_ = 0;
+  std::atomic<bool> phone_recheck_{false};      // a delivery found this generation can never land
+  std::atomic<double> phone_cancelled_at_{0};   // wall clock
   std::atomic<bool> transferring_{false};  // workers wait (an import)
   std::deque<std::pair<std::string, std::vector<float>>> text_cache_;
 };

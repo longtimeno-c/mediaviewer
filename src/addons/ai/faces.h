@@ -375,6 +375,8 @@ class faces_db {
 
   [[nodiscard]] std::uint64_t face_count();
   [[nodiscard]] std::uint32_t person_count(std::uint32_t min_faces);
+  // Changes when a name or a named person's faces do: what a phone's people carry.
+  [[nodiscard]] std::string people_stamp();
 
  private:
   faces_db() = default;

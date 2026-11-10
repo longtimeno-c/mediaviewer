@@ -311,6 +311,11 @@ class index_db {
   // PRAGMA data_version: changes when another connection commits. A reader
   // polls it to learn the app has indexed more.
   [[nodiscard]] std::int64_t data_version();
+  // What a phone's catalogue would carry, as one string: the rows that matter,
+  // never `seen`, so a walk that finds nothing leaves it the same.
+  [[nodiscard]] std::string content_stamp(const std::string& spec);
+  // A catalogue's stored place labels (docs/plans/mobile.md §5).
+  void each_place(const std::function<void(const std::string& path, const std::string& label)>& visit);
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
 
   // ---- roots ------------------------------------------------------------------

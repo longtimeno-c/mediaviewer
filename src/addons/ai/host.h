@@ -140,6 +140,15 @@ class host {
   [[nodiscard]] result<std::vector<std::string>> place_matches(const std::string& place,
                                                                const std::function<bool()>& keep_going) const;
 
+  // The phone's catalogue (docs/plans/mobile.md §5). A smaller JPEG of a JPEG;
+  // an older host has none: has_jpeg_shrink() false.
+  [[nodiscard]] bool has_jpeg_shrink() const noexcept;
+  [[nodiscard]] result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
+                                                              std::uint32_t quality) const;
+  // Place labels for GPS points, one per point ("" for none). not_found when
+  // nothing here can name a place: Places is not installed, or the host is older.
+  [[nodiscard]] result<std::vector<std::string>> place_labels(std::span<const mv_addon_route_point> points) const;
+
   // #354: a document's text from the host (a DOCX; a PDF is the pack's own,
   // pdf_reader.h), a paragraph at a time with its page. An older host has
   // none: has_document_text() false. `visit` false stops the read.

@@ -247,11 +247,10 @@ std::vector<vector_store::hit> vector_store::scan(std::span<const float> query,
     all.push_back(hit{asset_[r], pts_[r], score, generic_[r]});
   }
   if (all.size() > k) {
-    std::nth_element(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(k), all.end(),
-                     [](const hit& a, const hit& b) { return a.score > b.score; });
+    std::nth_element(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(k), all.end(), &vector_store::ranked_before);
     all.resize(k);
   }
-  std::sort(all.begin(), all.end(), [](const hit& a, const hit& b) { return a.score > b.score; });
+  std::sort(all.begin(), all.end(), &vector_store::ranked_before);
   if (stats) {
     stats->assets = bests.size();
     if (bests.size() >= scan_stats::kMinAssets) {
@@ -427,7 +426,7 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
     for (const auto& h : store.scan(query, allow, k, false, 0, stats.mean + result_z * stats.sd, nullptr, true)) {
       if (have.insert({h.asset, h.pts_ms}).second) hits.push_back(h);
     }
-    std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    std::sort(hits.begin(), hits.end(), &vector_store::ranked_before);
   }
   if (hits.empty()) return hits;
   // "Nothing found" (PR 20 calibration): a query that no top-ten row beats

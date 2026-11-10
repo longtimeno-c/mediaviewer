@@ -141,6 +141,49 @@ result<std::vector<std::string>> host::place_matches(const std::string& place,
   return std::move(v.paths);
 }
 
+bool host::has_jpeg_shrink() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, jpeg_shrink) + sizeof(api_->jpeg_shrink) &&
+         api_->jpeg_shrink;
+}
+
+result<std::vector<std::uint8_t>> host::jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
+                                                    std::uint32_t quality) const {
+  if (!has_jpeg_shrink()) return err(status::unsupported_format);
+  std::vector<std::uint8_t> out(8u * 1024u);  // a 64 px tile is 1.5 to 2 KB
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    uint64_t n = 0;
+    const mv_status s = api_->jpeg_shrink(api_->host, jpeg.data(), static_cast<uint64_t>(jpeg.size()), max_edge, quality,
+                                          out.data(), static_cast<uint64_t>(out.size()), &n);
+    if (s == MV_OK) {
+      out.resize(static_cast<std::size_t>(n));
+      return out;
+    }
+    if (s != MV_ERR_INVALID_ARG || n <= out.size() || n > (4u << 20)) return err(to_status(s));
+    out.resize(static_cast<std::size_t>(n));
+  }
+  return err(status::internal);
+}
+
+namespace {
+int32_t MV_CALL label_thunk(void* user, uint32_t index, const char* label) {
+  auto& out = *static_cast<std::vector<std::string>*>(user);
+  if (index < out.size() && label) out[index] = label;
+  return 1;
+}
+}  // namespace
+
+result<std::vector<std::string>> host::place_labels(std::span<const mv_addon_route_point> points) const {
+  if (!api_ || api_->struct_size < offsetof(mv_host_api, place_labels) + sizeof(api_->place_labels) ||
+      !api_->place_labels) {
+    return err(status::not_found);
+  }
+  std::vector<std::string> out(points.size());
+  const mv_status s =
+      api_->place_labels(api_->host, points.data(), static_cast<uint32_t>(points.size()), &label_thunk, &out);
+  if (s != MV_OK) return err(to_status(s));
+  return out;
+}
+
 bool host::has_document_text() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, document_text) + sizeof(api_->document_text) &&
          api_->document_text;
