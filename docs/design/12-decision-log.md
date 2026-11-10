@@ -1886,6 +1886,28 @@ nothing is noticed before the pack loads (#292), and a held root is not watched 
 **Not measured:** idle CPU with watched roots, and the PR 1 gates during a large copy into a
 watched root, on either platform; the Windows watcher has been compiled only by CI.
 
+**What a phone's catalogue carries, and when it is published (2026-11-10, `docs/plans/mobile.md`
+§5, §6).** People travel as names and asset links in a `faces.db` with an empty `emb` and a zero box:
+the reader's own code opens it, and no embedding or face position leaves the machine (owner call
+7). Thumbnails are tracked in a local ledger, each committed when made, so a cancel keeps hours of
+work; a tile lives in SQLite until a pack is sealed, which needs no crash-recovery of a growing file.
+Packs and model files are named by content and listed in the signed manifest, so a file already
+on the share at full size is not copied again. A pack under 16 MiB is folded into the next, or
+hourly publishes would leave a pack an hour. NFC is our own table, not the OS's, because OS
+normalisers differ by Unicode version and a phone and a desktop must produce the same bytes; it
+matches Python's Unicode 16 `NFC` on every code point and 400 000 random mark sequences. The bytes
+on disk go in `disk_path`, only in a catalogue, so `index.db` needs no migration. Place labels
+reach Places through a separate `mv.place_labels.1` interface: appending to `mv_addon_slots` broke
+every add-on that fills that struct under `-Wmissing-field-initializers`. Publishing is part of
+the control loop's existing tick and compares a content stamp only after a scan, so idle gains no
+wakeup. Same build, runs alternated base/new, three each, 40-file library published, loaded
+machine (load 3 to 5), fake embedder: idle CPU 0.042 to 0.079 % base, 0.039 to 0.068 % new;
+wakeups 5.4 to 7.0 per second base, 5.0 to 6.5 new; scan 2031 to 2086 files per second base, 2037
+to 2119 new. Vector scan of 100 k frames with the longer tie-break comparator: 1.70 to 1.76 ms
+base, 1.65 to 1.75 ms new, six runs each after one 3.5 ms outlier in an earlier set. The stamp costs
+4.8 ms at 100 k assets. A 64 px tile averaged 1510 bytes and 0.43 ms over 13 system wallpapers
+made into JPEG-512s, not over a camera library. No NAS or Windows run: local folders on the Mac.
+
 **A walk deletes only what it can vouch for, and a damaged `.mvindex` is refused (2026-11-09,
 audit in `docs/plans/mobile.md` §1).** Reading the code showed a share dropping mid-walk could
 delete index rows: a subfolder that failed to open was skipped, a `readdir` error looked like the

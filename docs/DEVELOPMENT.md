@@ -1091,6 +1091,15 @@ A local app build that should try the library in Settings needs the new `Info.pl
 with `-DMV_MAC_BUNDLE_ID=io.github.longtimeno-c.mediaviewer.dev`, so that the dev app's Photos
 permission and preferences stay apart from an installed MediaViewer.
 
+### The phone's catalogue
+
+`mv_ai_tests "[phone]"` publishes to a local folder and reads the result back as a phone would
+(docs/design/17 "The phone's catalogue"); no NAS is needed. `mv_ai_tests "[.perf-bench][phone-cost]"`
+prints the publisher's idle cost and scan throughput, and `[.perf-bench][phone-scale]` its per-tile
+and per-scan costs (`MV_TILE_DIR` points it at a folder of real JPEG-512s). The NFC table is
+generated: `python3 tools/fold/gen_nfc_table.py > src/addons/ai/nfc_table.inc`, with the newest
+Python, whose `unicodedata` sets the Unicode version.
+
 ### Local search from Final Cut Pro and FCPXML export
 
 Status and verify lines: [docs/design/23](design/23-nle-search.md) (issue #71). Phase 1 (the search

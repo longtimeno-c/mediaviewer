@@ -436,6 +436,31 @@ std::int64_t index_db::data_version() {
   return s.step_row() ? s.i64(0) : 0;
 }
 
+std::string index_db::content_stamp(const std::string& spec) {
+  std::lock_guard lock(m_);
+  std::string out;
+  {
+    stmt s(db_, "SELECT COUNT(*), TOTAL(mtime), TOTAL(size), TOTAL(tags), TOTAL(id) FROM assets");
+    if (s.step_row()) {
+      out = std::to_string(s.i64(0)) + "," + std::to_string(s.real(1)) + "," + std::to_string(s.real(2)) + "," +
+            std::to_string(s.real(3)) + "," + std::to_string(s.real(4));
+    }
+  }
+  for (const char* q : {"SELECT COUNT(*) FROM frames WHERE spec = ?1", "SELECT COUNT(*) FROM speech",
+                        "SELECT COUNT(*) FROM cues", "SELECT COUNT(*) FROM passages"}) {
+    stmt s(db_, q);
+    if (std::string_view(q).find("?1") != std::string_view::npos) s.bind(1, spec);
+    if (s.step_row()) out += "," + std::to_string(s.i64(0));
+  }
+  return out;
+}
+
+void index_db::each_place(const std::function<void(const std::string&, const std::string&)>& visit) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT path, place FROM assets WHERE place IS NOT NULL AND place != ''");
+  while (s.step_row()) visit(s.text(0), s.text(1));
+}
+
 std::vector<root_row> index_db::roots() {
   std::lock_guard lock(m_);
   std::vector<root_row> out;

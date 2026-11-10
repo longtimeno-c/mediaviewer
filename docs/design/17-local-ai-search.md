@@ -1612,6 +1612,78 @@ It is a one-off merge, not a sync. The Photos library root is never exported (it
 Mac's PhotoKit identifiers). The file carries folder and file names and, if ticked, faces and
 names; nothing about it is logged or sent.
 
+## The phone's catalogue
+
+A phone answers queries itself, from a copy of the library's index ([plan](../plans/mobile.md) §5,
+§6). `src/addons/ai/catalog.*` builds one **generation** from a read snapshot and delivers it to
+`<destination>/.mediaviewer/`; `engine::run_phone_publish` is the publisher. Nothing here runs
+until the person has published once, and the `phone_auto` setting stops the automatic half.
+
+**What a generation holds** (`gen/000123/`, every file hashed in `manifest.json`, the manifest's
+hash signed in `current.json`):
+
+| File | What |
+|---|---|
+| `catalog.db` | `index.db`'s tables and schema, only the answering tower's vectors and only the folders on this share; `assets.path` is `/<root id>/<rel>` |
+| `settings.json` | what a reader needs of this machine's settings, `faces` included |
+| `labels.f32` | when the index has one |
+| `faces.db` | the app's own schema: named people and the assets and moments they are in. `emb` is empty and the box is zero on every row, so `faces_db::open_read_only` accepts it and no embedding leaves the machine (owner call 7) |
+| `tiny.pack` | one 64 px JPEG per asset (`kTinyEdge`, quality `kTinyQuality`), 1.5 to 2 KB each: inside the phone's copy |
+| `thumbs.idx` | asset → pack, offset, length |
+
+Shared across generations, on the share only: `thumbs/t-<hash>.pack` (the JPEG-512s),
+`previews/p-*.pack`, `models/<spec>/<hash>-<name>`. A shared file's name holds its hash, so one
+that is there at full size is the one meant and a publish copies only what is new. The manifest
+lists the hash of each one a generation uses (`thumb_packs`, `preview_packs`, `model_files`), so
+nothing a phone parses sits outside the signature. `preview_packs` is empty until the setting
+exists.
+
+**Formats.** `tiny.pack`: `MVTINY01`, u32 count, u32 0, then rows `(i64 asset, u64 offset, u32
+length, u32 0)` sorted by asset, then the JPEGs. `thumbs.idx`: `MVTIDX01`, u32 packs, u32 rows, 40
+bytes NUL-padded per pack name, then rows `(i64 asset, u32 pack, u32 length, u64 offset)` sorted by
+asset. Little-endian, so a phone binary-searches a mapping (`find_tiny`, `find_thumb`).
+
+**Names (N7).** `assets.path` and `motion` are NFC. `nfc.cpp` is our own table
+(`tools/fold/gen_nfc_table.py`, Unicode 16), so every OS gives the same bytes. The bytes the file
+really has are in `disk_path` / `disk_motion`, with the same `/<root id>/` prefix, NULL when they
+equal the NFC form: open by `COALESCE(disk_path, path)`. Those two columns exist only in a
+catalogue. Two files that differ only in form both survive: the one already in NFC keeps the
+name, the other keeps its bytes.
+
+**Places.** `place` holds each geotagged asset's label, asked for at publish time through the
+host table's `place_labels`, which reaches Places through `mv.slots.1 place_label` in batches of
+256. A read-only engine with no Places answers `place:` from it (`stored_place_matches`): a whole
+component of the label, or the start of one from four letters, never a point at sea. It is the
+label's own language, so `lisboa` does not find a label that says Lisbon, and a route's other
+points are not searched: Places on the desktop does both.
+
+**Thumbnails.** `thumb_store` keeps a ledger at `phone/thumbs/ledger.db`. A tile is committed to
+SQLite when made, 16 at a time, so a cancel or a kill costs a few at most; hours of work are not
+redone. It runs on its own thread at the OS's background priority and waits for as long as the
+viewer wants the machine, as Import does. A run works for 30 minutes at most, then the catalogue
+goes out with what is ready and the next hour carries on (`thumbs_left`). A file with no picture
+(`corrupt`, `unsupported_format`) is recorded and not asked again until it changes; any other
+failure is asked again, and 16 in a row end the pass, because the share has gone. Sealing writes
+the tiles to a pack named by its hash; a pack under 16 MiB is folded into the next, so hourly
+publishes do not leave a pack an hour. A pack that has been delivered is removed here unless it
+is small enough to be folded later, and one on neither side has its tiles forgotten and made
+again.
+
+**When it runs.** A check after each scan compares `index_db::content_stamp` (rows, never `seen`)
+and the named people with what the newest generation carries. Different, then quiet for 120 s and
+at most once an hour since the last attempt, publishes. It is part of the control loop's existing
+tick, so it adds no wakeup; while nothing changed it is one lock and a few comparisons. It does
+not run on battery. A generation built while the share is away waits in `phone/gen/`, only the
+newest, with `waiting` in `phone_json`. While one waits, the control loop offers it every 30 s on
+the publisher's thread, so a dead mount cannot hold the control thread.
+
+**Retention (§5 rule 4).** The newest two generations stay, and an older one until 7 days after
+its successor arrived. A shared file no retained generation names, and unnamed for 30 days, goes.
+`phone/unused.json` remembers since when, and an unreadable manifest deletes nothing that round.
+
+**Ranking.** Exact ties break by asset id, then time (`vector_store::ranked_before`, `finish`,
+the text passes), so a phone and its desktop list the same rows in the same order.
+
 ## Photos library source (macOS)
 
 A Photos result's path stays its key: the host lists it as a virtual item and resolves it to the

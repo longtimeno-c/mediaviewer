@@ -538,6 +538,15 @@ namespace {
 // waits for release(); "fail" returns an error having posted nothing.
 class place_client final : public mv::addon::slot_client {
  public:
+  std::atomic<int> labelled_off_caller{0};
+  std::thread::id caller = std::this_thread::get_id();
+  status place_label(double lat, double, std::string& out) override {
+    if (std::this_thread::get_id() != caller) ++labelled_off_caller;
+    char b[32];
+    std::snprintf(b, sizeof b, "%g", lat);
+    out = lat == 0 ? std::string() : std::string(b);
+    return status::ok;
+  }
   explicit place_client(slot_registry& r) : r_(r) {}
   status info_section(const mv_slot_info_request&) override { return status::ok; }
   status search(const mv_slot_search_request& q) override {
@@ -668,6 +677,13 @@ TEST_CASE("a place term's assets come from the provider that declares place:, or
     CHECK_FALSE(r.is_stale(chrome));            // and the chrome's search was not replaced
     // Nothing of it reached the chrome's results.
     CHECK(mv::json::parse(r.search_json(MV_SLOT_SCOPE_LOCAL))->find("rows")->a.empty());
+  }
+  SECTION("place labels for a catalogue, one call on the add-on's worker per point") {
+    const std::vector<std::pair<double, double>> points{{38.8, -9.4}, {51.5, -0.1}, {0.0, 0.0}};
+    std::vector<std::string> out;
+    REQUIRE(r.provider_labels("place:", points, out));
+    CHECK(out == std::vector<std::string>{"38.8", "51.5", ""});
+    CHECK(pc->labelled_off_caller.load() == 3);
   }
   SECTION("a provider that fails says nothing: done, no rows") {
     auto paths = r.provider_paths("place:", "fail", keep_going);

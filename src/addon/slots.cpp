@@ -69,7 +69,8 @@ const char* target_name(item_target t) noexcept {
 
 class native_client final : public slot_client {
  public:
-  native_client(void* addon, const mv_addon_slots* t) : addon_(addon), t_(t) {}
+  native_client(void* addon, const mv_addon_slots* t, const mv_addon_place_labels* labels)
+      : addon_(addon), t_(t), labels_(labels) {}
   status info_section(const mv_slot_info_request& r) override {
     return has(offsetof(mv_addon_slots, info_section), t_->info_section)
                ? static_cast<status>(t_->info_section(addon_, &r))
@@ -91,6 +92,24 @@ class native_client final : public slot_client {
   void event(const mv_slot_event& e) override {
     if (has(offsetof(mv_addon_slots, event), t_->event)) t_->event(addon_, &e);
   }
+  status place_label(double lat, double lon, std::string& out) override {
+    if (!labels_ || labels_->struct_size < offsetof(mv_addon_place_labels, place_label) + sizeof(labels_->place_label) ||
+        !labels_->place_label) {
+      return status::unsupported_format;
+    }
+    out.resize(256);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      std::uint32_t needed = 0;
+      const mv_status s = labels_->place_label(addon_, lat, lon, out.data(), static_cast<std::uint32_t>(out.size()), &needed);
+      if (s == MV_OK) {
+        out.resize(needed > 0 ? needed - 1 : 0);
+        return status::ok;
+      }
+      if (s != MV_ERR_INVALID_ARG || needed <= out.size()) return static_cast<status>(s);
+      out.resize(needed);
+    }
+    return status::internal;
+  }
 
  private:
   template <typename F>
@@ -99,6 +118,7 @@ class native_client final : public slot_client {
   }
   void* addon_;
   const mv_addon_slots* t_;
+  const mv_addon_place_labels* labels_;
 };
 
 // Latin-1 Supplement and Latin Extended-A letters to their base letter, for
@@ -111,8 +131,9 @@ static_assert(sizeof(kFoldLatin) == 0x180 - 0xC0 + 1, "one letter per code point
 
 }  // namespace
 
-std::unique_ptr<slot_client> native_slot_client(void* addon, const mv_addon_slots* table) {
-  return std::make_unique<native_client>(addon, table);
+std::unique_ptr<slot_client> native_slot_client(void* addon, const mv_addon_slots* table,
+                                                const mv_addon_place_labels* labels) {
+  return std::make_unique<native_client>(addon, table, labels);
 }
 
 std::optional<mv_addon_location> parse_location_text(std::string_view text) noexcept {
@@ -726,6 +747,51 @@ result<std::vector<std::string>> slot_registry::provider_paths(const std::string
       return paths;
     }
   }
+}
+
+expected slot_registry::provider_labels(const std::string& prefix, std::span<const std::pair<double, double>> points,
+                                         std::vector<std::string>& out) {
+  out.assign(points.size(), {});
+  if (points.empty()) return {};
+  // Shared with the task: it may still run after the add-on detached and this
+  // wait gave up.
+  struct batch {
+    std::vector<std::pair<double, double>> points;
+    std::vector<std::string> labels;
+    status st = status::ok;
+    bool done = false;
+  };
+  auto b = std::make_shared<batch>();
+  b->points.assign(points.begin(), points.end());
+  b->labels.resize(points.size());
+  std::string addon;
+  std::unique_lock lock(m_);
+  addon_entry* found = nullptr;
+  for (auto& [id, e] : addons_) {
+    for (const search_provider_contrib& p : e->c.search_providers) {
+      if (p.local && std::find(p.prefixes.begin(), p.prefixes.end(), prefix) != p.prefixes.end()) found = e.get();
+    }
+    if (found) break;
+  }
+  if (!found) return err(status::not_found);
+  addon = found->id;
+  enqueue(*found, "labels:" + std::to_string(next_generation()), [this, b](slot_client& c) {
+    status st = status::ok;
+    for (std::size_t i = 0; i < b->points.size() && st == status::ok; ++i) {
+      st = c.place_label(b->points[i].first, b->points[i].second, b->labels[i]);
+    }
+    std::lock_guard done_lock(m_);
+    b->st = st;
+    b->done = true;
+    private_cv_.notify_all();
+  });
+  // Notified when an add-on detaches too (the walk in detach above).
+  while (!b->done && addons_.count(addon) != 0) private_cv_.wait_for(lock, std::chrono::milliseconds(50));
+  if (!b->done) return err(status::not_found);
+  if (b->st == status::unsupported_format) return err(status::not_found);
+  if (b->st != status::ok) return err(b->st);
+  out = std::move(b->labels);
+  return {};
 }
 
 std::uint64_t slot_registry::request_badges(const std::string& folder) {
