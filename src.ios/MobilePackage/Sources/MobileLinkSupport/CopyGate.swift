@@ -9,10 +9,12 @@ public enum CopyGate {
   /// CancellationError when cancelled or `stopped`.
   public static func wait(mayMove: () -> Bool, stopped: () -> Bool, waiting: () -> Void,
                           poll: Duration = .milliseconds(500)) async throws {
-    while !mayMove() {
-      waiting()
+    while true {
+      // Stopped first, even when bytes may already move: an expiry or a Forget is never skipped.
       try Task.checkCancellation()
       if stopped() { throw CancellationError() }
+      if mayMove() { return }
+      waiting()
       try await Task.sleep(for: poll)
     }
   }
