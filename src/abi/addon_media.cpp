@@ -1332,6 +1332,46 @@ result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_m
   return store.store(key, jpeg);
 }
 
+result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
+                                              std::uint32_t quality) {
+  if (max_edge == 0 || quality < 1 || quality > 100) return err(status::invalid_arg);
+  MV_TRY(const codec::jpeg_size size, codec::jpeg_dimensions(jpeg));
+  const std::uint32_t long_edge = std::max(size.width, size.height);
+  // The largest DCT scale that still leaves at least `max_edge`: 512 -> 64 is 1/8.
+  int denom = 1;
+  while (denom < 8 && long_edge / static_cast<std::uint32_t>(denom * 2) >= max_edge) denom *= 2;
+  MV_TRY(codec::raster r, codec::decode_jpeg(jpeg, nullptr, denom));
+  const std::uint32_t from = std::max(r.width, r.height);
+  if (from <= max_edge) return codec::encode_jpeg_rgba(r.rgba, r.width, r.height, static_cast<int>(quality));
+  // Box average over each target pixel: the last step is at most 2:1 at a DCT
+  // scale, and a box is what a small tile wants.
+  const std::uint32_t w = std::max<std::uint32_t>(1, r.width * max_edge / from);
+  const std::uint32_t h = std::max<std::uint32_t>(1, r.height * max_edge / from);
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4u);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint32_t y0 = y * r.height / h, y1 = std::max(y0 + 1, (y + 1) * r.height / h);
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::uint32_t x0 = x * r.width / w, x1 = std::max(x0 + 1, (x + 1) * r.width / w);
+      std::uint32_t sum[3] = {0, 0, 0};
+      for (std::uint32_t sy = y0; sy < y1; ++sy) {
+        const std::uint8_t* p = r.rgba.data() + (static_cast<std::size_t>(sy) * r.width + x0) * 4u;
+        for (std::uint32_t sx = x0; sx < x1; ++sx, p += 4) {
+          sum[0] += p[0];
+          sum[1] += p[1];
+          sum[2] += p[2];
+        }
+      }
+      const std::uint32_t n = (x1 - x0) * (y1 - y0);
+      std::uint8_t* d = out.data() + (static_cast<std::size_t>(y) * w + x) * 4u;
+      d[0] = static_cast<std::uint8_t>((sum[0] + n / 2) / n);
+      d[1] = static_cast<std::uint8_t>((sum[1] + n / 2) / n);
+      d[2] = static_cast<std::uint8_t>((sum[2] + n / 2) / n);
+      d[3] = 255;
+    }
+  }
+  return codec::encode_jpeg_rgba(out, w, h, static_cast<int>(quality));
+}
+
 result<std::vector<std::uint8_t>> thumbnail_jpeg(const std::string& path, std::int64_t pts_ms) {
   MV_TRY(image::thumb_store* store, thumbs());
   MV_TRY(image::thumb_key key, cache_key(path, pts_ms));

@@ -318,6 +318,10 @@ under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitma
 
 ## Delivery: the Places add-on
 
+A phone has no Places, so the publisher asks once, at publish time: the host table's `place_labels`
+reaches this add-on through `mv.place_labels.1` and stores each asset's label in the catalogue
+([17](17-local-ai-search.md) "The phone's catalogue").
+
 Owner, 2026-10-11: Places is an add-on that carries its own code and its own data. Without it
 the pane shows coordinates, as it always has. Built (2026-10-12):
 

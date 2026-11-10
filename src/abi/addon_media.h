@@ -56,6 +56,10 @@ namespace media {
                                                                std::int64_t pts_ms);
 [[nodiscard]] expected store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
                                             std::span<const std::uint8_t> jpeg);
+// The phone's catalogue: a smaller JPEG of a JPEG (the host table's jpeg_shrink).
+// Bytes are decoded at a DCT scale and averaged; no I/O, any worker.
+[[nodiscard]] result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
+                                                            std::uint32_t quality);
 [[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
                                                                std::uint32_t sample_rate,
                                                                std::int64_t start_ms);
