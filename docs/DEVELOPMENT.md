@@ -664,7 +664,12 @@ without the sound text tower, which the manifest does not carry; `MV_PARITY_WITH
 on the desktop side. The run fails below 200 queries, on a query listed twice, and when the
 two desktop runs disagree. `place:` is covered only through the labels the catalogue stores: the
 desktop app answers it through the Places add-on, which neither half loads. `RealCatalogueTests` drives the real app and is skipped unless
-`TEST_RUNNER_MV_REAL_CATALOGUE` names a folder for its screenshots.
+`TEST_RUNNER_MV_REAL_CATALOGUE` names a folder for its screenshots. MobileCore's own tests (generation
+swaps, tiles and warm-up, over generations the publisher builds) run in a Simulator of their own:
+
+```bash
+tools/ios/run-mobilecore-tests.sh
+```
 
 ## Run
 

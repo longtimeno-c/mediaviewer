@@ -1182,7 +1182,7 @@ if(MV_BUILD_TESTS)
       tests/test_mobile_search.cpp  # docs/plans/mobile.md M5
     )
     target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
-      mv_mobile_search Catch2::Catch2WithMain)
+      mv_mobile_search mv_mobile_test_fixture Catch2::Catch2WithMain)
     target_include_directories(mv_ai_tests PRIVATE src tests)
     target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
       MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")

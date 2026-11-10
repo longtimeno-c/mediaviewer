@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -15,6 +16,17 @@
 #include "core/result.h"
 #include "mobile/catalogue.h"
 #include "mobile/search.h"
+#include "mobile/testing.h"
+
+namespace {
+std::mutex g_hook_m;
+std::function<void()> g_start_hook;
+}  // namespace
+
+void mv::mobile::testing::set_start_hook(std::function<void()> hook) {
+  std::lock_guard lock(g_hook_m);
+  g_start_hook = std::move(hook);
+}
 
 using mv::mobile::catalogue;
 using mv::mobile::search_engine;
@@ -272,6 +284,12 @@ mv_mobile_status mv_mobile_search_start(mv_mobile_library* l) {
     std::lock_guard lock(l->start_m);
     if (l->current_engine()) return MV_MOBILE_OK;
     l->starting = true;
+    std::function<void()> hook;
+    {
+      std::lock_guard held(g_hook_m);
+      hook = g_start_hook;
+    }
+    if (hook) hook();
     auto started = search_engine::start(l->cat, l->work_dir);
     l->starting = false;
     if (!started) return map_status(started.error());

@@ -73,6 +73,9 @@ public final class LocalCatalogue: @unchecked Sendable {
     }
   }
 
+  /// The generation in force, if one has opened.
+  func generationInForce() -> Generation? { lock.withLock { current } }
+
   func generation(serial: UInt64) -> Generation? {
     lock.withLock { open[serial]?.value }
   }
@@ -207,7 +210,8 @@ private struct CoreLibrary: LibraryStore {
   }
 
   func details(for item: MediaItem) async throws -> MediaDetails {
-    let g = try await catalogue.generation()
+    // The item's own generation: after a swap the same id can be another file.
+    guard let g = catalogue.generation(serial: item.id.catalogue) else { throw CatalogueOpenFailure.unreadable }
     guard let id = Int64(item.id.raw) else { throw CatalogueOpenFailure.unreadable }
     var d = mv_mobile_details()
     guard mv_mobile_library_details(g.raw, id, &d) == MV_MOBILE_OK else { throw CatalogueOpenFailure.unreadable }

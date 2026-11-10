@@ -8,6 +8,7 @@
 
 #include <array>
 #include <chrono>
+#include <future>
 #include <thread>
 #include <cstring>
 #include <filesystem>
@@ -23,27 +24,13 @@
 #include "mobile/catalogue.h"
 #include "mobile/mv_mobile_search.h"
 #include "mobile/search.h"
+#include "mobile/testing.h"
+#include "mobile_generation_fixture.h"
 
 namespace fs = std::filesystem;
 namespace cat = mv::ai::catalog;
 
 namespace {
-
-// The start of a real JPEG: SOI and a frame header saying 48 x 32 (w, h).
-std::vector<std::uint8_t> tile_bytes(std::uint8_t mark) {
-  return {0xFF, 0xD8, 0xFF, 0xC0, 0, 11, 8, 0, 32, 0, 48, 1, 1, 0x11, 0, mark};
-}
-
-void exec(const fs::path& db_path, const std::string& sql) {
-  sqlite3* db = nullptr;
-  REQUIRE(sqlite3_open(db_path.string().c_str(), &db) == SQLITE_OK);
-  char* message = nullptr;
-  const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &message);
-  INFO(sql << (message ? message : ""));
-  CHECK(rc == SQLITE_OK);
-  sqlite3_free(message);
-  sqlite3_close(db);
-}
 
 struct generation_fixture {
   fs::path root;
@@ -53,89 +40,13 @@ struct generation_fixture {
 
   // `extra_rel`: one more photo, at this path under the root (a hostile path, say).
   explicit generation_fixture(const std::string& name, const std::string& spec = "clip-vit-l14/fp16/pre1",
-                              const std::string& extra_rel = "") {
+                              const std::string& extra_rel = "", int variant = 0) {
     root = fs::temp_directory_path() / ("mv-mobile-test-" + name + "-" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
-    fs::remove_all(root);
-    fs::create_directories(root);
-    const fs::path index = root / "index.db";
-    { auto made = mv::ai::index_db::open(index.string()); REQUIRE(made); }
-    const fs::path pictures = root / "Pictures";
-    fs::create_directories(pictures / "trip" / "day1");
-    exec(index, "INSERT INTO meta(key, value) VALUES('active_spec', '" + spec + "');"
-                "INSERT INTO roots(id, path, recursive, enabled, media) VALUES(7, '" + pictures.string() + "', 1, 1, 0);"
-                "INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms, taken_at, camera, place) VALUES"
-                "(1, '" + pictures.string() + "/a.jpg', 7, 100, 11, 1, 0, 1000000, 'Cam A', 'Ortisei, South Tyrol, Italy'),"
-                "(2, '" + pictures.string() + "/trip/b.jpg', 7, 200, 22, 1, 0, 2000000, 'Cam A', 'Ortisei, South Tyrol, Italy'),"
-                "(3, '" + pictures.string() + "/trip/day1/c.mov', 7, 300, 33, 2, 9000, 1500000, 'Cam B', NULL),"
-                "(4, '" + pictures.string() + "/trip/day1/d.pdf', 7, 400, 44, 4, 0, NULL, NULL, NULL);");
-    if (!extra_rel.empty()) {
-      exec(index, "INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms) VALUES"
-                  "(5, '" + pictures.string() + "/" + extra_rel + "', 7, 500, 55, 1, 0);");
-    }
-
-    auto store = cat::thumb_store::open((root / "thumbs").string());
-    REQUIRE(store);
-    const std::vector<std::int64_t> roots{7};
-    auto wants = (*store)->missing(index.string(), roots);
-    REQUIRE(wants);
-    cat::thumb_fill_io io;
-    io.jpeg512 = [](const cat::thumb_want&) -> mv::result<std::vector<std::uint8_t>> { return tile_bytes(0); };
-    io.tiny = [](std::span<const std::uint8_t>) -> mv::result<std::vector<std::uint8_t>> { return tile_bytes(1); };
-    io.yield = [] {};
-    const cat::control quiet{[] { return false; }, [](double) {}, [] {}};
-    REQUIRE((*store)->fill(*wants, io, quiet, 0));
-    REQUIRE((*store)->seal());
-
-    const fs::path pack = root / "pack";
-    fs::create_directories(pack / "models" / "clip-l14");
-    fs::create_directories(pack / "models" / "clip-tokenizer");
-    std::ofstream(pack / "models" / "clip-l14" / "model.json")
-        << R"({"id":"clip-vit-l14","name":"CLIP ViT-L/14","quality":2,"precision":"fp16","dim":768,"image_size":224,"image":"image.onnx","text":"text.onnx","tokenizer":"clip-tokenizer"})";
-    std::ofstream(pack / "models" / "clip-l14" / "text.onnx") << "not-a-real-model";
-    std::ofstream(pack / "models" / "clip-tokenizer" / "vocab.json") << "{}";
-    std::ofstream(pack / "models" / "clip-tokenizer" / "merges.txt") << "#";
-
-    cat::build_options b;
-    b.index_db = index.string();
-    b.out_dir = (root / "built").string();
-    b.library_id = "library";
-    b.generation = 3;
-    b.created_unix = 1700000000;
-    b.active_spec = spec;
-    b.settings_json = R"({"audio_files":true,"document_files":true,"tier":"default","faces":false})";
-    b.roots = {cat::root_map{7, pictures.string(), uuid, "Photos", ""}};
-    b.thumbs = store->get();
-    b.model_spec = spec;
-    b.model_files = {(pack / "models/clip-l14/model.json").string(), (pack / "models/clip-l14/text.onnx").string(),
-                     (pack / "models/clip-tokenizer/vocab.json").string(), (pack / "models/clip-tokenizer/merges.txt").string()};
-    const auto built = cat::build(b, quiet);
-    REQUIRE(built);
-    nas = root / "NAS";
-    fs::create_directories(nas);
-    auto [public_key, secret_key] = cat::make_keypair();
-    cat::deliver_options d;
-    d.gen_dir = b.out_dir;
-    d.destination = nas.string();
-    d.library_id = "library";
-    d.generation = 3;
-    d.now_unix = 1700000000;
-    d.public_key = public_key;
-    d.secret_key = secret_key;
-    d.shared = built->shared;
-    d.retention_file = (root / "unused.json").string();
-    d.make_directories = [](const std::string& dir) -> mv::expected {
-      std::error_code ec;
-      fs::create_directories(dir, ec);
-      return {};
-    };
-    d.copy = [](const std::string& from, const std::string& to) -> mv::expected {
-      std::error_code ec;
-      fs::copy_file(from, to, ec);
-      return ec ? mv::expected{mv::err(mv::status::io)} : mv::expected{};
-    };
-    REQUIRE(cat::deliver(d, quiet));
-    gen = nas / ".mediaviewer" / "gen" / "000003";
-    REQUIRE(fs::exists(gen / "manifest.json"));
+    std::vector<char> g(8192), l(8192);
+    REQUIRE(mv_mobile_test_make_generation(root.string().c_str(), variant, 1, 3, spec.c_str(), extra_rel.c_str(), g.data(),
+                                           static_cast<uint32_t>(g.size()), l.data(), static_cast<uint32_t>(l.size())) == 0);
+    gen = g.data();
+    nas = fs::path(l.data()).parent_path();
   }
   ~generation_fixture() {
     std::error_code ec;
@@ -205,8 +116,9 @@ TEST_CASE("a generation opens as the phone's grid: newest first, folders, tiles"
   const uint8_t* bytes = nullptr;
   uint32_t length = 0;
   REQUIRE(mv_mobile_library_tile(lib, 2, &bytes, &length) == MV_MOBILE_OK);
-  REQUIRE(length == tile_bytes(1).size());
+  REQUIRE(length > 100);
   CHECK(bytes[0] == 0xFF);
+  CHECK(bytes[1] == 0xD8);
   CHECK(mv_mobile_library_tile(lib, 99, &bytes, &length) == MV_MOBILE_ERR_NOT_FOUND);
 
   std::vector<folder_row> top, under;
@@ -371,5 +283,32 @@ TEST_CASE("names, dates and files answer without a model; meaning waits for one"
   REQUIRE(mv_mobile_list_open(lib, MV_MOBILE_SCOPE_EVERYTHING, nullptr, &list) == MV_MOBILE_OK);
   CHECK(mv_mobile_list_row_at(list, 99, &row) == MV_MOBILE_ERR_INVALID_ARG);
   mv_mobile_list_close(list);
+  mv_mobile_library_close(lib);
+}
+
+TEST_CASE("cancel and state never wait for an engine that is starting", "[mobile]") {
+  generation_fixture g("latch");
+  mv_mobile_library* lib = g.open();
+  REQUIRE(lib);
+  std::promise<void> entered, release;
+  auto released = release.get_future().share();
+  mv::mobile::testing::set_start_hook([&] {
+    entered.set_value();
+    released.wait();
+  });
+  std::thread starter([&] { (void)mv_mobile_search_start(lib); });
+  REQUIRE(entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+
+  // The start is held inside: neither call may wait for it.
+  auto quick = std::async(std::launch::async, [&] {
+    mv_mobile_search_cancel(lib);
+    return mv_mobile_search_state(lib);
+  });
+  const bool answered = quick.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  release.set_value();
+  starter.join();
+  mv::mobile::testing::set_start_hook({});
+  REQUIRE(answered);
+  CHECK(quick.get() == MV_MOBILE_SEARCH_WARMING);
   mv_mobile_library_close(lib);
 }
