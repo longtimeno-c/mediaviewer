@@ -442,7 +442,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       // Size first; nothing moves over mobile data unless the person asked (§8.4).
       try await CopyGate.wait(
         mayMove: { [weak self] in overMobileData || (self?.mayCopyQuietly ?? false) },
-        stopped: { [weak self] in self?.lock.withLock { self?.forgotten ?? true } ?? true },
+        stopped: { [weak self] in
+          guard let self else { return true }
+          return self.lock.withLock { self.forgotten } || self.continued.isExpired
+        },
         waiting: { continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes))) })
       let cancel = LinkCancel()
       lock.withLock { copyCancel = cancel }
@@ -489,17 +492,21 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     request.strategy = .fail
     // Refused where the system does not allow it (the Simulator, or one already running): the
     // copy still runs while the app is open.
+    continued.asking()  // first: the hand-over can come before submit returns
     do {
       try BGTaskScheduler.shared.submit(request)
-      continued.asked()
-    } catch {}
+    } catch {
+      continued.submitFailed()
+    }
   }
 
   @available(iOS 26.0, *)
   fileprivate func adopt(_ task: BGContinuedProcessingTask) {
     task.expirationHandler = { [weak self] in
       guard let self else { return }
-      // The copy ends, and its defer completes the task (Apple's rule: completed even when expired).
+      // The copy ends (a transfer by its cancel, the Wi-Fi wait by the expired flag), and its defer
+      // completes the task: Apple's rule, completed even when expired.
+      self.continued.expire()
       self.lock.withLock { self.copyCancel }?.fire()
     }
     continued.adopt(SystemContinuedTask(task))

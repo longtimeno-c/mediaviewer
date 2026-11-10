@@ -20,15 +20,42 @@ public final class ContinuedCopy: @unchecked Sendable {
   }
   private let lock = NSLock()
   private var state = State.idle
+  private var expiredFlag = false
 
   public init() {}
 
-  /// A copy asked for a continued task.
-  public func asked() {
+  /// Called before submitting the request: the system may hand the task over on its own queue
+  /// before submit even returns, and that hand-over must find this copy waiting for it. A task
+  /// still held from an earlier copy is completed here, never one adopted for this copy.
+  public func asking() {
+    lock.lock()
+    var leftover: ContinuedTaskHandle?
+    if case .running(let old) = state { leftover = old }
+    state = .asked
+    expiredFlag = false
+    lock.unlock()
+    leftover?.complete(success: false)
+  }
+
+  /// The request was refused: nothing will be handed over for it.
+  public func submitFailed() {
     lock.lock()
     defer { lock.unlock() }
-    if case .running(let old) = state { old.complete(success: false) }  // a copy before it never finished it
-    state = .asked
+    if case .asked = state { state = .idle }
+  }
+
+  /// The system took the time back. Whoever runs the copy stops at once (the Wi-Fi wait included)
+  /// and then calls `finished`, which completes the task, as Apple requires even after expiry.
+  public func expire() {
+    lock.lock()
+    defer { lock.unlock() }
+    expiredFlag = true
+  }
+
+  public var isExpired: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return expiredFlag
   }
 
   /// The system's hand-over. Completed at once when the copy has already ended.
