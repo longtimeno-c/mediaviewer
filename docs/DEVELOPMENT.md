@@ -319,6 +319,35 @@ slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/
 `F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
 cursor off the window.
 
+### iOS (the search and Driftwire engines)
+
+The engines the iPhone app links statically (`mv_ai_engine`, `mv_infer`, `mv_driftwire_engine`), from the
+root `CMakeLists.txt` through `cmake/ios.cmake`, with their own small manifest (`tools/ios/vcpkg.json`) and the
+`arm64-ios` / `arm64-ios-simulator` triplets. The chrome in `src.ios` will link these when it lands. Xcode with the iOS SDK and a
+Simulator runtime, CMake ≥ 3.28, Ninja, vcpkg. The minimum iOS is set in the root `CMakeLists.txt` and both
+triplets, so change them together.
+
+```sh
+cmake -S . -B build-ios-sim -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build-ios-sim
+tools/ios/run-simulator-smoke.sh "$PWD/build-ios-sim/bin/mv_ios_core_smoke"
+```
+
+`CMAKE_OSX_SYSROOT=iphoneos` builds for a device. The smoke runs in a Simulator of its own, which it deletes:
+ONNX Runtime without `dlopen` on a real graph, an index and a text search through a fake model, the Driftwire
+engine and its ports over loopback.
+
+The default target runs `tools/ios/licence_check.py` on the installed ports, ONNX Runtime's licence file and the
+smoke program. It fails on a GPL-family or non-permissive licence, an undeclared one, a non-system library or a known
+(L)GPL symbol. It does not see the app until the app's build calls it: `build-ios-*/ios-licence-check.sh --binary
+MediaViewer.app`, before the app is stripped. CI's `ios-core` job builds both SDKs and runs the smoke.
+
+ONNX Runtime's static build carries Microsoft's telemetry uploader. `src/infer/ort_static_ios.cpp` sets
+`ORT_DISABLE_TELEMETRY` before the runtime starts so the uploader is never made. `tools/ios/ort_telemetry_pin.py`
+fails the build if the collector addresses or that variable's name change, or if `MV_ORT_VERSION` moves: on a bump,
+re-read `core/platform/posix/telemetry.cc` and update the pin.
+
 ### Linux (Linux PR 1)
 
 The present lab, `frametime` and the portable tests, from the root `CMakeLists.txt` (it includes
