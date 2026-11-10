@@ -17,12 +17,16 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "addon/host.h"
 #include "addons/import/engine.h"
+#include "addons/import/host.h"
+#include "addons/import/library_index.h"
 #include "addons/import/naming.h"
+#include "addons/import/paths.h"
 #include "core/json.h"
 #include "import_fixture.h"
 
@@ -31,6 +35,10 @@ using namespace mv::test;
 namespace {
 
 fs::path from_utf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
+
+std::string join(const std::string& root, const std::string& rel) {
+  return mv::import::join_native(root, rel);
+}
 
 constexpr std::int64_t kSat = 1789999385;  // 2026-09-21 14:03:05
 constexpr std::int64_t kSun = 1790069400;  // 2026-09-22 09:30:00
@@ -56,6 +64,17 @@ struct wrap_state {
   std::int32_t fault_target = 0;
   std::function<void(int)> before_copy;
   std::map<std::string, std::string> cards;  // root -> volume id
+  // Destinations that are mounts of their own, so one can "remount" elsewhere.
+  struct fake_disk {
+    std::string volume_id;
+    std::string device_key;
+    bool network = false;
+  };
+  std::map<std::string, fake_disk> disks;  // root -> disk
+  // A UNC share root that no real stat should reach.
+  std::string share_root;
+  bool share_up = false;
+  std::atomic<int> share_stats{0};
 };
 wrap_state* g_wrap = nullptr;
 
@@ -80,8 +99,47 @@ mv_status MV_CALL w_hash(void* host, const char* path, uint32_t uncached,
   return g_wrap->real->hash_file(host, path, uncached, c, y, u, out);
 }
 
+void fill_disk(mv_addon_volume& out, const std::string& root, const wrap_state::fake_disk& d) {
+  out = mv_addon_volume{};
+  std::snprintf(out.volume_id, sizeof out.volume_id, "%s", d.volume_id.c_str());
+  std::snprintf(out.root_utf8, sizeof out.root_utf8, "%s", root.c_str());
+  std::snprintf(out.device_key, sizeof out.device_key, "%s", d.device_key.c_str());
+  out.network = d.network ? 1 : 0;
+}
+
+mv_status MV_CALL w_stat(void* host, const char* path, uint64_t* size, int64_t* mtime, uint32_t* dir) {
+  if (!g_wrap->share_root.empty() && g_wrap->share_root == path) {
+    ++g_wrap->share_stats;
+    if (!g_wrap->share_up) return MV_ERR_NOT_FOUND;
+    *size = 0;
+    *mtime = 0;
+    *dir = 1;
+    return MV_OK;
+  }
+  return g_wrap->real->stat_file(host, path, size, mtime, dir);
+}
+
+mv_status MV_CALL w_list_volumes(void* host, mv_addon_volume* out, uint32_t cap, uint32_t* count) {
+  uint32_t n = 0;
+  const mv_status s = g_wrap->real->list_volumes(host, out, cap, &n);
+  if (s != MV_OK) return s;
+  n = std::min(n, cap);
+  for (const auto& [root, disk] : g_wrap->disks) {
+    if (n < cap) fill_disk(out[n++], root, disk);
+  }
+  *count = n;
+  return MV_OK;
+}
+
 mv_status MV_CALL w_volume_of(void* host, const char* path, mv_addon_volume* out) {
   const mv_status s = g_wrap->real->volume_of(host, path, out);
+  const std::string p(path);
+  for (const auto& [root, disk] : g_wrap->disks) {
+    if (p == root || (p.rfind(root, 0) == 0 && (p[root.size()] == '/' || p[root.size()] == '\\'))) {
+      fill_disk(*out, root, disk);
+      return MV_OK;
+    }
+  }
   for (const auto& [root, id] : g_wrap->cards) {
     if (std::string(path).rfind(root, 0) == 0) {
       *out = mv_addon_volume{};
@@ -144,6 +202,8 @@ struct rig {
     api.copy_verified = &w_copy;
     api.hash_file = &w_hash;
     api.volume_of = &w_volume_of;
+    api.list_volumes = &w_list_volumes;
+    api.stat_file = &w_stat;
     api.eject_volume = &w_eject;
     api.watch_volumes = nullptr;  // tests call on_volume directly
     g_wrap = &wrap;
@@ -192,6 +252,23 @@ struct rig {
   std::string preset(const std::string& extra = "") const {
     return R"({"name":"Test","destination":")" + json_path(dest()) + R"(","eject_after":false)" + extra +
            "}";
+  }
+
+  std::string preset_to(const fs::path& to, const std::string& extra = "") const {
+    return R"({"name":"Test","destination":")" + json_path(to) + R"(","eject_after":false)" + extra + "}";
+  }
+
+  void mount(const fs::path& root, const std::string& volume_id, const std::string& device_key,
+             bool network) {
+    fs::create_directories(root);
+    wrap.disks[utf8(root)] = wrap_state::fake_disk{volume_id, device_key, network};
+  }
+  void unmount(const fs::path& root) { wrap.disks.erase(utf8(root)); }
+
+  std::unique_ptr<mv::import::library_index> open_index() {
+    auto idx = mv::import::library_index::open(utf8(dir / "data/import.db"));
+    REQUIRE(idx);
+    return std::move(*idx);
   }
 
   mv::json::value plan_of(std::uint64_t plan_id) {
@@ -567,9 +644,15 @@ TEST_CASE("resume copies only the destination a crash left without the file",
     for (const auto& row : (*idx)->journal(job)) {
       if (row.state != mv::import::member_state::pending || row.targets.size() != 2) continue;
       const std::string rel = row.src.substr(utf8(r.card()).size() + 1);
-      fs::create_directories(fs::path(row.targets[0]).parent_path());
-      fs::copy_file(gone / rel, row.targets[0]);
-      crashed = row.targets[1];
+      // The journal keeps a target relative to its destination when the
+      // destination has a volume identity (a Windows temp folder does).
+      const auto live = [](const fs::path& home, const std::string& t) {
+        return fs::path(t).is_relative() ? home / fs::path(t) : fs::path(t);
+      };
+      const fs::path first = live(r.dest(), row.targets[0]);
+      fs::create_directories(first.parent_path());
+      fs::copy_file(gone / rel, first);
+      crashed = utf8(live(backup, row.targets[1]));
       break;
     }
   }
@@ -582,6 +665,472 @@ TEST_CASE("resume copies only the destination a crash left without the file",
   REQUIRE(fs::exists(crashed));
   REQUIRE(list_tree(r.dest()).size() == 9);
   REQUIRE(list_tree(r.dest()) == list_tree(backup));
+}
+
+namespace {
+const char* const kSmbUser = "dev://tristan@NAS._smb._tcp.local/photos";
+const char* const kSmbOther = "dev://TRISTAN@nas.local/Photos";
+}  // namespace
+
+TEST_CASE("a destination that remounts under a new path still dedupes and keeps {seq}",
+          "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path nas = r.dir / "NAS";
+  const fs::path moved = r.dir / "Remounted/NAS-1";
+  // A share's filesystem id is new at every mount; its server and share are not.
+  r.mount(nas, "fsid:00000001", kSmbUser, true);
+  const std::string numbered = R"(,"rename":"{date}_{seq}","selection":"all")";
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(nas / "Photos", numbered));
+  REQUIRE(totals(pl, "selected_units") == 5);
+  r.run(pid);
+  const auto before = list_tree(nas / "Photos");
+  REQUIRE(before.size() == 9);
+
+  fs::create_directories(moved.parent_path());
+  fs::rename(nas, moved);
+  r.unmount(nas);
+  r.mount(moved, "fsid:00000002", kSmbOther, true);
+  r.restart();
+  r.wrap.copies = 0;
+  r.wrap.hashes = 0;
+  auto [again, plan2] = r.plan(r.card(), r.preset_to(moved / "Photos", numbered));
+  REQUIRE(totals(plan2, "selected_units") == 0);
+  REQUIRE(totals(plan2, "duplicates") == 5);
+  REQUIRE(r.wrap.hashes == 0);
+  r.run(again);
+  REQUIRE(r.wrap.copies == 0);
+  REQUIRE(list_tree(moved / "Photos") == before);
+
+  // {seq} carries on from the count made under the old path.
+  write_bytes(r.card() / "DCIM/100CANON/IMG_0006.JPG", pattern(77777, 60));
+  r.dates["IMG_0006.JPG"] = kSat;
+  auto [pid2, pl2] = r.plan(r.card(), r.preset_to(moved / "Photos", numbered));
+  r.run(pid2);
+  const auto more = list_tree(moved / "Photos");
+  REQUIRE(std::find(more.begin(), more.end(), "2026/2026-09-21/2026-09-21_0005.JPG") != more.end());
+}
+
+TEST_CASE("a share has one identity however it was mounted", "[import][engine][remount]") {
+  using mv::import::share_identity;
+  CHECK(share_identity(kSmbUser) == share_identity(kSmbOther));
+  CHECK(share_identity("dev://me@nas.local/photos/") == "dev://me@nas.local/photos");
+  CHECK(share_identity("dev://nas.local/photos") != share_identity("dev://nas.local/backup"));
+  CHECK(share_identity("dev://alice@nas.local/home") != share_identity("dev://bob@nas.local/home"));
+  CHECK(share_identity("dev:nas:/Export") != share_identity("dev:nas:/export"));  // NFS
+  // Windows' form, from a drive letter or a UNC root alike.
+  CHECK(share_identity("net:\\\\NAS\\Media") == "net:\\\\nas\\media");
+}
+
+TEST_CASE("a local disk that comes back under another path is the same destination",
+          "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path disk = r.dir / "Disk";
+  const fs::path moved = r.dir / "Disk 1";
+  r.mount(disk, "uuid:DISK-1", "bsd:disk4", false);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(disk / "Photos"));
+  r.run(pid);
+  fs::rename(disk, moved);
+  r.unmount(disk);
+  r.mount(moved, "uuid:DISK-1", "bsd:disk7", false);  // the BSD name moves too
+  r.restart();
+  r.wrap.hashes = 0;
+  auto [again, plan2] = r.plan(r.card(), r.preset_to(moved / "Photos", R"(,"selection":"all")"));
+  REQUIRE(totals(plan2, "selected_units") == 0);
+  REQUIRE(totals(plan2, "duplicates") == 5);
+  REQUIRE(r.wrap.hashes == 0);  // the ledger answered; the old path's rows were not lost
+}
+
+TEST_CASE("a resized Windows volume is the same destination", "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path disk = r.dir / "Disk";
+  r.mount(disk, "vsn:1A2B3C4D:1000", "disk:2", false);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(disk / "Photos"));
+  r.run(pid);
+  r.mount(disk, "vsn:1A2B3C4D:2000", "disk:2", false);  // the same serial, a bigger partition
+  r.restart();
+  r.wrap.hashes = 0;
+  auto [again, plan2] = r.plan(r.card(), r.preset_to(disk / "Photos", R"(,"selection":"all")"));
+  REQUIRE(totals(plan2, "selected_units") == 0);
+  REQUIRE(totals(plan2, "duplicates") == 5);
+  REQUIRE(r.wrap.hashes == 0);
+}
+
+TEST_CASE("a UNC destination is checked once per plan, answered or not",
+          "[import][engine][remount]") {
+  rig r;
+  r.wrap.share_root = "\\\\server\\share";
+  const std::string key = std::string("vol:net:\\\\server\\share") + '\x1f' + "Photos";
+  const mv::import::host h(&r.api);
+  const mv::import::dest_locator loc(h);
+  std::optional<std::string> first;
+  SECTION("online") {
+    r.wrap.share_up = true;
+    first = loc.live_root(key);
+    REQUIRE(first == mv::import::join_native(r.wrap.share_root, "Photos"));
+  }
+  SECTION("offline, where each attempt would wait on the network") {
+    first = loc.live_root(key);
+    REQUIRE_FALSE(first);
+  }
+  for (int i = 0; i < 5; ++i) REQUIRE(loc.live_root(key) == first);
+  REQUIRE(r.wrap.share_stats == 1);
+}
+
+TEST_CASE("an interrupted job resumes on a destination that remounted elsewhere",
+          "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path nas = r.dir / "NAS";
+  const fs::path away = r.dir / "offline";
+  const fs::path moved = r.dir / "Remounted/NAS-1";
+  r.mount(nas, "fsid:00000001", kSmbUser, true);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(nas / "Photos"));
+  r.wrap.before_copy = [&](int n) {
+    if (n == 3) fs::rename(nas, away);  // the share drops mid-job
+  };
+  const auto job = r.run(pid);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_INTERRUPTED);
+  r.wrap.before_copy = nullptr;
+  r.unmount(nas);
+  const auto partial = list_tree(away / "Photos");
+  REQUIRE_FALSE(partial.empty());
+  r.restart();
+
+  // Still offline: Resume changes nothing and creates nothing.
+  const auto journal_before = r.open_index()->journal(job);
+  r.wrap.copies = 0;
+  REQUIRE(r.eng->resume(job));
+  r.eng->wait_idle();
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_INTERRUPTED);
+  REQUIRE(r.wrap.copies == 0);
+  REQUIRE_FALSE(fs::exists(nas));
+  const auto journal_after = r.open_index()->journal(job);
+  REQUIRE(journal_after.size() == journal_before.size());
+  for (std::size_t i = 0; i < journal_after.size(); ++i) {
+    REQUIRE(journal_after[i].state == journal_before[i].state);
+    REQUIRE(journal_after[i].targets == journal_before[i].targets);
+    REQUIRE(journal_after[i].target_roots == journal_before[i].target_roots);
+  }
+  const auto unfinished = mv::json::parse(r.eng->unfinished_json());
+  REQUIRE(unfinished);
+  REQUIRE(unfinished->a.size() == 1);
+
+  // Back, somewhere else: only what was not verified is copied, and there.
+  fs::create_directories(moved.parent_path());
+  fs::rename(away, moved);
+  r.mount(moved, "fsid:00000002", kSmbOther, true);
+  r.restart();
+  r.wrap.copies = 0;
+  REQUIRE(r.eng->resume(job));
+  r.eng->wait_idle();
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_DONE);
+  REQUIRE(r.wrap.copies == 9 - static_cast<int>(partial.size()));
+  REQUIRE(list_tree(moved / "Photos").size() == 9);
+  REQUIRE_FALSE(fs::exists(nas));
+
+  // What the resumed job indexed dedupes too.
+  auto [again, plan2] = r.plan(r.card(), r.preset_to(moved / "Photos", R"(,"selection":"all")"));
+  REQUIRE(totals(plan2, "selected_units") == 0);
+}
+
+TEST_CASE("an interrupted job resumes from a card that came back under another path",
+          "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path away = r.dir / "pulled";
+  const fs::path moved = r.dir / "Cards/EOS_DIGITAL 1";
+  auto [pid, pl] = r.plan(r.card(), r.preset());
+  r.wrap.before_copy = [&](int n) {
+    if (n == 3) fs::rename(r.card(), away);
+  };
+  const auto job = r.run(pid);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_INTERRUPTED);
+  r.wrap.before_copy = nullptr;
+  const auto partial = list_tree(r.dest());
+  fs::create_directories(moved.parent_path());
+  fs::rename(away, moved);
+  r.wrap.cards.erase(utf8(r.card()));
+  r.wrap.cards[utf8(moved)] = "uuid:CARD-A";
+  r.wrap.disks[utf8(moved)] = wrap_state::fake_disk{"uuid:CARD-A", "card:uuid:CARD-A", false};
+  r.restart();
+  r.wrap.copies = 0;
+  REQUIRE(r.eng->resume(job));
+  r.eng->wait_idle();
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_DONE);
+  REQUIRE(r.wrap.copies == 9 - static_cast<int>(partial.size()));
+  REQUIRE(list_tree(r.dest()).size() == 9);
+}
+
+TEST_CASE("a library-wide plan leaves the rows of an offline destination alone",
+          "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path nas = r.dir / "NAS";
+  const fs::path away = r.dir / "offline";
+  r.mount(nas, "uuid:NAS-1", "bsd:disk4", false);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(nas / "Photos"));
+  r.run(pid);
+  const auto before = r.open_index()->all_rows();
+  REQUIRE(before.size() == 9);
+  fs::rename(nas, away);
+  r.unmount(nas);
+  // Its rows can't be confirmed, so nothing counts as a duplicate, and nothing is forgotten.
+  auto [again, plan2] = r.plan(r.card(), r.preset_to(r.dir / "Other", R"(,"selection":"all","scope":"library")"));
+  REQUIRE(totals(plan2, "selected_units") == 5);
+  REQUIRE(r.open_index()->all_rows().size() == before.size());
+}
+
+TEST_CASE("a per-user share resumes on that user's mount", "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path alice = r.dir / "A-home";
+  const fs::path bob = r.dir / "B-home";
+  const fs::path away = r.dir / "offline";
+  const fs::path moved = r.dir / "B-home-1";
+  r.mount(alice, "fsid:0000000a", "dev://alice@nas.local/home", true);
+  r.mount(bob, "fsid:0000000b", "dev://bob@nas.local/home", true);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(bob / "Photos"));
+  r.wrap.before_copy = [&](int n) {
+    if (n == 3) fs::rename(bob, away);
+  };
+  const auto job = r.run(pid);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_INTERRUPTED);
+  r.wrap.before_copy = nullptr;
+  r.unmount(bob);
+  fs::rename(away, moved);
+  r.mount(moved, "fsid:0000000c", "dev://bob@nas.local/home", true);
+  r.restart();
+  REQUIRE(r.eng->resume(job));
+  r.eng->wait_idle();
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_DONE);
+  REQUIRE(list_tree(moved / "Photos").size() == 9);
+  REQUIRE(list_tree(alice).empty());
+}
+
+TEST_CASE("two disks with one id leave the job interrupted", "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path disk = r.dir / "Disk";
+  const fs::path away = r.dir / "offline";
+  const fs::path moved = r.dir / "Disk 1";
+  const fs::path clone = r.dir / "Clone";
+  r.mount(disk, "uuid:DISK-1", "bsd:disk4", false);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(disk / "Photos"));
+  r.wrap.before_copy = [&](int n) {
+    if (n == 3) fs::rename(disk, away);
+  };
+  const auto job = r.run(pid);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_INTERRUPTED);
+  r.wrap.before_copy = nullptr;
+  r.unmount(disk);
+  fs::rename(away, moved);
+  r.mount(moved, "uuid:DISK-1", "bsd:disk5", false);
+  r.mount(clone, "uuid:DISK-1", "bsd:disk6", false);
+  r.restart();
+  r.wrap.copies = 0;
+  REQUIRE(r.eng->resume(job));
+  r.eng->wait_idle();
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_INTERRUPTED);
+  REQUIRE(r.wrap.copies == 0);
+  REQUIRE(list_tree(clone).empty());
+}
+
+TEST_CASE("Retry failed does not write to another disk now at the old path",
+          "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path nas = r.dir / "NAS";
+  const fs::path away = r.dir / "offline";
+  r.mount(nas, "uuid:NAS-1", "bsd:disk4", false);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(nas / "Photos"));
+  r.wrap.fault_times = 1000;  // every copy fails, so the job ends with failures
+  const auto job = r.run(pid);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_FAILED);
+  r.wrap.fault_times = 0;
+  fs::rename(nas, away);
+  r.unmount(nas);
+  fs::create_directories(nas);  // something else answers at the old path, with no key
+  r.wrap.copies = 0;
+  auto retry = r.eng->retry_failed(job);
+  REQUIRE(retry);
+  r.eng->wait_idle();
+  REQUIRE(r.progress(*retry).state == MV_IMPORT_JOB_INTERRUPTED);
+  REQUIRE(r.wrap.copies == 0);
+  REQUIRE(list_tree(nas).empty());
+}
+
+TEST_CASE("a volume with no id that lasts keeps its absolute path", "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path disk = r.dir / "Disk";
+  std::string id = "uuid:unused";
+  std::string device = "bsd:disk4";
+  bool network = false;
+  SECTION("an fsid") { id = "fsid:00000001:1000"; }
+  SECTION("a serial of zero") { id = "vsn:00000000:1000"; }
+  SECTION("a share Windows could not name") {
+    id = "vsn:12345678:1000";
+    device = "net:E:\\";
+    network = true;
+  }
+  r.mount(disk, id, device, network);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(disk / "Photos"));
+  r.run(pid);
+  const auto rows = r.open_index()->all_rows();
+  REQUIRE(rows.size() == 9);
+  for (const auto& row : rows) REQUIRE(row.root == utf8(disk / "Photos"));
+}
+
+TEST_CASE("migration samples across the root, not its oldest folders",
+          "[import][engine][remount]") {
+  rig r;
+  const fs::path nas = r.dir / "NAS";
+  const std::string root = utf8(nas / "Photos");
+  r.mount(nas, "uuid:NAS-1", "bsd:disk4", false);
+  // Every folder but the last has gone to an archive.
+  write_bytes(nas / "Photos/r096.jpg", pattern(1234, 1));
+  mv::import::digest h{};
+  {
+    auto idx = r.open_index();
+    for (int i = 0; i < 100; ++i) {
+      char rel[16];
+      std::snprintf(rel, sizeof rel, "r%03d.jpg", i);
+      idx->upsert({root, rel, 1234, 1, h});
+    }
+  }
+  r.restart();
+  r.eng->wait_idle();
+  const auto rows = r.open_index()->all_rows();
+  REQUIRE(rows.size() == 100);
+  REQUIRE(rows.front().root.rfind("vol:", 0) == 0);
+}
+
+TEST_CASE("rows that could not be adopted still dedupe and still count {seq}",
+          "[import][engine][remount]") {
+  rig r;
+  r.make_card();
+  const fs::path nas = r.dir / "NAS";
+  const std::string root = utf8(nas / "Photos");
+  r.mount(nas, "uuid:NAS-1", "bsd:disk4", false);
+  auto [pid, pl] = r.plan(r.card(), r.preset_to(nas / "Photos"));
+  r.run(pid);
+  {
+    // An import.db from before keys, as absolute rows. Rows for archived files
+    // surround the real ones, so the even sample (every 12th) finds none here.
+    auto idx = r.open_index();
+    const auto rows = idx->all_rows();
+    REQUIRE(rows.size() == 9);
+    mv::import::digest h{};
+    idx->upsert({root, "0-archived.jpg", 5, 1, h});
+    for (const auto& row : rows) {
+      idx->upsert({root, row.rel, row.size, row.mtime, row.hash});
+      idx->drop(row.root, row.rel);
+    }
+    for (int i = 0; i < 350; ++i) {
+      idx->upsert({root, "3-archived-" + std::to_string(1000 + i) + ".jpg", 5, 1, h});
+    }
+    idx->commit_seq(root, "2026-09-21", 7);
+  }
+  r.restart();
+  r.wrap.copies = 0;
+  r.wrap.hashes = 0;
+  const std::string numbered = R"(,"rename":"{date}_{seq}","selection":"all")";
+  auto [again, plan2] = r.plan(r.card(), r.preset_to(nas / "Photos", numbered));
+  REQUIRE(totals(plan2, "selected_units") == 0);
+  REQUIRE(totals(plan2, "duplicates") == 5);
+  REQUIRE(r.wrap.hashes == 0);
+  REQUIRE(r.open_index()->all_rows().front().root == root);  // not adopted
+
+  write_bytes(r.card() / "DCIM/100CANON/IMG_0006.JPG", pattern(77777, 60));
+  r.dates["IMG_0006.JPG"] = kSat;
+  auto [pid2, pl2] = r.plan(r.card(), r.preset_to(nas / "Photos", numbered));
+  r.run(pid2);
+  const auto files = list_tree(nas / "Photos");
+  REQUIRE(std::find(files.begin(), files.end(), "2026/2026-09-21/2026-09-21_0008.JPG") != files.end());
+}
+
+TEST_CASE("an existing import.db migrates in place and loses nothing",
+          "[import][engine][remount]") {
+  rig r;
+  const fs::path nas = r.dir / "NAS";
+  const fs::path moved = r.dir / "Remounted/NAS-1";
+  const fs::path stranger = r.dir / "Stranger";
+  const fs::path missing = r.dir / "Unplugged/Photos";
+  const std::string online = utf8(nas / "Photos");
+  const std::string offline = utf8(missing);
+  const std::string other = utf8(stranger / "Photos");
+  write_bytes(nas / "Photos/2026/a.jpg", pattern(1000, 1));
+  write_bytes(nas / "Photos/2026/job-done.jpg", pattern(1100, 2));
+  write_bytes(stranger / "Photos/unrelated.jpg", pattern(50, 3));
+  r.mount(nas, "fsid:00000001", kSmbUser, true);
+  r.mount(stranger, "uuid:STRANGER", "bsd:disk9", false);  // another disk at the recorded path
+  mv::import::digest h{};
+  h[0] = 7;
+  {
+    auto idx = r.open_index();
+    idx->upsert({online, "2026/a.jpg", 1000, 111, h});
+    idx->upsert({offline, "2026/b.jpg", 2000, 222, h});
+    idx->upsert({other, "2026/c.jpg", 3000, 333, h});
+    idx->commit_seq(online, "2026-09-21", 7);
+    idx->commit_seq(offline, "2026-09-21", 9);
+    mv::import::job_row job;
+    job.id = 41;
+    job.created = 1;
+    job.state = MV_IMPORT_JOB_INTERRUPTED;
+    REQUIRE(idx->create_job(job) == 41);
+    job.id = 42;
+    REQUIRE(idx->create_job(job) == 42);
+    mv::import::journal_row a;
+    a.job = 41;
+    a.src = "/nowhere/job.jpg";
+    a.size = 1100;
+    a.state = mv::import::member_state::done;
+    a.targets = {join(online, "2026/job-done.jpg")};
+    a.target_roots = {online};
+    mv::import::journal_row b = a;
+    b.job = 42;
+    b.targets = {join(offline, "2026/job.jpg")};
+    b.target_roots = {offline};
+    REQUIRE(idx->journal_add({a, b}));
+  }
+  r.restart();
+  r.eng->wait_idle();
+
+  auto idx = r.open_index();
+  const auto rows = idx->all_rows();
+  REQUIRE(rows.size() == 3);
+  std::string key;
+  for (const auto& row : rows) {
+    if (row.rel == "2026/a.jpg") key = row.root;
+    if (row.rel == "2026/b.jpg") REQUIRE(row.root == offline);
+    if (row.rel == "2026/c.jpg") REQUIRE(row.root == other);  // none of its files are here
+  }
+  REQUIRE(key.rfind("vol:", 0) == 0);
+  REQUIRE(idx->last_seq(key, "2026-09-21") == 7);
+  REQUIRE(idx->last_seq(offline, "2026-09-21") == 9);
+  const auto adopted = idx->journal(41);
+  REQUIRE(adopted.size() == 1);
+  REQUIRE(adopted[0].target_roots == std::vector<std::string>{key});
+  REQUIRE(adopted[0].targets == std::vector<std::string>{"2026/job-done.jpg"});
+  const auto left = idx->journal(42);
+  REQUIRE(left[0].target_roots == std::vector<std::string>{offline});
+  REQUIRE(left[0].targets == std::vector<std::string>{join(offline, "2026/job.jpg")});
+
+  // A second open finds nothing more to do, and the migrated rows follow a remount.
+  r.restart();
+  r.eng->wait_idle();
+  REQUIRE(r.open_index()->all_rows().size() == 3);
+  fs::create_directories(moved.parent_path());
+  fs::rename(nas, moved);
+  r.unmount(nas);
+  r.mount(moved, "fsid:00000002", kSmbOther, true);
+  r.restart();
+  r.eng->wait_idle();
+  const auto later = r.open_index()->all_rows();
+  REQUIRE(std::count_if(later.begin(), later.end(), [&](const auto& x) { return x.root == key; }) == 1);
 }
 
 TEST_CASE("Retry failed on an unknown job fails rather than reporting success",

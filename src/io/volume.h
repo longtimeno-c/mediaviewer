@@ -33,7 +33,9 @@ struct volume_info {
   std::string root_utf8;
   std::string label_utf8;
   // One key per physical device, so two cards in one reader share a reader
-  // thread and two readers do not (docs/design/18 "Throughput").
+  // thread and two readers do not (docs/design/18 "Throughput"). A network
+  // volume's key names the share (the Mac's mount source, Windows' UNC name
+  // whether reached by drive letter or not), so it survives a remount.
   std::string device_key;
   std::uint64_t total_bytes = 0;
   std::uint64_t free_bytes = 0;

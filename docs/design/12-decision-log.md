@@ -1404,6 +1404,17 @@ media; hidden, system, packages and empty files are skipped) and reports groups.
 
 ---
 
+**Destinations are volume keys, not absolute paths (2026-11-10).** `import.db` keyed `library`,
+`seq` and the journal on the destination's absolute path, so a share back at `/Volumes/photos-1`
+or a re-lettered drive looked new: every file re-read to dedupe, renamed files copied again, `{seq}`
+restarted, and an interrupted job never resumed. Rows now carry a volume identity plus the folder
+inside the volume. Not `volume_id` alone: a Mac share's fsid changes at each mount, so a share goes
+by its mount source, and Windows' network `device_key` now resolves a drive letter to its UNC name
+(it was the path). Not the ABI: `mv_addon_volume` already has both fields. Absolute rows migrate
+only after a file check, because a stale mount point or another disk at the same path must not
+adopt them; offline rows are never rewritten or dropped. Details: [18](18-import.md) "Destination
+identity".
+
 ## Local search (AI add-on)
 
 **Runtime (2026-09-24).** ONNX Runtime; GPU through vendor providers shipped as optional pieces
