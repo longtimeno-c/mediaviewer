@@ -7296,8 +7296,8 @@ TEST_CASE("phone link: with Driftwire missing, the card is told", "[ai][engine][
 }
 
 TEST_CASE("phone link: a code is one QR with the library, the key and the service", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   a.file("red_car.jpg");
   a.start();
@@ -7342,8 +7342,8 @@ TEST_CASE("phone link: a code is one QR with the library, the key and the servic
 }
 
 TEST_CASE("phone link: a takeover asked on the share, allowed, then published", "[ai][engine][phone-link]") {
+  fake_driftwire da, db;  // before the rigs: their engines call these until they are gone
   rig a, b;
-  fake_driftwire da, db;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
   b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
   a.file("red_car.jpg");
@@ -7417,8 +7417,8 @@ TEST_CASE("phone link: a takeover asked on the share, allowed, then published", 
 }
 
 TEST_CASE("phone link: Cancel, expiry and a new code withdraw the code on the service", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   a.file("red_car.jpg");
   a.start();
@@ -7448,9 +7448,9 @@ TEST_CASE("phone link: Cancel, expiry and a new code withdraw the code on the se
 }
 
 TEST_CASE("phone link: a revoke the NAS missed is retried until it lands", "[ai][engine][phone-link]") {
+  fake_driftwire d;
   rig a;
   a.link_retry = 0.2;
-  fake_driftwire d;
   d.pending = 1;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   a.file("red_car.jpg");
@@ -7477,8 +7477,8 @@ TEST_CASE("phone link: a revoke the NAS missed is retried until it lands", "[ai]
 }
 
 TEST_CASE("phone link: the share never moves this desktop's library or epoch backwards", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   a.file("red_car.jpg");
   a.start();
@@ -7530,8 +7530,8 @@ TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be re
 #if defined(_WIN32)
   SKIP("POSIX permissions");
 #else
+  fake_driftwire da, db;  // before the rigs: their engines call these until they are gone
   rig a, b;
-  fake_driftwire da, db;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
   b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
   const fs::path nas = a.dir / "NAS";
@@ -7582,8 +7582,8 @@ TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be re
 }
 
 TEST_CASE("phone link: Local search stopping lets go of the NAS without waiting on it", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   a.file("red_car.jpg");
   a.start();
@@ -7606,8 +7606,8 @@ TEST_CASE("phone link: Local search stopping lets go of the NAS without waiting 
 }
 
 TEST_CASE("phone link: a claim that timed out is claimed once more", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   d.claim_timeouts = 1;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   a.file("red_car.jpg");
@@ -7632,8 +7632,8 @@ TEST_CASE("phone link: a hand-over survives a restart, and handing back clears i
 #if defined(_WIN32)
   SKIP("POSIX permissions");
 #else
+  fake_driftwire da, db;  // before the rigs: their engines call these until they are gone
   rig a, b;
-  fake_driftwire da, db;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
   b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
   const fs::path nas = a.dir / "NAS";
@@ -7687,8 +7687,8 @@ TEST_CASE("phone link: a hand-over survives a restart, and handing back clears i
 }
 
 TEST_CASE("phone link: a code left showing at quit is withdrawn at the next start", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   a.file("red_car.jpg");
   a.start();
@@ -7737,8 +7737,8 @@ std::size_t count_of(fake_driftwire& d, const char* method) {
 }  // namespace
 
 TEST_CASE("phone link: a pair after a failed stale withdraw keeps its code", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   quit_with_a_code(a, d);
   {
@@ -7772,9 +7772,9 @@ TEST_CASE("phone link: a pair after a failed stale withdraw keeps its code", "[a
 
 TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definite answer", "[ai][engine][phone-link]") {
   SECTION("the NAS stays away past the code's lifetime") {
+    fake_driftwire d;
     rig a;
     a.code_ttl = 1;
-    fake_driftwire d;
     a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
     quit_with_a_code(a, d);
     {
@@ -7790,8 +7790,8 @@ TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definit
     CHECK(count_of(d, "pair_stop") == 0);  // nothing left to withdraw: the NAS dropped it
   }
   SECTION("the NAS answers no (another owner, the service gone)") {
-    rig a;
     fake_driftwire d;
+    rig a;
     a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
     quit_with_a_code(a, d);
     {
@@ -7808,8 +7808,8 @@ TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definit
 }
 
 TEST_CASE("phone link: a request queued while a code is made does not let the old debt withdraw it", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
-  fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
   quit_with_a_code(a, d);
   {
@@ -7856,8 +7856,8 @@ TEST_CASE("phone link: a request queued while a code is made does not let the ol
 
 TEST_CASE("phone link: a busy or not-yet-loaded Driftwire does not settle a code left at quit", "[ai][engine][phone-link]") {
   for (const auto transient : {mv::status::busy, mv::status::not_found}) {
-    rig a;
     fake_driftwire d;
+    rig a;
     a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
     quit_with_a_code(a, d);
     {
@@ -7876,4 +7876,75 @@ TEST_CASE("phone link: a busy or not-yet-loaded Driftwire does not settle a code
     (void)link_done(a);
     CHECK(count_of(d, "pair_stop") == 1);  // still owed, and asked again
   }
+}
+
+TEST_CASE("phone link: an engine stopped while its phone ticks never leaves a thread behind", "[ai][engine][phone-link]") {
+  fake_driftwire d;
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.phone_quiet = 0;
+  a.phone_interval = 0;
+  a.phone_poll = 0.01;
+  a.link_retry = 0.01;
+  {
+    std::lock_guard lock(d.m);
+    d.pending = 1;  // something for every tick to start
+  }
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  // Stopped at every point of a tick: the destructor of a joinable thread
+  // would end the process here.
+  for (int i = 0; i < 25; ++i) {
+    a.eng.reset();
+    a.start();
+    if (i % 3 == 0) (void)a.eng->phone_link("{\"do\":\"refresh\"}");
+    std::this_thread::sleep_for(std::chrono::milliseconds(i % 7));
+  }
+  SUCCEED();
+}
+
+TEST_CASE("phone link: a link.json that cannot be read is never taken as no hand-over", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
+  fake_driftwire d;
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  a.eng.reset();
+  const fs::path link = a.dir / "data" / "phone" / "link.json";
+  fs::create_directories(link.parent_path());
+  {
+    std::ofstream f(link, std::ios::binary | std::ios::trunc);
+    f << "{\"handed_over\":false,\"code_left\":false,\"code_left_until\":0}";
+  }
+  const std::string before = read_all(link);
+  // Neither file reads: the share cannot say this key is the library's.
+  const std::string share = utf8(nas / ".mediaviewer" / "library.json");
+  ::chmod(utf8(link).c_str(), 0);
+  ::chmod(share.c_str(), 0);
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto v = link_done(a);
+  ::chmod(share.c_str(), 0644);
+  CHECK(v.boolean("other_publisher") == true);  // closed: it may say handed over
+  ::chmod(utf8(link).c_str(), 0644);
+  CHECK(read_all(link) == before);              // and not written over blind
+  // The share reads again and names this key: that, and only that, ends it.
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == false);
+#endif
 }

@@ -1298,6 +1298,7 @@ class engine {
     bool flags_unsaved = false;       // phone/link.json could not be written
     bool flags_dirty = false;         // to be written once the lock is let go
     bool pairing = false;             // the link thread's own: it is making a code now
+    bool flags_read = false;          // phone/link.json was read (or is not there): it may be written
     bool code_waiting = false;        // the code shown is still on the service
     std::int64_t pending = 0;         // revokes the NAS has not heard
     double retry_s = 0;               // until the next try, doubling

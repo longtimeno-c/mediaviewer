@@ -529,8 +529,6 @@ void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
   transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   phone_cancel_ = true;
-  if (phone_thread_.joinable()) phone_thread_.join();
-  phone_link_stop();
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
   control_cv_.notify_all();
   work_cv_.notify_all();
@@ -541,6 +539,18 @@ void engine::stop() noexcept {
   dl_cv_.notify_all();
   if (download_thread_.joinable()) download_thread_.join();  // a model download stops between chunks
   if (control_.joinable()) control_.join();
+  // Phone access after the control thread: its tick starts both threads, and
+  // a tick between their joins and its own would start one nobody joins.
+  // Taken out under the lock their starters hold, which see stopping_ there.
+  {
+    std::thread t;
+    {
+      std::lock_guard lock(phone_m_);
+      t = std::move(phone_thread_);
+    }
+    if (t.joinable()) t.join();
+  }
+  phone_link_stop();
   // After the control thread (which sets it): no change is called in after this.
   if (watching_) {
     (void)host_.watch_tree({}, nullptr, nullptr);
@@ -5565,6 +5575,7 @@ expected engine::phone_publish(const std::string& destination) {
   if (options_.read_only) return err(status::unsupported_format);
   if (destination.empty()) return err(status::invalid_arg);
   std::lock_guard lock(phone_m_);
+  if (stopping_.load()) return err(status::cancelled);  // stop() takes the thread under this lock
   if (phone_.running) return err(status::busy);
   if (phone_thread_.joinable()) phone_thread_.join();  // the last one has finished
   phone_.running = true;
@@ -5619,7 +5630,7 @@ std::string engine::phone_json() const {
 void engine::phone_publish_auto() {
   // The control thread: starting a thread is all it does here.
   std::lock_guard lock(phone_m_);
-  if (phone_.running) return;
+  if (stopping_.load() || phone_.running) return;
   if (phone_thread_.joinable()) phone_thread_.join();
   const std::string destination = phone_.destination;
   phone_.running = true;
@@ -5641,7 +5652,7 @@ void engine::phone_publish_auto() {
 
 void engine::phone_deliver_waiting() {
   std::lock_guard lock(phone_m_);
-  if (phone_.running || phone_.waiting == 0) return;
+  if (stopping_.load() || phone_.running || phone_.waiting == 0) return;
   if (phone_thread_.joinable()) phone_thread_.join();
   phone_.running = true;
   phone_.fraction = 0;

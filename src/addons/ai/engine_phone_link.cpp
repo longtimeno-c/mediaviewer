@@ -80,29 +80,45 @@ const char* error_name(status s) noexcept {
 // not yet confirmed by a share that reads back, and a code left on the NAS.
 void engine::phone_link_load_flags() {
   const std::string file = data_dir_ + "/phone/link.json";
-  std::error_code ec;
-  if (!std::filesystem::exists(fs_path(file), ec)) return;  // nothing ever handed over, nothing left
-  // Read it, once more if the read itself failed (a file being replaced, a
-  // disk that hiccuped). Only a file read whole that does not parse fails closed.
-  std::optional<std::string> text;
-  for (int attempt = 0; attempt < 2 && !text; ++attempt) {
+  // Read whole: its size, then exactly that many bytes. A read that fails is
+  // tried once more after a moment (a file being replaced, a disk that hiccuped).
+  const auto read_whole = [&]() -> std::optional<std::string> {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(fs_path(file), ec);
+    if (ec || size > 64 * 1024) return std::nullopt;
     std::ifstream in(fs_path(file), std::ios::binary);
-    if (!in) continue;
-    std::ostringstream s;
-    s << in.rdbuf();
-    if (!in.bad()) text = s.str();
-  }
-  if (!text) return;  // not read: as before, nothing assumed
-  const auto doc = json::parse(*text, 4);
-  std::lock_guard lock(phone_link_m_);
-  if (!doc || doc->k != json::kind::object) {
-    // There and unreadable: fail closed. Signing nearby copies with a key
-    // that may have been handed away is worse than not serving nearby; the
-    // next refresh that reads this key on the share clears it.
-    link_.handed_over = true;
-    link_.other_publisher = true;
+    if (!in) return std::nullopt;
+    std::string text(static_cast<std::size_t>(size), '\0');
+    in.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (in.gcount() != static_cast<std::streamsize>(text.size())) return std::nullopt;
+    return text;
+  };
+  std::error_code ec;
+  const bool there = std::filesystem::exists(fs_path(file), ec);
+  if (!ec && !there) {
+    // Never written: nothing handed over, nothing left. The one case that is open.
+    std::lock_guard lock(phone_link_m_);
+    link_.flags_read = true;
     return;
   }
+  auto text = read_whole();
+  if (!text) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    text = read_whole();
+  }
+  const auto doc = text ? json::parse(*text, 4) : std::nullopt;
+  std::lock_guard lock(phone_link_m_);
+  if (!doc || doc->k != json::kind::object) {
+    // There and not read, or read and not ours to understand: fail closed.
+    // Signing nearby copies with a key that may have been handed away is worse
+    // than not serving nearby. Nothing is written over it until a read
+    // succeeds (a later run), so a passing failure cannot erase a hand-over.
+    link_.handed_over = true;
+    link_.other_publisher = true;
+    link_.flags_read = false;
+    return;
+  }
+  link_.flags_read = true;
   link_.handed_over = doc->boolean("handed_over").value_or(false);
   link_.code_left = doc->boolean("code_left").value_or(false);
   link_.code_left_until = doc->integer("code_left_until").value_or(0);
@@ -114,6 +130,10 @@ void engine::phone_link_save_flags() {
   std::int64_t until = 0;
   {
     std::lock_guard lock(phone_link_m_);
+    if (!link_.flags_read) {
+      link_.flags_unsaved = true;  // the file there could not be read: never overwritten blind
+      return;
+    }
     handed = link_.handed_over;
     left = link_.code_left;
     until = link_.code_left_until;
@@ -180,6 +200,7 @@ expected engine::phone_link(const std::string& request_json) {
   const auto doc = json::parse(request_json, 4);
   if (!doc || !doc->str("do")) return err(status::invalid_arg);
   std::lock_guard lock(phone_link_m_);
+  if (stopping_.load()) return err(status::cancelled);  // checked again where the thread is taken
   link_.busy = *doc->str("do");  // from now, so a poll right after this sees it
   link_requests_.push_back(request_json);
   if (!phone_link_thread_.joinable()) phone_link_thread_ = std::thread([this] { phone_link_loop(); });
@@ -298,6 +319,7 @@ void engine::phone_link_tick() {
   }
   if (!used) return;
   std::lock_guard lock(phone_link_m_);
+  if (stopping_.load()) return;  // phone_link_stop takes the thread under this lock
   // A phone revoked here while the NAS was away keeps the NAS's door open
   // until the NAS hears it: ask again, backing off, until it has.
   const auto now = std::chrono::steady_clock::now();
