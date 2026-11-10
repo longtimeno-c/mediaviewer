@@ -439,7 +439,7 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
                            std::chrono::steady_clock::time_point deadline) {
   const auto left_ms = [&] {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-    return static_cast<int>(std::max<std::int64_t>(0, ms));
+    return static_cast<int>(std::max<std::int64_t>(1, ms));  // 1: the channel reads 0 as no limit at all
   };
   channel::options opts;
   opts.access_key = key;
@@ -460,8 +460,9 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
   }
   (void)(*ch)->send(msg::serve_claim, w.str());
   if (auto r = (*ch)->receive(m, left_ms()); !r) {
-    // The proof is on the share: the service may yet take it. The caller asks.
-    return err(r.error() == status::timeout ? status::timeout : status::io);
+    // The proof is on the share: the service may have taken it, whatever
+    // happened to its answer. The caller claims once more to find out.
+    return err(status::timeout);
   }
   if (m.type != msg::serve_claimed) return err(status::permission_denied);
   const auto doc = json::parse(m.text(), 6);

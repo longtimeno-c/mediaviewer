@@ -108,9 +108,10 @@ struct claim_answer {
 };
 // `prove` writes the service's nonce to kClaimProofFile on the share, so the
 // service sees this desktop can write there, not only read the token.
-// Every wait after the handshake ends by `deadline`. status::timeout only when
-// the last answer, after the proof was written, did not come in time: the
-// claim may still have gone through. Any earlier failure is a refusal or
+// Every wait after the handshake ends by `deadline`. status::timeout when the
+// last answer, after the proof was written, did not arrive (late, or the link
+// dropped): the claim may still have gone through, and claiming again from
+// the same device returns the same keys. Any earlier failure is a refusal or
 // silence, status::permission_denied.
 [[nodiscard]] result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
                                          const std::array<std::uint8_t, 32>& device_key, const std::string& name,

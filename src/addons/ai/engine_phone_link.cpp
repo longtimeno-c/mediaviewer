@@ -117,8 +117,10 @@ void engine::phone_link_stop() noexcept {
   }
   if (t.joinable()) t.join();
   // Local search going (an update, a removal, quitting): Driftwire may stay,
-  // and must not go on serving a catalogue nobody here keeps up to date, or a
-  // code nobody here watches. Both are on this Mac or one bounded request.
+  // and must not go on serving a catalogue nobody here keeps up to date. Both
+  // calls are on this Mac. A code showing is not withdrawn here: that is a
+  // round trip to a NAS that may not answer, and quitting must not wait on
+  // it; the NAS lets the code lapse within its five minutes.
   bool nearby = false, showing = false;
   {
     std::lock_guard lock(phone_link_m_);
@@ -127,7 +129,6 @@ void engine::phone_link_stop() noexcept {
   }
   try {
     if (nearby) (void)phone_route("nearby_stop", "{}");
-    if (showing) (void)phone_route("pair_stop", "{}");
     if (nearby || showing) (void)phone_route("release", "{}");
   } catch (...) {
   }
@@ -280,6 +281,14 @@ void engine::phone_link_refresh(bool phones_only) {
   std::string mine;
   if (secret) mine = catalog::to_hex(catalog::public_of(*secret));
   bool other = false, mismatch = false;
+  bool handed_over = false;
+  {
+    std::lock_guard lock(phone_link_m_);
+    handed_over = link_.handed_over;
+  }
+  // Handed over: only a library.json that reads and names this key again
+  // makes this desktop the publisher; a share that cannot be read does not.
+  if (handed_over && (!lib || lib->public_key != mine)) other = true;
   std::string other_fp;
   if (lib) {
     if (lib->public_key == mine) {
@@ -325,8 +334,11 @@ void engine::phone_link_refresh(bool phones_only) {
   }
   std::lock_guard lock(phone_link_m_);
   link_.mismatch = mismatch;
+  if (handed_over && lib && lib->public_key == mine) link_.handed_over = false;
+  if (link_.handed_over) other = true;
+  if (!other) link_.other_fingerprint.clear();
   link_.other_publisher = other;
-  link_.other_fingerprint = other_fp;
+  if (!other_fp.empty()) link_.other_fingerprint = other_fp;
   link_.asking_name = asking_name;
   link_.asking_key = asking_key;
   link_.asking_fingerprint = asking_fp;
@@ -467,6 +479,9 @@ void engine::phone_link_do(const std::string& request) {
     json::writer w;
     w.begin_object().key("share").string(destination).key("local").string(text("local")).key("public").string(text("public")).end_object();
     auto r = phone_route("claim", w.str());
+    // Timed out: the service may have taken it and the answer been lost. A
+    // second claim from this Mac is answered with the same keys.
+    if (!r && r.error() == status::timeout) r = phone_route("claim", w.str());
     if (!r && r.error() != status::timeout) return fail(error_name(r.error()));
     // A slow claim may still have gone through: the service says which.
     phone_link_refresh();
@@ -617,15 +632,11 @@ void engine::phone_link_do(const std::string& request) {
       // back on the next try: this desktop is no longer the publisher.
       std::lock_guard lock(phone_link_m_);
       link_.other_publisher = true;
+      link_.handed_over = true;
       link_.other_fingerprint = catalog::fingerprint(to);
     }
     phone_link_prepare_nearby();  // its key is not the library's now: the nearby copy goes
     phone_link_refresh();
-    {
-      std::lock_guard lock(phone_link_m_);
-      link_.other_publisher = true;  // a refresh that could not read the share does not undo it
-      if (link_.other_fingerprint.empty()) link_.other_fingerprint = catalog::fingerprint(to);
-    }
     return;
   }
   fail("failed");

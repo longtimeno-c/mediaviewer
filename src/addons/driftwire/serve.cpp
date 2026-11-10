@@ -194,6 +194,7 @@ struct server::state {
   // The claim keys on the share, each with the named folder it was found under.
   [[nodiscard]] std::vector<std::pair<std::array<std::uint8_t, 32>, std::string>> claim_tokens() const;
   void run_claim(conn& c, std::unique_ptr<channel> ch, const std::string& folder);
+  void send_claimed(channel& ch);
   [[nodiscard]] bool redeem(channel& ch, const std::array<std::uint8_t, 32>& peer);
   [[nodiscard]] std::pair<end_code, std::string> admin(conn& c, std::string_view request);
 
@@ -760,7 +761,9 @@ void server::state::serve_connection(conn* c) {
     // gets the same silence as a wrong key, and no file on the share is read.
     std::string claim_folder;
     bool claiming = false;
-    if (claimable && !store->exists(kOwnerName) && on_own_network(c->from)) {
+    // Owned, this is still open to the owner itself, with a fresh token and
+    // proof: a claim whose answer was lost must be able to fetch its keys.
+    if (claimable && on_own_network(c->from)) {
       for (const auto& [key, folder] : claim_tokens()) {
         if (channel::hello_opens_under(*h, key, identity)) {
           o.access_key = key;
@@ -997,10 +1000,17 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     }
   }
   std::unique_lock lock(claim_m);
-  // Two desktops at once: the first through this lock is the owner.
+  // Two desktops at once: the first through this lock is the owner. The owner
+  // claiming again (its first answer was lost) gets the same answer; nothing
+  // changes.
   if (store->exists(kOwnerName)) {
+    const auto held = owner();
     lock.unlock();
-    (void)ch->cancel(kCancelWaitMs, "claimed");
+    if (!held || *held != *peer) {
+      (void)ch->cancel(kCancelWaitMs, "claimed");
+      return;
+    }
+    send_claimed(*ch);
     return;
   }
   const std::string catalogue = folder + "/" + kCatalogueFolder;
@@ -1020,6 +1030,10 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     return;
   }
   lock.unlock();
+  send_claimed(*ch);
+}
+
+void server::state::send_claimed(channel& ch) {
   std::vector<root_info> list;
   for (const auto& r : cfg()->roots) list.push_back({r.id, r.label});
   json::writer w;
@@ -1027,9 +1041,9 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
   w.key("access_key").string(key_hex(access_key));
   w.key("roots").raw(roots_json(list));
   w.end_object();
-  (void)ch->send(msg::serve_claimed, w.str());
-  ch->flush(kCancelWaitMs);
-  (void)ch->cancel(kCancelWaitMs, "done");
+  (void)ch.send(msg::serve_claimed, w.str());
+  ch.flush(kCancelWaitMs);
+  (void)ch.cancel(kCancelWaitMs, "done");
 }
 
 bool server::state::add_device(const std::string& name, const std::array<std::uint8_t, 32>& key, bool& full) {

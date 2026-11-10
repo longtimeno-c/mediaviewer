@@ -1289,6 +1289,7 @@ class engine {
     std::uint64_t tried = 0;          // the last one the tick asked to copy
     bool other_publisher = false;     // another desktop's key is on the share
     bool mismatch = false;            // the share's library.json goes back on what this desktop publishes
+    bool handed_over = false;         // this desktop signed the library away; until the share names its key again
     bool code_waiting = false;        // the code shown is still on the service
     std::int64_t pending = 0;         // revokes the NAS has not heard
     double retry_s = 0;               // until the next try, doubling

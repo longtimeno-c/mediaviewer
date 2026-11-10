@@ -17,7 +17,9 @@
 
 #include "abi/addon_media.h"
 #include <sodium.h>
+#if !defined(_WIN32)
 #include <sys/stat.h>
+#endif
 
 #include "addons/ai/catalog.h"
 #include "addons/ai/catalog_chain.h"
@@ -7511,6 +7513,9 @@ TEST_CASE("phone link: the share never moves this desktop's library or epoch bac
 }
 
 TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be read back", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
   rig a, b;
   fake_driftwire da, db;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
@@ -7546,14 +7551,23 @@ TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be re
   w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
   REQUIRE(a.eng->phone_link(w.str()));
   const auto after = link_done(a);
-  ::chmod(utf8(nas / ".mediaviewer/library.json").c_str(), 0644);
   CHECK(after.boolean("other_publisher") == true);
-  std::lock_guard lock(da.m);
-  CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby_stop")) != da.calls.end());
-  CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby")) == da.calls.end());
+  // A later look while the share still cannot be read changes nothing.
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == true);
+  ::chmod(utf8(nas / ".mediaviewer/library.json").c_str(), 0644);
+  {
+    std::lock_guard lock(da.m);
+    CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby_stop")) != da.calls.end());
+    CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby")) == da.calls.end());
+  }
+  // Readable again, and naming the new desktop: still not this one's.
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == true);
+#endif
 }
 
-TEST_CASE("phone link: Local search stopping takes its nearby copy and its code down", "[ai][engine][phone-link]") {
+TEST_CASE("phone link: Local search stopping lets go of the NAS without waiting on it", "[ai][engine][phone-link]") {
   rig a;
   fake_driftwire d;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
@@ -7572,6 +7586,7 @@ TEST_CASE("phone link: Local search stopping takes its nearby copy and its code 
   }
   a.eng->stop();
   std::lock_guard lock(d.m);
-  CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("pair_stop")) != d.calls.end());
+  // Only what is on this Mac: quitting never waits on the NAS (the code lapses there).
+  CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == d.calls.end());
   CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("release")) != d.calls.end());
 }

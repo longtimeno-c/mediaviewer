@@ -250,6 +250,57 @@ TEST_CASE("phone pairing: a service the desktop never reaches is a plain failure
   CHECK_FALSE(fs::exists(share.root() / serve::kClaimTokenFile));
 }
 
+TEST_CASE("phone pairing: a claim whose answer was lost is answered again for its owner", "[phone-pairing]") {
+  nas n;
+  const key32 device = random_key();
+  const auto write_proof = [&](std::string_view nonce) {
+    put_file(n.share / serve::kClaimProofFile, nonce);
+    return true;
+  };
+  const auto with_token = [&](const std::string& token) {
+    put_file(n.share / serve::kClaimTokenFile, token);
+    return serve::claim_key(token);
+  };
+  // A link that goes deaf once the proof is written: the service's answer never arrives here.
+  class deafening final : public sp::link {
+   public:
+    explicit deafening(std::shared_ptr<sp::link> in) : in_(std::move(in)) {}
+    mv::expected write_all(std::span<const std::uint8_t> b) override { return in_->write_all(b); }
+    mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int ms) override {
+      auto n = in_->read_some(into, ms);
+      if (deaf.load()) return mv::err(mv::status::io);
+      return n;
+    }
+    void shutdown() noexcept override { in_->shutdown(); }
+    sp::transport via() const noexcept override { return in_->via(); }
+    std::atomic<bool> deaf{false};
+
+   private:
+    std::shared_ptr<sp::link> in_;
+  };
+  auto drop = std::make_shared<deafening>(n.connect());
+  auto lost = serve::claim(drop, with_token(std::string(64, 'a')), device, "Mac", [&](std::string_view nonce) {
+    write_proof(nonce);
+    drop->deaf = true;
+    return true;
+  }, soon());
+  REQUIRE_FALSE(lost);
+  CHECK(lost.error() == mv::status::timeout);  // "it may have gone through": not a refusal
+  for (int i = 0; i < 250 && !n.store->exists(serve::kOwnerName); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  REQUIRE(n.store->exists(serve::kOwnerName));  // the service took it
+  // The same Mac claims again: same keys back, nothing changed on the service.
+  const auto roots_before = n.srv->roots().size();
+  auto again = serve::claim(n.connect(), with_token(std::string(64, 'b')), device, "Mac", write_proof, soon());
+  REQUIRE(again);
+  CHECK(again->access_key == n.access);
+  CHECK(again->identity == n.identity);
+  CHECK(n.srv->roots().size() == roots_before);
+  // Anyone else with a token and a proof is still refused.
+  auto other = serve::claim(n.connect(), with_token(std::string(64, 'c')), random_key(), "Other", write_proof, soon());
+  REQUIRE_FALSE(other);
+  CHECK(other.error() == mv::status::permission_denied);
+}
+
 // ---- pairing codes --------------------------------------------------------------------------
 
 TEST_CASE("phone pairing: a code pairs a phone once", "[phone-pairing]") {
@@ -548,7 +599,8 @@ TEST_CASE("phone pairing: a revoke made while the NAS is away reaches it later",
   REQUIRE(svc);
   // The service came back on another port in this test.
   (void)address;
-  REQUIRE(s.mac.d->claim(utf8(s.n.share), s.n.local(), "").error() == mv::status::permission_denied);
+  // Its owner claiming again is answered with the same keys (and the new address kept).
+  REQUIRE(s.mac.d->claim(utf8(s.n.share), s.n.local(), ""));
   REQUIRE(s.mac.d->set_local(s.n.local()));
   auto list = s.mac.d->refresh_devices();
   REQUIRE(list);
