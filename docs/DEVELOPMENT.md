@@ -640,6 +640,29 @@ cmake --build build-cli && ctest --test-dir build-cli --output-on-failure
 
 Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
 
+### The phone's library and search (`src/mobile`, `MobileCore`; plan: `docs/plans/mobile.md` M5, M6)
+
+The real app links `src/mobile` through `tools/ios/build-core.sh`, a build phase that makes
+`build-ios-<sdk>/` from CMake. It reads an installed generation from
+`Application Support/Library/gen/<N>/`, with the manifest's shared files beside `gen/`.
+
+The parity test runs the desktop engine, over the real AI pack, and the phone engine, in a Simulator
+of its own, on one published generation, and compares rows and order:
+
+```bash
+cmake --build build --target mv_mobile_parity_desktop
+ninja -C build-ios-sim mv_mobile_parity
+build/bin/mv_mobile_parity_desktop publish <copy of the index folder> <root> <pack> <fetched> <places.mvgeo> <work> <nas>
+tools/ios/run-parity.sh <nas>/.mediaviewer/gen/000001 <nas>/.mediaviewer <pack> <Add-ons> \
+  build/bin/mv_mobile_parity_desktop build-ios-sim/bin/mv_mobile_parity tools/ios/parity_queries.txt <work>/queries.local.txt -- <out>
+```
+
+`publish` makes `queries.local.txt` from the catalogue's own names, places and cameras, so those
+stay out of the repo. Numbers from this are Simulator numbers, not phone numbers. Both sides run
+without the sound text tower, which the manifest does not carry; `MV_PARITY_WITH_SOUND=1` keeps it
+on the desktop side. `RealCatalogueTests` drives the real app and is skipped unless
+`TEST_RUNNER_MV_REAL_CATALOGUE` names a folder for its screenshots.
+
 ## Run
 
 ```powershell

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA00000000000000000001F0 /* MobileCore in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000001F1 /* MobileCore */; };
 		AA0000000000000000000011 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000021 /* MobileKit */; };
 		AA0000000000000000000012 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000022 /* MobileUI */; };
 		AA0000000000000000000013 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000023 /* MobileKit */; };
@@ -43,6 +44,7 @@
 			files = (
 				AA0000000000000000000011 /* MobileKit in Frameworks */,
 				AA0000000000000000000012 /* MobileUI in Frameworks */,
+				AA00000000000000000001F0 /* MobileCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -93,8 +95,10 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = AA0000000000000000000091 /* Build configuration list for PBXNativeTarget "MediaViewer" */;
 			buildPhases = (
+				AA00000000000000000001F2 /* Build the C++ core */,
 				AA0000000000000000000081 /* Sources */,
 				AA0000000000000000000051 /* Frameworks */,
+				AA00000000000000000001F3 /* Licence check */,
 				AA0000000000000000000083 /* Resources */,
 			);
 			buildRules = (
@@ -108,6 +112,7 @@
 			packageProductDependencies = (
 				AA0000000000000000000021 /* MobileKit */,
 				AA0000000000000000000022 /* MobileUI */,
+							AA00000000000000000001F1 /* MobileCore */,
 			);
 			productName = MediaViewer;
 			productReference = AA0000000000000000000031 /* MediaViewer.app */;
@@ -217,6 +222,39 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		AA00000000000000000001F2 /* Build the C++ core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build the C++ core";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec \"$SRCROOT/../tools/ios/build-core.sh\"\n";
+		};
+		AA00000000000000000001F3 /* Licence check */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Licence check";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# A debug build links the app into a debug dylib the check cannot see through.\n[ \"$CONFIGURATION\" = Release ] || exit 0\nexec \"$SRCROOT/../build-ios-$PLATFORM_NAME/ios-licence-check.sh\" --binary \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		AA0000000000000000000081 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -306,6 +344,65 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"CoreBluetooth",
+					"-framework",
+					"SystemConfiguration",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"CoreBluetooth",
+					"-framework",
+					"SystemConfiguration",
+				);
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -330,6 +427,65 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"CoreBluetooth",
+					"-framework",
+					"SystemConfiguration",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"CoreBluetooth",
+					"-framework",
+					"SystemConfiguration",
+				);
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -457,6 +613,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		AA00000000000000000001F1 /* MobileCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileCore;
+		};
 		AA0000000000000000000021 /* MobileKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MobileKit;

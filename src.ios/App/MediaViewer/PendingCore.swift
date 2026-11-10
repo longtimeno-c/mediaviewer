@@ -1,41 +1,47 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Holds the place of the mv_mobile_* core until it is built (docs/plans/mobile.md M3–M8): a phone
-// with no library, on which any scan is refused. Replace `services()` with the real implementations.
+// The real core where it exists (the library, its search and tiles: MobileCore), and the place of
+// the parts not built yet (connection, sync, clips, saving: docs/plans/mobile.md M3, M4, M7, M8).
+// A phone with no installed generation is a phone with no library.
 import AVFoundation
+import MobileCore
 import MobileKit
 import UIKit
 
 enum PendingCore {
   static func services() -> Services {
-    let core = Empty()
-    return Services(library: core, images: core, search: core, connection: core, sync: core, clips: core, saver: core, transfers: core)
+    let catalogue = LocalCatalogue(location: .standard)
+    let stubs = Stubs(catalogue: catalogue)
+    return Services(library: catalogue.library, images: catalogue.images, search: catalogue.search,
+                    connection: stubs, sync: stubs, clips: stubs, saver: stubs, transfers: stubs)
   }
 
-  private struct Empty: LibraryStore, ImageLadder, SearchService, ConnectionService, CatalogueSync, ClipService, PhotoSaver, TransferMonitor {
-    func list(in scope: LibraryScope) async throws -> any MediaList { ArrayMediaList([]) }
-    func folders(under parent: Folder?) async throws -> [Folder] { [] }
-    func people() async throws -> [Person] { [] }
-    func details(for item: MediaItem) async throws -> MediaDetails { throw MediaFailure.synologyUnreachable }
+  private struct Stubs: ConnectionService, CatalogueSync, ClipService, PhotoSaver, TransferMonitor {
+    let catalogue: LocalCatalogue
 
-    func cachedImage(for id: MediaID) -> UIImage? { nil }
-    func thumbnail(for item: MediaItem) async -> UIImage? { nil }
-    func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error> {
-      AsyncThrowingStream { $0.finish(throwing: MediaFailure.synologyUnreachable) }
+    // One stat at launch so the first screen is the right one (§8.4).
+    var current: ConnectionSnapshot {
+      let installed = FileManager.default.fileExists(atPath: LibraryLocation.standard.root.appendingPathComponent("gen").path)
+      guard installed else { return .noLibrary }
+      // A catalogue is here, so the library shows at once; its date and count follow once it
+      // has opened (`updates`). Nil would send the person to the first copy.
+      let info = catalogue.infoIfOpen ?? CatalogueInfo(source: .synology, updatedAt: Date(), itemCount: 0)
+      return ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: info, cacheBytes: 0)
     }
-    func prefetch(_ items: [MediaItem], fittingPixels: CGSize) {}
 
-    func capability() async -> SearchCapability { .ready }
-    func recents() async -> [String] { [] }
-    func remember(_ query: String) async {}
-    func forget(_ query: String) async {}
-    func forgetAll() async {}
-    func search(_ query: String, filters: SearchFilters) async throws -> [SearchHit] { [] }
-    func filterOptions() async -> SearchFilterOptions { .none }
-    func isWarmingUp() async -> Bool { false }
-
-    var current: ConnectionSnapshot { .noLibrary }
-    func updates() -> AsyncStream<ConnectionSnapshot> { AsyncStream { $0.finish() } }
+    func updates() -> AsyncStream<ConnectionSnapshot> {
+      let first = current
+      let catalogue = catalogue
+      return AsyncStream { continuation in
+        continuation.yield(first)
+        Task {
+          if first.hasLibrary, let info = await catalogue.info() {
+            continuation.yield(ConnectionSnapshot(hasLibrary: true, synology: first.synology, macNearby: false, catalogue: info, cacheBytes: 0))
+          }
+          continuation.finish()
+        }
+      }
+    }
     func identify(code: String) async throws -> LibraryIdentity { throw PairingFailure.codeNotReadable }
     func pair(code: String, confirmed: LibraryIdentity) -> AsyncThrowingStream<PairingEvent, Error> {
       AsyncThrowingStream { $0.finish(throwing: PairingFailure.codeNotReadable) }

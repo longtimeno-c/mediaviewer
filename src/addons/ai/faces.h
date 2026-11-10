@@ -246,7 +246,8 @@ class faces_db {
   // faces.db from before the refinement columns is status::unsupported_format
   // until the app has opened it once.
   [[nodiscard]] static result<std::unique_ptr<faces_db>> open_read_only(const std::string& path_utf8,
-                                                                        float same_person, std::uint32_t dim);
+                                                                        float same_person, std::uint32_t dim,
+                                                                        bool immutable = false);
   // Closes and deletes the file and its WAL: every face vector, box and name.
   static void destroy(const std::string& path_utf8);
 

@@ -200,7 +200,7 @@ expected engine::start() {
   if (options_.read_only) {
     // A reader creates nothing: no folder, no schema, no settings file.
     load_settings();
-    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db")));
+    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db"), options_.immutable));
     db_ = std::move(db);
   } else {
     MV_TRY_VOID(host_.make_directories(data_dir_));
@@ -531,6 +531,9 @@ void engine::stop() noexcept {
   phone_cancel_ = true;
   if (phone_thread_.joinable()) phone_thread_.join();
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
+  // Through the lock, so a thread about to wait (an immutable reader's has no
+  // timeout) cannot miss this.
+  { std::lock_guard lock(control_m_); }
   control_cv_.notify_all();
   work_cv_.notify_all();
   search_cv_.notify_all();
@@ -2569,6 +2572,12 @@ void engine::reader_loop() {
   refresh_counts();
   post(MV_ADDON_EVENT_AI_STATUS);
   double last = now_s();
+  if (options_.immutable) {
+    // Nothing can have been committed: no timer, so an idle phone wakes for nothing.
+    std::unique_lock lock(control_m_);
+    control_cv_.wait(lock, [this] { return stopping_.load(); });
+    return;
+  }
   while (!stopping_) {
     {
       std::unique_lock lock(control_m_);
@@ -2626,7 +2635,7 @@ bool engine::load_reader() {
   // clusters nothing, so the threshold and width it is opened with are unused.
   std::unique_ptr<faces_db> people;
   if (s.faces) {
-    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) people = std::move(*f);
+    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) people = std::move(*f);
   }
   loaded_sound sound;
   if (deps_.open_sound_text) {
@@ -2704,7 +2713,7 @@ void engine::catch_up_reader() {
     std::lock_guard lock(models_m_);
     sound_spec = sound_.model ? sound_.spec_key : std::string();
     if (faces_) {
-      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) faces_ = std::move(*f);
+      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) faces_ = std::move(*f);
     }
   }
   begin_answer_swap();

@@ -1,0 +1,70 @@
+# docs/plans/mobile.md §9: the shipped part of the parity set. Words only: nothing about anyone's
+# own library goes in the repo. A run adds the names, places and years of the catalogue under
+# test (mobile_parity_desktop.mm, write_local_queries).
+mountains
+snow on a mountain
+a lake with mountains behind it
+wooden cabin
+forest trail
+waterfall
+sunset over the peaks
+fog in a valley
+people hiking
+a person on skis
+ski lift
+a dog
+a cat
+a horse
+cows in a field
+a bicycle
+a car on a mountain road
+a bridge
+a church
+a castle
+a village street
+a restaurant table
+food on a plate
+coffee
+a glass of beer
+a campfire
+a tent
+night sky with stars
+a red jacket
+a blue sky with clouds
+a storm
+rain on a window
+a selfie
+a group of friends
+a child laughing
+a wedding
+a birthday cake
+flowers in a meadow
+autumn leaves
+a river
+a beach
+a boat on the water
+a city at night
+a train
+an airplane window
+a road sign
+a map
+a phone screen
+text on a sign
+a drone shot from above
+"good morning"
+"thank you"
+hello
+mountains is:photo
+mountains is:video
+snow -people
+is:video
+is:photo
+in:2024
+in:2023
+before:2024
+since:2023-06
+after:2024-01-31
+nothing could possibly match zxqvjklm
+sky
+Tree
+MOUNTAIN

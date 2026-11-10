@@ -293,6 +293,10 @@ struct engine_deps {
 // every kReaderCatchUpSeconds, appending new frames rather than reloading.
 struct engine_options {
   bool read_only = false;
+  // A reader over files that can never change (a phone's installed catalogue,
+  // docs/plans/mobile.md §5 rule 2): opened with SQLite's immutable=1 and
+  // defensive mode, and never polled for what the app committed.
+  bool immutable = false;
   // Issue #299: a root whose picture indexing was unfinished when the engine
   // started (a quit or a kill part-way) is held, neither walked nor indexed,
   // until resume_root (set_setting "resume_root") or an explicit Rescan /
