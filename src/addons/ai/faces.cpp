@@ -971,13 +971,20 @@ std::vector<person_row> faces_db::people(std::uint32_t min_faces, const std::set
   return out;
 }
 
-std::string faces_db::people_stamp() {
+std::string faces_db::people_stamp(std::span<const std::int64_t> assets) {
   std::lock_guard lock(m_);
-  std::string out;
-  stmt s(db_, "SELECT (SELECT COUNT(*) FROM people WHERE name != ''),"
-              " (SELECT COALESCE(group_concat(id || ':' || name), '') FROM people WHERE name != ''),"
-              " (SELECT COUNT(*) FROM faces WHERE person_id IN (SELECT id FROM people WHERE name != ''))");
-  if (s.step_row()) out = std::to_string(s.i64(0)) + "/" + s.text(1) + "/" + std::to_string(s.i64(2));
+  std::uint64_t n = 0, mix = 0;
+  std::set<std::string> names;
+  stmt s(db_, "SELECT f.asset_id, f.person_id, p.name FROM faces f JOIN people p ON p.id = f.person_id WHERE p.name != ''");
+  while (s.step_row()) {
+    const std::int64_t asset = s.i64(0);
+    if (!std::binary_search(assets.begin(), assets.end(), asset)) continue;
+    ++n;
+    mix += static_cast<std::uint64_t>(asset) * static_cast<std::uint64_t>(s.i64(1));
+    names.insert(std::to_string(s.i64(1)) + ":" + s.text(2));
+  }
+  std::string out = std::to_string(n) + "/" + std::to_string(mix);
+  for (const std::string& name : names) out += "/" + name;
   return out;
 }
 

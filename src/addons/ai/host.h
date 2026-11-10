@@ -145,6 +145,9 @@ class host {
   [[nodiscard]] bool has_jpeg_shrink() const noexcept;
   [[nodiscard]] result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
                                                               std::uint32_t quality) const;
+  // A JPEG-512 made now and stored nowhere; an older host has none.
+  [[nodiscard]] bool has_thumbnail_make() const noexcept;
+  [[nodiscard]] result<std::vector<std::uint8_t>> thumbnail_make(const std::string& path, std::int64_t pts_ms) const;
   // Place labels for GPS points, one per point ("" for none). not_found when
   // nothing here can name a place: Places is not installed, or the host is older.
   [[nodiscard]] result<std::vector<std::string>> place_labels(std::span<const mv_addon_route_point> points) const;

@@ -1064,6 +1064,15 @@ typedef struct mv_host_api {
    * anywhere: the labels come from the database on this machine (rule 6). */
   mv_status(MV_CALL* place_labels)(void* host, const mv_addon_route_point* points, uint32_t count,
                                    mv_addon_label_fn visit, void* user);
+  /* [worker-thread] A JPEG-512 made now and stored nowhere: the viewer's cache
+   * is the viewer's. `pts_ms` < 0: the file's own picture (a still's, an audio
+   * file's cover art); >= 0: a clip's moment or a document's page. `*out_size`
+   * is always the bytes needed; MV_ERR_INVALID_ARG with it larger than
+   * `capacity`: call again. MV_ERR_UNSUPPORTED_FORMAT: it has no picture.
+   * Appended after place_labels: read only when `struct_size` covers it and
+   * the pointer is non-NULL. */
+  mv_status(MV_CALL* thumbnail_make)(void* host, const char* path_utf8, int64_t pts_ms, uint8_t* out,
+                                     uint64_t capacity, uint64_t* out_size);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u

@@ -164,6 +164,28 @@ result<std::vector<std::uint8_t>> host::jpeg_shrink(std::span<const std::uint8_t
   return err(status::internal);
 }
 
+bool host::has_thumbnail_make() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, thumbnail_make) + sizeof(api_->thumbnail_make) &&
+         api_->thumbnail_make;
+}
+
+result<std::vector<std::uint8_t>> host::thumbnail_make(const std::string& path, std::int64_t pts_ms) const {
+  if (!has_thumbnail_make()) return err(status::unsupported_format);
+  std::vector<std::uint8_t> out(96u * 1024u);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    uint64_t n = 0;
+    const mv_status s = api_->thumbnail_make(api_->host, path.c_str(), pts_ms, out.data(),
+                                             static_cast<uint64_t>(out.size()), &n);
+    if (s == MV_OK) {
+      out.resize(static_cast<std::size_t>(n));
+      return out;
+    }
+    if (s != MV_ERR_INVALID_ARG || n <= out.size() || n > (8u << 20)) return err(to_status(s));
+    out.resize(static_cast<std::size_t>(n));
+  }
+  return err(status::internal);
+}
+
 namespace {
 int32_t MV_CALL label_thunk(void* user, uint32_t index, const char* label) {
   auto& out = *static_cast<std::vector<std::string>*>(user);

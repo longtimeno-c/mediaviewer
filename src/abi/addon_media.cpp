@@ -987,6 +987,18 @@ result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_m
   return store.store(key, jpeg);
 }
 
+result<std::vector<std::uint8_t>> make_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms) {
+  if (pts_ms >= 0 || io::is_document_name(path)) return encode_moment_thumb(path, std::max<std::int64_t>(pts_ms, 0));
+  if (io::is_audio_name(path)) {
+    auto art = decode_still(path, image::kThumbLongEdge);  // the tag, never the whole file
+    if (!art) return err(art.error() == status::not_found ? status::unsupported_format : art.error());
+    const std::vector<std::uint8_t> rgba = rgba_of(art->rgb.data(), art->width, art->height);
+    return image::encode_thumb_rgba(rgba, art->width, art->height);
+  }
+  MV_TRY(auto bytes, io::read_all(path));
+  return image::make_thumb_jpeg(bytes);
+}
+
 result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
                                               std::uint32_t quality) {
   if (max_edge == 0 || quality < 1 || quality > 100) return err(status::invalid_arg);

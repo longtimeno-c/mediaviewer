@@ -5422,7 +5422,7 @@ std::string random_id() {
 
 // Where each shared file of a built generation comes from, beside it, so a
 // generation that waits for the share can still be delivered after a restart.
-bool write_shared_list(const std::string& file, const std::vector<catalog::shared_file>& list) {
+static bool write_shared_list(const std::string& file, const std::vector<catalog::shared_file>& list) {
   json::writer w;
   w.begin_array();
   for (const catalog::shared_file& f : list) {
@@ -5439,7 +5439,7 @@ bool write_shared_list(const std::string& file, const std::vector<catalog::share
   return static_cast<bool>(out);
 }
 
-std::vector<catalog::shared_file> read_shared_list(const std::string& file) {
+static std::vector<catalog::shared_file> read_shared_list(const std::string& file) {
   std::ifstream in(fs_path(file), std::ios::binary);
   std::ostringstream ss;
   ss << in.rdbuf();
@@ -5457,6 +5457,10 @@ std::vector<catalog::shared_file> read_shared_list(const std::string& file) {
     out.push_back(std::move(f));
   }
   return out;
+}
+
+static double wall_now() {
+  return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 void engine::load_phone_state() {
@@ -5482,6 +5486,7 @@ void engine::load_phone_state() {
   phone_.waiting_created = doc->integer("waiting_created").value_or(0);
   if (const std::string* s = doc->str("stamp")) phone_.stamp = *s;
   if (const std::string* s = doc->str("waiting_stamp")) phone_.waiting_stamp = *s;
+  if (const std::string* s = doc->str("share_device")) phone_.share_device = *s;
   phone_.thumbs_left = doc->boolean("thumbs_left").value_or(false);
   if (const json::value* v = doc->find("last_attempt"); v && v->k == json::kind::number) phone_.last_attempt = v->d;
   if (const json::value* list = doc->find("kept_roots"); list && list->k == json::kind::array) {
@@ -5522,6 +5527,7 @@ bool engine::save_phone_state() const {
     w.key("stamp").string(phone_.stamp);
     w.key("waiting_stamp").string(phone_.waiting_stamp);
     w.key("thumbs_left").boolean(phone_.thumbs_left);
+    w.key("share_device").string(phone_.share_device);
     w.key("last_attempt").number(phone_.last_attempt);
     w.key("kept_roots").begin_array();
     for (const catalog::root_map& m : phone_.roots) {
@@ -5567,6 +5573,7 @@ expected engine::phone_publish(const std::string& destination) {
   phone_.destination = destination;
   phone_cancel_ = false;
   phone_thread_ = std::thread([this, destination] {
+    if (options_.background_threads) platform::enter_background();  // §6: background only
     // Off the ABI's guard: nothing may leave this thread, or the app goes with it.
     try {
       run_phone_publish(destination, false);
@@ -5605,6 +5612,8 @@ std::string engine::phone_json() const {
   w.key("runs").integer(static_cast<std::int64_t>(phone_.runs));
   w.key("thumbs_made").integer(static_cast<std::int64_t>(phone_.thumbs_made));
   w.key("thumbs_left").boolean(phone_.thumbs_left);
+  w.key("needs_bytes").integer(static_cast<std::int64_t>(phone_.needs_bytes));
+  w.key("deliver_attempts").integer(static_cast<std::int64_t>(phone_.deliver_attempts));
   w.end_object();
   return w.take();
 }
@@ -5621,6 +5630,7 @@ void engine::phone_publish_auto() {
   phone_.error.clear();
   phone_cancel_ = false;
   phone_thread_ = std::thread([this, destination] {
+    if (options_.background_threads) platform::enter_background();
     try {
       run_phone_publish(destination, true);
     } catch (...) {
@@ -5642,6 +5652,7 @@ void engine::phone_deliver_waiting() {
   phone_.error.clear();
   phone_cancel_ = false;
   phone_thread_ = std::thread([this] {
+    if (options_.background_threads) platform::enter_background();
     try {
       run_phone_deliver();
     } catch (...) {
@@ -5653,9 +5664,10 @@ void engine::phone_deliver_waiting() {
   });
 }
 
-std::string engine::phone_stamp() const {
-  // What a generation would carry. Rows only: a walk that finds nothing moves
-  // `seen` and nothing here. Runs when a scan has just ended, never on a timer.
+std::string engine::phone_stamp(std::span<const std::int64_t> roots) const {
+  // What a generation would carry: its folders' rows and the people in them,
+  // never `seen`, so a walk that finds nothing moves nothing here. Runs when a
+  // scan has just ended, never on a timer.
   // "" while People is on and its database is not open yet: not comparable.
   bool people = false;
   {
@@ -5666,9 +5678,37 @@ std::string engine::phone_stamp() const {
   {
     std::lock_guard lock(models_m_);
     if (people && !faces_) return {};
-    if (faces_) names = faces_->people_stamp();
+    if (faces_) names = faces_->people_stamp(db_->asset_ids_in(roots));
   }
-  return db_->content_stamp(db_->meta("active_spec")) + "|" + names;
+  return db_->content_stamp(db_->meta("active_spec"), roots) + "|" + names;
+}
+
+std::vector<std::int64_t> engine::phone_carried_roots() {
+  std::vector<catalog::root_map> kept;
+  std::string device;
+  {
+    std::lock_guard lock(phone_m_);
+    kept = phone_.roots;
+    device = phone_.share_device;
+  }
+  std::vector<std::int64_t> out;
+  for (const root_row& r : db_->roots()) {
+    if (!r.enabled || is_photos_key(r.path)) continue;
+    bool on = std::any_of(kept.begin(), kept.end(), [&](const catalog::root_map& m) { return m.id == r.id; });
+    if (!on && !device.empty()) {
+      // A folder added since: asked once, and not at all while its volume is away.
+      const auto known = phone_root_on_share_.find(r.path);
+      if (known != phone_root_on_share_.end()) {
+        on = known->second;
+      } else if (auto v = host_.volume_of(r.path)) {
+        on = device == std::string_view(v->device_key);
+        phone_root_on_share_[r.path] = on;
+      }
+    }
+    if (on) out.push_back(r.id);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 // The control loop's tick. Nothing here waits, and it adds no wakeup: the loop
@@ -5711,7 +5751,7 @@ void engine::phone_tick(bool walked) {
   if (running) return;
   if (phone_recheck_.exchange(false)) phone_check_ = true;
   if (phone_check_) {
-    const std::string stamp = phone_stamp();
+    const std::string stamp = phone_stamp(phone_carried_roots());
     if (!stamp.empty()) {
       phone_check_ = false;
       phone_changed_ = stamp != published_stamp;
@@ -5728,7 +5768,7 @@ void engine::phone_tick(bool walked) {
     phone_publish_auto();
     return;
   }
-  if (waiting != 0 && t >= phone_next_poll_) {
+  if (waiting != 0 && t >= phone_next_poll_ && !power_state().on_battery) {
     phone_next_poll_ = t + deps_.phone_share_poll_s;
     phone_deliver_waiting();
   }
@@ -5765,20 +5805,34 @@ result<std::vector<std::string>> engine::stored_place_matches(const std::string&
   return out;
 }
 
-void engine::fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots, bool& left) {
+// A JPEG-512 for the catalogue: the viewer's when it has one, otherwise made
+// now and stored nowhere, so a publish does not fill the viewer's cache.
+result<std::vector<std::uint8_t>> engine::phone_thumb(const catalog::thumb_want& w) {
+  if (auto hit = host_.thumbnail_jpeg(w.path, -1)) return hit;
+  // A clip's tile is its poster, as export_thumb; a document's its first page.
+  const std::int64_t ms = w.kind == static_cast<int>(asset_kind::video)
+                              ? std::min<std::int64_t>(std::max<std::int64_t>(w.duration_ms, 0) / 10, 3000)
+                              : w.kind == static_cast<int>(asset_kind::document) ? 0 : -1;
+  if (ms >= 0) {
+    if (auto hit = host_.thumbnail_jpeg(w.path, ms)) return hit;
+  }
+  if (stopping_ || phone_cancel_) return err(status::cancelled);
+  if (host_.has_thumbnail_make()) return host_.thumbnail_make(w.path, ms);
+  transfer::thumb_want t;  // an older host: its cache is the only way
+  t.path = w.path;
+  t.video = w.kind == static_cast<int>(asset_kind::video);
+  t.duration_ms = w.duration_ms;
+  return export_thumb(t, phone_cancel_);
+}
+
+void engine::fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots,
+                               const std::string& destination, bool& left) {
   left = false;
-  auto wants = store.missing(join(data_dir_, "index.db"), roots);
+  auto wants = store.missing(join(data_dir_, "index.db"), roots, host_.has_jpeg_shrink());
   if (!wants || wants->empty()) return;
   const auto cancelled = [this] { return stopping_.load() || phone_cancel_.load(); };
   catalog::thumb_fill_io io;
-  io.jpeg512 = [this](const catalog::thumb_want& w) {
-    transfer::thumb_want t;
-    t.path = w.path;
-    t.pts_ms = -1;
-    t.video = w.kind == 2;
-    t.duration_ms = w.duration_ms;
-    return export_thumb(t, phone_cancel_);
-  };
+  io.jpeg512 = [this](const catalog::thumb_want& w) { return phone_thumb(w); };
   if (host_.has_jpeg_shrink()) {
     io.tiny = [this](std::span<const std::uint8_t> jpeg) {
       return host_.jpeg_shrink(jpeg, catalog::kTinyEdge, catalog::kTinyQuality);
@@ -5788,21 +5842,17 @@ void engine::fill_phone_thumbs(catalog::thumb_store& store, const std::vector<st
   io.yield = [this, cancelled] {
     while (!cancelled() && host_.should_yield()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
   };
+  io.share_present = [&destination] {
+    std::error_code ec;
+    return std::filesystem::is_directory(fs_path(destination), ec);
+  };
   const catalog::control c{cancelled, [this](double f) {
                              std::lock_guard lock(phone_m_);
                              phone_.phase = "thumbnails";
                              phone_.fraction = f;
                            },
                            {}};
-  // On its own thread, so only this work runs at the OS's lowest priority and
-  // the copy to the share does not.
-  result<catalog::thumb_fill_result> done = err(status::internal);
-  const bool background = options_.background_threads;
-  std::thread worker([&] {
-    if (background) platform::enter_background();
-    done = store.fill(*wants, io, c, deps_.phone_thumb_budget_s);
-  });
-  worker.join();
+  auto done = store.fill(*wants, io, c, deps_.phone_thumb_budget_s);
   if (done) {
     std::lock_guard lock(phone_m_);
     phone_.thumbs_made += done->made;
@@ -5907,7 +5957,10 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
 
   // Stamped before the snapshot: what lands during the build is seen as a
   // change by the next quiet scan, never lost.
-  const std::string stamp = phone_stamp();  // "" (People still loading) never reads as "the same"
+  std::vector<std::int64_t> carried;
+  for (const catalog::root_map& r : roots) carried.push_back(r.id);
+  std::sort(carried.begin(), carried.end());
+  const std::string stamp = phone_stamp(carried);  // "" (People still loading) never reads as "the same"
   bool nothing_new = false;
   {
     std::lock_guard lock(phone_m_);
@@ -5928,7 +5981,7 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
     for (const catalog::root_map& r : roots) root_ids.push_back(r.id);
     if (reachable) {
       (void)thumbs->reconcile(destination);
-      fill_phone_thumbs(*thumbs, root_ids, thumbs_left);
+      fill_phone_thumbs(*thumbs, root_ids, destination, thumbs_left);
     }
   }
   std::uint64_t made_after = 0;
@@ -5953,6 +6006,7 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
     std::lock_guard lock(phone_m_);
     phone_.root_ids = ids;
     phone_.roots = roots;
+    if (there) phone_.share_device = there->device_key;
     generation = std::max(phone_.high_water, published ? *published : 0) + 1;
     phone_.high_water = generation;  // saved below, before the NAS sees it
     epoch = phone_.epoch;
@@ -6022,7 +6076,6 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
     phone_.waiting_assets = built->assets;
     phone_.waiting_created = b.created_unix;
     phone_.destination = destination;
-    phone_.auto_on = true;
   }
   // The library's identity reaches this disk before it can reach the NAS: a
   // quit during the first delivery must not leave a folder this library no
@@ -6039,28 +6092,82 @@ void engine::run_phone_deliver() {
     std::lock_guard lock(phone_m_);
     phone_.running = false;
     phone_.phase.clear();
-    phone_.error = why;
+    if (!why.empty() || phone_.error.empty()) phone_.error = why;
   };
   const auto set_progress = [this](const char* phase, double f) {
     std::lock_guard lock(phone_m_);
     phone_.phase = phase;
     phone_.fraction = f;
   };
+  std::string library_id, destination, last_error;
+  bool was_seen = true;
+  std::uint64_t last_free = 0;
+  double retry_at = 0;
+  {
+    std::lock_guard lock(phone_m_);
+    library_id = phone_.library_id;
+    destination = phone_.destination;
+    was_seen = phone_.share_seen;
+    last_free = phone_.last_free;
+    retry_at = phone_.retry_at;
+    last_error = phone_.deliver_error;
+  }
+  // The cheap question first: nothing else happens while the share is away.
+  std::error_code ec;
+  if (!std::filesystem::is_directory(fs_path(destination), ec)) {
+    {
+      std::lock_guard lock(phone_m_);
+      phone_.share_seen = false;
+    }
+    return finish("unreachable");
+  }
+  auto v = host_.volume_of(destination);
+  if (!v) return finish("unreachable");
+  // The share came back, or room appeared: what stopped the last try may be gone.
+  static constexpr std::uint64_t kRoomWorthRetrying = 64u << 20;
+  const bool fresh = !was_seen || v->free_bytes >= last_free + kRoomWorthRetrying;
+  {
+    std::lock_guard lock(phone_m_);
+    phone_.share_seen = true;
+    phone_.last_free = v->free_bytes;
+    if (fresh) {
+      phone_.retry_at = 0;
+      phone_.retries = 0;
+      retry_at = 0;
+    }
+  }
+  if (wall_now() < retry_at) return finish(last_error);
+
   auto keys = deps_.key_store ? deps_.key_store() : driftwire::secrets::os_store("MediaViewer Local search");
   if (!keys) return finish("no_key_store");
   auto secret = keys->get("catalogue-signing-key");
   if (!secret) return finish("no_key_store");
   const std::vector<std::uint8_t> public_key = catalog::public_of(*secret);
   if (public_key.empty()) return finish("no_key_store");
-  std::string library_id, destination;
-  {
-    std::lock_guard lock(phone_m_);
-    library_id = phone_.library_id;
-    destination = phone_.destination;
-  }
-  std::error_code ec;
-  if (!std::filesystem::is_directory(fs_path(destination), ec)) return finish("unreachable");
   deliver_phone_generation(*secret, public_key, library_id, finish, set_progress);
+}
+
+void engine::note_phone_delivery_failed(const std::string& why) {
+  std::lock_guard lock(phone_m_);
+  phone_.deliver_error = why;
+  phone_.retries = std::min(phone_.retries + 1, 16);
+  phone_.retry_at = wall_now() + std::min(deps_.phone_retry_base_s * std::pow(2.0, phone_.retries - 1), 3600.0);
+}
+
+std::uint64_t engine::phone_bytes_needed(const std::string& gen_dir, const std::vector<catalog::shared_file>& shared,
+                                         const std::string& destination) const {
+  std::uint64_t need = 0;
+  std::error_code ec;
+  for (std::filesystem::directory_iterator it(fs_path(gen_dir), ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e;
+    const auto n = it->file_size(e);
+    if (!e) need += static_cast<std::uint64_t>(n);
+  }
+  for (const catalog::shared_file& f : shared) {
+    std::error_code e;
+    if (!std::filesystem::exists(fs_path(destination + "/.mediaviewer/" + f.rel), e)) need += f.size;
+  }
+  return need;
 }
 
 void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, const std::vector<std::uint8_t>& public_key,
@@ -6077,6 +6184,7 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
     assets = phone_.waiting_assets;
     created = phone_.waiting_created;
     destination = phone_.destination;
+    ++phone_.deliver_attempts;
   }
   const std::string local = join(data_dir_, "phone/gen");
   const std::string gen_dir = join(local, std::to_string(generation));
@@ -6090,6 +6198,21 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
   d.secret_key = secret;
   d.now_unix = static_cast<std::int64_t>(std::time(nullptr));
   d.shared = read_shared_list(gen_dir + ".shared.json");
+  const auto out_of_room = [&]() {
+    auto v = host_.volume_of(destination);
+    if (!v) return false;
+    const std::uint64_t need = phone_bytes_needed(gen_dir, d.shared, destination);
+    {
+      std::lock_guard lock(phone_m_);
+      phone_.needs_bytes = v->free_bytes < need ? need : 0;
+      phone_.last_free = v->free_bytes;
+    }
+    return v->free_bytes < need;
+  };
+  if (out_of_room()) {
+    note_phone_delivery_failed("no_space");
+    return finish("no_space");
+  }
   d.retention_file = join(data_dir_, "phone/unused.json");
   d.make_directories = [this](const std::string& dir) { return host_.make_directories(dir); };
   d.copy = [this](const std::string& from, const std::string& to) {
@@ -6106,6 +6229,10 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
   };
   if (const expected sent = catalog::deliver(d, sending); !sent) {
     if (sent.error() == status::cancelled) return finish("cancelled");
+    if (out_of_room()) {
+      note_phone_delivery_failed("no_space");
+      return finish("no_space");
+    }
     if (sent.error() == status::not_found || sent.error() == status::invalid_arg) {
       // A pack on neither side, or the share is ahead of this number: this
       // generation can never land. The next run builds another.
@@ -6119,7 +6246,9 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
       phone_recheck_ = true;  // the next tick compares, and a new build follows
       return finish("unreachable");
     }
-    return finish(sent.error() == status::permission_denied ? "other_library" : "unreachable");
+    const std::string why = sent.error() == status::permission_denied ? "other_library" : "unreachable";
+    note_phone_delivery_failed(why);
+    return finish(why);
   }
   if (auto store = catalog::thumb_store::open(join(data_dir_, "phone/thumbs"))) (void)(*store)->delivered();
   {
@@ -6130,6 +6259,10 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
     phone_.waiting = 0;
     phone_.stamp = stamp;
     phone_.waiting_stamp.clear();
+    phone_.retries = 0;
+    phone_.retry_at = 0;
+    phone_.deliver_error.clear();
+    phone_.needs_bytes = 0;
   }
   (void)save_phone_state();  // the share has it: the next run reads the number there
   finish("");
@@ -6803,8 +6936,7 @@ void engine::newest_first(search_state& st, const std::set<std::int64_t>& allowe
   }
   std::sort(rows.begin(), rows.end(), [](const dated& a, const dated& b) {
     if (a.when != b.when) return a.when > b.when;
-    if (a.path != b.path) return a.path < b.path;
-    return a.asset < b.asset;
+    return a.asset < b.asset;  // not the path: a phone's are not this machine's
   });
   // A result list holds at most 1,000 rows (add_row).
   if (rows.size() > 1000) rows.resize(1000);

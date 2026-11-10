@@ -716,6 +716,34 @@ int32_t MV_CALL flag_cloud(void* user, const mv_addon_file_entry2* e) {
   return c->visit(c->user, &x);
 }
 
+// A folder under "Local-disk" is on a volume of its own; the share's free space
+// can be set (the phone publisher's tests).
+std::mutex g_volumes_m;
+struct volume_override {
+  decltype(mv_host_api::volume_of) real = nullptr;
+  std::atomic<std::uint64_t>* nas_free = nullptr;
+};
+std::map<void*, volume_override> g_volumes;  // by host
+mv_status MV_CALL volume_of_faked(void* host, const char* path, mv_addon_volume* out) {
+  volume_override o;
+  {
+    std::lock_guard lock(g_volumes_m);
+    o = g_volumes.at(host);
+  }
+  const std::string_view p(path);
+  if (p.find("Local-disk") != std::string_view::npos) {
+    std::memset(out, 0, sizeof *out);
+    std::strcpy(out->device_key, "dev://local-disk");
+    std::strcpy(out->root_utf8, "/Local-disk");
+    return MV_OK;
+  }
+  const mv_status s = o.real(host, path, out);
+  if (s == MV_OK && p.find("NAS") != std::string_view::npos && o.nas_free->load() != UINT64_MAX) {
+    out->free_bytes = o.nas_free->load();
+  }
+  return s;
+}
+
 mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, mv_addon_walk2_fn visit, void* user) {
   decltype(mv_host_api::walk_files2) real = nullptr;
   cloud_world* world = nullptr;
@@ -758,6 +786,7 @@ struct rig {
   std::map<std::string, std::vector<std::uint8_t>> jpegs;  // path#ms -> bytes
   std::mutex thumbs_m;
   std::atomic<int> thumbnails_made{0};
+  std::atomic<std::uint64_t> nas_free{UINT64_MAX};  // the share's free space; UINT64_MAX: the real one
   std::function<void(const std::string& name)> thumb_hook;  // the thumbnail-maker's fake, inside it
   std::vector<std::vector<std::pair<double, double>>> label_batches;  // every place_labels batch
   bool places_answer = true;
@@ -833,10 +862,6 @@ struct rig {
       const std::string name = utf8(fs::path(path).filename());
       if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
       std::lock_guard lock(thumbs_m);
-      ++thumbnails_made;
-      if (thumb_hook) {
-        thumb_hook(name);
-      }
       std::vector<std::uint8_t>& jpeg = jpegs[path + "#-1"];
       if (jpeg.empty()) jpeg = {0xFF, 0xD8, 9};
       std::string out = path + ".thumb.jpg";
@@ -1026,6 +1051,16 @@ struct rig {
       if (!keep_going()) return mv::err(mv::status::cancelled);
       return places(place);
     };
+    // The publisher's tiles, made and not stored: "broken" has no picture and
+    // "truncated" fails in a way that does not say so.
+    svc.thumbnail_make = [this](const std::string& path, std::int64_t) -> mv::result<std::vector<std::uint8_t>> {
+      const std::string name = utf8(fs::path(path).filename());
+      ++thumbnails_made;
+      if (thumb_hook) thumb_hook(name);
+      if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
+      if (name.find("truncated") != std::string::npos) return mv::err(mv::status::io);
+      return std::vector<std::uint8_t>{0xFF, 0xD8, 9};
+    };
     // The phone's catalogue: a tile that says it was shrunk; a Sintra label for geo files.
     svc.jpeg_shrink = [](std::span<const std::uint8_t> j, std::uint32_t edge,
                          std::uint32_t) -> mv::result<std::vector<std::uint8_t>> {
@@ -1046,6 +1081,11 @@ struct rig {
       g_walks[api.host] = {api.walk_files2, cloud.get()};
     }
     api.walk_files2 = &walk2_with_cloud;
+    {
+      std::lock_guard lock(g_volumes_m);
+      g_volumes[api.host] = {api.volume_of, &nas_free};
+    }
+    api.volume_of = &volume_of_faked;
     {
       std::lock_guard lock(g_tag_m);
       g_tag_facts[api.host] = api.tag_facts;
@@ -1089,6 +1129,7 @@ struct rig {
     d.phone_min_interval_s = phone_interval;
     d.phone_share_poll_s = phone_poll;
     d.phone_thumb_budget_s = phone_budget;
+    d.phone_retry_base_s = phone_retry;
     d.qualities = [] { return std::vector<std::uint32_t>{1, 2}; };
     d.model_name = [](std::uint32_t q) { return q == 1 ? std::string("Fake fast") : std::string("Fake high"); };
     d.backend_available = [](mv::infer::backend) { return false; };
@@ -1251,6 +1292,7 @@ struct rig {
   double phone_interval = 3600;
   double phone_poll = 3600;
   double phone_budget = 0;
+  double phone_retry = 30;
   fs::path photos() const { return dir / "Photos"; }
   void file(const std::string& rel, std::size_t size = 16) { write_bytes(photos() / rel, pattern(size, 7)); }
 
@@ -2691,15 +2733,15 @@ TEST_CASE("a description nothing answers lists newest by date created; an answer
     for (const auto& [n, _] : rows) out.push_back(n);
     return out;
   };
-  const std::vector<std::string> newest{"red_plain.jpg", "green_y2019.jpg", "photos:blue-edited", "photos:grey-a",
-                                        "photos:grey-b"};
+  const std::vector<std::string> newest{"red_plain.jpg", "green_y2019.jpg", "photos:blue-edited", "photos:grey-b",
+                                        "photos:grey-a"};  // same date: by asset
   // Not an empty page, and not a score ranking: newest created first.
   CHECK(names(r.search("xyzzy plugh")) == newest);
   CHECK(r.answered("xyzzy plugh").empty());
   CHECK(names(r.search("xyzzy plugh")) == newest);  // the same order again
   // Within the Photos library alone too.
   CHECK(names(r.search("xyzzy plugh", MV_AI_SCOPE_FOLDER, "photos:")) ==
-        (std::vector<std::string>{"photos:blue-edited", "photos:grey-a", "photos:grey-b"}));
+        (std::vector<std::string>{"photos:blue-edited", "photos:grey-b", "photos:grey-a"}));
   // An answered query stays best match, not date order.
   const auto blue = r.answered("something blue");
   REQUIRE_FALSE(blue.empty());
@@ -6134,6 +6176,10 @@ TEST_CASE("every asset has a tile, and thumbnail packs are named by content and 
     ++tiles;
   }
   CHECK(tiles == 3);
+  {
+    std::lock_guard lock(p.a.thumbs_m);
+    CHECK(p.a.jpegs.empty());  // the viewer's cache is the viewer's
+  }
   REQUIRE(packs.size() == 1);
   CHECK(mv::ai::catalog::find_tiny(tiny, 99999).value() == std::nullopt);
   CHECK_FALSE(mv::ai::catalog::find_tiny(std::vector<std::uint8_t>(8, 0), 1));
@@ -6201,9 +6247,13 @@ TEST_CASE("people travel as names and links, never as embeddings", "[ai][engine]
   phone_rig p;
   p.a.file("anna_red.jpg");
   p.a.file("anna_blue.jpg");
-  p.a.file("ben_green.jpg");
+  const fs::path elsewhere = p.a.dir / "Local-disk";
+  fs::create_directories(elsewhere);
+  write_bytes(elsewhere / "ben_green.jpg", pattern(16, 7));
+  write_bytes(elsewhere / "ben_red.jpg", pattern(16, 7));
   p.a.start();
   REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.eng->index_folder(utf8(elsewhere), true));
   REQUIRE(p.a.idle());
   REQUIRE(p.a.eng->faces_enable(true));
   REQUIRE(wait_for([&] { return (p.a.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
@@ -6212,10 +6262,15 @@ TEST_CASE("people travel as names and links, never as embeddings", "[ai][engine]
   REQUIRE(list);
   std::int64_t anna = 0;
   for (const auto& v : list->a) {
-    if (*v.integer("faces") == 2) anna = *v.integer("id");
+    // Which is which from the faces' own files.
+    auto faces = mv::json::parse(p.a.eng->person_faces_json(*v.integer("id")));
+    REQUIRE(faces);
+    REQUIRE_FALSE(faces->a.empty());
+    const bool is_anna = faces->a[0].str("path")->find("anna") != std::string::npos;
+    if (is_anna) anna = *v.integer("id");
+    REQUIRE(p.a.eng->person_rename(*v.integer("id"), is_anna ? "Anna" : "Ben"));
   }
   REQUIRE(anna != 0);
-  REQUIRE(p.a.eng->person_rename(anna, "Anna"));
   p.nas = p.a.dir / "NAS";
   fs::create_directories(p.nas);
   p.base = p.nas / ".mediaviewer";
@@ -6492,6 +6547,8 @@ TEST_CASE("a pack goes only when unnamed and unused for 30 days", "[ai][engine][
   const std::string state = utf8(dir / "state.json");
   { std::ofstream(base / "thumbs" / "t-kept.pack") << "x"; }
   { std::ofstream(base / "thumbs" / "t-gone.pack") << "x"; }
+  fs::resize_file(base / "thumbs" / "t-gone.pack", mv::ai::catalog::kFoldBytes);  // a full pack, not the rolling one
+  { std::ofstream(base / "thumbs" / "t-small.pack") << "x"; }
   {
     std::ofstream out(base / "gen" / "000001" / "manifest.json", std::ios::binary);
     out << R"({"thumb_packs":[{"name":"t-kept.pack","path":"thumbs/t-kept.pack"}]})";
@@ -6499,6 +6556,9 @@ TEST_CASE("a pack goes only when unnamed and unused for 30 days", "[ai][engine][
   const std::int64_t day = 86400, t0 = 1'000'000'000;
   mv::ai::catalog::retain_shared(utf8(base), state, t0);
   CHECK(fs::exists(base / "thumbs" / "t-gone.pack"));  // unused starts counting now
+  mv::ai::catalog::retain_shared(utf8(base), state, t0 + 3 * 3600);
+  CHECK_FALSE(fs::exists(base / "thumbs" / "t-small.pack"));  // a folded pack goes within hours
+  CHECK(fs::exists(base / "thumbs" / "t-gone.pack"));
   mv::ai::catalog::retain_shared(utf8(base), state, t0 + 29 * day);
   CHECK(fs::exists(base / "thumbs" / "t-gone.pack"));
   mv::ai::catalog::retain_shared(utf8(base), state, t0 + 31 * day);
@@ -6533,6 +6593,327 @@ TEST_CASE("jpeg_shrink makes a real small JPEG, about the size the plan counted"
   CHECK(std::max(dim->width, dim->height) <= 64);
   CHECK(small->size() < 8192);
   CHECK_FALSE(mv::addon::media::jpeg_shrink(std::vector<std::uint8_t>{1, 2, 3}, 64, 72));
+}
+
+
+TEST_CASE("tiny.pack and thumbs.idx agree even when the index moves mid-build", "[ai][engine][phone]") {
+  phone_rig p;
+  for (const char* n : {"red_a.jpg", "green_b.jpg", "blue_c.jpg", "red_d.jpg"}) p.a.file(n);
+  p.index();
+  p.publish();
+  const auto state = *mv::json::parse(read_all(p.a.dir / "data" / "phone" / "state.json"));
+  mv::ai::catalog::build_options b;
+  const fs::path index = p.a.dir / "data" / "index.db";
+  b.index_db = utf8(index);
+  b.out_dir = utf8(p.a.dir / "snapshot");
+  b.library_id = "x";
+  b.generation = 99;
+  b.active_spec = *p.manifest().str("active_spec");
+  b.settings_json = "{}";
+  for (const auto& v : state.find("kept_roots")->a) {
+    mv::ai::catalog::root_map m;
+    m.id = *v.integer("id");
+    m.path = *v.str("path");
+    m.uuid = *v.str("uuid");
+    b.roots.push_back(std::move(m));
+  }
+  auto store = mv::ai::catalog::thumb_store::open(utf8(p.a.dir / "data" / "phone" / "thumbs"));
+  REQUIRE(store);
+  b.thumbs = store->get();
+  b.after_thumb_snapshot = [&] {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(utf8(index).c_str(), &db) == SQLITE_OK);
+    sqlite3_busy_timeout(db, 5000);
+    REQUIRE(sqlite3_exec(db, "UPDATE assets SET size = size + 1 WHERE id = (SELECT MIN(id) FROM assets)", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+  auto built = mv::ai::catalog::build(b, {});
+  REQUIRE(built);
+  const auto tiny = file_bytes(p.a.dir / "snapshot" / "tiny.pack");
+  const auto idx = file_bytes(p.a.dir / "snapshot" / "thumbs.idx");
+  for (const auto& [id, path] : p.assets()) {
+    INFO(path);
+    auto t = mv::ai::catalog::find_tiny(tiny, id);
+    REQUIRE(t);
+    REQUIRE(t->has_value());
+    CHECK(std::vector<std::uint8_t>((*t)->begin(), (*t)->end()) == std::vector<std::uint8_t>{0xFF, 0xD8, 64});
+    auto w = mv::ai::catalog::find_thumb(idx, id);
+    REQUIRE(w);
+    CHECK(w->has_value());
+  }
+}
+
+TEST_CASE("only the folders a generation carries can trigger one", "[ai][engine][phone]") {
+  phone_rig p;
+  const fs::path local = p.a.dir / "Local-disk";
+  fs::create_directories(local);
+  write_bytes(local / "local_one.jpg", pattern(16, 7));
+  p.a.file("red_car.jpg");
+  p.a.phone_quiet = 0.1;
+  p.a.phone_interval = 0.2;
+  p.a.start();
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.eng->index_folder(utf8(local), true));
+  REQUIRE(p.a.idle());
+  p.nas = p.a.dir / "NAS";
+  fs::create_directories(p.nas);
+  p.base = p.nas / ".mediaviewer";
+  p.publish();
+  CHECK(p.assets().size() == 1);
+  const auto gen = [&] { return *mv::json::parse(p.a.eng->phone_json())->integer("generation"); };
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  const auto runs = [&] { return *mv::json::parse(p.a.eng->phone_json())->integer("runs"); };
+  const auto before = runs();
+
+  write_bytes(local / "local_two.jpg", pattern(16, 7));
+  REQUIRE(p.a.eng->index_folder(utf8(local), true));
+  REQUIRE(p.a.idle());
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+  CHECK(gen() == 1);  // a folder on another volume is not this catalogue's business
+  CHECK(runs() == before);  // and no publish even started
+
+  p.a.file("green_field.jpg");
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(wait_for([&] { return gen() == 2; }, kSettleMs));
+  CHECK(p.assets(2).size() == 2);
+
+  SECTION("a new folder on the share counts") {
+    const fs::path more = p.a.dir / "More";
+    fs::create_directories(more);
+    write_bytes(more / "red_more.jpg", pattern(16, 7));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    REQUIRE(p.a.eng->index_folder(utf8(more), true));
+    REQUIRE(p.a.idle());
+    REQUIRE(wait_for([&] { return gen() == 3; }, kSettleMs));
+    CHECK(p.assets(3).size() == 3);
+  }
+}
+
+TEST_CASE("a file that keeps failing stops being asked, and does not starve the rest", "[ai][engine][phone]") {
+  phone_rig p;
+  for (int i = 0; i < 3; ++i) p.a.file("good_" + std::to_string(i) + ".jpg");
+  p.index();
+  // Added after the good ones, so they are first in line (newest first).
+  for (int i = 0; i < 20; ++i) p.a.file("truncated_" + std::to_string(i) + ".jpg");
+  REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(wait_for([&] { return p.a.status().assets_done == 23; }, kSettleMs));
+  auto first = p.publish();
+  CHECK(*first.integer("thumbs_made") == 3);
+  CHECK(first.boolean("thumbs_left") == true);
+  CHECK(*p.manifest().integer("thumbs") == 3);
+  p.publish();
+  auto third = p.publish();
+  CHECK(third.boolean("thumbs_left") == false);  // the third failure is the last
+  const int asked = p.a.thumbnails_made.load();
+  p.publish();
+  CHECK(p.a.thumbnails_made.load() == asked);
+
+  SECTION("a share that goes mid-pass ends it without blaming the files") {
+    for (int i = 0; i < 4; ++i) p.a.file("truncated_more_" + std::to_string(i) + ".jpg");
+    REQUIRE(p.a.eng->index_folder(utf8(p.a.photos()), true));
+    REQUIRE(p.a.idle());
+    REQUIRE(wait_for([&] { return p.a.status().assets_done == 27; }, kSettleMs));
+    const fs::path away = p.a.dir / "NAS-away";
+    int n = 0;
+    p.a.thumb_hook = [&](const std::string&) {
+      if (++n == 1) fs::rename(p.nas, away);
+    };
+    REQUIRE(p.a.eng->phone_publish(utf8(p.nas)));
+    auto done = phone_done(p.a);
+    CHECK(n == 1);  // one try, then the share was asked
+    CHECK(done.boolean("thumbs_left") == true);
+    fs::rename(away, p.nas);
+  }
+}
+
+TEST_CASE("older generations go two hours after their successor arrived", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.index();
+  p.publish();
+  p.publish();
+  p.publish();
+  fs::last_write_time(p.gen(2), fs::file_time_type::clock::now() - std::chrono::hours(3));
+  p.publish();
+  CHECK_FALSE(fs::exists(p.gen(1)));
+  CHECK(fs::exists(p.gen(2)));  // its successor is new
+  CHECK(fs::exists(p.gen(3)));
+  CHECK(fs::exists(p.gen(4)));
+}
+
+TEST_CASE("an accented root does not break the NFC name rule", "[ai][engine][phone]") {
+  phone_rig p;
+  const auto native = [](const std::string& s) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size())); };
+  const fs::path root = p.a.photos() / native("Cafe\xCC\x81 roll");
+  const std::string nfc_name = "caf\xC3\xA9 menu.jpg", nfd_name = "cafe\xCC\x81 menu.jpg";
+  fs::create_directories(root);
+  write_bytes(root / "one.jpg", pattern(16, 7));
+  write_bytes(root / "two.jpg", pattern(16, 7));
+  p.a.start();
+  REQUIRE(p.a.eng->index_folder(utf8(root), true));
+  REQUIRE(p.a.idle());
+  p.nas = p.a.dir / "NAS";
+  fs::create_directories(p.nas);
+  p.base = p.nas / ".mediaviewer";
+  // The form that is not NFC comes first in the table.
+  {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(utf8(p.a.dir / "data" / "index.db").c_str(), &db) == SQLITE_OK);
+    sqlite3_busy_timeout(db, 5000);
+    for (const auto& [which, name] : {std::pair{"MIN", nfd_name}, std::pair{"MAX", nfc_name}}) {
+      const std::string full = utf8(root / native(name));
+      char* sql = sqlite3_mprintf("UPDATE assets SET path = %Q WHERE id = (SELECT %s(id) FROM assets)", full.c_str(), which);
+      REQUIRE(sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+      sqlite3_free(sql);
+    }
+    sqlite3_close(db);
+  }
+  p.publish();
+  CHECK(p.assets().size() == 2);
+  const std::string db = utf8(p.gen() / "catalog.db");
+  // The file that really is NFC keeps the name; the other keeps its bytes.
+  CHECK(only_cell(db, "SELECT COUNT(*) FROM assets WHERE id = (SELECT MAX(id) FROM assets) AND path LIKE '%caf\xC3\xA9%'") == "1");
+}
+
+TEST_CASE("a filter-only query breaks ties by asset, not by path", "[ai][engine][phone]") {
+  phone_rig p;
+  const fs::path z = p.a.photos() / "z_root", a = p.a.photos() / "a_root";
+  fs::create_directories(z);
+  fs::create_directories(a);
+  write_bytes(z / "red_y2019.jpg", pattern(16, 7));
+  write_bytes(a / "blue_y2019.jpg", pattern(16, 7));
+  p.a.start();
+  REQUIRE(p.a.eng->index_folder(utf8(z), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(p.a.eng->index_folder(utf8(a), true));
+  REQUIRE(p.a.idle());
+  REQUIRE(wait_for([&] { return p.a.search("in:2019").size() == 2; }, kSettleMs));
+  const auto desk = p.a.search("in:2019");
+  REQUIRE(desk.size() == 2);
+  CHECK(desk[0].first == "red_y2019.jpg");  // z_root was indexed first: the lower id
+  p.nas = p.a.dir / "NAS";
+  fs::create_directories(p.nas);
+  p.base = p.nas / ".mediaviewer";
+  p.publish();
+  rig phone;
+  auto rd = p.reader(phone);
+  auto id = rd->search_text("in:2019", {}, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(rd->wait_search(id, kSettleMs));
+  auto first = rd->result_path(id, 0);
+  REQUIRE(first);
+  CHECK(utf8(fs::path(*first).filename()) == "red_y2019.jpg");
+}
+
+TEST_CASE("a ledger that cannot be read deletes no packs", "[ai][engine][phone]") {
+  scratch_dir dir{"ledger"};
+  const std::string folder = utf8(dir / "thumbs");
+  const std::string pack = "t-0123456789abcdef0123456789abcdef.pack";
+  {
+    auto made = mv::ai::catalog::thumb_store::open(folder);
+    REQUIRE(made);
+  }
+  { std::ofstream(dir / "thumbs" / pack) << "tiles"; }
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(utf8(dir / "thumbs" / "ledger.db").c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db, "DROP TABLE packs; CREATE VIEW packs AS SELECT name FROM nowhere;", nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+  (void)mv::ai::catalog::thumb_store::open(folder);
+  CHECK(fs::exists(dir / "thumbs" / pack));
+}
+
+TEST_CASE("delivery says when the share is full, and waits longer each failure", "[ai][engine][phone]") {
+  phone_rig p;
+  p.a.file("red_car.jpg");
+  p.a.phone_poll = 0.1;
+  p.a.phone_retry = 3600;
+  p.index();
+  const auto state = [&] { return *mv::json::parse(p.a.eng->phone_json()); };
+
+  SECTION("a full share") {
+    p.a.nas_free = 1;
+    auto done = p.publish("no_space");
+    CHECK(*done.integer("waiting") == 1);
+    CHECK(*done.integer("needs_bytes") > 1);
+    CHECK_FALSE(fs::exists(p.base / "current.json"));
+    p.a.nas_free = 1u << 30;  // room appears: no waiting out the back-off
+    REQUIRE(wait_for([&] { return *state().integer("generation") == 1; }, kSettleMs));
+    CHECK(*state().integer("waiting") == 0);
+  }
+  SECTION("failures back off, and the signing key is not read for it") {
+    p.publish();
+    fs::permissions(p.base / "gen", fs::perms::owner_read | fs::perms::owner_exec);
+    auto done = p.publish("unreachable");
+    const auto tried = *done.integer("deliver_attempts");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    fs::permissions(p.base / "gen", fs::perms::owner_all);
+    CHECK(*state().integer("deliver_attempts") == tried);
+    CHECK(*state().integer("waiting") == 2);
+  }
+  SECTION("not on battery") {
+    p.publish();
+    p.a.phone_retry = 0;
+    p.a.start();
+    REQUIRE(wait_for([&] { return *state().integer("generation") == 1; }, kSettleMs));
+    fs::rename(p.nas, p.a.dir / "NAS-away");
+    p.a.on_battery = true;
+    p.publish("unreachable");
+    fs::rename(p.a.dir / "NAS-away", p.nas);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(*state().integer("generation") == 1);  // it waits for power
+    p.a.on_battery = false;
+    REQUIRE(wait_for([&] { return *state().integer("generation") == 2; }, kSettleMs));
+  }
+}
+
+TEST_CASE("the small findings: tiny backfill, the off switch, pack names", "[ai][engine][phone]") {
+  SECTION("a tile made where the host could not shrink gets its 64 px one later") {
+    phone_rig p;
+    p.a.file("red_car.jpg");
+    const auto shrink = p.a.api.jpeg_shrink;
+    p.a.api.jpeg_shrink = nullptr;
+    p.index();
+    p.publish();
+    CHECK(*p.manifest().integer("thumbs") == 0);
+    const auto pack = *p.manifest().find("thumb_packs")->a[0].str("name");
+    p.a.api.jpeg_shrink = shrink;
+    p.a.start();
+    REQUIRE(wait_for([&] { return *mv::json::parse(p.a.eng->phone_json())->integer("generation") == 1; }, kSettleMs));
+    p.publish();
+    CHECK(*p.manifest(2).integer("thumbs") == 1);
+    CHECK(*p.manifest(2).find("thumb_packs")->a[0].str("name") == pack);  // the tile itself was not made again
+  }
+  SECTION("Publish now leaves the automatic half off") {
+    phone_rig p;
+    p.a.file("red_car.jpg");
+    p.index();
+    REQUIRE(p.a.eng->set_setting("phone_auto", "0"));
+    auto done = p.publish();
+    CHECK(done.boolean("auto") == false);
+  }
+  SECTION("pack names and ranges from a file are not trusted") {
+    using namespace mv::ai::catalog;
+    CHECK(valid_pack_name("t-0123456789abcdef0123456789abcdef.pack"));
+    CHECK_FALSE(valid_pack_name("../../0123456789abcdef0123456789ab.pack"));
+    CHECK_FALSE(valid_pack_name("t-0123456789ABCDEF0123456789abcdef.pack"));
+    thumb_location at;
+    at.offset = UINT64_MAX - 1;
+    at.length = 10;
+    CHECK_FALSE(within_pack(at, 100));
+    at.offset = 90;
+    CHECK(within_pack(at, 100));
+    at.length = 11;
+    CHECK_FALSE(within_pack(at, 100));
+  }
+  SECTION("the host's made-and-not-stored JPEG is a real one") {
+    const auto path = fs::path(MV_AI_TEST_DATA) / ".." / "seeds" / "jpeg" / "baseline.jpg";
+    auto made = mv::addon::media::make_thumbnail_jpeg(utf8(path), -1);
+    REQUIRE(made);
+    auto dim = mv::codec::jpeg_dimensions(*made);
+    REQUIRE(dim);
+    CHECK(std::max(dim->width, dim->height) <= 512);
+  }
 }
 
 // ---- the publisher's cost (CLAUDE.md "Performance is the product") -------------------
@@ -6585,11 +6966,15 @@ TEST_CASE("perf: what the publisher adds at scale", "[.perf-bench][phone-scale]"
     sqlite3_exec(raw, "BEGIN; INSERT INTO roots(id, path, recursive) VALUES(1, '/a', 1);"
                       "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<100000)"
                       " INSERT INTO assets(path, root_id, mtime, size, kind) SELECT '/a/some/long/enough/path/file_' || x || '.jpg', 1, 1700000000+x, 5000000+x, 0 FROM c;"
+                      "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<1000000)"
+                      " INSERT INTO frames(asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)"
+                      " SELECT x % 100000 + 1, 'spec', x, x, 1, 1000, 0, 0, 1, x'00' FROM c;"
                       "COMMIT;", nullptr, nullptr, nullptr);
     sqlite3_close(raw);
     for (int i = 0; i < 5; ++i) {
       const auto t0 = std::chrono::steady_clock::now();
-      stamp = (*db)->content_stamp("spec");
+      const std::int64_t roots[] = {1};
+      stamp = (*db)->content_stamp("spec", roots);
       stamp_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     }
   }
@@ -6599,7 +6984,11 @@ TEST_CASE("perf: what the publisher adds at scale", "[.perf-bench][phone-scale]"
 }
 
 TEST_CASE("perf: publisher idle cost and scan throughput", "[.perf-bench][phone-cost]") {
+  const std::string which = std::getenv("MV_PHONE_STATE") ? std::getenv("MV_PHONE_STATE") : "";
   rig r;
+  r.phone_quiet = 120;
+  r.phone_poll = 30;
+  if (which == "thumbs_left") r.phone_budget = 0.01;
   for (int i = 0; i < 40; ++i) r.file("seed_" + std::to_string(i) + ".jpg");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
@@ -6608,18 +6997,26 @@ TEST_CASE("perf: publisher idle cost and scan throughput", "[.perf-bench][phone-
   fs::create_directories(nas);
   REQUIRE(r.eng->phone_publish(utf8(nas)));
   REQUIRE(*phone_done(r).str("error") == "");
+  if (which == "waiting") {  // the share is away, a generation is waiting, polled every 30 s
+    fs::rename(nas, r.dir / "NAS-away");
+    r.file("extra.jpg");
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+    REQUIRE(r.idle(60000));
+    REQUIRE(r.eng->phone_publish(utf8(nas)));
+    REQUIRE(*phone_done(r).str("error") == "unreachable");
+  }
   std::this_thread::sleep_for(std::chrono::seconds(3));
   const cost_mark a = cost_now();
   std::this_thread::sleep_for(std::chrono::seconds(30));
   const cost_mark b = cost_now();
-  std::vector<double> scans;
-  for (int run = 0; run < 3; ++run) {
+  std::vector<double> scans{0, 0, 0};
+  for (int run = 0; which.empty() && run < 3; ++run) {
     const std::string sub = "batch_" + std::to_string(run);
     for (int i = 0; i < 2000; ++i) r.file(sub + "/img_" + std::to_string(i) + ".jpg");
     const auto t0 = std::chrono::steady_clock::now();
     REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
     REQUIRE(r.idle(120000));
-    scans.push_back(2000.0 / std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    scans[static_cast<std::size_t>(run)] = 2000.0 / std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   }
   std::sort(scans.begin(), scans.end());
   std::printf("{\"idle_cpu_pct\":%.4f,\"idle_wakeups_per_s\":%.3f,\"scan_files_per_s_median\":%.1f}\n",

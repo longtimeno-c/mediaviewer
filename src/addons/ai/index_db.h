@@ -313,7 +313,9 @@ class index_db {
   [[nodiscard]] std::int64_t data_version();
   // What a phone's catalogue would carry, as one string: the rows that matter,
   // never `seen`, so a walk that finds nothing leaves it the same.
-  [[nodiscard]] std::string content_stamp(const std::string& spec);
+  // Only `roots`: a folder a generation does not carry changes nothing in it.
+  [[nodiscard]] std::string content_stamp(const std::string& spec, std::span<const std::int64_t> roots);
+  [[nodiscard]] std::vector<std::int64_t> asset_ids_in(std::span<const std::int64_t> roots);  // sorted
   // A catalogue's stored place labels (docs/plans/mobile.md §5).
   void each_place(const std::function<void(const std::string& path, const std::string& label)>& visit);
   [[nodiscard]] const std::string& path() const noexcept { return path_; }

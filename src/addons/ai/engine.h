@@ -276,6 +276,7 @@ struct engine_deps {
   double phone_quiet_s = 120;
   double phone_min_interval_s = 3600;
   double phone_share_poll_s = 30;
+  double phone_retry_base_s = 30;  // a failed delivery waits this, doubling, to an hour
   double phone_thumb_budget_s = 1800;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
   std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
@@ -1244,6 +1245,16 @@ class engine {
     std::string waiting_stamp;
     double last_attempt = 0;       // wall clock: at most hourly survives a restart
     std::vector<catalog::root_map> roots;  // as last seen on the share, for building while it is away
+    std::string share_device;      // its volume, to tell whether a new folder is on it
+    // A generation that failed to land waits longer each time, until the share
+    // or its free space changes.
+    int retries = 0;
+    double retry_at = 0;           // wall clock
+    bool share_seen = true;
+    std::uint64_t last_free = 0;
+    std::string deliver_error;     // said again while waiting out the back-off
+    std::uint64_t needs_bytes = 0; // no_space: what the generation needs
+    std::uint64_t deliver_attempts = 0;
   };
   void load_phone_state();
   [[nodiscard]] bool save_phone_state() const;
@@ -1255,8 +1266,14 @@ class engine {
   void phone_publish_auto();
   void phone_deliver_waiting();
   void phone_tick(bool walked);
-  void fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots, bool& left);
-  [[nodiscard]] std::string phone_stamp() const;
+  void fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots,
+                         const std::string& destination, bool& left);
+  [[nodiscard]] result<std::vector<std::uint8_t>> phone_thumb(const catalog::thumb_want& w);
+  void note_phone_delivery_failed(const std::string& why);
+  [[nodiscard]] std::uint64_t phone_bytes_needed(const std::string& gen_dir, const std::vector<catalog::shared_file>& shared,
+                                                 const std::string& destination) const;
+  [[nodiscard]] std::vector<std::int64_t> phone_carried_roots();
+  [[nodiscard]] std::string phone_stamp(std::span<const std::int64_t> roots) const;
   [[nodiscard]] result<std::vector<std::string>> stored_place_matches(const std::string& place);
   mutable std::mutex phone_m_;
   phone_view phone_;
@@ -1268,6 +1285,7 @@ class engine {
   bool phone_changed_ = false;
   double phone_quiet_since_ = 0;
   double phone_next_poll_ = 0;
+  std::map<std::string, bool> phone_root_on_share_;  // folders added since the last build
   std::atomic<bool> phone_recheck_{false};      // a delivery found this generation can never land
   std::atomic<double> phone_cancelled_at_{0};   // wall clock
   std::atomic<bool> transferring_{false};  // workers wait (an import)

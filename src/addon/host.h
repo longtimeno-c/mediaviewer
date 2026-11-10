@@ -144,6 +144,8 @@ struct host_services {
   std::function<result<std::vector<std::uint8_t>>(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
                                                   std::uint32_t quality)>
       jpeg_shrink;
+  // A JPEG-512 made now and not stored (media::make_thumbnail_jpeg).
+  std::function<result<std::vector<std::uint8_t>>(const std::string& path, std::int64_t pts_ms)> thumbnail_make;
   // The labels of GPS points. Empty: the add-on that answers `place:`
   // (slot_registry::provider_labels, Places). Tests inject a fake.
   std::function<result<std::vector<std::string>>(std::span<const std::pair<double, double>> points)> place_labels;
