@@ -201,9 +201,8 @@ mirror. Seams 1 and 2 leave `mv.ai.1` and `Ai.cs` as they are, so neither addres
 
 What **seam 3** adds (small, Windows chrome and CI):
 
-1. **`mv_ai_api` in `tools/abi-layout`.** Today the 47-entry function table is not compared. A C#
-   field inserted or reordered calls the wrong function, and nothing catches it. List each entry's
-   offset, as is done for the two structs.
+1. **`mv_ai_api` in `tools/abi-layout`.** Done 2026-11-10, after 0.1.41 shipped a table one entry
+   short: each entry's offset is listed and compared, as for the two structs.
 2. **A structured attach error.** `AiApi`'s constructor throws `InvalidOperationException`, and the
    user sees "installed but could not start" (`InstallWords.cs:83`). Name the check that failed
    (table older than the chrome, result stride, missing entry) in Settings' detail line and in the

@@ -28,6 +28,7 @@ set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 
 include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/mobile-link.cmake")
 
 # The phone's catalogue and search (docs/plans/mobile.md M5 and M6's local half).
 include("${CMAKE_CURRENT_LIST_DIR}/mobile.cmake")

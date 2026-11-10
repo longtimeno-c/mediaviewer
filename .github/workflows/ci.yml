@@ -769,8 +769,11 @@ jobs:
         # #511 and #517 timed out with 1566 of 1582 done, the PDF sweep 162 s;
         # no test hung), so they get 20. By 2026-10-22 main's msvc Debug took
         # 24.4 of its 25 min and ASan 44.5 of its 45 (#543 timed out at 25 with
-        # no test hung), so Debug gets 35 (job 50) and ASan 60 (job 85).
-        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 60 || matrix.config == 'Debug' && 35 || 20 }}
+        # no test hung), so Debug gets 35 (job 50) and ASan 60 (job 85). By
+        # 2026-11-09 main's msvc Release took 18.6-18.9 of its 20 min and #659
+        # timed out with 2101 of 2110 done (the document sweeps 82 s slower than
+        # the run before; no test hung), so Release gets 25, inside its job's 50.
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 60 || matrix.config == 'Debug' && 35 || 25 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
           # A missing clip or sample FAILS here instead of skipping

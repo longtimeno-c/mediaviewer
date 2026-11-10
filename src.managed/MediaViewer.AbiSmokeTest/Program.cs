@@ -60,7 +60,7 @@ Check("MvCompletion.Payload at offset 32",
 if (args.Length > 1)
 {
     var dump = NativeLayout.Read(args[1]);
-    foreach (var (native, managed) in new[] { ("mv_ai_status", typeof(MvAiStatus)), ("mv_ai_result", typeof(MvAiResult)) })
+    foreach (var (native, managed) in new[] { ("mv_ai_status", typeof(MvAiStatus)), ("mv_ai_result", typeof(MvAiResult)), ("mv_ai_api", typeof(MvAiApi)) })
     {
         var problems = NativeLayout.Compare(dump, native, managed);
         foreach (string p in problems) Console.WriteLine($"         {p}");

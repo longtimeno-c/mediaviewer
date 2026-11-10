@@ -761,6 +761,27 @@ alone picks the wrong person in a group shot. The generative alternative (eyes d
 person's other photos) was not taken: gigabytes of weights, minutes on Windows' CPU, eyes that may
 not be theirs, and identity models under non-commercial licences.
 
+**No *Eyes closed* tag; Open eyes on every face (2026-11-07).** S8 tagged faces whose eyes "look
+shut" (`edit::eyes_look_shut`, brightness in a patch about each eye) and offered Open eyes only
+there. On the owner's photos it was wrong both ways: two smiling, open-eyed faces tagged, the one
+shut pair (a tilted head) not, so the fix wasn't offered where it was needed. Measured over 43
+faces: no brightness rule (axis-aligned or along the eye line), Vision's eye contours or
+MediaPipe's blink score separated a blink from a big smile or flash red-eye. A wrong tag is worse
+than none: the tag goes, Open eyes is offered on every face, and on faces the person chose it
+takes the most open donor at their pose rather than second-guessing them. Revisit when the AI
+pack carries an eye-state model.
+
+***Eyes closed* comes back, from a model (2026-11-07, later the same day).** The owner asked for
+closed eyes to be detected. The row above failed for two reasons found since: YuNet's eye points
+sit a quarter of an eye distance off on a tilted face (every rule read the brow or the cheek), and
+brightness cannot tell a blink from a squint. Now each face is read again upright by the pack's
+own detector, and each eye by OpenVINO's open-closed-eye-0001 (Apache-2.0, 46 KB, run in plain
+C++ in `edit/eye_state`) on grey, contrast-standardised crops. On 68 labelled faces of the owner's
+it separates every shut face (≤ 0.57) from every open one (≥ 0.68), red eye and squints included.
+Open eyes stays on every face; the badge chooses the shut faces. Not MediaPipe's blendshapes
+(they false-alarm on smiles, and need a TFLite runtime), not a model trained on CEW
+(research-only licence) or on the owner's own photos (their faces would ship in the weights).
+
 **Detail is a CPU pass, not a kernel term (2026-11-02).** Definition, brilliance, sharpen and
 noise reduction need neighbours. They run on the working image on a worker after the slider
 settles and replace the working texture; the export runs the same code at full size. Not a GPU
@@ -1298,7 +1319,9 @@ only what the chrome declared, and the chrome zeroes the rest, so an older or ne
 attach. The size check is dropped for `mv_ai_status`. `mv_ai_result` keeps its exact check, because
 it comes back as an array with no `struct_size`, so its size is the stride. Drift is now caught
 in CI: `tools/abi-layout` prints the offset and size of each field as MSVC lays them out, and the
-ABI smoke test compares them, both ways, with the C# mirror.
+ABI smoke test compares them, both ways, with the C# mirror. **2026-11-10:** the `mv_ai_api` table
+is compared too. 0.1.41's `MvAiApi` lacked `eyes_json`, so every People correction entry after it
+called its neighbour, and opening the People grid crashed the app.
 
 **Developer key (2026-09-26).** `MV_ADDON_DEV_PUBLIC_KEY` lets a developer build trust a local key
 so a pack can be sideloaded; with it, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR` keep the run out of

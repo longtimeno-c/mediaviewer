@@ -24,6 +24,7 @@
 #include "core/job_system.h"
 #include "core/result.h"
 #include "edit/edit_stack.h"
+#include "edit/eye_state.h"
 #include "image/linear.h"
 
 namespace mv::addon {
@@ -134,8 +135,16 @@ void set_still_extend(const std::string& path, const std::array<float, 4>& ltrb)
 [[nodiscard]] std::array<float, 4> still_extend(const std::string& path);
 // docs/plans/edit-adjust.md slice 6: eyes open from the same moment.
 // The frames of the same moment as `path`: the other files of its folder
-// modified within kBurstSeconds of it, nearest first, at most kBurstFrames.
-inline constexpr double kBurstSeconds = 10.0;
+// taken within kBurstSeconds of it (EXIF; for a photo without a capture
+// stamp, written within it), then of the same occasion (kOccasionSeconds,
+// by capture stamp only), nearest first, at most kBurstFrames. Two minutes:
+// a group's run of shots, each donor still checked for its head's turn.
+inline constexpr double kBurstSeconds = 120.0;
+// With capture stamps, the frames of the same occasion too (taken within six
+// hours: the same evening's photos of the same people, in the same clothes
+// and light), nearest first after the moment's: the donors the Faces tool's
+// fixes can use even when People has none at this face's pose (2026-11-07).
+inline constexpr double kOccasionSeconds = 6.0 * 3600.0;
 inline constexpr std::size_t kBurstFrames = 12;
 [[nodiscard]] std::vector<std::string> burst_neighbours(const std::string& path);
 // What Open closed eyes did.
@@ -195,6 +204,39 @@ enum class face_fix : std::int32_t { do_all = -1, open_eyes = 0, improve = 1 };
 // file (`written` empty).
 [[nodiscard]] result<eyes_outcome> fix_faces(const std::string& path, std::string_view pack_json, face_fix fix,
                                              std::uint64_t faces_mask, const job_context* ctx = nullptr);
+// 2026-11-07 (owner: "detect closed eyes and fix them naturally"): YuNet's
+// eye points can be a quarter of an eye distance off on a tilted face, on the
+// brow or the cheek. A face is read again upright: a square of it, turned so
+// its eye line is level, given back to the pack's detector (set_face_redetect:
+// mv_ai_api faces_json), and its five points taken back to the picture. The
+// points stay as they were when the pack is not there, the face is not found
+// again, or the new eyes are not near the old.
+using face_redetect_fn = std::function<result<std::string>(const std::uint8_t* rgb, std::uint32_t width,
+                                                           std::uint32_t height, std::uint32_t stride)>;
+void set_face_redetect(face_redetect_fn fn);
+[[nodiscard]] edit::face_landmarks refine_landmarks(const image::linear_image& img, const edit::face_landmarks& lm);
+// The pack's answer with each face's "lm" read again upright (refine_landmarks)
+// and its eyes read (edit::read_eye_state): "eyes": [right, left], the
+// probability each is open, -1 unknown. Donors are left as they are. The
+// answer unchanged when it does not parse or `still` is not valid.
+[[nodiscard]] std::string with_eyes_read(std::string_view pack_json, const image::linear_image& still);
+// 2026-11-07: more donors for a fix. The pack's own pick from People reads
+// only faces turned as this one is by YuNet's raw points, which miss on a
+// tilted face; most of a person's photos never reach the host. So the fix
+// asks the pack twice: once with the moment's frames, then again with the
+// chosen faces' people's largest still photos (set_person_photos: the pack's
+// person_faces_json) added as candidates, which the pack reads at any pose;
+// the host then judges the pose on points read again upright. kPeoplePhotos a
+// person, kPeoplePhotosAll in all. `boxes` as faces_mask_of's (empty: every
+// face); `ask` is ai_eyes_json. The first answer when there is nothing to add
+// or the second fails.
+using person_photos_fn = std::function<result<std::string>(std::uint64_t person)>;
+void set_person_photos(person_photos_fn fn);
+inline constexpr std::size_t kPeoplePhotos = 12;
+inline constexpr std::size_t kPeoplePhotosAll = 24;
+using eyes_ask_fn = std::function<result<std::string>(const std::string& path, const std::string& candidates)>;
+[[nodiscard]] result<std::string> eyes_answer(const std::string& path, const std::string& candidates,
+                                              std::span<const float> boxes, const eyes_ask_fn& ask);
 // The note for a fix's outcome (eyes_note / faces_note by the fix).
 [[nodiscard]] std::string fix_note(face_fix fix, status pack, const result<eyes_outcome>& r);
 // The faces of `pack_json` the canvas chose: `boxes` holds x, y, w, h (0..1

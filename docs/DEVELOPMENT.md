@@ -1034,6 +1034,16 @@ people's clear faces taken out and filed again: how many come back to their pers
 with the base commit's `mv_ai_tests`
 built in its own worktree, runs alternated. Delete the copy after: it is face data.
 
+The Faces tool's eyes (docs/design/20, *Eyes closed*): `mv_tests "[eye-state]"` checks the C++
+eye model against its ONNX original; `"[.eye-state-bench]"` with `MV_EYE_STATE_LIST` (lines of
+`"path" x0 y0 x1 y1`, the eye centres in pixels) prints each eye's reading on real photos. A fix on
+a real photo with the pack's own detector: `mv_ai_tests "[.faces-real-bench]"` with
+`MV_AI_PACK_DIR`, `MV_AI_FACES_DIR` (a folder with `models/faces`: `model.json`, `yunet.onnx`,
+`adaface.onnx`), `MV_FACES_PHOTO` (a copy: the result is written beside it), `MV_FACES_PACK` (a
+saved eyes_json answer), `MV_FACES_FIX`, `MV_FACES_MASK`, and `MV_FACES_MOMENT_OF` (the photo's
+real path) to add its same-moment frames as the pack would. The eye model's weights are
+regenerated with `tools/eyes/export_eye_state.py` (needs the `onnx` package).
+
 The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
 everyone shows only when no folder is open (docs/design/17 "People in the open folder", amended
@@ -1227,8 +1237,8 @@ ctest --test-dir build -C Release --output-on-failure
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
 # the ABI, end to end from C#: SafeHandle, struct layout, completion drain. The
-# second argument is mv_abi_layout's dump: the AI structs' C# mirrors are then
-# compared field for field with the native layout (skipped without it; CI passes it)
+# second argument is mv_abi_layout's dump: the C# mirrors of the AI structs and function
+# table are then compared field for field with the native layout (skipped without it; CI passes it)
 cmake --build build --config Release --target mv_abi_layout
 build\bin\Release\mv_abi_layout.exe > build\abi-layout.txt
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
@@ -4652,3 +4662,11 @@ native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never t
 decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
 modify an original; nothing about a user's files leaves the machine; never require a Store
 codec pack.
+
+## The iPhone app's link (src/mobile, src.ios)
+
+The core: `mv_mobile_link_tests "[mobile-link]"` (the Mac build's `build/bin`), filter by tag. The app:
+build `build-ios-sim/` (`cmake/ios.cmake`), then the `MediaViewer` scheme. End to end against
+`driftwire serve` on loopback in a Simulator of your own: `tools/ios/link-e2e.sh <udid> <folder>`
+after copying the built `MediaViewer.app` into `<folder>`. Codes for a service come from
+`driftwire serve pair-code [SECONDS]` until the desktop claim lands.

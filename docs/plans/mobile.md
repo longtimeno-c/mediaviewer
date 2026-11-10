@@ -679,6 +679,7 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 | Hostile Wi-Fi impersonating the NAS | The sealed handshake proves the paired identity, and no password exists to capture |
 | A photographed QR code | The pairing code is single-use and short-lived, and the Mac shows each added phone |
 | Replay of an old signed catalogue | `(epoch, generation)` only goes up (§5, rule 7) |
+| A swapped JPEG-512 tile | Not checked per tile: a pack's hash is in the signed manifest, but the phone reads tiles by range and cannot hash the pack. A tile reaches only ImageIO, from a service the phone proved is the paired one, so the threat is someone who can write the share and swaps a pack in place. A per-tile hash in `thumbs.idx` would close it (open). |
 | An unclaimed service on the NAS | Claimed only once, only from its own network, and only by a desktop that can write to the share (§7.2) |
 | The review grant leaks | It opens only the review server's sample photos and is revocable |
 | Lost phone | iOS data protection, Keychain device-only, optional Face ID, "Forget this library" wipes everything; revoking the phone from the desktop removes it from both the NAS service and the Mac's paired devices |
@@ -777,12 +778,16 @@ unattended signed updates, capability negotiation, device revocation from the de
 
 ### M3 — Connect (iOS)
 
+**Built (2026-11-10, in `src/mobile/link*`, `sync*` and `src.ios/.../MobileLink`):** `remote_file` over the library channel, the route race by name, the Keychain, `mv_mobile_link.h`, pairing and the QR parser. Proven in the Simulator against `driftwire serve` on loopback (`tools/ios/link-e2e.sh`). Not proven yet: the camera (no camera in the Simulator), a real NAT64 network, mobile data, a device.
+
 Project, CI, Driftwire engine on iOS, `remote_file` over the link, QR pairing as the only setup,
 the mobile-data reachability test, Keychain.
 
 > **Verify:** From a clean install, one scan pairs with the Mac and the Synology; the phone then connects from mobile data with the Mac powered off, and connects by name on an IPv6-only NAT64 network; a wrong-signature `current.json` is refused.
 
 ### M4 — Catalogue sync (iOS)
+
+**Built (2026-11-10):** copy, signature and manifest checks, swap, resume, the never-lower rule, Wi-Fi by default, `BGContinuedProcessingTask` for the first copy. Not proven: leaving the app during a copy (needs a device), and `BGProcessingTask` for automatic sync is not built.
 
 Copy, verify, swap, resume, background task, first copy as a continued task on iOS 26, model copy,
 Wi-Fi by default.

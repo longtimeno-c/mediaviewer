@@ -54,7 +54,9 @@
 #include "edit/eyes.h"
 #include "edit/encode.h"
 #include "infer/clip_tokenizer.h"
+#include "edit/eye_state.h"
 #include "infer/models.h"
+#include "io/file.h"
 #include "infer/ort.h"
 #include "infer/preprocess.h"
 
@@ -1988,5 +1990,268 @@ TEST_CASE("eyes: real YuNet and AdaFace on real photos of one person", "[.eyes-r
   CHECK(fixed_score > shut_score * mv::edit::kEyesBetter);
 #else
   SKIP("needs the decode path (MV_AI_TEST_DECODE)");
+#endif
+}
+
+// 2026-11-08: what edit::aim_irises reads, over every open-eyed face of the
+// folders in MV_AIM_DIRS (separated by ':'), one line a face, to set
+// kSocketHalf and kGazeFollow from real eyes. Shut faces are marked. Needs
+// MV_AI_PACK_DIR and MV_AI_FACES_DIR as below (the embedder is not used).
+TEST_CASE("faces: what the eye aim reads over folders of photos", "[.iris-aim-bench]") {
+#if defined(MV_AI_TEST_DECODE)
+  const std::string pack_dir = env("MV_AI_PACK_DIR"), faces = env("MV_AI_FACES_DIR"), dirs = env("MV_AIM_DIRS");
+  if (pack_dir.empty() || faces.empty() || dirs.empty()) SKIP("set the MV_ variables");
+  auto rt = mv::infer::runtime::load(pack_dir);
+  REQUIRE(rt);
+  auto spec = mv::infer::read_face_spec(utf8(fs::path(faces) / "models" / "faces"));
+  REQUIRE(spec);
+  mv::infer::session_options cpu;
+  auto model = mv::infer::face_models::open(**rt, *spec, cpu);
+  REQUIRE(model);
+  mv::infer::face_models* m = model->get();
+  mv::addon::media::set_face_redetect(
+      [m](const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::uint32_t) -> mv::result<std::string> {
+        auto found = m->detect(mv::infer::rgb_view{rgb, w, h});
+        if (!found) return mv::err(found.error());
+        mv::json::writer out;
+        out.begin_object().key("faces").begin_array();
+        for (const auto& f : *found) {
+          out.begin_object();
+          out.key("x").number(f.x / w).key("y").number(f.y / h).key("w").number(f.w / w).key("h").number(f.h / h);
+          out.key("lm").begin_array();
+          for (int i = 0; i < 10; ++i) out.number(f.landmarks[i] / static_cast<float>(i % 2 ? h : w));
+          out.end_array().end_object();
+        }
+        out.end_array().end_object();
+        return out.take();
+      });
+  std::stringstream list(dirs);
+  for (std::string dir; std::getline(list, dir, ':');) {
+    for (const auto& entry : fs::directory_iterator(fs::path(dir))) {
+      const std::string name = utf8(entry.path().filename());
+      std::string ext = utf8(entry.path().extension());
+      std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if ((ext != ".jpg" && ext != ".jpeg" && ext != ".heic") || name.find("-eyes") != std::string::npos ||
+          name.find("-faces") != std::string::npos || name.find("-extended") != std::string::npos ||
+          name.find("-enhance") != std::string::npos) {
+        continue;
+      }
+      const std::string path = utf8(entry.path());
+      auto st = mv::addon::media::decode_still(path, 1024);
+      if (!st) continue;
+      auto found = m->detect(mv::infer::rgb_view{st->rgb.data(), st->width, st->height});
+      if (!found || found->empty()) continue;
+      mv::json::writer w;
+      w.begin_object().key("faces").begin_array();
+      for (const auto& f : *found) {
+        const float W = static_cast<float>(st->width), H = static_cast<float>(st->height);
+        w.begin_object().key("x").number(f.x / W).key("y").number(f.y / H).key("w").number(f.w / W).key("h").number(f.h / H);
+        w.key("lm").begin_array();
+        for (int i = 0; i < 10; ++i) w.number(f.landmarks[i] / (i % 2 ? H : W));
+        w.end_array().key("quality").number(0.3).key("donors").begin_array().end_array().end_object();
+      }
+      w.end_array().end_object();
+      auto bytes = mv::io::read_all(path);
+      if (!bytes) continue;
+      auto still = mv::image::decode_linear(*bytes);
+      if (!still) continue;
+      auto rd = mv::json::parse(mv::addon::media::with_eyes_read(w.take(), *still));
+      if (!rd) continue;
+      for (const auto& f : rd->find("faces")->a) {
+        const mv::json::value* e = f.find("eyes");
+        if (!e || e->a.size() != 2 || e->a[0].d < 0 || e->a[1].d < 0) continue;  // unreadable
+        mv::edit::face_landmarks lm{};
+        const auto& v = f.find("lm")->a;
+        for (std::size_t i = 0; i < 10; ++i) lm[i] = static_cast<float>(v[i].d);
+        const float dist = std::hypot((lm[2] - lm[0]) * still->width, (lm[3] - lm[1]) * still->height);
+        const auto r = mv::edit::read_eye_lines(*still, lm);
+        std::printf("AIMREAD %s x %.3f y %.3f d %.1f open %.2f %.2f turn %.3f R %.3f %.3f L %.3f %.3f\n", name.c_str(),
+                    f.find("x")->d, f.find("y")->d, dist, e->a[0].d, e->a[1].d, r.turn, r.right_end, r.right_iris,
+                    r.left_end, r.left_iris);
+      }
+    }
+  }
+  mv::addon::media::set_face_redetect(nullptr);
+#else
+  SKIP("needs MV_AI_TEST_DECODE");
+#endif
+}
+
+// 2026-11-07: a face fix on a real photo with the pack's own YuNet as the
+// re-detect (media::set_face_redetect), as the app runs it. MV_AI_PACK_DIR
+// (ONNX Runtime), MV_AI_FACES_DIR (a folder with models/faces: model.json and
+// its files), MV_FACES_PHOTO (a copy to fix: the result is written beside
+// it), MV_FACES_PACK (a saved eyes_json answer for it), MV_FACES_FIX (0 open
+// eyes, 1 improve, -1 do all) and MV_FACES_MASK (the faces' bits).
+TEST_CASE("faces: a fix on a real photo with the real detector", "[.faces-real-bench]") {
+#if defined(MV_AI_TEST_DECODE)
+  const std::string pack_dir = env("MV_AI_PACK_DIR"), faces = env("MV_AI_FACES_DIR");
+  const std::string photo = env("MV_FACES_PHOTO"), answer_path = env("MV_FACES_PACK");
+  if (pack_dir.empty() || faces.empty() || photo.empty()) SKIP("set the MV_ variables");
+  auto rt = mv::infer::runtime::load(pack_dir);
+  REQUIRE(rt);
+  auto spec = mv::infer::read_face_spec(utf8(fs::path(faces) / "models" / "faces"));
+  REQUIRE(spec);
+  mv::infer::session_options cpu;
+  auto model = mv::infer::face_models::open(**rt, *spec, cpu);
+  REQUIRE(model);
+  mv::infer::face_models* m = model->get();
+  mv::addon::media::set_face_redetect(
+      [m](const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, std::uint32_t) -> mv::result<std::string> {
+        auto found = m->detect(mv::infer::rgb_view{rgb, w, h});
+        if (!found) return mv::err(found.error());
+        mv::json::writer out;
+        out.begin_object().key("faces").begin_array();
+        for (const auto& f : *found) {
+          out.begin_object();
+          out.key("x").number(f.x / w).key("y").number(f.y / h).key("w").number(f.w / w).key("h").number(f.h / h);
+          out.key("lm").begin_array();
+          for (int i = 0; i < 10; ++i) out.number(f.landmarks[i] / static_cast<float>(i % 2 ? h : w));
+          out.end_array().end_object();
+        }
+        out.end_array().end_object();
+        return out.take();
+      });
+  std::stringstream ss;
+  if (!answer_path.empty()) {
+    std::ifstream in(answer_path);
+    ss << in.rdbuf();
+  } else {
+    // No saved answer: this photo's faces from the detector, as the pack lists them.
+    auto st = mv::addon::media::decode_still(photo, 1024);
+    REQUIRE(st);
+    auto found = m->detect(mv::infer::rgb_view{st->rgb.data(), st->width, st->height});
+    REQUIRE(found);
+    mv::json::writer w;
+    w.begin_object().key("faces").begin_array();
+    for (const auto& f : *found) {
+      const float W = static_cast<float>(st->width), H = static_cast<float>(st->height);
+      w.begin_object().key("x").number(f.x / W).key("y").number(f.y / H).key("w").number(f.w / W).key("h").number(f.h / H);
+      w.key("lm").begin_array();
+      for (int i = 0; i < 10; ++i) w.number(f.landmarks[i] / (i % 2 ? H : W));
+      w.end_array().key("quality").number(0.3).key("donors").begin_array().end_array().end_object();
+    }
+    w.end_array().end_object();
+    ss << w.take();
+  }
+  // MV_FACES_MOMENT_OF (the photo's real path): add, as the pack does, the
+  // faces of its same-moment frames (media::burst_neighbours) that the face
+  // model calls the same person, as donors.
+  if (const std::string of = env("MV_FACES_MOMENT_OF"); !of.empty()) {
+    auto doc = mv::json::parse(ss.str());
+    REQUIRE(doc);
+    auto here = mv::addon::media::decode_still(of, 1024);
+    REQUIRE(here);
+    auto here_faces = m->detect(mv::infer::rgb_view{here->rgb.data(), here->width, here->height});
+    REQUIRE(here_faces);
+    struct other_face {
+      std::string path;
+      std::uint32_t w, h;
+      mv::infer::face_box box;
+      std::vector<float> emb;
+    };
+    std::vector<other_face> others;
+    for (const std::string& n : mv::addon::media::burst_neighbours(of)) {
+      auto st = mv::addon::media::decode_still(n, 1024);
+      if (!st) continue;
+      const mv::infer::rgb_view v{st->rgb.data(), st->width, st->height};
+      auto fs2 = m->detect(v);
+      if (!fs2) continue;
+      for (const auto& f : *fs2) {
+        auto e = m->embed(v, f);
+        if (e) others.push_back({n, st->width, st->height, f, *e});
+      }
+    }
+    std::printf("moment: %zu faces in %zu frames\n", others.size(), mv::addon::media::burst_neighbours(of).size());
+    mv::json::writer w;
+    w.begin_object().key("faces").begin_array();
+    const mv::json::value* faces_v = doc->find("faces");
+    for (const mv::json::value& f : faces_v->a) {
+      const float fx = static_cast<float>(f.find("x")->d), fy = static_cast<float>(f.find("y")->d);
+      const float fw = static_cast<float>(f.find("w")->d), fh = static_cast<float>(f.find("h")->d);
+      // This face in the detector's own answer (nearest centre), embedded.
+      const mv::infer::face_box* mine = nullptr;
+      float best = 1e9f;
+      for (const auto& g : *here_faces) {
+        const float d = std::hypot((g.x + g.w / 2) / here->width - (fx + fw / 2), (g.y + g.h / 2) / here->height - (fy + fh / 2));
+        if (d < best) best = d, mine = &g;
+      }
+      std::vector<float> emb;
+      if (mine) {
+        if (auto e = m->embed(mv::infer::rgb_view{here->rgb.data(), here->width, here->height}, *mine)) emb = *e;
+      }
+      w.begin_object();
+      for (const auto& [k, v] : f.o) {
+        if (k == "donors") continue;
+        w.key(k);
+        if (v.k == mv::json::kind::number) {
+          if (v.is_integer) w.integer(v.i); else w.number(v.d);
+        } else if (v.k == mv::json::kind::string) {
+          w.string(v.s);
+        } else if (v.k == mv::json::kind::array) {
+          w.begin_array();
+          for (const auto& e : v.a) w.number(e.d);
+          w.end_array();
+        } else {
+          w.null();
+        }
+      }
+      w.key("donors").begin_array();
+      // The frames' faces of this person (each frame's most alike), then the pack's own.
+      std::vector<std::pair<float, const other_face*>> mine_others;
+      for (const other_face& o : others) {
+        double sim = 0;
+        for (std::size_t i = 0; i < std::min(emb.size(), o.emb.size()); ++i) sim += emb[i] * o.emb[i];
+        if (sim >= (*spec).same_person) mine_others.push_back({static_cast<float>(sim), &o});
+      }
+      std::sort(mine_others.begin(), mine_others.end(), [](auto& a, auto& b) { return a.first > b.first; });
+      std::vector<std::string> taken;
+      for (const auto& [sim, o] : mine_others) {
+        if (std::find(taken.begin(), taken.end(), o->path) != taken.end()) continue;
+        taken.push_back(o->path);
+        w.begin_object().key("path").string(o->path).key("lm").begin_array();
+        for (int i = 0; i < 10; ++i) w.number(o->box.landmarks[i] / static_cast<float>(i % 2 ? o->h : o->w));
+        w.end_array().key("quality").number(0.5).key("sim").number(sim).end_object();
+      }
+      if (const mv::json::value* lib = f.find("donors")) {
+        for (const auto& d : lib->a) {
+          w.begin_object().key("path").string(d.find("path")->s).key("lm").begin_array();
+          for (const auto& e : d.find("lm")->a) w.number(e.d);
+          w.end_array().key("quality").number(d.find("quality") ? d.find("quality")->d : 0.5).key("library").boolean(true).end_object();
+        }
+      }
+      w.end_array().end_object();
+      std::printf("face: %zu same-moment donors\n", taken.size());
+    }
+    w.end_array().end_object();
+    ss.str(w.take());
+  }
+  const std::string fix_env = env("MV_FACES_FIX"), mask_env = env("MV_FACES_MASK");
+  const auto fix = static_cast<mv::addon::media::face_fix>(fix_env.empty() ? 0 : std::atoi(fix_env.c_str()));
+  const std::uint64_t mask = mask_env.empty() ? mv::addon::media::kAllFaces : std::strtoull(mask_env.c_str(), nullptr, 10);
+  // The eyes the scan reads, then the fix.
+  auto bytes = mv::io::read_all(photo);
+  REQUIRE(bytes);
+  auto still = mv::image::decode_linear(*bytes);
+  REQUIRE(still);
+  {
+    auto rd = mv::json::parse(mv::addon::media::with_eyes_read(ss.str(), *still));
+    REQUIRE(rd);
+    int i = 0;
+    for (const auto& f : rd->find("faces")->a) {
+      const mv::json::value* e = f.find("eyes");
+      const auto& lmv = f.find("lm")->a;
+      std::printf("eyes %d x=%.2f lm %.4f %.4f %.4f %.4f %.3f %.3f nm %.4f %.4f %.4f %.4f %.4f %.4f%s\n", i++,
+                  f.find("x")->d, lmv[0].d, lmv[1].d, lmv[2].d, lmv[3].d, e ? e->a[0].d : -1.0, e ? e->a[1].d : -1.0,
+                  lmv[4].d, lmv[5].d, lmv[6].d, lmv[7].d, lmv[8].d, lmv[9].d,
+                  e && std::max(e->a[0].d, e->a[1].d) < mv::edit::kEyeOpen && e->a[0].d >= 0 && e->a[1].d >= 0 ? " SHUT" : "");
+    }
+  }
+  const auto r = mv::addon::media::fix_faces(photo, ss.str(), fix, mask);
+  REQUIRE(r);
+  std::printf("faces %d fixed %d written %s\n", r->faces, r->fixed, r->written.c_str());
+  mv::addon::media::set_face_redetect(nullptr);
+#else
+  SKIP("needs MV_AI_TEST_DECODE");
 #endif
 }

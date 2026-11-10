@@ -1377,6 +1377,13 @@ MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t
  * Open eyes, else "-faces.jpg"), `note_out` what happened. [worker-thread] */
 MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
                                          char* note_out, uint32_t cap, uint32_t* needed);
+/* As mv_adjust_faces, and `written_out` the new file's path ("" when nothing
+ * was fixed), so the host opens the result. MV_OK once the fix has run, even
+ * when a buffer is short: that buffer is left "" and its `*_needed` says how
+ * long it was (calling again would run the fix again). [worker-thread] */
+MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                            char* note_out, uint32_t cap, uint32_t* needed, char* written_out,
+                                            uint32_t written_cap, uint32_t* written_needed);
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file

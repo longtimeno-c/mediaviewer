@@ -49,7 +49,7 @@ std::string help_text() {
          "  driftwire update             update driftwire the way it was installed\n"
          "  driftwire serve              run the NAS service (no terminal needed), serving the\n"
          "         [--data DIR]          folders in DIR/serve.json to paired devices; serve init\n"
-         "                               makes its keys, serve devices|add|revoke its pairings\n"
+         "                               makes its keys, serve devices|add|revoke|pair-code its pairings\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -207,6 +207,9 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.serve = serve_action::init;
       } else if (what == "devices" && words.size() == 1) {
         a.serve = serve_action::devices;
+      } else if (what == "pair-code" && words.size() <= 2) {
+        a.serve = serve_action::pair_code;
+        if (words.size() == 2) a.serve_key = words[1];
       } else if (what == "add" && words.size() == 3) {
         a.serve = serve_action::add;
         a.name = words[1];
@@ -215,7 +218,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.serve = serve_action::revoke;
         a.serve_key = words[1];
       } else {
-        out.error = "serve takes init, devices, add NAME KEY or revoke NAME-OR-KEY";
+        out.error = "serve takes init, devices, add NAME KEY, revoke NAME-OR-KEY or pair-code [SECONDS]";
       }
       return out;
     }

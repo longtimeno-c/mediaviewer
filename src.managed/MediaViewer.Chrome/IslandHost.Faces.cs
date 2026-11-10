@@ -78,6 +78,15 @@ public static partial class IslandHost
     private static int _facesStatus;
     private static int _facesChosen;
     private static bool _facesRunning;
+    private static bool _facesAwaitAi;  // Faces started Local search: read again when it settles
+    private static bool _facesWokeAi;
+    private static int _facesPeopleRetries;  // after that load: People's model comes a moment later
+
+    private static async System.Threading.Tasks.Task FacesReadAgainSoon()
+    {
+        await System.Threading.Tasks.Task.Delay(2000);  // back on the UI thread
+        if (_facesArmed) SendFaces(FacesOp.Retry);
+    }
     private static int _facesRunningFace = -1;
     private static int _facesRunningAction;
     private static uint _facesRevision = uint.MaxValue;
@@ -104,6 +113,24 @@ public static partial class IslandHost
             // The same read (a choice changed): keep the pictures already made.
             bool sameRead = _facesStatus == FacesStatus.Ready && status == FacesStatus.Ready && count == FaceCards.Count;
             _facesRevision = revision;
+            // Local search waits on demand until something needs it (issue #292):
+            // Faces does, so it starts it, as Settings' Start now would, and says
+            // "Looking for faces…" until the load settles (OnSearchLoadChanged
+            // reads again). Once: a load that failed is not started by every read.
+            if (status == FacesStatus.NoPack && armed && !_facesWokeAi && StartAiOnDemand(open: false))
+            {
+                _facesWokeAi = true;
+                _facesAwaitAi = true;
+            }
+            if (status == FacesStatus.NoPack && _facesAwaitAi) status = FacesStatus.Looking;
+            // The pack Faces started has attached, but People's model loads after
+            // it (seconds): "Needs People" would be wrong. Read again shortly.
+            if (status == FacesStatus.PeopleOff && _facesPeopleRetries > 0)
+            {
+                _facesPeopleRetries--;
+                status = FacesStatus.Looking;
+                _ = FacesReadAgainSoon();
+            }
             _facesStatus = status;
             _facesChosen = chosen;
             _facesRunning = running;

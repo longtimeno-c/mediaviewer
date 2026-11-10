@@ -10,6 +10,7 @@
 		AA00000000000000000001F0 /* MobileCore in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000001F1 /* MobileCore */; };
 		AA0000000000000000000011 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000021 /* MobileKit */; };
 		AA0000000000000000000012 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000022 /* MobileUI */; };
+		AA0000000000000000000016 /* MobileLink in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000026 /* MobileLink */; };
 		AA0000000000000000000013 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000023 /* MobileKit */; };
 		AA0000000000000000000014 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000024 /* MobileUI */; };
 		AA0000000000000000000015 /* MobileFixtures in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000025 /* MobileFixtures */; };
@@ -45,6 +46,7 @@
 				AA0000000000000000000011 /* MobileKit in Frameworks */,
 				AA0000000000000000000012 /* MobileUI in Frameworks */,
 				AA00000000000000000001F0 /* MobileCore in Frameworks */,
+				AA0000000000000000000016 /* MobileLink in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,7 +114,8 @@
 			packageProductDependencies = (
 				AA0000000000000000000021 /* MobileKit */,
 				AA0000000000000000000022 /* MobileUI */,
-							AA00000000000000000001F1 /* MobileCore */,
+				AA00000000000000000001F1 /* MobileCore */,
+				AA0000000000000000000026 /* MobileLink */,
 			);
 			productName = MediaViewer;
 			productReference = AA0000000000000000000031 /* MediaViewer.app */;
@@ -347,6 +350,7 @@
 				MARKETING_VERSION = 1.0;
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
@@ -376,6 +380,7 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_link.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
@@ -431,6 +436,7 @@
 				MARKETING_VERSION = 1.0;
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
@@ -460,6 +466,7 @@
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_link.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
@@ -618,6 +625,10 @@
 		AA00000000000000000001F1 /* MobileCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MobileCore;
+		};
+		AA0000000000000000000026 /* MobileLink */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileLink;
 		};
 		AA0000000000000000000021 /* MobileKit */ = {
 			isa = XCSwiftPackageProductDependency;

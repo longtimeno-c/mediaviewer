@@ -18,4 +18,4 @@ if [ ! -f "$build/build.ninja" ]; then
   cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_OSX_SYSROOT="$sdk" -DCMAKE_TOOLCHAIN_FILE="$vcpkg/scripts/buildsystems/vcpkg.cmake"
 fi
-exec ninja -C "$build" mv_mobile_search mv_infer mv_model_fetch mv_driftwire_engine
+exec ninja -C "$build" mv_mobile_link mv_mobile_search mv_infer mv_model_fetch mv_driftwire_engine

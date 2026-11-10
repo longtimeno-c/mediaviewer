@@ -6,6 +6,7 @@
 //   MobileKit       The small protocols the real core drops in behind, and their value types.
 //   MobileUI        Every screen. Knows only MobileKit.
 //   MobileCore      The real library, search and tiles, over the C ABI of src/mobile.
+//   MobileLink      The real services over src/mobile's C ABI (mv_mobile_link.h).
 //   MobileFixtures  Stand-in services, generated pictures, the state gallery. Debug only: it does
 //                   not compile outside DEBUG, and only the MediaViewerFixtures app links it.
 import Foundation
@@ -33,6 +34,7 @@ let package = Package(
     .library(name: "MobileUI", targets: ["MobileUI"]),
     .library(name: "MobileCore", targets: ["MobileCore"]),
     .library(name: "MobileFixtures", targets: ["MobileFixtures"]),
+    .library(name: "MobileLink", targets: ["MobileLink"]),
   ],
   targets: [
     .target(name: "MobileKit"),
@@ -43,6 +45,11 @@ let package = Package(
     .target(name: "CMobileTestFixture", path: "Tests/CMobileTestFixture", publicHeadersPath: "include"),
     .testTarget(name: "MobileCoreTests", dependencies: ["MobileCore", "CMobileSearch", "CMobileTestFixture"],
                 linkerSettings: [.unsafeFlags(coreLink)]),
+    // The real connection, sync, pictures and clips (src/mobile/link*, sync*), linked by the app.
+    .target(name: "CMobileLink", publicHeadersPath: "include"),
+    .target(name: "MobileLinkSupport"),
+    .target(name: "MobileLink", dependencies: ["MobileKit", "CMobileLink", "MobileLinkSupport"]),
+    .testTarget(name: "MobileLinkSupportTests", dependencies: ["MobileLinkSupport"]),
   ],
   swiftLanguageModes: [.v5]
 )

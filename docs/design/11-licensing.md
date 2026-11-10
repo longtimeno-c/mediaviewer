@@ -74,6 +74,7 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | FTXUI | MIT | Static (its vcpkg port is static only); the `driftwire` command line's look, its `dom` and `screen` parts. Never in the app or an add-on |
 | Lua 5.4.8 | MIT | **Static, vendored** in `third_party/lua` (both platforms): the add-on script runtime ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)). Interpreter only; no JIT exists in Lua, and `io` / `os` / `package` / `debug` are not compiled in. `tools/licence-check.ps1` fails if one of those files, or a `luajit` / `luasocket`-style port, appears |
 | Dear ImGui | MIT | Static; present lab and F3 overlay only |
+| OpenVINO Open Model Zoo open-closed-eye-0001 (weights) | Apache-2.0 | Compiled in (`src/edit/eye_state_weights.inc`, from `tools/eyes/export_eye_state.py`): the Faces tool's *Eyes closed* |
 | Catch2 | BSL-1.0 | Tests only |
 | Velopack, BouncyCastle.Cryptography | MIT | Managed assemblies (Windows updater) |
 | Sparkle | MIT | Framework in `Contents/Frameworks` (macOS updater) |

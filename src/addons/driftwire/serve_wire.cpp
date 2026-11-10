@@ -73,6 +73,27 @@ std::optional<op> parse_op(std::string_view name) noexcept {
   return std::nullopt;
 }
 
+std::string pair_json(std::string_view code, std::string_view name) {
+  json::writer w;
+  w.begin_object();
+  w.key("code").string(code);
+  w.key("name").string(name);
+  w.end_object();
+  return w.str();
+}
+
+std::optional<pair_msg> parse_pair(std::string_view text) {
+  if (text.size() > kMaxRequestBytes) return std::nullopt;
+  const auto doc = json::parse(text, 4);
+  if (!doc) return std::nullopt;
+  const std::string* code = doc->str("code");
+  const std::string* name = doc->str("name");
+  if (!code || !name || code->empty() || code->size() > kMaxPairCodeBytes || name->size() > kMaxLabelBytes) {
+    return std::nullopt;
+  }
+  return pair_msg{*code, *name};
+}
+
 std::string hello_json(std::uint32_t ops) {
   json::writer w;
   w.begin_object().key("v").integer(kVersion).key("min").integer(kMinVersion);

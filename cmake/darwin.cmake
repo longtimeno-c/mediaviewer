@@ -445,6 +445,7 @@ add_library(mv_edit STATIC
   src/edit/bake.cpp
   src/edit/detail.cpp
   src/edit/eyes.cpp
+  src/edit/eye_state.cpp
   src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -1009,6 +1010,7 @@ if(MV_BUILD_TESTS)
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp
     tests/test_eyes.cpp
+    tests/test_eye_state.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp
@@ -1164,6 +1166,20 @@ if(MV_BUILD_TESTS)
   # cases skip unless MV_AI_PACK_DIR (MV_AI_AUDIO_DIR, MV_AI_SPEECH_CLIP,
   # MV_AI_EVAL_DIR) point at staged files. arm64 only, like the pack.
   if(TARGET mv_ai)
+    include("${CMAKE_CURRENT_LIST_DIR}/mobile-link.cmake")
+    add_executable(mv_mobile_link_tests tests/test_mobile_link.cpp src/addons/driftwire/bt_none.cpp)
+    target_link_libraries(mv_mobile_link_tests PRIVATE mv_mobile_link mv_driftwire_engine mv_ai_engine mv_io mv_infer
+                          Catch2::Catch2WithMain ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET})
+    target_include_directories(mv_mobile_link_tests PRIVATE src tests)
+    set_target_properties(mv_mobile_link_tests PROPERTIES OSX_ARCHITECTURES "arm64")
+    catch_discover_tests(mv_mobile_link_tests TEST_PREFIX "mobile_link_" DISCOVERY_MODE PRE_TEST)
+
+    # A real catalogue for proving the phone end to end (docs/plans/mobile.md M3/M4); not shipped.
+    add_executable(mv_publish_test_library tools/ios/publish_test_library.cpp src/addons/driftwire/bt_none.cpp)
+    target_link_libraries(mv_publish_test_library PRIVATE mv_ai_engine mv_driftwire_engine mv_infer mv_io ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET})
+    target_include_directories(mv_publish_test_library PRIVATE src)
+    set_target_properties(mv_publish_test_library PROPERTIES OSX_ARCHITECTURES "arm64")
+
     add_executable(mv_ai_tests
       tests/test_ai_engine.cpp
       tests/test_ai_face_refine.cpp

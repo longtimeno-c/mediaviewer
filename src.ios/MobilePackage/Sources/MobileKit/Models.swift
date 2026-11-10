@@ -191,6 +191,8 @@ public enum MediaFailure: Error, Hashable, Sendable {
   case synologyUnreachable
   case originalGone
   case notThereYet
+  /// The NAS service has no folder named for the share this file is on.
+  case folderNotOnNAS
   /// ImageIO cannot decode it; `format` is the name a person knows ("Sony ARW").
   case cannotDecode(format: String)
   case serviceTooOld
@@ -282,6 +284,8 @@ public enum OutsideRouteResult: Hashable, Sendable {
 public enum PairingEvent: Hashable, Sendable {
   case working(PairingStep)
   case passed(PairingStep)
+  /// Not done by this build (the Mac step until nearby sync exists).
+  case skipped(PairingStep)
   case outsideRoute(OutsideRouteResult)
 }
 

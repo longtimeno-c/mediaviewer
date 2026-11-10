@@ -105,6 +105,13 @@ public static partial class IslandHost
     private static void OnSearchLoadChanged()
     {
         if (SearchChrome is null && !AiStarting()) _searchOpenPending = false;
+        // The load Faces started settled (attached or not): its faces are read again.
+        if (_facesAwaitAi && !AiStarting())
+        {
+            _facesAwaitAi = false;
+            _facesPeopleRetries = 10;
+            SendFaces(FacesOp.Retry);
+        }
         UpdatePathSearchButton();
         // Settings says "Starting Local search…" while it does.
         if (_settingsVisible) RefreshLocalSearch();

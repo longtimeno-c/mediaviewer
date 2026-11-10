@@ -92,6 +92,16 @@ struct caps_msg {
 [[nodiscard]] std::string caps_json(std::uint32_t version, std::uint32_t ops);
 [[nodiscard]] std::optional<caps_msg> parse_caps(std::string_view json);
 
+// ---- serve_pair ----------------------------------------------------------------------------
+// A single-use code, redeemed once by a device the service has not seen.
+inline constexpr std::size_t kMaxPairCodeBytes = 128;
+struct pair_msg {
+  std::string code;
+  std::string name;
+};
+[[nodiscard]] std::string pair_json(std::string_view code, std::string_view name);
+[[nodiscard]] std::optional<pair_msg> parse_pair(std::string_view json);
+
 // ---- stream_open ---------------------------------------------------------------------------
 struct open_request {
   std::uint32_t id = 0;

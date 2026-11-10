@@ -1,0 +1,4 @@
+module CMobileLink {
+  header "mv_mobile_link.h"
+  export *
+}
