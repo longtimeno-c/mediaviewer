@@ -3,7 +3,8 @@
 // The bookkeeping between a first copy and the system's continued-processing task (iOS 26,
 // docs/plans/mobile.md §8.4). One rule: a task that no live copy owns is completed at once. A copy
 // is live from `submit` to `finished`; a hand-over while one is live belongs to it and is completed
-// when it finishes; a hand-over at any other time is completed as it arrives.
+// when it finishes; a hand-over at any other time is completed as it arrives. Copies never overlap
+// (LinkConnection runs them through OneAtATime), so one live copy at a time is all this tracks.
 import Foundation
 
 /// The system's task, or a test's stand-in.
@@ -16,7 +17,7 @@ public final class ContinuedCopy: @unchecked Sendable {
   private let lock = NSLock()
   private var live = false                  // a copy runs and owns any hand-over
   private var held: ContinuedTaskHandle?    // only ever while `live`
-  private var lastOutcome: Bool?            // the latest copy's, for a hand-over that comes late
+  private var lastOutcome: Bool?            // the latest finished copy's, for a hand-over that comes late
   private var expiredFlag = false
 
   public init() {}
@@ -31,7 +32,6 @@ public final class ContinuedCopy: @unchecked Sendable {
     held = nil
     live = true
     expiredFlag = false
-    lastOutcome = nil
     lock.unlock()
     leftover?.complete(success: false)  // an earlier copy that never finished
     do {

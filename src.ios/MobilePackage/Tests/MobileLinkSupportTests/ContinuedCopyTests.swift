@@ -61,7 +61,83 @@ final class ContinuedCopyTests: XCTestCase {
     book.finished(success: true)
     let late = FakeTask()
     book.adopt(late)
-    XCTAssertEqual(late.completions.count, 1, "A hand-over nobody owns is completed at once")
+    XCTAssertEqual(late.completions, [true], "Completed at once, with the last copy's outcome")
+  }
+
+  /// A refused request leaves the copy running in the foreground: it still owns a hand-over.
+  func testARefusedRequestStillOwnsAHandOver() {
+    let book = ContinuedCopy()
+    XCTAssertFalse(book.submit { throw Refused() })
+    let task = FakeTask()
+    book.adopt(task)
+    XCTAssertTrue(task.completions.isEmpty)
+    book.finished(success: true)
+    XCTAssertEqual(task.completions, [true])
+  }
+
+  /// Two hand-overs while one copy runs: the earlier is completed, the later is kept.
+  func testASecondHandOverReplacesTheFirst() {
+    let book = ContinuedCopy()
+    let first = FakeTask(), second = FakeTask()
+    book.submit {}
+    book.adopt(first)
+    book.adopt(second)
+    XCTAssertEqual(first.completions, [false])
+    XCTAssertTrue(second.completions.isEmpty)
+    book.finished(success: true)
+    XCTAssertEqual(second.completions, [true])
+  }
+
+  /// Expiry while the copy runs completes nothing by itself: the copy's finished does.
+  func testExpiryWhileLiveWaitsForTheCopy() {
+    let book = ContinuedCopy()
+    let task = FakeTask()
+    book.submit {}
+    book.adopt(task)
+    book.expire()
+    XCTAssertTrue(task.completions.isEmpty, "Completed before the copy stopped")
+    book.finished(success: false)
+    XCTAssertEqual(task.completions, [false])
+  }
+
+  /// "Copy over mobile data" while a copy runs: the new copy starts only after the old one's defer,
+  /// so the old copy can never complete the new copy's task or end its ownership.
+  func testOverlappingCopiesNeverShareATask() async throws {
+    let book = ContinuedCopy()
+    let one = OneAtATime()
+    let a = FakeTask(), b = FakeTask()
+    let order = Log()
+    let runA = Task {
+      try await one.run {
+        var ok = false
+        defer { order.add("A ended"); book.finished(success: ok) }
+        book.submit {}
+        book.adopt(a)
+        try await Task.sleep(for: .seconds(30))  // waiting for Wi-Fi, until cancelled
+        ok = true
+      }
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    let runB = Task {
+      try await one.run {
+        order.add("B started")
+        book.submit { book.adopt(b) }  // the hand-over during submit
+        try await Task.sleep(for: .milliseconds(50))
+        book.finished(success: true)
+      }
+    }
+    _ = await runA.result
+    try await runB.value
+    XCTAssertEqual(order.entries, ["A ended", "B started"])
+    XCTAssertEqual(a.completions, [false])
+    XCTAssertEqual(b.completions, [true], "The old copy completed the new copy's task")
+  }
+
+  private final class Log: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+    func add(_ s: String) { lock.lock(); items.append(s); lock.unlock() }
+    var entries: [String] { lock.lock(); defer { lock.unlock() }; return items }
   }
 
   /// A hand-over when no copy has ever run is completed at once too.

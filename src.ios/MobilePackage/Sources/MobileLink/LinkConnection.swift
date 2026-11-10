@@ -27,6 +27,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var connectGeneration = 0
   private var forgotten = false
   private var copyCancel: LinkCancel?
+  // One first copy at a time: a new one (Copy over mobile data) waits for the old one's defer.
+  private let oneCopy = OneAtATime()
   // Everything that writes into the library: Forget cancels it and waits before deleting.
   private let work = TrackedWork()
   private let continued = ContinuedCopy()  // the BGContinuedProcessingTask's bookkeeping (iOS 26)
@@ -396,7 +398,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     AsyncThrowingStream { continuation in
       let task = work.run { [self] in
         do {
-          try await runCopy(overMobileData: overMobileData, continuation: continuation)
+          try await oneCopy.run { try await self.runCopy(overMobileData: overMobileData, continuation: continuation) }
           continuation.finish()
         } catch {
           continuation.finish(throwing: error)
@@ -433,9 +435,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // However this ends (done, failed, cancelled while waiting for Wi-Fi), the system's
     // continued task hears it, or it would never complete.
     var succeeded = false
+    var mine: LinkCancel?
     defer {
       finishContinued(success: succeeded)
-      lock.withLock { copyCancel = nil }
+      // Only this copy's own cancel: a later copy's is never dropped.
+      lock.withLock { if copyCancel != nil && copyCancel === mine { copyCancel = nil } }
     }
     var started = false
     while true {
@@ -449,6 +453,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
         waiting: { continuation.yield(.waitingForWiFi(totalBytes: Int64(check.total_bytes))) })
       let cancel = LinkCancel()
       lock.withLock { copyCancel = cancel }
+      mine = cancel
       // An expiry between the gate and here fired the previous cancel, or none: never lose it.
       if continued.isExpired { throw CancellationError() }
       if check.done_bytes > 0 || started {
