@@ -700,10 +700,13 @@ tools/ios/search-live.sh "$HOME/Library/Application Support/MediaViewer/Add-ons/
 
 Build the app for the Simulator ad hoc signed (`CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO`) and
 copy it to `<out>/MediaViewer.app`. Without a signature it has no keychain and cannot pair. The real
-index is only read. The Mac's side runs its towers on the CPU at quality High, and answers `place:`
+index is only read. The Mac's side runs with the index's own compute and quality (`MV_LIVE_CPU=1`:
+the CPU at quality High), and needs every AI piece installed. It answers `place:`
 with the Places add-on's own rule (`place_query`); clip routes are not walked. Tiles come from
 ImageIO and AVFoundation, which cannot read every clip. The phone has no sound tower, so a query the
-Mac answers by sound differs. `tools/ios/small-screen.sh <out>` runs every screen on an iPhone SE
+Mac answers by sound differs. The script detaches its disk image on the way out (not with `MV_LIVE_REUSE=1`); afterwards delete
+`<out>` (the image holds copies of the files, `data/` a copy of the index and faces) with
+`hdiutil detach <out>/mnt; rm -rf <out>`. `tools/ios/small-screen.sh <out>` runs every screen on an iPhone SE
 (3rd generation) Simulator at the largest text size.
 
 The parity test runs the desktop engine, over the real AI pack, and the phone engine, in a Simulator

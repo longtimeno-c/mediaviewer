@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <atomic>
@@ -26,6 +27,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -125,6 +127,37 @@ mv::result<std::vector<std::uint8_t>> shrink(std::span<const std::uint8_t> jpeg)
   }
 }
 
+
+
+// The newest installed version of an add-on piece (`<add-ons>/AI Audio/0.1.41`), as the app's
+// store picks it. A piece that is missing stops the run: answering without it would quietly
+// compare a different engine.
+std::string piece_folder(const std::string& addons, const std::string& name) {
+  std::string best;
+  std::error_code ec;
+  for (fs::directory_iterator it(fs::path(addons) / name, ec), end; !ec && it != end; it.increment(ec)) {
+    const std::string v = it->path().filename().string();
+    if (v.empty() || v[0] < '0' || v[0] > '9' || !fs::is_directory(it->path())) continue;
+    const auto parts = [](const std::string& t) {
+      std::vector<int> out;
+      std::stringstream in(t);
+      for (std::string p; std::getline(in, p, '.');) out.push_back(std::atoi(p.c_str()));
+      return out;
+    };
+    if (best.empty() || parts(v) > parts(fs::path(best).filename().string())) best = it->path().string();
+  }
+  if (best.empty()) {
+    std::fprintf(stderr, "the %s piece is not installed under %s: refusing to answer without it\n", name.c_str(), addons.c_str());
+    std::exit(3);
+  }
+  return best;
+}
+
+std::map<std::string, std::string> required_pieces(const std::string& addons) {
+  return {{"ai-audio", piece_folder(addons, "AI Audio")},
+          {"ai-docs", piece_folder(addons, "AI Documents")},
+          {"ai-faces", piece_folder(addons, "AI Faces")}};
+}
 
 struct noop_host {
   std::string data_dir;
@@ -378,9 +411,7 @@ int search(int argc, char** argv) {
   }
   std::error_code ec;
   fs::create_hard_link(fs::path(gen) / "catalog.db", fs::path(state.data_dir) / "index.db", ec);
-  if (fs::exists(addons + "/AI Audio/0.1.41")) state.pieces["ai-audio"] = addons + "/AI Audio/0.1.41";
-  if (fs::exists(addons + "/AI Documents/0.1.41")) state.pieces["ai-docs"] = addons + "/AI Documents/0.1.41";
-  if (fs::exists(addons + "/AI Faces/0.1.41")) state.pieces["ai-faces"] = addons + "/AI Faces/0.1.41";
+  state.pieces = required_pieces(addons);
   mv_host_api api{};
   api.struct_size = sizeof api;
   api.host_api = MV_ADDON_HOST_API;
@@ -660,12 +691,10 @@ int publish_engine(int argc, char** argv) {
     sqlite3_close_v2(db);
     return out;
   };
-  svc.piece_dir = [addons](const std::string& piece) -> mv::result<std::string> {
-    static const std::map<std::string, std::string> folders{{"ai-audio", "AI Audio"}, {"ai-docs", "AI Documents"}, {"ai-faces", "AI Faces"}};
-    auto it = folders.find(piece);
-    if (it == folders.end()) return mv::err(mv::status::io);
-    const std::string dir = addons + "/" + it->second + "/0.1.41";
-    return fs::exists(dir) ? mv::result<std::string>(dir) : mv::result<std::string>(mv::err(mv::status::io));
+  svc.piece_dir = [pieces = required_pieces(addons)](const std::string& piece) -> mv::result<std::string> {
+    auto it = pieces.find(piece);
+    if (it == pieces.end()) return mv::err(mv::status::io);  // ai-cuda, ai-large: not on this Mac
+    return it->second;
   };
   mv::addon::host_table table(std::move(svc));
   mv::ai::host host(table.api());

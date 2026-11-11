@@ -52,6 +52,7 @@ final class LiveSearchTests: XCTestCase {
       field.typeText(query + "\n")
       // Answered: every tile on screen says it answers these words, or the "Nothing" page names them.
       var last: [String] = []
+      var total = 0
       var answered = false
       let start = Date()
       while Date().timeIntervalSince(start) < 60 {
@@ -61,27 +62,30 @@ final class LiveSearchTests: XCTestCase {
         let nothing = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Nothing' AND label CONTAINS %@", query)).count > 0
         if mine || (nothing && tiles.isEmpty) {
           last = tiles.map(\.id)
+          total = tiles.first?.total ?? 0
           answered = true
           break
         }
       }
       XCTAssertTrue(answered, "No answer on screen for \(query)")
-      answers.append(["query": query, "tiles": last])
+      answers.append(["query": query, "tiles": last, "total": total])
       if n < 16 { save(String(format: "q%02d", n)) }
     }
     let data = try JSONSerialization.data(withJSONObject: answers, options: [.prettyPrinted])
     try data.write(to: URL(fileURLWithPath: outDir).appendingPathComponent("phone-answers.json"))
   }
 
-  /// The tiles on screen, in reading order: asset id and the words they answer.
-  private func visibleTiles(_ app: XCUIApplication) -> [(id: String, answering: String)] {
+  /// The tiles on screen, in reading order: asset id, how many results there are in all, and the
+  /// words they answer.
+  private func visibleTiles(_ app: XCUIApplication) -> [(id: String, total: Int, answering: String)] {
     let window = app.windows.firstMatch.frame
     return app.buttons.matching(tilePredicate).allElementsBoundByIndex
       .filter { $0.exists && $0.isHittable && window.intersects($0.frame) }
       .sorted { abs($0.frame.minY - $1.frame.minY) > 4 ? $0.frame.minY < $1.frame.minY : $0.frame.minX < $1.frame.minX }
       .map { element in
-        let parts = element.identifier.dropFirst(5).split(separator: "|", maxSplits: 1).map(String.init)
-        return (parts.first ?? "", parts.count > 1 ? parts[1] : "")
+        // "tile:<asset>|<total>|<words>"
+        let parts = element.identifier.dropFirst(5).split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+        return (parts.first ?? "", parts.count > 1 ? Int(parts[1]) ?? 0 : 0, parts.count > 2 ? parts[2] : "")
       }
   }
 }

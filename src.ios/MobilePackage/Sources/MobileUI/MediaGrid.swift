@@ -77,8 +77,9 @@ struct MediaGrid<Header: View>: View {
   let entries: GridSource
   /// The name of this grid; a viewer closes onto a tile in the grid that opened it.
   let context: String
-  /// Said in each tile's identifier, never spoken: the search screen names the words its results
-  /// answer, so a test can tell an answer from the one before it.
+  /// Said in each tile's identifier, never spoken: the search screen names how many results there
+  /// are and the words they answer ("40|mountains"), so a test can tell an answer from the one
+  /// before it and count what is off screen.
   var answering: String = ""
   @ViewBuilder var header: Header
 

@@ -41,7 +41,7 @@ struct SearchScreen: View {
       }
     case .searching, .results:
       MediaGrid(sections: [GridSection(id: "results", title: nil, range: search.entries.indices)], entries: search.entries,
-                context: "search", answering: search.answered) {
+                context: "search", answering: "\(search.entries.count)|\(search.answered)") {
         topNotices
       }
       .opacity(search.phase == .searching ? 0.6 : 1)

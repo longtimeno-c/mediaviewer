@@ -17,7 +17,8 @@
 # Needs build/ (mv_mobile_parity_desktop, mv_driftwire_cli_test) and <out>/MediaViewer.app, built
 # for the Simulator ad hoc signed (CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO): an unsigned app
 # has no keychain, so pairing cannot store its device key.
-# MV_LIVE_REUSE=1 keeps a finished publish (<out>/mac.jsonl) and starts at step 3.
+# MV_LIVE_REUSE=1 keeps a finished publish (<out>/mac.jsonl) and starts at step 3; the image then
+# stays attached when the run ends. Without it the image is detached on the way out.
 # MV_LIVE_QUERIES and MV_LIVE_MAC: another query list and the Mac's answers to it (answer-engine).
 set -euo pipefail
 data_src="${1:?data}"; folder="${2:?folder}"; udid="${3:?udid}"; out="${4:?out}"
@@ -29,6 +30,13 @@ desk="$root/build/bin/mv_mobile_parity_desktop"; cli="$root/build/bin/mv_driftwi
 port=18462
 mkdir -p "$out"; out="$(cd "$out" && pwd)"
 mnt="$out/mnt"
+finish() {
+  [[ -f $out/serve.pid ]] && kill "$(cat "$out/serve.pid")" 2>/dev/null
+  # The image holds copies of the owner's files: detached on every way out, unless the next run
+  # reuses it (MV_LIVE_REUSE=1).
+  [[ ${MV_LIVE_REUSE:-} == 1 ]] || hdiutil detach -quiet "$mnt" 2>/dev/null || true
+}
+trap finish EXIT
 
 # ---- 1. the "NAS" and the index pointing at it ----------------------------------------------
 if [[ ! -d $mnt/Photos && -f $out/nas.sparseimage ]]; then mkdir -p "$mnt"; hdiutil attach -quiet -nobrowse -mountpoint "$mnt" "$out/nas.sparseimage"; fi
@@ -41,13 +49,16 @@ rm -rf "$out/data"; mkdir -p "$out/data"
 sqlite3 "file:$data_src/index.db?mode=ro" "VACUUM INTO '$out/data/index.db'"
 [[ -f $data_src/faces.db ]] && sqlite3 "file:$data_src/faces.db?mode=ro" "VACUUM INTO '$out/data/faces.db'"
 cp "$data_src/settings.json" "$out/data/"; [[ -f $data_src/labels.f32 ]] && cp "$data_src/labels.f32" "$out/data/"
-# The towers on the CPU, as the phone runs them: no Core ML compile of the picture tower (minutes,
-# gigabytes) for a run that embeds no picture. Quality High, as Auto picks on an Apple silicon Mac:
-# Auto on the CPU picks Fast, whose Whisper wrote no transcript here.
+# The owner's own compute and quality, unless MV_LIVE_CPU=1 (towers on the CPU at quality High: no
+# Core ML compile). The Core ML cache is cloned from the real data folder (APFS: no copy is made),
+# so Auto does not compile the picture tower again for minutes.
+if [[ ${MV_LIVE_CPU:-} == 1 ]]; then
 python3 -I - "$out/data/settings.json" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1])); s["compute"] = 1; s["quality"] = 2; json.dump(s, open(sys.argv[1], "w"))
 PY
+fi
+if [[ -d $data_src/cache/coreml && ! -d $out/coreml-cache ]]; then cp -cR "$data_src/cache/coreml" "$out/coreml-cache"; fi
 python3 -I - "$out/data/index.db" "$folder" "$mnt/Photos/$(basename "$folder")" <<'PY'
 import os, shutil, sqlite3, sys
 db, src, dst = sys.argv[1:4]
@@ -72,6 +83,7 @@ PY
 
 # ---- 2. the Mac's publisher, and the Mac's answers ------------------------------------------
 rm -rf "$out/work" "$mnt/.mediaviewer"
+if [[ -d $out/coreml-cache ]]; then mkdir -p "$out/work/pack-data/cache"; cp -cR "$out/coreml-cache" "$out/work/pack-data/cache/coreml"; fi
 "$desk" publish-engine "$out/data" "$pack" "$addons" "$places" "$out/work" "$mnt" 3 \
   "$root/tools/ios/parity_queries.txt" "$out/mac.jsonl" | tee "$out/publish.txt"
 fi
@@ -102,9 +114,13 @@ j = {"v": 1, "library_id": library, "library_name": "Test library", "publisher_k
 print("mediaviewer://pair#" + base64.urlsafe_b64encode(json.dumps(j).encode()).decode().rstrip("="))
 PY
 )"
-stale="$(lsof -ti tcp:$port -sTCP:LISTEN || true)"; if [[ -n $stale ]]; then kill $stale; sleep 1; fi
+# Only this script's own service from an earlier run, never whatever else holds the port.
+if [[ -f $out/serve.pid ]]; then
+  old="$(cat "$out/serve.pid")"
+  if ps -p "$old" -o command= 2>/dev/null | grep -q "mv_driftwire_cli_test serve"; then kill "$old"; sleep 1; fi
+  rm -f "$out/serve.pid"
+fi
 "$cli" serve --data "$out/serve" --test-loopback > "$out/serve.log" 2>&1 & echo $! > "$out/serve.pid"
-trap 'kill "$(cat "$out/serve.pid")" 2>/dev/null || true' EXIT
 sleep 1
 
 bundle=io.github.longtimeno-c.mediaviewer.mobile

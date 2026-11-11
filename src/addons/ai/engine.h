@@ -664,8 +664,12 @@ class engine {
     std::int64_t start_ms = 0;
     std::string text;
     std::vector<std::string> words;
+    // Written by another Whisper than the one chosen now (index_db::each_speech):
+    // the chosen one's transcript replaces it when it is made.
+    bool other_spec = false;
   };
-  void load_speech(const std::string& spec);
+  // Every clip's transcript, `preferred`'s where there is one ("": the busiest).
+  void load_speech(const std::string& preferred);
   // #406: a clip's own text in memory, matched like transcript lines but kept
   // apart from them: removing the audio piece clears speech, never these.
   struct cue_row {

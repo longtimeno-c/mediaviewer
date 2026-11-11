@@ -1100,14 +1100,28 @@ expected index_db::commit_speech(std::int64_t asset, const std::string& spec,
 }
 
 expected index_db::each_speech(
-    const std::string& spec,
-    const std::function<void(std::int64_t, std::int64_t, std::int64_t, const std::string&)>& visit) {
+    const std::string& preferred,
+    const std::function<void(std::int64_t, std::int64_t, std::int64_t, const std::string&, bool)>& visit) {
   std::lock_guard lock(m_);
-  stmt s(db_, "SELECT asset_id, start_ms, end_ms, text FROM speech WHERE spec = ?1 ORDER BY asset_id, start_ms");
+  // One spec per clip: the preferred one where the clip has it, else the
+  // spec with the most lines overall, then by name, so every run agrees.
+  stmt s(db_,
+         "WITH totals AS (SELECT spec, COUNT(*) AS n FROM speech GROUP BY spec),"
+         " pick AS (SELECT a.asset_id, (SELECT x.spec FROM speech x JOIN totals t ON t.spec = x.spec"
+         "   WHERE x.asset_id = a.asset_id GROUP BY x.spec ORDER BY (x.spec = ?1) DESC, t.n DESC, x.spec LIMIT 1) AS spec"
+         "   FROM (SELECT DISTINCT asset_id FROM speech) a)"
+         " SELECT s.asset_id, s.start_ms, s.end_ms, s.text, s.spec = ?1 FROM speech s"
+         " JOIN pick p ON p.asset_id = s.asset_id AND p.spec = s.spec ORDER BY s.asset_id, s.start_ms");
   if (!s.ok()) return err(status::io);
-  s.bind(1, spec);
-  while (s.step_row()) visit(s.i64(0), s.i64(1), s.i64(2), s.text(3));
+  s.bind(1, preferred);
+  while (s.step_row()) visit(s.i64(0), s.i64(1), s.i64(2), s.text(3), s.i64(4) != 0);
   return {};
+}
+
+std::string index_db::busiest_speech_spec() {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT spec FROM speech GROUP BY spec ORDER BY COUNT(*) DESC, spec LIMIT 1");
+  return s.ok() && s.step_row() ? s.text(0) : std::string();
 }
 
 expected index_db::commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,

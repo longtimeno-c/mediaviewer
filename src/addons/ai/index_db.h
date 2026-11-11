@@ -449,10 +449,16 @@ class index_db {
   [[nodiscard]] expected commit_speech(std::int64_t asset, const std::string& spec,
                                        std::span<const speech_in> segments, work_state state,
                                        std::int64_t resume_ms);
+  // Each clip's transcript, one Whisper's per clip: `preferred`'s where it
+  // wrote one, else the Whisper that wrote the most lines in the index (by
+  // name on a tie), so `said:` reads what was transcribed whichever model
+  // is chosen now. `visit` learns whether the line is `preferred`'s.
   [[nodiscard]] expected each_speech(
-      const std::string& spec,
-      const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms,
-                               const std::string& text)>& visit);
+      const std::string& preferred,
+      const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms, const std::string& text,
+                               bool preferred_spec)>& visit);
+  // The Whisper `each_speech` falls back to: the one with most lines, "" for none.
+  [[nodiscard]] std::string busiest_speech_spec();
   // #406: a clip's cues, with progress under kCueSpec, in one transaction.
   // `replace_from` other than -1 first drops the asset's cues starting at or
   // after it (a resumed pass sends them again; kAllCues drops every one).

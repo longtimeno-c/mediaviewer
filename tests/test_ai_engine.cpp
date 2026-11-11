@@ -7995,3 +7995,60 @@ TEST_CASE("phone link: a hand-over is written down even when link.json could not
   CHECK(saved->boolean("handed_over") == true);
 #endif
 }
+
+TEST_CASE("said: reads the transcripts there are, the chosen Whisper's first", "[ai][engine][audio][phone]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.search("said:birthday").size() == 1);
+  r.eng.reset();
+
+  const std::string index = utf8(r.dir / "data" / "index.db");
+  const auto sql = [&](const char* text) {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(index.c_str(), &db) == SQLITE_OK);
+    CHECK(sqlite3_exec(db, text, nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+  // Whisper small wrote every transcript, and the Whisper chosen now (Auto on
+  // the CPU picks the fast one) wrote none: `said:` still finds them.
+  sql("UPDATE speech SET spec = 'whisper-small/fp16/pre1'");
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:birthday").size() == 1);
+  CHECK(r.search("\"make a wish\"").size() == 1);
+  {
+    auto rd = r.start_reader();  // the search agent, and the phone's engine, read the same way
+    const std::uint64_t id = rd->search_text("said:birthday", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(rd->wait_search(id, kSettleMs));
+    CHECK(*rd->result_count(id) == 1);
+  }
+
+  // Where a clip has both, the chosen Whisper's transcript answers, never both.
+  r.eng.reset();
+  sql("INSERT INTO speech(asset_id, spec, start_ms, end_ms, text)"
+      " SELECT asset_id, 'fake-whisper/fp16/pre1', 2000, 4000, 'See you tomorrow' FROM speech LIMIT 1");
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:tomorrow").size() == 1);
+  CHECK(r.search("said:birthday").empty());
+  {
+    auto rd = r.start_reader();
+    const std::uint64_t id = rd->search_text("said:birthday", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(rd->wait_search(id, kSettleMs));
+    CHECK(*rd->result_count(id) == 0);
+  }
+
+  // A phone prefers the same Whisper: the catalogue names it.
+  const fs::path nas = r.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(r.eng->phone_publish(utf8(nas)));
+  auto done = phone_done(r);
+  REQUIRE(*done.str("error") == "");
+  const auto settings = mv::json::parse(read_all(nas / ".mediaviewer" / "gen" / "000001" / "settings.json"));
+  REQUIRE(settings);
+  CHECK(*settings->str("speech_spec") == "fake-whisper/fp16/pre1");
+}

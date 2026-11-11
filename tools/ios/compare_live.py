@@ -1,53 +1,71 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""tools/ios/search-live.sh's comparison: the tiles the phone showed against the Mac's first rows.
+"""tools/ios/search-live.sh's comparison: the phone's search screen against the Mac's rows.
 
-The phone's tiles are catalogue asset ids, in reading order; the Mac's rows are paths on the Mac.
-Both are turned into the catalogue's paths. A query matches when the phone's tiles are exactly the
-Mac's first rows, in order (the screen shows as many as fit); top-k overlap is reported too.
+The phone gives, per query, the tiles on screen (catalogue asset ids, in reading order) and how many
+results there are in all; the Mac's rows are paths on the Mac, turned into catalogue paths here.
+A query is identical when the phone has as many results as the Mac and its first k tiles are the
+Mac's first k rows in order, with k = min(tiles on screen, Mac's rows). Each difference is
+classified: a sound match (CLAP, which the phone has no tower for) among the Mac's rows on screen,
+or anywhere in them when the counts differ, or not; the second kind is unexplained.
 """
 import json
 import sqlite3
 import sys
+
+SOUND = 2  # MV_AI_MATCH_SOUND
 
 
 def main():
     mac_file, phone_file, catalog_db, root = sys.argv[1:5]
     db = sqlite3.connect(f"file:{catalog_db}?mode=ro", uri=True)
     by_id = {str(i): p for i, p in db.execute("SELECT id, path FROM assets")}
-    # The root's own uuid: the first path segment the catalogue gives this root's files.
     uuid = next(iter(by_id.values())).split("/")[1]
     mac = {}
     with open(mac_file, encoding="utf-8") as f:
         for line in f:
             d = json.loads(line)
-            mac[d["query"]] = ["/" + uuid + r[0][len(root):] for r in d["rows"]]
+            mac[d["query"]] = [("/" + uuid + r[0][len(root):], r[3]) for r in d["rows"]]
     phone = json.load(open(phone_file, encoding="utf-8"))
-    tried = exact = 0
+    tried = identical = sound = unexplained = 0
     overlap_sum = 0.0
-    shown = 0
+    compared = 0
     for answer in phone:
         q = answer["query"]
-        tiles = [by_id.get(t, "?" + t) for t in answer["tiles"]]
-        want = mac.get(q, [])
-        k = len(tiles)
-        tried += 1
-        if k == 0 and not want:
-            exact += 1
-            overlap_sum += 1
+        if q not in mac:
+            print(f"NO MAC ANSWER {q!r}")
+            unexplained += 1
+            tried += 1
             continue
-        top = want[:k] if k else want[:1]
-        same = tiles == top
-        exact += same
-        overlap = len(set(tiles) & set(top)) / max(1, len(top))
+        tiles = [by_id.get(t, "?" + t) for t in answer["tiles"]]
+        total = answer.get("total", len(tiles))
+        rows = mac[q]
+        k = min(len(tiles), len(rows))
+        want = [p for p, _ in rows[:k]]
+        tried += 1
+        compared += k
+        same_count = total == len(rows)
+        same_top = tiles[:k] == want
+        overlap = 1.0 if k == 0 and len(tiles) == len(rows) else len(set(tiles[:k]) & set(want)) / max(1, k)
         overlap_sum += overlap
-        shown += k
-        if not same:
-            print(f"DIFFER {q!r}: phone {len(tiles)} tiles, Mac {len(want)} rows, overlap {overlap:.2f}")
-    print(json.dumps({"queries": tried, "identical_top_k": exact, "mean_top_k_overlap": round(overlap_sum / max(1, tried), 4),
-                      "tiles_compared": shown}))
-    return 0 if exact == tried else 1
+        if same_count and same_top and len(tiles) >= k:
+            identical += 1
+            continue
+        # The Mac's rows the phone could have shown, and, when the counts differ, every Mac row:
+        # a sound match anywhere can be the row the phone lacks.
+        heard = any(m & SOUND for _, m in (rows if total != len(rows) else rows[:max(k, len(tiles), 1)]))
+        if heard:
+            sound += 1
+        else:
+            unexplained += 1
+        why = "sound-matched rows in the Mac's top" if heard else "UNEXPLAINED"
+        print(f"DIFFER {q!r}: phone {total} results ({len(tiles)} on screen), Mac {len(rows)} rows, "
+              f"top-{k} overlap {overlap:.2f}: {why}")
+    print(json.dumps({"queries": tried, "identical": identical, "differ_sound": sound,
+                      "differ_unexplained": unexplained, "mean_top_k_overlap": round(overlap_sum / max(1, tried), 4),
+                      "rows_compared": compared}))
+    return 0 if identical == tried else 1
 
 
 if __name__ == "__main__":
