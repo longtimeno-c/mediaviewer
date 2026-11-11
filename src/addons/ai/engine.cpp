@@ -7460,17 +7460,40 @@ void engine::note_speech_commit(std::int64_t asset) {
   std::lock_guard lock(speech_m_);
   const std::uint64_t mark = ++speech_mark_;
   speech_dirty_[asset] = mark;
-  speech_committed_[asset] = mark;
+  // Only a full install reading now needs to know (it re-reads what changed
+  // under its read); with none, nothing is kept, so this never grows.
+  if (!speech_installs_.empty()) speech_committed_[asset] = mark;
 }
 
 void engine::forget_speech_locked(const std::set<std::int64_t>* assets) {
-  // Rows just left memory (assets dropped, the index cleared): a settle that
-  // read one of these clips before must not put it back, so its mark moves;
-  // it stays dirty, and the next settle reads what the index holds now.
+  // Rows just left memory and the index (assets dropped, the index cleared):
+  // a change like a commit. A settle that read one of these clips before must
+  // not put it back, so a dirty clip's mark moves (it stays dirty; the next
+  // settle reads what the index holds now), and a full install reading now
+  // must not put them back either: it re-reads the dropped clips, or after a
+  // clear installs nothing it read before it.
   for (auto& [id, mark] : speech_dirty_) {
     if (!assets || assets->count(id)) mark = ++speech_mark_;
   }
-  if (!assets) speech_committed_.clear();
+  if (speech_installs_.empty()) return;
+  if (!assets) {
+    speech_cleared_mark_ = ++speech_mark_;
+    speech_committed_.clear();  // what was committed before the clear is gone with it
+    return;
+  }
+  for (const std::int64_t id : *assets) speech_committed_[id] = ++speech_mark_;
+}
+
+void engine::prune_speech_committed_locked() {
+  // Entries older than every full install still reading are no use to any.
+  if (speech_installs_.empty()) {
+    speech_committed_.clear();
+    return;
+  }
+  const std::uint64_t oldest = *speech_installs_.begin();
+  for (auto it = speech_committed_.begin(); it != speech_committed_.end();) {
+    it = it->second <= oldest ? speech_committed_.erase(it) : std::next(it);
+  }
 }
 
 void engine::install_speech(const std::string& preferred, const std::function<void()>& with_locks) {
@@ -7481,20 +7504,26 @@ void engine::install_speech(const std::string& preferred, const std::function<vo
   {
     std::lock_guard lock(speech_m_);
     start = speech_mark_;
+    speech_installs_.insert(start);  // from here, commits and drops are recorded for this read
   }
   std::vector<speech_row> rows = read_speech(preferred);  // no lock held: SQLite and tokenising
   if (deps_.after_speech_read) deps_.after_speech_read();
   {
     std::lock_guard lock(models_m_);
     std::lock_guard held(speech_m_);
+    // The index was cleared during the read: nothing read before the clear stands.
+    if (speech_cleared_mark_ > start) rows.clear();
     speech_rows_ = std::move(rows);
     if (with_locks) with_locks();
     for (auto it = speech_dirty_.begin(); it != speech_dirty_.end();) {
       it = it->second <= start ? speech_dirty_.erase(it) : std::next(it);  // committed before the read: in it
     }
     for (const auto& [id, mark] : speech_committed_) {
-      if (mark > start) speech_dirty_[id] = ++speech_mark_;  // committed during the read: maybe not in it
+      // Committed or dropped during the read: maybe not as the read saw it.
+      if (mark > start) speech_dirty_[id] = ++speech_mark_;
     }
+    speech_installs_.erase(speech_installs_.find(start));
+    prune_speech_committed_locked();
   }
   settle_speech();
 }

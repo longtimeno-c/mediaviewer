@@ -417,6 +417,11 @@ class engine {
     std::lock_guard lock(speech_m_);
     return speech_rows_.size();
   }
+  // Clips remembered for full installs still reading (tests: none kept once idle). [no-block]
+  [[nodiscard]] std::size_t speech_commits_kept() const {
+    std::lock_guard lock(speech_m_);
+    return speech_committed_.size();
+  }
   // A reader: whether search_text can answer this query now, before (or
   // without) its tower: names, dates, places, words said, files. [no-block]
   [[nodiscard]] bool answerable_now(const std::string& query);
@@ -692,6 +697,7 @@ class engine {
   void settle_speech();
   void install_speech(const std::string& preferred, const std::function<void()>& with_locks);
   void forget_speech_locked(const std::set<std::int64_t>* assets);  // speech_m_ held; null: all
+  void prune_speech_committed_locked();                              // speech_m_ held
   // #406: a clip's own text in memory, matched like transcript lines but kept
   // apart from them: removing the audio piece clears speech, never these.
   struct cue_row {
@@ -1025,7 +1031,12 @@ class engine {
   // yet settled into memory, with their mark; every clip's last commit mark.
   std::uint64_t speech_mark_ = 0;
   std::map<std::int64_t, std::uint64_t> speech_dirty_;
+  // Commits and drops since the oldest full install still reading began
+  // (empty while none reads); the starts of the installs reading now; the
+  // mark of the last clear, for an install whose read it overtook.
   std::unordered_map<std::int64_t, std::uint64_t> speech_committed_;
+  std::multiset<std::uint64_t> speech_installs_;
+  std::uint64_t speech_cleared_mark_ = 0;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
   // #403: made on the control thread (Windows joins it to the MTA first), set
   // once under models_m_ and never replaced, so a worker may keep the pointer.

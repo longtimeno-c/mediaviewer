@@ -8351,6 +8351,8 @@ TEST_CASE("said: a window committed during a reload's read is in memory after it
   r.speech->on_transcribe = nullptr;
   REQUIRE(wait_for([&] { return r.eng->speech_lines() == speech_in_index(r); }, kSettleMs));
   CHECK(r.search("said:birthday").size() == 1);
+  // The record empties once no install reads (a reload still finishing may hold one entry).
+  CHECK(wait_for([&] { return r.eng->speech_commits_kept() == 0; }, kSettleMs));
 }
 
 TEST_CASE("said: a window committed with no Whisper is in memory once one is back", "[ai][engine][audio]") {
@@ -8570,4 +8572,44 @@ TEST_CASE("a clip's transcript falls back to the Whisper with most lines, as the
   REQUIRE((*idx)->drop_spec("b/fp16/pre1"));  // B's lines gone: the count is stale, recounted
   CHECK(spoken(1) == "from A");
   CHECK(spoken(3).empty());
+}
+
+// A drop or a clear while a full install is reading: the install must not put
+// back what left the index during its read (a drop is a change, like a commit).
+TEST_CASE("said: a folder removed or the index cleared during a reload's read stays gone", "[ai][engine][audio]") {
+  for (const bool clear : {false, true}) {
+    INFO((clear ? "clear_index" : "root_remove"));
+    rig r;
+    r.audio_available = true;
+    r.file("party_talk_bark.mp4");
+    std::atomic<bool> armed{false};
+    std::atomic<bool> done{false};
+    std::int64_t root = 0;
+    r.tweak = [&](mv::ai::engine_deps& d) {
+      d.after_speech_read = [&] {
+        if (!armed.exchange(false)) return;
+        // The reload has read the transcript; it leaves the index before the install.
+        if (clear) {
+          REQUIRE(r.eng->clear_index());
+        } else {
+          REQUIRE(r.eng->root_remove(root));
+        }
+        done = true;
+      };
+    };
+    r.start();
+    auto made = r.eng->index_folder(utf8(r.photos()), false);
+    REQUIRE(made);
+    root = *made;
+    REQUIRE(r.idle());
+    REQUIRE(r.eng->speech_lines() > 0);
+    armed = true;
+    REQUIRE(r.eng->set_setting("reload", "1"));
+    REQUIRE(wait_for([&] { return done.load(); }, kSettleMs));
+    REQUIRE(r.idle());
+    REQUIRE(wait_for([&] { return r.eng->speech_lines() == speech_in_index(r); }, kSettleMs));
+    CHECK(speech_in_index(r) == 0);
+    CHECK(r.search("said:birthday").empty());
+    CHECK(wait_for([&] { return r.eng->speech_commits_kept() == 0; }, kSettleMs));  // nothing kept once none reads
+  }
 }
