@@ -1140,6 +1140,16 @@ struct rig {
     d.phone_save_hook = [this] {
       if (slow_save) std::this_thread::sleep_for(std::chrono::milliseconds(400));
     };
+    // A thread that still takes the state lock on its way out: whoever
+    // joins it must not hold that lock.
+    d.phone_start_hook = [this] {
+      if (slow_start) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    };
+    d.phone_thread_exit_hook = [this] {
+      if (!slow_exit) return;
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      if (eng) (void)eng->phone_json();
+    };
     d.qualities = [] { return std::vector<std::uint32_t>{1, 2}; };
     d.model_name = [](std::uint32_t q) { return q == 1 ? std::string("Fake fast") : std::string("Fake high"); };
     d.backend_available = [](mv::infer::backend) { return false; };
@@ -1304,6 +1314,8 @@ struct rig {
   double phone_budget = 0;
   double phone_retry = 30;
   std::atomic<bool> slow_save{false};
+  std::atomic<bool> slow_exit{false};
+  std::atomic<bool> slow_start{false};
   fs::path photos() const { return dir / "Photos"; }
   void file(const std::string& rel, std::size_t size = 16) { write_bytes(photos() / rel, pattern(size, 7)); }
 
@@ -7117,6 +7129,7 @@ TEST_CASE("a publish asked for the moment the last one ends never waits on it", 
   p.a.file("red_car.jpg");
   p.index();
   p.a.slow_save = true;  // the state write takes a while
+  SECTION("and the thread still takes the state lock on its way out") { p.a.slow_exit = true; }
   for (int round = 0; round < 3; ++round) {
     REQUIRE(p.a.eng->phone_publish(utf8(p.nas)));
     REQUIRE(wait_for([&] { return mv::json::parse(p.a.eng->phone_json())->boolean("running") == false; }, kSettleMs));
@@ -7128,6 +7141,31 @@ TEST_CASE("a publish asked for the moment the last one ends never waits on it", 
     REQUIRE(*phone_done(p.a).str("error") == "");
   }
   p.a.slow_save = false;
+  p.a.slow_exit = false;
+}
+
+TEST_CASE("two starters racing a run that ends at once never lose a thread", "[ai][engine][phone]") {
+  rig a;  // nothing indexed and nowhere to keep a key: every run ends at once
+  a.no_key_store = true;
+  a.slow_start = true;  // a starter lingers right after its thread exists
+  a.start();
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  std::atomic<bool> go{false};
+  std::atomic<int> started{0};
+  const auto racer = [&] {
+    while (!go) std::this_thread::yield();
+    for (int i = 0; i < 300; ++i) {
+      if (a.eng->phone_publish(utf8(nas))) ++started;
+    }
+  };
+  std::thread one(racer), two(racer);
+  go = true;
+  one.join();
+  two.join();
+  CHECK(started.load() > 0);
+  const std::string why = *phone_done(a).str("error");
+  CHECK((why == "no_index" || why == "no_key_store"));
 }
 
 // ---- the publisher's cost (CLAUDE.md "Performance is the product") -------------------

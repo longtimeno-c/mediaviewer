@@ -5556,7 +5556,7 @@ bool engine::start_phone_thread(const char* phase, const std::function<bool(cons
   std::thread old;
   {
     std::lock_guard lock(phone_m_);
-    if (phone_.running || phone_stopped_) return false;
+    if (phone_.running || phone_stopped_ || stopping_) return false;
     if (admit && !admit(phone_)) return false;
     phone_.running = true;
     phone_.fraction = 0;
@@ -5566,7 +5566,17 @@ bool engine::start_phone_thread(const char* phase, const std::function<bool(cons
     old = std::move(phone_thread_);
   }
   if (old.joinable()) old.join();  // it has ended: `running` was false
-  std::thread next([this, run = std::move(body)] {
+  // Made and stored under one hold of phone_m_: the new thread cannot end
+  // (that takes phone_m_) before phone_thread_ owns it, so no other starter
+  // can see it ended and find an empty slot to fill.
+  std::lock_guard lock(phone_m_);
+  if (phone_stopped_ || stopping_) {  // stop() came between: nothing starts now
+    phone_.running = false;
+    phone_.phase.clear();
+    phone_.error = "cancelled";
+    return false;
+  }
+  phone_thread_ = std::thread([this, run = std::move(body)] {
     if (options_.background_threads) platform::enter_background();  // §6: background only
     // Off the ABI's guard: nothing may leave this thread, or the app goes with it.
     try {
@@ -5577,14 +5587,9 @@ bool engine::start_phone_thread(const char* phase, const std::function<bool(cons
       phone_.phase.clear();
       phone_.error = "failed";
     }
+    if (deps_.phone_thread_exit_hook) deps_.phone_thread_exit_hook();
   });
-  std::unique_lock lock(phone_m_);
-  if (phone_stopped_) {  // stop() came between: it found no thread to wait for
-    lock.unlock();
-    next.join();
-    return true;
-  }
-  phone_thread_ = std::move(next);
+  if (deps_.phone_start_hook) deps_.phone_start_hook();  // tests: the thread exists, the slot is ours
   return true;
 }
 

@@ -278,7 +278,11 @@ struct engine_deps {
   double phone_share_poll_s = 30;
   double phone_retry_base_s = 30;
   // Tests: runs as the phone state is about to be written.
-  std::function<void()> phone_save_hook;  // a failed delivery waits this, doubling, to an hour
+  std::function<void()> phone_save_hook;
+  // Tests: the publisher thread's very last step, after its run has ended.
+  std::function<void()> phone_thread_exit_hook;
+  // Tests: a starter's step right after its thread exists.
+  std::function<void()> phone_start_hook;  // a failed delivery waits this, doubling, to an hour
   double phone_thumb_budget_s = 1800;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
   std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
