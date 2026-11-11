@@ -93,6 +93,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -597,6 +598,13 @@ class index_db {
                                        const std::string& after);
   std::mutex m_;
   sqlite3* db_ = nullptr;
+  // Lines per Whisper over the whole speech table, for each_speech's
+  // fallback on one clip (under m_): counted once, kept up to date by
+  // commit_speech, marked stale by every method that can remove lines.
+  std::map<std::string, std::int64_t> speech_totals_;
+  bool speech_totals_valid_ = false;
+  std::int64_t speech_totals_version_ = -1;
+  [[nodiscard]] const std::map<std::string, std::int64_t>& speech_totals_locked();
   std::string path_;
 };
 

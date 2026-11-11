@@ -8287,3 +8287,287 @@ TEST_CASE("said: a reload between a window's commit and memory leaves each line 
   REQUIRE(r.idle());
   CHECK(r.eng->speech_lines() == in_index);
 }
+
+// A full install reads the index outside the locks; a window committed after
+// that read and before the install must still be in memory afterwards, for
+// every path that installs: a reload, a reload after a time with no Whisper,
+// and an imported index.
+namespace {
+
+// Holds a full install between its read and its install until a window has
+// been committed, and holds that window's commit until the read is done.
+struct read_then_commit {
+  std::atomic<bool> armed{false};
+  std::atomic<bool> read_done{false};
+  std::atomic<bool> committed{false};
+  void on_read() {
+    if (!armed.load() || read_done.exchange(true)) return;
+    (void)wait_for([&] { return committed.load(); }, kSettleMs);
+  }
+  void on_commit() {
+    if (read_done.load()) committed = true;
+  }
+};
+
+std::size_t speech_in_index(rig& r) {
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(utf8(r.dir / "data" / "index.db").c_str(), &db) == SQLITE_OK);
+  sqlite3_stmt* q = nullptr;
+  REQUIRE(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM speech", -1, &q, nullptr) == SQLITE_OK);
+  REQUIRE(sqlite3_step(q) == SQLITE_ROW);
+  const auto n = static_cast<std::size_t>(sqlite3_column_int64(q, 0));
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  return n;
+}
+
+void gate(rig& r, read_then_commit& g) {
+  r.tweak = [&g](mv::ai::engine_deps& d) {
+    d.after_speech_read = [&g] { g.on_read(); };
+    // Once the worker has put its window in memory: the install then lands on top of it.
+    d.after_speech_settle = [&g] { g.on_commit(); };
+  };
+}
+
+}  // namespace
+
+TEST_CASE("said: a window committed during a reload's read is in memory after it", "[ai][engine][audio]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  read_then_commit g;
+  gate(r, g);
+  std::atomic<bool> once{false};
+  r.speech->on_transcribe = [&] {
+    if (once.exchange(true)) return;
+    g.armed = true;
+    REQUIRE(r.eng->set_setting("reload", "1"));
+    REQUIRE(wait_for([&] { return g.read_done.load(); }, kSettleMs));  // the reload has read; now commit
+  };
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(g.committed.load());
+  r.speech->on_transcribe = nullptr;
+  REQUIRE(wait_for([&] { return r.eng->speech_lines() == speech_in_index(r); }, kSettleMs));
+  CHECK(r.search("said:birthday").size() == 1);
+}
+
+TEST_CASE("said: a window committed with no Whisper is in memory once one is back", "[ai][engine][audio]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  read_then_commit g;
+  gate(r, g);
+  std::atomic<bool> once{false};
+  r.speech->on_transcribe = [&] {
+    if (once.exchange(true)) return;
+    // The piece goes, then comes back; its reload reads before this window
+    // lands, and the window lands while no Whisper is in.
+    r.audio_available = false;
+    REQUIRE(r.eng->set_setting("reload", "1"));
+    REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0; }, kSettleMs));
+    r.audio_available = true;
+    g.armed = true;
+    REQUIRE(r.eng->set_setting("reload", "1"));
+    REQUIRE(wait_for([&] { return g.read_done.load(); }, kSettleMs));
+  };
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(g.committed.load());
+  r.speech->on_transcribe = nullptr;
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_AUDIO_READY) != 0; }, kSettleMs));
+  REQUIRE(wait_for([&] { return r.eng->speech_lines() == speech_in_index(r); }, kSettleMs));
+  CHECK(r.search("said:birthday").size() == 1);
+  r.eng.reset();
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.eng->speech_lines() == speech_in_index(r));
+}
+
+TEST_CASE("said: a window committed during an import's reload is in memory after it", "[ai][engine][audio]") {
+  // Machine A: a picture, exported.
+  rig a;
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(a.idle());
+  const std::string file = utf8(a.dir / "library.mvindex");
+  REQUIRE(a.eng->export_index(file, {}, 0));
+  REQUIRE(*transfer_done(a).integer("status") == 0);
+  const auto info = mv::json::parse(*a.eng->inspect_export(file));
+  REQUIRE(info);
+  const std::int64_t root = *info->find("roots")->a[0].integer("id");
+
+  // Machine B transcribes a clip while it imports A's index.
+  rig b;
+  b.audio_available = true;
+  b.file("party_talk_bark.mp4");
+  const fs::path there = b.dir / "NAS" / "Photos";
+  copy_library(a, there);
+  read_then_commit g;
+  gate(b, g);
+  std::atomic<bool> once{false};
+  b.speech->on_transcribe = [&] {
+    if (once.exchange(true)) return;
+    g.armed = true;
+    REQUIRE(b.eng->import_index(file, map_json(root, there), 0));
+    // The import waits a while for this worker, then reloads from the index.
+    REQUIRE(wait_for([&] { return g.read_done.load(); }, 4 * kSettleMs));
+  };
+  b.start();
+  REQUIRE(b.eng->index_folder(utf8(b.photos()), false));
+  REQUIRE(b.idle());
+  REQUIRE(g.committed.load());
+  b.speech->on_transcribe = nullptr;
+  REQUIRE(*transfer_done(b).integer("status") == 0);
+  REQUIRE(wait_for([&] { return b.eng->speech_lines() == speech_in_index(b); }, kSettleMs));
+  CHECK(b.search("said:birthday").size() == 1);
+}
+
+// The per-clip transcript read a worker runs after every window (settle_speech): at 1 M lines it
+// touches one clip's rows through speech_asset, where the earlier statement scanned the table.
+// `mv_ai_tests "[.perf-bench][speech]"` prints JSON and the query plans.
+TEST_CASE("perf: a clip's transcript read at 1 M lines touches only that clip", "[.perf-bench][speech]") {
+  scratch_dir dir{"ai-speech-bench"};
+  const std::string path = utf8(dir / "index.db");
+  constexpr int kClips = 20000, kLines = 50;  // 1 M lines, 50 per clip, two Whispers
+  {
+    auto made = mv::ai::index_db::open(path);
+    REQUIRE(made);
+  }
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db,
+                       "BEGIN; INSERT INTO roots(id, path, recursive, enabled, media) VALUES(1, '/clips', 1, 1, 0);"
+                       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20000)"
+                       " INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms) SELECT i, '/clips/' || i || '.mp4', 1, 0, 0, 2, 60000 FROM n;"
+                       "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 999999)"
+                       " INSERT INTO speech(asset_id, spec, start_ms, end_ms, text)"
+                       " SELECT 1 + i / 50, CASE WHEN (i / 50) % 4 = 0 THEN 'whisper-base/fp16/pre1' ELSE 'whisper-small/fp16/pre1' END,"
+                       " (i % 50) * 1000, (i % 50) * 1000 + 900, 'words said at moment ' || (i % 50) FROM n; COMMIT;",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+  const auto plan = [&](const char* sql) {
+    std::string out;
+    sqlite3_stmt* q = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, (std::string("EXPLAIN QUERY PLAN ") + sql).c_str(), -1, &q, nullptr) == SQLITE_OK);
+    while (sqlite3_step(q) == SQLITE_ROW) out += std::string(" | ") + reinterpret_cast<const char*>(sqlite3_column_text(q, 3));
+    sqlite3_finalize(q);
+    return out;
+  };
+  const char* kNow = "SELECT spec, start_ms, end_ms, text FROM speech WHERE asset_id = ?1 ORDER BY spec, start_ms";
+  const char* kBefore =
+      "WITH totals AS (SELECT spec, COUNT(*) AS n FROM speech GROUP BY spec),"
+      " pick AS (SELECT a.asset_id, (SELECT x.spec FROM speech x JOIN totals t ON t.spec = x.spec"
+      "   WHERE x.asset_id = a.asset_id GROUP BY x.spec ORDER BY (x.spec = ?1) DESC, t.n DESC, x.spec LIMIT 1) AS spec"
+      "   FROM (SELECT DISTINCT asset_id FROM speech WHERE ?2 = 0 OR asset_id = ?2) a)"
+      " SELECT s.asset_id, s.start_ms, s.end_ms, s.text, s.spec = ?1 FROM speech s"
+      " JOIN pick p ON p.asset_id = s.asset_id AND p.spec = s.spec ORDER BY s.asset_id, s.start_ms";
+  std::printf("plan now:%s\nplan before:%s\n", plan(kNow).c_str(), plan(kBefore).c_str());
+
+  // The earlier statement, as 50d0a106 ran it per window.
+  double before_ms = 0;
+  {
+    sqlite3_stmt* q = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, kBefore, -1, &q, nullptr) == SQLITE_OK);
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 5; ++i) {
+      sqlite3_reset(q);
+      sqlite3_bind_text(q, 1, "whisper-base/fp16/pre1", -1, SQLITE_STATIC);
+      sqlite3_bind_int64(q, 2, 2 + i * 4);
+      while (sqlite3_step(q) == SQLITE_ROW) {
+      }
+    }
+    before_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 5;
+    sqlite3_finalize(q);
+  }
+  sqlite3_close(db);
+
+  // Now: index_db::each_speech for one clip, through the class the engine uses. Clip 2 has only
+  // Whisper small's lines; asking for base takes the fallback, which needs the totals once.
+  auto idx = mv::ai::index_db::open(path);
+  REQUIRE(idx);
+  std::size_t rows = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  (void)(*idx)->each_speech("whisper-base/fp16/pre1", [&](auto, auto, auto, const std::string&, bool) { ++rows; }, 2);
+  const double first_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  constexpr int kReads = 1000;
+  rows = 0;
+  const auto t1 = std::chrono::steady_clock::now();
+  for (int i = 0; i < kReads; ++i) {
+    (void)(*idx)->each_speech("whisper-base/fp16/pre1", [&](auto, auto, auto, const std::string&, bool) { ++rows; },
+                              1 + (i * 7) % kClips);
+  }
+  const double per_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count() / kReads;
+  CHECK(rows == static_cast<std::size_t>(kReads) * kLines);  // one Whisper's 50 lines per clip, no more
+  // The fallback that needs the table's totals: a clip with two Whispers, neither preferred. The
+  // first read counts them (one pass), later ones reuse the count while nothing is written.
+  REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db,
+                       "INSERT INTO speech(asset_id, spec, start_ms, end_ms, text)"
+                       " SELECT 3, 'whisper-base/fp16/pre1', start_ms, end_ms, text FROM speech WHERE asset_id = 3",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+  idx = mv::ai::index_db::open(path);
+  REQUIRE(idx);
+  std::string picked;
+  const auto t2 = std::chrono::steady_clock::now();
+  (void)(*idx)->each_speech("whisper-turbo/fp16/pre1", [&](auto, auto, auto, const std::string&, bool) {}, 3);
+  const double totals_first_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count();
+  const auto t3 = std::chrono::steady_clock::now();
+  for (int i = 0; i < kReads; ++i) {
+    (void)(*idx)->each_speech("whisper-turbo/fp16/pre1", [&](auto, auto, auto, const std::string&, bool) {}, 3);
+  }
+  const double totals_cached_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t3).count() / kReads;
+  // As a worker runs it: a window committed, then the clip read, the fallback included.
+  const std::vector<mv::ai::speech_in> window{{0, 900, "a line"}};
+  const auto t4 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 200; ++i) {
+    REQUIRE((*idx)->commit_speech(4, "whisper-small/fp16/pre1", window, mv::ai::work_state::partial, 1000));
+    (void)(*idx)->each_speech("whisper-turbo/fp16/pre1", [&](auto, auto, auto, const std::string&, bool) {}, 3);
+  }
+  const double commit_and_read_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t4).count() / 200;
+  std::printf("{\"lines\":1000000,\"clips\":%d,\"before_ms_per_clip\":%.2f,\"now_first_ms\":%.2f,\"now_ms_per_clip\":%.4f,"
+              "\"rows_returned_per_clip\":%d,\"two_whispers_neither_preferred_first_ms\":%.2f,"
+              "\"two_whispers_neither_preferred_cached_ms\":%.4f,\"commit_then_fallback_read_ms\":%.3f}\n",
+              kClips, before_ms, first_ms, per_ms, kLines, totals_first_ms, totals_cached_ms, commit_and_read_ms);
+  CHECK(commit_and_read_ms < 20.0);  // a commit keeps the count: no recount of 1 M lines per window
+  CHECK(per_ms < 5.0);
+  CHECK(totals_cached_ms < 5.0);
+}
+
+TEST_CASE("a clip's transcript falls back to the Whisper with most lines, as the totals now stand", "[ai][speech]") {
+  scratch_dir dir{"ai-speech-totals"};
+  auto idx = mv::ai::index_db::open(utf8(dir / "index.db"));
+  REQUIRE(idx);
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(utf8(dir / "index.db").c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db,
+                       "INSERT INTO roots(id, path, recursive, enabled, media) VALUES(1, '/c', 1, 1, 0);"
+                       "INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms) VALUES"
+                       " (1, '/c/1.mp4', 1, 0, 0, 2, 1), (2, '/c/2.mp4', 1, 0, 0, 2, 1), (3, '/c/3.mp4', 1, 0, 0, 2, 1);",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+  const auto put = [&](std::int64_t asset, const char* spec, int lines, const char* text) {
+    std::vector<mv::ai::speech_in> w;
+    for (int i = 0; i < lines; ++i) w.push_back({i * 1000, i * 1000 + 900, text});
+    REQUIRE((*idx)->commit_speech(asset, spec, w, mv::ai::work_state::done, 0));
+  };
+  const auto spoken = [&](std::int64_t asset) {
+    std::string out;
+    (void)(*idx)->each_speech("chosen/fp16/pre1",
+                              [&](auto, auto, auto, const std::string& t, bool) { out = t; }, asset);
+    return out;
+  };
+  // Clip 1 has both A's and B's lines; neither is the chosen Whisper.
+  put(1, "a/fp16/pre1", 1, "from A");
+  put(1, "b/fp16/pre1", 1, "from B");
+  put(2, "a/fp16/pre1", 3, "more A");  // A has 4 lines in all, B 1
+  CHECK(spoken(1) == "from A");
+  put(3, "b/fp16/pre1", 5, "more B");  // a commit moves the totals: B 6, A 4
+  CHECK(spoken(1) == "from B");
+  REQUIRE((*idx)->drop_spec("b/fp16/pre1"));  // B's lines gone: the count is stale, recounted
+  CHECK(spoken(1) == "from A");
+  CHECK(spoken(3).empty());
+}

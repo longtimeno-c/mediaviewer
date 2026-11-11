@@ -288,6 +288,10 @@ struct engine_deps {
   // follows it; after load_audio installs a Whisper and its lines.
   std::function<void()> after_speech_commit;
   std::function<void()> after_speech_install;
+  // Tests only: a full install has read the index, and holds no lock yet;
+  // a worker has settled the window it committed.
+  std::function<void()> after_speech_read;
+  std::function<void()> after_speech_settle;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
   std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
   double tree_max_wait_s = 10;
@@ -680,8 +684,14 @@ class engine {
   void load_speech(const std::string& preferred);
   // The same rows, read without taking a lock; `only_asset` > 0: one clip's.
   [[nodiscard]] std::vector<speech_row> read_speech(const std::string& preferred, std::int64_t only_asset = 0);
-  // A clip's lines in memory become exactly what read_speech reads for it now.
-  void replace_clip_speech(std::int64_t asset);
+  // The one way memory changes for transcripts (models_m_, then speech_m_):
+  // a window committed marks its clip dirty; settling installs dirty clips as
+  // read_speech reads them now; a full install reads outside the locks, then
+  // settles what was committed during the read.
+  void note_speech_commit(std::int64_t asset);
+  void settle_speech();
+  void install_speech(const std::string& preferred, const std::function<void()>& with_locks);
+  void forget_speech_locked(const std::set<std::int64_t>* assets);  // speech_m_ held; null: all
   // #406: a clip's own text in memory, matched like transcript lines but kept
   // apart from them: removing the audio piece clears speech, never these.
   struct cue_row {
@@ -1011,9 +1021,11 @@ class engine {
   std::atomic<bool> catalogue_ready_{false};
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
-  // Bumped whenever speech_rows_ changes (under speech_m_): a read made
-  // outside the locks is installed only if nothing changed meanwhile.
-  std::uint64_t speech_gen_ = 0;
+  // Under speech_m_: marks handed out in order; the clips committed and not
+  // yet settled into memory, with their mark; every clip's last commit mark.
+  std::uint64_t speech_mark_ = 0;
+  std::map<std::int64_t, std::uint64_t> speech_dirty_;
+  std::unordered_map<std::int64_t, std::uint64_t> speech_committed_;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
   // #403: made on the control thread (Windows joins it to the MTA first), set
   // once under models_m_ and never replaced, so a worker may keep the pointer.
