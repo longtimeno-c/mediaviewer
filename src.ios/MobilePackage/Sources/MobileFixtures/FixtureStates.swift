@@ -73,6 +73,7 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case viewerGone = "viewer.gone"
   case viewerNotThereYet = "viewer.notThereYet"
   case viewerCannotDecode = "viewer.cannotDecode"
+  case viewerPhotosDenied = "viewer.photosDenied"
   case clip
   case clipMoment = "clip.moment"
   case clipStops = "clip.stopsPlaying"
@@ -181,6 +182,7 @@ final class FixtureRun {
     case .viewerGone: world.imageMode = .fails(.originalGone)
     case .viewerNotThereYet: world.imageMode = .fails(.notThereYet)
     case .viewerCannotDecode: world.imageMode = .fails(.cannotDecode(format: "Sigma X3F"))
+    case .viewerPhotosDenied: world.photosRefused = true
     case .searchTyping: world.searchMode = .neverAnswers
     case .searchTower: world.capability = .unsupportedTower
     case .clipTooBig, .clipTooBigMoment: world.clipMode = .tooBig
@@ -294,7 +296,7 @@ final class FixtureRun {
       if let notice = model.libraryNotice { model.dismiss(notice) }
     case .viewerNoFilmstrip, .viewerRefiningUnknown, .viewerSlowNetwork, .viewerServiceTooOld, .viewerPublisherChanged:
       openViewer(kind: .photo)
-    case .viewer, .viewerRefining, .viewerUnreachable, .viewerGone, .viewerNotThereYet, .viewerCannotDecode:
+    case .viewer, .viewerRefining, .viewerUnreachable, .viewerGone, .viewerNotThereYet, .viewerCannotDecode, .viewerPhotosDenied:
       openViewer(kind: .photo)
     case .details:
       openViewer(kind: .photo, details: true)

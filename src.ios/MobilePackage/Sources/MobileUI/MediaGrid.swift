@@ -201,7 +201,7 @@ struct NoticeCard: View {
         .fixedSize(horizontal: false, vertical: true)
         if let onDismiss {
           Button(action: onDismiss) {
-            Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.body)
+            Image(systemName: "xmark").font(.footnote.weight(.semibold)).foregroundStyle(Theme.body)
               .frame(width: 44, height: 44)
               .contentShape(Rectangle())
           }

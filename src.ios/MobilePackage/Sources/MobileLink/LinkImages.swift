@@ -14,23 +14,29 @@ import UniformTypeIdentifiers
 
 public final class LinkImages: ImageLadder, @unchecked Sendable {
   private let connection: LinkConnection
-  private let memory = NSCache<NSNumber, UIImage>()
-  private let tiles = NSCache<NSNumber, UIImage>()
+  private let memory = ScopedCache<UIImage>(totalCostLimit: 256 << 20)
+  private let tiles = ScopedCache<UIImage>(countLimit: 8000)
   private let decodeQueue = DispatchQueue(label: "mediaviewer.link.decode", qos: .userInitiated, attributes: .concurrent)
   private let originals = OriginalStore(dir: LinkFolders.originals, limitBytes: 1 << 30)
 
   public init(connection: LinkConnection) {
     self.connection = connection
-    memory.totalCostLimit = 256 << 20
-    tiles.countLimit = 8000
+    // Forget, or the library gone: nothing of it stays in memory.
+    Task.detached(priority: .utility) { [memory, tiles] in
+      for await snapshot in connection.updates() where !snapshot.hasLibrary {
+        memory.removeAll()
+        tiles.removeAll()
+      }
+    }
   }
 
   private func assetID(_ id: MediaID) -> Int64? { Int64(id.raw) }
 
   public func cachedImage(for id: MediaID) -> UIImage? {
     guard let asset = assetID(id) else { return nil }
-    let key = NSNumber(value: asset)
-    if let image = memory.object(forKey: key) ?? tiles.object(forKey: key) { return image }
+    let library = connection.libraryID
+    if let image = memory.object(library: library, generation: id.catalogue, id: id.raw)
+      ?? tiles.object(library: library, generation: id.catalogue, id: id.raw) { return image }
     guard let link = connection.link else { return nil }
     let box = BytesBox()
     let status = mv_tiny_get(link.raw, asset, { ctx, data, size in
@@ -38,24 +44,26 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
       Unmanaged<BytesBox>.fromOpaque(ctx).takeUnretainedValue().data = Data(bytes: data, count: size)
     }, Unmanaged.passUnretained(box).toOpaque())
     guard status == 0, let data = box.data, let image = UIImage(data: data) else { return nil }
-    tiles.setObject(image, forKey: key)
+    tiles.set(image, library: library, generation: id.catalogue, id: id.raw)
     return image
   }
 
   public func thumbnail(for item: MediaItem) async -> UIImage? {
     guard let asset = assetID(item.id) else { return nil }
-    let key = NSNumber(value: asset)
-    if let image = memory.object(forKey: key) { return image }
+    let library = connection.libraryID
+    if let image = memory.object(library: library, generation: item.id.catalogue, id: item.id.raw) { return image }
     guard let bytes = await requestThumb(asset: asset, lane: 0), let image = await decode(bytes, maxPixels: 512) else {
       return cachedImage(for: item.id)
     }
-    memory.setObject(image, forKey: key, cost: Int(image.size.width * image.size.height * image.scale * image.scale * 4))
+    memory.set(image, library: library, generation: item.id.catalogue, id: item.id.raw,
+               cost: Int(image.size.width * image.size.height * image.scale * image.scale * 4))
     return image
   }
 
   public func prefetch(_ items: [MediaItem], fittingPixels: CGSize) {
     for item in items {
-      guard let asset = assetID(item.id), memory.object(forKey: NSNumber(value: asset)) == nil else { continue }
+      guard let asset = assetID(item.id),
+            memory.object(library: connection.libraryID, generation: item.id.catalogue, id: item.id.raw) == nil else { continue }
       Task.detached(priority: .utility) { [self] in _ = await requestThumb(asset: asset, lane: 1) }
     }
   }
@@ -144,7 +152,9 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     let size = info.size
     progress(0, total)
     do {
-      return try await originals.file(key: "\(asset)-\(size)", size: size) { part in
+      // The library in the name too: after Forget and another pairing, an id can come back.
+      let library = String(connection.libraryID.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+      return try await originals.file(key: "\(library)-\(asset)-\(size)", size: size) { part in
         let status = await Self.readOriginal(link: link, asset: asset, size: size, to: part) { done in progress(done, total) }
         switch status {
         case 0: return

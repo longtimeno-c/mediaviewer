@@ -33,6 +33,8 @@ final class FixtureWorld: @unchecked Sendable {
   var identifyFailures = 0
   var personFailures = 0
   var foldersFail = false
+  /// Save to Photos is refused, as when the person said no to adding to Photos.
+  var photosRefused = false
   var searchFails = false
   #if MV_BACKUP
   /// Stand-in backup: nil runs nothing, otherwise how many ticks it runs for.
@@ -72,11 +74,11 @@ final class FixtureWorld: @unchecked Sendable {
     #if MV_BACKUP
     return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
                     connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
-                    clips: FixtureClips(world: self), saver: FixtureSaver(), transfers: FixtureTransfers(world: self))
+                    clips: FixtureClips(world: self), saver: FixtureSaver(world: self), transfers: FixtureTransfers(world: self))
     #else
     return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
                     connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
-                    clips: FixtureClips(world: self), saver: FixtureSaver())
+                    clips: FixtureClips(world: self), saver: FixtureSaver(world: self))
     #endif
   }
 }
@@ -600,10 +602,13 @@ struct FixtureTransfers: TransferMonitor {
 #endif
 
 struct FixtureSaver: PhotoSaver {
+  let world: FixtureWorld
+
   func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error> {
     AsyncThrowingStream { continuation in
       let task = Task {
         do {
+          if world.photosRefused { throw MediaFailure.photosNotAllowed }
           let total: Int64 = 12_000_000
           for step in 1...12 {
             continuation.yield(TransferProgress(doneBytes: total * Int64(step) / 12, totalBytes: total))

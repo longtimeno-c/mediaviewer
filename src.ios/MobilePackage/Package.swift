@@ -23,7 +23,6 @@ let coreLink: [String] = [
   simTriplet + "/libsqlite3.a", simTriplet + "/libsodium.a", simTriplet + "/libblake3.a",
   simCore + "/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
   "-lc++", "-framework", "CoreML", "-framework", "Network", "-framework", "Security", "-framework", "SystemConfiguration",
-  "-framework", "CoreBluetooth",
 ]
 
 let package = Package(
@@ -50,6 +49,7 @@ let package = Package(
     .target(name: "MobileLinkSupport"),
     .target(name: "MobileLink", dependencies: ["MobileKit", "CMobileLink", "MobileLinkSupport"]),
     .testTarget(name: "MobileLinkSupportTests", dependencies: ["MobileLinkSupport"]),
+    .testTarget(name: "MobileUITests", dependencies: ["MobileUI", "MobileKit"]),
   ],
   swiftLanguageModes: [.v5]
 )

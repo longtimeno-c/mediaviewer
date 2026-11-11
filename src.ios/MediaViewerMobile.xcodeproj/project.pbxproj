@@ -373,8 +373,6 @@
 					"-framework",
 					"CoreFoundation",
 					"-framework",
-					"CoreBluetooth",
-					"-framework",
 					"SystemConfiguration",
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
@@ -402,8 +400,6 @@
 					"Security",
 					"-framework",
 					"CoreFoundation",
-					"-framework",
-					"CoreBluetooth",
 					"-framework",
 					"SystemConfiguration",
 				);
@@ -455,8 +451,6 @@
 					"-framework",
 					"CoreFoundation",
 					"-framework",
-					"CoreBluetooth",
-					"-framework",
 					"SystemConfiguration",
 				);
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
@@ -484,8 +478,6 @@
 					"Security",
 					"-framework",
 					"CoreFoundation",
-					"-framework",
-					"CoreBluetooth",
 					"-framework",
 					"SystemConfiguration",
 				);

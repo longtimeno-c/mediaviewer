@@ -224,7 +224,49 @@ public final class AppModel {
 
   // MARK: Setup
 
+  /// What a pair link opened from outside the app (another app, a web page) may do (§11.1).
+  public enum PairLinkAction: Equatable { case open, confirm, ignore }
+
+  /// Any app can open a mediaviewer://pair link, so one never interrupts pairing or a first copy,
+  /// and never replaces a library in use without asking.
+  public static func pairLinkAction(stage: Stage, isScanning: Bool, hasLibrary: Bool,
+                                    connectEnded: Bool = false) -> PairLinkAction {
+    if isScanning { return .open }
+    switch stage {
+    case .welcome: return .open
+    // A Connect screen that ended in a failure (expired, unreachable, not a match) takes a fresh
+    // link; one still reading or pairing does not.
+    case .connect: return connectEnded ? .open : .ignore
+    case .firstCopy: return .ignore
+    case .main: return hasLibrary ? .confirm : .open
+    }
+  }
+
+  /// The Connect screen has stopped on a failure, so nothing is in progress there.
+  public var connectEnded = false
+
+  /// A pair link waiting for the person to say it may replace the library on this phone.
+  public var pendingPairLink: String?
+
+  public func openedPairLink(_ link: String) {
+    switch Self.pairLinkAction(stage: stage, isScanning: isScanning, hasLibrary: connection.hasLibrary,
+                               connectEnded: connectEnded) {
+    case .open: scanned(link)
+    case .confirm:
+      viewer = nil  // the question is asked from under the viewer, which would hide it
+      pendingPairLink = link
+    case .ignore: break
+    }
+  }
+
+  public func confirmPendingPairLink() {
+    guard let link = pendingPairLink else { return }
+    pendingPairLink = nil
+    scanned(link)
+  }
+
   public func scanned(_ code: String) {
+    connectEnded = false
     isScanning = false
     scanCount += 1
     stage = .connect(code: code)
@@ -232,6 +274,8 @@ public final class AppModel {
 
   func connected() {
     resetLibraryState()
+    // A new pairing, perhaps of another library: its first catalogue sets the epoch afresh.
+    UserDefaults.standard.removeObject(forKey: Self.epochKey)
     stage = .firstCopy
   }
 

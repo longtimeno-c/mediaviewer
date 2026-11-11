@@ -95,7 +95,8 @@ struct QuietButtonStyle: ButtonStyle {
   }
 }
 
-/// The viewer's round controls, readable over any photo.
+/// The viewer's round controls, readable over any photo. They keep their size over the picture;
+/// at the accessibility text sizes a long press shows them large instead.
 struct ChromeIconStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
@@ -104,6 +105,7 @@ struct ChromeIconStyle: ButtonStyle {
       .frame(width: 44, height: 44)
       .background(Circle().fill(.black.opacity(configuration.isPressed ? 0.75 : 0.5)))
       .contentShape(Circle())
+      .accessibilityShowsLargeContentViewer()
   }
 }
 

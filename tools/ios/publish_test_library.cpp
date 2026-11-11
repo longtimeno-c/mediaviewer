@@ -4,13 +4,15 @@
 // catalog::build and catalog::deliver, real signature), without the indexer's models: for proving
 // the phone end to end against `driftwire serve`. Thumbnails come from `sips` and `ffmpeg`.
 //
-//   publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key]
+//   publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key] [library=<id>]
 //
 // Not shipped; docs/plans/mobile.md M3/M4 verify. macOS (sips).
 #include <sodium.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <optional>
@@ -44,6 +46,19 @@ static std::string quoted(const std::string& s) {
   return out + "'";
 }
 
+/// A clip's length from ffprobe, in milliseconds; 0 when it cannot say.
+static std::int64_t clip_ms(const std::string& path) {
+  const std::string cmd = "/opt/homebrew/bin/ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 " + quoted(path);
+  FILE* pipe = popen(cmd.c_str(), "r");
+  if (!pipe) return 0;
+  char line[64] = {};
+  const bool read = std::fgets(line, sizeof line, pipe) != nullptr;
+  pclose(pipe);
+  if (!read) return 0;
+  const double seconds = std::strtod(line, nullptr);
+  return seconds > 0 ? static_cast<std::int64_t>(seconds * 1000.0) : 0;
+}
+
 static std::optional<std::vector<std::uint8_t>> shrink(const std::string& source, bool video, int edge, const fs::path& work) {
   const fs::path out = work / ("thumb-" + std::to_string(std::rand()) + ".jpg");
   const std::string cmd = video
@@ -59,14 +74,20 @@ static std::optional<std::vector<std::uint8_t>> shrink(const std::string& source
 
 int main(int argc, char** argv) {
   if (argc < 5 || sodium_init() < 0) {
-    std::cerr << "usage: publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key]\n";
+    std::cerr << "usage: publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key] [library=<id>]\n";
     return 2;
   }
   const fs::path folder = fs::absolute(argv[1]);
   const fs::path nas = fs::absolute(argv[2]);
   const fs::path work = fs::absolute(argv[3]);
   const std::uint64_t generation = std::stoull(argv[4]);
-  const bool wrong_key = argc > 5 && std::string(argv[5]) == "wrong-key";
+  bool wrong_key = false;
+  std::string library_id = "e2e-library-1";  // library=<id>: another library, for pairing over one
+  for (int i = 5; i < argc; ++i) {
+    const std::string a = argv[i];
+    if (a == "wrong-key") wrong_key = true;
+    else if (a.rfind("library=", 0) == 0 && a.size() > 8) library_id = a.substr(8);
+  }
   std::error_code ec;
   fs::create_directories(work, ec);
   fs::create_directories(nas, ec);
@@ -110,11 +131,24 @@ int main(int argc, char** argv) {
   {
     sqlite3* raw = nullptr;
     if (sqlite3_open(index_path.c_str(), &raw) != SQLITE_OK) { std::cerr << "cannot open index\n"; return 1; }
-    sqlite3_exec(raw,
-                 "UPDATE assets SET duration_ms = 30000 WHERE kind = 2;"
-                 "INSERT INTO speech(asset_id, spec, start_ms, end_ms, text)"
-                 " SELECT id, 'ai-test', 12000, 13000, 'The moment to jump to' FROM assets WHERE kind = 2;",
-                 nullptr, nullptr, nullptr);
+    // Each clip's real length, and one spoken moment inside it (at 12 s, or halfway in a short one).
+    std::vector<std::pair<std::int64_t, std::string>> clips;
+    sqlite3_stmt* q = nullptr;
+    if (sqlite3_prepare_v2(raw, "SELECT id, path FROM assets WHERE kind = 2", -1, &q, nullptr) == SQLITE_OK) {
+      while (sqlite3_step(q) == SQLITE_ROW) {
+        clips.emplace_back(sqlite3_column_int64(q, 0), reinterpret_cast<const char*>(sqlite3_column_text(q, 1)));
+      }
+    }
+    sqlite3_finalize(q);
+    for (const auto& [id, path] : clips) {
+      const std::int64_t ms = clip_ms(path);
+      if (ms <= 0) { std::cerr << "no length for " << path << "\n"; continue; }
+      const std::int64_t start = std::min<std::int64_t>(12000, ms / 2);
+      const std::string sql = "UPDATE assets SET duration_ms = " + std::to_string(ms) + " WHERE id = " + std::to_string(id) + ";"
+          "INSERT INTO speech(asset_id, spec, start_ms, end_ms, text) VALUES (" + std::to_string(id) + ", 'ai-test', " +
+          std::to_string(start) + ", " + std::to_string(std::min(ms, start + 1000)) + ", 'The moment to jump to');";
+      sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr);
+    }
     sqlite3_close(raw);
   }
 
@@ -153,7 +187,7 @@ int main(int argc, char** argv) {
   cat::build_options b;
   b.index_db = index_path.string();
   b.out_dir = gen_dir.string();
-  b.library_id = "e2e-library-1";
+  b.library_id = library_id;
   b.epoch = 1;
   b.generation = generation;
   b.created_unix = std::time(nullptr);

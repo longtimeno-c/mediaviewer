@@ -5,6 +5,7 @@
 # A local stand-in for the Synology, for trying the iPhone app by hand in the Simulator:
 #   tools/ios/demo-service.sh <folder> [desktop build dir]     start, print the pairing link
 #   tools/ios/demo-service.sh <folder> stop                    stop the service
+# DEMO_LIBRARY=<id> publishes under another library id (pair one library over another).
 #
 # Makes a small sample library (generated pictures and two clips), publishes a signed catalogue
 # with the test publisher, and runs `driftwire serve --test-loopback` on 127.0.0.1:18452. Writes the
@@ -80,7 +81,7 @@ fi
 
 cd "$out"
 rm -rf nas work data; mkdir -p nas work data; chmod 700 data
-"$pub" photos nas work 1 > publish.txt
+"$pub" photos nas work 1 "library=${DEMO_LIBRARY:-e2e-library-1}" > publish.txt
 publisher="$(grep publisher_key= publish.txt | cut -d= -f2)"
 library="$(grep library_id= publish.txt | cut -d= -f2)"
 cat > data/serve.json <<JSON

@@ -65,6 +65,40 @@ final class LocalCatalogueTests: XCTestCase {
     XCTAssertNoThrow(try item(named: "z.jpg", in: list))  // the newer one's file
   }
 
+  /// Forget, then pair another library whose first generation is numbered no higher: it comes
+  /// into force, and the forgotten library's does not linger.
+  func testAfterForgetTheNextLibraryOpensEvenIfNotNewer() async throws {
+    let (location, first, second) = try library()
+    let catalogue = LocalCatalogue(location: location)
+    try await catalogue.swap(to: second)
+    catalogue.forgetInForce()
+    XCTAssertNil(catalogue.generationInForce())
+    try await catalogue.swap(to: first)
+    XCTAssertEqual(catalogue.generationInForce()?.number, 1)
+  }
+
+  /// An open already running when the library is forgotten does not put it back in force.
+  func testAnOpenFinishingAfterForgetIsDropped() async throws {
+    let (location, _, second) = try library()
+    let catalogue = LocalCatalogue(location: location)
+    LocalCatalogue.beforeOpen = { _ in catalogue.forgetInForce() }  // Forget lands mid-open
+    try await catalogue.swap(to: second)
+    LocalCatalogue.beforeOpen = nil
+    XCTAssertNil(catalogue.generationInForce())
+  }
+
+  /// A generation another library left installed is never opened for the library now paired.
+  func testInstalledGenerationOfAnotherLibraryIsRefused() throws {
+    let (location, _, _) = try library()
+    XCTAssertNotNil(location.installedGeneration())
+    let other = LibraryLocation(root: location.root, pairedLibrary: { "another-library" })
+    XCTAssertNil(other.installedGeneration())
+    let same = LibraryLocation(root: location.root, pairedLibrary: { "library" })
+    XCTAssertNotNil(same.installedGeneration())
+    let unknown = LibraryLocation(root: location.root, pairedLibrary: { "" })
+    XCTAssertNotNil(unknown.installedGeneration(), "not known yet (an install from before the id was kept)")
+  }
+
   /// #8: an item from a list taken before a swap answers from its own generation.
   func testAPreSwapListKeepsItsOwnTilesAndDetails() async throws {
     let (location, _, second) = try library()

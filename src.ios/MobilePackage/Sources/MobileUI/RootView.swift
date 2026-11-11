@@ -30,7 +30,16 @@ public struct RootView: View {
     // The link MediaViewer shows beside its code, for when the camera cannot be used (§11.1).
     .onOpenURL { url in
       guard url.scheme == "mediaviewer", url.host == "pair" else { return }
-      model.scanned(url.absoluteString)
+      model.openedPairLink(url.absoluteString)
+    }
+    // An alert, not a confirmation dialog: one up here would keep Settings' Forget dialog from showing.
+    .alert("Pair with another library?", isPresented: Binding(
+      get: { model.pendingPairLink != nil }, set: { if !$0 { model.pendingPairLink = nil } }
+    )) {
+      Button("Pair with the new library") { model.confirmPendingPairLink() }
+      Button("Keep this library", role: .cancel) { model.pendingPairLink = nil }
+    } message: {
+      Text("Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your Synology changes.")
     }
     .task { await model.run() }
   }
