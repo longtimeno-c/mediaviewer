@@ -27,4 +27,10 @@ final class PairLinkTests: XCTestCase {
   func testALibraryInUseAsksFirst() {
     XCTAssertEqual(action(.main, library: true), .confirm)
   }
+
+  /// A Connect screen showing a failure takes a fresh link from the computer.
+  func testAFailedConnectTakesAFreshLink() {
+    XCTAssertEqual(AppModel.pairLinkAction(stage: .connect(code: "x"), isScanning: false, hasLibrary: false,
+                                           connectEnded: true), .open)
+  }
 }

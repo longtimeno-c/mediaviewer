@@ -229,20 +229,28 @@ public final class AppModel {
 
   /// Any app can open a mediaviewer://pair link, so one never interrupts pairing or a first copy,
   /// and never replaces a library in use without asking.
-  public static func pairLinkAction(stage: Stage, isScanning: Bool, hasLibrary: Bool) -> PairLinkAction {
+  public static func pairLinkAction(stage: Stage, isScanning: Bool, hasLibrary: Bool,
+                                    connectEnded: Bool = false) -> PairLinkAction {
     if isScanning { return .open }
     switch stage {
     case .welcome: return .open
-    case .connect, .firstCopy: return .ignore
+    // A Connect screen that ended in a failure (expired, unreachable, not a match) takes a fresh
+    // link; one still reading or pairing does not.
+    case .connect: return connectEnded ? .open : .ignore
+    case .firstCopy: return .ignore
     case .main: return hasLibrary ? .confirm : .open
     }
   }
+
+  /// The Connect screen has stopped on a failure, so nothing is in progress there.
+  public var connectEnded = false
 
   /// A pair link waiting for the person to say it may replace the library on this phone.
   public var pendingPairLink: String?
 
   public func openedPairLink(_ link: String) {
-    switch Self.pairLinkAction(stage: stage, isScanning: isScanning, hasLibrary: connection.hasLibrary) {
+    switch Self.pairLinkAction(stage: stage, isScanning: isScanning, hasLibrary: connection.hasLibrary,
+                               connectEnded: connectEnded) {
     case .open: scanned(link)
     case .confirm:
       viewer = nil  // the question is asked from under the viewer, which would hide it
@@ -258,6 +266,7 @@ public final class AppModel {
   }
 
   public func scanned(_ code: String) {
+    connectEnded = false
     isScanning = false
     scanCount += 1
     stage = .connect(code: code)

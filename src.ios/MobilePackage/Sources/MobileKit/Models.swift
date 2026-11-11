@@ -247,6 +247,9 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   public let macNearby: Bool
   public let catalogue: CatalogueInfo?
   public let cacheBytes: Int64
+  /// Which paired library this snapshot is about ("" with none), stamped when it is published, so a
+  /// late snapshot is never read as another library's.
+  public var libraryID: String = ""
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

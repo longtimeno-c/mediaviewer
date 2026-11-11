@@ -369,6 +369,7 @@ struct ConnectScreen: View {
     }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: ending)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: phase)
+    .onChange(of: hasEndedInFailure, initial: true) { _, ended in model.connectEnded = ended }
     .task(id: attempt) {
       if attempt > 0, let confirmed { await pair(confirmed) } else { await begin() }
     }
@@ -537,6 +538,12 @@ struct ConnectScreen: View {
     if model.connection.hasLibrary {
       Button("Back to library") { model.returnToLibrary() }.buttonStyle(QuietButtonStyle())
     }
+  }
+
+  private var hasEndedInFailure: Bool {
+    if phase == .notMatched { return true }
+    if case .failure? = ending { return true }
+    return false
   }
 
   private func restart() {

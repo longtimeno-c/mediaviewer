@@ -24,9 +24,14 @@ enum LiveServices {
   private static func reopenOnNewCatalogue(_ catalogue: LocalCatalogue, connection: LinkConnection) {
     Task.detached(priority: .utility) {
       var last = connection.current.catalogue
+      var library = LinkConnection.LibraryChange(current: connection.current.libraryID)
       for await snapshot in connection.updates() {
-        // Forgotten: the open catalogue goes too, or a library paired next could show this one.
-        if !snapshot.hasLibrary { catalogue.forgetInForce() }
+        // Forgotten, or another library paired over this one: the open catalogue goes too, or
+        // its generation (numbered higher than the new library's first) would stay in force.
+        if library.changed(to: snapshot.libraryID) {
+          catalogue.forgetInForce()
+          last = nil
+        }
         guard snapshot.catalogue != last else { continue }
         last = snapshot.catalogue
         if snapshot.catalogue != nil { try? await catalogue.reloadInstalled() }
