@@ -2331,8 +2331,8 @@ void engine::download_loop() {
       dl_cv_.wait(lock, [this] { return dl_kick_ || stopping_.load(); });
       if (stopping_) return;
       dl_kick_ = false;
+      dl_stop_ = false;  // under dl_m_: stop() sets it there, and this must not undo that
     }
-    dl_stop_ = false;
     dl_running_ = true;
     auto last_post = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     const auto progress = [&](const fetch_progress& p) {
@@ -3013,12 +3013,15 @@ void engine::scan_root(const root_row& root) {
     // An unreachable root (a share offline, a card pulled) keeps its index:
     // deleting rows because a drive is absent would throw work away. Settings
     // says so on the folder's row (roots_json "error") instead of "Up to date".
-    // A walk that failed part way is the same, and what it did find is kept.
+    // A walk that failed part way is the same, and what it did find is kept,
+    // and indexed now: its new and changed files go to the workers as after
+    // any walk (nothing is gone, and the root is not marked as checked).
     (void)see_batch(root, batch, gen, changed);
     {
       std::lock_guard lock(status_m_);
       root_errors_.insert(root.id);
     }
+    after_scan(root, {}, changed, false);
     post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
     return;
   }
@@ -3144,8 +3147,16 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
   std::vector<std::string> plain, trees;  // walked: their unseen rows are gone
   bool failed = false;
   bool root_checked = false;
+  // Cut short (the root stopped answering, the index could not take a batch):
+  // what was found is kept and indexed now, nothing is gone, and the root is
+  // not marked as checked; the next walk does the rest.
+  const auto partial = [&] {
+    if (!failed) (void)see_batch(root, batch, gen, changed);
+    after_scan(root, {}, changed, false);
+  };
   for (const auto& [dir, flags] : dirs) {
-    if (stopping_ || failed) return;
+    if (stopping_) return;
+    if (failed) return partial();
     const std::string key = path_key(dir);
     if (key != root_key && !under(key, root_key)) continue;
     // A root that is only its own folder: what happens below it is not ours
@@ -3158,7 +3169,7 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
       // answers is it gone, and everything that was under it with it.
       if (!root_checked) {
         const auto rs = host_.stat(root.path);
-        if (!rs || !rs->is_directory) return;  // the backstop's walk says "unreadable"
+        if (!rs || !rs->is_directory) return partial();  // the backstop's walk says "unreadable"
         root_checked = true;
       }
       trees.push_back(dir);
@@ -3175,7 +3186,11 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
     }
     (depth > 0 ? trees : plain).push_back(dir);
   }
-  if (!see_batch(root, batch, gen, changed) || failed) return;
+  if (stopping_) return;
+  if (failed || !see_batch(root, batch, gen, changed)) {
+    failed = true;
+    return partial();
+  }
   if (!trees.empty()) keep_unlistable(root, gen, &trees);
   auto gone = db_->end_scan_dirs(root.id, gen, plain, trees);
   after_scan(root, gone ? *gone : std::vector<std::int64_t>{}, changed);
@@ -3242,8 +3257,10 @@ void engine::scan_photos(const root_row& root) {
   bool failed = false;
   // The library's first walk adds everything; only later walks add news.
   photos_note_new_ = db_->assets_in_root(root.id) > 0;
+  std::uint64_t listed = 0;  // what the enumeration saw
   const expected walked = photos_->enumerate([&](const photos_item& it) {
     if (stopping_ || failed) return false;
+    ++listed;
     batch.push_back(index_db::seen_file{photos_key(it.id), it.mtime, it.size, it.kind});
     {
       std::lock_guard lock(photos_tags_m_);
@@ -3252,8 +3269,35 @@ void engine::scan_photos(const root_row& root) {
     if (batch.size() >= 512 && !see_batch(root, batch, gen, changed)) failed = true;
     return !failed;
   });
-  if (!walked || stopping_ || failed) return;  // keep what is indexed
-  if (!see_batch(root, batch, gen, changed)) return;
+  if (stopping_) return;
+  if (!walked || failed || !see_batch(root, batch, gen, changed)) {
+    // Keep what is indexed, and index what the enumeration did find (as a
+    // folder walk that failed part way does): nothing is gone.
+    if (walked && !failed) failed = true;  // the last batch did not go in
+    if (!walked && !failed) (void)see_batch(root, batch, gen, changed);
+    after_scan(root, {}, changed, false);
+    return;
+  }
+  // An enumeration that saw nothing where this library had assets is more
+  // often a library that is not there (its drive unmounted, the System Photo
+  // Library being switched) than one emptied on purpose: the rows wait, and
+  // the library's row says it cannot be read, as a folder's does. Otherwise
+  // every asset would be dropped, and embedded again when it came back.
+  if (listed == 0) {
+    if (const auto unseen = db_->unseen_assets(root.id, gen); unseen && !unseen->empty()) {
+      {
+        std::lock_guard lock(status_m_);
+        root_errors_.insert(root.id);
+      }
+      after_scan(root, {}, changed, false);
+      post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
+      return;
+    }
+  }
+  {
+    std::lock_guard lock(status_m_);
+    if (root_errors_.erase(root.id) != 0) post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
+  }
   end_root_scan(root, gen, changed);
 }
 
@@ -3411,7 +3455,7 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
 }
 
 void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& gone,
-                        const std::vector<std::int64_t>& changed) {
+                        const std::vector<std::int64_t>& changed, bool walked_whole) {
   if (!gone.empty()) {
     std::lock_guard lock(assets_m_);
     for (std::int64_t id : gone) erase_asset_locked(id);
@@ -3449,7 +3493,7 @@ void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& g
       faces_scanned_.erase(id);
     }
   }
-  (void)db_->touch_root(root.id, unix_now());
+  if (walked_whole) (void)db_->touch_root(root.id, unix_now());
   {
     std::lock_guard lock(work_m_);
     queue_.clear();

@@ -669,6 +669,12 @@ struct cloud_world {
   // walk then reports the failure, as the host does after listing what it could.
   std::set<std::string> walk_misses;
   std::atomic<bool> walk_fails{false};
+  // Paths whose stat fails, as on a share that stopped answering (a test's).
+  std::set<std::string> stat_fails;
+  bool stat_failed(const std::string& path) {
+    std::lock_guard lock(m);
+    return stat_fails.count(path) != 0;
+  }
   bool walk_missed(const std::string& name) {
     std::lock_guard lock(m);
     return walk_misses.count(name) != 0;
@@ -712,6 +718,7 @@ struct walk2_ctx {
 };
 std::mutex g_walks_m;
 std::map<void*, std::pair<decltype(mv_host_api::walk_files2), cloud_world*>> g_walks;  // by host
+std::map<void*, std::pair<decltype(mv_host_api::stat_file), cloud_world*>> g_stats;  // by host, under g_walks_m
 // Every walk the engine asked for: (folder, depth) (docs/plans/index-watcher.md).
 std::vector<std::pair<std::string, int>> g_walk_log;
 
@@ -749,6 +756,20 @@ mv_status MV_CALL volume_of_faked(void* host, const char* path, mv_addon_volume*
     out->free_bytes = o.nas_free->load();
   }
   return s;
+}
+
+mv_status MV_CALL stat_with_failures(void* host, const char* path, uint64_t* size, int64_t* mtime, uint32_t* dir) {
+  decltype(mv_host_api::stat_file) real = nullptr;
+  cloud_world* world = nullptr;
+  {
+    std::lock_guard lock(g_walks_m);
+    const auto it = g_stats.find(host);
+    if (it == g_stats.end()) return MV_ERR_INTERNAL;
+    real = it->second.first;
+    world = it->second.second;
+  }
+  if (path && world->stat_failed(path)) return MV_ERR_IO;
+  return real(host, path, size, mtime, dir);
 }
 
 mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, mv_addon_walk2_fn visit, void* user) {
@@ -1097,8 +1118,10 @@ struct rig {
     {
       std::lock_guard lock(g_walks_m);
       g_walks[api.host] = {api.walk_files2, cloud.get()};
+      g_stats[api.host] = {api.stat_file, cloud.get()};
     }
     api.walk_files2 = &walk2_with_cloud;
+    api.stat_file = &stat_with_failures;
     {
       std::lock_guard lock(g_volumes_m);
       g_volumes[api.host] = {api.volume_of, &nas_free};
@@ -1118,6 +1141,7 @@ struct rig {
     }
     std::lock_guard lock(g_walks_m);
     g_walks.erase(api.host);
+    g_stats.erase(api.host);
   }
   std::vector<std::string> drawn_pages() {
     std::lock_guard lock(decoded_m);
@@ -1234,8 +1258,8 @@ struct rig {
     };
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
-    d.tree_quiet_s = 0.05;  // docs/plans/index-watcher.md: the host's watch, walked at once
-    d.tree_max_wait_s = 0.5;
+    d.tree_quiet_s = tree_quiet;  // docs/plans/index-watcher.md: the host's watch, walked at once
+    d.tree_max_wait_s = tree_quiet > 1 ? tree_quiet : 0.5;  // a test that keeps the watch out of the way
     d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
     d.pdf = [this]() -> std::unique_ptr<mv::ai::pdf_reader> {
       if (!pdf_available) return nullptr;
@@ -1325,6 +1349,7 @@ struct rig {
   // which does not ask for automatic publishing never sees one.
   double phone_quiet = 3600;
   double link_retry = 30;
+  double tree_quiet = 0.05;  // the host's watch; a test sets an hour to see a walk do the work alone
   std::function<void()> after_hand_over;
   double code_ttl = 300;
   double phone_interval = 3600;
@@ -1577,7 +1602,7 @@ TEST_CASE("a folder replaced by a file drops its rows", "[ai][engine]") {
   CHECK(r.status().assets_total == 1);
 }
 
-TEST_CASE("a walk that fails part way adds what it found and deletes nothing", "[ai][engine]") {
+TEST_CASE("a walk that fails part way adds what it found and deletes nothing", "[ai][engine][walk]") {
   rig r;
   r.file("red_car.jpg");
   r.file("green_field.jpg");
@@ -1598,6 +1623,65 @@ TEST_CASE("a walk that fails part way adds what it found and deletes nothing", "
   CHECK(r.search("green").size() == 1);
   CHECK(r.search("blue").size() == 1);
   CHECK(wait_for([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }, kSettleMs));
+}
+
+// The same, with the engine wholly quiet first, so nothing still finishing
+// from the first index can pick the new file up by chance: a partial walk
+// must hand what it found to the workers itself.
+TEST_CASE("a walk that fails part way on a quiet engine still indexes what it found", "[ai][engine][walk]") {
+  rig r;
+  // The host's watch would find the new file too, and walk its folder after
+  // its quiet time. On a share that is dropping it often says nothing; here
+  // it waits an hour, so only the failed walk can hand the file over.
+  r.tree_quiet = 3600;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // every worker parked, the queue known empty
+  REQUIRE(r.idle());
+
+  r.file("blue_sea.jpg");
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->walk_misses.insert("green_field.jpg");
+  }
+  r.cloud->walk_fails = true;
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(wait_for([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }, kSettleMs));
+  // Indexed within a few seconds, not when the watch's walk comes round. (Not
+  // "idle": the watch's change is still waiting its hour, as it should.)
+  CHECK(wait_for([&] { return r.status().assets_done == 3 && r.search("blue").size() == 1; }, 5000));
+}
+
+// The watch's walk of the folders it says changed, cut short when the root
+// stops answering part way: what it found before that is indexed now, not at
+// the 15-minute backstop.
+TEST_CASE("a watched walk that loses the root part way still indexes what it found", "[ai][engine][walk]") {
+#if !defined(_WIN32) && !defined(__APPLE__)
+  SKIP("no tree watch on this OS");
+#else
+  rig r;
+  r.file("a/red_car.jpg");
+  r.file("z/green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  // z, and then the root itself, stop answering; a is still fine.
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->stat_fails = {utf8(r.photos() / "z"), utf8(r.photos())};
+  }
+  r.file("a/blue_sea.jpg");                  // the watch reports a
+  write_bytes(r.photos() / "z" / "x.txt", pattern(8, 1));  // and z, which is walked after a
+  const bool found = wait_for([&] { return r.status().assets_done == 3 && r.search("blue").size() == 1; }, 8000);
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->stat_fails.clear();
+  }
+  CHECK(found);
+#endif
 }
 
 // docs/plans/index-watcher.md: the host watches a remembered folder's tree,
@@ -5516,6 +5600,45 @@ TEST_CASE("a Photos edit re-queues its asset, a delete drops it, and a change no
   CHECK(has_row(r.answered("red"), "photos:red-rose"));
   // The edit and the import were embedded; nothing else was.
   CHECK(r.fast->images_embedded + r.high->images_embedded == embedded + 2);
+}
+
+// The same guard as a folder's empty mount point: a library that answers with
+// nothing at all (on an unmounted drive, or being switched) keeps its rows.
+TEST_CASE("a Photos library that answers with nothing keeps its index until it is back", "[ai][engine][photos]") {
+  rig r;
+  r.library->items = {{"red-rose", 1, mv::ai::asset_kind::photo, true, ""},
+                      {"green-leaf", 1, mv::ai::asset_kind::photo, true, ""}};
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  REQUIRE(r.status().assets_total == 2);
+  const int embedded = r.fast->images_embedded + r.high->images_embedded;
+
+  std::vector<photos_lib::item> kept;
+  {
+    std::lock_guard lock(r.library->m);
+    kept = r.library->items;
+    r.library->items.clear();  // its drive unmounted: PhotoKit lists nothing
+  }
+  const int before = r.library->enumerations;
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.library->enumerations > before; }));
+  REQUIRE(eventually([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }));
+  CHECK(r.status().assets_total == 2);
+  CHECK(has_row(r.answered("red"), "photos:red-rose"));
+
+  // Back: nothing is embedded again, and the row no longer says unreadable.
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items = kept;
+  }
+  const int again = r.library->enumerations;
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.library->enumerations > again; }));
+  REQUIRE(eventually([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") == std::string::npos; }));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_total == 2);
+  CHECK(r.fast->images_embedded + r.high->images_embedded == embedded);
 }
 
 TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once it is local",
