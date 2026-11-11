@@ -1118,12 +1118,6 @@ expected index_db::each_speech(
   return {};
 }
 
-std::string index_db::busiest_speech_spec() {
-  std::lock_guard lock(m_);
-  stmt s(db_, "SELECT spec FROM speech GROUP BY spec ORDER BY COUNT(*) DESC, spec LIMIT 1");
-  return s.ok() && s.step_row() ? s.text(0) : std::string();
-}
-
 expected index_db::commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
                                std::int64_t resume_ms, std::int64_t replace_from, const std::string& spec) {
   std::lock_guard lock(m_);

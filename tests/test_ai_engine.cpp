@@ -26,6 +26,7 @@
 #include "addons/ai/nfc.h"
 #include "codec/decode.h"
 #include "addons/ai/sha256.h"
+#include "mobile/catalogue.h"
 
 #include <algorithm>
 #include <atomic>
@@ -469,7 +470,7 @@ class fake_speech final : public mv::ai::speech_model {
   mv::result<mv::infer::speech_window> transcribe(std::span<const float> pcm, std::int64_t start_ms) override {
     mv::infer::speech_window w;
     w.consumed_ms = static_cast<std::int64_t>(pcm.size()) * 1000 / 16000;
-    for (std::size_t i = 0; i < pcm.size(); ++i) {
+    for (std::size_t i = 0; i < pcm.size() && !silent; ++i) {
       if (std::fabs(pcm[i] - 0.1f) < 1e-4f) {
         w.segments.push_back({start_ms + static_cast<std::int64_t>(i / 16), start_ms + 10000,
                               "Happy birthday Anna, make a wish!"});
@@ -481,6 +482,7 @@ class fake_speech final : public mv::ai::speech_model {
     return w;
   }
   std::atomic<int> windows{0};
+  std::atomic<bool> silent{false};  // hears nothing: speech under music, say
 };
 
 // A tower a test can hold at each step the pack's Core ML tower takes long
@@ -8051,4 +8053,69 @@ TEST_CASE("said: reads the transcripts there are, the chosen Whisper's first", "
   const auto settings = mv::json::parse(read_all(nas / ".mediaviewer" / "gen" / "000001" / "settings.json"));
   REQUIRE(settings);
   CHECK(*settings->str("speech_spec") == "fake-whisper/fp16/pre1");
+}
+
+TEST_CASE("said: keeps another Whisper's transcript when the chosen one hears nothing", "[ai][engine][audio]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  r.eng.reset();
+  const std::string index = utf8(r.dir / "data" / "index.db");
+  const auto sql = [&](const char* text) {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(index.c_str(), &db) == SQLITE_OK);
+    CHECK(sqlite3_exec(db, text, nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+  // Whisper small's transcript is the only one; the chosen Whisper transcribes
+  // the clip again and hears nothing.
+  sql("UPDATE speech SET spec = 'whisper-small/fp16/pre1'; DELETE FROM progress WHERE spec = 'fake-whisper/fp16/pre1'");
+  r.speech->silent = true;
+  const int before = r.speech->windows.load();
+  r.start();
+  REQUIRE(r.idle());
+  REQUIRE(r.speech->windows.load() > before);  // it did transcribe again
+  CHECK(r.search("said:birthday").size() == 1);  // live: not dropped by a silent window
+  r.eng.reset();
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:birthday").size() == 1);  // after a reload, the same
+}
+
+TEST_CASE("with no Whisper no transcript answers in the app or the reader or on the phone", "[ai][engine][audio][phone]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.search("said:birthday").size() == 1);
+  r.eng.reset();
+  // The audio piece removed: its transcripts stay in the index, but none answers
+  // (2026-09-27: a removed piece clears what it answered).
+  r.audio_available = false;
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:birthday").empty());
+  {
+    auto rd = r.start_reader();
+    const std::uint64_t id = rd->search_text("said:birthday", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(rd->wait_search(id, kSettleMs));
+    CHECK(*rd->result_count(id) == 0);
+  }
+  const fs::path nas = r.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(r.eng->phone_publish(utf8(nas)));
+  auto done = phone_done(r);
+  REQUIRE(*done.str("error") == "");
+  const fs::path gen = nas / ".mediaviewer" / "gen" / "000001";
+  const auto settings = mv::json::parse(read_all(gen / "settings.json"));
+  REQUIRE(settings);
+  CHECK(*settings->str("speech_spec") == "");
+  auto cat = mv::mobile::catalogue::open(utf8(gen), utf8(nas / ".mediaviewer"));
+  REQUIRE(cat);
+  CHECK((*cat)->speech_spec().empty());  // the phone's engine then reads no transcript
 }

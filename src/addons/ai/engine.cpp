@@ -2662,7 +2662,7 @@ bool engine::load_reader() {
     speech_ = {};
     speech_.spec_key = reader_speech_spec_;
   }
-  load_speech(reader_speech_spec_);  // "": whichever Whisper wrote the most
+  load_speech(reader_speech_spec_);  // "": no Whisper here, so no transcript answers
   catalogue_ready_ = true;
 
   // The tower whose vectors are in the index answers; the reader never
@@ -4427,6 +4427,7 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
   constexpr std::size_t kWindow = 16000 * 30;
   std::vector<float> buf;
   std::int64_t buf_start = -1;
+  bool replaced_other = false;  // another Whisper's lines of this clip, dropped from memory once
   std::vector<float> chunk(16000 * 5);
   bool eof = false;
   while (true) {
@@ -4461,13 +4462,18 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
                             next_ms)) {
       return;
     }
-    {
+    if (!rows.empty()) {
       std::lock_guard lock(speech_m_);
-      // Another Whisper's transcript of this clip answered until now: this one replaces it.
-      const std::int64_t id = item.asset.id;
-      speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
-                                        [id](const speech_row& r) { return r.asset == id && r.other_spec; }),
-                         speech_rows_.end());
+      // The rule load_speech reads by (index_db::each_speech): once the chosen
+      // Whisper has a line for this clip, its transcript replaces another's.
+      // Once per clip; a silent window replaces nothing.
+      if (!replaced_other) {
+        const std::int64_t id = item.asset.id;
+        speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                          [id](const speech_row& r) { return r.asset == id && r.other_spec; }),
+                           speech_rows_.end());
+        replaced_other = true;
+      }
       for (const speech_in& r : rows) {
         speech_rows_.push_back(speech_row{item.asset.id, r.start_ms, r.text, infer::speech_words(r.text)});
       }
@@ -7452,6 +7458,14 @@ void engine::process_scan(const work_item& item) {
 }
 
 void engine::load_speech(const std::string& preferred) {
+  // No Whisper chosen: no transcript answers, as when the audio piece is
+  // removed (2026-09-27: a removed piece clears what it answered; cues, in
+  // their own table, stay). Readers follow the app here.
+  if (preferred.empty()) {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.clear();
+    return;
+  }
   std::vector<speech_row> rows;
   (void)db_->each_speech(preferred, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text,
                                         bool chosen) {

@@ -450,15 +450,17 @@ filter_options catalogue::filters() const {
 
 std::string catalogue::speech_spec() const {
   // The Whisper the publishing Mac reads `said:` from first; the engine's
-  // load_speech then takes, clip by clip, that one's transcript or whichever
-  // the clip has, the same rule as the Mac's. "" (an older publisher): the
-  // engine falls back to the Whisper with the most lines, as the Mac would.
+  // load_speech then takes, clip by clip, that one's transcript or another's,
+  // the Mac's own rule. "" means the Mac had no Whisper, so no transcript
+  // answers there or here. A catalogue from before the key: its busiest
+  // Whisper, which each_speech's own fallback would pick anyway.
   if (auto text = slurp(dir_ + "/settings.json")) {
     if (const auto doc = json::parse(*text, 4); doc && doc->k == json::kind::object) {
       if (const std::string* spec = doc->str("speech_spec")) return *spec;
     }
   }
-  return std::string();
+  stmt q(db_, "SELECT spec FROM speech GROUP BY spec ORDER BY COUNT(*) DESC, spec LIMIT 1");
+  return q.next() ? q.text(0) : std::string();
 }
 
 std::optional<std::int64_t> catalogue::id_at(const std::string& path) const {

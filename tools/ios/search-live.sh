@@ -30,13 +30,28 @@ desk="$root/build/bin/mv_mobile_parity_desktop"; cli="$root/build/bin/mv_driftwi
 port=18462
 mkdir -p "$out"; out="$(cd "$out" && pwd)"
 mnt="$out/mnt"
+# This script's own service only: the pid in serve.pid, and only while it is still our
+# `driftwire serve` (a reused pid is someone else's process).
+stop_own_service() {
+  [[ -f $out/serve.pid ]] || return 0
+  local pid; pid="$(cat "$out/serve.pid")"
+  if ps -p "$pid" -o command= 2>/dev/null | grep -q "mv_driftwire_cli_test serve"; then kill "$pid" 2>/dev/null || true; fi
+  rm -f "$out/serve.pid"
+}
 finish() {
-  [[ -f $out/serve.pid ]] && kill "$(cat "$out/serve.pid")" 2>/dev/null
+  stop_own_service
   # The image holds copies of the owner's files: detached on every way out, unless the next run
-  # reuses it (MV_LIVE_REUSE=1).
-  [[ ${MV_LIVE_REUSE:-} == 1 ]] || hdiutil detach -quiet "$mnt" 2>/dev/null || true
+  # reuses it (MV_LIVE_REUSE=1). A file still open in it (the service just stopped) can refuse
+  # the first try; the second forces it, and a third failure is said, not hidden.
+  [[ ${MV_LIVE_REUSE:-} == 1 ]] && return 0
+  mount | grep -q " on $mnt " || return 0
+  hdiutil detach -quiet "$mnt" 2>/dev/null && return 0
+  sleep 2
+  hdiutil detach -force -quiet "$mnt" 2>/dev/null && return 0
+  echo "COULD NOT DETACH $mnt: it holds copies of the files; detach it by hand (hdiutil detach -force $mnt)" >&2
 }
 trap finish EXIT
+trap 'exit 143' TERM INT HUP  # a signal ends the script through finish too
 
 # ---- 1. the "NAS" and the index pointing at it ----------------------------------------------
 if [[ ! -d $mnt/Photos && -f $out/nas.sparseimage ]]; then mkdir -p "$mnt"; hdiutil attach -quiet -nobrowse -mountpoint "$mnt" "$out/nas.sparseimage"; fi
@@ -115,11 +130,7 @@ print("mediaviewer://pair#" + base64.urlsafe_b64encode(json.dumps(j).encode()).d
 PY
 )"
 # Only this script's own service from an earlier run, never whatever else holds the port.
-if [[ -f $out/serve.pid ]]; then
-  old="$(cat "$out/serve.pid")"
-  if ps -p "$old" -o command= 2>/dev/null | grep -q "mv_driftwire_cli_test serve"; then kill "$old"; sleep 1; fi
-  rm -f "$out/serve.pid"
-fi
+stop_own_service; sleep 1
 "$cli" serve --data "$out/serve" --test-loopback > "$out/serve.log" 2>&1 & echo $! > "$out/serve.pid"
 sleep 1
 

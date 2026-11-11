@@ -668,7 +668,8 @@ class engine {
     // the chosen one's transcript replaces it when it is made.
     bool other_spec = false;
   };
-  // Every clip's transcript, `preferred`'s where there is one ("": the busiest).
+  // Every clip's transcript, `preferred`'s where there is one, else another
+  // Whisper's (index_db::each_speech). "": no Whisper, so none.
   void load_speech(const std::string& preferred);
   // #406: a clip's own text in memory, matched like transcript lines but kept
   // apart from them: removing the audio piece clears speech, never these.

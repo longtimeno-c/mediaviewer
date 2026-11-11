@@ -131,8 +131,9 @@ class catalogue {
   [[nodiscard]] std::uint32_t people_count() const;
   [[nodiscard]] result<details> details_of(std::int64_t id) const;
   [[nodiscard]] filter_options filters() const;
-  // The Whisper the publisher reads `said:` from first ("": none named; the
-  // engine then prefers the one with most lines). Speech needs no model.
+  // The Whisper the publisher reads `said:` from first: "" when it had none
+  // (no transcript answers), the busiest for a catalogue from before the key.
+  // Speech needs no model.
   [[nodiscard]] std::string speech_spec() const;
   // The asset id at this path in the catalogue, for the engine's tile calls.
   [[nodiscard]] std::optional<std::int64_t> id_at(const std::string& path) const;
