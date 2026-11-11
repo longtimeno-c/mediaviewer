@@ -5537,6 +5537,45 @@ TEST_CASE("a Photos edit re-queues its asset, a delete drops it, and a change no
   CHECK(r.fast->images_embedded + r.high->images_embedded == embedded + 2);
 }
 
+// The same guard as a folder's empty mount point: a library that answers with
+// nothing at all (on an unmounted drive, or being switched) keeps its rows.
+TEST_CASE("a Photos library that answers with nothing keeps its index until it is back", "[ai][engine][photos]") {
+  rig r;
+  r.library->items = {{"red-rose", 1, mv::ai::asset_kind::photo, true, ""},
+                      {"green-leaf", 1, mv::ai::asset_kind::photo, true, ""}};
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  REQUIRE(r.status().assets_total == 2);
+  const int embedded = r.fast->images_embedded + r.high->images_embedded;
+
+  std::vector<photos_lib::item> kept;
+  {
+    std::lock_guard lock(r.library->m);
+    kept = r.library->items;
+    r.library->items.clear();  // its drive unmounted: PhotoKit lists nothing
+  }
+  const int before = r.library->enumerations;
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.library->enumerations > before; }));
+  REQUIRE(eventually([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }));
+  CHECK(r.status().assets_total == 2);
+  CHECK(has_row(r.answered("red"), "photos:red-rose"));
+
+  // Back: nothing is embedded again, and the row no longer says unreadable.
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items = kept;
+  }
+  const int again = r.library->enumerations;
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.library->enumerations > again; }));
+  REQUIRE(eventually([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") == std::string::npos; }));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_total == 2);
+  CHECK(r.fast->images_embedded + r.high->images_embedded == embedded);
+}
+
 TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once it is local",
           "[ai][engine][photos]") {
   rig r;

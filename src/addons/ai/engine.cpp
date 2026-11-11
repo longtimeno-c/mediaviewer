@@ -3233,8 +3233,10 @@ void engine::scan_photos(const root_row& root) {
   bool failed = false;
   // The library's first walk adds everything; only later walks add news.
   photos_note_new_ = db_->assets_in_root(root.id) > 0;
+  std::uint64_t listed = 0;  // what the enumeration saw
   const expected walked = photos_->enumerate([&](const photos_item& it) {
     if (stopping_ || failed) return false;
+    ++listed;
     batch.push_back(index_db::seen_file{photos_key(it.id), it.mtime, it.size, it.kind});
     {
       std::lock_guard lock(photos_tags_m_);
@@ -3251,6 +3253,26 @@ void engine::scan_photos(const root_row& root) {
     if (!walked && !failed) (void)see_batch(root, batch, gen, changed);
     after_scan(root, {}, changed, false);
     return;
+  }
+  // An enumeration that saw nothing where this library had assets is more
+  // often a library that is not there (its drive unmounted, the System Photo
+  // Library being switched) than one emptied on purpose: the rows wait, and
+  // the library's row says it cannot be read, as a folder's does. Otherwise
+  // every asset would be dropped, and embedded again when it came back.
+  if (listed == 0) {
+    if (const auto unseen = db_->unseen_assets(root.id, gen); unseen && !unseen->empty()) {
+      {
+        std::lock_guard lock(status_m_);
+        root_errors_.insert(root.id);
+      }
+      after_scan(root, {}, changed, false);
+      post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
+      return;
+    }
+  }
+  {
+    std::lock_guard lock(status_m_);
+    if (root_errors_.erase(root.id) != 0) post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
   }
   end_root_scan(root, gen, changed);
 }
