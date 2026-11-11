@@ -5,6 +5,7 @@
 #include <ctime>
 #include <random>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "addons/ai/machine.h"
 
@@ -7479,20 +7480,26 @@ void engine::forget_speech_locked(const std::set<std::int64_t>* assets) {
   if (!assets) {
     speech_cleared_mark_ = ++speech_mark_;
     speech_committed_.clear();  // what was committed before the clear is gone with it
+    speech_dropped_.clear();
     return;
   }
-  for (const std::int64_t id : *assets) speech_committed_[id] = ++speech_mark_;
+  // Recorded apart from commits: an install filters these out of what it read
+  // in one pass, and never reads them again (a photo has no lines at all).
+  for (const std::int64_t id : *assets) speech_dropped_[id] = ++speech_mark_;
 }
 
 void engine::prune_speech_committed_locked() {
   // Entries older than every full install still reading are no use to any.
   if (speech_installs_.empty()) {
     speech_committed_.clear();
+    speech_dropped_.clear();
     return;
   }
   const std::uint64_t oldest = *speech_installs_.begin();
-  for (auto it = speech_committed_.begin(); it != speech_committed_.end();) {
-    it = it->second <= oldest ? speech_committed_.erase(it) : std::next(it);
+  for (auto* record : {&speech_committed_, &speech_dropped_}) {
+    for (auto it = record->begin(); it != record->end();) {
+      it = it->second <= oldest ? record->erase(it) : std::next(it);
+    }
   }
 }
 
@@ -7513,14 +7520,24 @@ void engine::install_speech(const std::string& preferred, const std::function<vo
     std::lock_guard held(speech_m_);
     // The index was cleared during the read: nothing read before the clear stands.
     if (speech_cleared_mark_ > start) rows.clear();
+    // Assets dropped during the read: their lines leave what was read in one
+    // pass, never a read or an erase per asset under these locks.
+    const auto dropped_since = [&](std::int64_t id) {
+      auto d = speech_dropped_.find(id);
+      return d != speech_dropped_.end() && d->second > start ? d->second : std::uint64_t{0};
+    };
+    if (!speech_dropped_.empty()) {
+      rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const speech_row& r) { return dropped_since(r.asset) != 0; }),
+                 rows.end());
+    }
     speech_rows_ = std::move(rows);
     if (with_locks) with_locks();
     for (auto it = speech_dirty_.begin(); it != speech_dirty_.end();) {
       it = it->second <= start ? speech_dirty_.erase(it) : std::next(it);  // committed before the read: in it
     }
     for (const auto& [id, mark] : speech_committed_) {
-      // Committed or dropped during the read: maybe not as the read saw it.
-      if (mark > start) speech_dirty_[id] = ++speech_mark_;
+      // Committed during the read, and not dropped after: maybe not as the read saw it.
+      if (mark > start && dropped_since(id) < mark) speech_dirty_[id] = ++speech_mark_;
     }
     speech_installs_.erase(speech_installs_.find(start));
     prune_speech_committed_locked();
@@ -7545,16 +7562,22 @@ void engine::settle_speech() {
     std::lock_guard lock(models_m_);
     std::lock_guard held(speech_m_);
     if ((speech_.model ? speech_.spec_key : std::string()) != chosen) continue;  // another Whisper meanwhile
+    // The clips still as they were read: their old lines out in one pass, the new ones in.
+    std::unordered_set<std::int64_t> settled;
     for (std::size_t i = 0; i < dirty.size(); ++i) {
-      const std::int64_t id = dirty[i].first;
-      auto it = speech_dirty_.find(id);
+      auto it = speech_dirty_.find(dirty[i].first);
       if (it == speech_dirty_.end() || it->second != dirty[i].second) continue;  // marked again: next pass
-      speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
-                                        [id](const speech_row& r) { return r.asset == id; }),
-                         speech_rows_.end());
+      settled.insert(dirty[i].first);
+      speech_dirty_.erase(it);
+    }
+    if (settled.empty()) continue;
+    speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                      [&](const speech_row& r) { return settled.count(r.asset) != 0; }),
+                       speech_rows_.end());
+    for (std::size_t i = 0; i < dirty.size(); ++i) {
+      if (!settled.count(dirty[i].first)) continue;
       speech_rows_.insert(speech_rows_.end(), std::make_move_iterator(reads[i].begin()),
                           std::make_move_iterator(reads[i].end()));
-      speech_dirty_.erase(it);
     }
   }
 }

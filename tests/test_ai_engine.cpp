@@ -8613,3 +8613,59 @@ TEST_CASE("said: a folder removed or the index cleared during a reload's read st
     CHECK(wait_for([&] { return r.eng->speech_commits_kept() == 0; }, kSettleMs));  // nothing kept once none reads
   }
 }
+
+// A folder removed during a reload's read: the install must not re-read or erase the dropped
+// assets one by one under models_m_ and speech_m_, where every said: search waits. 30,000 photos
+// (no speech) dropped while a reload reads 300,000 transcript lines.
+// `mv_ai_tests "[.perf-bench][speech-drop]"` prints JSON.
+TEST_CASE("perf: a 30k-asset folder removed during a 300k-line reload", "[.perf-bench][speech-drop]") {
+  rig r;
+  r.audio_available = true;
+  const fs::path data = r.dir / "data";
+  fs::create_directories(data);
+  {
+    auto made = mv::ai::index_db::open(utf8(data / "index.db"));
+    REQUIRE(made);
+  }
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(utf8(data / "index.db").c_str(), &db) == SQLITE_OK);
+  // Disabled roots: kept and loaded, never walked (their files are not on disk).
+  REQUIRE(sqlite3_exec(db,
+                       "BEGIN; INSERT INTO roots(id, path, recursive, enabled, media) VALUES"
+                       " (1, '/bench/photos', 1, 0, 0), (2, '/bench/clips', 1, 0, 0);"
+                       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 30000)"
+                       " INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms)"
+                       " SELECT i, '/bench/photos/' || i || '.jpg', 1, 0, 0, 1, 0 FROM n;"
+                       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)"
+                       " INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms)"
+                       " SELECT 100000 + i, '/bench/clips/' || i || '.mp4', 2, 0, 0, 2, 600000 FROM n;"
+                       "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 299999)"
+                       " INSERT INTO speech(asset_id, spec, start_ms, end_ms, text)"
+                       " SELECT 100001 + i / 100, 'fake-whisper/fp16/pre1', (i % 100) * 1000, (i % 100) * 1000 + 900,"
+                       " 'words said at moment ' || (i % 100) FROM n; COMMIT;",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+
+  std::atomic<bool> armed{false}, installed{false};
+  std::chrono::steady_clock::time_point dropped, end;
+  r.tweak = [&](mv::ai::engine_deps& d) {
+    d.after_speech_read = [&] {
+      if (!armed.load()) return;
+      REQUIRE(r.eng->root_remove(1));  // the 30k photos leave during the read
+      dropped = std::chrono::steady_clock::now();
+    };
+    d.after_speech_install = [&] {
+      if (!armed.exchange(false)) return;
+      end = std::chrono::steady_clock::now();
+      installed = true;
+    };
+  };
+  r.start();
+  REQUIRE(wait_for([&] { return r.eng->speech_lines() == 300000; }, 4 * kSettleMs));
+  armed = true;
+  REQUIRE(r.eng->set_setting("reload", "1"));
+  REQUIRE(wait_for([&] { return installed.load(); }, 60 * kSettleMs));
+  const double after_drop_ms = std::chrono::duration<double, std::milli>(end - dropped).count();
+  CHECK(r.eng->speech_lines() == 300000);
+  std::printf("{\"rows\":300000,\"dropped_assets\":30000,\"install_after_drop_ms\":%.1f}\n", after_drop_ms);
+}

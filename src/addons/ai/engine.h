@@ -420,7 +420,7 @@ class engine {
   // Clips remembered for full installs still reading (tests: none kept once idle). [no-block]
   [[nodiscard]] std::size_t speech_commits_kept() const {
     std::lock_guard lock(speech_m_);
-    return speech_committed_.size();
+    return speech_committed_.size() + speech_dropped_.size();
   }
   // A reader: whether search_text can answer this query now, before (or
   // without) its tower: names, dates, places, words said, files. [no-block]
@@ -1035,6 +1035,7 @@ class engine {
   // (empty while none reads); the starts of the installs reading now; the
   // mark of the last clear, for an install whose read it overtook.
   std::unordered_map<std::int64_t, std::uint64_t> speech_committed_;
+  std::unordered_map<std::int64_t, std::uint64_t> speech_dropped_;  // assets dropped, by mark
   std::multiset<std::uint64_t> speech_installs_;
   std::uint64_t speech_cleared_mark_ = 0;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
