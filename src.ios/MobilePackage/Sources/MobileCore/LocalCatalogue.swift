@@ -16,8 +16,14 @@ import UIKit
 /// (§8.3): a catalogue of the whole library must not go there.
 public struct LibraryLocation: Sendable {
   public let root: URL
+  /// The library this phone is paired with, when known: an installed generation of any other
+  /// library (left behind by an earlier pairing) is never opened. "" or nil: not known yet.
+  public var pairedLibrary: @Sendable () -> String?
 
-  public init(root: URL) { self.root = root }
+  public init(root: URL, pairedLibrary: @escaping @Sendable () -> String? = { nil }) {
+    self.root = root
+    self.pairedLibrary = pairedLibrary
+  }
 
   /// `Application Support/library`. Cheap: no disk.
   public static var standard: LibraryLocation {
@@ -33,13 +39,18 @@ public struct LibraryLocation: Sendable {
     root.appendingPathComponent("engine", isDirectory: true).appendingPathComponent(generation.lastPathComponent, isDirectory: true)
   }
 
-  private struct Installed: Decodable { let dir: String }
+  private struct Installed: Decodable {
+    let dir: String
+    let library_id: String?
+  }
 
   /// The generation `installed.json` names, if it has a manifest. Reads the disk.
   public func installedGeneration() -> URL? {
     guard let data = try? Data(contentsOf: installedFile),
-          let dir = (try? JSONDecoder().decode(Installed.self, from: data))?.dir,
-          !dir.isEmpty, dir != ".", dir != "..", !dir.contains("/") else { return nil }
+          let installed = try? JSONDecoder().decode(Installed.self, from: data) else { return nil }
+    let dir = installed.dir
+    guard !dir.isEmpty, dir != ".", dir != "..", !dir.contains("/") else { return nil }
+    if let paired = pairedLibrary(), !paired.isEmpty, installed.library_id != paired { return nil }
     let url = generations.appendingPathComponent(dir, isDirectory: true)
     return FileManager.default.fileExists(atPath: url.appendingPathComponent("manifest.json").path) ? url : nil
   }

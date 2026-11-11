@@ -87,6 +87,18 @@ final class LocalCatalogueTests: XCTestCase {
     XCTAssertNil(catalogue.generationInForce())
   }
 
+  /// A generation another library left installed is never opened for the library now paired.
+  func testInstalledGenerationOfAnotherLibraryIsRefused() throws {
+    let (location, _, _) = try library()
+    XCTAssertNotNil(location.installedGeneration())
+    let other = LibraryLocation(root: location.root, pairedLibrary: { "another-library" })
+    XCTAssertNil(other.installedGeneration())
+    let same = LibraryLocation(root: location.root, pairedLibrary: { "library" })
+    XCTAssertNotNil(same.installedGeneration())
+    let unknown = LibraryLocation(root: location.root, pairedLibrary: { "" })
+    XCTAssertNotNil(unknown.installedGeneration(), "not known yet (an install from before the id was kept)")
+  }
+
   /// #8: an item from a list taken before a swap answers from its own generation.
   func testAPreSwapListKeepsItsOwnTilesAndDetails() async throws {
     let (location, _, second) = try library()

@@ -4,7 +4,7 @@
 // catalog::build and catalog::deliver, real signature), without the indexer's models: for proving
 // the phone end to end against `driftwire serve`. Thumbnails come from `sips` and `ffmpeg`.
 //
-//   publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key]
+//   publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key] [library=<id>]
 //
 // Not shipped; docs/plans/mobile.md M3/M4 verify. macOS (sips).
 #include <sodium.h>
@@ -74,14 +74,20 @@ static std::optional<std::vector<std::uint8_t>> shrink(const std::string& source
 
 int main(int argc, char** argv) {
   if (argc < 5 || sodium_init() < 0) {
-    std::cerr << "usage: publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key]\n";
+    std::cerr << "usage: publish_test_library <folder> <nas destination> <work dir> <generation> [wrong-key] [library=<id>]\n";
     return 2;
   }
   const fs::path folder = fs::absolute(argv[1]);
   const fs::path nas = fs::absolute(argv[2]);
   const fs::path work = fs::absolute(argv[3]);
   const std::uint64_t generation = std::stoull(argv[4]);
-  const bool wrong_key = argc > 5 && std::string(argv[5]) == "wrong-key";
+  bool wrong_key = false;
+  std::string library_id = "e2e-library-1";  // library=<id>: another library, for pairing over one
+  for (int i = 5; i < argc; ++i) {
+    const std::string a = argv[i];
+    if (a == "wrong-key") wrong_key = true;
+    else if (a.rfind("library=", 0) == 0 && a.size() > 8) library_id = a.substr(8);
+  }
   std::error_code ec;
   fs::create_directories(work, ec);
   fs::create_directories(nas, ec);
@@ -181,7 +187,7 @@ int main(int argc, char** argv) {
   cat::build_options b;
   b.index_db = index_path.string();
   b.out_dir = gen_dir.string();
-  b.library_id = "e2e-library-1";
+  b.library_id = library_id;
   b.epoch = 1;
   b.generation = generation;
   b.created_unix = std::time(nullptr);

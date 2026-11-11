@@ -38,6 +38,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private let defaults = UserDefaults.standard
   private static let pairedKey = "link.paired"
   private static let catalogueKey = "link.catalogue"
+  private static let libraryKey = "link.libraryID"
+
+  /// The paired library's id as last published; "" with none or before the first publish. A plain
+  /// stored value, cheap enough for launch.
+  public static var storedLibraryID: String { UserDefaults.standard.string(forKey: libraryKey) ?? "" }
 
   public let continuesAfterLeaving: Bool
 
@@ -45,11 +50,13 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if #available(iOS 26.0, *) { continuesAfterLeaving = true } else { continuesAfterLeaving = false }
     // What launch paints first comes from a stored value: no Keychain, no files on the main thread.
     let paired = defaults.bool(forKey: Self.pairedKey)
-    snapshot = paired
+    var first = paired
       ? ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false,
                            catalogue: Self.catalogue(from: defaults.object(forKey: Self.catalogueKey) as? [String: Any]),
                            cacheBytes: 0)
       : .noLibrary
+    if paired { first.libraryID = Self.storedLibraryID }
+    snapshot = first
     opened = Task.detached(priority: .userInitiated) { [weak self] in await self?.openStored() }
     monitor.pathUpdateHandler = { [weak self] path in self?.pathChanged(path) }
     monitor.start(queue: DispatchQueue(label: "mediaviewer.link.path"))
@@ -75,6 +82,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
         self.record = record
         self.handle = handle
       }
+      // Stamps the id on what launch showed, for an install from before the id was stored.
+      if current.libraryID != record.libraryID { publish { _ in } }
       if !current.hasLibrary { publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) } }
       // Not awaited: connecting waits for this open to finish, so awaiting it here would deadlock.
       Task { await self.retry() }
@@ -139,12 +148,14 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       if let generation, generation != connectGeneration || forgotten { return nil }
       var next = snapshot
       change(&next)
-      next.libraryID = next.hasLibrary ? (record?.libraryID ?? "") : ""
+      // Until the stored record is read at launch, the id launch stamped stands.
+      next.libraryID = next.hasLibrary ? (record?.libraryID ?? snapshot.libraryID) : ""
       snapshot = next
       return (next, Array(continuations.values))
     }
     guard let (value, list) = published else { return }
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
+    defaults.set(value.libraryID, forKey: Self.libraryKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
                     "epoch": NSNumber(value: info.epoch)], forKey: Self.catalogueKey)
@@ -248,6 +259,12 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     default: throw PairingFailure.synologyUnreachable(Self.failures(of: report))
     }
 
+    // The code was good. A library already on this phone goes now, all of it, as Forget would:
+    // its copies stop and its files go before the new one is written (the person agreed to this).
+    if lock.withLock({ self.record != nil || self.handle != nil }) {
+      await removeLibrary(keepingDeviceKey: true)
+    }
+
     let record = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
                                fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
                                local: linkString(parsed.local), publicName: linkString(parsed.public_name),
@@ -304,7 +321,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       $0 = ConnectionSnapshot(hasLibrary: true, synology: Self.state(status, report), macNearby: false,
                               catalogue: info ?? $0.catalogue, cacheBytes: cache)
     }
-    if status == 0 { work.run(priority: .utility) { [weak self] in await self?.quietSync(link) } }
+    // Not for a library replaced while this connect ran (another pairing, Forget).
+    if status == 0, lock.withLock({ generation == connectGeneration && handle === link && !forgotten }) {
+      work.run(priority: .utility) { [weak self] in await self?.quietSync(link) }
+    }
   }
 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
@@ -324,7 +344,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if done == 0, let info = await catalogueNow(link: link) { publishCatalogue(info, from: link) }
   }
 
-  public func forget() async {
+  public func forget() async { await removeLibrary(keepingDeviceKey: false) }
+
+  /// Forget's work, also run for the library already paired when another one is paired over it:
+  /// nothing of the old library may outlive the new pairing. The device key stays only then.
+  private func removeLibrary(keepingDeviceKey: Bool) async {
     // Stop first, wait, then delete: a copy still running (or waiting for Wi-Fi) must not write
     // into a wiped library, and must not keep Forget waiting.
     let (link, cancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?) in
@@ -343,7 +367,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       try? FileManager.default.removeItem(at: LinkFolders.originals)
       try? FileManager.default.removeItem(at: LinkFolders.clips)
       PairingRecord.clear()
-      DeviceKey.clear()
+      if !keepingDeviceKey { DeviceKey.clear() }
     }
     publish { $0 = .noLibrary }
   }

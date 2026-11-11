@@ -39,7 +39,7 @@ public struct RootView: View {
       Button("Pair with the new library") { model.confirmPendingPairLink() }
       Button("Keep this library", role: .cancel) { model.pendingPairLink = nil }
     } message: {
-      Text("It replaces the library on this phone once it is paired.")
+      Text("Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your Synology changes.")
     }
     .task { await model.run() }
   }

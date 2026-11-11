@@ -10,7 +10,8 @@ import UIKit
 
 enum LiveServices {
   static func services() -> Services {
-    let catalogue = LocalCatalogue(location: .standard)
+    let catalogue = LocalCatalogue(location: LibraryLocation(root: LibraryLocation.standard.root,
+                                                             pairedLibrary: { LinkConnection.storedLibraryID }))
     let link = LinkServices.make()
     reopenOnNewCatalogue(catalogue, connection: link.connection)
     let images = LayeredImages(local: catalogue.images, remote: link.images)
@@ -28,7 +29,7 @@ enum LiveServices {
       for await snapshot in connection.updates() {
         // Forgotten, or another library paired over this one: the open catalogue goes too, or
         // its generation (numbered higher than the new library's first) would stay in force.
-        if library.changed(to: snapshot.libraryID) {
+        if library.changed(to: snapshot.libraryID) || !snapshot.hasLibrary {
           catalogue.forgetInForce()
           last = nil
         }

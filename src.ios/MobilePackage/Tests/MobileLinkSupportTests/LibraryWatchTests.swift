@@ -21,4 +21,10 @@ final class LibraryWatchTests: XCTestCase {
     var watch = LibraryWatch(current: "")
     XCTAssertFalse(watch.changed(to: "A"))
   }
+
+  /// Forget before the first connect: launch already knew the library, so going to none is seen.
+  func testForgetBeforeTheFirstConnectIsAChange() {
+    var watch = LibraryWatch(current: "A")  // stamped at launch from the stored id
+    XCTAssertTrue(watch.changed(to: ""))
+  }
 }
