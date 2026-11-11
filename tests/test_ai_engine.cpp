@@ -8245,3 +8245,45 @@ TEST_CASE("said: a clip transcribed while its Whisper goes or changes answers as
     CHECK(r.search("said:birthday").empty());
   }
 }
+
+// A reload that lands between a worker's commit and its update of memory reads
+// that window from the index; the worker then must not add it a second time.
+TEST_CASE("said: a reload between a window's commit and memory leaves each line once", "[ai][engine][audio]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  std::atomic<int> installs{0};
+  std::atomic<bool> once{false};
+  r.tweak = [&](mv::ai::engine_deps& d) {
+    d.after_speech_install = [&] { ++installs; };
+    d.after_speech_commit = [&] {
+      if (once.exchange(true)) return;
+      const int before = installs.load();
+      REQUIRE(r.eng->set_setting("reload", "1"));
+      REQUIRE(wait_for([&] { return installs.load() > before; }, kSettleMs));  // the reload read this window
+    };
+  };
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(once.load());
+
+  std::size_t in_index = 0;
+  {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(utf8(r.dir / "data" / "index.db").c_str(), &db) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM speech", -1, &q, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite3_step(q) == SQLITE_ROW);
+    in_index = static_cast<std::size_t>(sqlite3_column_int64(q, 0));
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+  }
+  REQUIRE(in_index > 0);
+  CHECK(r.eng->speech_lines() == in_index);  // every line once: none twice, none lost
+  CHECK(r.search("said:birthday").size() == 1);
+  r.eng.reset();
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.eng->speech_lines() == in_index);
+}

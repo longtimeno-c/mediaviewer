@@ -284,6 +284,10 @@ struct engine_deps {
   double phone_link_code_ttl_s = 300;
   // The tests: right after a hand-over is written, before anything reads it back.
   std::function<void()> phone_link_after_hand_over;
+  // Tests only: after a worker commits a transcript window, before memory
+  // follows it; after load_audio installs a Whisper and its lines.
+  std::function<void()> after_speech_commit;
+  std::function<void()> after_speech_install;
   // The answering text tower's files, for a phone (a tower of this spec), or none.
   std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
   double tree_max_wait_s = 10;
@@ -404,6 +408,11 @@ class engine {
   // ---- search ------------------------------------------------------------------
   [[nodiscard]] std::uint64_t search_text(const std::string& query, const std::string& scope_dir,
                                           std::uint32_t scope, std::uint32_t kinds);
+  // Transcript lines `said:` reads from now (tests: no line twice). [no-block]
+  [[nodiscard]] std::size_t speech_lines() const {
+    std::lock_guard lock(speech_m_);
+    return speech_rows_.size();
+  }
   // A reader: whether search_text can answer this query now, before (or
   // without) its tower: names, dates, places, words said, files. [no-block]
   [[nodiscard]] bool answerable_now(const std::string& query);
@@ -664,9 +673,6 @@ class engine {
     std::int64_t start_ms = 0;
     std::string text;
     std::vector<std::string> words;
-    // Written by another Whisper than the one chosen now (index_db::each_speech):
-    // the chosen one's transcript replaces it when it is made.
-    bool other_spec = false;
   };
   // Every clip's transcript, `preferred`'s where there is one, else another
   // Whisper's (index_db::each_speech). "": no Whisper, so none.
@@ -674,6 +680,8 @@ class engine {
   void load_speech(const std::string& preferred);
   // The same rows, read without taking a lock; `only_asset` > 0: one clip's.
   [[nodiscard]] std::vector<speech_row> read_speech(const std::string& preferred, std::int64_t only_asset = 0);
+  // A clip's lines in memory become exactly what read_speech reads for it now.
+  void replace_clip_speech(std::int64_t asset);
   // #406: a clip's own text in memory, matched like transcript lines but kept
   // apart from them: removing the audio piece clears speech, never these.
   struct cue_row {
@@ -1003,9 +1011,9 @@ class engine {
   std::atomic<bool> catalogue_ready_{false};
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
-  // Lines a worker put in memory (under speech_m_): a reload that read the
-  // index before one landed reads it again rather than lose them.
-  std::uint64_t speech_pushes_ = 0;
+  // Bumped whenever speech_rows_ changes (under speech_m_): a read made
+  // outside the locks is installed only if nothing changed meanwhile.
+  std::uint64_t speech_gen_ = 0;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
   // #403: made on the control thread (Windows joins it to the MTA first), set
   // once under models_m_ and never replaced, so a worker may keep the pointer.

@@ -1584,6 +1584,7 @@ void engine::load_models() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    ++speech_gen_;
   }
   end_answer_swap();
   retire(std::move(old_build.model));
@@ -2097,6 +2098,7 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
       sound_ = {};
       speech_ = {};
       speech_rows_.clear();
+      ++speech_gen_;
       publish_pieces_locked();
     }
     sounds_.reset(0);
@@ -2115,23 +2117,26 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
   // every transcript there is). Without one, no transcript answers. Read
   // outside the locks; swapped in with the Whisper, in one section.
   const std::string preferred = speech.model ? speech.spec_key : std::string();
-  std::uint64_t pushes = 0;
-  {
-    std::lock_guard lock(speech_m_);
-    pushes = speech_pushes_;
-  }
-  std::vector<speech_row> rows = read_speech(preferred);
-  {
+  for (int attempt = 0;; ++attempt) {
+    std::uint64_t gen = 0;
+    {
+      std::lock_guard lock(speech_m_);
+      gen = speech_gen_;
+    }
+    std::vector<speech_row> rows = read_speech(preferred);  // no lock held: SQLite and tokenising
     std::lock_guard lock(models_m_);
     std::lock_guard held(speech_m_);
-    // A worker put lines in memory since the read: they are in the index, so
-    // read it again here (rare: a reload while a clip is being transcribed).
-    if (speech_pushes_ != pushes) rows = read_speech(preferred);
+    // A worker replaced a clip since the read: read again, outside the locks.
+    // After a few tries install anyway; that clip's next replace corrects it.
+    if (speech_gen_ != gen && attempt < 3) continue;
     speech_rows_ = std::move(rows);
+    ++speech_gen_;
     sound_ = std::move(sound);
     speech_ = std::move(speech);
     publish_pieces_locked();
+    break;
   }
+  if (deps_.after_speech_install) deps_.after_speech_install();
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -3351,6 +3356,7 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    ++speech_gen_;
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -3440,6 +3446,7 @@ void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& g
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    ++speech_gen_;
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -4436,7 +4443,6 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
   constexpr std::size_t kWindow = 16000 * 30;
   std::vector<float> buf;
   std::int64_t buf_start = -1;
-  bool replaced_other = false;  // another Whisper's lines of this clip, dropped from memory once
   std::vector<float> chunk(16000 * 5);
   bool eof = false;
   while (true) {
@@ -4471,50 +4477,15 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
                             next_ms)) {
       return;
     }
-    // Memory follows load_speech's rule for the Whisper chosen now, not the
-    // one this worker started with: the piece may have gone, or another
-    // Whisper been chosen, while it transcribed (load_audio does not wait for
-    // a clip in progress). The rows are in the index either way. The check
-    // and the change are one section, models_m_ then speech_m_.
-    if (!rows.empty()) {
-      const std::int64_t id = item.asset.id;
-      for (int attempt = 0; attempt < 3; ++attempt) {
-        std::string chosen;
-        {
-          std::lock_guard lock(models_m_);
-          if (!speech_.model) break;  // no Whisper: no transcript answers
-          chosen = speech_.spec_key;
-        }
-        // Not the chosen Whisper's: this clip's lines as a reload reads them
-        // (one Whisper's per clip), read outside the locks.
-        std::vector<speech_row> clip;
-        if (chosen != speech.spec_key) clip = read_speech(chosen, id);
-        std::lock_guard lock(models_m_);
-        std::lock_guard held(speech_m_);
-        if (!speech_.model) break;
-        if (speech_.spec_key != chosen) continue;  // chosen again meanwhile: look again
-        ++speech_pushes_;
-        if (chosen == speech.spec_key) {
-          // Once the chosen Whisper has a line for this clip, its transcript
-          // replaces another's. Once per clip; a silent window replaces nothing.
-          if (!replaced_other) {
-            speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
-                                              [id](const speech_row& r) { return r.asset == id && r.other_spec; }),
-                               speech_rows_.end());
-            replaced_other = true;
-          }
-          for (const speech_in& r : rows) {
-            speech_rows_.push_back(speech_row{id, r.start_ms, r.text, infer::speech_words(r.text)});
-          }
-        } else {
-          speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
-                                            [id](const speech_row& r) { return r.asset == id; }),
-                             speech_rows_.end());
-          speech_rows_.insert(speech_rows_.end(), std::make_move_iterator(clip.begin()), std::make_move_iterator(clip.end()));
-        }
-        break;
-      }
-    }
+    if (deps_.after_speech_commit) deps_.after_speech_commit();
+    // One rule for what memory holds of a clip: exactly what
+    // index_db::each_speech reads for it under the Whisper chosen now (not the
+    // one this worker started with: the piece may have gone, or another been
+    // chosen, while it transcribed). Read outside the locks with the
+    // generation it was read under; installed under models_m_ then speech_m_
+    // only if nothing changed memory meanwhile, else read again. No append:
+    // a reload that already read this window cannot leave it twice.
+    if (!rows.empty()) replace_clip_speech(item.asset.id);
     {
       std::lock_guard lock(status_m_);
       units_done_ += static_cast<double>(consumed) / 16000.0;
@@ -5291,6 +5262,7 @@ expected engine::root_remove(std::int64_t id) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    ++speech_gen_;
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -5379,6 +5351,7 @@ expected engine::clear_index() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    ++speech_gen_;
     cue_rows_.clear();
   }
   {
@@ -7498,14 +7471,39 @@ void engine::load_speech(const std::string& preferred) {
   // No Whisper chosen: no transcript answers, as when the audio piece is
   // removed (2026-09-27: a removed piece clears what it answered; cues, in
   // their own table, stay). Readers follow the app here.
-  if (preferred.empty()) {
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
-    return;
-  }
-  std::vector<speech_row> rows = read_speech(preferred);
+  std::vector<speech_row> rows = read_speech(preferred);  // "": none
   std::lock_guard lock(speech_m_);
   speech_rows_ = std::move(rows);
+  ++speech_gen_;
+}
+
+void engine::replace_clip_speech(std::int64_t id) {
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    std::string chosen;
+    std::uint64_t gen = 0;
+    {
+      std::lock_guard lock(models_m_);
+      if (!speech_.model) return;  // no Whisper: no transcript answers
+      chosen = speech_.spec_key;
+      std::lock_guard held(speech_m_);
+      gen = speech_gen_;
+    }
+    std::vector<speech_row> clip = read_speech(chosen, id);
+    std::lock_guard lock(models_m_);
+    std::lock_guard held(speech_m_);
+    if (!speech_.model) return;
+    // Memory changed since the read (a reload, another clip's worker, a removal): read again,
+    // so what goes in is never older than what is there.
+    if (speech_.spec_key != chosen || speech_gen_ != gen) continue;
+    speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                      [id](const speech_row& r) { return r.asset == id; }),
+                       speech_rows_.end());
+    speech_rows_.insert(speech_rows_.end(), std::make_move_iterator(clip.begin()), std::make_move_iterator(clip.end()));
+    ++speech_gen_;
+    return;
+  }
+  // Four changes in a row while this clip was read: the change that won read the index after
+  // this clip's commit, or the clip's next window replaces it.
 }
 
 std::vector<engine::speech_row> engine::read_speech(const std::string& preferred, std::int64_t only_asset) {
@@ -7514,7 +7512,8 @@ std::vector<engine::speech_row> engine::read_speech(const std::string& preferred
   (void)db_->each_speech(
       preferred,
       [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text, bool chosen) {
-        rows.push_back(speech_row{asset, start, text, infer::speech_words(text), !chosen});
+        (void)chosen;
+        rows.push_back(speech_row{asset, start, text, infer::speech_words(text)});
       },
       only_asset);
   return rows;
