@@ -28,7 +28,8 @@ pack="$(ls -d "$addons/AI"/0.* | sort -V | tail -1)"
 places="$(ls -d "$addons/Places"/0.* | sort -V | tail -1)/data/places.mvgeo"
 desk="$root/build/bin/mv_mobile_parity_desktop"; cli="$root/build/bin/mv_driftwire_cli_test"
 port=18462
-mkdir -p "$out"; out="$(cd "$out" && pwd)"
+# The physical path: mount reports /private/tmp, not /tmp, and the checks below compare with it.
+mkdir -p "$out"; out="$(cd "$out" && pwd -P)"
 mnt="$out/mnt"
 # This script's own service only: the pid in serve.pid, and only while it is still our
 # `driftwire serve` (a reused pid is someone else's process).
@@ -44,11 +45,12 @@ finish() {
   # reuses it (MV_LIVE_REUSE=1). A file still open in it (the service just stopped) can refuse
   # the first try; the second forces it, and a third failure is said, not hidden.
   [[ ${MV_LIVE_REUSE:-} == 1 ]] && return 0
-  mount | grep -q " on $mnt " || return 0
-  hdiutil detach -quiet "$mnt" 2>/dev/null && return 0
-  sleep 2
-  hdiutil detach -force -quiet "$mnt" 2>/dev/null && return 0
-  echo "COULD NOT DETACH $mnt: it holds copies of the files; detach it by hand (hdiutil detach -force $mnt)" >&2
+  mount | grep -qF " on $mnt (" || return 0
+  hdiutil detach -quiet "$mnt" 2>/dev/null || { sleep 2; hdiutil detach -force -quiet "$mnt" 2>/dev/null; } || true
+  # Checked, not assumed: the image holds copies of the files.
+  if mount | grep -qF " on $mnt ("; then
+    echo "COULD NOT DETACH $mnt: it holds copies of the files; detach it by hand (hdiutil detach -force $mnt)" >&2
+  fi
 }
 trap finish EXIT
 trap 'exit 143' TERM INT HUP  # a signal ends the script through finish too

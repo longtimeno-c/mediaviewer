@@ -4462,20 +4462,40 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
                             next_ms)) {
       return;
     }
-    if (!rows.empty()) {
+    // What answers now, not what this worker started with: the piece may have
+    // gone, or another Whisper been chosen, while it transcribed (load_audio
+    // does not wait for a clip in progress). The rows are in the index either
+    // way; memory follows load_speech's rule.
+    bool have_whisper = false;
+    std::string chosen;
+    {
+      std::lock_guard lock(models_m_);
+      have_whisper = speech_.model != nullptr;
+      if (have_whisper) chosen = speech_.spec_key;
+    }
+    if (!rows.empty() && have_whisper) {
+      const bool mine = chosen == speech.spec_key;
       std::lock_guard lock(speech_m_);
-      // The rule load_speech reads by (index_db::each_speech): once the chosen
-      // Whisper has a line for this clip, its transcript replaces another's.
-      // Once per clip; a silent window replaces nothing.
-      if (!replaced_other) {
+      // Once the chosen Whisper has a line for this clip, its transcript
+      // replaces another's (index_db::each_speech). Once per clip; a silent
+      // window replaces nothing.
+      if (mine && !replaced_other) {
         const std::int64_t id = item.asset.id;
         speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                           [id](const speech_row& r) { return r.asset == id && r.other_spec; }),
                            speech_rows_.end());
         replaced_other = true;
       }
-      for (const speech_in& r : rows) {
-        speech_rows_.push_back(speech_row{item.asset.id, r.start_ms, r.text, infer::speech_words(r.text)});
+      // A Whisper no longer chosen adds its lines only where the clip has no
+      // line of the chosen one, as a reload would.
+      const std::int64_t id = item.asset.id;
+      const bool chosen_has_clip =
+          !mine && std::any_of(speech_rows_.begin(), speech_rows_.end(),
+                               [id](const speech_row& r) { return r.asset == id && !r.other_spec; });
+      if (!chosen_has_clip) {
+        for (const speech_in& r : rows) {
+          speech_rows_.push_back(speech_row{item.asset.id, r.start_ms, r.text, infer::speech_words(r.text), !mine});
+        }
       }
     }
     {
