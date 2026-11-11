@@ -670,7 +670,10 @@ class engine {
   };
   // Every clip's transcript, `preferred`'s where there is one, else another
   // Whisper's (index_db::each_speech). "": no Whisper, so none.
+  // Lock order wherever both are held: models_m_, then speech_m_.
   void load_speech(const std::string& preferred);
+  // The same rows, read without taking a lock; `only_asset` > 0: one clip's.
+  [[nodiscard]] std::vector<speech_row> read_speech(const std::string& preferred, std::int64_t only_asset = 0);
   // #406: a clip's own text in memory, matched like transcript lines but kept
   // apart from them: removing the audio piece clears speech, never these.
   struct cue_row {
@@ -1000,6 +1003,9 @@ class engine {
   std::atomic<bool> catalogue_ready_{false};
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
+  // Lines a worker put in memory (under speech_m_): a reload that read the
+  // index before one landed reads it again rather than lose them.
+  std::uint64_t speech_pushes_ = 0;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
   // #403: made on the control thread (Windows joins it to the MTA first), set
   // once under models_m_ and never replaced, so a worker may keep the pointer.

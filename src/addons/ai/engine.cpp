@@ -2090,14 +2090,16 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
     // The piece went: its models first (a worker holding one finishes its
     // clip with its own copy), then what they answered from.
     {
+      // The Whisper and what it answers go together (models_m_, then
+      // speech_m_), so a worker never sees one without the other.
       std::lock_guard lock(models_m_);
+      std::lock_guard rows(speech_m_);
       sound_ = {};
       speech_ = {};
+      speech_rows_.clear();
       publish_pieces_locked();
     }
     sounds_.reset(0);
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
     return;
   }
   // The stored vectors and transcripts first, then the models: a job that
@@ -2110,15 +2112,22 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
   }
   // With a Whisper: its transcript where it wrote one, else whichever Whisper
   // did (Auto on the CPU picks the fast one; the high one may have written
-  // every transcript there is). Without one, no transcript answers.
-  if (speech.model) {
-    load_speech(speech.spec_key);
-  } else {
+  // every transcript there is). Without one, no transcript answers. Read
+  // outside the locks; swapped in with the Whisper, in one section.
+  const std::string preferred = speech.model ? speech.spec_key : std::string();
+  std::uint64_t pushes = 0;
+  {
     std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
+    pushes = speech_pushes_;
   }
+  std::vector<speech_row> rows = read_speech(preferred);
   {
     std::lock_guard lock(models_m_);
+    std::lock_guard held(speech_m_);
+    // A worker put lines in memory since the read: they are in the index, so
+    // read it again here (rare: a reload while a clip is being transcribed).
+    if (speech_pushes_ != pushes) rows = read_speech(preferred);
+    speech_rows_ = std::move(rows);
     sound_ = std::move(sound);
     speech_ = std::move(speech);
     publish_pieces_locked();
@@ -4462,40 +4471,48 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
                             next_ms)) {
       return;
     }
-    // What answers now, not what this worker started with: the piece may have
-    // gone, or another Whisper been chosen, while it transcribed (load_audio
-    // does not wait for a clip in progress). The rows are in the index either
-    // way; memory follows load_speech's rule.
-    bool have_whisper = false;
-    std::string chosen;
-    {
-      std::lock_guard lock(models_m_);
-      have_whisper = speech_.model != nullptr;
-      if (have_whisper) chosen = speech_.spec_key;
-    }
-    if (!rows.empty() && have_whisper) {
-      const bool mine = chosen == speech.spec_key;
-      std::lock_guard lock(speech_m_);
-      // Once the chosen Whisper has a line for this clip, its transcript
-      // replaces another's (index_db::each_speech). Once per clip; a silent
-      // window replaces nothing.
-      if (mine && !replaced_other) {
-        const std::int64_t id = item.asset.id;
-        speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
-                                          [id](const speech_row& r) { return r.asset == id && r.other_spec; }),
-                           speech_rows_.end());
-        replaced_other = true;
-      }
-      // A Whisper no longer chosen adds its lines only where the clip has no
-      // line of the chosen one, as a reload would.
+    // Memory follows load_speech's rule for the Whisper chosen now, not the
+    // one this worker started with: the piece may have gone, or another
+    // Whisper been chosen, while it transcribed (load_audio does not wait for
+    // a clip in progress). The rows are in the index either way. The check
+    // and the change are one section, models_m_ then speech_m_.
+    if (!rows.empty()) {
       const std::int64_t id = item.asset.id;
-      const bool chosen_has_clip =
-          !mine && std::any_of(speech_rows_.begin(), speech_rows_.end(),
-                               [id](const speech_row& r) { return r.asset == id && !r.other_spec; });
-      if (!chosen_has_clip) {
-        for (const speech_in& r : rows) {
-          speech_rows_.push_back(speech_row{item.asset.id, r.start_ms, r.text, infer::speech_words(r.text), !mine});
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        std::string chosen;
+        {
+          std::lock_guard lock(models_m_);
+          if (!speech_.model) break;  // no Whisper: no transcript answers
+          chosen = speech_.spec_key;
         }
+        // Not the chosen Whisper's: this clip's lines as a reload reads them
+        // (one Whisper's per clip), read outside the locks.
+        std::vector<speech_row> clip;
+        if (chosen != speech.spec_key) clip = read_speech(chosen, id);
+        std::lock_guard lock(models_m_);
+        std::lock_guard held(speech_m_);
+        if (!speech_.model) break;
+        if (speech_.spec_key != chosen) continue;  // chosen again meanwhile: look again
+        ++speech_pushes_;
+        if (chosen == speech.spec_key) {
+          // Once the chosen Whisper has a line for this clip, its transcript
+          // replaces another's. Once per clip; a silent window replaces nothing.
+          if (!replaced_other) {
+            speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                              [id](const speech_row& r) { return r.asset == id && r.other_spec; }),
+                               speech_rows_.end());
+            replaced_other = true;
+          }
+          for (const speech_in& r : rows) {
+            speech_rows_.push_back(speech_row{id, r.start_ms, r.text, infer::speech_words(r.text)});
+          }
+        } else {
+          speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                            [id](const speech_row& r) { return r.asset == id; }),
+                             speech_rows_.end());
+          speech_rows_.insert(speech_rows_.end(), std::make_move_iterator(clip.begin()), std::make_move_iterator(clip.end()));
+        }
+        break;
       }
     }
     {
@@ -7486,13 +7503,21 @@ void engine::load_speech(const std::string& preferred) {
     speech_rows_.clear();
     return;
   }
-  std::vector<speech_row> rows;
-  (void)db_->each_speech(preferred, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text,
-                                        bool chosen) {
-    rows.push_back(speech_row{asset, start, text, infer::speech_words(text), !chosen});
-  });
+  std::vector<speech_row> rows = read_speech(preferred);
   std::lock_guard lock(speech_m_);
   speech_rows_ = std::move(rows);
+}
+
+std::vector<engine::speech_row> engine::read_speech(const std::string& preferred, std::int64_t only_asset) {
+  std::vector<speech_row> rows;
+  if (preferred.empty()) return rows;
+  (void)db_->each_speech(
+      preferred,
+      [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text, bool chosen) {
+        rows.push_back(speech_row{asset, start, text, infer::speech_words(text), !chosen});
+      },
+      only_asset);
+  return rows;
 }
 
 namespace {

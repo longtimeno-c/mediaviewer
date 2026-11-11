@@ -469,10 +469,11 @@ class fake_speech final : public mv::ai::speech_model {
  public:
   mv::result<mv::infer::speech_window> transcribe(std::span<const float> pcm, std::int64_t start_ms) override {
     const bool other_words = second_voice.load();  // decided before the test's step below
+    const bool deaf = silent.load();
     if (on_transcribe) on_transcribe();  // a test's step while a clip is being transcribed
     mv::infer::speech_window w;
     w.consumed_ms = static_cast<std::int64_t>(pcm.size()) * 1000 / 16000;
-    for (std::size_t i = 0; i < pcm.size() && !silent; ++i) {
+    for (std::size_t i = 0; i < pcm.size() && !deaf; ++i) {
       if (std::fabs(pcm[i] - 0.1f) < 1e-4f) {
         w.segments.push_back({start_ms + static_cast<std::int64_t>(i / 16), start_ms + 10000,
                               other_words ? "See you tomorrow then" : "Happy birthday Anna, make a wish!"});
@@ -1227,8 +1228,8 @@ struct rig {
       if (!audio_available) return mv::err(mv::status::io);
       mv::ai::loaded_speech s;
       s.model = speech;
-      s.name = "Fake Whisper";
       s.spec_key = speech_key();
+      s.name = "Fake Whisper " + s.spec_key;  // settings_json's speech_model says which is in
       return s;
     };
     return d;
@@ -8162,6 +8163,52 @@ TEST_CASE("said: a clip transcribed while its Whisper goes or changes answers as
     REQUIRE(r.idle());
     CHECK(r.search("said:birthday").empty());
   }
+  SECTION("three Whispers: a superseded one's lines give way as a reload reads") {
+    rig r;
+    r.audio_available = true;
+    r.file("party_talk_bark.mp4");
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    r.eng.reset();
+    // X wrote two lines for the clip; the chosen Whisper (A) transcribes it again.
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(utf8(r.dir / "data" / "index.db").c_str(), &db) == SQLITE_OK);
+    CHECK(sqlite3_exec(db,
+                       "UPDATE speech SET spec = 'x-whisper/fp16/pre1', text = 'Hello there';"
+                       "INSERT INTO speech(asset_id, spec, start_ms, end_ms, text)"
+                       " SELECT asset_id, spec, start_ms + 20000, end_ms + 20000, text FROM speech;"
+                       "DELETE FROM progress WHERE spec = 'fake-whisper/fp16/pre1'",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+    std::atomic<bool> once{false};
+    r.speech->on_transcribe = [&] {
+      if (once.exchange(true)) return;
+      // B is chosen while A transcribes, and B hears nothing in the clip.
+      r.set_speech_key("fake-whisper-2/fp16/pre1");
+      r.speech->silent = true;
+      REQUIRE(r.eng->set_setting("reload", "1"));
+      REQUIRE(wait_for(
+          [&] {
+            const auto j = mv::json::parse(r.eng->settings_json());
+            const std::string* name = j ? j->str("speech_model") : nullptr;
+            return name && *name == "Fake Whisper fake-whisper-2/fp16/pre1";
+          },
+          kSettleMs));
+    };
+    r.start();
+    REQUIRE(r.idle());
+    REQUIRE(once.load());
+    r.speech->on_transcribe = nullptr;
+    // No line of B's: the clip reads as the Whisper with most lines, X (2 to A's 1), alone.
+    CHECK(r.search("said:hello").size() == 1);
+    CHECK(r.search("said:birthday").empty());
+    r.eng.reset();
+    r.start();
+    REQUIRE(r.idle());
+    CHECK(r.search("said:hello").size() == 1);
+    CHECK(r.search("said:birthday").empty());
+  }
   SECTION("another Whisper chosen mid-clip: live and reloaded agree") {
     rig r;
     r.audio_available = true;
@@ -8172,13 +8219,15 @@ TEST_CASE("said: a clip transcribed while its Whisper goes or changes answers as
       r.set_speech_key("fake-whisper-2/fp16/pre1");
       r.speech->second_voice = true;  // the new Whisper hears the clip differently
       REQUIRE(r.eng->set_setting("reload", "1"));
+      // The new Whisper's name is published in the same locked step that swaps
+      // in its transcripts: once it shows, the swap has landed.
       REQUIRE(wait_for(
           [&] {
             const auto j = mv::json::parse(r.eng->settings_json());
-            return j && j->boolean("audio_ready") == true && r.status().state != MV_AI_STATE_LOADING;
+            const std::string* name = j ? j->str("speech_model") : nullptr;
+            return name && *name == "Fake Whisper fake-whisper-2/fp16/pre1";
           },
           kSettleMs));
-      std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the reload's load_speech has run
     };
     r.start();
     REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
