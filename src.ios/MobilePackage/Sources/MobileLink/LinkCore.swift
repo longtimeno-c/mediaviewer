@@ -107,6 +107,23 @@ enum LinkFolders {
     FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent(name, isDirectory: true)
   }
 
+  /// The link's thumbnail cache for one library. Each library has its own folder, so a fetch for a
+  /// library that has since been replaced can never land under another library's keys.
+  static func thumbs(for libraryID: String) -> URL {
+    let name = String(libraryID.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" })
+    return thumbs.appendingPathComponent(name.isEmpty ? "library" : name, isDirectory: true)
+  }
+
+  /// Off the main thread only. Removes every other library's thumbnails (and the shared folder's
+  /// files from before thumbnails were kept per library).
+  static func keepOnlyThumbs(of libraryID: String) {
+    let keep = thumbs(for: libraryID).lastPathComponent
+    let items = (try? FileManager.default.contentsOfDirectory(at: thumbs, includingPropertiesForKeys: nil)) ?? []
+    for item in items where item.lastPathComponent != keep { try? FileManager.default.removeItem(at: item) }
+    try? FileManager.default.createDirectory(at: thumbs(for: libraryID), withIntermediateDirectories: true,
+                                             attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+  }
+
   /// Off the main thread only.
   static func prepare() {
     for url in [library, thumbs, originals, clips] {

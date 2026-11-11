@@ -72,7 +72,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     let opened: (PairingRecord, LinkHandle)? = await onLinkQueue {
       guard let record = PairingRecord.load(), let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }) else { return nil }
       LinkFolders.prepare()
-      guard let handle = LinkHandle.open(record: record, deviceKey: device, libraryDir: LinkFolders.library, cacheDir: LinkFolders.thumbs) else {
+      LinkFolders.keepOnlyThumbs(of: record.libraryID)
+      guard let handle = LinkHandle.open(record: record, deviceKey: device, libraryDir: LinkFolders.library,
+                                         cacheDir: LinkFolders.thumbs(for: record.libraryID)) else {
         return nil
       }
       return (record, handle)
@@ -273,7 +275,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     let handle: LinkHandle = try await onLinkQueue {
       guard record.save() else { throw PairingFailure.codeNotReadable }
       LinkFolders.prepare()  // again: a Forget removed them, with their backup exclusion
-      guard let handle = LinkHandle.open(record: record, deviceKey: deviceKey, libraryDir: LinkFolders.library, cacheDir: LinkFolders.thumbs) else {
+      LinkFolders.keepOnlyThumbs(of: record.libraryID)
+      guard let handle = LinkHandle.open(record: record, deviceKey: deviceKey, libraryDir: LinkFolders.library,
+                                         cacheDir: LinkFolders.thumbs(for: record.libraryID)) else {
         throw PairingFailure.codeNotReadable
       }
       return handle
