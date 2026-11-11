@@ -1362,6 +1362,20 @@ mv_status MV_CALL t_jpeg_shrink(void* host, const uint8_t* jpeg, uint64_t size, 
   });
 }
 
+mv_status MV_CALL t_addon_request(void* host, const char* addon_id, const char* method, const char* request_json,
+                                  mv_addon_reply_fn reply, void* user) {
+  return guarded([&] {
+    if (!addon_id || !method || !reply) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    const std::string json = request_json ? request_json : "{}";
+    auto got = t.services().addon_request ? t.services().addon_request(addon_id, method, json)
+                                          : t.slots().addon_request(addon_id, t.addon_id(), method, json);
+    if (!got) return to_mv(got.error());
+    reply(user, got->c_str());
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_thumbnail_make(void* host, const char* path, int64_t pts_ms, uint8_t* out, uint64_t capacity,
                                    uint64_t* out_size) {
   return guarded([&] {
@@ -1591,6 +1605,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   if (svc_.still_extend) api_.still_extend = &t_still_extend;  // edit-refresh S6
   if (svc_.jpeg_shrink) api_.jpeg_shrink = &t_jpeg_shrink;      // the phone's catalogue
   api_.place_labels = &t_place_labels;
+  api_.addon_request = &t_addon_request;
   if (svc_.thumbnail_make) api_.thumbnail_make = &t_thumbnail_make;
 }
 
@@ -1721,7 +1736,7 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
       slot_registry& reg = out->table_->slots();
       contributions c = info.m.slots;
       for (const manifest_command& cmd : info.m.commands) c.commands.push_back(cmd.id);
-      if (reg.attach(info.id, info.m.name, std::move(c), native_slot_client(api.addon, table, static_cast<const mv_addon_place_labels*>(out->query(MV_PLACE_LABELS_INTERFACE))), info.dir) ==
+      if (reg.attach(info.id, info.m.name, std::move(c), native_slot_client(api.addon, table, static_cast<const mv_addon_place_labels*>(out->query(MV_PLACE_LABELS_INTERFACE)), static_cast<const mv_addon_request_api*>(out->query(MV_REQUEST_INTERFACE))), info.dir) ==
           status::ok) {
         out->slots_ = &reg;
       }

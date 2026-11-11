@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "core/json.h"
+#include "edit/eye_state.h"
 #include "edit/eyes.h"
 #include "image/half.h"
 #include "shell/canvas_tool.h"
@@ -107,10 +108,17 @@ faces_scan read_faces(status pack, std::string_view pack_json, const image::line
     c.person = f.integer("person").value_or(0);
     if (const std::string* n = f.str("name")) c.name = *n;
     c.photos = static_cast<std::uint32_t>(std::max<std::int64_t>(0, f.integer("photos").value_or(0)));
-    if (have) {
-      c.shut = edit::eyes_look_shut(*still, c.lm);
-      make_thumb(c, *still, thumb_px);
+    // The badge: both eyes read shut by the eye model on the face's points
+    // read again upright (media::with_eyes_read's "eyes"; edit/eye_state.h).
+    // Not from a brightness rule: that marked smiles shut and a tilted blink
+    // open (2026-11-07, IMG_2113).
+    if (const json::value* e = f.find("eyes"); e && e->k == json::kind::array && e->a.size() == 2) {
+      edit::eye_state st;
+      st.right = static_cast<float>(e->a[0].d);
+      st.left = static_cast<float>(e->a[1].d);
+      c.shut = edit::eyes_closed(st);
     }
+    if (have) make_thumb(c, *still, thumb_px);
     out.faces.push_back(std::move(c));
   }
   return out;
@@ -130,6 +138,29 @@ bool faces_tool::landed(std::uint64_t photo, faces_scan scan) {
   status = scan.status;
   faces = std::move(scan.faces);
   chosen = faces.empty() ? 0u : (faces.size() >= 32 ? ~0u : (1u << faces.size()) - 1u);
+  // Faces whose eyes read shut are the ones to fix: they start chosen alone.
+  std::uint32_t shut_faces = 0;
+  for (std::size_t i = 0; i < faces.size() && i < 32; ++i) {
+    if (faces[i].shut) shut_faces |= 1u << static_cast<unsigned>(i);
+  }
+  if (shut_faces != 0u) chosen = shut_faces;
+  if (!carry.empty() && status == faces_status::ready) {
+    // The fix's faces, found again by their boxes (a fixed copy keeps the
+    // photo's size and framing, so they sit where they were).
+    std::uint32_t again = 0;
+    for (std::size_t i = 0; i < faces.size() && i < 32; ++i) {
+      const auto& a = faces[i].box;
+      for (std::size_t b = 0; b + 4 <= carry.size(); b += 4) {
+        const float ix = std::max(0.0f, std::min(a[0] + a[2], carry[b] + carry[b + 2]) - std::max(a[0], carry[b]));
+        const float iy =
+            std::max(0.0f, std::min(a[1] + a[3], carry[b + 1] + carry[b + 3]) - std::max(a[1], carry[b + 1]));
+        const float inter = ix * iy, uni = a[2] * a[3] + carry[b + 2] * carry[b + 3] - inter;
+        if (uni > 0.0f && inter / uni >= 0.3f) again |= 1u << static_cast<unsigned>(i);
+      }
+    }
+    if (again != 0u) chosen = again;
+  }
+  carry.clear();
   hover = -1;
   ++revision;
   return true;

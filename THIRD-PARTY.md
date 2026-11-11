@@ -19,6 +19,7 @@ added by the PR that adds the dependency.
 | Component | Version | Licence | Linkage | Notes |
 |---|---|---|---|---|
 | [Dear ImGui](https://github.com/ocornut/imgui) | 1.92.8 | MIT | Static | Present lab and the F3 debug overlay only. Never shipped chrome (D1). |
+| [OpenVINO Open Model Zoo open-closed-eye-0001](https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/open-closed-eye-0001) | 2022.1 | **Apache-2.0** (Copyright Intel Corporation) | Weights **compiled in** (`src/edit/eye_state_weights.inc`) | The Faces tool's *Eyes closed*: whether each eye is open (docs/design/20). Generated from the published ONNX file by `tools/eyes/export_eye_state.py`, which checks its SHA-384. |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.16.0 | BSL-1.0 | Static, tests only | Not in a shipped binary. |
 | [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo) | 3.2.0 | IJG / BSD-3 | Dynamic (vcpkg x64-windows) | JPEG decode. |
 | [libspng](https://github.com/randy408/libspng) | 0.7.4 | BSD-2 | Dynamic (vcpkg x64-windows) | PNG decode. APNG frames are walked by MediaViewer and decoded by libspng. |

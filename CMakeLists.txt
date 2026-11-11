@@ -34,6 +34,20 @@ foreach(candidate IN ITEMS "$ENV{VCPKG_ROOT}" "$ENV{VCPKG_INSTALLATION_ROOT}"
   endif()
 endforeach()
 
+# iOS (docs/plans/mobile.md 8.1; cmake/ios.cmake): its own small manifest, and
+# the triplet that matches the SDK. Both are read when project() loads vcpkg.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tools/ios" CACHE PATH "iOS vcpkg manifest")
+  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "iOS: Apple silicon only")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "18.0" CACHE STRING
+      "Keep in step with tools/vcpkg/triplets/arm64-ios*.cmake")
+  if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    set(VCPKG_TARGET_TRIPLET "arm64-ios-simulator" CACHE STRING "vcpkg triplet")
+  else()
+    set(VCPKG_TARGET_TRIPLET "arm64-ios" CACHE STRING "vcpkg triplet")
+  endif()
+endif()
+
 # Linux PR 1 needs two packages (imgui, Catch2) and builds without vcpkg too:
 # cmake/linux.cmake finds them as CONFIG packages first (vcpkg, CI) and falls
 # back to a source tree (MV_IMGUI_SOURCE_DIR) and the system. Windows and
@@ -59,6 +73,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 option(MV_BUILD_TESTS "Build the core test suite" ON)
 option(MV_ASAN "Build with AddressSanitizer (docs/design/09 CI configuration)" OFF)
 
+# The iPhone core (docs/plans/mobile.md): engines only, no viewer.
+if(IOS)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ios.cmake")
+  return()
+endif()
 # PR 16: Apple Silicon present lab. Windows targets are not defined on Darwin.
 if(APPLE)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/darwin.cmake")
@@ -669,6 +688,7 @@ add_library(mv_edit STATIC
   src/edit/bake.cpp
   src/edit/detail.cpp
   src/edit/eyes.cpp
+  src/edit/eye_state.cpp
   src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -1249,6 +1269,7 @@ if(MV_BUILD_TESTS)
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp
     tests/test_eyes.cpp
+    tests/test_eye_state.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
     # #297: Enhance's sound in and out (edit/sound_writer.h).
@@ -1507,6 +1528,7 @@ if(MV_BUILD_TESTS)
   # MV_AI_EVAL_DIR) point at staged files; tools/ai-bench runs the timings.
   add_executable(mv_ai_tests
     tests/test_ai_engine.cpp
+    tests/test_phone_chain.cpp
     tests/test_ai_face_refine.cpp
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp

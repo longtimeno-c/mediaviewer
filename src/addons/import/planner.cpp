@@ -3,6 +3,7 @@
 #include "addons/import/planner.h"
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
@@ -46,20 +47,19 @@ bool ensure_hash(const host& h, library_index& idx, const scan_result& scan, sou
   return true;
 }
 
-// The hash of a file already at a destination: the index's when its size and
-// mtime still match, else read once and indexed. A missing file drops its row,
-// but only when its folder answers: a share that is offline says nothing about
-// what is on it, and the row is the only memory of a file renamed since.
-std::optional<digest> destination_hash(const host& h, library_index& idx, const std::string& root,
-                                       const std::string& rel, const std::atomic<bool>& cancel) {
-  const std::string full = join_native(root, rel);
+// The hash of a file already at a destination, `live` being where `root`
+// (import.db's name for it) is now: the index's when its size and mtime still
+// match, else read once and indexed. A missing file drops its row, unless its
+// folder is missing too: an offline share or an empty stale mount point says
+// nothing about the file, and the row is the only memory of a file renamed since.
+std::optional<digest> destination_hash(const host& h, library_index& idx, const std::string& live,
+                                       const std::string& root, const std::string& rel,
+                                       const std::atomic<bool>& cancel) {
+  const std::string full = join_native(live, rel);
   auto st = h.stat(full);
   if (!st || st->is_directory) {
-    const std::size_t slash = full.find_last_of("/\\");
-    if (slash != std::string::npos) {
-      const auto folder = h.stat(full.substr(0, slash));
-      if (folder && folder->is_directory) idx.drop(root, rel);
-    }
+    const auto folder = h.stat(parent_native(full));
+    if (folder && folder->is_directory) idx.drop(root, rel);
     return std::nullopt;
   }
   if (auto row = idx.by_path(root, rel); row && row->size == st->size && row->mtime == st->mtime) {
@@ -77,17 +77,31 @@ struct dup_finder {
   scan_result& scan;
   const plan_result& plan;
   const std::atomic<bool>& cancel;
+  const dest_locator& loc;
   // Sizes that occur more than once on this source: only those need hashing
   // to catch a duplicate inside the card itself.
   std::unordered_map<std::uint64_t, int> size_count;
   // Content already planned from this source: hash -> display.
   std::map<digest, std::string> seen;
 
+  // A destination's rows of `size`: under its key, and under its absolute
+  // path while those rows have not been adopted (planner.h, adopt_legacy_root).
+  std::vector<library_row> rows_of(std::uint64_t size, const std::string& key,
+                                   const std::string& path) {
+    std::vector<library_row> out = idx.by_size(size, &key);
+    if (path != key) {
+      std::vector<library_row> old = idx.by_size(size, &path);
+      out.insert(out.end(), std::make_move_iterator(old.begin()), std::make_move_iterator(old.end()));
+    }
+    return out;
+  }
+
   // What `f` duplicates, or empty.
   std::string match(source_file& f) {
-    const std::string* scope_root =
-        plan.settings.scope == dup_scope::destination ? &plan.destination : nullptr;
-    std::vector<library_row> candidates = idx.by_size(f.size, scope_root);
+    std::vector<library_row> candidates =
+        plan.settings.scope == dup_scope::destination
+            ? rows_of(f.size, plan.destination_key, plan.destination)
+            : idx.by_size(f.size, nullptr);
     const bool twin_on_card = size_count[f.size] > 1;
     if (candidates.empty() && !twin_on_card) return {};
     if (!ensure_hash(h, idx, scan, f, cancel)) return {};
@@ -95,24 +109,28 @@ struct dup_finder {
       if (c.hash != f.hash) continue;
       // The backup drive is indexed too, but a copy there is not the library:
       // the main destination still needs the file.
-      if (!plan.backup.empty() && c.root == plan.backup) continue;
+      if (!plan.backup.empty() && (c.root == plan.backup_key || c.root == plan.backup)) continue;
+      const auto live = loc.live_root(c.root);
+      if (!live) continue;  // offline: nothing can be confirmed, and the row stays
       // The index says so; the file must still be there (a stat, not a read).
-      auto now = destination_hash(h, idx, c.root, c.rel, cancel);
+      auto now = destination_hash(h, idx, *live, c.root, c.rel, cancel);
       if (now && *now == f.hash) {
-        return c.root == plan.destination ? c.rel : join_native(c.root, c.rel);
+        const bool here = c.root == plan.destination_key || c.root == plan.destination;
+        return here ? c.rel : join_native(*live, c.rel);
       }
     }
     if (auto it = seen.find(f.hash); it != seen.end()) return it->second;
     return {};
   }
 
-  // Whether `root` already holds `f`'s content (the index, confirmed on disk).
-  bool present_on(source_file& f, const std::string& root) {
-    std::vector<library_row> candidates = idx.by_size(f.size, &root);
+  // Whether the destination at `live`, `key` in the index, already holds
+  // `f`'s content (the index, confirmed on disk).
+  bool present_on(source_file& f, const std::string& live, const std::string& key) {
+    std::vector<library_row> candidates = rows_of(f.size, key, live);
     if (candidates.empty() || !ensure_hash(h, idx, scan, f, cancel)) return false;
     for (const library_row& c : candidates) {
       if (c.hash != f.hash) continue;
-      auto now = destination_hash(h, idx, c.root, c.rel, cancel);
+      auto now = destination_hash(h, idx, live, c.root, c.rel, cancel);
       if (now && *now == f.hash) return true;
     }
     return false;
@@ -238,7 +256,11 @@ void assign_names(const host& h, library_index& idx, scan_result& scan, plan_res
     if (!p.rename.empty()) {
       if (uses_seq && work) {
         auto [it, inserted] = next_seq.try_emplace(pu.day, 0u);
-        if (inserted) it->second = idx.last_seq(plan.destination, pu.day);
+        if (inserted) {
+          // An absolute-path count not adopted yet still counts.
+          it->second = std::max(idx.last_seq(plan.destination_key, pu.day),
+                                idx.last_seq(plan.destination, pu.day));
+        }
         pu.seq = ++it->second;
       }
       base = render_stem(p.rename, rename_input{u.taken, u.camera, pu.seq, old_stem});
@@ -266,7 +288,9 @@ void assign_names(const host& h, library_index& idx, scan_result& scan, plan_res
             // Something is there already. Same bytes: it is this file, a
             // duplicate the index had not seen. Different bytes: a clash.
             source_file& f = scan.files[u.files[m]];
-            auto there = destination_hash(h, idx, root, rel, cancel);
+            const std::string& stored =
+                root == plan.destination ? plan.destination_key : plan.backup_key;
+            auto there = destination_hash(h, idx, root, stored, rel, cancel);
             const bool same = there && f.type != file_type::sidecar &&
                               ensure_hash(h, idx, scan, f, cancel) && *there == f.hash &&
                               p.skip_duplicates && m == 0;
@@ -307,6 +331,26 @@ void assign_names(const host& h, library_index& idx, scan_result& scan, plan_res
   }
 }
 
+void adopt_legacy_root(const host& h, library_index& idx, const dest_locator& loc,
+                       const std::string& root) {
+  const std::string key = loc.key_of(root);
+  if (!is_volume_key(key)) return;
+  const auto samples = idx.sample_rows(root, 32);
+  bool here = false;
+  if (samples.empty()) {
+    const auto st = h.stat(root);
+    here = st && st->is_directory;
+  }
+  for (const library_row& s : samples) {
+    const auto st = h.stat(join_native(root, s.rel));
+    if (st && !st->is_directory && st->size == s.size) {
+      here = true;
+      break;
+    }
+  }
+  if (here) (void)idx.adopt_root(root, key);
+}
+
 result<plan_result> make_plan(const host& h, library_index& idx, scan_result& scan,
                               const preset& settings, const std::set<std::string>& marked,
                               const std::string& default_library,
@@ -320,7 +364,20 @@ result<plan_result> make_plan(const host& h, library_index& idx, scan_result& sc
   if (plan.destination.empty()) return err(status::invalid_arg);
   if (!plan.backup.empty() && plan.backup == plan.destination) plan.backup.clear();
 
-  dup_finder dups{h, idx, scan, plan, cancel, {}, {}};
+  const dest_locator loc(h);
+  adopt_legacy_root(h, idx, loc, plan.destination);
+  plan.destination_key = loc.key_of(plan.destination);
+  if (!plan.backup.empty()) {
+    adopt_legacy_root(h, idx, loc, plan.backup);
+    plan.backup_key = loc.key_of(plan.backup);
+    // The same folder by two names (a drive letter and its UNC path).
+    if (plan.backup_key == plan.destination_key) {
+      plan.backup.clear();
+      plan.backup_key.clear();
+    }
+  }
+
+  dup_finder dups{h, idx, scan, plan, cancel, loc, {}, {}};
   for (const source_file& f : scan.files) {
     if (f.type != file_type::sidecar) ++dups.size_count[f.size];
   }
@@ -359,7 +416,7 @@ result<plan_result> make_plan(const host& h, library_index& idx, scan_result& sc
         if (!plan.backup.empty() && settings.skip_duplicates) {
           for (std::uint32_t fi : u.files) {
             source_file& f = scan.files[fi];
-            if (f.type != file_type::sidecar && !dups.present_on(f, plan.backup)) {
+            if (f.type != file_type::sidecar && !dups.present_on(f, plan.backup, plan.backup_key)) {
               pu.backup_needed = true;
               break;
             }

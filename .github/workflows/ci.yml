@@ -197,6 +197,53 @@ jobs:
           path: driftwire-macos/*.tar.gz
           if-no-files-found: error
 
+  # The iPhone engines (cmake/ios.cmake): both SDKs, the licence check inside
+  # the build, and the run-time smoke in a Simulator.
+  ios-core:
+    name: iOS core (${{ matrix.sdk }})
+    if: github.event_name != 'schedule'
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphoneos, iphonesimulator]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+          brew install ninja autoconf autoconf-archive automake libtool
+
+      - name: Licence check's own tests
+        run: python3 tools/ios/test_licence_check.py
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-ios -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build (includes the licence check)
+        run: cmake --build build-ios
+
+      - name: Smoke in a Simulator
+        if: matrix.sdk == 'iphonesimulator'
+        run: tools/ios/run-simulator-smoke.sh "$PWD/build-ios/bin/mv_ios_core_smoke"
+
   windows-chrome:
     name: WinUI chrome
     if: github.event_name != 'schedule'
@@ -722,8 +769,11 @@ jobs:
         # #511 and #517 timed out with 1566 of 1582 done, the PDF sweep 162 s;
         # no test hung), so they get 20. By 2026-10-22 main's msvc Debug took
         # 24.4 of its 25 min and ASan 44.5 of its 45 (#543 timed out at 25 with
-        # no test hung), so Debug gets 35 (job 50) and ASan 60 (job 85).
-        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 60 || matrix.config == 'Debug' && 35 || 20 }}
+        # no test hung), so Debug gets 35 (job 50) and ASan 60 (job 85). By
+        # 2026-11-09 main's msvc Release took 18.6-18.9 of its 20 min and #659
+        # timed out with 2101 of 2110 done (the document sweeps 82 s slower than
+        # the run before; no test hung), so Release gets 25, inside its job's 50.
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 60 || matrix.config == 'Debug' && 35 || 25 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
           # A missing clip or sample FAILS here instead of skipping

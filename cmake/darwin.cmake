@@ -445,6 +445,7 @@ add_library(mv_edit STATIC
   src/edit/bake.cpp
   src/edit/detail.cpp
   src/edit/eyes.cpp
+  src/edit/eye_state.cpp
   src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -537,6 +538,14 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # all (the Intel leg of the universal release links x64 dependencies only).
 if(MV_MAC_VCPKG_ARCH STREQUAL "arm64")
   include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/mobile.cmake")
+  # The desktop half of the phone's parity test (tools/ios/run-parity.sh).
+  add_executable(mv_mobile_parity_desktop "${CMAKE_SOURCE_DIR}/tools/ios/mobile_parity_desktop.mm")
+  target_link_libraries(mv_mobile_parity_desktop PRIVATE mv_ai_engine mv_infer mv_geo_open mv_geo
+    unofficial::sqlite3::sqlite3 "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO"
+    "-framework UniformTypeIdentifiers" "-framework AVFoundation" "-framework CoreMedia")
+  target_include_directories(mv_mobile_parity_desktop SYSTEM PRIVATE "${MV_ORT_INCLUDE}")
+  set_target_properties(mv_mobile_parity_desktop PROPERTIES OSX_ARCHITECTURES "arm64")
   # Enhance (#297): its own add-on over the AI pack's model downloader.
   include("${CMAKE_CURRENT_LIST_DIR}/enhance.cmake")
 endif()
@@ -1001,6 +1010,7 @@ if(MV_BUILD_TESTS)
     tests/test_auto_tone.cpp
     tests/test_prompt.cpp
     tests/test_eyes.cpp
+    tests/test_eye_state.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp
@@ -1156,8 +1166,23 @@ if(MV_BUILD_TESTS)
   # cases skip unless MV_AI_PACK_DIR (MV_AI_AUDIO_DIR, MV_AI_SPEECH_CLIP,
   # MV_AI_EVAL_DIR) point at staged files. arm64 only, like the pack.
   if(TARGET mv_ai)
+    include("${CMAKE_CURRENT_LIST_DIR}/mobile-link.cmake")
+    add_executable(mv_mobile_link_tests tests/test_mobile_link.cpp src/addons/driftwire/bt_none.cpp)
+    target_link_libraries(mv_mobile_link_tests PRIVATE mv_mobile_link mv_driftwire_engine mv_ai_engine mv_io mv_infer
+                          Catch2::Catch2WithMain ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET})
+    target_include_directories(mv_mobile_link_tests PRIVATE src tests)
+    set_target_properties(mv_mobile_link_tests PROPERTIES OSX_ARCHITECTURES "arm64")
+    catch_discover_tests(mv_mobile_link_tests TEST_PREFIX "mobile_link_" DISCOVERY_MODE PRE_TEST)
+
+    # A real catalogue for proving the phone end to end (docs/plans/mobile.md M3/M4); not shipped.
+    add_executable(mv_publish_test_library tools/ios/publish_test_library.cpp src/addons/driftwire/bt_none.cpp)
+    target_link_libraries(mv_publish_test_library PRIVATE mv_ai_engine mv_driftwire_engine mv_infer mv_io ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET})
+    target_include_directories(mv_publish_test_library PRIVATE src)
+    set_target_properties(mv_publish_test_library PROPERTIES OSX_ARCHITECTURES "arm64")
+
     add_executable(mv_ai_tests
       tests/test_ai_engine.cpp
+      tests/test_phone_chain.cpp
       tests/test_ai_face_refine.cpp
       tests/test_ai_infer.cpp
       tests/test_ai_audio.cpp
@@ -1171,9 +1196,10 @@ if(MV_BUILD_TESTS)
       # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
       tests/test_ai_ocr.cpp
       tests/test_nle.cpp
+      tests/test_mobile_search.cpp  # docs/plans/mobile.md M5
     )
     target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
-      Catch2::Catch2WithMain)
+      mv_mobile_search mv_mobile_test_fixture Catch2::Catch2WithMain)
     target_include_directories(mv_ai_tests PRIVATE src tests)
     target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
       MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")

@@ -89,15 +89,17 @@ TEST_CASE("faces tool: cards from the pack's answer and the still", "[faces-tool
   CHECK(anna.person == 7);
   CHECK(anna.photos == 37);
   CHECK(other.name.empty());
+  // No "Eyes closed" badge without the eye model's reading ("eyes", from
+  // media::with_eyes_read): never from a brightness rule. Open eyes and
+  // Improve face on every face, the person deciding.
   CHECK_FALSE(anna.shut);
-  CHECK(other.shut);
-  // Open eyes only where they look shut; Improve face everywhere.
-  CHECK(actions_of(anna) == (1u << static_cast<unsigned>(face_action::improve)));
-  CHECK(actions_of(other) == ((1u << static_cast<unsigned>(face_action::improve)) |
-                              (1u << static_cast<unsigned>(face_action::open_eyes))));
+  CHECK_FALSE(other.shut);
+  const std::uint32_t both = (1u << static_cast<unsigned>(face_action::improve)) |
+                             (1u << static_cast<unsigned>(face_action::open_eyes));
+  CHECK(actions_of(anna) == both);
+  CHECK(actions_of(other) == both);
   // S10's Restore face is Enhance's: offered on every face while Enhance has it.
-  CHECK(actions_of(anna, true) == ((1u << static_cast<unsigned>(face_action::improve)) |
-                                   (1u << static_cast<unsigned>(face_action::restore))));
+  CHECK(actions_of(anna, true) == (both | (1u << static_cast<unsigned>(face_action::restore))));
   CHECK((actions_of(other, true) & (1u << static_cast<unsigned>(face_action::restore))) != 0u);
   // A thumbnail a face, opaque sRGB, the skin's colour about its edge.
   REQUIRE(anna.thumb_w == kFaceThumbPx);
@@ -278,4 +280,50 @@ TEST_CASE("faces tool: which reads are made again", "[faces-tool]") {
   CHECK_FALSE(t.needs_read(3));
   t.clear();
   CHECK(t.needs_read(3));
+}
+
+TEST_CASE("faces tool: a fix's result chooses the same faces again", "[faces-tool]") {
+  const auto img = two_faces(800, 400, 80);
+  faces_tool t;
+  t.looking(1);
+  REQUIRE(t.landed(1, read_faces(mv::status::ok, answer(800, 400, 80), &img)));
+  REQUIRE(t.count() == 2);
+  REQUIRE(t.toggle(0));  // only the second face chosen
+  t.carry = t.run_boxes(-1);
+  REQUIRE(t.carry.size() == 4);
+  // The result (a new photo, same framing) lands: the second face again, not both.
+  t.looking(2);
+  REQUIRE(t.landed(2, read_faces(mv::status::ok, answer(800, 400, 80), &img)));
+  CHECK_FALSE(t.is_chosen(0));
+  CHECK(t.is_chosen(1));
+  CHECK(t.carry.empty());
+  // The next photo starts with every face chosen, as before.
+  t.looking(3);
+  REQUIRE(t.landed(3, read_faces(mv::status::ok, answer(800, 400, 80), &img)));
+  CHECK(t.chosen_count() == 2);
+}
+
+TEST_CASE("faces tool: the eye model's reading badges shut eyes, and those faces start chosen", "[faces-tool]") {
+  // The answer as media::with_eyes_read gives it: "eyes" per face.
+  std::string a = answer(800, 400, 80);
+  const std::size_t first = a.find("\"donors\":[]");
+  REQUIRE(first != std::string::npos);
+  a.insert(first, "\"eyes\":[0.12,0.31],");  // Anna: both eyes shut
+  const std::size_t second = a.find("\"donors\":[]", a.find("\"eyes\"") + 30);
+  REQUIRE(second != std::string::npos);
+  a.insert(second, "\"eyes\":[0.05,0.98],");  // a wink: one eye open, no badge
+  const faces_scan scan = read_faces(mv::status::ok, a, nullptr);
+  REQUIRE(scan.faces.size() == 2);
+  CHECK(scan.faces[0].shut);
+  CHECK_FALSE(scan.faces[1].shut);
+  faces_tool t;
+  t.looking(3);
+  REQUIRE(t.landed(3, scan));
+  CHECK(t.chosen_count() == 1);
+  CHECK(t.is_chosen(0));
+  CHECK_FALSE(t.is_chosen(1));
+  // A face whose eyes could not be read (-1) is not badged.
+  std::string unknown = answer(800, 400, 80);
+  unknown.insert(unknown.find("\"donors\":[]"), "\"eyes\":[-1,0.2],");
+  CHECK_FALSE(read_faces(mv::status::ok, unknown, nullptr).faces[0].shut);
 }

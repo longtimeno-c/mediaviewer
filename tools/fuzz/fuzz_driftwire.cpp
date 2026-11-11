@@ -15,7 +15,10 @@
 // the receiver's internet places as a sender reads them; and from #472's
 // relays, a relay server's rendezvous hello, the relay field as typed, and the own-device relay's
 // request (as R reads it) and answer (as A reads it). The first byte picks
-// which. Whatever comes in, every call must
+// which; and from `driftwire serve`, what a stranger can make the service
+// read before the access key is proven (the library hello, the service's
+// whole open, also with the key held so the rest of the handshake is reached),
+// a whole session of what a paired device sends, and its config file. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
 // a closed link.
 #include <algorithm>
@@ -24,6 +27,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <string>
@@ -42,6 +47,8 @@
 #include "addons/driftwire/net.h"
 #include "addons/driftwire/noise.h"
 #include "addons/driftwire/relay.h"
+#include "addons/driftwire/serve.h"
+#include "addons/driftwire/serve_wire.h"
 #include "addons/driftwire/splice.h"
 #include "addons/driftwire/transfer.h"
 #include "addons/driftwire/wire.h"
@@ -89,7 +96,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 28) {
+  switch (data[0] % 36) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -237,6 +244,95 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       std::uint64_t written = 0;  // "now" is the item's own time, so the age check lets it through
       for (int i = 7; i >= 0; --i) written = (written << 8) | plain[5 + static_cast<std::size_t>(i)];
       (void)mv::driftwire::dht::parse_plain(plain, static_cast<std::int64_t>(written));
+      break;
+    }
+    case 28: {
+      // The service's first read: all a stranger reaches before the AEAD.
+      input_link l(in);
+      (void)sp::channel::read_library_hello(l, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+      break;
+    }
+    case 29: {
+      // The service's whole open, access key fixed, fed from the input.
+      auto l = std::make_shared<input_link>(in);
+      auto h = sp::channel::read_library_hello(*l, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+      sp::channel::options o;
+      o.access_key = fixed(9);
+      o.static_key = fixed(2);
+      o.fresh_first = [](std::span<const std::uint8_t>) { return true; };
+      if (h) (void)sp::channel::open_library_server(l, std::move(*h), "bbbbbbbbbbbbbbbb", "Fuzz", o);
+      break;
+    }
+    case 30: {
+      // Past the key: a real first message and answer, then the input as message 3.
+      noise::handshake init(noise::xx_hfs_psk0(), true, {}, fixed(1), fixed(9));
+      noise::handshake resp(noise::xx_hfs_psk0(), false, {}, fixed(2), fixed(9));
+      std::vector<std::uint8_t> reply;
+      if (init.write_message({}, out) && resp.read_message(out, payload) && resp.write_message({}, reply)) {
+        (void)resp.read_message(in, payload);
+      }
+      break;
+    }
+    case 31: {
+      bool unknown = false;
+      (void)mv::driftwire::serve::parse_open(in, unknown);
+      (void)mv::driftwire::serve::parse_credit(in);
+      (void)mv::driftwire::serve::parse_cancel(in);
+      (void)mv::driftwire::serve::parse_data(in);
+      (void)mv::driftwire::serve::parse_end(in);
+      (void)mv::driftwire::serve::parse_admin(in);
+      break;
+    }
+    case 32:
+      (void)mv::driftwire::serve::parse_hello(text);
+      (void)mv::driftwire::serve::parse_pair(text);
+      (void)mv::driftwire::serve::parse_caps(text);
+      (void)mv::driftwire::serve::parse_roots(text);
+      (void)mv::driftwire::serve::parse_stat(text);
+      (void)mv::driftwire::serve::parse_listing(text);
+      break;
+    case 33:
+      (void)mv::driftwire::serve::parse_config(text, true);
+      break;
+    case 34: {
+      // The service's whole open with the key held: a real hello made here,
+      // then the input as the rest of the handshake.
+      const std::string text_prologue = std::string("MediaViewer Driftwire library") + "MVSP" + char{2} + 'L';
+      noise::handshake init(noise::xx_hfs_psk0(), true,
+                            std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text_prologue.data()),
+                                                          text_prologue.size()),
+                            fixed(1), fixed(9));
+      if (!init.write_message({}, out)) break;
+      std::vector<std::uint8_t> stream = {'M', 'V', 'S', 'P', 2, 'L', static_cast<std::uint8_t>(out.size()),
+                                          static_cast<std::uint8_t>(out.size() >> 8)};
+      stream.insert(stream.end(), out.begin(), out.end());
+      stream.insert(stream.end(), in.begin(), in.end());
+      auto l = std::make_shared<input_link>(stream);
+      auto h = sp::channel::read_library_hello(*l, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+      sp::channel::options o;
+      o.access_key = fixed(9);
+      o.static_key = fixed(2);
+      o.fresh_first = [](std::span<const std::uint8_t>) { return true; };
+      if (h) (void)sp::channel::open_library_server(l, std::move(*h), "bbbbbbbbbbbbbbbb", "Fuzz", o);
+      break;
+    }
+    case 35: {
+      // After the handshake: everything an admitted device can send, against
+      // real files, with the channel taken out of the way.
+      static const auto cfg = [] {
+        std::filesystem::path dir = std::filesystem::temp_directory_path() / "driftwire-serve-fuzz";
+        std::error_code ec;
+        std::filesystem::create_directories(dir / "d", ec);
+        std::ofstream(dir / "a.bin", std::ios::binary) << std::string(100000, 'a');
+        std::ofstream(dir / "d" / "b.txt", std::ios::binary) << "b";
+        mv::driftwire::serve::config c;
+        c.port = 1;
+        c.name = "Fuzz";
+        const std::u8string p = dir.u8string();
+        c.roots.push_back({"aaaaaaaaaaaaaaaa", "A", std::string(reinterpret_cast<const char*>(p.data()), p.size())});
+        return c;
+      }();
+      mv::driftwire::serve::drive_requests(cfg, mv::driftwire::serve::kAllOps, in);
       break;
     }
     case 15: {

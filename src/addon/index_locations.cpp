@@ -19,6 +19,7 @@ struct source_state {
   index_location_source source;  // under m
   eyes_source eyes;              // under m (slice 6)
   faces_source faces;            // under m (edit-refresh S10)
+  person_faces_source person_faces;  // under m (2026-11-07)
   std::uint32_t in_flight = 0;   // under m
   std::condition_variable changed;  // a publish or a decline
   index_wanted_fn wanted;           // under m
@@ -111,6 +112,7 @@ void retract_index_locations() noexcept {
     s.source = nullptr;
     s.eyes = nullptr;
     s.faces = nullptr;
+    s.person_faces = nullptr;
     s.epoch.fetch_add(1, std::memory_order_acq_rel);
   }
 }
@@ -255,6 +257,51 @@ index_location_source ai_index_locations(const mv_ai_api* api) {
     const mv_status st = api->each_location(api->ctx, &visit_thunk, &c);
     if (st == MV_OK) return {};
     return err(static_cast<status>(st));
+  };
+}
+
+
+void publish_ai_person_faces(person_faces_source source) {
+  source_state& s = state();
+  std::lock_guard lock(s.m);
+  s.person_faces = std::move(source);
+}
+
+result<std::string> ai_person_faces_json(std::uint64_t person) {
+  source_state& s = state();
+  person_faces_source fn;
+  {
+    std::lock_guard lock(s.m);
+    if (!s.person_faces) return err(status::not_found);
+    fn = s.person_faces;
+    ++s.in_flight;
+  }
+  struct leave {
+    source_state& s;
+    ~leave() {
+      std::lock_guard lock(s.m);
+      if (--s.in_flight == 0) s.idle.notify_all();
+    }
+  } on_leave{s};
+  return fn(person);
+}
+
+person_faces_source ai_person_faces(const mv_ai_api* api) {
+  if (!api || api->struct_size < offsetof(mv_ai_api, person_faces_json) + sizeof(api->person_faces_json) ||
+      !api->person_faces_json) {
+    return nullptr;
+  }
+  return [api](std::uint64_t person) -> result<std::string> {
+    std::string out(64 * 1024, '\0');
+    std::uint32_t needed = 0;
+    mv_status st = api->person_faces_json(api->ctx, person, out.data(), static_cast<std::uint32_t>(out.size()), &needed);
+    if (st == MV_ERR_INVALID_ARG && needed > out.size()) {
+      out.assign(needed, '\0');
+      st = api->person_faces_json(api->ctx, person, out.data(), static_cast<std::uint32_t>(out.size()), &needed);
+    }
+    if (st != MV_OK) return err(static_cast<status>(st));
+    out.resize(std::strlen(out.c_str()));
+    return out;
   };
 }
 

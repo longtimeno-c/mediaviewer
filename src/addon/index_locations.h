@@ -101,4 +101,15 @@ void publish_ai_faces(faces_source source);
 // The table's faces_json row as a source; empty for an older pack.
 [[nodiscard]] faces_source ai_faces(const mv_ai_api* api);
 
+// 2026-11-07: the pack's person_faces_json row (a person's faces in People,
+// each with its photo), published and retracted with the eyes. The Faces
+// tool's fixes ask it for the chosen faces' people's photos and offer them to
+// eyes_json as candidates (media::people_candidates): the pack reads those at
+// any pose, and the host judges the pose on points read again upright.
+using person_faces_source = std::function<result<std::string>(std::uint64_t person)>;
+void publish_ai_person_faces(person_faces_source source);
+// status::not_found when no pack is loaded or it predates the row.
+[[nodiscard]] result<std::string> ai_person_faces_json(std::uint64_t person);
+[[nodiscard]] person_faces_source ai_person_faces(const mv_ai_api* api);
+
 }  // namespace mv::addon

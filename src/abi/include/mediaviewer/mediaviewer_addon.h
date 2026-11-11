@@ -551,6 +551,19 @@ typedef struct mv_addon_slots {
   void(MV_CALL* event)(void* addon, const mv_slot_event* event);
 } mv_addon_slots;
 
+/* One add-on asking another (mv_host_api.addon_request, docs/design/18). */
+typedef void(MV_CALL* mv_addon_reply_fn)(void* user, const char* json_utf8);
+#define MV_REQUEST_INTERFACE "mv.request.1"
+typedef struct mv_addon_request_api {
+  uint32_t struct_size;
+  uint32_t reserved;
+  /* On the add-on's slot worker. `caller_id` is the asking add-on's id, from
+   * the host, so an add-on can answer only those it knows. `reply` once, with
+   * the answer's JSON, before returning MV_OK. */
+  mv_status(MV_CALL* handle)(void* addon, const char* caller_id, const char* method, const char* request_json,
+                             mv_addon_reply_fn reply, void* user);
+} mv_addon_request_api;
+
 /* The answer to the host's place_labels (2026-11-10), its own interface so no
  * add-on that fills mv.slots.1 has to change. The label the Info pane would
  * show at a GPS point, "" for none. On the add-on's slot worker. `*needed` is
@@ -1064,12 +1077,25 @@ typedef struct mv_host_api {
    * anywhere: the labels come from the database on this machine (rule 6). */
   mv_status(MV_CALL* place_labels)(void* host, const mv_addon_route_point* points, uint32_t count,
                                    mv_addon_label_fn visit, void* user);
+  /* ---- add-ons calling add-ons (docs/design/18 "Add-ons calling add-ons") ------ */
+  /* [worker-thread] One request to the loaded add-on `addon_id`, answered on
+   * its slot worker: the only way one add-on reaches another. `method` and
+   * `request_json` mean what that add-on documents; the host tells it who is
+   * asking. `reply` gets the answer's JSON once, on the caller's thread,
+   * before this returns. Blocks until answered, at most 30 s
+   * (MV_ERR_TIMEOUT). Never from a slot worker: the answering add-on's worker
+   * may be busy with this caller's own work. MV_ERR_NOT_FOUND: that add-on
+   * is not installed, not loaded, too old for this, or does not know the
+   * method (the caller offers to install it). Appended after place_labels:
+   * read only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* addon_request)(void* host, const char* addon_id, const char* method, const char* request_json,
+                                    mv_addon_reply_fn reply, void* user);
   /* [worker-thread] A JPEG-512 made now and stored nowhere: the viewer's cache
    * is the viewer's. `pts_ms` < 0: the file's own picture (a still's, an audio
    * file's cover art); >= 0: a clip's moment or a document's page. `*out_size`
    * is always the bytes needed; MV_ERR_INVALID_ARG with it larger than
    * `capacity`: call again. MV_ERR_UNSUPPORTED_FORMAT: it has no picture.
-   * Appended after place_labels: read only when `struct_size` covers it and
+   * Appended after addon_request: read only when `struct_size` covers it and
    * the pointer is non-NULL. */
   mv_status(MV_CALL* thumbnail_make)(void* host, const char* path_utf8, int64_t pts_ms, uint8_t* out,
                                      uint64_t capacity, uint64_t* out_size);
@@ -1386,6 +1412,13 @@ MV_API mv_status MV_CALL mv_eyes_json(const char* path_utf8, char* out, uint32_t
  * Open eyes, else "-faces.jpg"), `note_out` what happened. [worker-thread] */
 MV_API mv_status MV_CALL mv_adjust_faces(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
                                          char* note_out, uint32_t cap, uint32_t* needed);
+/* As mv_adjust_faces, and `written_out` the new file's path ("" when nothing
+ * was fixed), so the host opens the result. MV_OK once the fix has run, even
+ * when a buffer is short: that buffer is left "" and its `*_needed` says how
+ * long it was (calling again would run the fix again). [worker-thread] */
+MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, const float* boxes, uint32_t count,
+                                            char* note_out, uint32_t cap, uint32_t* needed, char* written_out,
+                                            uint32_t written_cap, uint32_t* written_needed);
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file

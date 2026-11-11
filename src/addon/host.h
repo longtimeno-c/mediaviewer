@@ -149,6 +149,9 @@ struct host_services {
   // The labels of GPS points. Empty: the add-on that answers `place:`
   // (slot_registry::provider_labels, Places). Tests inject a fake.
   std::function<result<std::vector<std::string>>(std::span<const std::pair<double, double>> points)> place_labels;
+  // One add-on asking another. Empty: slot_registry::addon_request. Tests inject a fake.
+  std::function<result<std::string>(const std::string& target, const std::string& method, const std::string& json)>
+      addon_request;
   std::function<result<std::string>(const std::string& source, const rgb_image& pixels, const std::string& suffix)>
       write_still;
   // #606: a clip's GPS route from its telemetry (meta::read_route in both

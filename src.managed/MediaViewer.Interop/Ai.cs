@@ -390,6 +390,9 @@ public unsafe struct MvAiApi
     // #354, a folder's Documents choice. Appended: read only when StructSize covers it.
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, MvStatus> RootSetDocuments;
 
+    // edit-adjust slice 6, closed eyes: the host serves it; this chrome never calls it.
+    public IntPtr EyesJson;
+
     // correcting people (2026-11-02, docs/design/17 "People"). Appended: each is read
     // only when StructSize covers it and it is non-null (AiApi.Has*).
     public delegate* unmanaged[Cdecl]<IntPtr, ulong*, uint, ulong, uint, MvStatus> FacesAssign;
@@ -405,6 +408,9 @@ public unsafe struct MvAiApi
     // Refine / Merge duplicates in detail (2026-11-02, docs/design/17). Appended.
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, byte*, uint, uint*, MvStatus> PersonRefineJson;
     public delegate* unmanaged[Cdecl]<IntPtr, uint, byte*, uint, uint*, MvStatus> PeopleDedupeJson;
+
+    // edit-refresh S10, faces in a picture: the host serves it; this chrome never calls it.
+    public IntPtr FacesJson;
 }
 
 /// <summary>Mirrors <c>MV_AI_DRY_RUN</c>: person_refine_json / people_dedupe_json look first.</summary>

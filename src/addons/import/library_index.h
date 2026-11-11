@@ -24,7 +24,7 @@ struct sqlite3;
 namespace mv::import {
 
 struct library_row {
-  std::string root;  // destination root, native, no trailing separator
+  std::string root;  // dest_locator's key for the destination (host.h)
   std::string rel;   // '/'-separated
   std::uint64_t size = 0;
   std::int64_t mtime = 0;
@@ -52,7 +52,9 @@ struct journal_row {
   std::string rel;               // source-relative, for the card memory
   std::uint64_t size = 0;
   std::int64_t mtime = 0;
-  std::vector<std::string> targets;  // final paths, one per destination
+  // One per destination. A root is dest_locator's key; beside a volume key the
+  // target is '/'-separated under it, beside an absolute root it is absolute.
+  std::vector<std::string> targets;
   std::vector<std::string> target_roots;
   member_state state = member_state::pending;
   digest hash{};
@@ -98,6 +100,15 @@ class library_index {
   void upsert(const library_row& row);
   void drop(const std::string& root, const std::string& rel);
   [[nodiscard]] std::vector<library_row> all_rows();
+
+  // ---- absolute roots from before volume keys (docs/design/18) ----
+  // Distinct roots in `library` and `seq` that are still absolute paths.
+  [[nodiscard]] std::vector<std::string> legacy_roots();
+  // At most `limit` of `root`'s rows, spread evenly across it.
+  [[nodiscard]] std::vector<library_row> sample_rows(const std::string& root, int limit);
+  // Moves `root`'s library and {seq} rows to `key` in one transaction. A row
+  // `key` already has wins over the old one for that file; {seq} keeps the higher.
+  [[nodiscard]] expected adopt_root(const std::string& root, const std::string& key);
 
   // ---- find duplicates: remembered hashes ----
   // Every row whose path starts with `prefix` (a folder with its trailing
@@ -153,6 +164,8 @@ class library_index {
   void journal_set(std::uint64_t job, std::uint32_t unit, std::uint32_t member, member_state state,
                    const digest* hash, const std::string& reason);
   [[nodiscard]] std::vector<journal_row> journal(std::uint64_t job);
+  // Rewrites the targets and roots of `rows`, all or none.
+  [[nodiscard]] expected journal_set_targets(const std::vector<journal_row>& rows);
 
  private:
   library_index() = default;

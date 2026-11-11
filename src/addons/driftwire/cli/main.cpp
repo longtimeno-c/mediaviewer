@@ -5,7 +5,8 @@
 // identity, settings and a data folder of its own.
 //
 // The steps, each with its way out: the arguments (2 on a usage error);
-// --help, --version, `devices` and `update`, which need no terminal; then a terminal
+// --help, --version, `devices`, `update` and `serve` (the NAS service,
+// serve_cmd.h), which need no terminal; then a terminal
 // on both ends (2 without one: it asks before anything is sent or saved),
 // the files to send, one session per user (2 when another terminal has it),
 // and the session itself, whose exit code is the program's.
@@ -28,6 +29,7 @@
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host.h"
 #include "addons/driftwire/cli/paths_arg.h"
+#include "addons/driftwire/cli/serve_cmd.h"
 #include "addons/driftwire/cli/session.h"
 #include "addons/driftwire/cli/term.h"
 #include "addons/driftwire/cli/theme.h"
@@ -189,6 +191,13 @@ int main(int argc, char** argv) {
   }
 
   if (a.cmd == cli::command::devices) return list_devices();
+#if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+  if (a.cmd == cli::command::serve) return cli::run_serve(a, true);
+#else
+  // The one mode with no terminal: it answers no one at a keyboard, only
+  // devices already paired (docs/design/28 "The NAS service").
+  if (a.cmd == cli::command::serve) return cli::run_serve(a, false);
+#endif
 #if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
   if (a.cmd == cli::command::update) return run_update();
 #else

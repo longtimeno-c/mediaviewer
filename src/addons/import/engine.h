@@ -106,6 +106,8 @@ class engine {
   struct job;
 
   void control_loop();
+  // Moves rows from before volume keys to them, where the destination is here.
+  void adopt_legacy_on_control();
   void post_task(std::function<void()> fn);
   // In memory only: safe on the UI thread. persist() writes its row.
   std::shared_ptr<job> make_job(std::uint32_t kind, const preset& settings);

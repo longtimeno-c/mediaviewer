@@ -45,6 +45,16 @@ class source_limit {
     return true;
   }
 
+  // Whether allow() would say yes now, without counting anything: a coarser
+  // limit asks this, and charges only once the finer one has passed.
+  [[nodiscard]] bool has_room(const std::string& source, clock::time_point now) const {
+    if (source.empty()) return true;
+    const auto it = std::find_if(seen_.begin(), seen_.end(), [&](const entry& e) { return e.source == source; });
+    if (it == seen_.end()) return true;
+    const auto live = std::count_if(it->at.begin(), it->at.end(), [&](clock::time_point t) { return now - t < window_; });
+    return live < per_window_;
+  }
+
  private:
   struct entry {
     std::string source;

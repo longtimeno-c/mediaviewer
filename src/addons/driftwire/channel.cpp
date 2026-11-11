@@ -24,6 +24,15 @@ constexpr std::size_t kHelloBytes = 4 + 1 + crypto_kx_PUBLICKEYBYTES;  // protoc
 constexpr std::uint8_t kKindNew = 'N';
 constexpr std::uint8_t kKindRejoin = 'R';
 constexpr std::uint8_t kKindInternet = 'I';
+constexpr std::uint8_t kKindLibrary = 'L';
+constexpr char kPrologueLibrary[] = "MediaViewer Driftwire library";
+// A library hello's first Noise message, exactly: e, e1 sealed, the empty
+// payload's tag. Nothing is allocated for any other length.
+constexpr std::size_t kLibraryFirstBytes = noise::kDhBytes + noise::kKemPublicBytes + 2 * noise::kTagBytes;
+// The service, from the reply to the end of ident: a slot held by a recorded
+// hello, or by a revoked device that still holds the key, is given back soon
+// (and, once full, from 1 s; serve.cpp).
+constexpr int kLibraryServerMs = 2000;
 constexpr char kPrologueInternet[] = "MediaViewer Driftwire 2 internet";
 constexpr char kCpaceChannel[] = "MediaViewer Driftwire 2 internet sender-receiver";
 constexpr char kCheckContext[] = "MediaViewer Driftwire check v2";
@@ -192,7 +201,14 @@ std::span<const std::uint8_t> seal_kept(std::vector<std::uint8_t>& buf, crypto_s
   return {buf.data(), 4 + static_cast<std::size_t>(out_len)};
 }
 
-bool valid_type(std::uint8_t raw, std::uint32_t version) noexcept {
+bool valid_type(std::uint8_t raw, std::uint32_t version, bool library) noexcept {
+  // `driftwire serve`: its own ids, and the session's plumbing. Nothing else
+  // goes on such a channel, and no other channel takes these ids.
+  if (library) {
+    return raw == static_cast<std::uint8_t>(msg::ident) || raw == static_cast<std::uint8_t>(msg::cancel) ||
+           raw == static_cast<std::uint8_t>(msg::ping) ||
+           (raw >= static_cast<std::uint8_t>(msg::serve_hello) && raw <= static_cast<std::uint8_t>(msg::serve_claim_check));
+  }
   const auto last = version >= 2 ? msg::places : msg::ping;  // places: #472 PR 5
   // #472 relays (relay.h): their own range, protocol 2 only.
   if (version >= 2 && raw >= static_cast<std::uint8_t>(msg::relay) &&
@@ -601,6 +617,115 @@ result<std::unique_ptr<channel>> channel::open_internet_v2(std::unique_ptr<chann
   return c;
 }
 
+result<hello> channel::read_library_hello(link& l, clock::time_point deadline) {
+  // MVSP, 2, L, the length, the message: fixed sizes, nothing variable. All
+  // of it is read before any of it is looked at, so a wrong prefix does not
+  // close sooner than a right one. A patient scanner can still count how many
+  // bytes it takes to get a close.
+  std::vector<std::uint8_t> all(8 + kLibraryFirstBytes);
+  if (auto r = read_exact_until(l, all, deadline); !r) return err(r.error());
+  if (std::memcmp(all.data(), kHelloMagic, 4) != 0 || all[4] != kProtocol2 || all[5] != kKindLibrary ||
+      (static_cast<std::size_t>(all[6]) | static_cast<std::size_t>(all[7]) << 8) != kLibraryFirstBytes) {
+    return err(status::corrupt);
+  }
+  hello h;
+  h.version = kProtocol2;
+  h.body.assign(all.begin() + 8, all.end());
+  return h;
+}
+
+result<std::unique_ptr<channel>> channel::open_library(std::shared_ptr<link> l, std::string_view my_id,
+                                                       std::string_view my_name, const options& opts) {
+  if (!l || !opts.access_key || !opts.static_key) return err(status::invalid_arg);
+  if (sodium_init() < 0) return err(status::internal);
+  const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
+  std::unique_ptr<channel> c(new channel());
+  c->via_ = l->via();
+  c->link_ = c->write_link_ = c->read_link_ = l;
+  c->st_ = std::make_unique<state>();
+  c->version_ = kProtocol2;
+  auto opened = open_library_v2(std::move(c), true, nullptr, opts, deadline);
+  if (!opened) return err(opened.error());
+  if (auto r = (*opened)->exchange_ident(my_id, my_name, deadline); !r) {
+    l->shutdown();
+    return err(r.error());
+  }
+  return opened;
+}
+
+result<std::unique_ptr<channel>> channel::open_library_server(std::shared_ptr<link> l, hello h, std::string_view my_id,
+                                                              std::string_view my_name, const options& opts) {
+  if (!l) return err(status::invalid_arg);
+  if (!opts.access_key || !opts.static_key) {
+    l->shutdown();
+    return err(status::invalid_arg);
+  }
+  if (sodium_init() < 0) return err(status::internal);
+  const auto deadline = clock::now() + std::chrono::milliseconds(kLibraryServerMs);
+  std::unique_ptr<channel> c(new channel());
+  c->via_ = l->via();
+  c->link_ = c->write_link_ = c->read_link_ = l;
+  c->st_ = std::make_unique<state>();
+  c->version_ = kProtocol2;
+  auto opened = open_library_v2(std::move(c), false, &h, opts, deadline);
+  if (!opened) return err(opened.error());
+  if (auto r = (*opened)->exchange_ident(my_id, my_name, deadline); !r) {
+    l->shutdown();
+    return err(r.error());
+  }
+  return opened;
+}
+
+bool channel::hello_opens_under(const hello& h, const std::array<std::uint8_t, 32>& key,
+                                const std::array<std::uint8_t, 32>& static_key) {
+  noise::handshake hs(noise::xx_hfs_psk0(), false, prologue(kPrologueLibrary, kKindLibrary), static_key, key);
+  std::vector<std::uint8_t> payload;
+  return hs.read_message(h.body, payload) && payload.empty();
+}
+
+result<std::unique_ptr<channel>> channel::open_library_v2(std::unique_ptr<channel> c, bool client, const hello* theirs,
+                                                          const options& opts, clock::time_point deadline) {
+  link& l = *c->link_;
+  auto fail = [&](status s) -> result<std::unique_ptr<channel>> {
+    l.shutdown();
+    return err(s);
+  };
+  c->library_ = true;
+  // One prologue, one fixed kind: a library handshake opens nowhere else.
+  noise::handshake hs(noise::xx_hfs_psk0(), client, prologue(kPrologueLibrary, kKindLibrary), opts.static_key,
+                      opts.access_key);
+  std::vector<std::uint8_t> out, payload;
+  if (client) {
+    if (!hs.write_message({}, out)) return fail(status::internal);
+    const std::uint8_t prefix[] = {'M', 'V', 'S', 'P', kProtocol2, kKindLibrary};
+    if (!write_noise(l, prefix, out)) return fail(status::io);
+    auto m2 = read_noise(l, deadline);
+    if (!m2) return fail(m2.error());  // a wrong key: the service said nothing and closed
+    if (!hs.read_message(*m2, payload) || !payload.empty()) return fail(status::corrupt);
+    if (!hs.write_message({}, out)) return fail(status::internal);
+    if (!write_noise(l, {}, out)) return fail(status::io);
+  } else {
+    // The first read: e1 is sealed under a key from the psk, so a stranger
+    // fails here, having cost one AEAD and no X25519 or ML-KEM work.
+    if (!hs.read_message(theirs->body, payload) || !payload.empty()) return fail(status::permission_denied);
+    if (opts.fresh_first && !opts.fresh_first(theirs->body)) return fail(status::permission_denied);
+    if (!hs.write_message({}, out)) return fail(status::corrupt);  // e.g. a KEM key that is not well formed
+    if (!write_noise(l, {}, out)) return fail(status::io);
+    auto m3 = read_noise(l, deadline);
+    if (!m3) return fail(m3.error());
+    if (!hs.read_message(*m3, payload) || !payload.empty()) return fail(status::corrupt);
+  }
+  c->peer_key_ = hs.remote_static();
+  auto keys = hs.split();
+  if (!keys) return fail(status::internal);
+  const auto& tx = client ? keys->initiator_to_responder : keys->responder_to_initiator;
+  const auto& rx = client ? keys->responder_to_initiator : keys->initiator_to_responder;
+  if (auto r = open_streams(l, tx, rx, deadline, c->st_->push, c->st_->pull); !r) return fail(r.error());
+  // No code to show and no rejoin: the secret that would be its root is not kept.
+  c->last_heard_ns_ = now_ns();
+  return c;
+}
+
 expected channel::exchange_ident(std::string_view my_id, std::string_view my_name, clock::time_point deadline) {
   // Who each side is, sealed.
   json::writer w;
@@ -625,6 +750,7 @@ expected channel::exchange_ident(std::string_view my_id, std::string_view my_nam
 channel_options::~channel_options() {
   if (static_key) sodium_memzero(static_key->data(), static_key->size());
   if (internet_secret) sodium_memzero(internet_secret->data(), internet_secret->size());
+  if (access_key) sodium_memzero(access_key->data(), access_key->size());
 }
 
 channel::~channel() {
@@ -761,6 +887,15 @@ bool channel::rejoin_expired() const noexcept {
 }
 
 expected channel::send_v2(msg type, std::span<const std::uint8_t> body) {
+  // A library channel is never rejoined, so nothing is kept to send again:
+  // no copy of every chunk, and a stalled client holds no replay here.
+  if (library_) {
+    std::lock_guard lock(send_m_);
+    if (cancelled_.load()) return err(status::cancelled);
+    const std::uint64_t seq = ++send_seq_;
+    sent_seq_.store(seq);
+    return write_frame2(type, seq, body);  // on failure it marks the link down, which ends the session
+  }
   // Room among what is kept unacknowledged, waited for before send_m_: a
   // rejoin takes send_m_ to move the session, and it is what frees room.
   {
@@ -931,7 +1066,7 @@ expected channel::receive_v1(message& out, int timeout_ms) {
       return err(status::corrupt);
     }
     const auto raw = out.body[0];
-    if (!valid_type(raw, kProtocol1)) return err(status::corrupt);
+    if (!valid_type(raw, kProtocol1, false)) return err(status::corrupt);
     out.type = static_cast<msg>(raw);
     out.body.erase(out.body.begin());
     out.body.resize(static_cast<std::size_t>(plain) - 1);
@@ -1024,7 +1159,7 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
       unsigned char tag = 0;
       if (crypto_secretstream_xchacha20poly1305_pull(&st_->pull, out.body.data(), &plain, &tag, open_buf_.data(),
                                                      open_buf_.size(), nullptr, 0) != 0 ||
-          plain < kHeader2 || !valid_type(out.body[0], 2)) {
+          plain < kHeader2 || !valid_type(out.body[0], 2, library_)) {
         r = err(status::corrupt);
       }
     }
@@ -1075,7 +1210,7 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     const std::uint64_t heard = rx_bytes_.fetch_add(out.body.size() + kHeader2) + out.body.size() + kHeader2;
     // Acknowledge at least every kAckBytes, and at once for anything but
     // file bytes (rare, and the last of a transfer must not wait).
-    if (out.type != msg::data || heard - rx_bytes_at_ack_.load() >= kAckBytes) {
+    if ((out.type != msg::data && out.type != msg::stream_data) || heard - rx_bytes_at_ack_.load() >= kAckBytes) {
       {
         std::lock_guard lock(ping_m_);
         ack_wanted_ = true;
@@ -1138,8 +1273,8 @@ void channel::mark_down(std::uint64_t gen) noexcept {
   }
   link_cv_.notify_all();
   if (old) old->shutdown();
-  if (cancelled_.load()) {
-    shutdown();  // #511: ended on purpose; nothing to rejoin
+  if (cancelled_.load() || library_) {
+    shutdown();  // #511: ended on purpose; or a library channel, which is never rejoined
     return;
   }
   if (!opened_.load()) return;

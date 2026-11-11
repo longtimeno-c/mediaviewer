@@ -8,6 +8,10 @@
 
 #include "addons/ai/machine.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include <algorithm>
 #include <numeric>
 #include <cctype>
@@ -196,7 +200,7 @@ expected engine::start() {
   if (options_.read_only) {
     // A reader creates nothing: no folder, no schema, no settings file.
     load_settings();
-    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db")));
+    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db"), options_.immutable));
     db_ = std::move(db);
   } else {
     MV_TRY_VOID(host_.make_directories(data_dir_));
@@ -525,26 +529,44 @@ void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
   transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   phone_cancel_ = true;
-  {
-    // Moved out under the lock, joined without it (start_phone_thread).
-    std::thread phone;
-    {
-      std::lock_guard lock(phone_m_);
-      phone_stopped_ = true;
-      phone = std::move(phone_thread_);
-    }
-    if (phone.joinable()) phone.join();
-  }
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
-  control_cv_.notify_all();
-  work_cv_.notify_all();
-  search_cv_.notify_all();
-  fetch_cv_.notify_all();
+  // Every wake goes through the lock, so a thread about to wait (an immutable
+  // reader's has no timeout) cannot miss it. Each loop checks stopping_ under
+  // its own mutex before it waits. Taking
+  // that mutex once, after stopping_ is set, means a loop is either still
+  // before its check (and sees stopping_) or parked (and gets the notify):
+  // a notify sent with no lock can fall between the two, and a loop that
+  // waits with no timeout then never wakes, and stop() never returns.
+  const auto wake = [](std::mutex& m, std::condition_variable& cv) {
+    { std::lock_guard lock(m); }
+    cv.notify_all();
+  };
+  wake(control_m_, control_cv_);
+  wake(work_m_, work_cv_);
+  wake(search_m_, search_cv_);
+  wake(fetch_m_, fetch_cv_);
   if (fetch_thread_.joinable()) fetch_thread_.join();  // a download in flight cancels (stopping_)
-  dl_stop_ = true;
+  {
+    std::lock_guard lock(dl_m_);
+    dl_stop_ = true;
+  }
   dl_cv_.notify_all();
   if (download_thread_.joinable()) download_thread_.join();  // a model download stops between chunks
   if (control_.joinable()) control_.join();
+  // Phone access after the control thread: its tick starts both threads, and
+  // a tick between their joins and its own would start one nobody joins.
+  // Taken out under the lock their starters hold, which see stopping_ and
+  // phone_stopped_ there, and joined without it (start_phone_thread).
+  {
+    std::thread t;
+    {
+      std::lock_guard lock(phone_m_);
+      phone_stopped_ = true;
+      t = std::move(phone_thread_);
+    }
+    if (t.joinable()) t.join();
+  }
+  phone_link_stop();
   // After the control thread (which sets it): no change is called in after this.
   if (watching_) {
     (void)host_.watch_tree({}, nullptr, nullptr);
@@ -2574,6 +2596,12 @@ void engine::reader_loop() {
   refresh_counts();
   post(MV_ADDON_EVENT_AI_STATUS);
   double last = now_s();
+  if (options_.immutable) {
+    // Nothing can have been committed: no timer, so an idle phone wakes for nothing.
+    std::unique_lock lock(control_m_);
+    control_cv_.wait(lock, [this] { return stopping_.load(); });
+    return;
+  }
   while (!stopping_) {
     {
       std::unique_lock lock(control_m_);
@@ -2610,6 +2638,37 @@ bool engine::load_reader() {
     std::lock_guard lock(settings_m_);
     s = settings_;
   }
+  // People and transcripts need no model: they go in first, so a search by
+  // name, date, place or words said answers while the tower is still loading
+  // (docs/plans/mobile.md §9, "Readiness"), or when it cannot load at all.
+  std::uint32_t quality = 0;
+  for (std::uint32_t q : deps_.qualities()) {
+    if (!deps_.clip_spec_key || deps_.clip_spec_key(q) == active) {
+      quality = q;
+      break;
+    }
+  }
+  // People: names and faces only (search, the query language). The reader
+  // clusters nothing, so the threshold and width it is opened with are unused.
+  std::unique_ptr<faces_db> people;
+  if (s.faces) {
+    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) people = std::move(*f);
+  }
+  reader_speech_spec_ = deps_.speech_spec_key && quality != 0 ? deps_.speech_spec_key(quality) : std::string();
+  {
+    std::lock_guard lock(models_m_);
+    faces_ = std::move(people);
+    speech_ = {};
+    speech_.spec_key = reader_speech_spec_;
+  }
+  if (!reader_speech_spec_.empty()) {
+    load_speech(reader_speech_spec_);
+  } else {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.clear();
+  }
+  catalogue_ready_ = true;
+
   // The tower whose vectors are in the index answers; the reader never
   // changes which (the app decides, and a migration it finishes shows up as
   // a new active_spec).
@@ -2627,12 +2686,6 @@ bool engine::load_reader() {
   for (const std::string& p : answer.meta.generic_prompts) {
     if (auto v = answer.model->embed_text(p)) answer.generic.push_back(std::move(*v));
   }
-  // People: names and faces only (search, the query language). The reader
-  // clusters nothing, so the threshold and width it is opened with are unused.
-  std::unique_ptr<faces_db> people;
-  if (s.faces) {
-    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) people = std::move(*f);
-  }
   loaded_sound sound;
   if (deps_.open_sound_text) {
     if (auto so = deps_.open_sound_text()) {
@@ -2643,8 +2696,6 @@ bool engine::load_reader() {
       }
     }
   }
-  // Speech needs no model: the transcripts are rows, matched as words.
-  reader_speech_spec_ = deps_.speech_spec_key ? deps_.speech_spec_key(answer.meta.quality) : std::string();
   loaded_clip old;
   begin_answer_swap();
   {
@@ -2652,10 +2703,7 @@ bool engine::load_reader() {
     old = std::move(answer_);
     build_ = answer;  // what status reads; a reader builds nothing
     answer_ = std::move(answer);
-    faces_ = std::move(people);
     sound_ = std::move(sound);
-    speech_ = {};
-    speech_.spec_key = reader_speech_spec_;
     publish_pieces_locked();
   }
   reader_frame_ = 0;
@@ -2674,12 +2722,6 @@ bool engine::load_reader() {
   }
   load_docs(true);  // #354 D3: the passage vectors, with the ai-docs piece
   load_labels();    // the label bar answers here as it does in the app
-  if (!reader_speech_spec_.empty()) {
-    load_speech(reader_speech_spec_);
-  } else {
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
-  }
   end_answer_swap();
   old = {};
   return true;
@@ -2709,7 +2751,7 @@ void engine::catch_up_reader() {
     std::lock_guard lock(models_m_);
     sound_spec = sound_.model ? sound_.spec_key : std::string();
     if (faces_) {
-      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) faces_ = std::move(*f);
+      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) faces_ = std::move(*f);
     }
   }
   begin_answer_swap();
@@ -5331,6 +5373,8 @@ namespace {
 std::string machine_label() {
 #if defined(_WIN32)
   std::string os = "Windows";
+#elif defined(__APPLE__) && !TARGET_OS_OSX
+  std::string os = "iOS";
 #elif defined(__APPLE__)
   std::string os = "macOS";
 #else
@@ -5448,7 +5492,7 @@ static bool write_shared_list(const std::string& file, const std::vector<catalog
   return static_cast<bool>(out);
 }
 
-static std::vector<catalog::shared_file> read_shared_list(const std::string& file) {
+std::vector<catalog::shared_file> read_shared_list(const std::string& file) {
   std::ifstream in(fs_path(file), std::ios::binary);
   std::ostringstream ss;
   ss << in.rdbuf();
@@ -5649,6 +5693,7 @@ bool engine::write_phone_state(const phone_view& v) const {
 expected engine::phone_publish(const std::string& destination) {
   if (options_.read_only) return err(status::unsupported_format);
   if (destination.empty()) return err(status::invalid_arg);
+  if (stopping_.load()) return err(status::cancelled);  // quitting: nothing new starts
   const bool started = start_phone_thread(
       "building",
       [&](const phone_view&) {
@@ -5656,6 +5701,7 @@ expected engine::phone_publish(const std::string& destination) {
         return true;
       },
       [this, destination] { run_phone_publish(destination, false); });
+  if (!started && stopping_.load()) return err(status::cancelled);
   return started ? expected{} : err(status::busy);
 }
 
@@ -5756,6 +5802,7 @@ std::vector<std::int64_t> engine::phone_carried_roots() {
 // The control loop's tick. Nothing here waits, and it adds no wakeup: the loop
 // runs anyway. While nothing changed it is a lock and a few comparisons.
 void engine::phone_tick(bool walked) {
+  phone_link_tick();
   if (options_.read_only) return;
   std::uint64_t waiting = 0;
   std::string published_stamp;
@@ -7907,10 +7954,24 @@ std::vector<vector_store::hit> engine::picture_hits(const std::string& text,
   return {};
 }
 
+bool engine::answerable_now(const std::string& query_text) {
+  if (models_ready_) return true;
+  if (!catalogue_ready_) return false;
+  std::vector<query::person_name> names;
+  {
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      for (auto& [id, name] : faces_->names()) names.push_back({id, std::move(name)});
+    }
+  }
+  const query::plan plan = query::resolve(query::parse(query_text), names);
+  return plan.text.empty() && plan.not_text.empty();
+}
+
 std::uint64_t engine::search_text(const std::string& query_text, const std::string& scope_dir,
                                   std::uint32_t scope, std::uint32_t kinds) {
   return submit([this, query_text, scope_dir, scope, kinds](search_state& st) {
-    if (!models_ready_) return;
+    if (!models_ready_ && !catalogue_ready_) return;
     std::uint32_t precision;
     {
       std::lock_guard lock(settings_m_);
@@ -7941,6 +8002,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
     }
     if (plan.impossible) return;
+    // A reader whose tower is not in yet answers only what needs none.
+    if (!models_ready_ && (!plan.text.empty() || !plan.not_text.empty())) return;
     // #441: which place a place: / in: term names is the Places add-on's
     // answer (the host's place_matches, over the whole index), intersected
     // here with the rest of the query: in every place named, in none left
@@ -8401,8 +8464,12 @@ float pose_apart(const std::array<float, 10>& a, float aw, float ah, const std::
   for (int i = 0; i < 3; ++i) sum += std::hypot(fa[2 * i] - fb[2 * i], fa[2 * i + 1] - fb[2 * i + 1]);
   return sum / 3.0f;
 }
-// edit/eyes.h kPoseMatch: a donor further than this looks the wrong way.
-constexpr float kPoseMatch = 0.12f;
+// A first cut only, wider than edit/eyes.h kPoseMatch: YuNet's points on a
+// tilted face can be a quarter of an eye distance off, so the host reads each
+// donor again upright and judges the pose itself (addon_media.cpp
+// refine_landmarks). At 0.12 here a tilted face kept one donor in 64
+// (2026-11-07).
+constexpr float kPoseMatch = 0.22f;
 }  // namespace
 
 result<std::string> engine::eyes_json(const std::string& path, const std::vector<std::string>& candidates) {
@@ -8501,7 +8568,7 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
     // largest faces first, each read once, kept when the head is turned as
     // this one is. Stops at kLibraryKeep such faces or kLibraryRead photos.
     // The whole-face fix wants them even when a frame of the moment exists.
-    constexpr std::size_t kLibraryRead = 64, kLibraryKeep = 6;
+    constexpr std::size_t kLibraryRead = 64, kLibraryKeep = 10;
     if (person != 0 && std::find(library_read.begin(), library_read.end(), person) == library_read.end()) {
       library_read.push_back(person);
       std::vector<face_row> rows;

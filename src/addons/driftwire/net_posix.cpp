@@ -18,19 +18,23 @@
 #include <sys/types.h>
 #include <unistd.h>
 #if defined(__APPLE__)
-#include <net/route.h>
+#include <TargetConditionals.h>
 #include <sys/sysctl.h>
+#if TARGET_OS_OSX
+#include <net/route.h>
+#endif
 #endif
 
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <vector>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 #include "addons/driftwire/wire.h"
 
@@ -337,7 +341,7 @@ result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms) {
   return std::unique_ptr<link>(std::make_unique<tcp_link>(fd));
 }
 
-result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only) {
+result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only, int backlog) {
   // Dual stack where IPv6 exists; IPv4 alone where it does not.
   int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
   sockaddr_storage s{};
@@ -362,7 +366,7 @@ result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopb
   }
   close_on_exec(fd);
   (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 || ::listen(fd, 8) != 0 ||
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 || ::listen(fd, backlog) != 0 ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&s), &len) != 0) {
     ::close(fd);
     return err(status::io);
@@ -424,7 +428,11 @@ std::vector<subnet> local_subnets() {
 }
 
 std::optional<address> default_gateway() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_OSX
+  // iOS has no <net/route.h> and its sandbox hides the routing table. The
+  // gateway is for mapping a port on the router, which only a receiver asks for.
+  return std::nullopt;
+#elif defined(__APPLE__)
   // The routing table's default IPv4 route (what `route -n get default` reads).
   int mib[6] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY};
   std::size_t len = 0;
@@ -759,6 +767,28 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   return std::unique_ptr<tcp_rendezvous>(std::make_unique<tcp_meet>(fd, s, len, dual));
 }
 
+#if defined(__APPLE__)
+namespace {
+// An IPv4 socket bound to an ephemeral port no IPv4 socket holds, and that
+// port; -1 when none. See open_udp_dual.
+std::pair<int, std::uint16_t> held_ipv4_port() noexcept {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) return {-1, 0};
+  close_on_exec(fd);
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(INADDR_ANY);
+  socklen_t len = sizeof a;
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
+      ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
+    ::close(fd);
+    return {-1, 0};
+  }
+  return {fd, ntohs(a.sin_port)};
+}
+}  // namespace
+#endif
+
 result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only, int buffer_bytes) {
   const int fd = ::socket(AF_INET6, SOCK_DGRAM, 0);
   if (fd < 0 && errno == EAFNOSUPPORT) {
@@ -800,7 +830,23 @@ result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopb
   a.sin6_addr = in6addr_any;
   (void)loopback_only;
   socklen_t len = sizeof a;
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
+  bool bound = false;
+#if defined(__APPLE__)
+  // The kernel picks a dual-stack socket's ephemeral port without looking at
+  // IPv4 sockets, and an IPv4 socket on that port then takes every IPv4
+  // datagram for it: this socket would hear IPv4 peers never. So the port comes
+  // from the IPv4 side, held while this socket binds it. A few tries: an IPv6
+  // socket may hold the port IPv4 offers.
+  for (int tries = 0; port == 0 && !bound && tries < 16; ++tries) {
+    const auto [guard, free_port] = held_ipv4_port();
+    if (guard < 0) break;
+    a.sin6_port = htons(free_port);
+    bound = ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0;
+    ::close(guard);
+  }
+  if (!bound) a.sin6_port = htons(port);
+#endif
+  if ((!bound && ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0) ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
     ::close(fd);
     return err(status::io);

@@ -98,6 +98,7 @@ driftwire receive [--once]       the session for receiving; --once closes after 
 driftwire code                   the session, making a code to receive from anywhere, closing
                                  when the receive it lets in ends, or the code fails or runs out
 driftwire devices                the remembered devices (no terminal needed)
+driftwire serve [--data DIR]     the NAS service, no terminal ([below](#the-nas-service-driftwire-serve)); init, devices, add, revoke
 driftwire update                 update it the way it was installed (no terminal needed)
 driftwire --help | --version     (no terminal needed)
   --save-to DIR, --name NAME     this run only
@@ -1345,6 +1346,193 @@ link. The tests check that no 32-byte run of the file passes through either rela
 - **Tor** (option 11) was evaluated, not built, and dropped for now
   ([plan](../plans/driftwire-tor-spike.md), [12](12-decision-log.md#driftwire)).
 
+## Claiming and pairing (phone access)
+
+`desk.*`, `advert*`, the owner's half of `serve.*`; plan: `docs/plans/mobile.md` §7.2, §7.4, §7.5.
+The Driftwire add-on holds the desktop's side of a phone. Local search asks for it through the host
+table (`route_request`, [18](18-import.md#add-ons-calling-add-ons)), and refuses any other caller.
+
+**Claiming.** Only for a connection from its own network (`net::on_link`, loopback included), and only
+while the service has no owner or, once it has, for a hello the access key does not open (so a phone's
+session never reads the share), it looks for `.mediaviewer/claim.token` under its named folders:
+64 hex digits the desktop wrote over the share. A hello that opens under the key derived from that
+token (`claim_key`, `channel::hello_opens_under`, one AEAD) becomes a claim channel. Everyone else
+gets the silence a wrong access key gets, and from outside no file is read. The token proves the desktop
+can read the share; the service then sends a nonce, and the claim goes through only once that nonce is in
+`.mediaviewer/claim.proof` beside it, which proves the desktop can also write there (a read-only account
+cannot claim). What is not proven: that the desktop is the share's owner, or a person's own computer;
+anyone who can write the share on the NAS's own network, before the owner does, can claim it. The claimant's device
+key is stored as `owner`; the answer carries the access key, and `<folder>/.mediaviewer` becomes a
+named folder labelled `Catalogue` (a hidden name cannot be reached any other way). The desktop deletes
+the token whatever happens. There is no expiry on the token: anyone who can read it could also write
+one. Behind a NAT that rewrites sources, an outside connection can look local, and the token is then
+the only gate. `driftwire serve disown` forgets the owner when that desktop is gone.
+Owned, a claim is answered only for the owner's own device key (with a fresh token and proof), with the same
+keys and nothing changed: a claim whose answer was lost can fetch them again. Anyone else's claim on an owned
+service ends with the link closed and no reason given, before any challenge. That is not the silence of a
+wrong key: the handshake completes first, so the caller can tell owned (closed) from unowned (a challenge)
+from no token (no handshake). Reading the token on the share is enough to learn it; claiming still needs the
+write proof. A claim that crashes before its cleanup leaves the token on the share until the next claim
+replaces and removes it.
+
+**Who may do what.** A phone holds a read-only grant. The owner's session alone is granted
+`kAdminOp` and sends `serve_admin` (devices, add or revoke a device, a pairing code, the named folders,
+with their NAS paths, which no phone is told). Anyone else's `serve_admin` is answered `refused`.
+Removing a named folder cuts every other session, so nothing keeps reading it.
+
+**Pairing.** The owner hands the service a single-use code with a lifetime measured on the service's
+clock; a new code withdraws the one before, and Cancel or expiry on the card withdraws it (`pair_cancel`).
+The device list says whether a code is still waiting, so the card takes down one a re-scan used. A device not yet paired redeems it with `serve_pair` before `serve_hello`; a used, expired or
+made-up code is `bad-code`, and the phone is told to scan again. A phone already paired that scans again is
+answered `serve_paired` and goes on, and a code it carries is spent so it pairs nothing else. Codes are in memory, hashed, at most
+`kMaxPairCodes`, and a restart forgets them. The desktop learns the phone from the service's device list,
+which is its own list too (`phone_devices`), so one scan pairs with both. A revoke takes the phone off the
+desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`), and Local
+search asks again by itself, from 30 s and doubling to an hour, until the service has it.
+
+**Nearby.** `desk::start_nearby` runs a second `serve::server` on the Mac over the local copy, `lan_only`,
+never claimable, with its keys in memory so its timer never wakes the Keychain. It takes the same access key
+and the same device list, and is advertised as `_mediaviewer._tcp` (TXT `v=1`, `lib=` the first 16 hex of the
+library id's SHA-256; `advert_mac.cpp`). The phone reads it exactly as it reads the NAS, so a paired phone
+needs no Accept and a dropped transfer resumes by `read_range`. Its identity is made per run and nothing
+pins it: the catalogue's signature is the trust. Windows and Linux have `advert_none.cpp`, so no advert yet.
+
+## The NAS service (`driftwire serve`)
+
+`serve.h`, `serve_wire.h`, `serve_client.h`, `channel::open_library`; plan: `docs/plans/mobile.md`
+§7.2, M2b. A headless mode of the command line that lets a paired phone list and read named folders
+on a NAS through one forwarded port, the same way on the NAS's own network. It moves bytes and
+nothing else. It never touches the DHT, a router's mapping or the beacon.
+
+```
+driftwire serve [--data DIR]              the service, with no terminal: DIR/serve.json, DIR/secrets
+driftwire serve init                      makes the identity and library access key; shows the key once
+driftwire serve devices                   lists paired devices
+driftwire serve add NAME KEY              pairs a device by its public key (64 hex digits)
+driftwire serve revoke NAME-OR-KEY        revokes one; a running session is cut within 2 s
+driftwire serve pair-code [SECONDS]       prints a single-use pairing code for the QR (default 600 s)
+```
+
+`serve.json`, normally written by the desktop at setup:
+`{"port":N,"name":"...","roots":[{"id":"16 hex digits","label":"Photos","path":"/volume1/photo"}]}`.
+The port is fixed; there is no mapping and no hole punching. A catalogue folder like
+`.mediaviewer` is its own named folder, because `safe_relative` refuses hidden parts everywhere.
+
+**Who gets in.** The order of work for a connection is the design, because the port is open to
+everyone:
+
+1. Limits, past which the connection is closed and nothing is said, checked coarsest first so a
+   block over its limit never reaches the per-address table. Per IPv6 /48: 120 a minute and 4
+   handshakes in progress. Per address (an IPv6 /64): 30 a minute and 2 in progress, the /48 being charged only after its
+   address has passed. Each table keeps
+   4096 sources. Last, 200 new connections a second across the service, spent only by a connection
+   that would be admitted, so a flood that the per-address limits drop costs nothing (measured
+   below). At most 16 handshakes are in progress: when full, the oldest connection whose hello
+   has not all arrived and that has had 500 ms is closed, so a phone arriving last can still get in.
+   A complete hello is given 2 s from the reply to the end of ident, and when no silent connection
+   can go, the oldest handshake still waiting a second after its reply is closed instead, so a
+   holder of the key (a revoked phone) cannot fill the table with stalled handshakes. A
+   normal round trip finishes well inside that second. Residuals: someone with many addresses can keep all 16
+   young and refuse new arrivals for as long as they keep it up, and an evicted connection may be a
+   phone whose hello is slow.
+2. `read_library_hello`: `MVSP`, 2, `L`, then a two-byte length that must be exactly the size of
+   the first Noise message. All 1256 bytes are read before any is judged, so a wrong prefix
+   closes no sooner than a right one. That only stops the prefix being probed: a wrong one is still
+   a few microseconds quicker, and a scanner that counts bytes until the close (1256 versus 1255) can
+   tell a listener of this shape. An older kind of hello reaches nothing, because this listener never
+   calls `read_hello`, and an engine listener never takes this one.
+3. `Noise_XXhfs+psk0` keyed by the **library access key** (32 random bytes, in the QR). The client's
+   ML-KEM key is sealed under a key mixed from the psk, so a client without the access key fails at
+   the service's first AEAD: one ChaCha20-Poly1305 open, no X25519, no ML-KEM, no reply.
+   `noise::kem_encapsulations()` counts that work, and the tests assert it does not move.
+4. A first message that opens is checked against the last 4096 seen since the service started. A recording of a real client's
+   hello opens too, but is not worth a reply, and only messages that opened are remembered, so
+   a stranger cannot flush the ring. The ring is memory: after a restart a recording works once
+   more (one ML-KEM and one reply each, never a session, since message 3 needs the device's key).
+5. A device not on the list that holds the access key may send one `serve_pair` message with a
+   single-use code from `serve pair-code` (only its hash is stored, with an expiry): a good one
+   adds its key to the list and the session goes on as `serve_paired`, anything else is
+   `{"why":"bad-code"}`. A pairing code never reaches a device without the access key.
+6. After the handshake the client's device key (`peer_key`) must be in the paired list, read fresh
+   for every connection. Not paired or revoked: sealed `msg::cancel` with `{"why":"not-paired"}`,
+   then closed. A running session is checked against the list every 2 s and cut with
+   `{"why":"revoked"}`.
+
+The identity, the access key and the paired list live in `secrets::file_store` (a file per value,
+0600, written whole and renamed in, refused on read when group- or world-readable, or a link) in a
+folder that must be 0700 and this user's own. A value that is there but cannot be read is an error,
+never a reason to make a new one: replacing the identity would lose every phone that pinned it. The
+service only reads the keys; `init` makes them. `serve.json` and the data folder must be writable
+by this user alone. There is no keyring on a NAS. Paired devices hold a
+read-only grant on the named folders; a write path for the backup folder waits for 1.1.
+
+**The protocol.** A library channel takes only message ids 25–31 and 33–34 (`wire.h`), plus ident, ping and
+cancel, and no other channel takes them. After ident the client sends `serve_hello` (protocol
+versions and operation names), the service answers `serve_caps` with what both have, and neither
+sends an operation the other did not list. An operation name the service does not know answers
+`end_code::unsupported` on that one stream, so a new app and an older service, or the reverse,
+still talk; if nothing is shared the app says the service is too old.
+
+Each operation is a stream with a client-chosen id: `roots`, `list` (NDJSON, in `stream_data`),
+`stat`, `read_range` (`file_reader::read_at`). The client grants credit in bytes per stream (at most
+8 MiB outstanding); the service sends at most that, one chunk at a time. Interactive streams use
+chunks of 64 KiB or less, and bulk streams (a whole-file pull) up to 256 KiB, with one bulk chunk
+after every four interactive ones when both wait. `stream_cancel` ends one between chunks, and a
+seek is a cancel plus a new `read_range`.
+
+A library channel is never rejoined and keeps no replay. The channel sends straight to the socket
+(no copy of every chunk, no 16 MiB per stalled client), a dropped link ends the session at once,
+and the client reconnects and asks again, which is safe because every read is idempotent.
+
+**Paths.** A root id from the service's list and a relative path: the id is opaque and the absolute
+path is never sent or logged. A request fails `refused` before any file is touched if the root is
+unknown or the path fails `safe_relative`. Then `io::stat_beneath`, `list_beneath` and
+`file_reader::open_beneath` go one part at a time from an open descriptor of the root
+(`openat(O_NOFOLLOW|O_DIRECTORY)`, and `O_NOFOLLOW|O_NONBLOCK` for the file, on POSIX), so a link at any
+part is refused and a folder swapped for a link after it was checked changes nothing. Windows holds
+each folder of the walk open without share-delete, which stops it being renamed, instead of
+handle-relative opens (which need the native NT calls). A folder is listed with its hidden and
+link entries left out.
+
+**Rule 6.** The service prints its port and that it stopped, and counts totals (`server::stats`).
+No address, path or file name is ever logged.
+
+**Not built, for spike S5 and later.**
+
+- **The Synology package** (which build, which models): the service needs only a start at boot as
+  an unprivileged user, a fixed `--data` folder on the system volume (0700, surviving updates), and
+  read access to the shares in `serve.json`. A Task Scheduler job or container must run as the
+  service's own user with a `--data` folder that user owns, and `serve init` and `serve add` must
+  be run as that user too, because the keys are its alone and root is refused. Spike S5 has to
+  confirm DSM allows this. Its firewall rule and port forward are the setup
+  guide's.
+- **Unattended signed updates**: the installer channels notify only. An update must replace the
+  binary and restart without touching `--data`, or every phone pairs again. Needs a signed channel
+  and a service restart hook. Not started.
+- **Claiming from the desktop**: writing the token into `.mediaviewer/` over SMB. Needs a claim
+  operation (a capability; only while there is no owner, and only from the NAS's own network, the
+  plan says), and the `add` / `revoke` / folder changes as owner operations over the channel. Today
+  those are the local command line.
+- Rejoin on a library channel, per-stream priorities beyond interactive and bulk, and the phone's
+  `remote_file` wrapper (M3).
+
+**Revocation removes a device, not the access key.** A revoked phone still holds the shared key, so
+it can still make the service do the first handshake steps (never a session, and never a file). Only
+a new key would stop that, and every other phone would need it too: rotating it is an **open
+decision for the owner**, not built.
+
+**As root it refuses to start** (except the test build): the keys would be root's and the service
+would run with more than the unprivileged user §7.2 asks for.
+
+**Tested only on loopback, on one Mac.** Every test here runs over `::1`: a 5 GB sparse file read
+and seeked past 4 GiB, silence and no KEM work without the key (and with a replayed hello), revoked
+and unpaired devices, paths outside the folders and through links, credit and cancel, capability
+negotiation. The program runs with no terminal and stops on SIGTERM. Not run: anything over a real
+network or a real forwarded port (M2b's "from outside the building"), a seek under load at 30 Mbit,
+Synology hardware or Linux (`file_store` and sockets are portable, but only macOS ran them here),
+Windows. On Windows, `file_store` relies on the per-user profile's ACL; there are no POSIX modes
+to check.
+
 ## What moves, and how it lands
 
 `transfer.h`. Copies only: an original is only ever read (rule 5).
@@ -1665,9 +1853,11 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
+| Phone access | `desk.*` (claim, devices, codes, nearby, the route), `advert*` (Bonjour) |
+| The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
+| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_serve.cpp` (the NAS service over `::1`: the verify line as far as loopback goes), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
 
 ## Not built
 

@@ -7,7 +7,7 @@
 // A generation is trusted through its Ed25519 signature over the library id,
 // the epoch, the generation and the manifest's hash (verify_current), and the
 // manifest names the hash of every file a reader will use, shared packs and
-// model files included. Not here yet: moving the key to another desktop.
+// model files included. Moving the key to another desktop is catalog_chain.h.
 #pragma once
 
 #include <cstdint>
@@ -56,6 +56,9 @@ struct current_info {
 // A current.json, believed only if `public_key` signed exactly these fields.
 // status::permission_denied when it did not; status::corrupt when unreadable.
 [[nodiscard]] result<current_info> verify_current(std::string_view text, std::span<const std::uint8_t> public_key);
+
+// The whole current.json for `c`, signed with `secret_key`; "" when it cannot sign.
+[[nodiscard]] std::string signed_current_json(const current_info& c, std::span<const std::uint8_t> secret_key);
 
 // One indexed folder as a phone knows it: no path of this machine.
 struct root_map {

@@ -79,7 +79,8 @@ class listener {
 // #472 PR 2: the listener a code points at. TCP on `port` (0: the OS picks),
 // IPv6 and IPv4 both ([::] dual stack; IPv4 alone where there is no IPv6).
 // `loopback_only`: ::1 and 127.0.0.1 only (the tests).
-[[nodiscard]] result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only);
+// `backlog`: connections the OS holds for the next accept (the NAS service asks for more).
+[[nodiscard]] result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only, int backlog = 8);
 
 // This machine's unicast addresses, every interface that is up.
 [[nodiscard]] std::vector<address> local_addresses();

@@ -215,6 +215,7 @@ final class ManagementModel: ObservableObject {
     photosAccess = PhotosLibrary.status
     transfer = IndexTransferModel(table: table)
     phone = PhoneAccessModel(table: table)
+    phone.link.getDriftwire = { [weak self] in self?.chrome?.hostShowAddon("driftwire") }
     transfer.changed = { [weak self] in
       guard let self else { return }
       self.reloadSettings()

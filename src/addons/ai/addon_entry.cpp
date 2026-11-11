@@ -592,6 +592,16 @@ mv_status MV_CALL t_phone_cancel(void* ctx) {
     return MV_OK;
   });
 }
+mv_status MV_CALL t_phone_link(void* ctx, const char* request) {
+  return guard([&] {
+    if (!request) return MV_ERR_INVALID_ARG;
+    const auto r = eng(ctx).phone_link(request);
+    return r ? MV_OK : static_cast<mv_status>(r.error());
+  });
+}
+mv_status MV_CALL t_phone_link_json(void* ctx, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] { return write_out(eng(ctx).phone_link_json(), out, cap, needed); });
+}
 mv_status MV_CALL t_phone_json(void* ctx, char* out, uint32_t cap, uint32_t* needed) {
   return guard([&] { return write_out(eng(ctx).phone_json(), out, cap, needed); });
 }
@@ -715,6 +725,8 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.phone_publish = &t_phone_publish;
     a.phone_cancel = &t_phone_cancel;
     a.phone_json = &t_phone_json;
+    a.phone_link = &t_phone_link;
+    a.phone_link_json = &t_phone_link_json;
     a.inspect_export = &t_inspect_export;
     a.import_index = &t_import_index;
     a.transfer_json = &t_transfer_json;

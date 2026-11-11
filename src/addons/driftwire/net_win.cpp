@@ -411,7 +411,7 @@ result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms) {
   return std::unique_ptr<link>(std::make_unique<tcp_link>(s));
 }
 
-result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only) {
+result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only, int backlog) {
   if (!winsock_ready()) return err(status::io);
   // Dual stack where IPv6 exists; IPv4 alone where it does not.
   SOCKET s = ::WSASocketW(AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
@@ -436,7 +436,7 @@ result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopb
   }
   BOOL excl = TRUE;
   (void)::setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&excl), sizeof excl);
-  if (::bind(s, reinterpret_cast<sockaddr*>(&st), len) != 0 || ::listen(s, 8) != 0 ||
+  if (::bind(s, reinterpret_cast<sockaddr*>(&st), len) != 0 || ::listen(s, backlog) != 0 ||
       ::getsockname(s, reinterpret_cast<sockaddr*>(&st), &len) != 0) {
     ::closesocket(s);
     return err(status::io);

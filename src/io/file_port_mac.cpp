@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <ctime>
 #include <algorithm>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -170,12 +171,11 @@ expected remove_tree(std::string_view utf8_dir) {
   return ok && ::rmdir(dir.c_str()) == 0 ? expected{} : err(status::io);
 }
 
-result<std::vector<dir_child>> list_children(std::string_view utf8_dir, bool with_directories) {
-  if (utf8_dir.empty()) return err(status::invalid_arg);
-  const std::string dir(utf8_dir);
+namespace {
+
+// Every plain file (and, with `with_directories`, folder) of `d`, then closes it.
+std::vector<dir_child> children_of(DIR* d, bool with_directories) {
   std::vector<dir_child> out;
-  DIR* d = ::opendir(dir.c_str());
-  if (!d) return errno == ENOENT ? result<std::vector<dir_child>>(std::move(out)) : err(status::io);
   const int dfd = ::dirfd(d);
   while (dirent* ent = ::readdir(d)) {
     const std::string_view name(ent->d_name);
@@ -195,6 +195,83 @@ result<std::vector<dir_child>> list_children(std::string_view utf8_dir, bool wit
   }
   ::closedir(d);
   return out;
+}
+
+// The folder `parts` names under `root`, each part opened from the one before
+// and never through a link. The caller closes it. O_NONBLOCK: a part that is
+// a pipe must not hang the open.
+result<int> folder_beneath(const std::string& root, std::span<const std::string_view> parts) {
+  int fd = ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NONBLOCK);
+  if (fd < 0) return err(status::io);
+  for (const std::string_view part : parts) {
+    const std::string name(part);
+    const int next = ::openat(fd, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (next < 0) {
+      struct stat st{};
+      const bool link = ::fstatat(fd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(st.st_mode);
+      ::close(fd);
+      return err(link ? status::permission_denied : status::io);
+    }
+    ::close(fd);
+    fd = next;
+  }
+  return fd;
+}
+
+file_stat beneath_stat_of(const struct stat& st) noexcept {
+  file_stat out;
+  out.size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
+  out.mtime_unix = mtime_of(st);
+  out.is_directory = S_ISDIR(st.st_mode);
+  return out;
+}
+
+}  // namespace
+
+result<std::vector<dir_child>> list_children(std::string_view utf8_dir, bool with_directories) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+  const std::string dir(utf8_dir);
+  DIR* d = ::opendir(dir.c_str());
+  if (!d) return errno == ENOENT ? result<std::vector<dir_child>>(std::vector<dir_child>{}) : err(status::io);
+  return children_of(d, with_directories);
+}
+
+result<std::vector<dir_child>> list_beneath(std::string_view root, std::string_view relative_slash,
+                                            bool with_directories) {
+  detail::simulated_round_trip();
+  std::vector<std::string_view> parts;
+  if (root.empty() || !detail::relative_parts(relative_slash, parts)) return err(status::invalid_arg);
+  auto fd = folder_beneath(std::string(root), parts);
+  if (!fd) return err(fd.error());
+  DIR* d = ::fdopendir(*fd);
+  if (!d) {
+    ::close(*fd);
+    return err(status::io);
+  }
+  return children_of(d, with_directories);
+}
+
+result<file_stat> stat_beneath(std::string_view root, std::string_view relative_slash) {
+  detail::simulated_round_trip();
+  std::vector<std::string_view> parts;
+  if (root.empty() || !detail::relative_parts(relative_slash, parts)) return err(status::invalid_arg);
+  const bool whole = parts.empty();
+  auto fd = folder_beneath(std::string(root), whole ? std::span<const std::string_view>{}
+                                                    : std::span<const std::string_view>(parts).first(parts.size() - 1));
+  if (!fd) return err(fd.error());
+  struct stat st{};
+  int rc = 0;
+  if (whole) {
+    rc = ::fstat(*fd, &st);
+  } else {
+    const std::string name(parts.back());
+    rc = ::fstatat(*fd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW);
+  }
+  ::close(*fd);
+  if (rc != 0) return err(status::io);
+  if (S_ISLNK(st.st_mode)) return err(status::permission_denied);
+  if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) return err(status::io);
+  return beneath_stat_of(st);
 }
 
 tree_usage tree_size(std::string_view utf8_path) {
@@ -429,6 +506,40 @@ result<std::size_t> file_reader::read(std::span<std::uint8_t> into) {
     filled += static_cast<std::size_t>(n);
   }
   return filled;
+}
+
+expected file_reader::open_beneath(std::string_view root, std::string_view relative_slash) {
+  detail::simulated_round_trip();
+  close();
+  std::vector<std::string_view> parts;
+  if (root.empty() || !detail::relative_parts(relative_slash, parts) || parts.empty()) return err(status::invalid_arg);
+  auto parent = folder_beneath(std::string(root), std::span<const std::string_view>(parts).first(parts.size() - 1));
+  if (!parent) return err(parent.error());
+  const std::string name(parts.back());
+  const int fd = ::openat(*parent, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0) {
+    struct stat link_st{};
+    const bool link = ::fstatat(*parent, name.c_str(), &link_st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(link_st.st_mode);
+    ::close(*parent);
+    return err(link ? status::permission_denied : status::io);
+  }
+  ::close(*parent);
+  struct stat st{};
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    ::close(fd);
+    return err(status::io);
+  }
+  const int flags = ::fcntl(fd, F_GETFL);
+  if (flags >= 0) (void)::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+#if defined(__APPLE__)
+  (void)::fcntl(fd, F_RDAHEAD, 1);
+#else
+  (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+  impl_ = std::make_unique<impl>();
+  impl_->fd = fd;
+  impl_->size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
+  return {};
 }
 
 result<std::size_t> file_reader::read_at(std::uint64_t offset, std::span<std::uint8_t> into) {

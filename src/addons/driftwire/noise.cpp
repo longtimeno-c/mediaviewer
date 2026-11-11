@@ -4,6 +4,7 @@
 
 #include <sodium.h>
 
+#include <atomic>
 #include <cstring>
 
 namespace mv::driftwire::noise {
@@ -16,6 +17,7 @@ static_assert(crypto_scalarmult_BYTES == kDhBytes);
 namespace {
 
 constexpr std::size_t kBlockBytes = 128;  // BLAKE2b
+std::atomic<std::uint64_t> g_kem_encapsulations{0};
 
 // The patterns (Noise §7.5, §9 psk; the hfs modifier, revision 1).
 constexpr token kXX1[] = {token::e};
@@ -53,6 +55,8 @@ void blake2b(std::span<const std::span<const std::uint8_t>> parts, std::span<std
 }
 
 }  // namespace
+
+std::uint64_t kem_encapsulations() noexcept { return g_kem_encapsulations.load(std::memory_order_relaxed); }
 
 const pattern& xx() { return kPatternXX; }
 const pattern& nn_psk0() { return kPatternNNpsk0; }
@@ -266,8 +270,7 @@ handshake::handshake(const pattern& p, bool initiator, std::span<const std::uint
   st_->ck = st_->h;
   st_->mix_hash(prologue);
   if (s) {
-    st_->s = *s;
-    crypto_scalarmult_base(st_->s_pub.data(), st_->s.data());
+    st_->s = *s;  // its public half is worked out when it is sent
     st_->has_s = true;
     sodium_memzero(s->data(), s->size());
   }
@@ -310,6 +313,7 @@ expected handshake::write_message(std::span<const std::uint8_t> payload, std::ve
       }
       case token::s:
         if (!st.has_s) return err(status::invalid_arg);
+        crypto_scalarmult_base(st.s_pub.data(), st.s.data());
         if (auto r = st.encrypt_and_hash(st.s_pub, out); !r) return r;
         break;
       case token::ee:
@@ -339,6 +343,7 @@ expected handshake::write_message(std::span<const std::uint8_t> payload, std::ve
       }
       case token::ekem1: {
         if (!st.has_re1) return err(status::invalid_arg);
+        g_kem_encapsulations.fetch_add(1, std::memory_order_relaxed);
         std::uint8_t ct[kKemCiphertextBytes], ss_kem[32];
         const int enc = st.fixed.kem_seed
                             ? crypto_kem_mlkem768_enc_deterministic(ct, ss_kem, st.re1.data(), st.fixed.kem_seed->data())

@@ -16,7 +16,13 @@
 #include <sqlite3.h>
 
 #include "abi/addon_media.h"
+#include <sodium.h>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
 #include "addons/ai/catalog.h"
+#include "addons/ai/catalog_chain.h"
 #include "addons/ai/nfc.h"
 #include "codec/decode.h"
 #include "addons/ai/sha256.h"
@@ -1080,6 +1086,11 @@ struct rig {
       label_batches.emplace_back(at.begin(), at.end());
       return std::vector<std::string>(at.size(), "Sintra, Lisbon, Portugal");
     };
+    svc.addon_request = [this](const std::string& target, const std::string& method, const std::string& json)
+        -> mv::result<std::string> {
+      if (!route) return mv::err(mv::status::not_found);
+      return route(target, method, json);
+    };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
     api = *table->api();
@@ -1133,6 +1144,9 @@ struct rig {
       return std::vector<std::string>{utf8(dir / "tower" / "text.onnx"), utf8(dir / "tower" / "vocab.json")};
     };
     d.phone_quiet_s = phone_quiet;
+    d.phone_link_retry_s = link_retry;
+    d.phone_link_after_hand_over = after_hand_over;
+    d.phone_link_code_ttl_s = code_ttl;
     d.phone_min_interval_s = phone_interval;
     d.phone_share_poll_s = phone_poll;
     d.phone_thumb_budget_s = phone_budget;
@@ -1306,9 +1320,13 @@ struct rig {
   }
 
   bool no_key_store = false;
+  std::function<mv::result<std::string>(const std::string&, const std::string&, const std::string&)> route;
   // The publisher's timing; the defaults are far enough apart that a test
   // which does not ask for automatic publishing never sees one.
   double phone_quiet = 3600;
+  double link_retry = 30;
+  std::function<void()> after_hand_over;
+  double code_ttl = 300;
   double phone_interval = 3600;
   double phone_poll = 3600;
   double phone_budget = 0;
@@ -7827,4 +7845,802 @@ TEST_CASE("an index from before tiers keeps the Default tier without asking", "[
   r.start();
   REQUIRE(wait_for([&] { return std::string(r.status().tier_utf8) == "default"; }, kSettleMs));
   CHECK((r.status().flags & MV_AI_STATUS_TIER_UNCHOSEN) == 0);
+}
+
+// ---- Phone access: the route to Driftwire, the QR, moving the key (docs/plans/mobile.md) -----
+
+namespace {
+
+mv::json::value link_done(rig& r) {
+  mv::json::value v;
+  REQUIRE(wait_for(
+      [&] {
+        auto t = mv::json::parse(r.eng->phone_link_json());
+        if (!t || !t->str("busy") || !t->str("busy")->empty()) return false;
+        v = *t;
+        return true;
+      },
+      kSettleMs));
+  return v;
+}
+
+// What the Driftwire add-on would answer, without a network.
+struct fake_driftwire {
+  bool claimed = true;
+  int pending = 0;     // revokes the NAS has not heard yet
+  bool waiting = true;  // the code shown is still waiting on the service
+  int claim_timeouts = 0;  // claims answered status::timeout before one goes through
+  mv::status pair_stop_error = mv::status::ok;  // what pair_stop answers (ok: done)
+  std::vector<std::pair<std::string, std::string>> devices;
+  std::vector<std::string> calls;
+  std::mutex m;
+  std::function<void()> on_pair;  // runs before "pair" is answered, outside the lock (a test holds it there)
+  mv::result<std::string> operator()(const std::string& target, const std::string& method, const std::string& json) {
+    if (method == "pair" && on_pair) on_pair();
+    std::lock_guard lock(m);
+    calls.push_back(method);
+    if (target != "driftwire") return mv::err(mv::status::not_found);
+    if (method == "status") {
+      mv::json::writer w;
+      w.begin_object().key("claimed").boolean(claimed).key("pending_revokes").integer(pending).key("local").string("192.168.1.5:7878").key("public").string("nas.example.com:7878").key("machine").string("Studio Mac").end_object();
+      return w.take();
+    }
+    if (method == "devices") {
+      mv::json::writer w;
+      w.begin_object().key("reachable").boolean(true).key("code_waiting").boolean(waiting).key("devices").begin_array();
+      for (const auto& [n, k] : devices) w.begin_object().key("name").string(n).key("key").string(k).end_object();
+      w.end_array().end_object();
+      return w.take();
+    }
+    if (method == "pair") {
+      const auto asked = mv::json::parse(json, 4);
+      mv::json::writer w;
+      w.begin_object()
+          .key("local").string("192.168.1.5:7878")
+          .key("public").string("nas.example.com:7878")
+          .key("identity").string(std::string(64, 'a'))
+          .key("access_key").string(std::string(64, 'b'))
+          .key("code").string(std::string(32, 'c'))
+          .key("expires").integer(static_cast<std::int64_t>(std::time(nullptr)) + 300)
+          .key("check").string("check:" + *asked->str("library_id") + ":" + *asked->str("publisher_key"))
+          .end_object();
+      return w.take();
+    }
+    if (method == "roots") return std::string("{\"roots\":[]}");
+    if (method == "pair_stop" && pair_stop_error != mv::status::ok) return mv::err(pair_stop_error);
+    if (method == "claim") {
+      if (claim_timeouts > 0) {
+        --claim_timeouts;
+        return mv::err(mv::status::timeout);
+      }
+      return std::string("{}");
+    }
+    return std::string("{}");
+  }
+};
+
+std::string qr_json(const std::string& url) {
+  const std::string prefix = "mediaviewer://pair#";
+  REQUIRE(url.starts_with(prefix));
+  std::string out(url.size(), '\0');
+  std::size_t len = 0;
+  REQUIRE(sodium_base642bin(reinterpret_cast<unsigned char*>(out.data()), out.size(), url.data() + prefix.size(),
+                            url.size() - prefix.size(), nullptr, &len, nullptr, sodium_base64_VARIANT_URLSAFE_NO_PADDING) == 0);
+  out.resize(len);
+  return out;
+}
+
+void publish_to(rig& a, const fs::path& nas) {
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  REQUIRE(*phone_done(a).str("error") == "");
+}
+
+}  // namespace
+
+TEST_CASE("phone link: with Driftwire missing, the card is told", "[ai][engine][phone-link]") {
+  rig a;
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("driftwire") == false);
+}
+
+TEST_CASE("phone link: a code is one QR with the library, the key and the service", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  const auto v = link_done(a);
+  REQUIRE(v.str("error"));
+  CHECK(*v.str("error") == "");
+  const auto doc = mv::json::parse(qr_json(*v.str("qr")), 4);
+  REQUIRE(doc);
+  CHECK(doc->integer("v") == 1);
+  CHECK(*doc->str("library_name") == "Photos");
+  CHECK_FALSE(doc->str("library_id")->empty());
+  CHECK(doc->str("publisher_key")->size() == 64);
+  CHECK(*doc->find("service")->str("local") == "192.168.1.5:7878");
+  CHECK(*doc->str("code") == std::string(32, 'c'));
+  // Driftwire's check code, for this library and key (the fake echoes what it was asked).
+  CHECK(*v.str("qr_fingerprint") == "check:" + *doc->str("library_id") + ":" + *doc->str("publisher_key"));
+  CHECK(v.integer("qr_expires") > static_cast<std::int64_t>(std::time(nullptr)));
+
+  // The phone redeems it: the Mac shows it and takes the code down.
+  {
+    std::lock_guard lock(d.m);
+    d.devices.emplace_back("iPhone", std::string(64, 'd'));
+  }
+  mv::json::value after;
+  REQUIRE(wait_for(
+      [&] {
+        auto t = mv::json::parse(a.eng->phone_link_json());
+        if (!t || t->find("added")->a.empty()) return false;
+        after = *t;
+        return true;
+      },
+      8000));
+  CHECK(after.find("added")->a[0].s == "iPhone");
+  CHECK(after.str("qr")->empty());
+}
+
+TEST_CASE("phone link: a takeover asked on the share, allowed, then published", "[ai][engine][phone-link]") {
+  fake_driftwire da, db;  // before the rigs: their engines call these until they are gone
+  rig a, b;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const auto first_doc = mv::json::parse(read_all(nas / ".mediaviewer/library.json"), 4);
+  REQUIRE(first_doc);
+  const std::string library = *first_doc->str("library_id");
+  std::vector<std::uint8_t> pinned(32);
+  std::size_t n = 0;
+  REQUIRE(sodium_hex2bin(pinned.data(), 32, first_doc->str("public_key")->data(), 64, nullptr, &n, nullptr) == 0);
+
+  b.file("blue_sea.jpg");
+  b.start();
+  REQUIRE(b.eng->index_folder(utf8(b.photos()), true));
+  REQUIRE(b.idle());
+  // Its index is about these photos' folder; the share is the same place.
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  CHECK(*phone_done(b).str("error") == "other_library");
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(b).boolean("other_publisher") == true);
+
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  CHECK(*link_done(b).str("error") == "");
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto asked = link_done(a);
+  REQUIRE(*asked.str("asking_name") == "Studio Mac");
+
+  // A has a phone, so it serves nearby until it hands over.
+  {
+    std::lock_guard lock(da.m);
+    da.devices.emplace_back("iPhone", std::string(64, 'd'));
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(da.m);
+    da.calls.clear();
+  }
+  // The old desktop's person agrees: its key signs the move.
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  CHECK(*link_done(a).str("error") == "");
+  // The old desktop stops offering its own catalogue nearby: its key is not the library's now.
+  {
+    std::lock_guard lock(da.m);
+    CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby_stop")) != da.calls.end());
+  }
+
+  // The new one finds its key on the share and takes the library over.
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(b).boolean("other_publisher") == false);
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  // No folder of b's is on this NAS in the test; what matters is the identity.
+  const std::string after_error = *phone_done(b).str("error");
+  CHECK(after_error != "other_library");
+
+  const std::string doc = read_all(nas / ".mediaviewer/library.json");
+  auto followed = mv::ai::catalog::follow_chain(doc, library, pinned, 1);
+  REQUIRE(followed);
+  CHECK(followed->epoch == 2);
+  CHECK(mv::ai::catalog::to_hex(followed->public_key) != mv::ai::catalog::to_hex(pinned));
+  // The old desktop is locked out now.
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  CHECK(*phone_done(a).str("error") == "other_library");
+}
+
+TEST_CASE("phone link: Cancel, expiry and a new code withdraw the code on the service", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const auto count = [&](const char* m) {
+    std::lock_guard lock(d.m);
+    return std::count(d.calls.begin(), d.calls.end(), std::string(m));
+  };
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  (void)link_done(a);
+  const auto before = count("pair_stop");
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair_stop\"}"));
+  (void)link_done(a);
+  CHECK(count("pair_stop") == before + 1);
+  // A code the service no longer holds (spent by a re-scan) comes down from the card.
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  CHECK_FALSE(link_done(a).str("qr")->empty());
+  {
+    std::lock_guard lock(d.m);
+    d.waiting = false;
+  }
+  REQUIRE(wait_for([&] { return mv::json::parse(a.eng->phone_link_json())->str("qr")->empty(); }, 8000));
+}
+
+TEST_CASE("phone link: a revoke the NAS missed is retried until it lands", "[ai][engine][phone-link]") {
+  fake_driftwire d;
+  rig a;
+  a.link_retry = 0.2;
+  d.pending = 1;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const auto devices_asked = [&] {
+    std::lock_guard lock(d.m);
+    return std::count(d.calls.begin(), d.calls.end(), std::string("devices"));
+  };
+  // Nobody touches the card: the engine keeps trying by itself.
+  REQUIRE(wait_for([&] { return devices_asked() >= 3; }, 15000));
+  {
+    std::lock_guard lock(d.m);
+    d.pending = 0;
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  const auto settled = devices_asked();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(devices_asked() == settled);  // and stops once the NAS has it
+}
+
+TEST_CASE("phone link: the share never moves this desktop's library or epoch backwards", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "NAS";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  const fs::path lib = nas / ".mediaviewer/library.json";
+  auto doc = mv::json::parse(read_all(lib), 4);
+  const std::string id = *doc->str("library_id");
+  const std::string key = *doc->str("public_key");
+  const auto rewrite = [&](const std::string& library, int epoch) {
+    std::ofstream f(lib, std::ios::binary | std::ios::trunc);
+    f << "{\"format\":1,\"library_id\":\"" << library << "\",\"public_key\":\"" << key << "\",\"epoch\":" << epoch << "}";
+  };
+  const auto current_epoch = [&] { return *mv::json::parse(read_all(nas / ".mediaviewer/current.json"), 4)->integer("epoch"); };
+
+  // Moving up is how a takeover lands: taken.
+  rewrite(id, 5);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("mismatch") == false);
+  a.file("green_field.jpg");
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  publish_to(a, nas);
+  CHECK(current_epoch() == 5);
+
+  // A restored or edited file that goes back: refused, and the card says so.
+  rewrite(id, 3);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("mismatch") == true);
+  a.file("blue_sea.jpg");
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  (void)phone_done(a);
+  CHECK(current_epoch() == 5);
+
+  // Another library's id under this key: never adopted over a library phones already follow.
+  rewrite("someone-else", 9);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("mismatch") == true);
+  REQUIRE(a.eng->phone_publish(utf8(nas)));
+  CHECK(*phone_done(a).str("error") == "other_library");
+}
+
+TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be read back", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
+  fake_driftwire da, db;  // before the rigs: their engines call these until they are gone
+  rig a, b;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  const fs::path nas = a.dir / "NAS";
+  // The share drops just after the hand-over is written (an SMB hiccup).
+  a.after_hand_over = [&] { ::chmod(utf8(nas / ".mediaviewer/library.json").c_str(), 0); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  {
+    std::lock_guard lock(da.m);
+    da.devices.emplace_back("iPhone", std::string(64, 'd'));
+  }
+  b.start();
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(b);
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  (void)phone_done(b);
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto asked = link_done(a);
+  REQUIRE_FALSE(asked.str("asking_key")->empty());
+  {
+    std::lock_guard lock(da.m);
+    da.calls.clear();
+  }
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  const auto after = link_done(a);
+  CHECK(after.boolean("other_publisher") == true);
+  // A later look while the share still cannot be read changes nothing.
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == true);
+  ::chmod(utf8(nas / ".mediaviewer/library.json").c_str(), 0644);
+  {
+    std::lock_guard lock(da.m);
+    CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby_stop")) != da.calls.end());
+    CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby")) == da.calls.end());
+  }
+  // Readable again, and naming the new desktop: still not this one's.
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == true);
+#endif
+}
+
+TEST_CASE("phone link: Local search stopping lets go of the NAS without waiting on it", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  a.eng->stop();
+  std::lock_guard lock(d.m);
+  // Only what is on this Mac: quitting never waits on the NAS (the code lapses there).
+  CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == d.calls.end());
+  CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("release")) != d.calls.end());
+}
+
+TEST_CASE("phone link: a claim that timed out is claimed once more", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  d.claim_timeouts = 1;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"claim\",\"local\":\"nas.local:7878\"}"));
+  const auto v = link_done(a);
+  CHECK(*v.str("error") == "");
+  std::lock_guard lock(d.m);
+  CHECK(std::count(d.calls.begin(), d.calls.end(), std::string("claim")) == 2);
+}
+
+TEST_CASE("phone link: a hand-over survives a restart, and handing back clears it", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
+  fake_driftwire da, db;  // before the rigs: their engines call these until they are gone
+  rig a, b;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  const fs::path nas = a.dir / "NAS";
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  b.start();
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  (void)phone_done(b);
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  auto asked = link_done(a);
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  REQUIRE(link_done(a).boolean("other_publisher") == true);
+
+  // Local search restarts while the share cannot be read: still handed over.
+  const std::string lib = utf8(nas / ".mediaviewer/library.json");
+  ::chmod(lib.c_str(), 0);
+  a.eng.reset();
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == true);
+  ::chmod(lib.c_str(), 0644);
+
+  // b hands the library back: a's key is on the share again, and a publishes.
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(a);
+  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  auto back = link_done(b);
+  REQUIRE_FALSE(back.str("asking_key")->empty());
+  mv::json::writer w2;
+  w2.begin_object().key("do").string("takeover_allow").key("key").string(*back.str("asking_key")).end_object();
+  REQUIRE(b.eng->phone_link(w2.str()));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == false);
+  // And that stays so after another restart.
+  a.eng.reset();
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == false);
+#endif
+}
+
+TEST_CASE("phone link: a code left showing at quit is withdrawn at the next start", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  a.eng.reset();
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  std::lock_guard lock(d.m);
+  CHECK(std::count(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == 1);
+}
+
+namespace {
+
+// Quits with a code showing, then starts again: what the next start sees.
+void quit_with_a_code(rig& a, fake_driftwire& d) {
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  a.eng.reset();
+  std::lock_guard lock(d.m);
+  d.calls.clear();
+}
+
+std::size_t count_of(fake_driftwire& d, const char* method) {
+  std::lock_guard lock(d.m);
+  return static_cast<std::size_t>(std::count(d.calls.begin(), d.calls.end(), std::string(method)));
+}
+
+}  // namespace
+
+TEST_CASE("phone link: a pair after a failed stale withdraw keeps its code", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  quit_with_a_code(a, d);
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::io;  // the NAS is briefly away
+  }
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  CHECK(count_of(d, "pair_stop") >= 1);  // tried (once per refresh, the start's own too), failed, still owed
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::ok;
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  const auto v = link_done(a);
+  CHECK_FALSE(v.str("qr")->empty());
+  CHECK(count_of(d, "pair_stop") == 0);  // the new code is not withdrawn by the old debt
+  // And the debt is gone: a later look withdraws nothing.
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair_stop\"}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  CHECK(count_of(d, "pair_stop") == 0);
+}
+
+TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definite answer", "[ai][engine][phone-link]") {
+  SECTION("the NAS stays away past the code's lifetime") {
+    fake_driftwire d;
+    rig a;
+    a.code_ttl = 1;
+    a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+    quit_with_a_code(a, d);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = mv::status::io;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+    a.start();
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    CHECK(count_of(d, "pair_stop") == 0);  // nothing left to withdraw: the NAS dropped it
+  }
+  SECTION("the NAS answers no (another owner, the service gone)") {
+    fake_driftwire d;
+    rig a;
+    a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+    quit_with_a_code(a, d);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = mv::status::permission_denied;
+    }
+    a.start();
+    for (int i = 0; i < 3; ++i) {
+      REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+      (void)link_done(a);
+    }
+    CHECK(count_of(d, "pair_stop") == 1);  // asked once; that answer settles it
+  }
+}
+
+TEST_CASE("phone link: a request queued while a code is made does not let the old debt withdraw it", "[ai][engine][phone-link]") {
+  fake_driftwire d;  // before the rig: its engine calls this until it is gone
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  quit_with_a_code(a, d);
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::io;  // the old code could not be withdrawn
+  }
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(d.m);
+    d.pair_stop_error = mv::status::ok;
+  }
+  // The pair is held at the NAS while something else is queued behind it.
+  std::mutex gate_m;
+  std::condition_variable gate_cv;
+  bool reached = false, open = false;
+  d.on_pair = [&] {
+    std::unique_lock g(gate_m);
+    reached = true;
+    gate_cv.notify_all();
+    gate_cv.wait(g, [&] { return open; });
+  };
+  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  {
+    std::unique_lock g(gate_m);
+    REQUIRE(gate_cv.wait_for(g, std::chrono::seconds(10), [&] { return reached; }));
+  }
+  {
+    std::lock_guard lock(d.m);
+    d.calls.clear();
+  }
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));  // busy now says "refresh"
+  {
+    std::lock_guard g(gate_m);
+    open = true;
+  }
+  gate_cv.notify_all();
+  const auto v = link_done(a);
+  d.on_pair = {};
+  CHECK_FALSE(v.str("qr")->empty());
+  CHECK(count_of(d, "pair_stop") == 0);
+}
+
+TEST_CASE("phone link: a busy or not-yet-loaded Driftwire does not settle a code left at quit", "[ai][engine][phone-link]") {
+  for (const auto transient : {mv::status::busy, mv::status::not_found}) {
+    fake_driftwire d;
+    rig a;
+    a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+    quit_with_a_code(a, d);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = transient;
+    }
+    a.start();
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    {
+      std::lock_guard lock(d.m);
+      d.pair_stop_error = mv::status::ok;
+      d.calls.clear();
+    }
+    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    (void)link_done(a);
+    CHECK(count_of(d, "pair_stop") == 1);  // still owed, and asked again
+  }
+}
+
+TEST_CASE("phone link: an engine stopped while its phone ticks never leaves a thread behind", "[ai][engine][phone-link]") {
+  fake_driftwire d;
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.phone_quiet = 0;
+  a.phone_interval = 0;
+  a.phone_poll = 0.01;
+  a.link_retry = 0.01;
+  {
+    std::lock_guard lock(d.m);
+    d.pending = 1;  // something for every tick to start
+  }
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  // Stopped at every point of a tick: the destructor of a joinable thread
+  // would end the process here.
+  for (int i = 0; i < 25; ++i) {
+    a.eng.reset();
+    a.start();
+    if (i % 3 == 0) (void)a.eng->phone_link("{\"do\":\"refresh\"}");
+    std::this_thread::sleep_for(std::chrono::milliseconds(i % 7));
+  }
+  SUCCEED();
+}
+
+TEST_CASE("phone link: a link.json that cannot be read is never taken as no hand-over", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
+  fake_driftwire d;
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  a.eng.reset();
+  const fs::path link = a.dir / "data" / "phone" / "link.json";
+  fs::create_directories(link.parent_path());
+  {
+    std::ofstream f(link, std::ios::binary | std::ios::trunc);
+    f << "{\"handed_over\":false,\"code_left\":false,\"code_left_until\":0}";
+  }
+  const std::string before = read_all(link);
+  // Neither file reads: the share cannot say this key is the library's.
+  const std::string share = utf8(nas / ".mediaviewer" / "library.json");
+  ::chmod(utf8(link).c_str(), 0);
+  ::chmod(share.c_str(), 0);
+  a.start();
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto v = link_done(a);
+  ::chmod(share.c_str(), 0644);
+  CHECK(v.boolean("other_publisher") == true);  // closed: it may say handed over
+  ::chmod(utf8(link).c_str(), 0644);
+  CHECK(read_all(link) == before);              // and not written over blind
+  // The share reads again and names this key: that, and only that, ends it.
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  CHECK(link_done(a).boolean("other_publisher") == false);
+#endif
+}
+
+TEST_CASE("phone link: a hand-over is written down even when link.json could not be read", "[ai][engine][phone-link]") {
+#if defined(_WIN32)
+  SKIP("POSIX permissions");
+#else
+  fake_driftwire da, db;
+  rig a, b;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return da(t, m, j); };
+  b.route = [&](const std::string& t, const std::string& m, const std::string& j) { return db(t, m, j); };
+  const fs::path nas = a.dir / "NAS";
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  fs::create_directories(nas);
+  publish_to(a, nas);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  (void)link_done(a);
+  // a restarts with a link.json it cannot read.
+  a.eng.reset();
+  const fs::path link = a.dir / "data" / "phone" / "link.json";
+  fs::create_directories(link.parent_path());
+  {
+    std::ofstream f(link, std::ios::binary | std::ios::trunc);
+    f << "{\"handed_over\":false}";
+  }
+  ::chmod(utf8(link).c_str(), 0);
+  a.start();
+  b.start();
+  REQUIRE(b.eng->phone_publish(utf8(nas)));
+  (void)phone_done(b);
+  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  (void)link_done(b);
+  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  const auto asked = link_done(a);
+  REQUIRE_FALSE(asked.str("asking_key")->empty());
+  mv::json::writer w;
+  w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
+  REQUIRE(a.eng->phone_link(w.str()));
+  CHECK(*link_done(a).str("error") == "");
+  ::chmod(utf8(link).c_str(), 0644);
+  // The hand-over is on disk: a restart with the share unreadable still knows it.
+  const auto saved = mv::json::parse(read_all(link), 4);
+  REQUIRE(saved);
+  CHECK(saved->boolean("handed_over") == true);
+#endif
 }

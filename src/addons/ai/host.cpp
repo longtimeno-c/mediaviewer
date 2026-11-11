@@ -194,6 +194,18 @@ int32_t MV_CALL label_thunk(void* user, uint32_t index, const char* label) {
 }
 }  // namespace
 
+result<std::string> host::addon_request(const char* addon_id, const char* method, const std::string& json) const {
+  if (!api_ || api_->struct_size < offsetof(mv_host_api, addon_request) + sizeof(api_->addon_request) ||
+      !api_->addon_request) {
+    return err(status::not_found);
+  }
+  std::string out;
+  const auto keep = [](void* user, const char* text) { *static_cast<std::string*>(user) = text ? text : ""; };
+  const mv_status s = api_->addon_request(api_->host, addon_id, method, json.c_str(), keep, &out);
+  if (s != MV_OK) return err(to_status(s));
+  return out;
+}
+
 result<std::vector<std::string>> host::place_labels(std::span<const mv_addon_route_point> points) const {
   if (!api_ || api_->struct_size < offsetof(mv_host_api, place_labels) + sizeof(api_->place_labels) ||
       !api_->place_labels) {
