@@ -112,6 +112,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   public var current: ConnectionSnapshot { lock.withLock { snapshot } }
 
+  /// The paired library's id; "" with none. Keys the pictures in memory (`ScopedCache`).
+  public var libraryID: String { lock.withLock { record?.libraryID ?? "" } }
+
   public func updates() -> AsyncStream<ConnectionSnapshot> {
     let id = UUID()
     return AsyncStream { continuation in

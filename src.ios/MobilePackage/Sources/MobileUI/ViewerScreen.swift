@@ -24,6 +24,9 @@ struct ViewerScreen: View {
   @State private var save: SaveState?
   /// The item `save` is about. Swiping away leaves the save running but out of sight.
   @State private var saveItem: MediaItem?
+  /// The last save failed because Photos access was refused: the line offers Settings.
+  @State private var photosRefused = false
+  @Environment(\.openURL) private var openURL
   @State private var saveToken = UUID()
 
   private enum SaveState: Equatable {
@@ -158,7 +161,8 @@ struct ViewerScreen: View {
                        detail: progress.map { ProgressWords.amounts($0.doneBytes, of: $0.totalBytes) },
                        key: "save-\(current.item.id.raw)")
         case .outcome(let outcome):
-          ProgressLine(verb: "Saving to Photos", fraction: nil, outcome: outcome, onRetry: retrySave)
+          ProgressLine(verb: "Saving to Photos", fraction: nil, outcome: outcome, onRetry: retrySave,
+                       extra: photosRefused ? (title: "Open Settings", action: openSettings) : nil)
         }
       }
     } else {
@@ -202,10 +206,15 @@ struct ViewerScreen: View {
     if let saveItem { startSave(saveItem) }
   }
 
+  private func openSettings() {
+    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+  }
+
   private func startSave(_ item: MediaItem) {
     let token = UUID()
     saveToken = token
     saveItem = item
+    photosRefused = false
     save = .running(nil)
     Task {
       do {
@@ -217,7 +226,10 @@ struct ViewerScreen: View {
         try? await Task.sleep(for: .seconds(2))
         if token == saveToken, case .outcome(.done) = save { save = nil }
       } catch let failure as MediaFailure {
-        if token == saveToken { save = .outcome(.failed(FailureCopy.line(for: failure), canRetry: false)) }
+        if token == saveToken {
+          photosRefused = failure == .photosNotAllowed
+          save = .outcome(.failed(FailureCopy.line(for: failure), canRetry: false))
+        }
       } catch {
         if token == saveToken { save = .outcome(.failed("Couldn't save this to Photos.", canRetry: true)) }
       }

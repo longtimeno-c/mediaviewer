@@ -430,14 +430,17 @@ private struct ClipBody: View {
     HStack(spacing: 28) {
       Button { clip.skip(by: -10) } label: { transportIcon("gobackward.10") }
         .accessibilityLabel("Back 10 seconds")
+        .accessibilityShowsLargeContentViewer()
       Button { clip.toggle() } label: {
         Image(systemName: clip.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 30))
           .frame(width: 44, height: 44)
           .contentShape(Rectangle())
       }
       .accessibilityLabel(clip.isPlaying ? "Pause" : "Play")
+      .accessibilityShowsLargeContentViewer()
       Button { clip.skip(by: 10) } label: { transportIcon("goforward.10") }
         .accessibilityLabel("Forward 10 seconds")
+        .accessibilityShowsLargeContentViewer()
     }
     .font(.system(size: 22))
     .foregroundStyle(Theme.title)

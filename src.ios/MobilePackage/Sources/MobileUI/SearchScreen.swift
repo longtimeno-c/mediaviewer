@@ -172,9 +172,9 @@ private struct FilterRow: View {
       }
     } label: {
       ChipLabel(isOn: value != nil) {
-        Image(systemName: symbol).font(.system(size: 12)).foregroundStyle(value == nil ? Theme.body : Theme.accent)
+        Image(systemName: symbol).font(.footnote).foregroundStyle(value == nil ? Theme.body : Theme.accent)
         Text(value ?? title).font(.subheadline).foregroundStyle(value == nil ? Theme.body : Theme.title).fixedSize()
-        Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.body)
+        Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(Theme.body)
       }
     }
     .accessibilityLabel(value.map { "\(title): \($0)" } ?? "\(title) filter")

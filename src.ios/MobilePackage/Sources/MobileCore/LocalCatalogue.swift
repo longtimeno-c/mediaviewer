@@ -59,6 +59,8 @@ public final class LocalCatalogue: @unchecked Sendable {
   private let lock = NSLock()
   private var current: Generation?
   private var opening: Task<Generation, Error>?
+  /// Counts Forgets. An open that began before the latest one is never put in force.
+  private var forgets = 0
   /// Every generation still held by a list or a result, by serial, so an item from before a swap
   /// still finds its own tiles.
   private var open: [UInt64: WeakGeneration] = [:]
@@ -110,9 +112,10 @@ public final class LocalCatalogue: @unchecked Sendable {
 
   /// Puts `g` in force unless a newer (epoch, generation) already is: opens can finish in any
   /// order, and the newest always wins.
-  private func offer(_ g: Generation) {
+  private func offer(_ g: Generation, startedAt era: Int) {
     register(g)
     lock.withLock {
+      guard era == forgets else { return }  // a forgotten library's open, finishing late
       if let current, !g.isNewer(than: current) { return }
       current = g
     }
@@ -126,11 +129,12 @@ public final class LocalCatalogue: @unchecked Sendable {
     let task: Task<Generation, Error> = lock.withLock {
       if let opening { return opening }
       let root = location
+      let era = forgets
       let made = Task.detached(priority: .userInitiated) { [self] () throws -> Generation in
         guard let directory = root.installedGeneration() else { throw CatalogueOpenFailure.notInstalled }
         root.excludeFromBackup()
         let g = try Self.open(directory, in: root)
-        offer(g)  // inside the task: whoever awaits it finds it already offered
+        offer(g, startedAt: era)  // inside the task: whoever awaits it finds it already offered
         return g
       }
       opening = made
@@ -142,6 +146,17 @@ public final class LocalCatalogue: @unchecked Sendable {
     } catch {
       lock.withLock { if opening == task { opening = nil } }
       throw error
+    }
+  }
+
+  /// The library was forgotten: nothing of it stays in force, so the next library's first
+  /// generation opens even when its (epoch, generation) is no newer than the forgotten one's.
+  /// Lists and results still holding the old generation keep it until they let go.
+  public func forgetInForce() {
+    lock.withLock {
+      current = nil
+      opening = nil
+      forgets += 1
     }
   }
 
@@ -159,12 +174,13 @@ public final class LocalCatalogue: @unchecked Sendable {
   /// one keeps it until they let go.
   public func swap(to directory: URL) async throws {
     // A first open still in flight is compared too: it may be the newer one.
+    let era = lock.withLock { forgets }
     if let pending = lock.withLock({ current == nil ? opening : nil }) { _ = try? await pending.value }
     let root = location
     let new = try await Task.detached(priority: .userInitiated) { () throws -> Generation in
       try Self.open(directory, in: root)
     }.value
-    offer(new)
+    offer(new, startedAt: era)
   }
 
   public func info() async -> CatalogueInfo? {

@@ -62,6 +62,8 @@ struct ScanScreen: View {
   @State private var picked: PhotosPickerItem?
   @State private var problem: String?
   @State private var reading = false
+  /// How tall the buttons at the bottom are, so the camera's own messages stop above them.
+  @State private var controlsHeight: CGFloat = 0
 
   var body: some View {
     ZStack {
@@ -69,6 +71,7 @@ struct ScanScreen: View {
       model.scanner.surface { code in
         model.scanned(code)
       }
+      .environment(\.scanControlsHeight, controlsHeight)
       .ignoresSafeArea()
       VStack(spacing: 12) {
         HStack {
@@ -79,6 +82,7 @@ struct ScanScreen: View {
         }
         Spacer()
         otherWays
+          .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controlsHeight = $0 }
       }
       .padding(16)
       .frame(maxWidth: Theme.readableWidth)
@@ -118,22 +122,21 @@ struct ScanScreen: View {
     .accessibilityHint("Reads the code from a screenshot or photo of it")
   }
 
+  /// The same button as "Choose a picture". It reads the clipboard only when tapped; iOS asks the
+  /// person once whether MediaViewer may paste.
   private var pasteButton: some View {
-    PasteButton(payloadType: String.self) { strings in
-      guard let text = strings.first?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-      Task { @MainActor in
-        if text.hasPrefix("mediaviewer://pair") {
-          problem = nil
-          model.scanned(text)
-        } else {
-          problem = FailureCopy.pasteNotCode
-        }
+    Button {
+      let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if text.hasPrefix("mediaviewer://pair") {
+        problem = nil
+        model.scanned(text)
+      } else {
+        problem = FailureCopy.pasteNotCode
       }
+    } label: {
+      Label("Paste link", systemImage: "doc.on.clipboard")
     }
-    .labelStyle(.titleAndIcon)
-    .buttonBorderShape(.roundedRectangle(radius: 12))
-    .controlSize(.large)
-    .tint(Theme.lifted)
+    .buttonStyle(SecondaryButtonStyle())
     .accessibilityHint("Pastes the link MediaViewer shows next to its code")
   }
 
@@ -169,8 +172,14 @@ enum QRReader {
   }
 }
 
+extension EnvironmentValues {
+  /// The scan screen's buttons, measured; what the camera surface keeps clear at the bottom.
+  @Entry var scanControlsHeight: CGFloat = 0
+}
+
 private struct CameraSurface: View {
   let onCode: (String) -> Void
+  @Environment(\.scanControlsHeight) private var controlsHeight
   @State private var access = AVCaptureDevice.authorizationStatus(for: .video)
   @Environment(\.openURL) private var openURL
   private let hasCamera = AVCaptureDevice.default(for: .video) != nil
@@ -204,7 +213,23 @@ private struct CameraSurface: View {
     }
   }
 
+  /// Between Close and the buttons, scrolling when the text is too large for that space.
   private func message(_ text: String, settings: Bool) -> some View {
+    GeometryReader { geo in
+      let top = geo.safeAreaInsets.top + 76
+      let bottom = geo.safeAreaInsets.bottom + controlsHeight + 32
+      ScrollView {
+        messageContent(text, settings: settings)
+          .frame(maxWidth: .infinity, minHeight: max(0, geo.size.height - top - bottom))
+          .padding(.top, top)
+          .padding(.bottom, bottom)
+      }
+      .scrollBounceBehavior(.basedOnSize)
+    }
+    .ignoresSafeArea()
+  }
+
+  private func messageContent(_ text: String, settings: Bool) -> some View {
     VStack(spacing: 12) {
       Image(systemName: settings ? "camera" : "camera.badge.ellipsis")
         .font(.system(size: 28))
@@ -316,7 +341,7 @@ struct ConnectScreen: View {
     case notMatched
     case pairing
   }
-  private enum StepState: Equatable { case waiting, working, passed, warned, skipped }
+  private enum StepState: Equatable { case waiting, working, passed, warned, failed, skipped }
   private enum Ending: Equatable {
     case failure(PairingFailure)
     case warning(String)
@@ -423,6 +448,7 @@ struct ConnectScreen: View {
         case .working: Image(systemName: "circle.inset.filled").foregroundStyle(Theme.accent)
         case .passed: Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accent)
         case .warned: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.warm)
+        case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.danger)
         case .skipped: Image(systemName: "minus.circle").foregroundStyle(Theme.body)
         }
       }
@@ -442,6 +468,7 @@ struct ConnectScreen: View {
     case .working: return "In progress"
     case .passed: return "Done"
     case .warned: return "Needs attention"
+    case .failed: return "Failed"
     case .skipped: return "Skipped"
     }
   }
@@ -566,9 +593,11 @@ struct ConnectScreen: View {
       guard !Task.isCancelled else { return }
       if let warning { ending = .warning(warning) } else { model.connected() }
     } catch let failure as PairingFailure {
-      steps = steps.mapValues { $0 == .working ? .waiting : $0 }
+      // The step that was running is the one that failed, and says so.
+      steps = steps.mapValues { $0 == .working ? .failed : $0 }
       ending = .failure(failure)
     } catch {
+      steps = steps.mapValues { $0 == .working ? .failed : $0 }
       ending = .failure(.codeNotReadable)
     }
   }

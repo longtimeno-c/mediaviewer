@@ -224,6 +224,39 @@ public final class AppModel {
 
   // MARK: Setup
 
+  /// What a pair link opened from outside the app (another app, a web page) may do (§11.1).
+  public enum PairLinkAction: Equatable { case open, confirm, ignore }
+
+  /// Any app can open a mediaviewer://pair link, so one never interrupts pairing or a first copy,
+  /// and never replaces a library in use without asking.
+  public static func pairLinkAction(stage: Stage, isScanning: Bool, hasLibrary: Bool) -> PairLinkAction {
+    if isScanning { return .open }
+    switch stage {
+    case .welcome: return .open
+    case .connect, .firstCopy: return .ignore
+    case .main: return hasLibrary ? .confirm : .open
+    }
+  }
+
+  /// A pair link waiting for the person to say it may replace the library on this phone.
+  public var pendingPairLink: String?
+
+  public func openedPairLink(_ link: String) {
+    switch Self.pairLinkAction(stage: stage, isScanning: isScanning, hasLibrary: connection.hasLibrary) {
+    case .open: scanned(link)
+    case .confirm:
+      viewer = nil  // the question is asked from under the viewer, which would hide it
+      pendingPairLink = link
+    case .ignore: break
+    }
+  }
+
+  public func confirmPendingPairLink() {
+    guard let link = pendingPairLink else { return }
+    pendingPairLink = nil
+    scanned(link)
+  }
+
   public func scanned(_ code: String) {
     isScanning = false
     scanCount += 1
@@ -232,6 +265,8 @@ public final class AppModel {
 
   func connected() {
     resetLibraryState()
+    // A new pairing, perhaps of another library: its first catalogue sets the epoch afresh.
+    UserDefaults.standard.removeObject(forKey: Self.epochKey)
     stage = .firstCopy
   }
 

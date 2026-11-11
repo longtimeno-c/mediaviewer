@@ -101,7 +101,7 @@ private struct PlaceBar: View {
           step("All media", isCurrent: library.trail.isEmpty) { library.goToAllMedia() }
           ForEach(Array(library.trail.enumerated()), id: \.element.id) { index, folder in
             Image(systemName: "chevron.right")
-              .font(.system(size: 10, weight: .semibold))
+              .font(.caption2.weight(.semibold))
               .foregroundStyle(Theme.body.opacity(0.7))
               .accessibilityHidden(true)
             step(folder.name, isCurrent: index == library.trail.count - 1) { library.goBack(to: index) }
@@ -153,7 +153,7 @@ private struct PlaceBar: View {
 
   private func chip(_ folder: Folder) -> some View {
     ChipLabel {
-      Image(systemName: "folder.fill").font(.system(size: 12)).foregroundStyle(Theme.body)
+      Image(systemName: "folder.fill").font(.footnote).foregroundStyle(Theme.body)
       Text(folder.name).font(.subheadline).foregroundStyle(Theme.title).fixedSize()
       Text(folder.itemCount, format: .number).font(.caption.monospacedDigit()).foregroundStyle(Theme.body).fixedSize()
     }

@@ -160,6 +160,15 @@ final class ProgressMemory {
   func forget(_ key: String) { meters[key] = nil }
 }
 
+private extension View {
+  /// The quiet button's side padding is only touch area. Taken back out on the outer edges only,
+  /// the words line up with the track's end (the last button) and with the words above at the
+  /// largest text sizes (every button's leading edge), and neighbours' touch areas never overlap.
+  func alignedWithLine(leading: Bool, trailing: Bool) -> some View {
+    padding(.leading, leading ? -8 : 0).padding(.trailing, trailing ? -8 : 0)
+  }
+}
+
 /// The bar and its one line.
 struct ProgressLine: View {
   let verb: String
@@ -170,6 +179,8 @@ struct ProgressLine: View {
   var outcome: ProgressOutcome? = nil
   var onCancel: (() -> Void)? = nil
   var onRetry: (() -> Void)? = nil
+  /// One more way out of a failure, such as "Open Settings" when Photos access was refused.
+  var extra: (title: String, action: () -> Void)? = nil
 
   @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -197,17 +208,37 @@ struct ProgressLine: View {
           words(ProgressWords.line(verb, fraction: shown, detail: detail))
         }
         if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
-        if case .failed(_, true)? = outcome, let onRetry {
-          Button("Try again", action: onRetry).buttonStyle(QuietButtonStyle(color: Theme.title))
+        let stacked = typeSize.isAccessibilitySize
+        let showsExtra = outcomeIsFailure && extra != nil
+        let showsRetry = outcomeCanRetry && onRetry != nil
+        let showsCancel = outcomeAllowsCancel && onCancel != nil
+        if showsExtra, let extra {
+          Button(extra.title, action: extra.action).buttonStyle(QuietButtonStyle(color: Theme.title))
+            .alignedWithLine(leading: stacked, trailing: stacked || !(showsRetry || showsCancel))
         }
-        if outcomeAllowsCancel, let onCancel {
+        if showsRetry, let onRetry {
+          Button("Try again", action: onRetry).buttonStyle(QuietButtonStyle(color: Theme.title))
+            .alignedWithLine(leading: stacked, trailing: stacked || !showsCancel)
+        }
+        if showsCancel, let onCancel {
           Button("Cancel", action: onCancel).buttonStyle(QuietButtonStyle())
+            .alignedWithLine(leading: stacked, trailing: true)
         }
       }
       .frame(minHeight: 22)
     }
     // The words are read as written, and Cancel and Try again stay reachable on their own.
     .accessibilityElement(children: .contain)
+  }
+
+  private var outcomeIsFailure: Bool {
+    if case .failed? = outcome { return true }
+    return false
+  }
+
+  private var outcomeCanRetry: Bool {
+    if case .failed(_, true)? = outcome { return true }
+    return false
   }
 
   private var outcomeAllowsCancel: Bool {
