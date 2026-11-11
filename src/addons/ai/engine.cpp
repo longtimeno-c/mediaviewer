@@ -3123,8 +3123,16 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
   std::vector<std::string> plain, trees;  // walked: their unseen rows are gone
   bool failed = false;
   bool root_checked = false;
+  // Cut short (the root stopped answering, the index could not take a batch):
+  // what was found is kept and indexed now, nothing is gone, and the root is
+  // not marked as checked; the next walk does the rest.
+  const auto partial = [&] {
+    if (!failed) (void)see_batch(root, batch, gen, changed);
+    after_scan(root, {}, changed, false);
+  };
   for (const auto& [dir, flags] : dirs) {
-    if (stopping_ || failed) return;
+    if (stopping_) return;
+    if (failed) return partial();
     const std::string key = path_key(dir);
     if (key != root_key && !under(key, root_key)) continue;
     // A root that is only its own folder: what happens below it is not ours
@@ -3137,7 +3145,7 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
       // answers is it gone, and everything that was under it with it.
       if (!root_checked) {
         const auto rs = host_.stat(root.path);
-        if (!rs || !rs->is_directory) return;  // the backstop's walk says "unreadable"
+        if (!rs || !rs->is_directory) return partial();  // the backstop's walk says "unreadable"
         root_checked = true;
       }
       trees.push_back(dir);
@@ -3154,7 +3162,11 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
     }
     (depth > 0 ? trees : plain).push_back(dir);
   }
-  if (!see_batch(root, batch, gen, changed) || failed) return;
+  if (stopping_) return;
+  if (failed || !see_batch(root, batch, gen, changed)) {
+    failed = true;
+    return partial();
+  }
   if (!trees.empty()) keep_unlistable(root, gen, &trees);
   auto gone = db_->end_scan_dirs(root.id, gen, plain, trees);
   after_scan(root, gone ? *gone : std::vector<std::int64_t>{}, changed);
@@ -3231,8 +3243,15 @@ void engine::scan_photos(const root_row& root) {
     if (batch.size() >= 512 && !see_batch(root, batch, gen, changed)) failed = true;
     return !failed;
   });
-  if (!walked || stopping_ || failed) return;  // keep what is indexed
-  if (!see_batch(root, batch, gen, changed)) return;
+  if (stopping_) return;
+  if (!walked || failed || !see_batch(root, batch, gen, changed)) {
+    // Keep what is indexed, and index what the enumeration did find (as a
+    // folder walk that failed part way does): nothing is gone.
+    if (walked && !failed) failed = true;  // the last batch did not go in
+    if (!walked && !failed) (void)see_batch(root, batch, gen, changed);
+    after_scan(root, {}, changed, false);
+    return;
+  }
   end_root_scan(root, gen, changed);
 }
 

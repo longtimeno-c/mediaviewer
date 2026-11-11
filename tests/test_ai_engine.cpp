@@ -668,6 +668,12 @@ struct cloud_world {
   // walk then reports the failure, as the host does after listing what it could.
   std::set<std::string> walk_misses;
   std::atomic<bool> walk_fails{false};
+  // Paths whose stat fails, as on a share that stopped answering (a test's).
+  std::set<std::string> stat_fails;
+  bool stat_failed(const std::string& path) {
+    std::lock_guard lock(m);
+    return stat_fails.count(path) != 0;
+  }
   bool walk_missed(const std::string& name) {
     std::lock_guard lock(m);
     return walk_misses.count(name) != 0;
@@ -711,6 +717,7 @@ struct walk2_ctx {
 };
 std::mutex g_walks_m;
 std::map<void*, std::pair<decltype(mv_host_api::walk_files2), cloud_world*>> g_walks;  // by host
+std::map<void*, std::pair<decltype(mv_host_api::stat_file), cloud_world*>> g_stats;  // by host, under g_walks_m
 // Every walk the engine asked for: (folder, depth) (docs/plans/index-watcher.md).
 std::vector<std::pair<std::string, int>> g_walk_log;
 
@@ -720,6 +727,20 @@ int32_t MV_CALL flag_cloud(void* user, const mv_addon_file_entry2* e) {
   mv_addon_file_entry2 x = *e;
   if (e->name_utf8 && c->world->is_online_only(e->name_utf8)) x.flags |= MV_ADDON_FILE_CLOUD_ONLY;
   return c->visit(c->user, &x);
+}
+
+mv_status MV_CALL stat_with_failures(void* host, const char* path, uint64_t* size, int64_t* mtime, uint32_t* dir) {
+  decltype(mv_host_api::stat_file) real = nullptr;
+  cloud_world* world = nullptr;
+  {
+    std::lock_guard lock(g_walks_m);
+    const auto it = g_stats.find(host);
+    if (it == g_stats.end()) return MV_ERR_INTERNAL;
+    real = it->second.first;
+    world = it->second.second;
+  }
+  if (path && world->stat_failed(path)) return MV_ERR_IO;
+  return real(host, path, size, mtime, dir);
 }
 
 mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, mv_addon_walk2_fn visit, void* user) {
@@ -1055,8 +1076,10 @@ struct rig {
     {
       std::lock_guard lock(g_walks_m);
       g_walks[api.host] = {api.walk_files2, cloud.get()};
+      g_stats[api.host] = {api.stat_file, cloud.get()};
     }
     api.walk_files2 = &walk2_with_cloud;
+    api.stat_file = &stat_with_failures;
     {
       std::lock_guard lock(g_tag_m);
       g_tag_facts[api.host] = api.tag_facts;
@@ -1071,6 +1094,7 @@ struct rig {
     }
     std::lock_guard lock(g_walks_m);
     g_walks.erase(api.host);
+    g_stats.erase(api.host);
   }
   std::vector<std::string> drawn_pages() {
     std::lock_guard lock(decoded_m);
@@ -1564,6 +1588,35 @@ TEST_CASE("a walk that fails part way on a quiet engine still indexes what it fo
   // Indexed within a few seconds, not when the watch's walk comes round. (Not
   // "idle": the watch's change is still waiting its hour, as it should.)
   CHECK(wait_for([&] { return r.status().assets_done == 3 && r.search("blue").size() == 1; }, 5000));
+}
+
+// The watch's walk of the folders it says changed, cut short when the root
+// stops answering part way: what it found before that is indexed now, not at
+// the 15-minute backstop.
+TEST_CASE("a watched walk that loses the root part way still indexes what it found", "[ai][engine][walk]") {
+#if !defined(_WIN32) && !defined(__APPLE__)
+  SKIP("no tree watch on this OS");
+#else
+  rig r;
+  r.file("a/red_car.jpg");
+  r.file("z/green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  // z, and then the root itself, stop answering; a is still fine.
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->stat_fails = {utf8(r.photos() / "z"), utf8(r.photos())};
+  }
+  r.file("a/blue_sea.jpg");                  // the watch reports a
+  write_bytes(r.photos() / "z" / "x.txt", pattern(8, 1));  // and z, which is walked after a
+  const bool found = wait_for([&] { return r.status().assets_done == 3 && r.search("blue").size() == 1; }, 8000);
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->stat_fails.clear();
+  }
+  CHECK(found);
+#endif
 }
 
 // docs/plans/index-watcher.md: the host watches a remembered folder's tree,

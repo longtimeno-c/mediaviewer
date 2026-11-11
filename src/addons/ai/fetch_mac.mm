@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -31,15 +32,30 @@ struct exchange {
 }  // namespace
 }  // namespace mv::ai
 
+// The delegate shares the exchange with get(): the session may still call it
+// after get() has stopped waiting (a cancelled task that is slow to finish),
+// and it lets go only when the session is invalidated.
 @interface MVFetchDelegate : NSObject <NSURLSessionDataDelegate>
-@property(nonatomic, assign) mv::ai::exchange* x;
+- (void)attach:(std::shared_ptr<mv::ai::exchange>)x;
 @end
 
-@implementation MVFetchDelegate
+@implementation MVFetchDelegate {
+  std::shared_ptr<mv::ai::exchange> _x;
+}
+- (void)attach:(std::shared_ptr<mv::ai::exchange>)x {
+  _x = std::move(x);
+}
+- (void)URLSession:(NSURLSession*)session didBecomeInvalidWithError:(NSError*)error {
+  _x.reset();
+}
 - (void)URLSession:(NSURLSession*)session
               dataTask:(NSURLSessionDataTask*)task
     didReceiveResponse:(NSURLResponse*)response
      completionHandler:(void (^)(NSURLSessionResponseDisposition))done {
+  if (!_x) {
+    done(NSURLSessionResponseCancel);
+    return;
+  }
   const int code = [response isKindOfClass:[NSHTTPURLResponse class]]
                        ? static_cast<int>(static_cast<NSHTTPURLResponse*>(response).statusCode)
                        : 0;
@@ -52,19 +68,22 @@ struct exchange {
 }
 
 - (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)task didReceiveData:(NSData*)data {
-  std::unique_lock lock(_x->m);
-  if (_x->stop) {
+  if (!_x) return;
+  const std::shared_ptr<mv::ai::exchange> x = _x;  // kept for this call whatever happens to _x
+  std::unique_lock lock(x->m);
+  if (x->stop) {
     [task cancel];
     return;
   }
   const auto* p = static_cast<const std::uint8_t*>(data.bytes);
-  _x->chunks.emplace_back(p, p + data.length);
+  x->chunks.emplace_back(p, p + data.length);
   // Back-pressure: a slow disk must not pile gigabytes up in memory.
-  _x->cv.notify_all();
-  _x->cv.wait(lock, [self] { return _x->chunks.size() < 64 || _x->stop; });
+  x->cv.notify_all();
+  x->cv.wait(lock, [&x] { return x->chunks.size() < 64 || x->stop; });
 }
 
 - (void)URLSession:(NSURLSession*)session task:(NSURLSessionTask*)task didCompleteWithError:(NSError*)error {
+  if (!_x) return;
   {
     std::lock_guard lock(_x->m);
     if (error && error.code != NSURLErrorCancelled) {
@@ -84,7 +103,8 @@ class mac_transport final : public http_transport {
   http_reply get(const std::string& url, std::uint64_t from, const std::function<bool(int)>& head,
                  const std::function<bool(std::span<const std::uint8_t>)>& body) override {
     http_reply reply;
-    exchange x;
+    const auto shared = std::make_shared<exchange>();
+    exchange& x = *shared;
     @autoreleasepool {
       NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
       config.HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever;
@@ -95,7 +115,7 @@ class mac_transport final : public http_transport {
       config.timeoutIntervalForRequest = 60;
       config.HTTPAdditionalHeaders = @{@"User-Agent" : @"MediaViewer"};
       MVFetchDelegate* delegate = [MVFetchDelegate new];
-      delegate.x = &x;
+      [delegate attach:shared];
       NSOperationQueue* queue = [NSOperationQueue new];
       queue.maxConcurrentOperationCount = 1;
       NSURLSession* session = [NSURLSession sessionWithConfiguration:config delegate:delegate delegateQueue:queue];
