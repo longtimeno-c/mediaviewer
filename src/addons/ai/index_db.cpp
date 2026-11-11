@@ -540,12 +540,14 @@ expected index_db::set_root_docs(std::int64_t id, std::uint32_t docs) {
 
 expected index_db::remove_root(std::int64_t id) {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   stmt s(db_, "DELETE FROM roots WHERE id = ?1");  // cascades
   return s.bind(1, id).run() ? expected{} : err(status::io);
 }
 
 result<std::vector<std::int64_t>> index_db::remove_kind(asset_kind kind) {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   std::vector<std::int64_t> gone;
   if (!exec("BEGIN")) return err(status::io);
   {
@@ -565,6 +567,7 @@ result<std::vector<std::int64_t>> index_db::remove_kind(asset_kind kind) {
 
 expected index_db::merge_root(std::int64_t from, std::int64_t to) {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   if (!exec("BEGIN")) return err(status::io);
   stmt a(db_, "UPDATE assets SET root_id = ?2 WHERE root_id = ?1");
   stmt r(db_, "DELETE FROM roots WHERE id = ?1");
@@ -731,6 +734,7 @@ expected index_db::mark_seen(const std::vector<std::int64_t>& ids, std::int64_t 
 
 result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int64_t generation) {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   std::vector<std::int64_t> gone;
   stmt q(db_, "SELECT id FROM assets WHERE root_id = ?1 AND seen != ?2");
   q.bind(1, root).bind(2, generation);
@@ -744,6 +748,7 @@ result<std::vector<std::int64_t>> index_db::end_scan_dirs(std::int64_t root, std
                                                          const std::vector<std::string>& dirs,
                                                          const std::vector<std::string>& trees) {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   std::set<std::int64_t> gone;
   // A range on the path (UNIQUE, so indexed) per folder and separator: the
   // host spells paths with either, and the next character up bounds it.
@@ -1117,13 +1122,69 @@ expected index_db::commit_speech(std::int64_t asset, const std::string& spec,
     exec("ROLLBACK");
     return err(status::io);
   }
-  return exec("COMMIT") ? expected{} : err(status::io);
+  if (!exec("COMMIT")) {
+    speech_totals_valid_ = false;
+    return err(status::io);
+  }
+  if (speech_totals_valid_) speech_totals_[spec] += static_cast<std::int64_t>(segments.size());
+  return {};
+}
+
+const std::map<std::string, std::int64_t>& index_db::speech_totals_locked() {
+  // Counted once, then kept: commit_speech adds its lines; every method that
+  // can remove or add others marks the count stale; another process's
+  // commit shows as a new data_version.
+  std::int64_t version = 0;
+  {
+    stmt v(db_, "PRAGMA data_version");
+    if (v.step_row()) version = v.i64(0);
+  }
+  if (!speech_totals_valid_ || version != speech_totals_version_) {
+    speech_totals_.clear();
+    stmt t(db_, "SELECT spec, COUNT(*) FROM speech GROUP BY spec");
+    while (t.step_row()) speech_totals_[t.text(0)] = t.i64(1);
+    speech_totals_version_ = version;
+    speech_totals_valid_ = true;
+  }
+  return speech_totals_;
 }
 
 expected index_db::each_speech(
     const std::string& preferred,
-    const std::function<void(std::int64_t, std::int64_t, std::int64_t, const std::string&, bool)>& visit) {
+    const std::function<void(std::int64_t, std::int64_t, std::int64_t, const std::string&, bool)>& visit,
+    std::int64_t only_asset) {
   std::lock_guard lock(m_);
+  if (only_asset > 0) {
+    // One clip: its own rows through speech_asset(asset_id, spec), nothing
+    // else. The same choice as below; the table's totals only when the clip
+    // has lines from two Whispers or more and none from the preferred one.
+    stmt s(db_, "SELECT spec, start_ms, end_ms, text FROM speech WHERE asset_id = ?1 ORDER BY spec, start_ms");
+    if (!s.ok()) return err(status::io);
+    s.bind(1, only_asset);
+    struct line {
+      std::int64_t start, end;
+      std::string text;
+    };
+    std::map<std::string, std::vector<line>> by_spec;
+    while (s.step_row()) by_spec[s.text(0)].push_back(line{s.i64(1), s.i64(2), s.text(3)});
+    if (by_spec.empty()) return {};
+    auto pick = by_spec.find(preferred);
+    if (pick == by_spec.end()) {
+      pick = by_spec.begin();
+      if (by_spec.size() > 1) {
+        const auto& totals = speech_totals_locked();
+        const auto total = [&](const std::string& spec) {
+          auto t = totals.find(spec);
+          return t == totals.end() ? std::int64_t{0} : t->second;
+        };
+        for (auto it = std::next(by_spec.begin()); it != by_spec.end(); ++it) {
+          if (total(it->first) > total(pick->first)) pick = it;  // ties keep the first by name
+        }
+      }
+    }
+    for (const line& l : pick->second) visit(only_asset, l.start, l.end, l.text, pick->first == preferred);
+    return {};
+  }
   // One spec per clip: the preferred one where the clip has it, else the
   // spec with the most lines overall, then by name, so every run agrees.
   stmt s(db_,
@@ -1386,6 +1447,7 @@ std::uint64_t index_db::passage_count(std::int64_t asset) {
 
 expected index_db::drop_spec(const std::string& spec) {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   if (!exec("BEGIN")) return err(status::io);
   stmt f(db_, "DELETE FROM frames WHERE spec = ?1");
   stmt p(db_, "DELETE FROM progress WHERE spec = ?1");
@@ -1583,6 +1645,7 @@ expected index_db::set_meta(const std::string& key, const std::string& value) {
 
 expected index_db::clear() {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM passage_vecs; DELETE FROM passages;"
             " DELETE FROM passage_text; DELETE FROM tracks;"
             " DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text; DELETE FROM assets; DELETE FROM roots;")) {
@@ -1783,6 +1846,7 @@ std::vector<std::int64_t> index_db::match_text(const std::string& words, std::si
 
 expected index_db::with_connection(const std::function<expected(sqlite3*)>& fn) {
   std::lock_guard lock(m_);
+  speech_totals_valid_ = false;  // may remove or add speech lines (cascades included)
   return fn(db_);
 }
 

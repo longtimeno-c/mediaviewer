@@ -93,6 +93,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -455,10 +456,12 @@ class index_db {
   // wrote one, else the Whisper that wrote the most lines in the index (by
   // name on a tie), so `said:` reads what was transcribed whichever model
   // is chosen now. `visit` learns whether the line is `preferred`'s.
+  // `only_asset` > 0: that clip alone, by the same rule.
   [[nodiscard]] expected each_speech(
       const std::string& preferred,
       const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms, const std::string& text,
-                               bool preferred_spec)>& visit);
+                               bool preferred_spec)>& visit,
+      std::int64_t only_asset = 0);
   // #406: a clip's cues, with progress under kCueSpec, in one transaction.
   // `replace_from` other than -1 first drops the asset's cues starting at or
   // after it (a resumed pass sends them again; kAllCues drops every one).
@@ -597,6 +600,13 @@ class index_db {
                                        const std::string& after);
   std::mutex m_;
   sqlite3* db_ = nullptr;
+  // Lines per Whisper over the whole speech table, for each_speech's
+  // fallback on one clip (under m_): counted once, kept up to date by
+  // commit_speech, marked stale by every method that can remove lines.
+  std::map<std::string, std::int64_t> speech_totals_;
+  bool speech_totals_valid_ = false;
+  std::int64_t speech_totals_version_ = -1;
+  [[nodiscard]] const std::map<std::string, std::int64_t>& speech_totals_locked();
   std::string path_;
 };
 

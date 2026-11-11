@@ -5,6 +5,7 @@
 #include <ctime>
 #include <random>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "addons/ai/machine.h"
 
@@ -1586,6 +1587,7 @@ void engine::load_models() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    forget_speech_locked(nullptr);
   }
   end_answer_swap();
   retire(std::move(old_build.model));
@@ -2091,15 +2093,14 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
     if (!replacing) return;
     // The piece went: its models first (a worker holding one finishes its
     // clip with its own copy), then what they answered from.
-    {
-      std::lock_guard lock(models_m_);
+    // The Whisper and what it answers go together, in one section.
+    install_speech(std::string(), [&] {
       sound_ = {};
       speech_ = {};
       publish_pieces_locked();
-    }
+    });
     sounds_.reset(0);
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
+    if (deps_.after_speech_install) deps_.after_speech_install();
     return;
   }
   // The stored vectors and transcripts first, then the models: a job that
@@ -2112,19 +2113,15 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
   }
   // With a Whisper: its transcript where it wrote one, else whichever Whisper
   // did (Auto on the CPU picks the fast one; the high one may have written
-  // every transcript there is). Without one, no transcript answers.
-  if (speech.model) {
-    load_speech(speech.spec_key);
-  } else {
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
-  }
-  {
-    std::lock_guard lock(models_m_);
+  // every transcript there is). Without one, no transcript answers. Read
+  // outside the locks; swapped in with the Whisper, in one section.
+  const std::string preferred = speech.model ? speech.spec_key : std::string();
+  install_speech(preferred, [&] {
     sound_ = std::move(sound);
     speech_ = std::move(speech);
     publish_pieces_locked();
-  }
+  });
+  if (deps_.after_speech_install) deps_.after_speech_install();
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -3388,6 +3385,7 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    forget_speech_locked(&drop);
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -3477,6 +3475,7 @@ void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& g
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    forget_speech_locked(&drop);
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -4473,7 +4472,6 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
   constexpr std::size_t kWindow = 16000 * 30;
   std::vector<float> buf;
   std::int64_t buf_start = -1;
-  bool replaced_other = false;  // another Whisper's lines of this clip, dropped from memory once
   std::vector<float> chunk(16000 * 5);
   bool eof = false;
   while (true) {
@@ -4508,42 +4506,15 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
                             next_ms)) {
       return;
     }
-    // What answers now, not what this worker started with: the piece may have
-    // gone, or another Whisper been chosen, while it transcribed (load_audio
-    // does not wait for a clip in progress). The rows are in the index either
-    // way; memory follows load_speech's rule.
-    bool have_whisper = false;
-    std::string chosen;
-    {
-      std::lock_guard lock(models_m_);
-      have_whisper = speech_.model != nullptr;
-      if (have_whisper) chosen = speech_.spec_key;
-    }
-    if (!rows.empty() && have_whisper) {
-      const bool mine = chosen == speech.spec_key;
-      std::lock_guard lock(speech_m_);
-      // Once the chosen Whisper has a line for this clip, its transcript
-      // replaces another's (index_db::each_speech). Once per clip; a silent
-      // window replaces nothing.
-      if (mine && !replaced_other) {
-        const std::int64_t id = item.asset.id;
-        speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
-                                          [id](const speech_row& r) { return r.asset == id && r.other_spec; }),
-                           speech_rows_.end());
-        replaced_other = true;
-      }
-      // A Whisper no longer chosen adds its lines only where the clip has no
-      // line of the chosen one, as a reload would.
-      const std::int64_t id = item.asset.id;
-      const bool chosen_has_clip =
-          !mine && std::any_of(speech_rows_.begin(), speech_rows_.end(),
-                               [id](const speech_row& r) { return r.asset == id && !r.other_spec; });
-      if (!chosen_has_clip) {
-        for (const speech_in& r : rows) {
-          speech_rows_.push_back(speech_row{item.asset.id, r.start_ms, r.text, infer::speech_words(r.text), !mine});
-        }
-      }
-    }
+    if (deps_.after_speech_commit) deps_.after_speech_commit();
+    // One rule for what memory holds of a clip: exactly what
+    // index_db::each_speech reads for it under the Whisper chosen now (not the
+    // one this worker started with). Every committed window, with or without a
+    // Whisper, marks the clip dirty; settling reads dirty clips outside the
+    // locks and installs each one unless it was marked again meanwhile.
+    note_speech_commit(item.asset.id);
+    settle_speech();
+    if (deps_.after_speech_settle) deps_.after_speech_settle();
     {
       std::lock_guard lock(status_m_);
       units_done_ += static_cast<double>(consumed) / 16000.0;
@@ -5320,6 +5291,7 @@ expected engine::root_remove(std::int64_t id) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    forget_speech_locked(&drop);
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -5408,6 +5380,7 @@ expected engine::clear_index() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    forget_speech_locked(nullptr);
     cue_rows_.clear();
   }
   {
@@ -7712,21 +7685,148 @@ void engine::process_scan(const work_item& item) {
 }
 
 void engine::load_speech(const std::string& preferred) {
-  // No Whisper chosen: no transcript answers, as when the audio piece is
+  // No Whisper chosen (""): no transcript answers, as when the audio piece is
   // removed (2026-09-27: a removed piece clears what it answered; cues, in
   // their own table, stay). Readers follow the app here.
-  if (preferred.empty()) {
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
+  install_speech(preferred, nullptr);
+}
+
+void engine::note_speech_commit(std::int64_t asset) {
+  std::lock_guard lock(speech_m_);
+  const std::uint64_t mark = ++speech_mark_;
+  speech_dirty_[asset] = mark;
+  // Only a full install reading now needs to know (it re-reads what changed
+  // under its read); with none, nothing is kept, so this never grows.
+  if (!speech_installs_.empty()) speech_committed_[asset] = mark;
+}
+
+void engine::forget_speech_locked(const std::set<std::int64_t>* assets) {
+  // Rows just left memory and the index (assets dropped, the index cleared):
+  // a change like a commit. A settle that read one of these clips before must
+  // not put it back, so a dirty clip's mark moves (it stays dirty; the next
+  // settle reads what the index holds now), and a full install reading now
+  // must not put them back either: it re-reads the dropped clips, or after a
+  // clear installs nothing it read before it.
+  for (auto& [id, mark] : speech_dirty_) {
+    if (!assets || assets->count(id)) mark = ++speech_mark_;
+  }
+  if (speech_installs_.empty()) return;
+  if (!assets) {
+    speech_cleared_mark_ = ++speech_mark_;
+    speech_committed_.clear();  // what was committed before the clear is gone with it
+    speech_dropped_.clear();
     return;
   }
+  // Recorded apart from commits: an install filters these out of what it read
+  // in one pass, and never reads them again (a photo has no lines at all).
+  for (const std::int64_t id : *assets) speech_dropped_[id] = ++speech_mark_;
+}
+
+void engine::prune_speech_committed_locked() {
+  // Entries older than every full install still reading are no use to any.
+  if (speech_installs_.empty()) {
+    speech_committed_.clear();
+    speech_dropped_.clear();
+    return;
+  }
+  const std::uint64_t oldest = *speech_installs_.begin();
+  for (auto* record : {&speech_committed_, &speech_dropped_}) {
+    for (auto it = record->begin(); it != record->end();) {
+      it = it->second <= oldest ? record->erase(it) : std::next(it);
+    }
+  }
+}
+
+void engine::install_speech(const std::string& preferred, const std::function<void()>& with_locks) {
+  // Every full install, one way: read outside the locks, install with
+  // whatever must change with it (the Whisper), then settle the clips
+  // committed after the read began, which it may not hold.
+  std::uint64_t start = 0;
+  {
+    std::lock_guard lock(speech_m_);
+    start = speech_mark_;
+    speech_installs_.insert(start);  // from here, commits and drops are recorded for this read
+  }
+  std::vector<speech_row> rows = read_speech(preferred);  // no lock held: SQLite and tokenising
+  if (deps_.after_speech_read) deps_.after_speech_read();
+  {
+    std::lock_guard lock(models_m_);
+    std::lock_guard held(speech_m_);
+    // The index was cleared during the read: nothing read before the clear stands.
+    if (speech_cleared_mark_ > start) rows.clear();
+    // Assets dropped during the read: their lines leave what was read in one
+    // pass, never a read or an erase per asset under these locks.
+    const auto dropped_since = [&](std::int64_t id) {
+      auto d = speech_dropped_.find(id);
+      return d != speech_dropped_.end() && d->second > start ? d->second : std::uint64_t{0};
+    };
+    if (!speech_dropped_.empty()) {
+      rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const speech_row& r) { return dropped_since(r.asset) != 0; }),
+                 rows.end());
+    }
+    speech_rows_ = std::move(rows);
+    if (with_locks) with_locks();
+    for (auto it = speech_dirty_.begin(); it != speech_dirty_.end();) {
+      it = it->second <= start ? speech_dirty_.erase(it) : std::next(it);  // committed before the read: in it
+    }
+    for (const auto& [id, mark] : speech_committed_) {
+      // Committed during the read, and not dropped after: maybe not as the read saw it.
+      if (mark > start && dropped_since(id) < mark) speech_dirty_[id] = ++speech_mark_;
+    }
+    speech_installs_.erase(speech_installs_.find(start));
+    prune_speech_committed_locked();
+  }
+  settle_speech();
+}
+
+void engine::settle_speech() {
+  for (;;) {
+    std::string chosen;
+    std::vector<std::pair<std::int64_t, std::uint64_t>> dirty;
+    {
+      std::lock_guard lock(models_m_);
+      chosen = speech_.model ? speech_.spec_key : std::string();
+      std::lock_guard held(speech_m_);
+      if (speech_dirty_.empty()) return;
+      dirty.assign(speech_dirty_.begin(), speech_dirty_.end());
+    }
+    std::vector<std::vector<speech_row>> reads;
+    reads.reserve(dirty.size());
+    for (const auto& [id, mark] : dirty) reads.push_back(read_speech(chosen, id));  // O(clip) each, no lock held
+    std::lock_guard lock(models_m_);
+    std::lock_guard held(speech_m_);
+    if ((speech_.model ? speech_.spec_key : std::string()) != chosen) continue;  // another Whisper meanwhile
+    // The clips still as they were read: their old lines out in one pass, the new ones in.
+    std::unordered_set<std::int64_t> settled;
+    for (std::size_t i = 0; i < dirty.size(); ++i) {
+      auto it = speech_dirty_.find(dirty[i].first);
+      if (it == speech_dirty_.end() || it->second != dirty[i].second) continue;  // marked again: next pass
+      settled.insert(dirty[i].first);
+      speech_dirty_.erase(it);
+    }
+    if (settled.empty()) continue;
+    speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                      [&](const speech_row& r) { return settled.count(r.asset) != 0; }),
+                       speech_rows_.end());
+    for (std::size_t i = 0; i < dirty.size(); ++i) {
+      if (!settled.count(dirty[i].first)) continue;
+      speech_rows_.insert(speech_rows_.end(), std::make_move_iterator(reads[i].begin()),
+                          std::make_move_iterator(reads[i].end()));
+    }
+  }
+}
+
+std::vector<engine::speech_row> engine::read_speech(const std::string& preferred, std::int64_t only_asset) {
   std::vector<speech_row> rows;
-  (void)db_->each_speech(preferred, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text,
-                                        bool chosen) {
-    rows.push_back(speech_row{asset, start, text, infer::speech_words(text), !chosen});
-  });
-  std::lock_guard lock(speech_m_);
-  speech_rows_ = std::move(rows);
+  if (preferred.empty()) return rows;
+  (void)db_->each_speech(
+      preferred,
+      [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text, bool chosen) {
+        (void)chosen;
+        rows.push_back(speech_row{asset, start, text, infer::speech_words(text)});
+      },
+      only_asset);
+  return rows;
 }
 
 namespace {
