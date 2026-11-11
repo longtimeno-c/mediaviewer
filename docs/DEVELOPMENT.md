@@ -602,8 +602,10 @@ xcodebuild archive -project MediaViewerMobile.xcodeproj -scheme MediaViewer \
   -destination 'generic/platform=iOS' -archivePath /tmp/MediaViewer.xcarchive CODE_SIGNING_ALLOWED=NO
 ```
 
-`ITSAppUsesNonExemptEncryption` is true (Noise over libsodium): App Store Connect asks for the
-export compliance documentation on the first upload. The Acknowledgements screen reads
+`ITSAppUsesNonExemptEncryption` is false. The link uses standard algorithms (Noise over libsodium), and
+the App Store Connect encryption answers (standard algorithms, not distributed in France) need no
+documents. Before the app is offered in France, a French declaration has to be filed and those answers
+changed. The Acknowledgements screen reads
 `App/MediaViewer/Acknowledgements.txt`; after a dependency changes, regenerate it from the device
 core build with `python3 tools/ios/acknowledgements.py build-ios-iphoneos src.ios/App/MediaViewer/Acknowledgements.txt`.
 

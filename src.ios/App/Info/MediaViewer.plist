@@ -43,8 +43,10 @@
 	<array>
 		<string>_mediaviewer._tcp</string>
 	</array>
-	<!-- The link uses Noise with libsodium: not exempt. The export compliance filing is the owner's (call 10). -->
+	<!-- The link uses standard algorithms (Noise with libsodium). The owner's App Store Connect answers
+	     (2026-11-11, call 10): standard encryption, not distributed in France, so Apple asks for no
+	     documents and the app declares false here. Distributing in France needs a French declaration first. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<false/>
 </dict>
 </plist>
