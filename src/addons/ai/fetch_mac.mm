@@ -8,6 +8,7 @@
 
 #import <Foundation/Foundation.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -114,16 +115,29 @@ class mac_transport final : public http_transport {
 
       bool wanted = false;
       std::unique_lock lock(x.m);
-      x.cv.wait(lock, [&] { return x.status >= 0 || x.finished; });
+      // Waits that look at the stop flag every quarter second: the session
+      // gives up on a stalled connection only after its 60 s idle timeout.
+      const auto stopping = [&] { return stop && stop->load(); };
+      const auto wait = [&](const auto& ready) {
+        while (!x.cv.wait_for(lock, std::chrono::milliseconds(250), ready)) {
+          if (stopping()) return false;
+        }
+        return true;
+      };
+      if (!wait([&] { return x.status >= 0 || x.finished; })) x.stop = true;
       reply.status = x.status < 0 ? 0 : x.status;
-      if (x.status >= 0) {
+      if (x.status >= 0 && !x.stop) {
         lock.unlock();
         wanted = head(x.status);
         lock.lock();
       }
       if (!wanted) x.stop = true;
       while (wanted) {
-        x.cv.wait(lock, [&] { return !x.chunks.empty() || x.finished; });
+        if (!wait([&] { return !x.chunks.empty() || x.finished; })) {
+          x.stop = true;
+          x.cv.notify_all();
+          break;
+        }
         if (x.chunks.empty() && x.finished) break;
         std::vector<std::uint8_t> chunk = std::move(x.chunks.front());
         x.chunks.pop_front();
@@ -142,7 +156,8 @@ class mac_transport final : public http_transport {
       lock.unlock();
       [task cancel];
       lock.lock();
-      x.cv.wait(lock, [&] { return x.finished; });
+      // A cancelled task completes promptly; bounded all the same.
+      (void)x.cv.wait_for(lock, std::chrono::seconds(5), [&] { return x.finished; });
       reply.error = x.error;
       if (!x.error.empty() && reply.status == 0) reply.status = 0;
       lock.unlock();

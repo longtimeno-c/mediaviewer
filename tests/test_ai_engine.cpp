@@ -1173,8 +1173,8 @@ struct rig {
     };
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
-    d.tree_quiet_s = 0.05;  // docs/plans/index-watcher.md: the host's watch, walked at once
-    d.tree_max_wait_s = 0.5;
+    d.tree_quiet_s = tree_quiet;  // docs/plans/index-watcher.md: the host's watch, walked at once
+    d.tree_max_wait_s = tree_quiet > 1 ? tree_quiet : 0.5;  // a test that keeps the watch out of the way
     d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
     d.pdf = [this]() -> std::unique_ptr<mv::ai::pdf_reader> {
       if (!pdf_available) return nullptr;
@@ -1264,6 +1264,7 @@ struct rig {
   // which does not ask for automatic publishing never sees one.
   double phone_quiet = 3600;
   double link_retry = 30;
+  double tree_quiet = 0.05;  // the host's watch; a test sets an hour to see a walk do the work alone
   std::function<void()> after_hand_over;
   double code_ttl = 300;
   double phone_interval = 3600;
@@ -1512,7 +1513,7 @@ TEST_CASE("a folder replaced by a file drops its rows", "[ai][engine]") {
   CHECK(r.status().assets_total == 1);
 }
 
-TEST_CASE("a walk that fails part way adds what it found and deletes nothing", "[ai][engine]") {
+TEST_CASE("a walk that fails part way adds what it found and deletes nothing", "[ai][engine][walk]") {
   rig r;
   r.file("red_car.jpg");
   r.file("green_field.jpg");
@@ -1533,6 +1534,36 @@ TEST_CASE("a walk that fails part way adds what it found and deletes nothing", "
   CHECK(r.search("green").size() == 1);
   CHECK(r.search("blue").size() == 1);
   CHECK(wait_for([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }, kSettleMs));
+}
+
+// The same, with the engine wholly quiet first, so nothing still finishing
+// from the first index can pick the new file up by chance: a partial walk
+// must hand what it found to the workers itself.
+TEST_CASE("a walk that fails part way on a quiet engine still indexes what it found", "[ai][engine][walk]") {
+  rig r;
+  // The host's watch would find the new file too, and walk its folder after
+  // its quiet time. On a share that is dropping it often says nothing; here
+  // it waits an hour, so only the failed walk can hand the file over.
+  r.tree_quiet = 3600;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // every worker parked, the queue known empty
+  REQUIRE(r.idle());
+
+  r.file("blue_sea.jpg");
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->walk_misses.insert("green_field.jpg");
+  }
+  r.cloud->walk_fails = true;
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(wait_for([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }, kSettleMs));
+  // Indexed within a few seconds, not when the watch's walk comes round. (Not
+  // "idle": the watch's change is still waiting its hour, as it should.)
+  CHECK(wait_for([&] { return r.status().assets_done == 3 && r.search("blue").size() == 1; }, 5000));
 }
 
 // docs/plans/index-watcher.md: the host watches a remembered folder's tree,

@@ -744,8 +744,10 @@ class engine {
   void end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed);
   // end_root_scan's part after the index: `gone` and `changed` leave the
   // matrices, faces and text rows.
+  // `walked_whole` false: a walk that failed part way (the root is not marked
+  // as checked; what it found is still indexed).
   void after_scan(const root_row& root, const std::vector<std::int64_t>& gone,
-                  const std::vector<std::int64_t>& changed);
+                  const std::vector<std::int64_t>& changed, bool walked_whole = true);
   void forget_vectors(const std::vector<std::int64_t>& ids);
   // Whether an unavailable Photos asset is on this Mac now (the launch check).
   [[nodiscard]] bool photos_local(const asset_row& a) const;

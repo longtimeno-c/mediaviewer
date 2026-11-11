@@ -2327,8 +2327,8 @@ void engine::download_loop() {
       dl_cv_.wait(lock, [this] { return dl_kick_ || stopping_.load(); });
       if (stopping_) return;
       dl_kick_ = false;
+      dl_stop_ = false;  // under dl_m_: stop() sets it there, and this must not undo that
     }
-    dl_stop_ = false;
     dl_running_ = true;
     auto last_post = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     const auto progress = [&](const fetch_progress& p) {
@@ -2989,12 +2989,15 @@ void engine::scan_root(const root_row& root) {
     // An unreachable root (a share offline, a card pulled) keeps its index:
     // deleting rows because a drive is absent would throw work away. Settings
     // says so on the folder's row (roots_json "error") instead of "Up to date".
-    // A walk that failed part way is the same, and what it did find is kept.
+    // A walk that failed part way is the same, and what it did find is kept,
+    // and indexed now: its new and changed files go to the workers as after
+    // any walk (nothing is gone, and the root is not marked as checked).
     (void)see_batch(root, batch, gen, changed);
     {
       std::lock_guard lock(status_m_);
       root_errors_.insert(root.id);
     }
+    after_scan(root, {}, changed, false);
     post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
     return;
   }
@@ -3387,7 +3390,7 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
 }
 
 void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& gone,
-                        const std::vector<std::int64_t>& changed) {
+                        const std::vector<std::int64_t>& changed, bool walked_whole) {
   if (!gone.empty()) {
     std::lock_guard lock(assets_m_);
     for (std::int64_t id : gone) erase_asset_locked(id);
@@ -3425,7 +3428,7 @@ void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& g
       faces_scanned_.erase(id);
     }
   }
-  (void)db_->touch_root(root.id, unix_now());
+  if (walked_whole) (void)db_->touch_root(root.id, unix_now());
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
