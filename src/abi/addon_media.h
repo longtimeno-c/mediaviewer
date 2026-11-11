@@ -60,6 +60,10 @@ namespace media {
 // Bytes are decoded at a DCT scale and averaged; no I/O, any worker.
 [[nodiscard]] result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
                                                             std::uint32_t quality);
+// A JPEG-512 made now and stored nowhere, for a caller that must not fill the
+// viewer's cache. `pts_ms` < 0: the file's own picture; an audio file with no
+// cover art is unsupported_format.
+[[nodiscard]] result<std::vector<std::uint8_t>> make_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms);
 [[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
                                                                std::uint32_t sample_rate,
                                                                std::int64_t start_ms);

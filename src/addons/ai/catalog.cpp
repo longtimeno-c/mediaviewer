@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <set>
@@ -267,9 +268,11 @@ expected copy_tables(sqlite3* db, const build_options& o, build_counts& n, const
     for (const root_map& r : o.roots) {
       const std::string at = trimmed(r.path);
       stmt first(db, "INSERT OR IGNORE INTO main.assets(" + names + ") SELECT " + normal +
-                         " FROM src.assets WHERE root_id = ?3 ORDER BY path = nfc(path) DESC");
+                         " FROM src.assets WHERE root_id = ?3 ORDER BY " + relocated("path") + " = nfc(" +
+                         relocated("path") + ") DESC");
       if (!first.bind(1, r.uuid).bind(2, at).bind(3, r.id).run()) return err(status::io);
-      stmt rest(db, "INSERT INTO main.assets(" + names + ") SELECT " + raw +
+      // OR IGNORE: one asset that still collides is left out, not the generation.
+      stmt rest(db, "INSERT OR IGNORE INTO main.assets(" + names + ") SELECT " + raw +
                         " FROM src.assets WHERE root_id = ?3 AND id NOT IN (SELECT id FROM main.assets)");
       if (!rest.bind(1, r.uuid).bind(2, at).bind(3, r.id).run()) return err(status::io);
       stmt bytes(db, "UPDATE main.assets SET disk_path = (SELECT " + relocated("path") +
@@ -411,6 +414,8 @@ expected make_people(const build_options& o, const std::string& catalogue, const
                 " SELECT f.id, f.asset_id, a.path, f.pts_ms, 0, 0, 0, 0, f.score, f.person_id, zeroblob(0), 0, NULL, 0, 'names-only'"
                 " FROM src.faces f JOIN cat.assets a ON a.id = f.asset_id"
                 " WHERE f.person_id IN (SELECT id FROM main.people)") ||
+      // A name whose faces are all in folders this share does not hold stays here.
+      !exec(db, "DELETE FROM main.people WHERE id NOT IN (SELECT person_id FROM main.faces)") ||
       !exec(db, "COMMIT")) {
     return err(status::io);
   }
@@ -459,6 +464,9 @@ expected write_thumb_files(const build_options& o, const std::string& catalogue,
       " FROM main.assets m JOIN src.assets a ON a.id = m.id"
       " JOIN led.thumbs l ON l.path = a.path AND l.size = a.size AND l.mtime = a.mtime"
       " WHERE l.pack IS NOT NULL AND l.length > 0";
+  // One snapshot for every query below: the indexer goes on writing, and two
+  // files read at different moments would disagree under one signature.
+  if (!exec(db, "BEGIN")) return err(status::io);
   std::vector<std::string> packs;
   std::map<std::string, std::pair<std::uint64_t, std::string>> pack_facts;  // size, hash: a delivered one is not kept here
   {
@@ -473,6 +481,7 @@ expected write_thumb_files(const build_options& o, const std::string& catalogue,
       if (!q.next()) return err(status::io);
       tiny_count = static_cast<std::uint64_t>(q.i64(0));
     }
+    if (o.after_thumb_snapshot) o.after_thumb_snapshot();
     std::ofstream out(fs_path(o.out_dir + "/tiny.pack"), std::ios::binary | std::ios::trunc);
     out.write(kTinyMagic, 8);
     put_u32(out, static_cast<std::uint32_t>(tiny_count));
@@ -534,7 +543,7 @@ expected write_thumb_files(const build_options& o, const std::string& catalogue,
     if (q.failed) return err(status::io);
   }
   out.flush();
-  if (!out) return err(status::io);
+  if (!out || !exec(db, "COMMIT")) return err(status::io);
   names.push_back("tiny.pack");
   names.push_back("thumbs.idx");
   for (const std::string& name : packs) {
@@ -838,30 +847,67 @@ std::string gen_name(std::uint64_t g) {
 
 // Every generation but the newest two goes once it is old enough, and so does
 // a part folder a dead run left. Failing to tidy never fails a publish.
+// When each generation became current, by this machine's clock: the share's
+// file times are another clock, and a folder that never became current is no
+// successor at all.
+std::map<std::uint64_t, std::int64_t> read_arrivals(const std::string& file) {
+  std::map<std::uint64_t, std::int64_t> out;
+  if (file.empty()) return out;
+  if (const auto doc = json::parse(slurp(file), 4); doc && doc->k == json::kind::object) {
+    for (const auto& [g, v] : doc->o) {
+      std::uint64_t n = 0;
+      const auto [stop, why] = std::from_chars(g.data(), g.data() + g.size(), n);
+      if (why == std::errc{} && stop == g.data() + g.size() && v.k == json::kind::number) out[n] = v.i;
+    }
+  }
+  return out;
+}
+
+void write_arrivals(const std::string& file, const std::map<std::uint64_t, std::int64_t>& at) {
+  if (file.empty()) return;
+  json::writer w;
+  w.begin_object();
+  for (const auto& [g, when] : at) w.key(std::to_string(g)).integer(when);
+  w.end_object();
+  std::error_code ec;
+  if (write_text(file + ".tmp", w.str())) fs::rename(fs_path(file + ".tmp"), fs_path(file), ec);
+}
+
+// Every generation but the newest two goes once the next one that became
+// current has been current long enough; a dead run's part folder goes too.
+// Failing to tidy never fails a publish.
 void tidy(const deliver_options& o, const std::string& gen_root) {
   const auto gens = generations_in(gen_root);
-  const auto stale = [&](const fs::path& p) {
-    std::error_code ec;
-    const auto when = fs::last_write_time(p, ec);
-    if (ec) return false;
-    const auto age = fs::file_time_type::clock::now() - when;
-    return std::chrono::duration_cast<std::chrono::seconds>(age).count() >= o.keep_seconds;
-  };
+  auto arrived = read_arrivals(o.arrivals_file);
+  for (auto it = arrived.begin(); it != arrived.end();) {
+    it = std::binary_search(gens.begin(), gens.end(), it->first) ? std::next(it) : arrived.erase(it);
+  }
+  write_arrivals(o.arrivals_file, arrived);
   std::error_code ec;
   // A reader may have started on a generation until the one after it arrived,
   // so the grace runs from then, not from when this one was written.
   for (std::size_t i = 0; i + 2 < gens.size(); ++i) {
-    if (stale(fs_path(gen_root + "/" + gen_name(gens[i + 1])))) {
+    const auto next = arrived.upper_bound(gens[i]);
+    if (next != arrived.end() && std::time(nullptr) - next->second >= o.keep_seconds) {
       fs::remove_all(fs_path(gen_root + "/" + gen_name(gens[i])), ec);
     }
   }
-  for (fs::directory_iterator it(fs_path(gen_root), ec), end; !ec && it != end; it.increment(ec)) {
-    const std::string name = utf8_of(it->path().filename());
-    if (name.size() > 5 && name.ends_with(".part") && name != gen_name(o.generation) + ".part" && stale(it->path())) {
-      std::error_code e2;
-      fs::remove_all(it->path(), e2);
-    }
-  }
+}
+
+// A small file on the share, whole or not at all: the verified copy flushes it
+// and reads it back under a part name, and only then does a rename replace.
+expected put_durable(const deliver_options& o, const std::string& text, const std::string& final_path) {
+  const std::string local = o.gen_dir + ".put";
+  const std::string part = final_path + ".part";
+  if (!write_text(local, text)) return err(status::io);
+  std::error_code ec;
+  fs::remove(fs_path(part), ec);
+  const expected copied = o.copy(local, part);
+  fs::remove(fs_path(local), ec);
+  if (!copied) return copied;
+  ec.clear();
+  fs::rename(fs_path(part), fs_path(final_path), ec);
+  return ec ? expected(err(status::io)) : expected{};
 }
 
 }  // namespace
@@ -897,7 +943,14 @@ expected deliver(const deliver_options& o, const control& c) {
   const std::string done = gen_root + "/" + name;
   MV_TRY_VOID(o.make_directories(gen_root));
   std::error_code ec;
-  fs::remove_all(fs_path(part), ec);
+  // Any part folder is a run that died: one publisher writes here (§5 rule 5),
+  // and its room is what this one needs.
+  for (fs::directory_iterator it(fs_path(gen_root), ec), end; !ec && it != end; it.increment(ec)) {
+    if (utf8_of(it->path().filename()).ends_with(".part")) {
+      std::error_code e2;
+      fs::remove_all(it->path(), e2);
+    }
+  }
   ec.clear();
   MV_TRY_VOID(o.make_directories(part));
 
@@ -908,10 +961,7 @@ expected deliver(const deliver_options& o, const control& c) {
     w.key("library_id").string(o.library_id);
     w.key("public_key").string(to_hex(o.public_key));
     w.end_object();
-    const std::string tmp = base + "/library.json.part";
-    if (!write_text(tmp, w.str())) return err(status::io);
-    fs::rename(fs_path(tmp), fs_path(base + "/library.json"), ec);
-    if (ec) return err(status::io);
+    MV_TRY_VOID(put_durable(o, w.str(), base + "/library.json"));
   }
 
   // What the generation will name is on the share before anything names it.
@@ -976,10 +1026,14 @@ expected deliver(const deliver_options& o, const control& c) {
   w.key("manifest_sha256").string(*manifest_hash);
   w.key("signature").string(to_hex(signature));
   w.end_object();
-  const std::string tmp = base + "/current.json.part";
-  if (!write_text(tmp, w.str())) return err(status::io);
-  fs::rename(fs_path(tmp), fs_path(base + "/current.json"), ec);
-  if (ec) return err(status::io);
+  MV_TRY_VOID(put_durable(o, w.str(), base + "/current.json"));
+  {
+    auto arrived = read_arrivals(o.arrivals_file);
+    // When it really became current: a long copy must not shorten the
+    // predecessor's grace, which runs from here.
+    arrived[o.generation] = static_cast<std::int64_t>(std::time(nullptr));
+    write_arrivals(o.arrivals_file, arrived);
+  }
   report(c, 1.0);
   tidy(o, gen_root);
   if (!o.retention_file.empty()) retain_shared(base, o.retention_file, o.now_unix);
@@ -1022,7 +1076,8 @@ void retain_shared(const std::string& base, const std::string& state_file, std::
       if (e || named.count(rel)) continue;
       const auto seen = since.find(rel);
       const std::int64_t first = seen == since.end() ? now_unix : seen->second;
-      if (now_unix - first >= unused_seconds) {
+      const bool rolling = std::string_view(dir) == "thumbs" && it->file_size(e) < kFoldBytes && !e;
+      if (now_unix - first >= (rolling ? std::min(unused_seconds, kRollingUnusedSeconds) : unused_seconds)) {
         fs::remove(it->path(), e);
       } else {
         next[rel] = first;
@@ -1073,6 +1128,8 @@ result<std::unique_ptr<thumb_store>> thumb_store::open(const std::string& dir) {
                 "CREATE INDEX IF NOT EXISTS thumbs_pack ON thumbs(pack);"
                 "CREATE TABLE IF NOT EXISTS packs(name TEXT PRIMARY KEY, size INTEGER NOT NULL, sha256 TEXT NOT NULL,"
                 " delivered INTEGER NOT NULL DEFAULT 0);"
+                "CREATE TABLE IF NOT EXISTS fails(path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL,"
+                " count INTEGER NOT NULL);"
                 "CREATE TABLE IF NOT EXISTS hashes(path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL,"
                 " sha256 TEXT NOT NULL);")) {
     return err(status::corrupt);
@@ -1082,6 +1139,7 @@ result<std::unique_ptr<thumb_store>> thumb_store::open(const std::string& dir) {
   {
     stmt q(db, "SELECT name FROM packs");
     while (q.next()) known.insert(q.text(0));
+    if (q.failed) return t;  // not knowing what is ours is no reason to delete it
   }
   for (fs::directory_iterator it(fs_path(dir), ec), end; !ec && it != end; it.increment(ec)) {
     const std::string name = utf8_of(it->path().filename());
@@ -1093,21 +1151,28 @@ result<std::unique_ptr<thumb_store>> thumb_store::open(const std::string& dir) {
   return t;
 }
 
-result<std::vector<thumb_want>> thumb_store::missing(const std::string& index_db, std::span<const std::int64_t> roots) {
+result<std::vector<thumb_want>> thumb_store::missing(const std::string& index_db, std::span<const std::int64_t> roots,
+                                                     bool want_tiny) {
   sqlite3* db = db_->db;
   {
     stmt a(db, "ATTACH ?1 AS src");
     if (!a.bind(1, index_db).run()) return err(status::io);
   }
   std::vector<thumb_want> out;
-  bool ok = exec(db, "DELETE FROM thumbs WHERE path NOT IN (SELECT path FROM src.assets)");
+  bool ok = exec(db, "DELETE FROM thumbs WHERE path NOT IN (SELECT path FROM src.assets)") &&
+            exec(db, "DELETE FROM fails WHERE path NOT IN (SELECT path FROM src.assets)") &&
+            // A tile or a "no picture" row of this very file ends its count.
+            exec(db, "DELETE FROM fails WHERE EXISTS (SELECT 1 FROM thumbs t WHERE t.path = fails.path"
+                     " AND t.size = fails.size AND t.mtime = fails.mtime)");
   if (ok) {
     std::string in;
     for (const std::int64_t r : roots) in += (in.empty() ? "" : ",") + std::to_string(r);
     // Read whole and released: no read stays open across hours of decoding.
-    stmt q(db, "SELECT a.path, a.size, a.mtime, a.kind, a.duration_ms FROM src.assets a"
+    // A NULL tiny: made where the host could not shrink. An empty one was tried.
+    stmt q(db, std::string("SELECT a.path, a.size, a.mtime, a.kind, a.duration_ms, l.id IS NOT NULL FROM src.assets a"
                " LEFT JOIN thumbs l ON l.path = a.path AND l.size = a.size AND l.mtime = a.mtime"
-               " WHERE l.id IS NULL AND a.cloud = 0 AND a.root_id IN (" + in + ") ORDER BY a.mtime DESC, a.id DESC");
+               " WHERE (l.id IS NULL") + (want_tiny ? " OR (l.length > 0 AND l.tiny IS NULL)" : "") +
+               ") AND a.cloud = 0 AND a.root_id IN (" + in + ") ORDER BY a.mtime DESC, a.id DESC");
     while (q.next()) {
       thumb_want w;
       w.path = q.text(0);
@@ -1115,6 +1180,7 @@ result<std::vector<thumb_want>> thumb_store::missing(const std::string& index_db
       w.mtime = q.i64(2);
       w.kind = static_cast<int>(q.i64(3));
       w.duration_ms = q.i64(4);
+      w.backfill = q.i64(5) != 0;
       out.push_back(std::move(w));
     }
     ok = !q.failed;
@@ -1128,7 +1194,6 @@ result<thumb_fill_result> thumb_store::fill(std::span<const thumb_want> wants, c
                                             double budget_seconds) {
   static constexpr std::size_t kCommitEvery = 16;
   static constexpr std::uint64_t kPackCap = 64u << 20;
-  static constexpr int kTransientLimit = 16;  // the share has gone: the next run carries on
   sqlite3* db = db_->db;
   thumb_fill_result out;
   const auto start = std::chrono::steady_clock::now();
@@ -1138,11 +1203,20 @@ result<thumb_fill_result> thumb_store::fill(std::span<const thumb_want> wants, c
     if (!q.next()) return err(status::io);
     tail = static_cast<std::uint64_t>(q.i64(0));
   }
+  // Only a tile of this very file ends its count: an old tile of a file that
+  // has since changed says nothing about the new one.
+  // A tile or a "no picture" row of this very file ends its count.
+  (void)exec(db, "DELETE FROM fails WHERE EXISTS (SELECT 1 FROM thumbs t WHERE t.path = fails.path"
+                 " AND t.size = fails.size AND t.mtime = fails.mtime)");
   stmt ins(db, "INSERT OR REPLACE INTO thumbs(path, size, mtime, pack, offset, length, jpeg, tiny) VALUES(?1, ?2, ?3, NULL, 0, ?4, ?5, ?6)");
+  stmt set_tiny(db, "UPDATE thumbs SET tiny = ?2 WHERE path = ?1");
+  // Counted once per run, and from one only if the file has not changed.
+  stmt count_fail(db, "INSERT INTO fails(path, size, mtime, count) VALUES(?1, ?2, ?3, 1) ON CONFLICT(path) DO UPDATE SET"
+                      " count = CASE WHEN size = excluded.size AND mtime = excluded.mtime THEN count + 1 ELSE 1 END,"
+                      " size = excluded.size, mtime = excluded.mtime RETURNING count");
   if (!exec(db, "BEGIN")) return err(status::io);
   std::size_t in_batch = 0;
   std::size_t i = 0;
-  int transient = 0;
   bool any_transient = false;
   bool stopped = false;
   for (; i < wants.size(); ++i) {
@@ -1162,29 +1236,56 @@ result<thumb_fill_result> thumb_store::fill(std::span<const thumb_want> wants, c
       stopped = true;
       break;
     }
-    ins.reset();
-    ins.bind(1, w.path).bind(2, static_cast<std::int64_t>(w.size)).bind(3, w.mtime);
-    if (jpeg && !jpeg->empty()) {
-      std::vector<std::uint8_t> tiny;
-      if (io.tiny) {
-        if (auto t = io.tiny(*jpeg)) tiny = std::move(*t);
-      }
-      ins.bind(4, static_cast<std::int64_t>(jpeg->size())).bind_blob(5, *jpeg).bind_blob(6, tiny);
-      tail += jpeg->size();
-      ++out.made;
-      transient = 0;
-    } else if (!jpeg && jpeg.error() != status::corrupt && jpeg.error() != status::unsupported_format) {
-      // Not the file's fault: asked again next time.
-      any_transient = true;
-      if (++transient >= kTransientLimit) {
+    const bool permanent = !jpeg && (jpeg.error() == status::corrupt || jpeg.error() == status::unsupported_format);
+    if (!jpeg && !permanent) {
+      // Not the file's own word: the share may have gone, which ends the pass.
+      if (io.share_present && !io.share_present()) {
+        any_transient = true;
         stopped = true;
         break;
       }
+      if (w.backfill) continue;  // the tile stands; no 64 px one this time
+      count_fail.reset();
+      count_fail.bind(1, w.path).bind(2, static_cast<std::int64_t>(w.size)).bind(3, w.mtime);
+      if (!count_fail.next()) {
+        (void)exec(db, "ROLLBACK");
+        return err(status::io);
+      }
+      const std::int64_t times = count_fail.i64(0);
+      count_fail.reset();
+      if (times < kMaxThumbFailures) {
+        any_transient = true;
+        continue;
+      }
+    }
+    if (w.backfill) {
+      std::vector<std::uint8_t> tiny;
+      if (jpeg && io.tiny) {
+        if (auto t = io.tiny(*jpeg)) tiny = std::move(*t);
+      }
+      if (!io.tiny) continue;
+      set_tiny.reset();
+      if (!set_tiny.bind(1, w.path).bind_blob(2, tiny).run()) {
+        (void)exec(db, "ROLLBACK");
+        return err(status::io);
+      }
+      ++out.made;
       continue;
+    }
+    ins.reset();
+    ins.bind(1, w.path).bind(2, static_cast<std::int64_t>(w.size)).bind(3, w.mtime);
+    if (jpeg && !jpeg->empty()) {
+      ins.bind(4, static_cast<std::int64_t>(jpeg->size())).bind_blob(5, *jpeg);
+      if (io.tiny) {  // left NULL when this host cannot make one: filled in later
+        std::vector<std::uint8_t> tiny;
+        if (auto t = io.tiny(*jpeg)) tiny = std::move(*t);
+        ins.bind_blob(6, tiny);
+      }
+      tail += jpeg->size();
+      ++out.made;
     } else {
       ins.bind(4, std::int64_t{0});  // pictureless; a changed file is another row
       ++out.failed;
-      transient = 0;
     }
     if (!ins.run()) {
       (void)exec(db, "ROLLBACK");
@@ -1297,24 +1398,55 @@ expected thumb_store::delivered(std::uint64_t fold_bytes) {
   return {};
 }
 
-expected thumb_store::reconcile(const std::string& destination) {
+expected thumb_store::reconcile(const std::string& destination, const std::function<void()>& after_listing) {
   sqlite3* db = db_->db;
-  const std::string there = base_of(destination) + "/thumbs/";
+  const std::string base = base_of(destination);
+  const std::string there = base + "/thumbs/";
+  // Forgetting a pack costs hours of work again, so only a clear "not there"
+  // on both sides counts: the share's folder lists, or is plainly absent from
+  // a .mediaviewer that lists (a new destination, or someone removed it), and
+  // no stat fails.
+  const auto lists = [](const std::string& dir) {
+    std::error_code e;
+    fs::directory_iterator it(fs_path(dir), e);
+    return !e;
+  };
+  // Not found, and a listing of .mediaviewer that has no such entry: Windows
+  // also reports a dropped network path as "not found", and a listing that
+  // fails or still names it is no proof.
+  const auto absent = [&] {
+    std::error_code e;
+    if (fs::symlink_status(fs_path(there), e).type() != fs::file_type::not_found) return false;
+    std::error_code le;
+    fs::directory_iterator it(fs_path(base), le), end;
+    if (le) return false;
+    for (; it != end; it.increment(le)) {
+      if (le) return false;
+      if (it->path().filename() == fs_path("thumbs")) return false;
+    }
+    return !le;
+  };
+  const bool gone = absent();
+  if ((!gone && !lists(there)) || !lists(dir_)) return err(status::io);
+  if (after_listing) after_listing();
   std::vector<std::string> lost;
   {
     stmt q(db, "SELECT name FROM packs");
     while (q.next()) {
       std::error_code a, b;
-      const bool shared = fs::exists(fs_path(there + q.text(0)), a);
+      const bool shared = !gone && fs::exists(fs_path(there + q.text(0)), a);
       const bool local = fs::exists(fs_path(dir_ + "/" + q.text(0)), b);
+      if (a || b) return err(status::io);
       if (!shared && !local) lost.push_back(q.text(0));
     }
     if (q.failed) return err(status::io);
   }
+  // Still the share we asked: what it said a moment ago still holds.
+  if (!lost.empty() && (gone ? !absent() : !lists(there))) return err(status::io);
   for (const std::string& name : lost) {
     stmt del(db, "DELETE FROM thumbs WHERE pack = ?1");
-    stmt gone(db, "DELETE FROM packs WHERE name = ?1");
-    if (!del.bind(1, name).run() || !gone.bind(1, name).run()) return err(status::io);
+    stmt drop_pack(db, "DELETE FROM packs WHERE name = ?1");
+    if (!del.bind(1, name).run() || !drop_pack.bind(1, name).run()) return err(status::io);
   }
   return {};
 }
@@ -1343,6 +1475,16 @@ std::uint64_t get_u(std::span<const std::uint8_t> b, std::size_t at, int bytes) 
 }
 }  // namespace
 
+bool valid_pack_name(std::string_view n) {
+  // t-<32 lower hex>.pack: never a path, whatever a damaged index says.
+  if (n.size() != 39 || !n.starts_with("t-") || !n.ends_with(".pack")) return false;
+  return std::all_of(n.begin() + 2, n.begin() + 34, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+bool within_pack(const thumb_location& at, std::uint64_t pack_size) {
+  return at.offset <= pack_size && at.length <= pack_size - at.offset;
+}
+
 result<std::optional<thumb_location>> find_thumb(std::span<const std::uint8_t> b, std::int64_t asset) {
   if (b.size() < 16 || !std::equal(kIdxMagic, kIdxMagic + 8, b.begin())) return err(status::corrupt);
   const std::uint64_t packs = get_u(b, 8, 4), entries = get_u(b, 12, 4);
@@ -1363,6 +1505,7 @@ result<std::optional<thumb_location>> find_thumb(std::span<const std::uint8_t> b
       thumb_location out;
       const char* name = reinterpret_cast<const char*>(b.data()) + 16 + pack * kPackNameBytes;
       out.pack.assign(name, strnlen(name, kPackNameBytes));
+      if (!valid_pack_name(out.pack)) return err(status::corrupt);
       out.length = static_cast<std::uint32_t>(get_u(b, row + 12, 4));
       out.offset = get_u(b, row + 16, 8);
       return std::optional<thumb_location>(std::move(out));

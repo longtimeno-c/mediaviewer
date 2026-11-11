@@ -1686,24 +1686,38 @@ points are not searched: Places on the desktop does both.
 SQLite when made, 16 at a time, so a cancel or a kill costs a few at most; hours of work are not
 redone. It runs on its own thread at the OS's background priority and waits for as long as the
 viewer wants the machine, as Import does. A run works for 30 minutes at most, then the catalogue
-goes out with what is ready and the next hour carries on (`thumbs_left`). A file with no picture
-(`corrupt`, `unsupported_format`) is recorded and not asked again until it changes; any other
-failure is asked again, and 16 in a row end the pass, because the share has gone. Sealing writes
-the tiles to a pack named by its hash; a pack under 16 MiB is folded into the next, so hourly
-publishes do not leave a pack an hour. A pack that has been delivered is removed here unless it
+goes out with what is ready and the next hour carries on (`thumbs_left`). A JPEG-512 the viewer
+has not cached is made by the host and stored nowhere (`thumbnail_make`), so a publish does not
+fill the viewer's cache. A file with no picture (`corrupt`, `unsupported_format`) is recorded and
+not asked again until it changes. Any other failure is passed over, so it cannot starve the files
+behind it, and asked again next run; after three runs at one size and date it counts as having no
+picture. A failure when the share itself has gone ends the pass and blames no file. Sealing
+writes the tiles to a pack named by its hash; a pack under 16 MiB is folded into the next, so
+hourly publishes do not leave a pack an hour. A pack that has been delivered is removed here unless it
 is small enough to be folded later, and one on neither side has its tiles forgotten and made
 again.
 
-**When it runs.** A check after each scan compares `index_db::content_stamp` (rows, never `seen`)
-and the named people with what the newest generation carries. Different, then quiet for 120 s and
+**When it runs.** The whole publish runs at the OS's background priority. A check after each scan
+compares `index_db::content_stamp` (rows, never `seen`) and the named people, both limited to the
+folders a generation carries, with what the newest generation holds; a change in a local folder
+or the Photos library does not count. Different, then quiet for 120 s and
 at most once an hour since the last attempt, publishes. It is part of the control loop's existing
 tick, so it adds no wakeup; while nothing changed it is one lock and a few comparisons. It does
 not run on battery. A generation built while the share is away waits in `phone/gen/`, only the
-newest, with `waiting` in `phone_json`. While one waits, the control loop offers it every 30 s on
-the publisher's thread, so a dead mount cannot hold the control thread.
+newest, with `waiting` in `phone_json`. While one waits, the control loop asks every 30 s, on the
+publisher's thread and not on battery, whether the share is there. A delivery that fails waits
+30 s, doubling to an hour, until the share or its free space changes. A pack is forgotten only
+when neither side has it: the share's `thumbs/` lists without it, or is plainly absent from a
+`.mediaviewer/` that lists (a new destination, or one someone emptied), and the share still looks
+the same once the packs are checked. A stat that fails forgets nothing. A file whose tile keeps
+failing is counted by size and date, so a changed file starts a new count and still stops. A generation the share has
+no room for reports `no_space` and `needs_bytes` without copying anything.
 
-**Retention (§5 rule 4).** The newest two generations stay, and an older one until 7 days after
-its successor arrived. A shared file no retained generation names, and unnamed for 30 days, goes.
+**Retention (§5 rule 4).** The newest two generations stay, and an older one until 2 hours after
+the next generation became current, by this Mac's clock (`phone/arrivals.json`): the share's file
+times are another clock, and a folder that never became current starts no grace. A dead run's part
+folder is removed before a delivery, and the room check counts it as free. A shared file no retained generation names, and unnamed for 30 days, goes;
+a thumbnail pack under the fold size goes after 2 hours, because folding replaces it routinely.
 `phone/unused.json` remembers since when, and an unreadable manifest deletes nothing that round.
 
 **Ranking.** Exact ties break by asset id, then time (`vector_store::ranked_before`, `finish`,

@@ -82,6 +82,7 @@ final class PhoneAccessModel: ObservableObject {
     switch error {
     case "unreachable": return "Couldn't reach that folder. It will need to be mounted."
     case "other_library": return "That folder holds another library's catalogue."
+    case "no_space": return "Not enough space on the share."
     case "no_index": return "Nothing is indexed yet."
     case "no_folders": return "None of your search folders are on that NAS."
     case "no_key_store": return "This copy of MediaViewer can't keep a signing key, so it can't publish."

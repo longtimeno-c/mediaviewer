@@ -875,6 +875,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
     svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
     svc.jpeg_shrink = &mv::addon::media::jpeg_shrink;     // the phone's catalogue
+    svc.thumbnail_make = &mv::addon::media::make_thumbnail_jpeg;
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);

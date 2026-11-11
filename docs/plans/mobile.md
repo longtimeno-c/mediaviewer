@@ -232,10 +232,13 @@ Written only by the publisher. Read-only to every phone.
    database. The phone pins the publisher's key at pairing, verifies `current.json`, and opens
    `catalog.db` with `SQLITE_DBCONFIG_DEFENSIVE`.
    The manifest also lists the hash of every thumbnail pack, preview pack and model file it uses, so nothing outside the signature reaches the phone: an ONNX model is parsed by a native runtime. The private key lives in the OS store on each desktop (Keychain, DPAPI), which needs a keychain access group the app does not have yet. A stolen publisher can sign until the key is moved (rule 5).
-4. **Retention.** Keep the current generation and the previous one for at least 7 days, because a
-   phone may be mid-copy. Phones never write to `.mediaviewer/`, so there are no leases to clean up.
-   A thumbnail pack is deleted only when no retained generation names it and it has been unused
-   for 30 days. A phone that still misses one falls back to `tiny.pack` until its next sync.
+4. **Retention (changed 2026-11-10).** Keep the current generation and the previous one. Anything
+   older goes once its successor has been out for 2 hours: a phone copying it has had that long,
+   and hourly publishing would otherwise keep about 170 generations. Phones never write to
+   `.mediaviewer/`, so there are no leases to clean up. A thumbnail pack is deleted only when no
+   retained generation names it and it has been unused for 30 days; a pack under 16 MiB, which
+   the next publish folds into a new one, goes after 2 hours. A phone that still misses one falls
+   back to `tiny.pack` until its next sync.
 5. **One publisher, and a key that can move.** The lease stops two desktops overwriting each other.
    A second one says "Published from Studio Mac" and offers to take over. Taking over needs the
    current desktop to sign a record naming the new key, which raises the epoch, and phones follow

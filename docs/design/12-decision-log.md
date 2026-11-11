@@ -1934,13 +1934,44 @@ on disk go in `disk_path`, only in a catalogue, so `index.db` needs no migration
 reach Places through a separate `mv.place_labels.1` interface: appending to `mv_addon_slots` broke
 every add-on that fills that struct under `-Wmissing-field-initializers`. Publishing is part of
 the control loop's existing tick and compares a content stamp only after a scan, so idle gains no
-wakeup. Same build, runs alternated base/new, three each, 40-file library published, loaded
-machine (load 3 to 5), fake embedder: idle CPU 0.042 to 0.079 % base, 0.039 to 0.068 % new;
-wakeups 5.4 to 7.0 per second base, 5.0 to 6.5 new; scan 2031 to 2086 files per second base, 2037
-to 2119 new. Vector scan of 100 k frames with the longer tie-break comparator: 1.70 to 1.76 ms
-base, 1.65 to 1.75 ms new, six runs each after one 3.5 ms outlier in an earlier set. The stamp costs
-4.8 ms at 100 k assets. A 64 px tile averaged 1510 bytes and 0.43 ms over 13 system wallpapers
-made into JPEG-512s, not over a camera library. No NAS or Windows run: local folders on the Mac.
+wakeup. Generations go 2 hours after their successor arrives, not 7 days: hourly publishing kept
+about 170 of them, some 45 GB per 100 k assets. A small pack, replaced by folding, likewise goes
+in 2 hours rather than 30 days. The stamp covers only the folders a generation carries, so a
+local folder or the Photos library never triggers a publish.
+
+Measured against `28aa6af7`, Release, same machine, runs alternated, 30 s idle after a 40-file
+publish, fake embedder, `mv_ai_tests "[.perf-bench][phone-cost]"`. Raw output (scan 0.0: not run in
+that state):
+
+```
+base 1 {"idle_cpu_pct":0.0367,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":2070.8}
+new 1 {"idle_cpu_pct":0.0372,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":2144.5}
+new-waiting 1 {"idle_cpu_pct":0.0376,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":0.0}
+new-thumbs_left 1 {"idle_cpu_pct":0.0391,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+base 2 {"idle_cpu_pct":0.0357,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":2417.8}
+new 2 {"idle_cpu_pct":0.0365,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":2354.4}
+new-waiting 2 {"idle_cpu_pct":0.0378,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+new-thumbs_left 2 {"idle_cpu_pct":0.0395,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+base 3 {"idle_cpu_pct":0.0366,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":1484.6}
+new 3 {"idle_cpu_pct":0.0375,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":2199.1}
+new-waiting 3 {"idle_cpu_pct":0.0378,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+new-thumbs_left 3 {"idle_cpu_pct":0.0373,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+```
+
+Idle CPU rose slightly: 0.0357 to 0.0367 % on the base, 0.0365 to 0.0375 % new (the ranges barely
+overlap), 0.0376 to 0.0378 % with a generation waiting and 0.0373 to 0.0395 % with thumbnails left.
+Neither of those two overlaps the base; the increase is about 0.001 to 0.003 percentage points.
+Wakeups were 5.0 per second in every state. The bench is 30 s, so it holds at most one 30 s share
+poll, and it leaves out the stamp after a scan, a publish itself, and anything at library scale. Scan 1485 to 2418 files per second
+on the base, 2145 to 2354 new. The machine's load rose to about 60 during the last runs, so the
+scan rows are noisy. The vector comparator: 1.70 to 1.76 ms base, 1.65 to 1.75 ms new, six runs
+each. The stamp, once per finished scan and on no timer: about 400 ms at 100 k assets and 1 M
+frames on that loaded machine (`[.perf-bench][phone-scale]`), its lock released between queries.
+A 64 px tile averaged 1510 bytes and 0.43 ms over 13 system wallpapers made into JPEG-512s, not a
+camera library.
+
+**Not measured:** a pan soak or either present-loop gate during an active publish, because lab runs
+open windows on the owner's screen; a publish against a NAS; anything on Windows.
 
 **A walk deletes only what it can vouch for, and a damaged `.mvindex` is refused (2026-11-09,
 audit in `docs/plans/mobile.md` §1).** Reading the code showed a share dropping mid-walk could

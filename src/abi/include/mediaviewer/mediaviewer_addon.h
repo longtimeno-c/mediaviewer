@@ -1090,6 +1090,15 @@ typedef struct mv_host_api {
    * read only when `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* addon_request)(void* host, const char* addon_id, const char* method, const char* request_json,
                                     mv_addon_reply_fn reply, void* user);
+  /* [worker-thread] A JPEG-512 made now and stored nowhere: the viewer's cache
+   * is the viewer's. `pts_ms` < 0: the file's own picture (a still's, an audio
+   * file's cover art); >= 0: a clip's moment or a document's page. `*out_size`
+   * is always the bytes needed; MV_ERR_INVALID_ARG with it larger than
+   * `capacity`: call again. MV_ERR_UNSUPPORTED_FORMAT: it has no picture.
+   * Appended after addon_request: read only when `struct_size` covers it and
+   * the pointer is non-NULL. */
+  mv_status(MV_CALL* thumbnail_make)(void* host, const char* path_utf8, int64_t pts_ms, uint8_t* out,
+                                     uint64_t capacity, uint64_t* out_size);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u

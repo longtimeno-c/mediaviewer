@@ -276,6 +276,13 @@ struct engine_deps {
   double phone_quiet_s = 120;
   double phone_min_interval_s = 3600;
   double phone_share_poll_s = 30;
+  double phone_retry_base_s = 30;
+  // Tests: runs as the phone state is about to be written.
+  std::function<void()> phone_save_hook;
+  // Tests: the publisher thread's very last step, after its run has ended.
+  std::function<void()> phone_thread_exit_hook;
+  // Tests: a starter's step right after its thread exists.
+  std::function<void()> phone_start_hook;  // a failed delivery waits this, doubling, to an hour
   double phone_thumb_budget_s = 1800;
   // A revoke the NAS has not heard: asked again after this, doubling to an hour.
   double phone_link_retry_s = 30;
@@ -1264,9 +1271,23 @@ class engine {
     std::string waiting_stamp;
     double last_attempt = 0;       // wall clock: at most hourly survives a restart
     std::vector<catalog::root_map> roots;  // as last seen on the share, for building while it is away
+    std::string share_device;      // its volume, to tell whether a new folder is on it
+    // A generation that failed to land waits longer each time, until the share
+    // or its free space changes.
+    int retries = 0;
+    double retry_at = 0;           // wall clock
+    bool share_seen = true;
+    std::uint64_t last_free = 0;
+    std::string deliver_error;     // said again while waiting out the back-off
+    std::uint64_t needs_bytes = 0; // no_space: what the generation needs
+    std::uint64_t deliver_attempts = 0;
   };
   void load_phone_state();
   [[nodiscard]] bool save_phone_state() const;
+  [[nodiscard]] bool write_phone_state(const phone_view& v) const;
+  void finish_phone(const std::function<void(phone_view&)>& change, const std::string& error);
+  bool start_phone_thread(const char* phase, const std::function<bool(const phone_view&)>& admit,
+                          std::function<void()> body);
   void run_phone_publish(const std::string& destination, bool automatic);
   void run_phone_deliver();
   void deliver_phone_generation(const std::vector<std::uint8_t>& secret, const std::vector<std::uint8_t>& public_key,
@@ -1275,8 +1296,14 @@ class engine {
   void phone_publish_auto();
   void phone_deliver_waiting();
   void phone_tick(bool walked);
-  void fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots, bool& left);
-  [[nodiscard]] std::string phone_stamp() const;
+  void fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots,
+                         const std::string& destination, bool& left);
+  [[nodiscard]] result<std::vector<std::uint8_t>> phone_thumb(const catalog::thumb_want& w);
+  void note_phone_delivery_failed(const std::string& why);
+  [[nodiscard]] std::uint64_t phone_bytes_needed(const std::string& gen_dir, const std::vector<catalog::shared_file>& shared,
+                                                 const std::string& destination) const;
+  [[nodiscard]] std::vector<std::int64_t> phone_carried_roots();
+  [[nodiscard]] std::string phone_stamp(std::span<const std::int64_t> roots) const;
   [[nodiscard]] result<std::vector<std::string>> stored_place_matches(const std::string& place);
   // engine_phone_link.cpp: one request at a time on its own thread, made at
   // the first one, so nothing runs for someone who never turned this on.
@@ -1333,6 +1360,8 @@ class engine {
   bool link_tick_seen_ = false;              // the control thread's
   std::vector<std::string> link_before_;     // the link thread's: keys when the code went up
   mutable std::mutex phone_m_;
+  mutable std::mutex phone_save_m_;  // taken before phone_m_
+  bool phone_stopped_ = false;       // under phone_m_: stop() has taken the thread
   phone_view phone_;
   std::atomic<bool> phone_cancel_{false};
   std::thread phone_thread_;
@@ -1342,6 +1371,7 @@ class engine {
   bool phone_changed_ = false;
   double phone_quiet_since_ = 0;
   double phone_next_poll_ = 0;
+  std::map<std::string, bool> phone_root_on_share_;  // folders added since the last build
   std::atomic<bool> phone_recheck_{false};      // a delivery found this generation can never land
   std::atomic<double> phone_cancelled_at_{0};   // wall clock
   std::atomic<bool> transferring_{false};  // workers wait (an import)

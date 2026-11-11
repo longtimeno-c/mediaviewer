@@ -439,22 +439,43 @@ std::int64_t index_db::data_version() {
   return s.step_row() ? s.i64(0) : 0;
 }
 
-std::string index_db::content_stamp(const std::string& spec) {
-  std::lock_guard lock(m_);
+namespace {
+std::string id_list(std::span<const std::int64_t> ids) {
   std::string out;
+  for (const std::int64_t i : ids) out += (out.empty() ? "" : ",") + std::to_string(i);
+  return out;
+}
+}  // namespace
+
+std::string index_db::content_stamp(const std::string& spec, std::span<const std::int64_t> roots) {
+  const std::string in = id_list(roots);
+  std::string out = in + ";";
   {
-    stmt s(db_, "SELECT COUNT(*), TOTAL(mtime), TOTAL(size), TOTAL(tags), TOTAL(id) FROM assets");
+    // A lock per query, so the indexer gets in between them. `+root_id`: nearly
+    // every row qualifies, and a table scan beats a lookup for each one.
+    std::lock_guard lock(m_);
+    stmt s(db_, ("SELECT COUNT(*), TOTAL(mtime), TOTAL(size), TOTAL(tags), TOTAL(id) FROM assets WHERE +root_id IN (" + in + ")").c_str());
     if (s.step_row()) {
-      out = std::to_string(s.i64(0)) + "," + std::to_string(s.real(1)) + "," + std::to_string(s.real(2)) + "," +
-            std::to_string(s.real(3)) + "," + std::to_string(s.real(4));
+      out += std::to_string(s.i64(0)) + "," + std::to_string(s.real(1)) + "," + std::to_string(s.real(2)) + "," +
+             std::to_string(s.real(3)) + "," + std::to_string(s.real(4));
     }
   }
-  for (const char* q : {"SELECT COUNT(*) FROM frames WHERE spec = ?1", "SELECT COUNT(*) FROM speech",
-                        "SELECT COUNT(*) FROM cues", "SELECT COUNT(*) FROM passages"}) {
-    stmt s(db_, q);
-    if (std::string_view(q).find("?1") != std::string_view::npos) s.bind(1, spec);
+  const std::string of_roots = "asset_id IN (SELECT id FROM assets WHERE root_id IN (" + in + "))";
+  for (const std::string& q : {"SELECT COUNT(*) FROM frames WHERE spec = ?1 AND " + of_roots, "SELECT COUNT(*) FROM speech WHERE " + of_roots,
+                               "SELECT COUNT(*) FROM cues WHERE " + of_roots, "SELECT COUNT(*) FROM passages WHERE " + of_roots}) {
+    std::lock_guard lock(m_);
+    stmt s(db_, q.c_str());
+    if (q.find("?1") != std::string::npos) s.bind(1, spec);
     if (s.step_row()) out += "," + std::to_string(s.i64(0));
   }
+  return out;
+}
+
+std::vector<std::int64_t> index_db::asset_ids_in(std::span<const std::int64_t> roots) {
+  std::lock_guard lock(m_);
+  std::vector<std::int64_t> out;
+  stmt s(db_, ("SELECT id FROM assets WHERE root_id IN (" + id_list(roots) + ") ORDER BY id").c_str());
+  while (s.step_row()) out.push_back(s.i64(0));
   return out;
 }
 

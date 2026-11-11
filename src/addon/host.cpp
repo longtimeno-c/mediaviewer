@@ -1376,6 +1376,21 @@ mv_status MV_CALL t_addon_request(void* host, const char* addon_id, const char* 
   });
 }
 
+mv_status MV_CALL t_thumbnail_make(void* host, const char* path, int64_t pts_ms, uint8_t* out, uint64_t capacity,
+                                   uint64_t* out_size) {
+  return guarded([&] {
+    if (!path || !out_size) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().thumbnail_make;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto made = fn(path, pts_ms);
+    if (!made) return to_mv(made.error());
+    *out_size = static_cast<uint64_t>(made->size());
+    if (!out || made->size() > capacity) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, made->data(), made->size());
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_place_labels(void* host, const mv_addon_route_point* points, uint32_t count,
                                  mv_addon_label_fn visit, void* user) {
   return guarded([&] {
@@ -1591,6 +1606,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   if (svc_.jpeg_shrink) api_.jpeg_shrink = &t_jpeg_shrink;      // the phone's catalogue
   api_.place_labels = &t_place_labels;
   api_.addon_request = &t_addon_request;
+  if (svc_.thumbnail_make) api_.thumbnail_make = &t_thumbnail_make;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

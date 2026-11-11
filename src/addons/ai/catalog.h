@@ -33,6 +33,11 @@ inline constexpr std::uint32_t kTinyEdge = 64;
 inline constexpr std::uint32_t kTinyQuality = 72;
 // What a retained generation no longer names stays this long (§5 rule 4).
 inline constexpr std::int64_t kUnusedSeconds = 30 * 24 * 3600;
+// A pack under this is folded into the next one, so a superseded small pack is
+// routine, not a loss: it goes as soon as no retained generation needs it.
+inline constexpr int kMaxThumbFailures = 3;
+inline constexpr std::uint64_t kFoldBytes = 16u << 20;
+inline constexpr std::int64_t kRollingUnusedSeconds = 2 * 3600;
 
 // A new Ed25519 key pair: {public, secret}.
 [[nodiscard]] std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> make_keypair();
@@ -102,6 +107,7 @@ struct build_options {
   std::string model_spec;              // active_spec's text tower ...
   std::vector<std::string> model_files;  // ... its files, here
   std::vector<std::string> preview_packs;  // finished previews/p-*.pack, here
+  std::function<void()> after_thumb_snapshot;  // tests: the index moves on mid-build
 };
 
 struct build_counts {
@@ -126,9 +132,10 @@ struct deliver_options {
   std::uint64_t epoch = 1;
   std::vector<std::uint8_t> public_key;
   std::vector<std::uint8_t> secret_key;
-  std::int64_t keep_seconds = 7 * 24 * 3600;  // a phone may still be copying an older one
+  std::int64_t keep_seconds = 2 * 3600;  // an older generation, once its successor has been out this long
   std::vector<shared_file> shared;  // copied first; those the share already has are left
   std::string retention_file;       // here: when each unused shared file was last named
+  std::string arrivals_file;        // here: when each generation became current, by this clock
   // Verified copy to a new file in an existing folder.
   std::function<expected(const std::string& from, const std::string& to)> copy;
   std::function<expected(const std::string& dir)> make_directories;
@@ -162,12 +169,14 @@ struct thumb_want {
   std::int64_t mtime = 0;
   int kind = 0;  // assets.kind
   std::int64_t duration_ms = 0;
+  bool backfill = false;  // its tile exists; only the 64 px one is wanted
 };
 
 struct thumb_fill_io {
   std::function<result<std::vector<std::uint8_t>>(const thumb_want&)> jpeg512;
   std::function<result<std::vector<std::uint8_t>>(std::span<const std::uint8_t>)> tiny;
   std::function<void()> yield;  // waits while the viewer needs the machine
+  std::function<bool()> share_present;  // asked after a failure; unset: taken as yes
 };
 
 struct thumb_fill_result {
@@ -187,19 +196,22 @@ class thumb_store {
   // of files gone from the index are forgotten here. Cloud-only files are left
   // out: making their tile would download them.
   [[nodiscard]] result<std::vector<thumb_want>> missing(const std::string& index_db,
-                                                        std::span<const std::int64_t> roots);
-  // Makes tiles until done, cancelled (still status ok: `complete` false), or
-  // `budget_seconds` have gone (<= 0: no limit).
+                                                        std::span<const std::int64_t> roots, bool want_tiny = true);
+  // Makes tiles until done, cancelled (still status ok: `complete` false), the
+  // share goes, or `budget_seconds` have gone (<= 0: no limit). A file that
+  // fails without saying it has no picture is passed over and asked again next
+  // run; after kMaxThumbFailures runs at one size and date it counts as having none.
   [[nodiscard]] result<thumb_fill_result> fill(std::span<const thumb_want> wants, const thumb_fill_io& io,
                                                const control& c, double budget_seconds);
   // Names the tiles not yet in a pack. Packs under `fold_bytes` are folded
   // into the next, so hourly publishes do not leave a pack per hour.
-  [[nodiscard]] expected seal(std::uint64_t fold_bytes = 16u << 20);
+  [[nodiscard]] expected seal(std::uint64_t fold_bytes = kFoldBytes);
   // After a delivery: the local copy of a delivered pack goes, except one
   // small enough to be folded into the next.
-  [[nodiscard]] expected delivered(std::uint64_t fold_bytes = 16u << 20);
+  [[nodiscard]] expected delivered(std::uint64_t fold_bytes = kFoldBytes);
   // Forgets packs on neither side, so their tiles are made again.
-  [[nodiscard]] expected reconcile(const std::string& destination);
+  // `after_listing` (tests): the share changes between the listing and the stats.
+  [[nodiscard]] expected reconcile(const std::string& destination, const std::function<void()>& after_listing = {});
   [[nodiscard]] result<std::string> hash_of(const std::string& file);  // cached by size and mtime
   [[nodiscard]] const std::string& ledger_path() const noexcept { return ledger_; }
   [[nodiscard]] const std::string& dir() const noexcept { return dir_; }
@@ -219,6 +231,9 @@ struct thumb_location {
   std::uint64_t offset = 0;
   std::uint32_t length = 0;
 };
+[[nodiscard]] bool valid_pack_name(std::string_view name);
+// Whether a tile lies inside a pack of this size: check before reading it.
+[[nodiscard]] bool within_pack(const thumb_location& at, std::uint64_t pack_size);
 [[nodiscard]] result<std::optional<thumb_location>> find_thumb(std::span<const std::uint8_t> thumbs_idx,
                                                                std::int64_t asset);
 [[nodiscard]] result<std::optional<std::span<const std::uint8_t>>> find_tiny(std::span<const std::uint8_t> tiny_pack,
