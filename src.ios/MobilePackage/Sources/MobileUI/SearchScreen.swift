@@ -41,14 +41,22 @@ struct SearchScreen: View {
       }
     case .searching, .results:
       MediaGrid(sections: [GridSection(id: "results", title: nil, range: search.entries.indices)], entries: search.entries,
-                context: "search") {
+                context: "search", answering: "\(search.entries.count)|\(search.answered)") {
         topNotices
       }
       .opacity(search.phase == .searching ? 0.6 : 1)
     case .nothing:
-      VStack(spacing: 0) {
-        topNotices
-        NothingFound().frame(maxWidth: .infinity, maxHeight: .infinity)
+      // Centred while it fits; at the largest text sizes it is taller than a small phone, and
+      // then it scrolls rather than run under the search field and the tab bar.
+      GeometryReader { space in
+        ScrollView {
+          VStack(spacing: 0) {
+            topNotices
+            NothingFound().frame(maxWidth: .infinity, maxHeight: .infinity)
+          }
+          .frame(minHeight: space.size.height)
+        }
+        .scrollBounceBehavior(.basedOnSize)
       }
     }
   }
@@ -146,6 +154,7 @@ private struct FilterRow: View {
       }
       .padding(.horizontal, Theme.inset)
     }
+    .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
     .background(Theme.ground.ignoresSafeArea(edges: .top))
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: filters)
   }

@@ -581,11 +581,40 @@ Windows and Linux, and any run against a real Synology or phone.
 
 ### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
 
-The interface only, so far: the core behind it (`src/mobile`) is not built. Screens are in
-`src.ios/MobilePackage` (`MobileKit` holds the protocols the core will implement, `MobileUI` the
-screens). Two apps share them. `MediaViewer` is the real one and links no stand-in data.
+Screens are in `src.ios/MobilePackage` (`MobileKit` holds the protocols, `MobileUI` the screens,
+`MobileCore` and `MobileLink` the real library, search and link over `src/mobile`). Two apps share
+them. `MediaViewer` is the real one and links no stand-in data (`App/MediaViewer/LiveServices.swift`).
 `MediaViewerFixtures` runs the screens on generated pictures and a generated clip; its
-`MobileFixtures` package does not compile outside Debug, so it cannot reach a release.
+`MobileFixtures` package does not compile outside Debug, so it cannot reach a release. Backup
+(release 1.1) is compiled only with the Swift condition `MV_BACKUP`, which no build sets.
+
+The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
+`DEVELOPMENT_TEAM` is empty there. Put your own in `src.ios/Config/Signing.local.xcconfig` (git
+ignores it), for example `DEVELOPMENT_TEAM = ABCDE12345`. Build a Simulator copy with signing on
+(the Keychain refuses an app without entitlements, and pairing needs it), and check a release
+archive without a team:
+
+```bash
+cd src.ios
+xcodebuild -project MediaViewerMobile.xcodeproj -scheme MediaViewer -configuration Debug \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' build
+xcodebuild archive -project MediaViewerMobile.xcodeproj -scheme MediaViewer \
+  -destination 'generic/platform=iOS' -archivePath /tmp/MediaViewer.xcarchive CODE_SIGNING_ALLOWED=NO
+```
+
+`ITSAppUsesNonExemptEncryption` is true (Noise over libsodium): App Store Connect asks for the
+export compliance documentation on the first upload. The Acknowledgements screen reads
+`App/MediaViewer/Acknowledgements.txt`; after a dependency changes, regenerate it from the device
+core build with `python3 tools/ios/acknowledgements.py build-ios-iphoneos src.ios/App/MediaViewer/Acknowledgements.txt`.
+
+To walk the real app by hand, `tools/ios/demo-service.sh <folder> [desktop build dir]` makes a
+small sample library, publishes it with `mv_publish_test_library`, runs `driftwire serve
+--test-loopback` on 127.0.0.1:18452 (never the public DHT) and writes the pairing link and its QR
+picture. Add the picture to the Simulator's Photos and use "Choose a picture", or open the link
+with `xcrun simctl openurl booted "$(cat <folder>/pair-link.txt)"`. `demo-service.sh <folder> stop`
+stops it. The code lasts 15 minutes and works once.
+
+The fixtures app:
 
 ```bash
 cd src.ios
@@ -657,6 +686,28 @@ The real app links `src/mobile` through `tools/ios/build-core.sh`, a build phase
 `build-ios-<sdk>/` from CMake. It reads an installed generation from
 `Application Support/library/gen/<epoch>-<generation>/`, the one `library/installed.json` names, with
 the manifest's shared files beside `gen/`.
+
+**Live, end to end.** `tools/ios/search-live.sh` runs the same comparison through the real app. It
+copies an indexed folder's stills and short clips onto a disk image of their own (the "NAS"), points a
+copy of the index at it, and publishes with the desktop engine's own `phone_publish` and the installed
+AI pack. That is the code the Mac's Publish runs, so the catalogue carries the phone's real tower. It
+then asks that engine every query (the Mac's answers), serves the image with `driftwire serve
+--test-loopback` on 127.0.0.1, and pairs, copies and searches in the Simulator (`LiveSearchTests`).
+
+```bash
+tools/ios/search-live.sh "$HOME/Library/Application Support/MediaViewer/Add-ons/AI/data" <indexed folder> <Simulator UDID> <out>
+```
+
+Build the app for the Simulator ad hoc signed (`CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO`) and
+copy it to `<out>/MediaViewer.app`. Without a signature it has no keychain and cannot pair. The real
+index is only read. The Mac's side runs with the index's own compute and quality (`MV_LIVE_CPU=1`:
+the CPU at quality High), and needs every AI piece installed. It answers `place:`
+with the Places add-on's own rule (`place_query`); clip routes are not walked. Tiles come from
+ImageIO and AVFoundation, which cannot read every clip. The phone has no sound tower, so a query the
+Mac answers by sound differs. The script detaches its disk image on the way out (not with `MV_LIVE_REUSE=1`); afterwards delete
+`<out>` (the image holds copies of the files, `data/` a copy of the index and faces) with
+`hdiutil detach <out>/mnt; rm -rf <out>`. `tools/ios/small-screen.sh <out>` runs every screen on an iPhone SE
+(3rd generation) Simulator at the largest text size.
 
 The parity test runs the desktop engine, over the real AI pack, and the phone engine, in a Simulator
 of its own, on one published generation, and compares rows and order:

@@ -133,7 +133,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
     if let info = value.catalogue {
-      defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount], forKey: Self.catalogueKey)
+      defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
+                    "epoch": NSNumber(value: info.epoch)], forKey: Self.catalogueKey)
     } else {
       defaults.removeObject(forKey: Self.catalogueKey)
     }
@@ -142,7 +143,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   private static func catalogue(from stored: [String: Any]?) -> CatalogueInfo? {
     guard let stored, let at = stored["updatedAt"] as? TimeInterval, let count = stored["itemCount"] as? Int else { return nil }
-    return CatalogueInfo(source: .synology, updatedAt: Date(timeIntervalSince1970: at), itemCount: count)
+    let epoch = (stored["epoch"] as? NSNumber)?.uint64Value ?? 0
+    return CatalogueInfo(source: .synology, updatedAt: Date(timeIntervalSince1970: at), itemCount: count, epoch: epoch)
   }
 
   // MARK: The network
@@ -336,7 +338,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       var info = mv_catalogue_info()
       guard mv_catalogue_read(link.raw, &info) == 0, info.present != 0 else { return nil }
       return CatalogueInfo(source: .synology, updatedAt: Date(timeIntervalSince1970: TimeInterval(info.created_unix)),
-                           itemCount: Int(info.asset_count))
+                           itemCount: Int(info.asset_count), epoch: info.epoch)
     }
   }
 
@@ -344,7 +346,19 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     switch status {
     case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0)
     case 7: return .serviceTooOld
-    default: return .unreachable(failures(of: report))
+    case 5: return .deviceRevoked
+    default:
+      // A route that answered "not on the list" is the service speaking for the library: this
+      // phone was removed, whatever the other routes did.
+      if revoked(in: report) { return .deviceRevoked }
+      return .unreachable(failures(of: report))
+    }
+  }
+
+  private static func revoked(in report: mv_route_report) -> Bool {
+    withUnsafeBytes(of: report.failures) { raw in
+      let list = raw.bindMemory(to: mv_route_failure.self)
+      return (0..<Int(report.failure_count)).contains { list[$0].problem == 2 }
     }
   }
 

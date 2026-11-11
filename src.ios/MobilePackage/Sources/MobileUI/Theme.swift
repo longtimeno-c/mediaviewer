@@ -7,18 +7,41 @@ import SwiftUI
 /// Preferences kept on this phone, shared by the screen that shows a thing and the switch for it.
 public enum Preferences {
   public static let filmstrip = "viewerFilmstrip"
+  /// "dark" (the default, as the viewer is), "light" or "system".
+  public static let appearance = "appearance"
+}
+
+/// The colour scheme the person chose, for `preferredColorScheme`; nil follows the system.
+func chosenScheme(_ stored: String) -> ColorScheme? {
+  switch stored {
+  case "light": return .light
+  case "system": return nil
+  default: return .dark
+  }
 }
 
 public enum Theme {
-  static let ground = Color(red: 0.055, green: 0.055, blue: 0.063)
-  static let surface = Color(red: 0.102, green: 0.102, blue: 0.114)
-  static let lifted = Color(red: 0.149, green: 0.149, blue: 0.165)
-  static let title = Color(red: 0.925, green: 0.925, blue: 0.933)
-  static let body = Color(red: 0.635, green: 0.635, blue: 0.655)
-  public static let accent = Color(red: 0.34, green: 0.60, blue: 1.0)
-  /// The accent as a button's fill: dark enough for white words to pass 4.5:1.
-  static let accentFill = Color(red: 0.18, green: 0.44, blue: 0.90)
-  static let warm = Color(red: 0.96, green: 0.70, blue: 0.32)
+  private static func pair(dark: UInt32, light: UInt32) -> Color {
+    Color(UIColor { traits in
+      let hex = traits.userInterfaceStyle == .light ? light : dark
+      return UIColor(red: CGFloat((hex >> 16) & 255) / 255, green: CGFloat((hex >> 8) & 255) / 255,
+                     blue: CGFloat(hex & 255) / 255, alpha: 1)
+    })
+  }
+
+  // Dark is the app's own look. Light keeps the same structure: depth from a lighter or darker
+  // fill, never a shadow, and every text colour at 4.5:1 or better on its ground.
+  static let ground = pair(dark: 0x0E0E10, light: 0xF2F2F7)
+  static let surface = pair(dark: 0x1A1A1D, light: 0xFFFFFF)
+  static let lifted = pair(dark: 0x26262A, light: 0xE3E3E8)
+  static let title = pair(dark: 0xECECEE, light: 0x1C1C1E)
+  static let body = pair(dark: 0xA2A2A7, light: 0x5F5F64)
+  public static let accent = pair(dark: 0x5799FF, light: 0x0A63D6)
+  /// The accent as a button's fill: dark enough for white words to pass 4.5:1 in both looks.
+  static let accentFill = pair(dark: 0x2E70E6, light: 0x0A63D6)
+  static let warm = pair(dark: 0xF5B352, light: 0x9A5300)
+  /// Forget, the one action that loses something: 4.5:1 or better on ground in both looks.
+  static let danger = pair(dark: 0xFF453A, light: 0xC4161C)
   static let onAccent = Color.white
 
   static let inset: CGFloat = 12
@@ -92,19 +115,45 @@ struct TileButtonStyle: ButtonStyle {
 }
 
 /// Everything the first-run screens share: words at a readable width, centred on an iPad.
-struct SetupPage<Content: View>: View {
+struct SetupPage<Content: View, Footer: View>: View {
   @ViewBuilder var content: Content
+  /// The page's buttons: held at the bottom, except at the accessibility text sizes, where they
+  /// would leave the words a sliver, so they follow the words and scroll with them.
+  @ViewBuilder var footer: Footer
+  @Environment(\.dynamicTypeSize) private var typeSize
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 0) { content }
-        .frame(maxWidth: Theme.readableWidth, alignment: .leading)
-        .padding(.horizontal, 24)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+    let inline = typeSize.isAccessibilitySize
+    let page = ScrollView {
+      VStack(alignment: .leading, spacing: 0) {
+        content
+        if inline { footer.padding(.top, 32) }
+      }
+      .frame(maxWidth: Theme.readableWidth, alignment: .leading)
+      .padding(.horizontal, 24)
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 24)
     }
     .scrollBounceBehavior(.basedOnSize)
     .background(Theme.ground)
+    if inline {
+      page
+    } else {
+      page.safeAreaInset(edge: .bottom, spacing: 0) {
+        footer
+          .frame(maxWidth: Theme.readableWidth)
+          .padding(.horizontal, 24)
+          .padding(.vertical, 16)
+          .frame(maxWidth: .infinity)
+          .background(Theme.ground)
+      }
+    }
+  }
+}
+
+extension SetupPage where Footer == EmptyView {
+  init(@ViewBuilder content: () -> Content) {
+    self.init(content: content, footer: { EmptyView() })
   }
 }
 

@@ -3,39 +3,37 @@
 // §11.1 Welcome, Connect, First copy, and the scan between them. Setup is one path: the code.
 import AVFoundation
 import MobileKit
+import PhotosUI
 import SwiftUI
+import Vision
 
 struct WelcomeScreen: View {
   @Environment(AppModel.self) private var model
 
   var body: some View {
-    VStack(spacing: 0) {
-      SetupPage {
-        Text("Your NAS library, searched from your phone")
-          .font(.largeTitle.bold())
-          .foregroundStyle(Theme.title)
-          .padding(.top, 32)
-        Text("Open MediaViewer on your Mac or Windows PC, show its code, and scan it here.")
-          .font(.body)
-          .foregroundStyle(Theme.body)
-          .padding(.top, 12)
-        VStack(alignment: .leading, spacing: 8) {
-          Text("You'll need").font(.footnote.weight(.semibold)).foregroundStyle(Theme.title)
-          need("MediaViewer on a Mac or Windows PC, with Local search and Driftwire installed.")
-          need("A Synology NAS.")
-          need("A public IPv4 address with one forwarded port, or a public IPv6 address with that port open.")
-        }
+    SetupPage {
+      Text("Your NAS library, searched from your phone")
+        .font(.largeTitle.bold())
+        .foregroundStyle(Theme.title)
         .padding(.top, 32)
+      Text("Open MediaViewer on your Mac or Windows PC, show its code, and scan it here.")
+        .font(.body)
+        .foregroundStyle(Theme.body)
+        .padding(.top, 12)
+      VStack(alignment: .leading, spacing: 8) {
+        Text("You'll need").font(.footnote.weight(.semibold)).foregroundStyle(Theme.title)
+        need("MediaViewer on a Mac or Windows PC, with Local search and Driftwire installed.")
+        need("A Synology NAS.")
+        need("A public IPv4 address with one forwarded port, or a public IPv6 address with that port open.")
       }
+      .padding(.top, 32)
+    } footer: {
       Button {
         model.isScanning = true
       } label: {
         Label("Scan code", systemImage: "qrcode.viewfinder")
       }
       .buttonStyle(PrimaryButtonStyle())
-      .frame(maxWidth: Theme.readableWidth)
-      .padding(.horizontal, 24)
-      .padding(.vertical, 16)
     }
   }
 
@@ -61,7 +59,9 @@ public struct CameraScanSurface: ScanSurfaceProviding {
 
 struct ScanScreen: View {
   @Environment(AppModel.self) private var model
-  @Environment(\.dismiss) private var dismiss
+  @State private var picked: PhotosPickerItem?
+  @State private var problem: String?
+  @State private var reading = false
 
   var body: some View {
     ZStack {
@@ -70,7 +70,7 @@ struct ScanScreen: View {
         model.scanned(code)
       }
       .ignoresSafeArea()
-      VStack {
+      VStack(spacing: 12) {
         HStack {
           Button { model.isScanning = false } label: { Image(systemName: "xmark") }
             .buttonStyle(ChromeIconStyle())
@@ -78,16 +78,94 @@ struct ScanScreen: View {
           Spacer()
         }
         Spacer()
-        Text("Point at the code in MediaViewer")
-          .font(.subheadline)
-          .foregroundStyle(.white)
-          .multilineTextAlignment(.center)
-          .padding(.horizontal, Theme.inset)
-          .padding(.vertical, 8)
-          .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(.black.opacity(0.5)))
+        otherWays
       }
       .padding(16)
+      .frame(maxWidth: Theme.readableWidth)
     }
+    .onChange(of: picked) { _, item in
+      guard let item else { return }
+      Task { await read(item) }
+    }
+  }
+
+  /// For when the camera cannot see the code: a screenshot or photo of it, or its link.
+  private var otherWays: some View {
+    VStack(spacing: 8) {
+      if let problem {
+        Text(problem)
+          .font(.footnote)
+          .foregroundStyle(.white)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(.black.opacity(0.6)))
+      }
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 8) { pickButton; pasteButton }
+        VStack(spacing: 8) { pickButton; pasteButton }
+      }
+    }
+  }
+
+  private var pickButton: some View {
+    PhotosPicker(selection: $picked, matching: .images, photoLibrary: .shared()) {
+      Label(reading ? "Reading…" : "Choose a picture", systemImage: "photo")
+    }
+    .buttonStyle(SecondaryButtonStyle())
+    .disabled(reading)
+    .accessibilityHint("Reads the code from a screenshot or photo of it")
+  }
+
+  private var pasteButton: some View {
+    PasteButton(payloadType: String.self) { strings in
+      guard let text = strings.first?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+      Task { @MainActor in
+        if text.hasPrefix("mediaviewer://pair") {
+          problem = nil
+          model.scanned(text)
+        } else {
+          problem = FailureCopy.pasteNotCode
+        }
+      }
+    }
+    .labelStyle(.titleAndIcon)
+    .buttonBorderShape(.roundedRectangle(radius: 12))
+    .controlSize(.large)
+    .tint(Theme.lifted)
+    .accessibilityHint("Pastes the link MediaViewer shows next to its code")
+  }
+
+  private func read(_ item: PhotosPickerItem) async {
+    reading = true
+    defer {
+      reading = false
+      picked = nil
+    }
+    guard let data = try? await item.loadTransferable(type: Data.self),
+          let code = await QRReader.code(in: data) else {
+      problem = FailureCopy.noCodeInPicture
+      return
+    }
+    problem = nil
+    model.scanned(code)
+  }
+}
+
+/// The QR code in a still picture, off the main thread. Vision first; Core Image's detector when
+/// Vision finds nothing, which also covers the Simulator, where Vision's reader cannot run.
+enum QRReader {
+  static func code(in data: Data) async -> String? {
+    await Task.detached(priority: .userInitiated) {
+      guard let image = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return nil }
+      let request = VNDetectBarcodesRequest()
+      request.symbologies = [.qr]
+      try? VNImageRequestHandler(ciImage: image, options: [:]).perform([request])
+      if let found = request.results?.compactMap(\.payloadStringValue).first { return found }
+      let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: nil, options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])
+      return detector?.features(in: image).compactMap { ($0 as? CIQRCodeFeature)?.messageString }.first
+    }.value
   }
 }
 
@@ -95,29 +173,57 @@ private struct CameraSurface: View {
   let onCode: (String) -> Void
   @State private var access = AVCaptureDevice.authorizationStatus(for: .video)
   @Environment(\.openURL) private var openURL
+  private let hasCamera = AVCaptureDevice.default(for: .video) != nil
 
   var body: some View {
     Group {
-      if access == .authorized, AVCaptureDevice.default(for: .video) != nil {
+      if !hasCamera {
+        message(FailureCopy.noCamera, settings: false)
+      } else if access == .authorized {
         CameraPreview(onCode: onCode)
+          // At the top, under Close: the buttons at the bottom grow with the text size.
+          .overlay(alignment: .top) {
+            Text("Point at the code in MediaViewer")
+              .font(.subheadline)
+              .foregroundStyle(.white)
+              .multilineTextAlignment(.center)
+              .padding(.horizontal, Theme.inset)
+              .padding(.vertical, 8)
+              .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(.black.opacity(0.5)))
+              .padding(.horizontal, 16)
+              .safeAreaPadding(.top, 76)
+          }
       } else if access == .notDetermined {
         Color.black.task {
           _ = await AVCaptureDevice.requestAccess(for: .video)
           access = AVCaptureDevice.authorizationStatus(for: .video)
         }
       } else {
-        VStack(spacing: 12) {
-          Text("Allow the camera to scan the code")
-            .font(.headline).foregroundStyle(Theme.title)
-          Button("Open Settings") {
-            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-          }
-          .buttonStyle(SecondaryButtonStyle())
-          .frame(maxWidth: 240)
-        }
-        .padding(24)
+        message(FailureCopy.cameraNotAllowed, settings: true)
       }
     }
+  }
+
+  private func message(_ text: String, settings: Bool) -> some View {
+    VStack(spacing: 12) {
+      Image(systemName: settings ? "camera" : "camera.badge.ellipsis")
+        .font(.system(size: 28))
+        .foregroundStyle(.white.opacity(0.8))
+        .accessibilityHidden(true)
+      Text(text)
+        .font(.headline)
+        .foregroundStyle(.white)
+        .multilineTextAlignment(.center)
+      if settings {
+        Button("Open Settings") {
+          if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+        }
+        .buttonStyle(SecondaryButtonStyle())
+        .frame(maxWidth: 240)
+      }
+    }
+    .padding(24)
+    .frame(maxWidth: Theme.readableWidth)
   }
 }
 
@@ -216,6 +322,8 @@ struct ConnectScreen: View {
     case warning(String)
   }
 
+  /// The step icons' column grows with the text, so a large icon never sits on the words.
+  @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 24
   @State private var phase: Phase = .reading
   @State private var steps: [PairingStep: StepState] = [:]
   @State private var ending: Ending?
@@ -225,16 +333,14 @@ struct ConnectScreen: View {
   @State private var attempt = 0
 
   var body: some View {
-    VStack(spacing: 0) {
+    SetupPage {
       switch phase {
       case .check(let identity): checkPage(identity)
       case .notMatched: notMatchedPage
       case .reading, .pairing: stepsPage
       }
+    } footer: {
       actions
-        .frame(maxWidth: Theme.readableWidth)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
     }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: ending)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: phase)
@@ -245,12 +351,12 @@ struct ConnectScreen: View {
 
   // §7.4: the phone shows the library's name and a short key fingerprint, the desktop shows the same.
   private func checkPage(_ identity: LibraryIdentity) -> some View {
-    SetupPage {
+    Group {
       Text("Does this match your computer?")
         .font(.largeTitle.bold())
         .foregroundStyle(Theme.title)
         .padding(.top, 32)
-      Text("MediaViewer on your computer shows the same name and code.")
+      Text("MediaViewer on your computer shows the same name and check code. Pair only if they match.")
         .font(.body)
         .foregroundStyle(Theme.body)
         .padding(.top, 12)
@@ -271,7 +377,7 @@ struct ConnectScreen: View {
   }
 
   private var notMatchedPage: some View {
-    SetupPage {
+    Group {
       Text("Not paired")
         .font(.largeTitle.bold())
         .foregroundStyle(Theme.title)
@@ -284,13 +390,14 @@ struct ConnectScreen: View {
   }
 
   private var stepsPage: some View {
-    SetupPage {
+    Group {
       Text("Connecting")
         .font(.largeTitle.bold())
         .foregroundStyle(Theme.title)
         .padding(.top, 32)
       VStack(alignment: .leading, spacing: 16) {
-        row(.mac, "Pairing with your computer")
+        // The computer's half waits for nearby sync (M4b); a step that did not run is not shown.
+        if steps[.mac] != .skipped { row(.mac, "Pairing with your computer") }
         row(.synology, "Reaching your Synology")
         row(.outsideRoute, "Testing from outside, over mobile data")
       }
@@ -309,7 +416,7 @@ struct ConnectScreen: View {
 
   private func row(_ step: PairingStep, _ title: String) -> some View {
     let state = steps[step] ?? .waiting
-    return HStack(spacing: 12) {
+    return HStack(alignment: .firstTextBaseline, spacing: 12) {
       ZStack {
         switch state {
         case .waiting: Image(systemName: "circle").foregroundStyle(Theme.body.opacity(0.5))
@@ -320,7 +427,7 @@ struct ConnectScreen: View {
         }
       }
       .font(.body)
-      .frame(width: 24)
+      .frame(width: iconWidth)
       Text(title)
         .font(.body)
         .foregroundStyle(state == .waiting ? Theme.body : Theme.title)

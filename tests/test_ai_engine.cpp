@@ -26,6 +26,7 @@
 #include "addons/ai/nfc.h"
 #include "codec/decode.h"
 #include "addons/ai/sha256.h"
+#include "mobile/catalogue.h"
 
 #include <algorithm>
 #include <atomic>
@@ -468,12 +469,14 @@ class fake_docs final : public mv::ai::passage_model {
 class fake_speech final : public mv::ai::speech_model {
  public:
   mv::result<mv::infer::speech_window> transcribe(std::span<const float> pcm, std::int64_t start_ms) override {
+    const bool other_words = second_voice.load();  // decided before the test's step below
+    if (on_transcribe) on_transcribe();  // a test's step while a clip is being transcribed
     mv::infer::speech_window w;
     w.consumed_ms = static_cast<std::int64_t>(pcm.size()) * 1000 / 16000;
-    for (std::size_t i = 0; i < pcm.size(); ++i) {
+    for (std::size_t i = 0; i < pcm.size() && !silent; ++i) {
       if (std::fabs(pcm[i] - 0.1f) < 1e-4f) {
         w.segments.push_back({start_ms + static_cast<std::int64_t>(i / 16), start_ms + 10000,
-                              "Happy birthday Anna, make a wish!"});
+                              other_words ? "See you tomorrow then" : "Happy birthday Anna, make a wish!"});
         w.speech = true;
         break;
       }
@@ -482,6 +485,9 @@ class fake_speech final : public mv::ai::speech_model {
     return w;
   }
   std::atomic<int> windows{0};
+  std::atomic<bool> silent{false};  // hears nothing: speech under music, say
+  std::function<void()> on_transcribe;  // set before the clip is queued, cleared after
+  std::atomic<bool> second_voice{false};  // hears other words (another Whisper's transcript)
 };
 
 // A tower a test can hold at each step the pack's Core ML tower takes long
@@ -871,6 +877,17 @@ struct rig {
   std::shared_ptr<fake_docs> docs_model = std::make_shared<fake_docs>();
   std::atomic<bool> docs_available{false};  // #354 D3: the ai-docs piece
   std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
+  // The Whisper the pack offers: a test changes it to swap Whispers.
+  std::mutex speech_key_m;
+  std::string speech_key_now = "fake-whisper/fp16/pre1";
+  std::string speech_key() {
+    std::lock_guard lock(speech_key_m);
+    return speech_key_now;
+  }
+  void set_speech_key(std::string key) {
+    std::lock_guard lock(speech_key_m);
+    speech_key_now = std::move(key);
+  }
   // Never the real library: PhotoKit is not asked in a test.
   std::shared_ptr<photos_lib> library = std::make_shared<photos_lib>();
   // #441: the Places add-on's answer for a place term (the host's
@@ -1296,7 +1313,7 @@ struct rig {
       mv::ai::loaded_speech s;
       s.model = speech;
       s.name = "Fake Whisper";
-      s.spec_key = "fake-whisper/fp16/pre1";
+      s.spec_key = speech_key();
       return s;
     };
     return d;
@@ -1325,7 +1342,7 @@ struct rig {
     d.open_clip_text = [this](std::uint32_t q) { return deps().open_clip(q, MV_AI_COMPUTE_CPU_ONLY); };
     d.open_sound_text = [this]() { return deps().open_sound(MV_AI_COMPUTE_CPU_ONLY); };
     d.speech_spec_key = [this](std::uint32_t) {
-      return audio_available ? std::string("fake-whisper/fp16/pre1") : std::string();
+      return audio_available ? speech_key() : std::string();
     };
     return d;
   }
@@ -8766,4 +8783,188 @@ TEST_CASE("phone link: a hand-over is written down even when link.json could not
   REQUIRE(saved);
   CHECK(saved->boolean("handed_over") == true);
 #endif
+}
+
+TEST_CASE("said: reads the transcripts there are, the chosen Whisper's first", "[ai][engine][audio][phone]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.search("said:birthday").size() == 1);
+  r.eng.reset();
+
+  const std::string index = utf8(r.dir / "data" / "index.db");
+  const auto sql = [&](const char* text) {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(index.c_str(), &db) == SQLITE_OK);
+    CHECK(sqlite3_exec(db, text, nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+  // Whisper small wrote every transcript, and the Whisper chosen now (Auto on
+  // the CPU picks the fast one) wrote none: `said:` still finds them.
+  sql("UPDATE speech SET spec = 'whisper-small/fp16/pre1'");
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:birthday").size() == 1);
+  CHECK(r.search("\"make a wish\"").size() == 1);
+  {
+    auto rd = r.start_reader();  // the search agent, and the phone's engine, read the same way
+    const std::uint64_t id = rd->search_text("said:birthday", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(rd->wait_search(id, kSettleMs));
+    CHECK(*rd->result_count(id) == 1);
+  }
+
+  // Where a clip has both, the chosen Whisper's transcript answers, never both.
+  r.eng.reset();
+  sql("INSERT INTO speech(asset_id, spec, start_ms, end_ms, text)"
+      " SELECT asset_id, 'fake-whisper/fp16/pre1', 2000, 4000, 'See you tomorrow' FROM speech LIMIT 1");
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:tomorrow").size() == 1);
+  CHECK(r.search("said:birthday").empty());
+  {
+    auto rd = r.start_reader();
+    const std::uint64_t id = rd->search_text("said:birthday", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(rd->wait_search(id, kSettleMs));
+    CHECK(*rd->result_count(id) == 0);
+  }
+
+  // A phone prefers the same Whisper: the catalogue names it.
+  const fs::path nas = r.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(r.eng->phone_publish(utf8(nas)));
+  auto done = phone_done(r);
+  REQUIRE(*done.str("error") == "");
+  const auto settings = mv::json::parse(read_all(nas / ".mediaviewer" / "gen" / "000001" / "settings.json"));
+  REQUIRE(settings);
+  CHECK(*settings->str("speech_spec") == "fake-whisper/fp16/pre1");
+}
+
+TEST_CASE("said: keeps another Whisper's transcript when the chosen one hears nothing", "[ai][engine][audio]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  r.eng.reset();
+  const std::string index = utf8(r.dir / "data" / "index.db");
+  const auto sql = [&](const char* text) {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(index.c_str(), &db) == SQLITE_OK);
+    CHECK(sqlite3_exec(db, text, nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+  // Whisper small's transcript is the only one; the chosen Whisper transcribes
+  // the clip again and hears nothing.
+  sql("UPDATE speech SET spec = 'whisper-small/fp16/pre1'; DELETE FROM progress WHERE spec = 'fake-whisper/fp16/pre1'");
+  r.speech->silent = true;
+  const int before = r.speech->windows.load();
+  r.start();
+  REQUIRE(r.idle());
+  REQUIRE(r.speech->windows.load() > before);  // it did transcribe again
+  CHECK(r.search("said:birthday").size() == 1);  // live: not dropped by a silent window
+  r.eng.reset();
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:birthday").size() == 1);  // after a reload, the same
+}
+
+TEST_CASE("with no Whisper no transcript answers in the app or the reader or on the phone", "[ai][engine][audio][phone]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.search("said:birthday").size() == 1);
+  r.eng.reset();
+  // The audio piece removed: its transcripts stay in the index, but none answers
+  // (2026-09-27: a removed piece clears what it answered).
+  r.audio_available = false;
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("said:birthday").empty());
+  {
+    auto rd = r.start_reader();
+    const std::uint64_t id = rd->search_text("said:birthday", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(rd->wait_search(id, kSettleMs));
+    CHECK(*rd->result_count(id) == 0);
+  }
+  const fs::path nas = r.dir / "NAS";
+  fs::create_directories(nas);
+  REQUIRE(r.eng->phone_publish(utf8(nas)));
+  auto done = phone_done(r);
+  REQUIRE(*done.str("error") == "");
+  const fs::path gen = nas / ".mediaviewer" / "gen" / "000001";
+  const auto settings = mv::json::parse(read_all(gen / "settings.json"));
+  REQUIRE(settings);
+  CHECK(*settings->str("speech_spec") == "");
+  auto cat = mv::mobile::catalogue::open(utf8(gen), utf8(nas / ".mediaviewer"));
+  REQUIRE(cat);
+  CHECK((*cat)->speech_spec().empty());  // the phone's engine then reads no transcript
+}
+
+// A Whisper's worker may still be transcribing when the piece goes or another
+// Whisper is chosen (load_audio does not wait for it): what it adds to memory
+// must be what a reload would read.
+TEST_CASE("said: a clip transcribed while its Whisper goes or changes answers as after a reload", "[ai][engine][audio]") {
+  SECTION("the audio piece removed mid-clip: no Whisper, nothing answers") {
+    rig r;
+    r.audio_available = true;
+    r.file("party_talk_bark.mp4");
+    std::atomic<bool> once{false};
+    r.speech->on_transcribe = [&] {
+      if (once.exchange(true)) return;
+      r.audio_available = false;
+      REQUIRE(r.eng->set_setting("reload", "1"));
+      // The reload lands while this clip is still being transcribed.
+      REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0; }, kSettleMs));
+    };
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    REQUIRE(once.load());
+    r.speech->on_transcribe = nullptr;
+    CHECK(r.search("said:birthday").empty());
+    r.eng.reset();
+    r.start();
+    REQUIRE(r.idle());
+    CHECK(r.search("said:birthday").empty());
+  }
+  SECTION("another Whisper chosen mid-clip: live and reloaded agree") {
+    rig r;
+    r.audio_available = true;
+    r.file("party_talk_bark.mp4");
+    std::atomic<bool> once{false};
+    r.speech->on_transcribe = [&] {
+      if (once.exchange(true)) return;
+      r.set_speech_key("fake-whisper-2/fp16/pre1");
+      r.speech->second_voice = true;  // the new Whisper hears the clip differently
+      REQUIRE(r.eng->set_setting("reload", "1"));
+      REQUIRE(wait_for(
+          [&] {
+            const auto j = mv::json::parse(r.eng->settings_json());
+            return j && j->boolean("audio_ready") == true && r.status().state != MV_AI_STATE_LOADING;
+          },
+          kSettleMs));
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the reload's load_speech has run
+    };
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    REQUIRE(once.load());
+    r.speech->on_transcribe = nullptr;
+    // The new Whisper transcribed the clip too: its words answer, the old one's do not, live and
+    // after a reload.
+    CHECK(r.search("said:tomorrow").size() == 1);
+    CHECK(r.search("said:birthday").empty());
+    r.eng.reset();
+    r.start();
+    REQUIRE(r.idle());
+    CHECK(r.search("said:tomorrow").size() == 1);
+    CHECK(r.search("said:birthday").empty());
+  }
 }

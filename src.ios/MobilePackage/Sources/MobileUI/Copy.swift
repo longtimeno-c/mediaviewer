@@ -25,6 +25,15 @@ public enum FailureCopy {
   public static let codeExpired = "This code has expired. Show a new one in MediaViewer, then scan it."
   public static let codeNotReadable =
     "That isn't a code MediaViewer can read. Scan the one shown by MediaViewer on your Mac or Windows PC."
+  public static let deviceRevoked =
+    "This phone was removed from your library on your computer. Scan a new code from MediaViewer to use it again."
+  public static let libraryHandedOver =
+    "Your library is now published from a different computer, which your old one approved. Nothing changes on this phone."
+  public static let photosNotAllowed = "MediaViewer isn't allowed to add to Photos. You can change that in Settings."
+  public static let noCamera = "This device has no camera. Choose a picture of the code, or paste its link."
+  public static let cameraNotAllowed = "MediaViewer isn't allowed to use the camera."
+  public static let noCodeInPicture = "There's no MediaViewer code in that picture."
+  public static let pasteNotCode = "That isn't a MediaViewer link. Copy the link MediaViewer shows next to its code."
   public static let libraryFailed = "Couldn't read this library on the phone."
   public static let peopleFailed = "Couldn't read the people in this library."
   public static let searchFailed = "Search isn't working right now."
@@ -55,6 +64,7 @@ public enum FailureCopy {
     case .cannotDecode(let format): return cannotDecode(format)
     case .serviceTooOld: return serviceTooOld
     case .publisherChanged: return publisherChanged
+    case .photosNotAllowed: return photosNotAllowed
     }
   }
 }

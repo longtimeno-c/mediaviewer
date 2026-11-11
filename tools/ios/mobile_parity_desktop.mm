@@ -16,14 +16,18 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <atomic>
 #include <span>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <map>
+#include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,7 +35,11 @@
 #include <mediaviewer/mediaviewer_addon.h>
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include "addon/host.h"
+#include "addon/slots.h"
+#include "addons/places/places.h"
 #include "addons/ai/catalog.h"
+#include "addons/driftwire/secrets.h"
 #include "addons/ai/engine.h"
 #include "addons/ai/host.h"
 #include "addons/ai/pack.h"
@@ -119,6 +127,37 @@ mv::result<std::vector<std::uint8_t>> shrink(std::span<const std::uint8_t> jpeg)
   }
 }
 
+
+
+// The newest installed version of an add-on piece (`<add-ons>/AI Audio/0.1.41`), as the app's
+// store picks it. A piece that is missing stops the run: answering without it would quietly
+// compare a different engine.
+std::string piece_folder(const std::string& addons, const std::string& name) {
+  std::string best;
+  std::error_code ec;
+  for (fs::directory_iterator it(fs::path(addons) / name, ec), end; !ec && it != end; it.increment(ec)) {
+    const std::string v = it->path().filename().string();
+    if (v.empty() || v[0] < '0' || v[0] > '9' || !fs::is_directory(it->path())) continue;
+    const auto parts = [](const std::string& t) {
+      std::vector<int> out;
+      std::stringstream in(t);
+      for (std::string p; std::getline(in, p, '.');) out.push_back(std::atoi(p.c_str()));
+      return out;
+    };
+    if (best.empty() || parts(v) > parts(fs::path(best).filename().string())) best = it->path().string();
+  }
+  if (best.empty()) {
+    std::fprintf(stderr, "the %s piece is not installed under %s: refusing to answer without it\n", name.c_str(), addons.c_str());
+    std::exit(3);
+  }
+  return best;
+}
+
+std::map<std::string, std::string> required_pieces(const std::string& addons) {
+  return {{"ai-audio", piece_folder(addons, "AI Audio")},
+          {"ai-docs", piece_folder(addons, "AI Documents")},
+          {"ai-faces", piece_folder(addons, "AI Faces")}};
+}
 
 struct noop_host {
   std::string data_dir;
@@ -372,9 +411,7 @@ int search(int argc, char** argv) {
   }
   std::error_code ec;
   fs::create_hard_link(fs::path(gen) / "catalog.db", fs::path(state.data_dir) / "index.db", ec);
-  if (fs::exists(addons + "/AI Audio/0.1.41")) state.pieces["ai-audio"] = addons + "/AI Audio/0.1.41";
-  if (fs::exists(addons + "/AI Documents/0.1.41")) state.pieces["ai-docs"] = addons + "/AI Documents/0.1.41";
-  if (fs::exists(addons + "/AI Faces/0.1.41")) state.pieces["ai-faces"] = addons + "/AI Faces/0.1.41";
+  state.pieces = required_pieces(addons);
   mv_host_api api{};
   api.struct_size = sizeof api;
   api.host_api = MV_ADDON_HOST_API;
@@ -458,11 +495,290 @@ int search(int argc, char** argv) {
   return 0;
 }
 
+
+// ---- publish-engine: the Mac's own publisher, over a copy of its index ---------------------------
+// engine::phone_publish, the code the app's "Publish now" runs: the root picked by volume, the
+// signing key from a store, thumbnails through the host table, catalog::build and deliver with the
+// host's verified copy. The host table is the real one (addon/host.h) over this machine's io; only
+// what the app's viewer and Places add-on serve is supplied here (tiles from ImageIO and
+// AVFoundation, place labels from src/geo).
+
+struct tile_cache {
+  std::string dir;
+  std::mutex m;
+  std::string file(const std::string& path, std::int64_t ms) const {
+    std::size_t h = std::hash<std::string>{}(path + "#" + std::to_string(ms));
+    return dir + "/" + std::to_string(h) + ".jpg";
+  }
+};
+
+mv::result<mv::addon::rgb_image> frame_at(const std::string& path, std::int64_t ms, std::uint32_t max_edge) {
+  @autoreleasepool {
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]] options:nil];
+    AVAssetImageGenerator* g = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
+    g.appliesPreferredTrackTransform = YES;
+    g.maximumSize = CGSizeMake(max_edge, max_edge);
+    g.requestedTimeToleranceBefore = kCMTimeZero;
+    g.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(0.5, 600);
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    __block CGImageRef got = nullptr;
+    [g generateCGImageAsynchronouslyForTime:CMTimeMakeWithSeconds(ms / 1000.0, 600)
+                          completionHandler:^(CGImageRef cg, CMTime, NSError*) {
+                            if (cg) got = CGImageRetain(cg);
+                            dispatch_semaphore_signal(done);
+                          }];
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    if (!got) return mv::err(mv::status::unsupported_format);
+    const size_t w = CGImageGetWidth(got), h = CGImageGetHeight(got);
+    mv::addon::rgb_image out;
+    out.width = static_cast<std::uint32_t>(w);
+    out.height = static_cast<std::uint32_t>(h);
+    std::vector<std::uint8_t> rgba(w * h * 4);
+    CGColorSpaceRef rgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(rgba.data(), w, h, 8, w * 4, rgb, kCGImageAlphaNoneSkipLast);
+    CGColorSpaceRelease(rgb);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), got);
+    CGContextRelease(ctx);
+    CGImageRelease(got);
+    out.rgb.resize(w * h * 3);
+    for (size_t i = 0; i < w * h; ++i) {
+      out.rgb[i * 3] = rgba[i * 4];
+      out.rgb[i * 3 + 1] = rgba[i * 4 + 1];
+      out.rgb[i * 3 + 2] = rgba[i * 4 + 2];
+    }
+    return out;
+  }
+}
+
+std::vector<std::uint8_t> jpeg_of_rgb(const mv::addon::rgb_image& f, CGFloat max_edge, CGFloat quality) {
+  std::vector<std::uint8_t> rgba(f.width * f.height * 4, 255);
+  for (size_t i = 0; i < static_cast<size_t>(f.width) * f.height; ++i) {
+    rgba[i * 4] = f.rgb[i * 3];
+    rgba[i * 4 + 1] = f.rgb[i * 3 + 1];
+    rgba[i * 4 + 2] = f.rgb[i * 3 + 2];
+  }
+  CGColorSpaceRef rgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(rgba.data(), f.width, f.height, 8, f.width * 4, rgb, kCGImageAlphaNoneSkipLast);
+  CGColorSpaceRelease(rgb);
+  CGImageRef image = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  auto out = encode(image, max_edge, quality);
+  CGImageRelease(image);
+  return out;
+}
+
+bool write_all(const std::string& path, const std::vector<std::uint8_t>& bytes) {
+  std::ofstream out(path, std::ios::binary);
+  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  return static_cast<bool>(out);
+}
+
+mv::result<std::vector<std::uint8_t>> read_all(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return mv::err(mv::status::io);
+  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+void write_answers(std::ofstream& out, mv::ai::engine& eng, const std::string& q, std::uint64_t id, double ms) {
+  mv::json::writer w;
+  w.begin_object();
+  w.key("query").string(q);
+  w.key("ms").number(ms);
+  w.key("rows").begin_array();
+  auto count = eng.result_count(id);
+  const std::uint32_t n = count ? *count : 0;
+  for (std::uint32_t i = 0; i < n; ++i) {
+    auto r = eng.result_at(id, i);
+    auto path = eng.result_path(id, i);
+    if (!r || !path) continue;
+    w.begin_array();
+    w.string(*path);
+    w.integer(r->pts_ms);
+    w.integer(r->kind);
+    w.integer(r->match);
+    w.integer(r->more_in_clip);
+    char score[32];
+    std::snprintf(score, sizeof score, "%.7f", r->score);
+    w.raw(score);
+    w.end_array();
+  }
+  w.end_array();
+  w.end_object();
+  out << w.take() << '\n';
+}
+
+// publish-engine <data dir: a copy of the index> <pack> <add-ons> <places.mvgeo> <work> <destination>
+//                <kinds> <queries> <mac answers.jsonl>
+int publish_engine(int argc, char** argv) {
+  if (argc != 11) {
+    std::fprintf(stderr, "publish-engine <data> <pack> <add-ons> <places.mvgeo> <work> <destination> <kinds> <queries> <out.jsonl>\n");
+    return 2;
+  }
+  const std::string data = argv[2], pack = argv[3], addons = argv[4], places = argv[5], work = argv[6], dest = argv[7];
+  const uint32_t kinds = static_cast<uint32_t>(std::stoul(argv[8]));
+  fs::create_directories(work + "/tiles");
+  fs::create_directories(work + "/pack-data");
+  fs::create_directories(dest);
+  std::error_code ec;
+  fs::create_symlink(fs::path(pack).parent_path() / "data" / "fetched", fs::path(work) / "pack-data" / "fetched", ec);
+  auto geo = mv::geo::open_database(places);
+  if (!geo) {
+    std::fprintf(stderr, "no place database\n");
+    return 1;
+  }
+  auto cache = std::make_shared<tile_cache>();
+  cache->dir = work + "/tiles";
+
+  const mv::geo::database& places_db = (*geo)->db();
+  mv::addon::host_services svc;
+  svc.data_dir = data;
+  svc.post = [](const mv_addon_event&) {};
+  svc.should_yield = [] { return false; };
+  svc.thumbnail_jpeg = [cache](const std::string& path, std::int64_t ms) -> mv::result<std::vector<std::uint8_t>> {
+    return read_all(cache->file(path, ms));
+  };
+  svc.thumbnail = [cache](const std::string& path) -> mv::result<std::string> {
+    cat::thumb_want w;
+    w.path = path;
+    w.kind = 1;
+    MV_TRY(auto jpeg, jpeg512_of(w));
+    const std::string file = cache->file(path, -1);
+    if (!write_all(file, jpeg)) return mv::err(mv::status::io);
+    return file;
+  };
+  svc.video_frame = [](const std::string& path, std::int64_t ms, std::uint32_t edge) { return frame_at(path, ms, edge); };
+  svc.moment_thumbnail = [cache](const std::string& path, std::int64_t ms, const mv::addon::rgb_image* f) -> mv::result<std::string> {
+    const std::string file = cache->file(path, ms);
+    if (!f) return fs::exists(file) ? mv::result<std::string>(file) : mv::result<std::string>(mv::err(mv::status::io));
+    if (!write_all(file, jpeg_of_rgb(*f, 512, 0.75))) return mv::err(mv::status::io);
+    return file;
+  };
+  svc.jpeg_shrink = [](std::span<const std::uint8_t> jpeg, std::uint32_t edge, std::uint32_t quality) -> mv::result<std::vector<std::uint8_t>> {
+    @autoreleasepool {
+      NSData* d = [NSData dataWithBytesNoCopy:const_cast<std::uint8_t*>(jpeg.data()) length:jpeg.size() freeWhenDone:NO];
+      CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)d, nullptr);
+      if (!src) return mv::err(mv::status::corrupt);
+      CGImageRef image = CGImageSourceCreateImageAtIndex(src, 0, nullptr);
+      CFRelease(src);
+      if (!image) return mv::err(mv::status::corrupt);
+      auto out = encode(image, edge, quality / 100.0);
+      CGImageRelease(image);
+      return out;
+    }
+  };
+  svc.place_labels = [&places_db](std::span<const std::pair<double, double>> pts) -> mv::result<std::vector<std::string>> {
+    std::vector<std::string> out;
+    for (const auto& p : pts) out.push_back(places_db.lookup(p.first, p.second).label);
+    return out;
+  };
+  // `place:` as the Places add-on answers it (places.h place_query over each indexed file's
+  // coordinates), not a rule of the harness's own. Clip routes (#606) are not walked here.
+  svc.place_matches = [&places_db, index = data + "/index.db"](const std::string& place, const std::function<bool()>&)
+      -> mv::result<std::vector<std::string>> {
+    const auto q = mv::places::place_query::compile(places_db, mv::addon::fold_query(place));
+    std::vector<std::string> out;
+    if (q.empty()) return out;
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(index.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return mv::err(mv::status::io);
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db, "SELECT path, lat, lon FROM assets WHERE lat IS NOT NULL AND lon IS NOT NULL", -1, &s, nullptr);
+    while (s && sqlite3_step(s) == SQLITE_ROW) {
+      if (!q.why(places_db, sqlite3_column_double(s, 1), sqlite3_column_double(s, 2), {}).empty()) {
+        out.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)));
+      }
+    }
+    sqlite3_finalize(s);
+    sqlite3_close_v2(db);
+    return out;
+  };
+  svc.piece_dir = [pieces = required_pieces(addons)](const std::string& piece) -> mv::result<std::string> {
+    auto it = pieces.find(piece);
+    if (it == pieces.end()) return mv::err(mv::status::io);  // ai-cuda, ai-large: not on this Mac
+    return it->second;
+  };
+  mv::addon::host_table table(std::move(svc));
+  mv::ai::host host(table.api());
+
+  mv::ai::engine_deps deps = mv::ai::pack_deps(host, pack, work + "/pack-data");
+  deps.fetch_models = nullptr;  // nothing downloads: the pack's fetched files are linked in
+  deps.photos = [] { return std::unique_ptr<mv::ai::photos_source>(); };
+  deps.cloud = [] { return std::unique_ptr<mv::ai::cloud_files>(); };
+  const std::string keys = work + "/keys";
+  fs::create_directories(keys);
+  deps.key_store = [keys] { return mv::driftwire::secrets::file_store(keys); };
+  mv::ai::engine eng(table.api(), std::move(deps));
+  if (!eng.start()) {
+    std::fprintf(stderr, "engine failed\n");
+    return 1;
+  }
+  // Nothing new to index: the copy is indexed already. Paused, so no pass changes the index
+  // between the snapshot the catalogue is built from and the Mac's answers below.
+  eng.pause(true);
+  // answer-engine: the Mac's answers only, over what an earlier publish-engine made.
+  const bool publish = std::strcmp(argv[1], "publish-engine") == 0;
+  if (publish && !eng.phone_publish(dest)) {
+    std::fprintf(stderr, "publish refused\n");
+    return 1;
+  }
+  for (; publish;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const auto doc = mv::json::parse(eng.phone_json(), 8);
+    if (doc && doc->boolean("running") == false) {
+      std::printf("publish: %s\n", eng.phone_json().c_str());
+      const std::string* error = doc->str("error");
+      if (!error || !error->empty()) return 1;
+      break;
+    }
+  }
+  if (auto secret = mv::driftwire::secrets::file_store(keys)->get("catalogue-signing-key")) {
+    std::printf("publisher_key=%s\n", cat::to_hex(cat::public_of(*secret)).c_str());
+  }
+
+  // The Mac's own answers, from the engine that published (its models, its index).
+  for (;;) {
+    mv_ai_status st{};
+    st.struct_size = sizeof st;
+    eng.status(st);
+    if (st.state != MV_AI_STATE_LOADING) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  std::printf("mac engine: %s\n", eng.settings_json().c_str());
+  // The shipped words, then this library's own names, places, cameras and years (never in the
+  // repo); the whole list goes beside the answers for the phone's run.
+  std::string gen_dir;
+  for (fs::directory_iterator it(fs::path(dest) / ".mediaviewer" / "gen", ec), end; !ec && it != end; it.increment(ec)) {
+    if (fs::exists(it->path() / "manifest.json")) gen_dir = std::max(gen_dir, it->path().string());
+  }
+  write_local_queries(gen_dir, work + "/queries.local.txt");
+  std::vector<std::string> queries = read_lines(argv[9]);
+  for (std::string& q : read_lines(work + "/queries.local.txt")) {
+    if (std::find(queries.begin(), queries.end(), q) == queries.end()) queries.push_back(std::move(q));
+  }
+  {
+    std::ofstream all(work + "/queries.txt");
+    for (const std::string& q : queries) all << q << '\n';
+  }
+  std::ofstream out(argv[10]);
+  for (const std::string& q : queries) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::uint64_t id = eng.search_text(q, std::string(), MV_AI_SCOPE_ALL, kinds == 0 ? MV_AI_KIND_ALL : kinds);
+    if (!eng.wait_search(id, 120000)) return 1;
+    write_answers(out, eng, q, id, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    eng.search_release(id);
+  }
+  eng.stop();
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);  // lines reach a pipe as they are written
   if (argc >= 2 && std::strcmp(argv[1], "publish") == 0) return publish(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "search") == 0) return search(argc, argv);
+  if (argc >= 2 && (std::strcmp(argv[1], "publish-engine") == 0 || std::strcmp(argv[1], "answer-engine") == 0)) {
+    return publish_engine(argc, argv);
+  }
   std::fprintf(stderr, "usage: %s publish|search ...\n", argv[0]);
   return 2;
 }

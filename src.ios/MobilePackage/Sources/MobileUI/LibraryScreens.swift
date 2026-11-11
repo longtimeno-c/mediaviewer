@@ -19,11 +19,17 @@ struct LibraryScreen: View {
     if model.library.isLoading {
       GridSkeleton().background(Theme.ground)
     } else if model.library.sections.isEmpty {
-      VStack(spacing: 0) {
-        noticeSlot
-        emptyWords.frame(maxHeight: .infinity)
+      // Centred while it fits; scrolls at the largest text sizes rather than cut its words short.
+      GeometryReader { space in
+        ScrollView {
+          VStack(spacing: 0) {
+            noticeSlot
+            emptyWords.frame(maxHeight: .infinity)
+          }
+          .frame(maxWidth: .infinity, minHeight: space.size.height)
+        }
+        .scrollBounceBehavior(.basedOnSize)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(Theme.ground)
     } else {
       MediaGrid(sections: model.library.sections, entries: model.library.entries, context: "library") { noticeSlot }
@@ -39,6 +45,7 @@ struct LibraryScreen: View {
       .font(.subheadline)
       .foregroundStyle(Theme.body)
       .multilineTextAlignment(.center)
+      .fixedSize(horizontal: false, vertical: true)
       .padding(24)
   }
 
@@ -111,6 +118,7 @@ private struct PlaceBar: View {
         Color.clear.frame(width: 1, height: 1).id(Self.pathEnd)
         }
       }
+      .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
       // A long path keeps its end, the folder you are in, on screen.
       .onAppear { proxy.scrollTo(Self.pathEnd, anchor: .trailing) }
       .onChange(of: library.trail) {
@@ -147,6 +155,7 @@ private struct PlaceBar: View {
       }
       .padding(.horizontal, Theme.inset)
     }
+    .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
     // A new folder's list starts from its first entry.
     .id(library.trail.last?.id ?? "")
   }
