@@ -687,6 +687,25 @@ The real app links `src/mobile` through `tools/ios/build-core.sh`, a build phase
 `Application Support/library/gen/<epoch>-<generation>/`, the one `library/installed.json` names, with
 the manifest's shared files beside `gen/`.
 
+**Live, end to end.** `tools/ios/search-live.sh` runs the same comparison through the real app. It
+copies an indexed folder's stills and short clips onto a disk image of their own (the "NAS"), points a
+copy of the index at it, and publishes with the desktop engine's own `phone_publish` and the installed
+AI pack. That is the code the Mac's Publish runs, so the catalogue carries the phone's real tower. It
+then asks that engine every query (the Mac's answers), serves the image with `driftwire serve
+--test-loopback` on 127.0.0.1, and pairs, copies and searches in the Simulator (`LiveSearchTests`).
+
+```bash
+tools/ios/search-live.sh "$HOME/Library/Application Support/MediaViewer/Add-ons/AI/data" <indexed folder> <Simulator UDID> <out>
+```
+
+Build the app for the Simulator ad hoc signed (`CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO`) and
+copy it to `<out>/MediaViewer.app`. Without a signature it has no keychain and cannot pair. The real
+index is only read. The Mac's side runs its towers on the CPU at quality High, and answers `place:`
+with the Places add-on's own rule (`place_query`); clip routes are not walked. Tiles come from
+ImageIO and AVFoundation, which cannot read every clip. The phone has no sound tower, so a query the
+Mac answers by sound differs. `tools/ios/small-screen.sh <out>` runs every screen on an iPhone SE
+(3rd generation) Simulator at the largest text size.
+
 The parity test runs the desktop engine, over the real AI pack, and the phone engine, in a Simulator
 of its own, on one published generation, and compares rows and order:
 

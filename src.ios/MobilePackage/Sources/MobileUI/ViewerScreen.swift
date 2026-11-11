@@ -256,6 +256,7 @@ private struct Filmstrip: View {
         .padding(.horizontal, Theme.inset)
         .padding(.vertical, 8)
       }
+      .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
       .onAppear { proxy.scrollTo(current, anchor: .center) }
       .onChange(of: current) { _, new in
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {

@@ -77,6 +77,9 @@ struct MediaGrid<Header: View>: View {
   let entries: GridSource
   /// The name of this grid; a viewer closes onto a tile in the grid that opened it.
   let context: String
+  /// Said in each tile's identifier, never spoken: the search screen names the words its results
+  /// answer, so a test can tell an answer from the one before it.
+  var answering: String = ""
   @ViewBuilder var header: Header
 
   @Environment(AppModel.self) private var model
@@ -125,6 +128,8 @@ struct MediaGrid<Header: View>: View {
     }
     .buttonStyle(TileButtonStyle())
     .accessibilityLabel(entry.accessibilityName)
+    // Never spoken: lets a test name which item a tile is (the live parity run).
+    .accessibilityIdentifier(answering.isEmpty ? "tile:\(entry.item.id.raw)" : "tile:\(entry.item.id.raw)|\(answering)")
     .id(entry.position)
     .modifier(TransitionSource(id: source, namespace: namespace))
   }

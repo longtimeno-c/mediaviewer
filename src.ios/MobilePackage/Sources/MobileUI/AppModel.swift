@@ -467,6 +467,8 @@ public final class SearchModel {
   public private(set) var options = SearchFilterOptions.none
   public private(set) var phase: Phase = .idle
   public private(set) var entries = GridSource.empty
+  /// The words the entries on screen answer: earlier results stay while new ones are found.
+  public private(set) var answered = ""
   public private(set) var recents: [String] = []
   public private(set) var capability: SearchCapability = .ready
   /// True only while someone is actually waiting for the model.
@@ -550,6 +552,7 @@ public final class SearchModel {
         }.value
         guard !Task.isCancelled else { return }
         entries = built
+        answered = query
         phase = hits.isEmpty ? .nothing : .results
       } catch {
         guard !Task.isCancelled, !(error is CancellationError) else { return }

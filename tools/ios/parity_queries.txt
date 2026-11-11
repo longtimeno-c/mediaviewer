@@ -2,6 +2,7 @@
 # own library goes in the repo. A run adds the names, places and years of the catalogue under
 # test (mobile_parity_desktop.mm, write_local_queries).
 mountains
+dog on a beach
 snow on a mountain
 a lake with mountains behind it
 wooden cabin
