@@ -1619,14 +1619,21 @@ for a service too old to wait at a relay.
   the address to `serve.json` and the key to the store; `owner_status` and the caps report the
   address only. The pairing QR stays `"v":1` and gains an optional `"relay":{"address"}`, which an
   older app ignores.
-- **Not built yet:** the phone's side (racing the relay 1.5 s after the direct addresses with
-  `relay::join` under its own token, `src/mobile`), and hole punching between phone and NAS (owner
-  call 4, after the relay; loopback DHT only in tests).
+- **The phone tries it last** (`src/mobile/link.cpp`): a paired phone's race adds the relay 1.5 s
+  after the direct routes and joins its own waiter with `relay::join` under its own token; a direct
+  route that answers always wins, pairing never goes through the relay, and the route report and
+  Settings say "Connected through your relay" (it counts as over the internet for the mobile-data
+  rules). The code's `"relay"` is read when there and kept with the pairing; an old code has none.
+- **Not built yet:** hole punching between phone and NAS (owner call 4, after the relay; loopback
+  DHT only in tests).
 - **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's
   `set_relay` and the QR field in `"[phone-pairing]"`): a paired client lists and range-reads through
   an in-process relay on `127.0.0.1` with no 32-byte run of the file in the relay's bytes; a wrong
-  access key and a revoked phone get nothing; a claim never comes in through it. Never a public
-  relay or the public DHT.
+  access key and a revoked phone get nothing; a claim never comes in through it; a changed key
+  restarts the waiters; only the waiter's own device gets through it; a silent relay does not hold
+  up a stop. The phone's side is in `"[mobile-link]"` (the race through the relay, the direct route
+  winning, an old code, pairing never relayed). Never a public relay or the public DHT. The phone's
+  Swift tests were not run with it (no iOS core build here); the Swift side compiles.
 
 ## What moves, and how it lands
 
