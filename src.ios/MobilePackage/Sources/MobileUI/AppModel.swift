@@ -11,12 +11,15 @@ public struct GridEntry: Identifiable, Hashable, Sendable {
   public let moment: Moment?
   /// Where it sits in the grid's whole list, so opening it costs no search.
   public let position: Int
+  /// File search: why a tag match matched ("Canon EOS R5"), under its tile.
+  public let caption: String?
   public let id: String
 
-  public init(item: MediaItem, moment: Moment? = nil, position: Int = 0) {
+  public init(item: MediaItem, moment: Moment? = nil, position: Int = 0, caption: String? = nil) {
     self.item = item
     self.moment = moment
     self.position = position
+    self.caption = caption
     id = moment.map { "\(item.id.raw)@\($0.seconds)" } ?? item.id.raw
   }
 
@@ -160,12 +163,17 @@ public final class AppModel {
     let now = services.connection.current
     Self.noteFirstEpoch(of: now.catalogue)
     connection = now
-    // A library paired but never copied (the app was killed mid-copy) goes back to the copy.
-    stage = !now.hasLibrary ? .welcome : now.catalogue == nil ? .firstCopy : .main
+    // A library paired but never copied (the app was killed mid-copy) goes back to the copy; one
+    // with no catalogue on its NAS yet opens as its folders (file mode).
+    stage = Self.firstStage(for: now)
     library = LibraryModel(store: services.library)
     search = SearchModel(service: services.search)
     // §8.4: the catalogue opens before SwiftUI finishes attaching.
     if stage == .main { Task { await loadLibrary() } }
+  }
+
+  static func firstStage(for now: ConnectionSnapshot) -> Stage {
+    !now.hasLibrary ? .welcome : now.catalogue == nil && !now.fileMode ? .firstCopy : .main
   }
 
   #if DEBUG
@@ -193,14 +201,20 @@ public final class AppModel {
     for await snapshot in services.connection.updates() {
       if snapshot.synology != connection.synology { dismissedNotices.removeAll() }
       let newCatalogue = snapshot.catalogue != nil && snapshot.catalogue != connection.catalogue
+      // Folders and a catalogue's library are different trees: a switch starts again at the top.
+      let modeChanged = snapshot.hasLibrary && connection.hasLibrary && snapshot.fileMode != connection.fileMode
       Self.noteFirstEpoch(of: snapshot.catalogue)
       connection = snapshot
       guard stage == .main else {
-        if newCatalogue { reloadNeeded = true }
+        if newCatalogue || modeChanged { reloadNeeded = true }
         continue
       }
-      if snapshot.hasLibrary, snapshot.catalogue == nil {
+      if snapshot.hasLibrary, snapshot.catalogue == nil, !snapshot.fileMode {
         stage = .firstCopy
+      } else if modeChanged {
+        viewer = nil
+        library.reset()
+        reload()
       } else if newCatalogue {
         reload()
       }
@@ -211,6 +225,7 @@ public final class AppModel {
   private func reload() {
     Task {
       await loadLibrary()
+      await search.prepare()  // file search and the catalogue's answer differently
       search.rerun()
     }
   }
@@ -551,6 +566,17 @@ public final class SearchModel {
   public private(set) var answer = 0
   /// The words the entries on screen answer: earlier results stay while new ones are found.
   public private(set) var answered = ""
+  /// File search (no catalogue yet): what the last answer searched. nil for the catalogue's search.
+  public private(set) var fileScope: FileScope?
+
+  public struct FileScope: Equatable {
+    /// The folder searched; nil when no folder is open in the library.
+    public let folderName: String?
+    public let found: Int
+    public let outOf: Int
+    /// Tags still being read there: the answer grows as they are.
+    public let readingTags: SearchAnswer.Progress?
+  }
   public private(set) var recents: [String] = []
   public private(set) var capability: SearchCapability = .ready
   /// True only while someone is actually waiting for the model.
@@ -580,6 +606,7 @@ public final class SearchModel {
     warming?.cancel()
     text = ""
     filters = SearchFilters()
+    fileScope = nil
     options = .none
     entries = .empty
     recents = []
@@ -645,17 +672,28 @@ public final class SearchModel {
         if !Task.isCancelled { isWarmingUp = false }
       }
       do {
-        let hits = try await service.search(query, filters: filters)
+        let reply = try await service.answer(query, filters: filters)
+        let hits = reply.hits
         guard !Task.isCancelled else { return }
         let built = await Task.detached(priority: .userInitiated) {
-          GridSource(entries: hits.enumerated().map { GridEntry(item: $1.item, moment: $1.moment, position: $0) })
+          GridSource(entries: hits.enumerated().map { GridEntry(item: $1.item, moment: $1.moment, position: $0, caption: $1.why) })
         }.value
         guard !Task.isCancelled else { return }
         entries = built
         answered = query
+        fileScope = reply.outOf.map {
+          FileScope(folderName: reply.folderName, found: hits.count, outOf: $0, readingTags: reply.readingTags)
+        }
         phase = hits.isEmpty ? .nothing : .results
         shown = phase
         answer += 1
+        // File search: the folder's tags are still being read, so ask again as they arrive, as the
+        // desktop's bar does while it says "Still reading tags".
+        if reply.readingTags != nil {
+          warming.cancel()
+          try? await Task.sleep(for: .milliseconds(700))
+          if !Task.isCancelled { run() }
+        }
       } catch {
         guard !Task.isCancelled, !(error is CancellationError) else { return }
         didFail = true
