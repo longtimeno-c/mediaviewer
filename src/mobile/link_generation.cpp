@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mobile/link_generation.h"
 
-#include <fcntl.h>
 #include <sqlite3.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -14,19 +10,9 @@
 #include <iterator>
 
 #include "core/json.h"
+#include "mobile/file_map.h"
 
 namespace mv::mobile {
-
-struct generation_view::mapped {
-  void* data = nullptr;
-  std::size_t size = 0;
-  ~mapped() {
-    if (data) ::munmap(data, size);
-  }
-  [[nodiscard]] std::span<const std::uint8_t> span() const {
-    return {static_cast<const std::uint8_t*>(data), size};
-  }
-};
 
 namespace {
 
@@ -53,23 +39,7 @@ generation_view::~generation_view() {
 result<std::unique_ptr<generation_view>> generation_view::open(const std::string& dir) {
   std::unique_ptr<generation_view> v(new generation_view());
   v->dir_ = dir;
-  const auto map_file = [&](const std::string& name) -> std::unique_ptr<mapped> {
-    const std::string path = dir + "/" + name;
-    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return nullptr;
-    struct stat st{};
-    if (::fstat(fd, &st) != 0 || st.st_size <= 0) {
-      ::close(fd);
-      return nullptr;
-    }
-    void* data = ::mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ, MAP_SHARED, fd, 0);
-    ::close(fd);
-    if (data == MAP_FAILED) return nullptr;
-    auto m = std::make_unique<mapped>();
-    m->data = data;
-    m->size = static_cast<std::size_t>(st.st_size);
-    return m;
-  };
+  const auto map_file = [&](const std::string& name) { return file_map::open(dir + "/" + name, /*shared=*/true); };
   v->tiny_ = map_file("tiny.pack");
   v->thumbs_ = map_file("thumbs.idx");
   std::ifstream f(dir + "/manifest.json", std::ios::binary);
@@ -98,14 +68,14 @@ result<std::unique_ptr<generation_view>> generation_view::open(const std::string
 
 std::optional<std::span<const std::uint8_t>> generation_view::tiny(std::int64_t asset) const {
   if (!tiny_) return std::nullopt;
-  auto found = ai::catalog::find_tiny(tiny_->span(), asset);
+  auto found = ai::catalog::find_tiny(tiny_->bytes(), asset);
   if (!found || !*found) return std::nullopt;
   return **found;
 }
 
 std::optional<ai::catalog::thumb_location> generation_view::thumb(std::int64_t asset) const {
   if (!thumbs_) return std::nullopt;
-  auto found = ai::catalog::find_thumb(thumbs_->span(), asset);
+  auto found = ai::catalog::find_thumb(thumbs_->bytes(), asset);
   if (!found || !*found) return std::nullopt;
   return **found;
 }

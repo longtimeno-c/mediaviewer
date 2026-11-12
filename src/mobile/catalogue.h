@@ -22,6 +22,8 @@ struct sqlite3;
 
 namespace mv::mobile {
 
+class file_map;
+
 struct model_file {
   std::string name;  // "text.onnx"
   std::string path;  // absolute
@@ -160,8 +162,7 @@ class catalogue {
   std::vector<folder> folders_;
   std::unordered_map<std::string, std::uint32_t> folder_by_key_;
   std::shared_ptr<const listing> all_;
-  const std::uint8_t* tiny_ = nullptr;
-  std::size_t tiny_size_ = 0;
+  std::unique_ptr<file_map> tiny_;
   std::unique_ptr<std::atomic<std::uint32_t>[]> aspects_;  // width << 16 | height, by row
   std::atomic<bool> aspects_filled_{false};
 };

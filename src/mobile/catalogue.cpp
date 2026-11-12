@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mobile/catalogue.h"
 
-#include <fcntl.h>
 #include <sqlite3.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
@@ -19,6 +15,7 @@
 #include "addons/ai/catalog.h"
 #include "addons/ai/index_db.h"
 #include "core/json.h"
+#include "mobile/file_map.h"
 
 namespace mv::mobile {
 namespace {
@@ -177,7 +174,6 @@ std::optional<std::pair<std::uint16_t, std::uint16_t>> jpeg_size(std::span<const
 catalogue::~catalogue() {
   if (db_) sqlite3_close_v2(db_);
   if (faces_) sqlite3_close_v2(faces_);
-  if (tiny_) munmap(const_cast<std::uint8_t*>(tiny_), tiny_size_);
 }
 
 result<std::unique_ptr<catalogue>> catalogue::open(const std::string& generation_dir, const std::string& library_dir) {
@@ -192,18 +188,8 @@ result<std::unique_ptr<catalogue>> catalogue::open(const std::string& generation
     c->faces_ = faces;
   }
   if (c->manifest_.files.count("tiny.pack")) {
-    const std::string path = generation_dir + "/tiny.pack";
-    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return err(status::io);
-    struct stat st {};
-    void* mapped = MAP_FAILED;
-    if (fstat(fd, &st) == 0 && st.st_size > 0) {
-      mapped = mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
-    }
-    ::close(fd);
-    if (mapped == MAP_FAILED) return err(status::io);
-    c->tiny_ = static_cast<const std::uint8_t*>(mapped);
-    c->tiny_size_ = static_cast<std::size_t>(st.st_size);
+    c->tiny_ = file_map::open(generation_dir + "/tiny.pack");
+    if (!c->tiny_) return err(status::io);
   }
   MV_TRY_VOID(c->read_rows());
   return c;
@@ -472,7 +458,7 @@ std::optional<std::int64_t> catalogue::id_at(const std::string& path) const {
 
 std::optional<std::span<const std::uint8_t>> catalogue::tile(std::int64_t id) const {
   if (!tiny_) return std::nullopt;
-  auto found = ai::catalog::find_tiny(std::span<const std::uint8_t>(tiny_, tiny_size_), id);
+  auto found = ai::catalog::find_tiny(tiny_->bytes(), id);
   if (!found || !*found) return std::nullopt;
   return **found;
 }

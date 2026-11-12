@@ -6,6 +6,8 @@
 add_library(mv_mobile_search STATIC
   ${MV_SOURCE_ROOT}/src/mobile/catalogue.cpp
   ${MV_SOURCE_ROOT}/src/mobile/catalogue.h
+  ${MV_SOURCE_ROOT}/src/mobile/file_map.cpp
+  ${MV_SOURCE_ROOT}/src/mobile/file_map.h
   ${MV_SOURCE_ROOT}/src/mobile/search.cpp
   ${MV_SOURCE_ROOT}/src/mobile/search.h
   ${MV_SOURCE_ROOT}/src/mobile/mv_mobile_search.cpp

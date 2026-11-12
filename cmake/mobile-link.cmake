@@ -9,6 +9,7 @@ add_library(mv_mobile_link STATIC
   ${_M}/link.cpp ${_M}/link.h
   ${_M}/link_payload.cpp ${_M}/link_payload.h
   ${_M}/link_generation.cpp ${_M}/link_generation.h
+  ${_M}/file_map.cpp ${_M}/file_map.h
   ${_M}/link_thumbs.cpp ${_M}/link_thumbs.h
   ${_M}/sync.cpp ${_M}/sync.h
   ${_M}/link_abi.cpp ${_M}/mv_mobile_link.h)

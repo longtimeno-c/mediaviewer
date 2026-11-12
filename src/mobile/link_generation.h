@@ -20,6 +20,8 @@ struct sqlite3;
 
 namespace mv::mobile {
 
+class file_map;
+
 struct asset_file {
   std::string uuid;  // catalogue root id, the first part of assets.path
   std::string rel;   // relative to it, in the file's real bytes
@@ -68,8 +70,7 @@ class generation_view {
 
  private:
   generation_view() = default;
-  struct mapped;
-  std::unique_ptr<mapped> tiny_, thumbs_;
+  std::unique_ptr<file_map> tiny_, thumbs_;
   sqlite3* db_ = nullptr;
   std::string dir_;
   std::uint64_t created_ = 0, assets_ = 0;
