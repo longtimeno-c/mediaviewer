@@ -112,3 +112,49 @@ own Mac (Driftwire option 9) instead of a server.
 range-reads and seeks; the relay's recorded bytes contain no 32-byte run of the file in the clear; a client
 without the access key, and a revoked one, are refused through the relay as directly; an old QR and an old
 service still pair and connect directly.
+
+## 9. Hole punching (call 4): the design, for sign-off
+
+Built after the relay (§8, done 2026-11-12). Not started until the owner answers §9.4.
+
+### 9.1 How
+
+Reuse Driftwire's remembered-device meeting (`docs/design/28` "Remembered devices", "Four words over
+the DHT"), not new machinery:
+
+- **The meeting place.** Phone and NAS each derive the pair's hourly DHT target from what they
+  already share: `BLAKE2b(key = access_key, "MediaViewer punch v1" || device_pub || hour)`. A watcher
+  of the DHT sees a target that changes every hour and means nothing without the access key, the
+  same property remembered devices have today.
+- **The NAS** keeps one BEP 44 item per paired device (at most the 4 relay waiters' worth, the same
+  slot rule), refreshed each hour, saying its UDP mapping and NAT kind, sealed to that device.
+- **The phone**, in its race, looks the item up at once (beside the direct routes) and punches with
+  `udp_hub` (UDP first, TCP simultaneous open beside it, the birthday punch when exactly one NAT is
+  hard). A punched stream is a `link`: `serve::client::open` and the service's admission run on it
+  unchanged, Noise XX+psk0 end to end. The NAS binds a punched link to its device as the relay does.
+- **Order of the race:** direct addresses at 0 s, the punch at 0 s (it needs the lookup first, so it
+  finishes later), the relay at 1.5 s. The first handshake that completes wins; the rest are cut.
+
+### 9.2 Cost
+
+- The NAS keeps a UDP socket and a DHT routing table (a few hundred bytes a minute, Driftwire's
+  measured idle cost), and one DHT put per device per hour.
+- The phone does a DHT lookup only when it connects and no direct route answered, never in the
+  background. On mobile data that is a few KB.
+
+### 9.3 Tests
+
+On the loopback DHT swarm (`tests/driftwire_swarm.h`) and its stand-in NATs only. Never the public
+DHT, filtered by tag (`[phone-punch]`). Cases: a punch through two easy NATs, one hard and one easy
+(the birthday), a revoked phone, a wrong access key, and falling back to the relay when the punch
+fails.
+
+### 9.4 Owner calls this needs
+
+1. **The NAS joins the public DHT.** `docs/design/28` says today that `driftwire serve` "never
+   touches the DHT". With this it would, through public bootstrap nodes, announcing hourly targets
+   that mean nothing without the access key, as a desktop with remembered devices does. Yes or no?
+2. **On by default, or a toggle** on the card ("Reach the NAS directly when the network allows")?
+   Recommended: on whenever a relay is set (so there is always a fallback), off otherwise.
+3. **The phone on mobile data looks up the DHT** (a few KB per connect that did not reach home
+   directly). Recommended: yes, under today's mobile-data rules for what moves afterwards.
