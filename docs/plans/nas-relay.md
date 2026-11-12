@@ -5,7 +5,7 @@ address at home, or at a public name and forwarded port away from home ([mobile.
 With no forward (a router that cannot, carrier-grade NAT, a person who will not), the phone works only at
 home. This plan adds a fallback through a relay, using Driftwire's own (`docs/design/28` "Relays"),
 keeping the phone↔NAS handshake (Noise XX+psk0 with the access key, the device-key check) end to end so
-the relay carries ciphertext only. Nothing is built until the owner signs off §6.
+the relay carries ciphertext only. The owner's calls are in §6.
 
 ## 1. What is reused
 
@@ -82,21 +82,20 @@ access key. What it adds is the operator's view of addresses and timing (§6 cal
   mobile data stays off unless the person turned it on, as now.
 - Cost on the NAS: one TCP connection per waiter, a few bytes each minute.
 
-## 6. Owner calls (sign-off needed before building)
+## 6. Owner calls (answered 2026-11-12)
 
-1. **Who runs the relay.** (a) The owner's own server, `driftwire-relay` on a small VPS or any machine with
-   a public port (recommended for now: no third party sees anything). (b) A relay MediaViewer runs for
-   everyone: easiest for people, but MediaViewer then sees every relayed phone's and NAS's address and
-   timing, and pays for the traffic (a privacy-page change, and a service to run). (c) Both, the public one
-   off by default.
-2. **What may go over it.** Everything (recommended, with §5's mobile-data rules), or the catalogue and
-   thumbnails only, with originals and video at home or over a forward.
-3. **A default rate per splice** on the relay (none for one's own server, recommended), or a cap.
-4. **Hole punching later** (§7), or never.
+1. **No public relay will exist** (owner, 2026-11-12). Only a relay the person runs themselves
+   (`driftwire-relay` on their own server) is supported. The card and the docs say plainly that reaching
+   the NAS away from home without a forwarded port needs one's own relay.
+2. **Everything goes over it**, under today's mobile-data rules (§5).
+3. **No rate cap** on one's own relay.
+4. **Hole punching: yes, after the relay.** Built second, as an extra that skips the relay where both
+   NATs allow it, falling back to the relay or the direct address.
 
 ## 7. Later, not in this piece
 
-Hole punching between phone and NAS (only where both NATs allow it, saving relay traffic); more than four
+Hole punching between phone and NAS comes right after the relay (call 4), tested on the loopback DHT
+only. Also later: more than four
 phones away at once (a waiter pool per NAS at the relay, a server change); relaying through the person's
 own Mac (Driftwire option 9) instead of a server.
 
