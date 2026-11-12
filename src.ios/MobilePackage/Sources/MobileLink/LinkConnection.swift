@@ -50,6 +50,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private static let catalogueKey = "link.catalogue"
   private static let libraryKey = "link.libraryID"
   private static let sampleKey = "link.sample"
+  /// The last word was "your access ended": launch opens on the ended card, not a first copy.
+  private static let endedKey = "link.accessEnded"
   private static let nameKey = "link.libraryName"
 
   /// The paired library's id as last published; "" with none or before the first publish. A plain
@@ -63,7 +65,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // What launch paints first comes from a stored value: no Keychain, no files on the main thread.
     let paired = defaults.bool(forKey: Self.pairedKey)
     var first = paired
-      ? ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false,
+      ? ConnectionSnapshot(hasLibrary: true, synology: defaults.bool(forKey: Self.endedKey) ? .accessEnded : .unreachable([]),
+                           macNearby: false,
                            catalogue: Self.catalogue(from: defaults.object(forKey: Self.catalogueKey) as? [String: Any]),
                            cacheBytes: 0)
       : .noLibrary
@@ -207,6 +210,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
     defaults.set(value.libraryID, forKey: Self.libraryKey)
     defaults.set(value.isSample, forKey: Self.sampleKey)
+    defaults.set(value.hasLibrary && value.synology == .accessEnded, forKey: Self.endedKey)
     defaults.set(value.libraryName, forKey: Self.nameKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
@@ -721,16 +725,18 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private func runCopy(overMobileData: Bool, continuation: AsyncThrowingStream<CopyEvent, Error>.Continuation) async throws {
     guard let link = await awaitLink(), !lock.withLock({ forgotten }) else { throw CopyFailure.synologyUnreachable }
     // An ended access copies nothing: a NAS refuses it, and the sample guest's stand-in does too.
-    if sampleGuestEnded() || current.synology == .accessEnded {
-      await retry()  // says so on the card (and, for a NAS, finds out if it was extended)
-      if sampleGuestEnded() || current.synology == .accessEnded { throw CopyFailure.accessEnded }
+    // The connect that says so on the card runs apart from this copy, never awaited here: it
+    // stops and waits for tracked work, this copy among it.
+    if sampleGuestEnded() {
+      Task { [weak self] in await self?.retry() }
+      throw CopyFailure.accessEnded
     }
     let status = await onLinkQueue { () -> Int32 in
       var report = mv_route_report()
       return mv_link_connect(link.raw, nil, &report)  // keeps a live link
     }
     if status == Int32(MV_LINK_ACCESS_ENDED.rawValue) {
-      await retry()
+      Task { [weak self] in await self?.retry() }
       throw CopyFailure.accessEnded
     }
     guard status == 0 else { throw CopyFailure.synologyUnreachable }

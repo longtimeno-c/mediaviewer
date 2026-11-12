@@ -193,6 +193,7 @@ public final class AppModel {
       // The access ended during a copy: the library, with the card that says so.
       if stage == .firstCopy, snapshot.hasLibrary, snapshot.synology == .accessEnded {
         stage = .main
+        Task { await loadLibrary() }  // the grid, empty, under the ended card: never a skeleton left waiting
         continue
       }
       guard stage == .main else {
