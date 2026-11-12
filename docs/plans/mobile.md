@@ -598,6 +598,10 @@ the NAS. A phone that never has it searches as before, without sound.
   its eighth row on. Each query now encodes twice (picture and sound), and the sound encode is the
   ~63 ms: the price of fp32 compute over 8-bit weights. The footprint rises 104 MB, against ~720 MB
   for the Mac's own file.
+- **Live** (`tools/ios/search-live.sh` with `MV_LIVE_SOUND`: the real app pairs, copies, downloads the
+  model from loopback, and answers on its search screen): 268 of 270 identical in count and first
+  tiles, 253 before; the same two queries differ. The query set is the shipped list plus this
+  library's own names, 270 this run (280 in the run of 2026-11-11, whose local names differed).
 - **A new export** is a new pin and an app update (`tools/ios/clap_text_phone.py`, reproducible).
 - **Not done:** the release is not uploaded (it needs the owner's OK); until it is, the download
   ends at a 404, Settings says "Needs an app update", and the next launch tries again, so no update is
