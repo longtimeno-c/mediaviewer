@@ -1,0 +1,133 @@
+<!doctype html>
+<!-- Copyright (C) 2026 longtimeno-c
+     SPDX-License-Identifier: GPL-3.0-or-later
+     Support for the iPhone and iPad app, MediaViewer for NAS: the App Store listing's Support URL.
+     Copied into the GitHub Pages site as it is by tools/package/driftwire_repo.py. The problems
+     below use the app's own words (src.ios/MobilePackage/Sources/MobileUI/Copy.swift).
+     No external assets, no scripts, nothing that tracks. -->
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support: MediaViewer for NAS</title>
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #1d2125; --muted: #5b636b; --rule: #dfe2e5; --accent: #0f7f7a;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ab; --rule: #2c3237; --accent: #4fc4bc; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif;
+}
+main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+h1 { font-size: 2rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+h2 { font-size: 1.15rem; margin: 2.25rem 0 .5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+h3 { font-size: 1rem; margin: 1.5rem 0 .25rem; }
+p, li { max-width: 40rem; }
+.lead { font-size: 1.1rem; color: var(--muted); margin-top: 0; }
+a { color: var(--accent); }
+.small { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>MediaViewer for NAS</h1>
+<p class="lead">Your NAS library, searched from your phone. Support for the iPhone and iPad app.</p>
+
+<h2>What you need</h2>
+<p>The app shows a library that MediaViewer on your computer has already indexed. On its own it has
+nothing to show. You need:</p>
+<ul>
+<li><strong>MediaViewer on a Mac or Windows PC</strong>, with Local search and Driftwire installed,
+and your library on the NAS indexed by Local search. MediaViewer is free:
+<a href="https://github.com/longtimeno-c/mediaviewer/releases/latest">download it here</a>.</li>
+<li><strong>A Synology NAS</strong> running the MediaViewer service, which serves the library to
+your phone. Your computer claims the service and adds phones to it.</li>
+<li><strong>To use it away from home:</strong> a public IPv4 address with one port forwarded to the
+service, or a public IPv6 address with that port open. Without either, the app works only on the
+NAS's own network. Forward that one port only: never the NAS's file sharing or admin page.</li>
+</ul>
+<p>Your computer does not need to be on once the phone is paired. Search runs on the phone, so it
+works with no connection at all; photos and clips come from the NAS.</p>
+
+<h2>Pairing a phone</h2>
+<ol>
+<li>In MediaViewer on your computer, open Settings &rarr; Local search &rarr; Phone access. Claim
+the service on your NAS once, from the NAS's own network.</li>
+<li>Choose <strong>Add a phone</strong> &rarr; <strong>Show code</strong>. A code appears, with your
+library's name and a check code.</li>
+<li>In the app, tap <strong>Scan code</strong> and point the camera at it. No camera? Choose a
+picture of the code, or paste the link MediaViewer shows next to it.</li>
+<li>Check that the phone shows the same library name and check code as the computer, and pair only
+if they match.</li>
+<li>The app connects to the NAS, tests the route from outside over mobile data (an iPad without
+mobile data skips this and says so), and copies the catalogue. A large library can be hundreds of
+megabytes: the app shows the size first, and waits for Wi-Fi unless you tap to copy now.</li>
+</ol>
+<p>The code works once and expires after a short time. If it expires, show a new one.</p>
+
+<h2>Common problems</h2>
+
+<h3>&ldquo;Can't reach your Synology.&rdquo;</h3>
+<p>The app lists each address it tried and why it failed. Check that the NAS is on and the
+MediaViewer service is running, and, away from home, that the port is still forwarded. You can
+keep searching what is on the phone meanwhile, and tap <strong>Try again</strong> in Settings.</p>
+
+<h3>&ldquo;Your Synology can't be reached from the internet.&rdquo;</h3>
+<p>The phone reached the NAS at home but not from outside. Your provider may not give that building
+a public address (many share one address between customers), or the port is not forwarded. Ask
+your provider for a public IPv4 address, or use IPv6 if your provider offers it.</p>
+
+<h3>&ldquo;This code has expired.&rdquo; or &ldquo;That isn't a code MediaViewer can read.&rdquo;</h3>
+<p>Show a new code in MediaViewer on your computer and scan that one. The app only reads codes from
+MediaViewer itself.</p>
+
+<h3>&ldquo;Last updated &hellip; days ago.&rdquo;</h3>
+<p>The phone has the last catalogue your computer published. Open MediaViewer on your computer
+with the NAS reachable so it publishes a new one; the phone picks it up the next time it connects.</p>
+
+<h3>&ldquo;This one hasn't reached your Synology yet.&rdquo;</h3>
+<p>The catalogue knows the item but the file is not on the NAS yet, for example straight after an
+import. Try again once it has copied.</p>
+
+<h3>&ldquo;Your Synology isn't sharing the folder this came from.&rdquo;</h3>
+<p>Add that folder to the service in MediaViewer on your computer, named the same as its shared
+folder on the NAS.</p>
+
+<h3>&ldquo;The MediaViewer service on your Synology needs updating.&rdquo;</h3>
+<p>The app is newer than the service on the NAS. Update the service, then open the app again.</p>
+
+<h3>&ldquo;This phone was removed from your library on your computer.&rdquo;</h3>
+<p>Someone removed this phone in Phone access. Scan a new code to use it again.</p>
+
+<h3>&ldquo;This library was published from a different computer.&rdquo;</h3>
+<p>The library's signing key changed without the old computer handing it over. Scan a new code
+from the computer that publishes the library now.</p>
+
+<h3>&ldquo;This library uses the largest search model, which this phone can't run yet.&rdquo;</h3>
+<p>Local search on your computer uses its largest model. Choose a smaller one there to search from
+the phone.</p>
+
+<h3>&ldquo;MediaViewer isn't allowed to add to Photos.&rdquo;</h3>
+<p>Turn on Photos for MediaViewer in the Settings app. The app asks only to add photos, never to
+read your Photos library.</p>
+
+<h3>Starting again</h3>
+<p>Settings &rarr; <strong>Forget this library</strong> removes everything the app keeps on the phone.
+Nothing on your NAS changes. Scan a new code to connect again.</p>
+
+<h2>Still stuck?</h2>
+<p>Open an issue at
+<a href="https://github.com/longtimeno-c/mediaviewer/issues">github.com/longtimeno-c/mediaviewer/issues</a>
+with your iPhone or iPad model, the app's version (Settings &rarr; About), and the message the app
+showed. Issues are public, so leave out addresses, file names and anything personal.</p>
+
+<p class="small"><a href="../privacy/">Privacy</a> &middot; <a href="../../">MediaViewer</a>
+&middot; Oakforge Studios LTD</p>
+</main>
+</body>
+</html>

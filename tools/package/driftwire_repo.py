@@ -16,7 +16,9 @@ linux-cli artefacts, from cmake/driftwire-cli), and the macOS archive (tools/mac
 and the Windows zip (tools/package/driftwire-windows.ps1) when they are there, and writes, for
 URL = <Pages root>/driftwire:
 
-    SITE/index.html                    links to driftwire/ (the Pages root)
+    SITE/index.html                    the front page, from packaging/site, links to driftwire/
+    SITE/iphone/privacy/index.html,    the iPhone app's privacy and support pages, from packaging/site
+      iphone/support/index.html        (the App Store listing's URLs)
     SITE/driftwire/index.html          what driftwire is and how to install it
     SITE/driftwire/install.sh          the installer, URL and the key's fingerprint baked in (on
                                        macOS it names the Homebrew tap of --github-repo's owner,
@@ -81,6 +83,9 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / 'packaging' / 'linux' / 'repo'
 WINDOWS_TEMPLATES = ROOT / 'packaging' / 'windows'
+# The site's own pages, copied as they are: the front page and the iPhone app's support and
+# privacy pages (the App Store listing's URLs, src.ios/AppStore/listing.md).
+STATIC_PAGES = ROOT / 'packaging' / 'site'
 
 # Debian architecture → the RPM's and the tarball's (cmake/driftwire-cli's CPack names).
 ARCHES = {'amd64': 'x86_64', 'arm64': 'aarch64'}
@@ -383,6 +388,15 @@ def copy(src, dst):
     os.chmod(dst, 0o644)
 
 
+def copy_static_pages(site, pages=STATIC_PAGES):
+    """packaging/site into SITE as it is: index.html at the root, iphone/privacy/ and iphone/support/."""
+    for src in sorted(pages.rglob('*')):
+        if src.is_symlink():
+            raise ValueError(f'{src.name} is a link')
+        if src.is_file():
+            copy(src, site / src.relative_to(pages))
+
+
 def fill(template, values):
     path = template if isinstance(template, Path) else TEMPLATES / template
     text = path.read_text(encoding='utf-8')
@@ -527,12 +541,7 @@ def build_pages(site, dw, packages, base, signer, github_repo=GITHUB_REPO):
         'MACOS_NO_BREW': no_brew,
     }
     write(dw / 'index.html', fill('index.html', values))
-    write(site / 'index.html',
-          '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-          '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-          '<title>driftwire</title>\n<meta http-equiv="refresh" content="0; url=driftwire/">\n</head>\n'
-          '<body>\n<p><a href="driftwire/">driftwire</a>: the Driftwire command line.</p>\n'
-          '</body>\n</html>\n')
+    copy_static_pages(site)
     script = fill('install.sh', {'DRIFTWIRE_REPO_URL': base, 'DRIFTWIRE_KEY_FINGERPRINTS': ' '.join(signer.fingerprints),
                                  'DRIFTWIRE_BREW_TAP': github_repo.split('/')[0] + '/tap',
                                  'DRIFTWIRE_RELEASES_URL': f'https://github.com/{github_repo}/releases/latest'})
