@@ -1191,6 +1191,77 @@ TEST_CASE("notices and keep-alive are tables the hosts read; a notice's button r
   CHECK(mv::json::parse(r.notices_json())->find("busy")->a.empty());
 }
 
+TEST_CASE("a kept add-on's menu rows are checked, shown with its keep, and picked rows reach it",
+          "[addon][slots][screens]") {
+  slot_registry r;
+  std::atomic<std::uint32_t> bits{0};
+  r.set_listener([&](std::uint32_t b) { bits |= b; });
+  const std::string rows =
+      R"({"items":[{"kind":"text","label":"Sending to Ann · 42%"},{"kind":"button","id":"out_cancel","label":"Cancel"},)"
+      R"({"kind":"separator"},{"kind":"files","id":"send_files","label":"Send Files"},)"
+      R"({"kind":"toggle","id":"internet","label":"Over the internet","value":true}]})";
+  CHECK(r.keep_menu("slotstest", rows) == status::not_found);  // before attach: retry
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  fake_client* fc = client.get();
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+
+  // Bounds: an unknown kind, a bad id, no label, a toggle without a value, 17 rows, not JSON.
+  CHECK(r.keep_menu("slotstest", R"({"items":[{"kind":"slider","id":"a","label":"A"}]})") == status::invalid_arg);
+  CHECK(r.keep_menu("slotstest", R"({"items":[{"kind":"button","id":"Bad-Id","label":"A"}]})") == status::invalid_arg);
+  CHECK(r.keep_menu("slotstest", R"({"items":[{"kind":"button","id":"a"}]})") == status::invalid_arg);
+  CHECK(r.keep_menu("slotstest", R"({"items":[{"kind":"toggle","id":"a","label":"A"}]})") == status::invalid_arg);
+  std::string many = R"({"items":[)";
+  for (int i = 0; i < 17; ++i) many += std::string(i ? "," : "") + R"({"kind":"separator"})";
+  CHECK(r.keep_menu("slotstest", many + "]}") == status::invalid_arg);
+  CHECK(r.keep_menu("slotstest", "{") == status::invalid_arg);
+
+  // Kept, but shown only inside a keep entry; picking needs the keep too.
+  bits = 0;
+  REQUIRE(r.keep_menu("slotstest", rows) == status::ok);
+  CHECK((bits & mv::addon::slot_changed_notices) != 0);
+  CHECK(r.menu_action("slotstest", "internet", "false") == status::not_found);
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  auto doc = mv::json::parse(r.notices_json());
+  const auto* menu = doc->find("keep")->a[0].find("menu");
+  REQUIRE(menu);
+  REQUIRE(menu->a.size() == 5);
+  CHECK(*menu->a[0].str("kind") == "text");
+  CHECK(menu->a[0].find("id") == nullptr);
+  CHECK(*menu->a[4].str("id") == "internet");
+  CHECK(menu->a[4].find("value")->b);
+  bits = 0;
+  REQUIRE(r.keep_menu("slotstest", rows) == status::ok);
+  CHECK(bits == 0);  // unchanged: no wake
+
+  // Picked rows: each value must fit its kind; text and unknown rows are not rows to pick.
+  CHECK(r.menu_action("slotstest", "internet", "1") == status::invalid_arg);
+  CHECK(r.menu_action("slotstest", "send_files", "[]") == status::invalid_arg);
+  CHECK(r.menu_action("slotstest", "send_files", R"(["a",1])") == status::invalid_arg);
+  CHECK(r.menu_action("slotstest", "nothing", "") == status::not_found);
+  CHECK(r.menu_action("ghost", "internet", "true") == status::not_found);
+  REQUIRE(r.menu_action("slotstest", "internet", "false") == status::ok);
+  REQUIRE(r.menu_action("slotstest", "send_files", R"(["/a.jpg"])") == status::ok);
+  REQUIRE(r.menu_action("slotstest", "out_cancel", "") == status::ok);
+  r.drain();
+  {
+    std::lock_guard lock(fc->m);
+    REQUIRE(fc->events.size() == 3);
+    CHECK(fc->events[0] == "16:internet:false");
+    CHECK(fc->events[1] == "16:send_files:[\"/a.jpg\"]");
+    CHECK(fc->events[2] == "16:out_cancel:null");
+  }
+
+  // An empty list takes the rows away; detach takes them too.
+  REQUIRE(r.keep_menu("slotstest", "") == status::ok);
+  CHECK(mv::json::parse(r.notices_json())->find("keep")->a[0].find("menu") == nullptr);
+  REQUIRE(r.keep_menu("slotstest", rows) == status::ok);
+  r.detach("slotstest");
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
+          status::ok);
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  CHECK(mv::json::parse(r.notices_json())->find("keep")->a[0].find("menu") == nullptr);
+}
+
 TEST_CASE("surfaces are copied, bounded, and go with their tree", "[addon][slots][screens]") {
   slot_registry r;
   auto client = std::make_unique<fake_client>(r, "slotstest");

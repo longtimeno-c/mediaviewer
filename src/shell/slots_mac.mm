@@ -102,6 +102,9 @@ extern "C" int32_t mv_chrome_slots_notices(char* buf, int32_t size) {
 extern "C" bool mv_chrome_slots_notice_action(const char* addon, const char* notice, const char* action) {
   return mv::addon::default_slots().notice_action(str(addon), str(notice), str(action)) == mv::status::ok;
 }
+extern "C" bool mv_chrome_slots_menu_action(const char* addon, const char* item, const char* value_json) {
+  return mv::addon::default_slots().menu_action(str(addon), str(item), str(value_json)) == mv::status::ok;
+}
 
 extern "C" uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
                                                  const mv_chrome_slot_theme* theme, float width,
