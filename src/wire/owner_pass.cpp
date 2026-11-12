@@ -226,6 +226,7 @@ lockout load_lockout(secrets::store& store, std::int64_t now) {
   lockout l;
   l.claim.misses = l.owner.misses = kFreeMisses;
   l.claim.until = l.owner.until = now + kFirstLockSeconds;
+  (void)save_lockout(store, l);  // readable again, and over in kFirstLockSeconds
   return l;
 }
 

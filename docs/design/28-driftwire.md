@@ -1413,7 +1413,8 @@ service cannot ask for a cheap answer.
   (a NAS claimed before this) the device key does everything, as before (call C4).
 - **Wrong answers** are counted per counter (claims; the owner's sessions and its own re-claim) in
   `owner_lockout`, written before the answer is checked: 5 free, then 15 minutes doubling to a day,
-  and at most one answer a second. A broken lockout file reads as locked.
+  and wrong answers at most one a second (a right one never waits). A broken lockout file reads as
+  locked for 15 minutes and is written back readable.
 - **Recovery**: `driftwire serve passphrase reset` on the NAS, as the service's user, which can edit
   the store anyway (so the command line never asks for the passphrase, call C3). The new one is
   stretched first and written over the old; the lockouts go. A NAS rolled back to a binary from before

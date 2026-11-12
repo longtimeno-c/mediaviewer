@@ -291,7 +291,7 @@ passphrase"): failing open would hand the service to whoever claims next.
 ### 6.2 `owner_lockout`
 
 `{"v":1,"claim":{"misses":n,"until":unix,"level":k},"owner":{…}}`. Unreadable: treated as locked for
-15 minutes from start, and `reset` rewrites it.
+15 minutes from when it is read, and written back that way, so the lock ends; `reset` rewrites it.
 
 ### 6.3 `library_grants`
 
