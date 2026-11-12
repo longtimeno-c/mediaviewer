@@ -44,6 +44,20 @@
 // learns that two connections wanted each other, their addresses, the time
 // and the size. Nothing here logs an address or a token (rule 6): a server
 // counts pairs, never names them. Portable (D9): links only.
+//
+// Forwarding (the Tunnel, 2026-11-12; docs/plans/driftwire-menu-and-tunnel.md):
+// a key holder may also ask the server to open a TCP connection to a host
+// and port and copy bytes both ways, so a person's own web traffic leaves
+// through their own server. The same handshake as a waiter's (CPace on the
+// key, then Noise NNpsk0), role kForwarder; the client's answer carries the
+// host and port, sealed, so a network on the path sees neither. The server
+// says one sealed word (kForwarding, or why not), then the bytes go both
+// ways as sealed frames (sealed_link), never as they are: a plain HTTP
+// request would otherwise show its host to the filter it is meant to pass.
+// Never for anyone without the key: not an open proxy. Ports 80 and 443
+// unless the server's person says others, a cap on forwards at once, TCP
+// only, and only to public addresses (a name that resolves to a private one
+// is refused: the server is not a way into its own network).
 #pragma once
 
 #include <array>
@@ -57,6 +71,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -71,12 +86,15 @@ using token = std::array<std::uint8_t, kTokenBytes>;
 inline constexpr std::size_t kIdBytes = 16;
 using token_id_bytes = std::array<std::uint8_t, kIdBytes>;
 inline constexpr std::uint8_t kVersion = 3;  // #500: 2 said the token and a replayable proof in the clear
-inline constexpr std::uint8_t kSender = 0, kWaiter = 1;
+inline constexpr std::uint8_t kSender = 0, kWaiter = 1, kForwarder = 2;
 // "MVRL", the version, the role, two zero bytes.
 inline constexpr std::size_t kHeadBytes = 8;
 inline constexpr std::size_t kSessionIdBytes = 16;  // a waiter's CPace sid
 // The server's word, sealed: one byte and its tag.
 inline constexpr std::uint8_t kRegistered = 'R', kPaired = 'P';
+// The server's word to a forwarder: forwarding, or why not.
+inline constexpr std::uint8_t kForwarding = 'F', kForwardOff = 'O', kForwardPort = 'X', kForwardBusy = 'B',
+                              kForwardUnreachable = 'U', kForwardNotPublic = 'N';
 inline constexpr std::size_t kWordBytes = 1 + noise::kTagBytes;
 // A connection to a relay server finishes its handshake within this.
 inline constexpr int kHelloMs = 5000;
@@ -89,6 +107,14 @@ inline constexpr int kReregisterMs = 60000;
 inline constexpr std::uint16_t kDefaultPort = 47614;
 // A server key, as typed after '#', at least this long.
 inline constexpr std::size_t kMinKeyChars = 16;
+// A forward's host, as asked: a name or an address, at most this long.
+inline constexpr std::size_t kMaxHostBytes = 253;
+// The server's connect to a forward's host, every address of it in all.
+inline constexpr int kForwardConnectMs = 8000;
+// A forwarder's wait for the server's word: the handshake and that connect.
+inline constexpr int kForwardWaitMs = kHelloMs + kForwardConnectMs;
+// A sealed frame's plaintext, at most.
+inline constexpr std::size_t kSealedChunk = 16 * 1024;
 
 [[nodiscard]] token random_token();
 // A fresh server key: 26 characters of Crockford base32 (130 bits).
@@ -155,6 +181,57 @@ class waiting {
 // closed it (replaced, refused, or gone).
 [[nodiscard]] expected wait_paired(waiting& w, int wait_ms, const std::function<bool()>& stopped);
 
+// A link whose bytes go as sealed frames (a 2-byte length, then the AEAD of
+// at most kSealedChunk bytes) under one key each way: a forward's stream
+// between the client and the server. A frame that does not open closes it.
+// One reader and one writer at a time (on two threads, as a splice).
+class sealed_link final : public link {
+ public:
+  sealed_link(std::unique_ptr<link> inner, std::unique_ptr<noise::cipher_state> send,
+              std::unique_ptr<noise::cipher_state> recv, const char* through = "relay")
+      : inner_(std::move(inner)), send_(std::move(send)), recv_(std::move(recv)), through_(through) {}
+  [[nodiscard]] expected write_all(std::span<const std::uint8_t> bytes) override;
+  [[nodiscard]] result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override;
+  void shutdown() noexcept override { inner_->shutdown(); }
+  [[nodiscard]] transport via() const noexcept override { return inner_->via(); }
+  [[nodiscard]] const char* through() const noexcept override { return through_; }
+
+ private:
+  std::unique_ptr<link> inner_;
+  std::unique_ptr<noise::cipher_state> send_, recv_;
+  const char* through_;
+  // The reader's own: a frame read in part, and plaintext not yet handed out.
+  std::array<std::uint8_t, 2> len_{};
+  std::size_t len_got_ = 0;
+  std::vector<std::uint8_t> frame_;
+  std::size_t frame_got_ = 0;
+  std::vector<std::uint8_t> plain_;
+  std::size_t plain_at_ = 0;
+};
+
+// What a forward came to, on the client's side.
+enum class forward_answer : std::uint8_t {
+  ok,
+  key,          // the server did not prove the key (the wrong key, or not that server)
+  off,          // the server does not forward
+  port,         // not a port it forwards to
+  busy,         // its forwards are all in use
+  unreachable,  // nothing at that host answered it (or the name did not resolve)
+  not_public,   // the host is on a private network (or the server itself)
+  failed,       // the connection to the server failed or closed
+};
+[[nodiscard]] const char* forward_answer_name(forward_answer a) noexcept;
+// A forwarder: the handshake with the server key `key`, the host and port
+// sealed, and the server's word, within `wait_ms`. On ok, the stream to the
+// host (a sealed_link). `said` says what came of it either way. `host`: a
+// name or an address (no brackets), 1..kMaxHostBytes.
+[[nodiscard]] result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string& key,
+                                                    const std::string& host, std::uint16_t port, int wait_ms,
+                                                    forward_answer& said);
+// A host a forward may name: 1..kMaxHostBytes of letters, digits, '.', '-',
+// '_' and ':' (an IPv6 address). Pure.
+[[nodiscard]] bool forward_host_ok(std::string_view host) noexcept;
+
 // A link through a relay (through() says so, for the window), whose first
 // bytes may already have been read: they come first.
 class relayed_link final : public link {
@@ -200,10 +277,29 @@ class server {
     int max_waiting = 64;
     int wait_ms = 10 * 60 * 1000;  // a code lives 10 minutes
     limits lim;
+    // Forwarding (the Tunnel): the ports a key holder may reach (empty: no
+    // forwarding at all), forwards at once, and each forward's limits (a
+    // browser keeps a connection open a while between requests).
+    std::vector<std::uint16_t> forward_ports{80, 443};
+    int max_forwards = 64;
+    limits forward_lim = [] {
+      limits l;
+      l.idle_ms = 10 * 60 * 1000;
+      return l;
+    }();
+    // The tests: forward to loopback and private addresses too.
+    bool forward_private = false;
+    // How a forward reaches its host (net::resolve, then net::connect, when
+    // empty; the tests).
+    std::function<result<std::unique_ptr<link>>(const std::string& host, std::uint16_t port, int timeout_ms,
+                                                forward_answer& why)>
+        forward_connect;
   };
   struct counts {
     std::uint64_t paired = 0, refused = 0, waiting = 0, active = 0;
     std::uint64_t bytes = 0;  // spliced, both ways, every splice that ended
+    std::uint64_t forwarded = 0, forwarding = 0;  // forwards made, and open now
+    std::uint64_t forward_refused = 0;            // key holders' forwards said no to
   };
   [[nodiscard]] static result<std::unique_ptr<server>> start(options o);
   ~server();
@@ -221,6 +317,8 @@ class server {
   void handle(std::shared_ptr<link> l, const net::address& from);
   void serve_waiter(std::shared_ptr<link> l, const token& t, std::unique_ptr<noise::cipher_state> to_waiter,
                     const net::address& from);
+  void serve_forward(std::shared_ptr<link> l, std::string host, std::uint16_t port,
+                     std::unique_ptr<noise::cipher_state> to_client, std::unique_ptr<noise::cipher_state> from_client);
   void reap_locked();
 
   options opts_;

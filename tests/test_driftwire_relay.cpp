@@ -12,6 +12,8 @@
 // needs the stand-in DHT, is in test_driftwire_dht.cpp.
 #include "driftwire_fixture.h"
 
+#include <cctype>
+
 #include "addons/driftwire/invite.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/relay.h"
@@ -895,4 +897,176 @@ TEST_CASE("driftwire relay: the relay server's key is kept in the secret store, 
   }
   auto store = sp::secrets::file_store(utf8(dir / "secrets"));
   CHECK_FALSE(store->get(mv::driftwire::known::kRelayKeyName));
+}
+
+// ---- the Tunnel: forwarding on the relay server (docs/plans/driftwire-menu-and-tunnel.md) ----
+
+namespace {
+
+// A TCP server on loopback that echoes what each connection says, upper-cased
+// (so an echo is not mistaken for the bytes going one way only).
+struct echo_server {
+  std::unique_ptr<sp::net::listener> l;
+  std::thread t;
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> conns;
+  echo_server() {
+    auto x = sp::net::listen(true);
+    REQUIRE(x);
+    l = std::move(*x);
+    t = std::thread([this] {
+      while (!stop.load()) {
+        auto c = l->accept(200);
+        if (!c) {
+          if (c.error() == mv::status::cancelled) return;
+          continue;
+        }
+        std::shared_ptr<sp::link> one(std::move(*c));
+        conns.emplace_back([this, one] {
+          std::vector<std::uint8_t> b(4096);
+          while (!stop.load()) {
+            auto n = one->read_some(b, 200);
+            if (!n && n.error() == mv::status::timeout) continue;
+            if (!n || *n == 0) break;
+            for (std::size_t i = 0; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
+            if (!one->write_all(std::span<const std::uint8_t>(b.data(), *n))) break;
+          }
+          one->shutdown();
+        });
+      }
+    });
+  }
+  ~echo_server() {
+    stop.store(true);
+    l->shutdown();
+    t.join();
+    for (auto& c : conns) c.join();
+  }
+  std::uint16_t port() const { return l->port(); }
+};
+
+relay::server::options forward_options(std::uint16_t allowed_port) {
+  auto o = server_options();
+  o.forward_ports = {allowed_port};
+  o.forward_private = true;  // the echo server is on loopback
+  return o;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire relay: a key holder's forward reaches the host, sealed both ways", "[driftwire]") {
+  echo_server echo;
+  auto s = relay::server::start(forward_options(echo.port()));
+  REQUIRE(s);
+  auto tap = std::make_unique<wiretap>(dial((*s)->port()));
+  auto sent = tap->sent, heard = tap->heard;
+  relay::forward_answer said{};
+  auto f = relay::forward(std::move(tap), kKey, "127.0.0.1", echo.port(), relay::kForwardWaitMs, said);
+  REQUIRE(f);
+  CHECK(said == relay::forward_answer::ok);
+  CHECK(std::string((*f)->through()) == "relay");
+  // More than one sealed frame each way.
+  std::string ask = "GET / HTTP/1.1\r\nHost: blocked.example\r\n\r\n";
+  while (ask.size() < 3 * relay::kSealedChunk) ask += "padding-padding-padding-";
+  REQUIRE((*f)->write_all({reinterpret_cast<const std::uint8_t*>(ask.data()), ask.size()}));
+  const auto back = read_n(**f, ask.size());
+  std::string upper = ask;
+  for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  CHECK(std::string(back.begin(), back.end()) == upper);
+  // A network on the path sees neither the host asked for, nor what went.
+  const std::string host = "127.0.0.1", site = "blocked.example", key = kKey;
+  CHECK_FALSE(contains(*sent, host));
+  CHECK_FALSE(contains(*sent, site));
+  CHECK_FALSE(contains(*heard, std::string("BLOCKED.EXAMPLE")));
+  CHECK_FALSE(contains(*sent, key));
+  (*f)->shutdown();
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((*s)->snapshot().forwarding > 0 && std::chrono::steady_clock::now() < until) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  const auto c = (*s)->snapshot();
+  CHECK(c.forwarded == 1);
+  CHECK(c.forwarding == 0);
+  CHECK(c.bytes >= 2 * ask.size());
+}
+
+TEST_CASE("driftwire relay: no forward without the key, to another port, past the cap, or into a private network",
+          "[driftwire]") {
+  echo_server echo;
+  relay::forward_answer said{};
+  SECTION("the wrong key: the server proves nothing and hears no host") {
+    auto s = relay::server::start(forward_options(echo.port()));
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), "not the server's key at all", "127.0.0.1", echo.port(), 5000,
+                               said));
+    CHECK(said == relay::forward_answer::key);
+    CHECK((*s)->snapshot().forwarded == 0);
+  }
+  SECTION("a port it does not forward to") {
+    auto s = relay::server::start(forward_options(echo.port()));
+    REQUIRE(s);
+    const std::uint16_t other = echo.port() == 443 ? 444 : 443;
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", other, 5000, said));
+    CHECK(said == relay::forward_answer::port);
+  }
+  SECTION("forwarding off") {
+    auto o = forward_options(echo.port());
+    o.forward_ports.clear();
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::off);
+  }
+  SECTION("by default, only public addresses: loopback and a private name are refused") {
+    auto o = forward_options(echo.port());
+    o.forward_private = false;
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "192.168.1.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "localhost", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+  }
+  SECTION("the cap: a second forward while the first is open is busy") {
+    auto o = forward_options(echo.port());
+    o.max_forwards = 1;
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    auto first = relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said);
+    REQUIRE(first);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::busy);
+  }
+  SECTION("nothing listening there") {
+    auto o = forward_options(1);  // nothing listens on loopback port 1
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", 1, relay::kForwardWaitMs, said));
+    CHECK(said == relay::forward_answer::unreachable);
+  }
+}
+
+TEST_CASE("driftwire relay: a forward's host is checked, and a sealed frame that does not open closes it",
+          "[driftwire]") {
+  CHECK(relay::forward_host_ok("example.com"));
+  CHECK(relay::forward_host_ok("2001:db8::1"));
+  CHECK_FALSE(relay::forward_host_ok(""));
+  CHECK_FALSE(relay::forward_host_ok("bad host"));
+  CHECK_FALSE(relay::forward_host_ok("a/b"));
+  CHECK_FALSE(relay::forward_host_ok(std::string(relay::kMaxHostBytes + 1, 'a')));
+  echo_server echo;
+  auto s = relay::server::start(forward_options(echo.port()));
+  REQUIRE(s);
+  // A recorded forward said again opens nothing: the server's fresh
+  // ephemeral makes the old answer useless (the connection is closed).
+  auto tap = std::make_unique<wiretap>(dial((*s)->port()));
+  auto sent = tap->sent;
+  relay::forward_answer said{};
+  auto f = relay::forward(std::move(tap), kKey, "127.0.0.1", echo.port(), 5000, said);
+  REQUIRE(f);
+  (*f)->shutdown();
+  CHECK(says_and_is_closed((*s)->port(), *sent));
+  CHECK((*s)->snapshot().forwarded == 1);
 }
