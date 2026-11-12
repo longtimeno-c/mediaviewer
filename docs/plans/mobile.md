@@ -612,6 +612,20 @@ reason. With limited Photos access, it says only the chosen photos are covered.
 on its next walk and the next published catalogue includes them. The app says so if the folder
 is not indexed.
 
+### 10b.1 Open calls for 1.1 (written 2026-11-12, before M11 is built)
+
+What §10b and §7.2 leave open. Each has a recommendation; none is built until answered.
+
+| # | Call | Recommendation |
+|---|---|---|
+| B1 | **Who names the backup folder.** | The owner, on the desktop card: "Add a backup folder" is the existing "Add folder" with a storage limit, and the service marks that named folder writable. The phone picks among the writable folders the service lists (usually one) and never names a NAS path. |
+| B2 | **Who may write.** Today every paired phone holds a read-only grant. | Every paired phone may create files in every backup folder. A scoped or temporary grant (being built separately for `driftwire serve`) can take that away; a read-only grant never writes. |
+| B3 | **The ledger copy on the NAS replaces itself** (§10b says temp file and rename), which breaks "never replaces a file". | Allow exactly one exception: the service replaces `<folder>/.mediaviewer-phone-backup/<device id>/ledger.json`, and only for the device whose id it is. Every other write creates a new file or fails. |
+| B4 | **An interrupted large file.** A 4 GB clip killed at 3.9 GB starts over. | The service may append to, or remove, a `.part` it made itself for that same device, never anything else. A run resumes a `.part` from its size; the service still hashes the whole file on disk before the rename. |
+| B5 | **What the storage limit counts.** | The bytes in that backup folder as the service counts them (walked at start, then kept up to date by its own writes, including `.part` files). Separately, "NAS full" when the volume would keep less than 1 GB free after the file. The card asks for a limit, suggesting the smaller of 1 TB and half the free space. |
+| B6 | **Backup in the sample library** (owner: SAMPLE must demo every feature, and must never upload anyone's photos). | The real backup code with the person's own Photos as the source (so the Photos prompt and limited access are seen), into a clearly labelled **"Sample NAS on this iPhone"** folder in the app's own storage, through the same C++ writer the service uses. Its storage limit is 250 MB, so "Storage limit reached" can be seen. Nothing leaves the phone. Forget removes the folder and its ledger. No change to the `sample-library` release, so no republish. |
+| B7 | **The desktop indexes what arrives.** | The backup folder is chosen from the desktop's own search roots on that share (or added as one when chosen), so its next walk indexes it and the next publish carries it to the phone. The card says when it is not indexed. |
+
 **#46** (phone to desktop through Import) is a different route and stays open. Its findings carry
 over: native PhotoKit, and streaming rather than staging originals.
 
