@@ -28,6 +28,21 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// How long to wait for the service to catch up: a sanitizer build on a loaded runner is far slower.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define MV_SERVE_TEST_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define MV_SERVE_TEST_SANITIZED 1
+#endif
+#if defined(MV_SERVE_TEST_SANITIZED)
+constexpr int kSlowSeconds = 60;
+#else
+constexpr int kSlowSeconds = 15;
+#endif
+
 const std::string kRootA = "a1a1a1a1a1a1a1a1";
 const std::string kRootB = "b2b2b2b2b2b2b2b2";
 
@@ -479,8 +494,20 @@ TEST_CASE("serve: one address over its limit does not spend its /48's budget", "
       std::make_unique<two_doors>(std::move(*v6), std::move(*v4), sp::net::parse_address("2001:db8:1:2::1"),
                                   sp::net::parse_address("2001:db8:1:1::1")));
   service_fixture s(/*per_minute=*/2, 2, 16, 8, [doors] { return std::move(*doors); });
-  for (int i = 0; i < 40; ++i) (void)sp::net::connect({"127.0.0.1", v4_port}, 500);
-  REQUIRE(eventually([&] { return s.srv->stats().accepted >= 40; }));
+  {
+    // Count the connects that got through (a loaded or sanitized runner drops some) and hold
+    // them open until the service has accepted every one; then close them.
+    std::vector<std::unique_ptr<sp::link>> noisy;
+    for (int i = 0; i < 40; ++i) {
+      auto l = sp::net::connect({"127.0.0.1", v4_port}, 2000);
+      if (l) noisy.push_back(std::move(*l));
+    }
+    INFO(noisy.size() << " of 40 connects got through");
+    // Well past the /48's eight, so a noisy /64 that spent the /48's budget would lock it out.
+    REQUIRE(noisy.size() >= 16);
+    const auto sent = noisy.size();
+    REQUIRE(eventually([&] { return s.srv->stats().accepted >= sent; }, kSlowSeconds));
+  }
   // The noisy /64 has spent its own two, not the /48's eight.
   auto c = s.open_client();
   CHECK(c->roots());
