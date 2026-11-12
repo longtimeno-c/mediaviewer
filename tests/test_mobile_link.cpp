@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <future>
 #include <fstream>
 #include <memory>
@@ -1710,7 +1711,7 @@ TEST_CASE("file mode: library.json and no catalogue the phone can verify is file
     CHECK(plan.outcome == mob::sync_outcome::no_catalogue);
     CHECK(plan.library_root == "c2c2c2c2c2c2c2c2");
   }
-  SECTION("a current.json signed by a key this phone did not pin") {
+  SECTION("a current.json signed by a key this phone did not pin is refused, not file mode (§11.3)") {
     rig r(300000, "Photos", false);
     auto [other_pub, other_secret] = catalog::make_keypair();
     (void)other_pub;
@@ -1719,7 +1720,7 @@ TEST_CASE("file mode: library.json and no catalogue the phone can verify is file
     mob::link_session s(r.config());
     mob::route_report rep;
     REQUIRE(s.connect(rep));
-    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::no_catalogue);
+    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::rejected);
   }
   SECTION("another library's library.json is not this library: no file mode") {
     rig r(300000, "Photos", false);
@@ -1904,4 +1905,66 @@ TEST_CASE("file mode: the fields and the index through the C ABI", "[mobile-file
           }, &got) == MV_LINK_OK);
   CHECK(got == hit_list{{1, "Lisboa"}});
   mv_file_index_free(idx);
+}
+
+namespace {
+
+// A NAS in memory: two named folders, files by "root/rel", and a read that fails as told.
+class scripted_remote final : public mob::remote_file {
+ public:
+  std::map<std::string, std::string> files;
+  std::map<std::string, mv::status> failing;  // "root/rel" -> the read's error
+
+  mv::result<std::vector<dw::serve::root_info>> roots() override {
+    return std::vector<dw::serve::root_info>{{"a1", "Photos"}, {"c2", "Catalogue"}};
+  }
+  mv::result<std::vector<dw::serve::list_entry>> list(const std::string&, const std::string&) override {
+    return mv::err(mv::status::not_found);
+  }
+  mv::result<dw::serve::stat_info> stat(const std::string&, const std::string&) override {
+    return mv::err(mv::status::not_found);
+  }
+  mv::expected read_range(const std::string& root, const std::string& rel, std::uint64_t at, std::uint64_t length,
+                          const mob::byte_sink& sink, const mob::cancel_flag*, bool) override {
+    const std::string key = root + "/" + rel;
+    if (auto f = failing.find(key); f != failing.end()) return mv::err(f->second);
+    auto it = files.find(key);
+    if (it == files.end()) return mv::err(mv::status::not_found);
+    const std::string& text = it->second;
+    if (at >= text.size()) return {};
+    const auto n = std::min<std::uint64_t>(length, text.size() - at);
+    if (!sink(at, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()) + at, n))) {
+      return mv::err(mv::status::cancelled);
+    }
+    return {};
+  }
+};
+
+}  // namespace
+
+TEST_CASE("file mode is never a guess: a folder that did not answer is unreachable", "[mobile-files]") {
+  REQUIRE(sodium_init() >= 0);
+  scratch dir;
+  mob::sync_config cfg;
+  cfg.library_dir = (dir.root / "phone").string();
+  cfg.library_id = "lib-1";
+  scripted_remote nas;
+  nas.files["c2/library.json"] = "{\"format\":1,\"library_id\":\"lib-1\"}";
+  SECTION("every folder answered, none has a catalogue: file mode") {
+    const auto plan = mob::check_catalogue(nas, cfg);
+    CHECK(plan.outcome == mob::sync_outcome::no_catalogue);
+    CHECK(plan.library_root == "c2");
+  }
+  SECTION("one folder's current.json read timed out: unreachable, ask again later") {
+    nas.failing["a1/current.json"] = mv::status::timeout;
+    CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::unreachable);
+  }
+  SECTION("the link dropped on the catalogue's own folder: unreachable") {
+    nas.failing["c2/current.json"] = mv::status::io;
+    CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::unreachable);
+  }
+  SECTION("a current.json that is not one: refused") {
+    nas.files["c2/current.json"] = "not signed";
+    CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::rejected);
+  }
 }

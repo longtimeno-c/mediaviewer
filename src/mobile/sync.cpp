@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <set>
 
 #include "addons/ai/catalog.h"
@@ -195,9 +196,13 @@ bool names_library(remote_file& remote, const std::string& root, const sync_conf
 
 // The root that holds a current.json signed for this library: a root of the
 // wrong library or a forged file is not it. Roots are trusted only as far as
-// their signed content. With none, `failed` says why: no_catalogue when a
-// root whose current.json is missing or refused holds this library's
-// library.json (`library_root` names it), unreachable when a read failed.
+// their signed content. With none, `failed` says why, in this order:
+//   - a read that did not answer (a timeout, the link): unreachable, never file mode on a guess;
+//   - a current.json this phone refuses (another key, another library): rejected, so the phone
+//     says the library was published from a different computer (§11.3), not file mode;
+//   - no current.json anywhere, and a root holding this library's library.json: no_catalogue
+//     (`library_root` names it): file mode;
+//   - otherwise unreachable.
 std::string find_root(remote_file& remote, const sync_config& c, sync_outcome& failed, std::string& library_root) {
   auto roots = remote.roots();
   if (!roots) {
@@ -205,25 +210,35 @@ std::string find_root(remote_file& remote, const sync_config& c, sync_outcome& f
     return {};
   }
   bool saw_rejected = false;
-  std::vector<std::string> unverified;  // answered: no current.json there, or one we refuse
+  std::optional<sync_outcome> read_failed;
+  std::vector<std::string> absent;  // answered: no current.json there
   for (const auto& r : *roots) {
     auto attempt = read_current(remote, r.id, c);
     if (attempt.info) return r.id;
     if (attempt.failed == sync_outcome::rejected) {
       saw_rejected = true;
-      unverified.push_back(r.id);
     } else if (attempt.read_error == status::not_found) {
-      unverified.push_back(r.id);
+      absent.push_back(r.id);
+    } else if (!read_failed) {
+      read_failed = attempt.failed;  // unreachable or cancelled
     }
   }
-  for (const auto& id : unverified) {
+  if (read_failed) {
+    failed = *read_failed;
+    return {};
+  }
+  if (saw_rejected) {
+    failed = sync_outcome::rejected;
+    return {};
+  }
+  for (const auto& id : absent) {
     if (c.file_mode && names_library(remote, id, c)) {
       library_root = id;
       failed = sync_outcome::no_catalogue;
       return {};
     }
   }
-  failed = saw_rejected ? sync_outcome::rejected : sync_outcome::unreachable;
+  failed = sync_outcome::unreachable;
   return {};
 }
 

@@ -53,9 +53,10 @@ enum class sync_outcome : std::uint8_t {
   unreachable,    // the NAS could not be read
   cancelled,
   waiting,        // copy(): `allowed` said no (mobile data without the person's say-so); resumes later
-  // docs/plans/phone-in-the-app.md §4: a named folder holds a library.json naming this library, but no
-  // folder holds a current.json the pinned key signed for it (none yet, or none this phone can
-  // verify). The phone opens the library in file mode; a later check finds the catalogue.
+  // docs/plans/phone-in-the-app.md §4 (the plan lands with #668): a named folder holds a library.json
+  // naming this library, every folder answered, and none holds a current.json (none published yet).
+  // The phone opens the library in file mode; a later check finds the catalogue. A current.json the
+  // phone refuses is `rejected`, and a read that did not answer `unreachable`, never this.
   no_catalogue,
 };
 

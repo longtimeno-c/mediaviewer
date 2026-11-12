@@ -39,8 +39,8 @@ typedef enum mv_link_status {
   MV_LINK_INTERNAL = 17,
   MV_LINK_NO_FOLDER = 18,     /* the service has no folder named for this file's share */
   MV_LINK_WAITING = 19,       /* the copy stopped because bytes may not move now (mobile data) */
-  MV_LINK_NO_CATALOGUE = 20,  /* sync: a named folder's library.json names this library, and no folder holds a
-                                 catalogue this phone can verify: open it in file mode (see below) */
+  MV_LINK_NO_CATALOGUE = 20,  /* sync: a named folder's library.json names this library, every folder answered,
+                                 and none holds a current.json: open it in file mode (see below) */
 } mv_link_status;
 
 /* Return 0 to stop the read. */
@@ -215,7 +215,7 @@ int32_t mv_moments_get(mv_mobile_link* link, int64_t asset, mv_moment_fn fn, voi
 typedef void (*mv_listed_asset_fn)(void* ctx, int64_t asset, int32_t kind, int64_t taken_at, int64_t duration_ms, const char* name);
 int32_t mv_assets_list(mv_mobile_link* link, mv_listed_asset_fn fn, void* ctx);
 
-/* ---- file mode (docs/plans/phone-in-the-app.md 4) ----------------------------
+/* ---- file mode (docs/plans/phone-in-the-app.md 4, landing with #668) ---------
  * A library with no catalogue yet is the NAS's named folders. Paths are a service
  * root id plus a '/'-separated path under it ("" for its top). Never logged. */
 
