@@ -327,7 +327,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
                                fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
                                local: linkString(parsed.local), publicName: linkString(parsed.public_name),
                                identity: linkBytes(parsed.identity).hexString, accessKey: linkBytes(parsed.access_key).hexString,
-                               deviceName: deviceName)
+                               deviceName: deviceName, relay: linkString(parsed.relay))
     let handle: LinkHandle = try await onLinkQueue {
       guard record.save() else { throw PairingFailure.codeNotReadable }
       LinkFolders.prepare()  // again: a Forget removed them, with their backup exclusion
@@ -589,7 +589,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   private static func state(_ status: Int32, _ report: mv_route_report) -> SynologyState {
     switch status {
-    case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0)
+    case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0,
+                              relayed: report.relayed != 0)
     case 7: return .serviceTooOld
     case 5: return .deviceRevoked
     case 20: return .accessEnded

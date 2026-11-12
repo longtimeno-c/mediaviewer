@@ -24,10 +24,10 @@ struct SettingsScreen: View {
                 .font(.footnote)
                 .foregroundStyle(Theme.body)
                 .fixedSize(horizontal: false, vertical: true)
-              if case .reachable(let address, _) = model.connection.synology {
+              if case .reachable(let address, _, _) = model.connection.synology {
                 InfoRow(label: "Served from", value: address)
               }
-            } else if case .reachable(let address, _) = model.connection.synology {
+            } else if case .reachable(let address, _, _) = model.connection.synology {
               InfoRow(label: "Synology", value: synologyWords)
               InfoRow(label: "Address", value: address)
             }
@@ -114,7 +114,8 @@ struct SettingsScreen: View {
   }
 
   private var synologyWords: String {
-    if case .reachable(_, overInternet: false) = model.connection.synology { return "Connected on its own network" }
+    if case .reachable(_, overInternet: false, _) = model.connection.synology { return "Connected on its own network" }
+    if case .reachable(_, _, relayed: true) = model.connection.synology { return "Connected through your relay" }
     return "Connected over the internet"
   }
 

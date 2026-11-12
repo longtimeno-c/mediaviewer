@@ -29,6 +29,9 @@ struct pair_payload {
   // confirming; the service holds the real one against the code.
   std::int64_t grant_for_s = 0;
   bool grant_scoped = false;
+  // The person's own relay, "host:port" (docs/plans/nas-relay.md): tried after
+  // the direct routes. Optional; a QR from before has none.
+  std::string relay;
   std::string fingerprint;  // driftwire::pairing_check over the library, both keys and the access key
 };
 

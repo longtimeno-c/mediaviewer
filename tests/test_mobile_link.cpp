@@ -22,6 +22,7 @@
 #include "wire/secrets.h"
 #include "wire/grants.h"
 #include "wire/serve.h"
+#include "wire/splice.h"
 #include "addons/driftwire/transfer.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
@@ -172,6 +173,7 @@ struct rig {
   std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
 
   std::string photos_label = "Photos";
+  std::string relay_address;  // the person's own relay, for start(): the service waits there
 
   explicit rig(std::size_t payload_bytes = 300000, std::string label = "Photos")
       : payload(payload_bytes, 'x'), photos_label(std::move(label)) {
@@ -200,6 +202,7 @@ struct rig {
     o.cfg.name = "NAS";
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
+    o.cfg.relay = relay_address;
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
     o.now_unix = [this] {
       const auto t = fake_now.load();
@@ -1722,4 +1725,125 @@ TEST_CASE("sample: Forget through the C ABI stops a tile write whose read has al
     if (it->is_regular_file()) ++tiles;
   }
   CHECK(tiles == 0);  // nothing written into the folder Forget removes next
+}
+
+namespace {
+
+constexpr const char* kPhoneRelayKey = "mobile-loopback-relay-key-0123";
+
+std::string with_relay(const std::string& qr, const std::string& relay_json) {
+  // The code's JSON with a "relay" member added, encoded again.
+  const std::string b64 = qr.substr(std::strlen("mediaviewer://pair#"));
+  std::string json(b64.size(), '\0');
+  std::size_t n = 0;
+  REQUIRE(sodium_base642bin(reinterpret_cast<unsigned char*>(json.data()), json.size(), b64.data(), b64.size(), nullptr, &n,
+                            nullptr, sodium_base64_VARIANT_URLSAFE_NO_PADDING) == 0);
+  json.resize(n);
+  json.pop_back();  // the closing brace
+  json += ",\"relay\":" + relay_json + "}";
+  std::string out(sodium_base64_ENCODED_LEN(json.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+  sodium_bin2base64(out.data(), out.size(), reinterpret_cast<const unsigned char*>(json.data()), json.size(),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  out.resize(std::strlen(out.c_str()));
+  return "mediaviewer://pair#" + out;
+}
+
+// The rig's service, started again waiting at a loopback relay (never a public one).
+std::unique_ptr<dw::relay::server> relay_for(rig& r) {
+  dw::relay::server::options ro;
+  ro.key = kPhoneRelayKey;
+  ro.loopback_only = true;
+  auto started = dw::relay::server::start(ro);
+  REQUIRE(started);
+  const std::string key = kPhoneRelayKey;
+  REQUIRE(r.store->put(serve::kRelayKeyName, std::vector<std::uint8_t>(key.begin(), key.end())));
+  r.srv.reset();
+  r.relay_address = "127.0.0.1:" + std::to_string((*started)->port());
+  r.start();
+  return std::move(*started);
+}
+
+}  // namespace
+
+TEST_CASE("link payload: the person's own relay is read when there, and an old code still parses", "[mobile-link]") {
+  rig r;
+  const std::string plain = payload_text(r, 2000000000);
+  const auto old = mob::parse_pair_payload(plain);
+  REQUIRE(old);
+  CHECK(old->relay.empty());
+  const auto with = mob::parse_pair_payload(with_relay(plain, R"({"address":"relay.example.com:7879"})"));
+  REQUIRE(with);
+  CHECK(with->relay == "relay.example.com:7879");
+  CHECK(with->fingerprint == old->fingerprint);  // the relay is not part of what is compared
+  // A relay that is not an address is left out, never a reason to refuse the code.
+  for (const char* bad : {R"({"address":"no-port"})", R"({"address":"a:0"})", R"("relay.example.com:7879")", R"({"address":7})"}) {
+    const auto p = mob::parse_pair_payload(with_relay(plain, bad));
+    REQUIRE(p);
+    CHECK(p->relay.empty());
+  }
+  mv_pair_info info;
+  REQUIRE(mv_pair_parse(with_relay(plain, R"({"address":"relay.example.com:7879"})").c_str(), 0, &info) == MV_LINK_OK);
+  CHECK(std::string(info.relay) == "relay.example.com:7879");
+}
+
+TEST_CASE("link race: with no direct route, the phone gets in through its own relay; with one, the direct route wins", "[mobile-link]") {
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const std::string relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  // Direct routes dead: in through the relay, end to end, and reads work.
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = relay;
+  bool got_in = false;
+  for (int i = 0; i < 40 && !got_in; ++i) {  // the service's waiter registers a moment after it starts
+    mob::link_session s(c);
+    mob::route_report report;
+    if (s.connect(report, nullptr, 6000)) {
+      got_in = true;
+      CHECK(report.relayed);
+      CHECK(report.over_internet);
+      CHECK(report.address == relay);
+      auto roots = s.roots();
+      REQUIRE(roots);
+      CHECK_FALSE(roots->empty());
+      std::string got;
+      REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+        got.append(reinterpret_cast<const char*>(b.data()), b.size());
+        return true;
+      }, nullptr, false));
+      CHECK(got == std::string(70000, 'p'));
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+  }
+  CHECK(got_in);
+  // A working direct route: it wins, the relay is never asked.
+  mob::service_config direct = r.config();
+  direct.relay = relay;
+  mob::link_session d(direct);
+  mob::route_report report;
+  REQUIRE(d.connect(report));
+  CHECK_FALSE(report.relayed);
+  CHECK(report.address != relay);  // either direct route, never the relay
+  // Another phone with the access key but not paired: the relay has no waiter for it.
+  mob::service_config stranger = c;
+  stranger.device_key = random_key();
+  mob::link_session st(stranger);
+  mob::route_report none;
+  CHECK_FALSE(st.connect(none, nullptr, 4000));
+}
+
+TEST_CASE("pairing: a new code is never redeemed through the relay", "[mobile-link]") {
+  rig r;
+  auto rendezvous = relay_for(r);
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  const std::string code = serve::issue_pair_code(*r.store, 600, std::time(nullptr));
+  mob::route_report report;
+  CHECK_FALSE(mob::pair_device(c, code, report, nullptr, 3000));
+  CHECK_FALSE(report.relayed);
 }

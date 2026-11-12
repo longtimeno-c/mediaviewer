@@ -51,6 +51,7 @@ final class LinkHandle: @unchecked Sendable {
                 record.libraryID.withCString { id in
                   record.local.withCString { local in
                     record.publicName.withCString { pub in
+                      (record.relay ?? "").withCString { relay in
                       record.deviceName.withCString { name in
                         var c = mv_link_config()
                         c.library_dir = lib
@@ -58,6 +59,7 @@ final class LinkHandle: @unchecked Sendable {
                         c.library_id = id
                         c.local = local
                         c.public_name = pub
+                        c.relay = relay
                         c.device_name = name
                         c.identity = i.bindMemory(to: UInt8.self).baseAddress
                         c.access_key = a.bindMemory(to: UInt8.self).baseAddress
@@ -65,6 +67,7 @@ final class LinkHandle: @unchecked Sendable {
                         c.publisher_key = p.bindMemory(to: UInt8.self).baseAddress
                         c.thumb_cache_bytes = 2 << 30
                         return mv_link_open(&c).map { LinkHandle(raw: $0) }
+                      }
                       }
                     }
                   }

@@ -216,7 +216,9 @@ public struct AddressFailure: Hashable, Sendable, Identifiable {
 }
 
 public enum SynologyState: Hashable, Sendable {
-  case reachable(address: String, overInternet: Bool)
+  /// `relayed`: through the person's own relay (docs/plans/nas-relay.md); overInternet is true too,
+  /// so the mobile-data rules are the same as over the internet.
+  case reachable(address: String, overInternet: Bool, relayed: Bool = false)
   case unreachable([AddressFailure])
   case reachableOnlyOnItsOwnNetwork
   case serviceTooOld

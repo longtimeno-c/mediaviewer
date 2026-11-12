@@ -67,6 +67,7 @@ void fill_report(const route_report& r, mv_route_report* out) {
   std::memset(out, 0, sizeof *out);
   put(out->address, r.address);
   out->over_internet = r.over_internet ? 1 : 0;
+  out->relayed = r.relayed ? 1 : 0;
   const std::size_t n = std::min<std::size_t>(r.failures.size(), 4);
   out->failure_count = static_cast<std::int32_t>(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -119,6 +120,7 @@ service_config service_of(const mv_pair_info* i, const std::uint8_t* device_key,
   service_config c;
   c.local = i->local;
   c.public_name = i->public_name;
+  c.relay = i->relay;  // unused for pairing, kept for the session alike
   c.identity = key_at(i->identity);
   c.access_key = key_at(i->access_key);
   c.device_key = key_at(device_key);
@@ -272,6 +274,7 @@ int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
     out->grant_for_s = p->grant_for_s;
     out->grant_scoped = p->grant_scoped ? 1 : 0;
     put(out->fingerprint, p->fingerprint);
+    put(out->relay, p->relay);
     if (!is_sample && p->expires <= now_unix) return MV_LINK_EXPIRED;
     return MV_LINK_OK;
   });
@@ -309,6 +312,7 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
     if (!is_static) {
       l->service.local = or_empty(c->local);
       l->service.public_name = or_empty(c->public_name);
+      l->service.relay = or_empty(c->relay);
       l->service.identity = key_at(c->identity);
       l->service.access_key = key_at(c->access_key);
       l->service.device_key = key_at(c->device_key);

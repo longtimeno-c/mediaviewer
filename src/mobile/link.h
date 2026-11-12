@@ -57,6 +57,7 @@ class remote_file {
 struct service_config {
   std::string local;        // "host:port", may be empty
   std::string public_name;  // "name:port", may be empty
+  std::string relay;        // the person's own relay, "host:port", may be empty: tried last
   key32 identity{};         // the service's pinned public key
   key32 access_key{};
   key32 device_key{};       // this phone's X25519 private key
@@ -82,6 +83,7 @@ struct route_failure {
 struct route_report {
   std::string address;     // the one that answered
   bool over_internet = false;
+  bool relayed = false;    // through the person's own relay (the mobile-data rules apply as over the internet)
   std::vector<route_failure> failures;  // the ones that did not
 };
 

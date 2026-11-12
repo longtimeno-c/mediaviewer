@@ -2,13 +2,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mobile/link.h"
 
+#include <algorithm>
 #include <charconv>
+#include <cstring>
 #include <chrono>
 #include <condition_variable>
 #include <optional>
 #include <thread>
 
+#include <sodium.h>
+
 #include "wire/net.h"
+#include "wire/serve_wire.h"
+#include "wire/splice.h"
 
 namespace mv::mobile {
 
@@ -20,6 +26,9 @@ namespace {
 
 constexpr int kConnectEachMs = 2500;  // a dead address, at most
 constexpr int kStallMs = 15000;       // a read that has stopped moving
+// The relay starts this long after the direct routes (Driftwire's own race
+// delay), so a working direct path always wins and costs the relay nothing.
+constexpr int kRelayDelayMs = 1500;
 
 serve::client::options options_for(const service_config& c) {
   serve::client::options o;
@@ -50,9 +59,28 @@ struct target {
   std::string host;
   std::uint16_t port = 0;
   bool over_internet = false;
+  bool relay = false;
+  dw::relay::token token{};  // relay: this phone's waiter at it
 };
 
-std::vector<target> targets_of(const service_config& c) {
+// A link the race can cut while the relay's handshake owns it.
+class shared_hop final : public dw::link {
+ public:
+  explicit shared_hop(std::shared_ptr<dw::link> inner) : inner_(std::move(inner)) {}
+  expected write_all(std::span<const std::uint8_t> b) override { return inner_->write_all(b); }
+  result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    return inner_->read_some(into, timeout_ms);
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+  dw::transport via() const noexcept override { return inner_->via(); }
+
+ private:
+  std::shared_ptr<dw::link> inner_;
+};
+
+// `with_relay`: a paired phone's routes. Pairing never goes through the relay
+// (the service keeps waiters only for devices it already knows).
+std::vector<target> targets_of(const service_config& c, bool with_relay = true) {
   std::vector<target> out;
   const auto add = [&](const std::string& text, bool internet) {
     target t;
@@ -62,6 +90,19 @@ std::vector<target> targets_of(const service_config& c) {
   };
   add(c.local, false);
   add(c.public_name, true);
+  if (with_relay && !c.relay.empty() && !out.empty()) {
+    target t;
+    t.text = c.relay;
+    t.over_internet = true;
+    t.relay = true;
+    if (split_host_port(c.relay, t.host, t.port)) {
+      key32 device_pub{};
+      crypto_scalarmult_base(device_pub.data(), c.device_key.data());
+      const auto tok = serve::relay_token(c.access_key, device_pub);
+      std::memcpy(t.token.data(), tok.data(), t.token.size());
+      out.push_back(std::move(t));
+    }
+  }
   return out;
 }
 
@@ -74,6 +115,7 @@ struct race_state {
   std::optional<T> winner;
   std::string winner_address;
   bool winner_internet = false;
+  bool winner_relayed = false;
   int running = 0;
   bool over = false;
   std::vector<std::shared_ptr<dw::link>> links;
@@ -86,11 +128,26 @@ struct race_state {
 // timeout, so it owns everything it touches (a value and a shared_ptr).
 template <typename T, typename Work>
 result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_flag* cancel,
-               std::vector<route_failure>& failures, std::string& address, bool& over_internet, Work work) {
+               std::vector<route_failure>& failures, route_report& report, Work work) {
   auto st = std::make_shared<race_state<T>>();
   st->running = static_cast<int>(targets.size());
+  const auto started = clock::now();
   for (const target& t : targets) {
-    std::thread([st, t, work]() mutable {
+    std::thread([st, t, work, started, timeout_ms]() mutable {
+      if (t.relay) {
+        // Last: only when the direct routes have not answered by now.
+        while (clock::now() - started < std::chrono::milliseconds(kRelayDelayMs)) {
+          {
+            std::lock_guard lock(st->m);
+            if (st->over || st->winner) {
+              --st->running;
+              st->cv.notify_all();
+              return;
+            }
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+      }
       // By name, always, so a NAT64 network can translate it (§7.3). Local
       // addresses are numeric and resolve to themselves.
       const auto addresses = dw::net::resolve(t.host);
@@ -103,7 +160,7 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
         }
       }
       for (const auto& a : addresses) {
-        std::thread([st, t, a, work]() mutable {
+        std::thread([st, t, a, work, started, timeout_ms]() mutable {
           const auto finish = [&](std::optional<route_problem> problem) {
             std::lock_guard lock(st->m);
             if (problem && !st->over) st->failures.push_back({t.text, *problem});
@@ -125,6 +182,30 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
             }
             st->links.push_back(l);
           }
+          if (t.relay) {
+            // Joined to this phone's waiter; the handshake past it is end to end.
+            const int left = timeout_ms - static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - started).count());
+            auto joined = dw::relay::join(std::make_unique<shared_hop>(l), t.token, std::max(500, left), [st] {
+              std::lock_guard lock(st->m);
+              return st->over;
+            });
+            if (!joined) {
+              finish(route_problem::unreachable);
+              return;
+            }
+            // The joined link carries the TCP one inside it: it takes its place
+            // in the list, so a winner's own socket is never cut as a loser.
+            std::shared_ptr<dw::link> j = std::move(*joined);
+            std::lock_guard lock(st->m);
+            std::replace(st->links.begin(), st->links.end(), l, j);
+            l = std::move(j);
+            if (st->over) {
+              l->shutdown();
+              --st->running;
+              st->cv.notify_all();
+              return;
+            }
+          }
           serve::refusal why = serve::refusal::none;
           auto done = work(l, why);
           if (!done) {
@@ -137,6 +218,7 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
             st->winner_link = l;
             st->winner_address = t.text;
             st->winner_internet = t.over_internet;
+            st->winner_relayed = t.relay;
           }
           --st->running;
           st->cv.notify_all();
@@ -161,8 +243,9 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
     return err(status::io);
   }
   T out = std::move(*st->winner);
-  address = st->winner_address;
-  over_internet = st->winner_internet;
+  report.address = st->winner_address;
+  report.over_internet = st->winner_internet;
+  report.relayed = st->winner_relayed;
   return out;
 }
 
@@ -207,7 +290,7 @@ bool split_host_port(std::string_view text, std::string& host, std::uint16_t& po
 
 expected pair_device(const service_config& c, std::string_view code, route_report& report, const cancel_flag* cancel,
                      int timeout_ms) {
-  const auto targets = targets_of(c);
+  const auto targets = targets_of(c, false);
   if (targets.empty()) return err(status::invalid_arg);
   const auto opts = options_for(c);
   const std::string code_copy(code), name = c.device_name;
@@ -217,7 +300,7 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
   opts_with_code.pair_code = code_copy;
   opts_with_code.device_name = name;
   auto done = race<std::shared_ptr<serve::client>>(
-      targets, timeout_ms, cancel, report.failures, report.address, report.over_internet,
+      targets, timeout_ms, cancel, report.failures, report,
       [opts_with_code](std::shared_ptr<dw::link> l, serve::refusal& why) -> result<std::shared_ptr<serve::client>> {
         auto opened = serve::client::open(std::move(l), opts_with_code, &why);
         if (!opened) return err(opened.error());
@@ -271,7 +354,7 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
   if (targets.empty()) return err(status::invalid_arg);
   const auto opts = options_for(config_);
   auto c = race<std::shared_ptr<serve::client>>(
-      targets, timeout_ms, cancel, report.failures, report.address, report.over_internet,
+      targets, timeout_ms, cancel, report.failures, report,
       [opts](std::shared_ptr<dw::link> l, serve::refusal& why) -> result<std::shared_ptr<serve::client>> {
         auto opened = serve::client::open(std::move(l), opts, &why);
         if (!opened) return err(opened.error());

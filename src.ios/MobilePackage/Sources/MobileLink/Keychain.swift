@@ -45,6 +45,9 @@ struct PairingRecord: Codable, Sendable {
   var identity: String
   var accessKey: String
   var deviceName: String
+  /// The person's own relay, "host:port", from the code (docs/plans/nas-relay.md); nil or "" for
+  /// none, as in a record written before it existed. Tried after the direct routes.
+  var relay: String? = nil
   /// The sample library (§11.1): read from its static folder, with no service. nil in a record
   /// written before it existed.
   var sample: Bool? = nil

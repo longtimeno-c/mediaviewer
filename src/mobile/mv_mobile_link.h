@@ -64,6 +64,9 @@ typedef struct mv_pair_info {
    * whether it is to some folders only. Shown before the person confirms. */
   int64_t grant_for_s;
   int32_t grant_scoped;
+  /* The person's own relay, "host:port", tried after the direct routes; empty for none (an older
+   * code). Keep it with the pairing and pass it to mv_link_config.relay. */
+  char relay[256];
 } mv_pair_info;
 
 typedef struct mv_route_failure {
@@ -76,6 +79,7 @@ typedef struct mv_route_report {
   int32_t over_internet;
   int32_t failure_count;
   mv_route_failure failures[4];
+  int32_t relayed; /* 1: through the person's own relay (over_internet is 1 too) */
 } mv_route_report;
 
 typedef struct mv_cancel mv_cancel;
@@ -132,6 +136,7 @@ typedef struct mv_link_config {
   const char* static_base;
   mv_fetch_fn fetch;
   void* fetch_ctx; /* outlives the link */
+  const char* relay; /* the person's own relay from the pairing, or NULL / "" for none */
 } mv_link_config;
 
 mv_mobile_link* mv_link_open(const mv_link_config* config);
