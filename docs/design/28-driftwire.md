@@ -1562,9 +1562,12 @@ No address, path or file name is ever logged.
   be run as that user too, because the keys are its alone and root is refused. Spike S5 has to
   confirm DSM allows this. Its firewall rule and port forward are the setup
   guide's.
-- **Unattended signed updates**: the installer channels notify only. An update must replace the
-  binary and restart without touching `--data`, or every phone pairs again. Needs a signed channel
-  and a service restart hook. Not started.
+- **Unattended signed updates** ([nas-setup.md](../plans/nas-setup.md) §6): the core is built
+  (`cli/nas_update.*`, `"[nas-update]"`): an Ed25519-signed `latest.json` per arch, a staged
+  download checked by SHA-256 and size and self-tested before it replaces `var/bin/driftwire`, the
+  one before kept as `.prev`, and the package's `start-stop-status` rolling back after three failed
+  starts. Not wired yet: the service's daily check, `--self-test`, the restart after an install,
+  the pinned release key, and signing `latest.json` in a release.
 - **Claiming from the desktop**: writing the token into `.mediaviewer/` over SMB. Needs a claim
   operation (a capability; only while there is no owner, and only from the NAS's own network, the
   plan says), and the `add` / `revoke` / folder changes as owner operations over the channel. Today
@@ -1588,6 +1591,38 @@ network or a real forwarded port (M2b's "from outside the building"), a seek und
 Synology hardware or Linux (`file_store` and sockets are portable, but only macOS ran them here),
 Windows. On Windows, `file_store` relies on the per-user profile's ACL; there are no POSIX modes
 to check.
+
+### Through the person's own relay (piece 3, 2026-11-12)
+
+Plan and owner calls: [nas-relay.md](../plans/nas-relay.md). **There is no public relay and there
+will not be one** (owner, 2026-11-12): away from home without a forwarded port, a phone reaches the
+NAS only through a `driftwire-relay` the person runs on their own server. Settings → Phone access
+says so on its **Relay (your own server)** row (Mac and Windows), which is greyed, with the reason,
+for a service too old to wait at a relay.
+
+- **The service waits at it** (`serve.cpp` `relay_loop` / `wait_at_relay`). With `"relay"` in
+  `serve.json` and the server's key in the secret store (`relay_key`), the service keeps one waiter
+  per paired device, at most `kMaxRelayWaiters` (4, the relay's per-source cap), each re-registering
+  every `kReregisterMs`. A waiter's token is `relay_token(access_key, device_pub)` = BLAKE2b-128 keyed
+  by the access key over `"MediaViewer relay token v1" || device_pub`: opaque to the relay, unrelated
+  across libraries, not computable without the access key. A revoked device's waiter goes.
+- **A relayed link is admitted like a direct one** (`admit()`), keyed `relay:<token hex>` instead of
+  the relay's shared address, and is never the service's own network: no claim comes through a
+  relay. Noise XX+psk0 and the device-key check run end to end; the relay carries ciphertext only.
+  `stats().relayed` counts them.
+- **Set from the desktop, never put in the QR.** The owner's `set_relay {address, key}` verb (owner
+  only, needs an unlocked session once there is a passphrase; feature `"relay"` in the caps) writes
+  the address to `serve.json` and the key to the store; `owner_status` and the caps report the
+  address only. The pairing QR stays `"v":1` and gains an optional `"relay":{"address"}`, which an
+  older app ignores.
+- **Not built yet:** the phone's side (racing the relay 1.5 s after the direct addresses with
+  `relay::join` under its own token, `src/mobile`), and hole punching between phone and NAS (owner
+  call 4, after the relay; loopback DHT only in tests).
+- **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's
+  `set_relay` and the QR field in `"[phone-pairing]"`): a paired client lists and range-reads through
+  an in-process relay on `127.0.0.1` with no 32-byte run of the file in the relay's bytes; a wrong
+  access key and a revoked phone get nothing; a claim never comes in through it. Never a public
+  relay or the public DHT.
 
 ## What moves, and how it lands
 
