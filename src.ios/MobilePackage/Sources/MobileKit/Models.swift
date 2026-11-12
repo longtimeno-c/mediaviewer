@@ -112,7 +112,8 @@ public struct SearchAnswer: Sendable {
 public struct Folder: Identifiable, Hashable, Sendable {
   public let id: String
   public let name: String
-  /// Everything in this folder and the folders beneath it.
+  /// Everything in this folder and the folders beneath it; -1 when that is not known (a NAS
+  /// folder in file mode, which is never walked).
   public let itemCount: Int
   public let hasSubfolders: Bool
 
