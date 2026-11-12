@@ -26,6 +26,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var routeEpoch = 0
   private var connectGeneration = 0
   private var forgotten = false
+  /// The local copy was dropped for an access that ended (dropLocalCopy); cleared by a connection that gets in.
+  private var localCopyDropped = false
   private var copyCancel: LinkCancel?
   // One first copy at a time: a new one (Copy over mobile data) waits for the old one's defer.
   private let oneCopy = OneAtATime()
@@ -192,6 +194,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       next.libraryID = next.hasLibrary ? (record?.libraryID ?? snapshot.libraryID) : ""
       next.isSample = next.hasLibrary && (record.map(\.isSample) ?? snapshot.isSample)
       next.libraryName = next.hasLibrary ? (record?.libraryName ?? snapshot.libraryName) : ""
+      next.accessUntil = next.hasLibrary ? record?.accessUntil.map { Date(timeIntervalSince1970: $0) } : nil
       snapshot = next
       return (next, Array(continuations.values))
     }
@@ -422,12 +425,25 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       if replacing { routeEpoch += 1 }
       return connectGeneration
     }
-    let (status, report) = await onLinkQueue {
+    let (answered, report, grant) = await onLinkQueue { () -> (Int32, mv_route_report, Double?) in
       var report = mv_route_report()
       let status = replacing ? mv_link_reconnect(link.raw, nil, &report) : mv_link_connect(link.raw, nil, &report)
-      return (status, report)
+      var expires: Int64 = 0
+      var scoped: Int32 = 0
+      let limited = status == 0 && mv_link_grant(link.raw, &expires, &scoped) == 1 && expires > 0
+      return (status, report, limited ? Double(expires) : nil)
     }
     guard lock.withLock({ generation == connectGeneration && !forgotten }) else { return }  // a newer one is running
+    var status = answered
+    if status == 0 {
+      noteAccess(until: grant)
+    } else if Self.state(status, report) != .accessEnded, let end = lock.withLock({ record?.accessUntil }),
+              end <= Date().timeIntervalSince1970 {
+      // No answer, and the time the service gave has passed on this phone's clock too: said
+      // as ended, not as unreachable (§8.2).
+      status = Int32(MV_LINK_ACCESS_ENDED.rawValue)
+    }
+    if status == Int32(MV_LINK_ACCESS_ENDED.rawValue) { await dropLocalCopy() }
     let info = await catalogueNow(link: link)
     let cache = Int64(mv_thumb_bytes_used(link.raw))
     // Checked again as it publishes: a pairing during the read above makes this news stale.
@@ -439,6 +455,59 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if status == 0, lock.withLock({ generation == connectGeneration && handle === link && !forgotten }) {
       work.run(priority: .utility) { [weak self] in await self?.quietSync(link) }
     }
+  }
+
+  /// The service's word on this phone's time limit, kept with the pairing.
+  private func noteAccess(until end: Double?) {
+    let changed = lock.withLock { () -> Bool in
+      guard var r = record, r.accessUntil != end else { return false }
+      r.accessUntil = end
+      record = r
+      _ = r.save()
+      return true
+    }
+    if changed { publish { _ in } }
+    lock.withLock { localCopyDropped = false }
+  }
+
+  /// A time-limited phone whose access ended keeps nothing of the library but its pairing
+  /// (call C6): the catalogue, the tiles, the originals and the clips go, and an extension
+  /// fetches them again. Once per ending: a "Try again" that is still refused deletes nothing more.
+  private func dropLocalCopy() async {
+    let go = lock.withLock { () -> Bool in
+      guard !localCopyDropped, record != nil else { return false }
+      localCopyDropped = true
+      return true
+    }
+    guard go else { return }
+    let (link, cancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?) in
+      let out = (handle, copyCancel)
+      handle = nil
+      return out
+    }
+    writes.close()
+    cancel?.fire()
+    if let link { mv_link_shut_down(link.raw) }
+    await work.stopAndWait()
+    let reopened: LinkHandle? = await onLinkQueue {
+      Self.removeLibraryFiles()
+      guard let record = PairingRecord.load(), let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }) else {
+        return nil
+      }
+      LinkFolders.prepare()
+      LinkFolders.keepOnlyThumbs(of: record.libraryID)
+      return LinkHandle.open(record: record, deviceKey: device, libraryDir: LinkFolders.library,
+                             cacheDir: LinkFolders.thumbs(for: record.libraryID))
+    }
+    let adopted = lock.withLock { () -> Bool in
+      guard let reopened, !forgotten, handle == nil else { return false }
+      handle = reopened
+      writes.open(for: reopened)
+      return true
+    }
+    if !adopted, let reopened { mv_link_shut_down(reopened.raw) }
+    work.reopen()
+    publish { $0 = ConnectionSnapshot(hasLibrary: $0.hasLibrary, synology: .accessEnded, macNearby: false, catalogue: nil, cacheBytes: 0) }
   }
 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
@@ -509,12 +578,21 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0)
     case 7: return .serviceTooOld
     case 5: return .deviceRevoked
+    case 20: return .accessEnded
     case 12: return .publisherChanged  // the sample library's list: not signed by the pinned key
     default:
       // A route that answered "not on the list" is the service speaking for the library: this
       // phone was removed, whatever the other routes did.
+      if ended(in: report) { return .accessEnded }
       if revoked(in: report) { return .deviceRevoked }
       return .unreachable(failures(of: report))
+    }
+  }
+
+  private static func ended(in report: mv_route_report) -> Bool {
+    withUnsafeBytes(of: report.failures) { raw in
+      let list = raw.bindMemory(to: mv_route_failure.self)
+      return (0..<Int(report.failure_count)).contains { list[$0].problem == 6 }
     }
   }
 

@@ -356,6 +356,10 @@ public final class AppModel {
     switch connection.synology {
     case .deviceRevoked:
       first = LibraryNotice(id: "revoked", message: FailureCopy.deviceRevoked, canDismiss: false, action: .scan)
+    case .accessEnded:
+      first = LibraryNotice(id: "access-ended",
+                            message: FailureCopy.accessEnded(library: connection.libraryName, at: connection.accessUntil),
+                            canDismiss: false, action: .retry)
     case .publisherChanged where connection.isSample:
       // Not another computer: what arrived from GitHub was not signed by the sample's key.
       first = LibraryNotice(id: "publisher", message: FailureCopy.sampleRejected, canDismiss: true, action: .retry)

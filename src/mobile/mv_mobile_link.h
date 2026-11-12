@@ -39,6 +39,7 @@ typedef enum mv_link_status {
   MV_LINK_INTERNAL = 17,
   MV_LINK_NO_FOLDER = 18,     /* the service has no folder named for this file's share */
   MV_LINK_WAITING = 19,       /* the copy stopped because bytes may not move now (mobile data) */
+  MV_LINK_ACCESS_ENDED = 20,  /* this phone's time-limited access is over (not a removal: it may be extended) */
 } mv_link_status;
 
 /* Return 0 to stop the read. */
@@ -59,11 +60,15 @@ typedef struct mv_pair_info {
   int64_t expires;
   char fingerprint[32]; /* compare with the desktop's */
   int32_t sample;       /* 1: the sample library's code (no service, never expires; see below) */
+  /* A guest code: the access it gives, in seconds from when it is redeemed (0: unlimited), and
+   * whether it is to some folders only. Shown before the person confirms. */
+  int64_t grant_for_s;
+  int32_t grant_scoped;
 } mv_pair_info;
 
 typedef struct mv_route_failure {
   char address[256];
-  int32_t problem; /* 0 unreachable, 1 wrong service, 2 not paired, 3 too old, 4 busy, 5 bad code */
+  int32_t problem; /* 0 unreachable, 1 wrong service, 2 not paired, 3 too old, 4 busy, 5 bad code, 6 access ended */
 } mv_route_failure;
 
 typedef struct mv_route_report {
@@ -131,6 +136,11 @@ typedef struct mv_link_config {
 
 mv_mobile_link* mv_link_open(const mv_link_config* config);
 void mv_link_close(mv_mobile_link* link);
+
+/* The live connection's limit, as the service gave it: 1 when this phone's access is limited
+ * (`expires_unix` its end on the service's clock, 0 none; `scoped` 1 for some folders only), 0 when
+ * it is unlimited or there is no live connection. Never blocks. */
+int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
 
 /* BLOCKS. Keeps a live connection (the report says how it was reached); races the routes only when
  * there is none. Never cuts reads in flight. The sample library: its folder's host answered with a

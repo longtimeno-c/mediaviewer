@@ -83,6 +83,7 @@ mv_link_status status_of_route(status s, const route_report& r) {
     for (const auto& f : r.failures) {
       if (f.problem == route_problem::wrong_service) return MV_LINK_WRONG_SERVICE;
       if (f.problem == route_problem::bad_code) return MV_LINK_BAD_CODE;
+      if (f.problem == route_problem::expired) return MV_LINK_ACCESS_ENDED;
     }
     return MV_LINK_NOT_PAIRED;
   }
@@ -268,6 +269,8 @@ int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
     std::memcpy(out->access_key, p->access_key.data(), 32);
     put(out->code, p->code);
     out->expires = p->expires;
+    out->grant_for_s = p->grant_for_s;
+    out->grant_scoped = p->grant_scoped ? 1 : 0;
     put(out->fingerprint, p->fingerprint);
     if (!is_sample && p->expires <= now_unix) return MV_LINK_EXPIRED;
     return MV_LINK_OK;
@@ -335,6 +338,20 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
 }
 
 void mv_link_close(mv_mobile_link* l) { delete l; }
+
+int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {
+  return catch_all([&]() -> int32_t {
+    if (expires_unix) *expires_unix = 0;
+    if (scoped) *scoped = 0;
+    if (!l || l->fixed || !l->session) return 0;
+    std::int64_t e = 0;
+    bool s = false;
+    if (!l->session->grant(e, s)) return 0;
+    if (expires_unix) *expires_unix = e;
+    if (scoped) *scoped = s ? 1 : 0;
+    return 1;
+  });
+}
 
 int32_t mv_link_connect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
   return catch_all([&]() -> int32_t {

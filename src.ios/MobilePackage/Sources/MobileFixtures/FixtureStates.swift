@@ -39,6 +39,7 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryServiceTooOld = "library.serviceTooOld"
   case libraryPublisherChanged = "library.publisherChanged"
   case libraryRevoked = "library.revoked"
+  case libraryAccessEnded = "library.accessEnded"
   case libraryHandedOver = "library.handedOver"
   case settingsLight = "settings.light"
   case libraryEmpty = "library.empty"
@@ -144,6 +145,9 @@ final class FixtureRun {
       snapshot = .with(.publisherChanged)
     case .libraryRevoked:
       snapshot = .with(.deviceRevoked)
+    case .libraryAccessEnded:
+      snapshot = .with(.accessEnded)
+      snapshot.accessUntil = Date(timeIntervalSince1970: 1_794_000_000)
     case .libraryHandedOver:
       let base = FixtureWorld.connected()
       let raised = base.catalogue.map { CatalogueInfo(source: $0.source, updatedAt: $0.updatedAt, itemCount: $0.itemCount, epoch: 2) }

@@ -39,6 +39,7 @@ route_problem problem_of(serve::refusal why) {
     case serve::refusal::busy: return route_problem::busy;
     case serve::refusal::bad_code:
     case serve::refusal::too_many: return route_problem::bad_code;
+    case serve::refusal::expired: return route_problem::expired;
     case serve::refusal::none: return route_problem::unreachable;
   }
   return route_problem::unreachable;
@@ -225,7 +226,7 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
   if (!done) {
     for (const auto& f : report.failures) {
       if (f.problem == route_problem::wrong_service || f.problem == route_problem::not_paired ||
-          f.problem == route_problem::bad_code) {
+          f.problem == route_problem::bad_code || f.problem == route_problem::expired) {
         return err(status::permission_denied);
       }
       if (f.problem == route_problem::too_old) return err(status::unsupported_format);
@@ -278,7 +279,8 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
       });
   if (!c) {
     for (const auto& f : report.failures) {
-      if (f.problem == route_problem::wrong_service || f.problem == route_problem::not_paired) {
+      if (f.problem == route_problem::wrong_service || f.problem == route_problem::not_paired ||
+          f.problem == route_problem::expired) {
         return err(status::permission_denied);
       }
       if (f.problem == route_problem::too_old) return err(status::unsupported_format);
@@ -329,6 +331,14 @@ void link_session::disconnect() noexcept {
     live_.reset();
   }
   if (gone) gone->close();
+}
+
+bool link_session::grant(std::int64_t& expires_unix, bool& scoped) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed() || !live_->caps().has_grant) return false;
+  expires_unix = live_->caps().grant_expires;
+  scoped = live_->caps().grant_scoped;
+  return true;
 }
 
 bool link_session::connected() const {

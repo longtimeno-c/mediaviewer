@@ -1,6 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // docs/plans/mobile.md §11.3, word for word, and the short lines the same screens need.
+
+import Foundation
 import MobileKit
 
 public enum FailureCopy {
@@ -25,6 +27,16 @@ public enum FailureCopy {
   public static let codeExpired = "This code has expired. Show a new one in MediaViewer, then scan it."
   public static let codeNotReadable =
     "That isn't a code MediaViewer can read. Scan the one shown by MediaViewer on your Mac or Windows PC."
+  /// §8.2: distinct from a removal, and no new code is needed if the owner extends it.
+  public static func accessEnded(library: String, at end: Date?) -> String {
+    let name = library.isEmpty ? "this library" : "“\(library)”"
+    guard let end else { return "Your access to \(name) has ended. Ask its owner to extend it, then try again." }
+    let when = end.formatted(date: .long, time: .shortened)
+    return "Your access to \(name) ended on \(when). Ask its owner to extend it, then try again."
+  }
+  public static func accessUntil(_ end: Date) -> String {
+    "Access until \(end.formatted(date: .abbreviated, time: .shortened))"
+  }
   public static let deviceRevoked =
     "This phone was removed from your library on your computer. Scan a new code from MediaViewer to use it again."
   public static let libraryHandedOver =

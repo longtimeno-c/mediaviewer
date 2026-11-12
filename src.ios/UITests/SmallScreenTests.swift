@@ -9,7 +9,7 @@ final class SmallScreenTests: XCTestCase {
   static let states = [
     "welcome", "scan", "connect.confirm", "connect.working", "connect.unreachable", "connect.notReadable",
     "connect.ownNetwork", "firstCopy.running", "firstCopy.waitingForWiFi", "firstCopy.noSpace", "firstCopy.fails",
-    "library", "library.unreachable", "library.stale", "library.folder", "library.empty", "library.revoked",
+    "library", "library.unreachable", "library.stale", "library.folder", "library.empty", "library.revoked", "library.accessEnded",
     "library.handedOver", "search.recents", "search.results", "search.nothing", "search.filtered", "search.unsupportedTower",
     "search.failed", "search.warmingUp", "viewer", "viewer.gone", "viewer.cannotDecode", "details", "clip", "clip.tooBig",
     "clip.notPlayable", "people", "people.none", "connection", "connection.unreachable", "settings.light",

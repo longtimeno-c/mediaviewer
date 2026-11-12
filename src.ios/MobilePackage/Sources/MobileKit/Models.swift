@@ -223,6 +223,9 @@ public enum SynologyState: Hashable, Sendable {
   case publisherChanged
   /// The computer removed this phone from the library.
   case deviceRevoked
+  /// This phone's time-limited access ended (docs/plans/nas-owner-and-guests.md §8.2). Not a
+  /// removal: if the owner extends it, the phone gets straight back in.
+  case accessEnded
 }
 
 public struct CatalogueInfo: Hashable, Sendable {
@@ -255,6 +258,9 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   public var isSample = false
   /// The paired library's name, as its code gave it ("" with none): said when something would replace it.
   public var libraryName = ""
+  /// When this phone's access ends, as the service last said it (on the service's clock); nil for
+  /// a phone with no time limit.
+  public var accessUntil: Date? = nil
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

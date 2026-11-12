@@ -31,6 +31,9 @@ struct SettingsScreen: View {
               InfoRow(label: "Synology", value: synologyWords)
               InfoRow(label: "Address", value: address)
             }
+            if let end = model.connection.accessUntil {
+              InfoRow(label: "Access", value: FailureCopy.accessUntil(end))
+            }
             if let catalogue = model.connection.catalogue {
               InfoRow(label: "Catalogue from",
                       value: model.connection.isSample ? "GitHub" : catalogue.source == .synology ? "Your Synology" : "Your Mac, nearby")
@@ -142,6 +145,9 @@ struct SettingsScreen: View {
       NoticeCard(message: FailureCopy.publisherChanged, actionTitle: "Scan code") { model.isScanning = true }
     case .deviceRevoked:
       NoticeCard(message: FailureCopy.deviceRevoked, actionTitle: "Scan code") { model.isScanning = true }
+    case .accessEnded:
+      NoticeCard(message: FailureCopy.accessEnded(library: model.connection.libraryName, at: model.connection.accessUntil),
+                 actionTitle: "Try again") { Task { await model.services.connection.retry() } }
     }
   }
 }

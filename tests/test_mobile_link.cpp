@@ -8,6 +8,7 @@
 
 #include "catch_compat.h"
 
+#include <atomic>
 #include <filesystem>
 #include <future>
 #include <fstream>
@@ -19,6 +20,7 @@
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/secrets.h"
+#include "addons/driftwire/grants.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/transfer.h"
 #include "mobile/link.h"
@@ -167,6 +169,7 @@ struct rig {
   publisher pub{catalogue_home, dir.root / "work"};
   std::uint16_t port = 0;
   std::string payload;
+  std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
 
   std::string photos_label = "Photos";
 
@@ -198,6 +201,10 @@ struct rig {
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
+    o.now_unix = [this] {
+      const auto t = fake_now.load();
+      return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
+    };
     auto s = serve::server::start(o);
     REQUIRE(s);
     srv = std::move(*s);
@@ -363,6 +370,61 @@ TEST_CASE("pairing: a good code once; a used code, a wrong service and no access
   mob::link_session s4(no_key);
   mob::route_report silent;
   CHECK(s4.connect(silent, nullptr, 1500).error() == mv::status::io);
+}
+
+TEST_CASE("pairing: a guest code gives a time, the link reports it, and its end is not a removal", "[mobile-link]") {
+  rig r;
+  const std::int64_t t0 = std::time(nullptr);
+  r.fake_now = t0;
+  serve::grants::limit gives;
+  gives.for_s = 24 * 3600;
+  const std::string code = serve::grants::issue_guest_code(*r.store, 600, gives, t0);
+  REQUIRE_FALSE(code.empty());
+  mob::route_report report;
+  REQUIRE(mob::pair_device(r.config(), code, report));
+  mob::link_session s(r.config());
+  mob::route_report connected;
+  REQUIRE(s.connect(connected));
+  std::int64_t expires = 0;
+  bool scoped = true;
+  REQUIRE(s.grant(expires, scoped));
+  CHECK(expires == t0 + gives.for_s);
+  CHECK_FALSE(scoped);
+  // An unlimited phone has none.
+  rig other;
+  other.pair_now();
+  mob::link_session unlimited(other.config());
+  REQUIRE(unlimited.connect(connected));
+  CHECK_FALSE(unlimited.grant(expires, scoped));
+  // The day ends: refused, and the route says the access ended, not that the phone was removed.
+  r.fake_now = t0 + gives.for_s;
+  mob::route_report ended;
+  CHECK(s.reconnect(ended).error() == mv::status::permission_denied);
+  CHECK(std::any_of(ended.failures.begin(), ended.failures.end(),
+                    [](const mob::route_failure& f) { return f.problem == mob::route_problem::expired; }));
+  CHECK(std::none_of(ended.failures.begin(), ended.failures.end(),
+                     [](const mob::route_failure& f) { return f.problem == mob::route_problem::not_paired; }));
+}
+
+TEST_CASE("link payload: a guest code's grant is read for the confirm screen", "[mobile-link]") {
+  rig r;
+  const std::string json =
+      "{\"v\":1,\"library_id\":\"" + r.pub.library_id + "\",\"library_name\":\"Family\",\"publisher_key\":\"" +
+      catalog::to_hex(r.pub.pub) + "\",\"service\":{\"local\":\"" + r.config().local + "\",\"public\":\"\",\"identity\":\"" +
+      catalog::to_hex(r.identity) + "\"},\"access_key\":\"" + catalog::to_hex(r.access) +
+      "\",\"code\":\"abc\",\"expires\":99999999999,\"grant\":{\"for_s\":604800,\"scoped\":false}}";
+  std::string b64(sodium_base64_ENCODED_LEN(json.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+  sodium_bin2base64(b64.data(), b64.size(), reinterpret_cast<const unsigned char*>(json.data()), json.size(),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  b64.resize(std::strlen(b64.c_str()));
+  auto p = mob::parse_pair_payload("mediaviewer://pair#" + b64);
+  REQUIRE(p);
+  CHECK(p->grant_for_s == 604800);
+  CHECK_FALSE(p->grant_scoped);
+  // An unlimited code has none.
+  auto plain = mob::parse_pair_payload(payload_text(r, 99999999999));
+  REQUIRE(plain);
+  CHECK(plain->grant_for_s == 0);
 }
 
 TEST_CASE("link race: a dead local address loses to the named public route", "[mobile-link]") {
