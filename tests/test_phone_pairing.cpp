@@ -163,7 +163,9 @@ TEST_CASE("phone pairing: a desktop that can write the share claims the service"
   const auto roots = n.srv->roots();
   REQUIRE(roots.size() == 2);
   CHECK(roots[1].label == serve::kCatalogueLabel);
-  CHECK(roots[1].path == utf8(n.share / serve::kCatalogueFolder));
+  // Compared as paths: the claim joins with "/", and on Windows fs::path takes either separator.
+  const auto& claimed = roots[1].path;
+  CHECK(fs::path(std::u8string(claimed.begin(), claimed.end())) == n.share / serve::kCatalogueFolder);
   std::lock_guard lock(n.saved_m);
   REQUIRE(n.saved.size() == 1);
   CHECK(n.saved[0].roots.size() == 2);
