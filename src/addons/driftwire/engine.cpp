@@ -17,6 +17,7 @@
 #include "addons/driftwire/race.h"
 #include "core/json.h"
 #include "io/file_port.h"
+#include "addons/driftwire/presence_keys.h"
 
 namespace mv::driftwire {
 

@@ -1,5 +1,5 @@
 // M1 spike S2 (throwaway). One range GET over plain BSD sockets, the way a C++ core connects:
-// getaddrinfo with AF_UNSPEC (src/addons/driftwire/net_posix.cpp, resolve), then connect() to each
+// getaddrinfo with AF_UNSPEC (src/wire/net_posix.cpp, resolve), then connect() to each
 // address in turn. URLSession hides what this shows on a NAT64 network, where it papers over IPv4.
 #pragma once
 

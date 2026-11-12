@@ -412,13 +412,13 @@ public unsafe struct MvAiApi
     // edit-refresh S10, faces in a picture: the host serves it; this chrome never calls it.
     public IntPtr FacesJson;
 
-    // Phone access (docs/plans/mobile.md): appended. The Windows Phone access card is not
-    // built yet, so this chrome does not call them; they are here so the layout matches.
-    public IntPtr PhonePublish;
-    public IntPtr PhoneCancel;
-    public IntPtr PhoneJson;
-    public IntPtr PhoneLink;
-    public IntPtr PhoneLinkJson;
+    // Phone access (docs/plans/mobile.md §5–§7): appended. Each is read only when
+    // StructSize covers it and it is non-null (AiApi.HasPhone, HasPhoneLink).
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, MvStatus> PhonePublish;
+    public delegate* unmanaged[Cdecl]<IntPtr, MvStatus> PhoneCancel;
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, uint*, MvStatus> PhoneJson;
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, MvStatus> PhoneLink;
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, uint*, MvStatus> PhoneLinkJson;
 }
 
 /// <summary>Mirrors <c>MV_AI_DRY_RUN</c>: person_refine_json / people_dedupe_json look first.</summary>
@@ -501,6 +501,8 @@ public sealed unsafe class AiApi
     private static readonly uint EndPersonSuggestJson = EndOf(t => (byte*)&t->PersonSuggestJson);
     private static readonly uint EndPersonRefineJson = EndOf(t => (byte*)&t->PersonRefineJson);
     private static readonly uint EndPeopleDedupeJson = EndOf(t => (byte*)&t->PeopleDedupeJson);
+    private static readonly uint EndPhoneJson = EndOf(t => (byte*)&t->PhoneJson);
+    private static readonly uint EndPhoneLinkJson = EndOf(t => (byte*)&t->PhoneLinkJson);
 
     private static MediaViewerException Missing(string what) => new(MvStatus.UnsupportedFormat, $"ai.{what}", 0);
 
@@ -954,5 +956,46 @@ public sealed unsafe class AiApi
         ulong id;
         fixed (byte* p = Z(path)) Check(_api->SearchThisPerson(Ctx, p, ptsMs, &id));
         return id;
+    }
+    // ---- phone access (docs/plans/mobile.md §5–§7; no-block: the pack's own thread does the work) ----
+
+    /// <summary>A pack with phone_publish, phone_cancel and phone_json (the catalogue rows).</summary>
+    public bool HasPhone => _api->StructSize >= EndPhoneJson &&
+                            _api->PhonePublish != null && _api->PhoneCancel != null && _api->PhoneJson != null;
+
+    /// <summary>A pack with phone_link and phone_link_json (the service, the code, the phones).</summary>
+    public bool HasPhoneLink => _api->StructSize >= EndPhoneLinkJson && _api->PhoneLink != null && _api->PhoneLinkJson != null;
+
+    /// <summary>Builds a catalogue generation and delivers it to <paramref name="destination"/>\.mediaviewer. Busy while one runs.</summary>
+    public void PhonePublish(string destination)
+    {
+        if (!HasPhone) throw Missing(nameof(PhonePublish));
+        fixed (byte* d = Z(destination)) Check(_api->PhonePublish(Ctx, d));
+    }
+
+    public void PhoneCancel()
+    {
+        if (!HasPhone) throw Missing(nameof(PhoneCancel));
+        Check(_api->PhoneCancel(Ctx));
+    }
+
+    /// <summary>{"running","phase","fraction","error","destination","generation","published","assets"}.</summary>
+    public string PhoneJson()
+    {
+        if (!HasPhone) throw Missing(nameof(PhoneJson));
+        return ReadJson((b, c, n) => _api->PhoneJson(Ctx, b, c, n));
+    }
+
+    /// <summary>One request <c>{"do": …}</c>, queued for the pack's thread; watched through <see cref="PhoneLinkJson"/>.</summary>
+    public void PhoneLink(string requestJson)
+    {
+        if (!HasPhoneLink) throw Missing(nameof(PhoneLink));
+        fixed (byte* r = Z(requestJson)) Check(_api->PhoneLink(Ctx, r));
+    }
+
+    public string PhoneLinkJson()
+    {
+        if (!HasPhoneLink) throw Missing(nameof(PhoneLinkJson));
+        return ReadJson((b, c, n) => _api->PhoneLinkJson(Ctx, b, c, n));
     }
 }

@@ -16,12 +16,12 @@
 
 #include "driftwire_fixture.h"
 
-#include "addons/driftwire/channel.h"
-#include "addons/driftwire/grants.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/owner_pass.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/channel.h"
+#include "wire/grants.h"
+#include "wire/known.h"
+#include "wire/net.h"
+#include "wire/owner_pass.h"
+#include "wire/secrets.h"
 
 namespace owner = mv::driftwire::serve::owner;
 namespace sp = mv::driftwire;

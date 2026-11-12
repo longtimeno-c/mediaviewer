@@ -35,11 +35,11 @@
 #include "addons/driftwire/cli/theme.h"
 #include "addons/driftwire/cli/update.h"
 #include "addons/driftwire/engine.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/net.h"
+#include "wire/known.h"
+#include "wire/net.h"
 #include "addons/driftwire/power.h"
 #include "addons/driftwire/prefs.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 
 #ifndef MV_DRIFTWIRE_CLI_VERSION
 #define MV_DRIFTWIRE_CLI_VERSION "0.0.0"

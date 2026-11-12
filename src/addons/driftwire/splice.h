@@ -60,9 +60,9 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/link.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/noise.h"
+#include "wire/link.h"
+#include "wire/net.h"
+#include "wire/noise.h"
 
 namespace mv::driftwire::relay {
 

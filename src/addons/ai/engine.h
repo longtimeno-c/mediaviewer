@@ -40,7 +40,7 @@
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
 #include "addons/ai/cloud_files.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 #include "addons/ai/pdf_reader.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"

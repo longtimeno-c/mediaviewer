@@ -400,6 +400,9 @@ internal sealed partial class ManagePanel
         // Import and export (docs/design/17 "Sharing an index"; ManagePanel.Transfer.cs).
         AddTransferSection();
 
+        // Phone access (docs/plans/mobile.md; ManagePanel.Phone.cs), as on the Mac.
+        AddPhoneSection();
+
         // People: a separate opt-in (PR 24; biometric data, stricter than the frame index).
         StackPanel people = Section("People");
         _faces = new ToggleSwitch { OnContent = "", OffContent = "", MinWidth = 0, Width = 48 };
@@ -533,7 +536,7 @@ internal sealed partial class ManagePanel
     /// confirmRow): an accent wash, the action in the critical red when it
     /// deletes, and Esc as Cancel so it does not close Settings.
     /// </summary>
-    private Grid ConfirmRow(string text, string action, Action perform, Action cancel, bool focus)
+    private Grid ConfirmRow(string text, string action, Action perform, Action cancel, bool focus, bool destructive = true)
     {
         var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(12), Background = _look.LiveTint(AddonColour.Accent, 20) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -542,7 +545,7 @@ internal sealed partial class ManagePanel
         TextBlock label = _look.Text(text, 12, AddonColour.Title);
         label.VerticalAlignment = VerticalAlignment.Center;
         grid.Children.Add(label);
-        Button go = _look.DestructiveButton(action, perform);
+        Button go = destructive ? _look.DestructiveButton(action, perform) : _look.Button(action, perform, accent: true);
         go.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(go, 1);
         grid.Children.Add(go);
@@ -655,6 +658,7 @@ internal sealed partial class ManagePanel
         }
         MvAiStatus s = _chrome.Status;
         _status.Show(s);
+        PollPhone();
         string? why = Look.FallbackReason(s);
         string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
         _compute.Text = (why ?? $"Running on {Look.ComputeBadge(s)}") + model;

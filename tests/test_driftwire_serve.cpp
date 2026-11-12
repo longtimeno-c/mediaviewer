@@ -10,10 +10,10 @@
 
 #include "driftwire_fixture.h"
 
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/noise.h"
-#include "addons/driftwire/serve.h"
-#include "addons/driftwire/serve_client.h"
+#include "wire/known.h"
+#include "wire/noise.h"
+#include "wire/serve.h"
+#include "wire/serve_client.h"
 
 #if !defined(_WIN32)
 #include <fcntl.h>

@@ -12,8 +12,9 @@
 #include <cstdlib>
 #include <string_view>
 
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/known.h"
+#include "addons/driftwire/presence_keys.h"
+#include "wire/secrets.h"
 
 namespace known = mv::driftwire::known;
 namespace secrets = mv::driftwire::secrets;

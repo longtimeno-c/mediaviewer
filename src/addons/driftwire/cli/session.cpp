@@ -28,7 +28,7 @@
 #include "addons/driftwire/cli/term.h"
 #include "addons/driftwire/cli/text.h"
 #include "addons/driftwire/cli/update.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 #include "core/json.h"
 
 namespace mv::driftwire::cli {

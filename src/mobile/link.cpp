@@ -8,7 +8,7 @@
 #include <optional>
 #include <thread>
 
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 
 namespace mv::mobile {
 

@@ -5,9 +5,12 @@
 # Included by the Windows root and cmake/darwin.cmake after import.cmake and
 # places.cmake, so the two cannot drift, and by cmake/portable (Linux).
 #
-#   mv_driftwire_engine  the wire, Noise, the sealed channel, the transfer, the
-#                         engine and its view tree, and the network and
-#                         Bluetooth ports. Links libsodium and BLAKE3; not the
+#   mv_wire              the protocol (cmake/wire.cmake, src/wire): the wire,
+#                         Noise, the sealed channel, the NAS service, the
+#                         secret store and the network ports. The app's phone
+#                         feature links it too.
+#   mv_driftwire_engine  the transfer, the DHT, relays, the engine and its
+#                         view tree, and the Bluetooth port, over mv_wire. Links libsodium and BLAKE3; not the
 #                         core's io (the tests bring mv_io, the module compiles
 #                         the file port in).
 #   mv_driftwire         the add-on: ONE shared library whose only export is
@@ -31,58 +34,34 @@ if(NOT DEFINED MV_BLAKE3_TARGET)
   set(MV_BLAKE3_TARGET BLAKE3::blake3)
 endif()
 
-# Protocol 2's handshake is a post-quantum hybrid (noise.cpp): ML-KEM-768
-# arrived in libsodium 1.0.21. A distro libsodium (Ubuntu 24.04 ships 1.0.18)
-# fails here, at configure, rather than deep inside noise.cpp.
-include(CheckCXXSourceCompiles)
-include(CMakePushCheckState)
-cmake_push_check_state(RESET)
-set(CMAKE_REQUIRED_LIBRARIES ${MV_SODIUM_TARGET})
-check_cxx_source_compiles("
-#include <sodium.h>
-static_assert(crypto_kem_mlkem768_PUBLICKEYBYTES == 1184);
-int main() { return 0; }" MV_SODIUM_HAS_MLKEM768)
-cmake_pop_check_state()
-if(NOT MV_SODIUM_HAS_MLKEM768)
-  message(FATAL_ERROR "Driftwire needs libsodium 1.0.21 or newer (ML-KEM-768): use the pinned vcpkg port, "
-                      "or a libsodium built from source")
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/wire.cmake")
+
 
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp ${_S}/advert_none.cpp)
+  set(_driftwire_port ${_S}/power_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
 elseif(IOS)
-  # No module on iOS, so the engine carries what the module would compile in:
-  # the file port, BLAKE3 hashing and (no bearer yet) the empty Bluetooth port.
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_ios.cpp ${_S}/secrets_ios.cpp ${_S}/power_ios.cpp
-      ${_S}/bt_none.cpp ${_S}/advert_none.cpp
-      ${MV_SOURCE_ROOT}/src/io/file_port.cpp ${MV_SOURCE_ROOT}/src/io/file_port_mac.cpp
-      ${MV_SOURCE_ROOT}/src/io/content_hash.cpp)
+  # No module on iOS: mv_wire carries the file port and BLAKE3 hashing
+  # (cmake/wire.cmake), the engine the empty Bluetooth port (no bearer yet).
+  set(_driftwire_port ${_S}/power_ios.cpp ${_S}/bt_none.cpp)
   set(_driftwire_bt "")
 elseif(APPLE)
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp ${_S}/advert_mac.cpp)
+  set(_driftwire_port ${_S}/power_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
 else()
   # Linux: the Secret Service (libsecret) and logind (libsystemd / libelogind)
   # are loaded at run time, so there is nothing to build against; no
   # Bluetooth bearer yet (bt_none.cpp: Wi-Fi and the internet only).
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/secrets_linux.cpp ${_S}/power_linux.cpp ${_S}/advert_none.cpp)
+  set(_driftwire_port ${_S}/power_linux.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
 endif()
 
 add_library(mv_driftwire_engine STATIC
-  ${_S}/wire.cpp ${_S}/wire.h
-  ${_S}/link.h
-  ${_S}/noise.cpp ${_S}/noise.h
-  ${_S}/cpace.cpp ${_S}/cpace.h
-  ${_S}/channel.cpp ${_S}/channel.h
   ${_S}/transfer.cpp ${_S}/transfer.h
-  ${_S}/stages.cpp ${_S}/stages.h
   ${_S}/presence.cpp ${_S}/presence.h
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
-  ${_S}/net.h ${_S}/net_address.cpp
   ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/mapping.cpp ${_S}/mapping.h
   ${_S}/race.h
@@ -94,17 +73,10 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/dht.cpp ${_S}/dht.h
   ${_S}/meet.cpp ${_S}/meet.h
   ${_S}/handover.cpp ${_S}/handover.h
-  ${_S}/secrets.h ${_S}/secrets_file.cpp
-  ${_S}/known.h ${_S}/known.cpp
   ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
-  ${_S}/serve_wire.cpp ${_S}/serve_wire.h
-  ${_S}/owner_pass.cpp ${_S}/owner_pass.h
-  ${_S}/grants.cpp ${_S}/grants.h
-  ${_S}/serve.cpp ${_S}/serve.h
-  ${_S}/serve_client.cpp ${_S}/serve_client.h
-  ${_S}/desk.cpp ${_S}/desk.h ${_S}/advert.h
-  ${_S}/pair_check.cpp ${_S}/pair_check.h
+  ${_S}/desk.cpp ${_S}/desk.h
+  ${_S}/presence_keys.cpp ${_S}/presence_keys.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -113,7 +85,7 @@ add_library(mv_driftwire_engine STATIC
   ${_driftwire_port}
 )
 target_include_directories(mv_driftwire_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
-target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options ${MV_SODIUM_TARGET} ${MV_BLAKE3_TARGET}
+target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options mv_wire ${MV_SODIUM_TARGET} ${MV_BLAKE3_TARGET}
   Threads::Threads)
 set_target_properties(mv_driftwire_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
@@ -122,7 +94,7 @@ if(WIN32)
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
   # PowerCreateRequest is kernel32's (#530), linked by default.
-  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32)
+  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 dnsapi)
 elseif(IOS)
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework Security")
 elseif(APPLE)

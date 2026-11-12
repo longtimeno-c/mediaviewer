@@ -11,9 +11,9 @@
 
 #include <sodium.h>
 
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/serve_wire.h"
-#include "addons/driftwire/wire.h"
+#include "wire/pair_check.h"
+#include "wire/serve_wire.h"
+#include "wire/wire.h"
 #include "core/json.h"
 
 namespace mv::mobile::sample {

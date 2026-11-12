@@ -42,7 +42,7 @@
 #include "addon/slots.h"
 #include "addons/places/places.h"
 #include "addons/ai/catalog.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 #include "addons/ai/engine.h"
 #include "addons/ai/host.h"
 #include "addons/ai/pack.h"

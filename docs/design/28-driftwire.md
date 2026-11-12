@@ -1395,7 +1395,9 @@ never claimable, with its keys in memory so its timer never wakes the Keychain. 
 and the same device list, and is advertised as `_mediaviewer._tcp` (TXT `v=1`, `lib=` the first 16 hex of the
 library id's SHA-256; `advert_mac.cpp`). The phone reads it exactly as it reads the NAS, so a paired phone
 needs no Accept and a dropped transfer resumes by `read_range`. Its identity is made per run and nothing
-pins it: the catalogue's signature is the trust. Windows and Linux have `advert_none.cpp`, so no advert yet.
+pins it: the catalogue's signature is the trust. Windows registers the same service with its own mDNS responder (`advert_win.cpp`, `DnsServiceRegister`; the
+instance is `MediaViewer-` and six random hex digits, since Windows does not rename on a conflict). Linux has
+`advert_none.cpp`, so no advert yet.
 
 ## The NAS service (`driftwire serve`)
 
@@ -1829,16 +1831,23 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 ## Where it lives
 
+Since 2026-11-12 the protocol is `src/wire` (target `mv_wire`, `cmake/wire.cmake`), so the app's phone feature
+can link it with no add-on installed ([plan](../plans/phone-in-the-app.md)): `wire.*`, `keys.*`, `noise.*`,
+`cpace.*`, `stages.*`, `channel.*`, `link.h`, `net*`, `machine_*`, `admission.h`, `secrets*`, `known.*`,
+`serve*`, `pair_check.*`, `advert*`. The rest is `src/addons/driftwire` (`mv_driftwire_engine`, over `mv_wire`).
+The namespace stays `mv::driftwire`. The pair's hourly DHT keys left `known` for `presence_keys.*`, so the
+protocol has no DHT.
+
 | Piece | Code |
 |---|---|
-| Wire, code, path rule, beacon | `src/addons/driftwire/wire.*` |
+| Wire, code, path rule, beacon | `src/wire/wire.*` |
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
 | Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
 | The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
 | Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |
 | The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
-| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*` |
+| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*`, `presence_keys.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
@@ -1853,7 +1862,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
-| Phone access | `desk.*` (claim, devices, codes, nearby, the route), `advert*` (Bonjour) |
+| Phone access | `desk.*` (claim, devices, codes, nearby, the route), `advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
 | The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |

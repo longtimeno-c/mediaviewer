@@ -22,11 +22,11 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/driftwire/link.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/secrets.h"
-#include "addons/driftwire/serve.h"
-#include "addons/driftwire/serve_wire.h"
+#include "wire/link.h"
+#include "wire/net.h"
+#include "wire/secrets.h"
+#include "wire/serve.h"
+#include "wire/serve_wire.h"
 #include "core/result.h"
 
 namespace mv::driftwire::desk {
@@ -39,6 +39,9 @@ inline constexpr const char* kServiceName = "phone_service";     // what claimin
 inline constexpr const char* kDevicesName = "phone_devices";     // the phones this desktop has paired
 inline constexpr const char* kPendingName = "phone_revoke_pending";  // revoked here, the NAS not told yet
 void forget(secrets::store& store);
+// The add-on's "Remove everything" (#507): the phone's items above, then the
+// identity and the remembered devices (known::forget). Whether all are gone.
+[[nodiscard]] bool forget_addon(secrets::store& store);
 
 inline constexpr int kConnectMs = 5000;
 inline constexpr int kClaimTotalMs = 27000;  // under the host's 30 s per request

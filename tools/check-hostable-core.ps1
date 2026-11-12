@@ -56,7 +56,7 @@ if (-not $SourceRoot) {
 
 $SourceRoot = (Resolve-Path $SourceRoot).Path
 
-$bannedModules = @('core', 'codec', 'canvas', 'image', 'meta', 'player', 'edit', 'addon', 'addons', 'infer', 'geo')
+$bannedModules = @('core', 'codec', 'canvas', 'image', 'meta', 'player', 'edit', 'addon', 'addons', 'wire', 'infer', 'geo')
 
 $rules = @(
     [pscustomobject]@{

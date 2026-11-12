@@ -12,11 +12,11 @@
 #include <fstream>
 #include <map>
 
-#include "addons/driftwire/advert.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/serve_client.h"
-#include "addons/driftwire/transfer.h"
+#include "wire/advert.h"
+#include "wire/known.h"
+#include "wire/pair_check.h"
+#include "wire/serve_client.h"
+#include "wire/keys.h"
 #include "core/json.h"
 
 namespace mv::driftwire::desk {
@@ -112,6 +112,11 @@ void forget(secrets::store& store) {
   (void)store.erase(kServiceName);
   (void)store.erase(kDevicesName);
   (void)store.erase(kPendingName);
+}
+
+bool forget_addon(secrets::store& store) {
+  forget(store);
+  return known::forget(store);
 }
 
 std::optional<std::pair<std::string, std::uint16_t>> split_host_port(std::string_view text) {
