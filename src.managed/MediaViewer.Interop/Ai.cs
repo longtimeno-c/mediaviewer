@@ -411,6 +411,14 @@ public unsafe struct MvAiApi
 
     // edit-refresh S10, faces in a picture: the host serves it; this chrome never calls it.
     public IntPtr FacesJson;
+
+    // Phone access (docs/plans/mobile.md): appended. The Windows Phone access card is not
+    // built yet, so this chrome does not call them; they are here so the layout matches.
+    public IntPtr PhonePublish;
+    public IntPtr PhoneCancel;
+    public IntPtr PhoneJson;
+    public IntPtr PhoneLink;
+    public IntPtr PhoneLinkJson;
 }
 
 /// <summary>Mirrors <c>MV_AI_DRY_RUN</c>: person_refine_json / people_dedupe_json look first.</summary>
