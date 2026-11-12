@@ -1729,13 +1729,15 @@ own, indexed by the engine over the app's own decoders with B/32 on the CPU, the
 under a fixed library id and signed by the sample library's own key
 (`mv_mobile_parity_desktop sample-publish`). The catalogue and the originals are flattened into the
 GitHub release `sample-library`, one file per (root, path): `<root id>__<path with '/' as "__">`.
-`files.json`, signed by the same key (`files.sig`: Ed25519 over `kFilesContext` and the bytes), gives
+`files.json`, signed by the same key (`{"signature", "list"}` in one asset, so a republish never pairs a list
+with another's signature; Ed25519 over `kFilesContext` and the list's bytes), gives
 the root list and the size and SHA-256 of every file sync does not check itself: everything but
 `current.json`, `gen/` and `models/` under the catalogue root, so the JPEG-512 pack, `library.json`
 and every original. On the phone, `sample::static_remote` (`src/mobile/sample.*`) is the `remote_file`
 over that folder; the host does the HTTPS (`mv_fetch_fn`, `SampleFetch.swift`). It passes the
 catalogue's own files through by range, for sync to check, and reads any other file only from a
-whole copy whose hash matched the list (kept in `<thumb cache>/verified`, which Forget removes);
+whole copy whose hash matched the list (kept in `<thumb cache>/verified` as `<name>.<16 hex of its
+hash>`, so a republished file with the same name and size is fetched again; Forget removes it);
 a file not listed is never fetched. A download belongs to the file, not to the reader that began
 it: a reader that cancels (a seek in a clip, a swipe past a photo) leaves what arrived in a
 `.part` named by the file's hash, and the next reader rehashes that prefix and asks for the rest by

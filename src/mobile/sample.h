@@ -8,8 +8,10 @@
 // the Driftwire link. Nothing here knows which OS it runs on (D9).
 //
 // The folder's layout, one flat file per (root, path):
-//   files.json, files.sig             the signed list: library id, roots, and the size and SHA-256
-//                                     of every file below that sync does not check itself
+//   files.json                        {"signature": hex, "list": "<the list's JSON, as a string>"}:
+//                                     library id, roots, and the size and SHA-256 of every file
+//                                     below that sync does not check itself. One file, so the list
+//                                     and its signature are always replaced together.
 //   <root id>__<path, '/' as "__">    every other file, e.g. c0c0c0c0c0c0c0c0__gen__000001__manifest.json
 // Nothing is used on trust in the host. current.json, gen/ and models/ under the
 // catalogue root are what sync verifies against the pinned key. Everything else
@@ -63,7 +65,7 @@ inline constexpr std::string_view kBase = "https://github.com/longtimeno-c/media
 using fetch_fn = std::function<expected(const std::string& url, std::uint64_t at, std::uint64_t length,
                                         const byte_sink& sink, const cancel_flag* cancel)>;
 
-// files.sig signs this prefix and then files.json's bytes, so it can never be taken
+// The signature is over this prefix and then the list's bytes, so it can never be taken
 // for a signature over anything else the key signs.
 inline constexpr std::string_view kFilesContext = "MediaViewer sample files 1\n";
 
@@ -82,6 +84,9 @@ struct file_list {
 };
 [[nodiscard]] std::optional<file_list> parse_file_list(std::string_view text, std::string_view signature_hex,
                                                        const key32& key, std::string_view library_id);
+// files.json as published: the envelope, then parse_file_list on what it carries.
+[[nodiscard]] std::optional<file_list> parse_signed_list(std::string_view text, const key32& key,
+                                                         std::string_view library_id);
 
 class static_remote final : public remote_file {
  public:
@@ -126,6 +131,8 @@ class static_remote final : public remote_file {
   // clip cancels routinely). A reader waiting for another's download honours its own cancel.
   [[nodiscard]] result<std::string> verified(const std::string& name, const listed_file& f, const cancel_flag* cancel);
   void trim_verified(const std::string& keep);
+  // The lock of one listed file (by flat name): its download, its resume, its removal.
+  [[nodiscard]] std::shared_ptr<std::timed_mutex> slot(const std::string& name);
   [[nodiscard]] bool is_shut() const;
 
   std::string base_;

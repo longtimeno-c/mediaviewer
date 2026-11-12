@@ -765,7 +765,7 @@ catalogue that names this Mac's home folder or user, and signs `files.json` (eve
 the JPEG-512 pack's SHA-256) with `mv_mobile_parity_desktop sample-sign`. It signs with
 `~/Dev/.mv-toolchain/devkey/sample-library-publisher.key` (`MV_SAMPLE_KEY`), whose public half is
 pinned in `src/mobile/sample.h`: losing it means a new key and an app update, so keep a copy. The
-upload puts the files first, then `files.json` and `files.sig`, then `current.json`. It leaves older generations' files on the release; delete them
+upload puts the files first, then `files.json` (the list and its signature in one asset), then `current.json`. It leaves older generations' files on the release; delete them
 by hand once the new one has been out for a day.
 
 In the Simulator, with a Debug build ad hoc signed as for `search-live.sh`: the folder is served on

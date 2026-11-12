@@ -19,7 +19,7 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 bundle=io.github.longtimeno-c.mediaviewer.mobile
 port=18470
 mkdir -p "$out"; out="$(cd "$out" && pwd -P)"; work="$(cd "$work" && pwd -P)"
-[[ -f $work/release/files.sig ]] || { echo "no $work/release: run tools/ios/sample-library.sh first" >&2; exit 2; }
+[[ -f $work/release/files.json ]] || { echo "no $work/release: run tools/ios/sample-library.sh first" >&2; exit 2; }
 
 if [[ ${MV_SAMPLE_FILE:-} == 1 ]]; then
   base="file://$work/release/"

@@ -909,21 +909,27 @@ int sample_publish(int argc, char** argv) {
   return 0;
 }
 
-// sample-sign <files.json> <key file> <files.sig>: the sample library's signed list
-// (src/mobile/sample.h): Ed25519 over kFilesContext and the list's bytes, as hex.
+// sample-sign <files.json> <key file>: the sample library's signed list (src/mobile/sample.h), in
+// place: the list becomes {"signature": Ed25519 over kFilesContext and its bytes, "list": its text}.
 int sample_sign(int argc, char** argv) {
-  if (argc != 5) {
-    std::fprintf(stderr, "sample-sign <files.json> <key file> <files.sig>\n");
+  if (argc != 4) {
+    std::fprintf(stderr, "sample-sign <files.json> <key file>\n");
     return 2;
   }
   auto text = read_all(argv[2]);
   auto secret = read_all(argv[3]);
   if (!text || !secret || secret->size() != crypto_sign_SECRETKEYBYTES || sodium_init() < 0) return 1;
-  std::vector<std::uint8_t> msg(mv::mobile::sample::kFilesContext.begin(), mv::mobile::sample::kFilesContext.end());
-  msg.insert(msg.end(), text->begin(), text->end());
+  const std::string list(text->begin(), text->end());
+  std::string msg(mv::mobile::sample::kFilesContext);
+  msg += list;
   unsigned char sig[crypto_sign_BYTES];
-  crypto_sign_detached(sig, nullptr, msg.data(), msg.size(), secret->data());
-  std::ofstream(argv[4]) << cat::to_hex(std::span<const std::uint8_t>(sig, sizeof sig)) << '\n';
+  crypto_sign_detached(sig, nullptr, reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secret->data());
+  mv::json::writer w;
+  w.begin_object();
+  w.key("signature").string(cat::to_hex(std::span<const std::uint8_t>(sig, sizeof sig)));
+  w.key("list").string(list);
+  w.end_object();
+  std::ofstream(argv[2], std::ios::binary | std::ios::trunc) << w.take();
   return 0;
 }
 }  // namespace

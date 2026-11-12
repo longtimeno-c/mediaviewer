@@ -69,7 +69,7 @@ if [[ -n $leaks ]]; then echo "the catalogue names this Mac's folders or user:" 
 
 # ---- 4. the static folder -------------------------------------------------------------------
 python3 -I "$root/tools/ios/sample_library.py" flatten "$mnt" "$sub" "$work/release"
-"$desk" sample-sign "$work/release/files.json" "$key" "$work/release/files.sig"
+"$desk" sample-sign "$work/release/files.json" "$key"
 
 # ---- 5. the release --------------------------------------------------------------------------
 if [[ $upload == --upload ]]; then
@@ -78,8 +78,9 @@ if [[ $upload == --upload ]]; then
     --title "Sample library for the iPhone app" \
     --notes "The iPhone app's sample library (code SAMPLE): CC0 and public-domain pictures from Wikimedia Commons, listed with their authors in tools/ios/sample-library/SOURCES.md. Made by tools/ios/sample-library.sh."
   # The files first, then the list that vouches for them, then current.json.
-  ( cd "$work/release" && ls | grep -vxE 'c0c0c0c0c0c0c0c0__current.json|files.json|files.sig' | xargs gh release upload "$tag" --repo "$repo" --clobber )
-  gh release upload "$tag" --repo "$repo" --clobber "$work/release/files.json" "$work/release/files.sig"
+  ( cd "$work/release" && ls | grep -vxE 'c0c0c0c0c0c0c0c0__current.json|files.json' | xargs gh release upload "$tag" --repo "$repo" --clobber )
+  # One asset holds the list and its signature, so no phone can fetch a list with another's signature.
+  gh release upload "$tag" --repo "$repo" --clobber "$work/release/files.json"
   gh release upload "$tag" --repo "$repo" --clobber "$work/release/c0c0c0c0c0c0c0c0__current.json"
   echo "uploaded generation $generation"
 fi

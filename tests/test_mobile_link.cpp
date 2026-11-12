@@ -1011,12 +1011,17 @@ struct static_folder {
     const std::string list = std::string("{\"format\":1,\"library_id\":\"") + library_id + "\",\"roots\":[{\"id\":\"" +
                              kSampleCatalogueRoot + "\",\"label\":\"Catalogue\"},{\"id\":\"" + kSampleMediaRoot +
                              "\",\"label\":\"" + share + "\"}],\"files\":[" + files + "]}";
-    write_file(dir / "files.json", list);
     std::string msg(mob::sample::kFilesContext);
     msg += list;
     unsigned char sig[crypto_sign_BYTES];
     crypto_sign_detached(sig, nullptr, reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secret.data());
-    write_file(dir / "files.sig", catalog::to_hex(std::span<const std::uint8_t>(sig, sizeof sig)) + "\n");
+    std::string escaped;  // the list as a JSON string: it holds quotes, nothing else to escape
+    for (char c : list) {
+      if (c == '"' || c == '\\') escaped += '\\';
+      escaped += c;
+    }
+    write_file(dir / "files.json", "{\"signature\":\"" + catalog::to_hex(std::span<const std::uint8_t>(sig, sizeof sig)) +
+                                       "\",\"list\":\"" + escaped + "\"}");
   }
 
   // The host's GET: ranges (offsets from `at`), a 404 for what is not there, and the network gone when `down`.
@@ -1402,4 +1407,54 @@ TEST_CASE("sample: verified copies stay under their budget and count in the cach
   REQUIRE(mv_file_read(l, 1, 0, 10, 0, nullptr, collect, &got) == MV_LINK_OK);
   CHECK(mv_thumb_bytes_used(l) >= before + 70000);
   mv_link_close(l);
+}
+
+TEST_CASE("sample: a file republished with the same name and size is fetched again, not served from the old copy", "[mobile-link]") {
+  sample_rig r;
+  const mob::byte_sink drop = [](std::uint64_t, std::span<const std::uint8_t>) { return true; };
+  std::string got;
+  const mob::byte_sink keep = [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    got.append(reinterpret_cast<const char*>(b.data()), b.size());
+    return true;
+  };
+  {
+    auto remote = r.remote();
+    REQUIRE(remote.read_range(kSampleMediaRoot, "2024/pic.bin", 0, 10, drop, nullptr, false));
+  }
+  // The publisher replaces it (--clobber): same name, same size, other bytes, a new signed list.
+  write_file(r.photos / "2024" / "pic.bin", std::string(70000, 'n'));
+  r.folder.fill(r.dir.root / "nas" / ".mediaviewer", r.photos, "Photos", r.pub.library_id, r.pub.secret);
+  auto remote = r.remote();  // the same verified folder, the new list
+  REQUIRE(remote.read_range(kSampleMediaRoot, "2024/pic.bin", 0, 10, keep, nullptr, false));
+  CHECK(got == std::string(10, 'n'));
+}
+
+TEST_CASE("sample: a transport that sends more than the list says is refused and nothing of it is kept", "[mobile-link]") {
+  sample_rig r;
+  write_file(r.flat(kSampleMediaRoot, "2024/pic.bin"), std::string(70001, 'p'));  // after signing
+  auto inner = r.folder.as_fetch();
+  // A host that ignores the length asked for and sends the whole file.
+  mob::sample::fetch_fn sloppy = [&](const std::string& url, std::uint64_t at, std::uint64_t, const mob::byte_sink& sink,
+                                     const mob::cancel_flag* cancel) { return inner(url, at, UINT64_MAX, sink, cancel); };
+  mob::sample::static_remote remote(kTestBase, sloppy, r.cfg.publisher_key, r.cfg.library_id,
+                                    (r.dir.root / "verified").string());
+  auto read = remote.read_range(kSampleMediaRoot, "2024/pic.bin", 0, 10,
+                                [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false);
+  REQUIRE_FALSE(read);
+  CHECK(read.error() == mv::status::corrupt);
+  std::size_t kept = 0;
+  std::error_code ec;
+  for (fs::directory_iterator it(r.dir.root / "verified", ec), end; !ec && it != end; it.increment(ec)) ++kept;
+  CHECK(kept == 0);
+}
+
+TEST_CASE("sample: after Forget a reader makes nothing on disk", "[mobile-link]") {
+  sample_rig r;
+  auto remote = r.remote();
+  REQUIRE(remote.connect(nullptr));
+  remote.shut_down();
+  auto read = remote.read_range(kSampleMediaRoot, "2024/pic.bin", 0, 10,
+                                [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false);
+  CHECK_FALSE(read);
+  CHECK_FALSE(fs::exists(r.dir.root / "verified"));
 }
