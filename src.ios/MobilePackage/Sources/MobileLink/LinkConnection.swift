@@ -102,8 +102,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       guard adopted else {
         mv_link_shut_down(handle.raw)  // waits for its own writers; then it is dropped
         if lock.withLock({ forgotten && self.handle == nil }) {
-          // Forget ran while this opened: the folder the open made goes too.
-          await onLinkQueue { try? FileManager.default.removeItem(at: LinkFolders.thumbs(for: record.libraryID)) }
+          // Forget ran while this opened, and its removal may have run first: what the open made
+          // (the library folder, the caches) goes the same way. No pairing can start meanwhile:
+          // pairing waits for this open to finish.
+          await onLinkQueue { Self.removeLibraryFiles() }
         }
         return
       }
@@ -309,6 +311,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
     // The code was good. A library already on this phone goes now, all of it, as Forget would:
     // its copies stop and its files go before the new one is written (the person agreed to this).
+    _ = await awaitLink()  // launch's open first: it may still adopt, or clean up after, the stored library
     if lock.withLock({ self.record != nil || self.handle != nil }) {
       await removeLibrary(keepingDeviceKey: true)
     }
@@ -374,6 +377,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
 
     // As with any pairing, the library already here goes first, all of it.
+    _ = await awaitLink()  // launch's open first: it may still adopt, or clean up after, the stored library
     if lock.withLock({ self.record != nil || self.handle != nil }) {
       await removeLibrary(keepingDeviceKey: true)
     }
@@ -475,14 +479,20 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if let link { mv_link_shut_down(link.raw) }
     await work.stopAndWait()
     await onLinkQueue {
-      mv_library_remove(LinkFolders.library.path)
-      try? FileManager.default.removeItem(at: LinkFolders.thumbs)
-      try? FileManager.default.removeItem(at: LinkFolders.originals)
-      try? FileManager.default.removeItem(at: LinkFolders.clips)
+      Self.removeLibraryFiles()
       PairingRecord.clear()
       if !keepingDeviceKey { DeviceKey.clear() }
     }
     publish { $0 = .noLibrary }
+  }
+
+  /// Everything a library leaves in this phone's folders. Link queue only; after the handles that
+  /// write there are shut down.
+  private static func removeLibraryFiles() {
+    mv_library_remove(LinkFolders.library.path)
+    try? FileManager.default.removeItem(at: LinkFolders.thumbs)
+    try? FileManager.default.removeItem(at: LinkFolders.originals)
+    try? FileManager.default.removeItem(at: LinkFolders.clips)
   }
 
   private func catalogueNow(link: LinkHandle) async -> CatalogueInfo? {
