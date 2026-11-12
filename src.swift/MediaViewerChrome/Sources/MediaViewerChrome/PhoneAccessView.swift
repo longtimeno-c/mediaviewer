@@ -92,9 +92,11 @@ final class PhoneStore: ObservableObject {
   func appeared() {
     poll()
     guard timer == nil else { return }
-    timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+    let t = Timer(timeInterval: 0.5, repeats: true) { _ in
       Task { @MainActor in PhoneStore.shared.poll() }
     }
+    RunLoop.main.add(t, forMode: .common)  // goes on while Settings is scrolled
+    timer = t
   }
 
   func disappeared() {
@@ -108,7 +110,7 @@ final class PhoneStore: ObservableObject {
     for _ in 0..<3 {
       var buf = [CChar](repeating: 0, count: size)
       let need = Int(mv_chrome_phone_state(&buf, Int32(buf.count)))
-      if need <= size { text = String(cString: buf); break }
+      if need < size { text = String(cString: buf); break }  // need counts no NUL
       size = need + 1024
     }
     guard let o = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else { return }
@@ -272,18 +274,18 @@ struct PhoneAccessSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       if s.secondary {
-        SettingsRow(title: "Phone access", detail: "Set up in the first MediaViewer window.") { EmptyView() }
+        note("Set up in the first MediaViewer window.")
       } else if s.starting {
-        SettingsRow(title: "Phone access", detail: "Starting…") { EmptyView() }
+        note("Starting…")
       } else if !s.driftwire {
-        SettingsRow(title: "Phone access", detail: "This copy of MediaViewer can't keep phone keys.") { EmptyView() }
+        note("This copy of MediaViewer can't keep phone keys.")
       } else {
         content
       }
     }
     .onChange(of: s.local) { _, v in if local.isEmpty { local = v } }
     .onChange(of: s.publicName) { _, v in if publicName.isEmpty { publicName = v } }
-    .onAppear { model.appeared() }
+    .onAppear { if settings.visible { model.appeared() } }  // Settings stays built while hidden
     .onDisappear { model.disappeared() }
     .onChange(of: settings.visible) { _, visible in if visible { model.appeared() } else { model.disappeared() } }
   }
@@ -291,9 +293,11 @@ struct PhoneAccessSection: View {
   @ViewBuilder private var content: some View {
     if let line = model.busyText { ProgressLine(verb: line, fraction: nil, timed: false) }
     SettingsRow(title: "Folder on your NAS",
-                detail: s.folder.isEmpty ? "Where your phone reads your library. Nothing is written there until you choose it." : s.folder) {
+                detail: s.folder.isEmpty ? "Where your phone reads your library. Nothing is written there until you choose it." : s.folder,
+                labelsContent: false) {
       SettingsButton(title: s.folder.isEmpty ? "Choose…" : "Change…") { model.chooseFolder() }
         .disabled(!s.busy.isEmpty || (s.catalogue?.running ?? false))
+        .accessibilityLabel("Choose the folder on your NAS")
     }
     if !s.folder.isEmpty {
       search
@@ -314,18 +318,19 @@ struct PhoneAccessSection: View {
   // MARK: what the phone searches
 
   @ViewBuilder private var search: some View {
-    SettingsRow(title: "Search on your phone", detail: model.searchDetail) {
+    SettingsRow(title: "Search on your phone", detail: model.searchDetail, labelsContent: false) {
       if !s.localSearch {
         SettingsButton(title: "Get Local search…") { AddonNav.shared.show(AddonNav.localSearchPage) }
-      } else if s.catalogue?.running ?? false {
-        SettingsButton(title: "Cancel") { model.send(["do": "cancel"]) }
-      } else {
+      } else if !(s.catalogue?.running ?? false) {
         SettingsButton(title: "Publish now") { model.send(["do": "publish"]) }
           .disabled(!s.busy.isEmpty)
       }
     }
     if let c = s.catalogue, c.running {
-      ProgressTrack(fraction: min(1, max(0, c.fraction)))
+      // One progress line (docs/design/20 "Craft rules"), ending in a quiet Cancel.
+      ProgressLine(verb: c.phase == "sending" ? "Sending to the NAS" : "Building the catalogue",
+                   fraction: min(1, max(0, c.fraction)), key: "phone-publish",
+                   onCancel: { model.send(["do": "cancel"]) })
         .padding(.horizontal, MVTheme.space(12))
     }
   }
@@ -337,6 +342,7 @@ struct PhoneAccessSection: View {
       SettingsRow(title: "Service on your NAS",
                   detail: "Claim it from the NAS's own network, once. Your Mac writes a one-time token to the share to prove it can.") {
         SettingsButton(title: "Claim") { model.send(["do": "claim", "local": local, "public": publicName]) }
+          .accessibilityLabel("Claim the service")
           .disabled(!s.busy.isEmpty || local.isEmpty)
       }
       field("Address on your network", hint: "nas.local:7878", text: $local)
@@ -373,7 +379,7 @@ struct PhoneAccessSection: View {
         codeBlock
       }
       ForEach(s.phones) { phone in
-        SettingsRow(title: phone.name, detail: "Key \(phone.key.prefix(8))") {
+        SettingsRow(title: phone.name, detail: "Key \(phone.key.prefix(8))", labelsContent: false) {
           SettingsButton(title: "Remove") { model.send(["do": "revoke", "key": phone.key]) }
             .disabled(!s.busy.isEmpty)
             .accessibilityLabel("Remove \(phone.name)")
@@ -393,6 +399,8 @@ struct PhoneAccessSection: View {
     HStack(alignment: .top, spacing: MVTheme.space(16)) {
       PhoneQRImage(text: s.qr)
         .frame(width: 240, height: 240)
+        .accessibilityElement()
+        .accessibilityAddTraits(.isImage)
         .accessibilityLabel("Code for your phone to scan")
       VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         Text("Scan with MediaViewer on your phone").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
@@ -423,7 +431,7 @@ struct PhoneAccessSection: View {
   private var folders: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       ForEach(s.folders) { f in
-        SettingsRow(title: f.label, detail: f.path) {
+        SettingsRow(title: f.label, detail: f.path, labelsContent: false) {
           if !f.isCatalogue {
             SettingsButton(title: "Stop sharing") { model.send(["do": "remove_folder", "id": f.id]) }
               .disabled(!s.busy.isEmpty)
@@ -455,7 +463,8 @@ struct PhoneAccessSection: View {
 
   private var otherPublisher: some View {
     SettingsRow(title: "Published from another computer",
-                detail: "Key \(s.otherFingerprint). Ask it to hand over, and phones follow by themselves. If it's gone, start over and scan each phone again.") {
+                detail: "Key \(s.otherFingerprint). Ask it to hand over, and phones follow by themselves. If it's gone, start over and scan each phone again.",
+                labelsContent: false) {
       HStack(spacing: MVTheme.space(8)) {
         SettingsButton(title: "Ask to hand over") { model.send(["do": "takeover_ask"]) }
           .disabled(!s.busy.isEmpty)
@@ -484,6 +493,11 @@ struct PhoneAccessSection: View {
   }
 
   // MARK: pieces
+
+  private func note(_ text: String) -> some View {
+    Text(text).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+      .fixedSize(horizontal: false, vertical: true)
+  }
 
   private func field(_ title: String, hint: String, text: Binding<String>, onCommit: @escaping () -> Void = {}) -> some View {
     SettingsRow(title: title, detail: "") {

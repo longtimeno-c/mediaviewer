@@ -53,8 +53,11 @@ internal sealed record PhoneLinkState
     public string AskingFingerprint { get; init; } = "";
 
     /// <summary>Whether two reads would draw the same card (records compare lists by reference).</summary>
+    // The catalogue's fraction moves on every read while it publishes: the card
+    // updates its progress line in place, so that alone is not a change.
     public bool SameAs(PhoneLinkState o) =>
-        this with { Phones = o.Phones, Folders = o.Folders, Added = o.Added } == o &&
+        this with { Phones = o.Phones, Folders = o.Folders, Added = o.Added,
+                    Catalogue = Catalogue is { } c ? c with { Fraction = o.Catalogue?.Fraction ?? 0 } : null } == o &&
         Phones.SequenceEqual(o.Phones) && Folders.SequenceEqual(o.Folders) && Added.SequenceEqual(o.Added);
 }
 
@@ -178,7 +181,7 @@ internal static class PhoneWords
         return years <= 1 ? "1 year ago" : $"{years} years ago";
     }
 
-    // ---- the link rows (PhoneLinkView.swift) ----
+    // ---- the rest of the card (PhoneAccessView.swift) ----
 
     public static string? ErrorText(string error) => error switch
     {

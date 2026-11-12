@@ -357,13 +357,6 @@ public final class MVAIChrome: NSObject {
     _ = host.perform(sel, with: ids as NSArray)
   }
 
-  /// Settings → Add-ons on one add-on's page, for its Install button. The
-  /// app's chrome listens for this (AddonNav.showRequest); an older app
-  /// does not, and the button then does nothing.
-  func hostShowAddon(_ id: String) {
-    NotificationCenter.default.post(name: Notification.Name("MVShowAddonPage"), object: id)
-  }
-
   func hostSeek(_ ms: Int64) {
     let sel = NSSelectorFromString("seekTo:")
     guard let host, host.responds(to: sel) else { return }

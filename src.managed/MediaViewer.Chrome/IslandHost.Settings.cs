@@ -504,7 +504,10 @@ public static partial class IslandHost
     // One surface (SettingsView.swift SettingsRow): the fill, words 12 from its
     // edge. `card` false: the same row inside a surface that is already a card
     // (an add-on's page), with no surface of its own.
-    private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control, bool card = true)
+    // `keepName`: the control is already named for what it does ("Remove Pixel"),
+    // which the row's title would otherwise replace.
+    private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control, bool card = true,
+                                                bool keepName = false)
     {
         var row = new Grid { ColumnSpacing = Space(24) };
         if (card)
@@ -525,7 +528,7 @@ public static partial class IslandHost
         description.FontSize = TypeSize(12);
         description.TextWrapping = TextWrapping.Wrap;
         labels.Children.Add(name);
-        labels.Children.Add(description);
+        if (detail.Length > 0) labels.Children.Add(description);  // no empty second line
         row.Children.Add(labels);
         if (control is ToggleSwitch toggle)
         {
@@ -536,7 +539,7 @@ public static partial class IslandHost
             toggle.Width = 48;
         }
         control.VerticalAlignment = VerticalAlignment.Center;
-        AutomationProperties.SetName(control, title);
+        if (!keepName) AutomationProperties.SetName(control, title);
         AutomationProperties.SetHelpText(control, detail);
         Grid.SetColumn(control, 1);
         row.Children.Add(control);

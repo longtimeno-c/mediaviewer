@@ -36,7 +36,7 @@ public static partial class IslandHost
     private static FakeInput? _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath;
     private static string? _phoneFocus;  // the automation name of the focused control
     private static TextBlock? _phoneCountdown;
-    private static JobBar? _phonePublishBar;
+    private static ProgressLine? _phonePublishLine;
     private static Button? _phoneClaim, _phoneAdd;
     private static bool _phoneConfirmRestart, _phoneConfirmHandOver;
 
@@ -111,7 +111,7 @@ public static partial class IslandHost
         }
         if (_phoneCountdown is not null)
             _phoneCountdown.Text = PhoneWords.Countdown(s.QrExpires, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-        if (_phonePublishBar is not null && s.Catalogue is { Running: true } c) _phonePublishBar.Value = c.Fraction;
+        if (_phonePublishLine is not null && s.Catalogue is { Running: true } c) ShowPublishProgress(c);
     }
 
     private static void PhoneRequest(params (string Key, string Value)[] fields)
@@ -137,7 +137,7 @@ public static partial class IslandHost
         DetachPhoneInputs();
         rows.Children.Clear();
         _phoneCountdown = null;
-        _phonePublishBar = null;
+        _phonePublishLine = null;
         _phoneClaim = null;
         _phoneAdd = null;
         bool busy = s.Busy.Length > 0;
@@ -167,7 +167,7 @@ public static partial class IslandHost
         }
         Button choose = PhoneButton(s.Folder.Length == 0 ? "Choose…" : "Change…", () => _ = ChoosePhoneFolder(), "Choose the folder on your NAS");
         choose.IsEnabled = !busy && s.Catalogue is not { Running: true };
-        rows.Children.Add(SettingsRow("Folder on your NAS", PhoneWords.FolderDetail(s), choose));
+        rows.Children.Add(SettingsRow("Folder on your NAS", PhoneWords.FolderDetail(s), choose, keepName: true));
         if (s.Folder.Length > 0)
         {
             AddPhoneSearch(rows, s, busy);
@@ -191,7 +191,7 @@ public static partial class IslandHost
     private static void RefocusPhone(StackPanel rows, string? name)
     {
         if (name is null) return;
-        _dispatcher?.DispatcherQueue.TryEnqueue(() =>
+        DispatcherQueueControllerTryEnqueue(() =>
         {
             Control? target = FindPhoneControl(rows, name);
             target?.Focus(FocusState.Keyboard);
@@ -229,7 +229,7 @@ public static partial class IslandHost
 
     private static void AddPhoneSearch(StackPanel rows, PhoneLinkState s, bool busy)
     {
-        Button action;
+        FrameworkElement action;
         if (!s.LocalSearch)
         {
             action = PhoneButton("Get Local search…", () =>
@@ -240,21 +240,28 @@ public static partial class IslandHost
         }
         else if (s.Catalogue is { Running: true })
         {
-            action = PhoneButton("Cancel", () => PhoneRequest(("do", "cancel")), "Cancel publishing");
+            action = new Border();  // the progress line below carries Cancel
         }
         else
         {
-            action = PhoneButton("Publish now", () => PhoneRequest(("do", "publish")));
-            action.IsEnabled = !busy;
+            Button publish = PhoneButton("Publish now", () => PhoneRequest(("do", "publish")));
+            publish.IsEnabled = !busy;
+            action = publish;
         }
         rows.Children.Add(SettingsRow("Search on your phone",
-            PhoneWords.SearchDetail(s, DateTimeOffset.UtcNow.ToUnixTimeSeconds()), action));
+            PhoneWords.SearchDetail(s, DateTimeOffset.UtcNow.ToUnixTimeSeconds()), action, keepName: action is Button));
         if (s.Catalogue is { Running: true } c)
         {
-            _phonePublishBar = new JobBar { Value = c.Fraction };
-            rows.Children.Add(new Border { Child = _phonePublishBar.Root, Padding = Pad(12, 0, 12, 0) });
+            // One progress line (docs/design/20 "Craft rules"), ending in a quiet Cancel.
+            _phonePublishLine = new ProgressLine(("Cancel", () => PhoneRequest(("do", "cancel"))));
+            ShowPublishProgress(c);
+            rows.Children.Add(new Border { Child = _phonePublishLine.Root, Padding = Pad(12, 0, 12, 0) });
         }
     }
+
+    private static void ShowPublishProgress(PhonePublishState c) =>
+        _phonePublishLine?.Show(c.Phase == "sending" ? "Sending to the NAS" : "Building the catalogue",
+                                Math.Clamp(c.Fraction, 0, 1), key: "phone-publish", timed: true);
 
     private static void AddPhoneClaim(StackPanel rows, bool busy)
     {
@@ -263,14 +270,14 @@ public static partial class IslandHost
         _phoneClaim.IsEnabled = !busy;
         rows.Children.Add(SettingsRow("Service on your NAS",
             "Claim it from the NAS's own network, once. This PC writes a one-time token to the share to prove it can.",
-            _phoneClaim));
-        rows.Children.Add(SettingsRow("Address on your network", "", _phoneLocal!));
+            _phoneClaim, keepName: true));
+        rows.Children.Add(SettingsRow("Address on your network", "", _phoneLocal!, keepName: true));
         AddPhonePublicField(rows);
     }
 
     private static void AddPhonePublicField(StackPanel rows)
     {
-        rows.Children.Add(SettingsRow("Address from outside", "", _phonePublic!));
+        rows.Children.Add(SettingsRow("Address from outside", "", _phonePublic!, keepName: true));
         if (PhoneWords.WarningText(_phoneShown?.Warning ?? "") is string w) rows.Children.Add(PhoneNote(w));
     }
 
@@ -280,7 +287,7 @@ public static partial class IslandHost
         {
             Button show = PhoneButton("Show code", () => PhoneRequest(("do", "pair")));
             show.IsEnabled = !busy;
-            rows.Children.Add(SettingsRow("Add a phone", PhoneWords.AddDetail(s), show));
+            rows.Children.Add(SettingsRow("Add a phone", PhoneWords.AddDetail(s), show, keepName: true));
         }
         else
         {
@@ -291,10 +298,10 @@ public static partial class IslandHost
             string key = phone.Key;
             Button remove = PhoneButton("Remove", () => PhoneRequest(("do", "revoke"), ("key", key)), $"Remove {phone.Name}");
             remove.IsEnabled = !busy;
-            rows.Children.Add(SettingsRow(phone.Name, PhoneWords.KeyDetail(phone.Key), remove));
+            rows.Children.Add(SettingsRow(phone.Name, PhoneWords.KeyDetail(phone.Key), remove, keepName: true));
         }
         if (!s.Reachable) rows.Children.Add(PhoneNote("Couldn't reach the NAS. These are the phones it knew about last."));
-        rows.Children.Add(SettingsRow("Address on your network", "", _phoneLocal!));
+        rows.Children.Add(SettingsRow("Address on your network", "", _phoneLocal!, keepName: true));
         AddPhonePublicField(rows);
         foreach (PhoneFolder f in s.Folders)
         {
@@ -306,7 +313,7 @@ public static partial class IslandHost
                 stop.IsEnabled = !busy;
                 control = stop;
             }
-            rows.Children.Add(SettingsRow(f.Label, f.Path, control));
+            rows.Children.Add(SettingsRow(f.Label, f.Path, control, keepName: !f.IsCatalogue));
         }
         var add = new Grid { ColumnSpacing = Space(8), Padding = Pad(12) };
         add.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -426,7 +433,7 @@ public static partial class IslandHost
         buttons.Children.Add(restart);
         rows.Children.Add(SettingsRow("Published from another computer",
             $"Key {s.OtherFingerprint}. Ask it to hand over, and phones follow by themselves. If it's gone, start over and scan each phone again.",
-            buttons));
+            buttons, keepName: true));
         if (_phoneConfirmRestart)
         {
             rows.Children.Add(PhoneConfirm("Start over from this PC? Every phone will have to scan a new code.", "Start over",
@@ -451,7 +458,7 @@ public static partial class IslandHost
         });
         hand.IsEnabled = !busy;
         rows.Children.Add(SettingsRow($"{s.AskingName} wants to publish this library",
-            $"Its key is {s.AskingFingerprint}. Check it matches what that computer shows.", hand));
+            $"Its key is {s.AskingFingerprint}. Check it matches what that computer shows.", hand, keepName: true));
         if (_phoneConfirmHandOver)
         {
             string key = s.AskingKey;

@@ -173,19 +173,27 @@ final class SettingsStore: ObservableObject {
 struct SettingsRow<Content: View>: View {
   let title: String
   let detail: String
+  /// False when the content names itself ("Remove Pixel", two buttons).
+  var labelsContent = true
   @ViewBuilder let content: () -> Content
 
   var body: some View {
     HStack(spacing: MVTheme.space(24)) {
       VStack(alignment: .leading, spacing: MVTheme.space(4)) {
         Text(title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
-        Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-          .fixedSize(horizontal: false, vertical: true)
+        if !detail.isEmpty {
+          Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      content()
-        .labelsHidden()
-        .accessibilityLabel(title)
+      if labelsContent {
+        content()
+          .labelsHidden()
+          .accessibilityLabel(title)
+      } else {
+        content().labelsHidden()
+      }
     }
     .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .leading)
