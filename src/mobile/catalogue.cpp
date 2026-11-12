@@ -6,7 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <ctime>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -137,11 +137,11 @@ std::string_view leaf(std::string_view path) {
   return slash == std::string_view::npos ? path : path.substr(slash + 1);
 }
 
+// UTC year * 100 + month, from the C++20 calendar (no gmtime_r: it is POSIX).
 std::int32_t year_month(std::int64_t wall) {
-  const std::time_t t = static_cast<std::time_t>(wall);
-  std::tm tm{};
-  gmtime_r(&t, &tm);
-  return (tm.tm_year + 1900) * 100 + tm.tm_mon + 1;
+  const auto d = std::chrono::floor<std::chrono::days>(std::chrono::sys_seconds{std::chrono::seconds{wall}});
+  const std::chrono::year_month_day ymd{d};
+  return static_cast<int>(ymd.year()) * 100 + static_cast<int>(static_cast<unsigned>(ymd.month()));
 }
 
 }  // namespace
