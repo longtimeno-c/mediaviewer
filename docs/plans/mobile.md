@@ -365,6 +365,8 @@ but the model's CPU decides whether the x86-64 build applies, and many models ar
 tries a DSM package, a Task Scheduler boot job, and Container Manager on models that have it, and
 produces the supported list in §2.2.
 
+**Owner passphrase, timed and scoped phones (planned 2026-11-12):** `docs/plans/nas-owner-and-guests.md`.
+
 ### 7.3 Reaching it
 
 The QR gives the phone two addresses for the Synology: its local address and a public name.
