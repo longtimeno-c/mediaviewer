@@ -22,6 +22,7 @@
 # MV_LIVE_QUERIES and MV_LIVE_MAC: another query list and the Mac's answers to it (answer-engine).
 # MV_LIVE_SOUND=<folder>: sound search's model (tools/ios/clap_text_phone.py's output) served on
 # 127.0.0.1 for a Debug app, which downloads it and searches with it; the Mac side always hears.
+# MV_LIVE_SOUND=release: the app downloads it from the project's release, as a phone does.
 set -euo pipefail
 data_src="${1:?data}"; folder="${2:?folder}"; udid="${3:?udid}"; out="${4:?out}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -142,7 +143,9 @@ PY
 stop_own_service; sleep 1
 "$cli" serve --data "$out/serve" --test-loopback > "$out/serve.log" 2>&1 & echo $! > "$out/serve.pid"
 sound_base=""
-if [[ -n ${MV_LIVE_SOUND:-} ]]; then
+if [[ ${MV_LIVE_SOUND:-} == release ]]; then
+  sound_base="release"
+elif [[ -n ${MV_LIVE_SOUND:-} ]]; then
   # Plain files on loopback; the app asks from byte 0 and checks every file against its pin.
   python3 -I -m http.server 18463 --bind 127.0.0.1 --directory "$MV_LIVE_SOUND" > "$out/sound-serve.log" 2>&1 &
   echo $! > "$out/sound-serve.pid"

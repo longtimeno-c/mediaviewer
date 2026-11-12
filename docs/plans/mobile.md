@@ -603,9 +603,9 @@ the NAS. A phone that never has it searches as before, without sound.
   tiles, 253 before; the same two queries differ. The query set is the shipped list plus this
   library's own names, 270 this run (280 in the run of 2026-11-11, whose local names differed).
 - **A new export** is a new pin and an app update (`tools/ios/clap_text_phone.py`, reproducible).
-- **Not done:** the release is not uploaded (it needs the owner's OK); until it is, the download
-  ends at a 404, Settings says "Needs an app update", and the next launch tries again, so no update is
-  needed once the files are there. The sample library's clips have no sound track,
+- **Published 2026-11-12** (owner's OK): the pre-release `clap-text-phone-1`, four files, each
+  downloaded back and matching its pin. Never replace a file there: a new export is a new tag.
+- **Not done:** the sample library's clips have no sound track,
   so SAMPLE cannot show sound search without a republish (the owner's call).
 
 ## 10. Media pipeline

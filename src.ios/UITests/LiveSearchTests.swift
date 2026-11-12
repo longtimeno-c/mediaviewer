@@ -4,7 +4,8 @@
 // loopback, copies the catalogue the Mac's own publisher made, and answers each query on its search
 // screen. Writes the tiles it shows, in order, for tools/ios/search-live.sh to compare with the
 // Mac's answers. Runs only when MV_LIVE_PAYLOAD is set. With MV_LIVE_SOUND_BASE (a Debug app), sound
-// search's model comes from that folder, and the queries wait until Settings says it is on.
+// search's model comes from that folder ("release": the app's own, from the project's release), and
+// the queries wait until Settings says it is on.
 import XCTest
 
 final class LiveSearchTests: XCTestCase {
@@ -27,7 +28,7 @@ final class LiveSearchTests: XCTestCase {
     let app = XCUIApplication(bundleIdentifier: bundle)
     app.launchEnvironment["MV_TEST_SCAN_CODE"] = code
     let sound = env["MV_LIVE_SOUND_BASE"].flatMap { $0.isEmpty ? nil : $0 }
-    if let sound { app.launchEnvironment["MV_SOUND_BASE"] = sound }
+    if let sound, sound != "release" { app.launchEnvironment["MV_SOUND_BASE"] = sound }
     app.launch()
 
     let match = app.buttons["They match"]
