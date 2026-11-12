@@ -1926,3 +1926,35 @@ TEST_CASE("phone pairing: a link never used starts nothing at quit", "[phone-pai
   CHECK(stores.load() == 0);
   CHECK_FALSE(l.request("{\"do\":\"refresh\"}"));  // stopped
 }
+
+TEST_CASE("phone pairing: the person's own relay is set from the desktop and carried in the QR", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  app_link app(mac);
+  mv::json::writer f;
+  f.begin_object().key("do").string("folder").key("path").string(utf8(n.share)).end_object();
+  (void)app.ask(f.str());
+  mv::json::writer c;
+  c.begin_object().key("do").string("claim").key("local").string(n.local()).key("public").string("").end_object();
+  REQUIRE(app.ask(c.str()).boolean("claimed") == true);
+  // Too short a key is refused; a real one is kept by the service, not here.
+  auto v = app.ask(R"({"do":"set_relay","address":"relay.example.com:7879","key":"short"})");
+  CHECK(*v.str("error") != "");
+  v = app.ask(R"({"do":"set_relay","address":"relay.example.com:7879","key":"a-relay-key-long-enough-1234"})");
+  CHECK(*v.str("error") == "");
+  CHECK(*v.str("relay") == "relay.example.com:7879");
+  CHECK(app.l->state_json().find("a-relay-key-long-enough") == std::string::npos);
+  const auto kept = n.store->get(serve::kRelayKeyName);
+  REQUIRE(kept);
+  CHECK(std::string(kept->begin(), kept->end()) == "a-relay-key-long-enough-1234");
+  v = app.ask(R"({"do":"pair"})");
+  const auto qr = mv::json::parse(qr_payload(*v.str("qr")), 4);
+  REQUIRE(qr);
+  REQUIRE(qr->find("relay"));
+  CHECK(*qr->find("relay")->str("address") == "relay.example.com:7879");
+  CHECK(qr_payload(*v.str("qr")).find("a-relay-key") == std::string::npos);  // never the key
+  // Cleared: the service waits nowhere, and the next QR names no relay.
+  v = app.ask(R"({"do":"set_relay","address":"","key":""})");
+  CHECK(*v.str("relay") == "");
+  CHECK_FALSE(n.store->exists(serve::kRelayKeyName));
+}

@@ -812,6 +812,7 @@ result<owner_state> desk::owner_status() {
   if (const std::string* p = doc->str("passphrase")) out.passphrase = *p;
   out.unlocked_s = doc->integer("unlocked_s").value_or(0);
   out.locked_until = doc->integer("locked_until").value_or(0);
+  if (const std::string* r = doc->str("relay")) out.relay = *r;
   // This desktop's own kept key decides whether it can act without asking.
   if (!st_->signer || std::chrono::steady_clock::now() >= st_->signer_until) {
     out.unlocked_s = 0;
@@ -819,6 +820,16 @@ result<owner_state> desk::owner_status() {
     out.unlocked_s = std::chrono::duration_cast<std::chrono::seconds>(st_->signer_until - std::chrono::steady_clock::now()).count();
   }
   return out;
+}
+
+expected desk::set_relay(const std::string& address, const std::string& key) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("set_relay").key("address").string(address).key("key").string(key).end_object();
+  MV_TRY(const std::string text, st_->ask(w.str()));
+  (void)text;
+  return {};
 }
 
 expected desk::grant(const key32& key, std::int64_t for_s) {
@@ -1074,8 +1085,13 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     json::writer w;
     w.begin_object().key("passphrase").string(s.passphrase).key("features").begin_array();
     for (const auto& f : s.features) w.string(f);
-    w.end_array().key("unlocked_s").integer(s.unlocked_s).key("locked_until").integer(s.locked_until).end_object();
+    w.end_array().key("unlocked_s").integer(s.unlocked_s).key("locked_until").integer(s.locked_until);
+    w.key("relay").string(s.relay).end_object();
     return w.take();
+  }
+  if (method == "set_relay") {
+    MV_TRY_VOID(d.set_relay(text("address"), text("key")));
+    return std::string("{}");
   }
   if (method == "grant") {
     const auto key = parse_key_hex(text("key"));

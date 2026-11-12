@@ -591,6 +591,8 @@ void link::refresh(bool phones_only) {
             if (e.k == json::kind::string) v_.nas_features.push_back(e.s);
           }
         }
+        const std::string* relay = doc->str("relay");
+        v_.relay = relay ? *relay : std::string();
         v_.unlocked_s = doc->integer("unlocked_s").value_or(0);
         v_.unlocked_until = std::chrono::steady_clock::now() + std::chrono::seconds(std::max<std::int64_t>(0, v_.unlocked_s));
         v_.locked_until = doc->integer("locked_until").value_or(0);
@@ -1004,6 +1006,10 @@ void link::run(const std::string& request) {
     p.code = field("code");
     p.expires = a->integer("expires").value_or(0);
     p.grant_for_s = for_s;
+    {
+      std::lock_guard lock(m_);
+      p.relay = v_.relay;  // the phone tries it after the direct addresses
+    }
     const std::string url = catalog::pair_url(p);
     refresh();  // who is paired before this code
     std::lock_guard lock(m_);
@@ -1070,6 +1076,15 @@ void link::run(const std::string& request) {
       std::lock_guard lock(m_);
       v_.error.clear();
     }
+    refresh();
+    return;
+  }
+  if (what == "set_relay") {
+    // The person's own relay (docs/plans/nas-relay.md); the key goes to the
+    // service, kept nowhere here. "" for the address clears it.
+    json::writer w;
+    w.begin_object().key("address").string(text("address")).key("key").string(text("key")).end_object();
+    if (auto r = route("set_relay", w.str()); !r) return fail_status(r.error());
     refresh();
     return;
   }
@@ -1183,6 +1198,7 @@ std::string link::state_json() const {
   // The NAS owner's side: its passphrase ("set", "none", "broken"; "" from a NAS
   // too old to say), what it can do, this desktop's unlock and any lockout.
   w.key("nas_passphrase").string(v_.nas_passphrase);
+  w.key("relay").string(v_.relay);
   w.key("nas_features").begin_array();
   for (const auto& f : v_.nas_features) w.string(f);
   w.end_array();

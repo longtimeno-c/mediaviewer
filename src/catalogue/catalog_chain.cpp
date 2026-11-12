@@ -350,6 +350,7 @@ std::string pair_url(const pair_payload& p) {
   w.key("access_key").string(p.access_key_hex);
   w.key("code").string(p.code);
   w.key("expires").integer(p.expires);
+  if (!p.relay.empty()) w.key("relay").begin_object().key("address").string(p.relay).end_object();
   if (p.grant_for_s > 0) w.key("grant").begin_object().key("for_s").integer(p.grant_for_s).key("scoped").boolean(false).end_object();
   w.end_object();
   const std::string& text = w.str();

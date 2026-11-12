@@ -142,6 +142,7 @@ class link {
     // The NAS owner's side (§3): "set", "none", "broken", "" (a NAS too old to say).
     std::string nas_passphrase;
     std::vector<std::string> nas_features;
+    std::string relay;  // the person's own relay the service waits at ("" for none)
     std::int64_t unlocked_s = 0, locked_until = 0;
     // When the unlock read as unlocked_s runs out: the card's countdown is the
     // time left from now, not the snapshot (state_json).

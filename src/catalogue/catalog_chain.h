@@ -90,6 +90,9 @@ struct pair_payload {
   // A guest code (docs/plans/nas-owner-and-guests.md §4.4): the access it
   // gives, shown on the phone before it is confirmed; 0 for none.
   std::int64_t grant_for_s = 0;
+  // The person's own relay, "host:port" ("" for none): the phone tries it after
+  // the direct addresses (docs/plans/nas-relay.md). An app from before ignores it.
+  std::string relay;
 };
 [[nodiscard]] std::string pair_url(const pair_payload& p);
 

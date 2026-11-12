@@ -1640,6 +1640,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     w.key("unlocked_s").integer(
         unlocked ? std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::seconds>(c.unlocked_until - steady()).count()) : 0);
     w.key("locked_until").integer(locked_until(owner_counter));
+    w.key("relay").string(cfg()->relay);  // the address only, as in the caps
     w.end_object();
     return {end_code::ok, w.take()};
   }

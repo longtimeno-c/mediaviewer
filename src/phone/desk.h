@@ -89,6 +89,7 @@ struct owner_state {
   std::vector<std::string> features;
   std::int64_t unlocked_s = 0;    // left on this desktop's unlock; 0: locked
   std::int64_t locked_until = 0;  // unix: too many wrong answers until then
+  std::string relay;              // the person's own relay, "host:port" ("" for none)
 };
 
 struct root_row {
@@ -140,6 +141,9 @@ class desk {
   // Sets the passphrase (none yet: the device key is enough; set: unlocked).
   [[nodiscard]] expected set_passphrase(const std::string& next);
   [[nodiscard]] result<owner_state> owner_status();
+  // The person's own relay (docs/plans/nas-relay.md): the service waits there
+  // for its phones. "" clears it. The key goes to the service and nowhere else.
+  [[nodiscard]] expected set_relay(const std::string& address, const std::string& key);
   // A device's limit from now: `for_s` seconds, or 0 for no limit at all.
   [[nodiscard]] expected grant(const key32& key, std::int64_t for_s);
   // The NAS's last refusal, {"why":...,"until":...} ("{}" when the last request went through).
