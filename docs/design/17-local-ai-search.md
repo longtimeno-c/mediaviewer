@@ -1723,6 +1723,21 @@ a thumbnail pack under the fold size goes after 2 hours, because folding replace
 **Ranking.** Exact ties break by asset id, then time (`vector_store::ranked_before`, `finish`,
 the text passes), so a phone and its desktop list the same rows in the same order.
 
+**The sample library (2026-11-12, [plan](../plans/mobile.md) §11.1).** A generation like any
+other, made by `tools/ios/sample-library.sh`: 47 CC0 and public-domain files on a disk image of their
+own, indexed by the engine over the app's own decoders with B/32 on the CPU, then `phone_publish`
+under a fixed library id and signed by the sample library's own key
+(`mv_mobile_parity_desktop sample-publish`). The catalogue and the originals are flattened into the
+GitHub release `sample-library`, one file per (root, path): `<root id>__<path with '/' as "__">`, and
+`roots.json` stands for the service's root list. On the phone, `sample::static_remote`
+(`src/mobile/sample.*`) is the `remote_file` over that folder; the host does the HTTPS
+(`mv_fetch_fn`, `SampleFetch.swift`). `mv_pair_parse` reads the code `SAMPLE` or
+`mediaviewer://sample` as a code with `sample = 1`, the sample's library id and pinned key, and no
+service; `mv_link_open` with `static_base` opens the link over the folder. Sync, the thumb cache,
+`mv_file_read` and the catalogue's search are unchanged, so the sample is checked as a NAS's
+catalogue is: a file whose hash is not the manifest's, or a `current.json` the pinned key did not
+sign, is refused.
+
 ## Photos library source (macOS)
 
 A Photos result's path stays its key: the host lists it as a virtual item and resolves it to the

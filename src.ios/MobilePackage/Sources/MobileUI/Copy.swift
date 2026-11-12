@@ -39,13 +39,24 @@ public enum FailureCopy {
   public static let searchFailed = "Search isn't working right now."
   public static let clipStopped = "This clip stopped playing."
 
-  public static func line(for failure: CopyFailure) -> String {
+  public static func line(for failure: CopyFailure, sample: Bool = false) -> String {
     switch failure {
-    case .synologyUnreachable: return "The copy stopped. Your Synology went out of reach."
+    case .synologyUnreachable:
+      return sample ? "The copy stopped. The sample library went out of reach." : "The copy stopped. Your Synology went out of reach."
     case .notEnoughSpace(let bytes): return "There isn't enough space on this phone. The library needs \(ProgressWords.size(bytes))."
-    case .catalogueRejected: return "What arrived doesn't match what your computer published."
+    case .catalogueRejected:
+      return sample ? "What arrived isn't the signed sample library." : "What arrived doesn't match what your computer published."
     }
   }
+
+  // The sample library (§11.1). Said wherever the Synology would be named.
+  public static let sampleCode = "SAMPLE"
+  public static let sampleUnreachable =
+    "Can't reach the sample library. You can keep searching what's on this phone."
+  public static let sampleAbout =
+    "Free photos and clips from Wikimedia Commons, to try MediaViewer without a Mac or a NAS. They're downloaded from GitHub, and search runs on this phone."
+  public static let enterCodeHelp =
+    "Paste the link MediaViewer shows beside its code, or type \(sampleCode) to try the sample library."
 
   public static let notMatched =
     "Nothing was paired. Scan the code again from MediaViewer on your own computer."
@@ -55,9 +66,9 @@ public enum FailureCopy {
     "This phone can't open \(format) files. Showing the thumbnail."
   }
 
-  public static func line(for failure: MediaFailure) -> String {
+  public static func line(for failure: MediaFailure, sample: Bool = false) -> String {
     switch failure {
-    case .synologyUnreachable: return synologyUnreachable
+    case .synologyUnreachable: return sample ? sampleUnreachable : synologyUnreachable
     case .originalGone: return originalGone
     case .notThereYet: return notThereYet
     case .folderNotOnNAS: return folderNotOnNAS

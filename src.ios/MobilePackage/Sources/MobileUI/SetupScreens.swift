@@ -62,6 +62,8 @@ struct ScanScreen: View {
   @State private var picked: PhotosPickerItem?
   @State private var problem: String?
   @State private var reading = false
+  @State private var enteringCode = false
+  @State private var typedCode = ""
   /// How tall the buttons at the bottom are, so the camera's own messages stop above them.
   @State private var controlsHeight: CGFloat = 0
 
@@ -91,6 +93,26 @@ struct ScanScreen: View {
       guard let item else { return }
       Task { await read(item) }
     }
+    // A typed code or a pasted link goes the way a scanned one does: a wrong one is "not readable"
+    // on the Connect screen, as a wrong QR code is.
+    .alert("Enter a code", isPresented: $enteringCode) {
+      TextField("Code or link", text: $typedCode)
+        .textInputAutocapitalization(.characters)
+        .autocorrectionDisabled()
+        .accessibilityIdentifier("code-field")
+      Button("Open") { submitTyped() }
+      Button("Cancel", role: .cancel) { typedCode = "" }
+    } message: {
+      Text(FailureCopy.enterCodeHelp)
+    }
+  }
+
+  private func submitTyped() {
+    let code = typedCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    typedCode = ""
+    guard !code.isEmpty else { return }
+    problem = nil
+    model.scanned(code)
   }
 
   /// For when the camera cannot see the code: a screenshot or photo of it, or its link.
@@ -110,6 +132,13 @@ struct ScanScreen: View {
         HStack(spacing: 8) { pickButton; pasteButton }
         VStack(spacing: 8) { pickButton; pasteButton }
       }
+      Button {
+        enteringCode = true
+      } label: {
+        Label("Enter a code", systemImage: "keyboard")
+      }
+      .buttonStyle(QuietButtonStyle(color: .white))
+      .accessibilityHint("Type a code or paste a link, such as \(FailureCopy.sampleCode) for the sample library")
     }
   }
 
@@ -127,7 +156,7 @@ struct ScanScreen: View {
   private var pasteButton: some View {
     Button {
       let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      if text.hasPrefix("mediaviewer://pair") {
+      if text.hasPrefix("mediaviewer://pair") || text.lowercased().hasPrefix("mediaviewer://sample") {
         problem = nil
         model.scanned(text)
       } else {
@@ -378,13 +407,16 @@ struct ConnectScreen: View {
   // §7.4: the phone shows the library's name and a short key fingerprint, the desktop shows the same.
   private func checkPage(_ identity: LibraryIdentity) -> some View {
     Group {
-      Text("Does this match your computer?")
+      Text(identity.isSample ? "Open the sample library?" : "Does this match your computer?")
         .font(.largeTitle.bold())
         .foregroundStyle(Theme.title)
         .padding(.top, 32)
-      Text("MediaViewer on your computer shows the same name and check code. Pair only if they match.")
+      Text(identity.isSample
+           ? FailureCopy.sampleAbout + " It stays on this phone until you forget it in Settings."
+           : "MediaViewer on your computer shows the same name and check code. Pair only if they match.")
         .font(.body)
         .foregroundStyle(Theme.body)
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.top, 12)
       VStack(alignment: .leading, spacing: 8) {
         Text(identity.name)
@@ -424,8 +456,9 @@ struct ConnectScreen: View {
       VStack(alignment: .leading, spacing: 16) {
         // The computer's half waits for nearby sync (M4b); a step that did not run is not shown.
         if steps[.mac] != .skipped { row(.mac, "Pairing with your computer") }
-        row(.synology, "Reaching your Synology")
-        row(.outsideRoute, "Testing from outside, over mobile data")
+        row(.synology, isSample ? "Reaching the sample library" : "Reaching your Synology")
+        // The sample library is always over the internet: there is no outside route to test.
+        if !isSample { row(.outsideRoute, "Testing from outside, over mobile data") }
       }
       .padding(.top, 24)
       // One sweep for however long the steps take; a spinner is for waits under a second.
@@ -486,7 +519,8 @@ struct ConnectScreen: View {
       case .serviceTooOld: Text(FailureCopy.serviceTooOld).font(.subheadline).foregroundStyle(Theme.title)
       case .synologyUnreachable(let tried):
         VStack(alignment: .leading, spacing: 8) {
-          Text("Can't reach your Synology.").font(.subheadline).foregroundStyle(Theme.title)
+          Text(isSample ? "Can't reach the sample library." : "Can't reach your Synology.")
+            .font(.subheadline).foregroundStyle(Theme.title)
           ForEach(tried) { failure in
             AddressFailureRow(failure: failure)
           }
@@ -498,6 +532,17 @@ struct ConnectScreen: View {
   @ViewBuilder
   private var actions: some View {
     switch (phase, ending) {
+    case (.check(let identity), _) where identity.isSample:
+      VStack(spacing: 8) {
+        Button("Open sample library") {
+          confirmed = identity
+          phase = .pairing
+          attempt += 1
+        }
+        .buttonStyle(PrimaryButtonStyle())
+        Button("Not now") { model.leaveConnect() }
+          .buttonStyle(SecondaryButtonStyle())
+      }
     case (.check(let identity), _):
       VStack(spacing: 8) {
         Button("They match") {
@@ -538,6 +583,12 @@ struct ConnectScreen: View {
     if model.connection.hasLibrary {
       Button("Back to library") { model.returnToLibrary() }.buttonStyle(QuietButtonStyle())
     }
+  }
+
+  /// Known once the code is read: the sample library's or a computer's.
+  private var isSample: Bool {
+    if case .check(let identity) = phase { return identity.isSample }
+    return confirmed?.isSample ?? false
   }
 
   private var hasEndedInFailure: Bool {
@@ -715,10 +766,10 @@ struct FirstCopyScreen: View {
     } catch is CancellationError {
     } catch let failure as CopyFailure {
       guard !Task.isCancelled else { return }
-      state = .failed(FailureCopy.line(for: failure))
+      state = .failed(FailureCopy.line(for: failure, sample: model.connection.isSample))
     } catch {
       guard !Task.isCancelled else { return }
-      state = .failed(FailureCopy.line(for: CopyFailure.synologyUnreachable))
+      state = .failed(FailureCopy.line(for: CopyFailure.synologyUnreachable, sample: model.connection.isSample))
     }
   }
 }

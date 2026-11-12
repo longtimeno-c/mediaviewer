@@ -291,6 +291,11 @@ public final class AppModel {
     viewerFocus = nil
   }
 
+  /// Leaves the Connect screen without pairing: back to the library, or to Welcome when there is none.
+  func leaveConnect() {
+    if connection.hasLibrary { returnToLibrary() } else { stage = .welcome }
+  }
+
   /// Leaves a scan started from a library that is already paired.
   func returnToLibrary() {
     stage = .main
@@ -349,7 +354,9 @@ public final class AppModel {
     case .serviceTooOld:
       first = LibraryNotice(id: "service", message: FailureCopy.serviceTooOld, canDismiss: true, action: nil)
     case .unreachable:
-      first = LibraryNotice(id: "unreachable", message: FailureCopy.synologyUnreachable, canDismiss: true, action: nil)
+      first = LibraryNotice(id: "unreachable",
+                            message: connection.isSample ? FailureCopy.sampleUnreachable : FailureCopy.synologyUnreachable,
+                            canDismiss: true, action: nil)
     case .reachableOnlyOnItsOwnNetwork:
       first = LibraryNotice(id: "own-network", message: FailureCopy.ownNetworkOnly, canDismiss: true, action: nil)
     case .reachable:
@@ -408,6 +415,8 @@ public final class AppModel {
   /// only once the card that said it is gone.
   public var routeChip: String? {
     guard libraryNotice == nil else { return nil }
+    // Said on every visit, not once: nobody should take the sample for their own library (§11.1).
+    if connection.isSample { return "Sample library" }
     switch connection.synology {
     case .unreachable: return connection.macNearby ? "From your Mac" : "On this phone"
     case .reachableOnlyOnItsOwnNetwork: return "On this phone"

@@ -39,6 +39,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private static let pairedKey = "link.paired"
   private static let catalogueKey = "link.catalogue"
   private static let libraryKey = "link.libraryID"
+  private static let sampleKey = "link.sample"
 
   /// The paired library's id as last published; "" with none or before the first publish. A plain
   /// stored value, cheap enough for launch.
@@ -55,7 +56,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
                            catalogue: Self.catalogue(from: defaults.object(forKey: Self.catalogueKey) as? [String: Any]),
                            cacheBytes: 0)
       : .noLibrary
-    if paired { first.libraryID = Self.storedLibraryID }
+    if paired {
+      first.libraryID = Self.storedLibraryID
+      first.isSample = defaults.bool(forKey: Self.sampleKey)
+    }
     snapshot = first
     opened = Task.detached(priority: .userInitiated) { [weak self] in await self?.openStored() }
     monitor.pathUpdateHandler = { [weak self] path in self?.pathChanged(path) }
@@ -152,12 +156,14 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       change(&next)
       // Until the stored record is read at launch, the id launch stamped stands.
       next.libraryID = next.hasLibrary ? (record?.libraryID ?? snapshot.libraryID) : ""
+      next.isSample = next.hasLibrary && (record.map(\.isSample) ?? snapshot.isSample)
       snapshot = next
       return (next, Array(continuations.values))
     }
     guard let (value, list) = published else { return }
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
     defaults.set(value.libraryID, forKey: Self.libraryKey)
+    defaults.set(value.isSample, forKey: Self.sampleKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
                     "epoch": NSNumber(value: info.epoch)], forKey: Self.catalogueKey)
@@ -202,7 +208,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       let status = code.withCString { mv_pair_parse($0, Int64(Date().timeIntervalSince1970), &info) }
       if status == 2 { throw PairingFailure.codeExpired }
       guard status == 0 else { throw PairingFailure.codeNotReadable }
-      return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint))
+      return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint),
+                             isSample: info.sample != 0)
     }
   }
 
@@ -232,6 +239,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // What the person compared with the desktop must be what this code says (§7.4).
     guard linkString(parsed.library_name) == confirmed.name, linkString(parsed.fingerprint) == confirmed.fingerprint else {
       throw PairingFailure.codeNotReadable
+    }
+
+    if parsed.sample != 0 {
+      try await runSamplePairing(parsed, continuation: continuation)
+      return
     }
 
     // Pairing with the Mac itself waits for nearby sync (M4b): the code names only the service.
@@ -294,6 +306,63 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
     continuation.yield(.working(.outsideRoute))
     continuation.yield(.outsideRoute(await OutsideRoute.test(publicName: record.publicName)))
+    await retry()
+  }
+
+  /// The sample library (§11.1): no computer, no service and nothing to redeem. Its folder must
+  /// answer before anything on the phone changes; then it is stored and opened as any library is,
+  /// and the same sync copies, checks and installs its signed catalogue.
+  private func runSamplePairing(_ parsed: mv_pair_info,
+                                continuation: AsyncThrowingStream<PairingEvent, Error>.Continuation) async throws {
+    continuation.yield(.skipped(.mac))
+    continuation.yield(.working(.synology))
+    let probeDir = FileManager.default.temporaryDirectory.appendingPathComponent("sample-probe-\(UUID().uuidString)")
+    let probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
+                              fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
+                              local: "", publicName: "", identity: "", accessKey: "", deviceName: await deviceName(), sample: true)
+    let (status, report) = await withLinkCancel { cancel in
+      await onLinkQueue { () -> (Int32, mv_route_report) in
+        defer { try? FileManager.default.removeItem(at: probeDir) }
+        guard let handle = LinkHandle.open(record: probe, deviceKey: Data(), libraryDir: probeDir.appendingPathComponent("library"),
+                                           cacheDir: probeDir.appendingPathComponent("thumbs")) else {
+          return (Int32(MV_LINK_INTERNAL.rawValue), mv_route_report())
+        }
+        var report = mv_route_report()
+        return (mv_link_connect(handle.raw, cancel.raw, &report), report)
+      }
+    }
+    switch status {
+    case 0: break
+    case 11: throw CancellationError()
+    default: throw PairingFailure.synologyUnreachable(Self.failures(of: report))
+    }
+
+    // As with any pairing, the library already here goes first, all of it.
+    if lock.withLock({ self.record != nil || self.handle != nil }) {
+      await removeLibrary(keepingDeviceKey: true)
+    }
+    let record = probe
+    let handle: LinkHandle = try await onLinkQueue {
+      guard record.save() else { throw PairingFailure.codeNotReadable }
+      LinkFolders.prepare()
+      LinkFolders.keepOnlyThumbs(of: record.libraryID)
+      guard let handle = LinkHandle.open(record: record, deviceKey: Data(), libraryDir: LinkFolders.library,
+                                         cacheDir: LinkFolders.thumbs(for: record.libraryID)) else {
+        throw PairingFailure.codeNotReadable
+      }
+      return handle
+    }
+    lock.withLock {
+      self.record = record
+      self.handle = handle
+      self.forgotten = false
+      connectGeneration += 1
+    }
+    work.reopen()
+    publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
+    continuation.yield(.passed(.synology))
+    // Always over the internet: there is no route of its own to test.
+    continuation.yield(.skipped(.outsideRoute))
     await retry()
   }
 

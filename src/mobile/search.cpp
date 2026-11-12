@@ -154,7 +154,8 @@ bool tower_supported(std::string_view spec) {
   return spec.starts_with("clip-vit-l14/") || spec.starts_with("clip-vit-b32/");
 }
 
-expected lay_out_work_dir(const catalogue& c, const std::string& work_dir) {
+namespace {
+expected lay_out_part(const catalogue& c, const std::string& work_dir) {
   const fs::path done = fs_path(work_dir) / "core" / "models" / "tiers.json";
   std::error_code ec;
   if (fs::exists(done, ec)) return {};
@@ -208,6 +209,18 @@ expected lay_out_work_dir(const catalogue& c, const std::string& work_dir) {
   fs::rename(part, fs_path(work_dir), ec);
   if (ec) return err(status::io);
   return {};
+}
+}  // namespace
+
+expected lay_out_work_dir(const catalogue& c, const std::string& work_dir) {
+  auto done = lay_out_part(c, work_dir);
+  if (!done) {
+    // A layout that failed leaves nothing: Forget can remove the library while an open is
+    // still laying out its work folder, and a half one must not outlive it.
+    std::error_code ec;
+    fs::remove_all(fs_path(work_dir + ".part"), ec);
+  }
+  return done;
 }
 
 struct search_engine::impl {

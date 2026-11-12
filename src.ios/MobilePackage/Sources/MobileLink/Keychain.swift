@@ -45,6 +45,10 @@ struct PairingRecord: Codable, Sendable {
   var identity: String
   var accessKey: String
   var deviceName: String
+  /// The sample library (§11.1): read from its static folder, with no service. nil in a record
+  /// written before it existed.
+  var sample: Bool? = nil
+  var isSample: Bool { sample == true }
   static let account = "pairing"
 
   static func load() -> PairingRecord? {

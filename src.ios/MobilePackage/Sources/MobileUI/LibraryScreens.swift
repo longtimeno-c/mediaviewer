@@ -85,7 +85,7 @@ private struct PlaceBar: View {
       HStack(spacing: 8) {
         path(library)
         if let chip = model.routeChip {
-          RouteChip(text: chip) { model.tab = .connection }
+          RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
             .arrives(reduceMotion: reduceMotion)
         }
       }
@@ -186,13 +186,14 @@ struct ChipLabel<Content: View>: View {
 
 struct RouteChip: View {
   let text: String
+  var tone: Color = Theme.warm
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
       Text(text)
         .font(.caption.weight(.medium))
-        .foregroundStyle(Theme.warm)
+        .foregroundStyle(tone)
         .fixedSize()
     }
     .accessibilityHint("Shows the connection")

@@ -11,6 +11,7 @@ add_library(mv_mobile_link STATIC
   ${_M}/link_generation.cpp ${_M}/link_generation.h
   ${_M}/link_thumbs.cpp ${_M}/link_thumbs.h
   ${_M}/sync.cpp ${_M}/sync.h
+  ${_M}/sample.cpp ${_M}/sample.h
   ${_M}/link_abi.cpp ${_M}/mv_mobile_link.h)
 target_include_directories(mv_mobile_link PUBLIC "${MV_SOURCE_ROOT}/src")
 target_compile_features(mv_mobile_link PUBLIC cxx_std_20)

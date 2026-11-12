@@ -18,12 +18,22 @@ struct SettingsScreen: View {
         VStack(alignment: .leading, spacing: 12) {
           failureCard
           section("Library") {
-            if case .reachable(let address, _) = model.connection.synology {
+            if model.connection.isSample {
+              InfoRow(label: "Library", value: "Sample library")
+              Text(FailureCopy.sampleAbout)
+                .font(.footnote)
+                .foregroundStyle(Theme.body)
+                .fixedSize(horizontal: false, vertical: true)
+              if case .reachable(let address, _) = model.connection.synology {
+                InfoRow(label: "Served from", value: address)
+              }
+            } else if case .reachable(let address, _) = model.connection.synology {
               InfoRow(label: "Synology", value: synologyWords)
               InfoRow(label: "Address", value: address)
             }
             if let catalogue = model.connection.catalogue {
-              InfoRow(label: "Catalogue from", value: catalogue.source == .synology ? "Your Synology" : "Your Mac, nearby")
+              InfoRow(label: "Catalogue from",
+                      value: model.connection.isSample ? "GitHub" : catalogue.source == .synology ? "Your Synology" : "Your Mac, nearby")
               InfoRow(label: "Updated", value: catalogue.updatedAt.formatted(.relative(presentation: .named)))
               InfoRow(label: "Items", value: catalogue.itemCount.formatted())
             }
@@ -57,13 +67,18 @@ struct SettingsScreen: View {
             }
             .buttonStyle(TileButtonStyle())
           }
-          Button("Forget this library", role: .destructive) { confirmingForget = true }
+          Button(model.connection.isSample ? "Forget the sample library" : "Forget this library", role: .destructive) {
+            confirmingForget = true
+          }
             .buttonStyle(QuietButtonStyle(color: Theme.danger))
             .frame(maxWidth: .infinity)
-            .confirmationDialog("Forget this library?", isPresented: $confirmingForget, titleVisibility: .visible) {
+            .confirmationDialog(model.connection.isSample ? "Forget the sample library?" : "Forget this library?",
+                                isPresented: $confirmingForget, titleVisibility: .visible) {
               Button("Forget", role: .destructive) { model.forgetLibrary() }
             } message: {
-              Text("Everything MediaViewer keeps on this phone is removed. Nothing on your Synology changes. You'll need a new code from MediaViewer to connect again.")
+              Text(model.connection.isSample
+                   ? "Everything MediaViewer keeps on this phone for it is removed. To open it again, enter the code \(FailureCopy.sampleCode) on the Scan screen."
+                   : "Everything MediaViewer keeps on this phone is removed. Nothing on your Synology changes. You'll need a new code from MediaViewer to connect again.")
             }
         }
         .frame(maxWidth: Theme.readableWidth)
@@ -107,7 +122,8 @@ struct SettingsScreen: View {
       EmptyView()
     case .unreachable(let tried):
       VStack(alignment: .leading, spacing: 8) {
-        Text(FailureCopy.synologyUnreachable).font(.subheadline).foregroundStyle(Theme.title)
+        Text(model.connection.isSample ? FailureCopy.sampleUnreachable : FailureCopy.synologyUnreachable)
+          .font(.subheadline).foregroundStyle(Theme.title)
         ForEach(tried) { AddressFailureRow(failure: $0) }
         Button("Try again") { Task { await model.services.connection.retry() } }
           .buttonStyle(SecondaryButtonStyle())

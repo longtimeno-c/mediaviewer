@@ -4,6 +4,7 @@
 //
 //   publish  catalog::build and deliver from a copy of an index, the desktop's own publisher code,
 //            with real tiles (ImageIO, AVFoundation) and real place labels (src/geo).
+//   sample-publish  the sample library: index a folder with the real engine and the app's decoders, then phone_publish.
 //   search   the desktop's engine through pack_deps over the real AI pack, reading a generation,
 //            and writes one JSON line per query (compare_parity.py).
 #import <AVFoundation/AVFoundation.h>
@@ -35,6 +36,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include "abi/addon_media.h"
 #include "addon/host.h"
 #include "addon/slots.h"
 #include "addons/places/places.h"
@@ -47,6 +49,7 @@
 #include "geo/geo.h"
 #include "geo/open.h"
 #include "infer/ort.h"
+#include "meta/meta.h"
 
 namespace fs = std::filesystem;
 namespace cat = mv::ai::catalog;
@@ -607,29 +610,13 @@ void write_answers(std::ofstream& out, mv::ai::engine& eng, const std::string& q
   out << w.take() << '\n';
 }
 
-// publish-engine <data dir: a copy of the index> <pack> <add-ons> <places.mvgeo> <work> <destination>
-//                <kinds> <queries> <mac answers.jsonl>
-int publish_engine(int argc, char** argv) {
-  if (argc != 11) {
-    std::fprintf(stderr, "publish-engine <data> <pack> <add-ons> <places.mvgeo> <work> <destination> <kinds> <queries> <out.jsonl>\n");
-    return 2;
-  }
-  const std::string data = argv[2], pack = argv[3], addons = argv[4], places = argv[5], work = argv[6], dest = argv[7];
-  const uint32_t kinds = static_cast<uint32_t>(std::stoul(argv[8]));
-  fs::create_directories(work + "/tiles");
-  fs::create_directories(work + "/pack-data");
-  fs::create_directories(dest);
-  std::error_code ec;
-  fs::create_symlink(fs::path(pack).parent_path() / "data" / "fetched", fs::path(work) / "pack-data" / "fetched", ec);
-  auto geo = mv::geo::open_database(places);
-  if (!geo) {
-    std::fprintf(stderr, "no place database\n");
-    return 1;
-  }
+// The host table both publish commands run over: the real one (addon/host.h) over this
+// machine's io, with only what the app's viewer and Places add-on serve supplied here.
+mv::addon::host_services harness_services(const std::string& data, const std::string& work, const std::string& addons,
+                                          const mv::geo::database& places_db) {
   auto cache = std::make_shared<tile_cache>();
   cache->dir = work + "/tiles";
 
-  const mv::geo::database& places_db = (*geo)->db();
   mv::addon::host_services svc;
   svc.data_dir = data;
   svc.post = [](const mv_addon_event&) {};
@@ -696,6 +683,29 @@ int publish_engine(int argc, char** argv) {
     if (it == pieces.end()) return mv::err(mv::status::io);  // ai-cuda, ai-large: not on this Mac
     return it->second;
   };
+  return svc;
+}
+
+// publish-engine <data dir: a copy of the index> <pack> <add-ons> <places.mvgeo> <work> <destination>
+//                <kinds> <queries> <mac answers.jsonl>
+int publish_engine(int argc, char** argv) {
+  if (argc != 11) {
+    std::fprintf(stderr, "publish-engine <data> <pack> <add-ons> <places.mvgeo> <work> <destination> <kinds> <queries> <out.jsonl>\n");
+    return 2;
+  }
+  const std::string data = argv[2], pack = argv[3], addons = argv[4], places = argv[5], work = argv[6], dest = argv[7];
+  const uint32_t kinds = static_cast<uint32_t>(std::stoul(argv[8]));
+  fs::create_directories(work + "/tiles");
+  fs::create_directories(work + "/pack-data");
+  fs::create_directories(dest);
+  std::error_code ec;
+  fs::create_symlink(fs::path(pack).parent_path() / "data" / "fetched", fs::path(work) / "pack-data" / "fetched", ec);
+  auto geo = mv::geo::open_database(places);
+  if (!geo) {
+    std::fprintf(stderr, "no place database\n");
+    return 1;
+  }
+  mv::addon::host_services svc = harness_services(data, work, addons, (*geo)->db());
   mv::addon::host_table table(std::move(svc));
   mv::ai::host host(table.api());
 
@@ -770,12 +780,139 @@ int publish_engine(int argc, char** argv) {
   return 0;
 }
 
+
+// ---- sample-publish: the sample library (docs/plans/mobile.md §11.1) ------------------------------
+// Indexes a folder with the real engine over the app's own decoders (abi/addon_media.h), as the
+// Mac app would, then runs the same engine::phone_publish, signed with the sample library's own key
+// and under its fixed library id. tools/ios/sample-library.sh drives it.
+//
+// sample-publish <folder> <pack> <add-ons> <places.mvgeo> <work> <destination> <key file> <library id> <generation>
+int sample_publish(int argc, char** argv) {
+  if (argc != 11) {
+    std::fprintf(stderr, "sample-publish <folder> <pack> <add-ons> <places.mvgeo> <work> <destination> <key file> <library id> <generation>\n");
+    return 2;
+  }
+  const std::string folder = argv[2], pack = argv[3], addons = argv[4], places = argv[5], work = argv[6], dest = argv[7];
+  const std::string key_file = argv[8], library_id = argv[9];
+  const std::uint64_t generation = std::stoull(argv[10]);
+  const std::string data = work + "/data";
+  fs::create_directories(work + "/tiles");
+  fs::create_directories(work + "/pack-data");
+  fs::create_directories(data + "/phone");
+  fs::create_directories(dest);
+  std::error_code ec;
+  fs::create_symlink(fs::path(pack).parent_path() / "data" / "fetched", fs::path(work) / "pack-data" / "fetched", ec);
+
+  // The small tower (CLIP ViT-B/32: a 127 MB text half on the phone) on the CPU, where it is fast
+  // and the same on every Mac; no people; nothing but photos and clips.
+  {
+    std::ofstream(data + "/settings.json")
+        << R"({"compute":1,"quality":1,"faces":false,"read_text":false,"audio_files":false,"document_files":false,"tier":"default"})";
+    mv::json::writer w;
+    w.begin_object();
+    w.key("library_id").string(library_id);
+    w.key("epoch").integer(1);
+    // Numbered from here, so a regenerated library always reads as newer.
+    w.key("high_water").integer(static_cast<std::int64_t>(generation - 1));
+    w.end_object();
+    std::ofstream(data + "/phone/state.json") << w.take();
+  }
+  auto secret = read_all(key_file);
+  if (!secret || secret->size() != 64) {
+    std::fprintf(stderr, "no signing key in %s\n", key_file.c_str());
+    return 1;
+  }
+  const std::string keys = work + "/keys";
+  fs::create_directories(keys);
+  if (!mv::driftwire::secrets::file_store(keys)->put("catalogue-signing-key", *secret)) return 1;
+
+  auto geo = mv::geo::open_database(places);
+  if (!geo) {
+    std::fprintf(stderr, "no place database\n");
+    return 1;
+  }
+  mv::addon::host_services svc = harness_services(data, work, addons, (*geo)->db());
+  // The app's own pixels for the indexer, and its capture date and camera (the grid's order).
+  svc.still_rgb = &mv::addon::media::decode_still;
+  svc.open_sampler = &mv::addon::media::open_sampler;
+  svc.video_frame = &mv::addon::media::video_frame;
+  svc.capture = [](const std::string& path, mv_addon_capture& out) {
+    auto m = mv::meta::read(path);
+    if (!m) return false;
+    if (m->s.date_taken_key != 0) {
+      out.taken_unix = m->s.date_taken_key;
+      out.has_date = 1;
+    }
+    const std::size_t n = std::min(m->s.camera.size(), sizeof(out.camera_utf8) - 1);
+    std::memcpy(out.camera_utf8, m->s.camera.data(), n);
+    out.camera_utf8[n] = '\0';
+    return true;
+  };
+  mv::addon::host_table table(std::move(svc));
+  mv::ai::host host(table.api());
+  mv::ai::engine_deps deps = mv::ai::pack_deps(host, pack, work + "/pack-data");
+  deps.fetch_models = nullptr;
+  deps.photos = [] { return std::unique_ptr<mv::ai::photos_source>(); };
+  deps.cloud = [] { return std::unique_ptr<mv::ai::cloud_files>(); };
+  deps.key_store = [keys] { return mv::driftwire::secrets::file_store(keys); };
+  mv::ai::engine eng(table.api(), std::move(deps));
+  if (!eng.start()) {
+    std::fprintf(stderr, "engine failed\n");
+    return 1;
+  }
+  if (!eng.index_folder(folder, true)) {
+    std::fprintf(stderr, "cannot index %s\n", folder.c_str());
+    return 1;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int idle = 0;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    mv_ai_status st{};
+    st.struct_size = sizeof st;
+    eng.status(st);
+    if (st.state == MV_AI_STATE_ERROR) {
+      std::fprintf(stderr, "the model would not load\n");
+      return 1;
+    }
+    const bool done = st.state == MV_AI_STATE_IDLE && st.assets_total > 0 && st.assets_done + st.assets_failed >= st.assets_total;
+    idle = done ? idle + 1 : 0;
+    if (idle >= 4) {  // two seconds idle: the scan and every pass are over
+      std::printf("indexed: %llu assets, %llu failed, %llu frames, %s\n", (unsigned long long)st.assets_done,
+                  (unsigned long long)st.assets_failed, (unsigned long long)st.frames_indexed, st.model_utf8);
+      if (st.assets_failed != 0) return 1;
+      break;
+    }
+    if (std::chrono::steady_clock::now() - t0 > std::chrono::minutes(30)) {
+      std::fprintf(stderr, "indexing took too long\n");
+      return 1;
+    }
+  }
+  eng.pause(true);  // nothing changes the index under the snapshot
+  if (!eng.phone_publish(dest)) {
+    std::fprintf(stderr, "publish refused\n");
+    return 1;
+  }
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const auto doc = mv::json::parse(eng.phone_json(), 8);
+    if (doc && doc->boolean("running") == false) {
+      std::printf("publish: %s\n", eng.phone_json().c_str());
+      const std::string* error = doc->str("error");
+      if (!error || !error->empty()) return 1;
+      break;
+    }
+  }
+  std::printf("publisher_key=%s\n", cat::to_hex(cat::public_of(*secret)).c_str());
+  eng.stop();
+  return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IOLBF, 0);  // lines reach a pipe as they are written
   if (argc >= 2 && std::strcmp(argv[1], "publish") == 0) return publish(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "search") == 0) return search(argc, argv);
+  if (argc >= 2 && std::strcmp(argv[1], "sample-publish") == 0) return sample_publish(argc, argv);
   if (argc >= 2 && (std::strcmp(argv[1], "publish-engine") == 0 || std::strcmp(argv[1], "answer-engine") == 0)) {
     return publish_engine(argc, argv);
   }

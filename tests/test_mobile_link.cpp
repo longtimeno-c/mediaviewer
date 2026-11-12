@@ -26,6 +26,7 @@
 #include "mobile/link_payload.h"
 #include "mobile/link_thumbs.h"
 #include "mobile/mv_mobile_link.h"
+#include "mobile/sample.h"
 #include "mobile/sync.h"
 
 namespace fs = std::filesystem;
@@ -909,4 +910,244 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
   for (int i = 0; i < 200 && cache.bytes_used() < 256 * 1024; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   CHECK(cache.bytes_used() <= (1 << 20));
+}
+
+// ---- the sample library (docs/plans/mobile.md §11.1): a static folder, the same sync ----------
+
+TEST_CASE("sample: one fixed code and its link, nothing else", "[mobile-link]") {
+  CHECK(mob::sample::is_code("SAMPLE"));
+  CHECK(mob::sample::is_code("  sample\n"));
+  CHECK(mob::sample::is_code("Sample"));
+  CHECK(mob::sample::is_code("mediaviewer://sample"));
+  CHECK(mob::sample::is_code("MediaViewer://Sample/"));
+  CHECK_FALSE(mob::sample::is_code(""));
+  CHECK_FALSE(mob::sample::is_code("SAMPLES"));
+  CHECK_FALSE(mob::sample::is_code("sam ple"));
+  CHECK_FALSE(mob::sample::is_code("mediaviewer://sample/x"));
+  CHECK_FALSE(mob::sample::is_code("mediaviewer://pair#sample"));
+
+  const auto p = mob::sample::payload();
+  CHECK(catalog::to_hex(p.publisher_key) == mob::sample::kPublisherKey);  // the constant decodes
+  CHECK(p.library_id == mob::sample::kLibraryID);
+  CHECK(p.fingerprint.size() >= 8);
+  CHECK(mob::sample::kBase.substr(0, 8) == "https://");
+  CHECK(mob::sample::kBase.back() == '/');
+
+  mv_pair_info info{};
+  REQUIRE(mv_pair_parse("sample", 1, &info) == MV_LINK_OK);
+  CHECK(info.sample == 1);
+  CHECK(std::string(info.library_name) == "Sample library");
+  CHECK(std::string(info.fingerprint) == p.fingerprint);
+  CHECK(std::string(info.local).empty());
+  CHECK(std::string(info.public_name).empty());
+  // It never expires, and nothing is redeemed.
+  REQUIRE(mv_pair_parse("mediaviewer://sample", INT64_MAX, &info) == MV_LINK_OK);
+  const key32 device = random_key();
+  CHECK(mv_pair_redeem(&info, device.data(), "iPhone", nullptr, nullptr) == MV_LINK_OK);
+  // A wrong code is what it always was.
+  CHECK(mv_pair_parse("SAMPLE-1", 1, &info) == MV_LINK_INVALID);
+  CHECK(mv_pair_parse("hello", 1, &info) == MV_LINK_INVALID);
+  CHECK(std::string(mv_sample_base()) == mob::sample::kBase);
+}
+
+TEST_CASE("sample: a path maps to one flat file name, or to none", "[mobile-link]") {
+  using mob::sample::flat_name;
+  CHECK(flat_name("c0c0c0c0c0c0c0c0", "current.json") == "c0c0c0c0c0c0c0c0__current.json");
+  CHECK(flat_name("c0c0c0c0c0c0c0c0", "gen/000001/catalog.db") == "c0c0c0c0c0c0c0c0__gen__000001__catalog.db");
+  CHECK(flat_name("a0a0a0a0a0a0a0a0", "Sample library/Dogs/dog-01.jpg") ==
+        "a0a0a0a0a0a0a0a0__Sample_library__Dogs__dog-01.jpg");
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", ""));
+  CHECK_FALSE(flat_name("", "current.json"));
+  CHECK_FALSE(flat_name("c0/c0", "current.json"));
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", "../current.json"));
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", "gen/./x"));
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", "/current.json"));
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", "gen//x"));
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", "a\\b"));
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", "caf\xc3\xa9.jpg"));
+  CHECK_FALSE(flat_name("c0c0c0c0c0c0c0c0", "a?b"));
+}
+
+namespace {
+
+constexpr const char* kSampleCatalogueRoot = "c0c0c0c0c0c0c0c0";
+constexpr const char* kSampleMediaRoot = "a0a0a0a0a0a0a0a0";
+constexpr const char* kTestBase = "https://static.example.test/sample/";
+
+// What tools/ios/sample-library.sh uploads, made from a publisher's destination and its photos.
+struct static_folder {
+  fs::path dir;
+  int fetches = 0;
+  bool down = false;
+  std::vector<std::string> asked;
+
+  void fill(const fs::path& catalogue, const fs::path& photos, const std::string& share) {
+    fs::create_directories(dir);
+    const auto add = [&](const char* root, const fs::path& from) {
+      for (const auto& e : fs::recursive_directory_iterator(from)) {
+        if (!e.is_regular_file()) continue;
+        const auto name = mob::sample::flat_name(root, fs::relative(e.path(), from).generic_string());
+        REQUIRE(name);
+        fs::copy_file(e.path(), dir / *name, fs::copy_options::overwrite_existing);
+      }
+    };
+    add(kSampleCatalogueRoot, catalogue);
+    add(kSampleMediaRoot, photos);
+    write_file(dir / "roots.json", std::string("{\"roots\":[{\"id\":\"") + kSampleCatalogueRoot +
+                                       "\",\"label\":\"Catalogue\"},{\"id\":\"" + kSampleMediaRoot + "\",\"label\":\"" +
+                                       share + "\"}]}");
+  }
+
+  // The host's GET: ranges, a 404 for what is not there, and the network gone when `down`.
+  static int32_t fetch(void* ctx, const char* url, uint64_t at, uint64_t length, mv_sink_fn sink, void* sink_ctx,
+                       mv_stopped_fn stopped, void* stopped_ctx) {
+    auto* self = static_cast<static_folder*>(ctx);
+    ++self->fetches;
+    const std::string u(url);
+    self->asked.push_back(u);
+    if (self->down) return MV_LINK_UNREACHABLE;
+    if (u.rfind(kTestBase, 0) != 0) return MV_LINK_NOT_FOUND;
+    std::ifstream f(self->dir / u.substr(std::strlen(kTestBase)), std::ios::binary);
+    if (!f) return MV_LINK_NOT_FOUND;
+    f.seekg(0, std::ios::end);
+    const auto size = static_cast<std::uint64_t>(f.tellg());
+    const std::uint64_t end = length == UINT64_MAX || at + length > size ? size : at + length;
+    std::vector<char> buf(64 * 1024);
+    for (std::uint64_t pos = at; pos < end;) {
+      if (stopped(stopped_ctx)) return MV_LINK_CANCELLED;
+      const std::uint64_t n = std::min<std::uint64_t>(buf.size(), end - pos);
+      f.seekg(static_cast<std::streamoff>(pos));
+      f.read(buf.data(), static_cast<std::streamsize>(n));
+      if (sink(sink_ctx, pos - at, reinterpret_cast<const uint8_t*>(buf.data()), static_cast<size_t>(n)) == 0) {
+        return MV_LINK_CANCELLED;
+      }
+      pos += n;
+    }
+    return MV_LINK_OK;
+  }
+};
+
+mv_mobile_link* open_static(const mob::sync_config& cfg, const std::string& cache, static_folder& folder,
+                            const char* base = kTestBase) {
+  mv_link_config c{};
+  c.library_dir = cfg.library_dir.c_str();
+  c.cache_dir = cache.c_str();
+  c.library_id = cfg.library_id.c_str();
+  c.publisher_key = cfg.publisher_key.data();
+  c.static_base = base;
+  c.fetch = &static_folder::fetch;
+  c.fetch_ctx = &folder;
+  return mv_link_open(&c);
+}
+
+}  // namespace
+
+TEST_CASE("sample: a static folder installs through the same sync, and serves originals", "[mobile-link]") {
+  REQUIRE(sodium_init() >= 0);
+  scratch dir;
+  const fs::path photos = dir.root / "photos";
+  write_file(photos / "2024" / "pic.bin", std::string(70000, 'p'));
+  publisher pub(dir.root / "nas", dir.root / "work");
+  pub.publish(1);
+  static_folder folder;
+  folder.dir = dir.root / "static";
+  folder.fill(dir.root / "nas" / ".mediaviewer", photos, "Photos");
+
+  mob::sync_config cfg;
+  cfg.library_dir = (dir.root / "phone").string();
+  cfg.library_id = pub.library_id;
+  std::copy(pub.pub.begin(), pub.pub.end(), cfg.publisher_key.begin());
+  const std::string cache = (dir.root / "thumbs").string();
+  std::string got;
+  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+    return 1;
+  };
+
+  SECTION("connect, check, copy, install, then an original by range") {
+    mv_mobile_link* l = open_static(cfg, cache, folder);
+    REQUIRE(l);
+    mv_route_report report{};
+    REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+    CHECK(std::string(report.address) == "static.example.test");
+    CHECK(report.over_internet == 1);
+    CHECK(mv_link_is_connected(l) == 1);
+    mv_sync_report check{};
+    CHECK(mv_sync_check(l, &check) == MV_LINK_COPY_AVAILABLE);
+    CHECK(check.generation == 1);
+    mv_sync_report sync{};
+    REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
+    const auto installed = mob::read_installed(cfg.library_dir);
+    REQUIRE(installed);
+    CHECK(installed->generation == 1);
+    CHECK(installed->catalogue_root == kSampleCatalogueRoot);
+    CHECK(mv_sync_check(l, &check) == MV_LINK_UP_TO_DATE);
+    mv_catalogue_info info{};
+    REQUIRE(mv_catalogue_read(l, &info) == MV_LINK_OK);
+    CHECK(info.present == 1);
+    CHECK(mv_asset_folder_check(l, 1) == MV_LINK_OK);
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_OK);
+    CHECK(got == std::string(70000, 'p'));
+    got.clear();
+    CHECK(mv_file_read(l, 1, 100, 10, 0, nullptr, collect, &got) == MV_LINK_OK);
+    CHECK(got == std::string(10, 'p'));
+    // Every request stayed inside the folder it was given.
+    for (const auto& u : folder.asked) CHECK(u.rfind(kTestBase, 0) == 0);
+
+    // Forget: reads stop and nothing connects again.
+    mv_link_shut_down(l);
+    got.clear();
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) != MV_LINK_OK);
+    CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
+    mv_link_close(l);
+    mv_library_remove(cfg.library_dir.c_str());
+    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+  }
+  SECTION("a catalogue the pinned key did not sign is refused, and nothing is installed") {
+    const auto other = catalog::make_keypair();
+    pub.publish(2, std::string(300000, 'y'), &other.second);
+    folder.fill(dir.root / "nas" / ".mediaviewer", photos, "Photos");
+    mv_mobile_link* l = open_static(cfg, cache, folder);
+    REQUIRE(l);
+    mv_route_report report{};
+    REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+    mv_sync_report sync{};
+    CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_REJECTED);
+    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+    mv_link_close(l);
+  }
+  SECTION("a changed file is refused by its hash") {
+    for (const auto& e : fs::directory_iterator(folder.dir)) {
+      const auto name = e.path().filename().string();
+      if (name.find("__extra.bin") != std::string::npos) write_file(e.path(), std::string(300001, 'z'));
+    }
+    mv_mobile_link* l = open_static(cfg, cache, folder);
+    REQUIRE(l);
+    mv_sync_report sync{};
+    CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_REJECTED);
+    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+    mv_link_close(l);
+  }
+  SECTION("no network: unreachable, named by its host") {
+    folder.down = true;
+    mv_mobile_link* l = open_static(cfg, cache, folder);
+    REQUIRE(l);
+    mv_route_report report{};
+    CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
+    REQUIRE(report.failure_count == 1);
+    CHECK(std::string(report.failures[0].address) == "static.example.test");
+    mv_sync_report sync{};
+    CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_UNREACHABLE);
+    mv_link_close(l);
+  }
+  SECTION("a folder with no catalogue in it: unreachable, not installed") {
+    mv_mobile_link* l = open_static(cfg, cache, folder, "https://static.example.test/elsewhere/");
+    REQUIRE(l);
+    mv_route_report report{};
+    CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
+    mv_sync_report sync{};
+    CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) != MV_LINK_OK);
+    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+    mv_link_close(l);
+  }
 }
