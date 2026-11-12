@@ -4784,4 +4784,9 @@ The core: `mv_mobile_link_tests "[mobile-link]"` (the Mac build's `build/bin`), 
 build `build-ios-sim/` (`cmake/ios.cmake`), then the `MediaViewer` scheme. End to end against
 `driftwire serve` on loopback in a Simulator of your own: `tools/ios/link-e2e.sh <udid> <folder>`
 after copying the built `MediaViewer.app` into `<folder>`. Codes for a service come from
-`driftwire serve pair-code [SECONDS]` until the desktop claim lands.
+`driftwire serve pair-code [SECONDS]` (`--for 24h` for a guest code) until the desktop claim lands.
+The owner's passphrase and timed phones on the service: `driftwire serve init --passphrase-stdin` or
+`--no-passphrase` when no terminal can ask, `serve status`, `serve passphrase set|reset`,
+`serve grant NAME --for D|--forever` (`docs/design/28-driftwire.md` "The owner's passphrase"). Tests:
+`mv_import_tests "[driftwire-serve],[phone-pairing]"`; the iOS copy in `MobileUITests` (the package's
+test scheme links the iOS core from `build-ios-iphonesimulator/`).

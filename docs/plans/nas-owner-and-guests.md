@@ -1,6 +1,7 @@
 # Plan — the NAS owner's passphrase, and temporary and scoped phone access
 
-Status: **plan; the owner made every call in §9 as recommended on 2026-11-12** (C5: option A). Building. Reviewed
+Status: **plan; the owner made every call in §9 as recommended on 2026-11-12** (C5: option A). Slices 1–3 built
+(service, CLI, phone) and folded into `docs/design/28-driftwire.md`; slice 4 (the Mac card) next. Reviewed
 against the code by Opus on 2026-11-12; its findings are folded in (session binding, the claim's third
 round trip, guests kept out of `devices`, guest codes in their own value, re-scan rules).
 Builds on `driftwire serve` and the Phone access card as they are on `claude/mobile-integration-c6a3b5`

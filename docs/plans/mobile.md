@@ -393,7 +393,8 @@ is the final answer.
 The desktop card shows a QR code carrying the library id, publisher public key, the Synology's
 addresses and identity, the library access key, and a single-use pairing code for the service.
 **One scan pairs the phone
-with both the Mac and the Synology, and there is no NAS password to type or store.** The code is
+with both the Mac and the Synology, and the phone has no NAS password to type or store.** (The owner
+has one, for the claim and for adding phones: `docs/plans/nas-owner-and-guests.md`.) The code is
 short-lived, and the Mac shows which phone was added. The Mac provisions the service once
 beforehand. **Scanning is the only way to add a library** (owner, 2026-11-09): the code comes from
 MediaViewer on a Mac or a Windows PC.
