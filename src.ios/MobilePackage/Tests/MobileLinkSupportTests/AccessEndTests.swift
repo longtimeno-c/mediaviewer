@@ -25,6 +25,17 @@ final class AccessEndTests: XCTestCase {
                    .init(showEnded: false, dropLocalCopy: false))
   }
 
+  /// GUEST, the sample library as a guest: the phone stands in for a NAS, in sample mode only.
+  func testTheSampleGuestEndsOnlyInSampleMode() {
+    let now = 1_000_000.0
+    XCTAssertTrue(AccessEnd.sampleGuestEnded(isSample: true, accessUntil: now - 1, now: now))
+    XCTAssertTrue(AccessEnd.sampleGuestEnded(isSample: true, accessUntil: now, now: now))
+    XCTAssertFalse(AccessEnd.sampleGuestEnded(isSample: true, accessUntil: now + 600, now: now))
+    XCTAssertFalse(AccessEnd.sampleGuestEnded(isSample: true, accessUntil: nil, now: now))  // plain SAMPLE
+    // A real library past the end its NAS gave: never ended on this phone's own say.
+    XCTAssertFalse(AccessEnd.sampleGuestEnded(isSample: false, accessUntil: now - 1, now: now))
+  }
+
   func testTheCopyGoesAndThePairingStays() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("access-end-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }

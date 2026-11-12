@@ -409,6 +409,8 @@ public enum CopyFailure: Error, Hashable, Sendable {
   case notEnoughSpace(neededBytes: Int64)
   /// What arrived does not match what the computer published and signed.
   case catalogueRejected
+  /// This phone's time-limited access ended (nas-owner-and-guests.md §8.2): nothing is copied.
+  case accessEnded
 }
 
 public enum DownloadEvent: Sendable {

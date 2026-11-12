@@ -28,6 +28,13 @@ public enum AccessEnd {
     return Decision(showEnded: false, dropLocalCopy: false)
   }
 
+  /// The sample library as a guest (code GUEST) has no NAS to end it: in sample mode only, the
+  /// phone stands in for one, and this says whether that end has come.
+  public static func sampleGuestEnded(isSample: Bool, accessUntil: Double?, now: Double) -> Bool {
+    guard isSample, let end = accessUntil else { return false }
+    return end <= now
+  }
+
   /// Runs `remove` only while the library stored on this phone is still `expected` (a pairing over
   /// it, or a Forget, meanwhile leaves everything to that). True when it ran.
   @discardableResult
