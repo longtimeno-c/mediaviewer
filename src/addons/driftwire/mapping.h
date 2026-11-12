@@ -32,7 +32,7 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 
 namespace mv::driftwire::mapping {
 

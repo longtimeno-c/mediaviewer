@@ -16,10 +16,10 @@
 #include <sqlite3.h>
 
 #include "addons/ai/catalog.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/secrets.h"
-#include "addons/driftwire/serve.h"
+#include "wire/known.h"
+#include "wire/pair_check.h"
+#include "wire/secrets.h"
+#include "wire/serve.h"
 #include "addons/driftwire/transfer.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"

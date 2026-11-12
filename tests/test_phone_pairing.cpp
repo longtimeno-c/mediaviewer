@@ -7,12 +7,12 @@
 
 #include "driftwire_fixture.h"
 
-#include "addons/driftwire/advert.h"
+#include "wire/advert.h"
 #include "addons/driftwire/desk.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/serve.h"
-#include "addons/driftwire/serve_client.h"
+#include "wire/known.h"
+#include "wire/pair_check.h"
+#include "wire/serve.h"
+#include "wire/serve_client.h"
 
 #if defined(__APPLE__)
 #include <dns_sd.h>
@@ -792,7 +792,7 @@ TEST_CASE("phone pairing: forgetting the add-on's secrets takes the phone's too"
   CHECK(s.mac.store->exists(desk::kKeyName));
   CHECK(s.mac.store->exists(desk::kServiceName));
   CHECK(s.mac.store->exists(desk::kDevicesName));
-  (void)known::forget(*s.mac.store);
+  (void)desk::forget_addon(*s.mac.store);
   CHECK_FALSE(s.mac.store->exists(desk::kKeyName));
   CHECK_FALSE(s.mac.store->exists(desk::kServiceName));
   CHECK_FALSE(s.mac.store->exists(desk::kDevicesName));

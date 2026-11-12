@@ -7,7 +7,7 @@ resume secret, the tag, `resume_at`), and the internet handshake (CPace, then `N
 
 | File | What it checks |
 |---|---|
-| `driftwire.pvl` | The primitives and both handshakes, token by token from `src/addons/driftwire/noise.cpp` and `channel.cpp` |
+| `driftwire.pvl` | The primitives and both handshakes, token by token from `src/wire/noise.cpp` and `channel.cpp` |
 | `handshake_code.pv` | An attacker in the middle with a collision oracle on the code cannot get matching codes; after a match both sides share keys and the resume secret, and the files stay secret |
 | `handshake_nonce.pv` | The client's nonce is secret until its h2 is fixed (the other half of the ordering argument) |
 | `code_order.pv` | Sanity, on the first link's skeleton: the collision oracle wins without the commitment check (ProVerif finds the attack) and loses with it. The full first link without the check does not finish |

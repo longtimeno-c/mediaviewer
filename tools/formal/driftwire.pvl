@@ -2,7 +2,7 @@
    the models beside this file. Read with `proverif -lib driftwire <model>.pv`
    (tools/formal/README.md).
 
-   What is modelled is what src/addons/driftwire/noise.cpp and channel.cpp do,
+   What is modelled is what src/wire/noise.cpp and channel.cpp do,
    token by token: Noise's SymmetricState is written out (h a hash chain, ck an
    HKDF chain, the AEAD nonce reset by each MixKey; the rejoin's ciphertexts
    carry the h of that moment as associated data, the first link's a constant,

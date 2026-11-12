@@ -22,10 +22,10 @@
 #include <vector>
 
 #include "addons/driftwire/cli/data_dir.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/secrets.h"
-#include "addons/driftwire/serve.h"
+#include "wire/known.h"
+#include "wire/net.h"
+#include "wire/secrets.h"
+#include "wire/serve.h"
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
 

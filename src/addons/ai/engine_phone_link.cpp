@@ -21,7 +21,7 @@
 
 #include "addons/ai/catalog_chain.h"
 #include "addons/ai/engine.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 #include "core/json.h"
 
 namespace mv::ai {

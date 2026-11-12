@@ -6,8 +6,8 @@
 
 #include <vector>
 
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/transfer.h"
+#include "wire/pair_check.h"
+#include "wire/keys.h"
 #include "core/json.h"
 #include "mobile/link.h"
 

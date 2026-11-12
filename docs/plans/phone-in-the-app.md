@@ -99,8 +99,8 @@ catalogue) opens in **file mode**:
 - A line above the results: "Smart search (words, faces, places and sounds) needs Local search.
   Install it on your Mac or PC and index this library."
 - When a signed catalogue arrives, the library switches to full search on the next sync, as today.
-- **SAMPLE** gains a second code, `SAMPLE-FILES`, opening the same sample files with no catalogue.
-  That needs the sample release republished with a `files-only` listing: owner's OK needed.
+- **Not demoable in SAMPLE** (owner, 2026-11-12): no second sample code, and the sample release is
+  not republished for it.
 
 ## 5. Order (each step Opus-reviewed, both hosts)
 
@@ -111,18 +111,16 @@ catalogue) opens in **file mode**:
    instead of `fake_driftwire`); a new test pairs with no AI engine at all.
 3. The AI as provider: `catalogue_build`; `[phone]` publisher tests through the core.
 4. Settings → Phone access on Mac (SwiftUI) and Windows (WinUI), the AI chrome's sections removed.
-5. The phone's file mode and `SAMPLE-FILES`.
+5. The phone's file mode.
 
 **Verify:** with no AI pack installed, a desktop claims a `driftwire serve` on loopback, shows a QR,
 a test client pairs with it, lists the named folders, and the desktop revokes it; with the AI pack,
 a publish lands a signed generation the phone verifies, under the same publisher key as before the
 move. Import and Driftwire transfers pass their tests unchanged. Both present-loop gates hold.
 
-## 6. Open calls for the owner
+## 6. Owner calls (answered 2026-11-12)
 
-1. **File mode's search scope.** As the desktop's File search: the folder on screen, with tags read
-   from file heads as it is shown (recommended). Or by name across every named folder, which needs
-   the phone to list the whole library over the link first.
-2. **SAMPLE-FILES** needs the sample release republished. OK to republish?
-3. **Is Publish now still a user action** once smart search is on, or only automatic after a quiet
-   scan? Recommended: both, as today.
+1. **File mode searches the folder on screen**, by name and by tags read as the folder is shown, as
+   the desktop's File search does. No walk of the library.
+2. **No SAMPLE demo of file mode.** No `SAMPLE-FILES` code; the sample release is not republished.
+3. **Both ways to publish:** the Publish now button and the automatic publish after a quiet scan.

@@ -63,7 +63,12 @@ $allowed = [ordered]@{
     # rules of io::verified_copy), compiled into its own module as Places
     # compiles io/mapped_file: still nothing of the core is linked, and geo,
     # which add-ons already use, sits on io.
-    'addons' = @('addons', 'geo', 'infer', 'io', 'core')
+    # 2026-11-12 (docs/plans/phone-in-the-app.md): Driftwire's protocol, out of
+    # addons/ so the app's phone feature can link it. It sits on io (the file
+    # port the NAS service reads through) and core's header-only pieces; it
+    # never includes addons/, so nothing of an add-on reaches the app this way.
+    'wire'   = @('wire', 'io', 'core')
+    'addons' = @('addons', 'wire', 'geo', 'infer', 'io', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # docs/design/23: the Mac app's main() hands `--search-agent` to nle's agent.
     # Issue #610: shellext too, for the Quick Look extension (shell/quicklook_mac.mm,

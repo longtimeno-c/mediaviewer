@@ -1831,16 +1831,23 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 ## Where it lives
 
+Since 2026-11-12 the protocol is `src/wire` (target `mv_wire`, `cmake/wire.cmake`), so the app's phone feature
+can link it with no add-on installed ([plan](../plans/phone-in-the-app.md)): `wire.*`, `keys.*`, `noise.*`,
+`cpace.*`, `stages.*`, `channel.*`, `link.h`, `net*`, `machine_*`, `admission.h`, `secrets*`, `known.*`,
+`serve*`, `pair_check.*`, `advert*`. The rest is `src/addons/driftwire` (`mv_driftwire_engine`, over `mv_wire`).
+The namespace stays `mv::driftwire`. The pair's hourly DHT keys left `known` for `presence_keys.*`, so the
+protocol has no DHT.
+
 | Piece | Code |
 |---|---|
-| Wire, code, path rule, beacon | `src/addons/driftwire/wire.*` |
+| Wire, code, path rule, beacon | `src/wire/wire.*` |
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
 | Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
 | The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
 | Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |
 | The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
-| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*` |
+| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*`, `presence_keys.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |

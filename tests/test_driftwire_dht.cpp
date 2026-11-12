@@ -9,8 +9,9 @@
 
 #include "addons/driftwire/bencode.h"
 #include "addons/driftwire/dht_item.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/known.h"
+#include "addons/driftwire/presence_keys.h"
+#include "wire/secrets.h"
 #include "addons/driftwire/sha1.h"
 
 namespace bc = mv::driftwire::bencode;

@@ -276,12 +276,12 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/catalog_chain.cpp
   ${R}/src/addons/ai/engine_phone_link.cpp
   ${R}/src/addons/ai/catalog_chain.h
-  ${R}/src/addons/driftwire/secrets.h
-  # iOS: mv_driftwire_engine carries secrets_file.cpp and secrets_ios.cpp (linked below).
-  $<$<NOT:$<PLATFORM_ID:iOS>>:${R}/src/addons/driftwire/secrets_file.cpp>
-  $<$<PLATFORM_ID:Windows>:${R}/src/addons/driftwire/secrets_win.cpp>
-  $<$<PLATFORM_ID:Darwin>:${R}/src/addons/driftwire/secrets_mac.cpp>
-  $<$<PLATFORM_ID:Linux>:${R}/src/addons/driftwire/secrets_linux.cpp>
+  ${R}/src/wire/secrets.h
+  # iOS: mv_wire carries secrets_file.cpp and secrets_ios.cpp (linked below).
+  $<$<NOT:$<PLATFORM_ID:iOS>>:${R}/src/wire/secrets_file.cpp>
+  $<$<PLATFORM_ID:Windows>:${R}/src/wire/secrets_win.cpp>
+  $<$<PLATFORM_ID:Darwin>:${R}/src/wire/secrets_mac.cpp>
+  $<$<PLATFORM_ID:Linux>:${R}/src/wire/secrets_linux.cpp>
   ${R}/src/addons/ai/vectors.cpp
   ${R}/src/addons/ai/vectors.h
   ${R}/src/addons/ai/vocabulary.cpp
@@ -332,7 +332,7 @@ if(APPLE AND NOT IOS)
                         "-framework CoreGraphics")
 endif()
 if(IOS)
-  target_link_libraries(mv_ai_engine PRIVATE mv_driftwire_engine)  # secrets::os_store
+  target_link_libraries(mv_ai_engine PRIVATE mv_wire)  # secrets::os_store
 endif()
 if(WIN32)
   target_link_libraries(mv_ai_engine PRIVATE dxgi advapi32 crypt32)  # machine() (#482); the signing key

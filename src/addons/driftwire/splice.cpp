@@ -8,7 +8,7 @@
 #include <chrono>
 #include <cstring>
 
-#include "addons/driftwire/cpace.h"
+#include "wire/cpace.h"
 
 namespace mv::driftwire::relay {
 

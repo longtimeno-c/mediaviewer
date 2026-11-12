@@ -10,6 +10,7 @@
 
 #include "addons/driftwire/engine.h"
 #include "addons/driftwire/meet.h"
+#include "addons/driftwire/presence_keys.h"
 
 namespace mv::driftwire {
 
