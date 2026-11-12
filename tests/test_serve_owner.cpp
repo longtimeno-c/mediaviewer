@@ -168,18 +168,18 @@ TEST_CASE("serve owner: a library channel's handshake hash is shared by its ends
   const key32 access = random_key(), service = random_key(), device = random_key();
   const auto one = [&] {
     std::unique_ptr<sp::channel> server_side;
+    // No REQUIRE off the test's thread: it would end the run, not fail the test.
     std::thread t([&] {
       auto l = (*listen)->accept(5000);
-      REQUIRE(l);
+      if (!l) return;
       std::shared_ptr<sp::link> shared(std::move(*l));
       auto h = sp::channel::read_library_hello(*shared, std::chrono::steady_clock::now() + std::chrono::seconds(5));
-      REQUIRE(h);
+      if (!h) return;
       sp::channel::options o;
       o.access_key = access;
       o.static_key = service;
       auto ch = sp::channel::open_library_server(shared, std::move(*h), "0000000000000000", "svc", o);
-      REQUIRE(ch);
-      server_side = std::move(*ch);
+      if (ch) server_side = std::move(*ch);
     });
     auto l = sp::net::connect({"::1", (*listen)->port()}, 3000);
     REQUIRE(l);
@@ -273,10 +273,12 @@ TEST_CASE("serve owner: the command line sets, shows and resets the passphrase, 
   REQUIRE(owner::load(*store, second) == owner::stored::set);
   CHECK(second.pk != first.pk);
   CHECK(run("status", "", code).find("lockout owner 0 wrong") != std::string::npos);
-  // Reset to none.
+  // Reset never leaves none behind: with none, the next claim would choose it.
   out = run("passphrase reset --no-passphrase", "", code);
-  CHECK(code == 0);
-  CHECK(owner::load(*store, second) == owner::stored::none);
+  CHECK(code != 0);
+  out = run("passphrase reset --passphrase-stdin", "short\n", code);
+  CHECK(code != 0);
+  CHECK(owner::load(*store, second) == owner::stored::set);
   // The flags go only where a passphrase is asked for.
   out = run("devices --no-passphrase", "", code);
   CHECK(code != 0);

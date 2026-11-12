@@ -24,7 +24,9 @@
 namespace mv::driftwire::serve {
 
 // Why a connection could not be used.
-enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy, bad_code, too_many };
+// `expired`: a limited device whose time is up (docs/plans/nas-owner-and-guests.md
+// §4.3); an app from before it reads that as not_paired.
+enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy, bad_code, too_many, expired };
 
 class client {
  public:
@@ -98,12 +100,14 @@ class client {
   // `refusal` says why ({"why":"passphrase"|"locked-out"|...}). A cost outside
   // owner::sane_cost is never paid: status::corrupt.
   using derive_fn = std::function<std::optional<owner::signer>(const owner::salt_t&, std::uint64_t ops, std::uint64_t mem)>;
-  [[nodiscard]] result<std::string> unlock(const derive_fn& derive, std::string* refusal = nullptr);
+  [[nodiscard]] result<std::string> unlock(const derive_fn& derive, std::string* refusal = nullptr,
+                                           std::uint64_t min_ops = owner::kOps, std::uint64_t min_mem = owner::kMem);
 
   // Ends the session.
   void close() noexcept;
   [[nodiscard]] bool closed() const noexcept;
-  // A session the service ended after it began ("revoked", "not-paired", "busy"); empty otherwise.
+  // A session the service ended after it began ("revoked", "expired",
+  // "folders-changed", "not-paired", "busy"); empty otherwise.
   [[nodiscard]] std::string ended_why() const;
 
  private:
@@ -118,6 +122,9 @@ struct claim_answer {
   std::array<std::uint8_t, 32> access_key{};
   std::array<std::uint8_t, 32> identity{};
   std::vector<root_info> roots;
+  // The service took the passphrase step (asked for or took one). False
+  // from a service older than that, which kept no passphrase.
+  bool passphrase_step = false;
 };
 // `prove` writes the service's nonce to kClaimProofFile on the share, so the
 // service sees this desktop can write there, not only read the token.
@@ -137,6 +144,13 @@ struct claim_answer {
 struct claim_passphrase {
   std::function<std::optional<owner::signer>(const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem)> sign;
   std::optional<owner::verifier> set;
+  // The service's identity when this side knows it (`serve status` shows
+  // it; a re-claim has it): any other is refused before anything is sent.
+  std::optional<std::array<std::uint8_t, 32>> service_key;
+  // The least cost a challenge may ask for: a fake service asking for less
+  // would get an answer cheap to attack offline.
+  std::uint64_t min_ops = owner::kOps;
+  std::uint64_t min_mem = owner::kMem;
 };
 [[nodiscard]] result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
                                          const std::array<std::uint8_t, 32>& device_key, const std::string& name,

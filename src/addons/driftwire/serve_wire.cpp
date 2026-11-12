@@ -133,6 +133,14 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     }
   }
   if (const std::string* p = doc->str("passphrase"); p && p->size() <= 16) c.passphrase = *p;
+  if (const json::value* g = doc->find("grant"); g && g->k == json::kind::object) {
+    const auto expires = g->integer("expires");
+    if (expires && *expires >= 0) {
+      c.has_grant = true;
+      c.grant_expires = *expires;
+      c.grant_scoped = g->boolean("scoped") == true;
+    }
+  }
   return c;
 }
 

@@ -13,6 +13,7 @@
 
 #include "addons/driftwire/advert.h"
 #include "addons/driftwire/desk.h"
+#include "addons/driftwire/grants.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/serve.h"
@@ -66,6 +67,8 @@ struct nas {
   key32 identity{}, access{};
   std::atomic<bool> own{true};
   std::atomic<std::int64_t> fake_now{0};  // unix seconds the service sees (0: the clock)
+  std::atomic<std::int64_t> steady_skew_s{0};  // added to the service's steady clock
+  int answer_gap_ms = 0;
   std::vector<serve::config> saved;
   std::mutex saved_m;
   std::unique_ptr<serve::server> srv;
@@ -90,7 +93,8 @@ struct nas {
       const auto t = fake_now.load();
       return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
     };
-    o.min_answer_gap_ms = 0;
+    o.now_steady = [this] { return std::chrono::steady_clock::now() + std::chrono::seconds(steady_skew_s.load()); };
+    o.min_answer_gap_ms = answer_gap_ms;
     o.save_config = [this](const serve::config& c) {
       std::lock_guard lock(saved_m);
       saved.push_back(c);
@@ -273,6 +277,8 @@ constexpr const char* kPass = "a long owner passphrase";
 serve::claim_passphrase with_passphrase(std::string pass, bool set_if_none = true) {
   serve::claim_passphrase p;
   p.sign = [pass](const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) { return owner::derive(pass, salt, ops, mem); };
+  p.min_ops = owner::kMinOps;
+  p.min_mem = owner::kMinMem;
   if (set_if_none) p.set = owner::make(pass, 0, owner::kMinOps, owner::kMinMem);
   return p;
 }
@@ -384,9 +390,13 @@ TEST_CASE("phone pairing: a claim with none set chooses it, and only a public ke
   const auto wrong = with_passphrase("another long passphrase", false);
   CHECK_FALSE(m.claim(&wrong, &why));
   CHECK(why == "passphrase");
-  REQUIRE(m.claim(&pass, &why));
   const auto l = owner::load_lockout(*n.store, std::time(nullptr));
+  CHECK(l.owner.misses == 1);
   CHECK(l.claim.misses == 0);
+  auto again = m.claim(&pass, &why);
+  REQUIRE(again);
+  CHECK(again->passphrase_step);
+  CHECK(owner::load_lockout(*n.store, std::time(nullptr)).owner.misses == 0);
 }
 
 TEST_CASE("phone pairing: an older desktop claims a NAS with none, and the owner sets one later", "[phone-pairing]") {
@@ -458,13 +468,13 @@ TEST_CASE("phone pairing: what adds access needs an unlock; what takes it away d
   // A wrong passphrase does not unlock.
   CHECK_FALSE((*s)->unlock([](const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) {
     return owner::derive("the wrong passphrase", salt, ops, mem);
-  }, &refusal));
+  }, &refusal, owner::kMinOps, owner::kMinMem));
   CHECK(why_in(refusal) == "passphrase");
   // An answer with no challenge before it is refused.
   CHECK_FALSE((*s)->admin("{\"do\":\"unlock\",\"sig\":\"" + std::string(128, '0') + "\"}", nullptr, &refusal));
   CHECK(why_in(refusal) == "no-challenge");
   // The right one does, for this session only.
-  auto unlocked = (*s)->unlock(pass.sign, &refusal);
+  auto unlocked = (*s)->unlock(pass.sign, &refusal, owner::kMinOps, owner::kMinMem);
   REQUIRE(unlocked);
   CHECK(unlocked->find("\"unlocked_s\":600") != std::string::npos);
   CHECK((*s)->admin(code_request));
@@ -475,14 +485,21 @@ TEST_CASE("phone pairing: what adds access needs an unlock; what takes it away d
   // Lock ends it; and the ten minutes run out on the service's clock.
   REQUIRE((*s)->admin("{\"do\":\"lock\"}"));
   CHECK_FALSE((*s)->admin(code_request));
-  REQUIRE((*s)->unlock(pass.sign));
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
   CHECK((*s)->admin(code_request));
-  n.fake_now = std::time(nullptr) + owner::kUnlockSeconds + 1;
+  n.steady_skew_s = owner::kUnlockSeconds + 1;
   CHECK_FALSE((*s)->admin(code_request, nullptr, &refusal));
   CHECK(why_in(refusal) == "needs-unlock");
+  // A wall clock set back does not stretch it: the ten minutes are steady time.
+  n.steady_skew_s = 0;
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  n.fake_now = std::time(nullptr) - 3600;
+  n.steady_skew_s = owner::kUnlockSeconds + 1;
+  CHECK_FALSE((*s)->admin(code_request));
   // A passphrase changed on the NAS (the CLI) ends every unlock at once.
   n.fake_now = 0;
-  REQUIRE((*s)->unlock(pass.sign));
+  n.steady_skew_s = 0;
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
   CHECK((*s)->admin(code_request));
   init_passphrase(n, "the replacement passphrase");
   CHECK_FALSE((*s)->admin(code_request, nullptr, &refusal));
@@ -505,13 +522,13 @@ TEST_CASE("phone pairing: wrong passphrases lock the owner out, across a restart
   };
   std::string refusal;
   for (int i = 0; i < owner::kFreeMisses; ++i) {
-    CHECK_FALSE((*s)->unlock(wrong, &refusal));
+    CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
     CHECK(why_in(refusal) == "passphrase");
   }
-  CHECK_FALSE((*s)->unlock(wrong, &refusal));
+  CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
   CHECK(why_in(refusal) == "locked-out");
   // Locked: even the right one is not checked, and no challenge is given.
-  CHECK_FALSE((*s)->unlock(pass.sign, &refusal));
+  CHECK_FALSE((*s)->unlock(pass.sign, &refusal, owner::kMinOps, owner::kMinMem));
   CHECK(why_in(refusal) == "locked-out");
   CHECK(refusal.find("\"until\":" + std::to_string(t0 + owner::kFirstLockSeconds)) != std::string::npos);
   // A restart does not forget it.
@@ -520,20 +537,20 @@ TEST_CASE("phone pairing: wrong passphrases lock the owner out, across a restart
   n.start();
   auto again = m.session();
   REQUIRE(again);
-  CHECK_FALSE((*again)->unlock(pass.sign, &refusal));
+  CHECK_FALSE((*again)->unlock(pass.sign, &refusal, owner::kMinOps, owner::kMinMem));
   CHECK(why_in(refusal) == "locked-out");
   // The owner's lock does not stop a claim being counted apart, and vice versa.
   CHECK(owner::load_lockout(*n.store, t0).claim.misses == 0);
   // Past the lock the right one works and clears the count.
   n.fake_now = t0 + owner::kFirstLockSeconds;
-  REQUIRE((*again)->unlock(pass.sign));
+  REQUIRE((*again)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
   CHECK(owner::load_lockout(*n.store, t0).owner.misses == 0);
   // Locked again, `driftwire serve passphrase reset` on the NAS clears it.
-  for (int i = 0; i <= owner::kFreeMisses; ++i) (void)(*again)->unlock(wrong);
+  for (int i = 0; i <= owner::kFreeMisses; ++i) (void)(*again)->unlock(wrong, nullptr, owner::kMinOps, owner::kMinMem);
   CHECK(owner::load_lockout(*n.store, n.fake_now).owner.locked(n.fake_now));
   REQUIRE(owner::reset(*n.store));
   init_passphrase(n);
-  REQUIRE((*again)->unlock(pass.sign));
+  REQUIRE((*again)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
 }
 
 TEST_CASE("phone pairing: guesses at claims cannot lock the owner out", "[phone-pairing]") {
@@ -560,7 +577,267 @@ TEST_CASE("phone pairing: guesses at claims cannot lock the owner out", "[phone-
   REQUIRE(mac.claim(&pass));
   auto s = mac.session();
   REQUIRE(s);
-  REQUIRE((*s)->unlock(pass.sign));
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+}
+
+TEST_CASE("phone pairing: answers come at most one a second, and a cheap challenge is never answered", "[phone-pairing]") {
+  nas n;
+  n.answer_gap_ms = 1000;
+  n.srv->stop();
+  n.srv.reset();
+  n.start();
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto s = m.session();
+  REQUIRE(s);
+  const auto wrong = [](const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) {
+    return owner::derive("the wrong passphrase", salt, ops, mem);
+  };
+  std::string refusal;
+  CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "passphrase");
+  CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "slow-down");
+  // Not counted: one miss so far.
+  CHECK(owner::load_lockout(*n.store, std::time(nullptr)).owner.misses == 1);
+  // A client that expects the real cost refuses one far below it, and sends nothing a fake could attack cheaply.
+  auto cheap = (*s)->unlock(pass.sign, &refusal);
+  REQUIRE_FALSE(cheap);
+  CHECK(cheap.error() == mv::status::corrupt);
+  // A claim pinned to another identity says nothing to this one.
+  auto pinned = with_passphrase(kPass);
+  pinned.service_key = random_key();
+  std::string why;
+  CHECK_FALSE(m.claim(&pinned, &why));
+  CHECK(why == "wrong-service");
+  pinned.service_key = n.identity;
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  CHECK(m.claim(&pinned, &why));
+}
+
+// ---- timed and scoped phones (docs/plans/nas-owner-and-guests.md §5) ------------------------
+
+namespace grants = mv::driftwire::serve::grants;
+
+std::string guest_code_request(const std::string& code, std::int64_t for_s) {
+  return "{\"do\":\"guest_code\",\"code\":\"" + code + "\",\"ttl_ms\":60000,\"for_s\":" + std::to_string(for_s) + "}";
+}
+
+bool on_grants(nas& n, const key32& device) {
+  std::vector<grants::grant> list;
+  REQUIRE(grants::load(*n.store, list));
+  const key32 pub = public_of(device);
+  return std::any_of(list.begin(), list.end(), [&](const grants::grant& g) { return g.key == pub; });
+}
+
+TEST_CASE("phone pairing: a guest code pairs a phone for a time, then it is cut and refused as expired", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto owner_session = m.session();
+  REQUIRE(owner_session);
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  const std::string code(32, 'c');
+  REQUIRE((*owner_session)->admin(guest_code_request(code, 3600)));
+  const key32 guest = random_key();
+  auto phone = n.phone(guest, code, nullptr, "Guest phone");
+  REQUIRE(phone);
+  // Told its limit, so it can say so.
+  CHECK((*phone)->caps().has_grant);
+  CHECK((*phone)->caps().grant_expires == t0 + 3600);
+  CHECK_FALSE((*phone)->caps().grant_scoped);
+  // On the grants, never on the paired list (an older NAS, or an older Mac, would let it in for ever).
+  CHECK(on_grants(n, guest));
+  CHECK_FALSE(n.has_device(guest));
+  auto devices = (*owner_session)->admin("{\"do\":\"devices\"}");
+  REQUIRE(devices);
+  CHECK(devices->find("Guest phone") == std::string::npos);
+  auto listed = (*owner_session)->admin("{\"do\":\"grants\"}");
+  REQUIRE(listed);
+  CHECK(listed->find("Guest phone") != std::string::npos);
+  CHECK(listed->find("\"guest\":true") != std::string::npos);
+  // It reads like any phone meanwhile.
+  CHECK((*phone)->roots());
+  // The hour runs out: the running session is cut within the watch's 2 s, as a revoke is.
+  n.fake_now = t0 + 3600;
+  const auto cut_from = std::chrono::steady_clock::now();
+  CHECK(eventually([&] { return (*phone)->closed(); }, 6));
+  CHECK(std::chrono::steady_clock::now() - cut_from < std::chrono::milliseconds(3500));
+  CHECK((*phone)->ended_why() == "expired");
+  // And refused, saying why, distinct from a revoke.
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(guest, {}, &why));
+  CHECK(why == serve::refusal::expired);
+  CHECK(n.srv->stats().expired >= 2);
+  // Listed as expired for a week, for Extend; then dropped.
+  listed = (*owner_session)->admin("{\"do\":\"grants\"}");
+  REQUIRE(listed);
+  CHECK(listed->find("\"expired\":true") != std::string::npos);
+  n.fake_now = t0 + 3600 + grants::kExpiredKeptSeconds + 1;
+  listed = (*owner_session)->admin("{\"do\":\"grants\"}");
+  REQUIRE(listed);
+  CHECK(listed->find("Guest phone") == std::string::npos);
+}
+
+TEST_CASE("phone pairing: an expired guest is let back in by a new code, or by an extension", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto s = m.session();
+  REQUIRE(s);
+  // A guest code adds access: it needs the passphrase.
+  std::string refusal;
+  CHECK_FALSE((*s)->admin(guest_code_request(std::string(32, 'd'), 60), nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'd'), 60)));
+  const key32 guest = random_key();
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  REQUIRE(n.phone(guest, std::string(32, 'd')));
+  n.fake_now = t0 + 61;
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(guest, {}, &why));
+  CHECK(why == serve::refusal::expired);
+  // Re-invited: a new code redeemed by the same phone replaces its grant.
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'e'), 3600)));
+  auto back = n.phone(guest, std::string(32, 'e'));
+  REQUIRE(back);
+  CHECK((*back)->caps().grant_expires == t0 + 61 + 3600);
+  (*back)->close();
+  const std::string key = mv::driftwire::key_hex(public_of(guest));
+  // Shortening takes no passphrase and takes effect now; extending needs it.
+  REQUIRE((*s)->admin("{\"do\":\"lock\"}"));
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":10}"));
+  n.fake_now = t0 + 61 + 11;
+  CHECK_FALSE(n.phone(guest, {}, &why));
+  CHECK(why == serve::refusal::expired);
+  CHECK_FALSE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":86400}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  CHECK_FALSE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":86400}"));
+  REQUIRE(n.phone(guest));
+  // Made unlimited: it moves to the paired list, and off the grants.
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true}"));
+  CHECK(n.has_device(guest));
+  CHECK_FALSE(on_grants(n, guest));
+  auto unlimited = n.phone(guest);
+  REQUIRE(unlimited);
+  CHECK_FALSE((*unlimited)->caps().has_grant);
+  // Revoke takes it off whichever list it is on.
+  REQUIRE((*s)->admin("{\"do\":\"revoke\",\"key\":\"" + key + "\"}"));
+  CHECK_FALSE(n.has_device(guest));
+  CHECK_FALSE(on_grants(n, guest));
+}
+
+TEST_CASE("phone pairing: an unlimited phone that scans a guest code stays unlimited", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto s = m.session();
+  REQUIRE(s);
+  const key32 phone = random_key();
+  REQUIRE(known::save(*n.store, {known::device{"iPhone", public_of(phone), {}, false}}));
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'f'), 60)));
+  auto c = n.phone(phone, std::string(32, 'f'));
+  REQUIRE(c);
+  CHECK_FALSE((*c)->caps().has_grant);
+  CHECK(n.has_device(phone));
+  CHECK_FALSE(on_grants(n, phone));
+  // The code is spent: it pairs nothing else.
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(random_key(), std::string(32, 'f'), &why));
+  CHECK(why == serve::refusal::bad_code);
+}
+
+TEST_CASE("phone pairing: a scoped phone sees only its folders and the Catalogue; an emptied list is none", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  put_file(n.share / "a.txt", "photo");
+  put_file(n.share / ".mediaviewer" / "library.json", "{}");
+  auto s = m.session();
+  REQUIRE(s);
+  const key32 phone = random_key();
+  REQUIRE(known::save(*n.store, {known::device{"iPhone", public_of(phone), {}, false}}));
+  const std::string key = mv::driftwire::key_hex(public_of(phone));
+  auto c = n.phone(phone);
+  REQUIRE(c);
+  // Narrowed to no folders: cut at once with folders-changed, and back with the Catalogue alone.
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true,\"roots\":[]}"));
+  CHECK(eventually([&] { return (*c)->closed(); }, 6));
+  CHECK((*c)->ended_why() == "folders-changed");
+  CHECK(on_grants(n, phone));
+  auto back = n.phone(phone);
+  REQUIRE(back);
+  CHECK((*back)->caps().grant_scoped);
+  CHECK((*back)->caps().grant_expires == 0);
+  auto roots = (*back)->roots();
+  REQUIRE(roots);
+  REQUIRE(roots->size() == 1);
+  CHECK(roots->front().label == serve::kCatalogueLabel);
+  mv::driftwire::serve::end_code code{};
+  CHECK_FALSE((*back)->stat("a1a1a1a1a1a1a1a1", "a.txt", &code));
+  CHECK(code == mv::driftwire::serve::end_code::refused);
+  CHECK((*back)->stat(roots->front().id, "library.json"));
+  (*back)->close();
+  // Given Photos back (wider: with no passphrase set, the owner key is enough).
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true,\"roots\":[\"a1a1a1a1a1a1a1a1\"]}"));
+  auto photos = n.phone(phone);
+  REQUIRE(photos);
+  CHECK((*photos)->stat("a1a1a1a1a1a1a1a1", "a.txt"));
+}
+
+TEST_CASE("phone pairing: a guest code from the NAS's command line is kept apart and pairs a timed phone", "[phone-pairing]") {
+  nas n;
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  grants::limit gives;
+  gives.for_s = 7 * 24 * 3600;
+  const std::string code = grants::issue_guest_code(*n.store, 600, gives, t0);
+  REQUIRE(code.size() == 32);
+  // Not in the old value: a NAS rolled back to before this would pair it unlimited.
+  CHECK_FALSE(n.store->exists(serve::kPairCodesName));
+  const key32 guest = random_key();
+  auto c = n.phone(guest, code);
+  REQUIRE(c);
+  CHECK((*c)->caps().grant_expires == t0 + gives.for_s);
+  CHECK(on_grants(n, guest));
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(random_key(), code, &why));
+  CHECK(why == serve::refusal::bad_code);
+  // An older binary reads only the paired list: this phone is not on it, so it would be refused, not let in.
+  CHECK_FALSE(n.has_device(guest));
+}
+
+TEST_CASE("phone pairing: grants and durations parse strictly", "[phone-pairing]") {
+  CHECK(grants::parse_duration("24h") == 86400);
+  CHECK(grants::parse_duration("7d") == 7 * 86400);
+  CHECK(grants::parse_duration("90m") == 5400);
+  CHECK(grants::parse_duration("3600") == 3600);
+  CHECK_FALSE(grants::parse_duration("0"));
+  CHECK_FALSE(grants::parse_duration("-1h"));
+  CHECK_FALSE(grants::parse_duration("366d"));
+  CHECK_FALSE(grants::parse_duration("1w"));
+  CHECK_FALSE(grants::parse_duration("h"));
+  grants::grant g;
+  g.name = "x";
+  g.expires = 0;
+  CHECK_FALSE(grants::decode(grants::encode({g})));  // no limit at all belongs in the paired list
+  g.roots = std::vector<std::string>{};
+  const auto back = grants::decode(grants::encode({g}));
+  REQUIRE(back);
+  REQUIRE(back->front().roots);
+  CHECK(back->front().roots->empty());  // empty stays empty: none, never all
+  CHECK_FALSE(back->front().allows("a1a1a1a1a1a1a1a1", false));
+  CHECK(back->front().allows("a1a1a1a1a1a1a1a1", true));
 }
 
 TEST_CASE("phone pairing: a phone is never told the salt", "[phone-pairing]") {

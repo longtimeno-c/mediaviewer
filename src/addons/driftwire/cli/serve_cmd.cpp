@@ -32,8 +32,12 @@
 #include "core/json.h"
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <sys/stat.h>
@@ -166,6 +170,7 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
 // False at the end of input.
 bool read_line(std::string& out, bool hidden) {
   out.clear();
+  out.reserve(serve::owner::kMaxBytes + 2);  // never reallocated: no copy left behind unwiped
 #if defined(_WIN32)
   HANDLE in = ::GetStdHandle(STD_INPUT_HANDLE);
   DWORD mode = 0;
@@ -322,23 +327,19 @@ int run_passphrase_set(const args& a, secrets::store& store) {
   return 0;
 }
 
-// Recovery: the passphrase and both lockouts go; a new one is asked for
-// unless --no-passphrase.
+// Recovery: a new passphrase replaces the old, and both lockouts go. It is
+// stretched first, so a NAS without the memory for it is left as it was,
+// never with none (with none, the next claim would choose it).
 int run_passphrase_reset(const args& a, secrets::store& store) {
   wiped_string pass;
-  if (!a.no_passphrase) {
-    std::string why;
-    if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  std::string why;
+  if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  const auto v = serve::owner::make(pass.s, std::time(nullptr));
+  if (!v) return fail("could not stretch the passphrase (not enough memory?); nothing changed.", 1);
+  if (!serve::owner::reset(store) || !serve::owner::save(store, *v)) {
+    return fail("could not write the new passphrase; run this again before anything claims the service.", 1);
   }
-  if (!serve::owner::reset(store)) return fail("could not clear the passphrase.", 1);
-  std::string line = "passphrase reset at " + std::to_string(std::time(nullptr)) + "; lockouts cleared\n";
-  if (!pass.s.empty()) {
-    if (const int r = set_passphrase(pass.s, store); r != 0) return r;
-    line += "new passphrase set\n";
-  } else {
-    line += "no passphrase now: the next claim or the owner's Mac chooses one\n";
-  }
-  print(line);
+  print("passphrase reset at " + std::to_string(std::time(nullptr)) + "; lockouts cleared; unlocked sessions end\n");
   return 0;
 }
 

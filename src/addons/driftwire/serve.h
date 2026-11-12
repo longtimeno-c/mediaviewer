@@ -84,6 +84,7 @@ struct counters {
   std::uint64_t evicted = 0;        // a waiting hello closed to make room for a newer connection
   std::uint64_t wrong_passphrase = 0;  // owner or claim answers that did not verify
   std::uint64_t unlocks = 0;           // owner sessions unlocked by the passphrase
+  std::uint64_t expired = 0;           // limited devices refused or cut because their time was up
 };
 
 // The fuzz harness: one session's handling of what an admitted client sends,
@@ -116,6 +117,9 @@ class server {
     // The owner's passphrase (owner_pass.h). Unix seconds now: the tests move
     // it. Empty: the system clock.
     std::function<std::int64_t()> now_unix;
+    // How long an unlock and a challenge have lasted (a steady clock, so a
+    // clock set back never stretches them). Empty: steady_clock.
+    std::function<std::chrono::steady_clock::time_point()> now_steady;
     // Answers to a passphrase challenge, per counter, at least this far apart:
     // a guesser waits, and the service only ever verifies a signature.
     int min_answer_gap_ms = 1000;

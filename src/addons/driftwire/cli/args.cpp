@@ -240,8 +240,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         const bool asks = a.serve == serve_action::init || a.serve == serve_action::passphrase_set ||
                           a.serve == serve_action::passphrase_reset;
         if (!asks || (a.passphrase_stdin && a.no_passphrase) ||
-            (a.no_passphrase && a.serve == serve_action::passphrase_set)) {
-          out.error = "--passphrase-stdin and --no-passphrase go with serve init or serve passphrase, one of them";
+            (a.no_passphrase && a.serve != serve_action::init)) {
+          out.error = "--passphrase-stdin goes with serve init or serve passphrase, --no-passphrase with serve init alone";
         }
       }
       return out;

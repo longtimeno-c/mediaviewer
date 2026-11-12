@@ -95,6 +95,11 @@ struct caps_msg {
   // ("set", "none", "broken"). Empty from a service older than that.
   std::vector<std::string> features;
   std::string passphrase;
+  // To a device with a limit: when it ends (unix seconds on the service's
+  // clock, 0: never) and whether it sees only some folders.
+  bool has_grant = false;
+  std::int64_t grant_expires = 0;
+  bool grant_scoped = false;
 };
 // `owner_fields`: members appended to the object as they are (the owner's
 // "features" and "passphrase"), or empty.
