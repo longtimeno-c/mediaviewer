@@ -109,20 +109,6 @@ public protocol PhotoSaver: Sendable {
   func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error>
 }
 
-#if MV_BACKUP
-/// Backup (release 1.1, §10b): compiled only with MV_BACKUP, which no build defines yet.
-public protocol TransferMonitor: Sendable {
-  /// What is running now (nil when nothing is), then every change.
-  func activity() -> AsyncStream<TransferActivity?>
-}
-
-/// Nothing running.
-public struct NoBackup: TransferMonitor {
-  public init() {}
-  public func activity() -> AsyncStream<TransferActivity?> { AsyncStream { $0.finish() } }
-}
-#endif
-
 /// Everything the screens need, handed in at launch.
 public struct Services: Sendable {
   public let library: LibraryStore
@@ -132,19 +118,16 @@ public struct Services: Sendable {
   public let sync: CatalogueSync
   public let clips: ClipService
   public let saver: PhotoSaver
-  #if MV_BACKUP
-  public private(set) var transfers: TransferMonitor = NoBackup()
-  #endif
+  /// Phone backup (1.1, §10b).
+  public private(set) var backup: BackupService = NoBackup()
 
-  #if MV_BACKUP
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,
-              saver: PhotoSaver, transfers: TransferMonitor) {
+              saver: PhotoSaver, backup: BackupService) {
     self.init(library: library, images: images, search: search, connection: connection, sync: sync,
               clips: clips, saver: saver)
-    self.transfers = transfers
+    self.backup = backup
   }
-  #endif
 
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,

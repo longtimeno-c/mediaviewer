@@ -39,6 +39,24 @@ struct SettingsScreen: View {
             }
             InfoRow(label: "Saved on this phone", value: ProgressWords.size(model.connection.cacheBytes))
           }
+          section("Backup") {
+            NavigationLink {
+              BackupScreen()
+            } label: {
+              HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                  Text("Back up this phone").font(.subheadline).foregroundStyle(Theme.title)
+                  Text(backupSummary).font(.footnote).foregroundStyle(Theme.body).lineLimit(2)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.body)
+              }
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(TileButtonStyle())
+            .accessibilityIdentifier("settings.backup")
+          }
           section("Look") {
             Picker("Appearance", selection: $appearance) {
               Text("Dark").tag("dark")
@@ -88,6 +106,9 @@ struct SettingsScreen: View {
       .background(Theme.ground)
       .navigationTitle("Settings")
       .navigationBarTitleDisplayMode(.inline)
+      .navigationDestination(isPresented: Binding(get: { model.showsBackup }, set: { model.showsBackup = $0 })) {
+        BackupScreen()
+      }
     }
   }
 
@@ -108,6 +129,15 @@ struct SettingsScreen: View {
       InfoCard { content() }
     }
     .padding(.top, 4)
+  }
+
+  private var backupSummary: String {
+    let b = model.backup
+    guard let folder = b.folder else {
+      return model.connection.isSample ? "Try it with a folder on this iPhone" : "Off · choose a folder on your Synology"
+    }
+    if b.total > 0 { return "\(folder.label) · \(b.line)" }
+    return folder.label
   }
 
   private var synologyWords: String {

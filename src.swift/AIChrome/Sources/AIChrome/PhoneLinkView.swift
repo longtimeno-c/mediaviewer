@@ -35,6 +35,13 @@ final class PhoneLinkModel: ObservableObject {
     let label: String
     let path: String
     var isCatalogue: Bool { label == "Catalogue" }
+    // Phone backup (1.1): phones may create files here, under these sizes.
+    var backup = false
+    var limit: Int64 = 0
+    var reserve: Int64 = 0
+    var used: Int64 = 0
+    var room: Int64 = 0
+    var indexed = false
   }
   struct State: Equatable {
     var driftwire = true
@@ -92,7 +99,14 @@ final class PhoneLinkModel: ObservableObject {
     }
     s.folders = (o["folders"] as? [[String: Any]] ?? []).compactMap {
       guard let i = $0["id"] as? String, let l = $0["label"] as? String, let p = $0["path"] as? String else { return nil }
-      return Folder(id: i, label: l, path: p)
+      var f = Folder(id: i, label: l, path: p)
+      f.backup = $0["backup"] as? Bool ?? false
+      f.limit = int64($0["limit"])
+      f.reserve = int64($0["reserve"])
+      f.used = int64($0["used"])
+      f.room = int64($0["room"])
+      f.indexed = $0["indexed"] as? Bool ?? false
+      return f
     }
     s.qr = o["qr"] as? String ?? ""
     s.qrLibrary = o["qr_library"] as? String ?? ""
@@ -171,6 +185,12 @@ struct PhoneLinkSection: View {
   @State private var publicName = ""
   @State private var newLabel = ""
   @State private var newPath = ""
+  @State private var newIsBackup = false
+  @State private var newLimitGB = ""
+  @State private var newReserveGB = "1"
+  @State private var editing: String?   // a backup folder whose sizes are being changed
+  @State private var editLimitGB = ""
+  @State private var editReserveGB = ""
   @State private var confirmRestart = false
   @State private var confirmHandOver = false
 
@@ -299,11 +319,42 @@ struct PhoneLinkSection: View {
   private var folders: some View {
     VStack(alignment: .leading, spacing: 0) {
       ForEach(s.folders) { f in
-        row(f.label, detail: f.path) {
-          if !f.isCatalogue {
-            Button("Stop sharing") { model.send(["do": "remove_folder", "id": f.id]) }
+        row(f.backup ? "\(f.label) · phone backup" : f.label, detail: folderDetail(f)) {
+          HStack(spacing: 8) {
+            if f.backup {
+              Button("Change limit") {
+                editing = f.id
+                editLimitGB = gigabytes(f.limit)
+                editReserveGB = gigabytes(f.reserve)
+              }
               .disabled(!s.busy.isEmpty)
+            }
+            if !f.isCatalogue {
+              Button("Stop sharing") { model.send(["do": "remove_folder", "id": f.id]) }
+                .disabled(!s.busy.isEmpty)
+            }
           }
+        }
+        if editing == f.id {
+          HStack(spacing: 8) {
+            Text("Limit").foregroundStyle(AITheme.body)
+            TextField("GB", text: $editLimitGB).textFieldStyle(.roundedBorder).frame(width: 70)
+              .accessibilityLabel("Storage limit in gigabytes")
+            Text("GB, keep free").foregroundStyle(AITheme.body)
+            TextField("GB", text: $editReserveGB).textFieldStyle(.roundedBorder).frame(width: 60)
+              .accessibilityLabel("Free space to keep on the NAS, in gigabytes")
+            Text("GB").foregroundStyle(AITheme.body)
+            Button("Save") {
+              if let l = bytes(editLimitGB), l > 0, let r = bytes(editReserveGB) {
+                model.send(["do": "set_backup", "id": f.id, "limit": String(l), "reserve": String(r)])
+              }
+              editing = nil
+            }
+            .disabled(bytes(editLimitGB).map { $0 <= 0 } ?? true || bytes(editReserveGB) == nil)
+            Button("Cancel") { editing = nil }.buttonStyle(.link)
+          }
+          .font(AITheme.font(12))
+          .padding(.horizontal, 12).padding(.bottom, 8)
         }
       }
       HStack(spacing: 8) {
@@ -314,14 +365,43 @@ struct PhoneLinkSection: View {
           .accessibilityLabel("Path of the new shared folder on the NAS")
         Button("Add") {
           let label = newLabel.isEmpty ? PhoneLinkModel.shareLabel(forPath: newPath) : newLabel
-          model.send(["do": "add_folder", "label": label, "path": newPath])
+          var request = ["do": "add_folder", "label": label, "path": newPath]
+          if newIsBackup, let l = bytes(newLimitGB), let r = bytes(newReserveGB) {
+            request["backup"] = "1"
+            request["limit"] = String(l)
+            request["reserve"] = String(r)
+          }
+          model.send(request)
           newLabel = ""
           newPath = ""
+          newIsBackup = false
         }
-        .disabled(!s.busy.isEmpty || !newPath.hasPrefix("/") || PhoneLinkModel.shareLabel(forPath: newPath).isEmpty)
+        .disabled(!s.busy.isEmpty || !newPath.hasPrefix("/") || PhoneLinkModel.shareLabel(forPath: newPath).isEmpty
+                  || (newIsBackup && ((bytes(newLimitGB) ?? 0) <= 0 || bytes(newReserveGB) == nil)))
       }
       .font(AITheme.font(12))
-      .padding(12)
+      .padding(.horizontal, 12).padding(.top, 12)
+      HStack(spacing: 8) {
+        Toggle("Phones back up to this folder", isOn: $newIsBackup)
+          .toggleStyle(.checkbox)
+          .accessibilityLabel("Phones back up their photos to this folder")
+        if newIsBackup {
+          Text("Limit").foregroundStyle(AITheme.body)
+          TextField("GB", text: $newLimitGB).textFieldStyle(.roundedBorder).frame(width: 70)
+            .accessibilityLabel("Storage limit in gigabytes")
+          Text("GB, keep free").foregroundStyle(AITheme.body)
+          TextField("GB", text: $newReserveGB).textFieldStyle(.roundedBorder).frame(width: 60)
+            .accessibilityLabel("Free space to keep on the NAS, in gigabytes")
+          Text("GB").foregroundStyle(AITheme.body)
+        }
+      }
+      .font(AITheme.font(12))
+      .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 12)
+      .onChange(of: newIsBackup) { _, on in
+        // §10b.1 B5: suggested, then the owner's to change: the smaller of 1 TB and half the free space
+        // (the free space is not known here, so 1 TB; the service refuses past what is really free).
+        if on && newLimitGB.isEmpty { newLimitGB = "1000" }
+      }
     }
   }
 
@@ -366,6 +446,26 @@ struct PhoneLinkSection: View {
         .accessibilityLabel(title)
     }
     .padding(12)
+  }
+
+  private func folderDetail(_ f: PhoneLinkModel.Folder) -> String {
+    guard f.backup else { return f.path }
+    let sizes = "\(gigabytes(f.used)) of \(gigabytes(f.limit)) GB used, keeps \(gigabytes(f.reserve)) GB free"
+    let indexed = f.indexed
+      ? "Indexed by this Mac: what phones send reaches search after the next scan."
+      : "Not in Local search on this Mac yet: add this folder there so what phones send reaches search."
+    return "\(f.path) · \(sizes). \(indexed)"
+  }
+
+  private func gigabytes(_ bytes: Int64) -> String {
+    let gb = Double(bytes) / 1e9
+    return gb >= 10 ? String(Int(gb.rounded())) : String(format: "%.1f", gb)
+  }
+
+  /// "500" (GB) to bytes; nil when it is not a number.
+  private func bytes(_ gigabytes: String) -> Int64? {
+    guard let v = Double(gigabytes.trimmingCharacters(in: .whitespaces)), v >= 0, v < 1e6 else { return nil }
+    return Int64(v * 1e9)
   }
 
   private func row<Content: View>(_ title: String, detail: String,

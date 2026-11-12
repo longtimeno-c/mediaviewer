@@ -30,6 +30,41 @@ std::vector<catalog::shared_file> read_shared_list(const std::string& file);
 
 namespace {
 
+// Whether the NAS path of a backup folder ("/volume1/photo/Phone backup") is under the Mac's
+// Local search root `local` ("/Volumes/photo" or "/Volumes/photo/Phone backup"): the share is the
+// folder right under /volumeN on a Synology and is mounted under its own name. A heuristic for the
+// card's "indexed" line; it never changes what is indexed.
+bool phone_nas_covered_by(const std::string& nas, const std::string& local) {
+  std::vector<std::string> n, l;
+  const auto split = [](const std::string& p, std::vector<std::string>& out) {
+    std::string part;
+    for (char c : p + "/") {
+      if (c == '/') {
+        if (!part.empty()) out.push_back(part);
+        part.clear();
+      } else {
+        part += c;
+      }
+    }
+  };
+  split(nas, n);
+  split(local, l);
+  if (n.size() >= 2 && n[0].rfind("volume", 0) == 0) n.erase(n.begin());  // share/...
+  if (n.empty()) return false;
+  // Where the share's name is in the local path: from there the two must agree.
+  for (std::size_t i = 0; i < l.size(); ++i) {
+    if (l[i] != n[0]) continue;
+    const std::size_t rest = l.size() - i;
+    if (rest > n.size()) continue;
+    if (std::equal(l.begin() + static_cast<std::ptrdiff_t>(i), l.end(), n.begin())) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+namespace {
+
 constexpr int kPairPollMs = 2000;
 constexpr const char* kKeyName = "catalogue-signing-key";
 
@@ -426,7 +461,25 @@ void engine::phone_link_refresh(bool phones_only) {
           const std::string* id = v.str("id");
           const std::string* label = v.str("label");
           const std::string* path = v.str("path");
-          if (id && label && path) rows.push_back({*id, *label, *path});
+          if (!id || !label || !path) continue;
+          phone_link_view::folder_row row{*id, *label, *path};
+          if (const json::value* b = v.find("backup"); b && b->k == json::kind::object) {
+            const auto num = [&](const char* k) { return static_cast<std::uint64_t>(std::max<std::int64_t>(0, b->integer(k).value_or(0))); };
+            row.backup = true;
+            row.limit = num("limit");
+            row.reserve = num("reserve");
+            row.used = num("used");
+            row.room = num("room");
+            std::vector<root_row> roots;
+            {
+              std::lock_guard lock(status_m_);
+              roots = roots_cache_;
+            }
+            for (const auto& r : roots) {
+              if (r.enabled && r.recursive && phone_nas_covered_by(*path, r.path)) row.indexed = true;
+            }
+          }
+          rows.push_back(std::move(row));
         }
       }
       std::lock_guard lock(phone_link_m_);
@@ -741,7 +794,17 @@ void engine::phone_link_do(const std::string& request) {
     phone_link_prepare_nearby();
     return;
   }
-  if (what == "add_folder" || what == "remove_folder") {
+  if (what == "add_folder" || what == "remove_folder" || what == "set_backup") {
+    // Sizes come from the card as decimal byte counts (strings, as every field of a request is).
+    const auto bytes = [&](const char* k) -> std::int64_t {
+      const std::string t = text(k);
+      std::int64_t v = 0;
+      for (char c : t) {
+        if (c < '0' || c > '9' || v > (INT64_MAX - 9) / 10) return -1;
+        v = v * 10 + (c - '0');
+      }
+      return t.empty() ? -1 : v;
+    };
     json::writer w;
     w.begin_object();
     if (what == "add_folder") {
@@ -749,8 +812,16 @@ void engine::phone_link_do(const std::string& request) {
     } else {
       w.key("id").string(text("id"));
     }
+    if (what == "set_backup" || text("backup") == "1") {
+      const auto limit = bytes("limit");
+      const auto reserve = bytes("reserve");
+      if (limit <= 0 || reserve < 0) return fail("invalid_arg");
+      if (what == "add_folder") w.key("backup").boolean(true);
+      w.key("limit").integer(limit).key("reserve").integer(reserve);
+    }
     w.end_object();
-    if (auto r = phone_route(what == "add_folder" ? "add_root" : "remove_root", w.str()); !r) return fail(error_name(r.error()));
+    const char* verb = what == "add_folder" ? "add_root" : what == "remove_folder" ? "remove_root" : "set_backup";
+    if (auto r = phone_route(verb, w.str()); !r) return fail(error_name(r.error()));
     phone_link_refresh();
     return;
   }
@@ -838,7 +909,15 @@ std::string engine::phone_link_json() const {
   for (const auto& d : link_.devices) w.begin_object().key("name").string(d.name).key("key").string(d.key).end_object();
   w.end_array();
   w.key("folders").begin_array();
-  for (const auto& f : link_.folders) w.begin_object().key("id").string(f.id).key("label").string(f.label).key("path").string(f.path).end_object();
+  for (const auto& f : link_.folders) {
+    w.begin_object().key("id").string(f.id).key("label").string(f.label).key("path").string(f.path);
+    if (f.backup) {
+      w.key("backup").boolean(true).key("indexed").boolean(f.indexed);
+      w.key("limit").integer(static_cast<std::int64_t>(f.limit)).key("reserve").integer(static_cast<std::int64_t>(f.reserve));
+      w.key("used").integer(static_cast<std::int64_t>(f.used)).key("room").integer(static_cast<std::int64_t>(f.room));
+    }
+    w.end_object();
+  }
   w.end_array();
   w.key("qr").string(link_.qr_url);
   w.key("qr_library").string(link_.qr_library);

@@ -132,10 +132,12 @@ public final class AppModel {
   public private(set) var peopleFailed = false
   /// A new catalogue arrived while a scan was on screen.
   private var reloadNeeded = false
-  #if MV_BACKUP
   /// Long work still running, shown above the tab bar.
   public private(set) var transfer: TransferActivity?
-  #endif
+  /// Phone backup's state, for the Backup screen and the Settings row.
+  public private(set) var backup = BackupSnapshot()
+  /// The Backup screen is open in Settings.
+  public var showsBackup = false
   public let library: LibraryModel
   public let search: SearchModel
 
@@ -164,17 +166,18 @@ public final class AppModel {
   public func run() async {
     await withTaskGroup(of: Void.self) { group in
       group.addTask { await self.followConnection() }
-      #if MV_BACKUP
       group.addTask { await self.followTransfers() }
-      #endif
+      group.addTask { await self.followBackup() }
     }
   }
 
-  #if MV_BACKUP
   private func followTransfers() async {
-    for await activity in services.transfers.activity() { transfer = activity }
+    for await activity in services.backup.activity() { transfer = activity }
   }
-  #endif
+
+  private func followBackup() async {
+    for await snapshot in services.backup.updates() { backup = snapshot }
+  }
 
   private func followConnection() async {
     for await snapshot in services.connection.updates() {

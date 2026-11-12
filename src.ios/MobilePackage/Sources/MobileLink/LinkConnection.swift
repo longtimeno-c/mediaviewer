@@ -36,6 +36,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// Each write into the library's folders runs under it (`whileLive`); Forget closes it before it
   /// removes them. Opened for each handle the library is opened with.
   private let writes = WriteGate()
+  /// Phone backup (1.1): stopped, and its ledger and the sample library's on-phone folder removed,
+  /// before Forget (or a new pairing over this library) removes the rest.
+  private var beforeRemoval: (@Sendable () async -> Void)?
+  func setBeforeRemoval(_ body: @escaping @Sendable () async -> Void) { lock.withLock { beforeRemoval = body } }
 
   private let monitor = NWPathMonitor()
   private let defaults = UserDefaults.standard
@@ -476,6 +480,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     writes.close()
     cancel?.fire()
     // Returns once the core's own writers (tiles, the sample's verified copies) are done.
+    if let backup = lock.withLock({ beforeRemoval }) { await backup() }
     if let link { mv_link_shut_down(link.raw) }
     await work.stopAndWait()
     await onLinkQueue {

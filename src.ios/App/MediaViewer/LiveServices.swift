@@ -17,7 +17,7 @@ enum LiveServices {
     let images = LayeredImages(local: catalogue.images, remote: link.images)
     return Services(library: catalogue.library, images: images, search: catalogue.search,
                     connection: link.connection, sync: link.connection, clips: link.clips,
-                    saver: PhotoLibrarySaver(originals: link.images))
+                    saver: PhotoLibrarySaver(originals: link.images), backup: link.backup)
   }
 
   /// A new `CatalogueInfo` is the only "catalogue changed" signal: the sync has installed a

@@ -1363,6 +1363,11 @@ class engine {
     std::vector<phone_row> devices;
     struct folder_row {
       std::string id, label, path;
+      // A backup folder (phone backup, 1.1): its sizes, and whether a Local search root here
+      // covers it, so what phones send reaches search (docs/plans/mobile.md §10b.1, B7).
+      bool backup = false;
+      std::uint64_t limit = 0, reserve = 0, used = 0, room = 0;
+      bool indexed = false;
     };
     std::vector<folder_row> folders;
     std::string qr_url, qr_library, qr_fingerprint;
