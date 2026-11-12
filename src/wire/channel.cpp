@@ -207,7 +207,7 @@ bool valid_type(std::uint8_t raw, std::uint32_t version, bool library) noexcept 
   if (library) {
     return raw == static_cast<std::uint8_t>(msg::ident) || raw == static_cast<std::uint8_t>(msg::cancel) ||
            raw == static_cast<std::uint8_t>(msg::ping) ||
-           (raw >= static_cast<std::uint8_t>(msg::serve_hello) && raw <= static_cast<std::uint8_t>(msg::serve_claim_check));
+           (raw >= static_cast<std::uint8_t>(msg::serve_hello) && raw <= static_cast<std::uint8_t>(msg::serve_claim_challenge));
   }
   const auto last = version >= 2 ? msg::places : msg::ping;  // places: #472 PR 5
   // #472 relays (relay.h): their own range, protocol 2 only.
@@ -721,6 +721,8 @@ result<std::unique_ptr<channel>> channel::open_library_v2(std::unique_ptr<channe
   const auto& tx = client ? keys->initiator_to_responder : keys->responder_to_initiator;
   const auto& rx = client ? keys->responder_to_initiator : keys->initiator_to_responder;
   if (auto r = open_streams(l, tx, rx, deadline, c->st_->push, c->st_->pull); !r) return fail(r.error());
+  static_assert(sizeof keys->h == sizeof c->binding_);
+  std::memcpy(c->binding_.data(), keys->h.data(), c->binding_.size());
   // No code to show and no rejoin: the secret that would be its root is not kept.
   c->last_heard_ns_ = now_ns();
   return c;

@@ -28,8 +28,9 @@ public struct RootView: View {
       ScanScreen().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
     }
     // The link MediaViewer shows beside its code, for when the camera cannot be used (§11.1).
+    // mediaviewer://sample is the sample library's QR code and link (§11.1), opened the same way.
     .onOpenURL { url in
-      guard url.scheme == "mediaviewer", url.host == "pair" else { return }
+      guard url.scheme == "mediaviewer", url.host == "pair" || url.host == "sample" else { return }
       model.openedPairLink(url.absoluteString)
     }
     // An alert, not a confirmation dialog: one up here would keep Settings' Forget dialog from showing.
@@ -39,7 +40,9 @@ public struct RootView: View {
       Button("Pair with the new library") { model.confirmPendingPairLink() }
       Button("Keep this library", role: .cancel) { model.pendingPairLink = nil }
     } message: {
-      Text("Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your Synology changes.")
+      Text(model.connection.isSample
+           ? "Once the new library is paired, the sample library is removed from this phone."
+           : "Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your Synology changes.")
     }
     .task { await model.run() }
   }

@@ -7,12 +7,17 @@
 
 #include "driftwire_fixture.h"
 
+#include <ctime>
+
+#include "core/json.h"
+
 #include "wire/advert.h"
 #include "catalogue/catalog_chain.h"
 #include "catalogue/publisher.h"
 #include "core/json.h"
 #include "phone/desk.h"
 #include "phone/link.h"
+#include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/pair_check.h"
 #include "wire/serve.h"
@@ -65,6 +70,9 @@ struct nas {
   std::unique_ptr<sp::secrets::store> store = folder_store(dir.root() / "nas-secrets");
   key32 identity{}, access{};
   std::atomic<bool> own{true};
+  std::atomic<std::int64_t> fake_now{0};  // unix seconds the service sees (0: the clock)
+  std::atomic<std::int64_t> steady_skew_s{0};  // added to the service's steady clock
+  int answer_gap_ms = 0;
   std::vector<serve::config> saved;
   std::mutex saved_m;
   std::unique_ptr<serve::server> srv;
@@ -85,6 +93,12 @@ struct nas {
     o.per_minute = 100000;
     o.claimable = true;
     o.own_network = [this](const sp::net::address&) { return own.load(); };
+    o.now_unix = [this] {
+      const auto t = fake_now.load();
+      return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
+    };
+    o.now_steady = [this] { return std::chrono::steady_clock::now() + std::chrono::seconds(steady_skew_s.load()); };
+    o.min_answer_gap_ms = answer_gap_ms;
     o.save_config = [this](const serve::config& c) {
       std::lock_guard lock(saved_m);
       saved.push_back(c);
@@ -131,6 +145,9 @@ struct desktop {
     o.nearby_loopback = true;
     o.advertise = false;
     o.own_network = [](const sp::net::address&) { return true; };
+    // The owner's passphrase at the cheapest cost, so the tests stay quick.
+    o.pass_ops = o.floor_ops = mv::driftwire::serve::owner::kMinOps;
+    o.pass_mem = o.floor_mem = mv::driftwire::serve::owner::kMinMem;
     d = std::make_unique<desk::desk>(std::move(o));
   }
 };
@@ -254,6 +271,795 @@ TEST_CASE("phone pairing: a service the desktop never reaches is a plain failure
   REQUIRE_FALSE(r);
   CHECK(r.error() == mv::status::io);
   CHECK_FALSE(fs::exists(share.root() / serve::kClaimTokenFile));
+}
+
+// ---- the owner's passphrase (docs/plans/nas-owner-and-guests.md §3) ---------------------
+
+namespace owner = mv::driftwire::serve::owner;
+
+constexpr const char* kPass = "a long owner passphrase";
+
+// What a desktop that can take the passphrase step hands claim(): the
+// passphrase it was given, at the cheapest cost the tests allow.
+serve::claim_passphrase with_passphrase(std::string pass, bool set_if_none = true) {
+  serve::claim_passphrase p;
+  p.sign = [pass](const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) { return owner::derive(pass, salt, ops, mem); };
+  p.min_ops = owner::kMinOps;
+  p.min_mem = owner::kMinMem;
+  if (set_if_none) p.set = owner::make(pass, 0, owner::kMinOps, owner::kMinMem);
+  return p;
+}
+
+// `driftwire serve init` with a passphrase: the verifier in the NAS's store.
+void init_passphrase(nas& n, const std::string& pass = kPass) {
+  const auto v = owner::make(pass, 1, owner::kMinOps, owner::kMinMem);
+  REQUIRE(v);
+  REQUIRE(owner::save(*n.store, *v));
+}
+
+struct claimer {
+  nas& n;
+  std::string token = std::string(64, 'e');
+  key32 device = random_key();
+  explicit claimer(nas& in) : n(in) {}
+  mv::result<serve::claim_answer> claim(const serve::claim_passphrase* pass, std::string* why = nullptr,
+                                       const key32* as = nullptr) {
+    put_file(n.share / serve::kClaimTokenFile, token);
+    return serve::claim(n.connect(), serve::claim_key(token), as ? *as : device, "Mac",
+                        [&](std::string_view nonce) {
+                          put_file(n.share / serve::kClaimProofFile, nonce);
+                          return true;
+                        },
+                        soon(), pass, why);
+  }
+  mv::result<std::unique_ptr<serve::client>> session() {
+    serve::client::options o;
+    o.access_key = n.access;
+    o.device_key = device;
+    o.service_key = n.identity;
+    o.id = "aaaaaaaaaaaaaaaa";
+    o.ops = serve::kAllOps | serve::kAdminOp;
+    return serve::client::open(n.connect(), o);
+  }
+};
+
+std::string why_in(const std::string& json) {
+  const auto doc = mv::json::parse(json, 2);
+  const std::string* w = doc ? doc->str("why") : nullptr;
+  return w ? *w : std::string();
+}
+
+TEST_CASE("phone pairing: a passphrase set at init is needed to claim", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  // A desktop from before the passphrase: it can write the share, and still gets nothing.
+  std::string why;
+  auto old = m.claim(nullptr, &why);
+  CHECK_FALSE(old);
+  CHECK(why == "passphrase");
+  CHECK_FALSE(n.store->exists(serve::kOwnerName));
+  // A wrong one.
+  const auto wrong = with_passphrase("not the passphrase at all");
+  auto bad = m.claim(&wrong, &why);
+  CHECK_FALSE(bad);
+  CHECK(why == "passphrase");
+  CHECK_FALSE(n.store->exists(serve::kOwnerName));
+  CHECK(n.srv->stats().wrong_passphrase == 1);
+  // The right one.
+  const auto right = with_passphrase(kPass);
+  auto ok = m.claim(&right, &why);
+  REQUIRE(ok);
+  CHECK(ok->access_key == n.access);
+  CHECK(n.store->exists(serve::kOwnerName));
+  // init's passphrase is kept; the claim did not choose another.
+  owner::verifier v;
+  REQUIRE(owner::load(*n.store, v) == owner::stored::set);
+  CHECK(v.set == 1);
+  // The owner's session says what this service can do; the passphrase is set.
+  auto s = m.session();
+  REQUIRE(s);
+  CHECK((*s)->caps().passphrase == "set");
+  CHECK(std::find((*s)->caps().features.begin(), (*s)->caps().features.end(), serve::kFeaturePassphrase) !=
+        (*s)->caps().features.end());
+}
+
+TEST_CASE("phone pairing: a claim with none set chooses it, and only a public key is kept", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  // A claim that can take the step but brings nothing to set fails, and claims nothing.
+  const auto empty = with_passphrase(kPass, false);
+  std::string why;
+  CHECK_FALSE(m.claim(&empty, &why));
+  CHECK(why == "no-passphrase");
+  CHECK_FALSE(n.store->exists(serve::kOwnerName));
+
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass, &why));
+  owner::verifier v;
+  REQUIRE(owner::load(*n.store, v) == owner::stored::set);
+  CHECK(v.pk == pass.set->pk);
+  // Nothing in the store is the passphrase or the key that answers for it.
+  const auto signer = owner::derive(kPass, v.salt, v.ops, v.mem);
+  REQUIRE(signer);
+  for (const auto& e : fs::directory_iterator(n.dir.root() / "nas-secrets")) {
+    std::ifstream f(e.path(), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    CHECK(bytes.find(kPass) == std::string::npos);
+    CHECK(bytes.find(std::string(reinterpret_cast<const char*>(signer->sk.data()), 32)) == std::string::npos);
+    CHECK(bytes.find(mv::driftwire::key_hex([&] {
+      key32 seed;
+      std::memcpy(seed.data(), signer->sk.data(), 32);
+      return seed;
+    }())) == std::string::npos);
+  }
+  // A claim again from the owner (its answer lost) needs it now, and is counted on the owner's counter.
+  const auto wrong = with_passphrase("another long passphrase", false);
+  CHECK_FALSE(m.claim(&wrong, &why));
+  CHECK(why == "passphrase");
+  const auto l = owner::load_lockout(*n.store, std::time(nullptr));
+  CHECK(l.owner.misses == 1);
+  CHECK(l.claim.misses == 0);
+  auto again = m.claim(&pass, &why);
+  REQUIRE(again);
+  CHECK(again->passphrase_step);
+  CHECK(owner::load_lockout(*n.store, std::time(nullptr)).owner.misses == 0);
+}
+
+TEST_CASE("phone pairing: an older desktop claims a NAS with none, and the owner sets one later", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  owner::verifier v;
+  CHECK(owner::load(*n.store, v) == owner::stored::none);
+  auto s = m.session();
+  REQUIRE(s);
+  CHECK((*s)->caps().passphrase == "none");
+  // With none set, the owner's key is enough for everything, as before (call C4).
+  CHECK((*s)->admin("{\"do\":\"pair_code\",\"code\":\"" + std::string(32, 'a') + "\",\"ttl_ms\":60000}"));
+  // The first passphrase needs only the device key.
+  const auto made = owner::make(kPass, 0, owner::kMinOps, owner::kMinMem);
+  REQUIRE(made);
+  const auto set_request = [](const owner::verifier& x) {
+    mv::json::writer w;
+    w.begin_object().key("do").string("set_passphrase").key("set").begin_object();
+    std::string salt(owner::kSaltBytes * 2, '0');
+    sodium_bin2hex(salt.data(), salt.size() + 1, x.salt.data(), x.salt.size());
+    w.key("salt").string(salt);
+    w.key("ops").integer(static_cast<std::int64_t>(x.ops)).key("mem").integer(static_cast<std::int64_t>(x.mem));
+    w.key("pk").string(mv::driftwire::key_hex(x.pk));
+    w.end_object().end_object();
+    return w.take();
+  };
+  REQUIRE((*s)->admin(set_request(*made)));
+  REQUIRE(owner::load(*n.store, v) == owner::stored::set);
+  // A second one needs it unlocked: a thief with the Mac cannot replace it.
+  const auto other = owner::make("a thief's passphrase", 0, owner::kMinOps, owner::kMinMem);
+  REQUIRE(other);
+  std::string refusal;
+  CHECK_FALSE((*s)->admin(set_request(*other), nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  REQUIRE(owner::load(*n.store, v) == owner::stored::set);
+  CHECK(v.pk == made->pk);
+  // A claim from an older desktop is refused from now on.
+  std::string why;
+  CHECK_FALSE(m.claim(nullptr, &why));
+  CHECK(why == "passphrase");
+}
+
+TEST_CASE("phone pairing: what adds access needs an unlock; what takes it away does not", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  // A phone, paired from the NAS's own command line.
+  const key32 phone = random_key();
+  REQUIRE(known::save(*n.store, {known::device{"iPhone", public_of(phone), {}, false}}));
+  auto s = m.session();
+  REQUIRE(s);
+  const std::string code_request = "{\"do\":\"pair_code\",\"code\":\"" + std::string(32, 'b') + "\",\"ttl_ms\":60000}";
+  std::string refusal;
+  for (const std::string& r : {code_request, std::string("{\"do\":\"add_device\",\"name\":\"X\",\"key\":\"") +
+                                                 mv::driftwire::key_hex(random_key()) + "\"}",
+                               std::string("{\"do\":\"remove_root\",\"id\":\"a1a1a1a1a1a1a1a1\"}")}) {
+    CHECK_FALSE((*s)->admin(r, nullptr, &refusal));
+    CHECK(why_in(refusal) == "needs-unlock");
+  }
+  // Reading and taking away work on the device key alone.
+  CHECK((*s)->admin("{\"do\":\"devices\"}"));
+  CHECK((*s)->admin("{\"do\":\"pair_cancel\"}"));
+  CHECK((*s)->admin("{\"do\":\"revoke\",\"key\":\"" + mv::driftwire::key_hex(public_of(phone)) + "\"}"));
+  CHECK_FALSE(n.has_device(phone));
+
+  // A wrong passphrase does not unlock.
+  CHECK_FALSE((*s)->unlock([](const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) {
+    return owner::derive("the wrong passphrase", salt, ops, mem);
+  }, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "passphrase");
+  // An answer with no challenge before it is refused.
+  CHECK_FALSE((*s)->admin("{\"do\":\"unlock\",\"sig\":\"" + std::string(128, '0') + "\"}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "no-challenge");
+  // The right one does, for this session only.
+  auto unlocked = (*s)->unlock(pass.sign, &refusal, owner::kMinOps, owner::kMinMem);
+  REQUIRE(unlocked);
+  CHECK(unlocked->find("\"unlocked_s\":600") != std::string::npos);
+  CHECK((*s)->admin(code_request));
+  auto other = m.session();
+  REQUIRE(other);
+  CHECK_FALSE((*other)->admin(code_request, nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  // Lock ends it; and the ten minutes run out on the service's clock.
+  REQUIRE((*s)->admin("{\"do\":\"lock\"}"));
+  CHECK_FALSE((*s)->admin(code_request));
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  CHECK((*s)->admin(code_request));
+  n.steady_skew_s = owner::kUnlockSeconds + 1;
+  CHECK_FALSE((*s)->admin(code_request, nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  // A wall clock set back does not stretch it: the ten minutes are steady time.
+  n.steady_skew_s = 0;
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  n.fake_now = std::time(nullptr) - 3600;
+  n.steady_skew_s = owner::kUnlockSeconds + 1;
+  CHECK_FALSE((*s)->admin(code_request));
+  // A passphrase changed on the NAS (the CLI) ends every unlock at once.
+  n.fake_now = 0;
+  n.steady_skew_s = 0;
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  CHECK((*s)->admin(code_request));
+  init_passphrase(n, "the replacement passphrase");
+  CHECK_FALSE((*s)->admin(code_request, nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  CHECK(n.srv->stats().unlocks >= 3);
+}
+
+TEST_CASE("phone pairing: wrong passphrases lock the owner out, across a restart, until reset", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  const std::int64_t t0 = 2'000'000'000;
+  n.fake_now = t0;
+  auto s = m.session();
+  REQUIRE(s);
+  const auto wrong = [](const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) {
+    return owner::derive("the wrong passphrase", salt, ops, mem);
+  };
+  std::string refusal;
+  for (int i = 0; i < owner::kFreeMisses; ++i) {
+    CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
+    CHECK(why_in(refusal) == "passphrase");
+  }
+  CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "locked-out");
+  // Locked: even the right one is not checked, and no challenge is given.
+  CHECK_FALSE((*s)->unlock(pass.sign, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "locked-out");
+  CHECK(refusal.find("\"until\":" + std::to_string(t0 + owner::kFirstLockSeconds)) != std::string::npos);
+  // A restart does not forget it.
+  n.srv->stop();
+  n.srv.reset();
+  n.start();
+  auto again = m.session();
+  REQUIRE(again);
+  CHECK_FALSE((*again)->unlock(pass.sign, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "locked-out");
+  // The owner's lock does not stop a claim being counted apart, and vice versa.
+  CHECK(owner::load_lockout(*n.store, t0).claim.misses == 0);
+  // Past the lock the right one works and clears the count.
+  n.fake_now = t0 + owner::kFirstLockSeconds;
+  REQUIRE((*again)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  CHECK(owner::load_lockout(*n.store, t0).owner.misses == 0);
+  // Locked again, `driftwire serve passphrase reset` on the NAS clears it.
+  for (int i = 0; i <= owner::kFreeMisses; ++i) (void)(*again)->unlock(wrong, nullptr, owner::kMinOps, owner::kMinMem);
+  CHECK(owner::load_lockout(*n.store, n.fake_now).owner.locked(n.fake_now));
+  REQUIRE(owner::reset(*n.store));
+  init_passphrase(n);
+  REQUIRE((*again)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+}
+
+TEST_CASE("phone pairing: guesses at claims cannot lock the owner out", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  // Someone on the network who can write the share, before the owner claims.
+  claimer guesser(n);
+  const auto wrong = with_passphrase("not the passphrase at all");
+  for (int i = 0; i <= owner::kFreeMisses; ++i) (void)guesser.claim(&wrong);
+  std::string why;
+  CHECK_FALSE(guesser.claim(&wrong, &why));
+  CHECK(why == "locked-out");
+  // The claim counter is locked: the owner's first claim waits for it, or for a reset on the NAS.
+  claimer mac(n);
+  const auto pass = with_passphrase(kPass);
+  CHECK_FALSE(mac.claim(&pass, &why));
+  CHECK(why == "locked-out");
+  REQUIRE(owner::reset(*n.store));
+  init_passphrase(n);
+  REQUIRE(mac.claim(&pass));
+  // Owned now: more guesses never reach the passphrase step, and the owner's re-claim and session go on.
+  for (int i = 0; i <= owner::kFreeMisses + 1; ++i) (void)guesser.claim(&wrong);
+  CHECK(owner::load_lockout(*n.store, std::time(nullptr)).owner.misses == 0);
+  REQUIRE(mac.claim(&pass));
+  auto s = mac.session();
+  REQUIRE(s);
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+}
+
+TEST_CASE("phone pairing: answers come at most one a second, and a cheap challenge is never answered", "[phone-pairing]") {
+  nas n;
+  n.answer_gap_ms = 60000;  // far more than a loaded machine takes between two answers
+  n.srv->stop();
+  n.srv.reset();
+  n.start();
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto s = m.session();
+  REQUIRE(s);
+  const auto wrong = [](const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) {
+    return owner::derive("the wrong passphrase", salt, ops, mem);
+  };
+  std::string refusal;
+  CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "passphrase");
+  CHECK_FALSE((*s)->unlock(wrong, &refusal, owner::kMinOps, owner::kMinMem));
+  CHECK(why_in(refusal) == "slow-down");
+  // Not counted: one miss so far.
+  CHECK(owner::load_lockout(*n.store, std::time(nullptr)).owner.misses == 1);
+  // A client that expects the real cost refuses one far below it, and sends nothing a fake could attack cheaply.
+  auto cheap = (*s)->unlock(pass.sign, &refusal, owner::kOps, owner::kMem);
+  REQUIRE_FALSE(cheap);
+  CHECK(cheap.error() == mv::status::corrupt);
+  // A claim pinned to another identity says nothing to this one.
+  auto pinned = with_passphrase(kPass);
+  pinned.service_key = random_key();
+  std::string why;
+  CHECK_FALSE(m.claim(&pinned, &why));
+  CHECK(why == "wrong-service");
+  // (The pinned claim's own answer would wait out the gap: its passing is the claim tests'.)
+}
+
+// ---- timed and scoped phones (docs/plans/nas-owner-and-guests.md §5) ------------------------
+
+namespace grants = mv::driftwire::serve::grants;
+
+std::string guest_code_request(const std::string& code, std::int64_t for_s) {
+  return "{\"do\":\"guest_code\",\"code\":\"" + code + "\",\"ttl_ms\":60000,\"for_s\":" + std::to_string(for_s) + "}";
+}
+
+bool on_grants(nas& n, const key32& device) {
+  std::vector<grants::grant> list;
+  REQUIRE(grants::load(*n.store, list));
+  const key32 pub = public_of(device);
+  return std::any_of(list.begin(), list.end(), [&](const grants::grant& g) { return g.key == pub; });
+}
+
+TEST_CASE("phone pairing: a guest code pairs a phone for a time, then it is cut and refused as expired", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto owner_session = m.session();
+  REQUIRE(owner_session);
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  const std::string code(32, 'c');
+  REQUIRE((*owner_session)->admin(guest_code_request(code, 3600)));
+  const key32 guest = random_key();
+  auto phone = n.phone(guest, code, nullptr, "Guest phone");
+  REQUIRE(phone);
+  // Told its limit, so it can say so.
+  CHECK((*phone)->caps().has_grant);
+  CHECK((*phone)->caps().grant_expires == t0 + 3600);
+  CHECK_FALSE((*phone)->caps().grant_scoped);
+  // On the grants, never on the paired list (an older NAS, or an older Mac, would let it in for ever).
+  CHECK(on_grants(n, guest));
+  CHECK_FALSE(n.has_device(guest));
+  auto devices = (*owner_session)->admin("{\"do\":\"devices\"}");
+  REQUIRE(devices);
+  CHECK(devices->find("Guest phone") == std::string::npos);
+  auto listed = (*owner_session)->admin("{\"do\":\"grants\"}");
+  REQUIRE(listed);
+  CHECK(listed->find("Guest phone") != std::string::npos);
+  CHECK(listed->find("\"guest\":true") != std::string::npos);
+  // It reads like any phone meanwhile.
+  CHECK((*phone)->roots());
+  // The hour runs out: the running session is cut within the watch's 2 s, as a revoke is.
+  n.fake_now = t0 + 3600;
+  CHECK(eventually([&] { return (*phone)->closed(); }, 6));
+  CHECK((*phone)->ended_why() == "expired");
+  // And refused, saying why, distinct from a revoke.
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(guest, {}, &why));
+  CHECK(why == serve::refusal::expired);
+  CHECK(n.srv->stats().expired >= 2);
+  // Listed as expired for a week, for Extend; then dropped.
+  listed = (*owner_session)->admin("{\"do\":\"grants\"}");
+  REQUIRE(listed);
+  CHECK(listed->find("\"expired\":true") != std::string::npos);
+  n.fake_now = t0 + 3600 + grants::kExpiredKeptSeconds + 1;
+  listed = (*owner_session)->admin("{\"do\":\"grants\"}");
+  REQUIRE(listed);
+  CHECK(listed->find("Guest phone") == std::string::npos);
+}
+
+TEST_CASE("phone pairing: an expired guest is let back in by a new code, or by an extension", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto s = m.session();
+  REQUIRE(s);
+  // A guest code adds access: it needs the passphrase.
+  std::string refusal;
+  CHECK_FALSE((*s)->admin(guest_code_request(std::string(32, 'd'), 60), nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'd'), 60)));
+  const key32 guest = random_key();
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  REQUIRE(n.phone(guest, std::string(32, 'd')));
+  n.fake_now = t0 + 61;
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(guest, {}, &why));
+  CHECK(why == serve::refusal::expired);
+  // Re-invited: a new code redeemed by the same phone replaces its grant.
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'e'), 3600)));
+  auto back = n.phone(guest, std::string(32, 'e'));
+  REQUIRE(back);
+  CHECK((*back)->caps().grant_expires == t0 + 61 + 3600);
+  (*back)->close();
+  const std::string key = mv::driftwire::key_hex(public_of(guest));
+  // Shortening takes no passphrase and takes effect now; extending needs it.
+  REQUIRE((*s)->admin("{\"do\":\"lock\"}"));
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":10}"));
+  n.fake_now = t0 + 61 + 11;
+  CHECK_FALSE(n.phone(guest, {}, &why));
+  CHECK(why == serve::refusal::expired);
+  CHECK_FALSE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":86400}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  CHECK_FALSE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":86400}"));
+  REQUIRE(n.phone(guest));
+  // Made unlimited: it moves to the paired list, and off the grants.
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true}"));
+  CHECK(n.has_device(guest));
+  CHECK_FALSE(on_grants(n, guest));
+  auto unlimited = n.phone(guest);
+  REQUIRE(unlimited);
+  CHECK_FALSE((*unlimited)->caps().has_grant);
+  // Revoke takes it off whichever list it is on.
+  REQUIRE((*s)->admin("{\"do\":\"revoke\",\"key\":\"" + key + "\"}"));
+  CHECK_FALSE(n.has_device(guest));
+  CHECK_FALSE(on_grants(n, guest));
+}
+
+TEST_CASE("phone pairing: an extension reaches a live session, and a stale code does not shut a live guest out", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto s = m.session();
+  REQUIRE(s);
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'a'), 3600)));
+  const key32 guest = random_key();
+  auto phone = n.phone(guest, std::string(32, 'a'));
+  REQUIRE(phone);
+  CHECK((*phone)->caps().grant_expires == t0 + 3600);
+  // Extended while it reads: the session is refreshed so the phone learns the new end.
+  const std::string key = mv::driftwire::key_hex(public_of(guest));
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":86400}"));
+  CHECK(eventually([&] { return (*phone)->closed(); }, 6));
+  CHECK((*phone)->ended_why() == "folders-changed");
+  auto again = n.phone(guest);
+  REQUIRE(again);
+  CHECK((*again)->caps().grant_expires == t0 + 86400);
+  // A guest that scans an old, spent code is still let in on the grant it has.
+  auto rescanned = n.phone(guest, std::string(32, 'a'));
+  REQUIRE(rescanned);
+  CHECK((*rescanned)->caps().grant_expires == t0 + 86400);
+  // Made unlimited while connected: refreshed, and it comes back with no limit.
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true}"));
+  CHECK(eventually([&] { return (*rescanned)->closed(); }, 6));
+  auto unlimited = n.phone(guest);
+  REQUIRE(unlimited);
+  CHECK_FALSE((*unlimited)->caps().has_grant);
+  // Nothing in this was a revoke.
+  CHECK((*again)->ended_why() != "revoked");
+}
+
+TEST_CASE("phone pairing: an unlimited phone that scans a guest code stays unlimited", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto s = m.session();
+  REQUIRE(s);
+  const key32 phone = random_key();
+  REQUIRE(known::save(*n.store, {known::device{"iPhone", public_of(phone), {}, false}}));
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'f'), 60)));
+  auto c = n.phone(phone, std::string(32, 'f'));
+  REQUIRE(c);
+  CHECK_FALSE((*c)->caps().has_grant);
+  CHECK(n.has_device(phone));
+  CHECK_FALSE(on_grants(n, phone));
+  // The code is spent: it pairs nothing else.
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(random_key(), std::string(32, 'f'), &why));
+  CHECK(why == serve::refusal::bad_code);
+}
+
+TEST_CASE("phone pairing: a scoped phone sees only its folders and the Catalogue; an emptied list is none", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  put_file(n.share / "a.txt", "photo");
+  put_file(n.share / ".mediaviewer" / "library.json", "{}");
+  auto s = m.session();
+  REQUIRE(s);
+  const key32 phone = random_key();
+  REQUIRE(known::save(*n.store, {known::device{"iPhone", public_of(phone), {}, false}}));
+  const std::string key = mv::driftwire::key_hex(public_of(phone));
+  auto c = n.phone(phone);
+  REQUIRE(c);
+  // Narrowed to no folders: cut at once with folders-changed, and back with the Catalogue alone.
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true,\"roots\":[]}"));
+  CHECK(eventually([&] { return (*c)->closed(); }, 6));
+  CHECK((*c)->ended_why() == "folders-changed");
+  CHECK(on_grants(n, phone));
+  auto back = n.phone(phone);
+  REQUIRE(back);
+  CHECK((*back)->caps().grant_scoped);
+  CHECK((*back)->caps().grant_expires == 0);
+  auto roots = (*back)->roots();
+  REQUIRE(roots);
+  REQUIRE(roots->size() == 1);
+  CHECK(roots->front().label == serve::kCatalogueLabel);
+  mv::driftwire::serve::end_code code{};
+  CHECK_FALSE((*back)->stat("a1a1a1a1a1a1a1a1", "a.txt", &code));
+  CHECK(code == mv::driftwire::serve::end_code::refused);
+  CHECK((*back)->stat(roots->front().id, "library.json"));
+  (*back)->close();
+  // Given Photos back (wider: with no passphrase set, the owner key is enough).
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true,\"roots\":[\"a1a1a1a1a1a1a1a1\"]}"));
+  auto photos = n.phone(phone);
+  REQUIRE(photos);
+  CHECK((*photos)->stat("a1a1a1a1a1a1a1a1", "a.txt"));
+}
+
+TEST_CASE("phone pairing: a guest code from the NAS's command line is kept apart and pairs a timed phone", "[phone-pairing]") {
+  nas n;
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  grants::limit gives;
+  gives.for_s = 7 * 24 * 3600;
+  const std::string code = grants::issue_guest_code(*n.store, 600, gives, t0);
+  REQUIRE(code.size() == 32);
+  // Not in the old value: a NAS rolled back to before this would pair it unlimited.
+  CHECK_FALSE(n.store->exists(serve::kPairCodesName));
+  const key32 guest = random_key();
+  auto c = n.phone(guest, code);
+  REQUIRE(c);
+  CHECK((*c)->caps().grant_expires == t0 + gives.for_s);
+  CHECK(on_grants(n, guest));
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(n.phone(random_key(), code, &why));
+  CHECK(why == serve::refusal::bad_code);
+  // An older binary reads only the paired list: this phone is not on it, so it would be refused, not let in.
+  CHECK_FALSE(n.has_device(guest));
+}
+
+TEST_CASE("phone pairing: grants and durations parse strictly", "[phone-pairing]") {
+  CHECK(grants::parse_duration("24h") == 86400);
+  CHECK(grants::parse_duration("7d") == 7 * 86400);
+  CHECK(grants::parse_duration("90m") == 5400);
+  CHECK(grants::parse_duration("3600") == 3600);
+  CHECK_FALSE(grants::parse_duration("0"));
+  CHECK_FALSE(grants::parse_duration("-1h"));
+  CHECK_FALSE(grants::parse_duration("366d"));
+  CHECK_FALSE(grants::parse_duration("1w"));
+  CHECK_FALSE(grants::parse_duration("h"));
+  grants::grant g;
+  g.name = "x";
+  g.expires = 0;
+  CHECK_FALSE(grants::decode(grants::encode({g})));  // no limit at all belongs in the paired list
+  g.roots = std::vector<std::string>{};
+  const auto back = grants::decode(grants::encode({g}));
+  REQUIRE(back);
+  REQUIRE(back->front().roots);
+  CHECK(back->front().roots->empty());  // empty stays empty: none, never all
+  CHECK_FALSE(back->front().allows("a1a1a1a1a1a1a1a1", false));
+  CHECK(back->front().allows("a1a1a1a1a1a1a1a1", true));
+}
+
+// ---- the Mac's side of the passphrase and timed phones (desk) ---------------------------------
+
+std::string why_desk(desk::desk& d) { return why_in(d.last_refusal()); }
+
+TEST_CASE("phone pairing: the Mac chooses the passphrase at its claim, then unlocks, locks and adds a guest", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  // A NAS with none: the claim chooses one, and the Mac keeps the key it made for ten minutes.
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, true));
+  owner::verifier v;
+  REQUIRE(owner::load(*n.store, v) == owner::stored::set);
+  auto status = mac.d->owner_status();
+  REQUIRE(status);
+  CHECK(status->passphrase == "set");
+  CHECK(std::find(status->features.begin(), status->features.end(), "passphrase") != status->features.end());
+  CHECK(status->unlocked_s > 0);
+  // Adding needs an unlock: the kept key does it, with nobody asked.
+  REQUIRE(mac.d->start_pairing());
+  CHECK(mac.d->last_refusal() == "{}");
+  // Locked: the next addition is refused, and says why, until the person unlocks again.
+  REQUIRE(mac.d->lock());
+  CHECK_FALSE(mac.d->start_pairing());
+  CHECK(why_desk(*mac.d) == "needs-unlock");
+  CHECK_FALSE(mac.d->unlock("not the passphrase at all"));
+  CHECK(why_desk(*mac.d) == "passphrase");
+  REQUIRE(mac.d->unlock(kPass));
+  // A guest code: its phone is on the NAS's grants and the Mac's own, never on either paired list.
+  auto guest_code = mac.d->start_pairing(desk::kDefaultPairTtlMs, 24 * 3600);
+  REQUIRE(guest_code);
+  const key32 guest = random_key();
+  auto phone = n.phone(guest, guest_code->code, nullptr, "Visitor");
+  REQUIRE(phone);
+  CHECK((*phone)->caps().has_grant);
+  auto rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  const key32 pub = public_of(guest);
+  const auto it = std::find_if(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub; });
+  REQUIRE(it != rows->end());
+  CHECK(it->limited);
+  CHECK(it->guest);
+  CHECK(it->expires > 0);
+  CHECK(known::load_named(*mac.store, desk::kDevicesName).empty());  // the Mac's paired list: unlimited only
+  {
+    // The timed list the nearby service is given: the guest, with its end.
+    auto bytes = mac.store->get(desk::kGrantsName);
+    REQUIRE(bytes);
+    auto kept = mv::driftwire::serve::grants::decode(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+    REQUIRE(kept);
+    REQUIRE(kept->size() == 1);
+    CHECK(kept->front().key == pub);
+    CHECK(kept->front().guest);
+    CHECK(kept->front().expires == it->expires);
+  }
+  // Removing is the device key's alone, even locked.
+  REQUIRE(mac.d->lock());
+  REQUIRE(mac.d->revoke(pub));
+  rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  CHECK(std::none_of(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub; }));
+}
+
+TEST_CASE("phone pairing: the Mac proves a passphrase set at init, extends a guest, and changes it", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  desktop mac;
+  // No passphrase: refused, and it says so.
+  CHECK_FALSE(mac.d->claim(utf8(n.share), n.local(), ""));
+  CHECK(why_desk(*mac.d) == "passphrase");
+  // Choosing a new one on a NAS that has one never replaces it: it is checked, and wrong.
+  CHECK_FALSE(mac.d->claim(utf8(n.share), n.local(), "", "a different long passphrase", true));
+  CHECK(why_desk(*mac.d) == "passphrase");
+  // Too short is said as such, before anything is written to the share.
+  CHECK_FALSE(mac.d->claim(utf8(n.share), n.local(), "", "short", true));
+  CHECK(why_desk(*mac.d) == "passphrase-short");
+  CHECK_FALSE(fs::exists(n.share / serve::kClaimTokenFile));
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, false));
+  auto code = mac.d->start_pairing(desk::kDefaultPairTtlMs, 3600);
+  REQUIRE(code);
+  const key32 guest = random_key();
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  REQUIRE(n.phone(guest, code->code));
+  const key32 pub = public_of(guest);
+  // Extended from the card: a longer end.
+  REQUIRE(mac.d->grant(pub, 7 * 24 * 3600));
+  auto rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  const auto row = std::find_if(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub; });
+  REQUIRE(row != rows->end());
+  CHECK(row->expires == t0 + 7 * 24 * 3600);
+  // Made unlimited: it moves to the paired lists.
+  REQUIRE(mac.d->grant(pub, 0));
+  rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  CHECK(std::any_of(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub && !r.limited; }));
+  CHECK(known::load_named(*mac.store, desk::kDevicesName).size() == 1);
+  // A new passphrase, and the old one no longer unlocks.
+  REQUIRE(mac.d->set_passphrase("the replacement passphrase"));
+  REQUIRE(mac.d->lock());
+  CHECK_FALSE(mac.d->unlock(kPass));
+  REQUIRE(mac.d->unlock("the replacement passphrase"));
+  REQUIRE(mac.d->start_pairing());
+}
+
+TEST_CASE("phone pairing: a slow-down keeps the Mac's key, and the reason reaches the card", "[phone-pairing]") {
+  nas n;
+  n.answer_gap_ms = 60000;  // one owner answer a minute: the second always comes too soon
+  n.srv->stop();
+  n.srv.reset();
+  n.start();
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, true));
+  REQUIRE(mac.d->unlock(kPass));  // the owner counter's one answer this minute
+  mac.d->release();               // the card lets the session go between requests
+  // A new session needs an unlock: the kept key is too soon, and is not forgotten for that.
+  CHECK_FALSE(mac.d->start_pairing());
+  CHECK(why_desk(*mac.d) == "slow-down");
+  auto status = mac.d->owner_status();
+  REQUIRE(status);
+  CHECK(status->unlocked_s > 0);
+  // A wrong key is forgotten: the passphrase changed on the NAS meanwhile.
+  init_passphrase(n, "the replacement passphrase");
+  n.srv->stop();
+  n.srv.reset();
+  n.answer_gap_ms = 0;
+  n.start();
+  REQUIRE(mac.d->set_local(n.local()));  // the restarted service listens on a new port
+  CHECK_FALSE(mac.d->start_pairing());
+  status = mac.d->owner_status();
+  REQUIRE(status);
+  CHECK(status->unlocked_s == 0);
+}
+
+TEST_CASE("phone pairing: the route carries the passphrase and the limits to the card", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  auto claimed = desk::route_request(*mac.d, "phone", "claim",
+                                     "{\"share\":\"" + utf8(n.share) + "\",\"local\":\"" + n.local() +
+                                         "\",\"passphrase\":\"" + kPass + "\",\"new_passphrase\":true}");
+  REQUIRE(claimed);
+  auto status = desk::route_request(*mac.d, "phone", "owner_status", "{}");
+  REQUIRE(status);
+  CHECK(status->find("\"passphrase\":\"set\"") != std::string::npos);
+  auto pair = desk::route_request(*mac.d, "phone", "pair", "{\"for_s\":3600}");
+  REQUIRE(pair);
+  const auto doc = mv::json::parse(*pair, 2);
+  REQUIRE(doc);
+  REQUIRE(n.phone(random_key(), *doc->str("code")));
+  auto devices = desk::route_request(*mac.d, "phone", "devices", "{}");
+  REQUIRE(devices);
+  CHECK(devices->find("\"limited\":true") != std::string::npos);
+  CHECK(devices->find("\"guest\":true") != std::string::npos);
+  REQUIRE(desk::route_request(*mac.d, "phone", "lock", "{}"));
+  CHECK_FALSE(desk::route_request(*mac.d, "phone", "pair", "{}"));
+  auto why = desk::route_request(*mac.d, "phone", "last_refusal", "{}");
+  REQUIRE(why);
+  CHECK(why_in(*why) == "needs-unlock");
+  REQUIRE(desk::route_request(*mac.d, "phone", "unlock", std::string("{\"passphrase\":\"") + kPass + "\"}"));
+  CHECK(desk::route_request(*mac.d, "phone", "pair", "{}"));
+}
+
+TEST_CASE("phone pairing: a phone is never told the salt", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  const key32 phone = random_key();
+  REQUIRE(known::save(*n.store, {known::device{"iPhone", public_of(phone), {}, false}}));
+  serve::client::options o;
+  o.access_key = n.access;
+  o.device_key = phone;
+  o.service_key = n.identity;
+  o.ops = serve::kAllOps | serve::kAdminOp;
+  auto c = serve::client::open(n.connect(), o);
+  REQUIRE(c);
+  CHECK((*c)->caps().passphrase.empty());
+  CHECK((*c)->caps().features.empty());
+  std::string refusal;
+  auto challenge = (*c)->admin("{\"do\":\"challenge\"}", nullptr, &refusal);
+  CHECK_FALSE(challenge);
+  CHECK(refusal.find("salt") == std::string::npos);
 }
 
 TEST_CASE("phone pairing: a claim whose answer was lost is answered again for its owner", "[phone-pairing]") {
@@ -841,7 +1647,7 @@ TEST_CASE("phone pairing: the real program is claimed, keeps it across a restart
     CHECK((pclose(p) == 0) == ok);
     return out;
   };
-  (void)run_line("init");
+  (void)run_line("init --no-passphrase");
 
   struct running {
     FILE* p = nullptr;

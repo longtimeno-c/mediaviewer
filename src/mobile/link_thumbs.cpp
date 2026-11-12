@@ -2,12 +2,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mobile/link_thumbs.h"
 
+#include "mobile/testing.h"
+
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 
 namespace mv::mobile {
+
+namespace {
+std::mutex g_hook_m;
+std::function<void()> g_tile_write_hook;  // under g_hook_m; tests only (mobile/testing.h)
+
+std::function<void()> tile_write_hook() {
+  std::lock_guard lock(g_hook_m);
+  return g_tile_write_hook;
+}
+}  // namespace
+
+void testing::set_tile_write_hook(std::function<void()> hook) {
+  std::lock_guard lock(g_hook_m);
+  g_tile_write_hook = std::move(hook);
+}
 
 namespace fs = std::filesystem;
 
@@ -201,22 +218,37 @@ void thumb_cache::worker() {
         },
         nullptr, false);
     const bool whole = r && filled == got.size();
+    if (auto hook = tile_write_hook()) hook();
     std::vector<std::pair<std::string, std::uint64_t>> stored;
     for (const auto& w : batch) {
       result<std::vector<std::uint8_t>> out = err(whole ? status::corrupt : (r ? status::io : r.error()));
       if (whole) {
         const auto at = static_cast<std::ptrdiff_t>(w->where.offset - first);
         std::vector<std::uint8_t> piece(got.begin() + at, got.begin() + at + static_cast<std::ptrdiff_t>(w->where.length));
-        const std::string path = path_of(w->key);
-        std::ofstream f(path + ".part", std::ios::binary | std::ios::trunc);
-        f.write(reinterpret_cast<const char*>(piece.data()), static_cast<std::streamsize>(piece.size()));
-        f.close();
-        std::error_code ec;
-        if (f) {
-          fs::rename(path + ".part", path, ec);
-          if (!ec) stored.emplace_back(w->key, piece.size());
-        } else {
-          fs::remove(path + ".part", ec);
+        // Counted, and refused after Forget: shut_down waits for a write in progress, so no
+        // tile of a forgotten library lands in a folder that is being removed.
+        bool may_write = false;
+        {
+          std::lock_guard lock(m_);
+          if (!shut_) {
+            ++writing_;
+            may_write = true;
+          }
+        }
+        if (may_write) {
+          const std::string path = path_of(w->key);
+          std::ofstream f(path + ".part", std::ios::binary | std::ios::trunc);
+          f.write(reinterpret_cast<const char*>(piece.data()), static_cast<std::streamsize>(piece.size()));
+          f.close();
+          std::error_code ec;
+          if (f) {
+            fs::rename(path + ".part", path, ec);
+            if (!ec) stored.emplace_back(w->key, piece.size());
+          } else {
+            fs::remove(path + ".part", ec);
+          }
+          std::lock_guard lock(m_);
+          if (--writing_ == 0) written_.notify_all();
         }
         out = std::move(piece);
       }
@@ -240,6 +272,12 @@ void thumb_cache::worker() {
       trim_locked();
     }
   }
+}
+
+void thumb_cache::shut_down() {
+  std::unique_lock lock(m_);
+  shut_ = true;
+  written_.wait(lock, [this] { return writing_ == 0; });
 }
 
 void thumb_cache::admit(const std::string& name, std::uint64_t size) {

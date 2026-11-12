@@ -543,7 +543,7 @@ if(MV_MAC_VCPKG_ARCH STREQUAL "arm64")
   include("${CMAKE_CURRENT_LIST_DIR}/mobile.cmake")
   # The desktop half of the phone's parity test (tools/ios/run-parity.sh).
   add_executable(mv_mobile_parity_desktop "${CMAKE_SOURCE_DIR}/tools/ios/mobile_parity_desktop.mm")
-  target_link_libraries(mv_mobile_parity_desktop PRIVATE mv_ai_engine mv_infer mv_addon mv_io mv_places_engine mv_geo_open mv_geo
+  target_link_libraries(mv_mobile_parity_desktop PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_meta mv_io mv_places_engine mv_geo_open mv_geo ${MV_SODIUM_TARGET}
     unofficial::sqlite3::sqlite3 "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO"
     "-framework UniformTypeIdentifiers" "-framework AVFoundation" "-framework CoreMedia")
   target_include_directories(mv_mobile_parity_desktop SYSTEM PRIVATE "${MV_ORT_INCLUDE}")

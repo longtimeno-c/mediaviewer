@@ -216,6 +216,12 @@ class channel {
   // session hold, for "Remember this device".
   [[nodiscard]] const std::optional<std::array<std::uint8_t, 32>>& peer_key() const noexcept { return peer_key_; }
   [[nodiscard]] std::array<std::uint8_t, 32> pairing_secret() const;
+  // A library channel (open_library): the Noise handshake hash h after the
+  // last handshake message, the same at both ends and new for every session
+  // (channel binding, for the owner's signed passphrase answer,
+  // owner_pass.h). Zeros on any other kind: pairing_secret() is not a binding
+  // there either, since a library channel keeps no resume secret.
+  [[nodiscard]] const std::array<std::uint8_t, 64>& handshake_hash() const noexcept { return binding_; }
   // #497: the six digits the sender shows and the receiver types to remember
   // it (remember_check in wire.h). Protocol 2.
   [[nodiscard]] std::string remember_check() const;
@@ -411,6 +417,7 @@ class channel {
   std::mutex rejoin_m_;  // one rejoin adopted at a time
   mutable std::mutex secret_m_;
   std::array<std::uint8_t, 32> resume_{};  // under secret_m_
+  std::array<std::uint8_t, 64> binding_{};  // set once, before the channel is handed out
   // #496: the tags of the rejoins accept_rejoin has taken (the newest
   // kSpentTags; only a tag made with resume_ gets in).
   std::deque<std::array<std::uint8_t, 16>> spent_tags_;  // under secret_m_

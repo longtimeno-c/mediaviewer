@@ -90,8 +90,20 @@ struct caps_msg {
   std::uint32_t ops = 0;
   std::uint32_t chunk = 0;
   std::uint32_t bulk_chunk = 0;
+  // To the owner's session alone (docs/plans/nas-owner-and-guests.md §4.1):
+  // what this service can do beyond the operations, and its passphrase
+  // ("set", "none", "broken"). Empty from a service older than that.
+  std::vector<std::string> features;
+  std::string passphrase;
+  // To a device with a limit: when it ends (unix seconds on the service's
+  // clock, 0: never) and whether it sees only some folders.
+  bool has_grant = false;
+  std::int64_t grant_expires = 0;
+  bool grant_scoped = false;
 };
-[[nodiscard]] std::string caps_json(std::uint32_t version, std::uint32_t ops);
+// `owner_fields`: members appended to the object as they are (the owner's
+// "features" and "passphrase"), or empty.
+[[nodiscard]] std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields = {});
 [[nodiscard]] std::optional<caps_msg> parse_caps(std::string_view json);
 
 // ---- serve_pair ----------------------------------------------------------------------------

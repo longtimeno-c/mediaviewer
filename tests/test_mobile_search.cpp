@@ -181,6 +181,19 @@ TEST_CASE("a generation's text tower is laid out as pack.cpp reads it", "[mobile
   mv_mobile_library_close(lib);
 }
 
+// Forget can remove the library while an open is still laying out its work folder: a layout that
+// fails leaves no half folder behind to outlive the library.
+TEST_CASE("a layout whose files have gone leaves no half work folder", "[mobile]") {
+  generation_fixture g("layout-gone");
+  auto opened = mv::mobile::catalogue::open(g.gen.string(), (g.nas / ".mediaviewer").string());
+  REQUIRE(opened);
+  for (const auto& m : (*opened)->info().models) fs::remove(m.path);  // the library, removed meanwhile
+  const fs::path work = g.root / "engine" / "1-1";
+  CHECK_FALSE(mv::mobile::lay_out_work_dir(**opened, work.string()));
+  CHECK_FALSE(fs::exists(work.string() + ".part"));
+  CHECK_FALSE(fs::exists(work));
+}
+
 TEST_CASE("a truncated catalogue is refused", "[mobile]") {
   generation_fixture g("truncated");
   fs::resize_file(g.gen / "catalog.db", fs::file_size(g.gen / "catalog.db") - 1);

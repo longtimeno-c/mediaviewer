@@ -380,7 +380,7 @@ private struct ClipBody: View {
                line: "Its moments are shown as stills.",
                button: "Download the file · \(ProgressWords.size(bytes))")
     case .unavailable(let failure):
-      Text(FailureCopy.line(for: failure))
+      Text(FailureCopy.line(for: failure, sample: model.connection.isSample))
         .font(.footnote)
         .foregroundStyle(Theme.title)
         .frame(maxWidth: .infinity, alignment: .leading)

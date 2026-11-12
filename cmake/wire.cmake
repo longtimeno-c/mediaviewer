@@ -69,6 +69,8 @@ add_library(mv_wire STATIC
   ${_W}/secrets.h ${_W}/secrets_file.cpp
   ${_W}/known.cpp ${_W}/known.h
   ${_W}/serve_wire.cpp ${_W}/serve_wire.h
+  ${_W}/owner_pass.cpp ${_W}/owner_pass.h
+  ${_W}/grants.cpp ${_W}/grants.h
   ${_W}/serve.cpp ${_W}/serve.h
   ${_W}/serve_client.cpp ${_W}/serve_client.h
   ${_W}/pair_check.cpp ${_W}/pair_check.h

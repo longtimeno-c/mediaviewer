@@ -1037,7 +1037,7 @@ TEST_CASE("serve: the program runs without a terminal, keeps its keys and stops 
     return out;
   };
   // init writes owner-only keys and prints the key once.
-  const std::string init = run_line("init");
+  const std::string init = run_line("init --no-passphrase");
   auto hex_after = [](const std::string& text, const std::string& label) {
     const auto at = text.find(label);
     REQUIRE(at != std::string::npos);
@@ -1047,7 +1047,7 @@ TEST_CASE("serve: the program runs without a terminal, keeps its keys and stops 
   const auto access = sp::parse_key_hex(hex_after(init, "access-key "));
   REQUIRE(identity);
   REQUIRE(access);
-  CHECK(run_line("init").find("access-key") == std::string::npos);  // shown once
+  CHECK(run_line("init --no-passphrase").find("access-key") == std::string::npos);  // shown once
   // A device is paired from the command line.
   const key32 device = random_key();
   key32 device_public;

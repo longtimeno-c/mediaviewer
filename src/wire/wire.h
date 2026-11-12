@@ -155,6 +155,11 @@ enum class msg : std::uint8_t {
   // {"nonce"} (service), after serve_claim: the desktop writes it to
   // .mediaviewer/claim.proof on the share and sends serve_claim again.
   serve_claim_check = 37,
+  // After the write proof (docs/plans/nas-owner-and-guests.md §3.3), to a
+  // desktop whose first serve_claim said {"passphrase":1}:
+  // {"passphrase":"set","salt","ops","mem","nonce"} or {"passphrase":"none"}.
+  // It answers with a third serve_claim: {"sig"} or {"set":{"salt","ops","mem","pk"}}.
+  serve_claim_challenge = 38,
 };
 
 // "123 456": six digits from both public keys (client = the sender).

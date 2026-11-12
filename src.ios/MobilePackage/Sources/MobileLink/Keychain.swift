@@ -45,6 +45,13 @@ struct PairingRecord: Codable, Sendable {
   var identity: String
   var accessKey: String
   var deviceName: String
+  /// The sample library (§11.1): read from its static folder, with no service. nil in a record
+  /// written before it existed.
+  var sample: Bool? = nil
+  var isSample: Bool { sample == true }
+  /// A time-limited phone's end, unix seconds on the service's clock, as it last said (nil: none).
+  /// Kept so the phone can say the access ended even with no network.
+  var accessUntil: Double? = nil
   static let account = "pairing"
 
   static func load() -> PairingRecord? {

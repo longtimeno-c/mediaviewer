@@ -20,9 +20,11 @@
 
 #include "wire/admission.h"
 #include "wire/channel.h"
+#include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/net.h"
 #include "wire/keys.h"
+#include "wire/owner_pass.h"
 #include "core/json.h"
 #include "io/file_port.h"
 
@@ -37,6 +39,9 @@ constexpr int kHelloMs = 3000;
 constexpr int kServeHelloMs = 5000;
 // The desktop writing the claim's nonce over SMB, at most.
 constexpr int kClaimProofMs = 12000;
+// The desktop's answer to the passphrase step of a claim: a person may be
+// typing it, then Argon2id runs (about a second at 256 MiB).
+constexpr int kClaimAnswerMs = 120000;
 // First messages remembered as seen, against a replay of a recorded one. Only
 // ones that opened under the key go in, so a stranger cannot flush it.
 constexpr std::size_t kSeenFirsts = 4096;
@@ -102,6 +107,17 @@ struct conn {
   std::array<std::uint8_t, 32> device{};
   bool has_device = false;  // under m
   bool is_owner = false;    // set before its session starts
+  // A device with a limit (grants.h): the grant it came in with, set before
+  // its session starts; nullopt for an unlimited one and the owner.
+  std::optional<grants::grant> grant;
+  // The owner's passphrase on this session (its session thread's own):
+  // the challenge outstanding, and the unlock with the verifier it was for.
+  owner::key32 nonce{};
+  bool has_nonce = false;
+  std::chrono::steady_clock::time_point nonce_at{};
+  std::chrono::steady_clock::time_point unlocked_until{};  // steady: a clock set back never stretches it
+  owner::key32 unlocked_pk{};
+  std::int64_t unlocked_set = 0;
   std::atomic<bool> done{false};
   std::thread t;
 };
@@ -109,7 +125,15 @@ struct conn {
 struct waiting_code {
   std::array<std::uint8_t, 32> hash{};
   clock::time_point deadline;
+  grants::limit gives;  // a guest code's limit; none: an unlimited pairing
 };
+
+// The Catalogue root, which every grant may read (docs/plans/nas-owner-and-guests.md §5.2).
+bool is_catalogue(const root_config& r) {
+  const std::string tail = std::string("/") + kCatalogueFolder;
+  return r.label == kCatalogueLabel && r.path.size() >= tail.size() &&
+         r.path.compare(r.path.size() - tail.size(), tail.size(), tail) == 0;
+}
 
 std::array<std::uint8_t, 32> code_hash(std::string_view code) {
   std::array<std::uint8_t, 32> h{};
@@ -165,20 +189,22 @@ struct server::state {
     return k;
   }
   // Single use: it is gone from the list before anything else can look.
-  [[nodiscard]] bool take_code(std::string_view code, bool redeem = false) {
-    if (!lower_hex(code, kPairCodeChars)) return false;
+  // The limit it gives (none: an unlimited pairing), or nullopt.
+  [[nodiscard]] std::optional<grants::limit> take_code(std::string_view code, bool redeem = false) {
+    if (!lower_hex(code, kPairCodeChars)) return std::nullopt;
     const auto want = code_hash(code);
     const auto now = clock::now();
     std::lock_guard lock(codes_m);
     std::erase_if(codes, [&](const waiting_code& c) { return c.deadline <= now; });
     for (auto it = codes.begin(); it != codes.end(); ++it) {
       if (sodium_memcmp(it->hash.data(), want.data(), want.size()) == 0) {
+        grants::limit gives = it->gives;
         codes.erase(it);
         if (redeem) ++redeeming;
-        return true;
+        return gives;
       }
     }
-    return false;
+    return std::nullopt;
   }
   // The file lock against `serve add` / `serve revoke`, when there is one.
   [[nodiscard]] std::unique_ptr<net::instance_lock> lock_devices() const {
@@ -189,6 +215,25 @@ struct server::state {
     return devices_lock.empty() || held != nullptr;
   }
   [[nodiscard]] bool add_device(const std::string& name, const std::array<std::uint8_t, 32>& key, bool& full);
+  // Puts a device on the right list (grants.h): unlimited (`g` nullopt) in
+  // the paired list, limited in the grants, never both. `full`: no room.
+  [[nodiscard]] bool set_access(const std::string& name, const std::array<std::uint8_t, 32>& key,
+                                const std::optional<grants::grant>& g, bool& full);
+  enum class access { none, full, live, expired, unreadable };
+  struct device_access {
+    access a = access::none;
+    std::optional<grants::grant> g;
+  };
+  [[nodiscard]] device_access access_of(const std::array<std::uint8_t, 32>& key);
+  struct lists {
+    std::vector<known::device> devices;
+    std::vector<grants::grant> limited;
+    bool grants_ok = false;
+  };
+  [[nodiscard]] lists read_lists();
+  // Why a running session must end now, or nullptr.
+  [[nodiscard]] const char* verdict(const lists& l, const conn& c, std::int64_t t) const;
+  [[nodiscard]] std::shared_ptr<const config> cfg_for(const std::optional<grants::grant>& g) const;
   [[nodiscard]] bool publish_config(config next);
   // Every session but `except`: the named folders changed under it.
   void cut_sessions(const conn* except);
@@ -196,8 +241,35 @@ struct server::state {
   [[nodiscard]] std::vector<std::pair<std::array<std::uint8_t, 32>, std::string>> claim_tokens() const;
   void run_claim(conn& c, std::unique_ptr<channel> ch, const std::string& folder);
   void send_claimed(channel& ch);
-  [[nodiscard]] bool redeem(channel& ch, const std::array<std::uint8_t, 32>& peer);
+  // A serve_pair from a device that is not unlimited (`m`): spends the code
+  // and puts the device on the list its limit says. `live`: the device has a
+  // live grant, so a code that is no good is not a refusal (it goes on, as an
+  // unlimited phone that scans again does). False: refused, and said.
+  enum class redeemed { paired, bad_code_live, refused };
+  [[nodiscard]] redeemed redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m, bool live);
   [[nodiscard]] std::pair<end_code, std::string> admin(conn& c, std::string_view request);
+
+  // ---- the owner's passphrase (owner_pass.h) ----
+  std::function<std::int64_t()> now_unix;
+  std::function<clock::time_point()> now_steady;
+  [[nodiscard]] clock::time_point steady() const { return now_steady ? now_steady() : clock::now(); }
+  std::chrono::milliseconds min_answer_gap{1000};
+  std::mutex pass_m;  // the lockout: read, changed and written under it
+  clock::time_point last_answer[2]{};  // under pass_m: claim, owner
+  enum which_counter : int { claim_counter = 0, owner_counter = 1 };
+  [[nodiscard]] std::int64_t now() const { return now_unix ? now_unix() : static_cast<std::int64_t>(std::time(nullptr)); }
+  // The counter's lock, if it is locked now (0: not).
+  [[nodiscard]] std::int64_t locked_until(which_counter which);
+  // A signed answer to `nonce`, checked and counted. `why` and `until` say
+  // why not: "locked-out" (until), "slow-down", "passphrase".
+  // `v` is the verifier the challenge was made from: one changed since (a
+  // reset on the NAS while the answer was being typed) refuses it.
+  [[nodiscard]] bool answer(which_counter which, const owner::verifier& v, const owner::signature& sig, const channel& ch,
+                            const owner::key32& nonce, std::string& why, std::int64_t& until);
+  // Whether `c` may make a change that adds access now (§3.4). Not: the
+  // refusal to send.
+  [[nodiscard]] std::optional<std::pair<end_code, std::string>> needs_unlock(conn& c);
+  [[nodiscard]] std::string owner_fields();
 
   secrets::store* store = nullptr;
   bool loopback_only = false;
@@ -206,6 +278,7 @@ struct server::state {
   int per_minute = 30;
 
   std::array<std::uint8_t, 32> identity{}, access_key{};
+  std::array<std::uint8_t, 32> identity_public{};  // what clients pin, and sign over
   std::unique_ptr<net::listener> listen;
   std::uint16_t port = 0;
   std::atomic<bool> stopping{false};
@@ -231,7 +304,7 @@ struct server::state {
 
   std::atomic<std::uint64_t> n_evicted{0};
   std::atomic<std::uint64_t> n_accepted{0}, n_over{0}, n_hello{0}, n_key{0}, n_replay{0}, n_unpaired{0}, n_sessions{0};
-  std::atomic<std::uint64_t> n_paired{0}, n_bad_codes{0};
+  std::atomic<std::uint64_t> n_paired{0}, n_bad_codes{0}, n_wrong_pass{0}, n_unlocks{0}, n_expired{0};
 
   ~state() {
     sodium_memzero(identity.data(), identity.size());
@@ -256,10 +329,6 @@ struct server::state {
     return true;
   }
 
-  [[nodiscard]] bool paired(const std::array<std::uint8_t, 32>& key) {
-    const auto devices = known::load(*store);
-    return std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == key; });
-  }
 
   void accept_loop();
   bool take_token(clock::time_point now) noexcept;
@@ -268,7 +337,7 @@ struct server::state {
   void run(conn* c);
   void serve_connection(conn* c);
   void release_pending(conn& c);
-  void session(conn& c);
+  void session(conn& c, std::optional<message> hello);
   void watch_loop();
   void cut_unpaired();
 };
@@ -663,17 +732,24 @@ void drive_requests(const config& cfg, std::uint32_t ops, std::span<const std::u
   pump.join();
 }
 
-void server::state::session(conn& c) {
+void server::state::session(conn& c, std::optional<message> first_message) {
   channel& ch = *c.ch;
   message m;
-  // The first message after ident: what the client can do.
-  auto first = ch.receive(m, kServeHelloMs);
-  // A phone that is already paired and scans again: it is told so and goes on.
-  // A code it carries is spent here, so that code can pair nothing else.
+  // The first message after ident: what the client can do (already read for
+  // a device with a limit).
+  bool first = true;
+  if (first_message) {
+    m = std::move(*first_message);
+  } else {
+    first = ch.receive(m, kServeHelloMs).has_value();
+  }
+  // An unlimited phone that scans again: it is told so and goes on, unlimited
+  // (a guest code never limits it). A code it carries is spent here, so that
+  // code can pair nothing else.
   if (first && m.type == msg::serve_pair) {
     if (const auto p = parse_pair(m.text())) (void)take_code(p->code);
     if (!ch.send(msg::serve_paired, std::string_view("{}"))) return;
-    first = ch.receive(m, kServeHelloMs);
+    first = ch.receive(m, kServeHelloMs).has_value();
   }
   if (!first || m.type != msg::serve_hello) {
     (void)ch.cancel(kCancelWaitMs, "protocol");
@@ -686,7 +762,16 @@ void server::state::session(conn& c) {
     version = std::clamp(hello->version, kMinVersion, kVersion);
     if (hello->min_version <= kVersion && hello->version >= kMinVersion) ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0));
   }
-  if (!ch.send(msg::serve_caps, caps_json(version, ops))) return;
+  std::string extra = (ops & kAdminOp) != 0 ? owner_fields() : std::string();
+  if (c.grant) {
+    // A limited phone is told its limit, so it can say so, and say it ended even offline.
+    json::writer w;
+    w.begin_object().key("grant").begin_object().key("expires").integer(c.grant->expires);
+    w.key("scoped").boolean(c.grant->roots.has_value()).end_object().end_object();
+    const std::string g = w.take();
+    extra = g.substr(1, g.size() - 2);
+  }
+  if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
     // Nothing in common (one side too old). The answer said so.
     ch.flush(kCancelWaitMs);
@@ -696,7 +781,7 @@ void server::state::session(conn& c) {
   session_state::admin_fn admin_handler;
   if (c.is_owner) admin_handler = [this, &c](std::string_view request) { return admin(c, request); };
   session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); },
-                  [this] { return cfg(); }, ops, std::move(admin_handler));
+                  [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler));
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
     try {
@@ -794,10 +879,52 @@ void server::state::serve_connection(conn* c) {
   const auto peer = opened->peer_key();
   const auto owner_key = peer ? owner() : std::nullopt;
   c->is_owner = peer && owner_key && *owner_key == *peer;
-  if (!peer || (!c->is_owner && !paired(*peer) && !redeem(*opened, *peer))) {
+  if (!peer) {
     n_unpaired.fetch_add(1);
-    (void)opened->cancel(kCancelWaitMs, "not-paired");  // says nothing new after a bad code's own reason
+    (void)opened->cancel(kCancelWaitMs, "not-paired");
     return;
+  }
+  // An unlimited device goes straight on; anyone else's first word decides
+  // (docs/plans/nas-owner-and-guests.md §5.2): a code is redeemed, even by a
+  // guest whose time is up (re-inviting it); otherwise only a live grant
+  // goes on, with its hello.
+  std::optional<message> hello;
+  if (!c->is_owner) {
+    auto acc = access_of(*peer);
+    if (acc.a != access::full) {
+      message m;
+      if (!opened->receive(m, kServeHelloMs)) {
+        n_unpaired.fetch_add(1);
+        (void)opened->cancel(kCancelWaitMs, "not-paired");
+        return;
+      }
+      if (m.type == msg::serve_pair) {
+        const auto r = redeem(*opened, *peer, m, acc.a == access::live);
+        if (r == redeemed::refused) {
+          n_unpaired.fetch_add(1);
+          (void)opened->cancel(kCancelWaitMs, "not-paired");  // says nothing new after a bad code's own reason
+          return;
+        }
+        if (r == redeemed::bad_code_live && !opened->send(msg::serve_paired, std::string_view("{}"))) return;
+        acc = access_of(*peer);
+        if (acc.a != access::full && acc.a != access::live) {
+          (void)opened->cancel(kCancelWaitMs, "error");
+          return;
+        }
+      } else if (acc.a == access::live) {
+        hello = std::move(m);
+      } else {
+        if (acc.a == access::expired) {
+          n_expired.fetch_add(1);
+          (void)opened->cancel(kCancelWaitMs, "expired");
+        } else {
+          n_unpaired.fetch_add(1);
+          (void)opened->cancel(kCancelWaitMs, "not-paired");
+        }
+        return;
+      }
+    }
+    c->grant = acc.a == access::live ? acc.g : std::nullopt;
   }
   const int before = sessions.fetch_add(1);
   // Held to the end of this function, however it ends.
@@ -816,7 +943,7 @@ void server::state::serve_connection(conn* c) {
     c->has_device = true;
   }
   n_sessions.fetch_add(1);
-  session(*c);
+  session(*c, std::move(hello));
   {
     std::lock_guard lock(c->m);
     c->has_device = false;
@@ -971,6 +1098,143 @@ bool server::state::publish_config(config next) {
   return true;
 }
 
+// ---- the owner's passphrase -----------------------------------------------------------------
+
+namespace {
+
+std::string hex_of(std::span<const std::uint8_t> b) {
+  std::string out(b.size() * 2, '0');
+  sodium_bin2hex(out.data(), out.size() + 1, b.data(), b.size());
+  return out;
+}
+
+template <std::size_t N>
+std::optional<std::array<std::uint8_t, N>> from_hex(const std::string* s) {
+  if (!s || s->size() != N * 2) return std::nullopt;
+  std::array<std::uint8_t, N> out{};
+  std::size_t len = 0;
+  if (sodium_hex2bin(out.data(), out.size(), s->data(), s->size(), nullptr, &len, nullptr) != 0 || len != N) return std::nullopt;
+  return out;
+}
+
+std::pair<end_code, std::string> refusal_json(std::string_view why, std::int64_t until = 0) {
+  json::writer w;
+  w.begin_object().key("why").string(why);
+  if (until > 0) w.key("until").integer(until);
+  w.end_object();
+  return {end_code::refused, w.take()};
+}
+
+// The salt, the cost and a nonce: what a client needs to sign.
+void challenge_fields(json::writer& w, const owner::verifier& v, const owner::key32& nonce) {
+  w.key("salt").string(hex_of(v.salt));
+  w.key("ops").integer(static_cast<std::int64_t>(v.ops));
+  w.key("mem").integer(static_cast<std::int64_t>(v.mem));
+  w.key("nonce").string(hex_of(nonce));
+}
+
+// {"salt","ops","mem","pk"}: a verifier a client made, checked before it is kept.
+std::optional<owner::verifier> parse_new_verifier(const json::value* v, std::int64_t now) {
+  if (!v || v->k != json::kind::object) return std::nullopt;
+  const auto ops = v->integer("ops");
+  const auto mem = v->integer("mem");
+  const auto salt = from_hex<owner::kSaltBytes>(v->str("salt"));
+  const auto pk = from_hex<32>(v->str("pk"));
+  if (!ops || !mem || *ops <= 0 || *mem <= 0 || !salt || !pk) return std::nullopt;
+  if (!owner::sane_cost(static_cast<std::uint64_t>(*ops), static_cast<std::uint64_t>(*mem))) return std::nullopt;
+  owner::verifier out;
+  out.ops = static_cast<std::uint64_t>(*ops);
+  out.mem = static_cast<std::uint64_t>(*mem);
+  out.salt = *salt;
+  out.pk = *pk;
+  out.set = now;
+  return out;
+}
+
+const char* stored_name(owner::stored s) {
+  return s == owner::stored::set ? "set" : s == owner::stored::none ? "none" : "broken";
+}
+
+}  // namespace
+
+std::int64_t server::state::locked_until(which_counter which) {
+  std::lock_guard lock(pass_m);
+  const auto t = now();
+  const auto l = owner::load_lockout(*store, t);
+  const owner::counter& c = which == claim_counter ? l.claim : l.owner;
+  return c.locked(t) ? c.until : 0;
+}
+
+bool server::state::answer(which_counter which, const owner::verifier& v, const owner::signature& sig, const channel& ch,
+                           const owner::key32& nonce, std::string& why, std::int64_t& until) {
+  const auto peer = ch.peer_key();
+  if (!peer) {
+    why = "passphrase";
+    return false;
+  }
+  std::lock_guard lock(pass_m);
+  owner::verifier current;
+  if (owner::load(*store, current) != owner::stored::set || current.pk != v.pk || current.set != v.set) {
+    why = "passphrase-changed";
+    return false;
+  }
+  const auto t = now();
+  auto l = owner::load_lockout(*store, t);
+  owner::counter& c = which == claim_counter ? l.claim : l.owner;
+  if (c.locked(t)) {
+    why = "locked-out";
+    until = c.until;
+    return false;
+  }
+  const auto at = steady();
+  if (last_answer[which] != clock::time_point{} && at - last_answer[which] < min_answer_gap) {
+    why = "slow-down";
+    return false;
+  }
+  last_answer[which] = at;
+  // Counted as a miss before it is checked: a store that cannot be written
+  // must never mean guesses that are never counted.
+  c.miss(t);
+  if (!owner::save_lockout(*store, l)) {
+    why = "error";
+    return false;
+  }
+  if (owner::check(current, sig, std::span<const std::uint8_t, owner::kBindingBytes>(ch.handshake_hash()), nonce,
+                   identity_public, *peer)) {
+    c.success();
+    (void)owner::save_lockout(*store, l);  // if this fails the miss stays counted: never in the guesser's favour
+    return true;
+  }
+  n_wrong_pass.fetch_add(1);
+  why = c.locked(t) ? "locked-out" : "passphrase";
+  until = c.locked(t) ? c.until : 0;
+  return false;
+}
+
+std::optional<std::pair<end_code, std::string>> server::state::needs_unlock(conn& c) {
+  owner::verifier v;
+  switch (owner::load(*store, v)) {
+    case owner::stored::none:
+      return std::nullopt;  // none set yet: as before this existed (call C4)
+    case owner::stored::unreadable:
+      return std::pair<end_code, std::string>{end_code::error, {}};
+    case owner::stored::set:
+      break;
+  }
+  if (c.unlocked_until > steady() && c.unlocked_pk == v.pk && c.unlocked_set == v.set) return std::nullopt;
+  return refusal_json("needs-unlock");
+}
+
+std::string server::state::owner_fields() {
+  owner::verifier v;
+  const auto s = owner::load(*store, v);
+  json::writer w;
+  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).end_array();
+  w.key("passphrase").string(stored_name(s)).end_object();
+  std::string out = w.take();
+  return out.substr(1, out.size() - 2);
+}
+
 void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::string& folder) {
   message m;
   const auto peer = ch->peer_key();
@@ -979,6 +1243,10 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     return;
   }
   (void)c;
+  // A desktop that can take the passphrase step says so; one from before it
+  // does not, and claims as it always did while no passphrase is set.
+  bool speaks_passphrase = false;
+  if (const auto first = json::parse(m.text(), 2)) speaks_passphrase = first->integer("passphrase") == 1;
   // Owned and not its owner: closed with no reason given, before any
   // challenge, so this ends as a refusal and never as "it may have gone
   // through". The caller can still tell this from a challenge (unowned) or a
@@ -1016,6 +1284,93 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
       return;
     }
   }
+  // Only now, past the write proof, is anything said about a passphrase
+  // (docs/plans/nas-owner-and-guests.md §3.3): a reader of the share learns
+  // nothing about it. The owner's own re-claim is counted on the owner's
+  // counter, so guesses at claims cannot lock it out.
+  // Owned since the top of this function (another desktop got there while
+  // this one wrote its proof): only that owner goes on, and only the owner's
+  // own claim is counted on the owner's counter.
+  which_counter counter = claim_counter;
+  if (store->exists(kOwnerName)) {
+    const auto held = owner();
+    if (!held || *held != *peer) {
+      ch->shutdown();
+      return;
+    }
+    counter = owner_counter;
+  }
+  std::optional<owner::verifier> to_set;
+  {
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    if (s == owner::stored::unreadable) {
+      (void)ch->cancel(kCancelWaitMs, "error");
+      return;
+    }
+    if (s == owner::stored::set) {
+      if (!speaks_passphrase) {
+        (void)ch->cancel(kCancelWaitMs, "passphrase");  // an older desktop: it must be updated
+        return;
+      }
+      if (locked_until(counter) != 0) {
+        (void)ch->cancel(kCancelWaitMs, "locked-out");
+        return;
+      }
+      owner::key32 nonce{};
+      randombytes_buf(nonce.data(), nonce.size());
+      json::writer w;
+      w.begin_object().key("passphrase").string("set");
+      challenge_fields(w, v, nonce);
+      w.end_object();
+      if (!ch->send(msg::serve_claim_challenge, w.str()) || !ch->receive(m, kClaimAnswerMs) || m.type != msg::serve_claim) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+      const auto doc = json::parse(m.text(), 2);
+      const auto sig = doc ? from_hex<64>(doc->str("sig")) : std::nullopt;
+      std::string why;
+      std::int64_t until = 0;
+      if (!sig) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+      if (!answer(counter, v, *sig, *ch, nonce, why, until)) {
+        (void)ch->cancel(kCancelWaitMs, why);
+        return;
+      }
+    } else if (speaks_passphrase) {
+      // None yet: the claim chooses it, and only its public key comes here.
+      if (!ch->send(msg::serve_claim_challenge, std::string_view("{\"passphrase\":\"none\"}")) || !ch->receive(m, kClaimAnswerMs) ||
+          m.type != msg::serve_claim) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+      const auto doc = json::parse(m.text(), 3);
+      to_set = doc ? parse_new_verifier(doc->find("set"), now()) : std::nullopt;
+      if (!to_set) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+    }
+  }
+  // Kept before the owner, so a service is never owned with the passphrase
+  // its claim chose missing; never over one that is there (a racing claim
+  // that set one first wins it, and this one loses below).
+  // A passphrase that appeared meanwhile (the command line, or a racing
+  // set_passphrase) is not this claim's: it fails rather than let the
+  // desktop believe its own was kept.
+  bool passphrase_taken = false;
+  const auto keep_passphrase = [&]() -> bool {
+    if (!to_set) return true;
+    std::lock_guard pass(pass_m);
+    owner::verifier there;
+    if (owner::load(*store, there) != owner::stored::none) {
+      passphrase_taken = true;
+      return false;
+    }
+    return owner::save(*store, *to_set);
+  };
   std::unique_lock lock(claim_m);
   // Two desktops at once: the first through this lock is the owner. The owner
   // claiming again (its first answer was lost) gets the same answer; nothing
@@ -1027,6 +1382,10 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
       ch->shutdown();  // a racing claim lost: no reason given (see above for what the caller can tell)
       return;
     }
+    if (!keep_passphrase()) {
+      (void)ch->cancel(kCancelWaitMs, passphrase_taken ? "passphrase" : "error");
+      return;
+    }
     send_claimed(*ch);
     return;
   }
@@ -1036,9 +1395,9 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
       next.roots.size() < kMaxRoots) {
     next.roots.push_back({new_root_id(), kCatalogueLabel, catalogue});
   }
-  if (!publish_config(std::move(next))) {
+  if (!keep_passphrase() || !publish_config(std::move(next))) {
     lock.unlock();
-    (void)ch->cancel(kCancelWaitMs, "error");
+    (void)ch->cancel(kCancelWaitMs, passphrase_taken ? "passphrase" : "error");
     return;
   }
   if (!store->put(kOwnerName, *peer) || !owner()) {
@@ -1064,54 +1423,137 @@ void server::state::send_claimed(channel& ch) {
 }
 
 bool server::state::add_device(const std::string& name, const std::array<std::uint8_t, 32>& key, bool& full) {
+  return set_access(name, key, std::nullopt, full);
+}
+
+bool server::state::set_access(const std::string& name, const std::array<std::uint8_t, 32>& key,
+                               const std::optional<grants::grant>& g, bool& full) {
   full = false;
   std::lock_guard lock(devices_m);
   std::unique_ptr<net::instance_lock> held;
   if (!may_change_devices(held)) return false;
-  auto v = store->exists(known::kDevicesName) ? store->get(known::kDevicesName) : std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{}};
-  if (!v) return false;  // a list that cannot be read is never replaced
   std::vector<known::device> devices;
   if (store->exists(known::kDevicesName)) {
+    auto v = store->get(known::kDevicesName);
+    if (!v) return false;  // a list that cannot be read is never replaced
     auto decoded = known::decode(*v);
+    sodium_memzero(v->data(), v->size());
     if (!decoded) return false;
     devices = std::move(*decoded);
   }
-  for (auto& d : devices) {
-    if (d.key == key) {
-      d.name = name;
-      return known::save(*store, devices);
-    }
-  }
-  if (devices.size() >= known::kMaxDevices) {
+  std::vector<grants::grant> limited;
+  if (!grants::load(*store, limited)) return false;
+  const auto t = now();
+  (void)grants::prune(limited, t);
+  const bool was_unlimited = std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == key; });
+  const bool was_live = std::any_of(limited.begin(), limited.end(), [&](const grants::grant& x) { return x.key == key && !x.expired(t); });
+  std::erase_if(devices, [&](const known::device& d) { return d.key == key; });
+  std::erase_if(limited, [&](const grants::grant& x) { return x.key == key; });
+  // Room for it, unless it is already one of the live ones (moving lists, or
+  // renamed). An expired guest coming back is a new live one.
+  const bool counted = was_unlimited || was_live;
+  if (!counted && !grants::make_room(limited, devices.size(), t)) {
     full = true;
     return false;
   }
-  known::device d;
-  d.name = name;
-  d.key = key;
-  devices.push_back(std::move(d));
-  return known::save(*store, devices);
+  if (g) {
+    grants::grant next = *g;
+    next.key = key;
+    next.name = name;
+    limited.push_back(std::move(next));
+  } else {
+    known::device d;
+    d.name = name;
+    d.key = key;
+    devices.push_back(std::move(d));
+  }
+  // The list it goes to is written first, then the one it leaves, so it is
+  // never, even for a moment, on neither (the watch would cut it). On both
+  // for a moment, or after a failed second write, the grant wins (access_of,
+  // cut_unpaired): never more access than either list gives.
+  if (g) {
+    if (!grants::save(*store, limited)) return false;
+    if (!known::save(*store, devices)) return false;
+  } else {
+    if (!known::save(*store, devices) || known::load(*store).size() != devices.size()) return false;
+    if (!grants::save(*store, limited)) return false;
+  }
+  return true;
 }
 
-bool server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer) {
-  // Its first word decides, even with no code waiting: a phone holding an
-  // expired or used one is told so and asks for a new scan.
-  message m;
-  if (!ch.receive(m, kServeHelloMs) || m.type != msg::serve_pair) return false;
+server::state::device_access server::state::access_of(const std::array<std::uint8_t, 32>& key) {
+  const auto once = [&](const lists& l) {
+    device_access out;
+    // A grant wins over the paired list: a key on both (a move between them
+    // half done) gets the limit, never more.
+    if (!l.grants_ok) {
+      out.a = access::unreadable;  // nobody gets in on a list that cannot be read; the paired list still can
+    } else {
+      for (const auto& g : l.limited) {
+        if (g.key != key) continue;
+        out.a = g.expired(now()) ? access::expired : access::live;
+        out.g = g;
+        return out;
+      }
+    }
+    if (std::any_of(l.devices.begin(), l.devices.end(), [&](const known::device& d) { return d.key == key; })) {
+      out.a = access::full;
+      return out;
+    }
+    if (out.a != access::unreadable) out.a = access::none;
+    return out;
+  };
+  auto out = once(read_lists());
+  if (out.a == access::none) {
+    // The command line moves a device between the lists from another process:
+    // a device on neither is read again before it is turned away.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    out = once(read_lists());
+  }
+  return out;
+}
+
+std::shared_ptr<const config> server::state::cfg_for(const std::optional<grants::grant>& g) const {
+  auto all = cfg();
+  if (!g || !g->roots) return all;
+  auto mine = std::make_shared<config>(*all);
+  std::erase_if(mine->roots, [&](const root_config& r) { return !g->allows(r.id, is_catalogue(r)); });
+  return mine;
+}
+
+server::state::redeemed server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m,
+                                              bool live) {
   const auto p = parse_pair(m.text());
   // Taken and counted as redeeming under one lock, so the owner's devices
   // answer sees the code waiting or the phone saved, never neither.
-  bool taken = p && take_code(p->code, true);
-  // A code from `driftwire serve pair-code` (no desktop) is kept in the store instead.
-  if (p && !taken && redeem_pair_code(*store, p->code, std::time(nullptr))) {
-    std::lock_guard lock(codes_m);
-    ++redeeming;
-    taken = true;
+  std::optional<grants::limit> gives = p ? take_code(p->code, true) : std::nullopt;  // counted by take_code
+  // A code from `driftwire serve pair-code` (no desktop) is kept in the store
+  // instead: unlimited in the old list, limited in its own. Spent under the
+  // same locks as the lists (and the command line's file lock), so two
+  // connections with one code cannot both read it before either spends it.
+  if (p && !gives) {
+    std::lock_guard lock(devices_m);
+    std::unique_ptr<net::instance_lock> held;
+    if (!may_change_devices(held)) {
+      // The command line is changing the lists: not a bad code, try again.
+      (void)ch.cancel(kCancelWaitMs, "busy");
+      return redeemed::refused;
+    }
+    if (redeem_pair_code(*store, p->code, std::time(nullptr))) {
+      gives = grants::limit{};
+    } else {
+      gives = grants::redeem_guest_code(*store, p->code, now());
+    }
+    if (gives) {
+      std::lock_guard counted(codes_m);
+      ++redeeming;
+    }
   }
-  if (!taken) {
+  if (!gives) {
     n_bad_codes.fetch_add(1);
+    if (live) return redeemed::bad_code_live;
     (void)ch.cancel(kCancelWaitMs, "bad-code");
-    return false;
+    return redeemed::refused;
   }
   struct done_redeeming {
     state& s;
@@ -1120,13 +1562,23 @@ bool server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer
       --s.redeeming;
     }
   } counted{*this};
+  std::optional<grants::grant> g;
+  if (gives->any()) {
+    grants::grant x;
+    const auto t = now();
+    x.expires = gives->for_s != 0 ? t + gives->for_s : 0;
+    x.roots = gives->roots;
+    x.guest = true;
+    x.created = t;
+    g = std::move(x);
+  }
   bool full = false;
-  if (!add_device(p->name.empty() ? std::string("Phone") : p->name, peer, full)) {
+  if (!set_access(p->name.empty() ? std::string("Phone") : p->name, peer, g, full)) {
     (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "error");
-    return false;
+    return redeemed::refused;
   }
   n_paired.fetch_add(1);
-  return ch.send(msg::serve_paired, std::string_view("{}")).has_value();
+  return ch.send(msg::serve_paired, std::string_view("{}")).has_value() ? redeemed::paired : redeemed::refused;
 }
 
 std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view request) {
@@ -1138,6 +1590,80 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     return v ? *v : std::string();
   };
   const auto device_key = [&]() -> std::optional<std::array<std::uint8_t, 32>> { return parse_key_hex(text("key")); };
+
+  // ---- the passphrase (docs/plans/nas-owner-and-guests.md §3) ----
+  if (*what == "owner_status") {
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    const bool unlocked = s == owner::stored::set && !needs_unlock(c);
+    json::writer w;
+    w.begin_object().key("passphrase").string(stored_name(s));
+    w.key("unlocked_s").integer(
+        unlocked ? std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::seconds>(c.unlocked_until - steady()).count()) : 0);
+    w.key("locked_until").integer(locked_until(owner_counter));
+    w.end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "challenge") {
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    if (s == owner::stored::unreadable) return {end_code::error, {}};
+    if (s == owner::stored::none) return refusal_json("no-passphrase");
+    if (const auto until = locked_until(owner_counter)) return refusal_json("locked-out", until);
+    randombytes_buf(c.nonce.data(), c.nonce.size());
+    c.has_nonce = true;
+    c.nonce_at = steady();
+    json::writer w;
+    w.begin_object();
+    challenge_fields(w, v, c.nonce);
+    w.end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "unlock") {
+    const auto sig = from_hex<64>(doc->str("sig"));
+    if (!sig) return {end_code::bad_request, {}};
+    // One answer per challenge, and only a fresh one.
+    const bool fresh = c.has_nonce && steady() - c.nonce_at <= std::chrono::seconds(owner::kChallengeSeconds);
+    c.has_nonce = false;
+    if (!fresh) return refusal_json("no-challenge");
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    if (s == owner::stored::unreadable) return {end_code::error, {}};
+    if (s == owner::stored::none) return refusal_json("no-passphrase");
+    std::string why;
+    std::int64_t until = 0;
+    if (!answer(owner_counter, v, *sig, *c.ch, c.nonce, why, until)) return refusal_json(why, until);
+    n_unlocks.fetch_add(1);
+    c.unlocked_until = steady() + std::chrono::seconds(owner::kUnlockSeconds);
+    c.unlocked_pk = v.pk;
+    c.unlocked_set = v.set;
+    json::writer w;
+    w.begin_object().key("unlocked_s").integer(owner::kUnlockSeconds).end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "lock") {
+    c.unlocked_until = {};
+    c.has_nonce = false;
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "set_passphrase") {
+    // None yet: the owner's device key is enough (call C4). Set: unlocked.
+    if (auto refused = needs_unlock(c)) return *refused;
+    auto next = parse_new_verifier(doc->find("set"), now());
+    if (!next) return {end_code::bad_request, {}};
+    std::lock_guard lock(pass_m);
+    if (!owner::save(*store, *next)) return {end_code::error, {}};
+    owner::verifier back;
+    if (owner::load(*store, back) != owner::stored::set || back.pk != next->pk) return {end_code::error, {}};
+    c.unlocked_until = {};  // this session unlocks again, with the new one
+    return {end_code::ok, "{}"};
+  }
+  // What adds access, or changes what is served, needs an unlocked session
+  // once there is a passphrase (§3.4). Revoking and reading never do.
+  if (*what == "add_device" || *what == "pair_code" || *what == "add_root" || *what == "remove_root") {
+    // (grant and guest_code check for themselves.)
+    if (auto refused = needs_unlock(c)) return *refused;
+  }
 
   if (*what == "devices") {
     bool waiting = false;
@@ -1170,12 +1696,126 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       std::unique_ptr<net::instance_lock> held;
       if (!may_change_devices(held)) return {end_code::error, {}};
       auto devices = known::load(*store);
-      const auto before = devices.size();
+      std::vector<grants::grant> limited;
+      if (!grants::load(*store, limited)) return {end_code::error, {}};
+      const auto before = devices.size() + limited.size();
       std::erase_if(devices, [&](const known::device& d) { return d.key == *key; });
-      if (devices.size() == before) return {end_code::not_found, {}};
+      std::erase_if(limited, [&](const grants::grant& g) { return g.key == *key; });
+      if (devices.size() + limited.size() == before) return {end_code::not_found, {}};
+      if (!grants::save(*store, limited)) return {end_code::error, {}};
       if (!known::save(*store, devices) || known::load(*store).size() != devices.size()) return {end_code::error, {}};
     }
     cut_unpaired();
+    return {end_code::ok, "{}"};
+  }
+  // ---- timed and scoped access (docs/plans/nas-owner-and-guests.md §5) ----
+  if (*what == "grants") {
+    // The limited devices, and expired ones still listed. `devices` never
+    // lists them: a desktop from before this would serve them unlimited.
+    std::vector<grants::grant> limited;
+    if (!grants::load(*store, limited)) return {end_code::error, {}};
+    const auto t = now();
+    json::writer w;
+    w.begin_object().key("now").integer(t).key("grants").begin_array();
+    for (const auto& g : limited) {
+      if (t >= g.expires + grants::kExpiredKeptSeconds && g.expires != 0) continue;
+      w.begin_object().key("name").string(g.name).key("key").string(key_hex(g.key));
+      w.key("expires").integer(g.expires).key("expired").boolean(g.expired(t)).key("guest").boolean(g.guest);
+      if (g.roots) {
+        w.key("roots").begin_array();
+        for (const auto& r : *g.roots) w.string(r);
+        w.end_array();
+      }
+      w.end_object();
+    }
+    w.end_array().end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "grant") {
+    // {"key", "for_s" | "forever":true, "roots":[...] | "all_roots":true}:
+    // a device's limit from now. Extending, widening or lifting it adds access
+    // and needs an unlock; shortening or narrowing does not (§3.4).
+    const auto key = device_key();
+    if (!key) return {end_code::bad_request, {}};
+    const auto acc = access_of(*key);
+    if (acc.a == access::none) return {end_code::not_found, {}};
+    if (acc.a == access::unreadable) return {end_code::error, {}};
+    const auto t = now();
+    const auto for_s = doc->integer("for_s");
+    const bool forever = doc->boolean("forever") == true;
+    if (forever == for_s.has_value() || (for_s && (*for_s <= 0 || *for_s > grants::kMaxSeconds))) return {end_code::bad_request, {}};
+    std::optional<std::vector<std::string>> roots;
+    const bool all_roots = doc->boolean("all_roots") == true;
+    if (const json::value* r = doc->find("roots")) {
+      if (all_roots || r->k != json::kind::array || r->a.size() > grants::kMaxRootIds) return {end_code::bad_request, {}};
+      std::vector<std::string> ids;
+      for (const auto& e : r->a) {
+        if (e.k != json::kind::string || !lower_hex(e.s, 16)) return {end_code::bad_request, {}};
+        ids.push_back(e.s);
+      }
+      roots = std::move(ids);
+    } else if (!all_roots) {
+      roots = acc.g ? acc.g->roots : std::nullopt;  // unchanged
+    }
+    const std::int64_t old_expires = acc.a == access::full ? 0 : acc.g->expires;
+    const auto old_roots = acc.a == access::full ? std::nullopt : acc.g->roots;
+    const std::int64_t new_expires = forever ? 0 : t + *for_s;
+    // Later than it was (or none, where it had one), or a folder it could not see.
+    const bool longer = (new_expires == 0 && old_expires != 0) || (old_expires != 0 && new_expires > std::max(old_expires, t));
+    const bool wider = old_roots.has_value() && (!roots || std::any_of(roots->begin(), roots->end(), [&](const std::string& id) {
+      return std::find(old_roots->begin(), old_roots->end(), id) == old_roots->end();
+    }));
+    if (longer || wider) {
+      if (auto refused = needs_unlock(c)) return *refused;
+    }
+    std::optional<grants::grant> g;
+    if (new_expires != 0 || roots) {
+      grants::grant x;
+      x.expires = new_expires;
+      x.roots = roots;
+      x.guest = acc.g && acc.g->guest;
+      x.created = acc.g ? acc.g->created : t;
+      g = std::move(x);
+    }
+    const std::string name = acc.a == access::full ? [&] {
+      for (const auto& d : known::load(*store)) {
+        if (d.key == *key) return d.name;
+      }
+      return std::string("Phone");
+    }() : acc.g->name;
+    bool full = false;
+    if (!set_access(name, *key, g, full)) return {full ? end_code::too_many : end_code::error, {}};
+    cut_unpaired();  // a shortened or narrowed one takes effect now
+    json::writer w;
+    w.begin_object().key("expires").integer(new_expires).end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "guest_code") {
+    // {"code","ttl_ms","for_s","roots"?}: a pairing code whose phone gets a
+    // limit, from when it is redeemed (call C7). Its own verb, so a service
+    // from before this answers `unsupported` rather than pairing it unlimited.
+    if (auto refused = needs_unlock(c)) return *refused;
+    const std::string code = text("code");
+    const auto ttl = doc->integer("ttl_ms");
+    const auto for_s = doc->integer("for_s");
+    if (!lower_hex(code, kPairCodeChars) || !ttl || *ttl <= 0 || *ttl > kMaxPairTtlMs || !for_s || *for_s <= 0 ||
+        *for_s > grants::kMaxSeconds) {
+      return {end_code::bad_request, {}};
+    }
+    grants::limit gives;
+    gives.for_s = *for_s;
+    if (const json::value* r = doc->find("roots")) {
+      if (r->k != json::kind::array || r->a.size() > grants::kMaxRootIds) return {end_code::bad_request, {}};
+      std::vector<std::string> ids;
+      for (const auto& e : r->a) {
+        if (e.k != json::kind::string || !lower_hex(e.s, 16)) return {end_code::bad_request, {}};
+        ids.push_back(e.s);
+      }
+      gives.roots = std::move(ids);
+    }
+    std::lock_guard lock(codes_m);
+    codes.clear();  // one code at a time, as pair_code
+    codes.push_back({code_hash(code), clock::now() + std::chrono::milliseconds(*ttl), std::move(gives)});
     return {end_code::ok, "{}"};
   }
   if (*what == "pair_code") {
@@ -1186,7 +1826,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     // older QR is worth nothing once the card has moved on.
     std::lock_guard lock(codes_m);
     codes.clear();
-    codes.push_back({code_hash(code), clock::now() + std::chrono::milliseconds(*ttl)});
+    codes.push_back({code_hash(code), clock::now() + std::chrono::milliseconds(*ttl), {}});
     return {end_code::ok, "{}"};
   }
   if (*what == "pair_cancel") {
@@ -1256,23 +1896,74 @@ void server::state::cut_sessions(const conn* except) {
   for (auto& c : live) (void)c->ch->cancel(kCancelWaitMs, "folders-changed");
 }
 
+server::state::lists server::state::read_lists() {
+  // Both read under the lock every change in this process takes, so a move
+  // between them is never seen half done from here.
+  std::lock_guard lock(devices_m);
+  lists out;
+  out.devices = known::load(*store);
+  out.grants_ok = grants::load(*store, out.limited);
+  return out;
+}
+
+const char* server::state::verdict(const lists& l, const conn& c, std::int64_t t) const {
+  const bool unlimited = std::any_of(l.devices.begin(), l.devices.end(), [&](const known::device& d) { return d.key == c.device; });
+  const grants::grant* g = nullptr;
+  if (l.grants_ok) {
+    for (const auto& x : l.limited) {
+      if (x.key == c.device) g = &x;
+    }
+  }
+  if (!l.grants_ok && !unlimited) return "revoked";  // a grants list that cannot be read keeps nobody on it
+  if (!g && unlimited) {
+    // Made unlimited while connected: it reconnects so its caps lose the limit.
+    return c.grant ? "folders-changed" : nullptr;
+  }
+  if (!g) return "revoked";
+  if (g->expired(t)) return "expired";
+  // Its limit changed (an extension, other folders, or a limit on an unlimited
+  // phone): it reconnects and is told the one it has now. "folders-changed" is
+  // what every app already answers by reconnecting.
+  if (!c.grant || g->roots != c.grant->roots || g->expires != c.grant->expires) return "folders-changed";
+  return nullptr;
+}
+
 void server::state::cut_unpaired() {
-  const auto devices = known::load(*store);
+  auto l = read_lists();
+  const auto t = now();
   // The cuts wait on sockets, so they happen with no lock held; each conn is
   // kept alive by its reference here, and its channel is set only once.
-  std::vector<std::shared_ptr<conn>> revoked;
-  {
+  std::vector<std::pair<std::shared_ptr<conn>, const char*>> cut;
+  const auto decide = [&](const lists& with) {
+    cut.clear();
     std::lock_guard all(conns_m);
     for (auto& c : conns) {
       std::lock_guard lock(c->m);
-      if (!c->has_device || !c->ch) continue;
-      if (!c->is_owner && std::none_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == c->device; })) {
-        c->has_device = false;
-        revoked.push_back(c);
-      }
+      if (!c->has_device || !c->ch || c->is_owner) continue;
+      if (const char* why = verdict(with, *c, t)) cut.emplace_back(c, why);
     }
+  };
+  decide(l);
+  // `driftwire serve` on the command line writes the two lists from another
+  // process: a revoke seen there is read again before it cuts anyone.
+  if (std::any_of(cut.begin(), cut.end(), [](const auto& x) { return std::strcmp(x.second, "revoked") == 0; })) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    l = read_lists();
+    decide(l);
   }
-  for (auto& c : revoked) (void)c->ch->cancel(kCancelWaitMs, "revoked");
+  {
+    std::lock_guard all(conns_m);
+    std::erase_if(cut, [](auto& x) {
+      std::lock_guard lock(x.first->m);
+      if (!x.first->has_device) return true;  // gone meanwhile
+      x.first->has_device = false;
+      return false;
+    });
+  }
+  for (auto& [c, why] : cut) {
+    if (std::strcmp(why, "expired") == 0) n_expired.fetch_add(1);
+    (void)c->ch->cancel(kCancelWaitMs, why);
+  }
 }
 
 void server::state::watch_loop() {
@@ -1301,6 +1992,9 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.own_network = o.own_network;
   st.save_config = o.save_config;
   st.devices_lock = o.devices_lock;
+  st.now_unix = o.now_unix;
+  st.now_steady = o.now_steady;
+  st.min_answer_gap = std::chrono::milliseconds(std::max(0, o.min_answer_gap_ms));
   st.store = o.store;
   st.loopback_only = o.loopback_only;
   st.max_sessions = o.max_sessions;
@@ -1318,6 +2012,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   if (!identity || identity->size() != st.identity.size()) return err(status::not_found);
   std::memcpy(st.identity.data(), identity->data(), st.identity.size());
   sodium_memzero(identity->data(), identity->size());
+  crypto_scalarmult_base(st.identity_public.data(), st.identity.data());
   net::reserve_sockets(kReserveSockets);
   if (o.make_listener) {
     st.listen = o.make_listener();
@@ -1348,6 +2043,9 @@ counters server::stats() const noexcept {
   c.bad_codes = st_->n_bad_codes.load();
   c.sessions = st_->n_sessions.load();
   c.evicted = st_->n_evicted.load();
+  c.wrong_passphrase = st_->n_wrong_pass.load();
+  c.unlocks = st_->n_unlocks.load();
+  c.expired = st_->n_expired.load();
   return c;
 }
 

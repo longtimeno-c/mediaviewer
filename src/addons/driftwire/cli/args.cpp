@@ -50,7 +50,11 @@ std::string help_text() {
          "  driftwire serve              run the NAS service (no terminal needed), serving the\n"
          "         [--data DIR]          folders in DIR/serve.json to paired devices; serve init\n"
          "                               makes its keys, serve devices|add|revoke|pair-code its pairings,\n"
-         "                               serve disown forgets the desktop that claimed it\n"
+         "                               serve disown forgets the desktop that claimed it,\n"
+         "                               serve status shows its identity and passphrase, serve passphrase\n"
+         "                               set|reset changes or resets the owner's passphrase (here only);\n"
+         "                               add, pair-code --for 24h|7d|... make a timed phone, serve grant\n"
+         "                               NAME-OR-KEY --for D|--forever changes one\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -117,6 +121,14 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         want_once = true;
       } else if (t.name == "--data") {
         if (!value(a.data, "a folder")) return out;
+      } else if (t.name == "--for") {
+        if (!value(a.for_duration, "a duration (24h, 7d, 90m)")) return out;
+      } else if (t.name == "--forever" && flag) {
+        a.forever = true;
+      } else if (t.name == "--passphrase-stdin" && flag) {
+        a.passphrase_stdin = true;
+      } else if (t.name == "--no-passphrase" && flag) {
+        a.no_passphrase = true;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -220,8 +232,36 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.serve_key = words[1];
       } else if (what == "disown" && words.size() == 1) {
         a.serve = serve_action::disown;
+      } else if (what == "grant" && words.size() == 2) {
+        a.serve = serve_action::grant;
+        a.serve_key = words[1];
+      } else if (what == "status" && words.size() == 1) {
+        a.serve = serve_action::status;
+      } else if (what == "passphrase" && words.size() == 2 && words[1] == "set") {
+        a.serve = serve_action::passphrase_set;
+      } else if (what == "passphrase" && words.size() == 2 && words[1] == "reset") {
+        a.serve = serve_action::passphrase_reset;
       } else {
-        out.error = "serve takes init, devices, add NAME KEY, revoke NAME-OR-KEY, pair-code [SECONDS] or disown";
+        out.error = "serve takes init, status, devices, add NAME KEY, revoke NAME-OR-KEY, pair-code [SECONDS], "
+                    "grant NAME-OR-KEY, disown or passphrase set|reset";
+      }
+      if (out.error.empty()) {
+        const bool timed = a.serve == serve_action::add || a.serve == serve_action::pair_code || a.serve == serve_action::grant;
+        if ((!a.for_duration.empty() || a.forever) && !timed) {
+          out.error = "--for and --forever go with serve add, pair-code or grant";
+        } else if (a.serve == serve_action::grant && a.for_duration.empty() == !a.forever) {
+          out.error = "serve grant takes --for DURATION or --forever, one of them";
+        } else if (a.forever && a.serve != serve_action::grant) {
+          out.error = "--forever goes with serve grant";
+        }
+      }
+      if (out.error.empty() && (a.passphrase_stdin || a.no_passphrase)) {
+        const bool asks = a.serve == serve_action::init || a.serve == serve_action::passphrase_set ||
+                          a.serve == serve_action::passphrase_reset;
+        if (!asks || (a.passphrase_stdin && a.no_passphrase) ||
+            (a.no_passphrase && a.serve != serve_action::init)) {
+          out.error = "--passphrase-stdin goes with serve init or serve passphrase, --no-passphrase with serve init alone";
+        }
       }
       return out;
     }

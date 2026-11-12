@@ -17,13 +17,16 @@
 #include <vector>
 
 #include "wire/channel.h"
+#include "wire/owner_pass.h"
 #include "wire/serve_wire.h"
 #include "core/result.h"
 
 namespace mv::driftwire::serve {
 
 // Why a connection could not be used.
-enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy, bad_code, too_many };
+// `expired`: a limited device whose time is up (docs/plans/nas-owner-and-guests.md
+// §4.3); an app from before it reads that as not_paired.
+enum class refusal : std::uint8_t { none, wrong_service, not_paired, too_old, busy, bad_code, too_many, expired };
 
 class client {
  public:
@@ -84,13 +87,27 @@ class client {
   [[nodiscard]] result<stat_info> stat(const std::string& root, const std::string& rel, end_code* code = nullptr);
 
   // One request of the owner's (kAdminOp in `ops`). The answer's JSON. Refused,
-  // or not the owner: status::permission_denied; `code` says how it ended.
-  [[nodiscard]] result<std::string> admin(const std::string& request_json, end_code* code = nullptr);
+  // or not the owner: status::permission_denied; `code` says how it ended,
+  // and `refusal` gets the stream's JSON however it ended ({"why",...} on a
+  // refusal; empty from a service that gave none).
+  [[nodiscard]] result<std::string> admin(const std::string& request_json, end_code* code = nullptr,
+                                          std::string* refusal = nullptr);
+
+  // The owner's passphrase (docs/plans/nas-owner-and-guests.md §3.2): asks for
+  // a challenge, has `derive` make the signer from the salt and cost the
+  // service sent (Argon2id runs there, on this thread), and answers it. The
+  // answer's JSON ({"unlocked_s"}). Refused: status::permission_denied, and
+  // `refusal` says why ({"why":"passphrase"|"locked-out"|...}). A cost outside
+  // owner::sane_cost is never paid: status::corrupt.
+  using derive_fn = std::function<std::optional<owner::signer>(const owner::salt_t&, std::uint64_t ops, std::uint64_t mem)>;
+  [[nodiscard]] result<std::string> unlock(const derive_fn& derive, std::string* refusal = nullptr,
+                                           std::uint64_t min_ops = owner::kFloorOps, std::uint64_t min_mem = owner::kFloorMem);
 
   // Ends the session.
   void close() noexcept;
   [[nodiscard]] bool closed() const noexcept;
-  // A session the service ended after it began ("revoked", "not-paired", "busy"); empty otherwise.
+  // A session the service ended after it began ("revoked", "expired",
+  // "folders-changed", "not-paired", "busy"); empty otherwise.
   [[nodiscard]] std::string ended_why() const;
 
  private:
@@ -105,6 +122,9 @@ struct claim_answer {
   std::array<std::uint8_t, 32> access_key{};
   std::array<std::uint8_t, 32> identity{};
   std::vector<root_info> roots;
+  // The service took the passphrase step (asked for or took one). False
+  // from a service older than that, which kept no passphrase.
+  bool passphrase_step = false;
 };
 // `prove` writes the service's nonce to kClaimProofFile on the share, so the
 // service sees this desktop can write there, not only read the token.
@@ -113,9 +133,29 @@ struct claim_answer {
 // dropped): the claim may still have gone through, and claiming again from
 // the same device returns the same keys. Any earlier failure is a refusal or
 // silence, status::permission_denied.
+//
+// The owner's passphrase (docs/plans/nas-owner-and-guests.md §3.3). With
+// `pass`, the claim says it can take the passphrase step: a service that has
+// one asks for a signature, made by `pass->sign` from the salt and cost it
+// sends (Argon2id runs there); one that has none takes `pass->set`, and the
+// claim fails with nothing to set. Without `pass`, the claim is as before
+// this, and a service with a passphrase refuses it. `why` gets the service's
+// reason when it gave one ("passphrase", "locked-out", "slow-down", ...).
+struct claim_passphrase {
+  std::function<std::optional<owner::signer>(const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem)> sign;
+  std::optional<owner::verifier> set;
+  // The service's identity when this side knows it (`serve status` shows
+  // it; a re-claim has it): any other is refused before anything is sent.
+  std::optional<std::array<std::uint8_t, 32>> service_key;
+  // The least cost a challenge may ask for: a fake service asking for less
+  // would get an answer cheap to attack offline.
+  std::uint64_t min_ops = owner::kFloorOps;
+  std::uint64_t min_mem = owner::kFloorMem;
+};
 [[nodiscard]] result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
                                          const std::array<std::uint8_t, 32>& device_key, const std::string& name,
                                          const std::function<bool(std::string_view nonce)>& prove,
-                                         std::chrono::steady_clock::time_point deadline);
+                                         std::chrono::steady_clock::time_point deadline,
+                                         const claim_passphrase* pass = nullptr, std::string* why = nullptr);
 
 }  // namespace mv::driftwire::serve

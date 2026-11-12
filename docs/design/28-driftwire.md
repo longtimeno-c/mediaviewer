@@ -1392,6 +1392,53 @@ which is its own list too (`phone_devices`), so one scan pairs with both. A revo
 desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`), and Local
 search asks again by itself, from 30 s and doubling to an hour, until the service has it.
 
+**The owner's passphrase** (`owner_pass.h`; plan: `docs/plans/nas-owner-and-guests.md` §3, owner calls
+made 2026-11-12). A second factor beside the owner's device key and, for a claim, the share token and
+write proof. Set at `serve init` (recommended: it closes the race in which someone else on the network
+claims first) or by the first claim. The passphrase is stretched with Argon2id (3 passes, 256 MiB) into the
+seed of an Ed25519 key; the service stores only the salt, the cost and the public key
+(`owner_passphrase`), never the passphrase or anything that can answer for it. To prove it, the owner
+signs a fresh nonce bound to the session's Noise handshake hash (`channel::handshake_hash`; a library
+channel keeps no resume secret, so `pairing_secret()` is a constant there and is not used), the
+service's identity and its own device key. A client refuses a challenge cheaper than 64 MiB, so a fake
+service cannot ask for a cheap answer.
+
+- **The claim** gains a third round trip after the write proof (`serve_claim_challenge`, 38): a
+  signature when a passphrase is set, or the public key to set when none is. Nothing about it is said
+  before the write proof. A desktop from before this claims a NAS with none as it always did, and is
+  refused (`passphrase`) by one that has one. A claim can pin the identity `serve status` shows.
+- **What needs it** (call C1): adding a device, a pairing or guest code, extending or widening a
+  grant, adding or removing a named folder, changing the passphrase. A session is unlocked for 10
+  minutes of steady time (`challenge`, `unlock`, `lock`, `owner_status`). Reading, revoking, cancelling
+  a code and shortening or narrowing a grant need the device key alone, so a stolen Mac can only take
+  access away, and a revoke queued while the NAS is away still goes through. With no passphrase set
+  (a NAS claimed before this) the device key does everything, as before (call C4).
+- **Wrong answers** are counted per counter (claims; the owner's sessions and its own re-claim) in
+  `owner_lockout`, written before the answer is checked: 5 free, then 15 minutes doubling to a day,
+  and at most one answer a second. A broken lockout file reads as locked.
+- **Recovery**: `driftwire serve passphrase reset` on the NAS, as the service's user, which can edit
+  the store anyway (so the command line never asks for the passphrase, call C3). The new one is
+  stretched first and written over the old; the lockouts go. A NAS rolled back to a binary from before
+  this ignores the passphrase: that fails open, and only signed updates can stop it.
+
+**Timed and scoped phones** (`grants.h`; plan §5). A device with an expiry or a set of named folders is
+kept in `library_grants` and never in the paired list, which keeps its format: a service, or a Mac,
+from before this reads only that list, so after a rollback it refuses a guest rather than letting it
+in for ever. Guest codes from `pair-code --for` live in their own value (`library_guest_codes`) for the
+same reason. The owner's `guest_code` makes one; its phone's time starts when it is redeemed.
+
+- At connect an unlimited phone goes on; anyone else's first message decides: a code is redeemed (an
+  expired guest re-invited gets the new grant; an unlimited phone that scans a guest code stays
+  unlimited; a live guest with a spent code goes on with the grant it has), a live grant goes on, and
+  an expired one is refused `expired`. The 2 s watch cuts an expired session with `expired` and
+  refreshes one whose limit changed with `folders-changed`; both lists are read together, and a revoke
+  is read twice before anyone is cut. A key on both lists is treated by its grant.
+- A scoped phone sees only its folders and the Catalogue; anything else is refused like an unknown id,
+  and an empty list is none. **Folder scope is not offered yet** (call C5): the catalogue covers every
+  folder, so it waits for per-scope catalogues. `devices` never lists a limited device, because a Mac
+  from before this copies that list into its nearby service; `grants` does, with expired ones for 7 days.
+- `serve_caps` tells the owner `features` and the passphrase state, and a limited phone its end.
+
 **Nearby.** `desk::start_nearby` runs a second `serve::server` on the Mac over the local copy, `lan_only`,
 never claimable, with its keys in memory so its timer never wakes the Keychain. It takes the same access key
 and the same device list, and is advertised as `_mediaviewer._tcp` (TXT `v=1`, `lib=` the first 16 hex of the
@@ -1410,11 +1457,16 @@ nothing else. It never touches the DHT, a router's mapping or the beacon.
 
 ```
 driftwire serve [--data DIR]              the service, with no terminal: DIR/serve.json, DIR/secrets
-driftwire serve init                      makes the identity and library access key; shows the key once
-driftwire serve devices                   lists paired devices
-driftwire serve add NAME KEY              pairs a device by its public key (64 hex digits)
+driftwire serve init                      makes the identity and library access key; shows the key once;
+     [--passphrase-stdin | --no-passphrase]   asks for the owner's passphrase on the terminal
+driftwire serve status                    identity, owner, passphrase set or not, both lockouts
+driftwire serve devices                   lists paired devices, and timed ones with their end
+driftwire serve add NAME KEY [--for D]    pairs a device by its public key (64 hex digits); --for: timed
+driftwire serve grant NAME-OR-KEY         --for D (24h, 7d, 90m, seconds) or --forever: a device's limit
 driftwire serve revoke NAME-OR-KEY        revokes one; a running session is cut within 2 s
-driftwire serve pair-code [SECONDS]       prints a single-use pairing code for the QR (default 600 s)
+driftwire serve pair-code [S] [--for D]   prints a single-use pairing code for the QR (default 600 s);
+                                          --for: a guest code, whose phone gets D from when it scans
+driftwire serve passphrase set|reset      changes the owner's passphrase; reset is the recovery (below)
 ```
 
 `serve.json`, normally written by the desktop at setup:

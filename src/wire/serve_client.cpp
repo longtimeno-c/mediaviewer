@@ -32,6 +32,7 @@ constexpr std::uint32_t kCreditRefill = 2;
 struct client::state {
   std::unique_ptr<channel> ch;
   caps_msg caps;
+  std::array<std::uint8_t, 32> device_public{};  // what the service sees as peer_key
   std::atomic<std::uint32_t> next_id{1};
 
   // Per-stream, kept while its id can still come back.
@@ -161,6 +162,7 @@ result<std::unique_ptr<client>> client::open(std::shared_ptr<link> l, const opti
       *why = *text == "busy"       ? refusal::busy
              : *text == "bad-code" ? refusal::bad_code
              : *text == "too-many" ? refusal::too_many
+             : *text == "expired"  ? refusal::expired
                                    : refusal::not_paired;
     }
   };
@@ -194,6 +196,7 @@ result<std::unique_ptr<client>> client::open(std::shared_ptr<link> l, const opti
   c->st_ = std::make_shared<state>();
   c->st_->ch = std::move(*ch);
   c->st_->caps = *caps;
+  crypto_scalarmult_base(c->st_->device_public.data(), o.device_key.data());
   state* st = c->st_.get();
   st->reader = std::thread([st] { st->reader_loop(); });
   return c;
@@ -407,7 +410,7 @@ result<std::vector<list_entry>> client::list(const std::string& root, const std:
   return *parsed;
 }
 
-result<std::string> client::admin(const std::string& request_json, end_code* code) {
+result<std::string> client::admin(const std::string& request_json, end_code* code, std::string* refusal) {
   open_request r;
   auto slot = st_->open_slot(r);
   if (auto s = st_->ch->send(msg::serve_admin, encode_admin(r.id, request_json)); !s) {
@@ -416,6 +419,10 @@ result<std::string> client::admin(const std::string& request_json, end_code* cod
   }
   auto done = finish(st_, slot, r.id, code);
   st_->remove(r.id);
+  if (refusal) {
+    std::lock_guard lock(slot->m);
+    *refusal = slot->end_json;
+  }
   if (!done) return err(done.error());
   switch (*done) {
     case end_code::ok:
@@ -433,10 +440,81 @@ result<std::string> client::admin(const std::string& request_json, end_code* cod
   }
 }
 
+namespace {
+
+template <std::size_t N>
+std::optional<std::array<std::uint8_t, N>> from_hex(const std::string* s) {
+  if (!s || s->size() != N * 2) return std::nullopt;
+  std::array<std::uint8_t, N> out{};
+  std::size_t len = 0;
+  if (sodium_hex2bin(out.data(), out.size(), s->data(), s->size(), nullptr, &len, nullptr) != 0 || len != N) return std::nullopt;
+  return out;
+}
+
+template <std::size_t N>
+std::string to_hex(const std::array<std::uint8_t, N>& b) {
+  std::string out(N * 2, '0');
+  sodium_bin2hex(out.data(), out.size() + 1, b.data(), b.size());
+  return out;
+}
+
+// A challenge's salt, cost and nonce, signed for this channel: the "sig" hex.
+// nullopt: not a challenge, a cost this side will not pay, or no signer.
+std::optional<std::string> sign_challenge(const json::value& doc, const channel& ch, const std::array<std::uint8_t, 32>& me,
+                                          const client::derive_fn& derive, std::uint64_t min_ops, std::uint64_t min_mem) {
+  const auto salt = from_hex<owner::kSaltBytes>(doc.str("salt"));
+  const auto nonce = from_hex<32>(doc.str("nonce"));
+  const auto ops = doc.integer("ops");
+  const auto mem = doc.integer("mem");
+  const auto service = ch.peer_key();
+  if (!salt || !nonce || !ops || !mem || *ops <= 0 || *mem <= 0 || !service || !derive) return std::nullopt;
+  if (!owner::sane_cost(static_cast<std::uint64_t>(*ops), static_cast<std::uint64_t>(*mem))) return std::nullopt;
+  if (static_cast<std::uint64_t>(*ops) < min_ops || static_cast<std::uint64_t>(*mem) < min_mem) return std::nullopt;
+  const auto s = derive(*salt, static_cast<std::uint64_t>(*ops), static_cast<std::uint64_t>(*mem));
+  if (!s) return std::nullopt;
+  return to_hex(owner::sign(*s, std::span<const std::uint8_t, owner::kBindingBytes>(ch.handshake_hash()), *nonce, *service, me));
+}
+
+std::string set_json(const owner::verifier& v) {
+  json::writer w;
+  w.begin_object().key("set").begin_object();
+  w.key("salt").string(to_hex(v.salt));
+  w.key("ops").integer(static_cast<std::int64_t>(v.ops));
+  w.key("mem").integer(static_cast<std::int64_t>(v.mem));
+  w.key("pk").string(to_hex(v.pk));
+  w.end_object().end_object();
+  return w.take();
+}
+
+std::string why_of(const message& m) {
+  if (m.type != msg::cancel) return {};
+  const auto doc = json::parse(m.text(), 2);
+  const std::string* why = doc ? doc->str("why") : nullptr;
+  return why ? *why : std::string();
+}
+
+}  // namespace
+
+result<std::string> client::unlock(const derive_fn& derive, std::string* refusal, std::uint64_t min_ops,
+                                   std::uint64_t min_mem) {
+  if (refusal) refusal->clear();
+  end_code code = end_code::error;
+  auto challenge = admin("{\"do\":\"challenge\"}", &code, refusal);
+  if (!challenge) return challenge;
+  const auto doc = json::parse(*challenge, 2);
+  const auto sig = doc ? sign_challenge(*doc, *st_->ch, st_->device_public, derive, min_ops, min_mem) : std::nullopt;
+  if (!sig) return err(status::corrupt);
+  json::writer w;
+  w.begin_object().key("do").string("unlock").key("sig").string(*sig).end_object();
+  return admin(w.str(), &code, refusal);
+}
+
 result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
                            const std::array<std::uint8_t, 32>& device_key, const std::string& name,
                            const std::function<bool(std::string_view nonce)>& prove,
-                           std::chrono::steady_clock::time_point deadline) {
+                           std::chrono::steady_clock::time_point deadline, const claim_passphrase* pass,
+                           std::string* why) {
+  if (why) why->clear();
   const auto left_ms = [&] {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
     return static_cast<int>(std::max<std::int64_t>(1, ms));  // at least 1: the channel reads 0 as one poll and returns at once
@@ -446,8 +524,15 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
   opts.static_key = device_key;
   auto ch = channel::open_library(l, "0000000000000000", name, opts);
   if (!ch) return err(status::permission_denied);  // silence: owned, not its network, or no token here
+  if (pass && pass->service_key && (*ch)->peer_key() != pass->service_key) {
+    if (why) *why = "wrong-service";  // nothing said to it, not even the name
+    (*ch)->shutdown();
+    return err(status::permission_denied);
+  }
   json::writer w;
-  w.begin_object().key("name").string(name).end_object();
+  w.begin_object().key("name").string(name);
+  if (pass) w.key("passphrase").integer(1);
+  w.end_object();
   (void)(*ch)->send(msg::serve_claim, w.str());
   message m;
   if (auto r = (*ch)->receive(m, std::min(kAnswerMs, left_ms())); !r) return err(status::permission_denied);
@@ -464,7 +549,36 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
     // happened to its answer. The caller claims once more to find out.
     return err(status::timeout);
   }
-  if (m.type != msg::serve_claimed) return err(status::permission_denied);
+  bool stepped = false;
+  if (pass && m.type == msg::serve_claim_challenge) {
+    // Past the write proof: the passphrase step (§3.3).
+    const auto doc = json::parse(m.text(), 2);
+    const std::string* state = doc ? doc->str("passphrase") : nullptr;
+    std::optional<std::string> answer;
+    if (state && *state == "set") {
+      std::array<std::uint8_t, 32> me{};
+      crypto_scalarmult_base(me.data(), device_key.data());
+      if (const auto sig = sign_challenge(*doc, **ch, me, pass->sign, pass->min_ops, pass->min_mem)) {
+        json::writer a;
+        a.begin_object().key("sig").string(*sig).end_object();
+        answer = a.take();
+      }
+    } else if (state && *state == "none" && pass->set) {
+      answer = set_json(*pass->set);
+    }
+    if (!answer) {
+      if (why) *why = state && *state == "none" ? "no-passphrase" : "cost";
+      (*ch)->shutdown();
+      return err(status::permission_denied);
+    }
+    (void)(*ch)->send(msg::serve_claim, *answer);
+    if (auto r = (*ch)->receive(m, left_ms()); !r) return err(status::timeout);
+    stepped = true;
+  }
+  if (m.type != msg::serve_claimed) {
+    if (why) *why = why_of(m);
+    return err(status::permission_denied);
+  }
   const auto doc = json::parse(m.text(), 6);
   const std::string* access = doc ? doc->str("access_key") : nullptr;
   const auto parsed = access ? parse_key_hex(*access) : std::nullopt;
@@ -473,6 +587,7 @@ result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_
   claim_answer out;
   out.access_key = *parsed;
   out.identity = *peer;
+  out.passphrase_step = stepped;
   return out;
 }
 

@@ -748,6 +748,52 @@ swaps, tiles and warm-up, over generations the publisher builds) run in a Simula
 tools/ios/run-mobilecore-tests.sh
 ```
 
+### The sample library (code `SAMPLE`; plan: `docs/plans/mobile.md` §11.1)
+
+Every build of the iPhone app opens a sample library from the GitHub release `sample-library` when
+someone enters `SAMPLE` on the Scan screen ("Enter a code") or opens `mediaviewer://sample`. It is
+App Review's way in (`src.ios/AppStore/review-notes.md`). The pictures are listed with their authors
+and licences in `tools/ios/sample-library/SOURCES.md` (made from `sources.json` by
+`python3 tools/ios/sample_library.py table`).
+
+To make it again, and to put it on the release (the second needs `gh` signed in to the repository):
+
+```bash
+cmake --build build --target mv_mobile_parity_desktop
+```
+
+```bash
+tools/ios/sample-library.sh <work folder> <generation>
+```
+
+```bash
+tools/ios/sample-library.sh <work folder> <generation> --upload
+```
+
+`<generation>` must be above the one on the release, or phones that have the sample keep theirs. The
+script downloads each original from Wikimedia Commons (its SHA-1 pinned, its licence rechecked),
+makes 2048 px JPEGs and 1280 px H.264 clips (the OS's encoder, no x264), indexes them on a disk image
+of their own with the AI pack's B/32 on the CPU, publishes with `phone_publish`, refuses a
+catalogue that names this Mac's home folder or user, and signs `files.json` (every original's and
+the JPEG-512 pack's SHA-256) with `mv_mobile_parity_desktop sample-sign`. It signs with
+`~/Dev/.mv-toolchain/devkey/sample-library-publisher.key` (`MV_SAMPLE_KEY`), whose public half is
+pinned in `src/mobile/sample.h`: losing it means a new key and an app update, so keep a copy. The
+upload puts the files first, then `files.json` (the list and its signature in one asset), then `current.json`. It leaves older generations' files on the release; delete them
+by hand once the new one has been out for a day.
+
+In the Simulator, with a Debug build ad hoc signed as for `search-live.sh`: the folder is served on
+127.0.0.1 with ranges, the app is pointed at it (`MV_SAMPLE_BASE`, Debug builds only), and
+`SampleLibraryTests` walks a wrong code, `SAMPLE`, the copy, six searches, a photo, a clip and Forget;
+then the script checks each search's first three answers against the pictures' tags, that Forget
+left nothing in the app's container, and that requests carried no header about the person:
+
+```bash
+tools/ios/sample-library-sim.sh <work folder> <Simulator UDID> <MediaViewer.app> <out>
+```
+
+`MV_SAMPLE_FILE=1` serves it as a `file://` folder instead. The core's side, over a folder of a
+publisher's real `deliver()`, is in `mv_mobile_link_tests "sample*"`.
+
 ## Run
 
 ```powershell
@@ -4746,4 +4792,9 @@ The core: `mv_mobile_link_tests "[mobile-link]"` (the Mac build's `build/bin`), 
 build `build-ios-sim/` (`cmake/ios.cmake`), then the `MediaViewer` scheme. End to end against
 `driftwire serve` on loopback in a Simulator of your own: `tools/ios/link-e2e.sh <udid> <folder>`
 after copying the built `MediaViewer.app` into `<folder>`. Codes for a service come from
-`driftwire serve pair-code [SECONDS]` until the desktop claim lands.
+`driftwire serve pair-code [SECONDS]` (`--for 24h` for a guest code) until the desktop claim lands.
+The owner's passphrase and timed phones on the service: `driftwire serve init --passphrase-stdin` or
+`--no-passphrase` when no terminal can ask, `serve status`, `serve passphrase set|reset`,
+`serve grant NAME --for D|--forever` (`docs/design/28-driftwire.md` "The owner's passphrase"). Tests:
+`mv_import_tests "[driftwire-serve],[phone-pairing]"`; the iOS copy in `MobileUITests` (the package's
+test scheme links the iOS core from `build-ios-iphonesimulator/`).

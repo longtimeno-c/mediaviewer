@@ -96,14 +96,19 @@ std::optional<hello_msg> parse_hello(std::string_view text) {
   return h;
 }
 
-std::string caps_json(std::uint32_t version, std::uint32_t ops) {
+std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields) {
   json::writer w;
   w.begin_object().key("v").integer(version);
   write_ops(w, ops);
   w.key("chunk").integer(static_cast<std::int64_t>(kInteractiveChunk));
   w.key("bulk_chunk").integer(static_cast<std::int64_t>(kBulkChunk));
   w.end_object();
-  return w.take();
+  std::string out = w.take();
+  if (!owner_fields.empty()) {
+    out.pop_back();
+    out.append(",").append(owner_fields).append("}");
+  }
+  return out;
 }
 
 std::optional<caps_msg> parse_caps(std::string_view text) {
@@ -122,6 +127,20 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
   c.ops = read_ops(*doc);
   c.chunk = static_cast<std::uint32_t>(*chunk);
   c.bulk_chunk = static_cast<std::uint32_t>(*bulk);
+  if (const json::value* f = doc->find("features"); f && f->k == json::kind::array) {
+    for (const auto& e : f->a) {
+      if (e.k == json::kind::string && e.s.size() <= 32 && c.features.size() < 16) c.features.push_back(e.s);
+    }
+  }
+  if (const std::string* p = doc->str("passphrase"); p && p->size() <= 16) c.passphrase = *p;
+  if (const json::value* g = doc->find("grant"); g && g->k == json::kind::object) {
+    const auto expires = g->integer("expires");
+    if (expires && *expires >= 0) {
+      c.has_grant = true;
+      c.grant_expires = *expires;
+      c.grant_scoped = g->boolean("scoped") == true;
+    }
+  }
   return c;
 }
 

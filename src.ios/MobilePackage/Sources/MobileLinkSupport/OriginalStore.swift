@@ -33,7 +33,11 @@ public actor OriginalStore {
   /// The file named `key`, `size` bytes long: from the cache, from a fetch already running, or from
   /// `fetch`, which writes the whole file to the URL it is given. A cancelled caller gets
   /// CancellationError at once; the fetch is cancelled when no caller still wants the file.
-  public func file(key: String, size: UInt64, fetch: @escaping @Sendable (URL) async throws -> Void) async throws -> URL {
+  /// `place` runs the move into the store, or refuses it (false: the library is gone; the caller hears
+  /// CancellationError and nothing is left behind).
+  public func file(key: String, size: UInt64,
+                   place: @escaping @Sendable (_ move: () throws -> Void) throws -> Bool = { move in try move(); return true },
+                   fetch: @escaping @Sendable (URL) async throws -> Void) async throws -> URL {
     let target = dir.appendingPathComponent(key)
     if Self.size(of: target) == size {
       Self.touch(target)
@@ -51,8 +55,16 @@ public actor OriginalStore {
           try Task.checkCancellation()
           let got = Self.size(of: part) ?? 0
           guard got == size else { throw OriginalStoreError.short(expected: size, got: got) }
-          try? FileManager.default.removeItem(at: target)
-          do { try FileManager.default.moveItem(at: part, to: target) } catch { throw OriginalStoreError.notMoved }
+          let placed: Bool
+          do {
+            placed = try place {
+              try? FileManager.default.removeItem(at: target)
+              try FileManager.default.moveItem(at: part, to: target)
+            }
+          } catch {
+            throw OriginalStoreError.notMoved
+          }
+          guard placed else { throw CancellationError() }
           result = .success(target)
         } catch {
           result = .failure(error)

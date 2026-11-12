@@ -176,7 +176,7 @@ struct ViewerScreen: View {
         }
       case .failed(let failure):
         slotCard {
-          Text(FailureCopy.line(for: failure))
+          Text(FailureCopy.line(for: failure, sample: model.connection.isSample))
             .font(.footnote)
             .foregroundStyle(Theme.title)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -228,7 +228,7 @@ struct ViewerScreen: View {
       } catch let failure as MediaFailure {
         if token == saveToken {
           photosRefused = failure == .photosNotAllowed
-          save = .outcome(.failed(FailureCopy.line(for: failure), canRetry: false))
+          save = .outcome(.failed(FailureCopy.line(for: failure, sample: model.connection.isSample), canRetry: false))
         }
       } catch {
         if token == saveToken { save = .outcome(.failed("Couldn't save this to Photos.", canRetry: true)) }

@@ -110,8 +110,22 @@ const char* error_name(status s) noexcept {
     case status::permission_denied: return "refused";
     case status::invalid_arg: return "bad_address";
     case status::busy: return "too_many";
+    case status::unsupported_format: return "nas_too_old";
     default: return "unreachable";
   }
+}
+
+// The NAS's own reason for a refusal (desk last_refusal), as the card names it;
+// nullptr when it gave none the card has words for.
+const char* refusal_name(std::string_view why) noexcept {
+  if (why == "needs-unlock") return "needs_unlock";
+  if (why == "passphrase" || why == "passphrase-changed") return "passphrase";
+  if (why == "locked-out") return "locked_out";
+  if (why == "no-passphrase") return "no_passphrase";
+  if (why == "slow-down") return "slow_down";
+  if (why == "wrong-service") return "wrong_service";
+  if (why == "passphrase-short") return "passphrase_short";
+  return nullptr;
 }
 
 }  // namespace
@@ -547,7 +561,16 @@ void link::refresh(bool phones_only) {
         for (const json::value& v : list->a) {
           const std::string* name = v.str("name");
           const std::string* key = v.str("key");
-          if (name && key) rows.push_back({*name, *key});
+          if (!name || !key) continue;
+          row r;
+          r.name = *name;
+          r.key = *key;
+          r.limited = v.boolean("limited").value_or(false);
+          r.expires = v.integer("expires").value_or(0);
+          r.expired = v.boolean("expired").value_or(false);
+          r.guest = v.boolean("guest").value_or(false);
+          r.scoped = v.boolean("scoped").value_or(false);
+          rows.push_back(std::move(r));
         }
       }
       std::lock_guard lock(m_);
@@ -556,6 +579,22 @@ void link::refresh(bool phones_only) {
       v_.code_waiting = doc && doc->boolean("code_waiting").value_or(false);
     }
     if (phones_only) return;  // the two-second poll under a showing code
+    if (auto o = route("owner_status", "{}")) {
+      const auto doc = json::parse(*o, 3);
+      std::lock_guard lock(m_);
+      if (doc) {
+        const std::string* p = doc->str("passphrase");
+        v_.nas_passphrase = p ? *p : std::string();
+        v_.nas_features.clear();
+        if (const json::value* f = doc->find("features"); f && f->k == json::kind::array) {
+          for (const auto& e : f->a) {
+            if (e.k == json::kind::string) v_.nas_features.push_back(e.s);
+          }
+        }
+        v_.unlocked_s = doc->integer("unlocked_s").value_or(0);
+        v_.locked_until = doc->integer("locked_until").value_or(0);
+      }
+    }
     if (auto r = route("roots", "{}")) {
       const auto doc = json::parse(*r, 6);
       std::vector<folder_row> rows;
@@ -768,12 +807,30 @@ void link::run(const std::string& request) {
     std::lock_guard lock(m_);
     v_.error = why;
   };
+  // A refusal, named by the NAS's reason when it gave one (a passphrase wanted,
+  // wrong, or locked out) rather than the bare status.
+  const auto fail_status = [this, &fail](status e) {
+    if (e == status::permission_denied || e == status::invalid_arg) {
+      if (auto r = route("last_refusal", "{}")) {
+        const auto d = json::parse(*r, 2);
+        const std::string* why = d ? d->str("why") : nullptr;
+        if (const char* named = why ? refusal_name(*why) : nullptr) {
+          std::lock_guard lock(m_);
+          v_.error = named;
+          if (const auto until = d->integer("until")) v_.locked_until = *until;
+          return;
+        }
+      }
+    }
+    fail(error_name(e));
+  };
   const auto clear_qr = [this] {
     std::lock_guard lock(m_);
     v_.qr_url.clear();
     v_.qr_library.clear();
     v_.qr_fingerprint.clear();
     v_.qr_expires = 0;
+    v_.qr_for_s = 0;
   };
   std::string destination;
   {
@@ -816,6 +873,7 @@ void link::run(const std::string& request) {
         v_.qr_library.clear();
         v_.qr_fingerprint.clear();
         v_.qr_expires = 0;
+        v_.qr_for_s = 0;
         return;
       }
     }
@@ -833,6 +891,7 @@ void link::run(const std::string& request) {
       v_.qr_library.clear();
       v_.qr_fingerprint.clear();
       v_.qr_expires = 0;
+      v_.qr_for_s = 0;
       // The new phone can be served nearby from now on, and the session
       // kept open for this code is let go after it.
       requests_.push_back("{\"do\":\"nearby\"}");
@@ -884,17 +943,25 @@ void link::run(const std::string& request) {
   if (what == "claim") {
     if (destination.empty()) return fail("no_folder");
     json::writer w;
-    w.begin_object().key("share").string(destination).key("local").string(text("local")).key("public").string(text("public")).end_object();
+    w.begin_object().key("share").string(destination).key("local").string(text("local")).key("public").string(text("public"));
+    if (const std::string pass = text("passphrase"); !pass.empty()) {
+      w.key("passphrase").string(pass).key("new_passphrase").boolean(doc->boolean("new_passphrase").value_or(false));
+    }
+    w.end_object();
     auto r = route("claim", w.str());
     // Timed out: the service may have taken it and the answer been lost. A
     // second claim from this desktop is answered with the same keys.
     if (!r && r.error() == status::timeout) r = route("claim", w.str());
-    if (!r && r.error() != status::timeout) return fail(error_name(r.error()));
+    if (!r && r.error() != status::timeout) return fail_status(r.error());
     // A slow claim may still have gone through: the service says which.
     refresh();
     if (!r) {
       std::lock_guard lock(m_);
       if (!v_.claimed) v_.error = "unreachable";
+    } else if (const auto a = json::parse(*r, 2); a && a->boolean("passphrase_set") == false) {
+      // Claimed, but the NAS is too old to keep a passphrase: nothing protects it yet.
+      std::lock_guard lock(m_);
+      v_.error = "nas_too_old";
     }
     return;
   }
@@ -909,14 +976,16 @@ void link::run(const std::string& request) {
     auto secret = signing_key(false);
     if (!secret) return fail("not_published");
     const auto publisher = catalog::public_of(*secret);
+    const std::int64_t for_s = std::max<std::int64_t>(0, doc->integer("for_s").value_or(0));
     json::writer w;
     w.begin_object()
         .key("ttl_ms").integer(static_cast<std::int64_t>(o_.code_ttl_s * 1000))
         .key("library_id").string(library_id)
-        .key("publisher_key").string(catalog::to_hex(publisher))
-        .end_object();
+        .key("publisher_key").string(catalog::to_hex(publisher));
+    if (for_s > 0) w.key("for_s").integer(for_s);
+    w.end_object();
     auto answer = route("pair", w.str());
-    if (!answer) return fail(error_name(answer.error()));
+    if (!answer) return fail_status(answer.error());
     const auto a = json::parse(*answer, 4);
     if (!a) return fail("failed");
     catalog::pair_payload p;
@@ -933,6 +1002,7 @@ void link::run(const std::string& request) {
     p.access_key_hex = field("access_key");
     p.code = field("code");
     p.expires = a->integer("expires").value_or(0);
+    p.grant_for_s = for_s;
     const std::string url = catalog::pair_url(p);
     refresh();  // who is paired before this code
     std::lock_guard lock(m_);
@@ -946,10 +1016,12 @@ void link::run(const std::string& request) {
       // A desk too old to say it: no code to compare is no code to show.
       v_.qr_url.clear();
       v_.qr_expires = 0;
+      v_.qr_for_s = 0;
       v_.error = "no_driftwire";
       return;
     }
     v_.qr_expires = p.expires;
+    v_.qr_for_s = for_s;
     // A new code is the one on the service now: nothing left from before to withdraw.
     if (v_.code_left) {
       v_.code_left = false;
@@ -968,7 +1040,7 @@ void link::run(const std::string& request) {
     json::writer w;
     w.begin_object().key("key").string(text("key")).end_object();
     auto r = route("revoke", w.str());
-    if (!r) return fail(error_name(r.error()));
+    if (!r) return fail_status(r.error());
     const auto a = json::parse(*r, 4);
     if (a && !a->boolean("nas_told").value_or(true)) fail("revoke_waits");
     refresh();
@@ -984,8 +1056,33 @@ void link::run(const std::string& request) {
       w.key("id").string(text("id"));
     }
     w.end_object();
-    if (auto r = route(what == "add_folder" ? "add_root" : "remove_root", w.str()); !r) return fail(error_name(r.error()));
+    if (auto r = route(what == "add_folder" ? "add_root" : "remove_root", w.str()); !r) return fail_status(r.error());
     refresh();
+    return;
+  }
+  // ---- the owner's passphrase and timed phones ----
+  if (what == "unlock" || what == "set_passphrase") {
+    json::writer w;
+    w.begin_object().key("passphrase").string(text("passphrase")).end_object();
+    if (auto r = route(what.c_str(), w.str()); !r) return fail_status(r.error());
+    {
+      std::lock_guard lock(m_);
+      v_.error.clear();
+    }
+    refresh();
+    return;
+  }
+  if (what == "lock") {
+    (void)route("lock", "{}");
+    refresh();
+    return;
+  }
+  if (what == "grant") {
+    json::writer w;
+    w.begin_object().key("key").string(text("key")).key("for_s").integer(std::max<std::int64_t>(0, doc->integer("for_s").value_or(0))).end_object();
+    if (auto r = route("grant", w.str()); !r) return fail_status(r.error());
+    refresh();
+    prepare_nearby();
     return;
   }
   if (what == "set_addresses") {
@@ -1074,8 +1171,23 @@ std::string link::state_json() const {
   w.key("public").string(v_.public_name);
   w.key("warning").string(v_.warning);
   w.key("devices").begin_array();
-  for (const auto& d : v_.devices) w.begin_object().key("name").string(d.name).key("key").string(d.key).end_object();
+  for (const auto& d : v_.devices) {
+    w.begin_object().key("name").string(d.name).key("key").string(d.key);
+    // A timed or scoped phone: its end (unix, the NAS's clock; 0 none) and whether it has passed.
+    w.key("limited").boolean(d.limited).key("expires").integer(d.expires).key("expired").boolean(d.expired);
+    w.key("guest").boolean(d.guest).key("scoped").boolean(d.scoped);
+    w.end_object();
+  }
   w.end_array();
+  // The NAS owner's side: its passphrase ("set", "none", "broken"; "" from a NAS
+  // too old to say), what it can do, this desktop's unlock and any lockout.
+  w.key("nas_passphrase").string(v_.nas_passphrase);
+  w.key("nas_features").begin_array();
+  for (const auto& f : v_.nas_features) w.string(f);
+  w.end_array();
+  w.key("unlocked_s").integer(v_.unlocked_s);
+  w.key("locked_until").integer(v_.locked_until);
+  w.key("qr_for_s").integer(v_.qr_for_s);
   w.key("folders").begin_array();
   for (const auto& f : v_.folders) w.begin_object().key("id").string(f.id).key("label").string(f.label).key("path").string(f.path).end_object();
   w.end_array();
