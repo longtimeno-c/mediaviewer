@@ -34,6 +34,8 @@ using mv::mobile::search_engine;
 struct mv_mobile_library {
   std::shared_ptr<catalogue> cat;
   std::string work_dir;
+  std::string sound_dir;  // "" without one
+  bool has_sound = false;
   std::mutex start_m;   // one start at a time; held across it
   std::atomic<bool> starting{false};
   mutable std::mutex engine_m;  // only to read or publish `engine`: never held across work
@@ -128,6 +130,8 @@ mv_mobile_status mv_mobile_library_open(const mv_mobile_open_options* o, mv_mobi
     auto library = std::make_unique<mv_mobile_library>();
     library->cat = std::shared_ptr<catalogue>(std::move(*opened));
     library->work_dir = o->work_dir;
+    if (o->sound_dir) library->sound_dir = o->sound_dir;
+    library->has_sound = mv::mobile::sound_wanted(*library->cat, library->sound_dir);
     *out = library.release();
     return MV_MOBILE_OK;
   });
@@ -145,6 +149,7 @@ mv_mobile_status mv_mobile_library_info_get(const mv_mobile_library* l, mv_mobil
     out->assets = static_cast<uint32_t>(l->cat->rows().size());
     out->people = l->cat->people_count();
     out->has_tiny = l->cat->has_tiny() ? 1 : 0;
+    out->has_sound = l->has_sound ? 1 : 0;
     fill(out->active_spec, sizeof out->active_spec, m.active_spec);
     return MV_MOBILE_OK;
   });
@@ -296,7 +301,7 @@ mv_mobile_status mv_mobile_search_start(mv_mobile_library* l) {
       hook = g_start_hook;
     }
     if (hook) hook();
-    auto started = search_engine::start(l->cat, l->work_dir);
+    auto started = search_engine::start(l->cat, l->work_dir, l->sound_dir);
     if (!started) return map_status(started.error());
     std::lock_guard publish(l->engine_m);
     l->engine = std::shared_ptr<search_engine>(std::move(*started));

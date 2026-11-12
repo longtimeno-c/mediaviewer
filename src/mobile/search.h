@@ -29,10 +29,16 @@ struct hit {
 // True for the towers a phone can run (§9: L/14 and B/32). H/14 is not one.
 [[nodiscard]] bool tower_supported(std::string_view spec);
 
+// True when `sound_dir` holds the pinned sound text tower, verified, and the catalogue has clip
+// sounds it answers (sound_tower.h). Only then does the engine load it.
+[[nodiscard]] bool sound_wanted(const catalogue& c, const std::string& sound_dir);
+
 // docs/plans/mobile.md §5's folder for the engine: index.db, settings.json and what else the
-// generation carries, linked in, and the text tower where pack.cpp expects it. Atomic: a run
-// killed part-way leaves nothing that a later run would believe.
-[[nodiscard]] expected lay_out_work_dir(const catalogue& c, const std::string& work_dir);
+// generation carries, linked in, and the text tower where pack.cpp expects it; the sound text
+// tower too when sound_wanted. Atomic: a run killed part-way leaves nothing that a later run
+// would believe. `sound_dir` "": none.
+[[nodiscard]] expected lay_out_work_dir(const catalogue& c, const std::string& work_dir,
+                                        const std::string& sound_dir = std::string());
 
 class search_engine {
  public:
@@ -43,7 +49,8 @@ class search_engine {
   // status::unsupported_format for a tower a phone cannot run. Reads the
   // catalogue now; the model loads on the engine's own thread.
   [[nodiscard]] static result<std::unique_ptr<search_engine>> start(std::shared_ptr<const catalogue> c,
-                                                                    const std::string& work_dir);
+                                                                    const std::string& work_dir,
+                                                                    const std::string& sound_dir = std::string());
   enum class state : std::uint8_t { warming, ready, failed };
   [[nodiscard]] state current() const;
   // status::cancelled when a newer run or cancel() overtakes it. timeout_ms 0: no limit.

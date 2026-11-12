@@ -8,8 +8,10 @@
 
 #include "catch_compat.h"
 
+#include <array>
 #include <filesystem>
 #include <future>
+#include <map>
 #include <fstream>
 #include <memory>
 #include <span>
@@ -27,6 +29,8 @@
 #include "mobile/link_thumbs.h"
 #include "mobile/mv_mobile_link.h"
 #include "mobile/sample.h"
+#include "mobile/sound_fetch.h"
+#include "mobile/sound_tower.h"
 #include "mobile/sync.h"
 #include "mobile/testing.h"
 
@@ -1658,4 +1662,168 @@ TEST_CASE("sample: Forget through the C ABI stops a tile write whose read has al
     if (it->is_regular_file()) ++tiles;
   }
   CHECK(tiles == 0);  // nothing written into the folder Forget removes next
+}
+
+// ---- the sound text tower's download (docs/plans/mobile.md §9, "Sound search") ------------------
+
+namespace {
+
+std::string read_text(const fs::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+std::string sha_hex(std::string_view bytes) {
+  unsigned char h[crypto_hash_sha256_BYTES];
+  crypto_hash_sha256(h, reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
+  return catalog::to_hex(std::span<const std::uint8_t>(h, sizeof h));
+}
+
+// A release in memory: the files by URL, every request seen, and a way to make one fail.
+struct fake_release {
+  std::map<std::string, std::string> files;
+  std::vector<std::pair<std::string, uint64_t>> asked;  // url, from
+  int32_t answer = MV_LINK_OK;
+  std::size_t cut_after = SIZE_MAX;  // stop delivering after this many bytes in all (a dropped line)
+  std::size_t sent = 0;
+};
+
+int32_t fake_fetch(void* ctx, const char* url, uint64_t at, uint64_t length, mv_sink_fn sink, void* sink_ctx,
+                   mv_stopped_fn stopped, void* stopped_ctx) {
+  auto* r = static_cast<fake_release*>(ctx);
+  r->asked.emplace_back(url, at);
+  if (r->answer != MV_LINK_OK) return r->answer;
+  const auto it = r->files.find(url);
+  if (it == r->files.end()) return MV_LINK_NOT_FOUND;
+  const std::string& body = it->second;
+  const uint64_t end = length == UINT64_MAX ? body.size() : std::min<uint64_t>(body.size(), at + length);
+  for (uint64_t i = at; i < end; i += 3) {  // small chunks, so `allowed` is asked often
+    if (stopped && stopped(stopped_ctx)) return MV_LINK_CANCELLED;
+    if (r->sent >= r->cut_after) return MV_LINK_UNREACHABLE;
+    const std::size_t n = static_cast<std::size_t>(std::min<uint64_t>(3, end - i));
+    if (!sink(sink_ctx, i - at, reinterpret_cast<const uint8_t*>(body.data() + i), n)) return MV_LINK_CANCELLED;
+    r->sent += n;
+  }
+  return MV_LINK_OK;
+}
+
+struct sound_fixture {
+  fs::path root = fs::temp_directory_path() / ("mv-sound-" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+  std::string a = "model file A, the first", b = "tokens: the second file, a little longer";
+  std::string sa = sha_hex(a), sb = sha_hex(b);  // the pin's views point here
+  std::array<mob::sound::pinned_file, 2> pin{};
+  fake_release release;
+  sound_fixture() {
+    fs::remove_all(root);
+    fs::create_directories(root);
+    pin = {{{"a.bin", sa, a.size()}, {"b.txt", sb, b.size()}}};
+    release.files["https://example.invalid/r/a.bin"] = a;
+    release.files["https://example.invalid/r/b.txt"] = b;
+  }
+  ~sound_fixture() {
+    std::error_code ec;
+    fs::remove_all(root, ec);
+  }
+  std::string library() const { return root.string(); }
+  fs::path dir() const { return fs::path(mob::sound::folder(library())); }
+  int32_t fetch(mv_sync_allowed_fn allowed = nullptr, void* ctx = nullptr, const mob::cancel_flag* cancel = nullptr) {
+    return mob::sound::fetch_all(library(), "https://example.invalid/r/", &fake_fetch, &release, cancel, allowed, nullptr, ctx,
+                                 pin);
+  }
+};
+
+int32_t never(void*) { return 0; }
+
+}  // namespace
+
+TEST_CASE("sound tower: downloaded, hashed and recorded; a second run asks for nothing", "[mobile-link]") {
+  sound_fixture f;
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  CHECK(mob::sound::ready(f.dir().string(), f.pin));
+  CHECK(read_text(f.dir() / "a.bin") == f.a);
+  CHECK(read_text(f.dir() / "b.txt") == f.b);
+  CHECK_FALSE(fs::exists(f.dir() / "a.bin.part"));
+  CHECK(mob::sound::bytes_on_disk(f.library()) >= f.a.size() + f.b.size());
+  f.release.asked.clear();
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  CHECK(f.release.asked.empty());
+}
+
+TEST_CASE("sound tower: a dropped download resumes where it stopped", "[mobile-link]") {
+  sound_fixture f;
+  f.release.cut_after = f.a.size() + 7;  // all of a, then part of b
+  CHECK(f.fetch() == MV_LINK_UNREACHABLE);
+  CHECK(fs::exists(f.dir() / "a.bin"));
+  REQUIRE(fs::exists(f.dir() / "b.txt.part"));
+  const auto have = fs::file_size(f.dir() / "b.txt.part");
+  CHECK(have > 0);
+  f.release.cut_after = SIZE_MAX;
+  f.release.asked.clear();
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  REQUIRE(f.release.asked.size() == 1);
+  CHECK(f.release.asked[0].first == "https://example.invalid/r/b.txt");
+  CHECK(f.release.asked[0].second == have);
+  CHECK(read_text(f.dir() / "b.txt") == f.b);
+}
+
+TEST_CASE("sound tower: a file that is not the pinned one is deleted, never kept or resumed", "[mobile-link]") {
+  sound_fixture f;
+  f.release.files["https://example.invalid/r/b.txt"] = std::string(f.b.size(), 'x');  // the right size, not the file
+  CHECK(f.fetch() == MV_LINK_REJECTED);
+  CHECK_FALSE(fs::exists(f.dir() / "b.txt"));
+  CHECK_FALSE(fs::exists(f.dir() / "b.txt.part"));
+  CHECK_FALSE(mob::sound::ready(f.dir().string(), f.pin));
+  // A verified record left by hand does not make a wrong file right either.
+  std::ofstream(f.dir() / "b.txt", std::ios::binary) << std::string(f.b.size(), 'x');
+  CHECK(f.fetch() == MV_LINK_REJECTED);
+  CHECK_FALSE(fs::exists(f.dir() / "b.txt"));
+}
+
+TEST_CASE("sound tower: no bytes move while the Wi-Fi rule says no, and a gone pin says so", "[mobile-link]") {
+  sound_fixture f;
+  CHECK(f.fetch(&never) == MV_LINK_WAITING);
+  CHECK(f.release.asked.empty());
+  CHECK_FALSE(fs::exists(f.dir() / "a.bin.part"));
+  f.release.files.erase("https://example.invalid/r/b.txt");
+  CHECK(f.fetch() == MV_LINK_NOT_FOUND);
+  CHECK_FALSE(mob::sound::ready(f.dir().string(), f.pin));
+  mob::cancel_flag stop;
+  stop.stop = true;
+  CHECK(f.fetch(nullptr, nullptr, &stop) == MV_LINK_CANCELLED);
+}
+
+TEST_CASE("sound tower: an older pin's files are cleared, the record is per pin", "[mobile-link]") {
+  sound_fixture f;
+  fs::create_directories(f.dir());
+  std::ofstream(f.dir() / "old-text.onnx") << "an older tower";
+  std::ofstream(f.dir() / std::string(mob::sound::kVerified)) << "old-text.onnx 00\n";
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  CHECK_FALSE(fs::exists(f.dir() / "old-text.onnx"));
+  CHECK(read_text(f.dir() / std::string(mob::sound::kVerified)) == mob::sound::verified_text(f.pin));
+  CHECK_FALSE(mob::sound::ready(f.dir().string()));  // the app's own pin is another
+}
+
+TEST_CASE("sound tower: wanted only for a catalogue whose clips the pinned tower answers", "[mobile-link]") {
+  const fs::path root = fs::temp_directory_path() / "mv-sound-wanted";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto make = [&](const std::string& spec) {
+    fs::remove(root / "catalog.db");
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open((root / "catalog.db").string().c_str(), &db) == SQLITE_OK);
+    const std::string sql = "CREATE TABLE frames(id INTEGER PRIMARY KEY, asset_id INTEGER, spec TEXT);"
+                            "CREATE INDEX frames_spec ON frames(spec);"
+                            "INSERT INTO frames(asset_id, spec) VALUES(1, 'clip-vit-l14/fp16/pre1'), (2, '" + spec + "');";
+    REQUIRE(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+  make(std::string(mob::sound::kSpec));
+  CHECK(mv_sound_wanted(root.string().c_str()) == 1);
+  make("clap-other/fp16/pre1");
+  CHECK(mv_sound_wanted(root.string().c_str()) == 0);
+  CHECK(mv_sound_wanted((root / "missing").string().c_str()) == 0);
+  CHECK(mv_sound_wanted(nullptr) == 0);
+  CHECK(mv_sound_total_bytes() == mob::sound::total_bytes());
+  CHECK(std::string(mv_sound_base()).back() == '/');
+  fs::remove_all(root);
 }

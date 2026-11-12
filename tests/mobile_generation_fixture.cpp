@@ -174,6 +174,11 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
                      "(4, '" + p + "/trip/day1/d.pdf', 7, 400, 44, 4, 0, NULL, NULL, NULL);")) {
       return 2;
     }
+    // What the clip sounds like, under the Mac's CLAP key: a phone with the sound tower hears it.
+    if (!exec(index, "INSERT INTO frames(asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb) VALUES"
+                     "(3, 'clap-general/fp16/pre1', 0, 0, 1, 1000, 0, 0, 1, zeroblob(512));")) {
+      return 2;
+    }
     if (!extra_rel.empty() &&
         !exec(index, "INSERT INTO assets(id, path, root_id, mtime, size, kind, duration_ms) VALUES"
                      "(5, '" + p + "/" + extra_rel + "', 7, 500, 55, 1, 0);")) {

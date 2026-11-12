@@ -17,6 +17,7 @@
 #include "addons/ai/host.h"
 #include "addons/ai/pack.h"
 #include "core/json.h"
+#include "mobile/sound_tower.h"
 
 namespace mv::mobile {
 namespace {
@@ -50,8 +51,9 @@ bool link_in(const fs::path& from, const fs::path& to) {
   return !ec;
 }
 
-// The phone's whole tier: one tower, in the slot the tier's own name says.
-std::string tiers_json(const std::string& tier, std::string_view spec, const std::string& folder) {
+// The phone's whole tier: one tower, in the slot the tier's own name says, and the sound text
+// tower when this phone has one (sound_tower.h).
+std::string tiers_json(const std::string& tier, std::string_view spec, const std::string& folder, bool sound) {
   json::writer w;
   w.begin_object();
   w.key("default").string(tier);
@@ -64,12 +66,16 @@ std::string tiers_json(const std::string& tier, std::string_view spec, const std
   w.key("high").string(folder);
   w.key("fast").null();
   w.end_object();
-  // Speech is rows, not a model; sounds, people and documents need models the
-  // phone does not have. The tier says so rather than leaving the slots out.
+  // Speech is rows, not a model; people and documents need models the phone
+  // does not have. The tier says so rather than leaving the slots out.
   w.key("speech").begin_object();
   w.key("high").string("models/no-speech-model");  // a slot the file format requires; never opened
   w.end_object();
-  w.key("sounds").null();
+  if (sound) {
+    w.key("sounds").string("models/sound");
+  } else {
+    w.key("sounds").null();
+  }
   w.key("faces").null();
   w.key("documents").null();
   (void)spec;
@@ -93,6 +99,8 @@ std::atomic<std::uint64_t> g_correlation{1};
 struct host_state {
   std::string data_dir;
   std::string tile_dir;
+  std::string core_dir;  // the laid-out models; also the "ai-audio" piece when there is a sound tower
+  bool sound = false;
   std::shared_ptr<const catalogue> c;
 };
 
@@ -116,8 +124,13 @@ mv_status MV_CALL host_stat(void*, const char* path, std::uint64_t* size, std::i
   *is_dir = dir ? 1 : 0;
   return MV_OK;
 }
-// Nothing here is a piece; the pack's tower is laid out in the Core folder.
-mv_status MV_CALL host_piece_dir(void*, const char*, char*, std::uint32_t) { return MV_ERR_IO; }
+// The pack's tower is laid out in the Core folder. The sound text tower is laid out there too, and
+// the engine asks for it as the ai-audio piece; no other piece is here.
+mv_status MV_CALL host_piece_dir(void* h, const char* piece, char* out, std::uint32_t capacity) {
+  const auto* s = static_cast<host_state*>(h);
+  if (s->sound && piece && std::string_view(piece) == "ai-audio") return copy_out(s->core_dir, out, capacity);
+  return MV_ERR_IO;
+}
 int32_t MV_CALL host_no_yield(void*) { return 0; }
 void MV_CALL host_drop_event(void*, const mv_addon_event*) {}
 uint64_t MV_CALL host_correlation(void*) { return g_correlation.fetch_add(1); }
@@ -154,11 +167,21 @@ bool tower_supported(std::string_view spec) {
   return spec.starts_with("clip-vit-l14/") || spec.starts_with("clip-vit-b32/");
 }
 
+bool sound_wanted(const catalogue& c, const std::string& sound_dir) {
+  return !sound_dir.empty() && sound::ready(sound_dir) && c.has_vectors(sound::kSpec);
+}
+
 namespace {
-expected lay_out_part(const catalogue& c, const std::string& work_dir) {
+expected lay_out_part(const catalogue& c, const std::string& work_dir, const std::string& sound_dir) {
+  const bool with_sound = sound_wanted(c, sound_dir);
+  MV_TRY(std::string tier, tier_of(c));
+  const std::string folder = "models/tower";
+  const std::string tiers = tiers_json(tier, c.info().active_spec, folder, with_sound);
+  // A whole folder, laid out for the same tower and sound as now. One laid out without the
+  // sound tower (it arrived since) is laid out again: the app gives that one another folder.
   const fs::path done = fs_path(work_dir) / "core" / "models" / "tiers.json";
   std::error_code ec;
-  if (fs::exists(done, ec)) return {};
+  if (fs::exists(done, ec) && slurp(done) == tiers) return {};
   const fs::path dir = fs_path(c.dir());
   const fs::path part = fs_path(work_dir + ".part");
   fs::remove_all(part, ec);
@@ -188,7 +211,6 @@ expected lay_out_part(const catalogue& c, const std::string& work_dir) {
     return err(status::corrupt);
   }
   const fs::path models = part / "core" / "models";
-  const std::string folder = "models/tower";
   const fs::path tower = models / "tower";
   const fs::path tokens = models / *tokenizer;
   fs::create_directories(tower, ec);
@@ -200,8 +222,23 @@ expected lay_out_part(const catalogue& c, const std::string& work_dir) {
   }
   if (!fs::exists(tower / *text, ec)) return err(status::not_found);
 
-  MV_TRY(std::string tier, tier_of(c));
-  if (!write_new(models / "tiers.json", tiers_json(tier, c.info().active_spec, folder))) return err(status::io);
+  // The sound text tower, as pack.cpp's open_sound_text finds it: models/sound/model.json and
+  // the file it names, the tokenizer its sibling folder. No audio tower: a phone hears nothing.
+  if (with_sound) {
+    const fs::path from = fs_path(sound_dir);
+    const fs::path sound_tower = models / "sound";
+    const fs::path sound_tokens = models / "clap-tokenizer";
+    fs::create_directories(sound_tower, ec);
+    fs::create_directories(sound_tokens, ec);
+    if (ec) return err(status::io);
+    for (const sound::pinned_file& f : sound::kFiles) {
+      const std::string name(f.name);
+      const bool token = name == "vocab.json" || name == "merges.txt";
+      if (!link_in(from / name, (token ? sound_tokens : sound_tower) / name)) return err(status::io);
+    }
+  }
+
+  if (!write_new(models / "tiers.json", tiers)) return err(status::io);
 
   // The commit: a work folder with a tiers.json is a whole one.
   fs::remove_all(fs_path(work_dir), ec);
@@ -212,8 +249,8 @@ expected lay_out_part(const catalogue& c, const std::string& work_dir) {
 }
 }  // namespace
 
-expected lay_out_work_dir(const catalogue& c, const std::string& work_dir) {
-  auto done = lay_out_part(c, work_dir);
+expected lay_out_work_dir(const catalogue& c, const std::string& work_dir, const std::string& sound_dir) {
+  auto done = lay_out_part(c, work_dir, sound_dir);
   if (!done) {
     // A layout that failed leaves nothing: Forget can remove the library while an open is
     // still laying out its work folder, and a half one must not outlive it.
@@ -241,14 +278,17 @@ search_engine::~search_engine() {
 }
 
 result<std::unique_ptr<search_engine>> search_engine::start(std::shared_ptr<const catalogue> c,
-                                                            const std::string& work_dir) {
+                                                            const std::string& work_dir,
+                                                            const std::string& sound_dir) {
   if (!tower_supported(c->info().active_spec)) return err(status::unsupported_format);
-  MV_TRY_VOID(lay_out_work_dir(*c, work_dir));
+  MV_TRY_VOID(lay_out_work_dir(*c, work_dir, sound_dir));
   std::unique_ptr<search_engine> s(new search_engine());
   s->impl_ = std::make_unique<impl>();
   impl& i = *s->impl_;
   i.state.data_dir = work_dir;
   i.state.tile_dir = work_dir + "/tiles";
+  i.state.core_dir = work_dir + "/core";
+  i.state.sound = sound_wanted(*c, sound_dir);
   i.state.c = c;
   std::error_code ec;
   fs::create_directories(fs_path(i.state.tile_dir), ec);

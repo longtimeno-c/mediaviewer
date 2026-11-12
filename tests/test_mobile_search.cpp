@@ -20,10 +20,12 @@
 #include "addons/ai/index_db.h"
 #include "addons/ai/tiers.h"
 #include "core/json.h"
+#include "infer/audio_models.h"
 #include "infer/models.h"
 #include "mobile/catalogue.h"
 #include "mobile/mv_mobile_search.h"
 #include "mobile/search.h"
+#include "mobile/sound_tower.h"
 #include "mobile/testing.h"
 #include "mobile_generation_fixture.h"
 
@@ -55,7 +57,7 @@ struct generation_fixture {
 
   mv_mobile_library* open(mv_mobile_status* status = nullptr) {
     const std::string g = gen.string(), l = (nas / ".mediaviewer").string(), w = (root / "work" / "000003").string();
-    const mv_mobile_open_options o{sizeof o, g.c_str(), l.c_str(), w.c_str()};
+    const mv_mobile_open_options o{sizeof o, g.c_str(), l.c_str(), w.c_str(), nullptr};
     mv_mobile_library* out = nullptr;
     const mv_mobile_status st = mv_mobile_library_open(&o, &out);
     if (status) *status = st;
@@ -178,6 +180,92 @@ TEST_CASE("a generation's text tower is laid out as pack.cpp reads it", "[mobile
   CHECK(spec->spec_key() == "clip-vit-l14/fp16/pre1");
   CHECK(spec->text_file == core + "/models/tower/text.onnx");
   CHECK(spec->vocab_file == core + "/models/clip-tokenizer/vocab.json");
+  mv_mobile_library_close(lib);
+}
+
+namespace {
+// A folder the size check takes for the pinned sound tower: model.json real (the Mac's values,
+// padded to the pinned size), the rest sparse files of the pinned sizes.
+void make_sound_folder(const fs::path& dir, bool verified) {
+  namespace sound = mv::mobile::sound;
+  fs::create_directories(dir);
+  for (const auto& f : sound::kFiles) {
+    const fs::path p = dir / std::string(f.name);
+    if (f.name == "model.json") {
+      std::string json =
+          R"j({"id":"clap-general","name":"LAION CLAP (general)","precision":"fp16","dim":512,"audio":"audio.onnx",)j"
+          R"j("text":"text.onnx","tokenizer":"clap-tokenizer","query_margin":0.04,"generic_prompts":["a sound."]})j";
+      REQUIRE(json.size() <= f.size);
+      json.resize(f.size, ' ');
+      std::ofstream(p, std::ios::binary) << json;
+    } else {
+      std::ofstream(p, std::ios::binary).close();
+      fs::resize_file(p, f.size);
+    }
+  }
+  if (verified) std::ofstream(dir / std::string(sound::kVerified), std::ios::binary) << sound::verified_text();
+}
+}  // namespace
+
+TEST_CASE("the sound text tower is laid out only once it is verified, and a folder without it is laid out again", "[mobile]") {
+  namespace sound = mv::mobile::sound;
+  generation_fixture g("sound");
+  auto opened = mv::mobile::catalogue::open(g.gen.string(), (g.nas / ".mediaviewer").string());
+  REQUIRE(opened);
+  CHECK((*opened)->has_vectors(sound::kSpec));  // the fixture's clip was heard by the Mac's CLAP
+  CHECK_FALSE((*opened)->has_vectors("clap-other/fp16/pre1"));
+  const fs::path dir = g.root / "library" / "sound" / "clap-general";
+  make_sound_folder(dir, false);
+  const fs::path work = g.root / "work-sound";
+
+  // Not verified: no sound, and the library says so.
+  CHECK_FALSE(sound::ready(dir.string()));
+  CHECK_FALSE(mv::mobile::sound_wanted(**opened, dir.string()));
+  REQUIRE(mv::mobile::lay_out_work_dir(**opened, work.string(), dir.string()));
+  CHECK(mv::ai::read_tier_profile((work / "core").string(), "default").sounds.empty());
+  CHECK_FALSE(fs::exists(work / "core" / "models" / "sound"));
+
+  // Verified: the same work folder is laid out again, with the sound slot and its files.
+  std::ofstream(dir / std::string(sound::kVerified), std::ios::binary) << sound::verified_text();
+  CHECK(sound::ready(dir.string()));
+  CHECK(mv::mobile::sound_wanted(**opened, dir.string()));
+  REQUIRE(mv::mobile::lay_out_work_dir(**opened, work.string(), dir.string()));
+  const std::string core = (work / "core").string();
+  CHECK(mv::ai::read_tier_profile(core, "default").sounds == "models/sound");
+  CHECK(mv::ai::read_tier_profile(core, "default").picture_high == "models/tower");
+  const auto spec = mv::infer::read_clap_spec(core + "/models/sound", core + "/models/sound");
+  REQUIRE(spec);
+  CHECK(spec->spec_key() == std::string(sound::kSpec));  // the index key of the clips' sound vectors
+  CHECK(spec->text_file == core + "/models/sound/text.onnx");
+  CHECK(spec->vocab_file == core + "/models/clap-tokenizer/vocab.json");
+  CHECK(spec->merges_file == core + "/models/clap-tokenizer/merges.txt");
+  CHECK(fs::file_size(fs::path(spec->text_file)) == fs::file_size(dir / "text.onnx"));
+  CHECK_FALSE(fs::exists(work.string() + ".part"));
+
+  // A second layout with nothing changed keeps the folder as it is.
+  const auto stamp = fs::last_write_time(work / "core" / "models" / "tiers.json");
+  REQUIRE(mv::mobile::lay_out_work_dir(**opened, work.string(), dir.string()));
+  CHECK(bool(fs::last_write_time(work / "core" / "models" / "tiers.json") == stamp));
+
+  // The library tells the app; a pin whose sizes are wrong is not taken.
+  {
+    const std::string gs = g.gen.string(), ls = (g.nas / ".mediaviewer").string(), ws = (g.root / "w3").string();
+    const std::string ds = dir.string();
+    const mv_mobile_open_options o{sizeof o, gs.c_str(), ls.c_str(), ws.c_str(), ds.c_str()};
+    mv_mobile_library* lib = nullptr;
+    REQUIRE(mv_mobile_library_open(&o, &lib) == MV_MOBILE_OK);
+    mv_mobile_library_info info{};
+    REQUIRE(mv_mobile_library_info_get(lib, &info) == MV_MOBILE_OK);
+    CHECK(info.has_sound == 1);
+    mv_mobile_library_close(lib);
+  }
+  fs::resize_file(dir / "text.onnx", fs::file_size(dir / "text.onnx") - 1);
+  CHECK_FALSE(sound::ready(dir.string()));
+  mv_mobile_library* lib = g.open();
+  REQUIRE(lib);
+  mv_mobile_library_info info{};
+  REQUIRE(mv_mobile_library_info_get(lib, &info) == MV_MOBILE_OK);
+  CHECK(info.has_sound == 0);  // no folder given at all
   mv_mobile_library_close(lib);
 }
 
