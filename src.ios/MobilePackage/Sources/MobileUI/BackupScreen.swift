@@ -55,7 +55,7 @@ struct BackupScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .task { await loadFolders() }
     .sheet(isPresented: $choosing) {
-      FolderChoice(folders: folders ?? [], failure: foldersFailure, current: backup.folder, layout: backup.layout) { folder, layout in
+      FolderChoice(folders: folders ?? [], failure: foldersFailure, sample: backup.isSample, current: backup.folder, layout: backup.layout) { folder, layout in
         Task { await service.choose(folder: folder, layout: layout) }
       }
       .environment(model)
@@ -96,7 +96,7 @@ struct BackupScreen: View {
                         faded: backup.state != .running)
           if backup.state == .running, let name = backup.currentName {
             Text("Copying \(name)").font(.footnote).foregroundStyle(Theme.body).lineLimit(1)
-          } else if backup.state == .done {
+          } else if backup.state == .done && backup.failures.isEmpty && backup.toGo == 0 {
             Text("Everything is backed up.").font(.footnote).foregroundStyle(Theme.body)
           }
         }
@@ -204,6 +204,7 @@ struct BackupScreen: View {
 private struct FolderChoice: View {
   let folders: [BackupFolder]
   let failure: BackupState?
+  let sample: Bool
   let current: BackupFolder?
   let layout: BackupLayout
   let chosen: (BackupFolder, BackupLayout) -> Void
@@ -215,7 +216,7 @@ private struct FolderChoice: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
-          if let failure, let words = FailureCopy.backupLine(for: failure) {
+          if let failure, let words = FailureCopy.backupLine(for: failure, sample: sample) {
             Text(words).font(.subheadline).foregroundStyle(Theme.title).fixedSize(horizontal: false, vertical: true)
           } else if folders.isEmpty {
             Text(FailureCopy.backupNoFolders).font(.subheadline).foregroundStyle(Theme.title).fixedSize(horizontal: false, vertical: true)
@@ -281,6 +282,9 @@ private struct FolderChoice: View {
           .disabled(folder == nil)
           .accessibilityIdentifier("backup.choose.done")
         }
+      }
+      .onChange(of: folders) { _, _ in
+        if folder == nil { folder = current.flatMap { c in folders.first { $0.id == c.id } } ?? (folders.count == 1 && folders[0].writable ? folders[0] : nil) }
       }
       .onAppear {
         folder = current.flatMap { c in folders.first { $0.id == c.id } } ?? (folders.count == 1 && folders[0].writable ? folders[0] : nil)

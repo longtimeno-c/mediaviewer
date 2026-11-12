@@ -15,19 +15,35 @@ import Network
 import Photos
 import UIKit
 
+/// One open `mv_backup`, closed when the last user lets go: a run, a folder listing and Forget can
+/// each hold it, and none closes it under another. It holds its link, released only after the close.
+final class BackupHandle: @unchecked Sendable {
+  let raw: OpaquePointer
+  let link: LinkHandle
+  let library: String
+  init(raw: OpaquePointer, link: LinkHandle, library: String) {
+    self.raw = raw
+    self.link = link
+    self.library = library
+  }
+  deinit { mv_backup_close(raw) }  // stored properties (the link) go after this body
+}
+
 public final class LinkBackup: BackupService, @unchecked Sendable {
   private let connection: LinkConnection
   private let lock = NSLock()
   private var snapshot: BackupSnapshot
   private var listeners: [UUID: AsyncStream<BackupSnapshot>.Continuation] = [:]
-  private var handle: OpaquePointer?          // mv_backup, for `handleLibrary`
-  private var handleLink: LinkHandle?         // kept alive while `handle` is open
-  private var handleLibrary = ""
+  private var handle: BackupHandle?
+  private var opening: Task<BackupHandle?, Never>?  // single-flight open
   private var running = false
-  private var cancel: LinkCancel?
+  private var cancel: LinkCancel?            // made with the run, so a stop before it starts still counts
+  private enum StopReason { case none, offWiFi, other }
+  private var stopReason = StopReason.none
+  private var restartPending = false         // a folder chosen while a run was stopping
+  private var runAllowsNetwork = false       // iCloud downloads only on Wi-Fi, or when asked
   private var localIDs: [String: String] = [:]  // ledger key -> Photos local identifier, from the last listing
   private var onWiFi = false
-  private var pathKnown = false
   private let monitor = NWPathMonitor()
   // Concurrent: a run blocks one thread for as long as it lasts, while the screen still asks for folders.
   private let queue = DispatchQueue(label: "mediaviewer.backup", qos: .utility, attributes: .concurrent)
@@ -98,11 +114,11 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
   }
 
   public func folders() async throws -> [BackupFolder] {
-    guard let b = await openHandle() else { throw BackupState.unreachable }
+    guard let h = await openHandle() else { throw BackupState.unreachable }
     return try await onQueue {
       final class Box { var list: [BackupFolder] = [] }
       let box = Box()
-      let status = mv_backup_folders(b, { ctx, id, label, writable in
+      let status = mv_backup_folders(h.raw, { ctx, id, label, writable in
         guard let ctx, let id, let label else { return }
         Unmanaged<Box>.fromOpaque(ctx).takeUnretainedValue().list.append(
           BackupFolder(id: String(cString: id), label: String(cString: label), writable: writable != 0))
@@ -122,7 +138,11 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
   }
 
   public func choose(folder: BackupFolder, layout: BackupLayout) async {
-    stop()
+    let wasRunning = lock.withLock { () -> Bool in
+      if running { restartPending = true }
+      return running
+    }
+    if wasRunning { stop() }
     defaults.set(folder.id, forKey: Key.folderID)
     defaults.set(folder.label, forKey: Key.folderLabel)
     defaults.set(layout.rawValue, forKey: Key.layout)
@@ -131,8 +151,10 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       $0.folder = folder
       $0.layout = layout
       $0.state = .off
+      $0.backedUp = 0
+      $0.total = 0
     }
-    start(overMobileData: false)
+    if !wasRunning { start(overMobileData: false) }  // else the stopping run starts the next one
   }
 
   public func setAutomatic(_ on: Bool) {
@@ -148,30 +170,47 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
   }
 
   public func start(overMobileData: Bool) {
-    let go: Bool = lock.withLock {
-      guard !running, snapshot.folder != nil else { return false }
+    let cancel: LinkCancel? = lock.withLock {
+      guard !running, snapshot.folder != nil else { return nil }
       running = true
-      return true
+      stopReason = .none
+      let c = LinkCancel()
+      self.cancel = c
+      return c
     }
-    guard go else { return }
+    guard let cancel else { return }
     Task.detached(priority: .utility) { [weak self] in
-      await self?.run(overMobileData: overMobileData)
-      self?.lock.withLock { self?.running = false }
-      self?.updateIdleTimer()
+      guard let self else { return }
+      await self.run(overMobileData: overMobileData, cancel: cancel)
+      let again = self.lock.withLock { () -> Bool in
+        self.running = false
+        self.cancel = nil
+        let again = self.restartPending
+        self.restartPending = false
+        return again
+      }
+      self.updateIdleTimer()
+      if again { self.start(overMobileData: false) }
     }
   }
 
-  public func stop() {
-    lock.withLock { cancel }?.fire()
+  public func stop() { stop(because: .other) }
+
+  private func stop(because reason: StopReason) {
+    let c: LinkCancel? = lock.withLock {
+      if running && stopReason == .none { stopReason = reason }
+      return cancel
+    }
+    c?.fire()
   }
 
   public func notBackedUp() async -> [String] {
-    guard let b = lock.withLock({ handle }) else { return [] }
+    guard let h = lock.withLock({ handle }) else { return [] }
     let map = lock.withLock { localIDs }
     return await onQueue {
       final class Box { var keys: [String] = [] }
       let box = Box()
-      _ = mv_backup_remaining(b, { ctx, key in
+      _ = mv_backup_remaining(h.raw, { ctx, key in
         guard let ctx, let key else { return }
         Unmanaged<Box>.fromOpaque(ctx).takeUnretainedValue().keys.append(String(cString: key))
       }, Unmanaged.passUnretained(box).toOpaque())
@@ -206,11 +245,14 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     start(overMobileData: false)
   }
 
-  private func run(overMobileData: Bool) async {
+  private func run(overMobileData: Bool, cancel: LinkCancel) async {
     guard let folder = current.folder else { return }
     let sample = connection.current.isSample
-    // Never over mobile data unless asked (§10b). The sample's "NAS" is on this phone: no network at all.
-    if !sample && !overMobileData && !lock.withLock({ onWiFi }) {
+    let wifi = lock.withLock { onWiFi }
+    // Never over mobile data unless asked (§10b). The sample's "NAS" is on this phone, but an iCloud
+    // original still downloads, so that too waits for Wi-Fi unless asked.
+    lock.withLock { runAllowsNetwork = wifi || overMobileData }
+    if !sample && !overMobileData && !wifi {
       change { $0.state = .pausedOffWiFi }
       return
     }
@@ -226,16 +268,17 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       $0.state = .checking
       $0.failures = []
     }
-    guard let b = await openHandle() else {
+    guard let h = await openHandle() else {
       change { $0.state = .unreachable }
       return
     }
-    let cancel = LinkCancel()
-    lock.withLock { self.cancel = cancel }
+    if mv_backup_cancelled(cancel.raw) != 0 { finishStopped(); return }
     updateIdleTimer()
     let layout = current.layout
+    let b = h.raw
     let final: Int32 = await onQueue { [self] in
       let total = listPhotos(into: b)
+      if mv_backup_cancelled(cancel.raw) != 0 { return 0 }
       change { $0.total = total }
       let ctx = Unmanaged.passUnretained(self).toOpaque()
       var state: Int32 = 8  // unreachable, unless the run says otherwise
@@ -251,7 +294,7 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       }
       return status == Int32(MV_LINK_OK.rawValue) ? state : 8
     }
-    lock.withLock { self.cancel = nil }
+    withExtendedLifetime(h) {}
     var failures: [BackupFailureRow] = []
     _ = await onQueue {
       final class Box { var rows: [BackupFailureRow] = [] }
@@ -276,11 +319,25 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       guard folder.id.withCString({ mv_backup_space_of(b, $0, &s) }) == Int32(MV_LINK_OK.rawValue) else { return nil }
       return BackupSpace(limitBytes: Int64(s.limit), usedBytes: Int64(s.used), roomBytes: Int64(s.room))
     }
+    if final == 0 {  // idle: it was stopped
+      finishStopped()
+    } else {
+      change { $0.state = Self.state(final) }
+    }
     change {
-      $0.state = Self.state(final)
       $0.currentName = nil
       $0.failures = failures
       if let space { $0.space = space }
+    }
+    withExtendedLifetime(h) {}
+  }
+
+  /// A stopped run says why: off Wi-Fi keeps §11.1's paused state and its mobile-data button.
+  private func finishStopped() {
+    let reason = lock.withLock { stopReason }
+    change {
+      $0.currentName = nil
+      $0.state = reason == .offWiFi ? .pausedOffWiFi : .off
     }
   }
 
@@ -365,29 +422,44 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       return Int32(MV_LINK_INTERNAL.rawValue)
     }
     let options = PHAssetResourceRequestOptions()
-    options.isNetworkAccessAllowed = true  // iCloud-only originals: downloaded one at a time, then dropped
+    // iCloud-only originals: downloaded one at a time, then dropped; only on Wi-Fi unless asked.
+    options.isNetworkAccessAllowed = lock.withLock { runAllowsNetwork }
+    /// Shared with PhotoKit's queue: written there, read here, and the file closed under its lock.
+    final class Export: @unchecked Sendable {
+      let lock = NSLock()
+      var failed = false
+      var stopped = false
+      var closed = false
+      let out: FileHandle
+      init(out: FileHandle) { self.out = out }
+    }
+    let box = Export(out: out)
     let done = DispatchSemaphore(value: 0)
-    var failed: Error?
-    var stopped = false
     let manager = PHAssetResourceManager.default()
     let request = manager.requestData(for: resources[index].resource, options: options, dataReceivedHandler: { data in
-      if stopped { return }
-      if mv_backup_cancelled(cancel) != 0 { stopped = true; return }
-      do { try out.write(contentsOf: data) } catch { failed = error; stopped = true }
+      box.lock.withLock {
+        if box.stopped || box.closed { return }
+        if mv_backup_cancelled(cancel) != 0 { box.stopped = true; return }
+        do { try box.out.write(contentsOf: data) } catch { box.failed = true; box.stopped = true }
+      }
     }, completionHandler: { error in
-      if let error { failed = error }
+      box.lock.withLock { if error != nil { box.failed = true } }
       done.signal()
     })
     while done.wait(timeout: .now() + .milliseconds(200)) == .timedOut {
-      if mv_backup_cancelled(cancel) != 0 || stopped {
+      if mv_backup_cancelled(cancel) != 0 || box.lock.withLock({ box.stopped }) {
         manager.cancelDataRequest(request)
         _ = done.wait(timeout: .now() + .seconds(5))
         break
       }
     }
-    try? out.close()
+    let (failed, stopped) = box.lock.withLock { () -> (Bool, Bool) in
+      box.closed = true
+      try? box.out.close()
+      return (box.failed, box.stopped)
+    }
     if mv_backup_cancelled(cancel) != 0 { return Int32(MV_LINK_CANCELLED.rawValue) }
-    if failed != nil || stopped { return Int32(MV_LINK_INTERNAL.rawValue) }
+    if failed || stopped { return Int32(MV_LINK_INTERNAL.rawValue) }
     if let ymd, let date = Self.captureDate(of: url, kind: resources[index].kind) {
       ymd[0] = Int32(date.0); ymd[1] = Int32(date.1); ymd[2] = Int32(date.2)
     }
@@ -399,7 +471,9 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
   private static func captureDate(of url: URL, kind: String) -> (Int, Int, Int)? {
     func parse(_ text: String) -> (Int, Int, Int)? {
       let digits = text.prefix(10).split(whereSeparator: { $0 == ":" || $0 == "-" }).compactMap { Int($0) }
-      guard digits.count == 3, (1900...9999).contains(digits[0]), (1...12).contains(digits[1]), (1...31).contains(digits[2]) else { return nil }
+      guard digits.count == 3, (1900...9999).contains(digits[0]) else { return nil }
+      let c = DateComponents(calendar: Calendar(identifier: .gregorian), year: digits[0], month: digits[1], day: digits[2])
+      guard c.isValidDate else { return nil }  // 2024:02:31 is no date
       return (digits[0], digits[1], digits[2])
     }
     if kind == "photo" || kind == "raw" {
@@ -410,18 +484,22 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       return parse(original)
     }
     let asset = AVURLAsset(url: url)
+    final class Found: @unchecked Sendable {
+      let lock = NSLock()
+      var value: (Int, Int, Int)?
+    }
+    let found = Found()
     let wait = DispatchSemaphore(value: 0)
-    var found: (Int, Int, Int)?
-    Task.detached {
+    let task = Task.detached {
       if let items = try? await asset.load(.metadata) {
         for item in items where item.identifier == .quickTimeMetadataCreationDate {
-          if let text = try? await item.load(.stringValue) { found = parse(text) }
+          if let text = try? await item.load(.stringValue), let d = parse(text) { found.lock.withLock { found.value = d } }
         }
       }
       wait.signal()
     }
-    _ = wait.wait(timeout: .now() + .seconds(5))
-    return found
+    if wait.wait(timeout: .now() + .seconds(5)) == .timedOut { task.cancel() }
+    return found.lock.withLock { found.value }
   }
 
   private func report(_ s: mv_backup_status) {
@@ -430,7 +508,7 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       return String(cString: base.assumingMemoryBound(to: CChar.self))
     }
     change {
-      $0.state = Self.state(s.state)
+      if s.state != 0 { $0.state = Self.state(s.state) }  // idle comes only from a stop: finishStopped says why
       $0.total = Int(s.total)
       $0.backedUp = Int(s.backed_up)
       $0.currentFraction = s.current_fraction
@@ -458,57 +536,65 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
 
   // MARK: Plumbing
 
-  /// The core's backup handle for the paired library, opened once per library.
-  private func openHandle() async -> OpaquePointer? {
+  /// The core's backup handle for the paired library, opened once per library, one open at a time.
+  private func openHandle() async -> BackupHandle? {
     guard let link = await connection.awaitLink() else { return nil }
     let library = connection.libraryID
-    if let open = lock.withLock({ handleLibrary == library && handleLink === link ? handle : nil }) { return open }
-    let sample = connection.current.isSample
-    return await onQueue { [self] in
-      for url in [Self.root, Self.scratch] {
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
-                                                 attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
-        var u = url
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? u.setResourceValues(values)
-      }
-      let opened: OpaquePointer? = Self.ledger.path.withCString { ledger in
-        Self.scratch.path.withCString { scratch in
-          library.withCString { id in
-            Self.sampleNAS.path.withCString { nas in
-              var c = mv_backup_config(ledger_path: ledger, scratch_dir: scratch, library_id: id, sample_folder: sample ? nas : nil)
-              return mv_backup_open(link.raw, &c)
+    let task: Task<BackupHandle?, Never> = lock.withLock {
+      if let h = handle, h.library == library, h.link === link { return Task { h } }
+      if let pending = opening { return pending }
+      let sample = connection.current.isSample
+      let t = Task<BackupHandle?, Never> { [weak self] in
+        guard let self else { return nil }
+        let opened: BackupHandle? = await self.onQueue {
+          for url in [Self.root, Self.scratch] {
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
+                                                     attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+            var u = url
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? u.setResourceValues(values)
+          }
+          let raw: OpaquePointer? = Self.ledger.path.withCString { ledger in
+            Self.scratch.path.withCString { scratch in
+              library.withCString { id in
+                Self.sampleNAS.path.withCString { nas in
+                  var c = mv_backup_config(ledger_path: ledger, scratch_dir: scratch, library_id: id, sample_folder: sample ? nas : nil)
+                  return mv_backup_open(link.raw, &c)
+                }
+              }
             }
           }
+          return raw.map { BackupHandle(raw: $0, link: link, library: library) }
         }
+        // The old one closes when its last user lets go (a run in flight keeps it).
+        self.lock.withLock {
+          self.handle = opened
+          self.opening = nil
+        }
+        return opened
       }
-      let old: OpaquePointer? = lock.withLock {
-        let previous = handle
-        handle = opened
-        handleLink = link
-        handleLibrary = library
-        return previous
-      }
-      if let old { mv_backup_close(old) }
-      return opened
+      opening = t
+      return t
     }
+    return await task.value
   }
 
   /// Forget (and a new pairing over this library): stop, wait, remove the ledger and the sample folder.
   private func removeForForget() async {
     stop()
+    lock.withLock { restartPending = false }
     while lock.withLock({ running }) { try? await Task.sleep(for: .milliseconds(50)) }
-    let old: OpaquePointer? = lock.withLock {
+    _ = await lock.withLock({ opening })?.value
+    var old: BackupHandle? = lock.withLock {
       let h = handle
       handle = nil
-      handleLink = nil
-      handleLibrary = ""
       localIDs = [:]
       return h
     }
+    old = nil  // closed here unless a folder listing still holds it for a moment
+    _ = old
     await onQueue {
-      if let old { mv_backup_close(old) }
       Self.sampleNAS.path.withCString { nas in Self.ledger.path.withCString { mv_backup_remove_local(nas, $0) } }
       try? FileManager.default.removeItem(at: Self.scratch)
     }
@@ -519,19 +605,18 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
   }
 
   private func pathChanged(_ path: NWPath) {
-    let wifi = path.status == .satisfied && !path.isExpensive && !path.isConstrained
+    // Low Data Mode Wi-Fi is still Wi-Fi: the person's own network to their own NAS.
+    let wifi = path.status == .satisfied && !path.isExpensive
     let was = lock.withLock { () -> Bool in
       let was = onWiFi
       onWiFi = wifi
-      pathKnown = true
       return was
     }
     if wifi && !was {
       if current.state == .pausedOffWiFi { change { $0.state = .off } }
       startIfAutomatic()
     } else if !wifi && was && !connection.current.isSample {
-      stop()  // never over mobile data unless asked; it goes on from here on Wi-Fi
-      change { if $0.state == .running || $0.state == .checking { $0.state = .pausedOffWiFi } }
+      stop(because: .offWiFi)  // never over mobile data unless asked; it goes on from here on Wi-Fi
     }
   }
 
