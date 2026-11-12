@@ -7,7 +7,7 @@ import XCTest
 
 final class SmallScreenTests: XCTestCase {
   static let states = [
-    "welcome", "scan", "connect.confirm", "connect.working", "connect.unreachable", "connect.notReadable",
+    "welcome", "scan", "connect.confirm", "connect.confirmGuest", "connect.working", "connect.unreachable", "connect.notReadable",
     "connect.ownNetwork", "firstCopy.running", "firstCopy.waitingForWiFi", "firstCopy.noSpace", "firstCopy.fails",
     "library", "library.unreachable", "library.stale", "library.folder", "library.empty", "library.revoked", "library.accessEnded",
     "library.handedOver", "search.recents", "search.results", "search.nothing", "search.filtered", "search.unsupportedTower",

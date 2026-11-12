@@ -124,6 +124,7 @@ const char* refusal_name(std::string_view why) noexcept {
   if (why == "no-passphrase") return "no_passphrase";
   if (why == "slow-down") return "slow_down";
   if (why == "wrong-service") return "wrong_service";
+  if (why == "passphrase-short") return "passphrase_short";
   return nullptr;
 }
 
@@ -809,7 +810,7 @@ void link::run(const std::string& request) {
   // A refusal, named by the NAS's reason when it gave one (a passphrase wanted,
   // wrong, or locked out) rather than the bare status.
   const auto fail_status = [this, &fail](status e) {
-    if (e == status::permission_denied) {
+    if (e == status::permission_denied || e == status::invalid_arg) {
       if (auto r = route("last_refusal", "{}")) {
         const auto d = json::parse(*r, 2);
         const std::string* why = d ? d->str("why") : nullptr;
@@ -957,6 +958,10 @@ void link::run(const std::string& request) {
     if (!r) {
       std::lock_guard lock(m_);
       if (!v_.claimed) v_.error = "unreachable";
+    } else if (const auto a = json::parse(*r, 2); a && a->boolean("passphrase_set") == false) {
+      // Claimed, but the NAS is too old to keep a passphrase: nothing protects it yet.
+      std::lock_guard lock(m_);
+      v_.error = "nas_too_old";
     }
     return;
   }

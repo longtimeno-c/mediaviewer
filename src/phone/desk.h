@@ -144,6 +144,12 @@ class desk {
   [[nodiscard]] expected grant(const key32& key, std::int64_t for_s);
   // The NAS's last refusal, {"why":...,"until":...} ("{}" when the last request went through).
   [[nodiscard]] std::string last_refusal();
+  // Forgets it: each request through route_request starts with none, so a
+  // failure that never reached the NAS never reads an older one's reason.
+  void clear_refusal();
+  // The last claim took the passphrase step (false from a NAS too old to: it
+  // was claimed, and no passphrase protects it).
+  [[nodiscard]] bool claim_took_passphrase();
   // A new public name for the QR ("" for none).
   [[nodiscard]] expected set_public_name(const std::string& public_name);
   // The service's address on its own network changed ("host:port").

@@ -251,7 +251,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       if status == 2 { throw PairingFailure.codeExpired }
       guard status == 0 else { throw PairingFailure.codeNotReadable }
       return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint),
-                             isSample: info.sample != 0)
+                             isSample: info.sample != 0,
+                             guestFor: info.grant_for_s > 0 ? TimeInterval(info.grant_for_s) : nil)
     }
   }
 
@@ -440,17 +441,16 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
     guard lock.withLock({ generation == connectGeneration && !forgotten }) else { return }  // a newer one is running
     var status = answered
-    if status == 0 {
-      if grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
-    } else if case .unreachable = Self.state(status, report), let end = lock.withLock({ record?.accessUntil }),
-              end <= Date().timeIntervalSince1970 {
-      // No answer at all, and the end the service last gave has passed on this phone's clock:
-      // said as ended rather than unreachable (§8.2). Only said: nothing is deleted on this
-      // phone's own reckoning, since the owner may have extended it meanwhile.
-      status = Int32(MV_LINK_ACCESS_ENDED.rawValue)
-    }
-    // The service itself said the time is up: the local copy goes (call C6).
-    if answered == Int32(MV_LINK_ACCESS_ENDED.rawValue) { await dropLocalCopy(of: link) }
+    if status == 0, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
+    // §8.2: the NAS's "expired" shows the end and deletes the copy; the phone's own clock past
+    // the end the NAS gave only says so, and only when no route answered at all.
+    var unreachable = false
+    if case .unreachable = Self.state(answered, report) { unreachable = true }
+    let end = AccessEnd.decide(serviceSaidEnded: answered == Int32(MV_LINK_ACCESS_ENDED.rawValue),
+                               noRouteAnswered: answered != 0 && unreachable,
+                               storedEnd: lock.withLock { record?.accessUntil }, now: Date().timeIntervalSince1970)
+    if end.showEnded { status = Int32(MV_LINK_ACCESS_ENDED.rawValue) }
+    if end.dropLocalCopy { await dropLocalCopy(of: link) }
     let info = await catalogueNow(link: link)
     let cache = Int64(mv_thumb_bytes_used(link.raw))
     // Checked again as it publishes: a pairing during the read above makes this news stale.
@@ -497,9 +497,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     let reopened: LinkHandle? = await onLinkQueue {
       // The pairing record is read and written on this queue too, so this is the library still
       // stored, or nothing is touched.
-      guard let record = PairingRecord.load(), record.libraryID == started.id,
-            let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }) else { return nil }
-      Self.removeLibraryFiles()
+      guard let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }),
+            AccessEnd.dropIfStill(started.id, stored: { PairingRecord.load()?.libraryID }, remove: { Self.removeLibraryFiles() }),
+            let record = PairingRecord.load() else { return nil }
       LinkFolders.prepare()
       LinkFolders.keepOnlyThumbs(of: record.libraryID)
       return LinkHandle.open(record: record, deviceKey: device, libraryDir: LinkFolders.library,

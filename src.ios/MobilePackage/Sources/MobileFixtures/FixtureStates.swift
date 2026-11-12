@@ -14,6 +14,7 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case welcome
   case scan
   case connectConfirm = "connect.confirm"
+  case connectConfirmGuest = "connect.confirmGuest"
   case connectNotMatched = "connect.notMatched"
   case connectIdentifyFails = "connect.identifyFails"
   case connectWorking = "connect.working"
@@ -233,6 +234,7 @@ final class FixtureRun {
   func arrive() async {
     if state == .connectIdentifyFails { model.setStageForChecking(.connect(code: "fixture:identify-fails-once")); return }
     if state == .connectConfirm { model.setStageForChecking(.connect(code: "fixture:good")); return }
+    if state == .connectConfirmGuest { model.setStageForChecking(.connect(code: "fixture:guest")); return }
     if state == .connectNotMatched { model.setStageForChecking(.connect(code: "fixture:good", start: .notMatched)); return }
     if let code = Self.code(for: state) {
       let readsCode = state == .connectExpired || state == .connectNotReadable

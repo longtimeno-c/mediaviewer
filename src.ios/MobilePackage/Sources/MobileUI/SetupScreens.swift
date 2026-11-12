@@ -439,6 +439,13 @@ struct ConnectScreen: View {
           .font(.title.monospaced())
           .foregroundStyle(Theme.title)
           .accessibilityLabel(identity.fingerprint.map(String.init).joined(separator: " "))
+        if let guestFor = identity.guestFor {
+          Text(FailureCopy.guestAccess(for: guestFor))
+            .font(.subheadline)
+            .foregroundStyle(Theme.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 4)
+        }
       }
       .padding(Theme.inset)
       .frame(maxWidth: .infinity, alignment: .leading)

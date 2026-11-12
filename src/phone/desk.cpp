@@ -179,10 +179,16 @@ struct desk::state {
   std::uint64_t signer_ops = 0, signer_mem = 0;
   std::chrono::steady_clock::time_point signer_until{};
   std::string refusal = "{}";  // the NAS's last refusal
+  serve::end_code last_end = serve::end_code::ok;  // how the last request's stream ended
+  bool claim_passphrase_set = false;              // the last claim took the passphrase step
 
   void forget_signer() {
     signer.reset();
     signer_until = {};
+  }
+  // Past its ten minutes the key goes, used or not.
+  void expire_signer() {
+    if (signer && std::chrono::steady_clock::now() >= signer_until) forget_signer();
   }
   void keep_signer(const serve::owner::signer& s, const serve::owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem) {
     signer = s;
@@ -286,17 +292,26 @@ struct desk::state {
     for (int attempt = 0;; ++attempt) {
       MV_TRY(serve::client * c, session());
       std::string why;
-      auto r = c->admin(request, nullptr, &why);
+      auto r = c->admin(request, &last_end, &why);
       refusal = r ? std::string("{}") : (why.empty() ? std::string("{}") : why);
       if (!r && !unlocked_again && why_of_refusal() == "needs-unlock" && signer &&
           std::chrono::steady_clock::now() < signer_until) {
         unlocked_again = true;
         std::string unlock_why;
-        if (c->unlock(kept(), &unlock_why, o.floor_ops, o.floor_mem)) {
-          r = c->admin(request, nullptr, &why);
+        auto u = c->unlock(kept(), &unlock_why, o.floor_ops, o.floor_mem);
+        if (u) {
+          r = c->admin(request, &last_end, &why);
           refusal = r ? std::string("{}") : (why.empty() ? std::string("{}") : why);
         } else {
-          forget_signer();  // the passphrase changed, or the NAS forgot: ask the person again
+          const auto d = json::parse(unlock_why, 2);
+          const std::string* reason = d ? d->str("why") : nullptr;
+          // Only a definite no makes the person type it again: the passphrase
+          // changed, or the key no longer fits the NAS's salt and cost. A
+          // slow-down, a lockout or a dropped link keeps it for the next try.
+          if (u.error() == status::corrupt || (reason && (*reason == "passphrase" || *reason == "passphrase-changed"))) {
+            forget_signer();
+          }
+          if (reason && !reason->empty()) refusal = unlock_why;  // say why, with its "until"
         }
       }
       if (r || attempt == 1 || !admin->closed()) return r;
@@ -342,6 +357,12 @@ struct desk::state {
                                 const std::map<key32, std::vector<std::string>>& roots = {}) {
     std::vector<known::device> list;
     std::vector<serve::grants::grant> limited;
+    // A scoped grant keeps the folders it had here unless the NAS's answer gave new ones.
+    std::map<key32, std::vector<std::string>> known_roots;
+    for (const auto& g : local_grants()) {
+      if (g.roots) known_roots[g.key] = *g.roots;
+    }
+    for (const auto& [k, ids] : roots) known_roots[k] = ids;
     for (const auto& r : rows) {
       if (r.limited) {
         serve::grants::grant g;
@@ -349,7 +370,9 @@ struct desk::state {
         g.key = r.key;
         g.expires = r.expires;
         g.guest = r.guest;
-        if (const auto it = roots.find(r.key); it != roots.end()) g.roots = it->second;
+        if (r.scoped) {
+          if (const auto it = known_roots.find(r.key); it != known_roots.end()) g.roots = it->second;
+        }
         if (r.scoped && !g.roots) g.roots = std::vector<std::string>{};  // its folders unknown here: none nearby
         if (g.expires == 0 && !g.roots) g.roots = std::vector<std::string>{};
         limited.push_back(std::move(g));
@@ -430,6 +453,28 @@ expected desk::claim(const std::string& share_folder, const std::string& local, 
   if (!public_name.empty() && !split_host_port(public_name)) return err(status::invalid_arg);
   MV_TRY(const key32 key, st_->device_key());
 
+  // The passphrase is stretched before anything touches the share or the
+  // network: Argon2id takes about a second, which the claim's deadline
+  // should not pay for.
+  std::optional<serve::claim_passphrase> pass;
+  if (!passphrase.empty()) {
+    pass.emplace();
+    pass->sign = st_->deriving(passphrase);
+    if (new_passphrase) {
+      serve::owner::signer made;
+      pass->set = serve::owner::make(passphrase, static_cast<std::int64_t>(std::time(nullptr)), st_->o.pass_ops,
+                                     st_->o.pass_mem, &made);
+      if (!pass->set) {
+        st_->refusal = serve::owner::acceptable(passphrase) ? "{}" : "{\"why\":\"passphrase-short\"}";
+        return err(status::invalid_arg);  // too short, or no memory for it
+      }
+      st_->keep_signer(made, pass->set->salt, pass->set->ops, pass->set->mem);
+    }
+    // The NAS claimed before (a re-claim): only that identity is answered.
+    if (st_->info) pass->service_key = st_->info->identity;
+    pass->min_ops = st_->o.floor_ops;
+    pass->min_mem = st_->o.floor_mem;
+  }
   const fs::path file = fs_path(share_folder) / fs_path(serve::kClaimTokenFile);
   const fs::path proof = fs_path(share_folder) / fs_path(serve::kClaimProofFile);
   // Whatever happens from here, neither file stays on the share; this is in
@@ -459,22 +504,6 @@ expected desk::claim(const std::string& share_folder, const std::string& local, 
 
   auto l = st_->connect_to(local);
   if (!l) return err(status::io);
-  std::optional<serve::claim_passphrase> pass;
-  if (!passphrase.empty()) {
-    pass.emplace();
-    pass->sign = st_->deriving(passphrase);
-    if (new_passphrase) {
-      serve::owner::signer made;
-      pass->set = serve::owner::make(passphrase, static_cast<std::int64_t>(std::time(nullptr)), st_->o.pass_ops,
-                                     st_->o.pass_mem, &made);
-      if (!pass->set) return err(status::invalid_arg);  // too short, or no memory for it
-      st_->keep_signer(made, pass->set->salt, pass->set->ops, pass->set->mem);
-    }
-    // The NAS claimed before (a re-claim): only that identity is answered.
-    if (st_->info) pass->service_key = st_->info->identity;
-    pass->min_ops = st_->o.floor_ops;
-    pass->min_mem = st_->o.floor_mem;
-  }
   std::string why;
   auto answer = serve::claim(std::shared_ptr<link>(std::move(*l)), serve::claim_key(token), key, st_->o.device_name,
                              [&](std::string_view nonce) { return write(proof, nonce); }, deadline,
@@ -493,6 +522,7 @@ expected desk::claim(const std::string& share_folder, const std::string& local, 
     st_->forget_signer();  // nothing it made is known to be right
     return err(answer.error() == status::timeout ? status::timeout : status::permission_denied);
   }
+  st_->claim_passphrase_set = pass && answer->passphrase_step;
   if (pass && !answer->passphrase_step) {
     // A NAS from before the passphrase: claimed, and nothing was set.
     st_->forget_signer();
@@ -542,7 +572,7 @@ result<pairing> desk::start_pairing(int ttl_ms, std::int64_t for_s) {
   if (for_s > 0) w.key("for_s").integer(for_s);
   w.end_object();
   auto asked = st_->ask(w.str());
-  if (!asked && for_s > 0 && st_->why_of_refusal().empty()) return err(status::unsupported_format);
+  if (!asked && for_s > 0 && st_->last_end == serve::end_code::unsupported) return err(status::unsupported_format);
   MV_TRY(const std::string done, std::move(asked));
   (void)done;
   st_->waiting = true;
@@ -575,6 +605,7 @@ std::size_t desk::revokes_pending() {
 void desk::release() {
   std::lock_guard lock(st_->m);
   st_->admin.reset();
+  st_->expire_signer();
 }
 
 std::vector<device_row> desk::devices() {
@@ -631,7 +662,10 @@ result<std::vector<device_row>> desk::refresh_devices() {
         r.scoped = true;
         std::vector<std::string> ids;
         for (const auto& id : roots->a) {
-          if (id.k == json::kind::string) ids.push_back(id.s);
+          // Only a folder id this side can keep: 16 lowercase hex digits.
+          const bool ok = id.k == json::kind::string && id.s.size() == 16 &&
+                          std::all_of(id.s.begin(), id.s.end(), [](char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
+          if (ok) ids.push_back(id.s);
         }
         scopes[r.key] = std::move(ids);
       }
@@ -745,7 +779,10 @@ expected desk::set_passphrase(const std::string& next) {
   serve::owner::signer made;
   const auto v = serve::owner::make(next, static_cast<std::int64_t>(std::time(nullptr)), st_->o.pass_ops,
                                     st_->o.pass_mem, &made);
-  if (!v) return err(status::invalid_arg);
+  if (!v) {
+    st_->refusal = serve::owner::acceptable(next) ? "{}" : "{\"why\":\"passphrase-short\"}";
+    return err(status::invalid_arg);
+  }
   json::writer w;
   std::string salt(serve::owner::kSaltBytes * 2, '0');
   sodium_bin2hex(salt.data(), salt.size() + 1, v->salt.data(), v->salt.size());
@@ -763,6 +800,7 @@ expected desk::set_passphrase(const std::string& next) {
 result<owner_state> desk::owner_status() {
   std::lock_guard lock(st_->m);
   st_->load();
+  st_->expire_signer();
   MV_TRY(serve::client * c, st_->session());
   owner_state out;
   out.features = c->caps().features;
@@ -803,6 +841,17 @@ expected desk::grant(const key32& key, std::int64_t for_s) {
 std::string desk::last_refusal() {
   std::lock_guard lock(st_->m);
   return st_->refusal;
+}
+
+void desk::clear_refusal() {
+  std::lock_guard lock(st_->m);
+  st_->refusal = "{}";
+  st_->last_end = serve::end_code::ok;
+}
+
+bool desk::claim_took_passphrase() {
+  std::lock_guard lock(st_->m);
+  return st_->claim_passphrase_set;
 }
 
 expected desk::start_nearby(const std::string& folder, const std::string& library_id) {
@@ -905,6 +954,7 @@ std::string devices_json(const std::vector<device_row>& rows, bool reachable, bo
 
 result<std::string> route_request(desk& d, std::string_view caller, std::string_view method, std::string_view request_json) {
   if (caller != "phone") return err(status::permission_denied);
+  if (method != "last_refusal") d.clear_refusal();
   const auto doc = json::parse(request_json.empty() ? std::string_view("{}") : request_json, 4);
   if (!doc) return err(status::invalid_arg);
   const auto text = [&](const char* k) -> std::string {
@@ -926,6 +976,11 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
   if (method == "claim") {
     MV_TRY_VOID(d.claim(text("share"), text("local"), text("public"), text("passphrase"),
                         doc->boolean("new_passphrase").value_or(false)));
+    if (!text("passphrase").empty()) {
+      json::writer w;
+      w.begin_object().key("passphrase_set").boolean(d.claim_took_passphrase()).end_object();
+      return w.take();
+    }
     return std::string("{}");
   }
   if (method == "set_public") {

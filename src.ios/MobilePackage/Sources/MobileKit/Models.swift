@@ -286,11 +286,15 @@ public struct LibraryIdentity: Hashable, Sendable {
   public let fingerprint: String
   /// The sample library's code: nothing on a computer to compare with.
   public let isSample: Bool
+  /// A guest code (docs/plans/nas-owner-and-guests.md §8.2): how long access lasts from pairing,
+  /// as the code says. nil for an ordinary code. The NAS holds the real limit.
+  public let guestFor: TimeInterval?
 
-  public init(name: String, fingerprint: String, isSample: Bool = false) {
+  public init(name: String, fingerprint: String, isSample: Bool = false, guestFor: TimeInterval? = nil) {
     self.name = name
     self.fingerprint = fingerprint
     self.isSample = isSample
+    self.guestFor = guestFor
   }
 }
 

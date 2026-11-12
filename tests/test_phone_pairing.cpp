@@ -919,8 +919,18 @@ TEST_CASE("phone pairing: the Mac chooses the passphrase at its claim, then unlo
   CHECK(it->limited);
   CHECK(it->guest);
   CHECK(it->expires > 0);
-  CHECK(known::load_named(*mac.store, desk::kDevicesName).empty());  // the Mac's nearby list: unlimited only
-  CHECK(mac.store->exists(desk::kGrantsName));
+  CHECK(known::load_named(*mac.store, desk::kDevicesName).empty());  // the Mac's paired list: unlimited only
+  {
+    // The timed list the nearby service is given: the guest, with its end.
+    auto bytes = mac.store->get(desk::kGrantsName);
+    REQUIRE(bytes);
+    auto kept = mv::driftwire::serve::grants::decode(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+    REQUIRE(kept);
+    REQUIRE(kept->size() == 1);
+    CHECK(kept->front().key == pub);
+    CHECK(kept->front().guest);
+    CHECK(kept->front().expires == it->expires);
+  }
   // Removing is the device key's alone, even locked.
   REQUIRE(mac.d->lock());
   REQUIRE(mac.d->revoke(pub));
@@ -938,6 +948,11 @@ TEST_CASE("phone pairing: the Mac proves a passphrase set at init, extends a gue
   CHECK(why_desk(*mac.d) == "passphrase");
   // Choosing a new one on a NAS that has one never replaces it: it is checked, and wrong.
   CHECK_FALSE(mac.d->claim(utf8(n.share), n.local(), "", "a different long passphrase", true));
+  CHECK(why_desk(*mac.d) == "passphrase");
+  // Too short is said as such, before anything is written to the share.
+  CHECK_FALSE(mac.d->claim(utf8(n.share), n.local(), "", "short", true));
+  CHECK(why_desk(*mac.d) == "passphrase-short");
+  CHECK_FALSE(fs::exists(n.share / serve::kClaimTokenFile));
   REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, false));
   auto code = mac.d->start_pairing(desk::kDefaultPairTtlMs, 3600);
   REQUIRE(code);
@@ -965,6 +980,35 @@ TEST_CASE("phone pairing: the Mac proves a passphrase set at init, extends a gue
   CHECK_FALSE(mac.d->unlock(kPass));
   REQUIRE(mac.d->unlock("the replacement passphrase"));
   REQUIRE(mac.d->start_pairing());
+}
+
+TEST_CASE("phone pairing: a slow-down keeps the Mac's key, and the reason reaches the card", "[phone-pairing]") {
+  nas n;
+  n.answer_gap_ms = 60000;  // one owner answer a minute: the second always comes too soon
+  n.srv->stop();
+  n.srv.reset();
+  n.start();
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, true));
+  REQUIRE(mac.d->unlock(kPass));  // the owner counter's one answer this minute
+  mac.d->release();               // the card lets the session go between requests
+  // A new session needs an unlock: the kept key is too soon, and is not forgotten for that.
+  CHECK_FALSE(mac.d->start_pairing());
+  CHECK(why_desk(*mac.d) == "slow-down");
+  auto status = mac.d->owner_status();
+  REQUIRE(status);
+  CHECK(status->unlocked_s > 0);
+  // A wrong key is forgotten: the passphrase changed on the NAS meanwhile.
+  init_passphrase(n, "the replacement passphrase");
+  n.srv->stop();
+  n.srv.reset();
+  n.answer_gap_ms = 0;
+  n.start();
+  REQUIRE(mac.d->set_local(n.local()));  // the restarted service listens on a new port
+  CHECK_FALSE(mac.d->start_pairing());
+  status = mac.d->owner_status();
+  REQUIRE(status);
+  CHECK(status->unlocked_s == 0);
 }
 
 TEST_CASE("phone pairing: the route carries the passphrase and the limits to the card", "[phone-pairing]") {

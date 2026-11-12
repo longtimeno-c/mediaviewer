@@ -34,6 +34,18 @@ public enum FailureCopy {
     let when = end.formatted(date: .long, time: .shortened)
     return "Your access to \(name) ended on \(when). Ask its owner to extend it, then try again."
   }
+  /// The confirm screen's line for a guest code: "Guest access for 24 hours, from when you pair."
+  public static func guestAccess(for seconds: TimeInterval) -> String {
+    "Guest access for \(duration(seconds)), from when you pair."
+  }
+  /// Whole days, then whole hours, then minutes: what the computer's menu offered.
+  public static func duration(_ seconds: TimeInterval) -> String {
+    let s = Int(seconds.rounded())
+    func plural(_ n: Int, _ unit: String) -> String { "\(n) \(unit)\(n == 1 ? "" : "s")" }
+    if s >= 86_400, s % 86_400 == 0 { return plural(s / 86_400, "day") }
+    if s >= 3_600, s % 3_600 == 0 { return plural(s / 3_600, "hour") }
+    return plural(max(1, s / 60), "minute")
+  }
   public static func accessUntil(_ end: Date) -> String {
     "Access until \(end.formatted(date: .abbreviated, time: .shortened))"
   }
