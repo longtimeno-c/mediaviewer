@@ -89,16 +89,11 @@ bool load_devices(secrets::store& store, std::vector<known::device>& out) {
 
 // Whole and renamed in, owner-only: the running service is the only writer.
 bool write_config(const std::string& path, const serve::config& c) {
-  json::writer w;
-  w.begin_object().key("port").integer(c.port).key("name").string(c.name).key("roots").begin_array();
-  for (const auto& r : c.roots) {
-    w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
-  }
-  w.end_array().end_object();
+  const std::string text = serve::config_json(c);
   const std::string tmp = path + ".part";
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    f.write(w.str().data(), static_cast<std::streamsize>(w.str().size()));
+    f.write(text.data(), static_cast<std::streamsize>(text.size()));
     if (!f.flush()) return false;
   }
 #if !defined(_WIN32)

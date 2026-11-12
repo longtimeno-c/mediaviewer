@@ -14,6 +14,7 @@
 #include "addons/driftwire/noise.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/serve_client.h"
+#include "io/content_hash.h"
 
 #if !defined(_WIN32)
 #include <fcntl.h>
@@ -45,6 +46,7 @@ constexpr int kSlowSeconds = 15;
 
 const std::string kRootA = "a1a1a1a1a1a1a1a1";
 const std::string kRootB = "b2b2b2b2b2b2b2b2";
+const std::string kRootC = "c3c3c3c3c3c3c3c3";  // a backup folder (phone backup, 1.1)
 
 using key32 = std::array<std::uint8_t, 32>;
 
@@ -74,6 +76,11 @@ struct service_fixture {
   fs::path library = dir.root() / "library";
   fs::path other = dir.root() / "other";
   fs::path outside = dir.root() / "outside";
+  fs::path backup = dir.root() / "backup";
+  std::uint64_t backup_limit = 64ull << 20;
+  std::uint64_t backup_reserve = 0;
+  std::atomic<std::uint64_t> free_bytes{1ull << 40};
+  std::function<bool(const key32&)> may_write;  // empty: the service's own rule
   std::unique_ptr<sp::secrets::store> store;
   key32 access{};
   key32 identity_public{};
@@ -95,6 +102,7 @@ struct service_fixture {
     fs::create_directories(library);
     fs::create_directories(other);
     fs::create_directories(outside);
+    fs::create_directories(backup);
     REQUIRE(sp::secrets::owner_only_folder(utf8(data / "secrets")));
     store = sp::secrets::file_store(utf8(data / "secrets"));
     REQUIRE(store);
@@ -128,6 +136,13 @@ struct service_fixture {
     o.cfg.port = 0;  // the OS picks: the tests only
     o.cfg.name = "Test NAS";
     o.cfg.roots = {{kRootA, "Photos", utf8(library)}, {kRootB, "Catalogue", utf8(other)}};
+    serve::root_config b{kRootC, "Phone backup", utf8(backup)};
+    b.backup = true;
+    b.limit = backup_limit;
+    b.reserve = backup_reserve;
+    o.cfg.roots.push_back(b);
+    o.free_bytes = [this](const std::string&) { return free_bytes.load(); };
+    o.may_write = may_write;
     o.store = store.get();
     o.loopback_only = true;
     o.per_minute = per_minute;
@@ -154,6 +169,7 @@ struct service_fixture {
     o.service_key = identity_public;
     o.id = "aaaaaaaaaaaaaaaa";
     o.name = "Phone";
+    o.ops = serve::kAllOps | serve::kWriteOp;
     return o;
   }
 
@@ -231,12 +247,12 @@ TEST_CASE("serve: a paired client lists, range-reads and seeks in a large file",
   fs::resize_file(big, big_size);
 
   auto c = s.open_client();
-  CHECK(c->caps().ops == serve::kAllOps);
+  CHECK(c->caps().ops == (serve::kAllOps | serve::kWriteOp));
   CHECK(c->caps().chunk <= serve::kInteractiveChunk);
 
   auto roots = c->roots();
   REQUIRE(roots);
-  REQUIRE(roots->size() == 2);
+  REQUIRE(roots->size() == 3);
   CHECK(roots->at(0).id == kRootA);
   CHECK(roots->at(0).label == "Photos");
 
@@ -1116,3 +1132,309 @@ TEST_CASE("serve: the program runs without a terminal, keeps its keys and stops 
   CHECK(status == 0);
 }
 #endif
+
+// ---- phone backup (docs/plans/mobile.md §10b, M11) -----------------------------------------
+
+namespace {
+
+std::string hash_of(std::string_view bytes) {
+  return mv::io::hash_bytes(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()))
+      .hex();
+}
+
+serve::client::read_fn reader_of(const std::string& bytes) {
+  return [&bytes](std::uint64_t at, std::span<std::uint8_t> into) -> mv::result<std::size_t> {
+    if (at >= bytes.size()) return std::size_t{0};
+    const std::size_t n = std::min<std::size_t>(into.size(), bytes.size() - static_cast<std::size_t>(at));
+    std::memcpy(into.data(), bytes.data() + at, n);
+    return n;
+  };
+}
+
+std::string slurp(const fs::path& p) {
+  std::ifstream f(p, std::ios::binary);
+  return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+}
+
+// Every unfinished copy anywhere under `root`.
+int parts_under(const fs::path& root) {
+  int n = 0;
+  for (const auto& e : fs::recursive_directory_iterator(root)) {
+    if (e.path().filename().string().ends_with(".mvpart")) ++n;
+  }
+  return n;
+}
+
+key32 public_of(const key32& private_key) {
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), private_key.data());
+  return pub;
+}
+
+}  // namespace
+
+TEST_CASE("serve backup: a file is written whole, checked, and never replaces another", "[driftwire-serve]") {
+  service_fixture s;
+  auto c = s.open_client();
+  REQUIRE((c->caps().ops & serve::kWriteOp) != 0);
+
+  auto roots = c->roots();
+  REQUIRE(roots);
+  const auto it = std::find_if(roots->begin(), roots->end(), [](const serve::root_info& r) { return r.id == kRootC; });
+  REQUIRE(it != roots->end());
+  CHECK(it->backup);
+  CHECK(it->writable);
+  CHECK_FALSE(roots->front().backup);
+
+  const std::string photo = marker(0, 3 * 1024 * 1024 + 17);  // past one window and one chunk
+  serve::client::write_refused why;
+  std::uint64_t progressed = 0;
+  auto done = c->write(kRootC, "2026/09/IMG_0412.HEIC", photo.size(), hash_of(photo), 0, reader_of(photo),
+                       [&](std::uint64_t n) { progressed = n; }, nullptr, &why);
+  REQUIRE(done);
+  CHECK(done->name == "2026/09/IMG_0412.HEIC");
+  CHECK_FALSE(done->existing);
+  CHECK(progressed == photo.size());
+  CHECK(slurp(s.backup / "2026" / "09" / "IMG_0412.HEIC") == photo);
+  CHECK(parts_under(s.backup) == 0);
+
+  // The same file again: nothing is sent, and it says where it is.
+  done = c->write(kRootC, "2026/09/IMG_0412.HEIC", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE(done);
+  CHECK(done->existing);
+  CHECK(done->name == "2026/09/IMG_0412.HEIC");
+
+  // A different photo with that name, the same size or not: numbered, and the first untouched.
+  const std::string other = marker(7, photo.size());
+  done = c->write(kRootC, "2026/09/IMG_0412.HEIC", other.size(), hash_of(other), 0, reader_of(other), {}, nullptr, &why);
+  REQUIRE(done);
+  CHECK(done->name == "2026/09/IMG_0412 (2).HEIC");
+  CHECK(slurp(s.backup / "2026" / "09" / "IMG_0412.HEIC") == photo);
+  CHECK(slurp(s.backup / "2026" / "09" / "IMG_0412 (2).HEIC") == other);
+  // And that one again is found under its number.
+  done = c->write(kRootC, "2026/09/IMG_0412.HEIC", other.size(), hash_of(other), 0, reader_of(other), {}, nullptr, &why);
+  REQUIRE(done);
+  CHECK(done->existing);
+  CHECK(done->name == "2026/09/IMG_0412 (2).HEIC");
+
+  // An empty file is a file.
+  done = c->write(kRootC, "empty.txt", 0, hash_of(""), 0, reader_of(std::string()), {}, nullptr, &why);
+  REQUIRE(done);
+  CHECK(fs::is_regular_file(s.backup / "empty.txt"));
+  CHECK(parts_under(s.backup) == 0);
+}
+
+TEST_CASE("serve backup: bytes that are not what was promised never become the file", "[driftwire-serve]") {
+  service_fixture s;
+  auto c = s.open_client();
+  const std::string photo = marker(3, 300000);
+  serve::client::write_refused why;
+  auto done = c->write(kRootC, "bad.jpg", photo.size(), hash_of("something else"), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(done.error() == mv::status::corrupt);
+  CHECK(why.why == serve::kWhyHash);
+  CHECK_FALSE(fs::exists(s.backup / "bad.jpg"));
+  CHECK(parts_under(s.backup) == 0);
+  // The session goes on.
+  done = c->write(kRootC, "bad.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE(done);
+}
+
+TEST_CASE("serve backup: a write left half way goes on from where it stopped", "[driftwire-serve]") {
+  service_fixture s;
+  const std::string clip = marker(11, 6 * 1024 * 1024 + 5);
+  std::uint64_t stopped_at = 0;
+  {
+    auto c = s.open_client();
+    std::atomic<bool> stop{false};
+    serve::client::write_refused why;
+    auto done = c->write(kRootC, "2026/09/IMG_0413.MOV", clip.size(), hash_of(clip), 0, reader_of(clip),
+                         [&](std::uint64_t n) {
+                           if (n >= 2 * 1024 * 1024) stop = true;
+                         },
+                         &stop, &why);
+    REQUIRE_FALSE(done);
+    CHECK(done.error() == mv::status::cancelled);
+  }  // and the app was killed: the session ends with it
+  CHECK_FALSE(fs::exists(s.backup / "2026" / "09" / "IMG_0413.MOV"));
+  CHECK(eventually([&] { return parts_under(s.backup) == 1; }));
+
+  auto c = s.open_client();
+  serve::client::write_refused why;
+  // From the start: told where its copy ends.
+  auto done = c->write(kRootC, "2026/09/IMG_0413.MOV", clip.size(), hash_of(clip), 0, reader_of(clip), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyOffset);
+  stopped_at = why.have;
+  CHECK(stopped_at >= 2 * 1024 * 1024);
+  CHECK(stopped_at < clip.size());
+  done = c->write(kRootC, "2026/09/IMG_0413.MOV", clip.size(), hash_of(clip), stopped_at, reader_of(clip), {}, nullptr, &why);
+  REQUIRE(done);
+  CHECK(slurp(s.backup / "2026" / "09" / "IMG_0413.MOV") == clip);
+  CHECK(parts_under(s.backup) == 0);
+
+  // Another device's unfinished copy of the same name is its own: never touched.
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+  auto c2 = serve::client::open(s.connect(), s.client_options(second));
+  REQUIRE(c2);
+  std::atomic<bool> stop{false};
+  done = (*c2)->write(kRootC, "x.mov", clip.size(), hash_of(clip), 0, reader_of(clip),
+                      [&](std::uint64_t n) {
+                        if (n >= 1024 * 1024) stop = true;
+                      },
+                      &stop, &why);
+  REQUIRE_FALSE(done);
+  done = c->write(kRootC, "x.mov", clip.size(), hash_of(clip), 0, reader_of(clip), {}, nullptr, &why);
+  REQUIRE(done);  // this device starts its own from 0
+  CHECK(parts_under(s.backup) == 1);  // the other's is still there
+}
+
+TEST_CASE("serve backup: the storage limit and the free-space reserve refuse a write", "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.backup_limit = 1024 * 1024;
+  s.backup_reserve = 512 * 1024;
+  write_file(s.backup / "old" / "already.jpg", marker(1, 300 * 1024));  // counted against the limit
+  s.start(10000);
+  auto c = s.open_client();
+
+  auto space = c->stat(kRootC, "");
+  REQUIRE(space);
+  CHECK(space->has_space);
+  CHECK(space->limit == 1024 * 1024);
+  CHECK(space->used >= 300 * 1024);
+
+  serve::client::write_refused why;
+  const std::string big = marker(2, 800 * 1024);
+  auto done = c->write(kRootC, "big.jpg", big.size(), hash_of(big), 0, reader_of(big), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(done.error() == mv::status::permission_denied);
+  CHECK(why.why == serve::kWhyLimit);
+  CHECK_FALSE(fs::exists(s.backup / "big.jpg"));
+  CHECK(parts_under(s.backup) == 0);
+
+  const std::string small = marker(3, 200 * 1024);
+  done = c->write(kRootC, "small.jpg", small.size(), hash_of(small), 0, reader_of(small), {}, nullptr, &why);
+  REQUIRE(done);
+
+  // The NAS itself nearly full: the reserve stays free.
+  s.free_bytes = 600 * 1024;
+  const std::string tiny = marker(4, 150 * 1024);
+  done = c->write(kRootC, "tiny.jpg", tiny.size(), hash_of(tiny), 0, reader_of(tiny), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyFull);
+  space = c->stat(kRootC, "");
+  REQUIRE(space);
+  CHECK(space->room == 600 * 1024 - 512 * 1024);
+}
+
+TEST_CASE("serve backup: only a backup folder, and only a device that may write", "[driftwire-serve]") {
+  service_fixture s;
+  auto c = s.open_client();
+  serve::client::write_refused why;
+  const std::string photo = marker(5, 1000);
+  auto done = c->write(kRootA, "IMG.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyNotAllowed);
+  CHECK_FALSE(fs::exists(s.library / "IMG.jpg"));
+  // Outside the folder: refused before any file is looked at.
+  done = c->write(kRootC, "../escape.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK_FALSE(fs::exists(s.dir.root() / "escape.jpg"));
+  done = c->write(kRootC, ".hidden.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  c.reset();
+
+  // A client that did not ask for writes is never given them.
+  auto o = s.client_options();
+  o.ops = serve::kAllOps;
+  auto reader = serve::client::open(s.connect(), o);
+  REQUIRE(reader);
+  CHECK(((*reader)->caps().ops & serve::kWriteOp) == 0);
+  auto r = (*reader)->roots();
+  REQUIRE(r);
+  CHECK(std::none_of(r->begin(), r->end(), [](const serve::root_info& i) { return i.writable; }));
+  reader->reset();
+
+  // A device the grants say may not write sees the folder, not writable, and is refused.
+  s.srv.reset();
+  const key32 me = public_of(s.device);
+  s.may_write = [me](const key32& k) { return k != me; };
+  s.start(10000);
+  c = s.open_client();
+  r = c->roots();
+  REQUIRE(r);
+  const auto it = std::find_if(r->begin(), r->end(), [](const serve::root_info& i) { return i.id == kRootC; });
+  REQUIRE(it != r->end());
+  CHECK(it->backup);
+  CHECK_FALSE(it->writable);
+  done = c->write(kRootC, "IMG.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyNotAllowed);
+  CHECK_FALSE(c->list(kRootC, "", nullptr, true));  // nor its ledgers
+}
+
+TEST_CASE("serve backup: a device's ledger copy is the one file replaced, and only its own", "[driftwire-serve]") {
+  service_fixture s;
+  auto c = s.open_client();
+  const std::string me = serve::device_folder_id(public_of(s.device));
+  serve::client::write_refused why;
+  const std::string v1 = R"({"library_id":"x","rows":[1]})";
+  const std::string v2 = R"({"library_id":"x","rows":[1,2]})";
+  auto done = c->write(kRootC, me + "/ledger.json", v1.size(), hash_of(v1), 0, reader_of(v1), {}, nullptr, &why, true);
+  REQUIRE(done);
+  done = c->write(kRootC, me + "/ledger.json", v2.size(), hash_of(v2), 0, reader_of(v2), {}, nullptr, &why, true);
+  REQUIRE(done);
+  CHECK(slurp(s.backup / serve::kBackupMetaFolder / me / "ledger.json") == v2);
+  CHECK(parts_under(s.backup) == 0);
+
+  // Not another device's, and nothing else in there.
+  done = c->write(kRootC, "0123456789abcdef/ledger.json", v1.size(), hash_of(v1), 0, reader_of(v1), {}, nullptr, &why, true);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyNotAllowed);
+  done = c->write(kRootC, me + "/other.json", v1.size(), hash_of(v1), 0, reader_of(v1), {}, nullptr, &why, true);
+  REQUIRE_FALSE(done);
+
+  // A new phone finds it: listed and read under the meta folder.
+  const key32 next = random_key();
+  REQUIRE(s.pair(next, "New phone"));
+  auto c2 = serve::client::open(s.connect(), s.client_options(next));
+  REQUIRE(c2);
+  auto listing = (*c2)->list(kRootC, "", nullptr, true);
+  REQUIRE(listing);
+  REQUIRE(listing->size() == 1);
+  CHECK(listing->front().name == me);
+  auto stream = (*c2)->read_range(kRootC, me + "/ledger.json", 0, UINT64_MAX, 1024 * 1024, false, true);
+  REQUIRE(stream);
+  CHECK(read_all(**stream) == v2);
+  // The meta folder is not a backup folder's ordinary content.
+  auto plain = (*c2)->list(kRootC, "");
+  REQUIRE(plain);
+  CHECK(std::none_of(plain->begin(), plain->end(), [](const serve::list_entry& e) { return e.name.starts_with("."); }));
+}
+
+TEST_CASE("serve backup: the owner adds a backup folder and changes its limit", "[driftwire-serve]") {
+  service_fixture s;
+  // Through the wire messages only: the owner's admin verbs are tested with claiming elsewhere;
+  // here the config they write must round-trip.
+  serve::config c;
+  c.port = 4000;
+  c.name = "NAS";
+  serve::root_config r{kRootC, "Phone backup", "/volume1/backup"};
+  r.backup = true;
+  r.limit = 500ull << 30;
+  r.reserve = 1ull << 30;
+  c.roots = {{kRootA, "Photos", "/volume1/photo"}, r};
+  auto back = serve::parse_config(serve::config_json(c));
+  REQUIRE(back);
+  REQUIRE(back->roots.size() == 2);
+  CHECK_FALSE(back->roots[0].backup);
+  CHECK(back->roots[1].backup);
+  CHECK(back->roots[1].limit == r.limit);
+  CHECK(back->roots[1].reserve == r.reserve);
+  // A config from before 1.1 has none.
+  auto old = serve::parse_config(R"({"port":4000,"roots":[{"id":"a1a1a1a1a1a1a1a1","label":"P","path":"/v"}]})");
+  REQUIRE(old);
+  CHECK_FALSE(old->roots[0].backup);
+}

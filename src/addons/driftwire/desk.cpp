@@ -492,21 +492,48 @@ result<std::vector<root_row>> desk::roots() {
     const std::string* label = v.str("label");
     const std::string* path = v.str("path");
     if (!id || !label || !path) return err(status::corrupt);
-    out.push_back({*id, *label, *path});
+    root_row row{*id, *label, *path};
+    if (const json::value* b = v.find("backup"); b && b->k == json::kind::object) {
+      const auto num = [&](const char* k) { return static_cast<std::uint64_t>(std::max<std::int64_t>(0, b->integer(k).value_or(0))); };
+      row.backup = true;
+      row.limit = num("limit");
+      row.reserve = num("reserve");
+      row.used = num("used");
+      row.room = num("room");
+    }
+    out.push_back(std::move(row));
   }
   return out;
 }
 
-result<std::string> desk::add_root(const std::string& label, const std::string& path) {
+result<std::string> desk::add_root(const std::string& label, const std::string& path, std::optional<backup_sizes> backup) {
   std::lock_guard lock(st_->m);
   st_->load();
   json::writer w;
-  w.begin_object().key("do").string("add_root").key("label").string(label).key("path").string(path).end_object();
+  w.begin_object().key("do").string("add_root").key("label").string(label).key("path").string(path);
+  if (backup) {
+    w.key("backup").begin_object();
+    w.key("limit").integer(static_cast<std::int64_t>(backup->limit)).key("reserve").integer(static_cast<std::int64_t>(backup->reserve));
+    w.end_object();
+  }
+  w.end_object();
   MV_TRY(const std::string text, st_->ask(w.str()));
   const auto doc = json::parse(text, 4);
   const std::string* id = doc ? doc->str("id") : nullptr;
   if (!id) return err(status::corrupt);
   return *id;
+}
+
+expected desk::set_backup(const std::string& id, backup_sizes sizes) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("set_backup").key("id").string(id).key("backup").begin_object();
+  w.key("limit").integer(static_cast<std::int64_t>(sizes.limit)).key("reserve").integer(static_cast<std::int64_t>(sizes.reserve));
+  w.end_object().end_object();
+  MV_TRY(const std::string done, st_->ask(w.str()));
+  (void)done;
+  return {};
 }
 
 expected desk::remove_root(const std::string& id) {
@@ -672,12 +699,38 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     MV_TRY(const auto rows, d.roots());
     json::writer w;
     w.begin_object().key("roots").begin_array();
-    for (const auto& r : rows) w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
+    for (const auto& r : rows) {
+      w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path);
+      if (r.backup) {
+        w.key("backup").begin_object();
+        w.key("limit").integer(static_cast<std::int64_t>(r.limit)).key("reserve").integer(static_cast<std::int64_t>(r.reserve));
+        w.key("used").integer(static_cast<std::int64_t>(r.used)).key("room").integer(static_cast<std::int64_t>(r.room));
+        w.end_object();
+      }
+      w.end_object();
+    }
     w.end_array().end_object();
     return w.take();
   }
+  // {"limit","reserve"} at the top of the request, bytes; nullopt when absent or not sizes.
+  const auto sizes = [&]() -> std::optional<backup_sizes> {
+    const auto limit = doc->integer("limit");
+    if (!limit || *limit <= 0) return std::nullopt;
+    const auto reserve = doc->find("reserve") ? doc->integer("reserve") : std::optional<std::int64_t>(static_cast<std::int64_t>(serve::kDefaultReserve));
+    if (!reserve || *reserve < 0) return std::nullopt;
+    return backup_sizes{static_cast<std::uint64_t>(*limit), static_cast<std::uint64_t>(*reserve)};
+  };
+  if (method == "set_backup") {
+    const auto s = sizes();
+    if (!s) return err(status::invalid_arg);
+    MV_TRY_VOID(d.set_backup(text("id"), *s));
+    return std::string("{}");
+  }
   if (method == "add_root") {
-    MV_TRY(const std::string id, d.add_root(text("label"), text("path")));
+    const bool backup = doc->boolean("backup").value_or(false);
+    const auto s = sizes();
+    if (backup && !s) return err(status::invalid_arg);
+    MV_TRY(const std::string id, d.add_root(text("label"), text("path"), backup ? s : std::nullopt));
     json::writer w;
     w.begin_object().key("id").string(id).end_object();
     return w.take();

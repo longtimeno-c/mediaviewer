@@ -8,6 +8,7 @@
 #include <climits>
 #include <cstring>
 #include <ctime>
+#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -22,6 +23,7 @@
 #include "addons/driftwire/channel.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/net.h"
+#include "addons/driftwire/serve_backup.h"
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
 #include "io/file_port.h"
@@ -84,6 +86,24 @@ struct stream {
   std::size_t body_at = 0;
   std::uint64_t count = 0;
   bool truncated = false;
+};
+
+// A file a phone is writing into a backup folder (serve_backup.h).
+struct write_stream {
+  std::uint32_t id = 0;
+  root_config root;      // the folder as it was when the write opened
+  std::string dir;       // the folder the file goes into, made beneath the root
+  std::string name;      // the name it is meant to have there
+  std::string rel_dir;   // `dir` relative to the root ("" for the root), for the answer
+  std::string part;      // the unfinished copy, beside it
+  std::string hash;
+  bool meta = false;     // the device's ledger copy: replaces, under the meta folder
+  std::uint64_t size = 0;
+  std::uint64_t next = 0;   // the offset the next byte must have
+  std::uint64_t held = 0;   // still held against the limit, not yet written
+  std::uint32_t credit = 0; // bytes the client may still send
+  io::file_writer out;      // the reader thread's alone once registered
+  bool closed = false;
 };
 
 // The live connection: pre-auth until `ch` is set.
@@ -256,6 +276,8 @@ struct server::state {
     return true;
   }
 
+  backup::book book;  // phone backup: limits and unfinished copies, across sessions
+
   [[nodiscard]] bool paired(const std::array<std::uint8_t, 32>& key) {
     const auto devices = known::load(*store);
     return std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == key; });
@@ -282,8 +304,11 @@ class session_state {
   using send_fn = std::function<bool(msg, std::span<const std::uint8_t>)>;
   using config_fn = std::function<std::shared_ptr<const config>()>;
   using admin_fn = std::function<std::pair<end_code, std::string>(std::string_view)>;
-  session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {})
-      : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)) {}
+  session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {}, backup::book* book = nullptr,
+                const std::array<std::uint8_t, 32>& device = {})
+      : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)), book_(book), device_(device),
+        device_id_(device_folder_id(device)) {}
+  ~session_state() { join_commits(); }
 
   // The reader thread's: a message from the client. False: end the session.
   bool on_message(const message& m) {
@@ -331,9 +356,12 @@ class session_state {
         }
         return true;  // credit for a stream that has ended is not an error
       }
+      case msg::stream_data:
+        return on_write_data(m.body);
       case msg::stream_cancel: {
         const auto id = parse_cancel(m.body);
         if (!id) return false;
+        if (cancel_write(*id)) return true;
         std::lock_guard lock(m_);
         std::erase_if(opens_, [&](const open_request& o) { return o.id == *id; });
         if (*id == opening_) opening_cancelled_ = true;
@@ -377,9 +405,28 @@ class session_state {
   }
 
   void stop() {
-    std::lock_guard lock(m_);
-    stopping_ = true;
-    cv_.notify_all();
+    {
+      std::lock_guard lock(m_);
+      stopping_ = true;
+      cv_.notify_all();
+    }
+    // Unfinished copies stay where they are, for the device to go on from.
+    std::map<std::uint32_t, std::shared_ptr<write_stream>> left;
+    {
+      std::lock_guard lock(wm_);
+      left.swap(writes_);
+    }
+    for (auto& [id, w] : left) close_write(*w);
+  }
+
+  // The commits already handed over finish (their files are whole); then the thread ends.
+  void join_commits() {
+    {
+      std::lock_guard lock(cm_);
+      commit_stop_ = true;
+      ccv_.notify_all();
+    }
+    if (committer_.joinable()) committer_.join();
   }
 
   // The pump thread: opens requests, and moves bytes, one chunk at a time.
@@ -493,17 +540,28 @@ class session_state {
     const auto cfg = cfg_();
     if (r.kind == op::roots) {
       std::vector<root_info> out;
-      for (const auto& c : cfg->roots) out.push_back({c.id, c.label});
+      for (const auto& c : cfg->roots) {
+        root_info info{c.id, c.label};
+        info.backup = c.backup;
+        info.writable = c.backup && may_write(c);
+        out.push_back(std::move(info));
+      }
       return send_end(r.id, end_code::ok, roots_json(out));
     }
     const root_config* root = find_root(*cfg, r.root);
     // Before any file is looked at.
     if (!root || (!r.rel.empty() && !safe_relative(r.rel))) return send_end(r.id, end_code::refused);
-    if (r.kind == op::read_range && r.rel.empty()) return send_end(r.id, end_code::refused);
+    // The meta folder: only a backup folder's, only to a device that may write there.
+    if (r.meta && !may_write(*root)) return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
+    if (r.kind == op::write) return open_write(r, *root);
+    const std::string rel = r.meta ? (r.rel.empty() ? std::string(kBackupMetaFolder) : std::string(kBackupMetaFolder) + "/" + r.rel) : r.rel;
+    if (r.kind == op::read_range && rel.empty()) return send_end(r.id, end_code::refused);
     if (r.kind == op::stat) {
-      auto st = io::stat_beneath(root->path, r.rel);
+      auto st = io::stat_beneath(root->path, rel);
       if (!st) return send_end(r.id, end_for(st.error()));
-      return send_end(r.id, end_code::ok, stat_json({st->size, st->mtime_unix, st->is_directory}));
+      stat_info info{st->size, st->mtime_unix, st->is_directory};
+      if (root->backup && rel.empty() && book_) book_->space(*root, info);
+      return send_end(r.id, end_code::ok, stat_json(info));
     }
     auto s = std::make_unique<stream>();
     s->id = r.id;
@@ -519,7 +577,7 @@ class session_state {
         for (const auto& t : streams_) held += t->body.size();
       }
       if (held >= kMaxListBytes) return send_end(r.id, end_code::too_many);  // no lock across a send
-      auto children = io::list_beneath(root->path, r.rel, true);
+      auto children = io::list_beneath(root->path, rel, true);
       if (!children) return send_end(r.id, end_for(children.error()));
       for (const auto& c : *children) {
         if (!safe_relative(c.name)) continue;  // a hidden name, or one no peer may ask for
@@ -531,7 +589,7 @@ class session_state {
         ++s->count;
       }
     } else {
-      if (auto opened = s->reader.open_beneath(root->path, r.rel); !opened) return send_end(r.id, end_for(opened.error()));
+      if (auto opened = s->reader.open_beneath(root->path, rel); !opened) return send_end(r.id, end_for(opened.error()));
       const std::uint64_t size = s->reader.size();
       s->at = std::min(r.at, size);
       s->remaining = std::min(r.length, size - s->at);
@@ -557,6 +615,298 @@ class session_state {
       }
     }
     return duplicate ? send_end(r.id, end_code::bad_request) : true;
+  }
+
+  // ---- writes (phone backup) ----------------------------------------------------------------
+
+  [[nodiscard]] bool may_write(const root_config& root) const {
+    return book_ && (ops_ & kWriteOp) != 0 && book_->allowed(root, device_);
+  }
+
+  static std::string why_json(const char* why, std::optional<std::uint64_t> have = std::nullopt) {
+    json::writer w;
+    w.begin_object().key("why").string(why);
+    if (have) w.key("have").integer(static_cast<std::int64_t>(*have));
+    w.end_object();
+    return w.take();
+  }
+
+  static std::string name_json(std::string_view rel_dir, std::string_view name, bool existing) {
+    json::writer w;
+    std::string rel(rel_dir);
+    if (!rel.empty()) rel += '/';
+    rel += name;
+    w.begin_object().key("name").string(rel);
+    if (existing) w.key("existing").boolean(true);
+    w.end_object();
+    return w.take();
+  }
+
+  // The pump's: checks a write, makes its folder, finds an identical file
+  // already there, holds its bytes, opens its unfinished copy, gives credit.
+  bool open_write(const open_request& r, const root_config& root) {
+    if (!may_write(root)) return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
+    const auto slash = r.rel.rfind('/');
+    std::string rel_dir = slash == std::string::npos ? std::string() : r.rel.substr(0, slash);
+    std::string name = slash == std::string::npos ? r.rel : r.rel.substr(slash + 1);
+    if (r.meta) {
+      // The one file the service replaces: this device's own ledger copy.
+      if (rel_dir != device_id_ || name != kLedgerFile || r.size > kMaxLedgerBytes) {
+        return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
+      }
+      rel_dir = std::string(kBackupMetaFolder) + "/" + device_id_;
+    }
+    auto dir = rel_dir.empty() ? result<std::string>(root.path) : io::make_directories_beneath(root.path, rel_dir);
+    if (!dir) return send_end(r.id, end_for(dir.error()));
+    if (!r.meta) {
+      // Already there under this name or a numbered one: nothing to send.
+      for (int n = 1; n <= backup::kMaxNumbered; ++n) {
+        const std::string candidate = backup::numbered(name, n);
+        auto st = io::stat_beneath(*dir, candidate);
+        if (!st) break;
+        if (!st->is_directory && st->size == r.size && backup::same_file(io::join_path(*dir, candidate), r.size, r.hash)) {
+          return send_end(r.id, end_code::ok, name_json(r.meta ? std::string_view() : std::string_view(rel_dir), candidate, true));
+        }
+      }
+    }
+    auto w = std::make_shared<write_stream>();
+    w->id = r.id;
+    w->root = root;
+    w->dir = *dir;
+    w->name = name;
+    w->rel_dir = r.meta ? std::string() : rel_dir;
+    w->part = io::join_path(*dir, backup::part_name(name, device_id_));
+    w->hash = r.hash;
+    w->meta = r.meta;
+    w->size = r.size;
+    if (!book_->claim(w->part)) return send_end(r.id, end_code::refused, why_json(kWhyBusy));
+    struct unclaim {
+      backup::book* b;
+      std::string part;
+      bool keep = false;
+      ~unclaim() {
+        if (!keep) b->drop(part);
+      }
+    } claimed{book_, w->part};
+    // What this device already has of it.
+    std::uint64_t have = 0;
+    std::error_code ec;
+    const auto part_path = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(w->part.data()), w->part.size()));
+    const auto pst = std::filesystem::symlink_status(part_path, ec);
+    const bool exists = !ec && std::filesystem::exists(pst);
+    if (exists) {
+      if (!std::filesystem::is_regular_file(pst)) return send_end(r.id, end_code::error);
+      have = std::filesystem::file_size(part_path, ec);
+      if (ec) return send_end(r.id, end_code::error);
+      if (have > r.size) {
+        // Not the same file after all (the phone's copy changed): this device's own, so it goes.
+        std::filesystem::remove(part_path, ec);
+        if (ec) return send_end(r.id, end_code::error);
+        book_->removed(root.id, have);
+        have = 0;
+      }
+    }
+    if (r.at != have) return send_end(r.id, end_code::refused, why_json(kWhyOffset, have));
+    const std::uint64_t left = r.size - have;
+    switch (book_->reserve(root, left)) {
+      case backup::book::verdict::ok: break;
+      case backup::book::verdict::limit: return send_end(r.id, end_code::refused, why_json(kWhyLimit));
+      case backup::book::verdict::full: return send_end(r.id, end_code::refused, why_json(kWhyFull));
+    }
+    w->held = left;
+    w->next = have;
+    if (have > 0) {
+      if (auto o = w->out.open_resume(w->part, have); !o) {
+        book_->release(root.id, left);
+        return send_end(r.id, end_code::error);
+      }
+    } else {
+      auto o = w->out.create_new(w->part);
+      if (!o || *o != io::rename_outcome::renamed) {
+        book_->release(root.id, left);
+        return send_end(r.id, end_code::error);
+      }
+      if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(w->part, true);
+    }
+    bool cancelled = false;
+    {
+      std::lock_guard lock(m_);
+      opening_ = 0;
+      cancelled = opening_cancelled_;
+    }
+    if (cancelled) {
+      close_write(*w);
+      return true;
+    }
+    claimed.keep = true;
+    if (left == 0) {
+      // Whole already: straight to the commit.
+      (void)w->out.close();
+      w->closed = true;
+      hand_to_commit(std::move(w));
+      return true;
+    }
+    w->credit = static_cast<std::uint32_t>(std::min<std::uint64_t>(left, kWriteWindow));
+    const std::uint32_t credit = w->credit;
+    {
+      std::lock_guard lock(wm_);
+      if (writes_.count(r.id) != 0) {
+        close_write(*w);
+        return send_end(r.id, end_code::bad_request);
+      }
+      writes_[r.id] = w;
+    }
+    return send_(msg::stream_credit, encode_credit(r.id, credit));
+  }
+
+  // The reader's: bytes of a write. False ends the session (bytes nobody asked for).
+  bool on_write_data(std::span<const std::uint8_t> body) {
+    const auto d = parse_data(body);
+    if (!d) return false;
+    std::shared_ptr<write_stream> w;
+    {
+      std::lock_guard lock(wm_);
+      const auto it = writes_.find(d->id);
+      if (it == writes_.end()) return true;  // cancelled, or refused: what was on the wire
+      w = it->second;
+    }
+    const std::uint64_t n = d->bytes.size();
+    if (d->offset != w->next || n > w->credit || n > w->size - w->next) return false;
+    if (auto ok = w->out.write_at(d->offset, d->bytes); !ok) {
+      drop_write(d->id);
+      return send_end(d->id, end_code::error);
+    }
+    w->next += n;
+    w->credit -= static_cast<std::uint32_t>(n);
+    w->held -= n;
+    book_->wrote(w->root.id, n);
+    if (w->next == w->size) {
+      {
+        std::lock_guard lock(wm_);
+        writes_.erase(d->id);
+      }
+      hand_to_commit(std::move(w));
+      return true;
+    }
+    // Keep about a window in flight.
+    const std::uint64_t want = std::min<std::uint64_t>(kWriteWindow, w->size - w->next);
+    if (w->credit < want / 2) {
+      const auto more = static_cast<std::uint32_t>(want - w->credit);
+      w->credit += more;
+      return send_(msg::stream_credit, encode_credit(d->id, more));
+    }
+    return true;
+  }
+
+  // The client gave up on it: the copy stays, unfinished, to go on from next time.
+  bool cancel_write(std::uint32_t id) {
+    std::shared_ptr<write_stream> w;
+    {
+      std::lock_guard lock(wm_);
+      const auto it = writes_.find(id);
+      if (it == writes_.end()) return false;
+      w = it->second;
+      writes_.erase(it);
+    }
+    close_write(*w);
+    return true;
+  }
+
+  void drop_write(std::uint32_t id) {
+    std::shared_ptr<write_stream> w;
+    {
+      std::lock_guard lock(wm_);
+      const auto it = writes_.find(id);
+      if (it == writes_.end()) return;
+      w = it->second;
+      writes_.erase(it);
+    }
+    close_write(*w);
+  }
+
+  void close_write(write_stream& w) {
+    if (!w.closed) {
+      (void)w.out.close();
+      w.closed = true;
+    }
+    if (book_) {
+      book_->release(w.root.id, w.held);
+      w.held = 0;
+      book_->drop(w.part);
+    }
+  }
+
+  void hand_to_commit(std::shared_ptr<write_stream> w) {
+    std::lock_guard lock(cm_);
+    commits_.push_back(std::move(w));
+    if (!committer_.joinable()) committer_ = std::thread([this] { commit_loop(); });
+    ccv_.notify_all();
+  }
+
+  void commit_loop() {
+    for (;;) {
+      std::shared_ptr<write_stream> w;
+      {
+        std::unique_lock lock(cm_);
+        ccv_.wait(lock, [&] { return commit_stop_ || !commits_.empty(); });
+        if (commits_.empty()) return;
+        w = std::move(commits_.front());
+        commits_.pop_front();
+      }
+      const auto [code, json] = commit(*w);
+      book_->drop(w->part);
+      // A session already gone cannot hear it; the copy is whole on disk either way.
+      (void)send_end(w->id, code, json);
+    }
+  }
+
+  // Flush, hash what is on disk, rename into place without replacing anything.
+  std::pair<end_code, std::string> commit(write_stream& w) {
+    const auto path = [](const std::string& s) {
+      return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+    };
+    if (!w.closed) {
+      const bool flushed = w.out.flush_durable().has_value();
+      const bool closed = w.out.close().has_value();
+      w.closed = true;
+      if (!flushed || !closed) return {end_code::error, {}};
+    }
+    const auto on_disk = backup::hash_file(w.part);
+    if (!on_disk) return {end_code::error, {}};
+    std::error_code ec;
+    if (on_disk.value() != w.hash) {
+      // Not what was sent: this device's own unfinished copy goes, and it starts again.
+      const auto bytes = std::filesystem::file_size(path(w.part), ec);
+      std::filesystem::remove(path(w.part), ec);
+      if (!ec) book_->removed(w.root.id, bytes);
+      return {end_code::error, why_json(kWhyHash)};
+    }
+    if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(w.part, false);
+    if (w.meta) {
+      // The ledger copy, the one file replaced (owner's call B3).
+      const std::string target = io::join_path(w.dir, w.name);
+      const auto old = std::filesystem::file_size(path(target), ec);
+      const std::uint64_t old_bytes = ec ? 0 : old;
+      std::filesystem::rename(path(w.part), path(target), ec);
+      if (ec) return {end_code::error, {}};
+      book_->removed(w.root.id, old_bytes);
+      return {end_code::ok, name_json({}, w.name, false)};
+    }
+    for (int n = 1; n <= backup::kMaxNumbered; ++n) {
+      const std::string candidate = backup::numbered(w.name, n);
+      const std::string target = io::join_path(w.dir, candidate);
+      auto renamed = io::rename_no_replace(w.part, target);
+      if (!renamed) return {end_code::error, {}};
+      if (*renamed == io::rename_outcome::renamed) return {end_code::ok, name_json(w.rel_dir, candidate, false)};
+      // Taken. By this very file (a commit whose answer was lost)? Then it is done.
+      if (backup::same_file(target, w.size, w.hash)) {
+        std::filesystem::remove(path(w.part), ec);
+        if (!ec) book_->removed(w.root.id, w.size);
+        return {end_code::ok, name_json(w.rel_dir, candidate, true)};
+      }
+    }
+    if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(w.part, true);
+    return {end_code::error, {}};
   }
 
   static std::string done_json(std::uint64_t sent) {
@@ -641,6 +991,16 @@ class session_state {
   std::uint32_t opening_credit_ = 0;              // under m_
   bool opening_cancelled_ = false;                // under m_
   int since_bulk_ = 0;                            // under m_
+  backup::book* book_ = nullptr;
+  const std::array<std::uint8_t, 32> device_;
+  const std::string device_id_;
+  std::mutex wm_;
+  std::map<std::uint32_t, std::shared_ptr<write_stream>> writes_;  // under wm_
+  std::mutex cm_;
+  std::condition_variable ccv_;
+  std::deque<std::shared_ptr<write_stream>> commits_;  // under cm_
+  bool commit_stop_ = false;                           // under cm_
+  std::thread committer_;                              // started under cm_
 };
 
 }  // namespace
@@ -684,7 +1044,9 @@ void server::state::session(conn& c) {
   std::uint32_t version = kVersion;
   if (hello) {
     version = std::clamp(hello->version, kMinVersion, kVersion);
-    if (hello->min_version <= kVersion && hello->version >= kMinVersion) ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0));
+    if (hello->min_version <= kVersion && hello->version >= kMinVersion) {
+      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp));
+    }
   }
   if (!ch.send(msg::serve_caps, caps_json(version, ops))) return;
   if (ops == 0) {
@@ -696,7 +1058,7 @@ void server::state::session(conn& c) {
   session_state::admin_fn admin_handler;
   if (c.is_owner) admin_handler = [this, &c](std::string_view request) { return admin(c, request); };
   session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); },
-                  [this] { return cfg(); }, ops, std::move(admin_handler));
+                  [this] { return cfg(); }, ops, std::move(admin_handler), &book, c.device);
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
     try {
@@ -719,6 +1081,7 @@ void server::state::session(conn& c) {
   s.stop();
   ch.shutdown();
   pump.join();
+  s.join_commits();
 }
 
 void server::state::release_pending(conn& c) {
@@ -1199,10 +1562,45 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     json::writer w;
     w.begin_object().key("roots").begin_array();
     for (const auto& r : cfg()->roots) {
-      w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
+      w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path);
+      if (r.backup) {
+        stat_info space;
+        book.space(r, space);
+        w.key("backup").begin_object();
+        w.key("limit").integer(static_cast<std::int64_t>(r.limit)).key("reserve").integer(static_cast<std::int64_t>(r.reserve));
+        w.key("used").integer(static_cast<std::int64_t>(space.used)).key("room").integer(static_cast<std::int64_t>(space.room));
+        w.end_object();
+      }
+      w.end_object();
     }
     w.end_array().end_object();
     return {end_code::ok, w.take()};
+  }
+  // A backup folder's storage limit and reserve, both bytes ({"limit","reserve"}).
+  const auto backup_sizes = [&](const json::value& b, std::uint64_t& limit, std::uint64_t& reserve) {
+    const auto l = b.integer("limit");
+    const auto r = b.find("reserve") ? b.integer("reserve") : std::optional<std::int64_t>(static_cast<std::int64_t>(kDefaultReserve));
+    if (!l || *l <= 0 || !r || *r < 0) return false;
+    limit = static_cast<std::uint64_t>(*l);
+    reserve = static_cast<std::uint64_t>(*r);
+    return true;
+  };
+  if (*what == "set_backup") {
+    // Changing either one moves and removes nothing: a lower limit only stops new writes.
+    const std::string id = text("id");
+    const json::value* b = doc->find("backup");
+    std::uint64_t limit = 0, reserve = 0;
+    if (!b || b->k != json::kind::object || !backup_sizes(*b, limit, reserve)) return {end_code::bad_request, {}};
+    std::lock_guard lock(claim_m);
+    config next = *cfg();
+    auto it = std::find_if(next.roots.begin(), next.roots.end(), [&](const root_config& r) { return r.id == id; });
+    if (it == next.roots.end()) return {end_code::not_found, {}};
+    if (it->label == kCatalogueLabel) return {end_code::refused, {}};  // the catalogue is never a backup folder
+    it->backup = true;
+    it->limit = limit;
+    it->reserve = reserve;
+    if (!publish_config(std::move(next))) return {end_code::error, {}};
+    return {end_code::ok, "{}"};
   }
   if (*what == "add_root") {
     std::string label = text("label");
@@ -1217,7 +1615,12 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     config next = *cfg();
     if (next.roots.size() >= kMaxRoots) return {end_code::too_many, {}};
     const std::string id = new_root_id();
-    next.roots.push_back({id, std::move(label), path});
+    root_config added{id, std::move(label), path};
+    if (const json::value* b = doc->find("backup")) {
+      if (b->k != json::kind::object || !backup_sizes(*b, added.limit, added.reserve)) return {end_code::bad_request, {}};
+      added.backup = true;
+    }
+    next.roots.push_back(std::move(added));
     if (!publish_config(std::move(next))) return {end_code::error, {}};
     json::writer w;
     w.begin_object().key("id").string(id).end_object();
@@ -1300,6 +1703,13 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.lan_only = o.lan_only;
   st.own_network = o.own_network;
   st.save_config = o.save_config;
+  if (o.may_write) {
+    st.book.may_write = o.may_write;
+  } else {
+    // Every device on the paired list may write; the owner's session never asks.
+    st.book.may_write = [s = &st](const std::array<std::uint8_t, 32>& device) { return s->paired(device); };
+  }
+  st.book.free_bytes = o.free_bytes;
   st.devices_lock = o.devices_lock;
   st.store = o.store;
   st.loopback_only = o.loopback_only;

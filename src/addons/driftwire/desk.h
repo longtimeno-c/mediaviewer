@@ -73,6 +73,15 @@ struct device_row {
 
 struct root_row {
   std::string id, label, path;
+  // A backup folder (phone backup, 1.1): its limit and reserve, and what the
+  // service counted in it and would still take.
+  bool backup = false;
+  std::uint64_t limit = 0, reserve = 0, used = 0, room = 0;
+};
+// A backup folder's sizes, in bytes.
+struct backup_sizes {
+  std::uint64_t limit = 0;
+  std::uint64_t reserve = 0;
 };
 
 class desk {
@@ -130,7 +139,12 @@ class desk {
   [[nodiscard]] expected revoke(const key32& key);
 
   [[nodiscard]] result<std::vector<root_row>> roots();
-  [[nodiscard]] result<std::string> add_root(const std::string& label, const std::string& path);
+  // With `backup`, a backup folder: phones may create files there under its limit.
+  [[nodiscard]] result<std::string> add_root(const std::string& label, const std::string& path,
+                                             std::optional<backup_sizes> backup = std::nullopt);
+  // Makes a named folder a backup folder, or changes its limit and reserve.
+  // A lower limit moves and removes nothing: it only stops new writes.
+  [[nodiscard]] expected set_backup(const std::string& id, backup_sizes sizes);
   [[nodiscard]] expected remove_root(const std::string& id);
 
   // The nearby service over `folder` (the Catalogue root) for the paired phones,

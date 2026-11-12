@@ -626,6 +626,13 @@ What §10b and §7.2 leave open. Each has a recommendation; none is built until 
 | B6 | **Backup in the sample library** (owner: SAMPLE must demo every feature, and must never upload anyone's photos). | The real backup code with the person's own Photos as the source (so the Photos prompt and limited access are seen), into a clearly labelled **"Sample NAS on this iPhone"** folder in the app's own storage, through the same C++ writer the service uses. Its storage limit is 250 MB, so "Storage limit reached" can be seen. Nothing leaves the phone. Forget removes the folder and its ledger. No change to the `sample-library` release, so no republish. |
 | B7 | **The desktop indexes what arrives.** | The backup folder is chosen from the desktop's own search roots on that share (or added as one when chosen), so its next walk indexes it and the next publish carries it to the phone. The card says when it is not indexed. |
 
+**Answers (owner, 2026-11-12).** B6 as recommended. B3 and B4 both allowed. B1, B5, B7 as
+recommended, and the storage limit and the free-space reserve are both set per backup folder on the
+card and can be changed later. B2: worked out with the owner-passphrase and grants plan
+(`docs/plans/nas-owner-and-guests.md`) so that write access is one of a phone's permissions there;
+until that lands, the service asks one function (`may_write`) and every unlimited paired phone may
+write.
+
 **#46** (phone to desktop through Import) is a different route and stays open. Its findings carry
 over: native PhotoKit, and streaming rather than staging originals.
 

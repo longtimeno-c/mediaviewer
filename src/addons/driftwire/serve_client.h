@@ -7,6 +7,8 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <span>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -76,12 +78,36 @@ class client {
   // for a whole-file pull. `at` past the end reads nothing.
   [[nodiscard]] result<std::unique_ptr<read_stream>> read_range(const std::string& root, const std::string& rel,
                                                                 std::uint64_t at, std::uint64_t length,
-                                                                std::uint32_t window = 1024 * 1024, bool bulk = false);
+                                                                std::uint32_t window = 1024 * 1024, bool bulk = false,
+                                                                bool meta = false);
 
   [[nodiscard]] result<std::vector<root_info>> roots(end_code* code = nullptr);
+  // `meta`: under a backup folder's kBackupMetaFolder (serve_wire.h, "writes").
   [[nodiscard]] result<std::vector<list_entry>> list(const std::string& root, const std::string& rel,
-                                                     end_code* code = nullptr);
-  [[nodiscard]] result<stat_info> stat(const std::string& root, const std::string& rel, end_code* code = nullptr);
+                                                     end_code* code = nullptr, bool meta = false);
+  [[nodiscard]] result<stat_info> stat(const std::string& root, const std::string& rel, end_code* code = nullptr,
+                                       bool meta = false);
+
+  // Phone backup: writes one file into a backup folder (serve_wire.h, "writes";
+  // kWriteOp in caps). `read` fills its span from the file at an offset and
+  // returns how much it filled (short only at the end). `progress` gets the
+  // bytes sent so far. A refusal is status::permission_denied with `why` set
+  // (kWhyNotAllowed, kWhyLimit, kWhyFull, kWhyOffset with `have`, kWhyHash,
+  // kWhyBusy); `cancel` set is status::cancelled and leaves the service's
+  // unfinished copy, to go on from with `at` = its `have`.
+  struct write_done {
+    std::string name;       // where it is now, relative to the folder
+    bool existing = false;  // it was there already: nothing was sent
+  };
+  struct write_refused {
+    std::string why;
+    std::uint64_t have = 0;
+  };
+  using read_fn = std::function<result<std::size_t>(std::uint64_t offset, std::span<std::uint8_t> into)>;
+  [[nodiscard]] result<write_done> write(const std::string& root, const std::string& rel, std::uint64_t size,
+                                         const std::string& hash_hex, std::uint64_t at, const read_fn& read,
+                                         const std::function<void(std::uint64_t)>& progress,
+                                         const std::atomic<bool>* cancel, write_refused* why, bool meta = false);
 
   // One request of the owner's (kAdminOp in `ops`). The answer's JSON. Refused,
   // or not the owner: status::permission_denied; `code` says how it ended.

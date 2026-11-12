@@ -16,7 +16,8 @@
 //      go no further: message 3 needs the device's key);
 //   4. only then does it do any key work or say anything;
 //   5. the device key from the finished handshake must be a paired one:
-//      paired devices hold a read-only grant on the named folders; a device
+//      paired devices hold a read grant on the named folders, and may create
+//      files in the backup folders (serve_backup.h); a device
 //      that is not paired, or was revoked, is told so, sealed, and refused.
 //
 // A running session is cut within kDevicesRecheckMs of its device being
@@ -108,6 +109,12 @@ class server {
     std::function<bool(const config&)> save_config;
     // Taken around every change of the paired list ("": none), against `serve add`.
     std::string devices_lock;
+    // Phone backup (1.1): whether a device may create files in the backup
+    // folders. Empty: every paired device may, and the owner's session never
+    // (docs/plans/mobile.md §10b.1, B2; the grants plan fills this in).
+    std::function<bool(const std::array<std::uint8_t, 32>&)> may_write;
+    // Tests: a volume's free bytes, instead of asking the OS.
+    std::function<std::uint64_t(const std::string&)> free_bytes;
   };
 
   // Listens and returns. status::not_found when the store has no usable

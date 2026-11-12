@@ -21,6 +21,7 @@
 // where a named folder is on the NAS. Portable (D9): no socket, no OS header.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -57,10 +58,16 @@ inline constexpr std::size_t kMaxLabelBytes = 64;
 // A listing, at most (a folder bigger than this says "truncated").
 inline constexpr std::size_t kMaxListBytes = 16u * 1024 * 1024;
 
-enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4 };
-// What a phone can use. `admin` is apart: granted only to the owner's session.
+enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4, write = 5 };
+// What a phone can use to read. `admin` is apart: granted only to the owner's
+// session. `write` (phone backup, docs/plans/mobile.md §10b) is apart too:
+// granted to a device that may write (serve.h, may_write), and then only into
+// a backup folder, under its storage limit, creating files and never
+// replacing or deleting one. A service from before 1.1 does not know the name
+// and leaves it out of serve_caps, which is how a phone learns it is too old.
 inline constexpr std::uint32_t kAllOps = (1u << 4) - 1;
 inline constexpr std::uint32_t kAdminOp = 1u << 4;
+inline constexpr std::uint32_t kWriteOp = 1u << 5;
 [[nodiscard]] const char* op_name(op o) noexcept;
 [[nodiscard]] std::optional<op> parse_op(std::string_view name) noexcept;
 [[nodiscard]] constexpr std::uint32_t op_bit(op o) noexcept { return 1u << static_cast<unsigned>(o); }
@@ -75,6 +82,34 @@ enum class end_code : std::uint8_t {
   bad_request = 5,
   too_many = 6,     // kMaxStreams already open
 };
+
+// ---- writes (phone backup) -----------------------------------------------------------------
+// A write stream: the client opens {"op":"write","root","rel","at","size","hash"} and the
+// service answers either at once with stream_end, or with stream_credit (service to client:
+// bytes it may send), then takes stream_data (client to service) at the offsets it expects,
+// and tops the credit up as it writes. With every byte there it flushes, hashes what is on
+// disk, and renames the file into place without replacing anything: stream_end ok
+// {"name":"<rel it got>"} (" (2)" and so on for a name already taken by another file).
+// A file that is already there with that name, size and hash: ok {"name","existing":true},
+// at once. Refusals carry {"why":...} (kWhy* below), and "offset" carries {"have":N}: the
+// bytes of this device's own unfinished copy, to go on from (`at` must equal it).
+//
+// `meta`: `rel` is under the folder's `.mediaviewer-phone-backup/` instead (a hidden name, so
+// never reachable otherwise): any device that may write there may read and list it, and may
+// write only `<its own device id>/ledger.json`, the one file the service replaces.
+inline constexpr const char* kBackupMetaFolder = ".mediaviewer-phone-backup";
+inline constexpr const char* kLedgerFile = "ledger.json";
+inline constexpr std::uint64_t kMaxLedgerBytes = 64ull * 1024 * 1024;
+inline constexpr std::uint32_t kWriteWindow = 4u * 1024 * 1024;  // credit a write stream is given at once
+inline constexpr const char* kWhyNotAllowed = "not-allowed";  // not a backup folder, or this device may not write
+inline constexpr const char* kWhyLimit = "limit";              // past the folder's storage limit
+inline constexpr const char* kWhyFull = "full";                // the volume would keep less than the reserve
+inline constexpr const char* kWhyOffset = "offset";            // `at` is not where its copy ends
+inline constexpr const char* kWhyHash = "hash";                // what reached the disk is not what was sent
+inline constexpr const char* kWhyBusy = "busy";                // this device is already writing that name
+// The 16 hex digits a device's files are known by in a backup folder: its unfinished
+// copies and its ledger. The first 8 bytes of BLAKE2b-256 over its public key.
+[[nodiscard]] std::string device_folder_id(const std::array<std::uint8_t, 32>& device_public);
 
 // ---- serve_hello and serve_caps ------------------------------------------------------------
 struct hello_msg {
@@ -109,6 +144,10 @@ struct open_request {
   std::uint64_t length = 0;  // read_range: UINT64_MAX means to the end
   std::uint32_t credit = 0;  // the first credit
   bool bulk = false;
+  // write
+  std::uint64_t size = 0;    // the whole file
+  std::string hash;          // its BLAKE3, 64 lowercase hex digits
+  bool meta = false;         // rel is under kBackupMetaFolder
 };
 [[nodiscard]] std::vector<std::uint8_t> encode_open(const open_request& r);
 // nullopt: not a well-formed request at all. A name this build does not know
@@ -147,6 +186,8 @@ struct end_msg {
 struct root_info {
   std::string id;
   std::string label;
+  bool backup = false;    // a backup folder (1.1)
+  bool writable = false;  // and this device may write there
 };
 [[nodiscard]] std::string roots_json(std::span<const root_info> roots);
 [[nodiscard]] std::optional<std::vector<root_info>> parse_roots(std::string_view json);
@@ -155,6 +196,10 @@ struct stat_info {
   std::uint64_t size = 0;
   std::int64_t mtime = 0;
   bool dir = false;
+  // A backup folder's own stat (rel empty): its storage limit, what is in it, and
+  // what may still be written before either the limit or the volume's reserve.
+  bool has_space = false;
+  std::uint64_t limit = 0, used = 0, room = 0;
 };
 [[nodiscard]] std::string stat_json(const stat_info& s);
 [[nodiscard]] std::optional<stat_info> parse_stat(std::string_view json);
@@ -197,6 +242,11 @@ struct root_config {
   std::string id;     // opaque: 16 lowercase hex digits (valid_id)
   std::string label;  // shown by the client; never the path
   std::string path;   // absolute, on the NAS; never sent
+  // A backup folder (1.1): phones may create files here, never past `limit`
+  // bytes in it, and never leaving the volume less than `reserve` free.
+  bool backup = false;
+  std::uint64_t limit = 0;
+  std::uint64_t reserve = 0;
 };
 struct config {
   std::uint16_t port = 0;
@@ -206,5 +256,9 @@ struct config {
 // {"port":N,"name":"...","roots":[{"id","label","path"}]}. `any_port`: port 0
 // is accepted (the OS picks; the test build only): a service needs a fixed one.
 [[nodiscard]] result<config> parse_config(std::string_view json, bool any_port = false);
+// The same, written ("backup":{"limit","reserve"} only on a backup folder).
+[[nodiscard]] std::string config_json(const config& c);
+// The free space a backup folder keeps when the owner sets none.
+inline constexpr std::uint64_t kDefaultReserve = 1ull << 30;
 
 }  // namespace mv::driftwire::serve

@@ -13,6 +13,7 @@
 #include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/serve_client.h"
+#include "io/content_hash.h"
 
 #if defined(__APPLE__)
 #include <dns_sd.h>
@@ -909,3 +910,60 @@ TEST_CASE("phone pairing: the real program is claimed, keeps it across a restart
   }
 }
 #endif
+
+// ---- backup folders (phone backup, 1.1) -------------------------------------------------------
+
+TEST_CASE("phone pairing: the owner adds a backup folder, and changes its limit and reserve", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  const fs::path backup = n.dir.root() / "phone-backup";
+  fs::create_directories(backup);
+  put_file(backup / "already.jpg", std::string(1000, 'x'));
+
+  auto id = mac.d->add_root("Phone backup", utf8(backup), mv::driftwire::desk::backup_sizes{1u << 20, 0});
+  REQUIRE(id);
+  auto roots = mac.d->roots();
+  REQUIRE(roots);
+  const auto row = std::find_if(roots->begin(), roots->end(), [&](const auto& r) { return r.id == *id; });
+  REQUIRE(row != roots->end());
+  CHECK(row->backup);
+  CHECK(row->limit == (1u << 20));
+  CHECK(row->used >= 1000);
+
+  auto p = mac.d->start_pairing();
+  REQUIRE(p);
+  const key32 phone = random_key();
+  REQUIRE(n.phone(phone, p->code));
+  serve::client::options o;
+  o.access_key = n.access;
+  o.device_key = phone;
+  o.service_key = n.identity;
+  o.id = "cccccccccccccccc";
+  o.ops = serve::kAllOps | serve::kWriteOp;
+  auto c = serve::client::open(n.connect(), o);
+  REQUIRE(c);
+  const std::string photo(600 * 1024, 'p');
+  const std::string hash =
+      mv::io::hash_bytes(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(photo.data()), photo.size())).hex();
+  const serve::client::read_fn read = [&](std::uint64_t at, std::span<std::uint8_t> into) -> mv::result<std::size_t> {
+    const std::size_t k = std::min<std::size_t>(into.size(), photo.size() - static_cast<std::size_t>(at));
+    std::memcpy(into.data(), photo.data() + at, k);
+    return k;
+  };
+  serve::client::write_refused why;
+  REQUIRE((*c)->write(*id, "2026/11/a.jpg", photo.size(), hash, 0, read, {}, nullptr, &why));
+  // A second one would pass the limit: refused. The owner raises it: taken.
+  CHECK_FALSE((*c)->write(*id, "2026/11/b.jpg", photo.size(), hash, 0, read, {}, nullptr, &why));
+  CHECK(why.why == serve::kWhyLimit);
+  REQUIRE(mac.d->set_backup(*id, {8u << 20, 0}));
+  auto again = (*c)->write(*id, "2026/11/b.jpg", photo.size(), hash, 0, read, {}, nullptr, &why);
+  REQUIRE(again);
+  CHECK(again->name == "2026/11/b.jpg");
+  // The catalogue is never a backup folder.
+  roots = mac.d->roots();
+  REQUIRE(roots);
+  const auto cat = std::find_if(roots->begin(), roots->end(), [](const auto& r) { return r.label == "Catalogue"; });
+  REQUIRE(cat != roots->end());
+  CHECK_FALSE(mac.d->set_backup(cat->id, {1u << 20, 0}));
+}
