@@ -1056,7 +1056,7 @@ struct static_folder {
 
   mob::sample::fetch_fn as_fetch() {
     return [this](const std::string& url, std::uint64_t at, std::uint64_t length, const mob::byte_sink& sink,
-                  const mob::cancel_flag*) -> mv::expected {
+                  const std::function<bool()>&) -> mv::expected {
       struct k { const mob::byte_sink* s; } c{&sink};
       const int32_t r = fetch(this, url.c_str(), at, length,
                               [](void* p, uint64_t o, const uint8_t* d, size_t n) -> int32_t {
@@ -1358,7 +1358,7 @@ TEST_CASE("sample: a reader waiting for another's download stops on its own canc
   auto inner = r.folder.as_fetch();
   // The first reader's download hangs in the network until released.
   mob::sample::fetch_fn slow = [&](const std::string& url, std::uint64_t at, std::uint64_t length,
-                                   const mob::byte_sink& sink, const mob::cancel_flag* cancel) -> mv::expected {
+                                   const mob::byte_sink& sink, const std::function<bool()>& cancel) -> mv::expected {
     if (url.find("clip.bin") != std::string::npos && !release) {
       started = true;
       while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1435,7 +1435,7 @@ TEST_CASE("sample: a transport that sends more than the list says is refused and
   auto inner = r.folder.as_fetch();
   // A host that ignores the length asked for and sends the whole file.
   mob::sample::fetch_fn sloppy = [&](const std::string& url, std::uint64_t at, std::uint64_t, const mob::byte_sink& sink,
-                                     const mob::cancel_flag* cancel) { return inner(url, at, UINT64_MAX, sink, cancel); };
+                                     const std::function<bool()>& cancel) { return inner(url, at, UINT64_MAX, sink, cancel); };
   mob::sample::static_remote remote(kTestBase, sloppy, r.cfg.publisher_key, r.cfg.library_id,
                                     (r.dir.root / "verified").string());
   auto read = remote.read_range(kSampleMediaRoot, "2024/pic.bin", 0, 10,
@@ -1457,4 +1457,41 @@ TEST_CASE("sample: after Forget a reader makes nothing on disk", "[mobile-link]"
                                 [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false);
   CHECK_FALSE(read);
   CHECK_FALSE(fs::exists(r.dir.root / "verified"));
+}
+
+TEST_CASE("sample: Forget waits for the readers in flight, and nothing of theirs is left after the removal", "[mobile-link]") {
+  sample_rig r;
+  auto inner = r.folder.as_fetch();
+  for (int round = 0; round < 20; ++round) {
+    const fs::path dir = r.dir.root / ("verified-" + std::to_string(round));
+    // A slow line: each chunk takes a moment, so shut_down lands in the middle of downloads.
+    mob::sample::fetch_fn slow = [&](const std::string& url, std::uint64_t at, std::uint64_t length,
+                                     const mob::byte_sink& sink, const std::function<bool()>& stop) -> mv::expected {
+      return inner(url, at, length,
+                   [&](std::uint64_t o, std::span<const std::uint8_t> b) {
+                     std::this_thread::sleep_for(std::chrono::microseconds(200));
+                     return !(stop && stop()) && sink(o, b);
+                   },
+                   stop);
+    };
+    mob::sample::static_remote remote(kTestBase, slow, r.cfg.publisher_key, r.cfg.library_id, dir.string());
+    REQUIRE(remote.connect(nullptr));
+    std::vector<std::thread> readers;
+    for (const char* rel : {"2024/clip.bin", "2024/pic.bin", "2024/clip.bin", "2024/pic.bin"}) {
+      readers.emplace_back([&remote, rel] {
+        (void)remote.read_range(kSampleMediaRoot, rel, 0, 10,
+                                [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false);
+      });
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(round % 5 * 3));
+    remote.shut_down();  // Forget: stop and wait
+    std::error_code ec;
+    fs::remove_all(dir, ec);  // what LinkConnection.removeLibrary does next
+    for (auto& t : readers) t.join();
+    CHECK_FALSE(fs::exists(dir));
+    // And a reader that comes after does nothing to disk.
+    CHECK_FALSE(remote.read_range(kSampleMediaRoot, "2024/pic.bin", 0, 10,
+                                  [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false));
+    CHECK_FALSE(fs::exists(dir));
+  }
 }

@@ -183,14 +183,14 @@ auto catch_all(Fn fn) noexcept -> decltype(fn()) {
 // cancel flag as its `stopped`.
 sample::fetch_fn host_fetch(mv_fetch_fn fetch, void* ctx) {
   return [fetch, ctx](const std::string& url, std::uint64_t at, std::uint64_t length, const byte_sink& sink,
-                      const cancel_flag* cancel) -> expected {
+                      const std::function<bool()>& stop) -> expected {
     struct call {
       const byte_sink* sink;
-      const cancel_flag* cancel;
-    } c{&sink, cancel};
+      const std::function<bool()>* stop;
+    } c{&sink, &stop};
     const mv_sink_fn to_sink = [](void* p, uint64_t offset, const uint8_t* data, size_t size) -> int32_t {
       auto* k = static_cast<call*>(p);
-      if (k->cancel && k->cancel->stopped()) return 0;
+      if (*k->stop && (*k->stop)()) return 0;
       try {  // nothing unwinds through the host's frames
         return (*k->sink)(offset, std::span<const std::uint8_t>(data, size)) ? 1 : 0;
       } catch (...) {
@@ -199,7 +199,7 @@ sample::fetch_fn host_fetch(mv_fetch_fn fetch, void* ctx) {
     };
     const mv_stopped_fn stopped = [](void* p) -> int32_t {
       const auto* k = static_cast<const call*>(p);
-      return k->cancel && k->cancel->stopped() ? 1 : 0;
+      return *k->stop && (*k->stop)() ? 1 : 0;
     };
     const int32_t s = fetch(ctx, url.c_str(), at, length, to_sink, &c, stopped, &c);
     switch (s) {

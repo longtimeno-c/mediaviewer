@@ -24,6 +24,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -61,9 +62,10 @@ inline constexpr std::string_view kBase = "https://github.com/longtimeno-c/media
 // The host's HTTPS GET of [at, at + length) of `url` (length UINT64_MAX: to the
 // end), bytes to `sink` in order. status::not_found for a 404, ::cancelled when
 // `cancel` fired or the sink said stop, ::io for anything else. Blocks.
-// The sink's offsets count from `at` (0 is the first byte asked for).
+// The sink's offsets count from `at` (0 is the first byte asked for). `stopped` is polled while
+// the fetch waits: the reader's cancel, or Forget.
 using fetch_fn = std::function<expected(const std::string& url, std::uint64_t at, std::uint64_t length,
-                                        const byte_sink& sink, const cancel_flag* cancel)>;
+                                        const byte_sink& sink, const std::function<bool()>& stopped)>;
 
 // The signature is over this prefix and then the list's bytes, so it can never be taken
 // for a signature over anything else the key signs.
@@ -106,7 +108,8 @@ class static_remote final : public remote_file {
 
   // Reads roots.json afresh: the folder answers. status::io when it does not.
   [[nodiscard]] expected connect(const cancel_flag* cancel = nullptr);
-  // "Forget this library": every read in flight stops at its next chunk, and every later one is refused.
+  // "Forget this library": every read in flight is stopped and waited for, and every later one
+  // is refused, so once this returns nothing of this remote writes to disk again.
   void shut_down() noexcept;
   [[nodiscard]] bool connected() const;
   void disconnect() noexcept;
@@ -134,6 +137,11 @@ class static_remote final : public remote_file {
   // The lock of one listed file (by flat name): its download, its resume, its removal.
   [[nodiscard]] std::shared_ptr<std::timed_mutex> slot(const std::string& name);
   [[nodiscard]] bool is_shut() const;
+  // The reader's cancel, or Forget, as a fetch polls them.
+  [[nodiscard]] std::function<bool()> stopping(const cancel_flag* cancel) const;
+  // A read that may write to disk: counted, so shut_down can wait for it. False once shut.
+  [[nodiscard]] bool enter();
+  void leave();
 
   std::string base_;
   fetch_fn fetch_;
@@ -149,6 +157,8 @@ class static_remote final : public remote_file {
   std::optional<file_list> list_;  // under m_
   bool connected_ = false;                                        // under m_
   bool shut_ = false;                                             // under m_
+  int in_flight_ = 0;                                             // under m_: reads shut_down waits for
+  std::condition_variable drained_;
 };
 
 }  // namespace mv::mobile::sample

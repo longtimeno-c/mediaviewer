@@ -190,9 +190,28 @@ bool static_remote::is_shut() const {
 }
 
 void static_remote::shut_down() noexcept {
-  std::lock_guard lock(m_);
+  std::unique_lock lock(m_);
   shut_ = true;
   connected_ = false;
+  // Every read in flight sees is_shut() at its next chunk or wait (its fetch polls it too), so
+  // this is short; then Forget can remove the folders with nothing left to write into them.
+  drained_.wait(lock, [this] { return in_flight_ == 0; });
+}
+
+bool static_remote::enter() {
+  std::lock_guard lock(m_);
+  if (shut_) return false;
+  ++in_flight_;
+  return true;
+}
+
+void static_remote::leave() {
+  std::lock_guard lock(m_);
+  if (--in_flight_ == 0) drained_.notify_all();
+}
+
+std::function<bool()> static_remote::stopping(const cancel_flag* cancel) const {
+  return [this, cancel] { return is_shut() || (cancel && cancel->stopped()); };
 }
 
 bool static_remote::connected() const {
@@ -225,7 +244,7 @@ result<std::string> static_remote::small(const std::string& name, std::uint64_t 
         text.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         return !is_shut() && !(cancel && cancel->stopped());
       },
-      cancel);
+      stopping(cancel));
   if (too_big) return err(status::corrupt);
   if (!got) return err(got.error() == status::cancelled ? status::cancelled : status::io);
   return text;
@@ -404,7 +423,7 @@ result<std::string> static_remote::verified(const std::string& name, const liste
           have += bytes.size();
           return true;
         },
-        cancel);
+        stopping(cancel));
   }
   out.close();
   if (!out) write_failed = true;
@@ -438,7 +457,11 @@ result<std::string> static_remote::verified(const std::string& name, const liste
 
 expected static_remote::read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                    std::uint64_t length, const byte_sink& sink, const cancel_flag* cancel, bool) {
-  if (is_shut() || !fetch_) return err(status::io);
+  if (!fetch_ || !enter()) return err(status::io);  // after Forget: nothing, not even a folder
+  struct leaving {
+    static_remote* r;
+    ~leaving() { r->leave(); }
+  } counted{this};
   const auto name = flat_name(root, rel);
   if (!name) return err(status::not_found);  // nothing the publisher could have named
   MV_TRY(file_list list, list_now(cancel));
@@ -456,7 +479,7 @@ expected static_remote::read_range(const std::string& root, const std::string& r
           }
           return true;
         },
-        cancel);
+        stopping(cancel));
     if (got) return {};
     if (is_shut()) return err(status::io);
     if (stopped_by_sink || got.error() == status::cancelled) return err(status::cancelled);
