@@ -12349,8 +12349,14 @@ bool client_animations_off() noexcept {
 // folder and its watch close), hides, and the add-on's threads are all that
 // run; the canvas presents nothing (window_visible is false).
 
+struct kept_menu_row {
+  std::string kind, id, label;
+  bool value = false;
+};
+
 struct kept_alive_entry {
   std::string addon, screen, title, label;
+  std::vector<kept_menu_row> menu;  // the add-on's own rows (keep_menu), drawn before Open / Quit
 };
 
 std::string slot_notices() {
@@ -12370,7 +12376,7 @@ std::vector<kept_alive_entry> kept_alive() {
   std::vector<kept_alive_entry> out;
   const std::string json = slot_notices();
   if (json.empty()) return out;
-  const auto doc = mv::json::parse(json, 4);
+  const auto doc = mv::json::parse(json, 8);  // keep -> entry -> menu -> row
   if (!doc || doc->k != mv::json::kind::object) return out;
   const mv::json::value* keep = doc->find("keep");
   if (!keep || keep->k != mv::json::kind::array) return out;
@@ -12380,7 +12386,19 @@ std::vector<kept_alive_entry> kept_alive() {
     if (!addon || !screen) continue;
     const std::string* title = k.str("title");
     const std::string* label = k.str("label");
-    out.push_back({*addon, *screen, title ? *title : *screen, label ? *label : std::string()});
+    kept_alive_entry e{*addon, *screen, title ? *title : *screen, label ? *label : std::string(), {}};
+    if (const mv::json::value* menu = k.find("menu"); menu && menu->k == mv::json::kind::array) {
+      for (const mv::json::value& r : menu->a) {
+        const std::string* kind = r.str("kind");
+        if (!kind) continue;
+        const std::string* id = r.str("id");
+        const std::string* text = r.str("label");
+        const mv::json::value* v = r.find("value");
+        e.menu.push_back({*kind, id ? *id : std::string(), text ? *text : std::string(),
+                          v && v->k == mv::json::kind::boolean && v->b});
+      }
+    }
+    out.push_back(std::move(e));
   }
   return out;
 }
@@ -12390,7 +12408,7 @@ std::vector<kept_alive_entry> kept_alive() {
 bool addons_busy() {
   const std::string json = slot_notices();
   if (json.empty()) return true;
-  const auto doc = mv::json::parse(json, 4);
+  const auto doc = mv::json::parse(json, 8);  // as kept_alive: a kept menu nests deeper
   if (!doc || doc->k != mv::json::kind::object) return true;
   const mv::json::value* busy = doc->find("busy");
   return busy && busy->k == mv::json::kind::array && !busy->a.empty();
@@ -12520,14 +12538,68 @@ void sync_login_item(app_state* app, bool kept) {
   });
 }
 
-// The icon's menu: the add-on's line, Open <screen> for each, Open MediaViewer, Quit.
+// A kept menu's "files" row: files chosen in the system dialog, as UTF-8
+// paths. Empty when the person cancels.
+std::vector<std::string> pick_files(HWND hwnd) {
+  std::vector<std::string> out;
+  IFileOpenDialog* dlg = nullptr;
+  if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+    return out;
+  }
+  FILEOPENDIALOGOPTIONS opt{};
+  dlg->GetOptions(&opt);
+  dlg->SetOptions(opt | FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+  IShellItemArray* items = nullptr;
+  if (dlg->Show(hwnd) == S_OK && SUCCEEDED(dlg->GetResults(&items)) && items) {
+    DWORD count = 0;
+    (void)items->GetCount(&count);
+    for (DWORD i = 0; i < count; ++i) {
+      IShellItem* item = nullptr;
+      if (FAILED(items->GetItemAt(i, &item)) || !item) continue;
+      PWSTR path = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+        out.push_back(utf8_from_wide(path));
+        ::CoTaskMemFree(path);
+      }
+      item->Release();
+    }
+    items->Release();
+  }
+  dlg->Release();
+  return out;
+}
+
+// The icon's menu: the add-on's line, its own rows (keep_menu,
+// docs/plans/driftwire-menu-and-tunnel.md), Open <screen> for each, Open
+// MediaViewer, Quit. The Mac twin is AddonNotices.swift.
 void show_tray_menu(app_state* app, POINT at) {
   const std::vector<kept_alive_entry> keep = kept_alive();
   HMENU menu = ::CreatePopupMenu();
   if (!menu) return;
-  constexpr UINT kOpenViewer = 1, kQuit = 2, kOpenScreen = 0x100;
+  constexpr UINT kOpenViewer = 1, kQuit = 2, kOpenScreen = 0x100, kRow = 0x200;
   if (!keep.empty() && !keep.front().label.empty()) {
     (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide_from_utf8(keep.front().label).c_str());
+    (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  }
+  // Each row's command id is kRow + its place in this list.
+  struct row_ref {
+    const kept_alive_entry* keep;
+    const kept_menu_row* row;
+  };
+  std::vector<row_ref> rows;
+  for (std::size_t i = 0; i < keep.size() && i < 16; ++i) {
+    if (keep[i].menu.empty()) continue;
+    for (const kept_menu_row& r : keep[i].menu) {
+      if (r.kind == "separator") {
+        (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      } else if (r.kind == "text") {
+        (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide_from_utf8(r.label).c_str());
+      } else if (rows.size() < 64) {
+        const UINT flags = MF_STRING | (r.kind == "toggle" && r.value ? MF_CHECKED : MF_UNCHECKED);
+        (void)::AppendMenuW(menu, flags, kRow + static_cast<UINT>(rows.size()), wide_from_utf8(r.label).c_str());
+        rows.push_back({&keep[i], &r});
+      }
+    }
     (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   }
   for (std::size_t i = 0; i < keep.size() && i < 16; ++i) {
@@ -12547,6 +12619,22 @@ void show_tray_menu(app_state* app, POINT at) {
     leave_background(app);
   } else if (picked == kQuit) {
     quit_from_background(app);
+  } else if (picked >= kRow && picked - kRow < rows.size()) {
+    const row_ref& r = rows[picked - kRow];
+    if (r.row->kind == "toggle") {
+      (void)mv_slots_menu_action(r.keep->addon.c_str(), r.row->id.c_str(), r.row->value ? "false" : "true");
+    } else if (r.row->kind == "files") {
+      const std::vector<std::string> paths = pick_files(app->window);
+      if (!paths.empty()) {
+        mv::json::writer w;
+        w.begin_array();
+        for (const std::string& path : paths) w.string(path);
+        w.end_array();
+        (void)mv_slots_menu_action(r.keep->addon.c_str(), r.row->id.c_str(), w.take().c_str());
+      }
+    } else {
+      (void)mv_slots_menu_action(r.keep->addon.c_str(), r.row->id.c_str(), nullptr);
+    }
   } else if (picked >= kOpenScreen && picked - kOpenScreen < keep.size()) {
     const kept_alive_entry& k = keep[picked - kOpenScreen];
     (void)app->chrome.open_addon_screen(k.addon, k.screen);

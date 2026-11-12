@@ -396,6 +396,7 @@ void slot_registry::detach(const std::string& addon_id) {
       i = i->first.first == addon_id ? notices_.erase(i) : std::next(i);
     }
     keep_.erase(addon_id);
+    keep_menu_.erase(addon_id);
     busy_.erase(addon_id);
     private_cv_.notify_all();  // a provider_paths waiting on it returns not_found
   }
@@ -1759,6 +1760,96 @@ status slot_registry::keep_alive(const std::string& addon_id, bool on, const std
   return status::ok;
 }
 
+namespace {
+bool menu_id_ok(const std::string& id) {
+  return !id.empty() && id.size() <= 64 &&
+         std::all_of(id.begin(), id.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'; });
+}
+}  // namespace
+
+status slot_registry::keep_menu(const std::string& addon_id, std::string_view menu_json) {
+  constexpr std::size_t kMaxRows = 16;
+  std::vector<menu_row> rows;
+  if (!menu_json.empty()) {
+    const auto doc = json::parse(menu_json, 4);
+    if (!doc || doc->k != json::kind::object) return status::invalid_arg;
+    const json::value* items = doc->find("items");
+    if (!items || items->k != json::kind::array || items->a.size() > kMaxRows) return status::invalid_arg;
+    for (const json::value& it : items->a) {
+      const std::string* kind = it.str("kind");
+      if (!kind) return status::invalid_arg;
+      menu_row r;
+      r.kind = *kind;
+      if (r.kind == "separator") {
+        rows.push_back(std::move(r));
+        continue;
+      }
+      if (r.kind != "text" && r.kind != "toggle" && r.kind != "button" && r.kind != "files") return status::invalid_arg;
+      const std::string* label = it.str("label");
+      if (!label || label->empty() || !notice_text_ok(*label, 120)) return status::invalid_arg;
+      r.label = *label;
+      if (r.kind != "text") {
+        const std::string* id = it.str("id");
+        if (!id || !menu_id_ok(*id)) return status::invalid_arg;
+        r.id = *id;
+      }
+      if (r.kind == "toggle") {
+        const json::value* v = it.find("value");
+        if (!v || v->k != json::kind::boolean) return status::invalid_arg;
+        r.value = v->b;
+      }
+      rows.push_back(std::move(r));
+    }
+  }
+  {
+    std::lock_guard lock(m_);
+    if (addons_.find(addon_id) == addons_.end()) return status::not_found;
+    if (rows.empty()) {
+      if (keep_menu_.erase(addon_id) == 0) return status::ok;
+    } else {
+      auto k = keep_menu_.find(addon_id);
+      if (k != keep_menu_.end() && k->second == rows) return status::ok;
+      keep_menu_[addon_id] = std::move(rows);
+    }
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
+status slot_registry::menu_action(const std::string& addon_id, const std::string& item_id,
+                                  const std::string& value_json) {
+  std::lock_guard lock(m_);
+  auto it = addons_.find(addon_id);
+  if (it == addons_.end()) return status::not_found;
+  auto keep = keep_.find(addon_id);
+  auto menu = keep_menu_.find(addon_id);
+  if (keep == keep_.end() || menu == keep_menu_.end()) return status::not_found;
+  const auto row = std::find_if(menu->second.begin(), menu->second.end(),
+                                [&](const menu_row& r) { return !r.id.empty() && r.id == item_id; });
+  if (row == menu->second.end()) return status::not_found;
+  std::string value = value_json.empty() ? std::string("null") : value_json;
+  if (row->kind == "toggle" || row->kind == "files") {
+    const auto v = json::parse(value, 4);
+    if (!v) return status::invalid_arg;
+    if (row->kind == "toggle" && v->k != json::kind::boolean) return status::invalid_arg;
+    if (row->kind == "files" &&
+        (v->k != json::kind::array || v->a.empty() || v->a.size() > screen::kMaxItems ||
+         !std::all_of(v->a.begin(), v->a.end(), [](const json::value& p) { return p.k == json::kind::string; }))) {
+      return status::invalid_arg;
+    }
+  }
+  enqueue(*it->second, {}, [screen = keep->second.first, item_id, value = std::move(value)](slot_client& c) {
+    mv_slot_event ev{};
+    ev.struct_size = sizeof ev;
+    ev.kind = MV_SLOT_EVENT_MENU;
+    ev.screen_id = screen.c_str();
+    ev.node_id = item_id.c_str();
+    ev.value_json = value.c_str();
+    c.event(ev);
+  });
+  return status::ok;
+}
+
 status slot_registry::post_busy(const std::string& addon_id, std::string what) {
   if (!what.empty() && !notice_text_ok(what, 120)) return status::invalid_arg;
   {
@@ -1798,7 +1889,19 @@ std::string slot_registry::notices_json() const {
       }
     }
     w.begin_object().key("addon").string(addon).key("screen").string(k.first).key("title").string(title);
-    w.key("label").string(k.second).end_object();
+    w.key("label").string(k.second);
+    if (auto m = keep_menu_.find(addon); m != keep_menu_.end()) {
+      w.key("menu").begin_array();
+      for (const menu_row& r : m->second) {
+        w.begin_object().key("kind").string(r.kind);
+        if (!r.id.empty()) w.key("id").string(r.id);
+        if (!r.label.empty()) w.key("label").string(r.label);
+        if (r.kind == "toggle") w.key("value").boolean(r.value);
+        w.end_object();
+      }
+      w.end_array();
+    }
+    w.end_object();
   }
   w.end_array().key("busy").begin_array();
   for (const auto& [addon, what] : busy_) w.begin_object().key("addon").string(addon).key("what").string(what).end_object();
