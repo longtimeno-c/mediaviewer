@@ -302,6 +302,7 @@ result<std::optional<client::read_stream::chunk>> client::read_stream::next(int 
 result<std::unique_ptr<client::read_stream>> client::read_range(const std::string& root, const std::string& rel,
                                                                 std::uint64_t at, std::uint64_t length,
                                                                 std::uint32_t window, bool bulk, bool meta) {
+  if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);  // an older service would read root/<rel>
   open_request r;
   r.kind = op::read_range;
   r.meta = meta;
@@ -378,6 +379,7 @@ result<std::vector<root_info>> client::roots(end_code* code) {
 }
 
 result<stat_info> client::stat(const std::string& root, const std::string& rel, end_code* code, bool meta) {
+  if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;
   r.kind = op::stat;
   r.meta = meta;
@@ -400,6 +402,7 @@ result<stat_info> client::stat(const std::string& root, const std::string& rel, 
 
 result<std::vector<list_entry>> client::list(const std::string& root, const std::string& rel, end_code* code,
                                              bool meta) {
+  if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;
   r.kind = op::list;
   r.meta = meta;

@@ -322,7 +322,8 @@ class session_state {
         bool full = false;
         {
           std::lock_guard lock(m_);
-          full = opens_.size() + streams_.size() >= kMaxStreams;
+          // Writes count too: each holds an open file until its commit is done.
+          full = opens_.size() + streams_.size() + live_writes_.load() >= kMaxStreams;
           if (!full) {
             opens_.push_back(std::move(*r));
             cv_.notify_all();
@@ -361,8 +362,9 @@ class session_state {
       case msg::stream_cancel: {
         const auto id = parse_cancel(m.body);
         if (!id) return false;
-        if (cancel_write(*id)) return true;
         std::lock_guard lock(m_);
+        // Under m_, as open_write registers a write: a cancel never falls between the two.
+        if (cancel_write(*id)) return true;
         std::erase_if(opens_, [&](const open_request& o) { return o.id == *id; });
         if (*id == opening_) opening_cancelled_ = true;
         for (auto it = streams_.begin(); it != streams_.end(); ++it) {
@@ -560,7 +562,7 @@ class session_state {
       auto st = io::stat_beneath(root->path, rel);
       if (!st) return send_end(r.id, end_for(st.error()));
       stat_info info{st->size, st->mtime_unix, st->is_directory};
-      if (root->backup && rel.empty() && book_) book_->space(*root, info);
+      if (root->backup && rel.empty() && may_write(*root)) book_->space(*root, info);
       return send_end(r.id, end_code::ok, stat_json(info));
     }
     auto s = std::make_unique<stream>();
@@ -649,6 +651,7 @@ class session_state {
     const auto slash = r.rel.rfind('/');
     std::string rel_dir = slash == std::string::npos ? std::string() : r.rel.substr(0, slash);
     std::string name = slash == std::string::npos ? r.rel : r.rel.substr(slash + 1);
+    if (name.size() > kMaxWriteName) return send_end(r.id, end_code::refused, why_json(kWhyName));
     if (r.meta) {
       // The one file the service replaces: this device's own ledger copy.
       if (rel_dir != device_id_ || name != kLedgerFile || r.size > kMaxLedgerBytes) {
@@ -660,13 +663,20 @@ class session_state {
     if (!dir) return send_end(r.id, end_for(dir.error()));
     if (!r.meta) {
       // Already there under this name or a numbered one: nothing to send.
-      for (int n = 1; n <= backup::kMaxNumbered; ++n) {
-        const std::string candidate = backup::numbered(name, n);
-        auto st = io::stat_beneath(*dir, candidate);
-        if (!st) break;
-        if (!st->is_directory && st->size == r.size && backup::same_file(io::join_path(*dir, candidate), r.size, r.hash)) {
-          return send_end(r.id, end_code::ok, name_json(r.meta ? std::string_view() : std::string_view(rel_dir), candidate, true));
+      if (const auto found = backup::find_existing(*dir, name, r.size, r.hash, book_)) {
+        // An unfinished copy of it from this device is no use now: its own, so it goes.
+        const std::string part = io::join_path(*dir, backup::part_name(name, device_id_));
+        if (book_->claim(part)) {
+          std::error_code ec;
+          const auto p = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(part.data()), part.size()));
+          const auto st = std::filesystem::symlink_status(p, ec);
+          if (!ec && std::filesystem::is_regular_file(st)) {
+            const auto bytes = std::filesystem::file_size(p, ec);
+            if (!ec && std::filesystem::remove(p, ec) && !ec) book_->removed(root.id, bytes);
+          }
+          book_->drop(part);
         }
+        return send_end(r.id, end_code::ok, name_json(rel_dir, *found, true));
       }
     }
     auto w = std::make_shared<write_stream>();
@@ -728,33 +738,44 @@ class session_state {
       }
       if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(w->part, true);
     }
-    bool cancelled = false;
+    claimed.keep = true;
+    ++live_writes_;
+    w->credit = static_cast<std::uint32_t>(std::min<std::uint64_t>(left, kWriteWindow));
+    const std::uint32_t credit = w->credit;
+    // Registered, or let go, in one step with the cancel and stop checks: m_ then wm_, the
+    // order the cancel takes them in, so neither a cancel nor stop() can fall between.
+    enum class next_step { gone, duplicate, commit, credit } step = next_step::credit;
     {
       std::lock_guard lock(m_);
       opening_ = 0;
-      cancelled = opening_cancelled_;
+      if (stopping_ || opening_cancelled_) {
+        step = next_step::gone;
+      } else if (left == 0) {
+        step = next_step::commit;
+      } else {
+        std::lock_guard wl(wm_);
+        if (writes_.count(r.id) != 0) {
+          step = next_step::duplicate;
+        } else {
+          writes_[r.id] = w;
+        }
+      }
     }
-    if (cancelled) {
-      close_write(*w);
-      return true;
-    }
-    claimed.keep = true;
-    if (left == 0) {
-      // Whole already: straight to the commit.
-      (void)w->out.close();
-      w->closed = true;
-      hand_to_commit(std::move(w));
-      return true;
-    }
-    w->credit = static_cast<std::uint32_t>(std::min<std::uint64_t>(left, kWriteWindow));
-    const std::uint32_t credit = w->credit;
-    {
-      std::lock_guard lock(wm_);
-      if (writes_.count(r.id) != 0) {
+    switch (step) {
+      case next_step::gone:
+        close_write(*w);
+        return true;
+      case next_step::duplicate:
         close_write(*w);
         return send_end(r.id, end_code::bad_request);
-      }
-      writes_[r.id] = w;
+      case next_step::commit:
+        // Whole already: straight to the commit.
+        (void)w->out.close();
+        w->closed = true;
+        hand_to_commit(std::move(w));
+        return true;
+      case next_step::credit:
+        break;
     }
     return send_(msg::stream_credit, encode_credit(r.id, credit));
   }
@@ -834,6 +855,7 @@ class session_state {
       w.held = 0;
       book_->drop(w.part);
     }
+    --live_writes_;
   }
 
   void hand_to_commit(std::shared_ptr<write_stream> w) {
@@ -855,57 +877,36 @@ class session_state {
       }
       const auto [code, json] = commit(*w);
       book_->drop(w->part);
+      --live_writes_;
       // A session already gone cannot hear it; the copy is whole on disk either way.
       (void)send_end(w->id, code, json);
     }
   }
 
-  // Flush, hash what is on disk, rename into place without replacing anything.
+  // Flush, hash what is on disk, rename into place without replacing anything (serve_backup.h).
   std::pair<end_code, std::string> commit(write_stream& w) {
-    const auto path = [](const std::string& s) {
-      return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
-    };
     if (!w.closed) {
       const bool flushed = w.out.flush_durable().has_value();
       const bool closed = w.out.close().has_value();
       w.closed = true;
       if (!flushed || !closed) return {end_code::error, {}};
     }
-    const auto on_disk = backup::hash_file(w.part);
-    if (!on_disk) return {end_code::error, {}};
-    std::error_code ec;
-    if (on_disk.value() != w.hash) {
-      // Not what was sent: this device's own unfinished copy goes, and it starts again.
-      const auto bytes = std::filesystem::file_size(path(w.part), ec);
-      std::filesystem::remove(path(w.part), ec);
-      if (!ec) book_->removed(w.root.id, bytes);
-      return {end_code::error, why_json(kWhyHash)};
+    backup::commit_result done;
+    {
+      const auto folder = book_->lock_folder(w.dir);
+      done = backup::commit_part(w.dir, w.name, w.part, w.size, w.hash, w.meta, book_);
     }
-    if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(w.part, false);
-    if (w.meta) {
-      // The ledger copy, the one file replaced (owner's call B3).
-      const std::string target = io::join_path(w.dir, w.name);
-      const auto old = std::filesystem::file_size(path(target), ec);
-      const std::uint64_t old_bytes = ec ? 0 : old;
-      std::filesystem::rename(path(w.part), path(target), ec);
-      if (ec) return {end_code::error, {}};
-      book_->removed(w.root.id, old_bytes);
-      return {end_code::ok, name_json({}, w.name, false)};
+    if (done.freed != 0) book_->removed(w.root.id, done.freed);
+    if (done.k == backup::commit_result::kind::placed && w.size < backup::book::kMinFileCost) {
+      book_->added(w.root.id, backup::book::kMinFileCost - w.size);
     }
-    for (int n = 1; n <= backup::kMaxNumbered; ++n) {
-      const std::string candidate = backup::numbered(w.name, n);
-      const std::string target = io::join_path(w.dir, candidate);
-      auto renamed = io::rename_no_replace(w.part, target);
-      if (!renamed) return {end_code::error, {}};
-      if (*renamed == io::rename_outcome::renamed) return {end_code::ok, name_json(w.rel_dir, candidate, false)};
-      // Taken. By this very file (a commit whose answer was lost)? Then it is done.
-      if (backup::same_file(target, w.size, w.hash)) {
-        std::filesystem::remove(path(w.part), ec);
-        if (!ec) book_->removed(w.root.id, w.size);
-        return {end_code::ok, name_json(w.rel_dir, candidate, true)};
-      }
+    using kind = backup::commit_result::kind;
+    switch (done.k) {
+      case kind::placed: return {end_code::ok, name_json(w.rel_dir, done.name, false)};
+      case kind::existing: return {end_code::ok, name_json(w.rel_dir, done.name, true)};
+      case kind::bad_hash: return {end_code::error, why_json(kWhyHash)};
+      case kind::failed: break;
     }
-    if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(w.part, true);
     return {end_code::error, {}};
   }
 
@@ -1001,6 +1002,7 @@ class session_state {
   std::deque<std::shared_ptr<write_stream>> commits_;  // under cm_
   bool commit_stop_ = false;                           // under cm_
   std::thread committer_;                              // started under cm_
+  std::atomic<std::size_t> live_writes_{0};            // opened and not yet closed or committed
 };
 
 }  // namespace
@@ -1081,6 +1083,7 @@ void server::state::session(conn& c) {
   s.stop();
   ch.shutdown();
   pump.join();
+  s.stop();  // anything the pump registered while the first stop ran
   s.join_commits();
 }
 

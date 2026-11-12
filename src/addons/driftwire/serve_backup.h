@@ -21,6 +21,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <string>
@@ -54,6 +56,22 @@ class book {
   [[nodiscard]] bool claim(const std::string& part);
   void drop(const std::string& part);
 
+  // One commit at a time per folder: where the OS has no rename-without-replace
+  // (exFAT, some SMB mounts), two devices placing the same name could otherwise
+  // both see it free (io::rename_no_replace's fallback).
+  [[nodiscard]] std::unique_lock<std::mutex> lock_folder(const std::string& dir);
+
+  // Hashes of files already looked at, by path, size and modification time, so a
+  // phone asking again (or a cancel and reopen) does not hash a big file twice.
+  [[nodiscard]] std::optional<std::string> cached_hash(const std::string& path, std::uint64_t size, std::int64_t mtime_ns);
+  void remember_hash(const std::string& path, std::uint64_t size, std::int64_t mtime_ns, std::string hash);
+  // Whether `path` is a regular file of `size` bytes whose hash is `hash`, through the cache.
+  [[nodiscard]] bool same_file(const std::string& path, std::uint64_t size, std::string_view hash);
+
+  // A file this small still costs a block: counted as this much against the limit,
+  // so empty files cannot be made without end.
+  static constexpr std::uint64_t kMinFileCost = 4096;
+
   // Tests: the volume's free bytes, instead of asking the OS.
   std::function<std::uint64_t(const std::string& path)> free_bytes;
 
@@ -68,6 +86,14 @@ class book {
   std::mutex m_;
   std::map<std::string, counted> roots_;  // under m_
   std::set<std::string> parts_;           // under m_
+  std::map<std::string, std::unique_ptr<std::mutex>> folders_;  // under m_
+  struct hashed {
+    std::uint64_t size = 0;
+    std::int64_t mtime_ns = 0;
+    std::string hash;
+  };
+  std::map<std::string, hashed> hashes_;  // under m_, at most kHashCache
+  static constexpr std::size_t kHashCache = 1024;
 };
 
 // "IMG_0412.HEIC", 2 -> "IMG_0412 (2).HEIC"; 1 is the name itself.
@@ -80,5 +106,23 @@ class book {
 [[nodiscard]] bool same_file(const std::string& path, std::uint64_t size, std::string_view hash);
 // Names tried for a file before the write is refused (" (2)" ... " (99)").
 inline constexpr int kMaxNumbered = 99;
+
+// The name an identical file already has in `dir`: `name` or a numbered one.
+// `cache`, when given, saves hashing a file it has seen.
+[[nodiscard]] std::optional<std::string> find_existing(const std::string& dir, std::string_view name,
+                                                       std::uint64_t size, std::string_view hash, book* cache = nullptr);
+
+// The last step of a write, shared by the service and the phone's sample target:
+// `part` (flushed and closed) is hashed as it is on disk and, if it is `hash`,
+// renamed into `dir` as `name` or the first free numbered name, replacing
+// nothing. `replace`: the device's ledger copy, the one file that replaces.
+struct commit_result {
+  enum class kind : std::uint8_t { placed, existing, bad_hash, failed };
+  kind k = kind::failed;
+  std::string name;        // the name it has now in `dir`
+  std::uint64_t freed = 0; // bytes taken off the disk (a removed part, a replaced ledger)
+};
+[[nodiscard]] commit_result commit_part(const std::string& dir, std::string_view name, const std::string& part,
+                                        std::uint64_t size, std::string_view hash, bool replace, book* cache = nullptr);
 
 }  // namespace mv::driftwire::serve::backup

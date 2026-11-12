@@ -1438,3 +1438,82 @@ TEST_CASE("serve backup: the owner adds a backup folder and changes its limit", 
   REQUIRE(old);
   CHECK_FALSE(old->roots[0].backup);
 }
+
+TEST_CASE("serve backup: one writer per unfinished copy, long names, and an orphaned copy goes", "[driftwire-serve]") {
+  service_fixture s;
+  const std::string clip = marker(21, 2 * 1024 * 1024);
+  // A write held half way (its reader waits), and the same device on a second session.
+  std::atomic<bool> release{false}, started{false};
+  auto c1 = s.open_client();
+  serve::client::read_fn slow = [&](std::uint64_t at, std::span<std::uint8_t> into) -> mv::result<std::size_t> {
+    if (at >= 512 * 1024) {
+      started = true;
+      while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return reader_of(clip)(at, into);
+  };
+  std::thread t([&] {
+    serve::client::write_refused why;
+    (void)c1->write(kRootC, "held.mov", clip.size(), hash_of(clip), 0, slow, {}, nullptr, &why);
+  });
+  REQUIRE(eventually([&] { return started.load(); }));
+  auto c2 = s.open_client();
+  serve::client::write_refused why;
+  auto busy = c2->write(kRootC, "held.mov", clip.size(), hash_of(clip), 0, reader_of(clip), {}, nullptr, &why);
+  REQUIRE_FALSE(busy);
+  CHECK(why.why == serve::kWhyBusy);
+  release = true;
+  t.join();
+  CHECK(slurp(s.backup / "held.mov") == clip);
+
+  // A name too long to keep beside its unfinished copy is refused up front.
+  const std::string long_name(serve::kMaxWriteName + 1, 'n');
+  auto too_long = c2->write(kRootC, long_name, 10, hash_of("0123456789"), 0, reader_of(std::string("0123456789")), {}, nullptr, &why);
+  REQUIRE_FALSE(too_long);
+  CHECK(why.why == serve::kWhyName);
+
+  // An unfinished copy of a file that is now there whole (another phone's, the same bytes): its own copy goes.
+  std::atomic<bool> stop{false};
+  auto left = c2->write(kRootC, "twin.mov", clip.size(), hash_of(clip), 0, reader_of(clip),
+                        [&](std::uint64_t n) {
+                          if (n >= 1024 * 1024) stop = true;
+                        },
+                        &stop, &why);
+  REQUIRE_FALSE(left);
+  REQUIRE(eventually([&] { return parts_under(s.backup) == 1; }));
+  write_file(s.backup / "twin.mov", clip);
+  auto found = c2->write(kRootC, "twin.mov", clip.size(), hash_of(clip), 0, reader_of(clip), {}, nullptr, &why);
+  REQUIRE(found);
+  CHECK(found->existing);
+  CHECK(parts_under(s.backup) == 0);
+}
+
+TEST_CASE("serve backup: two phones placing one name at once keep both files", "[driftwire-serve]") {
+  service_fixture s;
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+  auto a = s.open_client();
+  auto b = serve::client::open(s.connect(), s.client_options(second));
+  REQUIRE(b);
+  for (int round = 0; round < 10; ++round) {
+    const std::string name = "same" + std::to_string(round) + ".jpg";
+    const std::string one = marker(100 + round, 200 * 1024);
+    const std::string two = marker(200 + round, 200 * 1024);
+    mv::result<serve::client::write_done> ra = mv::err(mv::status::io), rb = mv::err(mv::status::io);
+    std::thread ta([&] {
+      serve::client::write_refused w;
+      ra = a->write(kRootC, name, one.size(), hash_of(one), 0, reader_of(one), {}, nullptr, &w);
+    });
+    std::thread tb([&] {
+      serve::client::write_refused w;
+      rb = (*b)->write(kRootC, name, two.size(), hash_of(two), 0, reader_of(two), {}, nullptr, &w);
+    });
+    ta.join();
+    tb.join();
+    REQUIRE(ra);
+    REQUIRE(rb);
+    CHECK(ra->name != rb->name);
+    CHECK(slurp(s.backup / ra->name) == one);
+    CHECK(slurp(s.backup / rb->name) == two);
+  }
+}

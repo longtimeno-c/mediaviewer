@@ -107,6 +107,8 @@ inline constexpr const char* kWhyFull = "full";                // the volume wou
 inline constexpr const char* kWhyOffset = "offset";            // `at` is not where its copy ends
 inline constexpr const char* kWhyHash = "hash";                // what reached the disk is not what was sent
 inline constexpr const char* kWhyBusy = "busy";                // this device is already writing that name
+inline constexpr const char* kWhyName = "name";                // a name too long to keep beside its unfinished copy
+inline constexpr std::size_t kMaxWriteName = 200;              // bytes of the last part of `rel`
 // The 16 hex digits a device's files are known by in a backup folder: its unfinished
 // copies and its ledger. The first 8 bytes of BLAKE2b-256 over its public key.
 [[nodiscard]] std::string device_folder_id(const std::array<std::uint8_t, 32>& device_public);
