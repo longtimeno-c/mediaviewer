@@ -28,6 +28,7 @@
 #include "mobile/mv_mobile_link.h"
 #include "mobile/sample.h"
 #include "mobile/sync.h"
+#include "mobile/testing.h"
 
 namespace fs = std::filesystem;
 namespace mob = mv::mobile;
@@ -79,6 +80,7 @@ struct publisher {
   std::string library_id = "11111111-2222-3333-4444-555555555555";
   fs::path nas;  // the destination; .mediaviewer is under it
   fs::path work;
+  std::vector<std::pair<std::string, std::string>> gen_files;  // more files in each generation (thumbs.idx)
 
   publisher(fs::path nas_dir, fs::path work_dir) : nas(std::move(nas_dir)), work(std::move(work_dir)) {
     auto [p, s] = catalog::make_keypair();
@@ -95,6 +97,7 @@ struct publisher {
     fs::create_directories(gen);
     make_catalog_db(gen / "catalog.db");
     write_file(gen / "extra.bin", payload + std::to_string(generation));
+    for (const auto& [name, bytes] : gen_files) write_file(gen / name, bytes);
     json_manifest(gen, generation);
     catalog::deliver_options o;
     o.gen_dir = gen.string();
@@ -139,7 +142,9 @@ struct publisher {
   void json_manifest(const fs::path& gen, std::uint64_t generation) {
     std::string files = "[";
     bool first = true;
-    for (const char* name : {"catalog.db", "extra.bin"}) {
+    std::vector<std::string> names{"catalog.db", "extra.bin"};
+    for (const auto& [name, bytes] : gen_files) names.push_back(name);
+    for (const std::string& name : names) {
       const auto text = read_all(gen / name);
       if (!first) files += ",";
       first = false;
@@ -1107,6 +1112,21 @@ struct sample_rig {
     REQUIRE(sodium_init() >= 0);
     write_file(photos / "2024" / "pic.bin", std::string(70000, 'p'));
     for (int i = 0; i < 4000; ++i) pack_bytes += static_cast<char>('a' + i % 26);
+    // thumbs.idx: asset 1's JPEG-512 is 200 bytes at 1000 in the pack (catalog.cpp's layout).
+    std::string idx = "MVTIDX01";
+    const auto put = [&idx](std::uint64_t v, int bytes) {
+      for (int b = 0; b < bytes; ++b) idx += static_cast<char>(v >> (8 * b) & 0xff);
+    };
+    put(1, 4);  // packs
+    put(1, 4);  // rows
+    std::string name(kTestPack);
+    name.resize(40, '\0');
+    idx += name;
+    put(1, 8);     // asset
+    put(0, 4);     // pack
+    put(200, 4);   // length
+    put(1000, 8);  // offset
+    pub.gen_files.emplace_back("thumbs.idx", idx);
     std::string big(8 * 1024 * 1024, '\0');
     for (std::size_t i = 0; i < big.size(); ++i) big[i] = static_cast<char>(i * 7 % 251);
     write_file(photos / "2024" / "clip.bin", big);
@@ -1510,7 +1530,7 @@ TEST_CASE("sample: Forget waits for the readers in flight, and nothing of theirs
 TEST_CASE("sample: Forget does not return while a reader is still inside its download", "[mobile-link]") {
   sample_rig r;
   auto inner = r.folder.as_fetch();
-  std::atomic<int> parked{0}, returned{0};
+  std::atomic<int> parked{0}, finishing{0};
   // Each download stops in its first chunk and stays there until it sees Forget.
   mob::sample::fetch_fn parking = [&](const std::string& url, std::uint64_t at, std::uint64_t length,
                                       const mob::byte_sink& sink, const std::function<bool()>& stop) -> mv::expected {
@@ -1523,6 +1543,7 @@ TEST_CASE("sample: Forget does not return while a reader is still inside its dow
                      ++parked;
                      while (!stop()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
                      std::this_thread::sleep_for(std::chrono::milliseconds(50));  // slow to notice: still in flight
+                     ++finishing;  // counted inside the read, before it leaves: shut_down must wait past this
                      return false;
                    }
                    return sink(o, b);
@@ -1533,18 +1554,28 @@ TEST_CASE("sample: Forget does not return while a reader is still inside its dow
                                     (r.dir.root / "verified").string());
   REQUIRE(remote.connect(nullptr));
   std::vector<std::thread> readers;
+  // However the test ends, the readers are released and joined: a thread left joinable would
+  // terminate the whole binary.
+  struct cleanup {
+    mob::sample::static_remote& remote;
+    std::vector<std::thread>& threads;
+    ~cleanup() {
+      remote.shut_down();
+      for (auto& t : threads) {
+        if (t.joinable()) t.join();
+      }
+    }
+  } guard{remote, readers};
   for (const char* rel : {"2024/clip.bin", "2024/pic.bin"}) {
-    readers.emplace_back([&remote, &returned, rel] {
+    readers.emplace_back([&remote, rel] {
       (void)remote.read_range(kSampleMediaRoot, rel, 0, 10, [](std::uint64_t, std::span<const std::uint8_t>) { return true; },
                               nullptr, false);
-      ++returned;
     });
   }
   for (int i = 0; i < 2000 && parked < 2; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
   REQUIRE(parked == 2);
   remote.shut_down();
-  CHECK(returned == 2);  // it waited for both: none was still downloading when it returned
-  for (auto& t : readers) t.join();
+  CHECK(finishing == 2);  // it waited for both: neither was still inside its download when it returned
 }
 
 TEST_CASE("thumb cache: after shut_down no tile is written, even from a read already in flight", "[mobile-link]") {
@@ -1581,4 +1612,42 @@ TEST_CASE("thumb cache: after shut_down no tile is written, even from a read alr
   std::error_code ec;
   for (fs::directory_iterator it(tiles, ec), end; !ec && it != end; it.increment(ec)) ++files;
   CHECK(files == 0);
+}
+
+TEST_CASE("sample: Forget through the C ABI stops a tile write whose read has already come back", "[mobile-link]") {
+  sample_rig r;
+  mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
+  REQUIRE(l);
+  mv_sync_report sync{};
+  REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
+  std::atomic<bool> parked{false}, release{false};
+  mob::testing::set_tile_write_hook([&] {
+    parked = true;
+    while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  });
+  struct unhook {
+    std::atomic<bool>& release;
+    ~unhook() {
+      release = true;
+      mob::testing::set_tile_write_hook({});
+    }
+  } guard{release};
+  std::promise<int32_t> done;
+  mv_cancel* cancel = nullptr;
+  REQUIRE(mv_thumb_request(l, 1, 0, [](void* ctx, int32_t status, const uint8_t*, size_t) {
+            static_cast<std::promise<int32_t>*>(ctx)->set_value(status);
+          }, &done, &cancel) == MV_LINK_OK);
+  for (int i = 0; i < 5000 && !parked; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  REQUIRE(parked);  // the pack read is back; its tile is not written yet
+  mv_link_shut_down(l);  // Forget
+  release = true;        // the worker goes on to write, after Forget
+  CHECK(done.get_future().get() == MV_LINK_OK);  // the caller still gets its bytes
+  std::size_t tiles = 0;
+  std::error_code ec;
+  for (fs::directory_iterator it(r.cache, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->is_regular_file()) ++tiles;
+  }
+  CHECK(tiles == 0);  // nothing written into the folder Forget removes next
+  mv_cancel_free(cancel);
+  mv_link_close(l);
 }

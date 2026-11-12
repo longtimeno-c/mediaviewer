@@ -2,12 +2,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mobile/link_thumbs.h"
 
+#include "mobile/testing.h"
+
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 
 namespace mv::mobile {
+
+namespace {
+std::mutex g_hook_m;
+std::function<void()> g_tile_write_hook;  // under g_hook_m; tests only (mobile/testing.h)
+
+std::function<void()> tile_write_hook() {
+  std::lock_guard lock(g_hook_m);
+  return g_tile_write_hook;
+}
+}  // namespace
+
+void testing::set_tile_write_hook(std::function<void()> hook) {
+  std::lock_guard lock(g_hook_m);
+  g_tile_write_hook = std::move(hook);
+}
 
 namespace fs = std::filesystem;
 
@@ -201,6 +218,7 @@ void thumb_cache::worker() {
         },
         nullptr, false);
     const bool whole = r && filled == got.size();
+    if (auto hook = tile_write_hook()) hook();
     std::vector<std::pair<std::string, std::uint64_t>> stored;
     for (const auto& w : batch) {
       result<std::vector<std::uint8_t>> out = err(whole ? status::corrupt : (r ? status::io : r.error()));

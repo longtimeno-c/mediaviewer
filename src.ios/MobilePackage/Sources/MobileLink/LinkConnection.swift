@@ -33,9 +33,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private let work = TrackedWork()
   private let continued = ContinuedCopy()  // the BGContinuedProcessingTask's bookkeeping (iOS 26)
   private var opened: Task<Void, Never>?
-  /// Held by each write into the library's folders (`whileLive`), and passed by Forget before it
-  /// removes them: never taken under `lock`'s callers on the main thread.
-  private let writeGate = NSLock()
+  /// Each write into the library's folders runs under it (`whileLive`); Forget closes it before it
+  /// removes them. Opened for each handle the library is opened with.
+  private let writes = WriteGate()
 
   private let monitor = NWPathMonitor()
   private let defaults = UserDefaults.standard
@@ -93,6 +93,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
         self.record = record
         self.handle = handle
       }
+      writes.open(for: handle)
       // Stamps the id on what launch showed, for an install from before the id was stored.
       if current.libraryID != record.libraryID { publish { _ in } }
       if !current.hasLibrary { publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) } }
@@ -129,10 +130,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// Forget removes the folders. Keep it short: a create or a move, never a download (the bytes go
   /// into a file already open, which a removal does not bring back). nil when refused.
   func whileLive<T>(_ link: LinkHandle, _ body: () throws -> T) rethrows -> T? {
-    writeGate.lock()
-    defer { writeGate.unlock() }
-    guard lock.withLock({ handle === link && !forgotten }) else { return nil }
-    return try body()
+    try writes.whileLive(link, body)
   }
 
   /// Bumped on every connect and network change: anything measured on the old route is stale.
@@ -318,6 +316,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.forgotten = false
       connectGeneration += 1  // the last library's connect, still running, publishes nothing
     }
+    writes.open(for: handle)
     work.reopen()
     publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
     continuation.yield(.passed(.synology))
@@ -377,6 +376,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.forgotten = false
       connectGeneration += 1
     }
+    writes.open(for: handle)
     work.reopen()
     publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
     continuation.yield(.passed(.synology))
@@ -451,8 +451,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       return out
     }
     // A write already past its check finishes now; every later one is refused.
-    writeGate.lock()
-    writeGate.unlock()
+    writes.close()
     cancel?.fire()
     // Returns once the core's own writers (tiles, the sample's verified copies) are done.
     if let link { mv_link_shut_down(link.raw) }
