@@ -107,7 +107,9 @@ bool write_config(const std::string& path, const serve::config& c) {
   for (const auto& r : c.roots) {
     w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
   }
-  w.end_array().end_object();
+  w.end_array();
+  if (!c.relay.empty()) w.key("relay").string(c.relay);
+  w.end_object();
   const std::string tmp = path + ".part";
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);

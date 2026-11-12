@@ -214,8 +214,18 @@ struct config {
   std::uint16_t port = 0;
   std::string name;  // the service's name, as the client's ident shows it
   std::vector<root_config> roots;
+  // The person's own relay server, "host:port" ("" for none): the service
+  // waits there for its paired phones (docs/plans/nas-relay.md). Its key is in
+  // the secret store (kRelayKeyName), never here.
+  std::string relay;
 };
-// {"port":N,"name":"...","roots":[{"id","label","path"}]}. `any_port`: port 0
+
+// What a paired device's waiter at the relay is called: BLAKE2b-128 keyed by
+// the library access key over a label and the device's public key. The relay
+// sees an opaque token per phone; only a holder of the access key can name one.
+[[nodiscard]] std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& access_key,
+                                                       const std::array<std::uint8_t, 32>& device_public);
+// {"port":N,"name":"...","roots":[{"id","label","path"}],"relay":"host:port"?}. `any_port`: port 0
 // is accepted (the OS picks; the test build only): a service needs a fixed one.
 [[nodiscard]] result<config> parse_config(std::string_view json, bool any_port = false);
 

@@ -49,7 +49,7 @@
 #include "addons/driftwire/relay.h"
 #include "wire/serve.h"
 #include "wire/serve_wire.h"
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 #include "addons/driftwire/transfer.h"
 #include "wire/wire.h"
 

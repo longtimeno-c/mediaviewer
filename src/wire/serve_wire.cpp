@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "wire/serve_wire.h"
 
+#include <sodium.h>
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -403,7 +405,22 @@ result<config> parse_config(std::string_view text, bool any_port) {
     if (!posix && !drive) return err(status::invalid_arg);
     c.roots.push_back({*id, *label, *path});
   }
+  if (const std::string* relay = doc->str("relay")) {
+    if (relay->size() > 300) return err(status::invalid_arg);
+    c.relay = *relay;
+  }
   return c;
+}
+
+std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& access_key,
+                                         const std::array<std::uint8_t, 32>& device_public) {
+  static const unsigned char label[] = "MediaViewer relay token v1";
+  std::array<unsigned char, sizeof label - 1 + 32> m{};
+  std::memcpy(m.data(), label, sizeof label - 1);
+  std::memcpy(m.data() + sizeof label - 1, device_public.data(), 32);
+  std::array<std::uint8_t, 16> out{};
+  crypto_generichash(out.data(), out.size(), m.data(), m.size(), access_key.data(), access_key.size());
+  return out;
 }
 
 }  // namespace mv::driftwire::serve

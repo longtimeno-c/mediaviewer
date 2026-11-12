@@ -74,6 +74,7 @@ add_library(mv_wire STATIC
   ${_W}/serve.cpp ${_W}/serve.h
   ${_W}/serve_client.cpp ${_W}/serve_client.h
   ${_W}/pair_check.cpp ${_W}/pair_check.h
+  ${_W}/splice.cpp ${_W}/splice.h
   ${_W}/advert.h
   ${_wire_port}
 )

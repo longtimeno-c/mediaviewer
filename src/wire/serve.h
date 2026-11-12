@@ -67,6 +67,12 @@ inline constexpr const char* kCatalogueLabel = "Catalogue";
 
 // What an owner's session can use beyond the operations (serve_caps "features").
 inline constexpr const char* kFeaturePassphrase = "passphrase";
+// The service can wait at the person's own relay (docs/plans/nas-relay.md).
+inline constexpr const char* kFeatureRelay = "relay";
+// The relay server's key, in the service's secret store (never serve.json).
+inline constexpr const char* kRelayKeyName = "relay_key";
+// Waiters at the relay, one per paired device: the relay's own per-source cap.
+inline constexpr int kMaxRelayWaiters = 4;
 
 // How often the paired list is read again, for revocations.
 inline constexpr int kDevicesRecheckMs = 2000;
@@ -85,6 +91,7 @@ struct counters {
   std::uint64_t wrong_passphrase = 0;  // owner or claim answers that did not verify
   std::uint64_t unlocks = 0;           // owner sessions unlocked by the passphrase
   std::uint64_t expired = 0;           // limited devices refused or cut because their time was up
+  std::uint64_t relayed = 0;           // connections that came through the relay
 };
 
 // The fuzz harness: one session's handling of what an admitted client sends,
@@ -123,6 +130,9 @@ class server {
     // Answers to a passphrase challenge, per counter, at least this far apart:
     // a guesser waits, and the service only ever verifies a signature.
     int min_answer_gap_ms = 1000;
+    // A connection to the relay server ("host", port). Empty: net::resolve
+    // and net::connect. The tests: their loopback relay.
+    std::function<result<std::unique_ptr<link>>(const std::string& host, std::uint16_t port, int timeout_ms)> relay_connect;
   };
 
   // Listens and returns. status::not_found when the store has no usable

@@ -29,7 +29,7 @@
 #include <string>
 #include <thread>
 
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 
 namespace relay = mv::driftwire::relay;
 

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <condition_variable>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include "wire/admission.h"
+#include "wire/splice.h"
 #include "wire/channel.h"
 #include "wire/grants.h"
 #include "wire/known.h"
@@ -96,6 +98,9 @@ struct conn {
   std::shared_ptr<link> l;
   std::string source, block;
   net::address from;
+  // Through the person's own relay (docs/plans/nas-relay.md): the same
+  // admission, but never this service's own network (no claim from away).
+  bool relayed = false;
   std::chrono::steady_clock::time_point born = std::chrono::steady_clock::now();
   bool pending_released = false;  // the connection's thread's own
   // 0: its hello has not all arrived; 1: it has, the handshake is running;
@@ -305,6 +310,24 @@ struct server::state {
   std::atomic<std::uint64_t> n_evicted{0};
   std::atomic<std::uint64_t> n_accepted{0}, n_over{0}, n_hello{0}, n_key{0}, n_replay{0}, n_unpaired{0}, n_sessions{0};
   std::atomic<std::uint64_t> n_paired{0}, n_bad_codes{0}, n_wrong_pass{0}, n_unlocks{0}, n_expired{0};
+  std::atomic<std::uint64_t> n_relayed{0};
+
+  // The person's own relay (docs/plans/nas-relay.md): one waiter per paired
+  // device, each its own thread, kept by relay_loop.
+  struct waiter {
+    std::array<std::uint8_t, 32> device{};
+    std::string relay;  // the "host:port" it was started for
+    std::atomic<bool> stop{false};
+    std::atomic<bool> done{false};
+    std::thread t;
+  };
+  std::function<result<std::unique_ptr<link>>(const std::string&, std::uint16_t, int)> relay_connect;
+  std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
+  std::mutex relay_m;
+  std::condition_variable relay_cv;
+  std::list<std::unique_ptr<waiter>> waiters;  // the relay thread's
+  std::thread relayer;
+  bool relay_poke = false;  // under relay_m: the setting changed
 
   ~state() {
     sodium_memzero(identity.data(), identity.size());
@@ -331,6 +354,12 @@ struct server::state {
 
 
   void accept_loop();
+  // Takes a connection in through the limits, as the listener does (relayed:
+  // keyed by its device token, never the service's own network).
+  void admit(std::unique_ptr<link> l, const std::string& source, const std::string& block, const net::address& from,
+             bool relayed);
+  void relay_loop();
+  void wait_at_relay(waiter& w, const std::string& relay_key);
   bool take_token(clock::time_point now) noexcept;
   bool evict_oldest_hello(clock::time_point now);
   void reap();
@@ -851,7 +880,7 @@ void server::state::serve_connection(conn* c) {
     // ends in the same silence as a wrong key.
     std::string claim_folder;
     bool claiming = false;
-    if (claimable && on_own_network(c->from) &&
+    if (claimable && !c->relayed && on_own_network(c->from) &&
         (!store->exists(kOwnerName) || !channel::hello_opens_under(*h, access_key, identity))) {
       for (const auto& [key, folder] : claim_tokens()) {
         if (channel::hello_opens_under(*h, key, identity)) {
@@ -1010,8 +1039,16 @@ void server::state::accept_loop() {
       continue;
     }
     n_accepted.fetch_add(1);
-    const std::string source = source_of(from);
-    const std::string block = block_of(from);
+    admit(std::move(*accepted), source_of(from), block_of(from), from, false);
+  }
+}
+
+void server::state::admit(std::unique_ptr<link> accepted, const std::string& source, const std::string& block,
+                          const net::address& from, bool relayed) {
+  {
+    // The global bucket and the eviction were the listener's alone; relayed
+    // connections come in on the waiters' threads too.
+    std::lock_guard admitting(admit_m);
     const auto now = clock::now();
     bool room = true;
     {
@@ -1032,7 +1069,7 @@ void server::state::accept_loop() {
     room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
            pending.load() < 2 * max_pending;
     // The desktop's nearby service: this network only, and silently.
-    if (room && lan_only && !on_own_network(from)) room = false;
+    if (room && lan_only && (relayed || !on_own_network(from))) room = false;
     // The global budget is last, and only for a connection that gets in, so
     // what the per-address limits drop never spends it. Full: the oldest
     // connection still saying nothing makes way (from kMinHelloAge), else
@@ -1044,10 +1081,11 @@ void server::state::accept_loop() {
     }
     if (!room) {
       n_over.fetch_add(1);
-      continue;  // destroying the link closes it; nothing is said
+      return;  // destroying the link closes it; nothing is said
     }
     auto c = std::make_shared<conn>();
-    c->l = std::shared_ptr<link>(std::move(*accepted));
+    c->l = std::shared_ptr<link>(std::move(accepted));
+    c->relayed = relayed;
     c->source = source;
     c->block = block;
     c->from = from;
@@ -1229,7 +1267,8 @@ std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
   json::writer w;
-  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).end_array();
+  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).end_array();
+  w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
   w.key("passphrase").string(stored_name(s)).end_object();
   std::string out = w.take();
   return out.substr(1, out.size() - 2);
@@ -1660,7 +1699,8 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
   }
   // What adds access, or changes what is served, needs an unlocked session
   // once there is a passphrase (§3.4). Revoking and reading never do.
-  if (*what == "add_device" || *what == "pair_code" || *what == "add_root" || *what == "remove_root") {
+  if (*what == "add_device" || *what == "pair_code" || *what == "add_root" || *what == "remove_root" ||
+      *what == "set_relay") {
     // (grant and guest_code check for themselves.)
     if (auto refused = needs_unlock(c)) return *refused;
   }
@@ -1863,6 +1903,31 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     w.begin_object().key("id").string(id).end_object();
     return {end_code::ok, w.take()};
   }
+  if (*what == "set_relay") {
+    // The person's own relay: the address in serve.json, the key in the
+    // secret store. Empty address: no relay (the waiters stop).
+    const std::string address = text("address");
+    const std::string key = text("key");
+    if (address.size() > 300 || (!address.empty() && key.size() < relay::kMinKeyChars)) return {end_code::bad_request, {}};
+    {
+      std::lock_guard lock(claim_m);
+      if (!address.empty()) {
+        const std::vector<std::uint8_t> bytes(key.begin(), key.end());
+        if (!store->put(kRelayKeyName, bytes)) return {end_code::error, {}};
+      } else {
+        (void)store->erase(kRelayKeyName);
+      }
+      config next = *cfg();
+      next.relay = address;
+      if (!publish_config(std::move(next))) return {end_code::error, {}};
+    }
+    {
+      std::lock_guard lock(relay_m);
+      relay_poke = true;
+    }
+    relay_cv.notify_all();
+    return {end_code::ok, "{}"};
+  }
   if (*what == "remove_root") {
     const std::string id = text("id");
     {
@@ -2024,6 +2089,8 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.port = st.listen->port();
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
+  st.relay_connect = o.relay_connect;
+  if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
   return srv;
 }
 
@@ -2046,7 +2113,137 @@ counters server::stats() const noexcept {
   c.wrong_passphrase = st_->n_wrong_pass.load();
   c.unlocks = st_->n_unlocks.load();
   c.expired = st_->n_expired.load();
+  c.relayed = st_->n_relayed.load();
   return c;
+}
+
+// ---- the person's own relay (docs/plans/nas-relay.md) ----------------------------------------
+
+namespace {
+
+constexpr int kRelayConnectMs = 5000;
+constexpr int kRelayHandshakeMs = 10000;
+constexpr int kRelayFirstBytesMs = 20000;
+constexpr int kRelayPollMs = 5000;
+
+std::string token_hex(const std::array<std::uint8_t, 16>& t) {
+  char hex[33];
+  sodium_bin2hex(hex, sizeof hex, t.data(), t.size());
+  return std::string(hex, 32);
+}
+
+}  // namespace
+
+// One paired device's waiter: registered under its token, registered again
+// every kReregisterMs (ahead of NATs that drop an idle connection), and on a
+// pair its link is admitted as any connection is. Backs off to a minute.
+void server::state::wait_at_relay(waiter& w, const std::string& relay_key) {
+  const auto stopped = [&] { return stopping.load() || w.stop.load(); };
+  std::string host;
+  std::uint16_t port = 0;
+  if (const auto colon = w.relay.find_last_of(':'); colon != std::string::npos && colon > 0) {
+    host = w.relay.substr(0, colon);
+    if (host.size() > 2 && host.front() == '[' && host.back() == ']') host = host.substr(1, host.size() - 2);
+    const unsigned long p = std::strtoul(w.relay.c_str() + colon + 1, nullptr, 10);
+    port = static_cast<std::uint16_t>(p > 0 && p < 65536 ? p : 0);
+  }
+  if (host.empty() || port == 0) return;
+  const auto t = relay_token(access_key, w.device);
+  relay::token tok{};
+  std::memcpy(tok.data(), t.data(), tok.size());
+  int backoff_ms = 1000;
+  const auto rest = [&](int ms) {
+    std::unique_lock lock(relay_m);
+    relay_cv.wait_for(lock, std::chrono::milliseconds(ms), [&] { return stopped(); });
+  };
+  const auto connect = [&]() -> result<std::unique_ptr<link>> {
+    if (relay_connect) return relay_connect(host, port, kRelayConnectMs);
+    for (const auto& a : net::resolve(host)) {
+      if (auto c = net::connect(net::endpoint{net::address_text(a), port}, kRelayConnectMs)) return std::move(*c);
+    }
+    return err(status::io);
+  };
+  while (!stopped()) {
+    auto l = connect();
+    auto reg = l ? relay::register_waiter(std::move(*l), tok, relay_key, kRelayHandshakeMs)
+                 : result<std::unique_ptr<relay::waiting>>(err(l.error()));
+    if (!reg) {
+      rest(backoff_ms);
+      backoff_ms = std::min(backoff_ms * 2, 60000);
+      continue;
+    }
+    backoff_ms = 1000;
+    if (const expected paired = relay::wait_paired(**reg, relay::kReregisterMs, stopped); !paired) {
+      continue;  // time to register again, or the server dropped it: a fresh wait
+    }
+    // Handed on once the sender has spoken: one that paired and went quiet is not one.
+    auto first = relay::first_bytes((*reg)->release(), kRelayFirstBytesMs, stopped, "relay");
+    if (!first || stopped()) continue;
+    n_relayed.fetch_add(1);
+    admit(std::move(*first), "relay:" + token_hex(t), std::string(), net::address{}, true);
+  }
+}
+
+void server::state::relay_loop() {
+  while (!stopping.load()) {
+    const std::string relay = cfg()->relay;
+    std::string key;
+    if (!relay.empty()) {
+      if (auto k = store->get(kRelayKeyName)) key.assign(k->begin(), k->end());
+    }
+    std::vector<std::array<std::uint8_t, 32>> want;
+    if (!relay.empty() && key.size() >= relay::kMinKeyChars) {
+      for (const auto& d : known::load(*store)) {
+        if (want.size() >= static_cast<std::size_t>(kMaxRelayWaiters)) break;
+        want.push_back(d.key);
+      }
+    }
+    // A device gone (revoked: its waiter goes at once), or the relay changed.
+    for (auto& w : waiters) {
+      if (w->relay != relay || std::find(want.begin(), want.end(), w->device) == want.end()) w->stop.store(true);
+    }
+    relay_cv.notify_all();
+    for (auto it = waiters.begin(); it != waiters.end();) {
+      if ((*it)->stop.load() && (*it)->done.load()) {
+        if ((*it)->t.joinable()) (*it)->t.join();
+        it = waiters.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for (const auto& d : want) {
+      const bool running = std::any_of(waiters.begin(), waiters.end(), [&](const auto& w) {
+        return !w->stop.load() && w->device == d && w->relay == relay;
+      });
+      if (running) continue;
+      auto w = std::make_unique<waiter>();
+      w->device = d;
+      w->relay = relay;
+      waiter* raw = w.get();
+      try {
+        raw->t = std::thread([this, raw, key] {
+          try {
+            wait_at_relay(*raw, key);
+          } catch (...) {
+          }
+          raw->done.store(true);
+        });
+      } catch (...) {
+        continue;  // no thread: tried again at the next look
+      }
+      waiters.push_back(std::move(w));
+    }
+    sodium_memzero(key.data(), key.size());
+    std::unique_lock lock(relay_m);
+    relay_cv.wait_for(lock, std::chrono::milliseconds(kRelayPollMs), [&] { return stopping.load() || relay_poke; });
+    relay_poke = false;
+  }
+  for (auto& w : waiters) w->stop.store(true);
+  relay_cv.notify_all();
+  for (auto& w : waiters) {
+    if (w->t.joinable()) w->t.join();
+  }
+  waiters.clear();
 }
 
 std::array<std::uint8_t, 32> claim_key(std::string_view token_hex) {
@@ -2069,6 +2266,8 @@ void server::stop() noexcept {
   if (st_->listen) st_->listen->shutdown();  // a start that failed has none
   if (st_->acceptor.joinable()) st_->acceptor.join();
   if (st_->watcher.joinable()) st_->watcher.join();
+  st_->relay_cv.notify_all();
+  if (st_->relayer.joinable()) st_->relayer.join();
   std::vector<std::shared_ptr<conn>> live;
   {
     std::lock_guard lock(st_->conns_m);
