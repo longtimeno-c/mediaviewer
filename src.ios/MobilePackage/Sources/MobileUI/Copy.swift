@@ -77,6 +77,8 @@ public enum FailureCopy {
     "Your Synology has no backup folder yet. Add one in MediaViewer on your computer, under Phone access."
   public static let backupNoPhotos = "MediaViewer isn't allowed to read Photos. You can change that in Settings."
   public static let backupLimited = "Only the photos you chose for MediaViewer are backed up."
+  /// Owner's call B8 (2026-11-12).
+  public static let backupSkipped = "Hidden photos, and the other frames of a burst, are not backed up."
   public static let backupNotIndexed =
     "New photos appear in search once your computer has indexed the backup folder and published the library again."
   public static let backupSampleAbout =

@@ -143,6 +143,7 @@ After BROWSE AND VIEW, add a section:
 BACK UP THIS PHONE TO YOUR NAS
 • Your photos and videos, newest first, copied to the folder you choose on your NAS whenever the app is open on Wi-Fi
 • Originals as shot: the photo or video, a Live Photo's video, RAW files; iCloud originals are downloaded one at a time
+• Hidden photos and the extra frames of a burst are left out
 • Filed by the date each was taken: year and month, year, year/month/day, or one folder
 • Each file is checked on the NAS before it counts as backed up, and nothing on the NAS is ever replaced or deleted
 • A storage limit set on your computer keeps backups from filling the NAS
@@ -159,7 +160,7 @@ Under YOURS, ON YOUR OWN HARDWARE, replace "• The app never writes to your NAS
 **What's New in This Version**
 
 ```text
-Back up this phone to your NAS. Choose a backup folder in Settings, and your photos and videos are copied to it, newest first, whenever the app is open on Wi-Fi. Every file is checked on the NAS before it counts, nothing there is ever replaced or deleted, and a storage limit set on your computer keeps the NAS from filling. Try it with the sample library: it backs up to a folder on this iPhone, and nothing leaves the phone.
+Back up this phone to your NAS. Choose a backup folder in Settings, and your photos and videos are copied to it, newest first, whenever the app is open on Wi-Fi (hidden photos and the extra frames of bursts are left out). Every file is checked on the NAS before it counts, nothing there is ever replaced or deleted, and a storage limit set on your computer keeps the NAS from filling. Try it with the sample library: it backs up to a folder on this iPhone, and nothing leaves the phone.
 ```
 
 **App Review notes**: the 1.0 notes, with this added after "Things to try:"'s last item:

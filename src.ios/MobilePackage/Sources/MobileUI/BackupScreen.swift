@@ -103,6 +103,10 @@ struct BackupScreen: View {
         if backup.limitedAccess {
           Text(FailureCopy.backupLimited).font(.footnote).foregroundStyle(Theme.body)
         }
+        if backup.folder != nil {
+          Text(FailureCopy.backupSkipped).font(.footnote).foregroundStyle(Theme.body)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       if backup.folder != nil { actionButton }
     }

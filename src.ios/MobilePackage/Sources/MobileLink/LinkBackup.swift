@@ -347,6 +347,9 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     let options = PHFetchOptions()
     options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
     options.includeAssetSourceTypes = [.typeUserLibrary]
+    // Owner's call B8 (2026-11-12): no hidden photos, and of a burst only the photo Photos shows.
+    options.includeHiddenAssets = false
+    options.includeAllBurstAssets = false
     let assets = PHAsset.fetchAssets(with: options)
     var ids: [String] = []
     ids.reserveCapacity(assets.count)
