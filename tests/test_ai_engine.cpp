@@ -8248,7 +8248,9 @@ TEST_CASE("phone link: the passphrase, guest codes and timed phones reach the ca
   REQUIRE(a.phone().request("{\"do\":\"unlock\",\"passphrase\":\"a long owner passphrase\"}"));
   v = link_done(a);
   CHECK(*v.str("error") == "");
-  CHECK(v.integer("unlocked_s") == 600);
+  // Counted down from when the NAS said 600 (link.cpp state_json), not the snapshot.
+  CHECK(*v.integer("unlocked_s") > 590);
+  CHECK(*v.integer("unlocked_s") <= 600);
   // The passphrase is never in what the card is shown.
   CHECK(a.phone().state_json().find("a long owner passphrase") == std::string::npos);
   REQUIRE(a.phone().request("{\"do\":\"pair\",\"for_s\":86400}"));

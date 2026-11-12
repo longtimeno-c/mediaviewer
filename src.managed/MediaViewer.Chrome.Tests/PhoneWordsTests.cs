@@ -156,4 +156,28 @@ public class PhoneWordsTests
         Assert.False(s.SameAs(s with { UnlockedSeconds = 1 }));
         Assert.False(s.SameAs(s with { UnlockedSeconds = 0 }));
     }
+
+    [Fact]
+    public void RequestsCarryNumbersAndBooleans()
+    {
+        using var claim = System.Text.Json.JsonDocument.Parse(PhoneWords.ClaimRequest("nas:7878", "", "correct horse", "correct horse"));
+        Assert.Equal(System.Text.Json.JsonValueKind.True, claim.RootElement.GetProperty("new_passphrase").ValueKind);
+        using var prove = System.Text.Json.JsonDocument.Parse(PhoneWords.ClaimRequest("nas:7878", "", "correct horse", ""));
+        Assert.Equal(System.Text.Json.JsonValueKind.False, prove.RootElement.GetProperty("new_passphrase").ValueKind);
+        using var none = System.Text.Json.JsonDocument.Parse(PhoneWords.ClaimRequest("nas:7878", "", "", ""));
+        Assert.False(none.RootElement.TryGetProperty("passphrase", out _));
+        using var pair = System.Text.Json.JsonDocument.Parse(PhoneWords.PairRequest(86400));
+        Assert.Equal(86400, pair.RootElement.GetProperty("for_s").GetInt64());
+        using var grant = System.Text.Json.JsonDocument.Parse(PhoneWords.GrantRequest("ab", 0));
+        Assert.Equal(System.Text.Json.JsonValueKind.Number, grant.RootElement.GetProperty("for_s").ValueKind);
+    }
+
+    [Fact]
+    public void ExtendNeverCutsAccessShort()
+    {
+        var timed = new PhoneDevice("Ann", "k") { Limited = true, Expires = 1000 + 2 * 86400 };  // two days left
+        Assert.Equal(new[] { "7 days", "30 days" }, PhoneWords.ExtendDurations(timed, 1000).Select(d => d.Label));
+        var open = new PhoneDevice("Bea", "k");
+        Assert.Equal(4, PhoneWords.ExtendDurations(open, 1000).Count);  // Limit… offers every length
+    }
 }

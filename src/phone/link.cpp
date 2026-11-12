@@ -592,6 +592,7 @@ void link::refresh(bool phones_only) {
           }
         }
         v_.unlocked_s = doc->integer("unlocked_s").value_or(0);
+        v_.unlocked_until = std::chrono::steady_clock::now() + std::chrono::seconds(std::max<std::int64_t>(0, v_.unlocked_s));
         v_.locked_until = doc->integer("locked_until").value_or(0);
       }
     }
@@ -1185,7 +1186,11 @@ std::string link::state_json() const {
   w.key("nas_features").begin_array();
   for (const auto& f : v_.nas_features) w.string(f);
   w.end_array();
-  w.key("unlocked_s").integer(v_.unlocked_s);
+  {
+    // Counted down from when the NAS last said; 0 once it has run out.
+    const auto left = std::chrono::duration_cast<std::chrono::seconds>(v_.unlocked_until - std::chrono::steady_clock::now()).count();
+    w.key("unlocked_s").integer(v_.unlocked_s > 0 ? std::max<std::int64_t>(0, left) : 0);
+  }
   w.key("locked_until").integer(v_.locked_until);
   w.key("qr_for_s").integer(v_.qr_for_s);
   w.key("folders").begin_array();

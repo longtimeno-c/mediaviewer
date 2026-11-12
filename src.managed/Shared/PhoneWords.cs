@@ -263,6 +263,30 @@ internal static class PhoneWords
     };
     public const string Unlimited = "Until I remove it";
 
+    /// <summary>What Extend offers a timed phone: only lengths that end after its end now (a grant
+    /// counts from now, so a shorter one would cut its access), then Until I remove it.</summary>
+    public static IReadOnlyList<(string Label, long Seconds)> ExtendDurations(PhoneDevice d, long nowUnix) =>
+        Durations.Where(x => !d.Limited || d.Expires == 0 || nowUnix + x.Seconds > d.Expires).ToList();
+
+    // ---- requests (the JSON link.cpp reads: numbers and booleans as such) ----
+
+    public static string ClaimRequest(string local, string publicName, string passphrase, string again)
+    {
+        var o = new System.Text.Json.Nodes.JsonObject { ["do"] = "claim", ["local"] = local, ["public"] = publicName };
+        if (passphrase.Length > 0)
+        {
+            o["passphrase"] = passphrase;
+            o["new_passphrase"] = again.Length > 0;  // twice: choose it; once: prove the NAS's
+        }
+        return o.ToJsonString();
+    }
+
+    public static string PairRequest(long forSeconds) =>
+        new System.Text.Json.Nodes.JsonObject { ["do"] = "pair", ["for_s"] = forSeconds }.ToJsonString();
+
+    public static string GrantRequest(string key, long forSeconds) =>
+        new System.Text.Json.Nodes.JsonObject { ["do"] = "grant", ["key"] = key, ["for_s"] = forSeconds }.ToJsonString();
+
     public static string DurationText(long seconds) => seconds switch
     {
         3600 => "1 hour",

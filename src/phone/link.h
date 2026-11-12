@@ -143,6 +143,9 @@ class link {
     std::string nas_passphrase;
     std::vector<std::string> nas_features;
     std::int64_t unlocked_s = 0, locked_until = 0;
+    // When the unlock read as unlocked_s runs out: the card's countdown is the
+    // time left from now, not the snapshot (state_json).
+    std::chrono::steady_clock::time_point unlocked_until{};
     std::int64_t qr_for_s = 0;  // the code showing is a guest code for this long
   };
 

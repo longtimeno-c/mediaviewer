@@ -408,6 +408,9 @@ internal class FakeInput : ContentControl
             var view = Windows.ApplicationModel.DataTransfer.Clipboard.GetContent();
             if (!view.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.Text)) return;
             string pasted = await view.GetTextAsync();
+            // A passphrase copied from a password manager often ends in a line
+            // break: trimmed, never turned into a space that would make it wrong.
+            if (Secret) pasted = pasted.Trim('\r', '\n', '\t');
             // One line: breaks and tabs become spaces, other controls go.
             var line = new System.Text.StringBuilder(pasted.Length);
             foreach (char ch in pasted)
@@ -500,14 +503,18 @@ internal class FakeInput : ContentControl
         else
         {
             int start = SelStart, end = SelEnd;
-            _before.Text = Shown(_text[..start]);
-            _selected.Text = Shown(_text[start..end]);
-            _after.Text = Shown(_text[end..]);
             if (Secret)
             {
+                // The text itself never reaches a TextBlock: a dot per character.
                 _before.Text = new string('\u2022', start);
                 _selected.Text = new string('\u2022', end - start);
                 _after.Text = new string('\u2022', _text.Length - end);
+            }
+            else
+            {
+                _before.Text = Shown(_text[..start]);
+                _selected.Text = Shown(_text[start..end]);
+                _after.Text = Shown(_text[end..]);
             }
         }
         Brush ink = empty ? _look.Body() : _look.Title();

@@ -259,10 +259,16 @@ final class PhoneStore: ObservableObject {
   }
 
   /// The durations a code or a phone's access can have, in the menus' order.
-  static let durations: [(label: String, seconds: Int64)] = [
+  nonisolated static let durations: [(label: String, seconds: Int64)] = [
     ("1 hour", 3600), ("24 hours", 86400), ("7 days", 7 * 86400), ("30 days", 30 * 86400),
   ]
-  static let unlimited = "Until I remove it"
+  nonisolated static let unlimited = "Until I remove it"
+
+  /// What Extend offers a timed phone: lengths that end after its end now.
+  nonisolated static func extendDurations(_ p: Phone, now: Date = Date()) -> [(label: String, seconds: Int64)] {
+    let t = Int64(now.timeIntervalSince1970)
+    return durations.filter { !p.limited || p.expires == 0 || t + $0.seconds > p.expires }
+  }
 
   nonisolated static func durationText(_ seconds: Int64) -> String {
     switch seconds {
@@ -353,6 +359,9 @@ struct PhoneAccessSection: View {
   @State private var unlockWith = ""
   @State private var changing = false
   @State private var codeFor: Int64 = 0  // 0: until I remove it
+  /// A refused action asked for the passphrase: the field stays until an unlock
+  /// lands or the person cancels (the core clears its error as each request starts).
+  @State private var unlockWanted = false
   private var s: PhoneStore.State { model.state }
 
   var body: some View {
@@ -370,8 +379,23 @@ struct PhoneAccessSection: View {
     .onChange(of: s.local) { _, v in if local.isEmpty { local = v } }
     .onChange(of: s.publicName) { _, v in if publicName.isEmpty { publicName = v } }
     .onAppear { if settings.visible { model.appeared() } }  // Settings stays built while hidden
-    .onDisappear { model.disappeared() }
-    .onChange(of: settings.visible) { _, visible in if visible { model.appeared() } else { model.disappeared() } }
+    .onChange(of: s.error) { _, e in if e == "needs_unlock" { unlockWanted = true } }
+    .onChange(of: s.unlockedSeconds) { _, left in
+      if left > 0 && unlockWanted {
+        unlockWanted = false
+        unlockWith = ""
+      }
+    }
+    .onDisappear {
+      model.disappeared()
+      forgetSecrets()
+    }
+    .onChange(of: settings.visible) { _, visible in
+      if visible { model.appeared() } else {
+        model.disappeared()
+        forgetSecrets()  // typed and never sent: gone when Settings closes
+      }
+    }
   }
 
   @ViewBuilder private var content: some View {
@@ -475,7 +499,7 @@ struct PhoneAccessSection: View {
   private var claimed: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       passphraseRow
-      if s.error == "needs_unlock" { unlockRow }
+      if unlockWanted && s.nasPassphrase == "set" { unlockRow }
       if s.qr.isEmpty {
         SettingsRow(title: "Add a phone",
                     detail: s.added.last.map { "Added \($0)." } ?? "One scan pairs a phone with this Mac and your NAS.",
@@ -500,8 +524,9 @@ struct PhoneAccessSection: View {
         SettingsRow(title: phone.name, detail: PhoneStore.phoneDetail(phone), labelsContent: false) {
           HStack(spacing: MVTheme.space(8)) {
             Menu(phone.limited ? "Extend" : "Limit…") {
-              ForEach(PhoneStore.durations, id: \.seconds) { d in
-                Button(d.label) { model.send(["do": "grant", "key": phone.key, "for_s": d.seconds]) }
+              // A grant counts from now: Extend offers only lengths that end later than now's end.
+              ForEach(PhoneStore.extendDurations(phone), id: \.seconds) { d in
+                Button("\(d.label) from now") { model.send(["do": "grant", "key": phone.key, "for_s": d.seconds]) }
               }
               if phone.limited {
                 Button(PhoneStore.unlimited) { model.send(["do": "grant", "key": phone.key, "for_s": 0]) }
@@ -533,7 +558,12 @@ struct PhoneAccessSection: View {
       HStack(spacing: MVTheme.space(8)) {
         if s.nasPassphrase == "set" && s.unlockedSeconds > 0 {
           SettingsButton(title: "Lock") { model.send(["do": "lock"]) }
+            .disabled(!s.busy.isEmpty)
             .accessibilityLabel("Lock: forget the NAS key on this Mac")
+        } else if s.nasPassphrase == "set" && !unlockWanted {
+          SettingsButton(title: "Unlock…") { unlockWanted = true }
+            .disabled(!s.busy.isEmpty)
+            .accessibilityLabel("Unlock with the NAS passphrase")
         }
         if s.nasPassphrase == "set" || s.nasPassphrase == "none" {
           SettingsButton(title: s.nasPassphrase == "set" ? "Change…" : "Choose…") { changing.toggle() }
@@ -558,7 +588,7 @@ struct PhoneAccessSection: View {
           passphrase = ""
           passphraseAgain = ""
         }
-        .disabled(passphrase.count < 10 || passphrase != passphraseAgain)
+        .disabled(!s.busy.isEmpty || passphrase.count < 10 || passphrase != passphraseAgain)
       }
     }
   }
@@ -568,11 +598,17 @@ struct PhoneAccessSection: View {
     SettingsRow(title: "Unlock", detail: "Enter the NAS passphrase, then do that again. This Mac keeps the key for 10 minutes and never the passphrase.",
                 labelsContent: false) {
       HStack(spacing: MVTheme.space(8)) {
-        SecureField("NAS passphrase", text: $unlockWith, onCommit: unlock)
+        SecureField("NAS passphrase", text: $unlockWith)
+          .onSubmit(unlock)
           .textFieldStyle(.roundedBorder).frame(width: 200).font(MVTheme.font(12))
           .accessibilityLabel("NAS passphrase")
         SettingsButton(title: "Unlock", action: unlock)
           .disabled(unlockWith.isEmpty || !s.busy.isEmpty)
+        SettingsButton(title: "Cancel") {
+          unlockWanted = false
+          unlockWith = ""
+        }
+        .accessibilityLabel("Cancel the unlock")
       }
     }
   }
@@ -689,6 +725,14 @@ struct PhoneAccessSection: View {
     SettingsRow(title: title, detail: detail) {
       SecureField("", text: text).textFieldStyle(.roundedBorder).frame(width: 240).font(MVTheme.font(12))
     }
+  }
+
+  private func forgetSecrets() {
+    passphrase = ""
+    passphraseAgain = ""
+    unlockWith = ""
+    changing = false
+    unlockWanted = false
   }
 
   private func note(_ text: String) -> some View {

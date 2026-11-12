@@ -353,6 +353,13 @@ Following `docs/design/20-edit-workspace.md`'s craft rules; inline rows, no shee
 - **Passphrase row**: "NAS passphrase · Set / Change". Forgotten: one line with the reset command.
 - **Older NAS**: the new controls are disabled with "Update the NAS service to use this".
 
+**As built (2026-11-12, both hosts' Settings → Phone access, `PhoneAccessView.swift` and
+`IslandHost.Phone.cs`):** the rows above, with two differences. Unlocking does not repeat the refused
+action by itself: the field says "Enter the NAS passphrase, then do that again", and stays until an
+unlock lands or the person cancels; a locked card also offers Unlock… up front. The claim row does not
+show the NAS identity's fingerprint yet (the state carries none before a claim). Extend offers only
+lengths that end after the phone's current end, since a grant counts from now.
+
 ### 8.2 Phone (iOS, `src.ios/MobilePackage`)
 
 - **Confirm screen** (before redeeming): "Guest access for 24 hours" under the library name and

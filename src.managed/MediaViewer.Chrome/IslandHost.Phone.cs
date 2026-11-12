@@ -38,6 +38,11 @@ public static partial class IslandHost
     private static FakeInput? _phonePass, _phonePassAgain, _phoneUnlock;
     private static ComboBox? _phoneCodeFor;
     private static bool _phoneChanging;
+    // A refused action asked for the passphrase: the field stays until an unlock
+    // lands or the person cancels (the core clears its error as each request starts).
+    private static bool _phoneUnlockWanted;
+    private static Button? _phoneUnlockGo;
+    private static readonly List<Flyout> PhoneFlyouts = new();
     private static string? _phoneFocus;  // the automation name of the focused control
     private static TextBlock? _phoneCountdown;
     private static ProgressLine? _phonePublishLine;
@@ -65,6 +70,7 @@ public static partial class IslandHost
         _phonePass.Changed += PhoneFieldsChanged;
         _phonePassAgain.Changed += PhoneFieldsChanged;
         _phoneUnlock.Submitted += UnlockPhone;
+        _phoneUnlock.Changed += PhoneFieldsChanged;
         _phoneCodeFor = new ComboBox { FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Title), Width = 170 };
         _phoneCodeFor.Items.Add(PhoneWords.Unlimited);
         foreach ((string label, long _) in PhoneWords.Durations) _phoneCodeFor.Items.Add(label);
@@ -112,6 +118,7 @@ public static partial class IslandHost
                 if (!_settingsVisible)
                 {
                     _phoneTimer?.Stop();  // Settings closed: nothing is read until it opens again
+                    ForgetPhoneSecrets();
                     return;
                 }
                 PollPhone();
@@ -120,10 +127,27 @@ public static partial class IslandHost
         _phoneTimer?.Start();
     }
 
+    // Typed and never sent: gone when Settings closes or its row does.
+    private static void ForgetPhoneSecrets()
+    {
+        _phonePass?.SetText("");
+        _phonePassAgain?.SetText("");
+        _phoneUnlock?.SetText("");
+        _phoneChanging = false;
+        _phoneUnlockWanted = false;
+    }
+
     private static void PollPhone()
     {
         PhoneLinkState? s = PhoneWords.ParseLink(PhoneNative.StateJson());
         if (s is null) return;
+        if (s.Error == "needs_unlock") _phoneUnlockWanted = true;
+        if (s.UnlockedSeconds > 0 && _phoneUnlockWanted)
+        {
+            _phoneUnlockWanted = false;
+            _phoneUnlock?.SetText("");
+            _phoneShown = null;  // the field goes: draw again
+        }
         if (_phoneShown is null || !_phoneShown.SameAs(s))
         {
             // The core's addresses fill an empty field.
@@ -163,6 +187,8 @@ public static partial class IslandHost
     {
         StackPanel rows = _phoneRows!;
         string? refocus = _phoneFocus;
+        foreach (Flyout f in PhoneFlyouts) f.Hide();  // its button leaves the tree now
+        PhoneFlyouts.Clear();
         DetachPhoneInputs();
         rows.Children.Clear();
         _phoneCountdown = null;
@@ -170,6 +196,7 @@ public static partial class IslandHost
         _phoneClaim = null;
         _phoneAdd = null;
         _phoneSetPass = null;
+        _phoneUnlockGo = null;
         bool busy = s.Busy.Length > 0;
         if (!s.OtherPublisher) _phoneConfirmRestart = false;
         if (s.AskingName.Length == 0) _phoneConfirmHandOver = false;
@@ -213,13 +240,22 @@ public static partial class IslandHost
             else AddPhoneClaimed(rows, s, busy);
         }
         if (PhoneWords.ErrorText(s, PhoneClock) is string e) rows.Children.Add(PhoneNote(e));
+        // A secret whose row is not drawn holds nothing.
+        if (!IsInTree(_phonePass)) { _phonePass!.SetText(""); _phonePassAgain!.SetText(""); }
+        if (!IsInTree(_phoneUnlock)) _phoneUnlock!.SetText("");
         PhoneFieldsChanged();
         RefocusPhone(rows, refocus);
     }
 
+    private static bool IsInTree(FrameworkElement? e) => e?.Parent is not null;
+
     private static string PhoneClock(long unix) => DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime().ToString("t");
 
-    private static string PhoneWhen(long unix) => DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime().ToString("ddd HH:mm");
+    private static string PhoneWhen(long unix)
+    {
+        DateTimeOffset t = DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime();
+        return t.ToString("ddd ") + t.ToString("t");  // the person's own clock: 14:00 or 2:00 PM
+    }
 
     // Once laid out: a control that has not loaded cannot take focus.
     private static void RefocusPhone(StackPanel rows, string? name)
@@ -314,20 +350,11 @@ public static partial class IslandHost
 
     private static void ClaimPhone()
     {
-        var o = new System.Text.Json.Nodes.JsonObject
-        {
-            ["do"] = "claim",
-            ["local"] = _phoneLocal!.Text,
-            ["public"] = _phonePublic!.Text,
-        };
-        if (_phonePass!.Text.Length > 0)
-        {
-            o["passphrase"] = _phonePass.Text;
-            o["new_passphrase"] = _phonePassAgain!.Text.Length > 0;
-        }
+        string request = PhoneWords.ClaimRequest(_phoneLocal!.Text, _phonePublic!.Text, _phonePass!.Text, _phonePassAgain!.Text);
         _phonePass.SetText("");
-        _phonePassAgain!.SetText("");
-        PhoneRequest(o);
+        _phonePassAgain.SetText("");
+        _ = PhoneNative.Request(request);
+        PollPhone();
     }
 
     private static void AddPhonePublicField(StackPanel rows)
@@ -339,13 +366,17 @@ public static partial class IslandHost
     private static void AddPhoneClaimed(StackPanel rows, PhoneLinkState s, bool busy)
     {
         AddPhonePassphrase(rows, s, busy);
-        if (s.Error == "needs_unlock")
+        if (_phoneUnlockWanted && s.NasPassphrase == "set")
         {
             var unlock = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
             unlock.Children.Add(_phoneUnlock!);
-            Button go = PhoneButton("Unlock", UnlockPhone, "Unlock");
-            go.IsEnabled = !busy;
-            unlock.Children.Add(go);
+            _phoneUnlockGo = PhoneButton("Unlock", UnlockPhone, "Unlock");
+            unlock.Children.Add(_phoneUnlockGo);
+            unlock.Children.Add(PhoneButton("Cancel", () =>
+            {
+                _phoneUnlockWanted = false;
+                if (_phoneShown is { } shown) ShowPhone(shown);
+            }, "Cancel the unlock"));
             rows.Children.Add(SettingsRow("Unlock",
                 "Enter the NAS passphrase, then do that again. This PC keeps the key for 10 minutes and never the passphrase.",
                 unlock, keepName: true));
@@ -354,14 +385,14 @@ public static partial class IslandHost
         {
             var code = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
             _phoneCodeFor!.IsEnabled = s.NasHasFeatures;
-            ToolTipService.SetToolTip(_phoneCodeFor, s.NasHasFeatures ? "How long the phone that scans it may use this library"
-                                                                       : "Update the NAS service to use this");
-            code.Children.Add(_phoneCodeFor);
+            ToolTipService.SetToolTip(_phoneCodeFor, s.NasHasFeatures ? "How long the phone that scans it may use this library" : null);
+            code.Children.Add(PhoneTipHolder(_phoneCodeFor, s.NasHasFeatures ? null : "Update the NAS service to use this"));
             Button show = PhoneButton("Show code", () =>
             {
                 int i = _phoneCodeFor.SelectedIndex;
                 long forS = s.NasHasFeatures && i > 0 ? PhoneWords.Durations[i - 1].Seconds : 0;
-                PhoneRequest(new System.Text.Json.Nodes.JsonObject { ["do"] = "pair", ["for_s"] = forS });
+                _ = PhoneNative.Request(PhoneWords.PairRequest(forS));
+                PollPhone();
             });
             show.IsEnabled = !busy;
             code.Children.Add(show);
@@ -376,7 +407,8 @@ public static partial class IslandHost
         {
             string key = phone.Key;
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
-            buttons.Children.Add(PhoneAccessMenu(phone, s.NasHasFeatures, busy));
+            buttons.Children.Add(PhoneTipHolder(PhoneAccessMenu(phone, s.NasHasFeatures, busy, now),
+                                                s.NasHasFeatures ? null : "Update the NAS service to use this"));
             Button remove = PhoneButton("Remove", () => PhoneRequest(("do", "revoke"), ("key", key)), $"Remove {phone.Name}");
             remove.IsEnabled = !busy;
             buttons.Children.Add(remove);
@@ -412,7 +444,18 @@ public static partial class IslandHost
 
     // Extend (a timed phone) or Limit… (an unlimited one): a Button with a Flyout of
     // buttons (a DropDownButton or MenuFlyout fail-fasts in this island).
-    private static Button PhoneAccessMenu(PhoneDevice phone, bool features, bool busy)
+    // A disabled control shows no tooltip (docs/design/20 "Craft rules"): the
+    // holder around it carries the reason.
+    private static FrameworkElement PhoneTipHolder(FrameworkElement control, string? tip)
+    {
+        if (control.Parent is Panel p) p.Children.Remove(control);
+        else if (control.Parent is Border b) b.Child = null;
+        var holder = new Border { Child = control, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        if (tip is not null) ToolTipService.SetToolTip(holder, tip);
+        return holder;
+    }
+
+    private static Button PhoneAccessMenu(PhoneDevice phone, bool features, bool busy, long now)
     {
         string name = phone.Limited ? $"Extend {phone.Name}'s access" : $"Limit {phone.Name}'s access";
         Button menu = PhoneButton(phone.Limited ? "Extend" : "Limit…", () => { }, name);
@@ -422,13 +465,16 @@ public static partial class IslandHost
         void Grant(long forS)
         {
             flyout.Hide();
-            PhoneRequest(new System.Text.Json.Nodes.JsonObject { ["do"] = "grant", ["key"] = key, ["for_s"] = forS });
+            _ = PhoneNative.Request(PhoneWords.GrantRequest(key, forS));
+            PollPhone();
         }
-        foreach ((string label, long seconds) in PhoneWords.Durations) column.Children.Add(SettingsButton(label, () => Grant(seconds)));
+        // A grant counts from now: Extend offers only lengths that end later than now's end.
+        foreach ((string label, long seconds) in PhoneWords.ExtendDurations(phone, now))
+            column.Children.Add(SettingsButton(label + " from now", () => Grant(seconds)));
         if (phone.Limited) column.Children.Add(SettingsButton(PhoneWords.Unlimited, () => Grant(0)));
         menu.Flyout = flyout;
+        PhoneFlyouts.Add(flyout);
         menu.IsEnabled = !busy && features;
-        if (!features) ToolTipService.SetToolTip(menu, "Update the NAS service to use this");
         return menu;
     }
 
@@ -437,7 +483,21 @@ public static partial class IslandHost
     {
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (s.NasPassphrase == "set" && s.UnlockedSeconds > 0)
-            buttons.Children.Add(PhoneButton("Lock", () => PhoneRequest(("do", "lock")), "Lock: forget the NAS key on this PC"));
+        {
+            Button lockNow = PhoneButton("Lock", () => PhoneRequest(("do", "lock")), "Lock: forget the NAS key on this PC");
+            lockNow.IsEnabled = !busy;
+            buttons.Children.Add(lockNow);
+        }
+        else if (s.NasPassphrase == "set" && !_phoneUnlockWanted)
+        {
+            Button unlockNow = PhoneButton("Unlock…", () =>
+            {
+                _phoneUnlockWanted = true;
+                if (_phoneShown is { } shown) ShowPhone(shown);
+            }, "Unlock with the NAS passphrase");
+            unlockNow.IsEnabled = !busy;
+            buttons.Children.Add(unlockNow);
+        }
         if (s.NasPassphrase is "set" or "none")
         {
             Button change = PhoneButton(s.NasPassphrase == "set" ? "Change…" : "Choose…", () =>
@@ -697,7 +757,8 @@ public static partial class IslandHost
         if (_phoneClaim is not null)
             _phoneClaim.IsEnabled = !busy && _phoneLocal!.Text.Length > 0 && (again.Length == 0 || again == _phonePass!.Text);
         if (_phoneSetPass is not null)
-            _phoneSetPass.IsEnabled = _phonePass!.Text.Length >= 10 && again == _phonePass.Text;
+            _phoneSetPass.IsEnabled = !busy && _phonePass!.Text.Length >= 10 && again == _phonePass.Text;
+        if (_phoneUnlockGo is not null) _phoneUnlockGo.IsEnabled = !busy && _phoneUnlock!.Text.Length > 0;
         string path = _phoneNewPath!.Text;
         _phoneNewLabel!.PlaceholderText = path.Length == 0 ? "Label" : PhoneWords.ShareLabel(path);
         if (_phoneAdd is not null)
