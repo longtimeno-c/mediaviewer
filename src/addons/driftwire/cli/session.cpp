@@ -480,11 +480,37 @@ struct session::impl {
     on_in(prev);
     on_code(prev);
     on_remember(prev);
+    on_tunnel(prev);
     keep_selection(prev);
     try_send_to_name();
     if (field == field_kind::save_elsewhere && v.in != in_phase::asking) close_field();
 
     if (o.plain) plain_nearby_update();
+  }
+
+  // The Tunnel (2026-11-12): the engine starts its proxy on its own thread,
+  // so the address is said when it first shows, and a problem when it changes.
+  void on_tunnel(const view& prev) {
+    if (!v.tunnel) return;
+    if (!v.tunnel_address.empty() && v.tunnel_address != prev.tunnel_address) say_tunnel();
+    if (!v.tunnel_note.empty() && v.tunnel_note != prev.tunnel_note) say(tone::warning, "Tunnel", {v.tunnel_note});
+  }
+
+  void say_tunnel() {
+    if (!v.tunnel) {
+      say(tone::info, "Tunnel: off", {"/tunnel on sends this computer's web traffic through your relay server."});
+      return;
+    }
+    if (v.tunnel_address.empty()) {
+      say(tone::info, "Tunnel: on, not running", {v.tunnel_note.empty() ? "Starting" + std::string(th.g->ellipsis)
+                                                                       : v.tunnel_note});
+      return;
+    }
+    say(tone::info, "Tunnel through " + (v.tunnel_relay.empty() ? std::string("your relay server") : v.tunnel_relay) +
+                        glue() + v.tunnel_address,
+        {"SOCKS5 or HTTP proxy: set it in your browser, or HTTPS_PROXY=http://" + v.tunnel_address +
+             " in a terminal.",
+         std::to_string(v.tunnel_open) + " open now; /tunnel off turns it off (kept for next time)."});
   }
 
   void print_banner() {
@@ -1280,6 +1306,21 @@ struct session::impl {
       set_option(option, *on, true);
     } else if (name == "/relay-server") {
       open_field(field_kind::relay_server);
+    } else if (name == "/tunnel") {
+      const auto on = on_off(rest);
+      if (!on) {
+        say_tunnel();
+        return;
+      }
+      if (*on && v.relay_server.empty()) {
+        flash("Set /relay-server first: the Tunnel goes through it.");
+        return;
+      }
+      const bool was = v.tunnel;
+      ev("tunnel", 2, *on ? "true" : "false");
+      refresh_view();
+      if (!*on) say(tone::info, std::string("Off: Tunnel") + (was ? "" : " (it already was)"));
+      else if (was) say_tunnel();  // already on: the address now; else on_tunnel says it once it listens
     } else if (name == "/updates") {
       if (!o.updates) {
         say(tone::info, "This copy does not check for updates.", {o.no_updates_why});
@@ -1368,6 +1409,8 @@ struct session::impl {
         "Continue over the internet if Wi-Fi drops: " + onoff(v.handover),
         "Relay through my computers: " + onoff(v.relay),
         "Relay server: " + std::string(v.relay_server.empty() ? "none" : "set"),
+        "Tunnel: " + (v.tunnel ? (v.tunnel_address.empty() ? std::string("on, not running") : "on, " + v.tunnel_address)
+                               : std::string("off")),
         "Remembers devices: " + std::string(v.can_remember ? "yes" : "no (no secret store here)"),
         "Checks for updates: " + (o.updates ? onoff(o.updates->enabled()) : "no (" + o.no_updates_why + ")"),
     };

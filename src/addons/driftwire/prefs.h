@@ -13,6 +13,7 @@
 // that finds no file takes "<file>.new". Portable (D9): the file port only.
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -35,6 +36,10 @@ struct prefs {
   // only the address; a file from before holds both until the next save.
   bool relay = false;
   std::string relay_server;
+  // The Tunnel (2026-11-12): "Tunnel through <relay>" (off by default), and
+  // the loopback port its proxy had, tried first next time (0: none yet).
+  bool tunnel = false;
+  std::uint16_t tunnel_port = 0;
   bool operator==(const prefs&) const = default;
 };
 

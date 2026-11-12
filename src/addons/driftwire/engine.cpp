@@ -156,6 +156,10 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
       sodium_memzero(k->data(), k->size());
     }
   }
+  // The Tunnel (2026-11-12): its switch and the port its proxy had.
+  v_.tunnel = kept.tunnel;
+  v_.tunnel_relay = tunnel::relay_shown(v_.relay_server);
+  tunnel_port_ = kept.tunnel_port;
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
@@ -163,7 +167,7 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   control_thread_ = std::thread([this] { control_loop(); });
   // Keep receiving was on at the last launch (#442): presence and the status
   // text come up on the control thread, never the caller's. Off: nothing.
-  if (v_.receiving || v_.internet) request_reconcile();
+  if (v_.receiving || v_.internet || v_.tunnel) request_reconcile();
 }
 
 engine::~engine() {
@@ -213,6 +217,16 @@ engine::~engine() {
   // starts it again).
   known_stop_.store(true);
   if (known_thread_.joinable()) known_thread_.join();
+  {
+    // The Tunnel's proxy (the control thread has stopped: nothing starts it
+    // again). Destroyed outside tunnel_m_: its threads take it to report.
+    std::unique_ptr<tunnel::proxy> t;
+    {
+      std::lock_guard lock(tunnel_m_);
+      t = std::move(tunnel_);
+    }
+    t.reset();
+  }
   {
     // The code, its listener and every router mapping go (joins its threads).
     std::shared_ptr<internet_receiver> in;
@@ -285,6 +299,8 @@ void engine::save_now() {
     p.handover = v_.handover;
     p.relay = v_.relay;
     p.relay_server = v_.relay_server;
+    p.tunnel = v_.tunnel;
+    p.tunnel_port = tunnel_port_;
   }
   {
     std::lock_guard lock(control_m_);
@@ -414,8 +430,104 @@ void engine::reconcile() {
   }
   sync_announce();
   sync_internet();
+  sync_tunnel();
   sync_known();
   sync_status();
+}
+
+// ---- the Tunnel (tunnel.h) ------------------------------------------------------------
+
+void engine::sync_tunnel() {
+  std::string relay;
+  bool want = false;
+  std::uint16_t port = 0;
+  {
+    std::lock_guard lock(m_);
+    want = v_.tunnel && !stopping_.load() && !opts_.offline;
+    relay = v_.relay_server;
+    port = tunnel_port_;
+  }
+  std::unique_ptr<tunnel::proxy> drop;
+  {
+    std::lock_guard lock(tunnel_m_);
+    if (tunnel_ && (!want || tunnel_for_ != relay)) {
+      drop = std::move(tunnel_);
+      tunnel_for_.clear();
+    }
+  }
+  if (drop) {
+    if (const auto p = drop->port()) port = p;  // the next one takes the same port, once this has let go
+    drop.reset();  // its streams close and its threads end, on this thread
+  }
+  bool running = false;
+  {
+    std::lock_guard lock(tunnel_m_);
+    running = static_cast<bool>(tunnel_);
+  }
+  std::string note;
+  if (want && !running) {
+    std::string why;
+    if (relay.empty()) {
+      note = "Type your relay server under Your own relay server first (address:port#key, as the server prints it).";
+    } else if (!relay_server_of(relay, why)) {
+      note = why;
+    } else {
+      tunnel::proxy::options o;
+      o.relay = relay;
+      o.port = port;
+      o.changed = [this] { tunnel_changed(); };
+      auto made = tunnel::proxy::start(std::move(o));
+      if (made) {
+        const auto got = (*made)->port();
+        {
+          std::lock_guard lock(tunnel_m_);
+          tunnel_ = std::move(*made);
+          tunnel_for_ = relay;
+        }
+        bool save = false;
+        {
+          std::lock_guard lock(m_);
+          save = tunnel_port_ != got;
+          tunnel_port_ = got;
+        }
+        if (save) request_save();
+        host_.log(2, "driftwire: tunnel on");
+      } else {
+        note = "The Tunnel could not listen on this computer.";
+        log_status("tunnel", made.error());
+      }
+    }
+  }
+  {
+    std::lock_guard lock(m_);
+    v_.tunnel_relay = tunnel::relay_shown(relay);
+    if (!want) {
+      v_.tunnel_address.clear();
+      v_.tunnel_note.clear();
+      v_.tunnel_open = 0;
+    } else if (!note.empty()) {
+      v_.tunnel_address.clear();
+      v_.tunnel_note = note;
+      v_.tunnel_open = 0;
+    }
+  }
+  tunnel_changed();
+}
+
+void engine::tunnel_changed() {
+  std::optional<tunnel::proxy::snapshot> s;
+  {
+    std::lock_guard lock(tunnel_m_);
+    if (tunnel_) s = tunnel_->state();
+  }
+  if (s) {
+    std::lock_guard lock(m_);
+    v_.tunnel_address = "127.0.0.1:" + std::to_string(s->port);
+    v_.tunnel_note = s->problem;
+    v_.tunnel_open = s->open;
+    v_.tunnel_streams = s->streams;
+  }
+  post_throttled();
 }
 
 void engine::sync_internet() {
@@ -1762,10 +1874,24 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     {
       std::lock_guard lock(m_);
       v_.relay_server = *text;
+      v_.tunnel_relay = tunnel::relay_shown(*text);  // the Tunnel's switch names it
       in = internet_;
     }
     if (in) in->set_relay(*text);
     request_save();
+    request_reconcile();  // the Tunnel follows the field (sync_tunnel)
+    return;
+  }
+  if (node == "tunnel" && kind == kChange && value && value->k == json::kind::boolean) {
+    // The Tunnel (2026-11-12): opt-in, off by default. The window's switch,
+    // the settings page's and the menu-bar row (same id) all come here.
+    {
+      std::lock_guard lock(m_);
+      v_.tunnel = value->b;
+    }
+    request_reconcile();
+    request_save();
+    post();
     return;
   }
   if (node.rfind("own", 0) == 0 && node.size() > 3 && kind == kChange && value && value->k == json::kind::boolean) {

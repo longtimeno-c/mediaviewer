@@ -90,6 +90,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/known.h ${_S}/known.cpp
   ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
+  ${_S}/tunnel.cpp ${_S}/tunnel.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h

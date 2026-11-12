@@ -42,6 +42,10 @@ std::optional<prefs> parse(const std::string& text) {
   p.handover = doc->boolean("handover").value_or(false);
   p.relay = doc->boolean("relay").value_or(false);
   if (const std::string* r = doc->str("relay_server")) p.relay_server = *r;
+  p.tunnel = doc->boolean("tunnel").value_or(false);
+  if (const auto port = doc->integer("tunnel_port"); port && *port >= 1 && *port <= 65535) {
+    p.tunnel_port = static_cast<std::uint16_t>(*port);
+  }
   return p;
 }
 
@@ -72,7 +76,8 @@ bool save_prefs(const std::string& path, const prefs& p) {
   w.key("destination").string(p.destination);
   w.key("internet").boolean(p.internet);
   w.key("dht").boolean(p.dht).key("handover").boolean(p.handover);
-  w.key("relay").boolean(p.relay).key("relay_server").string(p.relay_server).end_object();
+  w.key("relay").boolean(p.relay).key("relay_server").string(p.relay_server);
+  w.key("tunnel").boolean(p.tunnel).key("tunnel_port").integer(p.tunnel_port).end_object();
   const std::string text = w.take();
   const std::string fresh = path + ".new";
   (void)io::remove_file(fresh);  // a leftover from a write that stopped

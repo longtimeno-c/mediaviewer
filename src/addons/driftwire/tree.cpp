@@ -619,6 +619,64 @@ void unfinished(writer& w, const view& v) {
   end(w);
 }
 
+// ---- the Tunnel (2026-11-12; tunnel.h) ---------------------------------------------------
+
+std::string tunnel_label(const view& v) {
+  return "Tunnel through " + (v.tunnel_relay.empty() ? std::string("your relay server") : v.tunnel_relay);
+}
+
+// The switch (node "tunnel": the menu-bar row has the same id), and while
+// it is on, the path, the proxy's address with Copy, and how to use it.
+void tunnel_controls(writer& w, const view& v) {
+  toggle(w, "tunnel", tunnel_label(v), v.tunnel);
+  if (!v.tunnel) {
+    text(w, "tunnel_note",
+         v.relay_server.empty()
+             ? "For a network that blocks sites: your web traffic leaves through your own relay server. Set Your "
+               "own relay server first."
+             : "For a network that blocks sites: your web traffic leaves through your own relay server, sealed on "
+               "the way there.",
+         "caption");
+    return;
+  }
+  if (!v.tunnel_note.empty()) text(w, "tunnel_problem", v.tunnel_note, "secondary");
+  if (v.tunnel_address.empty()) return;
+  {
+    // The path: this computer, the relay, the web.
+    std::string through = v.tunnel_relay.empty() ? std::string("your relay server") : v.tunnel_relay;
+    if (through.size() > 64) through.resize(64);
+    const char* state = v.tunnel_open > 0 ? "moving" : !v.tunnel_note.empty() ? "failed" : "done";
+    const std::string caption =
+        v.tunnel_open > 0 ? "Through your relay server: " + std::to_string(v.tunnel_open) +
+                                (v.tunnel_open == 1 ? " connection" : " connections")
+                          : std::string("Through your relay server: ready");
+    w.begin_object().key("type").string("link").key("id").string("tunnel_path");
+    w.key("label").string("This computer's web traffic goes through " + through + ". " + caption + ".");
+    w.key("via").string("tunnel").key("state").string(state).key("direction").string("send");
+    w.key("from").string("This computer").key("to").string("The web").key("through").string(through);
+    w.key("caption").string(caption).end_object();
+  }
+  row(w, "tunnel_row");
+  copyable(w, "tunnel_address", v.tunnel_address, "body");
+  copy_button(w, "copy_tunnel", "Copy", "plain", v.tunnel_address);
+  end(w);
+  text(w, "tunnel_how",
+       "Set this as the SOCKS5 or HTTP proxy in your browser or system settings (for a terminal: "
+       "HTTPS_PROXY=http://" + v.tunnel_address + "). The sites see your relay server's address; the relay sees "
+       "which sites, never what you send.",
+       "caption");
+}
+
+// While the Tunnel is on and Internet options are not showing (the internet
+// switch off), its own card, so it can be seen and turned off.
+void tunnel_card(writer& w, const view& v) {
+  if (!v.tunnel || v.internet) return;
+  stack(w, "tunnel_card", 10, "vertical", "card", "fill");
+  text(w, "tunnel_title", "Tunnel", "heading");
+  tunnel_controls(w, v);
+  end(w);
+}
+
 void internet_options(writer& w, const view& v) {
   stack(w, "internet_options", 10, "vertical", "card", "fill");
   text(w, "options_title", "Internet options", "heading");
@@ -649,6 +707,7 @@ void internet_options(writer& w, const view& v) {
   w.begin_object().key("type").string("text_field").key("id").string("relay_server");
   w.key("label").string("Your own relay server (optional)").key("value").string(v.relay_server);
   w.key("placeholder").string("Only if you run one: address:port#key").end_object();
+  tunnel_controls(w, v);  // the Tunnel goes through that server
   end(w);
 }
 
@@ -744,6 +803,7 @@ std::string build_settings_tree(const view& v) {
     known_settings(w, v);
     internet_options(w, v);
   }
+  tunnel_card(w, v);
   w.end_array().end_object();
   return w.take();
 }
@@ -775,6 +835,7 @@ std::string build_tree(const view& v) {
   files_card(w, v, sending);
   nearby(w, v);
   internet(w, v, sending);
+  tunnel_card(w, v);
 
   end(w);                      // page
   w.end_array().end_object();  // root

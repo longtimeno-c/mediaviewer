@@ -50,6 +50,7 @@
 #include "addons/driftwire/resume.h"
 #include "addons/driftwire/presence.h"
 #include "addons/driftwire/transfer.h"
+#include "addons/driftwire/tunnel.h"
 #include "addons/driftwire/udp_hub.h"
 
 namespace mv::driftwire {
@@ -196,6 +197,15 @@ struct view {
   // toggle on both): this side's hub is open and the DHT answered.
   bool out_handover_dht = false;
   bool in_handover_dht = false;
+
+  // ---- the Tunnel (2026-11-12; tunnel.h): this computer's web traffic
+  // through the relay server in relay_server. Off by default.
+  bool tunnel = false;           // the switch (node "tunnel", also the menu-bar row)
+  std::string tunnel_relay;      // the relay server's address, without its key ("" when none is set)
+  std::string tunnel_address;    // "127.0.0.1:<port>" while the proxy listens, else ""
+  std::string tunnel_note;       // why it does not run, or the relay's last problem
+  std::uint32_t tunnel_open = 0;  // streams through it now
+  std::uint64_t tunnel_streams = 0;  // streams made this run (tests, /tunnel)
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -535,6 +545,11 @@ class engine {
                std::string peer_id, std::optional<net::endpoint> internet_place, bool trusted = false);
   // The control thread: the internet receiver made or dropped with the toggle.
   void sync_internet();
+  // The control thread: the Tunnel's proxy started, restarted (the relay
+  // field changed) or stopped with its switch.
+  void sync_tunnel();
+  // A proxy's state into the view (any proxy thread; never under m_).
+  void tunnel_changed();
   // `source`: where it came from (source_of; "": not known).
   void on_internet_link(std::unique_ptr<link> l, bool code = false, std::string source = {});
   // #472, the sender's side of a protocol 2 send, on its own thread while
@@ -685,6 +700,13 @@ class engine {
   // #472 PR 2: the receiver of codes while the toggle is on (made and dropped
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
+  // The Tunnel's proxy (tunnel.h): made and dropped on the control thread
+  // (and the destructor), read by its own callback; destroyed outside
+  // tunnel_m_, since its threads take it to report.
+  std::mutex tunnel_m_;
+  std::unique_ptr<tunnel::proxy> tunnel_;  // under tunnel_m_
+  std::string tunnel_for_;                 // under tunnel_m_: the relay field it was started with
+  std::uint16_t tunnel_port_ = 0;          // under m_: the port to try first (kept in the prefs)
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
   std::uint64_t offer_seq_ = 0;                  // under m_: the receive now (or last), for its notices (#502)
   // #502: receives started and notifications shown, per source.

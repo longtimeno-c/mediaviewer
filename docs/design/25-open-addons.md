@@ -832,7 +832,7 @@ Two more (2026-10-19, Driftwire; contribution API **6**, so an add-on whose tree
 blank window):
 
 - **`link`** (a picture, not a control; `label` required): the path a transfer takes. `via`
-  (`bluetooth`, `wifi`, `internet`, `dht`, `relay`, `server`) and `state` (`connecting`, `moving`,
+  (`bluetooth`, `wifi`, `internet`, `dht`, `relay`, `server`, `tunnel` (2026-11-12, Driftwire's Tunnel)) and `state` (`connecting`, `moving`,
   `paused`, `done`, `failed`) are required; `direction` (`send` / `receive`), `from`, `to`,
   `through` (the computer in between, 64 characters), `caption` and `value` (−1–1) are optional.
   Both hosts draw this computer, the other, the line between them in the bearer's own shape and

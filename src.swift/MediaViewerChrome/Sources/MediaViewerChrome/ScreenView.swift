@@ -1766,6 +1766,7 @@ private struct LinkNode: View {
     case "wifi": return Color(nsColor: .systemTeal)
     case "internet": return Color(nsColor: .systemIndigo)
     case "dht": return Color(nsColor: .systemOrange)
+    case "tunnel": return Color(nsColor: .systemGreen)  // Driftwire's Tunnel: this computer's web traffic
     default: return Color(nsColor: .systemPurple)  // relay, server
     }
   }
@@ -1777,6 +1778,7 @@ private struct LinkNode: View {
     case "internet": return "globe"
     case "dht": return "point.3.connected.trianglepath.dotted"
     case "relay": return "desktopcomputer"
+    case "tunnel": return "lock.shield"
     default: return "server.rack"
     }
   }
@@ -1876,7 +1878,7 @@ private struct LinkNode: View {
   /// How far the path bows up in the middle (an arc for the internet).
   private var arcLift: CGFloat {
     switch via {
-    case "internet", "dht", "relay", "server": return 22
+    case "internet", "dht", "relay", "server", "tunnel": return 22
     default: return 0
     }
   }
