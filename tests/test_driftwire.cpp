@@ -784,7 +784,9 @@ TEST_CASE("driftwire: the menu-bar menu's rows are the window's switches, with w
 
   // A long name is cut at a character, within the host's 120-byte label.
   v.in_peer = std::string(59, 'a') + "\xC3\xA9" + std::string(40, 'b');
-  for (const auto& row : mv::json::parse(sp::build_menu(v))->find("items")->a) {
+  const auto long_menu = mv::json::parse(sp::build_menu(v));  // kept alive for the loop
+  REQUIRE(long_menu);
+  for (const auto& row : long_menu->find("items")->a) {
     if (const std::string* label = row.str("label")) CHECK(label->size() <= 120);
   }
 }
