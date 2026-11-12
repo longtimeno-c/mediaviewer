@@ -6,9 +6,10 @@
 // and paired before anything is indexed; Local search signs with the same key.
 //
 // The key lives only in the OS's secret store, under kPublisherService. Until
-// 2026-11-12 Local search kept it under kLegacyService: the first read takes
-// it from there (written here, read back, then removed there), so a library
-// published before keeps its key and every paired phone keeps trusting it.
+// 2026-11-12 Local search kept it under kLegacyService: the first read copies
+// it here and leaves it there (a Local search from before the move still
+// signs with it), so a library published before keeps its key and every
+// paired phone keeps trusting it.
 // Worker threads only: the store may wait on the OS. Portable (D9).
 #pragma once
 

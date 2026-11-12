@@ -160,10 +160,17 @@ void link::set_source(catalogue_source s) {
     std::lock_guard lock(source_m_);
     source_ = std::move(s);
   }
-  // Loaded or gone: the card says so at once, the tick follows its generations.
+  // Loaded: one look now (the card says so, a library it published before the
+  // move is taken). Gone: the card says so. Nothing is queued while stopping,
+  // and no thread is started for a source alone with nothing set up.
+  bool any = false;
+  {
+    std::lock_guard source_lock(source_m_);
+    any = static_cast<bool>(source_);
+  }
   std::lock_guard lock(m_);
   if (stopping_.load()) return;
-  if (!pub_.destination.empty() || !state_read_) {
+  if (any || !pub_.destination.empty()) {
     requests_.push_back("{\"do\":\"source\"}");
     start_thread_locked();
   }
@@ -177,35 +184,36 @@ void link::stop() noexcept {
     t = std::move(thread_);
     cv_.notify_all();
   }
-  const bool ran = t.joinable();
-  if (ran) {
-    if (o_.detach_on_stop) {
-      t.detach();  // this link is never destroyed (phone/app.cpp)
-    } else {
-      t.join();
-    }
+  if (!t.joinable()) return;  // never used this run: nothing to tidy, no secret store woken
+  // The thread tidies up itself (quit_tidy) and ends: one writer of link.json,
+  // and the desk is never called from the stopping thread, which is the app's
+  // main thread at quit.
+  if (o_.detach_on_stop) {
+    t.detach();  // this link is never destroyed (phone/app.cpp)
+  } else {
+    t.join();
   }
-  if (!ran) return;  // never used this run: nothing to tidy, and no secret store is woken
-  // The app going: a code showing is not withdrawn here (a round trip to a NAS
-  // that may not answer, and quitting must not wait on it). It is written down
-  // and withdrawn at the next start; the NAS lets it lapse within five minutes
-  // anyway. The nearby service is the desk's and goes with it.
-  bool showing = false;
-  {
-    std::lock_guard lock(m_);
-    showing = v_.qr_expires != 0;
-  }
+}
+
+// The app going, on the link thread: a code showing is not withdrawn (a round
+// trip to a NAS that may not answer); it is written down and withdrawn at the
+// next start, and the NAS lets it lapse within five minutes anyway. Only what
+// is on this computer goes now: the nearby service and a held session.
+void link::quit_tidy() noexcept {
   try {
-    if (showing) {
-      {
-        std::lock_guard lock(m_);
+    bool showing = false, nearby = false;
+    {
+      std::lock_guard lock(m_);
+      showing = v_.qr_expires != 0;
+      nearby = v_.nearby;
+      if (showing) {
         v_.code_left = true;
         v_.code_left_until = static_cast<std::int64_t>(std::time(nullptr)) + static_cast<std::int64_t>(o_.code_ttl_s) + 1;
       }
-      save_flags();
     }
-    (void)route("nearby_stop", "{}");
-    (void)route("release", "{}");
+    if (showing) save_flags();
+    if (nearby) (void)route("nearby_stop", "{}");
+    if (nearby || showing) (void)route("release", "{}");
   } catch (...) {
   }
 }
@@ -327,6 +335,9 @@ void link::read_source() {
   pub_.waiting = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("waiting").value_or(0)));
   const std::string* g = doc->str("gen_dir");
   pub_.gen_dir = g ? *g : std::string();
+  const std::string* id = doc->str("library_id");
+  pub_.source_library_id = id ? *id : std::string();
+  pub_.source_epoch = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("epoch").value_or(0)));
 }
 
 // Before the move, Local search held the folder, the id and the epoch. A
@@ -385,12 +396,16 @@ void link::loop() {
       const auto ready = [this] { return stopping_.load() || !requests_.empty(); };
       if (v_.qr_expires != 0) {
         poll = !cv_.wait_for(lock, std::chrono::milliseconds(kPairPollMs), ready);
-      } else if (!pub_.destination.empty() || pub_.source) {
+      } else if (!pub_.destination.empty()) {
         ticked = !cv_.wait_for(lock, std::chrono::milliseconds(static_cast<std::int64_t>(o_.tick_s * 1000)), ready);
       } else {
         cv_.wait(lock, ready);
       }
-      if (stopping_.load()) return;
+      if (stopping_.load()) {
+        lock.unlock();
+        quit_tidy();
+        return;
+      }
       if (!poll && !ticked) {
         request = std::move(requests_.front());
         requests_.pop_front();
@@ -424,12 +439,14 @@ void link::loop() {
         }
         // The owner's session is kept only while a code shows: one forwarded
         // service, a few session slots, and a desktop that may sit here for days.
-        bool showing = false;
+        // With no folder there is no session, and no desk to ask.
+        bool showing = false, set_up = false;
         {
           std::lock_guard lock(m_);
           showing = v_.qr_expires != 0;
+          set_up = !pub_.destination.empty();
         }
-        if (!showing) (void)route("release", "{}");
+        if (!showing && set_up) (void)route("release", "{}");
       }
       bool dirty = false;
       {
@@ -687,6 +704,14 @@ void link::prepare_nearby() {
     gen_dir = pub_.gen_dir;
     // Handed over: this desktop's key signs nothing a phone should take now.
     any = v_.claimed && !v_.devices.empty() && !v_.other_publisher;
+    // A generation Local search built under another library's id would be
+    // refused by every phone: not served, and said. (An older epoch is the
+    // moment after a key move, before its next publish: signed here under the
+    // library's epoch, as before the move.)
+    if (!pub_.source_library_id.empty() && pub_.source_library_id != pub_.library_id) {
+      any = false;
+      v_.mismatch = true;
+    }
     if (!any && v_.nearby) v_.nearby = false;
   }
   if (!any) {
@@ -811,7 +836,7 @@ void link::run(const std::string& request) {
     std::lock_guard lock(m_);
     destination = pub_.destination;
   }
-  if (destination.empty() && what != "folder") {
+  if (destination.empty() && what != "folder" && what != "source") {
     // A folder Local search published to before this knew one (before the
     // move, or between ticks) is this library's folder too.
     read_source();
@@ -875,7 +900,10 @@ void link::run(const std::string& request) {
   if (what == "source") {
     read_source();
     adopt_from_source();
-    prepare_nearby();
+    std::lock_guard lock(m_);
+    // Nothing set up: nothing on the NAS or nearby to follow (no desk is woken).
+    if (pub_.destination.empty()) return;
+    requests_.push_back("{\"do\":\"nearby\"}");
     return;
   }
   if (what == "refresh") {
@@ -901,6 +929,8 @@ void link::run(const std::string& request) {
       if (source_) started = source_.publish(destination);
     }
     if (!started && started.error() == status::not_found) return fail("no_local_search");
+    // Busy: one is running, and the card shows it. Anything else is said.
+    if (!started && started.error() != status::busy) return fail("failed");
     read_source();
     return;
   }

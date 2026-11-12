@@ -1774,7 +1774,7 @@ TEST_CASE("phone pairing: with no Local search a library is set up, claimed, pai
   CHECK_FALSE(n.phone(phone, {}, &why));
 }
 
-TEST_CASE("phone pairing: the publisher key moves once from Local search's store", "[phone-pairing]") {
+TEST_CASE("phone pairing: the publisher key is copied once from Local search's store", "[phone-pairing]") {
   scratch_dir dir{"phone_key"};
   auto now = folder_store(dir.root() / "now");
   auto before = folder_store(dir.root() / "before");
@@ -1790,7 +1790,7 @@ TEST_CASE("phone pairing: the publisher key moves once from Local search's store
   REQUIRE(got);
   CHECK(*got == old);
   CHECK(now->get(catalog::kPublisherKeyName) == old);
-  CHECK_FALSE(before->get(catalog::kPublisherKeyName));
+  CHECK(before->get(catalog::kPublisherKeyName) == old);  // left: a Local search from before reads it there
   // And it stays the same key from then on.
   CHECK(*catalog::publisher_key(now.get(), before.get(), true) == old);
   // No store at all.
@@ -1832,4 +1832,53 @@ TEST_CASE("phone pairing: the desk's items move once from Driftwire's store", "[
   CHECK_FALSE(from->get(desk::kKeyName));
   CHECK_FALSE(from->get(desk::kDevicesName));
   CHECK(from->get(desk::kServiceName));  // not taken: still there
+}
+
+TEST_CASE("phone pairing: with Local search loaded and nothing set up, the link does not wake", "[phone-pairing]") {
+  scratch_dir dir{"phone_idle"};
+  std::atomic<int> looks{0}, routes{0};
+  mv::phone::link::options o;
+  o.data_dir = utf8(dir.root() / "phone");
+  o.key_store = [&]() { return sp::secrets::file_store(utf8(dir.root() / "keys")); };
+  o.route = [&](const char*, const std::string&) -> mv::result<std::string> {
+    ++routes;
+    return mv::err(mv::status::io);
+  };
+  o.tick_s = 0.05;
+  mv::phone::link l(std::move(o));
+  l.resume();
+  mv::phone::catalogue_source src;
+  src.publish = [](const std::string&) -> mv::expected { return {}; };
+  src.cancel = [] {};
+  src.json = [&] {
+    ++looks;
+    return std::string("{\"running\":false}");  // Local search with no folder of its own
+  };
+  l.set_source(std::move(src));
+  REQUIRE(eventually([&] { return looks.load() >= 1; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));  // twelve ticks' worth
+  CHECK(looks.load() <= 2);  // the one look when it loaded, nothing after
+  CHECK(routes.load() == 0);  // and nothing asked of the desk
+}
+
+TEST_CASE("phone pairing: a link never used starts nothing at quit", "[phone-pairing]") {
+  scratch_dir dir{"phone_quit"};
+  std::atomic<int> routes{0}, stores{0};
+  mv::phone::link::options o;
+  o.data_dir = utf8(dir.root() / "phone");
+  o.key_store = [&]() {
+    ++stores;
+    return sp::secrets::file_store(utf8(dir.root() / "keys"));
+  };
+  o.route = [&](const char*, const std::string&) -> mv::result<std::string> {
+    ++routes;
+    return std::string("{}");
+  };
+  mv::phone::link l(std::move(o));
+  l.stop();
+  l.set_source({});  // the app's quit order (phone/app.cpp)
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(routes.load() == 0);
+  CHECK(stores.load() == 0);
+  CHECK_FALSE(l.request("{\"do\":\"refresh\"}"));  // stopped
 }

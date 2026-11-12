@@ -113,6 +113,8 @@ class link {
     std::uint64_t epoch = 1;
     std::uint64_t generation = 0, waiting = 0;
     std::string gen_dir;  // Local search's newest generation, here
+    std::string source_library_id;  // the id and epoch Local search builds under
+    std::uint64_t source_epoch = 0;
     bool source = false;  // Local search is loaded
     std::string source_json;
   };
@@ -145,6 +147,7 @@ class link {
   };
 
   void loop();
+  void quit_tidy() noexcept;
   void tick();
   void run(const std::string& request);
   void refresh(bool phones_only = false);

@@ -72,22 +72,26 @@ result<std::vector<std::uint8_t>> publisher_key(driftwire::secrets::store* store
   if (auto kept = store->get(kPublisherKeyName)) return std::move(*kept);
   if (legacy) {
     if (auto old = legacy->get(kPublisherKeyName); old && old->size() == kSecretKeyBytes) {
-      // Moved, not copied: written here and read back before the old one goes.
+      // Copied, and left where it was in this release: a Local search from
+      // before the move reads it there and must sign with the same key, and a
+      // second reader (the app and Local search at once) finds it either way.
       // A store that will not take it keeps signing with the old one.
-      if (store->put(kPublisherKeyName, *old)) {
-        auto back = store->get(kPublisherKeyName);
-        if (back && *back == *old) (void)legacy->erase(kPublisherKeyName);
-      }
+      (void)store->put(kPublisherKeyName, *old);
       return std::move(*old);
     }
   }
   if (!make) return err(status::not_found);
+  // Looked at again just before making one: the app and Local search may both
+  // have missed it a moment ago, and the first to make it wins below.
+  if (auto kept = store->get(kPublisherKeyName)) return std::move(*kept);
   auto secret = make_keypair().second;
   if (secret.empty()) return err(status::io);  // no usable libsodium: never store an empty key
   if (!store->put(kPublisherKeyName, secret)) return err(status::io);
   auto back = store->get(kPublisherKeyName);
-  if (!back || *back != secret) return err(status::io);
-  return secret;
+  if (!back) return err(status::io);
+  // Another made one at the same moment and its put landed last: that is the
+  // key now, for both. (Nothing has signed with this one yet.)
+  return std::move(*back);
 }
 
 std::string new_library_id() {
