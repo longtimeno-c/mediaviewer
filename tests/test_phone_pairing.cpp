@@ -733,6 +733,41 @@ TEST_CASE("phone pairing: an expired guest is let back in by a new code, or by a
   CHECK_FALSE(on_grants(n, guest));
 }
 
+TEST_CASE("phone pairing: an extension reaches a live session, and a stale code does not shut a live guest out", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto s = m.session();
+  REQUIRE(s);
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  REQUIRE((*s)->admin(guest_code_request(std::string(32, 'a'), 3600)));
+  const key32 guest = random_key();
+  auto phone = n.phone(guest, std::string(32, 'a'));
+  REQUIRE(phone);
+  CHECK((*phone)->caps().grant_expires == t0 + 3600);
+  // Extended while it reads: the session is refreshed so the phone learns the new end.
+  const std::string key = mv::driftwire::key_hex(public_of(guest));
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"for_s\":86400}"));
+  CHECK(eventually([&] { return (*phone)->closed(); }, 6));
+  CHECK((*phone)->ended_why() == "folders-changed");
+  auto again = n.phone(guest);
+  REQUIRE(again);
+  CHECK((*again)->caps().grant_expires == t0 + 86400);
+  // A guest that scans an old, spent code is still let in on the grant it has.
+  auto rescanned = n.phone(guest, std::string(32, 'a'));
+  REQUIRE(rescanned);
+  CHECK((*rescanned)->caps().grant_expires == t0 + 86400);
+  // Made unlimited while connected: refreshed, and it comes back with no limit.
+  REQUIRE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + key + "\",\"forever\":true}"));
+  CHECK(eventually([&] { return (*rescanned)->closed(); }, 6));
+  auto unlimited = n.phone(guest);
+  REQUIRE(unlimited);
+  CHECK_FALSE((*unlimited)->caps().has_grant);
+  // Nothing in this was a revoke.
+  CHECK((*again)->ended_why() != "revoked");
+}
+
 TEST_CASE("phone pairing: an unlimited phone that scans a guest code stays unlimited", "[phone-pairing]") {
   nas n;
   claimer m(n);

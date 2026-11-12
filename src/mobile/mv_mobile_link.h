@@ -139,7 +139,8 @@ void mv_link_close(mv_mobile_link* link);
 
 /* The live connection's limit, as the service gave it: 1 when this phone's access is limited
  * (`expires_unix` its end on the service's clock, 0 none; `scoped` 1 for some folders only), 0 when
- * it is unlimited or there is no live connection. Never blocks. */
+ * it is unlimited, -1 when there is no live connection (nothing is known: keep what you had).
+ * Never blocks. */
 int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
 
 /* BLOCKS. Keeps a live connection (the report says how it was reached); races the routes only when

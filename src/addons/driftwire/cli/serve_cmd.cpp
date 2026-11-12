@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -350,7 +351,7 @@ int run_passphrase_reset(const args& a, secrets::store& store) {
 // list, timed only in the grants, never both. The list it goes to is written
 // first, as the service does. Under the file lock.
 int put_device(secrets::store& store, const std::string& name, const std::array<std::uint8_t, 32>& key,
-               std::int64_t for_s, std::int64_t now) {
+               std::optional<serve::grants::grant> limit, std::int64_t now) {
   std::vector<known::device> devices;
   if (!load_devices(store, devices)) return fail("the device list cannot be read; not changing it.", 1);
   std::vector<serve::grants::grant> limited;
@@ -363,12 +364,10 @@ int put_device(secrets::store& store, const std::string& name, const std::array<
   if (!was_unlimited && !was_live && !serve::grants::make_room(limited, devices.size(), now)) {
     return fail("too many paired devices; revoke one first.", 1);
   }
-  if (for_s > 0) {
-    serve::grants::grant g;
+  if (limit) {
+    serve::grants::grant g = std::move(*limit);
     g.name = name;
     g.key = key;
-    g.expires = now + for_s;
-    g.created = now;
     limited.push_back(std::move(g));
     if (!serve::grants::save(store, limited) || !known::save(store, devices)) return fail("could not save the device lists.", 1);
   } else {
@@ -390,26 +389,15 @@ int run_add(const args& a, secrets::store& store, const std::string& data) {
     const auto for_s = serve::grants::parse_duration(a.for_duration);
     if (!for_s) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
     const auto now = static_cast<std::int64_t>(std::time(nullptr));
-    if (const int r = put_device(store, a.name, *key, *for_s, now); r != 0) return r;
+    serve::grants::grant g;
+    g.expires = now + *for_s;
+    g.created = now;
+    if (const int r = put_device(store, a.name, *key, std::move(g), now); r != 0) return r;
     print("paired until " + std::to_string(now + *for_s) + " (unix seconds)\n");
     return 0;
   }
-  std::vector<known::device> devices;
-  if (!load_devices(store, devices)) return fail("the device list cannot be read; not changing it.", 1);
-  for (auto& d : devices) {
-    if (d.key == *key) {
-      d.name = a.name;
-      if (!known::save(store, devices)) return fail("could not save the device list.", 1);
-      print("updated\n");
-      return 0;
-    }
-  }
-  if (devices.size() >= known::kMaxDevices) return fail("too many paired devices; revoke one first.", 1);
-  known::device d;
-  d.name = a.name;
-  d.key = *key;
-  devices.push_back(std::move(d));
-  if (!known::save(store, devices)) return fail("could not save the device list.", 1);
+  // Unlimited: on the paired list alone (a timed one with this key becomes unlimited).
+  if (const int r = put_device(store, a.name, *key, std::nullopt, std::time(nullptr)); r != 0) return r;
   print("paired\n");
   return 0;
 }
@@ -447,22 +435,40 @@ int run_grant(const args& a, secrets::store& store, const std::string& data) {
   if (!serve::grants::load(store, limited)) return fail("the timed device list cannot be read; not changing it.", 1);
   const auto key = parse_key_hex(a.serve_key);
   std::optional<std::pair<std::string, std::array<std::uint8_t, 32>>> found;
+  std::optional<serve::grants::grant> current;  // its grant now, if it is a timed or scoped one
+  int matches = 0;
   for (const auto& d : devices) {
-    if ((key && d.key == *key) || d.name == a.serve_key) found.emplace(d.name, d.key);
+    if ((key && d.key == *key) || d.name == a.serve_key) {
+      found.emplace(d.name, d.key);
+      ++matches;
+    }
   }
   for (const auto& g : limited) {
-    if ((key && g.key == *key) || g.name == a.serve_key) found.emplace(g.name, g.key);
+    if ((key && g.key == *key) || g.name == a.serve_key) {
+      if (!found || found->second != g.key) ++matches;
+      found.emplace(g.name, g.key);
+      current = g;
+    }
   }
   if (!found) return fail("no such device.", 1);
-  std::int64_t for_s = 0;
+  if (matches > 1) return fail("more than one device has that name; give its key.", 2);
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  // Its folders, whether it is a guest and when it was added stay as they are:
+  // only the time changes.
+  std::optional<serve::grants::grant> next;
   if (!a.forever) {
     const auto parsed = serve::grants::parse_duration(a.for_duration);
     if (!parsed) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
-    for_s = *parsed;
+    next = current.value_or(serve::grants::grant{});
+    if (!current) next->created = now;
+    next->expires = now + *parsed;
+  } else if (current && current->roots) {
+    next = *current;  // no end, still only its folders
+    next->expires = 0;
   }
-  const auto now = static_cast<std::int64_t>(std::time(nullptr));
-  if (const int r = put_device(store, found->first, found->second, for_s, now); r != 0) return r;
-  print(for_s > 0 ? "until " + std::to_string(now + for_s) + " (unix seconds)\n" : std::string("unlimited\n"));
+  if (const int r = put_device(store, found->first, found->second, next, now); r != 0) return r;
+  print(next && next->expires != 0 ? "until " + std::to_string(next->expires) + " (unix seconds)\n"
+                                   : std::string(next ? "no end, its folders only\n" : "unlimited\n"));
   return 0;
 }
 

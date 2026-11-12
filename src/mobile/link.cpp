@@ -333,12 +333,13 @@ void link_session::disconnect() noexcept {
   if (gone) gone->close();
 }
 
-bool link_session::grant(std::int64_t& expires_unix, bool& scoped) const {
+int link_session::grant(std::int64_t& expires_unix, bool& scoped) const {
   std::lock_guard lock(m_);
-  if (!live_ || live_->closed() || !live_->caps().has_grant) return false;
+  if (!live_ || live_->closed()) return -1;
+  if (!live_->caps().has_grant) return 0;
   expires_unix = live_->caps().grant_expires;
   scoped = live_->caps().grant_scoped;
-  return true;
+  return 1;
 }
 
 bool link_session::connected() const {

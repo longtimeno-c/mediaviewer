@@ -225,6 +225,14 @@ struct server::state {
     std::optional<grants::grant> g;
   };
   [[nodiscard]] device_access access_of(const std::array<std::uint8_t, 32>& key);
+  struct lists {
+    std::vector<known::device> devices;
+    std::vector<grants::grant> limited;
+    bool grants_ok = false;
+  };
+  [[nodiscard]] lists read_lists();
+  // Why a running session must end now, or nullptr.
+  [[nodiscard]] const char* verdict(const lists& l, const conn& c, std::int64_t t) const;
   [[nodiscard]] std::shared_ptr<const config> cfg_for(const std::optional<grants::grant>& g) const;
   [[nodiscard]] bool publish_config(config next);
   // Every session but `except`: the named folders changed under it.
@@ -1474,27 +1482,34 @@ bool server::state::set_access(const std::string& name, const std::array<std::ui
 }
 
 server::state::device_access server::state::access_of(const std::array<std::uint8_t, 32>& key) {
-  device_access out;
-  // A grant wins over the paired list: a key on both (a move between them
-  // half done) gets the limit, never more.
-  std::vector<grants::grant> limited;
-  if (!grants::load(*store, limited)) {
-    out.a = access::unreadable;  // nobody gets in on a list that cannot be read; the paired list still can
-  } else {
-    for (auto& g : limited) {
-      if (g.key != key) continue;
-      out.a = g.expired(now()) ? access::expired : access::live;
-      out.g = std::move(g);
+  const auto once = [&](const lists& l) {
+    device_access out;
+    // A grant wins over the paired list: a key on both (a move between them
+    // half done) gets the limit, never more.
+    if (!l.grants_ok) {
+      out.a = access::unreadable;  // nobody gets in on a list that cannot be read; the paired list still can
+    } else {
+      for (const auto& g : l.limited) {
+        if (g.key != key) continue;
+        out.a = g.expired(now()) ? access::expired : access::live;
+        out.g = g;
+        return out;
+      }
+    }
+    if (std::any_of(l.devices.begin(), l.devices.end(), [&](const known::device& d) { return d.key == key; })) {
+      out.a = access::full;
       return out;
     }
-  }
-  const auto devices = known::load(*store);
-  if (std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == key; })) {
-    out.a = access::full;
-    out.g.reset();
+    if (out.a != access::unreadable) out.a = access::none;
     return out;
+  };
+  auto out = once(read_lists());
+  if (out.a == access::none) {
+    // The command line moves a device between the lists from another process:
+    // a device on neither is read again before it is turned away.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    out = once(read_lists());
   }
-  if (out.a != access::unreadable) out.a = access::none;
   return out;
 }
 
@@ -1519,12 +1534,15 @@ server::state::redeemed server::state::redeem(channel& ch, const std::array<std:
   if (p && !gives) {
     std::lock_guard lock(devices_m);
     std::unique_ptr<net::instance_lock> held;
-    if (may_change_devices(held)) {
-      if (redeem_pair_code(*store, p->code, std::time(nullptr))) {
-        gives = grants::limit{};
-      } else {
-        gives = grants::redeem_guest_code(*store, p->code, now());
-      }
+    if (!may_change_devices(held)) {
+      // The command line is changing the lists: not a bad code, try again.
+      (void)ch.cancel(kCancelWaitMs, "busy");
+      return redeemed::refused;
+    }
+    if (redeem_pair_code(*store, p->code, std::time(nullptr))) {
+      gives = grants::limit{};
+    } else {
+      gives = grants::redeem_guest_code(*store, p->code, now());
     }
     if (gives) {
       std::lock_guard counted(codes_m);
@@ -1878,43 +1896,69 @@ void server::state::cut_sessions(const conn* except) {
   for (auto& c : live) (void)c->ch->cancel(kCancelWaitMs, "folders-changed");
 }
 
+server::state::lists server::state::read_lists() {
+  // Both read under the lock every change in this process takes, so a move
+  // between them is never seen half done from here.
+  std::lock_guard lock(devices_m);
+  lists out;
+  out.devices = known::load(*store);
+  out.grants_ok = grants::load(*store, out.limited);
+  return out;
+}
+
+const char* server::state::verdict(const lists& l, const conn& c, std::int64_t t) const {
+  const bool unlimited = std::any_of(l.devices.begin(), l.devices.end(), [&](const known::device& d) { return d.key == c.device; });
+  const grants::grant* g = nullptr;
+  if (l.grants_ok) {
+    for (const auto& x : l.limited) {
+      if (x.key == c.device) g = &x;
+    }
+  }
+  if (!l.grants_ok && !unlimited) return "revoked";  // a grants list that cannot be read keeps nobody on it
+  if (!g && unlimited) {
+    // Made unlimited while connected: it reconnects so its caps lose the limit.
+    return c.grant ? "folders-changed" : nullptr;
+  }
+  if (!g) return "revoked";
+  if (g->expired(t)) return "expired";
+  // Its limit changed (an extension, other folders, or a limit on an unlimited
+  // phone): it reconnects and is told the one it has now. "folders-changed" is
+  // what every app already answers by reconnecting.
+  if (!c.grant || g->roots != c.grant->roots || g->expires != c.grant->expires) return "folders-changed";
+  return nullptr;
+}
+
 void server::state::cut_unpaired() {
-  const auto devices = known::load(*store);
-  std::vector<grants::grant> limited;
-  const bool grants_ok = grants::load(*store, limited);  // unreadable: nobody on it stays
+  auto l = read_lists();
   const auto t = now();
   // The cuts wait on sockets, so they happen with no lock held; each conn is
   // kept alive by its reference here, and its channel is set only once.
   std::vector<std::pair<std::shared_ptr<conn>, const char*>> cut;
-  {
+  const auto decide = [&](const lists& with) {
+    cut.clear();
     std::lock_guard all(conns_m);
     for (auto& c : conns) {
       std::lock_guard lock(c->m);
       if (!c->has_device || !c->ch || c->is_owner) continue;
-      const char* why = nullptr;
-      const bool unlimited = std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == c->device; });
-      const grants::grant* g = nullptr;
-      if (grants_ok) {
-        for (const auto& x : limited) {
-          if (x.key == c->device) g = &x;
-        }
-      }
-      if (!grants_ok && !unlimited) {
-        why = "revoked";  // a grants list that cannot be read keeps nobody on it
-      } else if (!g && unlimited) {
-        // Unlimited (or made so while connected: what it reads only grows).
-      } else if (!g) {
-        why = "revoked";
-      } else if (g->expired(t)) {
-        why = "expired";
-      } else if (g->roots != (c->grant ? c->grant->roots : std::nullopt)) {
-        why = "folders-changed";  // it reconnects and sees what it may see now
-      }
-      if (why) {
-        c->has_device = false;
-        cut.emplace_back(c, why);
-      }
+      if (const char* why = verdict(with, *c, t)) cut.emplace_back(c, why);
     }
+  };
+  decide(l);
+  // `driftwire serve` on the command line writes the two lists from another
+  // process: a revoke seen there is read again before it cuts anyone.
+  if (std::any_of(cut.begin(), cut.end(), [](const auto& x) { return std::strcmp(x.second, "revoked") == 0; })) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    l = read_lists();
+    decide(l);
+  }
+  {
+    std::lock_guard all(conns_m);
+    std::erase_if(cut, [](auto& x) {
+      std::lock_guard lock(x.first->m);
+      if (!x.first->has_device) return true;  // gone meanwhile
+      x.first->has_device = false;
+      return false;
+    });
   }
   for (auto& [c, why] : cut) {
     if (std::strcmp(why, "expired") == 0) n_expired.fetch_add(1);

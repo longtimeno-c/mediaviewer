@@ -343,10 +343,12 @@ int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped)
   return catch_all([&]() -> int32_t {
     if (expires_unix) *expires_unix = 0;
     if (scoped) *scoped = 0;
-    if (!l || l->fixed || !l->session) return 0;
+    if (!l) return -1;
+    if (l->fixed || !l->session) return 0;  // the sample library: never limited
     std::int64_t e = 0;
     bool s = false;
-    if (!l->session->grant(e, s)) return 0;
+    const int r = l->session->grant(e, s);
+    if (r != 1) return r;
     if (expires_unix) *expires_unix = e;
     if (scoped) *scoped = s ? 1 : 0;
     return 1;

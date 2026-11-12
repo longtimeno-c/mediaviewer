@@ -387,7 +387,7 @@ TEST_CASE("pairing: a guest code gives a time, the link reports it, and its end 
   REQUIRE(s.connect(connected));
   std::int64_t expires = 0;
   bool scoped = true;
-  REQUIRE(s.grant(expires, scoped));
+  REQUIRE(s.grant(expires, scoped) == 1);
   CHECK(expires == t0 + gives.for_s);
   CHECK_FALSE(scoped);
   // An unlimited phone has none.
@@ -395,7 +395,9 @@ TEST_CASE("pairing: a guest code gives a time, the link reports it, and its end 
   other.pair_now();
   mob::link_session unlimited(other.config());
   REQUIRE(unlimited.connect(connected));
-  CHECK_FALSE(unlimited.grant(expires, scoped));
+  CHECK(unlimited.grant(expires, scoped) == 0);
+  mob::link_session never(other.config());
+  CHECK(never.grant(expires, scoped) == -1);  // not connected: nothing known
   // The day ends: refused, and the route says the access ended, not that the phone was removed.
   r.fake_now = t0 + gives.for_s;
   mob::route_report ended;

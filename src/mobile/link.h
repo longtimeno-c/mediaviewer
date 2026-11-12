@@ -117,9 +117,9 @@ class link_session final : public remote_file {
     if (c) dropped(c);
   }
   [[nodiscard]] bool connected() const;
-  // The live connection's limit, as the service said it in serve_caps: false
-  // when not connected or unlimited.
-  [[nodiscard]] bool grant(std::int64_t& expires_unix, bool& scoped) const;
+  // The live connection's limit, as the service said it in serve_caps: 1
+  // limited, 0 unlimited, -1 no live connection (nothing known).
+  [[nodiscard]] int grant(std::int64_t& expires_unix, bool& scoped) const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list(const std::string& root,

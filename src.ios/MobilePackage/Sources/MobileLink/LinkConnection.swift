@@ -28,6 +28,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var forgotten = false
   /// The local copy was dropped for an access that ended (dropLocalCopy); cleared by a connection that gets in.
   private var localCopyDropped = false
+  /// Bumped whenever the library is removed (Forget, or a pairing over it): work begun for the
+  /// library before cannot touch the one after.
+  private var libraryEpoch = 0
   private var copyCancel: LinkCancel?
   // One first copy at a time: a new one (Copy over mobile data) waits for the old one's defer.
   private let oneCopy = OneAtATime()
@@ -430,20 +433,24 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       let status = replacing ? mv_link_reconnect(link.raw, nil, &report) : mv_link_connect(link.raw, nil, &report)
       var expires: Int64 = 0
       var scoped: Int32 = 0
-      let limited = status == 0 && mv_link_grant(link.raw, &expires, &scoped) == 1 && expires > 0
-      return (status, report, limited ? Double(expires) : nil)
+      // -1: the live link closed meanwhile, so nothing is known and the stored end stands.
+      let known = status == 0 ? mv_link_grant(link.raw, &expires, &scoped) : -1
+      if known < 0 { return (status, report, Double.nan) }
+      return (status, report, known == 1 && expires > 0 ? Double(expires) : nil)
     }
     guard lock.withLock({ generation == connectGeneration && !forgotten }) else { return }  // a newer one is running
     var status = answered
     if status == 0 {
-      noteAccess(until: grant)
-    } else if Self.state(status, report) != .accessEnded, let end = lock.withLock({ record?.accessUntil }),
+      if grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
+    } else if case .unreachable = Self.state(status, report), let end = lock.withLock({ record?.accessUntil }),
               end <= Date().timeIntervalSince1970 {
-      // No answer, and the time the service gave has passed on this phone's clock too: said
-      // as ended, not as unreachable (§8.2).
+      // No answer at all, and the end the service last gave has passed on this phone's clock:
+      // said as ended rather than unreachable (§8.2). Only said: nothing is deleted on this
+      // phone's own reckoning, since the owner may have extended it meanwhile.
       status = Int32(MV_LINK_ACCESS_ENDED.rawValue)
     }
-    if status == Int32(MV_LINK_ACCESS_ENDED.rawValue) { await dropLocalCopy() }
+    // The service itself said the time is up: the local copy goes (call C6).
+    if answered == Int32(MV_LINK_ACCESS_ENDED.rawValue) { await dropLocalCopy(of: link) }
     let info = await catalogueNow(link: link)
     let cache = Int64(mv_thumb_bytes_used(link.raw))
     // Checked again as it publishes: a pairing during the read above makes this news stale.
@@ -473,41 +480,46 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// A time-limited phone whose access ended keeps nothing of the library but its pairing
   /// (call C6): the catalogue, the tiles, the originals and the clips go, and an extension
   /// fetches them again. Once per ending: a "Try again" that is still refused deletes nothing more.
-  private func dropLocalCopy() async {
-    let go = lock.withLock { () -> Bool in
-      guard !localCopyDropped, record != nil else { return false }
+  private func dropLocalCopy(of expected: LinkHandle) async {
+    // Only for the library whose connection was refused, and only while it is still the one here:
+    // a Forget or a pairing meanwhile (libraryEpoch) leaves everything to that.
+    let started = lock.withLock { () -> (epoch: Int, id: String, cancel: LinkCancel?)? in
+      guard !localCopyDropped, !forgotten, let r = record, handle === expected else { return nil }
       localCopyDropped = true
-      return true
-    }
-    guard go else { return }
-    let (link, cancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?) in
-      let out = (handle, copyCancel)
       handle = nil
-      return out
+      return (libraryEpoch, r.libraryID, copyCancel)
     }
+    guard let started else { return }
     writes.close()
-    cancel?.fire()
-    if let link { mv_link_shut_down(link.raw) }
+    started.cancel?.fire()
+    mv_link_shut_down(expected.raw)
     await work.stopAndWait()
     let reopened: LinkHandle? = await onLinkQueue {
+      // The pairing record is read and written on this queue too, so this is the library still
+      // stored, or nothing is touched.
+      guard let record = PairingRecord.load(), record.libraryID == started.id,
+            let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }) else { return nil }
       Self.removeLibraryFiles()
-      guard let record = PairingRecord.load(), let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }) else {
-        return nil
-      }
       LinkFolders.prepare()
       LinkFolders.keepOnlyThumbs(of: record.libraryID)
       return LinkHandle.open(record: record, deviceKey: device, libraryDir: LinkFolders.library,
                              cacheDir: LinkFolders.thumbs(for: record.libraryID))
     }
     let adopted = lock.withLock { () -> Bool in
-      guard let reopened, !forgotten, handle == nil else { return false }
+      guard let reopened, !forgotten, handle == nil, libraryEpoch == started.epoch else { return false }
       handle = reopened
       writes.open(for: reopened)
+      connectGeneration += 1  // a connect begun on the old handle publishes nothing
       return true
     }
-    if !adopted, let reopened { mv_link_shut_down(reopened.raw) }
+    guard adopted, let reopened else {
+      if let reopened { mv_link_shut_down(reopened.raw) }
+      return
+    }
     work.reopen()
-    publish { $0 = ConnectionSnapshot(hasLibrary: $0.hasLibrary, synology: .accessEnded, macNearby: false, catalogue: nil, cacheBytes: 0) }
+    publish(from: reopened) {
+      $0 = ConnectionSnapshot(hasLibrary: true, synology: .accessEnded, macNearby: false, catalogue: nil, cacheBytes: 0)
+    }
   }
 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
@@ -536,6 +548,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // into a wiped library, and must not keep Forget waiting.
     let (link, cancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?) in
       forgotten = true
+      libraryEpoch += 1
+      localCopyDropped = false
       let out = (handle, copyCancel)
       handle = nil
       record = nil

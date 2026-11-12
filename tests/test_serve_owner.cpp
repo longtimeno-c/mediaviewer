@@ -314,6 +314,30 @@ TEST_CASE("serve owner: the command line sets, shows and resets the passphrase, 
   CHECK(out.size() == 33);
   CHECK(store->exists(mv::driftwire::serve::grants::kGuestCodesName));
   CHECK_FALSE(store->exists("library_pair_codes"));
+  // grant keeps a scope: only the time changes, and --forever keeps it scoped.
+  {
+    std::vector<mv::driftwire::serve::grants::grant> scoped(1);
+    scoped[0].name = "Scoped";
+    randombytes_buf(scoped[0].key.data(), 32);
+    scoped[0].expires = std::time(nullptr) + 60;
+    scoped[0].roots = std::vector<std::string>{"a1a1a1a1a1a1a1a1"};
+    scoped[0].guest = true;
+    scoped[0].created = 5;
+    REQUIRE(mv::driftwire::serve::grants::save(*store, scoped));
+    CHECK(run("grant Scoped --for 7d", "", code).find("until") != std::string::npos);
+    REQUIRE(mv::driftwire::serve::grants::load(*store, limited));
+    REQUIRE(limited.size() == 1);
+    REQUIRE(limited[0].roots);
+    CHECK(limited[0].roots->size() == 1);
+    CHECK(limited[0].guest);
+    CHECK(limited[0].created == 5);
+    CHECK(run("grant Scoped --forever", "", code).find("its folders only") != std::string::npos);
+    REQUIRE(mv::driftwire::serve::grants::load(*store, limited));
+    REQUIRE(limited.size() == 1);
+    CHECK(limited[0].expires == 0);
+    CHECK(limited[0].roots);
+    CHECK(run("revoke Scoped", "", code).find("revoked") != std::string::npos);
+  }
   out = run(std::string("revoke Guest"), "", code);
   CHECK(code == 0);
   CHECK(sp::known::load(*store).empty());
