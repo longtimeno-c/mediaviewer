@@ -225,6 +225,9 @@ struct config {
 // sees an opaque token per phone; only a holder of the access key can name one.
 [[nodiscard]] std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& access_key,
                                                        const std::array<std::uint8_t, 32>& device_public);
+// The relay's "host:port" (a name, an IPv4 address or "[IPv6]:port"), split;
+// false for anything else (no port, port 0, spaces or control characters).
+[[nodiscard]] bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port);
 // {"port":N,"name":"...","roots":[{"id","label","path"}],"relay":"host:port"?}. `any_port`: port 0
 // is accepted (the OS picks; the test build only): a service needs a fixed one.
 [[nodiscard]] result<config> parse_config(std::string_view json, bool any_port = false);

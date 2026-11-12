@@ -78,7 +78,7 @@ struct relayed_nas {
   std::unique_ptr<serve::server> srv;
   std::shared_ptr<tap> seen = std::make_shared<tap>();
 
-  relayed_nas() {
+  explicit relayed_nas(const std::string& stored_key = kRelayKey) {
     fs::create_directories(library);
     REQUIRE(sp::secrets::owner_only_folder(utf8(dir.root() / "secrets")));
     store = sp::secrets::file_store(utf8(dir.root() / "secrets"));
@@ -94,7 +94,7 @@ struct relayed_nas {
     auto started = relay::server::start(r);
     REQUIRE(started);
     rendezvous = std::move(*started);
-    const std::string key = kRelayKey;
+    const std::string key = stored_key;
     REQUIRE(store->put(serve::kRelayKeyName, std::vector<std::uint8_t>(key.begin(), key.end())));
     serve::server::options o;
     o.cfg.port = 0;
@@ -209,4 +209,99 @@ TEST_CASE("phone relay: a claim never comes in through the relay", "[phone-relay
                               [](std::string_view) { return true; }, std::chrono::steady_clock::now() + std::chrono::seconds(5));
   CHECK_FALSE(claimed);
   CHECK_FALSE(n.store->exists(serve::kOwnerName));
+}
+
+TEST_CASE("phone relay: a changed relay key reaches the waiters without a restart", "[phone-relay]") {
+  relayed_nas n("the-wrong-relay-key-0000000000");  // mistyped: no waiter registers
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK_FALSE(n.through_relay(n.phone, n.access));
+  const std::string right = kRelayKey;
+  REQUIRE(n.store->put(serve::kRelayKeyName, std::vector<std::uint8_t>(right.begin(), right.end())));
+  // The relay thread reads the key again within its poll and starts fresh waiters with it.
+  CHECK(eventually([&] { return n.through_relay(n.phone, n.access).has_value(); }, 20));
+}
+
+TEST_CASE("phone relay: only the device a waiter is for gets through it", "[phone-relay]") {
+  relayed_nas n;
+  key32 other = random_key();
+  known::device a, b;
+  a.name = "Phone";
+  a.key = public_of(n.phone);
+  b.name = "Tablet";
+  b.key = public_of(other);
+  REQUIRE(known::save(*n.store, {a, b}));
+  REQUIRE(eventually([&] { return n.through_relay(other, n.access).has_value(); }, 20));
+  // The phone, holding the access key, takes the tablet's waiter: refused after the handshake.
+  auto l = sp::net::connect({"127.0.0.1", n.rendezvous->port()}, 3000);
+  REQUIRE(l);
+  const auto t = serve::relay_token(n.access, public_of(other));
+  relay::token tok{};
+  std::memcpy(tok.data(), t.data(), tok.size());
+  auto joined = relay::join(std::move(*l), tok, 5000, [] { return false; });
+  REQUIRE(joined);
+  serve::client::options o;
+  o.access_key = n.access;
+  o.device_key = n.phone;
+  o.service_key = n.identity;
+  o.id = "cccccccccccccccc";
+  o.name = "phone";
+  CHECK_FALSE(serve::client::open(std::shared_ptr<sp::link>(std::move(*joined)), o));
+}
+
+TEST_CASE("phone relay: the relay's address is host:port and nothing else", "[phone-relay]") {
+  std::string h;
+  std::uint16_t p = 0;
+  CHECK(serve::parse_relay_address("relay.example.com:7879", h, p));
+  CHECK(h == "relay.example.com");
+  CHECK(p == 7879);
+  CHECK(serve::parse_relay_address("[::1]:9", h, p));
+  CHECK(h == "::1");
+  CHECK(serve::parse_relay_address("203.0.113.5:65535", h, p));
+  for (const char* bad : {"", "relay.example.com", "relay.example.com:", "relay.example.com:0", ":7879",
+                          "relay.example.com:65536", "relay.example.com:79x", "::1:9", "[]:9", "relay example.com:7879",
+                          "relay.example.com:7879\n", "relay.example.com:123456"}) {
+    CHECK_FALSE(serve::parse_relay_address(bad, h, p));
+  }
+}
+
+TEST_CASE("phone relay: a relay that never answers does not hold up a stop", "[phone-relay]") {
+  scratch_dir dir{"phone_relay_silent"};
+  const fs::path library = dir.root() / "library";
+  fs::create_directories(library);
+  REQUIRE(sp::secrets::owner_only_folder(utf8(dir.root() / "secrets")));
+  auto store = sp::secrets::file_store(utf8(dir.root() / "secrets"));
+  key32 identity{}, access{};
+  bool made = false;
+  REQUIRE(serve::set_up(*store, identity, access, made));
+  known::device d;
+  d.name = "Phone";
+  d.key = public_of(random_key());
+  REQUIRE(known::save(*store, {d}));
+  const std::string key = kRelayKey;
+  REQUIRE(store->put(serve::kRelayKeyName, std::vector<std::uint8_t>(key.begin(), key.end())));
+  // Accepts and never says a word: the waiter sits in its handshake.
+  auto silent = sp::net::listen(true);
+  REQUIRE(silent);
+  std::vector<std::unique_ptr<sp::link>> held;
+  std::atomic<bool> quit{false};
+  std::thread acceptor([&] {
+    while (!quit.load()) {
+      if (auto c = (*silent)->accept(100)) held.push_back(std::move(*c));
+    }
+  });
+  serve::server::options o;
+  o.cfg.port = 0;
+  o.cfg.name = "Test NAS";
+  o.cfg.roots = {{"a1a1a1a1a1a1a1a1", "Photos", utf8(library)}};
+  o.cfg.relay = "127.0.0.1:" + std::to_string((*silent)->port());
+  o.store = store.get();
+  o.loopback_only = true;
+  auto s = serve::server::start(o);
+  REQUIRE(s);
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));  // registering, and stuck there
+  const auto t0 = std::chrono::steady_clock::now();
+  (*s)->stop();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+  quit.store(true);
+  acceptor.join();
 }

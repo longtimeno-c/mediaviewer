@@ -771,21 +771,29 @@ struct PhoneAccessSection: View {
     if relayEditing {
       field("Relay address", hint: "relay.example.com:7879", text: $relayAddress)
       secure("Relay key", detail: "The key your driftwire-relay was started with. Your NAS keeps it; this Mac doesn't.", text: $relayKey)
+        .onSubmit(saveRelay)
       HStack(spacing: MVTheme.space(8)) {
         Spacer()
         SettingsButton(title: "Cancel") {
           relayEditing = false
           relayKey = ""
         }
-        SettingsButton(title: "Save relay") {
-          model.send(["do": "set_relay", "address": relayAddress.trimmingCharacters(in: .whitespaces), "key": relayKey])
-          relayEditing = false
-          relayKey = ""
-        }
-        .disabled(!s.busy.isEmpty || relayAddress.trimmingCharacters(in: .whitespaces).isEmpty ||
-                  relayKey.count < PhoneStore.relayKeyMinimum)
+        SettingsButton(title: "Save relay", action: saveRelay)
+          .disabled(!relayReady)
       }
     }
+  }
+
+  private var relayReady: Bool {
+    s.busy.isEmpty && !relayAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+      relayKey.count >= PhoneStore.relayKeyMinimum
+  }
+
+  private func saveRelay() {
+    guard relayReady else { return }
+    model.send(["do": "set_relay", "address": relayAddress.trimmingCharacters(in: .whitespacesAndNewlines), "key": relayKey])
+    relayEditing = false
+    relayKey = ""
   }
 
   private func forgetSecrets() {

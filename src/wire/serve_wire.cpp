@@ -412,6 +412,31 @@ result<config> parse_config(std::string_view text, bool any_port) {
   return c;
 }
 
+bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port) {
+  if (address.empty() || address.size() > 300) return false;
+  for (const char ch : address) {
+    if (static_cast<unsigned char>(ch) <= 0x20 || ch == 0x7f) return false;
+  }
+  const auto colon = address.find_last_of(':');
+  if (colon == std::string_view::npos || colon == 0 || colon + 1 >= address.size() || address.size() - colon - 1 > 5) return false;
+  std::string_view h = address.substr(0, colon);
+  if (h.front() == '[') {
+    if (h.size() < 3 || h.back() != ']') return false;
+    h = h.substr(1, h.size() - 2);
+  } else if (h.find(':') != std::string_view::npos) {
+    return false;  // an IPv6 address needs its brackets
+  }
+  unsigned long p = 0;
+  for (const char ch : address.substr(colon + 1)) {
+    if (ch < '0' || ch > '9') return false;
+    p = p * 10 + static_cast<unsigned long>(ch - '0');
+  }
+  if (p == 0 || p > 65535) return false;
+  host.assign(h);
+  port = static_cast<std::uint16_t>(p);
+  return true;
+}
+
 std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& access_key,
                                          const std::array<std::uint8_t, 32>& device_public) {
   static const unsigned char label[] = "MediaViewer relay token v1";
