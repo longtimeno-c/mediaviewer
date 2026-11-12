@@ -13,6 +13,9 @@ final class SampleLibraryModelTests: XCTestCase {
     XCTAssertFalse(FailureCopy.line(for: CopyFailure.catalogueRejected, sample: true).contains("computer"))
     XCTAssertTrue(FailureCopy.enterCodeHelp.contains(FailureCopy.sampleCode))
     XCTAssertEqual(FailureCopy.sampleCode, "SAMPLE")
+    // A list not signed by the sample's key is "rejected", never "another computer".
+    XCTAssertEqual(FailureCopy.line(for: MediaFailure.publisherChanged, sample: true), FailureCopy.sampleRejected)
+    XCTAssertEqual(FailureCopy.line(for: MediaFailure.publisherChanged), FailureCopy.publisherChanged)
   }
 
   func testAnIdentityFromAComputerIsNotTheSample() {

@@ -33,7 +33,9 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     guard ["mp4", "mov", "m4v"].contains(ext) else {
       return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(info.size))
     }
-    if let duration = item.duration, duration > 0 {
+    // The sample library's clips are a few megabytes, played from a copy checked whole against its
+    // signed hash: timing that download over a 4 MB probe would understate the line.
+    if let duration = item.duration, duration > 0, !connection.current.isSample {
       let needed = Int(Double(info.size) * 8 / duration / 1_000_000) + 1
       let available = await throughput(link: link, asset: asset, size: info.size)
       if let available, needed > available { return .tooBigToStream(neededMbps: needed, availableMbps: available, fileBytes: Int64(info.size)) }

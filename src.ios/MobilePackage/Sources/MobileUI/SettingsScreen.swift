@@ -136,6 +136,8 @@ struct SettingsScreen: View {
       NoticeCard(message: FailureCopy.ownNetworkOnly)
     case .serviceTooOld:
       NoticeCard(message: FailureCopy.serviceTooOld)
+    case .publisherChanged where model.connection.isSample:
+      NoticeCard(message: FailureCopy.sampleRejected, actionTitle: "Try again") { Task { await model.services.connection.retry() } }
     case .publisherChanged:
       NoticeCard(message: FailureCopy.publisherChanged, actionTitle: "Scan code") { model.isScanning = true }
     case .deviceRevoked:

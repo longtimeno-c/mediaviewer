@@ -55,6 +55,8 @@ public enum FailureCopy {
     "Can't reach the sample library. You can keep searching what's on this phone."
   public static let sampleAbout =
     "Free photos and clips from Wikimedia Commons, to try MediaViewer without a Mac or a NAS. They're downloaded from GitHub, and search runs on this phone."
+  public static let sampleRejected =
+    "The sample library didn't pass its signature check, so none of it is shown. Try again later."
   public static let enterCodeHelp =
     "Paste the link MediaViewer shows beside its code, or type \(sampleCode) to try the sample library."
 
@@ -74,7 +76,7 @@ public enum FailureCopy {
     case .folderNotOnNAS: return folderNotOnNAS
     case .cannotDecode(let format): return cannotDecode(format)
     case .serviceTooOld: return serviceTooOld
-    case .publisherChanged: return publisherChanged
+    case .publisherChanged: return sample ? sampleRejected : publisherChanged
     case .photosNotAllowed: return photosNotAllowed
     }
   }

@@ -312,6 +312,8 @@ public enum PairingFailure: Error, Hashable, Sendable {
   case codeNotReadable
   case synologyUnreachable([AddressFailure])
   case serviceTooOld
+  /// It answered with something not signed by the key the code pins (the sample library's list).
+  case catalogueRejected
 }
 
 public enum CopyEvent: Hashable, Sendable {

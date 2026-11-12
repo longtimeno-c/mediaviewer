@@ -1736,7 +1736,15 @@ and every original. On the phone, `sample::static_remote` (`src/mobile/sample.*`
 over that folder; the host does the HTTPS (`mv_fetch_fn`, `SampleFetch.swift`). It passes the
 catalogue's own files through by range, for sync to check, and reads any other file only from a
 whole copy whose hash matched the list (kept in `<thumb cache>/verified`, which Forget removes);
-a file not listed is never fetched. `mv_pair_parse` reads the code `SAMPLE` or
+a file not listed is never fetched. A download belongs to the file, not to the reader that began
+it: a reader that cancels (a seek in a clip, a swipe past a photo) leaves what arrived in a
+`.part` named by the file's hash, and the next reader rehashes that prefix and asks for the rest by
+range. A reader waiting for another's download honours its own cancel. The verified copies count
+in the cache size Settings shows and stay under 256 MB, least recently read first (the whole
+library is about 55 MB). A file list the pinned key did not sign is `MV_LINK_REJECTED` from connect,
+check and copy, shown as "didn't pass its signature check", not as unreachable. The clip
+throughput probe is skipped for the sample: its clips are a few megabytes, played from the
+verified copy. `mv_pair_parse` reads the code `SAMPLE` or
 `mediaviewer://sample` as a code with `sample = 1`, the sample's library id and pinned key, and no
 service; `mv_link_open` with `static_base` opens the link over the folder. Sync, the thumb cache,
 `mv_file_read` and the catalogue's search are unchanged, so the sample is checked as a NAS's

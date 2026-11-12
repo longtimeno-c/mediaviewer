@@ -86,8 +86,18 @@ struct file_list {
 class static_remote final : public remote_file {
  public:
   // `base` ends in '/'. `key` and `library_id` are the pinned ones; verified files
-  // are kept in `verified_dir`, which Forget removes with the rest of the cache.
-  static_remote(std::string base, fetch_fn fetch, key32 key, std::string library_id, std::string verified_dir);
+  // are kept in `verified_dir`, which Forget removes with the rest of the cache, at
+  // most `verified_budget` bytes of them (least recently read go first).
+  static_remote(std::string base, fetch_fn fetch, key32 key, std::string library_id, std::string verified_dir,
+                std::uint64_t verified_budget = kVerifiedBudget);
+
+  // Larger than the whole sample library (about 55 MB), so in practice nothing is
+  // fetched twice; a bound all the same.
+  static constexpr std::uint64_t kVerifiedBudget = 256ull << 20;
+
+  // What the verified copies and unfinished downloads hold on disk: part of the
+  // cache size the app reports.
+  [[nodiscard]] std::uint64_t verified_bytes() const;
 
   // Reads roots.json afresh: the folder answers. status::io when it does not.
   [[nodiscard]] expected connect(const cancel_flag* cancel = nullptr);
@@ -111,7 +121,11 @@ class static_remote final : public remote_file {
   [[nodiscard]] result<file_list> list_now(const cancel_flag* cancel);
   [[nodiscard]] result<std::string> small(const std::string& name, std::uint64_t cap, const cancel_flag* cancel);
   // The local, verified copy of a listed file: fetched whole and hashed the first time.
+  // The download belongs to the file, not to the reader: a reader that cancels leaves
+  // what arrived in a .part, and the next reader goes on from its end (a seek in a
+  // clip cancels routinely). A reader waiting for another's download honours its own cancel.
   [[nodiscard]] result<std::string> verified(const std::string& name, const listed_file& f, const cancel_flag* cancel);
+  void trim_verified(const std::string& keep);
   [[nodiscard]] bool is_shut() const;
 
   std::string base_;
@@ -121,8 +135,9 @@ class static_remote final : public remote_file {
   std::string verified_dir_;
   // One whole-file fetch per name at a time: a second reader of the same file waits for it,
   // and different files do not wait for each other.
+  std::uint64_t verified_budget_;
   std::mutex fetching_m_;
-  std::map<std::string, std::shared_ptr<std::mutex>> fetching_;  // under fetching_m_
+  std::map<std::string, std::shared_ptr<std::timed_mutex>> fetching_;  // under fetching_m_
   mutable std::mutex m_;
   std::optional<file_list> list_;  // under m_
   bool connected_ = false;                                        // under m_

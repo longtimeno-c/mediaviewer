@@ -530,6 +530,7 @@ struct ConnectScreen: View {
       case .codeExpired: Text(FailureCopy.codeExpired).font(.subheadline).foregroundStyle(Theme.title)
       case .codeNotReadable: Text(FailureCopy.codeNotReadable).font(.subheadline).foregroundStyle(Theme.title)
       case .serviceTooOld: Text(FailureCopy.serviceTooOld).font(.subheadline).foregroundStyle(Theme.title)
+      case .catalogueRejected: Text(FailureCopy.sampleRejected).font(.subheadline).foregroundStyle(Theme.title)
       case .synologyUnreachable(let tried):
         VStack(alignment: .leading, spacing: 8) {
           Text(isSample ? "Can't reach the sample library." : "Can't reach your Synology.")

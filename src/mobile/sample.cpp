@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -166,9 +167,9 @@ std::optional<file_list> parse_file_list(std::string_view text, std::string_view
 }
 
 static_remote::static_remote(std::string base, fetch_fn fetch, key32 key, std::string library_id,
-                             std::string verified_dir)
+                             std::string verified_dir, std::uint64_t verified_budget)
     : base_(std::move(base)), fetch_(std::move(fetch)), key_(key), library_id_(std::move(library_id)),
-      verified_dir_(std::move(verified_dir)) {
+      verified_dir_(std::move(verified_dir)), verified_budget_(verified_budget) {
   if (!base_.empty() && base_.back() != '/') base_ += '/';
 }
 
@@ -247,7 +248,9 @@ expected static_remote::connect(const cancel_flag* cancel) {
   if (shut_) return err(status::io);
   if (!list) {
     connected_ = false;
-    return err(list.error() == status::cancelled ? status::cancelled : status::io);
+    // permission_denied: the list is not signed by the pinned key, or is another library's.
+    if (list.error() == status::cancelled || list.error() == status::permission_denied) return err(list.error());
+    return err(status::io);
   }
   list_ = std::move(*list);
   connected_ = true;
@@ -267,55 +270,139 @@ result<driftwire::serve::stat_info> static_remote::stat(const std::string&, cons
   return err(status::unsupported_format);
 }
 
+std::uint64_t static_remote::verified_bytes() const {
+  namespace fs = std::filesystem;
+  std::uint64_t total = 0;
+  std::error_code ec;
+  for (fs::directory_iterator it(verified_dir_, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    const auto size = it->file_size(e2);
+    if (!e2) total += size;
+  }
+  return total;
+}
+
+void static_remote::trim_verified(const std::string& keep) {
+  namespace fs = std::filesystem;
+  std::vector<std::pair<fs::file_time_type, std::pair<fs::path, std::uint64_t>>> files;
+  std::uint64_t total = 0;
+  std::error_code ec;
+  for (fs::directory_iterator it(verified_dir_, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    const auto size = it->file_size(e2);
+    const auto when = it->last_write_time(e2);
+    if (e2) continue;
+    total += size;
+    if (it->path().filename() != keep) files.push_back({when, {it->path(), size}});
+  }
+  std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (const auto& [when, f] : files) {
+    if (total <= verified_budget_) break;
+    // Never one another reader is downloading or reading: its lock is held.
+    std::shared_ptr<std::timed_mutex> busy;
+    {
+      std::lock_guard lock(fetching_m_);
+      std::string name = f.first.filename().string();
+      if (const auto dot = name.find(".part."); dot != std::string::npos) name.resize(dot);
+      if (auto it = fetching_.find(name); it != fetching_.end()) busy = it->second;
+    }
+    if (busy && !busy->try_lock()) continue;
+    std::error_code e3;
+    if (fs::remove(f.first, e3)) total -= f.second;
+    if (busy) busy->unlock();
+  }
+}
+
 result<std::string> static_remote::verified(const std::string& name, const listed_file& f, const cancel_flag* cancel) {
   namespace fs = std::filesystem;
-  std::shared_ptr<std::mutex> mine;
+  std::shared_ptr<std::timed_mutex> mine;
   {
     std::lock_guard lock(fetching_m_);
     auto& slot = fetching_[name];
-    if (!slot) slot = std::make_shared<std::mutex>();
+    if (!slot) slot = std::make_shared<std::timed_mutex>();
     mine = slot;
   }
-  std::lock_guard one(*mine);
+  // Another reader may be bringing the same file: wait for it, but not past our own cancel.
+  while (!mine->try_lock_for(std::chrono::milliseconds(100))) {
+    if (is_shut()) return err(status::io);
+    if (cancel && cancel->stopped()) return err(status::cancelled);
+  }
+  std::unique_lock one(*mine, std::adopt_lock);
+
   const fs::path path = fs::path(verified_dir_) / name;
   std::error_code ec;
   // Written here only after its hash matched; a different size is an older list's file.
-  if (fs::file_size(path, ec) == f.size && !ec) return path.string();
+  if (fs::file_size(path, ec) == f.size && !ec) {
+    fs::last_write_time(path, fs::file_time_type::clock::now(), ec);  // read now: the budget's order
+    return path.string();
+  }
   fs::create_directories(verified_dir_, ec);
-  const fs::path part = path.string() + ".part";
-  std::ofstream out(part, std::ios::binary | std::ios::trunc);
-  if (!out) return err(status::io);
+  // Named by the hash the list gives, so what a cancelled reader kept is only ever resumed for
+  // the same file.
+  const fs::path part = path.string() + ".part." + f.sha256.substr(0, 16);
+
+  // What arrived before: hashed again (it is on this phone's own disk), then the rest asked for.
   crypto_hash_sha256_state st;
   crypto_hash_sha256_init(&st);
   std::uint64_t have = 0;
+  {
+    std::ifstream kept(part, std::ios::binary);
+    std::vector<char> buf(1 << 20);
+    while (kept) {
+      kept.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+      const auto n = static_cast<std::uint64_t>(kept.gcount());
+      if (n == 0) break;
+      crypto_hash_sha256_update(&st, reinterpret_cast<const unsigned char*>(buf.data()), n);
+      have += n;
+    }
+  }
+  if (have > f.size) {
+    fs::remove(part, ec);
+    crypto_hash_sha256_init(&st);
+    have = 0;
+  }
+  std::ofstream out(part, std::ios::binary | std::ios::app);
+  if (!out) return err(status::io);
   bool too_big = false;
-  auto got = fetch_(
-      base_ + name, 0, f.size + 1,
-      [&](std::uint64_t, std::span<const std::uint8_t> bytes) {
-        if (is_shut() || (cancel && cancel->stopped())) return false;
-        if (have + bytes.size() > f.size) {
-          too_big = true;
-          return false;
-        }
-        crypto_hash_sha256_update(&st, bytes.data(), bytes.size());
-        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        have += bytes.size();
-        return static_cast<bool>(out);
-      },
-      cancel);
+  expected got;
+  if (have < f.size) {
+    const std::uint64_t from = have;
+    got = fetch_(
+        base_ + name, from, f.size - from,
+        [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+          if (is_shut() || (cancel && cancel->stopped())) return false;
+          if (from + offset != have || have + bytes.size() > f.size) {
+            too_big = true;
+            return false;
+          }
+          crypto_hash_sha256_update(&st, bytes.data(), bytes.size());
+          out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+          have += bytes.size();
+          return static_cast<bool>(out);
+        },
+        cancel);
+  }
   out.close();
+  if (is_shut()) return err(status::io);
+  if (!got || have < f.size) {
+    // Kept for the next reader, who goes on from here; nothing is handed over yet.
+    if ((cancel && cancel->stopped()) || (!got && got.error() == status::cancelled)) return err(status::cancelled);
+    if (too_big) {
+      fs::remove(part, ec);
+      return err(status::corrupt);
+    }
+    return err(!got && got.error() == status::not_found ? status::not_found : status::io);
+  }
   unsigned char h[crypto_hash_sha256_BYTES];
   crypto_hash_sha256_final(&st, h);
-  const bool good = got && !too_big && out && have == f.size && hex_of(h, sizeof h) == f.sha256;
-  if (!good) {
+  if (too_big || !out || hex_of(h, sizeof h) != f.sha256) {
     fs::remove(part, ec);
-    if (is_shut()) return err(status::io);
-    if (!got && got.error() == status::cancelled) return err(status::cancelled);
-    if (!got && got.error() != status::not_found) return err(status::io);
     return err(status::corrupt);  // not the file the list signed for: refused, never shown
   }
   fs::rename(part, path, ec);
   if (ec) return err(status::io);
+  one.unlock();
+  trim_verified(path.filename().string());
   return path.string();
 }
 
@@ -352,8 +439,12 @@ expected static_remote::read_range(const std::string& root, const std::string& r
   // Anything else is read only from a whole copy whose hash the signed list gave.
   const auto listed = list.files.find(*name);
   if (listed == list.files.end()) return err(status::not_found);
-  MV_TRY(std::string path, verified(*name, listed->second, cancel));
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in;
+  for (int attempt = 0; attempt < 2 && !in.is_open(); ++attempt) {
+    // A trim for the budget may take it between the check and the open: then it is fetched again.
+    MV_TRY(std::string path, verified(*name, listed->second, cancel));
+    in.open(path, std::ios::binary);
+  }
   if (!in) return err(status::io);
   const std::uint64_t size = listed->second.size;
   const std::uint64_t end = (length == UINT64_MAX || at > size || length > size - at) ? size : at + length;

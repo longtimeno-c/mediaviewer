@@ -223,7 +223,16 @@ int32_t connect_static(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* re
   }
   fill_report(r, report);
   if (done) return MV_LINK_OK;
+  if (done.error() == status::permission_denied) return MV_LINK_REJECTED;  // answered, with a list we refuse
   return done.error() == status::cancelled ? MV_LINK_CANCELLED : MV_LINK_UNREACHABLE;
+}
+
+// The sample library's file list must be signed before sync looks at anything: a refused one is
+// "rejected", as a catalogue with a bad signature is, not "unreachable".
+bool static_list_refused(mv_mobile_link* l) {
+  if (!l->fixed) return false;
+  auto roots = l->fixed->roots();
+  return !roots && roots.error() == status::permission_denied;
 }
 
 }  // namespace
@@ -383,8 +392,9 @@ const char* mv_sample_base(void) { return sample::kBase.data(); }
 int32_t mv_sync_check(mv_mobile_link* l, mv_sync_report* report) {
   return catch_all([&]() -> int32_t {
     if (!l || !report) return MV_LINK_INVALID;
-    auto plan = check_catalogue(*l->remote, l->sync);
     std::memset(report, 0, sizeof *report);
+    if (static_list_refused(l)) return report->outcome = MV_LINK_REJECTED;
+    auto plan = check_catalogue(*l->remote, l->sync);
     report->outcome = status_of_outcome(plan.outcome);
     report->epoch = plan.epoch;
     report->generation = plan.generation;
@@ -407,6 +417,10 @@ int32_t mv_sync_copy(mv_mobile_link* l, mv_cancel* cancel, mv_sync_allowed_fn al
     // remove what the first just installed. The check is made inside the lock,
     // against installed.json as it is now.
     std::lock_guard one(l->copy_m);
+    if (static_list_refused(l)) {
+      if (report) report->outcome = MV_LINK_REJECTED;
+      return MV_LINK_REJECTED;
+    }
     sync_plan plan = check_catalogue(*l->remote, l->sync);
     if (report) {
       report->epoch = plan.epoch;
@@ -492,7 +506,11 @@ int32_t mv_thumb_request(mv_mobile_link* l, int64_t asset, int32_t lane, mv_done
   });
 }
 
-uint64_t mv_thumb_bytes_used(const mv_mobile_link* l) { return l ? l->thumbs->bytes_used() : 0; }
+uint64_t mv_thumb_bytes_used(const mv_mobile_link* l) {
+  if (!l) return 0;
+  // The sample library's verified pictures and clips are kept on the phone too.
+  return l->thumbs->bytes_used() + (l->fixed ? l->fixed->verified_bytes() : 0);
+}
 
 int32_t mv_asset_read(mv_mobile_link* l, int64_t asset, mv_asset_info* out) {
   return catch_all([&]() -> int32_t {

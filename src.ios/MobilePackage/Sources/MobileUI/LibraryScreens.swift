@@ -62,8 +62,8 @@ struct LibraryScreen: View {
                  onDismiss: notice.canDismiss ? {
                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { model.dismiss(notice) }
                  } : nil,
-                 actionTitle: notice.action == .scan ? "Scan code" : nil,
-                 action: notice.action == .scan ? { model.isScanning = true } : nil)
+                 actionTitle: notice.action == .scan ? "Scan code" : notice.action == .retry ? "Try again" : nil,
+                 action: noticeAction(notice))
         .padding(.horizontal, Theme.inset)
         .padding(.vertical, 8)
         .arrives(reduceMotion: reduceMotion)
@@ -181,6 +181,19 @@ struct ChipLabel<Content: View>: View {
       .background(Capsule().fill(isOn ? Theme.lifted : Theme.surface))
       .padding(.vertical, 4)
       .contentShape(Rectangle())
+  }
+}
+
+extension LibraryScreen {
+  /// What a notice's button does: scan a new code, or try the connection again.
+  fileprivate func noticeAction(_ notice: LibraryNotice) -> (() -> Void)? {
+    switch notice.action {
+    case .scan: return { model.isScanning = true }
+    case .retry:
+      let connection = model.services.connection
+      return { Task { await connection.retry() } }
+    case nil: return nil
+    }
   }
 }
 

@@ -338,6 +338,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     switch status {
     case 0: break
     case 11: throw CancellationError()
+    case 12: throw PairingFailure.catalogueRejected  // answered, but not signed by the sample's key
     default: throw PairingFailure.synologyUnreachable(Self.failures(of: report))
     }
 
@@ -463,6 +464,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0)
     case 7: return .serviceTooOld
     case 5: return .deviceRevoked
+    case 12: return .publisherChanged  // the sample library's list: not signed by the pinned key
     default:
       // A route that answered "not on the list" is the service speaking for the library: this
       // phone was removed, whatever the other routes did.

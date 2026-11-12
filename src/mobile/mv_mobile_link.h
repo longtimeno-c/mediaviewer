@@ -133,7 +133,8 @@ mv_mobile_link* mv_link_open(const mv_link_config* config);
 void mv_link_close(mv_mobile_link* link);
 
 /* BLOCKS. Keeps a live connection (the report says how it was reached); races the routes only when
- * there is none. Never cuts reads in flight. The sample library: its folder's host answered. */
+ * there is none. Never cuts reads in flight. The sample library: its folder's host answered with a
+ * file list signed by the pinned key; MV_LINK_REJECTED when it answered with one that is not. */
 int32_t mv_link_connect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
 /* BLOCKS. The network changed: races again and swaps the winner in; reads in flight finish on the old one. */
 int32_t mv_link_reconnect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);

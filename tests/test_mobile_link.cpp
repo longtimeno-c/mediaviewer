@@ -982,6 +982,9 @@ struct static_folder {
   int fetches = 0;
   bool down = false;
   std::vector<std::string> asked;
+  std::uint64_t served = 0;            // bytes handed to sinks, all fetches
+  mob::cancel_flag* trip = nullptr;    // fired once `served` reaches `trip_at`
+  std::uint64_t trip_at = 0;
 
   void fill(const fs::path& catalogue, const fs::path& photos, const std::string& share, const std::string& library_id,
             const std::vector<std::uint8_t>& secret) {
@@ -1039,6 +1042,8 @@ struct static_folder {
       if (sink(sink_ctx, pos - at, reinterpret_cast<const uint8_t*>(buf.data()), static_cast<size_t>(n)) == 0) {
         return MV_LINK_CANCELLED;
       }
+      self->served += n;
+      if (self->trip && self->served >= self->trip_at) self->trip->stop = true;
       pos += n;
     }
     return MV_LINK_OK;
@@ -1054,6 +1059,7 @@ struct static_folder {
                               },
                               &c, [](void*) -> int32_t { return 0; }, nullptr);
       if (r == MV_LINK_OK) return {};
+      if (r == MV_LINK_CANCELLED) return mv::err(mv::status::cancelled);
       return mv::err(r == MV_LINK_NOT_FOUND ? mv::status::not_found : mv::status::io);
     };
   }
@@ -1086,6 +1092,9 @@ struct sample_rig {
     REQUIRE(sodium_init() >= 0);
     write_file(photos / "2024" / "pic.bin", std::string(70000, 'p'));
     for (int i = 0; i < 4000; ++i) pack_bytes += static_cast<char>('a' + i % 26);
+    std::string big(8 * 1024 * 1024, '\0');
+    for (std::size_t i = 0; i < big.size(); ++i) big[i] = static_cast<char>(i * 7 % 251);
+    write_file(photos / "2024" / "clip.bin", big);
     pub.publish(1, std::string(2 * 1024 * 1024, 'x'));
     write_file(dir.root / "nas" / ".mediaviewer" / "thumbs" / kTestPack, pack_bytes);
     folder.dir = dir.root / "static";
@@ -1098,9 +1107,9 @@ struct sample_rig {
   // A file in the static folder, by its path under the publisher's destination or the photos.
   fs::path flat(const char* root, const std::string& rel) { return folder.dir / *mob::sample::flat_name(root, rel); }
 
-  mob::sample::static_remote remote() {
+  mob::sample::static_remote remote(std::uint64_t budget = mob::sample::static_remote::kVerifiedBudget) {
     return mob::sample::static_remote(kTestBase, folder.as_fetch(), cfg.publisher_key, cfg.library_id,
-                                      (dir.root / "verified").string());
+                                      (dir.root / "verified").string(), budget);
   }
 };
 
@@ -1195,15 +1204,18 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
     mv_link_close(l);
   }
-  SECTION("a list not signed by the pinned key: nothing is read") {
+  SECTION("a list not signed by the pinned key: rejected, as a bad catalogue is, and nothing is read") {
     const auto other = catalog::make_keypair();
     r.folder.fill(r.dir.root / "nas" / ".mediaviewer", r.photos, "Photos", r.pub.library_id, other.second);
     mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
     REQUIRE(l);
     mv_route_report report{};
-    CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
+    CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_REJECTED);
+    mv_sync_report check{};
+    CHECK(mv_sync_check(l, &check) == MV_LINK_REJECTED);
     mv_sync_report sync{};
-    CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) != MV_LINK_OK);
+    CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_REJECTED);
+    CHECK(sync.outcome == MV_LINK_REJECTED);
     CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
     mv_link_close(l);
   }
@@ -1304,4 +1316,90 @@ TEST_CASE("sample: a swapped original or tile pack is refused, and nothing of it
     CHECK(read.error() == mv::status::not_found);
     for (int i = before; i < r.folder.fetches; ++i) CHECK(r.folder.asked[static_cast<std::size_t>(i)].find("other.bin") == std::string::npos);
   }
+}
+
+TEST_CASE("sample: a whole-file download a reader cancels is resumed by the next, not begun again", "[mobile-link]") {
+  sample_rig r;
+  auto remote = r.remote();
+  const std::string want = read_all(r.photos / "2024" / "clip.bin");
+  mob::cancel_flag stop;
+  r.folder.trip = &stop;
+  r.folder.trip_at = r.folder.served + 6 * 1024 * 1024;  // a seek cancels the read at 6 of 8 MB
+  std::string got;
+  const mob::byte_sink keep = [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    got.append(reinterpret_cast<const char*>(b.data()), b.size());
+    return true;
+  };
+  auto first = remote.read_range(kSampleMediaRoot, "2024/clip.bin", 0, 4096, keep, &stop, false);
+  REQUIRE_FALSE(first);
+  CHECK(first.error() == mv::status::cancelled);
+  CHECK(got.empty());  // nothing unverified is handed over
+  r.folder.trip = nullptr;
+  const std::uint64_t before = r.folder.served;
+  REQUIRE(remote.read_range(kSampleMediaRoot, "2024/clip.bin", 5000000, 1000, keep, nullptr, false));
+  CHECK(r.folder.served - before == 2 * 1024 * 1024);  // only the rest came over the network
+  CHECK(got == want.substr(5000000, 1000));
+  // And from then on it is read from the phone: no more bytes from the network.
+  const std::uint64_t after = r.folder.served;
+  got.clear();
+  REQUIRE(remote.read_range(kSampleMediaRoot, "2024/clip.bin", 0, UINT64_MAX, keep, nullptr, false));
+  CHECK(got == want);
+  CHECK(r.folder.served == after);
+}
+
+TEST_CASE("sample: a reader waiting for another's download stops on its own cancel", "[mobile-link]") {
+  sample_rig r;
+  std::atomic<bool> release{false}, started{false};
+  auto inner = r.folder.as_fetch();
+  // The first reader's download hangs in the network until released.
+  mob::sample::fetch_fn slow = [&](const std::string& url, std::uint64_t at, std::uint64_t length,
+                                   const mob::byte_sink& sink, const mob::cancel_flag* cancel) -> mv::expected {
+    if (url.find("clip.bin") != std::string::npos && !release) {
+      started = true;
+      while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return inner(url, at, length, sink, cancel);
+  };
+  mob::sample::static_remote remote(kTestBase, slow, r.cfg.publisher_key, r.cfg.library_id,
+                                    (r.dir.root / "verified").string());
+  const mob::byte_sink drop = [](std::uint64_t, std::span<const std::uint8_t>) { return true; };
+  std::thread first([&] { (void)remote.read_range(kSampleMediaRoot, "2024/clip.bin", 0, 10, drop, nullptr, false); });
+  for (int i = 0; i < 2000 && !started; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  if (!started) {
+    release = true;
+    first.join();
+    FAIL("the first reader never reached the network");
+  }
+  mob::cancel_flag mine;
+  mine.stop = true;
+  const auto t0 = std::chrono::steady_clock::now();
+  auto second = remote.read_range(kSampleMediaRoot, "2024/clip.bin", 0, 10, drop, &mine, false);
+  const auto waited = std::chrono::steady_clock::now() - t0;
+  release = true;
+  first.join();
+  REQUIRE_FALSE(second);
+  CHECK(second.error() == mv::status::cancelled);
+  CHECK(waited < std::chrono::seconds(2));  // gave up on its own cancel, not after the other's download
+}
+
+TEST_CASE("sample: verified copies stay under their budget and count in the cache size", "[mobile-link]") {
+  sample_rig r;
+  {
+    auto remote = r.remote(9 * 1024 * 1024);  // room for the 8 MB clip or the photo, not both and more
+    const mob::byte_sink drop = [](std::uint64_t, std::span<const std::uint8_t>) { return true; };
+    REQUIRE(remote.read_range(kSampleMediaRoot, "2024/pic.bin", 0, 10, drop, nullptr, false));
+    REQUIRE(remote.read_range(kSampleMediaRoot, "2024/clip.bin", 0, 10, drop, nullptr, false));
+    CHECK(remote.verified_bytes() <= 9 * 1024 * 1024);
+    CHECK(remote.verified_bytes() >= 8 * 1024 * 1024);  // the one just read stays
+  }
+  // Through the C ABI: the cache size the app shows includes them.
+  mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
+  REQUIRE(l);
+  mv_sync_report sync{};
+  REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
+  const std::uint64_t before = mv_thumb_bytes_used(l);
+  std::string got;
+  REQUIRE(mv_file_read(l, 1, 0, 10, 0, nullptr, collect, &got) == MV_LINK_OK);
+  CHECK(mv_thumb_bytes_used(l) >= before + 70000);
+  mv_link_close(l);
 }
