@@ -17,6 +17,9 @@ extension String {
 struct MediaTile: View {
   let entry: GridEntry
   let images: ImageLadder
+  /// A search's tiles fade in their first picture as an answer arrives. A library's do not: a
+  /// fast scroll would run a fade on every row it passes (measured: more hitches).
+  var fadesIn = false
   /// The picture this tile has had, and whose it is: a tile shows only its own item's picture.
   @State private var loaded: Loaded?
   /// The thumbnail could not be had: a quiet glyph says what the tile is instead of an empty square.
@@ -76,14 +79,14 @@ struct MediaTile: View {
     if loaded?.id != item.id, !drawn.painted, !Task.isCancelled { missing = true }
   }
 
-  /// Fades in only the first picture a tile gets; a sharper one replaces it in place.
+  /// Fades in only the first picture a tile gets (`fadesIn`); a sharper one replaces it in place.
   private func show(_ image: UIImage, of id: MediaID) {
     guard id == entry.item.id else { return }
     // Whether the tile already paints something: its own picture, or one the ladder had in
     // memory (no new ladder call; `shown` asked the same question when the tile was drawn).
-    let first = loaded?.id != id && !drawn.painted
-    var change = Transaction(animation: first && !reduceMotion ? .easeOut(duration: 0.18) : nil)
-    change.disablesAnimations = !first || reduceMotion
+    let fade = fadesIn && !reduceMotion && loaded?.id != id && !drawn.painted
+    var change = Transaction(animation: fade ? .easeOut(duration: 0.18) : nil)
+    change.disablesAnimations = !fade
     withTransaction(change) { loaded = Loaded(id: id, image: image) }
   }
 
@@ -175,7 +178,7 @@ struct MediaGrid<Header: View>: View {
     Button {
       open(entry)
     } label: {
-      MediaTile(entry: entry, images: model.services.images)
+      MediaTile(entry: entry, images: model.services.images, fadesIn: entries.ids != nil)
     }
     .buttonStyle(TileButtonStyle())
     .accessibilityLabel(entry.accessibilityName)
