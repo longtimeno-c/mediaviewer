@@ -85,15 +85,21 @@ final class SampleLibraryTests: XCTestCase {
       if field.buttons["Clear text"].exists { field.buttons["Clear text"].tap() }
       field.typeText(query + "\n")
       var shown: [String] = []
+      var last: [String] = []
       let start = Date()
       while Date().timeIntervalSince(start) < 60 {
         usleep(300_000)
         let tiles = app.buttons.matching(tilePredicate).allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
         let parsed = tiles.map { $0.identifier.dropFirst(5).split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false).map(String.init) }
         if !parsed.isEmpty, parsed.allSatisfy({ $0.count > 2 && $0[2] == query }) {
-          shown = tiles.sorted { abs($0.frame.minY - $1.frame.minY) > 4 ? $0.frame.minY < $1.frame.minY : $0.frame.minX < $1.frame.minX }
+          let order = tiles.sorted { abs($0.frame.minY - $1.frame.minY) > 4 ? $0.frame.minY < $1.frame.minY : $0.frame.minX < $1.frame.minX }
             .map { String($0.identifier.dropFirst(5).split(separator: "|").first ?? "") }
-          break
+          // Tiles glide from one answer to the next: the order holds once two looks agree.
+          if order == last {
+            shown = order
+            break
+          }
+          last = order
         }
       }
       XCTAssertFalse(shown.isEmpty, "No results for \(query)")

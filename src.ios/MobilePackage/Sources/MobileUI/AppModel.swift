@@ -44,20 +44,33 @@ public struct GridSection: Identifiable, Hashable, Sendable {
 public struct GridSource: Sendable {
   public let count: Int
   private let make: @Sendable (Int) -> GridEntry
+  /// Each position's identity, when the list is small enough to hold them (a search's answers): a
+  /// grid keys its tiles by these, so an item in the next answer keeps its tile and its picture
+  /// instead of another item taking them over. Unique even when an item comes twice. nil for a
+  /// library, whose tiles are keyed by position and never change underneath.
+  public let ids: [String]?
 
-  public static let empty = GridSource(count: 0) { _ in fatalError("empty list") }
+  public static let empty = GridSource(count: 0, ids: []) { _ in fatalError("empty list") }
 
-  private init(count: Int, make: @escaping @Sendable (Int) -> GridEntry) {
+  private init(count: Int, ids: [String]?, make: @escaping @Sendable (Int) -> GridEntry) {
     self.count = count
+    self.ids = ids
     self.make = make
   }
 
   public init(list: any MediaList) {
-    self.init(count: list.count) { GridEntry(item: list.item(at: $0), position: $0) }
+    self.init(count: list.count, ids: nil) { GridEntry(item: list.item(at: $0), position: $0) }
   }
 
   public init(entries: [GridEntry]) {
-    self.init(count: entries.count) { entries[$0] }
+    var seen: [String: Int] = [:]
+    seen.reserveCapacity(entries.count)
+    let ids = entries.map { entry -> String in
+      let n = seen[entry.id, default: 0]
+      seen[entry.id] = n + 1
+      return n == 0 ? entry.id : "\(entry.id)#\(n)"
+    }
+    self.init(count: entries.count, ids: ids) { entries[$0] }
   }
 
   public subscript(index: Int) -> GridEntry { make(index) }
@@ -67,7 +80,7 @@ public struct GridSource: Sendable {
   /// The same list with one entry swapped, such as a clip opening at a moment.
   public func replacing(_ index: Int, with entry: GridEntry) -> GridSource {
     let make = make
-    return GridSource(count: count) { $0 == index ? entry : make($0) }
+    return GridSource(count: count, ids: ids) { $0 == index ? entry : make($0) }
   }
 }
 
@@ -529,7 +542,13 @@ public final class SearchModel {
   public private(set) var filters = SearchFilters()
   public private(set) var options = SearchFilterOptions.none
   public private(set) var phase: Phase = .idle
+  /// What the screen shows. The last answer stays (results, nothing found, or the recents before
+  /// any) until the next one is ready, so typing never flashes a skeleton or an empty grid
+  /// between keys; `.searching` only once a wait has passed `skeletonDelay` with nothing to show.
+  public private(set) var shown: Phase = .idle
   public private(set) var entries = GridSource.empty
+  /// Counts answers, so the grid animates from one answer to the next and at no other time.
+  public private(set) var answer = 0
   /// The words the entries on screen answer: earlier results stay while new ones are found.
   public private(set) var answered = ""
   public private(set) var recents: [String] = []
@@ -541,6 +560,12 @@ public final class SearchModel {
 
   private let service: SearchService
   private var running: Task<Void, Never>?
+  /// The running search's skeleton and warming notice. Cancelled with the search itself: a search
+  /// blocked in the core (a cold model) may not return for seconds after it is cancelled.
+  private var warming: Task<Void, Never>?
+
+  /// How long a first search waits on the recents before the skeleton shows.
+  static let skeletonDelay = Duration.milliseconds(800)
 
   init(service: SearchService) { self.service = service }
 
@@ -552,12 +577,14 @@ public final class SearchModel {
 
   func reset() {
     running?.cancel()
+    warming?.cancel()
     text = ""
     filters = SearchFilters()
     options = .none
     entries = .empty
     recents = []
     phase = .idle
+    shown = .idle
     isWarmingUp = false
     didFail = false
   }
@@ -584,6 +611,7 @@ public final class SearchModel {
 
   private func run() {
     running?.cancel()
+    warming?.cancel()
     isWarmingUp = false
     didFail = false
     let query = text.trimmingCharacters(in: .whitespaces)
@@ -591,6 +619,8 @@ public final class SearchModel {
     guard !query.isEmpty || !filters.isEmpty else {
       entries = .empty
       phase = .idle
+      shown = .idle
+      answer += 1
       return
     }
     // Earlier results stay put while the new ones are found: typing never blanks the grid.
@@ -599,10 +629,15 @@ public final class SearchModel {
       try? await Task.sleep(for: .milliseconds(90))
       guard !Task.isCancelled else { return }
       let warming = Task {
-        try? await Task.sleep(for: .milliseconds(800))
-        guard !Task.isCancelled, await service.isWarmingUp(), !Task.isCancelled else { return }
+        try? await Task.sleep(for: Self.skeletonDelay - .milliseconds(90))
+        guard !Task.isCancelled else { return }
+        // Nothing answered yet (from the recents, or after a failure with nothing to show): the
+        // content's own empty geometry, not a blank.
+        if shown == .idle || shown == .failed { shown = .searching }
+        guard await service.isWarmingUp(), !Task.isCancelled else { return }
         isWarmingUp = true
       }
+      self.warming = warming
       defer {
         warming.cancel()
         if !Task.isCancelled { isWarmingUp = false }
@@ -617,10 +652,13 @@ public final class SearchModel {
         entries = built
         answered = query
         phase = hits.isEmpty ? .nothing : .results
+        shown = phase
+        answer += 1
       } catch {
         guard !Task.isCancelled, !(error is CancellationError) else { return }
         didFail = true
         phase = entries.isEmpty ? .failed : .results
+        shown = phase
       }
     }
   }

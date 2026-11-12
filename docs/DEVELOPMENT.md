@@ -781,6 +781,21 @@ tools/ios/sample-library-sim.sh <work folder> <Simulator UDID> <MediaViewer.app>
 `MV_SAMPLE_FILE=1` serves it as a `file://` folder instead. The core's side, over a folder of a
 publisher's real `deliver()`, is in `mv_mobile_link_tests "sample*"`.
 
+Typing a search, recorded, so two builds can be compared doing the same thing (the grid flicker,
+2026-11-12). `SearchSmoothnessTests` opens the sample library from the release if the app has none,
+types three queries a letter at a time and refines each; the script records the screen
+(`typing.mp4`), the time from each query's last key to its answer (`latency.txt`), the app's memory
+afterwards (`footprint.txt`) and an Instruments trace. Build each app Release, ad hoc signed as
+above, alternate the runs (base, new, base, new), and keep other work off the Mac: under load
+XCUITest times out synthesizing keys. In the Simulator pass `none` or single instruments
+(`"+SwiftUI,Hangs"`); the Animation Hitches and SwiftUI templates carry the Hitches instrument,
+which runs only on a phone. The fixtures app's frame meter counts hitches while typing in the
+Simulator: `ScrollHitchTests/testSearchTypingHitches`.
+
+```bash
+tools/ios/search-smoothness.sh <Simulator UDID> <MediaViewer.app> <out> none
+```
+
 ## Run
 
 ```powershell
