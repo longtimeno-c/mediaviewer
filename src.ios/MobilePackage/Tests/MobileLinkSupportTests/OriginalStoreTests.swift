@@ -76,3 +76,22 @@ final class OriginalStoreTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: middle.path))
   }
 }
+
+/// Forget refuses the move into the store: the caller hears CancellationError and nothing is left.
+final class OriginalStoreRefusedTests: XCTestCase {
+  func testARefusedMoveLeavesNothing() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("refused-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = OriginalStore(dir: dir, limitBytes: 1 << 20)
+    do {
+      _ = try await store.file(key: "a", size: 4, place: { _ in false }) { part in
+        try Data([1, 2, 3, 4]).write(to: part)
+      }
+      XCTFail("a refused move must not succeed")
+    } catch is CancellationError {
+    }
+    let left = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+    XCTAssertEqual(left, [])
+  }
+}

@@ -372,8 +372,10 @@ int32_t mv_link_reconnect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report*
 
 void mv_link_shut_down(mv_mobile_link* l) {
   if (!l) return;
-  if (l->fixed) l->fixed->shut_down();
+  // The reads first, so the waits below are short; then the core's own writers drain.
+  if (l->fixed) l->fixed->shut_down();  // waits for its verified copies too
   else l->session->shut_down();
+  l->thumbs->shut_down();
 }
 
 int32_t mv_link_is_connected(const mv_mobile_link* l) {

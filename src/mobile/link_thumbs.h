@@ -41,6 +41,9 @@ class thumb_cache {
 
   [[nodiscard]] std::uint64_t bytes_used() const;
   void clear();
+  // "Forget this library": no tile is written from now on, and one being written is waited
+  // for, so the folder removed next stays removed. Reads from disk still answer.
+  void shut_down();
 
  private:
   struct want;
@@ -57,6 +60,9 @@ class thumb_cache {
   mutable std::mutex m_;
   std::condition_variable cv_;
   bool stop_ = false;
+  bool shut_ = false;              // under m_: no more writes
+  int writing_ = 0;                // under m_: tile writes in progress
+  std::condition_variable written_;
   std::string root_;
   std::vector<std::shared_ptr<want>> queue_;
   std::map<std::string, std::shared_ptr<want>> by_key_;  // queued and in flight, for dedupe

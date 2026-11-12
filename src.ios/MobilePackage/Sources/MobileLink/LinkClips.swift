@@ -120,10 +120,15 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     guard mv_asset_read(link.raw, asset, &info) == 0 else { throw MediaFailure.originalGone }
     let target = LinkFolders.clips.appendingPathComponent(item.fileName)
     let total = Int64(info.size)
+    let connection = self.connection
     let status = await withLinkCancel { cancel in
       await onLinkQueue {
-        try? FileManager.default.removeItem(at: target)
-        guard FileManager.default.createFile(atPath: target.path, contents: nil), let file = try? FileHandle(forWritingTo: target) else { return Int32(13) }
+        // Created only while the library is still paired: Forget may be removing the folder.
+        guard let made = connection.whileLive(link, { () -> Bool in
+          try? FileManager.default.removeItem(at: target)
+          return FileManager.default.createFile(atPath: target.path, contents: nil)
+        }) else { return Int32(11) }
+        guard made, let file = try? FileHandle(forWritingTo: target) else { return Int32(13) }
         defer { try? file.close() }
         var written: Int64 = 0
         let context = Unmanaged.passRetained(BlockBox { data -> Bool in

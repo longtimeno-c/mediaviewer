@@ -138,7 +138,9 @@ void mv_link_close(mv_mobile_link* link);
 int32_t mv_link_connect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
 /* BLOCKS. The network changed: races again and swaps the winner in; reads in flight finish on the old one. */
 int32_t mv_link_reconnect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
-/* "Forget this library": cuts every read and refuses every later connect. Close it afterwards. */
+/* "Forget this library": cuts every read and refuses every later connect. Returns once nothing the
+ * core writes for this library (JPEG-512 tiles, the sample library's verified copies) is being
+ * written, and none is written later, so the folders can be removed. Close it afterwards. */
 void mv_link_shut_down(mv_mobile_link* link);
 int32_t mv_link_is_connected(const mv_mobile_link* link);
 void mv_link_disconnect(mv_mobile_link* link);

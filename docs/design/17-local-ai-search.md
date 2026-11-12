@@ -1741,9 +1741,13 @@ hash>`, so a republished file with the same name and size is fetched again; Forg
 a file not listed is never fetched. A download belongs to the file, not to the reader that began
 it: a reader that cancels (a seek in a clip, a swipe past a photo) leaves what arrived in a
 `.part` named by the file's hash, and the next reader rehashes that prefix and asks for the rest by
-range. A reader waiting for another's download honours its own cancel. Forget (`mv_link_shut_down`) stops every read in
-flight, each fetch polling it, and waits for them before it returns, so the folders removed next
-cannot be made again by a late reader. The verified copies count
+range. A reader waiting for another's download honours its own cancel. Forget leaves nothing behind for any library, NAS or
+sample: `mv_link_shut_down` stops every read in flight (each fetch polls it) and returns only once
+the core's own writers are done and refuse any later write: the sample's verified copies and the
+JPEG-512 tiles. The app's own writers (an original moved into its store, a downloaded clip
+created) run under `LinkConnection.whileLive`, which refuses a library that is forgotten or
+replaced; Forget passes that gate before it removes the folders, so a late write cannot bring
+one back. Bytes still streaming into a file already open land in a removed file and vanish. The verified copies count
 in the cache size Settings shows and stay under 256 MB, least recently read first (the whole
 library is about 55 MB). A file list the pinned key did not sign is `MV_LINK_REJECTED` from connect,
 check and copy, shown as "didn't pass its signature check", not as unreachable. The clip

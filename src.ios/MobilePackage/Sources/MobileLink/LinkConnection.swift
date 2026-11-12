@@ -33,6 +33,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private let work = TrackedWork()
   private let continued = ContinuedCopy()  // the BGContinuedProcessingTask's bookkeeping (iOS 26)
   private var opened: Task<Void, Never>?
+  /// Held by each write into the library's folders (`whileLive`), and passed by Forget before it
+  /// removes them: never taken under `lock`'s callers on the main thread.
+  private let writeGate = NSLock()
 
   private let monitor = NWPathMonitor()
   private let defaults = UserDefaults.standard
@@ -119,6 +122,17 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   func awaitLink() async -> LinkHandle? {
     await lock.withLock({ opened })?.value
     return link
+  }
+
+  /// A write into this phone's folders for `link`'s library (moving in an original, creating a
+  /// downloaded clip): run only while that library is still the paired one, and finished before
+  /// Forget removes the folders. Keep it short: a create or a move, never a download (the bytes go
+  /// into a file already open, which a removal does not bring back). nil when refused.
+  func whileLive<T>(_ link: LinkHandle, _ body: () throws -> T) rethrows -> T? {
+    writeGate.lock()
+    defer { writeGate.unlock() }
+    guard lock.withLock({ handle === link && !forgotten }) else { return nil }
+    return try body()
   }
 
   /// Bumped on every connect and network change: anything measured on the old route is stale.
@@ -436,7 +450,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       record = nil
       return out
     }
+    // A write already past its check finishes now; every later one is refused.
+    writeGate.lock()
+    writeGate.unlock()
     cancel?.fire()
+    // Returns once the core's own writers (tiles, the sample's verified copies) are done.
     if let link { mv_link_shut_down(link.raw) }
     await work.stopAndWait()
     await onLinkQueue {

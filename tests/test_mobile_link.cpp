@@ -979,12 +979,19 @@ constexpr const char* kTestPack = "t-0123456789abcdef0123456789abcdef.pack";
 // the flat files, and files.json signed by the publisher's key for everything sync does not check.
 struct static_folder {
   fs::path dir;
-  int fetches = 0;
-  bool down = false;
-  std::vector<std::string> asked;
-  std::uint64_t served = 0;            // bytes handed to sinks, all fetches
-  mob::cancel_flag* trip = nullptr;    // fired once `served` reaches `trip_at`
-  std::uint64_t trip_at = 0;
+  // Fetched from several threads at once (different files hold different locks).
+  std::atomic<int> fetches{0};
+  std::atomic<bool> down{false};
+  std::mutex asked_m;
+  std::vector<std::string> asked;      // under asked_m
+  std::atomic<std::uint64_t> served{0};  // bytes handed to sinks, all fetches
+  std::atomic<mob::cancel_flag*> trip{nullptr};  // fired once `served` reaches `trip_at`
+  std::atomic<std::uint64_t> trip_at{0};
+
+  std::vector<std::string> asked_now() {
+    std::lock_guard lock(asked_m);
+    return asked;
+  }
 
   void fill(const fs::path& catalogue, const fs::path& photos, const std::string& share, const std::string& library_id,
             const std::vector<std::uint8_t>& secret) {
@@ -1030,7 +1037,10 @@ struct static_folder {
     auto* self = static_cast<static_folder*>(ctx);
     ++self->fetches;
     const std::string u(url);
-    self->asked.push_back(u);
+    {
+      std::lock_guard lock(self->asked_m);
+      self->asked.push_back(u);
+    }
     if (self->down) return MV_LINK_UNREACHABLE;
     if (u.rfind(kTestBase, 0) != 0) return MV_LINK_NOT_FOUND;
     std::ifstream f(self->dir / u.substr(std::strlen(kTestBase)), std::ios::binary);
@@ -1047,8 +1057,8 @@ struct static_folder {
       if (sink(sink_ctx, pos - at, reinterpret_cast<const uint8_t*>(buf.data()), static_cast<size_t>(n)) == 0) {
         return MV_LINK_CANCELLED;
       }
-      self->served += n;
-      if (self->trip && self->served >= self->trip_at) self->trip->stop = true;
+      const std::uint64_t now = self->served += n;
+      if (auto* t = self->trip.load(); t && now >= self->trip_at) t->stop = true;
       pos += n;
     }
     return MV_LINK_OK;
@@ -1157,7 +1167,7 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     CHECK(mv_file_read(l, 1, 100, 10, 0, nullptr, collect, &got) == MV_LINK_OK);
     CHECK(got == std::string(10, 'p'));
     // Every request stayed inside the folder it was given.
-    for (const auto& u : r.folder.asked) CHECK(u.rfind(kTestBase, 0) == 0);
+    for (const auto& u : r.folder.asked_now()) CHECK(u.rfind(kTestBase, 0) == 0);
 
     // Forget: reads stop and nothing connects again.
     mv_link_shut_down(l);
@@ -1319,7 +1329,8 @@ TEST_CASE("sample: a swapped original or tile pack is refused, and nothing of it
                                   [&](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false);
     REQUIRE_FALSE(read);
     CHECK(read.error() == mv::status::not_found);
-    for (int i = before; i < r.folder.fetches; ++i) CHECK(r.folder.asked[static_cast<std::size_t>(i)].find("other.bin") == std::string::npos);
+    const auto asked = r.folder.asked_now();
+    for (std::size_t i = static_cast<std::size_t>(before); i < asked.size(); ++i) CHECK(asked[i].find("other.bin") == std::string::npos);
   }
 }
 
@@ -1340,12 +1351,12 @@ TEST_CASE("sample: a whole-file download a reader cancels is resumed by the next
   CHECK(first.error() == mv::status::cancelled);
   CHECK(got.empty());  // nothing unverified is handed over
   r.folder.trip = nullptr;
-  const std::uint64_t before = r.folder.served;
+  const std::uint64_t before = r.folder.served.load();
   REQUIRE(remote.read_range(kSampleMediaRoot, "2024/clip.bin", 5000000, 1000, keep, nullptr, false));
   CHECK(r.folder.served - before == 2 * 1024 * 1024);  // only the rest came over the network
   CHECK(got == want.substr(5000000, 1000));
   // And from then on it is read from the phone: no more bytes from the network.
-  const std::uint64_t after = r.folder.served;
+  const std::uint64_t after = r.folder.served.load();
   got.clear();
   REQUIRE(remote.read_range(kSampleMediaRoot, "2024/clip.bin", 0, UINT64_MAX, keep, nullptr, false));
   CHECK(got == want);
@@ -1494,4 +1505,80 @@ TEST_CASE("sample: Forget waits for the readers in flight, and nothing of theirs
                                   [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false));
     CHECK_FALSE(fs::exists(dir));
   }
+}
+
+TEST_CASE("sample: Forget does not return while a reader is still inside its download", "[mobile-link]") {
+  sample_rig r;
+  auto inner = r.folder.as_fetch();
+  std::atomic<int> parked{0}, returned{0};
+  // Each download stops in its first chunk and stays there until it sees Forget.
+  mob::sample::fetch_fn parking = [&](const std::string& url, std::uint64_t at, std::uint64_t length,
+                                      const mob::byte_sink& sink, const std::function<bool()>& stop) -> mv::expected {
+    if (url.find("files.json") != std::string::npos) return inner(url, at, length, sink, stop);
+    bool first = true;
+    return inner(url, at, length,
+                 [&](std::uint64_t o, std::span<const std::uint8_t> b) {
+                   if (first) {
+                     first = false;
+                     ++parked;
+                     while (!stop()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                     std::this_thread::sleep_for(std::chrono::milliseconds(50));  // slow to notice: still in flight
+                     return false;
+                   }
+                   return sink(o, b);
+                 },
+                 stop);
+  };
+  mob::sample::static_remote remote(kTestBase, parking, r.cfg.publisher_key, r.cfg.library_id,
+                                    (r.dir.root / "verified").string());
+  REQUIRE(remote.connect(nullptr));
+  std::vector<std::thread> readers;
+  for (const char* rel : {"2024/clip.bin", "2024/pic.bin"}) {
+    readers.emplace_back([&remote, &returned, rel] {
+      (void)remote.read_range(kSampleMediaRoot, rel, 0, 10, [](std::uint64_t, std::span<const std::uint8_t>) { return true; },
+                              nullptr, false);
+      ++returned;
+    });
+  }
+  for (int i = 0; i < 2000 && parked < 2; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  REQUIRE(parked == 2);
+  remote.shut_down();
+  CHECK(returned == 2);  // it waited for both: none was still downloading when it returned
+  for (auto& t : readers) t.join();
+}
+
+TEST_CASE("thumb cache: after shut_down no tile is written, even from a read already in flight", "[mobile-link]") {
+  scratch dir;
+  struct held final : mob::remote_file {
+    std::atomic<bool> release{false}, reading{false};
+    mv::result<std::vector<mv::driftwire::serve::root_info>> roots() override { return mv::err(mv::status::io); }
+    mv::result<std::vector<mv::driftwire::serve::list_entry>> list(const std::string&, const std::string&) override {
+      return mv::err(mv::status::io);
+    }
+    mv::result<mv::driftwire::serve::stat_info> stat(const std::string&, const std::string&) override { return mv::err(mv::status::io); }
+    mv::expected read_range(const std::string&, const std::string&, std::uint64_t at, std::uint64_t length,
+                            const mob::byte_sink& sink, const mob::cancel_flag*, bool) override {
+      reading = true;
+      while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length), 7);
+      return sink(at, bytes) ? mv::expected{} : mv::err(mv::status::cancelled);
+    }
+  } remote;
+  const fs::path tiles = dir.root / "tiles";
+  {
+    mob::thumb_cache thumbs(tiles.string(), 1 << 20, remote);
+    thumbs.set_catalogue_root("c0c0c0c0c0c0c0c0");
+    std::promise<void> done;
+    auto flag = thumbs.request(catalog::thumb_location{kTestPack, 100, 50}, 0, [&](auto) { done.set_value(); });
+    while (!remote.reading) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    thumbs.shut_down();  // Forget, with the read still out
+    // The folder is left in place here, so any write at all would show: removeItem lists, then
+    // deletes, and a write between the two is the one that outlives Forget.
+    remote.release = true;  // the read comes back after shut_down returned
+    done.get_future().wait();
+  }
+  std::size_t files = 0;
+  std::error_code ec;
+  for (fs::directory_iterator it(tiles, ec), end; !ec && it != end; it.increment(ec)) ++files;
+  CHECK(files == 0);
 }
