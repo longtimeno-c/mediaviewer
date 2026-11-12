@@ -134,6 +134,8 @@ class server {
     // A connection to the relay server ("host", port). Empty: net::resolve
     // and net::connect. The tests: their loopback relay.
     std::function<result<std::unique_ptr<link>>(const std::string& host, std::uint16_t port, int timeout_ms)> relay_connect;
+    // The tests: runs before a direct path's candidates are gathered (a slow relay).
+    std::function<void()> before_gather;
   };
 
   // Listens and returns. status::not_found when the store has no usable

@@ -78,7 +78,7 @@ struct relayed_nas {
   std::unique_ptr<serve::server> srv;
   std::shared_ptr<tap> seen = std::make_shared<tap>();
 
-  explicit relayed_nas(const std::string& stored_key = kRelayKey) {
+  explicit relayed_nas(const std::string& stored_key = kRelayKey, std::function<void()> before_gather = {}) {
     fs::create_directories(library);
     REQUIRE(sp::secrets::owner_only_folder(utf8(dir.root() / "secrets")));
     store = sp::secrets::file_store(utf8(dir.root() / "secrets"));
@@ -106,6 +106,7 @@ struct relayed_nas {
     o.per_minute = 100000;
     o.claimable = true;
     o.own_network = [](const sp::net::address&) { return true; };  // everything local but the relay's
+    o.before_gather = std::move(before_gather);
     o.relay_connect = [t = seen](const std::string& host, std::uint16_t port, int ms) -> mv::result<std::unique_ptr<sp::link>> {
       auto l = sp::net::connect({host, port}, ms);
       if (!l) return mv::err(l.error());
@@ -344,4 +345,41 @@ TEST_CASE("phone relay: a direct path is asked only toward somewhere else, and n
   c->close();
   // A direct connection is never offered it.
   CHECK(n.srv->stats().punched == 0);
+}
+
+TEST_CASE("phone relay: a read on the session is never held up by a direct path being gathered", "[phone-relay]") {
+  // The gathering takes 2 s here (a slow relay); a range read asked meanwhile answers at once.
+  relayed_nas n(kRelayKey, [] { std::this_thread::sleep_for(std::chrono::seconds(2)); });
+  const std::string body(256 * 1024, 'r');
+  { std::ofstream(n.library / "clip.mov", std::ios::binary) << body; }
+  std::unique_ptr<serve::client> c;
+  REQUIRE(eventually([&] {
+    auto got = n.through_relay(n.phone, n.access, nullptr, true);
+    if (!got) return false;
+    c = std::move(*got);
+    return true;
+  }));
+  std::atomic<bool> answered{false};
+  std::thread asking([&] {
+    serve::end_code code{};
+    answered.store(c->admin(serve::candidates_json({{"127.0.0.1", 9}}, "upgrade"), &code).has_value());
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // the ask is in, its gathering asleep
+  const auto t0 = std::chrono::steady_clock::now();
+  auto s = c->read_range("a1a1a1a1a1a1a1a1", "clip.mov", 0, UINT64_MAX);
+  REQUIRE(s);
+  std::size_t got = 0;
+  for (;;) {
+    auto chunk = (*s)->next(8000);
+    REQUIRE(chunk);
+    if (!*chunk) break;
+    got += (*chunk)->bytes.size();
+  }
+  const auto took = std::chrono::steady_clock::now() - t0;
+  CHECK(got == body.size());
+  CHECK(took < std::chrono::milliseconds(500));
+  CHECK_FALSE(answered.load());  // still gathering: the read did not wait for it
+  asking.join();
+  CHECK(answered.load());  // and the answer came after, on the same session
+  c->close();
 }

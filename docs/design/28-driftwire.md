@@ -1649,8 +1649,9 @@ for a service too old to wait at a relay.
   device per 30 s and 4 punches at once, the slot taken before anything is gathered. A punch admits
   each connection it opens (8 at most) and the phone tries its handshake on each in turn, so two
   paths opening at once cannot leave the sides on different ones (not reproducible on loopback; by
-  review only). Known cost: the service gathers its candidates on the session's reader, so that
-  session's other requests wait up to 3 s (the relay's own answer, normally a few ms).
+  review only). The gathering and the answer run on the punch's own thread, never the session's
+  reader: a range read or a clip's next range asked meanwhile is answered at once (tested with a
+  2 s gathering).
 - **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's
   `set_relay` and the QR field in `"[phone-pairing]"`): a paired client lists and range-reads through
   an in-process relay on `127.0.0.1` with no 32-byte run of the file in the relay's bytes; a wrong

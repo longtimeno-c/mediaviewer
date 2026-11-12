@@ -329,6 +329,7 @@ struct server::state {
     std::shared_ptr<link> live;
   };
   std::function<result<std::unique_ptr<link>>(const std::string&, std::uint16_t, int)> relay_connect;
+  std::function<void()> before_gather;  // the tests
   std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
   std::mutex relay_m;
   std::condition_variable relay_cv;
@@ -349,7 +350,7 @@ struct server::state {
   std::list<punch> punches;  // under punch_m
   std::map<std::array<std::uint8_t, 32>, clock::time_point> punch_last;  // under punch_m: each device's last ask
   std::atomic<std::uint64_t> n_punched{0};
-  std::pair<end_code, std::string> upgrade(conn& c, std::string_view request);
+  std::optional<std::pair<end_code, std::string>> upgrade(conn& c, std::uint32_t id, std::string_view request);
   std::vector<candidate> gather_candidates(net::tcp_rendezvous& rz);
   void stop_punches();
 
@@ -405,7 +406,10 @@ class session_state {
   using send_fn = std::function<bool(msg, std::span<const std::uint8_t>)>;
   using config_fn = std::function<std::shared_ptr<const config>()>;
   using admin_fn = std::function<std::pair<end_code, std::string>(std::string_view)>;
-  session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {}, admin_fn upgrade = {})
+  // The upgrade answers at once (a refusal), or later from its own thread (nullopt): its
+  // gathering never holds up this session's reader (a clip's next range, a read).
+  using upgrade_fn = std::function<std::optional<std::pair<end_code, std::string>>(std::uint32_t, std::string_view)>;
+  session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {}, upgrade_fn upgrade = {})
       : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)), upgrade_(std::move(upgrade)) {}
 
   // The reader thread's: a message from the client. False: end the session.
@@ -479,8 +483,8 @@ class session_state {
         if (upgrade_ && (ops_ & kUpgradeOp) != 0) {
           const auto d = json::parse(a->json, 4);  // {"do","candidates":[{"a","p"}]}
           if (const std::string* what = d ? d->str("do") : nullptr; what && *what == "upgrade") {
-            const auto [code, json] = upgrade_(a->json);
-            return send_end(a->id, code, json);
+            if (auto now = upgrade_(a->id, a->json)) return send_end(a->id, now->first, now->second);
+            return true;  // answered by the punch's thread
           }
         }
         // Only an owner's session has the handler; to anyone else the answer is no.
@@ -764,7 +768,7 @@ class session_state {
   config_fn cfg_;
   const std::uint32_t ops_;
   admin_fn admin_;
-  admin_fn upgrade_;
+  upgrade_fn upgrade_;
   std::mutex m_;
   std::condition_variable cv_;
   bool stopping_ = false;                         // under m_
@@ -850,8 +854,10 @@ void server::state::session(conn& c, std::optional<message> first_message) {
   }
   session_state::admin_fn admin_handler;
   if (c.is_owner) admin_handler = [this, &c](std::string_view request) { return admin(c, request); };
-  session_state::admin_fn upgrade_handler;
-  if ((ops & kUpgradeOp) != 0) upgrade_handler = [this, &c](std::string_view request) { return upgrade(c, request); };
+  session_state::upgrade_fn upgrade_handler;
+  if ((ops & kUpgradeOp) != 0) {
+    upgrade_handler = [this, &c](std::uint32_t id, std::string_view request) { return upgrade(c, id, request); };
+  }
   session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); },
                   [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler), std::move(upgrade_handler));
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
@@ -2150,6 +2156,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
   st.relay_connect = o.relay_connect;
+  st.before_gather = o.before_gather;
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
   return srv;
 }
@@ -2317,20 +2324,20 @@ constexpr int kMaxPunchLinks = 8;                          // connections one pu
 
 }  // namespace
 
-std::pair<end_code, std::string> server::state::upgrade(conn& c, std::string_view request) {
+std::optional<std::pair<end_code, std::string>> server::state::upgrade(conn& c, std::uint32_t id, std::string_view request) {
   std::vector<net::endpoint> peers;
   for (const auto& t : parse_candidates(request)) {
     if (usable_candidate(t, loopback_only)) peers.push_back({t.address, t.port});
   }
-  if (peers.empty()) return {end_code::bad_request, {}};
+  if (peers.empty()) return std::make_pair(end_code::bad_request, std::string());
   std::array<std::uint8_t, 32> device{};
   {
     std::lock_guard lock(c.m);
-    if (!c.has_device) return {end_code::refused, {}};
+    if (!c.has_device) return std::make_pair(end_code::refused, std::string());
     device = c.device;
   }
   auto opened = net::open_rendezvous(loopback_only);
-  if (!opened) return {end_code::error, {}};
+  if (!opened) return std::make_pair(end_code::error, std::string());
   std::shared_ptr<net::tcp_rendezvous> rz(std::move(*opened));
   // The slot first, under the lock (no two asks pass the caps together), with
   // its port, so stop() cuts the gathering too.
@@ -2346,27 +2353,43 @@ std::pair<end_code, std::string> server::state::upgrade(conn& c, std::string_vie
     std::erase_if(punch_last, [&](const auto& e) { return now - e.second > kPunchCooldown; });
     if (stopping.load() || punches.size() >= kMaxPunches || punch_last.count(device) != 0 ||
         std::any_of(punches.begin(), punches.end(), [&](const punch& p) { return p.device == device; })) {
-      return {end_code::too_many, {}};
+      return std::make_pair(end_code::too_many, std::string());
     }
     punch_last[device] = now;
     slot = &punches.emplace_back();
     slot->device = device;
     slot->rz = rz;
   }
-  const auto mine = gather_candidates(*rz);
+  // The connection outlives the thread's use of it (its channel is never reset).
+  std::shared_ptr<conn> self;
+  {
+    std::lock_guard lock(conns_m);
+    for (const auto& x : conns) {
+      if (x.get() == &c) self = x;
+    }
+  }
   std::lock_guard lock(punch_m);
-  if (stopping.load()) {
+  if (stopping.load() || !self) {
     punches.remove_if([&](const punch& p) { return &p == slot; });
-    return {end_code::refused, {}};
+    return std::make_pair(end_code::refused, std::string());
   }
   try {
-    slot->t = std::thread([this, rz, peers, device, done = slot->done] {
-      // Every connection the punch makes is admitted (a few at most): where
-      // more than one path opens, the two sides may hold different ones, and
-      // the handshake the phone runs picks the real one; the rest say nothing
-      // and close at the hello's limit.
-      const auto until = clock::now() + std::chrono::milliseconds(kPunchMs);
+    slot->t = std::thread([this, rz, peers, device, id, self, done = slot->done] {
       try {
+        // Gathered here, off the session's reader; the answer goes on the session's channel
+        // (any thread), then the punch.
+        if (before_gather) before_gather();
+        const auto mine = gather_candidates(*rz);
+        if (stopping.load() || !self->ch->send(msg::stream_end, encode_end(id, end_code::ok, candidates_json(mine, "")))) {
+          rz->shutdown();
+          done->store(true);
+          return;
+        }
+        // Every connection the punch makes is admitted (a few at most): where
+        // more than one path opens, the two sides may hold different ones, and
+        // the handshake the phone runs picks the real one; the rest say nothing
+        // and close at the hello's limit.
+        const auto until = clock::now() + std::chrono::milliseconds(kPunchMs);
         for (int n = 0; n < kMaxPunchLinks && !stopping.load(); ++n) {
           const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - clock::now()).count();
           if (left <= 0) break;
@@ -2382,9 +2405,9 @@ std::pair<end_code, std::string> server::state::upgrade(conn& c, std::string_vie
     });
   } catch (...) {
     punches.remove_if([&](const punch& p) { return &p == slot; });
-    return {end_code::error, {}};
+    return std::make_pair(end_code::error, std::string());
   }
-  return {end_code::ok, candidates_json(mine, "")};
+  return std::nullopt;
 }
 
 void server::state::stop_punches() {
