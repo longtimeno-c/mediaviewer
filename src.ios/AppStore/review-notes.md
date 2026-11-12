@@ -35,6 +35,14 @@ Things to try:
 - Open a clip from the "Clips" folder in the Library tab to play it.
 - Settings tab: the sample library is named, with where it comes from. "Forget the sample library"
   removes everything the app keeps for it and returns to the start.
+- Backup (new in 1.1): Settings tab, "Back up this phone". With the sample library the backup folder is
+  "Sample NAS on this iPhone": a folder inside MediaViewer on this iPhone, labelled as such, standing in
+  for the NAS. Tap "Folder", choose "Sample NAS on this iPhone", tap "Done". iOS asks for Photos access:
+  allow all or some photos. The app copies the newest photos into that folder and shows "N of M backed
+  up · K to go"; it stops at the sample folder's 250 MB limit and says so, which shows the storage-limit
+  state. Nothing is uploaded anywhere: the copies stay on this iPhone, inside the app, and "Forget the
+  sample library" removes them. With a real library the folder is on the person's own NAS, and only that
+  NAS receives the photos.
 
 About the sample library: its photos and clips come from Wikimedia Commons and are CC0 or in the
 public domain. It is read from a GitHub release of this app's open-source repository, over HTTPS,

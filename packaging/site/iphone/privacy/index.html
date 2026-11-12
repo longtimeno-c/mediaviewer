@@ -50,7 +50,9 @@ the internet. Every connection is encrypted end to end, and the app checks that 
 one it paired with before it asks for anything. The service only lets in phones you paired, and
 only reads the folders you chose to share with them.</p>
 <p>Over that connection the app copies your library's catalogue and fetches thumbnails, photos and
-clips as you look at them. It never writes to your NAS.</p>
+clips as you look at them. It writes to your NAS only if you turn on phone backup: then it copies
+this phone's photos and videos into the one backup folder set up for phones on your computer, under
+the storage limit set there. It never replaces or deletes a file on your NAS.</p>
 <p>During setup, on a phone with mobile data, the app tries once to reach your NAS's internet name
 over mobile data, so it can tell you whether the app will work away from home. Looking up that
 name goes through your network's or carrier's name service, as any app's connection does.</p>
@@ -63,9 +65,13 @@ is read on the phone to find the code; it is not saved or sent.</li>
 <li><strong>Photos, add only.</strong> Asked for the first time you tap Save to Photos, and used
 only to add the copy you asked for. Add-only access cannot see or read anything already in your
 Photos library.</li>
+<li><strong>Photos, read.</strong> Asked only when you turn on phone backup, and used only to copy
+your photos and videos, as they were shot, to the backup folder on your own NAS. You can allow all
+of them or only the ones you choose. With the sample library the "NAS" is a folder inside the app on
+this phone, so nothing leaves the phone. Backup never deletes anything from Photos.</li>
 </ul>
 <p>You can turn any of these off in the Settings app. Without the camera you cannot pair a new
-library; without Photos you cannot save copies; everything else keeps working.</p>
+library; without Photos you cannot save copies or back up; everything else keeps working.</p>
 
 <h2>What is kept on your phone</h2>
 <ul>
@@ -80,6 +86,10 @@ on the search screen.</li>
 <li><strong>The pairing keys</strong> that let the phone into your NAS, in the iOS Keychain, kept on
 this device only.</li>
 <li><strong>The app's settings</strong>, such as its appearance.</li>
+<li><strong>The backup record</strong>, if you use phone backup: for each photo backed up, which one
+it was (iCloud Photos' identifier for it), its file name, size and checksum, and where it went. A
+copy is kept in the backup folder on your NAS so a reinstall or a new phone need not copy everything
+again. With the sample library, the photos it backed up are also kept, in a folder inside the app.</li>
 </ul>
 <p>The catalogue, the cache and your recent searches are kept out of iCloud and computer backups,
 so a copy of your library's catalogue does not leave the phone that way. They are protected by
@@ -87,8 +97,9 @@ iOS's data protection, locked until you first unlock the phone after it starts.<
 
 <h2>Removing it</h2>
 <p><strong>Settings &rarr; Forget this library</strong> removes everything the app keeps about the
-library: the catalogue, the cache, your recent searches and the pairing keys. Nothing on your NAS
-changes. You can also remove the phone from MediaViewer on your computer, after which the service
+library: the catalogue, the cache, your recent searches, the pairing keys, the backup record and,
+with the sample library, its backup folder. Nothing on your NAS changes: photos already backed up
+there stay. You can also remove the phone from MediaViewer on your computer, after which the service
 on your NAS no longer lets it in. Deleting the app removes its files with it.</p>
 
 <h2>Children</h2>

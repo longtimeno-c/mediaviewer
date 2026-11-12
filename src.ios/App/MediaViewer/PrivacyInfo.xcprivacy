@@ -20,7 +20,7 @@
 				<string>C617.1</string>
 			</array>
 		</dict>
-		<!-- Free space is checked before a catalogue copy, so it never fills the phone. -->
+		<!-- Free space is checked before a catalogue copy, and before the sample library's on-phone backup writes, so neither fills the phone. -->
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
