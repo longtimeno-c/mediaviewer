@@ -3,7 +3,8 @@
 // docs/plans/mobile.md §9's parity test, live: the real app pairs with `driftwire serve` on
 // loopback, copies the catalogue the Mac's own publisher made, and answers each query on its search
 // screen. Writes the tiles it shows, in order, for tools/ios/search-live.sh to compare with the
-// Mac's answers. Runs only when MV_LIVE_PAYLOAD is set.
+// Mac's answers. Runs only when MV_LIVE_PAYLOAD is set. With MV_LIVE_SOUND_BASE (a Debug app), sound
+// search's model comes from that folder, and the queries wait until Settings says it is on.
 import XCTest
 
 final class LiveSearchTests: XCTestCase {
@@ -25,6 +26,8 @@ final class LiveSearchTests: XCTestCase {
       .split(separator: "\n").map(String.init).filter { !$0.isEmpty && !$0.hasPrefix("#") }
     let app = XCUIApplication(bundleIdentifier: bundle)
     app.launchEnvironment["MV_TEST_SCAN_CODE"] = code
+    let sound = env["MV_LIVE_SOUND_BASE"].flatMap { $0.isEmpty ? nil : $0 }
+    if let sound { app.launchEnvironment["MV_SOUND_BASE"] = sound }
     app.launch()
 
     let match = app.buttons["They match"]
@@ -41,6 +44,15 @@ final class LiveSearchTests: XCTestCase {
     XCTAssertGreaterThan(tiles.count, 0, "The grid did not appear after the copy")
     sleep(3)
     save("03-grid")
+
+    if sound != nil {
+      app.buttons["Settings"].firstMatch.tap()
+      let on = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Sound search, On'")).firstMatch
+      XCTAssertTrue(on.waitForExistence(timeout: 600), "Sound search did not come on")
+      save("04-sound-on")
+      sleep(5)  // the catalogue opens again with it, beside the one without
+      app.buttons["Library"].firstMatch.tap()
+    }
 
     app.buttons["Search"].firstMatch.tap()
     let field = app.searchFields.firstMatch

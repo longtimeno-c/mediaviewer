@@ -514,7 +514,8 @@ The path is the desktop's (`engine.cpp:6886`): parse → resolve people and plac
   Ties need a defined order, because the scan sorts on score alone (`vectors.cpp:250-254`) and identical vectors tie. Rank by score, then asset id, then time, on both the desktop and the phone.
 - **Encoder.** Static ONNX Runtime on CPU first, as desktop does, because it is the same model and
   the same numbers. Core ML only if S1 says CPU is too slow, and only with a parity check. A
-  smaller or quantised text model would be a different tower and is out of scope.
+  smaller or quantised picture text model would be a different tower and is out of scope. The
+  sound text tower is the one exception, measured below ("Sound search").
 - **Memory.** The reader loads vectors fully: 80 MB at 100k L/14 frames, 797 MB at 1M
   (`vectors.h:131-140`). 1.0 is fine to a few hundred thousand frames. M12 moves vectors to an
   `mmap`ped flat file, since clean file-backed pages do not count against the app the way dirty
@@ -528,6 +529,65 @@ The path is the desktop's (`engine.cpp:6886`): parse → resolve people and plac
   launch time. Until it is ready, file name, date, people and place still work, and the screen
   says what is still warming up only if someone actually waits. iOS will often have ended the app
   between uses, so this cold path is the usual one and S1 measures it.
+
+### Sound search (decided and built 2026-11-12; owner: "yes add sound")
+
+The catalogue already carries what each clip sounds like: the Mac's CLAP audio vectors, under the
+index key `clap-general/fp16/pre1`. What the phone lacked is CLAP's text half, which puts a typed
+query in the same space, so a query the Mac answers by sound found nothing there (17 of 280 live
+queries on the owner's library differed, every one for that reason).
+
+**Which model.** Not the Mac's own file. The Mac's text tower is fp16 (251 MB), and ONNX Runtime on
+the CPU widens fp16 weights to fp32 when it loads them, however it is configured: about 720 MB of
+footprint on the Mac's ORT 1.30, on top of the picture tower. Measured on the Mac (ORT 1.30, two
+threads, 218 queries; cosine against the Mac's fp16 vector):
+
+| Text tower | File | Footprint | Per query | Cosine, worst |
+|---|---|---|---|---|
+| The Mac's fp16 | 251 MB | +720 MB | 6 ms | 1 |
+| fp32 | 501 MB | +640 to 740 MB | 6 ms | 1.0000 |
+| Xenova int8 (dynamic) | 127 MB | +238 MB | 3 ms | 0.932 |
+| **8-bit weights, blocks of 16, fp32 compute; int8 word embeddings (shipped)** | **152 MB** | **+165 to 205 MB** | **48 ms** | **0.9993** |
+| 8-bit weights, blocks of 16, int8 compute | 152 MB | +316 MB | 3 ms | 0.9988 |
+| 4-bit weights, blocks of 32 | 99 MB | +155 MB | 14 ms | 0.849 |
+
+The shipped one is the smallest that stays close: Xenova's own int8 quantises activations per
+tensor and drifts (0.932), 4-bit is worse still, and int8 compute costs 110 MB more for speed. Its
+results against the Mac's, with the desktop engine over the owner's whole index (24,811 items,
+237 queries): 198 identical in rows and order, 220 with the same count. Of the 17 that differ in
+count, 15 differ by one row at the edge of a threshold and one by two; one query ("money") loses
+its 9 sound rows, because its best sound score sits on the stand-out gate. fp32 itself is not exact either:
+218 identical, 235 the same count, no sound row turned on or off. Exact parity needs the Mac's own
+file and its 720 MB; this is the trade the owner asked for ("int8 or fp16, as small as quality
+allows").
+
+**How it travels: a pinned download, not the catalogue.** The phone downloads the four files
+(`model.json`, `text.onnx`, the tokenizer's `vocab.json` and `merges.txt`; 153 MB) once, from the
+project's GitHub release `clap-text-phone-1`, through the same plain transport as the sample library
+(no cookies, a fixed user agent), and keeps each file only if it is the size and SHA-256 pinned in
+`src/mobile/sound_tower.h`. The app's signature is what makes the pin trusted, as it is for the
+sample library's key. Why not inside the signed generation: the Mac never runs this file, so carrying it would mean
+every Mac fetching 152 MB it does not use, a new AI add-on release on both desktops before any
+phone could hear, and the NAS holding it; the catalogues already published carry the sound vectors,
+and a phone download works with them today. The cost: the phone needs the internet once, not just
+the NAS. A phone that never has it searches as before, without sound.
+- **When.** After each connection and each installed catalogue, if the catalogue has clips under the
+  pinned key (one indexed probe) and the folder is not verified yet. On Wi-Fi only; Settings shows
+  the size and offers "Download now over mobile data". Resumed by range; bytes stop the moment the
+  phone leaves Wi-Fi. A file that is not the pinned one is deleted, never resumed.
+- **Where.** `Application Support/library/sound/clap-general/`, inside the library's folder, so Forget
+  removes it; Forget cancels a download and waits for it. Its bytes count in "Saved on this phone".
+- **How it is used.** The engine's work folder gets the tower and a `sounds` slot in `tiers.json`,
+  and the host answers the `ai-audio` piece from it, so `pack.cpp`'s `open_sound_text` loads it as on
+  the Mac: the same thresholds (`model.json` is the Mac's, from `ai-models.json`), the same stand-out
+  rule, `said:` and the find bits untouched. `model.json` keeps `"precision": "fp16"`: the key names
+  the audio vectors in the index, which this file answers; `text_precision` says what the text file is.
+  The generation opens again, in a work folder of its own, once the download lands.
+- **A new export** is a new pin and an app update (`tools/ios/clap_text_phone.py`, reproducible).
+- **Not done:** the release is not uploaded (it needs the owner's OK); until it is, the download
+  ends at a 404, Settings says "Needs an app update", and the next launch tries again, so no update is
+  needed once the files are there. The sample library's clips have no sound track,
+  so SAMPLE cannot show sound search without a republish (the owner's call).
 
 ## 10. Media pipeline
 
