@@ -1,6 +1,6 @@
 # Driftwire: a fuller menu-bar menu, then a tunnel through your own relay
 
-Status: **slice 1 under way** (2026-11-12, owner's ask). Slices 2–4 are a proposal awaiting the
+Status: **slice 1 under way** (2026-11-12, owner's ask). Slices 2–5 are a proposal awaiting the
 owner's sign-off: they add a product surface Driftwire does not have (forwarding a person's
 own web traffic), so nothing of them is built until that call is made.
 
@@ -66,7 +66,7 @@ Windows: the same on the notification-area icon's menu. `mv_tests "[slots]"` and
 `mv_import_tests "[driftwire]"` cover the registry's checks and `build_menu`. Both present-loop
 gates hold (nothing here touches the render path; the menu is chrome).
 
-## Slices 2–4: Driftwire Tunnel (proposal; owner's sign-off first)
+## Slices 2–5: Driftwire Tunnel (proposal; owner's sign-off first)
 
 - **2. Forwarding on the relay server.** A key holder may ask `driftwire-relay` to open a TCP
   connection to `host:port` and copy bytes both ways, on the relay's existing sealed hop
@@ -99,6 +99,38 @@ gates hold (nothing here touches the render path; the menu is chrome).
 - **4. Looking like HTTPS.** The relay on TCP 443 behind TLS 1.3 with a browser's ClientHello,
   the sealed hop inside; a connection that does not authenticate is answered as an ordinary web
   site. For networks that block what looks like a tunnel. Its own spike first.
+- **5. Driftwire VPN: every app, not only those that follow the proxy** (owner, 2026-11-12).
+  A virtual network interface carries all of the machine's traffic over the same forwarded
+  streams as slice 3. No new protocol, and no change to the relay beyond UDP forwarding.
+  - **On the laptop, packets become connections** (a userspace TCP/IP stack, "tun2socks"
+    style, in shared code behind a port): each TCP connection read off the interface becomes one
+    forwarded stream; UDP (DNS, QUIC and other datagrams) becomes a forwarded datagram flow. The
+    relay never routes raw IP, so it needs no root and no NAT rules on the NAS.
+  - **Relay:** UDP forwarding added to slice 2's request (key holders only, a flow cap, DNS
+    always allowed, other UDP ports off by default with a switch on the server).
+  - **Mac:** a Network Extension packet tunnel (`NEPacketTunnelProvider`) as a system extension
+    inside the signed app; the person approves it once in System Settings. Needs the Network
+    Extension entitlement on the team's Developer ID profile, so ask Apple before any code. This
+    bends "add-ons carry their own code": the extension must live in the app bundle, so it is a
+    thin packet pump that does nothing unless the Driftwire add-on is installed and asks.
+    Owner's call, logged in `12-decision-log.md` when made.
+  - **Windows:** Wintun (WireGuard's signed adapter driver; its prebuilt-binaries licence is
+    checked against `11-licensing.md` first), installed and its adapter created with one
+    administrator prompt; routes and DNS set on the adapter, removed on off, quit and next start.
+  - **Linux:** `/dev/net/tun` with `CAP_NET_ADMIN` (a small helper granted by the package), once
+    the Linux host reaches Driftwire.
+  - **Safety:** routes exclude the relay's own address and the local network (so the tunnel
+    never carries itself and the printer still works). A dead relay drops back to the network as
+    it is, unless **Block when the tunnel is down** is on (a kill switch, off by default).
+  - **UI:** the tunnel row in the menu gets a choice, **Browsers and apps (proxy)** or **All
+    traffic (VPN)**. The VPN choice appears only once the extension / driver is approved. The
+    window and `/tunnel` in the command line say which is in use.
+  - **Verify:** with the VPN on, a command-line `curl` with no proxy variable, a browser and a UDP
+    DNS query all leave through the relay (the relay's log counts them; no host names logged
+    beyond the session); off, quit and a killed process each restore routes and DNS. Both PR 1
+    gates hold. Idle cost measured with the tunnel on and nothing sending.
+  Slice 4's camouflage matters to the VPN as much as to the proxy: the network sees the same
+  connection to the relay either way.
 
 What the tunnel exposes: the Wi-Fi sees a TLS connection to the relay's address; the sites see
 the relay's address; the relay sees which hosts are visited (never the content, which stays the
