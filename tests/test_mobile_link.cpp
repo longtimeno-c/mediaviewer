@@ -1620,20 +1620,30 @@ TEST_CASE("sample: Forget through the C ABI stops a tile write whose read has al
   REQUIRE(l);
   mv_sync_report sync{};
   REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
+  // Declared before the guard, so they outlive the worker the guard joins.
   std::atomic<bool> parked{false}, release{false};
+  std::promise<int32_t> done;
+  mv_cancel* cancel = nullptr;
+  // However the test ends: the worker is let go, the link is shut and closed (which joins the
+  // worker, so nothing it captured is used after this scope), and the hook is cleared.
+  struct teardown {
+    std::atomic<bool>& release;
+    mv_mobile_link*& link;
+    mv_cancel*& cancel;
+    ~teardown() {
+      release = true;
+      if (link) {
+        mv_link_shut_down(link);
+        mv_link_close(link);
+      }
+      mv_cancel_free(cancel);
+      mob::testing::set_tile_write_hook({});
+    }
+  } guard{release, l, cancel};
   mob::testing::set_tile_write_hook([&] {
     parked = true;
     while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   });
-  struct unhook {
-    std::atomic<bool>& release;
-    ~unhook() {
-      release = true;
-      mob::testing::set_tile_write_hook({});
-    }
-  } guard{release};
-  std::promise<int32_t> done;
-  mv_cancel* cancel = nullptr;
   REQUIRE(mv_thumb_request(l, 1, 0, [](void* ctx, int32_t status, const uint8_t*, size_t) {
             static_cast<std::promise<int32_t>*>(ctx)->set_value(status);
           }, &done, &cancel) == MV_LINK_OK);
@@ -1648,6 +1658,4 @@ TEST_CASE("sample: Forget through the C ABI stops a tile write whose read has al
     if (it->is_regular_file()) ++tiles;
   }
   CHECK(tiles == 0);  // nothing written into the folder Forget removes next
-  mv_cancel_free(cancel);
-  mv_link_close(l);
 }

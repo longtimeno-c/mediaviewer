@@ -9,6 +9,7 @@ public final class WriteGate: @unchecked Sendable {
   private let gate = NSLock()   // held by a write, and passed by close()
   private let state = NSLock()  // guards `live`; never held while a write runs
   private var live: ObjectIdentifier?
+  private var closes = 0  // under state: how many times Forget has closed it
 
   public init() {}
 
@@ -19,11 +20,29 @@ public final class WriteGate: @unchecked Sendable {
     state.unlock()
   }
 
+  /// A mark to take before slow work that ends in `open(for:ifNotClosedSince:)`.
+  public var era: Int {
+    state.lock()
+    defer { state.unlock() }
+    return closes
+  }
+
+  /// Opens for `owner` unless the gate was closed after `era` was read: a library opened at launch
+  /// must not come back after a Forget that ran while it was opening. False when refused.
+  public func open(for owner: AnyObject, ifNotClosedSince era: Int) -> Bool {
+    state.lock()
+    defer { state.unlock() }
+    guard closes == era else { return false }
+    live = ObjectIdentifier(owner)
+    return true
+  }
+
   /// Refuses every later write, then waits for one already running. Forget calls this before it
   /// removes the folders.
   public func close() {
     state.lock()
     live = nil
+    closes += 1
     state.unlock()
     gate.lock()
     gate.unlock()

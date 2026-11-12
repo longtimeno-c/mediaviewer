@@ -78,6 +78,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   deinit { monitor.cancel() }
 
   private func openStored() async {
+    // A Forget while the stored library opens wins: it is not adopted afterwards.
+    let era = writes.era
     let opened: (PairingRecord, LinkHandle)? = await onLinkQueue {
       guard let record = PairingRecord.load(), let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }) else { return nil }
       LinkFolders.prepare()
@@ -89,11 +91,22 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       return (record, handle)
     }
     if let (record, handle) = opened {
-      lock.withLock {
+      // Adopted, and its writes allowed, in one step, and only if nothing was forgotten or paired
+      // meanwhile.
+      let adopted = lock.withLock { () -> Bool in
+        guard !forgotten, self.handle == nil, writes.open(for: handle, ifNotClosedSince: era) else { return false }
         self.record = record
         self.handle = handle
+        return true
       }
-      writes.open(for: handle)
+      guard adopted else {
+        mv_link_shut_down(handle.raw)  // waits for its own writers; then it is dropped
+        if lock.withLock({ forgotten && self.handle == nil }) {
+          // Forget ran while this opened: the folder the open made goes too.
+          await onLinkQueue { try? FileManager.default.removeItem(at: LinkFolders.thumbs(for: record.libraryID)) }
+        }
+        return
+      }
       // Stamps the id on what launch showed, for an install from before the id was stored.
       if current.libraryID != record.libraryID { publish { _ in } }
       if !current.hasLibrary { publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) } }
@@ -130,7 +143,12 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// Forget removes the folders. Keep it short: a create or a move, never a download (the bytes go
   /// into a file already open, which a removal does not bring back). nil when refused.
   func whileLive<T>(_ link: LinkHandle, _ body: () throws -> T) rethrows -> T? {
-    try writes.whileLive(link, body)
+    // The gate, and inside it the connection's own word on which library is live, as before.
+    let ran: T?? = try writes.whileLive(link) { () throws -> T? in
+      guard lock.withLock({ handle === link && !forgotten }) else { return nil }
+      return try body()
+    }
+    return ran ?? nil
   }
 
   /// Bumped on every connect and network change: anything measured on the old route is stale.
@@ -315,8 +333,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.handle = handle
       self.forgotten = false
       connectGeneration += 1  // the last library's connect, still running, publishes nothing
+      writes.open(for: handle)  // with the handle, under the same lock
     }
-    writes.open(for: handle)
     work.reopen()
     publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
     continuation.yield(.passed(.synology))
@@ -375,8 +393,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.handle = handle
       self.forgotten = false
       connectGeneration += 1
+      writes.open(for: handle)  // with the handle, under the same lock
     }
-    writes.open(for: handle)
     work.reopen()
     publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
     continuation.yield(.passed(.synology))

@@ -23,6 +23,21 @@ final class WriteGateTests: XCTestCase {
     XCTAssertEqual(gate.whileLive(b) { 2 }, 2)
   }
 
+  /// The stored library opening at launch while the person taps Forget: once the gate has been
+  /// closed, that library is not let back in by the open that finishes afterwards.
+  func testAnOpenThatStartedBeforeForgetDoesNotReopen() {
+    let gate = WriteGate()
+    let stored = Library()
+    let era = gate.era  // launch begins opening the stored library
+    gate.close()        // Forget, meanwhile
+    XCTAssertFalse(gate.open(for: stored, ifNotClosedSince: era))
+    XCTAssertNil(gate.whileLive(stored) { 1 })
+    // With no Forget in between it opens as usual.
+    let again = gate.era
+    XCTAssertTrue(gate.open(for: stored, ifNotClosedSince: again))
+    XCTAssertEqual(gate.whileLive(stored) { 1 }, 1)
+  }
+
   func testForgetWaitsForAWriteAlreadyRunning() {
     let gate = WriteGate()
     let a = Library()
