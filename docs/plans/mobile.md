@@ -629,9 +629,14 @@ What §10b and §7.2 leave open. Each has a recommendation; none is built until 
 **Answers (owner, 2026-11-12).** B6 as recommended. B3 and B4 both allowed. B1, B5, B7 as
 recommended, and the storage limit and the free-space reserve are both set per backup folder on the
 card and can be changed later. B2: worked out with the owner-passphrase and grants plan
-(`docs/plans/nas-owner-and-guests.md`) so that write access is one of a phone's permissions there;
-until that lands, the service asks one function (`may_write`) and every unlimited paired phone may
-write.
+(`docs/plans/nas-owner-and-guests.md`, agreed with that session 2026-11-12): a grant gains `backup`
+(may create files in backup folders). A device is on the paired list (`known.h` `devices`) only when it
+has no expiry, no folder scope and backup allowed; any other device, a phone with backup off included,
+lives only in `library_grants`, which an older NAS never reads, so it fails closed. Guest codes default
+to backup off. Turning backup on is additive (needs the owner's unlock), off is reducing, and the 2 s
+watch cuts a session whose backup flag changed. `may_write` reads the session's grant: none (unlimited)
+may write; otherwise `grant.backup` and the grant's folders. Until the grants branch
+(`claude/nas-owner-passphrase-grants`) merges, every paired phone may write.
 
 **#46** (phone to desktop through Import) is a different route and stays open. Its findings carry
 over: native PhotoKit, and streaming rather than staging originals.
