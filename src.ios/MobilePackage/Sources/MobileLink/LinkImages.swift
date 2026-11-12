@@ -18,9 +18,12 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   private let tiles = ScopedCache<UIImage>(countLimit: 8000)
   private let decodeQueue = DispatchQueue(label: "mediaviewer.link.decode", qos: .userInitiated, attributes: .concurrent)
   private let originals = OriginalStore(dir: LinkFolders.originals, limitBytes: 1 << 30)
+  /// File mode's pictures and originals (a library with no catalogue yet), by path.
+  public let files: LinkFiles
 
   public init(connection: LinkConnection) {
     self.connection = connection
+    files = LinkFiles(connection: connection, originals: originals)
     // Forget, or the library gone: nothing of it stays in memory.
     Task.detached(priority: .utility) { [memory, tiles] in
       for await snapshot in connection.updates() where !snapshot.hasLibrary {
@@ -35,10 +38,12 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   /// The JPEG-512 if it is in memory, and nothing slower: what a grid tile shown before paints in
   /// its first frame.
   public func memoryImage(for id: MediaID) -> UIImage? {
-    memory.object(library: connection.libraryID, generation: id.catalogue, id: id.raw)
+    if FilePath.isFile(id.raw) { return files.memoryImage(for: id) }
+    return memory.object(library: connection.libraryID, generation: id.catalogue, id: id.raw)
   }
 
   public func cachedImage(for id: MediaID) -> UIImage? {
+    if FilePath.isFile(id.raw) { return files.memoryImage(for: id) }
     guard let asset = assetID(id) else { return nil }
     let library = connection.libraryID
     if let image = memory.object(library: library, generation: id.catalogue, id: id.raw)
@@ -55,6 +60,7 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   }
 
   public func thumbnail(for item: MediaItem) async -> UIImage? {
+    if FilePath.isFile(item.id.raw) { return await files.thumbnail(for: item) }
     guard let asset = assetID(item.id) else { return nil }
     let library = connection.libraryID
     if let image = memory.object(library: library, generation: item.id.catalogue, id: item.id.raw) { return image }
@@ -68,6 +74,10 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
 
   public func prefetch(_ items: [MediaItem], fittingPixels: CGSize) {
     for item in items {
+      if FilePath.isFile(item.id.raw) {
+        Task.detached(priority: .utility) { [files] in _ = await files.thumbnail(for: item) }
+        continue
+      }
       guard let asset = assetID(item.id),
             memory.object(library: connection.libraryID, generation: item.id.catalogue, id: item.id.raw) == nil else { continue }
       Task.detached(priority: .utility) { [self] in _ = await requestThumb(asset: asset, lane: 1) }
@@ -128,6 +138,10 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   }
 
   private func runLadder(item: MediaItem, fittingPixels: CGSize, continuation: AsyncThrowingStream<LadderEvent, Error>.Continuation) async throws {
+    if FilePath.isFile(item.id.raw) {
+      try await runFileLadder(item: item, fittingPixels: fittingPixels, continuation: continuation)
+      return
+    }
     guard let asset = assetID(item.id) else { throw MediaFailure.originalGone }
     if let tile = cachedImage(for: item.id) { continuation.yield(.image(tile, isOriginal: false)) }
     if let thumb = await thumbnail(for: item) { continuation.yield(.image(thumb, isOriginal: false)) }
@@ -135,6 +149,26 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
 
     let target = try await originalFile(link: link, asset: asset) { done, total in
+      continuation.yield(.loading(doneBytes: done, totalBytes: total))
+    }
+    let longest = Int(max(fittingPixels.width, fittingPixels.height))
+    let decoded = await withCheckedContinuation { (out: CheckedContinuation<UIImage?, Never>) in
+      decodeQueue.async {
+        guard let source = CGImageSourceCreateWithURL(target as CFURL, nil) else { out.resume(returning: nil); return }
+        out.resume(returning: Self.image(from: source, maxPixels: longest))
+      }
+    }
+    guard let decoded else { throw MediaFailure.cannotDecode(format: Self.formatName(of: item.fileName)) }
+    continuation.yield(.image(decoded, isOriginal: true))
+  }
+
+  /// File mode: the grid's picture, then the original over the link, as for a catalogue item.
+  private func runFileLadder(item: MediaItem, fittingPixels: CGSize,
+                             continuation: AsyncThrowingStream<LadderEvent, Error>.Continuation) async throws {
+    if let thumb = await files.thumbnail(for: item) { continuation.yield(.image(thumb, isOriginal: false)) }
+    try Task.checkCancellation()
+    guard let entry = files.entry(for: item.id) else { throw MediaFailure.originalGone }
+    let target = try await files.originalFile(entry) { done, total in
       continuation.yield(.loading(doneBytes: done, totalBytes: total))
     }
     let longest = Int(max(fittingPixels.width, fittingPixels.height))
@@ -184,10 +218,17 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     AsyncThrowingStream { continuation in
       let task = Task.detached(priority: .userInitiated) { [self] in
         do {
-          guard let asset = assetID(item.id) else { throw MediaFailure.originalGone }
-          guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
-          let file = try await originalFile(link: link, asset: asset) { done, total in
+          let progress: (Int64, Int64) -> Void = { done, total in
             continuation.yield(.progress(TransferProgress(doneBytes: done, totalBytes: total)))
+          }
+          let file: URL
+          if FilePath.isFile(item.id.raw) {
+            guard let entry = files.entry(for: item.id) else { throw MediaFailure.originalGone }
+            file = try await files.originalFile(entry, progress: progress)
+          } else {
+            guard let asset = assetID(item.id) else { throw MediaFailure.originalGone }
+            guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
+            file = try await originalFile(link: link, asset: asset, progress: progress)
           }
           continuation.yield(.finished(file))
           continuation.finish()

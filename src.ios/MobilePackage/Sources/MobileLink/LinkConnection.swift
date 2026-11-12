@@ -26,6 +26,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var routeEpoch = 0
   private var connectGeneration = 0
   private var forgotten = false
+  /// File mode (docs/plans/phone-in-the-app.md §4): the last check found this library's folders but
+  /// no catalogue. Stamped on every snapshot with no catalogue, as the library's id is.
+  private var fileModeNow = false
   private var copyCancel: LinkCancel?
   // One first copy at a time: a new one (Copy over mobile data) waits for the old one's defer.
   private let oneCopy = OneAtATime()
@@ -44,6 +47,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private static let libraryKey = "link.libraryID"
   private static let sampleKey = "link.sample"
   private static let nameKey = "link.libraryName"
+  private static let fileModeKey = "link.fileMode"
 
   /// The paired library's id as last published; "" with none or before the first publish. A plain
   /// stored value, cheap enough for launch.
@@ -64,7 +68,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       first.libraryID = Self.storedLibraryID
       first.isSample = defaults.bool(forKey: Self.sampleKey)
       first.libraryName = defaults.string(forKey: Self.nameKey) ?? ""
+      first.fileMode = first.catalogue == nil && defaults.bool(forKey: Self.fileModeKey)
     }
+    fileModeNow = first.fileMode
     snapshot = first
     opened = Task.detached(priority: .userInitiated) { [weak self] in await self?.openStored() }
     monitor.pathUpdateHandler = { [weak self] path in self?.pathChanged(path) }
@@ -192,6 +198,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       next.libraryID = next.hasLibrary ? (record?.libraryID ?? snapshot.libraryID) : ""
       next.isSample = next.hasLibrary && (record.map(\.isSample) ?? snapshot.isSample)
       next.libraryName = next.hasLibrary ? (record?.libraryName ?? snapshot.libraryName) : ""
+      // A catalogue ends file mode, and so does having no library.
+      if !next.hasLibrary || next.catalogue != nil { fileModeNow = false }
+      next.fileMode = fileModeNow
       snapshot = next
       return (next, Array(continuations.values))
     }
@@ -200,6 +209,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     defaults.set(value.libraryID, forKey: Self.libraryKey)
     defaults.set(value.isSample, forKey: Self.sampleKey)
     defaults.set(value.libraryName, forKey: Self.nameKey)
+    defaults.set(value.fileMode, forKey: Self.fileModeKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
                     "epoch": NSNumber(value: info.epoch)], forKey: Self.catalogueKey)
@@ -335,6 +345,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.record = record
       self.handle = handle
       self.forgotten = false
+      fileModeNow = false
       connectGeneration += 1  // the last library's connect, still running, publishes nothing
       writes.open(for: handle)  // with the handle, under the same lock
     }
@@ -396,6 +407,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.record = record
       self.handle = handle
       self.forgotten = false
+      fileModeNow = false
       connectGeneration += 1
       writes.open(for: handle)  // with the handle, under the same lock
     }
@@ -442,13 +454,15 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   }
 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
+  /// In file mode the same check is how the first catalogue arrives (phone-in-the-app.md §4).
   private func quietSync(_ link: LinkHandle) async {
-    guard current.catalogue != nil, mayCopyQuietly else { return }
+    guard current.catalogue != nil || current.fileMode, mayCopyQuietly else { return }
     let report = await onLinkQueue { () -> mv_sync_report in
       var report = mv_sync_report()
       _ = mv_sync_check(link.raw, &report)
       return report
     }
+    setFileMode(afterCheck: report.outcome, from: link)
     if report.outcome == 12 {  // not signed by the key this phone pinned: say so (§11.3)
       publish(from: link) { $0 = ConnectionSnapshot(hasLibrary: $0.hasLibrary, synology: .publisherChanged, macNearby: false, catalogue: $0.catalogue, cacheBytes: $0.cacheBytes) }
       return
@@ -467,6 +481,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // into a wiped library, and must not keep Forget waiting.
     let (link, cancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?) in
       forgotten = true
+      fileModeNow = false
       let out = (handle, copyCancel)
       handle = nil
       record = nil
@@ -493,6 +508,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     try? FileManager.default.removeItem(at: LinkFolders.thumbs)
     try? FileManager.default.removeItem(at: LinkFolders.originals)
     try? FileManager.default.removeItem(at: LinkFolders.clips)
+    try? FileManager.default.removeItem(at: LinkFolders.files)
   }
 
   private func catalogueNow(link: LinkHandle) async -> CatalogueInfo? {
@@ -602,6 +618,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     case 15, 14:
       if let info = await catalogueNow(link: link) { publishCatalogue(info, from: link) }
       return
+    case FileModeRule.noCatalogue:
+      // The folders are there and no catalogue is: the library opens in file mode.
+      setFileMode(afterCheck: check.outcome, from: link)
+      return
     case 16: break
     case 12: throw CopyFailure.catalogueRejected
     case 13: throw CopyFailure.notEnoughSpace(neededBytes: Int64(check.needed_bytes))
@@ -651,6 +671,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
         if let info = await catalogueNow(link: link) { publishCatalogue(info, from: link) }
         return
       case 19: continue  // left Wi-Fi: wait for it, then pick up where it stopped
+      case FileModeRule.noCatalogue:  // gone from the share since the check
+        succeeded = true
+        setFileMode(afterCheck: status, from: link)
+        return
       case 11:
         throw CancellationError()
       case 12:
@@ -661,6 +685,18 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
         throw CopyFailure.synologyUnreachable
       }
     }
+  }
+
+  /// File mode from what a catalogue check said, for `link`'s library only.
+  private func setFileMode(afterCheck outcome: Int32, from link: LinkHandle) {
+    let changed = lock.withLock { () -> Bool in
+      guard handle === link, !forgotten else { return false }
+      let next = FileModeRule.fileMode(afterCheck: outcome, hasCatalogue: snapshot.catalogue != nil, wasFileMode: fileModeNow)
+      guard next != fileModeNow else { return false }
+      fileModeNow = next
+      return true
+    }
+    if changed { publish(from: link) { _ in } }
   }
 
   /// Work on a library that has since been replaced (another pairing, or Forget) says nothing.
