@@ -36,6 +36,10 @@ public static partial class IslandHost
     private static FakeInput? _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath;
     // The NAS passphrase: never kept here or in the core (owner call C2), only typed.
     private static FakeInput? _phonePass, _phonePassAgain, _phoneUnlock;
+    // The person's own relay: its key goes to the NAS and is kept nowhere here.
+    private static FakeInput? _phoneRelayAddress, _phoneRelayKey;
+    private static bool _phoneRelayEditing;
+    private static Button? _phoneRelaySave;
     private static ComboBox? _phoneCodeFor;
     private static bool _phoneChanging;
     // A refused action asked for the passphrase: the field stays until an unlock
@@ -71,6 +75,11 @@ public static partial class IslandHost
         _phonePassAgain.Changed += PhoneFieldsChanged;
         _phoneUnlock.Submitted += UnlockPhone;
         _phoneUnlock.Changed += PhoneFieldsChanged;
+        _phoneRelayAddress = PhoneInput("relay.example.com:7879", "Relay address");
+        _phoneRelayKey = PhoneSecret("Relay key", "Relay key");
+        _phoneRelayAddress.Changed += PhoneFieldsChanged;
+        _phoneRelayKey.Changed += PhoneFieldsChanged;
+        _phoneRelayKey.Submitted += SavePhoneRelay;
         _phoneCodeFor = new ComboBox { FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Title), Width = 170 };
         _phoneCodeFor.Items.Add(PhoneWords.Unlimited);
         foreach ((string label, long _) in PhoneWords.Durations) _phoneCodeFor.Items.Add(label);
@@ -133,6 +142,8 @@ public static partial class IslandHost
         _phonePass?.SetText("");
         _phonePassAgain?.SetText("");
         _phoneUnlock?.SetText("");
+        _phoneRelayKey?.SetText("");
+        _phoneRelayEditing = false;
         _phoneChanging = false;
         _phoneUnlockWanted = false;
     }
@@ -179,7 +190,8 @@ public static partial class IslandHost
     private static void DetachPhoneInputs()
     {
         foreach (FrameworkElement? f in new FrameworkElement?[]
-                 { _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath, _phonePass, _phonePassAgain, _phoneUnlock, _phoneCodeFor })
+                 { _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath, _phonePass, _phonePassAgain, _phoneUnlock,
+                   _phoneRelayAddress, _phoneRelayKey, _phoneCodeFor })
             if (f?.Parent is Panel p) p.Children.Remove(f);
     }
 
@@ -197,6 +209,7 @@ public static partial class IslandHost
         _phoneAdd = null;
         _phoneSetPass = null;
         _phoneUnlockGo = null;
+        _phoneRelaySave = null;
         bool busy = s.Busy.Length > 0;
         if (!s.OtherPublisher) _phoneConfirmRestart = false;
         if (s.AskingName.Length == 0) _phoneConfirmHandOver = false;
@@ -417,6 +430,7 @@ public static partial class IslandHost
         if (!s.Reachable) rows.Children.Add(PhoneNote("Couldn't reach the NAS. These are the phones it knew about last."));
         rows.Children.Add(SettingsRow("Address on your network", "", _phoneLocal!, keepName: true));
         AddPhonePublicField(rows);
+        AddPhoneRelay(rows, s, busy);
         foreach (PhoneFolder f in s.Folders)
         {
             FrameworkElement control = new Border();
@@ -533,6 +547,60 @@ public static partial class IslandHost
     }
 
     private static Button? _phoneSetPass;
+
+    // "Relay (your own server)": the address and the server's key go to the NAS,
+    // which keeps the key; neither this PC nor a phone's code ever holds it.
+    private static void AddPhoneRelay(StackPanel rows, PhoneLinkState s, bool busy)
+    {
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+        if (s.Relay.Length > 0)
+        {
+            Button remove = PhoneButton("Remove", () => _ = PhoneRequestJson(PhoneWords.RelayRequest("", "")), "Stop using the relay");
+            remove.IsEnabled = !busy;
+            buttons.Children.Add(remove);
+        }
+        string relay = s.Relay;
+        Button set = PhoneButton(relay.Length == 0 ? "Set up…" : "Change…", () =>
+        {
+            _phoneRelayEditing = !_phoneRelayEditing;
+            _phoneRelayAddress!.SetText(relay);
+            _phoneRelayKey!.SetText("");
+            if (_phoneShown is { } shown) ShowPhone(shown);
+        }, relay.Length == 0 ? "Set up your own relay" : "Change the relay");
+        set.IsEnabled = !busy && s.NasHasRelay;
+        buttons.Children.Add(PhoneTipHolder(set, s.NasHasRelay ? null : "Update the NAS service to use this"));
+        rows.Children.Add(SettingsRow("Relay (your own server)", PhoneWords.RelayDetail(s), buttons, keepName: true));
+        if (!_phoneRelayEditing || _phoneRelayAddress is null || _phoneRelayKey is null) return;
+        rows.Children.Add(SettingsRow("Relay address", "", _phoneRelayAddress, keepName: true));
+        rows.Children.Add(SettingsRow("Relay key", "The key your driftwire-relay was started with. Your NAS keeps it; this PC doesn't.",
+                                      _phoneRelayKey, keepName: true));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8), HorizontalAlignment = HorizontalAlignment.Right };
+        actions.Children.Add(PhoneButton("Cancel", () =>
+        {
+            _phoneRelayEditing = false;
+            _phoneRelayKey.SetText("");
+            if (_phoneShown is { } shown) ShowPhone(shown);
+        }, "Cancel the relay"));
+        _phoneRelaySave = PhoneButton("Save relay", SavePhoneRelay);
+        actions.Children.Add(_phoneRelaySave);
+        rows.Children.Add(actions);
+    }
+
+    private static void SavePhoneRelay()
+    {
+        if (_phoneRelaySave is not { IsEnabled: true }) return;
+        string address = _phoneRelayAddress!.Text, key = _phoneRelayKey!.Text;
+        _phoneRelayEditing = false;
+        _phoneRelayKey.SetText("");
+        _ = PhoneRequestJson(PhoneWords.RelayRequest(address, key));
+    }
+
+    private static bool PhoneRequestJson(string json)
+    {
+        bool sent = PhoneNative.Request(json);
+        PollPhone();
+        return sent;
+    }
 
     private static void UnlockPhone()
     {
@@ -759,6 +827,9 @@ public static partial class IslandHost
         if (_phoneSetPass is not null)
             _phoneSetPass.IsEnabled = !busy && _phonePass!.Text.Length >= 10 && again == _phonePass.Text;
         if (_phoneUnlockGo is not null) _phoneUnlockGo.IsEnabled = !busy && _phoneUnlock!.Text.Length > 0;
+        if (_phoneRelaySave is not null)
+            _phoneRelaySave.IsEnabled = !busy && _phoneRelayAddress!.Text.Trim().Length > 0 &&
+                                        _phoneRelayKey!.Text.Length >= PhoneWords.RelayKeyMinimum;
         string path = _phoneNewPath!.Text;
         _phoneNewLabel!.PlaceholderText = path.Length == 0 ? "Label" : PhoneWords.ShareLabel(path);
         if (_phoneAdd is not null)

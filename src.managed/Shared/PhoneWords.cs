@@ -62,9 +62,13 @@ internal sealed record PhoneLinkState
     public long UnlockedSeconds { get; init; }        // left on this computer's unlock; 0 = locked
     public long LockedUntil { get; init; }            // unix; the NAS refuses tries until then
     public long QrForSeconds { get; init; }           // the code showing is a guest code for this long
+    public string Relay { get; init; } = "";          // the person's own relay, "host:port"; its key stays on the NAS
 
     /// <summary>The NAS takes guest codes, time limits and a passphrase.</summary>
     public bool NasHasFeatures => NasFeatures.Contains("passphrase");
+
+    /// <summary>The NAS can wait at the person's own relay (docs/plans/nas-relay.md).</summary>
+    public bool NasHasRelay => NasFeatures.Contains("relay");
 
     /// <summary>Whether two reads would draw the same card (records compare lists by reference).</summary>
     // The catalogue's fraction moves on every read while it publishes: the card
@@ -166,6 +170,7 @@ internal static class PhoneWords
                 UnlockedSeconds = Int(o, "unlocked_s"),
                 LockedUntil = Int(o, "locked_until"),
                 QrForSeconds = Int(o, "qr_for_s"),
+                Relay = Str(o, "relay"),
             };
         }
         catch (JsonException)
@@ -286,6 +291,19 @@ internal static class PhoneWords
 
     public static string GrantRequest(string key, long forSeconds) =>
         new System.Text.Json.Nodes.JsonObject { ["do"] = "grant", ["key"] = key, ["for_s"] = forSeconds }.ToJsonString();
+
+    /// <summary>The relay's key is at least 16 characters, as driftwire-relay takes it.</summary>
+    public const int RelayKeyMinimum = 16;
+
+    public static string RelayRequest(string address, string key) =>
+        new System.Text.Json.Nodes.JsonObject { ["do"] = "set_relay", ["address"] = address.Trim(), ["key"] = key }.ToJsonString();
+
+    /// <summary>There is no public relay (owner, 2026-11-12): the row says so plainly.</summary>
+    public static string RelayDetail(PhoneLinkState s) =>
+        !s.NasHasRelay ? "Update the NAS service to reach it away from home without a forwarded port."
+        : s.Relay.Length == 0
+            ? "Away from home without a forwarded port, phones need a relay you run yourself (driftwire-relay on your own server). There is no public one."
+            : $"Phones away from home go through {s.Relay} when they can't reach the NAS directly. It passes sealed bytes only.";
 
     public static string DurationText(long seconds) => seconds switch
     {

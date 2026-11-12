@@ -28,6 +28,14 @@ final class PhoneAccessTests: XCTestCase {
     XCTAssertTrue(text.contains(".interpolation(.none)"))
   }
 
+  // Owner, 2026-11-12: no public relay will exist, and the card says so.
+  func testTheRelayRowSaysItIsYourOwn() throws {
+    let text = try source
+    XCTAssertTrue(text.contains(#"SettingsRow(title: "Relay (your own server)""#))
+    XCTAssertTrue(text.contains("There is no public one."))
+    XCTAssertTrue(text.contains(#"model.send(["do": "set_relay""#))
+  }
+
   func testALongPairingStringReadsBack() throws {
     let payload = "mediaviewer://pair#" + String(repeating: "eyJ2IjoxLCJsaWJyYXJ5X2lkIjoiYWJjIn0", count: 18)
     let filter = try XCTUnwrap(CIFilter(name: "CIQRCodeGenerator"))

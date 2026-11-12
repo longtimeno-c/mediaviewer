@@ -89,8 +89,11 @@ final class PhoneStore: ObservableObject {
     var unlockedSeconds: Int64 = 0
     var lockedUntil: Int64 = 0
     var qrForSeconds: Int64 = 0
+    var relay = ""  // the person's own relay, "host:port"; its key stays on the NAS
     /// The NAS takes guest codes, time limits and a passphrase.
     var nasHasFeatures: Bool { nasFeatures.contains("passphrase") }
+    /// The NAS can wait at the person's own relay (docs/plans/nas-relay.md).
+    var nasHasRelay: Bool { nasFeatures.contains("relay") }
   }
 
   @Published private(set) var state = State()
@@ -180,6 +183,7 @@ final class PhoneStore: ObservableObject {
     s.unlockedSeconds = (o["unlocked_s"] as? NSNumber)?.int64Value ?? 0
     s.lockedUntil = (o["locked_until"] as? NSNumber)?.int64Value ?? 0
     s.qrForSeconds = (o["qr_for_s"] as? NSNumber)?.int64Value ?? 0
+    s.relay = o["relay"] as? String ?? ""
     return s
   }
 
@@ -269,6 +273,18 @@ final class PhoneStore: ObservableObject {
     let t = Int64(now.timeIntervalSince1970)
     return durations.filter { !p.limited || p.expires == 0 || t + $0.seconds > p.expires }
   }
+
+  /// There is no public relay (owner, 2026-11-12): the row says so plainly.
+  nonisolated static func relayDetail(_ relay: String, available: Bool) -> String {
+    if !available { return "Update the NAS service to reach it away from home without a forwarded port." }
+    if relay.isEmpty {
+      return "Away from home without a forwarded port, phones need a relay you run yourself (driftwire-relay on your own server). There is no public one."
+    }
+    return "Phones away from home go through \(relay) when they can't reach the NAS directly. It passes sealed bytes only."
+  }
+
+  /// The relay's key is at least 16 characters, as driftwire-relay takes it.
+  static let relayKeyMinimum = 16
 
   nonisolated static func durationText(_ seconds: Int64) -> String {
     switch seconds {
@@ -362,6 +378,9 @@ struct PhoneAccessSection: View {
   /// A refused action asked for the passphrase: the field stays until an unlock
   /// lands or the person cancels (the core clears its error as each request starts).
   @State private var unlockWanted = false
+  @State private var relayEditing = false
+  @State private var relayAddress = ""
+  @State private var relayKey = ""
   private var s: PhoneStore.State { model.state }
 
   var body: some View {
@@ -548,6 +567,7 @@ struct PhoneAccessSection: View {
       }
       field("Address on your network", hint: "nas.local:7878", text: $local, onCommit: saveAddresses)
       publicField
+      relayRow
       folders
     }
   }
@@ -727,7 +747,50 @@ struct PhoneAccessSection: View {
     }
   }
 
+  // "Relay (your own server)": the address and the server's key go to the NAS,
+  // which keeps the key; neither this Mac nor a phone's code ever holds it.
+  @ViewBuilder private var relayRow: some View {
+    SettingsRow(title: "Relay (your own server)", detail: PhoneStore.relayDetail(s.relay, available: s.nasHasRelay),
+                labelsContent: false) {
+      HStack(spacing: MVTheme.space(8)) {
+        if !s.relay.isEmpty {
+          SettingsButton(title: "Remove") { model.send(["do": "set_relay", "address": "", "key": ""]) }
+            .disabled(!s.busy.isEmpty)
+            .accessibilityLabel("Stop using the relay")
+        }
+        SettingsButton(title: s.relay.isEmpty ? "Set up…" : "Change…") {
+          relayEditing.toggle()
+          relayAddress = s.relay
+          relayKey = ""
+        }
+        .disabled(!s.busy.isEmpty || !s.nasHasRelay)
+        .help(s.nasHasRelay ? "" : "Update the NAS service to use this")
+        .accessibilityLabel(s.relay.isEmpty ? "Set up your own relay" : "Change the relay")
+      }
+    }
+    if relayEditing {
+      field("Relay address", hint: "relay.example.com:7879", text: $relayAddress)
+      secure("Relay key", detail: "The key your driftwire-relay was started with. Your NAS keeps it; this Mac doesn't.", text: $relayKey)
+      HStack(spacing: MVTheme.space(8)) {
+        Spacer()
+        SettingsButton(title: "Cancel") {
+          relayEditing = false
+          relayKey = ""
+        }
+        SettingsButton(title: "Save relay") {
+          model.send(["do": "set_relay", "address": relayAddress.trimmingCharacters(in: .whitespaces), "key": relayKey])
+          relayEditing = false
+          relayKey = ""
+        }
+        .disabled(!s.busy.isEmpty || relayAddress.trimmingCharacters(in: .whitespaces).isEmpty ||
+                  relayKey.count < PhoneStore.relayKeyMinimum)
+      }
+    }
+  }
+
   private func forgetSecrets() {
+    relayKey = ""
+    relayEditing = false
     passphrase = ""
     passphraseAgain = ""
     unlockWith = ""

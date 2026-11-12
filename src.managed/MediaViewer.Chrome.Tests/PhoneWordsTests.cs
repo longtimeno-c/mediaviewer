@@ -113,6 +113,9 @@ public class PhoneWordsTests
         said.Add(PhoneWords.FolderDetail(new PhoneLinkState()));
         foreach (string p in new[] { "set", "none", "broken", "" })
             said.Add(PhoneWords.PassphraseDetail(new PhoneLinkState { NasPassphrase = p }));
+        said.Add(PhoneWords.RelayDetail(new PhoneLinkState()));
+        said.Add(PhoneWords.RelayDetail(new PhoneLinkState { NasFeatures = new[] { "relay" } }));
+        Assert.Contains("Phones away from home go through \\(relay) when they can't reach the NAS directly. It passes sealed bytes only.", swift);
         said.Add(PhoneWords.Unlimited);
         foreach ((string label, long _) in PhoneWords.Durations) said.Add(label);
         // Built from parts on the Mac: the parts, as Swift writes them.
@@ -146,6 +149,15 @@ public class PhoneWordsTests
         Assert.Equal("Guest · Expired 1 minute ago", PhoneWords.PhoneDetail(s.Phones[0], 2060, _ => "Fri"));
         Assert.Equal("Key fedcba98", PhoneWords.PhoneDetail(s.Phones[1], 1000, _ => "Fri"));
         Assert.False(PhoneWords.ParseLink("""{"nas_features":[]}""")!.NasHasFeatures);
+        // The person's own relay: shown only by a NAS that can wait at one; the key never in a request's reply.
+        PhoneLinkState r = PhoneWords.ParseLink("""{"nas_features":["passphrase","relay"],"relay":"relay.example.com:7879"}""")!;
+        Assert.True(r.NasHasRelay);
+        Assert.Equal("relay.example.com:7879", r.Relay);
+        Assert.Contains("relay.example.com:7879", PhoneWords.RelayDetail(r));
+        Assert.Contains("There is no public one.", PhoneWords.RelayDetail(r with { Relay = "" }));
+        Assert.False(PhoneWords.ParseLink("""{"nas_features":["passphrase"]}""")!.NasHasRelay);
+        Assert.Equal("""{"do":"set_relay","address":"relay.example.com:7879","key":"k"}""",
+                     PhoneWords.RelayRequest(" relay.example.com:7879 ", "k"));
         // The lockout's line has its end; a claim on a NAS too old for a passphrase still says it went through.
         Assert.StartsWith("Too many tries. Try again at 14:20,",
                           PhoneWords.ErrorText(s with { Error = "locked_out", LockedUntil = 5 }, _ => "14:20"));
