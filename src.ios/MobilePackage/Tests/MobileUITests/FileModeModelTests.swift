@@ -64,6 +64,22 @@ final class FileSearchModelTests: XCTestCase {
   }
 }
 
+@MainActor
+final class FileSearchStallTests: XCTestCase {
+  func testAPassThatStopsMovingIsNotAskedAboutForEver() async {
+    let service = FolderSearch()
+    service.reading = SearchAnswer.Progress(done: 3, total: 40)  // never moves
+    let search = SearchModel(service: service)
+    search.setText("r5")
+    try? await Task.sleep(for: .milliseconds(Int(SearchModel.maxUnchangedPolls + 3) * 800))
+    let settled = service.asked
+    XCTAssertLessThanOrEqual(settled, SearchModel.maxUnchangedPolls + 2)
+    try? await Task.sleep(for: .milliseconds(1600))
+    XCTAssertEqual(service.asked, settled, "it stopped asking")
+    search.setText("")
+  }
+}
+
 final class FileModeStageTests: XCTestCase {
   @MainActor
   func testALibraryInFileModeOpensItsFoldersNotTheCopy() {

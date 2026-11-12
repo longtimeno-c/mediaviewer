@@ -32,8 +32,11 @@ public final class LinkFiles: @unchecked Sendable {
   private let connection: LinkConnection
   private let originals: OriginalStore
   private let lock = NSLock()
-  /// Every file a listing has shown this session, by item id: what opening one needs.
+  /// The files of the folders listed lately, by item id: what opening one needs. Bounded to the
+  /// last `recent.limit` folders (the one on screen always kept).
   private var known: [String: FileEntry] = [:]
+  private var knownByFolder: [String: [String]] = [:]
+  private var recent = RecentFolders(limit: 32)
   /// Listings in flight, by folder id: the library asks for a folder's files and its subfolders at once.
   private var listing: [String: Task<FolderListing, Error>] = [:]
   private var showing: Shown?
@@ -44,6 +47,10 @@ public final class LinkFiles: @unchecked Sendable {
   private let heads = HeadReads()
   private let posters = OneAtATimeGate(limit: 1)
   private let wholeReads = OneAtATimeGate(limit: 2)
+  /// The viewer's ±2 and the like: two at a time, and a fast scroll drops what it cannot start.
+  private let prefetches = OneAtATimeGate(limit: 2)
+  private var prefetchesWaiting = 0
+  static let prefetchQueueLimit = 6
 
   /// The grid's picture: on screen at 120 pt, three pixels a point.
   static let thumbPixels = 384
@@ -58,6 +65,21 @@ public final class LinkFiles: @unchecked Sendable {
         self?.forgetAll()
       }
     }
+    // The tag cache is written in batches; what is left goes when the app is left.
+    NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil,
+                                           queue: nil) { [weak self] _ in
+      guard let self else { return }
+      Task.detached(priority: .utility) { await self.saveFacts(force: true) }
+    }
+  }
+
+  private func saveFacts(force: Bool) async {
+    guard let cache = lock.withLock({ facts }), let link = await connection.awaitLink() else { return }
+    let connection = self.connection
+    await onLinkQueue {
+      let write: (() throws -> Void) throws -> Bool = { body in try connection.whileLive(link) { try body() } != nil }
+      if force { cache.save(write: write) } else { cache.saveIfDue(write: write) }
+    }
   }
 
   public var library: LibraryStore { FileModeLibrary(files: self) }
@@ -69,6 +91,8 @@ public final class LinkFiles: @unchecked Sendable {
   private func forgetAll() {
     lock.withLock {
       known.removeAll()
+      knownByFolder.removeAll()
+      recent.removeAll()
       showing = nil
       generation += 1
       facts?.removeAll()
@@ -149,8 +173,21 @@ public final class LinkFiles: @unchecked Sendable {
     }
     folders.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     files.sort { $0.mtime != $1.mtime ? $0.mtime > $1.mtime : $0.path.rel < $1.path.rel }
-    lock.withLock { for f in files { known[f.item.id.raw] = f } }
+    remember(files, in: folder)
     return FolderListing(folders: folders, files: files)
+  }
+
+  /// Keeps a listing's files for opening, and forgets the folders listed longest ago.
+  private func remember(_ files: [FileEntry], in folder: FilePath) {
+    let key = folder.id
+    lock.withLock {
+      for id in knownByFolder[key] ?? [] { known[id] = nil }
+      for f in files { known[f.item.id.raw] = f }
+      knownByFolder[key] = files.map(\.item.id.raw)
+      for gone in recent.touch(key, keep: showing?.folder?.id) {
+        for id in knownByFolder.removeValue(forKey: gone) ?? [] { known[id] = nil }  // a file is in one folder
+      }
+    }
   }
 
   static func failure(_ status: Int32) -> MediaFailure {
@@ -172,8 +209,11 @@ public final class LinkFiles: @unchecked Sendable {
     let index: FileIndex
     /// Photos the pass reads (clips carry no tags it can read from a head).
     let toRead: Int
+    /// Each file's place in `files`, by stamp: where a head read anywhere puts its fields.
+    let positions: [String: Int]
     private let lock = NSLock()
     private var read = 0
+    private var ended = false
 
     init(folder: FilePath?, name: String, files: [FileEntry]) {
       self.folder = folder
@@ -181,11 +221,15 @@ public final class LinkFiles: @unchecked Sendable {
       self.files = files
       index = FileIndex(names: files.map(\.path.name))
       toRead = files.filter { $0.kind != 2 }.count
+      positions = Dictionary(files.enumerated().map { ($1.stamp, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     func noteRead() { lock.withLock { read += 1 } }
+    /// The pass is over, however it ended (done, stopped, or never able to start): nothing is
+    /// still being read, so search stops saying so.
+    func endPass() { lock.withLock { ended = true } }
     var progress: SearchAnswer.Progress? {
-      lock.withLock { read < toRead ? SearchAnswer.Progress(done: read, total: toRead) : nil }
+      lock.withLock { !ended && read < toRead ? SearchAnswer.Progress(done: read, total: toRead) : nil }
     }
   }
 
@@ -200,7 +244,10 @@ public final class LinkFiles: @unchecked Sendable {
       generation += 1
       return generation
     }
-    guard folder != nil, shown.toRead > 0 else { return }
+    guard folder != nil, shown.toRead > 0 else {
+      shown.endPass()
+      return
+    }
     Task.detached(priority: .utility) { [self] in await readTags(of: shown, generation: mine) }
   }
 
@@ -221,7 +268,10 @@ public final class LinkFiles: @unchecked Sendable {
   }
 
   /// The background tag pass: what the cache knows at once, then each photo's head, two at a time.
+  /// Each head read also makes the file's grid picture when the head holds one, so a file's head
+  /// is read once for both.
   private func readTags(of shown: Shown, generation: Int) async {
+    defer { shown.endPass() }
     guard let cache = factCache(), let link = await connection.awaitLink() else { return }
     var unread: [(Int, FileEntry)] = []
     for (i, file) in shown.files.enumerated() where file.kind != 2 {
@@ -233,11 +283,12 @@ public final class LinkFiles: @unchecked Sendable {
       }
     }
     let work = { @Sendable [self] (i: Int, file: FileEntry) async -> Void in
-      guard isCurrent(generation) else { return }
-      if let facts = await facts(of: file, link: link) {
-        cache.set(facts, for: file.stamp)
-        shown.index.setFields(i, facts.fields)
+      guard isCurrent(generation), !Task.isCancelled else { return }
+      // A tile may have read this head meanwhile, and learnt its tags with it.
+      if cache.facts(for: file.stamp) == nil, let head = await heads.head(of: file, link: link) {
+        await use(head, of: file, link: link, cache: cache, thumbnail: true)
       }
+      if let known = cache.facts(for: file.stamp) { shown.index.setFields(i, known.fields) }
       shown.noteRead()
     }
     var queue = unread[...]
@@ -254,15 +305,23 @@ public final class LinkFiles: @unchecked Sendable {
         if let (i, file) = queue.popFirst() { group.addTask(priority: .utility) { await work(i, file) } }
       }
     }
-    await onLinkQueue { cache.save { write in try self.connection.whileLive(link) { try write() } != nil } }
+    await saveFacts(force: false)
   }
 
-  /// A file's search fields from its head, through the desktop's own field builder.
-  private func facts(of file: FileEntry, link: LinkHandle) async -> FileFacts? {
-    guard let head = await heads.head(of: file, link: link, priority: .utility) else { return nil }
-    guard let values = FileTags.read(head: head) else { return FileFacts(fields: [], camera: "", lens: "") }
-    let fields = Self.fields(of: values)
-    return FileFacts(fields: fields, camera: Self.cameraLine(values), lens: values.lens)
+  /// Everything a head gives: the file's tags (into the cache, and into the search index if its
+  /// folder is on screen) and, with `thumbnail`, its grid picture when the head holds one.
+  private func use(_ head: Data, of file: FileEntry, link: LinkHandle, cache: FileFactCache?, thumbnail: Bool) async {
+    if let cache, file.kind != 2, cache.facts(for: file.stamp) == nil {
+      let values = FileTags.read(head: head)
+      let facts = values.map { FileFacts(fields: Self.fields(of: $0), camera: Self.cameraLine($0), lens: $0.lens) }
+        ?? FileFacts(fields: [], camera: "", lens: "")
+      cache.set(facts, for: file.stamp)
+      if let shown = shownFolder, let i = shown.positions[file.stamp] { shown.index.setFields(i, facts.fields) }
+    }
+    if thumbnail, memoryImage(of: file) == nil, !thumbOnDisk(file),
+       let image = await headPicture(head, of: file) {
+      await keep(image, of: file, link: link)
+    }
   }
 
   static func fields(of values: FileTagValues) -> [String] {
@@ -301,67 +360,120 @@ public final class LinkFiles: @unchecked Sendable {
   // MARK: Pictures
 
   func memoryImage(for id: MediaID) -> UIImage? {
-    memory.object(library: connection.libraryID, generation: 0, id: id.raw)
+    guard let file = entry(for: id) else { return nil }
+    return memoryImage(of: file)
   }
 
-  /// The grid's picture: memory, the disk cache, then the file's head (its embedded preview, or the
-  /// whole picture when the head is all of it), then a whole read of a small file, or a clip's
-  /// first frame. nil leaves the tile its quiet glyph.
-  func thumbnail(for item: MediaItem) async -> UIImage? {
-    let library = connection.libraryID
-    if let hit = memory.object(library: library, generation: 0, id: item.id.raw) { return hit }
-    guard let file = entry(for: item.id), let link = await connection.awaitLink() else { return nil }
-    let disk = LinkFolders.fileThumbs(for: library).appendingPathComponent(Self.hashName(file.stamp) + ".jpg")
-    var image: UIImage? = await onLinkQueue { UIImage(contentsOfFile: disk.path)?.preparingForDisplay() }
-    if image == nil, !Task.isCancelled {
-      image = await makeThumbnail(file, link: link)
-      if let image, let data = image.jpegData(compressionQuality: 0.8) {
-        let connection = self.connection
-        await onLinkQueue {
-          _ = connection.whileLive(link) {
-            try? FileManager.default.createDirectory(at: disk.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? data.write(to: disk, options: .atomic)
-          }
-        }
+  /// Keyed by where the file is, its size and its time, as the disk copy is: a file changed in
+  /// place is never shown with its old picture.
+  private func memoryImage(of file: FileEntry) -> UIImage? {
+    memory.object(library: connection.libraryID, generation: 0, id: file.stamp)
+  }
+
+  private func diskThumb(_ file: FileEntry) -> URL {
+    LinkFolders.fileThumbs(for: connection.libraryID).appendingPathComponent(Self.hashName(file.stamp) + ".jpg")
+  }
+
+  private func thumbOnDisk(_ file: FileEntry) -> Bool { FileManager.default.fileExists(atPath: diskThumb(file).path) }
+
+  /// Into memory, and to disk for the next session.
+  private func keep(_ image: UIImage, of file: FileEntry, link: LinkHandle) async {
+    memory.set(image, library: connection.libraryID, generation: 0, id: file.stamp,
+               cost: Int(image.size.width * image.size.height * image.scale * image.scale * 4))
+    guard let data = image.jpegData(compressionQuality: 0.8) else { return }
+    let disk = diskThumb(file)
+    let connection = self.connection
+    await onLinkQueue {
+      _ = connection.whileLive(link) {
+        try? FileManager.default.createDirectory(at: disk.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: disk, options: .atomic)
       }
     }
-    if let image {
-      memory.set(image, library: library, generation: 0, id: item.id.raw,
+  }
+
+  /// The grid's picture: memory, the disk cache, then the file's head (an embedded preview of
+  /// at least 256 px, or the whole picture when the head is all of it), then a whole read of a
+  /// file of at most 8 MiB, or a clip's first frame. nil leaves the tile its quiet glyph. A head
+  /// read here also gives the file's tags.
+  func thumbnail(for item: MediaItem) async -> UIImage? {
+    guard let file = entry(for: item.id) else { return nil }
+    if let hit = memoryImage(of: file) { return hit }
+    guard let link = await connection.awaitLink() else { return nil }
+    let disk = diskThumb(file)
+    if let image = await onLinkQueue({ UIImage(contentsOfFile: disk.path)?.preparingForDisplay() }) {
+      memory.set(image, library: connection.libraryID, generation: 0, id: file.stamp,
                  cost: Int(image.size.width * image.size.height * image.scale * image.scale * 4))
+      return image
     }
+    guard !Task.isCancelled, let image = await makeThumbnail(file, link: link) else { return nil }
+    await keep(image, of: file, link: link)
     return image
+  }
+
+  /// The viewer's neighbours: behind a small gate, and dropped when too many already wait.
+  func prefetch(_ item: MediaItem) {
+    guard let file = entry(for: item.id), memoryImage(of: file) == nil else { return }
+    let admitted = lock.withLock { () -> Bool in
+      guard prefetchesWaiting < Self.prefetchQueueLimit else { return false }
+      prefetchesWaiting += 1
+      return true
+    }
+    guard admitted else { return }
+    Task.detached(priority: .utility) { [self] in
+      _ = await prefetches.run { await thumbnail(for: item) }
+      lock.withLock { prefetchesWaiting -= 1 }
+    }
   }
 
   private func makeThumbnail(_ file: FileEntry, link: LinkHandle) async -> UIImage? {
     if file.kind == 2 { return await poster(of: file, link: link) }
-    guard let head = await heads.head(of: file, link: link, priority: .userInitiated) else { return nil }
-    let whole = UInt64(head.count) >= file.size
-    if let image = await decode(head, maxPixels: Self.thumbPixels, embeddedOnly: !whole) { return image }
-    guard !whole, file.size <= Self.wholeReadLimit, !Task.isCancelled else { return nil }
-    let data: Data? = await wholeReads.run {
-      await Self.readAll(link: link, file: file)
-    }
+    guard let head = await heads.head(of: file, link: link) else { return nil }
+    await use(head, of: file, link: link, cache: factCache(), thumbnail: false)
+    if let image = await headPicture(head, of: file) { return image }
+    guard UInt64(head.count) < file.size, file.size <= Self.wholeReadLimit, !Task.isCancelled else { return nil }
+    let data: Data? = await wholeReads.run { await Self.readAll(link: link, file: file) }
     guard let data else { return nil }
-    return await decode(data, maxPixels: Self.thumbPixels, embeddedOnly: false)
+    return await onLinkQueue { Self.scaled(data, maxPixels: Self.thumbPixels) }
   }
 
-  private func decode(_ data: Data, maxPixels: Int, embeddedOnly: Bool) async -> UIImage? {
-    await onLinkQueue {
-      guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-      var options: [CFString: Any] = [kCGImageSourceThumbnailMaxPixelSize: maxPixels,
-                                      kCGImageSourceCreateThumbnailWithTransform: true,
-                                      kCGImageSourceShouldCacheImmediately: true]
-      if embeddedOnly {
-        options[kCGImageSourceCreateThumbnailFromImageIfAbsent] = false
-      } else {
-        options[kCGImageSourceCreateThumbnailFromImageAlways] = true
-      }
-      guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-      // From a head that is not the whole file, ImageIO may decode what it has of the picture itself
-      // (a JPEG scales as it decodes) rather than an embedded preview: the bottom comes out grey.
-      // An embedded preview is smaller than the size asked for; a decode of the picture is not.
-      if embeddedOnly, max(cg.width, cg.height) >= maxPixels { return nil }
-      return UIImage(cgImage: cg)
+  /// The picture a head holds for the grid: all of it when the head is the whole file, else an
+  /// embedded preview of at least 256 px (HeadPicture), scaled to the grid's size.
+  private func headPicture(_ head: Data, of file: FileEntry) async -> UIImage? {
+    if UInt64(head.count) >= file.size { return await onLinkQueue { Self.scaled(head, maxPixels: Self.thumbPixels) } }
+    return await onLinkQueue {
+      guard let source = CGImageSourceCreateWithData(head as CFData, nil) else { return nil }
+      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
+      let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
+      let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
+      let options: [CFString: Any] = [kCGImageSourceThumbnailMaxPixelSize: HeadPicture.probePixels,
+                                      kCGImageSourceCreateThumbnailFromImageIfAbsent: false,
+                                      kCGImageSourceCreateThumbnailWithTransform: true]
+      guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+            HeadPicture.isUsablePreview(longSide: max(cg.width, cg.height), imageLongSide: max(width, height)) else { return nil }
+      return Self.fitted(cg, maxPixels: Self.thumbPixels)
+    }
+  }
+
+  /// A whole picture's bytes to the grid's size. Link queue only.
+  private static func scaled(_ data: Data, maxPixels: Int) -> UIImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    let options: [CFString: Any] = [kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+                                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                    kCGImageSourceCreateThumbnailWithTransform: true,
+                                    kCGImageSourceShouldCacheImmediately: true]
+    return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary).map { UIImage(cgImage: $0) }
+  }
+
+  /// A preview larger than the grid's size, drawn down to it.
+  private static func fitted(_ cg: CGImage, maxPixels: Int) -> UIImage {
+    let long = max(cg.width, cg.height)
+    guard long > maxPixels else { return UIImage(cgImage: cg) }
+    let scale = CGFloat(maxPixels) / CGFloat(long)
+    let size = CGSize(width: (CGFloat(cg.width) * scale).rounded(), height: (CGFloat(cg.height) * scale).rounded())
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+      UIImage(cgImage: cg).draw(in: CGRect(origin: .zero, size: size))
     }
   }
 
@@ -521,37 +633,60 @@ final class FileIndex: @unchecked Sendable {
   }
 }
 
-/// One head read per file however many ask (the tag pass and a tile at once).
+/// One head read per file however many ask (the tag pass and a tile at once), and the last few
+/// heads kept, so a tile and the pass reaching the same file a moment apart read it once. The read
+/// runs in the asking task, so cancelling that task stops it; anyone waiting on it then reads for
+/// itself.
 private actor HeadReads {
-  private var running: [String: Task<Data?, Never>] = [:]
+  private var recent: [String: Data] = [:]
+  private var order: [String] = []
+  private var reading: Set<String> = []
+  private var waiting: [String: [CheckedContinuation<Data?, Never>]] = [:]
+  static let kept = 16
 
-  func head(of file: FileEntry, link: LinkHandle, priority: TaskPriority) async -> Data? {
+  func head(of file: FileEntry, link: LinkHandle) async -> Data? {
     let key = file.stamp
-    if let task = running[key] { return await task.value }
-    let task = Task.detached(priority: priority) { () -> Data? in
-      await withLinkCancel { cancel in
-        await onLinkQueue {
-          final class Sink { var data = Data() }
-          let sink = Sink()
-          let want = min(UInt64(FileTags.headBytes), file.size)
-          sink.data.reserveCapacity(Int(want))
-          let status = file.path.root.withCString { root in
-            file.path.rel.withCString { rel in
-              mv_files_read(link.raw, root, rel, 0, want, 0, cancel.raw, { ctx, _, bytes, count in
-                guard let ctx, let bytes else { return 0 }
-                Unmanaged<Sink>.fromOpaque(ctx).takeUnretainedValue().data.append(bytes, count: count)
-                return 1
-              }, Unmanaged.passUnretained(sink).toOpaque())
-            }
+    if let data = recent[key] {
+      order.removeAll { $0 == key }
+      order.append(key)
+      return data
+    }
+    if reading.contains(key) {
+      let data = await withCheckedContinuation { waiting[key, default: []].append($0) }
+      if data != nil || Task.isCancelled { return data }
+      return await Self.read(file, link: link)  // the reader was cancelled or failed: once, ourselves
+    }
+    reading.insert(key)
+    let data = await Self.read(file, link: link)
+    reading.remove(key)
+    if let data {
+      recent[key] = data
+      order.append(key)
+      while order.count > Self.kept { recent[order.removeFirst()] = nil }
+    }
+    for waiter in waiting.removeValue(forKey: key) ?? [] { waiter.resume(returning: data) }
+    return data
+  }
+
+  private static func read(_ file: FileEntry, link: LinkHandle) async -> Data? {
+    await withLinkCancel { cancel in
+      await onLinkQueue {
+        final class Sink { var data = Data() }
+        let sink = Sink()
+        let want = min(UInt64(FileTags.headBytes), file.size)
+        sink.data.reserveCapacity(Int(want))
+        let status = file.path.root.withCString { root in
+          file.path.rel.withCString { rel in
+            mv_files_read(link.raw, root, rel, 0, want, 0, cancel.raw, { ctx, _, bytes, count in
+              guard let ctx, let bytes else { return 0 }
+              Unmanaged<Sink>.fromOpaque(ctx).takeUnretainedValue().data.append(bytes, count: count)
+              return 1
+            }, Unmanaged.passUnretained(sink).toOpaque())
           }
-          return status == 0 ? sink.data : nil
         }
+        return status == 0 ? sink.data : nil
       }
     }
-    running[key] = task
-    let data = await task.value
-    running[key] = nil
-    return data
   }
 }
 

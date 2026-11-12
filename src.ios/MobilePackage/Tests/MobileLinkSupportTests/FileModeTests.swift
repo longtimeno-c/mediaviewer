@@ -180,3 +180,58 @@ final class FileFactCacheTests: XCTestCase {
     XCTAssertEqual(cache.count, 1)
   }
 }
+
+final class HeadPictureTests: XCTestCase {
+  func testAPreviewOfAGoodSizeIsUsed() {
+    XCTAssertTrue(HeadPicture.isUsablePreview(longSide: 320, imageLongSide: 4032))
+    XCTAssertTrue(HeadPicture.isUsablePreview(longSide: 512, imageLongSide: 4032))
+  }
+
+  func testATinyPreviewIsNot() {
+    XCTAssertFalse(HeadPicture.isUsablePreview(longSide: 160, imageLongSide: 4032), "an EXIF thumbnail is too soft for a tile")
+  }
+
+  func testADecodeOfThePictureItselfIsNot() {
+    XCTAssertFalse(HeadPicture.isUsablePreview(longSide: HeadPicture.probePixels, imageLongSide: 4032))
+    XCTAssertFalse(HeadPicture.isUsablePreview(longSide: 800, imageLongSide: 800), "a small picture decoded at its own size")
+    XCTAssertFalse(HeadPicture.isUsablePreview(longSide: HeadPicture.probePixels, imageLongSide: 0))
+  }
+}
+
+final class RecentFoldersTests: XCTestCase {
+  func testTheOldestGoesAndTheOneOnScreenStays() {
+    var recent = RecentFolders(limit: 2)
+    XCTAssertEqual(recent.touch("a", keep: nil), [])
+    XCTAssertEqual(recent.touch("b", keep: nil), [])
+    XCTAssertEqual(recent.touch("c", keep: "a"), ["b"], "a is on screen")
+    XCTAssertEqual(recent.order, ["a", "c"])
+    XCTAssertEqual(recent.touch("a", keep: nil), [])
+    XCTAssertEqual(recent.touch("d", keep: nil), ["c"])
+  }
+}
+
+final class FileFactCacheBatchTests: XCTestCase {
+  func testAPassDoesNotRewriteTheWholeCacheEachTime() {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("facts-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let cache = FileFactCache(file: dir.appendingPathComponent("facts.json"))
+    var writes = 0
+    let count: (() throws -> Void) throws -> Bool = { body in writes += 1; try body(); return true }
+    let start = Date()
+    cache.set(FileFacts(fields: [], camera: "", lens: ""), for: "first")
+    cache.saveIfDue(minChanges: 3, minInterval: 60, now: start, write: count)
+    XCTAssertEqual(writes, 1, "never written yet: the first is due")
+    cache.set(FileFacts(fields: [], camera: "", lens: ""), for: "a")
+    cache.saveIfDue(minChanges: 3, minInterval: 60, now: start.addingTimeInterval(1), write: count)
+    XCTAssertEqual(writes, 1, "one change, a second later: not yet")
+    cache.set(FileFacts(fields: [], camera: "", lens: ""), for: "b")
+    cache.set(FileFacts(fields: [], camera: "", lens: ""), for: "c")
+    cache.saveIfDue(minChanges: 3, minInterval: 60, now: start.addingTimeInterval(2), write: count)
+    XCTAssertEqual(writes, 2, "enough changes")
+    cache.set(FileFacts(fields: [], camera: "", lens: ""), for: "d")
+    cache.saveIfDue(minChanges: 3, minInterval: 60, now: start.addingTimeInterval(70), write: count)
+    XCTAssertEqual(writes, 3, "long enough since")
+    cache.saveIfDue(minChanges: 3, minInterval: 60, now: start.addingTimeInterval(200), write: count)
+    XCTAssertEqual(writes, 3, "nothing changed")
+  }
+}

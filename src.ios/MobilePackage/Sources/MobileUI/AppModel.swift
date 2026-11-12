@@ -636,7 +636,17 @@ public final class SearchModel {
     run()
   }
 
-  private func run() {
+  /// File search: the tag progress the last poll saw, and how many polls in a row saw no change.
+  private var lastReading: SearchAnswer.Progress?
+  private var unchangedPolls = 0
+  /// Polls with no progress before file search stops asking (a pass that stalled, or a slow file).
+  static let maxUnchangedPolls = 6
+
+  private func run(polling: Bool = false) {
+    if !polling {
+      lastReading = nil
+      unchangedPolls = 0
+    }
     running?.cancel()
     warming?.cancel()
     isWarmingUp = false
@@ -689,10 +699,19 @@ public final class SearchModel {
         answer += 1
         // File search: the folder's tags are still being read, so ask again as they arrive, as the
         // desktop's bar does while it says "Still reading tags".
-        if reply.readingTags != nil {
-          warming.cancel()
-          try? await Task.sleep(for: .milliseconds(700))
-          if !Task.isCancelled { run() }
+        // Only while the count moves: a pass that has stopped moving is not asked about for ever.
+        if let reading = reply.readingTags {
+          if reading == lastReading {
+            unchangedPolls += 1
+          } else {
+            lastReading = reading
+            unchangedPolls = 0
+          }
+          if unchangedPolls < Self.maxUnchangedPolls {
+            warming.cancel()
+            try? await Task.sleep(for: .milliseconds(700))
+            if !Task.isCancelled { run(polling: true) }
+          }
         }
       } catch {
         guard !Task.isCancelled, !(error is CancellationError) else { return }

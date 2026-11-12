@@ -16,13 +16,28 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   private let loaderQueue = DispatchQueue(label: "mediaviewer.link.avloader")
   private static let scheme = "mvlink"
   private var loaders: [Int64: ClipLoader] = [:]
+  /// File mode's clips by item id, the last few only (an AVURLAsset holds its loader weakly).
   private var fileLoaders: [String: ClipLoader] = [:]
+  private var fileLoaderOrder: [String] = []
+  static let fileLoadersKept = 4
   private let lock = NSLock()
   private var measured: (epoch: Int, mbps: Int)?  // per route: a network change measures again
 
   public init(connection: LinkConnection, images: LinkImages) {
     self.connection = connection
     self.images = images
+    super.init()
+    // Another library paired, or Forget: no loader of the last one's stays.
+    Task.detached(priority: .utility) { [weak self] in
+      var watch = LinkConnection.LibraryChange(current: connection.current.libraryID)
+      for await snapshot in connection.updates() where watch.changed(to: snapshot.libraryID) || !snapshot.hasLibrary {
+        guard let self else { return }
+        self.lock.withLock {
+          self.fileLoaders.removeAll()
+          self.fileLoaderOrder.removeAll()
+        }
+      }
+    }
   }
 
   public func route(for item: MediaItem) async -> ClipRoute {
@@ -65,7 +80,12 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
       return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(entry.size))
     }
     guard let (asset, loader) = images.files.clipAsset(entry, link: link) else { return .unavailable(.originalGone) }
-    lock.withLock { fileLoaders[item.id.raw] = loader }
+    lock.withLock {
+      fileLoaders[item.id.raw] = loader
+      fileLoaderOrder.removeAll { $0 == item.id.raw }
+      fileLoaderOrder.append(item.id.raw)
+      while fileLoaderOrder.count > Self.fileLoadersKept { fileLoaders[fileLoaderOrder.removeFirst()] = nil }
+    }
     return .stream(asset)
   }
 

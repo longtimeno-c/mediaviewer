@@ -72,3 +72,48 @@ public enum FileModeRule {
     return wasFileMode
   }
 }
+
+/// Which picture from a file's head the grid may use. ImageIO, asked for a thumbnail from a head
+/// that is not the whole file, gives an embedded preview when there is one, and otherwise decodes
+/// what it has of the picture itself (the bottom comes out grey).
+public enum HeadPicture {
+  /// What the head is asked for: larger than any preview worth keeping, so a preview comes back at
+  /// its own size and a decode of the picture at this size (or at the picture's own, if smaller).
+  public static let probePixels = 1024
+  /// A preview smaller than this looks soft on a grid tile: the whole file is read instead.
+  public static let minimumPreviewPixels = 256
+
+  /// `longSide`: of what ImageIO returned; `imageLongSide`: of the picture itself, 0 when unknown.
+  public static func isUsablePreview(longSide: Int, imageLongSide: Int) -> Bool {
+    let decodeSize = imageLongSide > 0 ? min(imageLongSide, probePixels) : probePixels
+    if abs(longSide - decodeSize) <= 1 { return false }  // a decode of the picture, not a preview
+    return longSide >= minimumPreviewPixels
+  }
+}
+
+/// The folders whose listings are kept, most recent last, so what a session has browsed stays
+/// bounded. Not thread-safe: the owner locks.
+public struct RecentFolders: Sendable {
+  public let limit: Int
+  public private(set) var order: [String] = []
+
+  public init(limit: Int) { self.limit = limit }
+
+  /// Notes `folder` as just listed; returns the folders to forget, never `keep` (the one on screen).
+  public mutating func touch(_ folder: String, keep: String?) -> [String] {
+    order.removeAll { $0 == folder }
+    order.append(folder)
+    var dropped: [String] = []
+    var i = 0
+    while order.count > limit, i < order.count {
+      if order[i] == keep || order[i] == folder {
+        i += 1
+        continue
+      }
+      dropped.append(order.remove(at: i))
+    }
+    return dropped
+  }
+
+  public mutating func removeAll() { order.removeAll() }
+}

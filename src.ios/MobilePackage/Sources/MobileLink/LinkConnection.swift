@@ -456,7 +456,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
   /// In file mode the same check is how the first catalogue arrives (phone-in-the-app.md §4).
   private func quietSync(_ link: LinkHandle) async {
-    guard current.catalogue != nil || current.fileMode, mayCopyQuietly else { return }
+    // The check is a few kilobytes and always allowed (§8.4): on mobile data too, so a library
+    // can learn it has a catalogue, or that it was refused. Only the copy waits for Wi-Fi.
+    guard current.catalogue != nil || current.fileMode else { return }
     let report = await onLinkQueue { () -> mv_sync_report in
       var report = mv_sync_report()
       _ = mv_sync_check(link.raw, &report)
@@ -467,7 +469,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       publish(from: link) { $0 = ConnectionSnapshot(hasLibrary: $0.hasLibrary, synology: .publisherChanged, macNearby: false, catalogue: $0.catalogue, cacheBytes: $0.cacheBytes) }
       return
     }
-    guard report.outcome == 16 else { return }
+    guard report.outcome == 16, mayCopyQuietly else { return }
     let (done, _) = await copy(link: link, cancel: nil, allowExpensive: false, progress: nil)
     if done == 0, let info = await catalogueNow(link: link) { publishCatalogue(info, from: link) }
   }

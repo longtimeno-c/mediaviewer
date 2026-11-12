@@ -75,7 +75,7 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   public func prefetch(_ items: [MediaItem], fittingPixels: CGSize) {
     for item in items {
       if FilePath.isFile(item.id.raw) {
-        Task.detached(priority: .utility) { [files] in _ = await files.thumbnail(for: item) }
+        files.prefetch(item)
         continue
       }
       guard let asset = assetID(item.id),

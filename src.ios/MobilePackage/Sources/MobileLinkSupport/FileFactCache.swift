@@ -28,6 +28,10 @@ public final class FileFactCache: @unchecked Sendable {
   private var fields: [String: FileFacts] = [:]
   private var loaded = false
   private var dirty = false
+  /// Entries set since the file was last written, and when that was: the whole cache is encoded
+  /// on each write, so a write waits until enough has changed (`saveIfDue`).
+  private var changes = 0
+  private var savedAt = Date.distantPast
 
   /// `limit`: entries kept; past it, the cache starts again rather than grow without end.
   public init(file: URL, limit: Int = 100_000) {
@@ -57,17 +61,28 @@ public final class FileFactCache: @unchecked Sendable {
       if fields.count >= limit, fields[stamp] == nil { fields.removeAll(keepingCapacity: true) }
       fields[stamp] = value
       dirty = true
+      changes += 1
     }
+  }
+
+  /// Writes the file only once `minChanges` entries have changed, or `minInterval` has passed
+  /// since the last write with something changed: a folder pass does not encode the whole cache.
+  public func saveIfDue(minChanges: Int = 500, minInterval: TimeInterval = 60, now: Date = Date(),
+                        write: (() throws -> Void) throws -> Bool = { body in try body(); return true }) {
+    let due = lock.withLock { dirty && (changes >= minChanges || now.timeIntervalSince(savedAt) >= minInterval) }
+    if due { save(now: now, write: write) }
   }
 
   public var count: Int { lock.withLock { fields.count } }
 
   /// Writes the file when something changed. `write` runs the write (so the caller can refuse it
   /// for a library that has gone); false from it leaves the cache dirty.
-  public func save(write: (() throws -> Void) throws -> Bool = { body in try body(); return true }) {
+  public func save(now: Date = Date(), write: (() throws -> Void) throws -> Bool = { body in try body(); return true }) {
     let snapshot: [String: FileFacts]? = lock.withLock {
       guard dirty else { return nil }
       dirty = false
+      changes = 0
+      savedAt = now
       return fields
     }
     guard let snapshot, let data = try? JSONEncoder().encode(snapshot) else { return }
@@ -84,6 +99,7 @@ public final class FileFactCache: @unchecked Sendable {
     lock.withLock {
       fields.removeAll()
       dirty = false
+      changes = 0
     }
   }
 }
