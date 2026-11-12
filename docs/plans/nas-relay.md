@@ -113,48 +113,53 @@ range-reads and seeks; the relay's recorded bytes contain no 32-byte run of the 
 without the access key, and a revoked one, are refused through the relay as directly; an old QR and an old
 service still pair and connect directly.
 
-## 9. Hole punching (call 4): the design, for sign-off
+## 9. A direct path after the relay (owner call 4, answered 2026-11-12)
 
-Built after the relay (§8, done 2026-11-12). Not started until the owner answers §9.4.
+The owner's call replaced the DHT design drafted here first: "after doing normal maybe it then
+announces / connects to the client directly and that increases transfer speed", and "make mobile
+data a toggle on in settings". **No DHT**: `driftwire serve` still never touches it, and the phone
+looks nothing up.
 
 ### 9.1 How
 
-Reuse Driftwire's remembered-device meeting (`docs/design/28` "Remembered devices", "Four words over
-the DHT"), not new machinery:
+1. **Connect as built** (§2): the direct addresses, then the person's own relay.
+2. **Only on the relay, upgrade.** With the session up through the relay, the phone asks the
+   service, inside the sealed session, to try a direct path (`serve_upgrade`, under a new op bit
+   `kUpgradeOp` both sides negotiate: an old service or app never sees it). Each side opens a TCP
+   simultaneous-open port (`net::tcp_rendezvous`, Driftwire's own) and gathers its candidates:
+   - its own network's addresses at that port;
+   - **its public address as the relay sees it**: from that same port it asks the relay (a new
+     role, `kAsk`, in the relay's hello: the server answers the address and port it sees and
+     closes; an older relay refuses the role and there is no public candidate);
+   - the service's public name, when the code has one (an address with no forward still punches).
+   The phone sends its candidates; the service answers with its own. Both are inside the end-to-end
+   session, so the relay sees neither, and only the paired phone can ask.
+3. **Punch.** Both sides connect from their port to every candidate of the other for up to 10 s
+   (`tcp_rendezvous::next`); a SYN that crosses the other's opens one connection.
+4. **Move over.** On the new connection the phone runs the whole handshake again (Noise XX+psk0, the
+   device-key check, the grant): the service admits it as any connection. It can only be this
+   phone (no one else holds its key with the access key). The phone then makes it the live link:
+   reads already running finish on the relayed one, every later read and a playing clip's next
+   range go direct, and the relayed session closes when its last read lets go (the swap
+   `reconnect` already does). Nothing in flight is dropped.
+5. **Otherwise stay on the relay**, silently, and try again later: after 1, 5, 15 minutes, then
+   hourly, while the session lasts. A failed try costs a few SYNs and two small messages.
 
-- **The meeting place.** Phone and NAS each derive the pair's hourly DHT target from what they
-  already share: `BLAKE2b(key = access_key, "MediaViewer punch v1" || device_pub || hour)`. A watcher
-  of the DHT sees a target that changes every hour and means nothing without the access key, the
-  same property remembered devices have today.
-- **The NAS** keeps one BEP 44 item per paired device (at most the 4 relay waiters' worth, the same
-  slot rule), refreshed each hour, saying its UDP mapping and NAT kind, sealed to that device.
-- **The phone**, in its race, looks the item up at once (beside the direct routes) and punches with
-  `udp_hub` (UDP first, TCP simultaneous open beside it, the birthday punch when exactly one NAT is
-  hard). A punched stream is a `link`: `serve::client::open` and the service's admission run on it
-  unchanged, Noise XX+psk0 end to end. The NAS binds a punched link to its device as the relay does.
-- **Order of the race:** direct addresses at 0 s, the punch at 0 s (it needs the lookup first, so it
-  finishes later), the relay at 1.5 s. The first handshake that completes wins; the rest are cut.
+Not tried at home or over a direct route that answered (nothing to gain).
 
-### 9.2 Cost
+### 9.2 Mobile data
 
-- The NAS keeps a UDP socket and a DHT routing table (a few hundred bytes a minute, Driftwire's
-  measured idle cost), and one DHT put per device per hour.
-- The phone does a DHT lookup only when it connects and no direct route answered, never in the
-  background. On mobile data that is a few KB.
+**Settings → "Faster direct connection on mobile data"**, on by default (owner): on Wi-Fi the upgrade
+is always tried; on mobile data only with it on. The core reads it (`mv_link_set_upgrade_on_cellular`
+and the network the host reports), not only the screen. It sits with the mobile-data rules in the
+iPhone's Settings, and shows for every library, the sample's too (which never relays).
 
-### 9.3 Tests
+### 9.3 Tests and measurement
 
-On the loopback DHT swarm (`tests/driftwire_swarm.h`) and its stand-in NATs only. Never the public
-DHT, filtered by tag (`[phone-punch]`). Cases: a punch through two easy NATs, one hard and one easy
-(the birthday), a revoked phone, a wrong access key, and falling back to the relay when the punch
-fails.
-
-### 9.4 Owner calls this needs
-
-1. **The NAS joins the public DHT.** `docs/design/28` says today that `driftwire serve` "never
-   touches the DHT". With this it would, through public bootstrap nodes, announcing hourly targets
-   that mean nothing without the access key, as a desktop with remembered devices does. Yes or no?
-2. **On by default, or a toggle** on the card ("Reach the NAS directly when the network allows")?
-   Recommended: on whenever a relay is set (so there is always a fallback), off otherwise.
-3. **The phone on mobile data looks up the DHT** (a few KB per connect that did not reach home
-   directly). Recommended: yes, under today's mobile-data rules for what moves afterwards.
+Loopback only: an in-process relay on 127.0.0.1, both sides' rendezvous on loopback; never the
+public DHT or a public relay. Tag `[phone-upgrade]`. Cases: an upgrade that succeeds and moves the
+reads (a read running across the move finishes); an old service (no `kUpgradeOp`); an old relay (no
+`kAsk`: local candidates only); the toggle off on mobile data; a punch that fails (stays on the
+relay); a stranger with the access key cannot ask. **Throughput**: relayed against upgraded on
+loopback, the same file, runs alternated, in `[.phone-upgrade-bench]`; loopback shows the relay's
+copying cost, not a real NAT's.
