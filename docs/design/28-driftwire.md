@@ -1348,9 +1348,11 @@ link. The tests check that no 32-byte run of the file passes through either rela
 
 ## Claiming and pairing (phone access)
 
-`desk.*`, `advert*`, the owner's half of `serve.*`; plan: `docs/plans/mobile.md` §7.2, §7.4, §7.5.
-The Driftwire add-on holds the desktop's side of a phone. Local search asks for it through the host
-table (`route_request`, [18](18-import.md#add-ons-calling-add-ons)), and refuses any other caller.
+`src/phone/desk.*`, `wire/advert*`, the owner's half of `wire/serve.*`; plans: `docs/plans/mobile.md` §7.2,
+§7.4, §7.5 and `docs/plans/phone-in-the-app.md`. Since 2026-11-12 the desktop's side of a phone is the app's,
+not the Driftwire add-on's: the app's phone link (`src/phone/link.*`) asks the desk through `route_request`,
+which takes only the caller "phone". Its items are in the OS store under "MediaViewer Phone access", copied
+once from Driftwire's (`desk::take_items`).
 
 **Claiming.** Only for a connection from its own network (`net::on_link`, loopback included), and only
 while the service has no owner or, once it has, for a hello the access key does not open (so a phone's
@@ -1862,7 +1864,7 @@ protocol has no DHT.
 | Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
-| Phone access | `desk.*` (claim, devices, codes, nearby, the route), `advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
+| Phone access (the app's, `src/phone`) | `phone/desk.*` (claim, devices, codes, nearby, the route), `wire/advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
 | The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |

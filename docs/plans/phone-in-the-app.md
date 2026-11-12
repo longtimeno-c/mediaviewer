@@ -102,6 +102,17 @@ catalogue) opens in **file mode**:
 - **Not demoable in SAMPLE** (owner, 2026-11-12): no second sample code, and the sample release is
   not republished for it.
 
+## 4b. As built (2026-11-12)
+
+Steps 1–4 are built on `claude/win-phone-card`: `src/wire` (591161fa), `src/catalogue` and `src/phone`
+with ABI 0.40 (fdc4c3c7, review fixes 17739f71), and the two cards. One change from §2.4: Local search
+was **not** reduced to a `catalogue_build` entry. Its publisher (automatic triggers, deliveries that wait
+for the share, retries, thumbnails) is intricate, and rewriting it for the core would have risked it for
+no difference a person sees. It keeps building and delivering through its existing `phone_publish` /
+`phone_json`, signs with the app's key, adopts the share's `library.json`, and is the link's catalogue
+source. Local search is still only the provider of the search catalogue: pairing, the service, the
+phones and nearby are the app's. Step 5 (the phone's file mode) is not built yet.
+
 ## 5. Order (each step Opus-reviewed, both hosts)
 
 1. `src/wire` split: moves and target only, no behaviour change; every existing test passes; iOS

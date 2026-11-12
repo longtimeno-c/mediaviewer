@@ -568,21 +568,29 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
-### Phone access on the Mac and Windows (plan: `docs/plans/mobile.md`)
+### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-in-the-app.md`)
 
-Claiming a NAS service, the QR, revoking, nearby sync and moving the signing key. Tests, always filtered by tag:
-`mv_import_tests "[phone-pairing]"` (loopback), `mv_import_tests "[phone-pairing-bonjour]"` (this machine's
-mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"`, and in `src.swift/AIChrome`,
-`swift test --filter PhoneQRTests`, and for the Windows card's QR and words
-`dotnet test src.managed/MediaViewer.Chrome.Tests` (any OS). To try it without a Synology, run
-`driftwire serve` on this computer with a `serve.json` naming a folder, and give the card that machine's address.
+Part of the app since 2026-11-12, with or without Local search: Settings → Phone access on both hosts
+(`PhoneAccessView.swift` in MediaViewerChrome, `IslandHost.Phone.cs` in MediaViewer.Chrome; words in
+`src.managed/Shared/PhoneWords.cs`, the Windows QR in `Shared/QrCode.cs`). The work is `src/phone`
+(`link.*` the state machine, `desk.*` claim/codes/devices/nearby, `app.*` the one link per process) over
+`src/wire` (Driftwire's protocol) and `src/catalogue` (keys, `library.json`, current.json, delivery);
+hosts reach it through `mv_phone_*` (ABI 0.40) and the Mac bridge `mv_chrome_phone_*`. Local search,
+when loaded, is a catalogue source (its `phone_publish` / `phone_json`). Only the first window's process
+runs it. Keys are in the OS store under "MediaViewer Phone access" (Credential Manager sealed with DPAPI
+on Windows, the Keychain on the Mac), copied once from "MediaViewer Local search" and "MediaViewer Driftwire".
 
-The Windows card is `src.managed/MediaViewer.Ai.Chrome/ManagePanel.Phone.cs` (QR: `Shared/QrCode.cs`,
-words: `Shared/PhoneWords.cs`); its signing key is in Credential Manager sealed with DPAPI
-(`secrets_win.cpp`). Windows advertises the nearby service with `advert_win.cpp` (DnsServiceRegister).
+Tests, always filtered by tag: `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
+claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
+machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the app's link over
+a Local search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`),
+and `dotnet test src.managed/MediaViewer.Chrome.Tests` (QR, words against the Swift). To try it without a
+Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the card that
+machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
 
-Not done: the Windows card and advert driven on a Windows machine (compiled by CI only), a Bonjour
-advert on Linux, and any run against a real Synology or phone.
+Not done: either card seen running (the Windows one is compiled only; the Mac one built, not driven), the
+phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
+run against a real Synology or phone.
 
 ### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
 

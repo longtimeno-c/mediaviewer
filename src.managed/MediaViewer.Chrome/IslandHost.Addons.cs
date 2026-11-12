@@ -600,7 +600,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The base chrome's services for an add-on (docs/design/18 IAddonHost; Milestone H IAddonHost2).</summary>
-    private sealed class AddonHost(AddonSlot slot) : IAddonHost3, IAddonThemeShape, IAddonPieces, IAddonPages
+    private sealed class AddonHost(AddonSlot slot) : IAddonHost3, IAddonThemeShape, IAddonPieces
     {
         public void Post(Action action) => DispatcherQueueControllerTryEnqueue(action);
 
@@ -671,13 +671,6 @@ public static partial class IslandHost
         {
             string[] ids = pieceIds.ToArray();  // the caller's list may change after it returns
             OnUi(() => HostInstallPieces(ids));
-        }
-
-        // ---- IAddonPages: the Phone access card's "Get Driftwire…" ----
-        public void ShowAddonPage(string addonId)
-        {
-            string id = addonId;
-            OnUi(() => HostShowAddonPage(id));
         }
 
         private static void OnUi(Action action)

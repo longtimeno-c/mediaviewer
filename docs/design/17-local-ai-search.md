@@ -1614,16 +1614,21 @@ names; nothing about it is logged or sent.
 
 ## Setting a phone up
 
-The Phone access card (`PhoneLinkView.swift` on the Mac, `ManagePanel.Phone.cs` on Windows, the same words and
-requests) asks and watches; `engine_phone_link.cpp` does the work on a
-thread of its own, made at the first request, reaching the network through Driftwire
-([28](28-driftwire.md#claiming-and-pairing-phone-access)). The QR is `catalog::pair_url`, made once the
+Since 2026-11-12 setting a phone up is the app's, not Local search's ([plan](../plans/phone-in-the-app.md)):
+Settings → Phone access (`PhoneAccessView.swift` on the Mac, `IslandHost.Phone.cs` on Windows, the same words
+and requests) asks and watches; `src/phone/link.cpp` does the work on a thread of its own and calls the desk
+(`src/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)) directly. Local search, when
+loaded, is the link's catalogue source: it builds and delivers generations (`phone_publish`) signed with the
+app's publisher key (`catalogue/publisher.h`), under the library id and epoch of the share's `library.json`,
+which the app writes when the person chooses the folder; `phone_json` says the id, the epoch and the newest
+generation's folder, for the nearby copy. Its `phone_link` entries are null now. The QR is `catalog::pair_url`, made once the
 service has taken a code, good for five minutes. Beside it is the check code (`driftwire::pairing_check`, `pair_check.h`: 80
 bits of a domain-separated BLAKE2b over the library id, the publisher key, the service identity and the access
 key). Driftwire computes it for the card, the phone computes it from the QR alone, and the person compares the
 two before the phone pairs. While it shows, the phones are polled every two seconds
-on one held session; when one appears the code comes down and the card names it. Without Driftwire the
-card offers it. Without Local search there is no card: that page's own install row is the offer.
+on one held session; when one appears the code comes down and the card names it. Without Local search the
+card still pairs, claims and serves, and says the phone searches by name and tag until Local search indexes the
+library.
 
 **Moving the signing key** (`catalog_chain.*`). `library.json` carries the current key, its epoch and a chain
 of records, each signed by the key it leaves. A new desktop writes `takeover.request`; the old one shows

@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace MediaViewer.Shared;
 
-/// <summary>phone_json: the catalogue on the NAS (docs/plans/mobile.md §6).</summary>
+/// <summary>Local search's phone_json: the catalogue on the NAS (docs/plans/mobile.md §6).</summary>
 internal sealed record PhonePublishState(
     bool Running, string Phase, double Fraction, string Error, string Destination, long Published, long Assets)
 {
@@ -20,10 +20,16 @@ internal sealed record PhoneFolder(string Id, string Label, string Path)
     public bool IsCatalogue => Label == "Catalogue";
 }
 
-/// <summary>phone_link_json: the service, the code, the phones (docs/plans/mobile.md §7.2–§7.5).</summary>
+/// <summary>mv_phone_state_json: the folder, the service, the code, the phones (docs/plans/phone-in-the-app.md).</summary>
 internal sealed record PhoneLinkState
 {
-    public bool Driftwire { get; init; } = true;
+    public bool Starting { get; init; }   // the app has not said yet which window runs it
+    public bool Secondary { get; init; }  // a later window's process: Phone access is the first's
+    public bool Driftwire { get; init; } = true;  // false: no secret store for phone keys
+    public string Folder { get; init; } = "";
+    public string LibraryName { get; init; } = "";
+    public bool LocalSearch { get; init; }
+    public PhonePublishState? Catalogue { get; init; }  // Local search's rows, when it is loaded
     public string Busy { get; init; } = "";
     public string Error { get; init; } = "";
     public bool Claimed { get; init; }
@@ -53,10 +59,10 @@ internal sealed record PhoneLinkState
 }
 
 /// <summary>
-/// The Phone access card's reading of the pack's JSON and its words, shared
-/// by the WinUI card (ManagePanel.Phone.cs) and Chrome.Tests. The words are
-/// the Mac's (PhoneLinkView.swift, PhoneAccessView.swift); Chrome.Tests reads
-/// the Swift as text so the two do not drift.
+/// Settings → Phone access: the reading of the app's state JSON (mv_phone_state_json)
+/// and the card's words, shared by the WinUI card (IslandHost.Phone.cs) and
+/// Chrome.Tests. The words are the Mac's (PhoneAccessView.swift, "this Mac" there
+/// is "this PC" here); Chrome.Tests reads the Swift as text so the two do not drift.
 /// </summary>
 internal static class PhoneWords
 {
@@ -94,8 +100,17 @@ internal static class PhoneWords
             var added = new List<string>();
             foreach (JsonElement a in Items(o, "added"))
                 if (a.ValueKind == JsonValueKind.String) added.Add(a.GetString() ?? "");
+            PhonePublishState? catalogue = o.TryGetProperty("catalogue", out JsonElement c) &&
+                                           c.ValueKind == JsonValueKind.Object
+                ? ParsePublish(c.GetRawText()) : null;
             return new PhoneLinkState
             {
+                Starting = Bool(o, "starting", false),
+                Secondary = Bool(o, "secondary", false),
+                Folder = Str(o, "folder"),
+                LibraryName = Str(o, "library_name"),
+                LocalSearch = Bool(o, "local_search", false),
+                Catalogue = catalogue,
                 Driftwire = Bool(o, "driftwire", true),
                 Busy = Str(o, "busy"),
                 Error = Str(o, "error"),
@@ -126,26 +141,26 @@ internal static class PhoneWords
         }
     }
 
-    // ---- the publish rows (PhoneAccessView.swift) ----
+    // ---- what the phone searches (PhoneAccessView.swift searchDetail) ----
 
-    public static string PublishStatus(PhonePublishState s, long nowUnix)
+    public static string SearchDetail(PhoneLinkState l, long nowUnix)
     {
+        if (!l.LocalSearch || l.Catalogue is not { } s)
+            return "Your phone searches file names and tags. Install Local search and index this library for words, faces, places and sounds.";
         if (s.Running) return s.Phase == "sending" ? "Sending to the NAS" : "Building the catalogue";
         switch (s.Error)
         {
             case "unreachable": return "Couldn't reach that folder. It will need to be mounted.";
             case "other_library": return "That folder holds another library's catalogue.";
             case "no_space": return "Not enough space on the share.";
-            case "no_index": return "Nothing is indexed yet.";
+            case "no_index": return "Nothing is indexed yet. Your phone searches file names and tags until it is.";
             case "no_folders": return "None of your search folders are on that NAS.";
             case "no_key_store": return "This copy of MediaViewer can't keep a signing key, so it can't publish.";
             case "failed": return "The catalogue could not be built.";
             case "cancelled": return "Stopped.";
         }
-        if (s.Published <= 0) return "Not published yet.";
-        // No key here: the one value to compare with a phone is the check code
-        // beside the QR, and a second one would teach people to skip it.
-        return $"Published {Ago(nowUnix - s.Published)} · {Math.Max(0, s.Assets):N0} files";
+        if (s.Published <= 0) return "Smart search starts once the catalogue is published.";
+        return $"Smart search is on. Published {Ago(nowUnix - s.Published)} · {Math.Max(0, s.Assets):N0} files";
     }
 
     /// <summary>"just now", "5 minutes ago", "yesterday": how long since, in the largest unit.</summary>
@@ -173,10 +188,12 @@ internal static class PhoneWords
         "bad_address" => "That isn't an address. Use name:port.",
         "too_many" => "Too many phones are paired. Remove one first.",
         "no_folder" => "Choose the folder on your NAS first.",
-        "not_published" => "Publish the catalogue first.",
+        "not_published" => "Choose the folder on your NAS first.",
+        "other_library" => "That folder holds another library's catalogue.",
         "no_key_store" => "This copy of MediaViewer can't keep a signing key.",
         "revoke_waits" => "Removed here. The NAS will be told when it can be reached.",
-        "no_driftwire" => "Driftwire isn't installed.",
+        "no_driftwire" => "This copy of MediaViewer can't keep phone keys.",
+        "no_local_search" => "Install Local search to publish a catalogue.",
         _ => "That didn't work.",
     };
 
@@ -189,6 +206,7 @@ internal static class PhoneWords
         "revoke" => "Removing the phone",
         "add_folder" or "remove_folder" => "Changing the shared folders",
         "set_addresses" => "Checking the address",
+        "folder" => "Setting up the folder",
         "takeover_ask" or "takeover_allow" or "takeover_restart" => "Updating the library",
         _ => null,
     };
@@ -218,6 +236,9 @@ internal static class PhoneWords
 
     public static string AddDetail(PhoneLinkState s) =>
         s.Added.Count > 0 ? $"Added {s.Added[^1]}." : "One scan pairs a phone with this PC and your NAS.";
+
+    public static string FolderDetail(PhoneLinkState s) =>
+        s.Folder.Length == 0 ? "Where your phone reads your library. Nothing is written there until you choose it." : s.Folder;
 
     /// <summary>"Good for 4:59" under the code, from its expiry and now.</summary>
     public static string Countdown(long expiresUnix, long nowUnix)

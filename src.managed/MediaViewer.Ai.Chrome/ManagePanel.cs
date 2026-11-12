@@ -400,8 +400,10 @@ internal sealed partial class ManagePanel
         // Import and export (docs/design/17 "Sharing an index"; ManagePanel.Transfer.cs).
         AddTransferSection();
 
-        // Phone access (docs/plans/mobile.md; ManagePanel.Phone.cs), as on the Mac.
-        AddPhoneSection();
+        // Phone access is the app's (docs/plans/phone-in-the-app.md): Settings,
+        // under its own heading. Here, where it used to be, one line says so.
+        Section("Phone access").Children.Add(Pad(_look.Text(
+            "Your phone searches this index once you publish it. Phone access is in Settings, under its own heading.", 12)));
 
         // People: a separate opt-in (PR 24; biometric data, stricter than the frame index).
         StackPanel people = Section("People");
@@ -658,7 +660,6 @@ internal sealed partial class ManagePanel
         }
         MvAiStatus s = _chrome.Status;
         _status.Show(s);
-        PollPhone();
         string? why = Look.FallbackReason(s);
         string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
         _compute.Text = (why ?? $"Running on {Look.ComputeBadge(s)}") + model;

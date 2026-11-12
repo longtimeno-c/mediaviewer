@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Phone access card's reading of the pack's JSON and its words
-// (src.managed/Shared/PhoneWords.cs), and the Mac twin (PhoneLinkView.swift,
-// PhoneAccessView.swift) read as text so the two say the same things.
+// Settings → Phone access: the reading of the app's state JSON and the card's
+// words (src.managed/Shared/PhoneWords.cs), and the Mac twin
+// (MediaViewerChrome's PhoneAccessView.swift) read as text so the two say the
+// same things.
 using MediaViewer.Shared;
 
 namespace MediaViewer.Chrome.Tests;
@@ -52,14 +53,23 @@ public class PhoneWordsTests
     }
 
     [Fact]
-    public void ThePublishRowSaysWhereItIs()
+    public void TheSearchRowSaysWhatThePhoneSearches()
     {
-        var p = PhoneWords.ParsePublish("""{"running":false,"error":"","destination":"\\\\nas\\photos","published":1000,"assets":12345}""");
-        Assert.Equal(@"\\nas\photos", p.Destination);
-        Assert.Equal("Published 2 hours ago · 12,345 files", PhoneWords.PublishStatus(p, 1000 + 2 * 3600 + 5));
-        Assert.Equal("Sending to the NAS", PhoneWords.PublishStatus(p with { Running = true, Phase = "sending" }, 0));
-        Assert.Equal("Building the catalogue", PhoneWords.PublishStatus(p with { Running = true }, 0));
-        Assert.Equal("Not published yet.", PhoneWords.PublishStatus(PhonePublishState.None, 0));
+        PhoneLinkState with = PhoneWords.ParseLink("""
+            {"folder":"\\\\nas\\photos","library_name":"photos","local_search":true,
+             "catalogue":{"running":false,"error":"","published":1000,"assets":12345}}
+            """)!;
+        Assert.Equal(@"\\nas\photos", with.Folder);
+        Assert.Equal("Smart search is on. Published 2 hours ago · 12,345 files", PhoneWords.SearchDetail(with, 1000 + 2 * 3600 + 5));
+        Assert.Equal("Sending to the NAS",
+                     PhoneWords.SearchDetail(with with { Catalogue = with.Catalogue! with { Running = true, Phase = "sending" } }, 0));
+        Assert.Equal("Smart search starts once the catalogue is published.",
+                     PhoneWords.SearchDetail(with with { Catalogue = PhonePublishState.None }, 0));
+        // No Local search: the phone searches as the desktop does without it.
+        PhoneLinkState without = PhoneWords.ParseLink("""{"folder":"/x","local_search":false}""")!;
+        Assert.StartsWith("Your phone searches file names and tags.", PhoneWords.SearchDetail(without, 0));
+        Assert.True(PhoneWords.ParseLink("""{"secondary":true}""")!.Secondary);
+        Assert.True(PhoneWords.ParseLink("""{"starting":true}""")!.Starting);
         Assert.Equal("just now", PhoneWords.Ago(30));
         Assert.Equal("yesterday", PhoneWords.Ago(86400 + 10));
     }
@@ -85,17 +95,19 @@ public class PhoneWordsTests
     [Fact]
     public void TheWordsAreTheMacs()
     {
-        string swift = Repo.Read("src.swift", "AIChrome", "Sources", "AIChrome", "PhoneLinkView.swift") +
-                       Repo.Read("src.swift", "AIChrome", "Sources", "AIChrome", "PhoneAccessView.swift");
+        string swift = Repo.Read("src.swift", "MediaViewerChrome", "Sources", "MediaViewerChrome", "PhoneAccessView.swift");
         var said = new List<string?>();
         foreach (string e in new[] { "refused", "unreachable", "bad_address", "too_many", "no_folder", "not_published",
-                                      "no_key_store", "revoke_waits", "no_driftwire" })
+                                      "other_library", "no_key_store", "revoke_waits", "no_driftwire", "no_local_search" })
             said.Add(PhoneWords.ErrorText(e));
-        foreach (string b in new[] { "claim", "pair", "refresh", "revoke", "add_folder", "set_addresses", "takeover_ask" })
+        foreach (string b in new[] { "claim", "pair", "refresh", "revoke", "add_folder", "set_addresses", "folder", "takeover_ask" })
             said.Add(PhoneWords.BusyText(b));
         foreach (string w in new[] { "private", "carrier", "unresolved" }) said.Add(PhoneWords.WarningText(w));
+        var loaded = new PhoneLinkState { LocalSearch = true };
         foreach (string e in new[] { "unreachable", "other_library", "no_space", "no_index", "no_folders", "no_key_store", "failed", "cancelled" })
-            said.Add(PhoneWords.PublishStatus(PhonePublishState.None with { Error = e }, 0));
+            said.Add(PhoneWords.SearchDetail(loaded with { Catalogue = PhonePublishState.None with { Error = e } }, 0));
+        said.Add(PhoneWords.SearchDetail(new PhoneLinkState(), 0));
+        said.Add(PhoneWords.FolderDetail(new PhoneLinkState()));
         foreach (string? text in said)
         {
             Assert.NotNull(text);
