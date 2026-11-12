@@ -583,6 +583,21 @@ the NAS. A phone that never has it searches as before, without sound.
   rule, `said:` and the find bits untouched. `model.json` keeps `"precision": "fp16"`: the key names
   the audio vectors in the index, which this file answers; `text_precision` says what the text file is.
   The generation opens again, in a work folder of its own, once the download lands.
+- **On the phone's engine** (`mv_mobile_parity` in an iPhone 18 Pro Simulator on an M5, the owner's
+  779-item Dolomites library as the Mac published it, the Mac's own answers at Auto; Simulator
+  numbers, not a phone's):
+
+  | | Identical to the Mac (rows and order) | Same count | Median per query | p95 | Footprint |
+  |---|---|---|---|---|---|
+  | Before (no sound tower) | 253 / 270 | 253 / 270 | 7.1 ms | 8.0 ms | 471 MB |
+  | After | 268 / 270 | 269 / 270 | 70.2 ms | 88.0 ms | 575 MB |
+
+  The 17 before were all a sound match on the Mac (one sound row the phone lacked, or no sound row
+  and the whole library instead). The two after are the shrunk tower at a threshold: "a glacier"
+  gains one sound row the Mac does not have, and "a ski slope" ranks one sound row differently from
+  its eighth row on. Each query now encodes twice (picture and sound), and the sound encode is the
+  ~63 ms: the price of fp32 compute over 8-bit weights. The footprint rises 104 MB, against ~720 MB
+  for the Mac's own file.
 - **A new export** is a new pin and an app update (`tools/ios/clap_text_phone.py`, reproducible).
 - **Not done:** the release is not uploaded (it needs the owner's OK); until it is, the download
   ends at a 404, Settings says "Needs an app update", and the next launch tries again, so no update is

@@ -131,6 +131,16 @@ mv_status MV_CALL host_piece_dir(void* h, const char* piece, char* out, std::uin
   if (s->sound && piece && std::string_view(piece) == "ai-audio") return copy_out(s->core_dir, out, capacity);
   return MV_ERR_IO;
 }
+// A phone decodes nothing for the engine: it indexes nothing. They are here because the host
+// table without them reads as one with no pixels, and such a host answers no piece_dir, so the
+// sound tower laid out as the ai-audio piece would never load (as the desktop's harness does).
+mv_status MV_CALL host_no_still(void*, const char*, std::uint32_t, std::uint8_t*, std::uint64_t, std::uint32_t*,
+                                std::uint32_t*) {
+  return MV_ERR_UNSUPPORTED_FORMAT;
+}
+mv_status MV_CALL host_no_sampler(void*, const char*, const mv_addon_sampler_options*, mv_addon_video_info*, void**) {
+  return MV_ERR_UNSUPPORTED_FORMAT;
+}
 int32_t MV_CALL host_no_yield(void*) { return 0; }
 void MV_CALL host_drop_event(void*, const mv_addon_event*) {}
 uint64_t MV_CALL host_correlation(void*) { return g_correlation.fetch_add(1); }
@@ -301,6 +311,8 @@ result<std::unique_ptr<search_engine>> search_engine::start(std::shared_ptr<cons
   i.api.stat_file = &host_stat;
   i.api.piece_dir = &host_piece_dir;
   i.api.should_yield = &host_no_yield;
+  i.api.decode_still_rgb = &host_no_still;
+  i.api.sampler_open = &host_no_sampler;
   i.api.post_event = &host_drop_event;
   i.api.next_correlation_id = &host_correlation;
   i.api.log = &host_log;
