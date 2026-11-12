@@ -8,6 +8,7 @@
 
 #include "catch_compat.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <future>
 #include <fstream>
@@ -21,6 +22,7 @@
 #include "addons/driftwire/secrets.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/transfer.h"
+#include "mobile/files.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
 #include "mobile/link_payload.h"
@@ -170,7 +172,9 @@ struct rig {
 
   std::string photos_label = "Photos";
 
-  explicit rig(std::size_t payload_bytes = 300000, std::string label = "Photos")
+  // `publish_first` false: the share as the desktop leaves it when the folder is chosen and no
+  // catalogue has been published yet (library.json only: file mode).
+  explicit rig(std::size_t payload_bytes = 300000, std::string label = "Photos", bool publish_first = true)
       : payload(payload_bytes, 'x'), photos_label(std::move(label)) {
     REQUIRE(sodium_init() >= 0);
     fs::create_directories(data);
@@ -182,7 +186,12 @@ struct rig {
     REQUIRE(serve::set_up(*store, identity, access, made));
     REQUIRE(made);
     write_file(photos / "2024" / "pic.bin", std::string(70000, 'p'));
-    pub.publish(1, payload);
+    if (publish_first) {
+      pub.publish(1, payload);
+    } else {
+      write_file(catalogue_home / ".mediaviewer" / "library.json",
+                 "{\"format\":1,\"library_id\":\"" + pub.library_id + "\",\"public_key\":\"" + catalog::to_hex(pub.pub) + "\"}");
+    }
     start();
   }
 
@@ -1658,4 +1667,241 @@ TEST_CASE("sample: Forget through the C ABI stops a tile write whose read has al
     if (it->is_regular_file()) ++tiles;
   }
   CHECK(tiles == 0);  // nothing written into the folder Forget removes next
+}
+
+// ---- file mode (docs/plans/phone-in-the-app.md §4) ----------------------------------------------
+
+namespace {
+
+mv_mobile_link* open_link(const std::string& cache, const mob::sync_config& cfg, const mob::service_config& service) {
+  mv_link_config c{};
+  c.library_dir = cfg.library_dir.c_str();
+  c.cache_dir = cache.c_str();
+  c.library_id = cfg.library_id.c_str();
+  c.local = service.local.c_str();
+  c.public_name = service.public_name.c_str();
+  c.device_name = service.device_name.c_str();
+  c.identity = service.identity.data();
+  c.access_key = service.access_key.data();
+  c.device_key = service.device_key.data();
+  c.publisher_key = cfg.publisher_key.data();
+  return mv_link_open(&c);
+}
+
+using hit_list = std::vector<std::pair<std::size_t, std::string>>;
+
+hit_list hits_of(const std::vector<mob::files::index::hit>& hits) {
+  hit_list out;
+  for (const auto& h : hits) out.emplace_back(h.index, h.why);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("file mode: library.json and no catalogue the phone can verify is file mode, not a failure",
+          "[mobile-link][mobile-files]") {
+  SECTION("no current.json") {
+    rig r(300000, "Photos", false);
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    const auto plan = mob::check_catalogue(s, r.sync_config());
+    CHECK(plan.outcome == mob::sync_outcome::no_catalogue);
+    CHECK(plan.library_root == "c2c2c2c2c2c2c2c2");
+  }
+  SECTION("a current.json signed by a key this phone did not pin") {
+    rig r(300000, "Photos", false);
+    auto [other_pub, other_secret] = catalog::make_keypair();
+    (void)other_pub;
+    r.pub.publish(1, r.payload, &other_secret);
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::no_catalogue);
+  }
+  SECTION("another library's library.json is not this library: no file mode") {
+    rig r(300000, "Photos", false);
+    write_file(r.catalogue_home / ".mediaviewer" / "library.json", "{\"format\":1,\"library_id\":\"someone-else\"}");
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::unreachable);
+  }
+  SECTION("a signed catalogue later: the next check offers it, as for any library") {
+    rig r(300000, "Photos", false);
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    REQUIRE(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::no_catalogue);
+    r.pub.publish(1, r.payload);
+    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::copy_available);
+  }
+}
+
+TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a file's bytes",
+          "[mobile-link][mobile-files]") {
+  rig r(300000, "Photos", false);
+  write_file(r.photos / "Trip" / "IMG_0001.JPG", std::string(5000, 'j'));
+  write_file(r.photos / "Trip" / "clip.MOV", std::string(100, 'm'));
+  write_file(r.photos / "Trip" / "notes.txt", "no");
+  write_file(r.photos / "Trip" / ".hidden.jpg", "no");
+  write_file(r.photos / "Trip" / "song.mp3", "no");
+  fs::create_directories(r.photos / "Trip" / "Day 2");
+  r.pair_now();
+  const auto cfg = r.sync_config();
+  const auto service = r.config();
+  const std::string cache = (r.dir.root / "thumbs").string();
+  mv_mobile_link* l = open_link(cache, cfg, service);
+  REQUIRE(l);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  mv_sync_report sync{};
+  CHECK(mv_sync_check(l, &sync) == MV_LINK_NO_CATALOGUE);
+  CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_NO_CATALOGUE);
+  mv_catalogue_info info{};
+  REQUIRE(mv_catalogue_read(l, &info) == MV_LINK_OK);
+  CHECK(info.present == 0);  // nothing installed
+
+  std::vector<std::pair<std::string, std::string>> roots;
+  REQUIRE(mv_files_roots(l, [](void* ctx, const char* id, const char* label) {
+            static_cast<std::vector<std::pair<std::string, std::string>>*>(ctx)->emplace_back(id, label);
+          }, &roots) == MV_LINK_OK);
+  REQUIRE(roots.size() == 1);  // the catalogue's own folder is not one to browse
+  CHECK(roots[0].first == "a1a1a1a1a1a1a1a1");
+  CHECK(roots[0].second == "Photos");
+
+  struct seen {
+    std::string name;
+    std::uint64_t size;
+    int dir;
+    int kind;
+  };
+  std::vector<seen> entries;
+  const mv_file_entry_fn collect_entries = [](void* ctx, const mv_file_entry* e) {
+    static_cast<std::vector<seen>*>(ctx)->push_back({e->name, e->size, e->dir, e->kind});
+  };
+  REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "Trip", collect_entries, &entries) == MV_LINK_OK);
+  std::sort(entries.begin(), entries.end(), [](const seen& a, const seen& b) { return a.name < b.name; });
+  REQUIRE(entries.size() == 3);
+  CHECK((entries[0].name == "Day 2" && entries[0].dir == 1 && entries[0].kind == -1));
+  CHECK((entries[1].name == "IMG_0001.JPG" && entries[1].size == 5000 && entries[1].kind == 0));
+  CHECK((entries[2].name == "clip.MOV" && entries[2].kind == 2));
+
+  entries.clear();
+  REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "", collect_entries, &entries) == MV_LINK_OK);
+  CHECK(entries.size() == 2);  // "2024" and "Trip"
+  CHECK(mv_files_list(l, "a1a1a1a1a1a1a1a1", "../x", collect_entries, &entries) == MV_LINK_INVALID);
+
+  std::string got;
+  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+    return 1;
+  };
+  REQUIRE(mv_files_read(l, "a1a1a1a1a1a1a1a1", "Trip/IMG_0001.JPG", 100, 50, 0, nullptr, collect, &got) == MV_LINK_OK);
+  CHECK(got == std::string(50, 'j'));
+  CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "Trip/gone.jpg", 0, 10, 0, nullptr, collect, &got) == MV_LINK_NOT_FOUND);
+  CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "", 0, 10, 0, nullptr, collect, &got) == MV_LINK_INVALID);
+  mv_link_close(l);
+}
+
+TEST_CASE("file mode: what a folder shows, by the D5 table", "[mobile-files]") {
+  using mob::files::kind;
+  CHECK(mob::files::kind_of("a.JPG") == kind::photo);
+  CHECK(mob::files::kind_of("a.heic") == kind::photo);
+  CHECK(mob::files::kind_of("a.CR3") == kind::raw);
+  CHECK(mob::files::kind_of("a.mov") == kind::clip);
+  CHECK(mob::files::kind_of("a.mp3") == kind::none);
+  CHECK(mob::files::kind_of("a.pdf") == kind::none);
+  CHECK(mob::files::kind_of("README") == kind::none);
+  const std::vector<dw::serve::list_entry> listing{
+      {"b.jpg", 1, 2, false}, {".mediaviewer", 0, 0, true}, {"Sub", 0, 0, true}, {"x.txt", 1, 1, false}, {".a.jpg", 1, 1, false}};
+  const auto out = mob::files::shown(listing);
+  REQUIRE(out.size() == 2);
+  CHECK((out[0].name == "b.jpg" && out[0].k == kind::photo && !out[0].dir));
+  CHECK((out[1].name == "Sub" && out[1].dir));
+}
+
+TEST_CASE("file mode: the fields are the desktop's, in its why-order", "[mobile-files]") {
+  using mob::files::tag;
+  CHECK(mob::files::camera_line("Canon", "Canon EOS R5") == "Canon EOS R5");
+  CHECK(mob::files::camera_line("NIKON CORPORATION", "NIKON Z 6") == "NIKON CORPORATION NIKON Z 6");
+  CHECK(mob::files::camera_line("Apple ", "iPhone 15 Pro ") == "Apple iPhone 15 Pro");
+  CHECK(mob::files::camera_line("", "X100V") == "X100V");
+  CHECK(mob::files::camera_line("FUJIFILM", "") == "FUJIFILM");
+
+  const std::vector<tag> tags{{"Exif.Image.Make", "Canon"},
+                              {"Exif.Image.Software", "Adobe Lightroom"},
+                              {"Xmp.dc.title", "Lisbon at dusk"},
+                              {"Iptc.Application2.Caption", "Tram 28 by the cathedral"},
+                              {"Xmp.dc.subject", "Portugal, trams, Canon"},
+                              {"Iptc.Application2.Keywords", "Alfama"},
+                              {"Exif.Image.Artist", "Ana Sá"},
+                              {"Exif.Image.ImageDescription", "OLYMPUS DIGITAL CAMERA"}};
+  const auto fields = mob::files::fields_of("Canon", "Canon EOS R5", "RF24-70mm F2.8 L IS USM", "", tags);
+  // "Canon" (the make, and the keyword) is already inside the camera line, and the placeholder
+  // makes no field.
+  const std::vector<std::string> want{"Canon EOS R5", "RF24-70mm F2.8 L IS USM", "Adobe Lightroom", "Lisbon at dusk",
+                                      "Tram 28 by the cathedral", "Portugal", "trams", "Alfama", "Ana Sá"};
+  CHECK(fields == want);
+}
+
+TEST_CASE("file mode: names then tags, case- and accent-insensitive, with the why", "[mobile-files]") {
+  mob::files::index idx;
+  idx.set_names({"IMG_0001.JPG", "Crème brûlée.jpg", "r5-test.jpg", "IMG_0002.JPG", "IMG_0003.HEIC"});
+  const std::vector<std::string> canon{"Canon EOS R5", "Ana Sá"};
+  const std::vector<std::string> iphone{"Apple iPhone 15 Pro", "Portugália"};
+  const std::vector<std::string> chatgpt{"ChatGPT"};
+  idx.set_fields(0, canon);
+  idx.set_fields(2, canon);
+  idx.set_fields(3, iphone);
+  idx.set_fields(4, chatgpt);
+  idx.set_fields(99, chatgpt);  // a listing replaced meanwhile: ignored
+  CHECK(idx.count() == 5);
+  CHECK(idx.tagged() == 4);
+
+  // A name match first (no why), then a tag match on a file not already matched by name.
+  CHECK(hits_of(idx.match("R5")) == hit_list{{2, ""}, {0, "Canon EOS R5"}});
+  CHECK(hits_of(idx.match("CREME BRULEE")) == hit_list{{1, ""}});
+  CHECK(hits_of(idx.match("  crème ")) == hit_list{{1, ""}});
+  CHECK(hits_of(idx.match("portugalia")) == hit_list{{3, "Portugália"}});
+  CHECK(hits_of(idx.match("PORTUGÁLIA")) == hit_list{{3, "Portugália"}});
+  // Every word must be found; the why is the field the first word matched in.
+  CHECK(hits_of(idx.match("sa canon")) == hit_list{{0, "Ana Sá"}, {2, "Ana Sá"}});
+  CHECK(hits_of(idx.match("canon iphone")).empty());
+  CHECK(hits_of(idx.match("chatgpt")) == hit_list{{4, "ChatGPT"}});
+  // One folded letter matches names only: as a tag it would light up every camera make.
+  CHECK(hits_of(idx.match("c")) == hit_list{{1, ""}, {4, ""}});
+  CHECK(idx.match("   ").empty());
+  idx.set_names({"a.jpg"});
+  CHECK(idx.tagged() == 0);
+  CHECK(idx.match("canon").empty());
+}
+
+TEST_CASE("file mode: the fields and the index through the C ABI", "[mobile-files]") {
+  const mv_file_tag tags[] = {{"Xmp.dc.subject", "Lisboa, Tram"}, {"Exif.Image.Software", nullptr}};
+  std::vector<std::string> fields;
+  REQUIRE(mv_files_fields("SONY", "ILCE-7M4", nullptr, "a comment", tags, 2,
+                          [](void* ctx, const char* t) { static_cast<std::vector<std::string>*>(ctx)->push_back(t); },
+                          &fields) == MV_LINK_OK);
+  CHECK(fields == std::vector<std::string>{"SONY ILCE-7M4", "a comment", "Lisboa", "Tram"});
+
+  mv_file_index* idx = mv_file_index_new();
+  REQUIRE(idx);
+  const char* names[] = {"DSC0001.ARW", "DSC0002.ARW"};
+  REQUIRE(mv_file_index_names(idx, names, 2) == MV_LINK_OK);
+  const char* f[] = {"SONY ILCE-7M4", "Lisboa"};
+  REQUIRE(mv_file_index_fields(idx, 1, f, 2) == MV_LINK_OK);
+  std::size_t tagged = 0, count = 0;
+  REQUIRE(mv_file_index_counts(idx, &tagged, &count) == MV_LINK_OK);
+  CHECK((tagged == 1 && count == 2));
+  hit_list got;
+  REQUIRE(mv_file_index_match(idx, "lisbóa", [](void* ctx, size_t i, const char* why) {
+            static_cast<hit_list*>(ctx)->emplace_back(i, why ? why : "");
+          }, &got) == MV_LINK_OK);
+  CHECK(got == hit_list{{1, "Lisboa"}});
+  mv_file_index_free(idx);
 }

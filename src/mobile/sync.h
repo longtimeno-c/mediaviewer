@@ -24,6 +24,9 @@ struct sync_config {
   std::string library_id;     // from the pairing
   std::array<std::uint8_t, 32> publisher_key{};  // pinned at pairing
   std::string catalogue_root; // service root of `.mediaviewer`; empty: find it
+  // A library.json with no catalogue is file mode (no_catalogue). Off for the sample library,
+  // which always has one: anything else there is refused.
+  bool file_mode = true;
 };
 
 // On disk at <library_dir>/installed.json; the one record of what is here.
@@ -50,6 +53,10 @@ enum class sync_outcome : std::uint8_t {
   unreachable,    // the NAS could not be read
   cancelled,
   waiting,        // copy(): `allowed` said no (mobile data without the person's say-so); resumes later
+  // docs/plans/phone-in-the-app.md §4: a named folder holds a library.json naming this library, but no
+  // folder holds a current.json the pinned key signed for it (none yet, or none this phone can
+  // verify). The phone opens the library in file mode; a later check finds the catalogue.
+  no_catalogue,
 };
 
 struct sync_file {
@@ -68,6 +75,7 @@ struct sync_plan {
   std::uint64_t done_bytes = 0;     // what a resume already holds
   std::uint64_t needed_bytes = 0;   // when outcome is no_space
   std::string catalogue_root;
+  std::string library_root;         // no_catalogue: the service root that holds library.json
   std::string manifest_text;
   std::vector<sync_file> files;
 };

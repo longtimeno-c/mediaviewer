@@ -39,6 +39,8 @@ typedef enum mv_link_status {
   MV_LINK_INTERNAL = 17,
   MV_LINK_NO_FOLDER = 18,     /* the service has no folder named for this file's share */
   MV_LINK_WAITING = 19,       /* the copy stopped because bytes may not move now (mobile data) */
+  MV_LINK_NO_CATALOGUE = 20,  /* sync: a named folder's library.json names this library, and no folder holds a
+                                 catalogue this phone can verify: open it in file mode (see below) */
 } mv_link_status;
 
 /* Return 0 to stop the read. */
@@ -212,6 +214,54 @@ int32_t mv_moments_get(mv_mobile_link* link, int64_t asset, mv_moment_fn fn, voi
 /* Until the search session's library store lands: every photo and clip, newest first. */
 typedef void (*mv_listed_asset_fn)(void* ctx, int64_t asset, int32_t kind, int64_t taken_at, int64_t duration_ms, const char* name);
 int32_t mv_assets_list(mv_mobile_link* link, mv_listed_asset_fn fn, void* ctx);
+
+/* ---- file mode (docs/plans/phone-in-the-app.md 4) ----------------------------
+ * A library with no catalogue yet is the NAS's named folders. Paths are a service
+ * root id plus a '/'-separated path under it ("" for its top). Never logged. */
+
+typedef void (*mv_root_fn)(void* ctx, const char* id, const char* label);
+/* BLOCKS. The named folders, without the one that holds the catalogue (`.mediaviewer`). */
+int32_t mv_files_roots(mv_mobile_link* link, mv_root_fn fn, void* ctx);
+
+typedef struct mv_file_entry {
+  const char* name;
+  uint64_t size;
+  int64_t mtime;
+  int32_t dir;  /* 1: a folder */
+  int32_t kind; /* files: 0 photo, 1 RAW, 2 clip (the D5 table); -1 for a folder */
+} mv_file_entry;
+typedef void (*mv_file_entry_fn)(void* ctx, const mv_file_entry* entry);
+/* BLOCKS. One folder: its folders and the files this phone shows, hidden names left out, in the
+ * service's order. MV_LINK_NOT_FOUND, MV_LINK_DENIED, MV_LINK_UNREACHABLE. */
+int32_t mv_files_list(mv_mobile_link* link, const char* root, const char* rel, mv_file_entry_fn fn, void* ctx);
+/* BLOCKS. A range of one file, as mv_file_read. */
+int32_t mv_files_read(mv_mobile_link* link, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
+                      mv_cancel* cancel, mv_sink_fn sink, void* ctx);
+
+/* File search: the desktop's fields, fold and match (docs/design/16 "File search", 06 "Search text").
+ * Nothing here blocks. */
+typedef struct mv_file_tag {
+  const char* raw_tag; /* as Exiv2 names it: "Exif.Image.Software", "Iptc.Application2.Keywords", "Xmp.dc.subject" */
+  const char* value;   /* a list as "a, b" */
+} mv_file_tag;
+typedef void (*mv_text_fn)(void* ctx, const char* text);
+/* A file's search fields in the desktop's why-order, each handed to `fn`. Any string may be NULL. */
+int32_t mv_files_fields(const char* make, const char* model, const char* lens, const char* comment, const mv_file_tag* tags,
+                        size_t count, mv_text_fn fn, void* ctx);
+
+/* The folder on screen. Thread-safe. */
+typedef struct mv_file_index mv_file_index;
+mv_file_index* mv_file_index_new(void);
+void mv_file_index_free(mv_file_index* index);
+/* A new listing; every file's fields are forgotten. */
+int32_t mv_file_index_names(mv_file_index* index, const char* const* names, size_t count);
+int32_t mv_file_index_fields(mv_file_index* index, size_t i, const char* const* fields, size_t count);
+/* `why` is NULL for a name match, else the field the first word matched in ("Canon EOS R5"). Names
+ * first, in listing order, then tags. */
+typedef void (*mv_file_hit_fn)(void* ctx, size_t index, const char* why);
+int32_t mv_file_index_match(const mv_file_index* index, const char* typed, mv_file_hit_fn fn, void* ctx);
+/* How many files have their fields, of how many. */
+int32_t mv_file_index_counts(const mv_file_index* index, size_t* tagged, size_t* count);
 
 #ifdef __cplusplus
 }
