@@ -17,17 +17,41 @@ extension String {
 struct MediaTile: View {
   let entry: GridEntry
   let images: ImageLadder
-  @State private var loaded: UIImage?
+  /// A search's tiles fade in their first picture as an answer arrives. A library's do not: a
+  /// fast scroll would run a fade on every row it passes (measured: more hitches).
+  var fadesIn = false
+  /// The picture this tile has had, and whose it is: a tile shows only its own item's picture.
+  @State private var loaded: Loaded?
   /// The thumbnail could not be had: a quiet glyph says what the tile is instead of an empty square.
   @State private var missing = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// Whether the last drawing painted a picture. A box, not state: written while drawing, read
+  /// when a picture arrives, and never a reason to draw again.
+  @State private var drawn = Drawn()
+
+  private final class Drawn { var painted = false }
+
+  private struct Loaded {
+    let id: MediaID
+    let image: UIImage
+  }
+
+  /// What the tile paints now: its own picture, else the best one already in memory, so an item
+  /// shown before (in this answer or an earlier one) paints in its first frame and never flashes.
+  private var shown: UIImage? {
+    if let loaded, loaded.id == entry.item.id { return loaded.image }
+    return images.cachedImage(for: entry.item.id)
+  }
 
   var body: some View {
-    let shown = loaded ?? images.cachedImage(for: entry.item.id)
+    let shown = shown
+    let _ = drawn.painted = shown != nil
     Theme.surface
       .aspectRatio(1, contentMode: .fit)
       .overlay {
         if let shown {
           Image(uiImage: shown).resizable().interpolation(.medium).scaledToFill()
+            .transition(.opacity)
         } else if missing {
           Image(systemName: entry.item.kind == .clip ? "film" : "photo")
             .font(.title2)
@@ -38,15 +62,32 @@ struct MediaTile: View {
       .clipped()
       .overlay(alignment: .bottomTrailing) { badge }
       .contentShape(Rectangle())
-      .task(id: entry.item.id) {
-        missing = false
-        loaded = nil
-        if images.cachedImage(for: entry.item.id) == nil {
-          loaded = await images.placeholder(for: entry.item)
-        }
-        if let sharper = await images.thumbnail(for: entry.item) { loaded = sharper }
-        if loaded == nil, images.cachedImage(for: entry.item.id) == nil, !Task.isCancelled { missing = true }
-      }
+      .task(id: entry.item.id) { await load() }
+  }
+
+  /// The ladder, off the main thread: the tile from the phone, then the sharper JPEG-512. Nothing
+  /// is cleared first, so the tile keeps what it shows until something better arrives.
+  private func load() async {
+    let item = entry.item
+    missing = false
+    if !drawn.painted, let quick = await images.placeholder(for: item), !Task.isCancelled {
+      show(quick, of: item.id)
+    }
+    if let sharper = await images.thumbnail(for: item), !Task.isCancelled {
+      show(sharper, of: item.id)
+    }
+    if loaded?.id != item.id, !drawn.painted, !Task.isCancelled { missing = true }
+  }
+
+  /// Fades in only the first picture a tile gets (`fadesIn`); a sharper one replaces it in place.
+  private func show(_ image: UIImage, of id: MediaID) {
+    guard id == entry.item.id else { return }
+    // Whether the tile already paints something: its own picture, or one the ladder had in
+    // memory (no new ladder call; `shown` asked the same question when the tile was drawn).
+    let fade = fadesIn && !reduceMotion && loaded?.id != id && !drawn.painted
+    var change = Transaction(animation: fade ? .easeOut(duration: 0.18) : nil)
+    change.disablesAnimations = !fade
+    withTransaction(change) { loaded = Loaded(id: id, image: image) }
   }
 
   @ViewBuilder
@@ -96,7 +137,14 @@ struct MediaGrid<Header: View>: View {
         LazyVGrid(columns: columns, spacing: 2) {
           ForEach(sections) { section in
             Section {
-              ForEach(section.range, id: \.self) { position in tile(entries[position]) }
+              if let ids = entries.ids {
+                // Keyed by item: a tile follows its item from one answer to the next.
+                ForEach(section.range.map { Slot(position: $0, id: ids[$0]) }) { slot in
+                  tile(entries[slot.position]).id(slot.id)
+                }
+              } else {
+                ForEach(section.range, id: \.self) { position in tile(entries[position]).id(position) }
+              }
             } header: {
               if let title = section.title {
                 Text(title)
@@ -113,7 +161,12 @@ struct MediaGrid<Header: View>: View {
       }
       .onChange(of: model.viewerFocus) { _, focus in
         guard let focus, focus.hasPrefix(context + "/") else { return }
-        if let position = Int(focus.dropFirst(context.count + 1)) { proxy.scrollTo(position, anchor: .center) }
+        guard let position = Int(focus.dropFirst(context.count + 1)) else { return }
+        if let ids = entries.ids {
+          if ids.indices.contains(position) { proxy.scrollTo(ids[position], anchor: .center) }
+        } else {
+          proxy.scrollTo(position, anchor: .center)
+        }
       }
     }
     .background(Theme.ground)
@@ -125,13 +178,12 @@ struct MediaGrid<Header: View>: View {
     Button {
       open(entry)
     } label: {
-      MediaTile(entry: entry, images: model.services.images)
+      MediaTile(entry: entry, images: model.services.images, fadesIn: entries.ids != nil)
     }
     .buttonStyle(TileButtonStyle())
     .accessibilityLabel(entry.accessibilityName)
     // Never spoken: lets a test name which item a tile is (the live parity run).
     .accessibilityIdentifier(answering.isEmpty ? "tile:\(entry.item.id.raw)" : "tile:\(entry.item.id.raw)|\(answering)")
-    .id(entry.position)
     .modifier(TransitionSource(id: source, namespace: namespace))
   }
 
@@ -140,6 +192,11 @@ struct MediaGrid<Header: View>: View {
                              playClip: entry.item.kind == .clip),
                reduceMotion: reduceMotion)
   }
+}
+
+private struct Slot: Identifiable {
+  let position: Int
+  let id: String
 }
 
 private struct TransitionSource: ViewModifier {
