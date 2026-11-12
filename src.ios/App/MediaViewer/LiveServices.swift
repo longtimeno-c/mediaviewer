@@ -36,7 +36,8 @@ enum LiveServices {
           last = nil
         }
         let nowHears = snapshot.soundSearch == .ready
-        guard snapshot.catalogue != last || (nowHears && !hears) else {
+        // At launch the model may be here from before: the generation opened with it.
+        guard snapshot.catalogue != last || (nowHears && !hears && !catalogue.hearsSound) else {
           hears = nowHears
           continue
         }

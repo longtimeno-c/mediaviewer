@@ -31,6 +31,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   // for mobile data (until the download ends), and its cancel for Forget.
   private var soundState: SoundSearchState = .notNeeded
   private var soundRunning = false
+  private var soundAgain = false  // asked while a run was going: run once more when it ends
   private var soundOverMobileData = false
   private var soundCancel: LinkCancel?
   // One first copy at a time: a new one (Copy over mobile data) waits for the old one's defer.
@@ -701,7 +702,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   }
 
   public func downloadSoundSearch(overMobileData: Bool) async {
-    if overMobileData { lock.withLock { soundOverMobileData = true } }
+    lock.withLock {
+      if overMobileData { soundOverMobileData = true }
+      // The person asked: a damaged download or a missing file is tried again.
+      if case .unavailable = soundState { soundState = .notNeeded }
+    }
     guard let link = await awaitLink() else { return }
     work.run(priority: .userInitiated) { [weak self] in await self?.soundSync(link) }
   }
@@ -726,13 +731,26 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// finds it running and leaves it.
   private func soundSync(_ link: LinkHandle) async {
     let start = lock.withLock { () -> Bool in
-      guard !soundRunning, !forgotten, handle === link else { return false }
-      if case .unavailable(.gone) = soundState { return false }  // until an update names another
+      guard !forgotten, handle === link else { return false }
+      if soundRunning {
+        soundAgain = true
+        return false
+      }
+      // Gone or damaged: not again on every connection (152 MB each time) until the next launch or
+      // the person's Try again.
+      if case .unavailable(let problem) = soundState, problem == .gone || problem == .rejected { return false }
       soundRunning = true
       return true
     }
     guard start else { return }
-    defer { lock.withLock { soundRunning = false } }
+    defer {
+      let again = lock.withLock { () -> Bool in
+        soundRunning = false
+        defer { soundAgain = false }
+        return soundAgain && !forgotten && handle === link
+      }
+      if again { work.run(priority: .utility) { [weak self] in await self?.soundSync(link) } }
+    }
     let library = LinkFolders.library.path
     let wanted = await onLinkQueue { () -> Bool in
       var info = mv_catalogue_info()
@@ -786,7 +804,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     case 19:  // left Wi-Fi: the next connection on Wi-Fi picks up where it stopped
       setSound(.waitingForWiFi(totalBytes: total - min(Int64(mv_sound_bytes(library)), total)), from: link,
                cacheBytes: Self.cacheBytes(link))
-    case 11: break  // Forget, or the app going: nothing to say
+    case 11:  // Forget (which says nothing), or the work stopping: picked up on the next connection
+      setSound(.waitingForWiFi(totalBytes: total - min(Int64(mv_sound_bytes(library)), total)), from: link,
+               cacheBytes: Self.cacheBytes(link))
     case 9: setSound(.unavailable(.gone), from: link, cacheBytes: Self.cacheBytes(link))
     case 12: setSound(.unavailable(.rejected), from: link, cacheBytes: Self.cacheBytes(link))
     case 13: setSound(.unavailable(.notEnoughSpace), from: link, cacheBytes: Self.cacheBytes(link))

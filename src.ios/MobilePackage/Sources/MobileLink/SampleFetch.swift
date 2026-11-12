@@ -116,11 +116,11 @@ final class SampleFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     return transfer.status
   }
 
-  /// Only https, and only the folder the core named: a Debug build's test folder may be a loopback
-  /// server or a file:// folder.
+  /// Only https, and only the folders the core named (the sample library's, sound search's model's):
+  /// a Debug build's test folder may be a loopback server or a file:// folder.
   private static func allowed(_ url: URL) -> Bool {
-    guard let base = URL(string: base) else { return false }
-    guard url.absoluteString.hasPrefix(base.absoluteString) else { return false }
+    let bases = [base, LinkConnection.soundBase].compactMap { URL(string: $0)?.absoluteString }
+    guard bases.contains(where: { url.absoluteString.hasPrefix($0) }) else { return false }
     #if DEBUG
     if url.isFileURL || url.host == "127.0.0.1" || url.host == "localhost" { return true }
     #endif

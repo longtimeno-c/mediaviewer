@@ -466,6 +466,7 @@ TEST_CASE("sync: copy, hash check, install, resume, signatures and generations",
     const std::string old_current = read_all(base / "current.json");
     r.pub.publish(2, r.payload);
     fs::create_directories(library / "engine" / "1-1");  // search's work folder for generation 1
+    fs::create_directories(library / "engine" / "1-1+sound");  // and the one with sound search's model
     auto next = mob::check_catalogue(s, cfg);
     REQUIRE(next.outcome == mob::sync_outcome::copy_available);
     REQUIRE(mob::copy_catalogue(s, cfg, next, nullptr, nullptr) == mob::sync_outcome::installed);
@@ -474,6 +475,7 @@ TEST_CASE("sync: copy, hash check, install, resume, signatures and generations",
     CHECK(installed->high_generation == 2);
     CHECK_FALSE(fs::exists(library / "gen" / "1-1"));
     CHECK_FALSE(fs::exists(library / "engine" / "1-1"));
+    CHECK_FALSE(fs::exists(library / "engine" / "1-1+sound"));
 
     // Lower generation, correctly signed: refused, and the catalogue stays.
     write_file(base / "current.json", old_current);

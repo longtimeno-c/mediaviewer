@@ -129,9 +129,12 @@ mv_mobile_status mv_mobile_library_open(const mv_mobile_open_options* o, mv_mobi
     if (!opened) return map_status(opened.error());
     auto library = std::make_unique<mv_mobile_library>();
     library->cat = std::shared_ptr<catalogue>(std::move(*opened));
-    library->work_dir = o->work_dir;
     if (o->sound_dir) library->sound_dir = o->sound_dir;
     library->has_sound = mv::mobile::sound_wanted(*library->cat, library->sound_dir);
+    // The folder is named by what is laid out in it: an engine of the same generation opened
+    // without the sound tower keeps its own, and never sees this one laid out over it.
+    library->work_dir = std::string(o->work_dir) + (library->has_sound ? "+sound" : "");
+    if (!library->has_sound) library->sound_dir.clear();
     *out = library.release();
     return MV_MOBILE_OK;
   });

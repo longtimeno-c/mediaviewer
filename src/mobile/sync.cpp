@@ -350,8 +350,10 @@ sync_outcome finish_install(const sync_config& c, sync_plan& plan, const std::st
     if (it->path().filename() != name) {
       std::error_code e2;
       fs::remove_all(it->path(), e2);
-      // The search engine's work folder for that generation goes with it.
+      // The search engine's work folders for that generation go with it, the one laid out with
+      // sound search's model too: both hold hard links to its files.
       fs::remove_all(library / "engine" / it->path().filename(), e2);
+      fs::remove_all(library / "engine" / (it->path().filename().string() + "+sound"), e2);
     }
   }
   std::set<fs::path> kept_models;

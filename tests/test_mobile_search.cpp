@@ -257,6 +257,9 @@ TEST_CASE("the sound text tower is laid out only once it is verified, and a fold
     mv_mobile_library_info info{};
     REQUIRE(mv_mobile_library_info_get(lib, &info) == MV_MOBILE_OK);
     CHECK(info.has_sound == 1);
+    REQUIRE(mv_mobile_search_start(lib) == MV_MOBILE_OK);  // lays out work_dir + "+sound", not work_dir
+    CHECK(fs::exists(g.root / "w3+sound" / "core" / "models" / "sound" / "text.onnx"));
+    CHECK_FALSE(fs::exists(g.root / "w3"));
     mv_mobile_library_close(lib);
   }
   fs::resize_file(dir / "text.onnx", fs::file_size(dir / "text.onnx") - 1);

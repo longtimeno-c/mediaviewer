@@ -34,6 +34,7 @@ from pathlib import Path
 
 import numpy as np
 import onnx
+import onnxruntime
 from onnx import TensorProto, helper, numpy_helper
 from onnxruntime.quantization.matmul_nbits_quantizer import DefaultWeightOnlyQuantConfig, MatMulNBitsQuantizer
 
@@ -43,6 +44,8 @@ FP32 = {"file": "onnx/text_model.onnx", "size": 501513769,
         "sha256": "386413c758300d8f2be107b9fefbc049945b1b1b302938b01039af0ad4984595"}
 EMBEDDING = "text_model.embeddings.word_embeddings.weight"
 BITS, BLOCK, ACCURACY = 8, 16, 1
+# The bytes depend on the quantiser, the serialiser and the rounding: the pin was made with these.
+TOOLS = {"onnxruntime": "1.30.0", "onnx": "1.23.2", "numpy": "2.5.4"}
 
 
 def sha256(path: Path) -> str:
@@ -124,6 +127,11 @@ def main() -> None:
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--fp32", type=Path, help="the pinned fp32 text model, if already here")
     a = ap.parse_args()
+    have = {"onnxruntime": onnxruntime.__version__, "onnx": onnx.__version__, "numpy": np.__version__}
+    if have != TOOLS:
+        sys.exit(f"made with {TOOLS}, this has {have}: the bytes would differ from the pin")
+    if a.fp32 and (a.fp32.stat().st_size != FP32["size"] or sha256(a.fp32) != FP32["sha256"]):
+        sys.exit(f"{a.fp32}: not the pinned fp32 export")
     spec, tokenizer, mac_text = pinned_audio()
     a.out.mkdir(parents=True, exist_ok=True)
     work = a.out / ".work"

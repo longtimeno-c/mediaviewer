@@ -56,8 +56,8 @@ typedef struct mv_mobile_open_options {
   const char* library_dir;
   const char* work_dir;
   /* The sound text tower's folder (sound_tower.h; mv_sound_fetch in mv_mobile_link.h), or NULL.
-   * Loaded only when it is verified and the catalogue has clip sounds it answers; a work_dir laid
-   * out without it is laid out again, so give a library opened with it a work_dir of its own. */
+   * Loaded only when it is verified and the catalogue has clip sounds it answers; the engine then
+   * works in work_dir + "+sound", so one opened without it keeps work_dir. */
   const char* sound_dir;
 } mv_mobile_open_options;
 
