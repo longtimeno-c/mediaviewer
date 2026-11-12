@@ -658,6 +658,14 @@ TestFlight included, and nothing about it is hidden:
 - `tools/ios/sample-library.sh` makes it again from `sources.json` (licences rechecked each time) and
   uploads it, current.json last. The review notes are `src.ios/AppStore/review-notes.md`.
 
+**A library with no catalogue yet (file mode, built 2026-11-12, `docs/plans/phone-in-the-app.md` §4):**
+when the share has this library's `library.json` and no catalogue the phone can verify, the check says
+so (`MV_LINK_NO_CATALOGUE`) and the library opens as its named folders, browsed folder by folder. Search
+is the desktop's File search over the folder on screen, by name and by tag, with the desktop's own
+fields and match (`src/mobile/files.*`, `meta/search.cpp`); tags come from each photo's first 256 KiB,
+parsed by ImageIO and kept by path, size and mtime. Items are `file:<root>/<path>`. The next sync that
+finds a signed catalogue copies it and the library becomes the catalogue's. Not in the sample library.
+
 The review server and review grant are no longer needed for 1.0. A grant may still come later for
 showing a real NAS to someone.
 
