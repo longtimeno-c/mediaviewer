@@ -1,6 +1,6 @@
 # Plan — the NAS owner's passphrase, and temporary and scoped phone access
 
-Status: **plan, waiting for the owner's calls in §9** (2026-11-12). Nothing here is built. Reviewed
+Status: **plan; the owner made every call in §9 as recommended on 2026-11-12** (C5: option A). Building. Reviewed
 against the code by Opus on 2026-11-12; its findings are folded in (session binding, the claim's third
 round trip, guests kept out of `devices`, guest codes in their own value, re-scan rules).
 Builds on `driftwire serve` and the Phone access card as they are on `claude/mobile-integration-c6a3b5`
@@ -375,7 +375,7 @@ entries. Recommended: this work adds the JSON fields and verbs to the engine, ex
 `phone_link` / `phone_link_json` mirrors, and the Windows card, when built, builds these rows with
 it. Building the whole Windows card now is a separate task.
 
-## 9. Owner calls (needed before building)
+## 9. Owner calls (made 2026-11-12: every recommendation accepted)
 
 | # | Call | Recommendation |
 |---|---|---|
