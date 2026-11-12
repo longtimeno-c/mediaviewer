@@ -51,7 +51,7 @@ public struct MediaItem: Identifiable, Hashable, Sendable {
 
 /// A place inside a clip that a search or the index knows about.
 public struct Moment: Identifiable, Hashable, Sendable {
-  public enum Kind: Hashable, Sendable { case speech, scene, wordsOnScreen }
+  public enum Kind: Hashable, Sendable { case speech, scene, wordsOnScreen, sound }
   public let seconds: TimeInterval
   public let kind: Kind
   /// What was said, what is on screen, or a short name for the scene.
@@ -241,6 +241,28 @@ public struct CatalogueInfo: Hashable, Sendable {
   }
 }
 
+/// Sound search (§9, "Sound search"): the catalogue carries what each clip sounds like; the phone
+/// downloads once the half of the Mac's sound model that reads a typed query.
+public enum SoundSearchState: Hashable, Sendable {
+  /// No library, or its clips were not listened to by the model a phone can run.
+  case notNeeded
+  /// The download waits for Wi-Fi unless the person allows mobile data; the size comes first (§8.4).
+  case waitingForWiFi(totalBytes: Int64)
+  case downloading(doneBytes: Int64, totalBytes: Int64)
+  case ready
+  case unavailable(SoundSearchProblem)
+}
+
+public enum SoundSearchProblem: Hashable, Sendable {
+  /// The download did not answer; it is tried again on the next connection.
+  case offline
+  case notEnoughSpace
+  /// This version's model is no longer where it was published: an app update brings another.
+  case gone
+  /// What arrived was not the model this version expects, and was deleted.
+  case rejected
+}
+
 public struct ConnectionSnapshot: Hashable, Sendable {
   public let hasLibrary: Bool
   public let synology: SynologyState
@@ -255,6 +277,8 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   public var isSample = false
   /// The paired library's name, as its code gave it ("" with none): said when something would replace it.
   public var libraryName = ""
+  /// Whether search hears clips, and the download that makes it (stamped when published).
+  public var soundSearch: SoundSearchState = .notNeeded
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

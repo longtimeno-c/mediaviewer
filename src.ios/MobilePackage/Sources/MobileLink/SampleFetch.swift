@@ -1,7 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The sample library's transport (docs/plans/mobile.md §11.1): the core's `mv_fetch_fn`, an HTTPS GET
-// of a byte range from the static folder src/mobile/sample.h names. Called on a core worker and
+// of a byte range from the static folder src/mobile/sample.h names. Sound search's model (§9) comes
+// the same way, from the release src/mobile/sound_tower.h names, each file hashed against its pin. Called on a core worker and
 // blocks it, as the link's own reads do; never on the main thread. Nothing about the person is
 // sent: no cookies, no cache; the user agent is a fixed "MediaViewer" (not the build, the OS
 // or the device) and the language "*", so a request says nothing a range does not. The core uses

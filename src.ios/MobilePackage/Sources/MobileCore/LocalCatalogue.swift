@@ -35,9 +35,21 @@ public struct LibraryLocation: Sendable {
   public var installedFile: URL { root.appendingPathComponent("installed.json") }
 
   var generations: URL { root.appendingPathComponent("gen", isDirectory: true) }
-  func work(for generation: URL) -> URL {
-    root.appendingPathComponent("engine", isDirectory: true).appendingPathComponent(generation.lastPathComponent, isDirectory: true)
+  /// A generation opened with sound search's model gets a work folder of its own: the engine of
+  /// the one opened without it may still be reading the other.
+  func work(for generation: URL, sound: Bool = false) -> URL {
+    root.appendingPathComponent("engine", isDirectory: true)
+      .appendingPathComponent(generation.lastPathComponent + (sound ? "+sound" : ""), isDirectory: true)
   }
+
+  /// Sound search's model (§9; src/mobile/sound_tower.h), as the link downloads it.
+  public var soundFolder: URL {
+    root.appendingPathComponent("sound", isDirectory: true).appendingPathComponent("clap-general", isDirectory: true)
+  }
+
+  /// Whether sound search's model is here, verified: the record the download writes last. The
+  /// core checks it whole (each file's size, every hash named) when the library opens.
+  var hasSoundModel: Bool { FileManager.default.fileExists(atPath: soundFolder.appendingPathComponent("verified.txt").path) }
 
   private struct Installed: Decodable {
     let dir: String
@@ -118,7 +130,9 @@ public final class LocalCatalogue: @unchecked Sendable {
 
   private static func open(_ directory: URL, in root: LibraryLocation) throws -> Generation {
     beforeOpen?(directory)
-    return try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory))
+    let sound = root.hasSoundModel
+    return try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory, sound: sound),
+                          sound: sound ? root.soundFolder : nil)
   }
 
   /// Puts `g` in force unless a newer (epoch, generation) already is: opens can finish in any
@@ -476,6 +490,7 @@ private final class CoreSearch: SearchService, @unchecked Sendable {
     let kind: Moment.Kind
     if hit.match & MV_MOBILE_MATCH_SPEECH != 0 { kind = .speech }
     else if hit.match & MV_MOBILE_MATCH_TEXT != 0 { kind = .wordsOnScreen }
+    else if hit.match & MV_MOBILE_MATCH_SOUND != 0 { kind = .sound }  // what the clip sounds like (§9)
     else { kind = .scene }
     return Moment(seconds: TimeInterval(hit.pts_ms) / 1000, kind: kind, text: text)
   }

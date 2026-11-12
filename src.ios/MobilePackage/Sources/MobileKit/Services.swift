@@ -85,6 +85,13 @@ public protocol CatalogueSync: Sendable {
   /// Finishes when the catalogue is on the phone; throws `CopyFailure`. Cancelling the iteration
   /// stops the copy.
   func firstCopy(overMobileData: Bool) -> AsyncThrowingStream<CopyEvent, Error>
+  /// Sound search's download (§9): now, over mobile data too when the person says so. Progress and
+  /// the outcome arrive as `ConnectionSnapshot.soundSearch`.
+  func downloadSoundSearch(overMobileData: Bool) async
+}
+
+public extension CatalogueSync {
+  func downloadSoundSearch(overMobileData: Bool) async {}
 }
 
 public enum ClipRoute {
