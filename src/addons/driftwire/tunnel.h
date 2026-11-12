@@ -86,6 +86,19 @@ struct socks_ask {
 };
 [[nodiscard]] std::optional<socks_ask> parse_socks_request(std::span<const std::uint8_t> bytes, std::size_t& needed);
 
+// The system proxy (owner, 2026-11-12; sysproxy.h): the computer's automatic
+// proxy setting points at a PAC file this proxy serves on its own port.
+// It sends everything but local names and private addresses to SOCKS5 here
+// (names resolved at the relay), and goes DIRECT when the proxy does not
+// answer, so a dead tunnel never leaves the machine without the network.
+inline constexpr std::string_view kPacPath = "/driftwire-tunnel.pac";
+[[nodiscard]] std::string pac_url(std::uint16_t port);
+[[nodiscard]] std::string pac_script(std::uint16_t port);
+// Whether a head (through its blank line) asks for the PAC file: "GET" of
+// kPacPath in origin form (what an OS's proxy client sends; never a proxy
+// request, which names a host).
+[[nodiscard]] bool asks_for_pac(std::string_view head);
+
 // SOCKS5's reply code for a forward's answer, and HTTP's status line.
 [[nodiscard]] std::uint8_t socks_reply_for(relay::forward_answer a) noexcept;
 [[nodiscard]] std::string http_reply_for(relay::forward_answer a);

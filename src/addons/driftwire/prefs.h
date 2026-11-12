@@ -40,6 +40,8 @@ struct prefs {
   // the loopback port its proxy had, tried first next time (0: none yet).
   bool tunnel = false;
   std::uint16_t tunnel_port = 0;
+  // "Use for all apps" (on by default): the system proxy points at it.
+  bool tunnel_all_apps = true;
   bool operator==(const prefs&) const = default;
 };
 

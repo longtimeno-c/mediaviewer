@@ -25,7 +25,7 @@ constexpr char kIdContext[] = "MediaViewer Driftwire relay token id v3";
 constexpr char kSenderPskContext[] = "MediaViewer Driftwire relay sender psk v3";
 // A handshake message here is an ephemeral key, a payload (a token, or a
 // forward's port, host length and host) and a tag at most.
-constexpr std::size_t kMaxNoiseBytes = noise::kDhBytes + 3 + kMaxHostBytes + noise::kTagBytes;
+constexpr std::size_t kMaxNoiseBytes = noise::kDhBytes + 4 + kMaxHostBytes + noise::kTagBytes;
 
 std::int64_t now_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count();
@@ -388,6 +388,7 @@ const char* forward_answer_name(forward_answer a) noexcept {
     case forward_answer::busy: return "busy";
     case forward_answer::unreachable: return "unreachable";
     case forward_answer::not_public: return "not_public";
+    case forward_answer::kind: return "kind";
     case forward_answer::failed: return "failed";
   }
   return "failed";
@@ -412,6 +413,7 @@ std::uint8_t word_of(forward_answer a) {
     case forward_answer::port: return kForwardPort;
     case forward_answer::busy: return kForwardBusy;
     case forward_answer::not_public: return kForwardNotPublic;
+    case forward_answer::kind: return kForwardKind;
     default: return kForwardUnreachable;
   }
 }
@@ -424,6 +426,7 @@ forward_answer answer_of(std::uint8_t w) {
     case kForwardBusy: return forward_answer::busy;
     case kForwardNotPublic: return forward_answer::not_public;
     case kForwardUnreachable: return forward_answer::unreachable;
+    case kForwardKind: return forward_answer::kind;
     default: return forward_answer::failed;
   }
 }
@@ -472,6 +475,7 @@ result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string
     return fail(status::permission_denied);
   }
   std::vector<std::uint8_t> ask;
+  ask.push_back(kForwardTcp);
   ask.push_back(static_cast<std::uint8_t>(port >> 8));
   ask.push_back(static_cast<std::uint8_t>(port));
   ask.push_back(static_cast<std::uint8_t>(host.size()));
@@ -710,11 +714,13 @@ void server::handle(std::shared_ptr<link> l, const net::address& from) {
   if (!m2 || !hs.read_message(*m2, payload)) return refuse();
   std::string fwd_host;
   std::uint16_t fwd_port = 0;
+  std::uint8_t fwd_kind = kForwardTcp;
   if (*role == kForwarder) {
-    // The port, the host's length and the host, sealed: nothing else.
-    if (payload.size() < 4 || payload.size() != 3u + payload[2]) return refuse();
-    fwd_port = static_cast<std::uint16_t>(payload[0] << 8 | payload[1]);
-    fwd_host.assign(reinterpret_cast<const char*>(payload.data()) + 3, payload[2]);
+    // The kind, the port, the host's length and the host, sealed: nothing else.
+    if (payload.size() < 5 || payload.size() != 4u + payload[3]) return refuse();
+    fwd_kind = payload[0];
+    fwd_port = static_cast<std::uint16_t>(payload[1] << 8 | payload[2]);
+    fwd_host.assign(reinterpret_cast<const char*>(payload.data()) + 4, payload[3]);
     if (fwd_port == 0 || !forward_host_ok(fwd_host)) return refuse();
   } else if (payload.size() != (*role == kWaiter ? kTokenBytes : 0)) {
     return refuse();
@@ -728,6 +734,14 @@ void server::handle(std::shared_ptr<link> l, const net::address& from) {
   if (*role == kForwarder) {
     auto from_client = std::make_unique<noise::cipher_state>();
     from_client->init(keys->responder_to_initiator);
+    if (fwd_kind != kForwardTcp) {
+      // A kind this server does not carry (a datagram flow): said, sealed.
+      (void)write_word(*l, *to_client, kForwardKind);
+      l->shutdown();
+      std::lock_guard lock(m_);
+      ++counts_.forward_refused;
+      return;
+    }
     return serve_forward(std::move(l), std::move(fwd_host), fwd_port, std::move(to_client), std::move(from_client));
   }
   if (*role == kSender) {

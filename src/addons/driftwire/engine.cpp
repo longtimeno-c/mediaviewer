@@ -160,6 +160,11 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.tunnel = kept.tunnel;
   v_.tunnel_relay = tunnel::relay_shown(v_.relay_server);
   tunnel_port_ = kept.tunnel_port;
+  v_.tunnel_all_apps = kept.tunnel_all_apps;
+  if (opts_.make_sysproxy) sysproxy_ = opts_.make_sysproxy();
+  // A setting Driftwire made and did not undo (a crash, a power cut): the
+  // control thread puts it back at its first reconcile, below.
+  proxy_record_ = sysproxy::load_record(data_file(sysproxy::kRecordFile));
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
@@ -167,7 +172,7 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   control_thread_ = std::thread([this] { control_loop(); });
   // Keep receiving was on at the last launch (#442): presence and the status
   // text come up on the control thread, never the caller's. Off: nothing.
-  if (v_.receiving || v_.internet || v_.tunnel) request_reconcile();
+  if (v_.receiving || v_.internet || v_.tunnel || proxy_record_) request_reconcile();
 }
 
 engine::~engine() {
@@ -226,6 +231,8 @@ engine::~engine() {
       t = std::move(tunnel_);
     }
     t.reset();
+    // Quitting: the computer's proxy setting goes back to what it was.
+    sync_system_proxy(0, false);
   }
   {
     // The code, its listener and every router mapping go (joins its threads).
@@ -301,6 +308,7 @@ void engine::save_now() {
     p.relay_server = v_.relay_server;
     p.tunnel = v_.tunnel;
     p.tunnel_port = tunnel_port_;
+    p.tunnel_all_apps = v_.tunnel_all_apps;
   }
   {
     std::lock_guard lock(control_m_);
@@ -457,6 +465,9 @@ void engine::sync_tunnel() {
   }
   if (drop) {
     if (const auto p = drop->port()) port = p;  // the next one takes the same port, once this has let go
+    // The system setting first: apps stop asking for the script before
+    // the port that serves it closes (the script's DIRECT covers the gap).
+    if (!want) sync_system_proxy(0, false);
     drop.reset();  // its streams close and its threads end, on this thread
   }
   bool running = false;
@@ -511,7 +522,81 @@ void engine::sync_tunnel() {
       v_.tunnel_open = 0;
     }
   }
+  std::uint16_t live = 0;
+  {
+    std::lock_guard lock(tunnel_m_);
+    if (tunnel_) live = tunnel_->port();
+  }
+  bool all_apps = false;
+  {
+    std::lock_guard lock(m_);
+    all_apps = v_.tunnel_all_apps;
+  }
+  sync_system_proxy(live, want && all_apps && live != 0);
   tunnel_changed();
+}
+
+void engine::write_proxy_record() {
+  const std::string path = data_file(sysproxy::kRecordFile);
+  if (path.empty()) return;  // the tests: kept in memory only
+  if (proxy_record_) {
+    if (!sysproxy::save_record(path, *proxy_record_)) host_.log(1, "driftwire: could not keep the proxy record");
+  } else {
+    (void)io::remove_file(path);
+  }
+}
+
+void engine::sync_system_proxy(std::uint16_t port, bool want) {
+  const std::string url = want && port != 0 ? tunnel::pac_url(port) : std::string();
+  std::string note;
+  bool ours = false;
+  if (!sysproxy_) {
+    // No port (the tests without a stand-in, an offline window): nothing to touch.
+  } else if (!sysproxy_->unsupported().empty()) {
+    if (want) note = sysproxy_->unsupported();
+  } else {
+    // What is set and no longer wanted (off, another port, a crash's leftover) goes back first.
+    if (proxy_record_ && proxy_record_->pac_url != url) {
+      if (sysproxy_->restore(proxy_record_->saved, proxy_record_->pac_url)) {
+        proxy_record_.reset();
+        write_proxy_record();
+        host_.log(2, "driftwire: system proxy restored");
+      } else {
+        note = "This computer's proxy setting could not be put back yet: it is tried again next time.";
+        host_.log(1, "driftwire: system proxy not restored");
+      }
+    }
+    if (proxy_retry_.exchange(false)) proxy_gave_up_for_.clear();
+    if (!url.empty() && !proxy_record_ && url == proxy_gave_up_for_) {
+      note = proxy_gave_up_note_;
+    } else if (!url.empty() && !proxy_record_) {
+      auto saved = sysproxy_->set(url);
+      if (saved) {
+        proxy_record_ = sysproxy::record{url, *saved};
+        write_proxy_record();
+        host_.log(2, "driftwire: system proxy set");
+      } else {
+        proxy_gave_up_for_ = url;
+        if (saved.error() == status::permission_denied) {
+          note = "This computer's proxy setting was not changed (it needs an administrator): set the address "
+                 "below in your apps, or turn Use for all apps off and on to be asked again.";
+        } else {
+          note = "This computer's proxy setting could not be changed: set the address below in your apps.";
+          log_status("system proxy", saved.error());
+        }
+        proxy_gave_up_note_ = note;
+      }
+    }
+    ours = proxy_record_ && proxy_record_->pac_url == url && !url.empty();
+  }
+  if (stopping_.load()) return;  // the destructor: no view to show it in
+  {
+    std::lock_guard lock(m_);
+    v_.tunnel_system = ours;
+    v_.tunnel_system_note = ours ? "Apps that follow this computer's proxy setting use the Tunnel. Others can use "
+                                   "the address below."
+                                 : note;
+  }
 }
 
 void engine::tunnel_changed() {
@@ -1882,6 +1967,18 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     request_reconcile();  // the Tunnel follows the field (sync_tunnel)
     return;
   }
+  if (node == "tunnel_all_apps" && kind == kChange && value && value->k == json::kind::boolean) {
+    // The system proxy (sysproxy.h), on by default while the Tunnel is on.
+    {
+      std::lock_guard lock(m_);
+      v_.tunnel_all_apps = value->b;
+    }
+    proxy_retry_.store(true);
+    request_reconcile();
+    request_save();
+    post();
+    return;
+  }
   if (node == "tunnel" && kind == kChange && value && value->k == json::kind::boolean) {
     // The Tunnel (2026-11-12): opt-in, off by default. The window's switch,
     // the settings page's and the menu-bar row (same id) all come here.
@@ -1889,6 +1986,7 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
       std::lock_guard lock(m_);
       v_.tunnel = value->b;
     }
+    proxy_retry_.store(true);
     request_reconcile();
     request_save();
     post();

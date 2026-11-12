@@ -1368,3 +1368,210 @@ TEST_CASE("driftwire tunnel: on with no relay server says why; the switch and it
     CHECK(eng.snapshot().tunnel_address == "127.0.0.1:" + std::to_string(first_port));
   }
 }
+
+// ---- the Tunnel's system proxy (sysproxy.h), through a stand-in for the OS ----------------
+
+namespace sysproxy = mv::driftwire::sysproxy;
+
+namespace {
+
+// The OS's setting, as a stand-in: what it is now, and every call.
+struct fake_os {
+  std::mutex m;
+  std::string url = "http://wpad.example/proxy.pac";  // the person's own, before
+  int sets = 0, restores = 0;
+  bool deny = false;
+  std::string now() {
+    std::lock_guard lock(m);
+    return url;
+  }
+};
+
+struct fake_port final : sysproxy::port {
+  std::shared_ptr<fake_os> os;
+  explicit fake_port(std::shared_ptr<fake_os> o) : os(std::move(o)) {}
+  std::string unsupported() const override { return {}; }
+  mv::result<std::string> set(const std::string& pac) override {
+    std::lock_guard lock(os->m);
+    ++os->sets;
+    if (os->deny) return mv::err(mv::status::permission_denied);
+    std::string was = os->url;
+    os->url = pac;
+    return was;
+  }
+  bool restore(const std::string& saved, const std::string& pac) override {
+    std::lock_guard lock(os->m);
+    ++os->restores;
+    if (os->url == pac) os->url = saved;  // only if still ours
+    return true;
+  }
+};
+
+std::string http_get(std::uint16_t port, const std::string& path) {
+  auto l = dial(port);
+  say(*l, "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  std::string got;
+  std::vector<std::uint8_t> buf(4096);
+  for (;;) {
+    auto n = l->read_some(buf, 5000);
+    if (!n || *n == 0) break;
+    got.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  return got;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire tunnel: the PAC script and the record read with care", "[driftwire]") {
+  const auto script = tunnel::pac_script(54321);
+  CHECK(script.find("FindProxyForURL") != std::string::npos);
+  CHECK(script.find("\"SOCKS5 127.0.0.1:54321; DIRECT\"") != std::string::npos);  // DIRECT when it is gone
+  CHECK(script.find("dnsResolve") == std::string::npos);  // never asks the network's DNS
+  CHECK(tunnel::pac_url(54321) == "http://127.0.0.1:54321/driftwire-tunnel.pac");
+  CHECK(tunnel::asks_for_pac("GET /driftwire-tunnel.pac HTTP/1.1\r\n\r\n"));
+  CHECK(tunnel::asks_for_pac("GET /driftwire-tunnel.pac?x=1 HTTP/1.1\r\n\r\n"));
+  CHECK_FALSE(tunnel::asks_for_pac("GET /driftwire-tunnel.pacx HTTP/1.1\r\n\r\n"));
+  CHECK_FALSE(tunnel::asks_for_pac("GET http://example.com/driftwire-tunnel.pac HTTP/1.1\r\n\r\n"));
+  CHECK_FALSE(tunnel::asks_for_pac("POST /driftwire-tunnel.pac HTTP/1.1\r\n\r\n"));
+  const sysproxy::record r{"http://127.0.0.1:1/driftwire-tunnel.pac", "1\tsvc\t0\t\n"};
+  const auto back = sysproxy::parse_record(sysproxy::record_json(r));
+  REQUIRE(back);
+  CHECK(back->pac_url == r.pac_url);
+  CHECK(back->saved == r.saved);
+  CHECK_FALSE(sysproxy::parse_record("{}"));
+  CHECK_FALSE(sysproxy::parse_record("not json"));
+}
+
+TEST_CASE("driftwire tunnel: Use for all apps points the system proxy at it, and puts it back", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_sysproxy");
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  auto os = std::make_shared<fake_os>();
+  const std::string before = os->now();
+  fake_host host(dir / "received");
+  auto o = far_end::options("Ann", {});
+  o.prefs_path = utf8(dir / "driftwire.json");
+  o.make_sysproxy = [os] { return std::make_unique<fake_port>(os); };
+  sp::engine eng(host, o);
+  eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+  CHECK(eng.snapshot().tunnel_all_apps);  // on by default
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  const auto v = eng.snapshot();
+  const auto port = static_cast<std::uint16_t>(std::stoi(v.tunnel_address.substr(10)));
+  CHECK(os->now() == tunnel::pac_url(port));
+  // Kept on disk while it is Driftwire's, so a crash can put it back.
+  const auto rec = sysproxy::load_record(utf8(dir / sysproxy::kRecordFile));
+  REQUIRE(rec);
+  CHECK(rec->pac_url == tunnel::pac_url(port));
+  CHECK(rec->saved == before);
+  CHECK(sp::build_tree(v).find("\"id\":\"tunnel_all_apps\"") != std::string::npos);
+  // The script, from the proxy's own port.
+  const auto pac = http_get(port, std::string(tunnel::kPacPath));
+  CHECK(pac.rfind("HTTP/1.1 200", 0) == 0);
+  CHECK(pac.find("application/x-ns-proxy-autoconfig") != std::string::npos);
+  CHECK(pac.find("SOCKS5 127.0.0.1:" + std::to_string(port) + "; DIRECT") != std::string::npos);
+  // More reconciles set nothing again.
+  eng.screen_opened("");
+  eng.screen_closed();
+  CHECK(os->sets == 1);
+
+  // Use for all apps off: back as it was; on: pointed again.
+  eng.on_event("tunnel_all_apps", 2, "false");
+  REQUIRE(eventually([&] { return os->now() == before; }));
+  CHECK_FALSE(eng.snapshot().tunnel_system);
+  CHECK_FALSE(sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)));
+  CHECK_FALSE(eng.snapshot().tunnel_address.empty());  // the Tunnel itself still runs
+  eng.on_event("tunnel_all_apps", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  // The Tunnel off: back as it was.
+  eng.on_event("tunnel", 2, "false");
+  REQUIRE(eventually([&] { return os->now() == before && eng.snapshot().tunnel_address.empty(); }));
+  CHECK_FALSE(sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)));
+
+  // On, then quit: the engine's way out puts it back.
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  // A setting the person changed since is theirs: not touched on the way out.
+}
+
+TEST_CASE("driftwire tunnel: the system proxy goes back at quit, after a crash, and never over the person's own",
+          "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_sysproxy_quit");
+  auto os = std::make_shared<fake_os>();
+  const std::string before = os->now();
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  const std::string field = "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"";
+  const auto make = [&] {
+    auto o = far_end::options("Ann", {});
+    o.prefs_path = utf8(dir / "driftwire.json");
+    o.make_sysproxy = [os] { return std::make_unique<fake_port>(os); };
+    return o;
+  };
+  SECTION("quit") {
+    fake_host host(dir / "received");
+    {
+      sp::engine eng(host, make());
+      eng.on_event("relay_server", 2, field);
+      eng.on_event("tunnel", 2, "true");
+      REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+    }
+    CHECK(os->now() == before);
+    CHECK_FALSE(sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)));
+  }
+  SECTION("a crash left it set: the next start puts it back, Tunnel on or off") {
+    const std::string left = "http://127.0.0.1:1234/driftwire-tunnel.pac";
+    os->url = left;
+    REQUIRE(sysproxy::save_record(utf8(dir / sysproxy::kRecordFile), {left, before}));
+    fake_host host(dir / "received");
+    sp::engine eng(host, make());
+    REQUIRE(eventually([&] { return os->now() == before; }));
+    CHECK(eventually([&] { return !sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)); }));
+  }
+  SECTION("the person changed it while the Tunnel was on: left alone") {
+    fake_host host(dir / "received");
+    {
+      sp::engine eng(host, make());
+      eng.on_event("relay_server", 2, field);
+      eng.on_event("tunnel", 2, "true");
+      REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+      std::lock_guard lock(os->m);
+      os->url = "http://corp.example/their.pac";
+    }
+    CHECK(os->now() == "http://corp.example/their.pac");
+  }
+}
+
+TEST_CASE("driftwire tunnel: a declined system proxy says so once, and asks again only when the switch moves",
+          "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_sysproxy_denied");
+  auto os = std::make_shared<fake_os>();
+  os->deny = true;
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  fake_host host(dir / "received");
+  auto o = far_end::options("Ann", {});
+  o.make_sysproxy = [os] { return std::make_unique<fake_port>(os); };
+  sp::engine eng(host, o);
+  eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system_note.find("administrator") != std::string::npos; }));
+  CHECK_FALSE(eng.snapshot().tunnel_system);
+  CHECK_FALSE(eng.snapshot().tunnel_address.empty());  // the Tunnel runs; apps can be pointed at it by hand
+  eng.screen_opened("");  // reconciles: no second prompt
+  eng.screen_closed();
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_system_note.empty(); }));
+  CHECK(os->sets == 1);
+  {
+    std::lock_guard lock(os->m);
+    os->deny = false;
+  }
+  eng.on_event("tunnel_all_apps", 2, "false");
+  eng.on_event("tunnel_all_apps", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  CHECK(os->sets == 2);
+}

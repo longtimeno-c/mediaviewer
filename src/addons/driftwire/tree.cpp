@@ -640,6 +640,11 @@ void tunnel_controls(writer& w, const view& v) {
     return;
   }
   if (!v.tunnel_note.empty()) text(w, "tunnel_problem", v.tunnel_note, "secondary");
+  // The system proxy (sysproxy.h): on by default.
+  toggle(w, "tunnel_all_apps", "Use for all apps", v.tunnel_all_apps);
+  if (v.tunnel_all_apps && !v.tunnel_system_note.empty()) {
+    text(w, "tunnel_system_note", v.tunnel_system_note, "caption");
+  }
   if (v.tunnel_address.empty()) return;
   {
     // The path: this computer, the relay, the web.
@@ -661,9 +666,10 @@ void tunnel_controls(writer& w, const view& v) {
   copy_button(w, "copy_tunnel", "Copy", "plain", v.tunnel_address);
   end(w);
   text(w, "tunnel_how",
-       "Set this as the SOCKS5 or HTTP proxy in your browser or system settings (for a terminal: "
-       "HTTPS_PROXY=http://" + v.tunnel_address + "). The sites see your relay server's address; the relay sees "
-       "which sites, never what you send.",
+       std::string(v.tunnel_system ? "For apps that ignore the system setting: " : "In your apps: ") +
+           "SOCKS5 or HTTP proxy " + v.tunnel_address + " (in a terminal, HTTPS_PROXY=http://" + v.tunnel_address +
+           "). Not carried: apps that ignore proxies, and anything over UDP. The sites see your relay server's "
+           "address; the relay sees which sites, never what you send.",
        "caption");
 }
 

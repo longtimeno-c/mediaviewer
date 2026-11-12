@@ -276,6 +276,8 @@ int main(int argc, char** argv) {
 #else
   // Its own identity and remembered devices, never the app's (secrets.h).
   eo.make_secrets = [] { return dw::secrets::os_store(dw::secrets::kCliService); };
+  // The Tunnel's system proxy (sysproxy.h), as the add-on's.
+  eo.make_sysproxy = [] { return dw::sysproxy::os_port(); };
 #endif
 
   const char* term_env = std::getenv("TERM");  // NOLINT(concurrency-mt-unsafe): read at start

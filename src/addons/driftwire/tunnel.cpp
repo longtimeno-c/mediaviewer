@@ -216,6 +216,31 @@ std::string http_reply_for(relay::forward_answer a) {
   return std::string(line) + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 }
 
+std::string pac_url(std::uint16_t port) {
+  return "http://127.0.0.1:" + std::to_string(port) + std::string(kPacPath);
+}
+
+std::string pac_script(std::uint16_t port) {
+  const std::string at = "127.0.0.1:" + std::to_string(port);
+  // No dnsResolve(): it would ask the network's DNS, the thing a filter
+  // watches. Literal private addresses and local names only.
+  return "function FindProxyForURL(url, host) {\n"
+         "  if (isPlainHostName(host) || host == \"localhost\" || dnsDomainIs(host, \".local\") ||\n"
+         "      /^(127\\.|10\\.|192\\.168\\.|169\\.254\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)/.test(host) ||\n"
+         "      /^(::1$|f[cd][0-9a-f]{2}:|fe80:)/i.test(host))\n"
+         "    return \"DIRECT\";\n"
+         "  return \"SOCKS5 " + at + "; DIRECT\";\n"
+         "}\n";
+}
+
+bool asks_for_pac(std::string_view head) {
+  const auto end = head.find_first_of("\r\n");
+  const auto line = head.substr(0, end);
+  const std::string want = "GET " + std::string(kPacPath);
+  return line.rfind(want, 0) == 0 && line.size() > want.size() &&
+         (line[want.size()] == ' ' || line[want.size()] == '?');
+}
+
 std::string relay_shown(const std::string& relay_field) {
   if (relay_field.empty()) return {};
   std::string why;
@@ -441,6 +466,14 @@ void proxy::serve(std::shared_ptr<link> local, const std::shared_ptr<std::shared
       if (buf.size() >= kMaxHeadBytes || !fill(buf.size() + 1)) return;
     }
     const std::string_view head(reinterpret_cast<const char*>(buf.data()), end + kEnd.size());
+    if (asks_for_pac(head)) {
+      // The system proxy's script (sysproxy.h): served here, nothing forwarded.
+      const auto script = pac_script(port());
+      (void)write_text(*local, "HTTP/1.1 200 OK\r\nContent-Type: application/x-ns-proxy-autoconfig\r\n"
+                               "Cache-Control: no-store\r\nContent-Length: " +
+                                   std::to_string(script.size()) + "\r\nConnection: close\r\n\r\n" + script);
+      return;
+    }
     const auto ask = parse_http_head(head);
     if (!ask) {
       (void)write_text(*local, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");

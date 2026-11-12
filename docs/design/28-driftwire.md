@@ -173,7 +173,7 @@ network at all it says so and waits, as the window does: a network can come up.
   shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
   empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
   `/code`, `/copy`, `/send-to`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
-  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/tunnel [on|off]`, `/updates`, `/settings`,
+  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/tunnel [on|off|apps on|off]`, `/updates`, `/settings`,
   `/help`, `/quit` (`/updates` is the command line's own, [Updates](#updates-in-the-terminal)). An internet option says what it means the first time it is turned on in a session (the
   window's words).
 - **Its own identity and data folder.** Its settings (`driftwire.json`), what it keeps of a
@@ -1361,7 +1361,9 @@ only the laptop there is no such machine. Plan and later slices:
   address, `forward_host_ok`), sealed against the server's fresh ephemeral, so a network on the
   path sees neither, and a recorded forward said again opens nothing. The server says one sealed
   word: `F` forwarding, else why not (`O` off, `X` not that port, `B` busy, `U` unreachable, `N` a
-  private address). Then the bytes go both ways as **sealed frames** (`sealed_link`: a 2-byte length
+  private address, `K` a kind it does not carry). The request starts with a kind byte (TCP, 0;
+  a datagram flow for the plan's slice 5 takes another value, and a server without it answers
+  `K`). Then the bytes go both ways as **sealed frames** (`sealed_link`: a 2-byte length
   and the AEAD of at most 16 KiB under the split keys), never as they are: a plain `http://`
   request would otherwise show its host to the filter. Never for anyone without the key, so it is
   not an open proxy (a wrong key gets one live guess and hears nothing). Limits: ports 80 and 443
@@ -1385,6 +1387,24 @@ only the laptop there is no such machine. Plan and later slices:
   and programs that ignore proxy settings. Any program of this machine's users may connect to the
   loopback port while it runs, as with any local proxy; it reaches only what the relay forwards.
   Nothing is logged with a host, an address or a port (rule 6).
+- **The system proxy** (owner, 2026-11-12; `sysproxy.*`). With **Use for all apps** on (by
+  default) while the Tunnel runs, the computer's automatic proxy setting points at a PAC script the
+  proxy serves on its own port (`http://127.0.0.1:<port>/driftwire-tunnel.pac`): local names and
+  literal private addresses go DIRECT, everything else `SOCKS5 127.0.0.1:<port>; DIRECT`, so an
+  app that follows the system setting goes through the relay with nothing to paste, and goes
+  direct if the proxy stops answering. The script never calls `dnsResolve` (it would ask the
+  network's DNS). The OS calls are behind a port, one file per OS as `power.h` (D9):
+  `sysproxy_mac.cpp`, every enabled network service's ProxyAutoConfigURLString through
+  SystemConfiguration, authorised by an administrator once a run; `sysproxy_win.cpp`, this user's
+  WinINet setting for the LAN connection (no administrator; other connection entries keep theirs);
+  `sysproxy_none.cpp` on Linux, where the window says to point apps at the address. What was there
+  is kept in `driftwire_proxy.json` beside the prefs as soon as it is set; it goes back when the
+  Tunnel or Use for all apps goes off, when the engine is destroyed (quit), and at the next start
+  after a crash, and only where the setting is still Driftwire's URL (one the person changed since
+  is theirs). A declined or failed change is said once and not asked again until the person
+  flips one of the two switches. Only a host that hands the engine `make_sysproxy` (the add-on and
+  the `driftwire` program) changes a setting; the tests use a stand-in. Not a VPN: apps that ignore
+  the system setting, and anything over UDP, go direct.
 - **One switch, every surface.** Node `tunnel` (a `kChange` boolean), opt-in and off by default,
   kept in the prefs: the window's **Tunnel through <relay>** under Internet options (its own card
   while the internet switch is off, so it can still be seen and turned off), the settings page
@@ -1393,7 +1413,9 @@ only the laptop there is no such machine. Plan and later slices:
   (`sync_tunnel`), restarts it when the relay field changes, and posts its state: the address with
   **Copy**, a `link` node with the new bearer `via: "tunnel"` (green, a lock; "moving" while
   streams are open, "failed" with the relay's problem, "done" when ready), and why it does not run
-  (no relay server set, or the relay's last answer: the wrong key, forwarding off, no answer). A
+  (no relay server set, or the relay's last answer: the wrong key, forwarding off, no answer), with
+  **Use for all apps** (`tunnel_all_apps`) under it and `/tunnel apps on|off` in the program. The
+  view's `tunnel_mode` is "proxy" until the plan's slice 5 adds a VPN mode beside the same switch. A
   site's own refusal (a port, a private address) is answered to the browser (SOCKS5 reply 2 or 4,
   HTTP 403 or 502) and is not the tunnel's problem.
 - **What it exposes.** The Wi-Fi sees a connection to the relay's address; the sites see the
@@ -1728,9 +1750,9 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 ## Not built
 
-- **The Tunnel's later slices** ([plan](../plans/driftwire-menu-and-tunnel.md)): pointing the
-  system proxy at it (a PAC file, saved and restored), looking like HTTPS on TCP 443 (slice 4),
-  and a VPN for every app with UDP forwarding (slice 5). The proxy does not move to another relay
+- **The Tunnel's later slices** ([plan](../plans/driftwire-menu-and-tunnel.md)): looking like
+  HTTPS on TCP 443 (slice 4), and a VPN for every app with UDP forwarding (slice 5). The system
+  proxy is not set on Linux, and on Windows only for the LAN connection's entry. The proxy does not move to another relay
   or retry a stream; a relay's address is resolved once per proxy (again after a failed connect).
 
 - **#500's ask before an own relay** (low): A's own computer relays without asking, so a stranger

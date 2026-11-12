@@ -494,6 +494,9 @@ struct session::impl {
     if (!v.tunnel) return;
     if (!v.tunnel_address.empty() && v.tunnel_address != prev.tunnel_address) say_tunnel();
     if (!v.tunnel_note.empty() && v.tunnel_note != prev.tunnel_note) say(tone::warning, "Tunnel", {v.tunnel_note});
+    if (!v.tunnel_system && !v.tunnel_system_note.empty() && v.tunnel_system_note != prev.tunnel_system_note) {
+      say(tone::info, "Tunnel", {v.tunnel_system_note});
+    }
   }
 
   void say_tunnel() {
@@ -508,8 +511,8 @@ struct session::impl {
     }
     say(tone::info, "Tunnel through " + (v.tunnel_relay.empty() ? std::string("your relay server") : v.tunnel_relay) +
                         glue() + v.tunnel_address,
-        {"SOCKS5 or HTTP proxy: set it in your browser, or HTTPS_PROXY=http://" + v.tunnel_address +
-             " in a terminal.",
+        {(v.tunnel_system ? std::string("This computer's proxy setting points at it. ") : std::string()) +
+             "SOCKS5 or HTTP proxy: HTTPS_PROXY=http://" + v.tunnel_address + " in a terminal.",
          std::to_string(v.tunnel_open) + " open now; /tunnel off turns it off (kept for next time)."});
   }
 
@@ -1307,6 +1310,21 @@ struct session::impl {
     } else if (name == "/relay-server") {
       open_field(field_kind::relay_server);
     } else if (name == "/tunnel") {
+      if (rest.rfind("apps", 0) == 0) {
+        // /tunnel apps on|off: the system proxy, "Use for all apps".
+        const auto apps = on_off(trim(rest.substr(4)));
+        if (!apps) {
+          say(tone::info, std::string("Use for all apps: ") + (v.tunnel_all_apps ? "on" : "off"),
+              {"/tunnel apps on or /tunnel apps off changes it (kept for next time)."});
+          return;
+        }
+        ev("tunnel_all_apps", 2, *apps ? "true" : "false");
+        refresh_view();
+        say(tone::info, std::string(*apps ? "On" : "Off") + ": Use for all apps",
+            {*apps ? "While the Tunnel is on, this computer's proxy setting points at it."
+                   : "This computer's proxy setting is left as it was."});
+        return;
+      }
       const auto on = on_off(rest);
       if (!on) {
         say_tunnel();

@@ -94,7 +94,11 @@ inline constexpr std::size_t kSessionIdBytes = 16;  // a waiter's CPace sid
 inline constexpr std::uint8_t kRegistered = 'R', kPaired = 'P';
 // The server's word to a forwarder: forwarding, or why not.
 inline constexpr std::uint8_t kForwarding = 'F', kForwardOff = 'O', kForwardPort = 'X', kForwardBusy = 'B',
-                              kForwardUnreachable = 'U', kForwardNotPublic = 'N';
+                              kForwardUnreachable = 'U', kForwardNotPublic = 'N', kForwardKind = 'K';
+// A forward request's first byte: what to carry. TCP only today; a datagram
+// flow (UDP, for the plan's slice 5 VPN: DNS and QUIC) takes another value
+// and an older server answers kForwardKind.
+inline constexpr std::uint8_t kForwardTcp = 0;
 inline constexpr std::size_t kWordBytes = 1 + noise::kTagBytes;
 // A connection to a relay server finishes its handshake within this.
 inline constexpr int kHelloMs = 5000;
@@ -218,13 +222,16 @@ enum class forward_answer : std::uint8_t {
   busy,         // its forwards are all in use
   unreachable,  // nothing at that host answered it (or the name did not resolve)
   not_public,   // the host is on a private network (or the server itself)
+  kind,         // not a kind of forward it does (a datagram flow, to a server without them)
   failed,       // the connection to the server failed or closed
 };
 [[nodiscard]] const char* forward_answer_name(forward_answer a) noexcept;
 // A forwarder: the handshake with the server key `key`, the host and port
 // sealed, and the server's word, within `wait_ms`. On ok, the stream to the
 // host (a sealed_link). `said` says what came of it either way. `host`: a
-// name or an address (no brackets), 1..kMaxHostBytes.
+// name or an address (no brackets), 1..kMaxHostBytes. One call is one
+// connection to one host: the proxy calls it per client connection, and a
+// later packet layer (a userspace TCP/IP stack under a VPN) per TCP flow.
 [[nodiscard]] result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string& key,
                                                     const std::string& host, std::uint16_t port, int wait_ms,
                                                     forward_answer& said);

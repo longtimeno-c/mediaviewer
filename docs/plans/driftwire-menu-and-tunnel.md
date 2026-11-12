@@ -3,7 +3,7 @@
 Status: **slice 1 under way** (2026-11-12, owner's ask). **Slices 2 and 3 built** on branch
 `claude/driftwire-tunnel-70ba6c` (2026-11-12, the owner's ask that day; draft PR): forwarding on
 the relay server and the local proxy, with the switch in the window, the settings page and
-`/tunnel`. Slice 3's system proxy (PAC) is not built yet; slices 4 and 5 stay proposals. What was
+`/tunnel`, and the system proxy (PAC, Use for all apps). Slices 4 and 5 stay proposals. What was
 built is in [28 "The Tunnel"](../design/28-driftwire.md#the-tunnel-2026-11-12).
 
 ## Why
@@ -75,7 +75,7 @@ gates hold (nothing here touches the render path; the menu is chrome).
   (CPace on the server key, then Noise). Never for anyone without the key: not an open proxy.
   Limits: ports 80/443 only by default, a connection cap, no UDP. ProVerif: the new request
   type in `tools/formal/relay.pv` (new: no model of the relay hop existed before).
-- **3. A local proxy in the add-on.** *(Built, except the system proxy below; the switch's node
+- **3. A local proxy in the add-on.** *(Built, with the system proxy below; the switch's node
   id is `tunnel`, which slice 1's menu row sends. `relay::forward` is a standalone call from a
   host and port to a sealed stream, so slice 5's packet layer calls it per connection.)* SOCKS5 and HTTP CONNECT on `127.0.0.1` (a random port,
   shown with a Copy button), each connection one forwarded stream. Browsers, the Claude app and

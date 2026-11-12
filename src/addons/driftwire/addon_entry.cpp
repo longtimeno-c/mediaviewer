@@ -226,6 +226,9 @@ struct addon_state {
       // Credential Manager / the Secret Service (none without one: nothing
       // is remembered).
       if (!o.offline) o.make_secrets = [] { return mv::driftwire::secrets::os_store(); };
+      // The Tunnel's system proxy (sysproxy.h): this OS's setting, changed
+      // only while the Tunnel and "Use for all apps" are on.
+      if (!o.offline) o.make_sysproxy = [] { return mv::driftwire::sysproxy::os_port(); };
       eng = std::make_unique<engine>(*bridge, std::move(o));
     }
     return *eng;

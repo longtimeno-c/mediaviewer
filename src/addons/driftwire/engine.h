@@ -50,6 +50,7 @@
 #include "addons/driftwire/resume.h"
 #include "addons/driftwire/presence.h"
 #include "addons/driftwire/transfer.h"
+#include "addons/driftwire/sysproxy.h"
 #include "addons/driftwire/tunnel.h"
 #include "addons/driftwire/udp_hub.h"
 
@@ -206,6 +207,15 @@ struct view {
   std::string tunnel_note;       // why it does not run, or the relay's last problem
   std::uint32_t tunnel_open = 0;  // streams through it now
   std::uint64_t tunnel_streams = 0;  // streams made this run (tests, /tunnel)
+  // The system proxy (sysproxy.h): "Use for all apps" (on by default),
+  // whether the computer's setting points at the Tunnel now, and what the
+  // window says about it ("" when nothing needs saying).
+  bool tunnel_all_apps = true;
+  bool tunnel_system = false;
+  std::string tunnel_system_note;
+  // The plan's slice 5 adds a VPN mode beside this one; the switch stays
+  // `tunnel` and a mode joins it then. Today always "proxy".
+  std::string tunnel_mode = "proxy";
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -372,6 +382,10 @@ class engine {
     // nothing is timed.
     stage_times* send_stages = nullptr;
     stage_times* receive_stages = nullptr;
+    // The Tunnel's system proxy (sysproxy.h): the OS's port in the add-on
+    // and the driftwire program, a stand-in in the tests. Empty: the
+    // computer's setting is never touched.
+    std::function<std::unique_ptr<sysproxy::port>()> make_sysproxy;
   };
 
   engine(engine_host& host, options opts);
@@ -550,6 +564,10 @@ class engine {
   void sync_tunnel();
   // A proxy's state into the view (any proxy thread; never under m_).
   void tunnel_changed();
+  // The control thread (and the destructor): the system proxy points at
+  // the proxy on `port` (0: at nothing of ours), its record kept or dropped.
+  void sync_system_proxy(std::uint16_t port, bool want);
+  void write_proxy_record();
   // `source`: where it came from (source_of; "": not known).
   void on_internet_link(std::unique_ptr<link> l, bool code = false, std::string source = {});
   // #472, the sender's side of a protocol 2 send, on its own thread while
@@ -707,6 +725,17 @@ class engine {
   std::unique_ptr<tunnel::proxy> tunnel_;  // under tunnel_m_
   std::string tunnel_for_;                 // under tunnel_m_: the relay field it was started with
   std::uint16_t tunnel_port_ = 0;          // under m_: the port to try first (kept in the prefs)
+  // The system proxy: the OS's port and the record of what Driftwire set
+  // (in driftwire_proxy.json beside the prefs while it is set). The control
+  // thread's, and the destructor's once it has stopped.
+  std::unique_ptr<sysproxy::port> sysproxy_;
+  std::optional<sysproxy::record> proxy_record_;
+  // A URL whose setting was declined or failed: not asked again (no second
+  // administrator prompt at every reconcile) until the person flips the
+  // Tunnel or Use for all apps (proxy_retry_).
+  std::string proxy_gave_up_for_;
+  std::atomic<bool> proxy_retry_{false};
+  std::string proxy_gave_up_note_;  // the control thread's: what was said when it gave up
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
   std::uint64_t offer_seq_ = 0;                  // under m_: the receive now (or last), for its notices (#502)
   // #502: receives started and notifications shown, per source.
