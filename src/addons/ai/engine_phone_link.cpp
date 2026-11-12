@@ -192,6 +192,7 @@ result<std::vector<std::uint8_t>> engine::phone_signing_key(bool make) {
   if (auto kept = keys->get(kKeyName)) return std::move(*kept);
   if (!make) return err(status::not_found);
   auto secret = catalog::make_keypair().second;
+  if (secret.empty()) return err(status::io);  // no usable libsodium: never store an empty key
   if (!keys->put(kKeyName, secret)) return err(status::io);
   auto back = keys->get(kKeyName);
   if (!back || *back != secret) return err(status::io);

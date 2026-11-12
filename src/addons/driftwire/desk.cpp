@@ -292,7 +292,9 @@ struct desk::state {
 };
 
 desk::desk(options o) : st_(std::make_unique<state>()) {
-  (void)sodium_init();
+  // A failed init leaves every later sodium call failing its own checks; the
+  // result is kept so -Werror=unused-result builds (GCC ignores a (void) cast).
+  [[maybe_unused]] const int sodium_ready = sodium_init();
   st_->o = std::move(o);
 }
 

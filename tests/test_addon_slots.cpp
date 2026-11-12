@@ -692,9 +692,9 @@ TEST_CASE("a place term's assets come from the provider that declares place:, or
     CHECK(pc->requests_off_caller.load() == 1);
   }
   SECTION("asking an add-on that is not there, or takes no requests") {
-    auto none = r.addon_request("not-installed", "ai", "ping", "{}");
-    REQUIRE_FALSE(none);
-    CHECK(none.error() == status::not_found);
+    auto missing = r.addon_request("not-installed", "ai", "ping", "{}");
+    REQUIRE_FALSE(missing);
+    CHECK(missing.error() == status::not_found);
     auto unknown = r.addon_request("places", "ai", "unsupported", "{}");
     REQUIRE_FALSE(unknown);
     CHECK(unknown.error() == status::not_found);

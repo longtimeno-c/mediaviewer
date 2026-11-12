@@ -574,7 +574,7 @@ void add_file_row(json::writer& w, const std::string& dir, const std::string& na
 }  // namespace
 
 std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> make_keypair() {
-  (void)sodium_init();
+  if (sodium_init() < 0) return {};  // no usable libsodium: no key (callers check the sizes)
   std::vector<std::uint8_t> pub(crypto_sign_ed25519_PUBLICKEYBYTES), sec(crypto_sign_ed25519_SECRETKEYBYTES);
   crypto_sign_ed25519_keypair(pub.data(), sec.data());
   return {std::move(pub), std::move(sec)};
@@ -662,7 +662,7 @@ std::string signed_current_json(const current_info& c, std::span<const std::uint
 }
 
 result<current_info> verify_current(std::string_view text, std::span<const std::uint8_t> public_key) {
-  (void)sodium_init();
+  if (sodium_init() < 0) return err(status::io);
   if (public_key.size() != crypto_sign_ed25519_PUBLICKEYBYTES) return err(status::invalid_arg);
   const auto doc = json::parse(text, 4);
   if (!doc) return err(status::corrupt);

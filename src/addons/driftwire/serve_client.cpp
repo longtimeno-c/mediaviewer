@@ -75,18 +75,18 @@ std::shared_ptr<client::state::stream_slot> client::state::open_slot(open_reques
 }
 
 void client::state::reader_loop() {
-  message m;
+  message in;
   for (;;) {
-    if (auto r = ch->receive(m); !r) break;
-    if (m.type == msg::cancel) {
-      const auto doc = json::parse(m.text(), 4);
+    if (auto r = ch->receive(in); !r) break;
+    if (in.type == msg::cancel) {
+      const auto doc = json::parse(in.text(), 4);
       const std::string* why = doc ? doc->str("why") : nullptr;
       std::lock_guard lock(why_m);
       ended_why = why ? *why : "cancelled";
       break;
     }
-    if (m.type == msg::stream_data) {
-      const auto d = parse_data(m.body);
+    if (in.type == msg::stream_data) {
+      const auto d = parse_data(in.body);
       if (!d) break;
       std::shared_ptr<stream_slot> slot;
       {
@@ -112,8 +112,8 @@ void client::state::reader_loop() {
         ch->shutdown();
         break;
       }
-    } else if (m.type == msg::stream_end) {
-      const auto e = parse_end(m.body);
+    } else if (in.type == msg::stream_end) {
+      const auto e = parse_end(in.body);
       if (!e) break;
       std::shared_ptr<stream_slot> slot;
       {

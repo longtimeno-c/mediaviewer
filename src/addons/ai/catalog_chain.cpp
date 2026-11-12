@@ -141,7 +141,7 @@ result<library_info> read_library(const std::string& destination) {
 
 result<followed_key> follow_chain(std::string_view library_json, std::string_view library_id, std::span<const std::uint8_t> pinned,
                                   std::uint64_t pinned_epoch) {
-  (void)sodium_init();
+  if (sodium_init() < 0) return err(status::io);
   if (pinned.size() != crypto_sign_ed25519_PUBLICKEYBYTES) return err(status::invalid_arg);
   const auto doc = json::parse(library_json, 6);
   if (!doc) return err(status::corrupt);
@@ -180,7 +180,7 @@ result<followed_key> follow_chain(std::string_view library_json, std::string_vie
 }
 
 result<library_info> hand_over(const std::string& destination, std::span<const std::uint8_t> secret, std::span<const std::uint8_t> to_public) {
-  (void)sodium_init();
+  if (sodium_init() < 0) return err(status::io);
   if (to_public.size() != kPublicKeyBytes) return err(status::invalid_arg);
   const std::vector<std::uint8_t> from = public_of(secret);
   if (from.empty()) return err(status::invalid_arg);
@@ -273,7 +273,7 @@ std::string gen_folder(std::uint64_t g) {
 }  // namespace
 
 expected prepare_nearby(const nearby_options& o) {
-  (void)sodium_init();
+  if (sodium_init() < 0) return err(status::io);
   if (o.secret_key.size() != kSecretKeyBytes || o.public_key.size() != kPublicKeyBytes) return err(status::invalid_arg);
   const fs::path dir = fs_path(o.dir);
   std::error_code ec;
@@ -335,7 +335,7 @@ expected prepare_nearby(const nearby_options& o) {
 }
 
 std::string pair_url(const pair_payload& p) {
-  (void)sodium_init();
+  if (sodium_init() < 0) return {};  // base64 helpers need it; an empty URL shows no QR
   json::writer w;
   w.begin_object();
   w.key("v").integer(1);

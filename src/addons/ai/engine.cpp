@@ -6034,6 +6034,7 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
     secret = std::move(*kept);
   } else {
     secret = catalog::make_keypair().second;
+    if (secret.empty()) return finish("no_key_store");  // no usable libsodium: never store an empty key
     if (!keys->put(kKeyName, secret)) return finish("no_key_store");
     auto back = keys->get(kKeyName);  // a store that does not keep it is no store
     if (!back || *back != secret) return finish("no_key_store");

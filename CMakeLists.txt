@@ -817,6 +817,9 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # Milestone H: the AI pack (mv_ai, packed separately; never installed with the
 # app) and its WinUI chrome. cmake/ai.cmake.
 include("${CMAKE_SOURCE_DIR}/cmake/ai.cmake")
+# The phone's catalogue reader and search (src/mobile, portable): the said: rule the
+# engine shares with the phone is tested in mv_ai_tests on every host.
+include("${CMAKE_SOURCE_DIR}/cmake/mobile.cmake")
 # Enhance (#297): its own add-on over the AI pack's model downloader.
 include("${CMAKE_SOURCE_DIR}/cmake/enhance.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/ai-chrome-win.cmake" OPTIONAL)
@@ -1544,7 +1547,7 @@ if(MV_BUILD_TESTS)
     tests/test_nle.cpp
   )
   target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
-    Catch2::Catch2WithMain)
+    mv_mobile_search Catch2::Catch2WithMain)
   target_include_directories(mv_ai_tests PRIVATE src tests)
   target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
     MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")
