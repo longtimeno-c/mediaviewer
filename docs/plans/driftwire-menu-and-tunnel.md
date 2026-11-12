@@ -78,6 +78,24 @@ gates hold (nothing here touches the render path; the menu is chrome).
   CLIs (`HTTPS_PROXY`) use it; no VPN driver, no OS entitlement. The menu gets **✓ Tunnel
   through <relay>**; the path picture a "tunnel" bearer. The `driftwire` terminal program gets
   `/tunnel`.
+  **The system proxy, so nothing is pasted** (owner, 2026-11-12: "sort of like a VPN"). While
+  the tunnel is on, Driftwire also points the computer's own proxy setting at it, so every app
+  that follows that setting (browsers, the Claude app, most desktop apps) goes through the relay
+  with nothing to configure:
+  - The setting is a **PAC file** that Driftwire serves on the same local port and answers with
+    `SOCKS5 127.0.0.1:<port>; DIRECT`. If the proxy is gone (a crash, the relay unreachable),
+    apps fall back to the Wi-Fi as it is. The tunnel never leaves a machine with no internet.
+  - Mac: the active network services' automatic proxy URL (SystemConfiguration; it may ask for
+    an administrator once). Windows: the per-user WinINet proxy (`InternetSetOption`, no
+    administrator rights).
+  - Driftwire saves what was there before and puts it back when the tunnel goes off and when
+    Driftwire quits. If MediaViewer crashed with the tunnel on, it restores the setting at the
+    next start. It changes the setting only if the setting is still Driftwire's own.
+  - A switch under the tunnel, **Use for all apps** (on by default), turns this off for anyone
+    who wants the local address only.
+  - Not a VPN: apps that ignore the system proxy (many command-line tools, some games, anything
+    over UDP) keep using the network directly. The window says so in one line. The SOCKS5
+    hostname is resolved at the relay, so DNS filtering on the Wi-Fi does not see it.
 - **4. Looking like HTTPS.** The relay on TCP 443 behind TLS 1.3 with a browser's ClientHello,
   the sealed hop inside; a connection that does not authenticate is answered as an ordinary web
   site. For networks that block what looks like a tunnel. Its own spike first.
