@@ -12,7 +12,11 @@
 #include "core/json.h"
 
 #include "wire/advert.h"
-#include "addons/driftwire/desk.h"
+#include "catalogue/catalog_chain.h"
+#include "catalogue/publisher.h"
+#include "core/json.h"
+#include "phone/desk.h"
+#include "phone/link.h"
 #include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/pair_check.h"
@@ -1370,7 +1374,7 @@ TEST_CASE("phone pairing: the route gives the check code for the service it clai
   key32 publisher;
   randombytes_buf(publisher.data(), publisher.size());
   const std::string request = "{\"library_id\":\"lib-1\",\"publisher_key\":\"" + sp::key_hex(publisher) + "\"}";
-  auto r = desk::route_request(*mac.d, "ai", "pair", request);
+  auto r = desk::route_request(*mac.d, "phone", "pair", request);
   REQUIRE(r);
   const auto doc = mv::json::parse(*r, 4);
   REQUIRE(doc);
@@ -1407,7 +1411,7 @@ TEST_CASE("phone pairing: host and port are read strictly", "[phone-pairing]") {
   }
 }
 
-TEST_CASE("phone pairing: only Local search can use the route", "[phone-pairing]") {
+TEST_CASE("phone pairing: only the phone link can use the route", "[phone-pairing]") {
   scratch_dir dir{"phone_route"};
   auto store = folder_store(dir.root() / "secrets");
   desk::desk::options o;
@@ -1417,27 +1421,16 @@ TEST_CASE("phone pairing: only Local search can use the route", "[phone-pairing]
   auto stranger = desk::route_request(d, "someone-elses-addon", "status", "{}");
   REQUIRE_FALSE(stranger);
   CHECK(stranger.error() == mv::status::permission_denied);
-  auto unknown = desk::route_request(d, "ai", "no-such-method", "{}");
+  auto unknown = desk::route_request(d, "phone", "no-such-method", "{}");
   REQUIRE_FALSE(unknown);
   CHECK(unknown.error() == mv::status::not_found);
-  auto ok = desk::route_request(d, "ai", "status", "{}");
+  auto ok = desk::route_request(d, "phone", "status", "{}");
   REQUIRE(ok);
   const auto doc = mv::json::parse(*ok, 4);
   REQUIRE(doc);
   CHECK(doc->boolean("claimed") == false);
   // Nothing about the access key leaves except on a request for a code.
   CHECK(ok->find("access_key") == std::string::npos);
-}
-
-TEST_CASE("phone pairing: forgetting the add-on's secrets takes the phone's too", "[phone-pairing]") {
-  paired_setup s;
-  CHECK(s.mac.store->exists(desk::kKeyName));
-  CHECK(s.mac.store->exists(desk::kServiceName));
-  CHECK(s.mac.store->exists(desk::kDevicesName));
-  (void)desk::forget_addon(*s.mac.store);
-  CHECK_FALSE(s.mac.store->exists(desk::kKeyName));
-  CHECK_FALSE(s.mac.store->exists(desk::kServiceName));
-  CHECK_FALSE(s.mac.store->exists(desk::kDevicesName));
 }
 
 #if defined(__APPLE__)
@@ -1551,3 +1544,172 @@ TEST_CASE("phone pairing: the real program is claimed, keeps it across a restart
   }
 }
 #endif
+
+// ---- Phone access in the app (docs/plans/phone-in-the-app.md) --------------------------------
+
+namespace {
+
+// The JSON inside a pairing QR (catalog::pair_url).
+std::string qr_payload(const std::string& url) {
+  const std::string prefix = "mediaviewer://pair#";
+  REQUIRE(url.starts_with(prefix));
+  std::string out(url.size(), '\0');
+  std::size_t len = 0;
+  REQUIRE(sodium_base642bin(reinterpret_cast<unsigned char*>(out.data()), out.size(), url.data() + prefix.size(),
+                            url.size() - prefix.size(), nullptr, &len, nullptr,
+                            sodium_base64_VARIANT_URLSAFE_NO_PADDING) == 0);
+  out.resize(len);
+  return out;
+}
+
+// The app's link over a desktop's desk, with no Local search (no source).
+struct app_link {
+  scratch_dir dir{"phone_link"};
+  std::unique_ptr<sp::secrets::store> keys = folder_store(dir.root() / "keys");
+  std::unique_ptr<mv::phone::link> l;
+  explicit app_link(desktop& mac) {
+    mv::phone::link::options o;
+    o.data_dir = utf8(dir.root() / "phone");
+    o.key_store = [this]() { return sp::secrets::file_store(utf8(dir.root() / "keys")); };
+    o.route = [&mac](const char* method, const std::string& json) {
+      return desk::route_request(*mac.d, "phone", method, json);
+    };
+    o.tick_s = 3600;
+    l = std::make_unique<mv::phone::link>(std::move(o));
+  }
+  // The state once the queue is empty.
+  mv::json::value done() {
+    mv::json::value v;
+    REQUIRE(eventually([&] {
+      auto t = mv::json::parse(l->state_json(), 6);
+      if (!t || !t->str("busy") || !t->str("busy")->empty()) return false;
+      v = *t;
+      return true;
+    }));
+    return v;
+  }
+  mv::json::value ask(const std::string& request) {
+    REQUIRE(l->request(request));
+    return done();
+  }
+};
+
+}  // namespace
+
+TEST_CASE("phone pairing: with no Local search a library is set up, claimed, paired and revoked", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  app_link app(mac);
+
+  // Choosing the folder starts the library on the share: nothing indexed yet.
+  mv::json::writer f;
+  f.begin_object().key("do").string("folder").key("path").string(utf8(n.share)).end_object();
+  auto v = app.ask(f.str());
+  CHECK(*v.str("error") == "");
+  CHECK(*v.str("folder") == utf8(n.share));
+  CHECK(*v.str("library_name") == "share");
+  CHECK(v.boolean("local_search") == false);
+  auto lib = mv::ai::catalog::read_library(utf8(n.share));
+  REQUIRE(lib);
+  CHECK(lib->library_id.size() == 32);
+  CHECK_FALSE(fs::exists(n.share / ".mediaviewer" / "current.json"));  // no catalogue: the phone browses
+
+  mv::json::writer c;
+  c.begin_object().key("do").string("claim").key("local").string(n.local()).key("public").string("").end_object();
+  v = app.ask(c.str());
+  CHECK(*v.str("error") == "");
+  CHECK(v.boolean("claimed") == true);
+  REQUIRE(v.find("folders")->a.size() == 2);  // the share and the catalogue's own folder
+
+  v = app.ask("{\"do\":\"pair\"}");
+  REQUIRE(*v.str("error") == "");
+  const auto qr = mv::json::parse(qr_payload(*v.str("qr")), 4);
+  REQUIRE(qr);
+  CHECK(*qr->str("library_id") == lib->library_id);
+  CHECK(*qr->str("publisher_key") == lib->public_key);
+  CHECK_FALSE(v.str("qr_fingerprint")->empty());
+
+  // The phone redeems the code and lists the named folders.
+  const key32 phone = random_key();
+  auto client = n.phone(phone, *qr->str("code"));
+  REQUIRE(client);
+  CHECK(n.has_device(phone));
+  auto roots = (*client)->roots();
+  REQUIRE(roots);
+  CHECK(roots->size() == 2);
+  (*client)->close();
+  // The card hears of it at its next look (every two seconds under a code).
+  REQUIRE(eventually([&] {
+    auto t = mv::json::parse(app.l->state_json(), 6);
+    return t && !t->find("added")->a.empty();
+  }));
+
+  // Remove: the NAS refuses it from then on.
+  mv::json::writer r;
+  r.begin_object().key("do").string("revoke").key("key").string(mv::driftwire::key_hex(public_of(phone))).end_object();
+  v = app.ask(r.str());
+  CHECK(*v.str("error") == "");
+  CHECK(v.find("devices")->a.empty());
+  serve::refusal why{};
+  CHECK_FALSE(n.phone(phone, {}, &why));
+}
+
+TEST_CASE("phone pairing: the publisher key moves once from Local search's store", "[phone-pairing]") {
+  scratch_dir dir{"phone_key"};
+  auto now = folder_store(dir.root() / "now");
+  auto before = folder_store(dir.root() / "before");
+  namespace catalog = mv::ai::catalog;
+  // Nothing anywhere, not asked to make one.
+  auto none = catalog::publisher_key(now.get(), before.get(), false);
+  REQUIRE_FALSE(none);
+  CHECK(none.error() == mv::status::not_found);
+  // A library Local search published: its key comes over and is gone from there.
+  const auto old = catalog::make_keypair().second;
+  REQUIRE(before->put(catalog::kPublisherKeyName, old));
+  auto got = catalog::publisher_key(now.get(), before.get(), false);
+  REQUIRE(got);
+  CHECK(*got == old);
+  CHECK(now->get(catalog::kPublisherKeyName) == old);
+  CHECK_FALSE(before->get(catalog::kPublisherKeyName));
+  // And it stays the same key from then on.
+  CHECK(*catalog::publisher_key(now.get(), before.get(), true) == old);
+  // No store at all.
+  CHECK(catalog::publisher_key(nullptr, before.get(), true).error() == mv::status::unsupported_format);
+}
+
+TEST_CASE("phone pairing: a library is started once and never over another", "[phone-pairing]") {
+  scratch_dir dir{"phone_start"};
+  namespace catalog = mv::ai::catalog;
+  const fs::path share = dir.root() / "share";
+  fs::create_directories(share);
+  const auto mine = catalog::public_of(catalog::make_keypair().second);
+  const auto theirs = catalog::public_of(catalog::make_keypair().second);
+  const std::string id = catalog::new_library_id();
+  REQUIRE(catalog::start_library(utf8(share), id, mine));
+  CHECK(catalog::start_library(utf8(share), id, mine));  // again: nothing to do
+  CHECK(catalog::start_library(utf8(share), id, theirs).error() == mv::status::permission_denied);
+  CHECK(catalog::start_library(utf8(share), catalog::new_library_id(), mine).error() == mv::status::permission_denied);
+  auto lib = catalog::read_library(utf8(share));
+  REQUIRE(lib);
+  CHECK(lib->library_id == id);
+  CHECK(lib->public_key == catalog::to_hex(mine));
+  CHECK(catalog::start_library(utf8(dir.root() / "gone"), id, mine).error() == mv::status::io);
+}
+
+TEST_CASE("phone pairing: the desk's items move once from Driftwire's store", "[phone-pairing]") {
+  scratch_dir dir{"phone_take"};
+  auto from = folder_store(dir.root() / "driftwire");
+  auto to = folder_store(dir.root() / "phone");
+  const std::vector<std::uint8_t> a{1, 2, 3}, b{4, 5}, kept{9};
+  REQUIRE(from->put(desk::kKeyName, a));
+  REQUIRE(from->put(desk::kDevicesName, b));
+  REQUIRE(from->put(desk::kServiceName, std::vector<std::uint8_t>{7}));
+  REQUIRE(to->put(desk::kServiceName, kept));  // already here: left as it is
+  desk::take_items(*from, *to);
+  CHECK(to->get(desk::kKeyName) == a);
+  CHECK(to->get(desk::kDevicesName) == b);
+  CHECK(to->get(desk::kServiceName) == kept);
+  CHECK_FALSE(from->get(desk::kKeyName));
+  CHECK_FALSE(from->get(desk::kDevicesName));
+  CHECK(from->get(desk::kServiceName));  // not taken: still there
+}

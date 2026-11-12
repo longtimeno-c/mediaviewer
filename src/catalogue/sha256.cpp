@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/ai/sha256.h"
+#include "catalogue/sha256.h"
 
 #include <filesystem>
 #include <fstream>

@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 39 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend */
+#define MV_ABI_VERSION_MINOR 40 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend; 0.40: Phone access in the app (mv_phone_*, docs/plans/phone-in-the-app.md) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -461,6 +461,32 @@ MV_API mv_status MV_CALL mv_storage_report_json(const char* extra_utf8, char* ut
 MV_API mv_status MV_CALL mv_thumb_cache_clear(mv_session_t session);
 MV_API mv_status MV_CALL mv_thumb_cache_sweep(mv_session_t session);
 MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
+
+/* 0.40 (docs/plans/phone-in-the-app.md, owner 2026-11-12). Settings -> Phone
+ * access, part of the app: the NAS folder, the service on the NAS, the code a
+ * phone scans, the paired phones, the nearby copy. Works with no add-on; Local
+ * search, when loaded, provides the catalogue.
+ *
+ * mv_phone_request: one UTF-8 JSON request {"do":"folder","path":...},
+ * {"do":"publish"}, {"do":"claim","local":...,"public":...}, {"do":"pair"},
+ * {"do":"revoke","key":...} and the rest (phone/link.h), queued for the
+ * feature's own thread. MV_ERR_INVALID_ARG for one that does not parse.
+ *
+ * mv_phone_state_json: the card's state, one JSON object (phone/link.h
+ * state_json); buffer rules as mv_storage_report_json.
+ *
+ * mv_phone_resume: at launch. In the first window's process (flags 0) a
+ * library set up before carries on with no card open (the revoke queue, the
+ * nearby copy). A later window's process passes MV_PHONE_SECONDARY: it runs
+ * none of it (two would race on the NAS), mv_phone_request answers
+ * MV_ERR_UNSUPPORTED_FORMAT and the state is {"secondary":true}.
+ * mv_phone_stop: at quit, before the add-ons unload; never waits on the NAS.
+ * Process-wide. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_phone_request(const char* request_json);
+MV_API mv_status MV_CALL mv_phone_state_json(char* utf8, uint32_t cap, uint32_t* out_bytes);
+#define MV_PHONE_SECONDARY 1u
+MV_API mv_status MV_CALL mv_phone_resume(uint32_t flags);
+MV_API mv_status MV_CALL mv_phone_stop(void);
 
 /* 0.19. Kinds the folder listing leaves out (Settings, "Show audio files" /
  * "Show documents"): MV_FOLDER_HIDE_AUDIO (MP3, M4A, M4P) and
