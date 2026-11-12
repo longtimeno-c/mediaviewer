@@ -100,22 +100,16 @@ Package Center cannot be relied on, so the service updates itself:
 - The service never downloads anything else, never runs a script it fetched, and reveals only its
   address, its version and its architecture in the request (rule 6).
 
-## 7. Owner calls
+## 7. Owner calls (answered 2026-11-12)
 
-1. **DSM floor.** 7.2 and later only (recommended: smaller test matrix), or 7.0 onward (the static build
-   makes it possible; two more DSM versions to verify).
-2. **32-bit ARM.** Not supported (recommended), or built and listed as untested.
-3. **Self-update.** The service replaces its own binary from a signed feed (recommended, §6). The
-   alternative is notify-only: the card says an update is out, and the person installs the new SPK by
-   hand, which leaves an internet-facing service unpatched until they do.
-4. **Installing for the person.** Never log in to DSM (recommended: the person installs the SPK, the
-   desktop only claims). The alternative, a one-time login to DSM's internal install API, needs the
-   administrator password and 2FA code typed into MediaViewer.
-5. **A Package Center source.** Also publish a package source (a JSON feed on our release site over TLS)
-   so the package shows in Package Center with update notices (recommended: yes, as discoverability; it
-   does not replace §6).
-6. **The real unit.** May S5's real-unit checks (§1, last paragraph) run on the owner's Synology, and
-   which model and DSM version is it?
+1. **DSM floor: 7.2 and later only.**
+2. **32-bit ARM: not supported.** Provisional: the recommendation, not yet put to the owner.
+3. **Self-update: yes**, from the Ed25519-signed feed with staging, self-test and rollback (§6).
+4. **Never log in to DSM** for the person: the person installs the SPK, the desktop only claims.
+5. **A Package Center source: yes**, as discoverability beside §6. Provisional: the recommendation, not
+   yet put to the owner.
+6. **The real unit: yes, asking before each step** that installs or changes anything on the owner's
+   Synology. Its model and DSM version are to be asked when the checks start.
 
 ## 8. Order
 
