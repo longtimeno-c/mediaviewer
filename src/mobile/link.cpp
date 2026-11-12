@@ -37,6 +37,7 @@ serve::client::options options_for(const service_config& c) {
   o.service_key = c.identity;
   o.id = c.device_id;
   o.name = c.device_name;
+  if (c.upgrade) o.ops |= serve::kUpgradeOp;  // granted only on a relayed link
   return o;
 }
 
@@ -325,7 +326,11 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
 
 link_session::link_session(service_config c) : config_(std::move(c)) {}
 
-link_session::~link_session() { disconnect(); }
+link_session::~link_session() {
+  stop_upgrades(false);
+  disconnect();
+  stop_upgrades(true);
+}
 
 expected link_session::connect(route_report& report, const cancel_flag* cancel, int timeout_ms) {
   std::lock_guard single(connect_m_);
@@ -389,10 +394,176 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     live_ = std::move(*c);
     last_report_ = report;
   }
+  if (report.relayed && config_.upgrade && (live_caps_ops() & serve::kUpgradeOp) != 0) start_upgrades();
   return {};
 }
 
+std::uint32_t link_session::live_caps_ops() const {
+  std::lock_guard lock(m_);
+  return live_ ? live_->caps().ops : 0;
+}
+
+// ---- a direct path after the relay (docs/plans/nas-relay.md §9) --------------------------------
+
+void link_session::set_upgrade_policy(bool on_cellular, bool allowed_on_cellular) noexcept {
+  on_cellular_.store(on_cellular);
+  cellular_ok_.store(allowed_on_cellular);
+  {
+    std::lock_guard lock(up_m_);
+    if (upgrade_allowed()) up_now_ = true;  // just allowed again (Wi-Fi, or switched on): try now
+  }
+  up_cv_.notify_all();
+}
+
+bool link_session::upgrade_allowed() const noexcept { return !on_cellular_.load() || cellular_ok_.load(); }
+
+void link_session::start_upgrades() {
+  std::lock_guard lock(up_m_);
+  up_now_ = true;
+  if (up_stop_ || upgrader_.joinable()) {
+    up_cv_.notify_all();
+    return;
+  }
+  try {
+    upgrader_ = std::thread([this] { upgrade_loop(); });
+  } catch (...) {
+    // No thread: the relay stays, as when a try fails.
+  }
+}
+
+void link_session::stop_upgrades(bool join) noexcept {
+  std::thread t;
+  {
+    std::lock_guard lock(up_m_);
+    up_stop_ = true;
+    if (up_rz_) up_rz_->shutdown();  // the punch and the ask end now
+    if (join) t = std::move(upgrader_);
+  }
+  up_cv_.notify_all();
+  if (t.joinable()) t.join();  // with the port shut and the links closed, a try ends at once
+}
+
+void link_session::upgrade_loop() {
+  static constexpr int kAfterMinutes[] = {1, 5, 15, 60};
+  std::size_t tried = 0;
+  auto next = clock::now();  // at once
+  std::unique_lock lock(up_m_);
+  while (!up_stop_) {
+    up_cv_.wait_until(lock, next, [&] { return up_stop_ || up_now_; });
+    if (up_stop_) return;
+    if (!up_now_ && clock::now() < next) continue;
+    up_now_ = false;
+    lock.unlock();
+    bool relayed = false;
+    {
+      std::lock_guard l(m_);
+      relayed = live_ && !live_->closed() && last_report_.relayed && !shut_;
+    }
+    bool moved = false;
+    if (relayed && upgrade_allowed()) moved = try_upgrade();
+    lock.lock();
+    if (moved || !relayed) return;  // direct now, or nothing to move (a new relayed link starts it again)
+    next = clock::now() + std::chrono::minutes(kAfterMinutes[std::min(tried, std::size(kAfterMinutes) - 1)]);
+    ++tried;
+  }
+}
+
+bool link_session::try_upgrade() {
+  std::shared_ptr<serve::client> c;
+  std::string relay_text;
+  {
+    std::lock_guard lock(m_);
+    if (!live_ || shut_ || !last_report_.relayed) return false;
+    c = live_;
+    relay_text = last_report_.address;
+  }
+  auto opened = dw::net::open_rendezvous(config_.loopback_only);
+  if (!opened) return false;
+  std::shared_ptr<dw::net::tcp_rendezvous> rz(std::move(*opened));
+  {
+    std::lock_guard lock(up_m_);
+    if (up_stop_) return false;
+    up_rz_ = rz;
+  }
+  struct closer {
+    link_session& s;
+    std::shared_ptr<dw::net::tcp_rendezvous>& r;
+    ~closer() {
+      r->shutdown();
+      std::lock_guard lock(s.up_m_);
+      s.up_rz_.reset();
+    }
+  } close_it{*this, rz};
+  // This side's candidates at the port: its own network, and its public side as the relay sees it.
+  std::vector<serve::candidate> mine;
+  if (config_.loopback_only) {
+    mine.push_back({"127.0.0.1", rz->port()});
+  } else {
+    for (const auto& a : dw::net::local_addresses()) {
+      if (mine.size() >= serve::kMaxCandidates - 1) break;
+      mine.push_back({dw::net::address_text(a), rz->port()});
+    }
+  }
+  std::string host;
+  std::uint16_t port = 0;
+  if (split_host_port(relay_text, host, port)) {
+    std::vector<dw::net::endpoint> relay;
+    if (const auto a = dw::net::parse_address(host)) {
+      relay.push_back({dw::net::address_text(*a), port});
+    } else if (const auto found = dw::net::resolve(host); !found.empty()) {
+      relay.push_back({dw::net::address_text(found.front()), port});
+    }
+    if (!relay.empty()) {
+      if (auto l = rz->next(relay, 3000)) {
+        if (auto seen = dw::relay::ask_seen(**l, 3000)) {
+          const bool known = std::any_of(mine.begin(), mine.end(), [&](const serve::candidate& m) {
+            return m.address == seen->address && m.port == seen->port;
+          });
+          if (!known && mine.size() < serve::kMaxCandidates) mine.push_back({seen->address, seen->port});
+        }
+        (*l)->shutdown();
+      }
+    }
+  }
+  // Asked inside the sealed session: the relay sees neither side's list.
+  auto answer = c->admin(serve::candidates_json(mine, "upgrade"));
+  if (!answer) return false;
+  std::vector<dw::net::endpoint> peers;
+  for (const auto& t : serve::parse_candidates(*answer)) peers.push_back({t.address, t.port});
+  if (peers.empty()) return false;
+  auto punched = rz->next(peers, serve::kPunchMs);
+  if (!punched) return false;
+  // The whole handshake again on the new path: only this phone completes it.
+  serve::refusal why = serve::refusal::none;
+  auto direct = serve::client::open(std::shared_ptr<dw::link>(std::move(*punched)), options_for(config_), &why);
+  if (!direct) return false;
+  std::shared_ptr<serve::client> fresh(std::move(*direct));
+  std::lock_guard single(connect_m_);
+  std::lock_guard lock(m_);
+  if (shut_ || live_ != c) {
+    fresh->close();  // reconnected meanwhile: that one stands
+    return false;
+  }
+  // As a reconnect swaps: reads running on the relayed client finish there.
+  std::erase_if(retired_, [](const auto& w) { return w.expired(); });
+  retired_.push_back(live_);
+  live_ = std::move(fresh);
+  last_report_.relayed = false;
+  last_report_.upgraded = true;
+  last_report_.address = "direct";
+  return true;
+}
+
+bool link_session::upgrade_now_for_test() {
+  {
+    std::lock_guard lock(m_);
+    if (!live_ || !last_report_.relayed) return false;
+  }
+  return upgrade_allowed() && try_upgrade();
+}
+
 void link_session::shut_down() noexcept {
+  stop_upgrades(false);
   std::vector<std::shared_ptr<serve::client>> still_reading;
   {
     std::lock_guard lock(m_);
@@ -405,6 +576,7 @@ void link_session::shut_down() noexcept {
   for (auto& c : still_reading) c->close();
   disconnect();
   streams_cv_.notify_all();
+  stop_upgrades(true);
 }
 
 void link_session::disconnect() noexcept {

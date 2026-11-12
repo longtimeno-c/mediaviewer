@@ -336,6 +336,22 @@ struct server::state {
   std::thread relayer;
   bool relay_poke = false;  // under relay_m: the setting changed
 
+  // Direct paths for relayed phones (nas-relay.md §9): one punch per device,
+  // kMaxPunches at once, each on its own thread with its own port.
+  struct punch {
+    std::array<std::uint8_t, 32> device{};
+    std::shared_ptr<net::tcp_rendezvous> rz;
+    std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
+    std::thread t;
+  };
+  static constexpr std::size_t kMaxPunches = 4;
+  std::mutex punch_m;
+  std::list<punch> punches;  // under punch_m
+  std::atomic<std::uint64_t> n_punched{0};
+  std::pair<end_code, std::string> upgrade(conn& c, std::string_view request);
+  std::vector<candidate> gather_candidates(net::tcp_rendezvous& rz);
+  void stop_punches();
+
   ~state() {
     sodium_memzero(identity.data(), identity.size());
     sodium_memzero(access_key.data(), access_key.size());
@@ -388,8 +404,8 @@ class session_state {
   using send_fn = std::function<bool(msg, std::span<const std::uint8_t>)>;
   using config_fn = std::function<std::shared_ptr<const config>()>;
   using admin_fn = std::function<std::pair<end_code, std::string>(std::string_view)>;
-  session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {})
-      : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)) {}
+  session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {}, admin_fn upgrade = {})
+      : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)), upgrade_(std::move(upgrade)) {}
 
   // The reader thread's: a message from the client. False: end the session.
   bool on_message(const message& m) {
@@ -458,6 +474,14 @@ class session_state {
       case msg::serve_admin: {
         const auto a = parse_admin(m.body);
         if (!a) return false;
+        // A relayed phone asking for a direct path (nas-relay.md §9): its own op.
+        if (upgrade_ && (ops_ & kUpgradeOp) != 0) {
+          const auto d = json::parse(a->json, 4);  // {"do","candidates":[{"a","p"}]}
+          if (const std::string* what = d ? d->str("do") : nullptr; what && *what == "upgrade") {
+            const auto [code, json] = upgrade_(a->json);
+            return send_end(a->id, code, json);
+          }
+        }
         // Only an owner's session has the handler; to anyone else the answer is no.
         if (!admin_ || (ops_ & kAdminOp) == 0) return send_end(a->id, end_code::refused);
         const auto [code, json] = admin_(a->json);
@@ -595,6 +619,8 @@ class session_state {
       }
     } opening_done{*this};
     if ((ops_ & op_bit(r.kind)) == 0) return send_end(r.id, end_code::unsupported);
+    // Not streams: asked on serve_admin's frame only.
+    if (r.kind == op::admin || r.kind == op::upgrade) return send_end(r.id, end_code::unsupported);
     // This request's view of the named folders, held until it has opened.
     const auto cfg = cfg_();
     if (r.kind == op::roots) {
@@ -737,6 +763,7 @@ class session_state {
   config_fn cfg_;
   const std::uint32_t ops_;
   admin_fn admin_;
+  admin_fn upgrade_;
   std::mutex m_;
   std::condition_variable cv_;
   bool stopping_ = false;                         // under m_
@@ -797,7 +824,10 @@ void server::state::session(conn& c, std::optional<message> first_message) {
   std::uint32_t version = kVersion;
   if (hello) {
     version = std::clamp(hello->version, kMinVersion, kVersion);
-    if (hello->min_version <= kVersion && hello->version >= kMinVersion) ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0));
+    if (hello->min_version <= kVersion && hello->version >= kMinVersion) {
+      // A direct path is offered only to a phone that came in through the relay.
+      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0) | (c.relayed && !lan_only ? kUpgradeOp : 0));
+    }
   }
   std::string extra = (ops & kAdminOp) != 0 ? owner_fields() : std::string();
   if (c.grant) {
@@ -817,8 +847,10 @@ void server::state::session(conn& c, std::optional<message> first_message) {
   }
   session_state::admin_fn admin_handler;
   if (c.is_owner) admin_handler = [this, &c](std::string_view request) { return admin(c, request); };
+  session_state::admin_fn upgrade_handler;
+  if ((ops & kUpgradeOp) != 0) upgrade_handler = [this, &c](std::string_view request) { return upgrade(c, request); };
   session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); },
-                  [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler));
+                  [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler), std::move(upgrade_handler));
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
     try {
@@ -2138,6 +2170,7 @@ counters server::stats() const noexcept {
   c.unlocks = st_->n_unlocks.load();
   c.expired = st_->n_expired.load();
   c.relayed = st_->n_relayed.load();
+  c.punched = st_->n_punched.load();
   return c;
 }
 
@@ -2231,6 +2264,110 @@ void server::state::wait_at_relay(waiter& w, const std::string& relay_key) {
     admit(std::move(*first), "relay:" + token_hex(t), std::string(), net::address{}, true, w.device);
   }
   unwatch();
+}
+
+// ---- a direct path after the relay (docs/plans/nas-relay.md §9) --------------------------------
+
+// This side's candidates at the rendezvous port: its own network's addresses,
+// and its public side as the person's relay sees it (kAsk from that port).
+std::vector<candidate> server::state::gather_candidates(net::tcp_rendezvous& rz) {
+  std::vector<candidate> out;
+  const std::uint16_t port = rz.port();
+  if (loopback_only) {
+    out.push_back({"127.0.0.1", port});
+  } else {
+    for (const auto& a : net::local_addresses()) {
+      if (out.size() >= kMaxCandidates - 1) break;
+      out.push_back({net::address_text(a), port});
+    }
+  }
+  std::string host;
+  std::uint16_t relay_port = 0;
+  if (parse_relay_address(cfg()->relay, host, relay_port)) {
+    std::vector<net::endpoint> relay;
+    if (const auto a = net::parse_address(host)) {
+      relay.push_back({net::address_text(*a), relay_port});
+    } else if (const auto found = net::resolve(host); !found.empty()) {
+      relay.push_back({net::address_text(found.front()), relay_port});
+    }
+    if (!relay.empty()) {
+      if (auto l = rz.next(relay, 3000)) {
+        if (auto seen = relay::ask_seen(**l, 3000)) {
+          const bool known = std::any_of(out.begin(), out.end(), [&](const candidate& c) {
+            return c.address == seen->address && c.port == seen->port;
+          });
+          if (!known && out.size() < kMaxCandidates) out.push_back({seen->address, seen->port});
+        }
+        (*l)->shutdown();
+      }
+    }
+  }
+  return out;
+}
+
+std::pair<end_code, std::string> server::state::upgrade(conn& c, std::string_view request) {
+  const auto theirs = parse_candidates(request);
+  if (theirs.empty()) return {end_code::bad_request, {}};
+  std::array<std::uint8_t, 32> device{};
+  {
+    std::lock_guard lock(c.m);
+    if (!c.has_device) return {end_code::refused, {}};
+    device = c.device;
+  }
+  {
+    std::lock_guard lock(punch_m);
+    std::erase_if(punches, [](punch& p) {
+      if (!p.done->load()) return false;
+      if (p.t.joinable()) p.t.join();
+      return true;
+    });
+    if (stopping.load() || punches.size() >= kMaxPunches ||
+        std::any_of(punches.begin(), punches.end(), [&](const punch& p) { return p.device == device; })) {
+      return {end_code::too_many, {}};
+    }
+  }
+  auto opened = net::open_rendezvous(loopback_only);
+  if (!opened) return {end_code::error, {}};
+  std::shared_ptr<net::tcp_rendezvous> rz(std::move(*opened));
+  const auto mine = gather_candidates(*rz);
+  std::vector<net::endpoint> peers;
+  for (const auto& t : theirs) peers.push_back({t.address, t.port});
+  std::lock_guard lock(punch_m);
+  if (stopping.load()) return {end_code::refused, {}};
+  punch& p = punches.emplace_back();
+  p.device = device;
+  p.rz = rz;
+  try {
+    p.t = std::thread([this, rz, peers, device, done = p.done] {
+      try {
+        if (auto l = rz->next(peers, kPunchMs); l && !stopping.load()) {
+          // A connection like any other: its handshake, the device check and the
+          // grant all run. Only this device goes on through it, as on the relay.
+          n_punched.fetch_add(1);
+          admit(std::move(*l), "punch:" + key_hex(device).substr(0, 16), std::string(), net::address{}, true, device);
+        }
+      } catch (...) {
+      }
+      rz->shutdown();
+      done->store(true);
+    });
+  } catch (...) {
+    punches.pop_back();
+    return {end_code::error, {}};
+  }
+  return {end_code::ok, candidates_json(mine, "")};
+}
+
+void server::state::stop_punches() {
+  std::list<punch> gone;
+  {
+    std::lock_guard lock(punch_m);
+    for (auto& p : punches) p.rz->shutdown();
+    gone.swap(punches);
+  }
+  for (auto& p : gone) {
+    if (p.t.joinable()) p.t.join();
+  }
 }
 
 void server::state::stop_waiters() {
@@ -2357,6 +2494,7 @@ void server::stop() noexcept {
   }
   st_->relay_cv.notify_all();
   if (st_->relayer.joinable()) st_->relayer.join();
+  st_->stop_punches();
   std::vector<std::shared_ptr<conn>> live;
   {
     std::lock_guard lock(st_->conns_m);

@@ -92,6 +92,7 @@ struct counters {
   std::uint64_t unlocks = 0;           // owner sessions unlocked by the passphrase
   std::uint64_t expired = 0;           // limited devices refused or cut because their time was up
   std::uint64_t relayed = 0;           // connections that came through the relay
+  std::uint64_t punched = 0;           // direct paths a relayed phone moved to (nas-relay.md §9)
 };
 
 // The fuzz harness: one session's handling of what an admitted client sends,

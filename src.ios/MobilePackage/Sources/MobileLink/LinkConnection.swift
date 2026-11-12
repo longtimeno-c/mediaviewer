@@ -17,7 +17,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private let lock = NSLock()
   private var snapshot: ConnectionSnapshot
   private var continuations: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
-  private var handle: LinkHandle?
+  // Under `lock`, as every write of it is: the core is told the network and the setting at once.
+  private var handle: LinkHandle? { didSet { if let handle { Self.applyUpgrade(handle, mobileData: pathExpensive) } } }
   private var record: PairingRecord?
   // Until the first answer from the path monitor the network is treated as mobile data (§8.4).
   private var pathKnown = false
@@ -79,6 +80,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     opened = Task.detached(priority: .userInitiated) { [weak self] in await self?.openStored() }
     monitor.pathUpdateHandler = { [weak self] path in self?.pathChanged(path) }
     monitor.start(queue: DispatchQueue(label: "mediaviewer.link.path"))
+    // Settings' "Faster direct connection on mobile data" reaches the core when it is switched.
+    NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
+      self?.settingsChanged()
+    }
     NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in
       guard let self else { return }
       Task { await self.retry() }  // keeps a live link; races only when there is none
@@ -229,6 +234,18 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   // MARK: The network
 
+  /// A direct path after the relay (docs/plans/nas-relay.md §9): on Wi-Fi always, on mobile data
+  /// as Settings says. The core enforces it; this only tells it. Never blocks.
+  private static func applyUpgrade(_ handle: LinkHandle, mobileData: Bool) {
+    mv_link_set_upgrade(handle.raw, mobileData ? 1 : 0, LinkPreferences.directOnMobileDataEnabled() ? 1 : 0)
+  }
+
+  private func settingsChanged() {
+    lock.withLock {
+      if let handle { Self.applyUpgrade(handle, mobileData: pathExpensive) }
+    }
+  }
+
   private func pathChanged(_ path: NWPath) {
     let signature = "\(path.status)|" + path.availableInterfaces.map { "\($0.type)-\($0.name)" }.joined(separator: ",")
     let (first, changed) = lock.withLock { () -> (Bool, Bool) in
@@ -236,6 +253,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       let changed = !first && signature != pathSignature
       pathKnown = true
       pathExpensive = path.isExpensive
+      if let handle { Self.applyUpgrade(handle, mobileData: path.isExpensive) }
       pathSignature = signature
       if changed { routeEpoch += 1 }
       return (first, changed)

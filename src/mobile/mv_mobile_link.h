@@ -79,7 +79,8 @@ typedef struct mv_route_report {
   int32_t over_internet;
   int32_t failure_count;
   mv_route_failure failures[4];
-  int32_t relayed; /* 1: through the person's own relay (over_internet is 1 too) */
+  int32_t relayed;  /* 1: through the person's own relay (over_internet is 1 too) */
+  int32_t upgraded; /* 1: moved from the relay to a direct path it punched (address is "direct") */
 } mv_route_report;
 
 typedef struct mv_cancel mv_cancel;
@@ -147,6 +148,12 @@ void mv_link_close(mv_mobile_link* link);
  * it is unlimited, -1 when there is no live connection (nothing is known: keep what you had).
  * Never blocks. */
 int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
+
+/* A direct path after the relay (docs/plans/nas-relay.md 9): once the link is through the person's
+ * own relay, the core tries to punch a direct one and moves to it. On Wi-Fi always; on mobile data
+ * only when `allowed_on_cellular` (Settings, "Faster direct connection on mobile data", default on).
+ * Call it at open and whenever the network or the setting changes. Never blocks. */
+void mv_link_set_upgrade(mv_mobile_link* link, int32_t on_cellular, int32_t allowed_on_cellular);
 
 /* BLOCKS. Keeps a live connection (the report says how it was reached); races the routes only when
  * there is none. Never cuts reads in flight. The sample library: its folder's host answered with a

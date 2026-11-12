@@ -68,6 +68,7 @@ void fill_report(const route_report& r, mv_route_report* out) {
   put(out->address, r.address);
   out->over_internet = r.over_internet ? 1 : 0;
   out->relayed = r.relayed ? 1 : 0;
+  out->upgraded = r.upgraded ? 1 : 0;
   const std::size_t n = std::min<std::size_t>(r.failures.size(), 4);
   out->failure_count = static_cast<std::int32_t>(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -314,6 +315,7 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
       l->service.local = or_empty(c->local);
       l->service.public_name = or_empty(c->public_name);
       l->service.relay = or_empty(c->relay);
+      l->service.upgrade = true;  // asked only on a relayed link, and only as mv_link_set_upgrade allows
       l->service.identity = key_at(c->identity);
       l->service.access_key = key_at(c->access_key);
       l->service.device_key = key_at(c->device_key);
@@ -343,6 +345,13 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
 }
 
 void mv_link_close(mv_mobile_link* l) { delete l; }
+
+void mv_link_set_upgrade(mv_mobile_link* l, int32_t on_cellular, int32_t allowed_on_cellular) {
+  try {
+    if (l && l->session) l->session->set_upgrade_policy(on_cellular != 0, allowed_on_cellular != 0);
+  } catch (...) {
+  }
+}
 
 int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {
   return catch_all([&]() -> int32_t {

@@ -205,6 +205,7 @@ class tcp_link final : public link {
 };
 
 address address_of(const sockaddr* sa) noexcept;  // below
+std::uint16_t port_of(const sockaddr_storage& s) noexcept;  // below
 
 class tcp_listener final : public listener {
  public:
@@ -220,6 +221,11 @@ class tcp_listener final : public listener {
   std::uint16_t port() const noexcept override { return port_; }
 
   result<std::unique_ptr<link>> accept_from(int timeout_ms, address& from) override {
+    std::uint16_t ignored = 0;
+    return accept_endpoint(timeout_ms, from, ignored);
+  }
+
+  result<std::unique_ptr<link>> accept_endpoint(int timeout_ms, address& from, std::uint16_t& port) override {
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
     for (;;) {
       if (down_.load()) return err(status::cancelled);
@@ -231,6 +237,7 @@ class tcp_listener final : public listener {
         const SOCKET c = ::accept(s_, reinterpret_cast<sockaddr*>(&peer), &len);
         if (c != INVALID_SOCKET) {
           from = address_of(reinterpret_cast<const sockaddr*>(&peer));
+          port = port_of(peer);
           return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
         }
         const int e = ::WSAGetLastError();

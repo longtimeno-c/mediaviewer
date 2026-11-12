@@ -6,11 +6,19 @@
 import MobileKit
 import SwiftUI
 
+/// Settings' words, shared with the tests.
+enum SettingsCopy {
+  static let directOnMobileData = "Faster direct connection on mobile data"
+  static let directOnMobileDataDetail =
+    "When MediaViewer reaches your Synology through your own relay, it tries to connect to it directly, which is faster. On Wi-Fi it always tries."
+}
+
 struct SettingsScreen: View {
   @Environment(AppModel.self) private var model
   @State private var confirmingForget = false
   @AppStorage(Preferences.filmstrip) private var showsFilmstrip = true
   @AppStorage(Preferences.appearance) private var appearance = "dark"
+  @AppStorage(Preferences.directOnMobileData) private var directOnMobileData = true
 
   var body: some View {
     NavigationStack {
@@ -41,6 +49,26 @@ struct SettingsScreen: View {
               InfoRow(label: "Items", value: catalogue.itemCount.formatted())
             }
             InfoRow(label: "Saved on this phone", value: ProgressWords.size(model.connection.cacheBytes))
+          }
+          section("Mobile data") {
+            Toggle(isOn: $directOnMobileData) {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(SettingsCopy.directOnMobileData).font(.subheadline).foregroundStyle(Theme.title)
+                Text(SettingsCopy.directOnMobileDataDetail)
+                  .font(.footnote)
+                  .foregroundStyle(Theme.body)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .tint(Theme.accent)
+            // VoiceOver: the name, then the detail once as the hint (not read twice from the label).
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(SettingsCopy.directOnMobileData)
+            .accessibilityValue(directOnMobileData ? "On" : "Off")
+            .accessibilityHint(SettingsCopy.directOnMobileDataDetail)
+            .accessibilityAddTraits(.isToggle)
+            .accessibilityAction { directOnMobileData.toggle() }
+            .accessibilityIdentifier("directOnMobileData")
           }
           section("Look") {
             Picker("Appearance", selection: $appearance) {

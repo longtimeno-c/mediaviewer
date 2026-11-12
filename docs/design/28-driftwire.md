@@ -1628,8 +1628,22 @@ for a service too old to wait at a relay.
 - **Known limits:** an expired guest has no waiter, so a re-invite code is redeemed only over a
   direct route (at home or through a forwarded port); a phone's race gives the relay the full time
   after its start (5 s, from 1.5 s), and starts it at once when every direct route has already failed.
-- **Not built yet:** hole punching between phone and NAS (owner call 4, after the relay; loopback
-  DHT only in tests).
+- **Then a direct path** (owner call 4, 2026-11-12; [plan §9](../plans/nas-relay.md)). No DHT: the
+  service still never touches it. With a session up through the relay, a phone whose service offers
+  `kUpgradeOp` (granted only to a relayed session) sends its candidates inside the session
+  (`serve_upgrade` on serve_admin's frame): its own network's addresses at a `tcp_rendezvous` port,
+  and its public side as the relay sees it, asked from that same port with the relay's new **`kAsk`**
+  role (the server says the address and port it sees, in the clear, and closes; an older relay
+  refuses it). The service answers with its own, gathered the same way, and both punch for 10 s.
+  The phone runs the whole handshake again on the new path, which the service admits bound to that
+  device as on the relay, and swaps it in as a reconnect does: reads running on the relayed client
+  finish there, later ones go direct. A failed try stays on the relay and tries again after 1, 5
+  and 15 minutes, then hourly; Forget ends a try at once. On mobile data only with Settings →
+  **Faster direct connection on mobile data** on (default on), enforced in the core
+  (`mv_link_set_upgrade`); on Wi-Fi always. Tests: `"[phone-upgrade]"` (loopback only).
+  Throughput on loopback, 64 MB, three runs alternated (`"[.phone-upgrade-bench]"`): relay
+  619/649/661 MB/s, direct 659/686/671 MB/s; loopback shows only the relay's copying, not a real
+  relay's distance, which is where the upgrade pays. Not run: a real NAT, a real relay.
 - **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's
   `set_relay` and the QR field in `"[phone-pairing]"`): a paired client lists and range-reads through
   an in-process relay on `127.0.0.1` with no 32-byte run of the file in the relay's bytes; a wrong

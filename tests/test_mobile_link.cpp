@@ -1875,3 +1875,149 @@ TEST_CASE("pairing: a new code is never redeemed through the relay", "[mobile-li
   CHECK_FALSE(mob::pair_device(c, code, report, nullptr, 3000));
   CHECK_FALSE(report.relayed);
 }
+
+// ---- a direct path after the relay (docs/plans/nas-relay.md §9): loopback only ----------------
+
+namespace {
+
+mob::service_config relayed_only(rig& r, const dw::relay::server& rendezvous) {
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = "127.0.0.1:" + std::to_string(rendezvous.port());
+  c.upgrade = true;
+  c.loopback_only = true;
+  return c;
+}
+
+bool connect_relayed(mob::link_session& s, mob::route_report& report) {
+  for (int i = 0; i < 40; ++i) {  // the service's waiter registers a moment after it starts
+    if (s.connect(report, nullptr, 6000)) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("upgrade: the relay says what it sees of a connection", "[phone-upgrade]") {
+  dw::relay::server::options ro;
+  ro.key = kPhoneRelayKey;
+  ro.loopback_only = true;
+  auto rendezvous = dw::relay::server::start(ro);
+  REQUIRE(rendezvous);
+  auto l = dw::net::connect({"127.0.0.1", (*rendezvous)->port()}, 3000);
+  REQUIRE(l);
+  const auto seen = dw::relay::ask_seen(**l, 3000);
+  REQUIRE(seen);
+  CHECK(seen->address == "127.0.0.1");
+  CHECK(seen->port != 0);
+  CHECK(seen->port != (*rendezvous)->port());
+  CHECK((*rendezvous)->snapshot().asked == 1);
+}
+
+TEST_CASE("upgrade: a relayed phone moves to a direct path, and a read across the move finishes", "[phone-upgrade]") {
+  rig r(300000);
+  write_file(r.photos / "big.bin", std::string(8 * 1024 * 1024, 'b'));
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  mob::link_session s(relayed_only(r, *rendezvous));
+  // On mobile data with the setting off: it stays on the relay.
+  s.set_upgrade_policy(true, false);
+  mob::route_report report;
+  REQUIRE(connect_relayed(s, report));
+  REQUIRE(report.relayed);
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
+  REQUIRE(s.connect(report));
+  CHECK(report.relayed);
+  CHECK_FALSE(report.upgraded);
+  CHECK(r.srv->stats().punched == 0);
+  // A read on the relayed link, and the setting switched on half way through it.
+  std::string got;
+  bool switched = false;
+  REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "big.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    got.append(reinterpret_cast<const char*>(b.data()), b.size());
+    if (!switched && got.size() > 1024 * 1024) {
+      switched = true;
+      s.set_upgrade_policy(true, true);
+      // Wait for the move while this read still holds the relayed client.
+      for (int i = 0; i < 120; ++i) {
+        mob::route_report now;
+        if (s.connect(now) && now.upgraded) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    }
+    return true;
+  }, nullptr, false));
+  CHECK(got.size() == 8u * 1024 * 1024);
+  CHECK(got == std::string(8 * 1024 * 1024, 'b'));
+  REQUIRE(s.connect(report));
+  CHECK(report.upgraded);
+  CHECK_FALSE(report.relayed);
+  CHECK(r.srv->stats().punched >= 1);
+  // Later reads go direct.
+  std::string again;
+  REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    again.append(reinterpret_cast<const char*>(b.data()), b.size());
+    return true;
+  }, nullptr, false));
+  CHECK(again == std::string(70000, 'p'));
+}
+
+TEST_CASE("upgrade: nothing is tried on a direct route, and Forget ends a try at once", "[phone-upgrade]") {
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  mob::service_config direct = r.config();
+  direct.relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  direct.upgrade = true;
+  direct.loopback_only = true;
+  mob::link_session d(direct);
+  mob::route_report report;
+  REQUIRE(d.connect(report));
+  CHECK_FALSE(report.relayed);
+  CHECK_FALSE(d.upgrade_now_for_test());
+  // A relayed one with the try running: Forget does not wait out the punch.
+  auto s = std::make_unique<mob::link_session>(relayed_only(r, *rendezvous));
+  REQUIRE(connect_relayed(*s, report));
+  const auto t0 = std::chrono::steady_clock::now();
+  s->shut_down();
+  s.reset();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+}
+
+TEST_CASE("upgrade: relayed and direct throughput, alternated", "[.phone-upgrade-bench]") {
+  rig r;
+  constexpr std::size_t kBytes = 64u * 1024 * 1024;
+  write_file(r.photos / "bench.bin", std::string(kBytes, 'x'));
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const auto read_all = [&](mob::link_session& s) {
+    std::size_t n = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "bench.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+      n += b.size();
+      return true;
+    }, nullptr, true));
+    REQUIRE(n == kBytes);
+    return static_cast<double>(kBytes) / 1e6 / std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  };
+  for (int run = 0; run < 3; ++run) {
+    mob::service_config c = relayed_only(r, *rendezvous);
+    mob::link_session relayed(c);
+    relayed.set_upgrade_policy(true, false);  // held on the relay
+    mob::route_report report;
+    REQUIRE(connect_relayed(relayed, report));
+    REQUIRE(report.relayed);
+    const double via_relay = read_all(relayed);
+    mob::link_session moved(c);
+    REQUIRE(connect_relayed(moved, report));
+    for (int i = 0; i < 100 && !report.upgraded; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      REQUIRE(moved.connect(report));
+    }
+    REQUIRE(report.upgraded);
+    const double direct = read_all(moved);
+    std::printf("{\"case\":\"phone_upgrade\",\"run\":%d,\"relay_MBps\":%.0f,\"direct_MBps\":%.0f}\n", run, via_relay, direct);
+  }
+}

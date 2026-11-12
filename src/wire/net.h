@@ -69,6 +69,12 @@ class listener {
     from = {};
     return accept(timeout_ms);
   }
+  // As accept_from, and the peer's port (a relay answering kAsk: the address
+  // and port it sees; never logged). 0 where the listener cannot say.
+  [[nodiscard]] virtual result<std::unique_ptr<link>> accept_endpoint(int timeout_ms, address& from, std::uint16_t& port) {
+    port = 0;
+    return accept_from(timeout_ms, from);
+  }
   virtual void shutdown() noexcept = 0;
 };
 [[nodiscard]] result<std::unique_ptr<listener>> listen(bool loopback_only = false);

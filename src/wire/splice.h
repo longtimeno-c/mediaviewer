@@ -72,6 +72,13 @@ inline constexpr std::size_t kIdBytes = 16;
 using token_id_bytes = std::array<std::uint8_t, kIdBytes>;
 inline constexpr std::uint8_t kVersion = 3;  // #500: 2 said the token and a replayable proof in the clear
 inline constexpr std::uint8_t kSender = 0, kWaiter = 1;
+// "What do you see of me?" (docs/plans/nas-relay.md §9): the server answers
+// kSeenBytes, the address and port this connection comes from (a NAT's
+// public side), in the clear, and closes. It says only what anyone on the
+// path already sees, and asks nothing; a relay from before closes it unanswered.
+inline constexpr std::uint8_t kAsk = 2;
+// 4 or 6, the address (IPv4 in the first 4 of 16), the port big-endian.
+inline constexpr std::size_t kSeenBytes = 1 + 16 + 2;
 // "MVRL", the version, the role, two zero bytes.
 inline constexpr std::size_t kHeadBytes = 8;
 inline constexpr std::size_t kSessionIdBytes = 16;  // a waiter's CPace sid
@@ -97,6 +104,10 @@ inline constexpr std::size_t kMinKeyChars = 16;
 [[nodiscard]] token_id_bytes token_id(const token& t);
 // The head's role, if a head of this version.
 [[nodiscard]] std::optional<std::uint8_t> parse_head(std::span<const std::uint8_t> head) noexcept;
+// kAsk on `l` (a fresh connection to the relay, from the port whose public
+// side is wanted): the address and port the relay sees. status::io when it
+// closed unanswered (a relay from before), status::corrupt for a bad answer.
+[[nodiscard]] result<net::endpoint> ask_seen(link& l, int wait_ms);
 
 // What a splice allows, each way.
 struct limits {
@@ -203,6 +214,7 @@ class server {
   };
   struct counts {
     std::uint64_t paired = 0, refused = 0, waiting = 0, active = 0;
+    std::uint64_t asked = 0;  // kAsk answered
     std::uint64_t bytes = 0;  // spliced, both ways, every splice that ended
   };
   [[nodiscard]] static result<std::unique_ptr<server>> start(options o);
@@ -218,7 +230,7 @@ class server {
   struct waiter;
   explicit server(options o) : opts_(std::move(o)) {}
   void accept_loop();
-  void handle(std::shared_ptr<link> l, const net::address& from);
+  void handle(std::shared_ptr<link> l, const net::address& from, const net::address& peer, std::uint16_t peer_port);
   void serve_waiter(std::shared_ptr<link> l, const token& t, std::unique_ptr<noise::cipher_state> to_waiter,
                     const net::address& from);
   void reap_locked();

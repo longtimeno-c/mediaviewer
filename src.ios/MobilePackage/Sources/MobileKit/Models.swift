@@ -215,6 +215,16 @@ public struct AddressFailure: Hashable, Sendable, Identifiable {
   }
 }
 
+/// Settings the core reads as well as the screen (docs/plans/nas-relay.md §9.2).
+public enum LinkPreferences {
+  /// "Faster direct connection on mobile data": once on the person's relay, try a direct path on
+  /// mobile data too (on Wi-Fi it is always tried). On unless switched off (owner, 2026-11-12).
+  public static let directOnMobileData = "directPathOnMobileData"
+  public static func directOnMobileDataEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+    defaults.object(forKey: directOnMobileData) as? Bool ?? true
+  }
+}
+
 public enum SynologyState: Hashable, Sendable {
   /// `relayed`: through the person's own relay (docs/plans/nas-relay.md); overInternet is true too,
   /// so the mobile-data rules are the same as over the internet.

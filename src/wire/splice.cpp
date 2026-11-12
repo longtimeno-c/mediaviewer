@@ -68,7 +68,7 @@ token_id_bytes token_id(const token& t) {
 
 std::optional<std::uint8_t> parse_head(std::span<const std::uint8_t> head) noexcept {
   if (head.size() != kHeadBytes || std::memcmp(head.data(), kMagic, 4) != 0 || head[4] != kVersion ||
-      (head[5] != kSender && head[5] != kWaiter) || head[6] != 0 || head[7] != 0) {
+      (head[5] != kSender && head[5] != kWaiter && head[5] != kAsk) || head[6] != 0 || head[7] != 0) {
     return std::nullopt;
   }
   return head[5];
@@ -213,6 +213,21 @@ splice_result splice(link& a, link& b, const limits& lim, const std::function<bo
   back.join();
   out.why = why.load();
   return out;
+}
+
+result<net::endpoint> ask_seen(link& l, int wait_ms) {
+  const auto deadline = clock::now() + std::chrono::milliseconds(wait_ms);
+  const auto head = make_head(kAsk);
+  if (!l.write_all(head)) return err(status::io);
+  std::array<std::uint8_t, kSeenBytes> seen{};
+  if (auto r = read_exact_until(l, seen, deadline); !r) return err(r.error() == status::timeout ? status::timeout : status::io);
+  if (seen[0] != 4 && seen[0] != 6) return err(status::corrupt);
+  net::address a;
+  a.v6 = seen[0] == 6;
+  std::memcpy(a.bytes.data(), seen.data() + 1, 16);
+  const std::uint16_t port = static_cast<std::uint16_t>(seen[17] << 8 | seen[18]);
+  if (port == 0) return err(status::corrupt);
+  return net::endpoint{net::address_text(a), port};
 }
 
 result<std::unique_ptr<link>> join(std::unique_ptr<link> l, const token& t, int wait_ms,
@@ -414,7 +429,8 @@ void server::reap_locked() {
 void server::accept_loop() {
   while (!stop_.load()) {
     net::address peer;
-    auto c = listener_->accept_from(500, peer);
+    std::uint16_t peer_port = 0;
+    auto c = listener_->accept_endpoint(500, peer, peer_port);
     if (!c) {
       if (c.error() == status::cancelled) return;
       if (c.error() != status::timeout) std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -435,9 +451,9 @@ void server::accept_loop() {
     ++handshaking_from_[from];
     auto done = std::make_shared<std::atomic<bool>>(false);
     try {
-      workers_.push_back({std::thread([this, l, done, from] {
+      workers_.push_back({std::thread([this, l, done, from, peer, peer_port] {
                             try {
-                              handle(l, from);
+                              handle(l, from, peer, peer_port);
                             } catch (...) {
                               l->shutdown();
                             }
@@ -453,7 +469,7 @@ void server::accept_loop() {
   }
 }
 
-void server::handle(std::shared_ptr<link> l, const net::address& from) {
+void server::handle(std::shared_ptr<link> l, const net::address& from, const net::address& peer, std::uint16_t peer_port) {
   // The handshake's place in the caps, given back however this ends.
   struct handshake_slot {
     server& s;
@@ -478,6 +494,22 @@ void server::handle(std::shared_ptr<link> l, const net::address& from) {
   if (!read_exact_until(*l, clear, deadline)) return refuse();
   const auto role = parse_head(clear);
   if (!role) return refuse();
+  if (*role == kAsk) {
+    // What anyone on the path sees, said back; then closed. Nothing kept.
+    if (peer_port == 0) return refuse();  // a listener that cannot say
+    std::array<std::uint8_t, kSeenBytes> seen{};
+    seen[0] = peer.v6 ? 6 : 4;
+    std::memcpy(seen.data() + 1, peer.bytes.data(), 16);
+    seen[17] = static_cast<std::uint8_t>(peer_port >> 8);
+    seen[18] = static_cast<std::uint8_t>(peer_port & 0xff);
+    (void)l->write_all(seen);
+    {
+      std::lock_guard lock(m_);
+      ++counts_.asked;
+    }
+    l->shutdown();
+    return;
+  }
   std::array<std::uint8_t, 32> psk{};
   struct wipe {
     std::array<std::uint8_t, 32>& k;

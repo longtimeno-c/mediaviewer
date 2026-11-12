@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // docs/design/20 "Craft rules" on the phone: dark, one fill per surface, depth from a lighter
 // surface, 12 pt word insets. Text uses Dynamic Type's styles rather than the desktop's fixed sizes.
+import MobileKit
 import SwiftUI
 
 /// Preferences kept on this phone, shared by the screen that shows a thing and the switch for it.
@@ -9,6 +10,8 @@ public enum Preferences {
   public static let filmstrip = "viewerFilmstrip"
   /// "dark" (the default, as the viewer is), "light" or "system".
   public static let appearance = "appearance"
+  /// The core reads it too (LinkPreferences): a direct path after the relay on mobile data.
+  public static let directOnMobileData = LinkPreferences.directOnMobileData
 }
 
 /// The colour scheme the person chose, for `preferredColorScheme`; nil follows the system.

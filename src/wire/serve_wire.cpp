@@ -10,16 +10,18 @@
 #include <set>
 
 #include "core/json.h"
+#include "wire/net.h"
 
 namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 5> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 6> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
                                                              {op::read_range, "read_range"},
-                                                             {op::admin, "admin"}}};
+                                                             {op::admin, "admin"},
+                                                             {op::upgrade, "upgrade"}}};
 
 void put_u32(std::uint8_t* p, std::uint32_t v) noexcept {
   for (int i = 0; i < 4; ++i) p[i] = static_cast<std::uint8_t>(v >> (8 * i));
@@ -410,6 +412,35 @@ result<config> parse_config(std::string_view text, bool any_port) {
     c.relay = *relay;
   }
   return c;
+}
+
+std::string candidates_json(const std::vector<candidate>& c, std::string_view what) {
+  json::writer w;
+  w.begin_object();
+  if (!what.empty()) w.key("do").string(std::string(what));
+  w.key("candidates").begin_array();
+  for (std::size_t i = 0; i < c.size() && i < kMaxCandidates; ++i) {
+    w.begin_object().key("a").string(c[i].address).key("p").integer(c[i].port).end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
+std::vector<candidate> parse_candidates(std::string_view text) {
+  std::vector<candidate> out;
+  const auto doc = json::parse(text, 4);
+  if (!doc) return out;
+  const json::value* a = doc->find("candidates");
+  if (!a || a->k != json::kind::array) return out;
+  for (const auto& v : a->a) {
+    if (out.size() >= kMaxCandidates) break;
+    if (v.k != json::kind::object) continue;
+    const std::string* addr = v.str("a");
+    const auto port = v.integer("p");
+    if (!addr || addr->size() > 64 || !net::parse_address(*addr) || !in_range(port, 1, 65535)) continue;
+    out.push_back({*addr, static_cast<std::uint16_t>(*port)});
+  }
+  return out;
 }
 
 bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port) {

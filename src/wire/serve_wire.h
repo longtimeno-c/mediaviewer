@@ -57,10 +57,23 @@ inline constexpr std::size_t kMaxLabelBytes = 64;
 // A listing, at most (a folder bigger than this says "truncated").
 inline constexpr std::size_t kMaxListBytes = 16u * 1024 * 1024;
 
-enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4 };
+enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4, upgrade = 5 };
 // What a phone can use. `admin` is apart: granted only to the owner's session.
 inline constexpr std::uint32_t kAllOps = (1u << 4) - 1;
 inline constexpr std::uint32_t kAdminOp = 1u << 4;
+// A direct path after the relay (docs/plans/nas-relay.md §9): granted only to a
+// session that came in through the relay. Asked on serve_admin's frame as
+// {"do":"upgrade","candidates":[{"a","p"},...]}; answered with the service's.
+inline constexpr std::uint32_t kUpgradeOp = 1u << 5;
+inline constexpr std::size_t kMaxCandidates = 8;
+inline constexpr int kPunchMs = 10000;
+struct candidate {
+  std::string address;  // numeric
+  std::uint16_t port = 0;
+};
+[[nodiscard]] std::string candidates_json(const std::vector<candidate>& c, std::string_view what);
+// At most kMaxCandidates numeric addresses with a port; anything else left out.
+[[nodiscard]] std::vector<candidate> parse_candidates(std::string_view json);
 [[nodiscard]] const char* op_name(op o) noexcept;
 [[nodiscard]] std::optional<op> parse_op(std::string_view name) noexcept;
 [[nodiscard]] constexpr std::uint32_t op_bit(op o) noexcept { return 1u << static_cast<unsigned>(o); }
