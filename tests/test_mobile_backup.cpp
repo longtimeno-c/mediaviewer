@@ -482,11 +482,11 @@ TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]
   } ctx{&roll, {}};
   const auto exporter = [](void* c, const char* local_id, int32_t index, const char* path, mv_cancel* cancel, int32_t*) -> int32_t {
     if (mv_backup_cancelled(cancel)) return MV_LINK_CANCELLED;
-    auto* roll = static_cast<ctx_t*>(c)->roll;
-    for (const auto& it : roll->items) {
+    auto* source = static_cast<ctx_t*>(c)->roll;
+    for (const auto& it : source->items) {
       if (it.local_id == local_id) {
         int ymd[3] = {it.year, it.month, it.day};
-        return roll->export_resource(it, static_cast<std::size_t>(index), path, nullptr, ymd) ? MV_LINK_OK : MV_LINK_INTERNAL;
+        return source->export_resource(it, static_cast<std::size_t>(index), path, nullptr, ymd) ? MV_LINK_OK : MV_LINK_INTERNAL;
       }
     }
     return MV_LINK_NOT_FOUND;

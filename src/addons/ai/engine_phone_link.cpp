@@ -470,13 +470,13 @@ void engine::phone_link_refresh(bool phones_only) {
             row.reserve = num("reserve");
             row.used = num("used");
             row.room = num("room");
-            std::vector<root_row> roots;
+            std::vector<root_row> search_roots;
             {
-              std::lock_guard lock(status_m_);
-              roots = roots_cache_;
+              std::lock_guard held(status_m_);
+              search_roots = roots_cache_;
             }
-            for (const auto& r : roots) {
-              if (r.enabled && r.recursive && phone_nas_covered_by(*path, r.path)) row.indexed = true;
+            for (const auto& search_root : search_roots) {
+              if (search_root.enabled && search_root.recursive && phone_nas_covered_by(*path, search_root.path)) row.indexed = true;
             }
           }
           rows.push_back(std::move(row));
