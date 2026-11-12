@@ -1625,6 +1625,9 @@ for a service too old to wait at a relay.
   route that answers always wins, pairing never goes through the relay, and the route report and
   Settings say "Connected through your relay" (it counts as over the internet for the mobile-data
   rules). The code's `"relay"` is read when there and kept with the pairing; an old code has none.
+- **Known limits:** an expired guest has no waiter, so a re-invite code is redeemed only over a
+  direct route (at home or through a forwarded port); a phone's race gives the relay the full time
+  after its start (5 s, from 1.5 s), and starts it at once when every direct route has already failed.
 - **Not built yet:** hole punching between phone and NAS (owner call 4, after the relay; loopback
   DHT only in tests).
 - **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's

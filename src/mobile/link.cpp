@@ -135,17 +135,15 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
   for (const target& t : targets) {
     std::thread([st, t, work, started, timeout_ms]() mutable {
       if (t.relay) {
-        // Last: only when the direct routes have not answered by now.
-        while (clock::now() - started < std::chrono::milliseconds(kRelayDelayMs)) {
-          {
-            std::lock_guard lock(st->m);
-            if (st->over || st->winner) {
-              --st->running;
-              st->cv.notify_all();
-              return;
-            }
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        // Last: only when the direct routes have not answered by now, or
+        // at once when every one of them has already failed.
+        std::unique_lock lock(st->m);
+        st->cv.wait_until(lock, started + std::chrono::milliseconds(kRelayDelayMs),
+                          [&] { return st->over || st->winner || st->running <= 1; });
+        if (st->over || st->winner) {
+          --st->running;
+          st->cv.notify_all();
+          return;
         }
       }
       // By name, always, so a NAT64 network can translate it (§7.3). Local
@@ -184,7 +182,8 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
           }
           if (t.relay) {
             // Joined to this phone's waiter; the handshake past it is end to end.
-            const int left = timeout_ms - static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - started).count());
+            const int left = timeout_ms + kRelayDelayMs -
+                             static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - started).count());
             auto joined = dw::relay::join(std::make_unique<shared_hop>(l), t.token, std::max(500, left), [st] {
               std::lock_guard lock(st->m);
               return st->over;
@@ -226,7 +225,9 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
       }
     }).detach();
   }
-  const auto until = clock::now() + std::chrono::milliseconds(timeout_ms);
+  // The relay starts late: it gets the whole time after its start, not what is left of it.
+  const bool relayed = std::any_of(targets.begin(), targets.end(), [](const target& t) { return t.relay; });
+  const auto until = clock::now() + std::chrono::milliseconds(timeout_ms + (relayed ? kRelayDelayMs : 0));
   std::unique_lock lock(st->m);
   while (!st->winner && st->running > 0 && clock::now() < until) {
     if (cancel && cancel->stopped()) break;

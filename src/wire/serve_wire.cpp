@@ -413,7 +413,7 @@ result<config> parse_config(std::string_view text, bool any_port) {
 }
 
 bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port) {
-  if (address.empty() || address.size() > 300) return false;
+  if (address.empty() || address.size() > 255) return false;  // the phone's limit for an address too
   for (const char ch : address) {
     if (static_cast<unsigned char>(ch) <= 0x20 || ch == 0x7f) return false;
   }

@@ -1800,8 +1800,11 @@ TEST_CASE("link race: with no direct route, the phone gets in through its own re
   for (int i = 0; i < 40 && !got_in; ++i) {  // the service's waiter registers a moment after it starts
     mob::link_session s(c);
     mob::route_report report;
+    const auto t0 = std::chrono::steady_clock::now();
     if (s.connect(report, nullptr, 6000)) {
       got_in = true;
+      // Every direct route refused at once: the relay did not wait out its 1.5 s.
+      CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1400));
       CHECK(report.relayed);
       CHECK(report.over_internet);
       CHECK(report.address == relay);

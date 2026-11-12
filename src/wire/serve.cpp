@@ -2255,7 +2255,10 @@ void server::state::relay_loop() {
     std::array<std::uint8_t, 16> key_id{};
     crypto_generichash(key_id.data(), key_id.size(), reinterpret_cast<const unsigned char*>(key.data()), key.size(), nullptr, 0);
     std::vector<std::array<std::uint8_t, 32>> want;
-    if (!relay.empty() && key.size() >= relay::kMinKeyChars) {
+    std::string relay_host;
+    std::uint16_t relay_port = 0;
+    // A serve.json edited by hand to an address that is not one: no waiters (set_relay refuses these).
+    if (!relay.empty() && key.size() >= relay::kMinKeyChars && parse_relay_address(relay, relay_host, relay_port)) {
       // An expired guest's time is up: its slot goes to a phone that can still get in.
       std::vector<grants::grant> limited;
       (void)grants::load(*store, limited);
