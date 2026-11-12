@@ -1563,7 +1563,7 @@ TEST_CASE("an edited file is re-queued and a reopened tree queues only its delta
 TEST_CASE("a folder the walk may not read keeps its index rows", "[ai][engine]") {
 #if defined(_WIN32)
   SKIP("POSIX permissions");
-#endif
+#else
   rig r;
   r.file("red_car.jpg");
   r.file("locked/green_field.jpg");
@@ -1585,6 +1585,7 @@ TEST_CASE("a folder the walk may not read keeps its index rows", "[ai][engine]")
     REQUIRE(r.idle());
     CHECK(r.status().assets_total == 1);
   }
+#endif
 }
 
 TEST_CASE("a root that suddenly lists nothing keeps its rows and says it cannot be read", "[ai][engine]") {
@@ -6212,7 +6213,7 @@ TEST_CASE("publishing again adds a generation and leaves the last one until it i
   SECTION("a folder that cannot be written keeps the current generation") {
 #if defined(_WIN32)
     SKIP("POSIX permissions");
-#endif
+#else
     fs::permissions(base / "gen", fs::perms::owner_read | fs::perms::owner_exec);
     REQUIRE(a.eng->phone_publish(utf8(nas)));
     auto done = phone_done(a);
@@ -6220,6 +6221,7 @@ TEST_CASE("publishing again adds a generation and leaves the last one until it i
     CHECK(*done.str("error") == "unreachable");
     CHECK(*done.integer("generation") == 1);
     CHECK(read_all(base / "current.json") == first);
+#endif
   }
   SECTION("a run that died before it became current does not block the next") {
     fs::create_directories(base / "gen" / "000002");
@@ -7035,7 +7037,7 @@ TEST_CASE("delivery says when the share is full, and waits longer each failure",
   SECTION("failures back off, and the signing key is not read for it") {
 #if defined(_WIN32)
     SKIP("POSIX permissions");
-#endif
+#else
     p.publish();
     fs::permissions(p.base / "gen", fs::perms::owner_read | fs::perms::owner_exec);
     auto done = p.publish("unreachable");
@@ -7044,6 +7046,7 @@ TEST_CASE("delivery says when the share is full, and waits longer each failure",
     fs::permissions(p.base / "gen", fs::perms::owner_all);
     CHECK(*state().integer("deliver_attempts") == tried);
     CHECK(*state().integer("waiting") == 2);
+#endif
   }
   SECTION("not on battery") {
     p.publish();
@@ -7162,7 +7165,7 @@ TEST_CASE("a dead run's part folder is room, not a full share", "[ai][engine][ph
 TEST_CASE("a pack is forgotten only when both sides clearly lack it", "[ai][engine][phone]") {
 #if defined(_WIN32)
   SKIP("POSIX permissions");
-#endif
+#else
   phone_rig p;
   p.a.file("red_car.jpg");
   p.index();
@@ -7181,6 +7184,7 @@ TEST_CASE("a pack is forgotten only when both sides clearly lack it", "[ai][engi
   CHECK(rows() == "1");
   REQUIRE((*store)->reconcile(utf8(p.nas)));
   CHECK(rows() == "1");  // still on the share
+#endif
 }
 
 
@@ -7204,7 +7208,7 @@ TEST_CASE("a share that lost its thumbs folder gets it back", "[ai][engine][phon
 TEST_CASE("reconcile forgets nothing when one stat fails or the share goes mid-way", "[ai][engine][phone]") {
 #if defined(_WIN32)
   SKIP("POSIX permissions");
-#endif
+#else
   phone_rig p;
   p.a.file("red_car.jpg");
   p.index();
@@ -7228,6 +7232,7 @@ TEST_CASE("reconcile forgets nothing when one stat fails or the share goes mid-w
     fs::rename(away, p.nas);
     CHECK(rows() == "1");
   }
+#endif
 }
 
 TEST_CASE("a generation's arrival is when it became current, and failure counts are pruned", "[ai][engine][phone]") {

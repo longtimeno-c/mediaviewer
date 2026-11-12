@@ -30,8 +30,7 @@ class file_map {
   file_map() = default;
   const std::uint8_t* data_ = nullptr;
   std::size_t size_ = 0;
-  bool mapped_ = false;             // data_ is an mmap to undo
-  std::vector<std::uint8_t> copy_;  // or the bytes themselves (Windows)
+  std::vector<std::uint8_t> copy_;  // Windows: the bytes themselves (POSIX: empty, data_ is an mmap)
 };
 
 }  // namespace mv::mobile

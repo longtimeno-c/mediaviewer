@@ -47,12 +47,11 @@ std::unique_ptr<file_map> file_map::open(const std::string& path, bool shared) {
   std::unique_ptr<file_map> m(new file_map());
   m->data_ = static_cast<const std::uint8_t*>(data);
   m->size_ = static_cast<std::size_t>(st.st_size);
-  m->mapped_ = true;
   return m;
 }
 
 file_map::~file_map() {
-  if (mapped_) ::munmap(const_cast<std::uint8_t*>(data_), size_);
+  if (data_) ::munmap(const_cast<std::uint8_t*>(data_), size_);
 }
 
 #endif
