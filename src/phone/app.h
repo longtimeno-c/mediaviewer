@@ -24,7 +24,8 @@ void set_app_source(catalogue_source s);
 // At launch. The first window's process (`primary`) runs Phone access: a
 // library set up before carries on (link::resume). A later window's process
 // runs none of it (two would race on the NAS and serve nearby twice): its
-// requests are refused and its state says {"secondary":true}.
+// requests are refused and its state says {"secondary":true}. Before either is
+// said nothing runs: requests answer busy, the state is {"starting":true}.
 void resume_app(bool primary);
 // At quit, from the main thread: Local search is no longer called (sync),
 // and the link stops (it never waits on the NAS: a request in flight ends on

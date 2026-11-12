@@ -46,7 +46,9 @@ struct app_state {
   link* l = nullptr;           // never destroyed: stop_app ends its thread
   catalogue_source pending;    // a source set before the link was made
   bool stopped = false;
-  bool secondary = false;      // a later window's process: no Phone access here
+  // Until resume_app says: the first window's process (primary) runs Phone
+  // access, a later window's (secondary) never does. Nothing runs before.
+  enum class role { unknown, primary, secondary } who = role::unknown;
   desk_holder desk;
 };
 
@@ -58,7 +60,7 @@ app_state& state() {
 link* get_link() {
   app_state& s = state();
   std::lock_guard lock(s.m);
-  if (s.l || s.stopped || s.secondary) return s.l;
+  if (s.l || s.stopped || s.who != app_state::role::primary) return s.l;
   link::options o;
   if (auto dir = io::phone_dir()) o.data_dir = *dir;
   o.key_store = [] { return secrets::os_store(mv::ai::catalog::kPublisherService); };
@@ -82,7 +84,11 @@ expected app_request(const std::string& request_json) {
   link* l = get_link();
   if (!l) {
     std::lock_guard lock(state().m);
-    return err(state().secondary ? status::unsupported_format : status::cancelled);
+    switch (state().who) {
+      case app_state::role::secondary: return err(status::unsupported_format);
+      case app_state::role::unknown: return err(status::busy);  // the app is still starting
+      default: return err(status::cancelled);
+    }
   }
   return l->request(request_json);
 }
@@ -91,7 +97,11 @@ std::string app_state_json() {
   link* l = get_link();
   if (l) return l->state_json();
   std::lock_guard lock(state().m);
-  return state().secondary ? std::string("{\"secondary\":true}") : std::string("{}");
+  switch (state().who) {
+    case app_state::role::secondary: return "{\"secondary\":true}";
+    case app_state::role::unknown: return "{\"starting\":true}";
+    default: return "{}";
+  }
 }
 
 void set_app_source(catalogue_source s) {
@@ -109,11 +119,14 @@ void set_app_source(catalogue_source s) {
 }
 
 void resume_app(bool primary) {
-  if (!primary) {
+  {
     std::lock_guard lock(state().m);
-    state().secondary = true;
-    state().pending = {};
-    return;
+    if (state().who != app_state::role::unknown) return;  // said once, for the process
+    state().who = primary ? app_state::role::primary : app_state::role::secondary;
+    if (!primary) {
+      state().pending = {};
+      return;
+    }
   }
   if (link* l = get_link()) l->resume();
 }
@@ -128,8 +141,8 @@ void stop_app() noexcept {
     l = st.l;
   }
   if (l) {
-    l->set_source({});  // Local search is about to go: nothing calls into it now
-    l->stop();
+    l->stop();          // stopping first: clearing the source below queues nothing
+    l->set_source({});  // waits out a call in flight; Local search may go after this
   }
 }
 
