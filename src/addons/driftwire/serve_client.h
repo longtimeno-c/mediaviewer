@@ -83,8 +83,9 @@ class client {
 
   [[nodiscard]] result<std::vector<root_info>> roots(end_code* code = nullptr);
   // `meta`: under a backup folder's kBackupMetaFolder (serve_wire.h, "writes").
+  // `truncated`, when given, says the service cut the listing short (kMaxListBytes).
   [[nodiscard]] result<std::vector<list_entry>> list(const std::string& root, const std::string& rel,
-                                                     end_code* code = nullptr, bool meta = false);
+                                                     end_code* code = nullptr, bool meta = false, bool* truncated = nullptr);
   [[nodiscard]] result<stat_info> stat(const std::string& root, const std::string& rel, end_code* code = nullptr,
                                        bool meta = false);
 

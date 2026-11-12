@@ -77,6 +77,7 @@ struct camera_roll final : bk::source {
   std::uint64_t largest = 0;
   std::atomic<std::uint64_t> peak_scratch{0};
   std::vector<bk::item> items;
+  bool date_from_file = false;  // the file says it was taken on 31 December 2019
 
   camera_roll(fs::path d, fs::path s, int count, std::uint32_t seed) : dir(std::move(d)), scratch(std::move(s)) {
     std::mt19937 rng(seed);
@@ -104,7 +105,12 @@ struct camera_roll final : bk::source {
   }
 
   mv::expected export_resource(const bk::item& it, std::size_t index, const std::string& path,
-                               const mob::cancel_flag* cancel) override {
+                               const mob::cancel_flag* cancel, int ymd[3]) override {
+    if (date_from_file) {
+      ymd[0] = 2019;
+      ymd[1] = 12;
+      ymd[2] = 31;
+    }
     if (cancel && cancel->stopped()) return mv::err(mv::status::cancelled);
     const auto f = files.find(it.key + "/" + std::to_string(index));
     if (f == files.end()) return mv::err(mv::status::not_found);
@@ -273,7 +279,7 @@ TEST_CASE("backup: stopped at random points, every file arrives once and whole; 
     contents.insert(bytes);
   }
   for (const auto& [k, bytes] : roll.files) CHECK(contents.count(bytes) == 1);
-  CHECK((*ledger)->size() == on_nas.size());
+  CHECK((*ledger)->size(kBackupRoot) == on_nas.size());
   // Peak extra storage on the phone: one file at a time.
   CHECK(roll.peak_scratch <= roll.largest);
 
@@ -303,7 +309,7 @@ TEST_CASE("backup: stopped at random points, every file arrives once and whole; 
     fs::remove(phone.root / "ledger.db-shm");
     ledger = bk::ledger::open((phone.root / "ledger.db").string());
     REQUIRE(ledger);
-    REQUIRE((*ledger)->size() == 0);
+    REQUIRE((*ledger)->size(kBackupRoot) == 0);
     const key32 key = new_phone ? random_key() : device;
     if (new_phone) n.pair(key);
     mob::link_session link(n.config(key));
@@ -375,7 +381,7 @@ TEST_CASE("backup: the storage limit, a folder this phone may not write, and a d
     auto target = bk::link_target(link);
     CHECK(run_once(*target, roll, **ledger, scratch, 0).now == bk::state::done);
     CHECK(read_all(n.backup / rel) == "someone else's photo");
-    const auto row = (*ledger)->find(it.key, it.resources[0].kind, it.resources[0].name);
+    const auto row = (*ledger)->find(kBackupRoot, it.key, it.resources[0].kind, it.resources[0].name);
     REQUIRE(row);
     CHECK(row->rel.find(" (2)") != std::string::npos);
   }
@@ -474,23 +480,27 @@ TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]
     camera_roll* roll;
     std::vector<mv_backup_status> seen;
   } ctx{&roll, {}};
-  const auto exporter = [](void* c, const char* local_id, int32_t index, const char* path, mv_cancel* cancel) -> int32_t {
+  const auto exporter = [](void* c, const char* local_id, int32_t index, const char* path, mv_cancel* cancel, int32_t*) -> int32_t {
     if (mv_backup_cancelled(cancel)) return MV_LINK_CANCELLED;
     auto* roll = static_cast<ctx_t*>(c)->roll;
     for (const auto& it : roll->items) {
       if (it.local_id == local_id) {
-        return roll->export_resource(it, static_cast<std::size_t>(index), path, nullptr) ? MV_LINK_OK : MV_LINK_INTERNAL;
+        int ymd[3] = {it.year, it.month, it.day};
+        return roll->export_resource(it, static_cast<std::size_t>(index), path, nullptr, ymd) ? MV_LINK_OK : MV_LINK_INTERNAL;
       }
     }
     return MV_LINK_NOT_FOUND;
   };
   const auto status = [](void* c, const mv_backup_status* s) { static_cast<ctx_t*>(c)->seen.push_back(*s); };
-  CHECK(mv_backup_run(b, kBackupRoot.c_str(), 5, nullptr, exporter, status, &ctx) == MV_BACKUP_DONE);
+  int32_t final_state = -1;
+  CHECK(mv_backup_run(b, kBackupRoot.c_str(), 5, nullptr, exporter, status, &ctx, &final_state) == MV_LINK_OK);
+  CHECK(final_state == MV_BACKUP_DONE);
   REQUIRE_FALSE(ctx.seen.empty());
   CHECK(ctx.seen.back().backed_up == roll.items.size());
   CHECK(files_under(n.backup).size() == roll.resource_count());
   // A bad layout is refused before anything runs.
-  CHECK(mv_backup_run(b, kBackupRoot.c_str(), 0, nullptr, exporter, status, &ctx) == MV_LINK_INVALID);
+  CHECK(mv_backup_run(b, kBackupRoot.c_str(), 0, nullptr, exporter, status, &ctx, &final_state) == MV_LINK_INVALID);
+  CHECK(mv_backup_add_item(b, "k", "1", 2026, 1, 1, "[]") == MV_LINK_INVALID);
 
   mv_backup_space space{};
   CHECK(mv_backup_space_of(b, kBackupRoot.c_str(), &space) == MV_LINK_OK);
@@ -498,4 +508,51 @@ TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]
   mv_backup_close(b);
   mv_link_shut_down(link);
   mv_link_close(link);
+}
+
+TEST_CASE("backup: the date read from the file files the whole photo", "[mobile-link]") {
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  fs::create_directories(scratch);
+  camera_roll roll(phone.root / "roll", scratch, 4, 3);
+  roll.date_from_file = true;
+  auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+  REQUIRE(ledger);
+  auto target = bk::local_target((phone.root / "nas").string(), "0123456789abcdef", bk::kSampleLimit,
+                                 [](const std::string&) { return std::uint64_t{1} << 40; });
+  REQUIRE(run_once(*target, roll, **ledger, scratch, 0, 2.0, bk::kSampleFolderId).now == bk::state::done);
+  for (const auto& [rel, bytes] : files_under(phone.root / "nas")) CHECK(rel.starts_with("2019/12/"));
+}
+
+TEST_CASE("backup: a hostile or garbled ledger copy on the NAS never blocks or skips a photo", "[mobile-link]") {
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  const fs::path nas_dir = phone.root / "nas";
+  fs::create_directories(scratch);
+  camera_roll roll(phone.root / "roll", scratch, 5, 11);
+  const auto& first = roll.items.front();
+  const std::string hash(64, 'a');
+  // Another "device" claims every photo is done, with paths that escape, a wrong name, another library.
+  std::string rows;
+  for (const auto& it : roll.items) {
+    for (const auto& r : it.resources) {
+      if (!rows.empty()) rows += ",";
+      rows += "{\"k\":\"" + it.key + "\",\"r\":\"" + r.kind + "\",\"n\":\"" + r.name + "\",\"s\":1,\"h\":\"" + hash +
+              "\",\"f\":\"" + bk::kSampleFolderId + "\",\"p\":\"../" + r.name + "\",\"t\":0}";
+    }
+  }
+  rows += ",{\"k\":\"" + first.key + "\",\"r\":\"" + first.resources[0].kind + "\",\"n\":\"" + first.resources[0].name +
+          "\",\"s\":1,\"h\":\"" + hash + "\",\"f\":\"" + bk::kSampleFolderId + "\",\"p\":\"other.jpg\",\"t\":0}";
+  write_file(nas_dir / serve::kBackupMetaFolder / "ffffffffffffffff" / "ledger.json",
+             "{\"v\":1,\"library_id\":\"" + kLibrary + "\",\"rows\":[" + rows + "]}");
+  write_file(nas_dir / "other.jpg", "x");
+  write_file(nas_dir / serve::kBackupMetaFolder / "eeeeeeeeeeeeeeee" / "ledger.json", "{not json");
+  auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+  REQUIRE(ledger);
+  auto target = bk::local_target(nas_dir.string(), "0123456789abcdef", bk::kSampleLimit,
+                                 [](const std::string&) { return std::uint64_t{1} << 40; });
+  const auto last = run_once(*target, roll, **ledger, scratch, 0, 2.0, bk::kSampleFolderId);
+  CHECK(last.now == bk::state::done);
+  CHECK(last.copied == roll.resource_count());
+  CHECK(last.backed_up == roll.items.size());
 }

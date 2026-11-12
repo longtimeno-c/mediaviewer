@@ -401,7 +401,7 @@ result<stat_info> client::stat(const std::string& root, const std::string& rel, 
 }
 
 result<std::vector<list_entry>> client::list(const std::string& root, const std::string& rel, end_code* code,
-                                             bool meta) {
+                                             bool meta, bool* truncated) {
   if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;
   r.kind = op::list;
@@ -426,6 +426,10 @@ result<std::vector<list_entry>> client::list(const std::string& root, const std:
   if (*done != end_code::ok) return err(status::permission_denied);
   auto parsed = parse_listing(slot->collected);
   if (!parsed) return err(status::corrupt);
+  if (truncated) {
+    const auto doc = json::parse(slot->end_json, 4);
+    *truncated = doc && doc->boolean("truncated").value_or(false);
+  }
   return *parsed;
 }
 

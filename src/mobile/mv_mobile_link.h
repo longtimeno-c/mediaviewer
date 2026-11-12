@@ -229,7 +229,9 @@ typedef struct mv_backup_config {
   const char* sample_folder; /* the sample library only: its on-phone "NAS" folder */
 } mv_backup_config;
 
+/* Holds a reference to `link`: close the backup before the link. */
 mv_backup* mv_backup_open(mv_mobile_link* link, const mv_backup_config* config);
+/* Waits for a run in flight to return (fire its cancel first). */
 void mv_backup_close(mv_backup* b);
 
 /* A backup folder the service offers. writable 0: not one this phone may write to. */
@@ -245,7 +247,8 @@ typedef struct mv_backup_space {
 /* BLOCKS. */
 int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out);
 
-/* The photos to back up, newest first. resources_json: [{"kind":"photo|video|live_video|raw|other","name":"IMG_0412.HEIC"}].
+/* The photos to back up, newest first. MV_LINK_INVALID for no resources, a name that is a path, or a
+ * year outside 1900-9999. resources_json: [{"kind":"photo|video|live_video|raw|other","name":"IMG_0412.HEIC"}].
  * key: PHCloudIdentifier where iCloud Photos gives one, else "local:" + the local identifier.
  * year, month, day: the capture date where it was taken. */
 int32_t mv_backup_clear_items(mv_backup* b);
@@ -254,8 +257,11 @@ int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, 
 
 /* BLOCKS (the core's run thread calls it). Writes resource `index` of the photo `local_id`, the
  * original as shot (from iCloud first if need be), to `path`. MV_LINK_OK, MV_LINK_NOT_FOUND (gone from
- * Photos), MV_LINK_CANCELLED, or MV_LINK_INTERNAL. Must poll `cancel` (mv_backup_cancelled). */
-typedef int32_t (*mv_backup_export_fn)(void* ctx, const char* local_id, int32_t index, const char* path, mv_cancel* cancel);
+ * Photos), MV_LINK_CANCELLED, or MV_LINK_INTERNAL. Must poll `cancel` (mv_backup_cancelled).
+ * ymd[3] holds the item's year, month and day; set it to the capture date read from the file, where
+ * it was taken, when the file says (it then files the rest of the photo too). */
+typedef int32_t (*mv_backup_export_fn)(void* ctx, const char* local_id, int32_t index, const char* path, mv_cancel* cancel,
+                                       int32_t ymd[3]);
 int32_t mv_backup_cancelled(mv_cancel* cancel);
 
 typedef enum mv_backup_state {
@@ -271,6 +277,7 @@ typedef enum mv_backup_state {
   MV_BACKUP_TOO_OLD = 9,
   MV_BACKUP_NO_FOLDER = 10,
   MV_BACKUP_NO_ACCESS = 11,
+  MV_BACKUP_DONE_FAILURES = 12, /* everything it could copy is backed up; mv_backup_failures says what not */
 } mv_backup_state;
 
 typedef struct mv_backup_status {
@@ -287,9 +294,10 @@ typedef struct mv_backup_status {
 typedef void (*mv_backup_status_fn)(void* ctx, const mv_backup_status* status);
 
 /* BLOCKS, until done, a state that stops it, or `cancel`. layout: 1 year, 2 year/month/day,
- * 4 one folder, 5 year/month (the default). Returns the last mv_backup_state. */
+ * 4 one folder, 5 year/month (the default). MV_LINK_OK with the last mv_backup_state in *state_out,
+ * or a mv_link_status for a bad argument. */
 int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_cancel* cancel,
-                      mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx);
+                      mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx, int32_t* state_out);
 
 /* The last run's failures: the photo's key, the file, and why ("gone", "export", "hash", "error"). */
 typedef void (*mv_backup_failure_fn)(void* ctx, const char* key, const char* name, const char* why);

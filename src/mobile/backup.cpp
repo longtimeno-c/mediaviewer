@@ -49,6 +49,22 @@ std::string name_of(const std::string& rel) {
   return slash == std::string::npos ? rel : rel.substr(slash + 1);
 }
 
+bool lower_hex64(std::string_view s) noexcept {
+  return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+bool valid_name(std::string_view n) {
+  return !n.empty() && n.size() <= serve::kMaxWriteName && n.find('/') == std::string_view::npos && driftwire::safe_relative(n);
+}
+
+// Whether `got` is `name` or a numbered form of it (the service's " (2)").
+bool named_as(std::string_view got, std::string_view name) {
+  for (int k = 1; k <= serve::backup::kMaxNumbered; ++k) {
+    if (got == serve::backup::numbered(name, k)) return true;
+  }
+  return false;
+}
+
 // Reads a file at an offset, for a write.
 serve::client::read_fn file_read_fn(io::file_reader& r) {
   return [&r](std::uint64_t at, std::span<std::uint8_t> into) -> result<std::size_t> { return r.read_at(at, into); };
@@ -91,7 +107,7 @@ class over_link final : public target {
   }
   result<serve::stat_info> space(const std::string& root) override { return l_.stat(root, ""); }
   result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
-    return l_.list(root, rel);
+    return l_.list_whole(root, rel);
   }
   result<serve::client::write_done> write(const std::string& root, const std::string& rel, std::uint64_t size,
                                           const std::string& hash_hex, std::uint64_t at, const serve::client::read_fn& read,
@@ -159,7 +175,12 @@ class on_phone final : public target {
   result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
     if (root != root_.id || (!rel.empty() && !driftwire::safe_relative(rel))) return err(status::permission_denied);
     auto children = io::list_beneath(root_.path, rel, true);
-    if (!children) return err(children.error() == status::permission_denied ? status::permission_denied : status::not_found);
+    if (!children) {
+      if (children.error() == status::permission_denied) return err(status::permission_denied);
+      std::error_code ec;
+      const auto where = rel.empty() ? fs_path(root_.path) : fs_path(io::join_path(root_.path, io::native_relative(rel)));
+      return err(std::filesystem::exists(where, ec) ? status::io : status::not_found);
+    }
     std::vector<serve::list_entry> out;
     for (const auto& c : *children) {
       if (!driftwire::safe_relative(c.name)) continue;  // as the service lists: no hidden names
@@ -196,6 +217,17 @@ class on_phone final : public target {
     const auto shown = [&](const std::string& n) { return shown_dir.empty() ? n : shown_dir + "/" + n; };
     if (!meta) {
       if (const auto found = serve::backup::find_existing(dir.value(), name, size, hash_hex, &book_)) {
+        // This device's unfinished copy of it is no use now (as the service does).
+        const std::string stale = io::join_path(dir.value(), serve::backup::part_name(name, device_id_));
+        if (book_.claim(stale)) {
+          const auto st = std::filesystem::symlink_status(fs_path(stale), ec);
+          if (!ec && std::filesystem::is_regular_file(st)) {
+            const auto bytes = std::filesystem::file_size(fs_path(stale), ec);
+            if (!ec && std::filesystem::remove(fs_path(stale), ec) && !ec) book_.removed(root_.id, bytes);
+          }
+          ec.clear();
+          book_.drop(stale);
+        }
         return serve::client::write_done{shown(*found), true};
       }
     }
@@ -221,7 +253,7 @@ class on_phone final : public target {
     }
     if (at != have) return refuse(serve::kWhyOffset, have);
     const std::uint64_t left = size - have;
-    switch (book_.reserve(root_, left)) {
+    switch (book_.reserve(root_, left, meta)) {
       case serve::backup::book::verdict::ok: break;
       case serve::backup::book::verdict::limit: return refuse(serve::kWhyLimit);
       case serve::backup::book::verdict::full: return refuse(serve::kWhyFull);
@@ -374,7 +406,7 @@ result<std::unique_ptr<ledger>> ledger::open(const std::string& path) {
   if (!l->impl_->exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;") ||
       !l->impl_->exec("CREATE TABLE IF NOT EXISTS rows (key TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, "
                       "size INTEGER NOT NULL, hash TEXT NOT NULL, root TEXT NOT NULL, rel TEXT NOT NULL, at INTEGER NOT NULL, "
-                      "PRIMARY KEY (key, kind, name));"
+                      "PRIMARY KEY (root, key, kind, name));"
                       "CREATE INDEX IF NOT EXISTS rows_same ON rows (name, size, hash);")) {
     return err(status::corrupt);
   }
@@ -398,47 +430,70 @@ expected ledger::add(const row& r) {
   return {};
 }
 
-expected ledger::remove(const std::string& key, const std::string& kind, const std::string& name) {
+expected ledger::add_all(const std::vector<row>& rows) {
+  {
+    std::lock_guard lock(impl_->m);
+    if (!impl_->exec("BEGIN;")) return err(status::io);
+  }
+  for (const auto& r : rows) {
+    if (auto a = add(r); !a) {
+      std::lock_guard lock(impl_->m);
+      (void)impl_->exec("ROLLBACK;");
+      return a;
+    }
+  }
   std::lock_guard lock(impl_->m);
-  stmt q(impl_->db, "DELETE FROM rows WHERE key = ? AND kind = ? AND name = ?");
-  q.text(1, key);
-  q.text(2, kind);
-  q.text(3, name);
+  return impl_->exec("COMMIT;") ? expected{} : expected(err(status::io));
+}
+
+expected ledger::remove(const std::string& root, const std::string& key, const std::string& kind, const std::string& name) {
+  std::lock_guard lock(impl_->m);
+  stmt q(impl_->db, "DELETE FROM rows WHERE root = ? AND key = ? AND kind = ? AND name = ?");
+  q.text(1, root);
+  q.text(2, key);
+  q.text(3, kind);
+  q.text(4, name);
   if (sqlite3_step(q.s) != SQLITE_DONE) return err(status::io);
   return {};
 }
 
-std::vector<row> ledger::all() const {
+std::vector<row> ledger::all(const std::string& root) const {
   std::lock_guard lock(impl_->m);
-  stmt q(impl_->db, kSelect);
+  stmt q(impl_->db, (std::string(kSelect) + " WHERE root = ?").c_str());
+  q.text(1, root);
   std::vector<row> out;
   while (sqlite3_step(q.s) == SQLITE_ROW) out.push_back(row_of(q));
   return out;
 }
 
-std::optional<row> ledger::find(const std::string& key, const std::string& kind, const std::string& name) const {
+std::optional<row> ledger::find(const std::string& root, const std::string& key, const std::string& kind,
+                                const std::string& name) const {
   std::lock_guard lock(impl_->m);
-  stmt q(impl_->db, (std::string(kSelect) + " WHERE key = ? AND kind = ? AND name = ?").c_str());
-  q.text(1, key);
-  q.text(2, kind);
-  q.text(3, name);
+  stmt q(impl_->db, (std::string(kSelect) + " WHERE root = ? AND key = ? AND kind = ? AND name = ?").c_str());
+  q.text(1, root);
+  q.text(2, key);
+  q.text(3, kind);
+  q.text(4, name);
   if (sqlite3_step(q.s) != SQLITE_ROW) return std::nullopt;
   return row_of(q);
 }
 
-std::optional<row> ledger::find_same(const std::string& name, std::uint64_t size, const std::string& hash) const {
+std::optional<row> ledger::find_same(const std::string& root, const std::string& name, std::uint64_t size,
+                                     const std::string& hash) const {
   std::lock_guard lock(impl_->m);
-  stmt q(impl_->db, (std::string(kSelect) + " WHERE name = ? AND size = ? AND hash = ?").c_str());
-  q.text(1, name);
-  q.num(2, static_cast<std::int64_t>(size));
-  q.text(3, hash);
+  stmt q(impl_->db, (std::string(kSelect) + " WHERE root = ? AND name = ? AND size = ? AND hash = ?").c_str());
+  q.text(1, root);
+  q.text(2, name);
+  q.num(3, static_cast<std::int64_t>(size));
+  q.text(4, hash);
   if (sqlite3_step(q.s) != SQLITE_ROW) return std::nullopt;
   return row_of(q);
 }
 
-std::size_t ledger::size() const {
+std::size_t ledger::size(const std::string& root) const {
   std::lock_guard lock(impl_->m);
-  stmt q(impl_->db, "SELECT COUNT(*) FROM rows");
+  stmt q(impl_->db, "SELECT COUNT(*) FROM rows WHERE root = ?");
+  q.text(1, root);
   return sqlite3_step(q.s) == SQLITE_ROW ? static_cast<std::size_t>(sqlite3_column_int64(q.s, 0)) : 0;
 }
 
@@ -447,10 +502,10 @@ expected ledger::clear() {
   return impl_->exec("DELETE FROM rows;") ? expected{} : expected(err(status::io));
 }
 
-std::string ledger::to_json(std::string_view library_id) const {
+std::string ledger::to_json(std::string_view library_id, const std::string& root) const {
   json::writer w;
   w.begin_object().key("v").integer(1).key("library_id").string(library_id).key("rows").begin_array();
-  for (const auto& r : all()) {
+  for (const auto& r : all(root)) {
     w.begin_object()
         .key("k").string(r.key)
         .key("r").string(r.kind)
@@ -478,6 +533,11 @@ std::optional<std::vector<row>> ledger::parse_json(std::string_view text, std::s
     const std::string *k = v.str("k"), *r = v.str("r"), *n = v.str("n"), *h = v.str("h"), *f = v.str("f"), *p = v.str("p");
     const auto s = v.integer("s");
     if (!k || !r || !n || !h || !f || !p || !s || *s < 0) continue;  // a row this build cannot read is only re-copied
+    // A row that could not be one of ours: never let it point the folder check elsewhere.
+    if (k->empty() || k->size() > 512 || !valid_name(*n) || !lower_hex64(*h) || !driftwire::safe_relative(*p) ||
+        static_cast<std::uint64_t>(*s) > driftwire::kMaxFileBytes || !named_as(name_of(*p), *n)) {
+      continue;
+    }
     out.push_back({*k, *r, *n, static_cast<std::uint64_t>(*s), *h, *f, *p, v.integer("t").value_or(0)});
   }
   return out;
@@ -499,16 +559,15 @@ std::vector<std::string> engine::remaining() const {
 }
 
 bool engine::item_done(const item& it) const {
-  if (it.resources.empty()) return true;
+  if (it.resources.empty()) return false;  // nothing listed for it: never counted as safe
   for (const auto& r : it.resources) {
-    const auto found = l_.find(it.key, r.kind, r.name);
-    if (!found || found->root != o_.root) return false;
+    if (!l_.find(o_.root, it.key, r.kind, r.name)) return false;
   }
   return true;
 }
 
 bool engine::restore_if_empty() {
-  if (l_.size() != 0) return true;
+  if (l_.size(o_.root) != 0) return true;
   auto ids = t_.ledger_ids(o_.root);
   if (!ids) return false;
   for (const auto& id : *ids) {
@@ -516,28 +575,32 @@ bool engine::restore_if_empty() {
     if (!text) continue;
     const auto rows = ledger::parse_json(*text, o_.library_id);
     if (!rows) continue;
+    std::vector<row> keep;
     for (const auto& r : *rows) {
       if (r.root != o_.root) continue;
       // Never trusted on its own: the folder check below drops any row whose file is not there.
-      if (!l_.find(r.key, r.kind, r.name)) (void)l_.add(r);
+      if (!l_.find(r.root, r.key, r.kind, r.name)) keep.push_back(r);
     }
+    (void)l_.add_all(keep);
+    restored_ = restored_ || !keep.empty();
   }
   return true;
 }
 
 result<engine::present_set> engine::check_folder() {
   present_set present;
-  const auto rows = l_.all();
+  const auto rows = l_.all(o_.root);
   std::set<std::string> dirs;
-  for (const auto& r : rows) {
-    if (r.root == o_.root) dirs.insert(dir_of(r.rel));
-  }
+  for (const auto& r : rows) dirs.insert(dir_of(r.rel));
+  // The folder itself first: refused there is the folder not being this phone's to write.
+  if (auto top = t_.list(o_.root, ""); !top && top.error() != status::not_found) return err(top.error());
   // One listing per folder (§10b).
   for (const auto& d : dirs) {
     auto listing = t_.list(o_.root, d);
     if (!listing) {
-      if (listing.error() == status::not_found) continue;  // the whole folder was deleted
-      return err(listing.error());
+      // Gone, or a subfolder refused (a row that named a path it may not): its rows are copied again.
+      if (listing.error() == status::not_found || listing.error() == status::permission_denied) continue;
+      return err(listing.error());  // the link, a truncated listing: nothing is dropped
     }
     for (const auto& e : *listing) {
       if (!e.dir) present.files[d.empty() ? e.name : d + "/" + e.name] = e.size;
@@ -545,15 +608,14 @@ result<engine::present_set> engine::check_folder() {
   }
   // A row whose file is gone, or is not that file any more, is copied again.
   for (const auto& r : rows) {
-    if (r.root != o_.root) continue;
     const auto it = present.files.find(r.rel);
-    if (it == present.files.end() || it->second != r.size) (void)l_.remove(r.key, r.kind, r.name);
+    if (it == present.files.end() || it->second != r.size) (void)l_.remove(r.root, r.key, r.kind, r.name);
   }
   return present;
 }
 
 void engine::copy_ledger() {
-  const std::string text = l_.to_json(o_.library_id);
+  const std::string text = l_.to_json(o_.library_id, o_.root);
   const std::string hash =
       io::hash_bytes(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size())).hex();
   const serve::client::read_fn read = [&text](std::uint64_t at, std::span<std::uint8_t> into) -> result<std::size_t> {
@@ -617,7 +679,7 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
       }
     }
   }
-  for (const auto& r : l_.all()) st_.files_done += r.root == o_.root ? 1 : 0;
+  st_.files_done = l_.size(o_.root);
   st_.now = state::running;
   say();
 
@@ -632,25 +694,30 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
     }
   } scrubbed{scratch};
   int since_copy = 0;
-  bool any_copied = false;
+  bool dirty = false;
 
   for (const auto& it : items_) {
     if (cancel && cancel->stopped()) {
-      if (any_copied) copy_ledger();
-      return stop_with(state::idle);
+      return stop_with(state::idle);  // leaving the app: no ledger upload now; the next run sends it
     }
     if (item_done(it)) continue;
     bool whole = true;
+    int ymd[3] = {it.year, it.month, it.day};
     for (std::size_t i = 0; i < it.resources.size(); ++i) {
       const auto& res = it.resources[i];
-      if (const auto found = l_.find(it.key, res.kind, res.name); found && found->root == o_.root) continue;
+      if (l_.find(o_.root, it.key, res.kind, res.name)) continue;
       std::filesystem::remove(fs_path(scratch), ec);
       st_.current = res.name;
       st_.current_fraction = 0;
       say();
-      if (auto exported = s_.export_resource(it, i, scratch, cancel); !exported) {
+      int read_ymd[3] = {ymd[0], ymd[1], ymd[2]};
+      auto exported = s_.export_resource(it, i, scratch, cancel, read_ymd);
+      if (exported && read_ymd[0] >= 1900 && read_ymd[0] <= 9999 && read_ymd[1] >= 1 && read_ymd[1] <= 12 && read_ymd[2] >= 1 &&
+          read_ymd[2] <= 31) {
+        std::copy(read_ymd, read_ymd + 3, ymd);
+      }
+      if (!exported) {
         if (exported.error() == status::cancelled) {
-          if (any_copied) copy_ledger();
           return stop_with(state::idle);
         }
         st_.failures.push_back({it.key, res.name, exported.error() == status::not_found ? "gone" : "export"});
@@ -672,11 +739,14 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
       }
       const std::string hash = hashed.value();
       // The same file under another key (a local id that changed): already there.
-      if (const auto same = l_.find_same(res.name, size, hash); same && same->root == o_.root) {
-        (void)l_.add({it.key, res.kind, res.name, size, hash, o_.root, same->rel, now_unix()});
+      if (const auto same = l_.find_same(o_.root, res.name, size, hash)) {
+        if (l_.add({it.key, res.kind, res.name, size, hash, o_.root, same->rel, now_unix()})) {
+          ++st_.files_done;
+          dirty = true;
+        }
         continue;
       }
-      const std::string dir = subdir(it.year, it.month, it.day, o_.folders);
+      const std::string dir = subdir(ymd[0], ymd[1], ymd[2], o_.folders);
       const std::string rel = dir.empty() ? res.name : dir + "/" + res.name;
       const auto read = file_read_fn(in);
       std::uint64_t at = 0;
@@ -702,17 +772,15 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
       }
       if (!written) {
         if (written.error() == status::cancelled) {
-          if (any_copied) copy_ledger();
           return stop_with(state::idle);
         }
         if (why.why == serve::kWhyLimit || why.why == serve::kWhyFull || why.why == serve::kWhyNotAllowed) {
-          if (any_copied) copy_ledger();
+          if (dirty) copy_ledger();
           return stop_with(why.why == serve::kWhyLimit ? state::limit
                            : why.why == serve::kWhyFull ? state::full
                                                         : state::not_allowed);
         }
         if (written.error() == status::io || written.error() == status::timeout) {
-          if (any_copied) copy_ledger();
           return stop_with(state::unreachable);
         }
         if (written.error() == status::unsupported_format) return stop_with(state::too_old);
@@ -726,7 +794,7 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
         whole = false;
         break;
       }
-      any_copied = true;
+      dirty = true;
       ++st_.copied;
       ++st_.files_done;
       st_.bytes += written->existing ? 0 : size - at;
@@ -742,8 +810,8 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
     }
     say();
   }
-  copy_ledger();
-  return stop_with(st_.failures.empty() ? state::done : state::done);
+  if (dirty || restored_) copy_ledger();
+  return stop_with(st_.failures.empty() ? state::done : state::done_failures);
 }
 
 }  // namespace mv::mobile::backup

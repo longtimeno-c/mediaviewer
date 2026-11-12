@@ -593,12 +593,15 @@ class host_source final : public backup::source {
   void* ctx = nullptr;
   std::shared_ptr<cancel_flag> flag;
   expected export_resource(const backup::item& it, std::size_t index, const std::string& path,
-                           const cancel_flag* cancel) override {
+                           const cancel_flag* cancel, int ymd[3]) override {
     if (!fn) return err(status::internal);
     if (cancel && cancel->stopped()) return err(status::cancelled);
     mv_cancel handle;
     handle.flag = flag;
-    switch (fn(ctx, it.local_id.c_str(), static_cast<std::int32_t>(index), path.c_str(), &handle)) {
+    std::int32_t date[3] = {ymd[0], ymd[1], ymd[2]};
+    const auto got = fn(ctx, it.local_id.c_str(), static_cast<std::int32_t>(index), path.c_str(), &handle, date);
+    if (got == MV_LINK_OK) std::copy(date, date + 3, ymd);
+    switch (got) {
       case MV_LINK_OK: return {};
       case MV_LINK_NOT_FOUND: return err(status::not_found);
       case MV_LINK_CANCELLED: return err(status::cancelled);
@@ -642,7 +645,11 @@ mv_backup* mv_backup_open(mv_mobile_link* l, const mv_backup_config* c) {
   }
 }
 
-void mv_backup_close(mv_backup* b) { delete b; }
+void mv_backup_close(mv_backup* b) {
+  if (!b) return;
+  { std::lock_guard run(b->run_m); }  // a run in flight returns first
+  delete b;
+}
 
 namespace {
 
@@ -694,7 +701,7 @@ int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, 
   return catch_all([&]() -> int32_t {
     if (!b || !key || !*key || !local_id || !resources_json) return MV_LINK_INVALID;
     const auto doc = json::parse(resources_json, 3);
-    if (!doc || doc->k != json::kind::array) return MV_LINK_INVALID;
+    if (!doc || doc->k != json::kind::array || doc->a.empty() || year < 1900 || year > 9999) return MV_LINK_INVALID;
     backup::item it;
     it.key = key;
     it.local_id = local_id;
@@ -719,9 +726,9 @@ int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, 
 int32_t mv_backup_cancelled(mv_cancel* c) { return c && c->flag && c->flag->stopped() ? 1 : 0; }
 
 int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_cancel* cancel,
-                      mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx) {
+                      mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx, int32_t* state_out) {
   return catch_all([&]() -> int32_t {
-    if (!b || !folder_id || !export_fn || !backup::valid_layout(layout)) return MV_LINK_INVALID;
+    if (!b || !folder_id || !export_fn || !state_out || !backup::valid_layout(layout)) return MV_LINK_INVALID;
     std::lock_guard run(b->run_m);
     backup::options o;
     o.library_id = b->library_id;
@@ -756,7 +763,8 @@ int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_ca
     std::lock_guard lock(b->m);
     b->failures = last.failures;
     b->remaining = e.remaining();
-    return static_cast<int32_t>(st);
+    *state_out = static_cast<int32_t>(st);
+    return MV_LINK_OK;
   });
 }
 

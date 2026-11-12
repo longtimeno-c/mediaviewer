@@ -133,6 +133,9 @@ class link_session final : public remote_file {
       std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
       const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta = false);
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list_meta(const std::string& root, const std::string& rel);
+  // The whole listing or an error: status::io when the service cut it short, so a caller that
+  // drops what is not listed never drops what was merely past the cut.
+  [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list_whole(const std::string& root, const std::string& rel);
   [[nodiscard]] expected read_meta(const std::string& root, const std::string& rel, const byte_sink& sink,
                                    const cancel_flag* cancel);
   [[nodiscard]] const std::string& device_folder_id() const noexcept { return device_folder_id_; }

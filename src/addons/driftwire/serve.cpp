@@ -718,7 +718,7 @@ class session_state {
     }
     if (r.at != have) return send_end(r.id, end_code::refused, why_json(kWhyOffset, have));
     const std::uint64_t left = r.size - have;
-    switch (book_->reserve(root, left)) {
+    switch (book_->reserve(root, left, r.meta)) {
       case backup::book::verdict::ok: break;
       case backup::book::verdict::limit: return send_end(r.id, end_code::refused, why_json(kWhyLimit));
       case backup::book::verdict::full: return send_end(r.id, end_code::refused, why_json(kWhyFull));

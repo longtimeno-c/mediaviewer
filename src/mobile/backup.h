@@ -109,8 +109,11 @@ class source {
   virtual ~source() = default;
   // Writes resource `index` of `it`, the original as shot (downloaded first if
   // only iCloud has it), to `path`. status::not_found: it is gone from Photos.
+  // `ymd` comes in as the item's date; the source may set the date it reads from
+  // the file itself (the capture date where it was taken, §10b), which then files
+  // this resource and the rest of the item.
   [[nodiscard]] virtual expected export_resource(const item& it, std::size_t index, const std::string& path,
-                                                 const cancel_flag* cancel) = 0;
+                                                 const cancel_flag* cancel, int ymd[3]) = 0;
 };
 
 // ---- the ledger -----------------------------------------------------------------------------
@@ -132,16 +135,23 @@ class ledger {
   ledger(const ledger&) = delete;
   ledger& operator=(const ledger&) = delete;
 
+  // Rows are per backup folder: the same photo backed up to two folders has a row in each.
   [[nodiscard]] expected add(const row& r);
-  [[nodiscard]] expected remove(const std::string& key, const std::string& kind, const std::string& name);
-  [[nodiscard]] std::vector<row> all() const;
-  [[nodiscard]] std::optional<row> find(const std::string& key, const std::string& kind, const std::string& name) const;
+  // Many at once, in one transaction (a restore).
+  [[nodiscard]] expected add_all(const std::vector<row>& rows);
+  [[nodiscard]] expected remove(const std::string& root, const std::string& key, const std::string& kind,
+                                const std::string& name);
+  [[nodiscard]] std::vector<row> all(const std::string& root) const;
+  [[nodiscard]] std::optional<row> find(const std::string& root, const std::string& key, const std::string& kind,
+                                        const std::string& name) const;
   // A file sent under another key (a local id that changed): the same name, size and hash.
-  [[nodiscard]] std::optional<row> find_same(const std::string& name, std::uint64_t size, const std::string& hash) const;
-  [[nodiscard]] std::size_t size() const;
-  // The copy on the NAS: {"v":1,"library_id","rows":[...]}.
-  [[nodiscard]] std::string to_json(std::string_view library_id) const;
-  // Rows of a copy for this library; nullopt when it is not one.
+  [[nodiscard]] std::optional<row> find_same(const std::string& root, const std::string& name, std::uint64_t size,
+                                             const std::string& hash) const;
+  [[nodiscard]] std::size_t size(const std::string& root) const;
+  // The copy on the NAS, of one folder's rows: {"v":1,"library_id","rows":[...]}.
+  [[nodiscard]] std::string to_json(std::string_view library_id, const std::string& root) const;
+  // Rows of a copy for this library; nullopt when it is not one. A row that could not be one
+  // of ours (a path that escapes, a name that does not match where it went, a bad hash) is left out.
   [[nodiscard]] static std::optional<std::vector<row>> parse_json(std::string_view text, std::string_view library_id);
   [[nodiscard]] expected clear();
 
@@ -166,6 +176,7 @@ enum class state : std::uint8_t {
   too_old = 9,       // the service is from before 1.1
   no_folder = 10,    // no backup folder chosen, or none offered
   no_access = 11,    // Photos access refused
+  done_failures = 12,  // every file it could copy is backed up; some could not be (failures says which)
 };
 
 struct failure {
@@ -220,6 +231,7 @@ class engine {
   mutable std::mutex m_;
   std::vector<std::string> remaining_;  // under m_
   status_report st_;
+  bool restored_ = false;  // rows came from the NAS's copy this run: send ours back
 };
 
 }  // namespace mv::mobile::backup

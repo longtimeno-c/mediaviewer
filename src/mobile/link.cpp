@@ -498,6 +498,20 @@ result<serve::client::write_done> link_session::write(const std::string& root, c
   return r;
 }
 
+result<std::vector<serve::list_entry>> link_session::list_whole(const std::string& root, const std::string& rel) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  bool truncated = false;
+  serve::end_code code = serve::end_code::ok;
+  auto r = (*c)->list(root, rel, &code, false, &truncated);
+  if (!r && r.error() == status::io) dropped(*c);
+  if (!r && r.error() == status::permission_denied && code != serve::end_code::refused) return err(status::busy);
+  if (r && truncated) return err(status::io);
+  return r;
+}
+
 result<std::vector<serve::list_entry>> link_session::list_meta(const std::string& root, const std::string& rel) {
   stream_slot slot(*this, nullptr);
   if (!slot.held()) return err(status::cancelled);
