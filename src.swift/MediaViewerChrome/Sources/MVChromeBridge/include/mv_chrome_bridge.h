@@ -621,6 +621,10 @@ int32_t mv_chrome_slots_status(char* buf, int32_t size);
 // "title","body","action","action_label","revision"}]} (change bit 64), and a notice's button.
 int32_t mv_chrome_slots_notices(char* buf, int32_t size);
 bool mv_chrome_slots_notice_action(const char* addon, const char* notice, const char* action);
+// docs/plans/driftwire-menu-and-tunnel.md: a row of the kept menu ("menu" in a
+// "keep" entry) was picked: a toggle's new value, a files row's paths (a JSON
+// array), NULL for a button.
+bool mv_chrome_slots_menu_action(const char* addon, const char* item, const char* value_json);
 // #452 (src/shell/main_mac.mm): the viewer comes back from the background, the
 // process quits for real (the menu-bar item's Quit), the keep-alive list
 // changed, and an add-on window is coming forward (the Dock icon returns). [main-thread]

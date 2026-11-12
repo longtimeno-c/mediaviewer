@@ -947,6 +947,13 @@ mv_status MV_CALL t_keep_alive(void* host, uint32_t on, const char* screen, cons
   });
 }
 
+mv_status MV_CALL t_keep_menu(void* host, const char* menu_json) {
+  return guarded([&] {
+    host_table& t = self(host);
+    return to_mv(t.slots().keep_menu(t.addon_id(), menu_json ? std::string_view(menu_json) : std::string_view()));
+  });
+}
+
 mv_status MV_CALL t_busy_post(void* host, const char* what) {
   return guarded([&] {
     host_table& t = self(host);
@@ -1532,6 +1539,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.open_list = &t_open_list;  // 0.38
   if (svc_.still_faces) api_.still_faces = &t_still_faces;  // edit-refresh S10
   if (svc_.still_extend) api_.still_extend = &t_still_extend;  // edit-refresh S6
+  api_.keep_menu = &t_keep_menu;  // 0.40
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

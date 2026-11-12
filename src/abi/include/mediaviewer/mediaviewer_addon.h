@@ -506,6 +506,13 @@ typedef struct mv_slot_badges_request {
  * add-on draws for that size, at a scale it lowers to keep each side within
  * 4096 px. */
 #define MV_SLOT_EVENT_RESIZE 15u
+/* 0.40 (docs/plans/driftwire-menu-and-tunnel.md slice 1): a row of the add-on's
+ * kept menu (host table keep_menu) was picked in the menu-bar item / tray
+ * icon's menu: screen_id = the kept screen, node_id = the row's id,
+ * value_json = a toggle's new value (true / false), a files row's chosen
+ * paths (a JSON array of strings), or null for a button. Not checked against
+ * a tree (the window may be closed). */
+#define MV_SLOT_EVENT_MENU 16u
 
 /* 0.33 (#452): a system notification an add-on asks for (notice_post). The
  * host shows it unless the screen it is about is the window in front of an
@@ -1027,6 +1034,20 @@ typedef struct mv_host_api {
    * uses its own preset). Appended after still_faces, last: read only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* still_extend)(void* host, const char* path_utf8, float* out_ltrb);
+  /* ---- the kept menu's rows (docs/plans/driftwire-menu-and-tunnel.md) ---------- */
+  /* [any-thread][no-block] Rows of this add-on's own for the menu keep_alive
+   * shows, after its first line and before the host's Open / Quit rows:
+   * {"items":[...]}, at most 16, each {"kind":"text","label"} (a line that
+   * does nothing), {"kind":"toggle","id","label","value":bool} (a checkmark),
+   * {"kind":"button","id","label"}, {"kind":"files","id","label"} (the host
+   * asks for files with its own open panel and hands the paths back; nothing
+   * when the person cancels) or {"kind":"separator"}. Labels <= 120 bytes,
+   * never a path or file name (rule 6); ids [a-z0-9_], <= 64. NULL, "" or an
+   * empty list removes them. Picking a row sends MV_SLOT_EVENT_MENU.
+   * MV_ERR_INVALID_ARG for a bad list; MV_ERR_NOT_FOUND before the add-on is
+   * attached (retry). Appended after still_extend, last: read only when
+   * `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* keep_menu)(void* host, const char* menu_json);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1209,13 +1230,19 @@ MV_API mv_status MV_CALL mv_slots_screens_json(char* out, uint32_t cap, uint32_t
 MV_API mv_status MV_CALL mv_slots_search_json(uint32_t scope, char* out, uint32_t cap, uint32_t* needed);
 MV_API mv_status MV_CALL mv_slots_badges_json(char* out, uint32_t cap, uint32_t* needed);
 MV_API mv_status MV_CALL mv_slots_status_json(char* out, uint32_t cap, uint32_t* needed);
-/* 0.33 (#452): {"ask": n (bumped by each notice_authorize), "keep": [{"addon","screen","title","label"}],
+/* 0.33 (#452): {"ask": n (bumped by each notice_authorize), "keep": [{"addon","screen","title","label",
+ * "menu"? (0.40: the rows keep_menu gave, as given)}],
  * "notices": [{"addon","id","screen","title","body","action","action_label","revision"}]}.
  * Change bit 64. */
 MV_API mv_status MV_CALL mv_slots_notices_json(char* out, uint32_t cap, uint32_t* needed);
 /* 0.33 (#452): a notice's button was clicked: the add-on gets
  * MV_SLOT_EVENT_NOTICE. MV_ERR_NOT_FOUND when the notice is gone. */
 MV_API mv_status MV_CALL mv_slots_notice_action(const char* addon, const char* notice_id, const char* action_id);
+/* 0.40: a row of a kept add-on's menu was picked: the add-on gets
+ * MV_SLOT_EVENT_MENU. `value_json`: a toggle's new value, a files row's paths
+ * (a JSON array of strings), NULL for a button. MV_ERR_NOT_FOUND when the row
+ * is gone; MV_ERR_INVALID_ARG for a value that does not fit its kind. */
+MV_API mv_status MV_CALL mv_slots_menu_action(const char* addon, const char* item, const char* value_json);
 
 /* The Metadata pane shows `path_utf8`; `location_text` is the pane's own
  * "Location" value ("" none). Sections that need a location are not asked

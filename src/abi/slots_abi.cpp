@@ -127,6 +127,13 @@ MV_API mv_status MV_CALL mv_slots_notice_action(const char* addon, const char* n
   }));
 }
 
+MV_API mv_status MV_CALL mv_slots_menu_action(const char* addon, const char* item, const char* value_json) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_menu_action", [&] {
+    MV_REQUIRE(addon && item, "addon and item required");
+    return mv::addon::default_slots().menu_action(addon, item, value_json ? std::string(value_json) : std::string());
+  }));
+}
+
 MV_API mv_status MV_CALL mv_slots_request_info(const char* path_utf8, const char* location_text,
                                                const mv_slot_theme* theme, float width_pt, float scale,
                                                uint64_t* out_generation) {
