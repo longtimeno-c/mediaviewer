@@ -973,32 +973,50 @@ namespace {
 constexpr const char* kSampleCatalogueRoot = "c0c0c0c0c0c0c0c0";
 constexpr const char* kSampleMediaRoot = "a0a0a0a0a0a0a0a0";
 constexpr const char* kTestBase = "https://static.example.test/sample/";
+constexpr const char* kTestPack = "t-0123456789abcdef0123456789abcdef.pack";
 
-// What tools/ios/sample-library.sh uploads, made from a publisher's destination and its photos.
+// What tools/ios/sample-library.sh uploads, made from a publisher's destination and its photos:
+// the flat files, and files.json signed by the publisher's key for everything sync does not check.
 struct static_folder {
   fs::path dir;
   int fetches = 0;
   bool down = false;
   std::vector<std::string> asked;
 
-  void fill(const fs::path& catalogue, const fs::path& photos, const std::string& share) {
+  void fill(const fs::path& catalogue, const fs::path& photos, const std::string& share, const std::string& library_id,
+            const std::vector<std::uint8_t>& secret) {
     fs::create_directories(dir);
+    std::string files;
     const auto add = [&](const char* root, const fs::path& from) {
       for (const auto& e : fs::recursive_directory_iterator(from)) {
         if (!e.is_regular_file()) continue;
-        const auto name = mob::sample::flat_name(root, fs::relative(e.path(), from).generic_string());
+        const std::string rel = fs::relative(e.path(), from).generic_string();
+        const auto name = mob::sample::flat_name(root, rel);
         REQUIRE(name);
         fs::copy_file(e.path(), dir / *name, fs::copy_options::overwrite_existing);
+        const bool by_sync = std::string(root) == kSampleCatalogueRoot &&
+                             (rel == "current.json" || rel.rfind("gen/", 0) == 0 || rel.rfind("models/", 0) == 0);
+        if (by_sync) continue;
+        const std::string bytes = read_all(e.path());
+        if (!files.empty()) files += ",";
+        files += "{\"name\":\"" + *name + "\",\"size\":" + std::to_string(bytes.size()) + ",\"sha256\":\"" +
+                 sha256_hex(bytes) + "\"}";
       }
     };
     add(kSampleCatalogueRoot, catalogue);
     add(kSampleMediaRoot, photos);
-    write_file(dir / "roots.json", std::string("{\"roots\":[{\"id\":\"") + kSampleCatalogueRoot +
-                                       "\",\"label\":\"Catalogue\"},{\"id\":\"" + kSampleMediaRoot + "\",\"label\":\"" +
-                                       share + "\"}]}");
+    const std::string list = std::string("{\"format\":1,\"library_id\":\"") + library_id + "\",\"roots\":[{\"id\":\"" +
+                             kSampleCatalogueRoot + "\",\"label\":\"Catalogue\"},{\"id\":\"" + kSampleMediaRoot +
+                             "\",\"label\":\"" + share + "\"}],\"files\":[" + files + "]}";
+    write_file(dir / "files.json", list);
+    std::string msg(mob::sample::kFilesContext);
+    msg += list;
+    unsigned char sig[crypto_sign_BYTES];
+    crypto_sign_detached(sig, nullptr, reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secret.data());
+    write_file(dir / "files.sig", catalog::to_hex(std::span<const std::uint8_t>(sig, sizeof sig)) + "\n");
   }
 
-  // The host's GET: ranges, a 404 for what is not there, and the network gone when `down`.
+  // The host's GET: ranges (offsets from `at`), a 404 for what is not there, and the network gone when `down`.
   static int32_t fetch(void* ctx, const char* url, uint64_t at, uint64_t length, mv_sink_fn sink, void* sink_ctx,
                        mv_stopped_fn stopped, void* stopped_ctx) {
     auto* self = static_cast<static_folder*>(ctx);
@@ -1025,6 +1043,20 @@ struct static_folder {
     }
     return MV_LINK_OK;
   }
+
+  mob::sample::fetch_fn as_fetch() {
+    return [this](const std::string& url, std::uint64_t at, std::uint64_t length, const mob::byte_sink& sink,
+                  const mob::cancel_flag*) -> mv::expected {
+      struct k { const mob::byte_sink* s; } c{&sink};
+      const int32_t r = fetch(this, url.c_str(), at, length,
+                              [](void* p, uint64_t o, const uint8_t* d, size_t n) -> int32_t {
+                                return (*static_cast<k*>(p)->s)(o, std::span<const std::uint8_t>(d, n)) ? 1 : 0;
+                              },
+                              &c, [](void*) -> int32_t { return 0; }, nullptr);
+      if (r == MV_LINK_OK) return {};
+      return mv::err(r == MV_LINK_NOT_FOUND ? mv::status::not_found : mv::status::io);
+    };
+  }
 };
 
 mv_mobile_link* open_static(const mob::sync_config& cfg, const std::string& cache, static_folder& folder,
@@ -1040,32 +1072,51 @@ mv_mobile_link* open_static(const mob::sync_config& cfg, const std::string& cach
   return mv_link_open(&c);
 }
 
+// One sample folder from a real deliver(): a photo, a JPEG-512 pack, a 2 MB extra file to copy.
+struct sample_rig {
+  scratch dir;
+  fs::path photos = dir.root / "photos";
+  publisher pub{dir.root / "nas", dir.root / "work"};
+  static_folder folder;
+  mob::sync_config cfg;
+  std::string cache = (dir.root / "thumbs").string();
+  std::string pack_bytes;
+
+  sample_rig() {
+    REQUIRE(sodium_init() >= 0);
+    write_file(photos / "2024" / "pic.bin", std::string(70000, 'p'));
+    for (int i = 0; i < 4000; ++i) pack_bytes += static_cast<char>('a' + i % 26);
+    pub.publish(1, std::string(2 * 1024 * 1024, 'x'));
+    write_file(dir.root / "nas" / ".mediaviewer" / "thumbs" / kTestPack, pack_bytes);
+    folder.dir = dir.root / "static";
+    folder.fill(dir.root / "nas" / ".mediaviewer", photos, "Photos", pub.library_id, pub.secret);
+    cfg.library_dir = (dir.root / "phone").string();
+    cfg.library_id = pub.library_id;
+    std::copy(pub.pub.begin(), pub.pub.end(), cfg.publisher_key.begin());
+  }
+
+  // A file in the static folder, by its path under the publisher's destination or the photos.
+  fs::path flat(const char* root, const std::string& rel) { return folder.dir / *mob::sample::flat_name(root, rel); }
+
+  mob::sample::static_remote remote() {
+    return mob::sample::static_remote(kTestBase, folder.as_fetch(), cfg.publisher_key, cfg.library_id,
+                                      (dir.root / "verified").string());
+  }
+};
+
+const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+  static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+  return 1;
+};
+
 }  // namespace
 
 TEST_CASE("sample: a static folder installs through the same sync, and serves originals", "[mobile-link]") {
-  REQUIRE(sodium_init() >= 0);
-  scratch dir;
-  const fs::path photos = dir.root / "photos";
-  write_file(photos / "2024" / "pic.bin", std::string(70000, 'p'));
-  publisher pub(dir.root / "nas", dir.root / "work");
-  pub.publish(1);
-  static_folder folder;
-  folder.dir = dir.root / "static";
-  folder.fill(dir.root / "nas" / ".mediaviewer", photos, "Photos");
-
-  mob::sync_config cfg;
-  cfg.library_dir = (dir.root / "phone").string();
-  cfg.library_id = pub.library_id;
-  std::copy(pub.pub.begin(), pub.pub.end(), cfg.publisher_key.begin());
-  const std::string cache = (dir.root / "thumbs").string();
+  sample_rig r;
   std::string got;
-  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
-    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
-    return 1;
-  };
 
   SECTION("connect, check, copy, install, then an original by range") {
-    mv_mobile_link* l = open_static(cfg, cache, folder);
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
     REQUIRE(l);
     mv_route_report report{};
     REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
@@ -1077,7 +1128,7 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     CHECK(check.generation == 1);
     mv_sync_report sync{};
     REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
-    const auto installed = mob::read_installed(cfg.library_dir);
+    const auto installed = mob::read_installed(r.cfg.library_dir);
     REQUIRE(installed);
     CHECK(installed->generation == 1);
     CHECK(installed->catalogue_root == kSampleCatalogueRoot);
@@ -1092,7 +1143,7 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     CHECK(mv_file_read(l, 1, 100, 10, 0, nullptr, collect, &got) == MV_LINK_OK);
     CHECK(got == std::string(10, 'p'));
     // Every request stayed inside the folder it was given.
-    for (const auto& u : folder.asked) CHECK(u.rfind(kTestBase, 0) == 0);
+    for (const auto& u : r.folder.asked) CHECK(u.rfind(kTestBase, 0) == 0);
 
     // Forget: reads stop and nothing connects again.
     mv_link_shut_down(l);
@@ -1100,37 +1151,65 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) != MV_LINK_OK);
     CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
     mv_link_close(l);
-    mv_library_remove(cfg.library_dir.c_str());
-    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+    mv_library_remove(r.cfg.library_dir.c_str());
+    CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
+  }
+  SECTION("a copy stopped part way resumes from where it got to, and installs") {
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
+    REQUIRE(l);
+    int asks = 0;
+    const mv_sync_allowed_fn allowed = [](void* ctx) -> int32_t { return ++*static_cast<int*>(ctx) < 6 ? 1 : 0; };
+    mv_sync_report first{};
+    CHECK(mv_sync_copy(l, nullptr, allowed, nullptr, &asks, &first) == MV_LINK_WAITING);
+    CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
+    mv_sync_report check{};
+    REQUIRE(mv_sync_check(l, &check) == MV_LINK_COPY_AVAILABLE);
+    CHECK(check.done_bytes > 0);  // what the stopped copy already holds
+    CHECK(check.done_bytes < check.total_bytes);
+    mv_sync_report second{};
+    REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &second) == MV_LINK_OK);
+    const auto installed = mob::read_installed(r.cfg.library_dir);
+    REQUIRE(installed);
+    CHECK(installed->generation == 1);
+    mv_link_close(l);
   }
   SECTION("a catalogue the pinned key did not sign is refused, and nothing is installed") {
     const auto other = catalog::make_keypair();
-    pub.publish(2, std::string(300000, 'y'), &other.second);
-    folder.fill(dir.root / "nas" / ".mediaviewer", photos, "Photos");
-    mv_mobile_link* l = open_static(cfg, cache, folder);
+    r.pub.publish(2, std::string(300000, 'y'), &other.second);
+    r.folder.fill(r.dir.root / "nas" / ".mediaviewer", r.photos, "Photos", r.pub.library_id, r.pub.secret);
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
     REQUIRE(l);
     mv_route_report report{};
     REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
     mv_sync_report sync{};
     CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_REJECTED);
-    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+    CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
     mv_link_close(l);
   }
-  SECTION("a changed file is refused by its hash") {
-    for (const auto& e : fs::directory_iterator(folder.dir)) {
-      const auto name = e.path().filename().string();
-      if (name.find("__extra.bin") != std::string::npos) write_file(e.path(), std::string(300001, 'z'));
-    }
-    mv_mobile_link* l = open_static(cfg, cache, folder);
+  SECTION("a changed catalogue file is refused by its hash") {
+    write_file(r.flat(kSampleCatalogueRoot, "gen/000001/extra.bin"), std::string(2 * 1024 * 1024 + 1, 'z'));
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
     REQUIRE(l);
     mv_sync_report sync{};
     CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_REJECTED);
-    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+    CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
+    mv_link_close(l);
+  }
+  SECTION("a list not signed by the pinned key: nothing is read") {
+    const auto other = catalog::make_keypair();
+    r.folder.fill(r.dir.root / "nas" / ".mediaviewer", r.photos, "Photos", r.pub.library_id, other.second);
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
+    REQUIRE(l);
+    mv_route_report report{};
+    CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
+    mv_sync_report sync{};
+    CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) != MV_LINK_OK);
+    CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
     mv_link_close(l);
   }
   SECTION("no network: unreachable, named by its host") {
-    folder.down = true;
-    mv_mobile_link* l = open_static(cfg, cache, folder);
+    r.folder.down = true;
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
     REQUIRE(l);
     mv_route_report report{};
     CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
@@ -1141,13 +1220,88 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     mv_link_close(l);
   }
   SECTION("a folder with no catalogue in it: unreachable, not installed") {
-    mv_mobile_link* l = open_static(cfg, cache, folder, "https://static.example.test/elsewhere/");
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder, "https://static.example.test/elsewhere/");
     REQUIRE(l);
     mv_route_report report{};
     CHECK(mv_link_connect(l, nullptr, &report) == MV_LINK_UNREACHABLE);
     mv_sync_report sync{};
     CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) != MV_LINK_OK);
-    CHECK_FALSE(mob::read_installed(cfg.library_dir));
+    CHECK_FALSE(mob::read_installed(r.cfg.library_dir));
     mv_link_close(l);
+  }
+}
+
+TEST_CASE("sample: a read from the middle of a file hands over file offsets", "[mobile-link]") {
+  sample_rig r;
+  auto remote = r.remote();
+  std::vector<std::uint64_t> offsets;
+  std::string got;
+  const mob::byte_sink keep = [&](std::uint64_t offset, std::span<const std::uint8_t> b) {
+    offsets.push_back(offset);
+    got.append(reinterpret_cast<const char*>(b.data()), b.size());
+    return true;
+  };
+  // A file sync checks (passed through by range) and a listed one (from its verified copy).
+  REQUIRE(remote.read_range(kSampleCatalogueRoot, "gen/000001/extra.bin", 4096, 100, keep, nullptr, false));
+  REQUIRE_FALSE(offsets.empty());
+  CHECK(offsets.front() == 4096);
+  CHECK(got == std::string(100, 'x'));
+  offsets.clear();
+  got.clear();
+  REQUIRE(remote.read_range(kSampleMediaRoot, "2024/pic.bin", 4096, 100, keep, nullptr, false));
+  REQUIRE_FALSE(offsets.empty());
+  CHECK(offsets.front() == 4096);
+  CHECK(got == std::string(100, 'p'));
+}
+
+TEST_CASE("sample: a JPEG-512 batch from the middle of a pack arrives", "[mobile-link]") {
+  sample_rig r;
+  auto remote = r.remote();
+  mob::thumb_cache thumbs((r.dir.root / "tiles").string(), 1 << 20, remote);
+  thumbs.set_catalogue_root(kSampleCatalogueRoot);
+  std::promise<mv::result<std::vector<std::uint8_t>>> done;
+  catalog::thumb_location where{kTestPack, 1000, 200};
+  auto flag = thumbs.request(where, 0, [&](mv::result<std::vector<std::uint8_t>> got) { done.set_value(std::move(got)); });
+  auto got = done.get_future().get();
+  REQUIRE(got);
+  CHECK(std::string(got->begin(), got->end()) == r.pack_bytes.substr(1000, 200));
+}
+
+TEST_CASE("sample: a swapped original or tile pack is refused, and nothing of it is handed over", "[mobile-link]") {
+  sample_rig r;
+  std::string got;
+  SECTION("an original") {
+    write_file(r.flat(kSampleMediaRoot, "2024/pic.bin"), std::string(70000, 'q'));  // same size, other bytes
+    mv_mobile_link* l = open_static(r.cfg, r.cache, r.folder);
+    REQUIRE(l);
+    mv_sync_report sync{};
+    REQUIRE(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_OK);
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) != MV_LINK_OK);
+    CHECK(got.empty());
+    CHECK(mv_file_read(l, 1, 100, 10, 0, nullptr, collect, &got) != MV_LINK_OK);
+    CHECK(got.empty());
+    mv_link_close(l);
+  }
+  SECTION("a tile pack") {
+    std::string swapped = r.pack_bytes;
+    swapped[1050] = '#';
+    write_file(r.flat(kSampleCatalogueRoot, std::string("thumbs/") + kTestPack), swapped);
+    auto remote = r.remote();
+    mob::thumb_cache thumbs((r.dir.root / "tiles").string(), 1 << 20, remote);
+    thumbs.set_catalogue_root(kSampleCatalogueRoot);
+    std::promise<mv::result<std::vector<std::uint8_t>>> done;
+    auto flag = thumbs.request(catalog::thumb_location{kTestPack, 1000, 200}, 0,
+                               [&](mv::result<std::vector<std::uint8_t>> g) { done.set_value(std::move(g)); });
+    CHECK_FALSE(done.get_future().get());
+  }
+  SECTION("a file the list does not name is never fetched") {
+    write_file(r.folder.dir / *mob::sample::flat_name(kSampleMediaRoot, "2024/other.bin"), "anything");
+    auto remote = r.remote();
+    const int before = r.folder.fetches;
+    auto read = remote.read_range(kSampleMediaRoot, "2024/other.bin", 0, UINT64_MAX,
+                                  [&](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, false);
+    REQUIRE_FALSE(read);
+    CHECK(read.error() == mv::status::not_found);
+    for (int i = before; i < r.folder.fetches; ++i) CHECK(r.folder.asked[static_cast<std::size_t>(i)].find("other.bin") == std::string::npos);
   }
 }

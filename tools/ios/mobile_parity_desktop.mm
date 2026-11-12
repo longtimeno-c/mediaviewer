@@ -13,6 +13,7 @@
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include <chrono>
@@ -50,6 +51,7 @@
 #include "geo/open.h"
 #include "infer/ort.h"
 #include "meta/meta.h"
+#include "mobile/sample.h"
 
 namespace fs = std::filesystem;
 namespace cat = mv::ai::catalog;
@@ -906,6 +908,24 @@ int sample_publish(int argc, char** argv) {
   eng.stop();
   return 0;
 }
+
+// sample-sign <files.json> <key file> <files.sig>: the sample library's signed list
+// (src/mobile/sample.h): Ed25519 over kFilesContext and the list's bytes, as hex.
+int sample_sign(int argc, char** argv) {
+  if (argc != 5) {
+    std::fprintf(stderr, "sample-sign <files.json> <key file> <files.sig>\n");
+    return 2;
+  }
+  auto text = read_all(argv[2]);
+  auto secret = read_all(argv[3]);
+  if (!text || !secret || secret->size() != crypto_sign_SECRETKEYBYTES || sodium_init() < 0) return 1;
+  std::vector<std::uint8_t> msg(mv::mobile::sample::kFilesContext.begin(), mv::mobile::sample::kFilesContext.end());
+  msg.insert(msg.end(), text->begin(), text->end());
+  unsigned char sig[crypto_sign_BYTES];
+  crypto_sign_detached(sig, nullptr, msg.data(), msg.size(), secret->data());
+  std::ofstream(argv[4]) << cat::to_hex(std::span<const std::uint8_t>(sig, sizeof sig)) << '\n';
+  return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -913,6 +933,7 @@ int main(int argc, char** argv) {
   if (argc >= 2 && std::strcmp(argv[1], "publish") == 0) return publish(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "search") == 0) return search(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "sample-publish") == 0) return sample_publish(argc, argv);
+  if (argc >= 2 && std::strcmp(argv[1], "sample-sign") == 0) return sample_sign(argc, argv);
   if (argc >= 2 && (std::strcmp(argv[1], "publish-engine") == 0 || std::strcmp(argv[1], "answer-engine") == 0)) {
     return publish_engine(argc, argv);
   }

@@ -3,8 +3,10 @@
 // The sample library's transport (docs/plans/mobile.md §11.1): the core's `mv_fetch_fn`, an HTTPS GET
 // of a byte range from the static folder src/mobile/sample.h names. Called on a core worker and
 // blocks it, as the link's own reads do; never on the main thread. Nothing about the person is
-// sent: no cookies, no cache, no headers but the range. Everything it returns is checked by the
-// core against the signed manifest before it is used.
+// sent: no cookies, no cache; the user agent is a fixed "MediaViewer" (not the build, the OS
+// or the device) and the language "*", so a request says nothing a range does not. The core uses
+// nothing it returns before checking it against the pinned key: the catalogue by its signed
+// manifest, every other file by the signed list (src/mobile/sample.h).
 import CMobileLink
 import Foundation
 
@@ -35,6 +37,8 @@ final class SampleFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
                   stopped: { stopped?(stoppedCtx) == 1 })
   }
 
+  static let userAgent = "MediaViewer"
+
   static var context: UnsafeMutableRawPointer { Unmanaged.passUnretained(shared).toOpaque() }
 
   private let lock = NSLock()
@@ -53,6 +57,9 @@ final class SampleFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
       c.timeoutIntervalForRequest = 30  // with no bytes for this long, the read fails and sync resumes later
       c.waitsForConnectivity = false
       c.httpMaximumConnectionsPerHost = 6
+      // URLSession would otherwise send the app's name and build, CFNetwork's and Darwin's versions,
+      // and the person's preferred languages.
+      c.httpAdditionalHeaders = ["User-Agent": Self.userAgent, "Accept-Language": "*"]
       let queue = OperationQueue()
       queue.name = "mediaviewer.sample.fetch"
       queue.maxConcurrentOperationCount = 4
@@ -93,6 +100,8 @@ final class SampleFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
       request.setValue("bytes=\(at)-\(end)", forHTTPHeaderField: "Range")
     }
     request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+    request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+    request.setValue("*", forHTTPHeaderField: "Accept-Language")
     let transfer = Transfer(at: at, length: length, sink: sink)
     let task = session.dataTask(with: request)
     lock.withLock { running[task.taskIdentifier] = transfer }

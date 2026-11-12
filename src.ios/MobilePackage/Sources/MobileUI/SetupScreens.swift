@@ -385,6 +385,8 @@ struct ConnectScreen: View {
   @State private var confirmed: LibraryIdentity?
   /// Each change runs the next step; Try again and They match both land here.
   @State private var attempt = 0
+  /// The sample library would replace the library on this phone: asked before anything changes.
+  @State private var confirmingReplace: String?
 
   var body: some View {
     SetupPage {
@@ -399,6 +401,17 @@ struct ConnectScreen: View {
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: ending)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: phase)
     .onChange(of: hasEndedInFailure, initial: true) { _, ended in model.connectEnded = ended }
+    .alert("Replace \(confirmingReplace ?? "") with the sample library?", isPresented: Binding(
+      get: { confirmingReplace != nil }, set: { if !$0 { confirmingReplace = nil } }
+    )) {
+      Button("Replace", role: .destructive) {
+        confirmingReplace = nil
+        openSample()
+      }
+      Button("Keep \(confirmingReplace ?? "it")", role: .cancel) { confirmingReplace = nil }
+    } message: {
+      Text("This replaces \(confirmingReplace ?? "your library") on this phone. Everything MediaViewer keeps here for it is removed. Nothing on your Synology changes, and you can pair it again with a new code from MediaViewer.")
+    }
     .task(id: attempt) {
       if attempt > 0, let confirmed { await pair(confirmed) } else { await begin() }
     }
@@ -535,9 +548,11 @@ struct ConnectScreen: View {
     case (.check(let identity), _) where identity.isSample:
       VStack(spacing: 8) {
         Button("Open sample library") {
-          confirmed = identity
-          phase = .pairing
-          attempt += 1
+          if let replacing = AppModel.sampleWouldReplace(model.connection) {
+            confirmingReplace = replacing
+          } else {
+            openSample()
+          }
         }
         .buttonStyle(PrimaryButtonStyle())
         Button("Not now") { model.leaveConnect() }
@@ -583,6 +598,13 @@ struct ConnectScreen: View {
     if model.connection.hasLibrary {
       Button("Back to library") { model.returnToLibrary() }.buttonStyle(QuietButtonStyle())
     }
+  }
+
+  private func openSample() {
+    guard case .check(let identity) = phase else { return }
+    confirmed = identity
+    phase = .pairing
+    attempt += 1
   }
 
   /// Known once the code is read: the sample library's or a computer's.

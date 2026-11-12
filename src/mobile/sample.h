@@ -8,14 +8,20 @@
 // the Driftwire link. Nothing here knows which OS it runs on (D9).
 //
 // The folder's layout, one flat file per (root, path):
-//   roots.json                        [{"id":"catalogue","label":"Catalogue"},{"id":"media","label":"<share>"}]
-//   <root id>__<path, '/' as "__">    every other file, e.g. catalogue__gen__000001__manifest.json
-// Like the service's root list, roots.json is not signed and is trusted only as far
-// as what it leads to: sync believes nothing that the pinned key did not sign.
+//   files.json, files.sig             the signed list: library id, roots, and the size and SHA-256
+//                                     of every file below that sync does not check itself
+//   <root id>__<path, '/' as "__">    every other file, e.g. c0c0c0c0c0c0c0c0__gen__000001__manifest.json
+// Nothing is used on trust in the host. current.json, gen/ and models/ under the
+// catalogue root are what sync verifies against the pinned key. Everything else
+// (the roots, the JPEG-512 packs, the originals) must be in files.json, which the
+// same key signs; such a file is fetched whole, hashed and kept before one byte of
+// it reaches the reader, and a file not listed is not read at all.
 #pragma once
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -53,13 +59,35 @@ inline constexpr std::string_view kBase = "https://github.com/longtimeno-c/media
 // The host's HTTPS GET of [at, at + length) of `url` (length UINT64_MAX: to the
 // end), bytes to `sink` in order. status::not_found for a 404, ::cancelled when
 // `cancel` fired or the sink said stop, ::io for anything else. Blocks.
+// The sink's offsets count from `at` (0 is the first byte asked for).
 using fetch_fn = std::function<expected(const std::string& url, std::uint64_t at, std::uint64_t length,
                                         const byte_sink& sink, const cancel_flag* cancel)>;
 
+// files.sig signs this prefix and then files.json's bytes, so it can never be taken
+// for a signature over anything else the key signs.
+inline constexpr std::string_view kFilesContext = "MediaViewer sample files 1\n";
+
+// One file the list vouches for.
+struct listed_file {
+  std::uint64_t size = 0;
+  std::string sha256;  // lowercase hex
+};
+
+// files.json, checked: the signature by `key` over kFilesContext + text, the library
+// id, and every name, size and hash well formed. nullopt otherwise.
+struct file_list {
+  std::vector<driftwire::serve::root_info> roots;
+  std::string catalogue_root;  // the root labelled "Catalogue"
+  std::map<std::string, listed_file> files;  // by flat name
+};
+[[nodiscard]] std::optional<file_list> parse_file_list(std::string_view text, std::string_view signature_hex,
+                                                       const key32& key, std::string_view library_id);
+
 class static_remote final : public remote_file {
  public:
-  // `base` ends in '/'.
-  static_remote(std::string base, fetch_fn fetch);
+  // `base` ends in '/'. `key` and `library_id` are the pinned ones; verified files
+  // are kept in `verified_dir`, which Forget removes with the rest of the cache.
+  static_remote(std::string base, fetch_fn fetch, key32 key, std::string library_id, std::string verified_dir);
 
   // Reads roots.json afresh: the folder answers. status::io when it does not.
   [[nodiscard]] expected connect(const cancel_flag* cancel = nullptr);
@@ -79,13 +107,24 @@ class static_remote final : public remote_file {
                                     bool bulk) override;
 
  private:
-  [[nodiscard]] result<std::vector<driftwire::serve::root_info>> read_roots(const cancel_flag* cancel);
+  [[nodiscard]] result<file_list> read_list(const cancel_flag* cancel);
+  [[nodiscard]] result<file_list> list_now(const cancel_flag* cancel);
+  [[nodiscard]] result<std::string> small(const std::string& name, std::uint64_t cap, const cancel_flag* cancel);
+  // The local, verified copy of a listed file: fetched whole and hashed the first time.
+  [[nodiscard]] result<std::string> verified(const std::string& name, const listed_file& f, const cancel_flag* cancel);
   [[nodiscard]] bool is_shut() const;
 
   std::string base_;
   fetch_fn fetch_;
+  key32 key_;
+  std::string library_id_;
+  std::string verified_dir_;
+  // One whole-file fetch per name at a time: a second reader of the same file waits for it,
+  // and different files do not wait for each other.
+  std::mutex fetching_m_;
+  std::map<std::string, std::shared_ptr<std::mutex>> fetching_;  // under fetching_m_
   mutable std::mutex m_;
-  std::optional<std::vector<driftwire::serve::root_info>> roots_;  // under m_
+  std::optional<file_list> list_;  // under m_
   bool connected_ = false;                                        // under m_
   bool shut_ = false;                                             // under m_
 };

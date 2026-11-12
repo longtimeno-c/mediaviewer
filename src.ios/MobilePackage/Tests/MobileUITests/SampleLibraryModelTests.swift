@@ -29,3 +29,25 @@ final class SampleLibraryModelTests: XCTestCase {
     XCTAssertEqual(AppModel.pairLinkAction(stage: .main, isScanning: false, hasLibrary: true), .confirm)
   }
 }
+
+/// Entering SAMPLE with a library paired asks before replacing it, by the library's name.
+final class SampleReplacesTests: XCTestCase {
+  private func snapshot(library: Bool, sample: Bool, name: String) -> ConnectionSnapshot {
+    var s = ConnectionSnapshot(hasLibrary: library, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0)
+    s.isSample = sample
+    s.libraryName = name
+    return s
+  }
+
+  @MainActor
+  func testAPairedLibraryIsNamedBeforeItIsReplaced() {
+    XCTAssertEqual(AppModel.sampleWouldReplace(snapshot(library: true, sample: false, name: "Family")), "Family")
+    XCTAssertEqual(AppModel.sampleWouldReplace(snapshot(library: true, sample: false, name: "")), "your library")
+  }
+
+  @MainActor
+  func testNothingToLoseAsksNothing() {
+    XCTAssertNil(AppModel.sampleWouldReplace(snapshot(library: false, sample: false, name: "")))
+    XCTAssertNil(AppModel.sampleWouldReplace(snapshot(library: true, sample: true, name: "Sample library")))
+  }
+}

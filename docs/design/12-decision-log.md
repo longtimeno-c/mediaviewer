@@ -31,8 +31,11 @@ hash, the install, the tiny pack, the JPEG-512 cache, originals, clips and searc
 the code a NAS library runs. Downloaded, not bundled: the B/32 text tower alone is 127 MB, which every
 install would carry for a library few customers open; the download is free, needs no server
 process, and the app grows by code only. Its own publisher key (the secret is off the repository),
-a fixed library id, read-only. Nothing about the person is sent: no cookies, no cache, no headers
-but the range; GitHub sees an address, as for any download. Never hidden (App Review guideline
+a fixed library id, read-only. Write access to the release is not enough to put a file on a phone:
+the originals, clips and JPEG-512 pack are listed with their SHA-256 in `files.json`, signed by the
+same key, and checked whole before use (review fix, 2026-11-12). Nothing about the person is sent:
+no cookies, no cache, a fixed user agent "MediaViewer" and any language; GitHub sees an address, as
+for any download. Never hidden (App Review guideline
 2.3.1): the Enter-a-code prompt says to type SAMPLE for it, the grid carries a "Sample library" chip,
 Settings names it and where it comes from, and Forget removes it like any library. Cost: a release
 of about 185 MB on GitHub that must stay published, a key to keep, and one more `remote_file`.

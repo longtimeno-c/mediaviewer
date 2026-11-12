@@ -646,12 +646,15 @@ TestFlight included, and nothing about it is hidden:
   owner's) and read from the GitHub release `sample-library` through a static `remote_file`
   (`src/mobile/sample.*`, the host's HTTPS in `SampleFetch.swift`). The same sync checks its signature,
   generation and every hash and installs it; search, the grid, the viewer and clips are the real code.
+  The pictures and clips themselves, and the JPEG-512 pack, are listed with their hashes in
+  `files.json`, signed by the same key, and each is checked whole before it is shown.
 - Downloaded rather than bundled, because the text tower is 127 MB: the phone copies about 131 MB
   once (the tower, `catalog.db`, `labels.f32`, `tiny.pack`), then the JPEG-512 pack (3 MB) and
   originals (50 MB in all) as they are viewed. The app itself grows by code only.
 - Labelled while open: a "Sample library" chip on the grid, which opens Settings; Settings names it,
   what it is and that it comes from GitHub; Forget says "Forget the sample library" and removes
-  everything, as for any library. Pairing a real library replaces it.
+  everything, as for any library. Pairing a real library replaces it; entering SAMPLE with a real
+  library paired asks first ("Replace <name> with the sample library?") and changes nothing on Keep.
 - `tools/ios/sample-library.sh` makes it again from `sources.json` (licences rechecked each time) and
   uploads it, current.json last. The review notes are `src.ios/AppStore/review-notes.md`.
 
@@ -701,8 +704,8 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 | Replay of an old signed catalogue | `(epoch, generation)` only goes up (§5, rule 7) |
 | A swapped JPEG-512 tile | Not checked per tile: a pack's hash is in the signed manifest, but the phone reads tiles by range and cannot hash the pack. A tile reaches only ImageIO, from a service the phone proved is the paired one, so the threat is someone who can write the share and swaps a pack in place. A per-tile hash in `thumbs.idx` would close it (open). |
 | An unclaimed service on the NAS | Claimed only once, only from its own network, and only by a desktop that can write to the share (§7.2) |
-| The sample library's release is replaced | The phone pins the sample publisher's key (compiled in) and checks every file against the signed manifest, as for a NAS; a forged or older catalogue is refused. The secret key is not in the repository. |
-| The sample library sends something about the person | Only HTTPS range reads of the release's files: no cookies, no cache, no headers but the range. GitHub sees the address, as for any download. Not tracking, so nothing for `NSPrivacyTrackingDomains`; the App Privacy answers stay "no data collected". |
+| The sample library's release is replaced | The phone pins the sample publisher's key (compiled in). The catalogue is checked as a NAS's is: `current.json`'s signature, then every file against the signed manifest. Every other file (the root list, the JPEG-512 pack, each original and clip) must be in `files.json`, which the same key signs with its size and SHA-256; it is fetched whole and hashed before any byte reaches ImageIO or AVFoundation, and an unlisted file is never read. So write access to the release alone cannot put a picture on a phone. The secret key is not in the repository. |
+| The sample library sends something about the person | Only HTTPS reads of the release's files: no cookies, no cache, a fixed `User-Agent: MediaViewer` (not the app's build, the OS or the device) and `Accept-Language: *`, besides the range and the transport's own headers (checked in `sample-library-sim.sh`). GitHub sees the address, as for any download. Not tracking, so nothing for `NSPrivacyTrackingDomains`; the App Privacy answers stay "no data collected". |
 | Lost phone | iOS data protection, Keychain device-only, optional Face ID, "Forget this library" wipes everything; revoking the phone from the desktop removes it from both the NAS service and the Mac's paired devices |
 | Cloud backup copies the catalogue | Excluded from backup (§8.3) |
 | The catalogue on the NAS reveals names, places, text | No worse than the share it sits on, which already holds the files. Encrypting it with a key from the QR is a later option. |

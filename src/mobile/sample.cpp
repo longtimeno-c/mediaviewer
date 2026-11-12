@@ -5,15 +5,20 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+
+#include <sodium.h>
 
 #include "addons/driftwire/pair_check.h"
 #include "addons/driftwire/serve_wire.h"
+#include "addons/driftwire/wire.h"
+#include "core/json.h"
 
 namespace mv::mobile::sample {
 
 namespace {
 
-constexpr std::uint64_t kMaxRootsBytes = 4096;
 constexpr std::size_t kMaxRel = 1024;
 
 std::string_view trimmed(std::string_view s) {
@@ -92,7 +97,78 @@ std::optional<std::string> flat_name(std::string_view root, std::string_view rel
   return out;
 }
 
-static_remote::static_remote(std::string base, fetch_fn fetch) : base_(std::move(base)), fetch_(std::move(fetch)) {
+namespace {
+
+std::string hex_of(const unsigned char* p, std::size_t n) {
+  static const char* digits = "0123456789abcdef";
+  std::string out;
+  for (std::size_t i = 0; i < n; ++i) {
+    out += digits[p[i] >> 4];
+    out += digits[p[i] & 15];
+  }
+  return out;
+}
+
+bool lower_hex(std::string_view s, std::size_t n) {
+  return s.size() == n && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+constexpr std::uint64_t kMaxListBytes = 256 * 1024;
+constexpr std::uint64_t kMaxListedFile = 512ull * 1024 * 1024;
+
+bool catalogue_signed(std::string_view rel) {
+  return rel == "current.json" || rel.starts_with("gen/") || rel.starts_with("models/");
+}
+
+}  // namespace
+
+std::optional<file_list> parse_file_list(std::string_view text, std::string_view signature_hex, const key32& key,
+                                         std::string_view library_id) {
+  if (sodium_init() < 0 || text.size() > kMaxListBytes || !lower_hex(signature_hex, crypto_sign_BYTES * 2)) return std::nullopt;
+  unsigned char sig[crypto_sign_BYTES];
+  for (std::size_t i = 0; i < crypto_sign_BYTES; ++i) {
+    const auto nib = [](char c) { return static_cast<unsigned>(c <= '9' ? c - '0' : c - 'a' + 10); };
+    sig[i] = static_cast<unsigned char>(nib(signature_hex[i * 2]) << 4 | nib(signature_hex[i * 2 + 1]));
+  }
+  std::string signed_bytes(kFilesContext);
+  signed_bytes.append(text);
+  if (crypto_sign_verify_detached(sig, reinterpret_cast<const unsigned char*>(signed_bytes.data()), signed_bytes.size(),
+                                  key.data()) != 0) {
+    return std::nullopt;
+  }
+  const auto doc = json::parse(text, 6);
+  if (!doc || doc->integer("format") != 1) return std::nullopt;
+  const std::string* id = doc->str("library_id");
+  if (!id || *id != library_id) return std::nullopt;
+  const json::value* roots = doc->find("roots");
+  const json::value* files = doc->find("files");
+  if (!roots || roots->k != json::kind::array || !files || files->k != json::kind::array) return std::nullopt;
+  file_list out;
+  for (const json::value& r : roots->a) {
+    const std::string* rid = r.str("id");
+    const std::string* label = r.str("label");
+    if (!rid || !label || !driftwire::valid_id(*rid) || label->size() > 256) return std::nullopt;
+    if (*label == "Catalogue") out.catalogue_root = *rid;
+    out.roots.push_back({*rid, *label});
+  }
+  if (out.catalogue_root.empty()) return std::nullopt;
+  for (const json::value& f : files->a) {
+    const std::string* name = f.str("name");
+    const std::string* sha = f.str("sha256");
+    const auto size = f.integer("size");
+    if (!name || name->empty() || name->size() > 2048 || name->find('/') != std::string::npos || !sha ||
+        !lower_hex(*sha, 64) || !size || *size < 0 || static_cast<std::uint64_t>(*size) > kMaxListedFile) {
+      return std::nullopt;
+    }
+    out.files[*name] = {static_cast<std::uint64_t>(*size), *sha};
+  }
+  return out;
+}
+
+static_remote::static_remote(std::string base, fetch_fn fetch, key32 key, std::string library_id,
+                             std::string verified_dir)
+    : base_(std::move(base)), fetch_(std::move(fetch)), key_(key), library_id_(std::move(library_id)),
+      verified_dir_(std::move(verified_dir)) {
   if (!base_.empty() && base_.back() != '/') base_ += '/';
 }
 
@@ -123,14 +199,14 @@ std::string static_remote::host() const {
   return std::string(b.substr(0, b.find('/')));
 }
 
-result<std::vector<driftwire::serve::root_info>> static_remote::read_roots(const cancel_flag* cancel) {
+result<std::string> static_remote::small(const std::string& name, std::uint64_t cap, const cancel_flag* cancel) {
   if (is_shut() || !fetch_) return err(status::io);
   std::string text;
   bool too_big = false;
   auto got = fetch_(
-      base_ + "roots.json", 0, kMaxRootsBytes + 1,
+      base_ + name, 0, cap + 1,
       [&](std::uint64_t, std::span<const std::uint8_t> bytes) {
-        if (text.size() + bytes.size() > kMaxRootsBytes) {
+        if (text.size() + bytes.size() > cap) {
           too_big = true;
           return false;
         }
@@ -140,36 +216,47 @@ result<std::vector<driftwire::serve::root_info>> static_remote::read_roots(const
       cancel);
   if (too_big) return err(status::corrupt);
   if (!got) return err(got.error() == status::cancelled ? status::cancelled : status::io);
-  auto roots = driftwire::serve::parse_roots(text);
-  if (!roots) return err(status::corrupt);
-  return std::move(*roots);
+  return text;
+}
+
+result<file_list> static_remote::read_list(const cancel_flag* cancel) {
+  MV_TRY(std::string text, small("files.json", kMaxListBytes, cancel));
+  MV_TRY(std::string sig, small("files.sig", 256, cancel));
+  while (!sig.empty() && std::isspace(static_cast<unsigned char>(sig.back()))) sig.pop_back();
+  auto list = parse_file_list(text, sig, key_, library_id_);
+  if (!list) return err(status::permission_denied);  // not signed by the pinned key, or not this library
+  return std::move(*list);
+}
+
+result<file_list> static_remote::list_now(const cancel_flag* cancel) {
+  {
+    std::lock_guard lock(m_);
+    if (shut_) return err(status::io);
+    if (list_) return *list_;
+  }
+  MV_TRY(file_list list, read_list(cancel));
+  std::lock_guard lock(m_);
+  list_ = list;
+  connected_ = true;
+  return list;
 }
 
 expected static_remote::connect(const cancel_flag* cancel) {
-  auto roots = read_roots(cancel);
+  auto list = read_list(cancel);
   std::lock_guard lock(m_);
   if (shut_) return err(status::io);
-  if (!roots) {
+  if (!list) {
     connected_ = false;
-    return err(roots.error() == status::cancelled ? status::cancelled : status::io);
+    return err(list.error() == status::cancelled ? status::cancelled : status::io);
   }
-  roots_ = std::move(*roots);
+  list_ = std::move(*list);
   connected_ = true;
   return {};
 }
 
 result<std::vector<driftwire::serve::root_info>> static_remote::roots() {
-  {
-    std::lock_guard lock(m_);
-    if (shut_) return err(status::io);
-    if (roots_) return *roots_;
-  }
-  auto roots = read_roots(nullptr);
-  if (!roots) return err(roots.error());
-  std::lock_guard lock(m_);
-  roots_ = *roots;
-  connected_ = true;
-  return std::move(*roots);
+  MV_TRY(file_list list, list_now(nullptr));
+  return list.roots;
 }
 
 result<std::vector<driftwire::serve::list_entry>> static_remote::list(const std::string&, const std::string&) {
@@ -180,33 +267,108 @@ result<driftwire::serve::stat_info> static_remote::stat(const std::string&, cons
   return err(status::unsupported_format);
 }
 
+result<std::string> static_remote::verified(const std::string& name, const listed_file& f, const cancel_flag* cancel) {
+  namespace fs = std::filesystem;
+  std::shared_ptr<std::mutex> mine;
+  {
+    std::lock_guard lock(fetching_m_);
+    auto& slot = fetching_[name];
+    if (!slot) slot = std::make_shared<std::mutex>();
+    mine = slot;
+  }
+  std::lock_guard one(*mine);
+  const fs::path path = fs::path(verified_dir_) / name;
+  std::error_code ec;
+  // Written here only after its hash matched; a different size is an older list's file.
+  if (fs::file_size(path, ec) == f.size && !ec) return path.string();
+  fs::create_directories(verified_dir_, ec);
+  const fs::path part = path.string() + ".part";
+  std::ofstream out(part, std::ios::binary | std::ios::trunc);
+  if (!out) return err(status::io);
+  crypto_hash_sha256_state st;
+  crypto_hash_sha256_init(&st);
+  std::uint64_t have = 0;
+  bool too_big = false;
+  auto got = fetch_(
+      base_ + name, 0, f.size + 1,
+      [&](std::uint64_t, std::span<const std::uint8_t> bytes) {
+        if (is_shut() || (cancel && cancel->stopped())) return false;
+        if (have + bytes.size() > f.size) {
+          too_big = true;
+          return false;
+        }
+        crypto_hash_sha256_update(&st, bytes.data(), bytes.size());
+        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        have += bytes.size();
+        return static_cast<bool>(out);
+      },
+      cancel);
+  out.close();
+  unsigned char h[crypto_hash_sha256_BYTES];
+  crypto_hash_sha256_final(&st, h);
+  const bool good = got && !too_big && out && have == f.size && hex_of(h, sizeof h) == f.sha256;
+  if (!good) {
+    fs::remove(part, ec);
+    if (is_shut()) return err(status::io);
+    if (!got && got.error() == status::cancelled) return err(status::cancelled);
+    if (!got && got.error() != status::not_found) return err(status::io);
+    return err(status::corrupt);  // not the file the list signed for: refused, never shown
+  }
+  fs::rename(part, path, ec);
+  if (ec) return err(status::io);
+  return path.string();
+}
+
 expected static_remote::read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                    std::uint64_t length, const byte_sink& sink, const cancel_flag* cancel, bool) {
   if (is_shut() || !fetch_) return err(status::io);
   const auto name = flat_name(root, rel);
   if (!name) return err(status::not_found);  // nothing the publisher could have named
-  bool stopped_by_sink = false;
-  auto got = fetch_(
-      base_ + *name, at, length,
-      [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
-        // Forget stops a read at its next chunk, as it cuts the link's.
-        if (is_shut()) return false;
-        if (!sink(offset, bytes)) {
-          stopped_by_sink = true;
-          return false;
-        }
-        return true;
-      },
-      cancel);
-  if (got) return {};
-  if (is_shut()) return err(status::io);
-  if (stopped_by_sink || got.error() == status::cancelled) return err(status::cancelled);
-  if (got.error() == status::not_found) return err(status::not_found);
-  {
+  MV_TRY(file_list list, list_now(cancel));
+
+  if (root == list.catalogue_root && catalogue_signed(rel)) {
+    // Sync checks these against the pinned key and the manifest's hashes before using them.
+    bool stopped_by_sink = false;
+    auto got = fetch_(
+        base_ + *name, at, length,
+        [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+          if (is_shut()) return false;  // Forget stops a read at its next chunk
+          if (!sink(at + offset, bytes)) {  // the remote_file contract: offsets in the file
+            stopped_by_sink = true;
+            return false;
+          }
+          return true;
+        },
+        cancel);
+    if (got) return {};
+    if (is_shut()) return err(status::io);
+    if (stopped_by_sink || got.error() == status::cancelled) return err(status::cancelled);
+    if (got.error() == status::not_found) return err(status::not_found);
     std::lock_guard lock(m_);
     connected_ = false;
+    return err(status::io);
   }
-  return err(status::io);
+
+  // Anything else is read only from a whole copy whose hash the signed list gave.
+  const auto listed = list.files.find(*name);
+  if (listed == list.files.end()) return err(status::not_found);
+  MV_TRY(std::string path, verified(*name, listed->second, cancel));
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return err(status::io);
+  const std::uint64_t size = listed->second.size;
+  const std::uint64_t end = (length == UINT64_MAX || at > size || length > size - at) ? size : at + length;
+  std::vector<std::uint8_t> buf(256 * 1024);
+  in.seekg(static_cast<std::streamoff>(std::min(at, size)));
+  for (std::uint64_t pos = at; pos < end;) {
+    if (is_shut()) return err(status::io);
+    if (cancel && cancel->stopped()) return err(status::cancelled);
+    const auto n = static_cast<std::size_t>(std::min<std::uint64_t>(buf.size(), end - pos));
+    in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(n));
+    if (static_cast<std::size_t>(in.gcount()) != n) return err(status::io);
+    if (!sink(pos, std::span<const std::uint8_t>(buf.data(), n))) return err(status::cancelled);
+    pos += n;
+  }
+  return {};
 }
 
 }  // namespace mv::mobile::sample

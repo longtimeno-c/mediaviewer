@@ -13,7 +13,8 @@
 #    desktop's real indexer and phone_publish over it (mv_mobile_parity_desktop sample-publish):
 #    the AI pack's CLIP ViT-B/32, signed with the sample library's own key, never the owner's.
 # 4. Flattens the catalogue and the originals into <work>/release, one file per path, as the app
-#    reads them (src/mobile/sample.h).
+#    reads them (src/mobile/sample.h), and signs files.json: the size and SHA-256 of every file the
+#    catalogue's own signature does not cover (the JPEG-512 pack, the originals).
 # 5. --upload: puts <work>/release on the GitHub release `sample-library` (gh), current.json last,
 #    so a phone never sees a generation before all of its files are there.
 #
@@ -68,6 +69,7 @@ if [[ -n $leaks ]]; then echo "the catalogue names this Mac's folders or user:" 
 
 # ---- 4. the static folder -------------------------------------------------------------------
 python3 -I "$root/tools/ios/sample_library.py" flatten "$mnt" "$sub" "$work/release"
+"$desk" sample-sign "$work/release/files.json" "$key" "$work/release/files.sig"
 
 # ---- 5. the release --------------------------------------------------------------------------
 if [[ $upload == --upload ]]; then
@@ -75,7 +77,9 @@ if [[ $upload == --upload ]]; then
   gh release view "$tag" --repo "$repo" >/dev/null 2>&1 || gh release create "$tag" --repo "$repo" --prerelease \
     --title "Sample library for the iPhone app" \
     --notes "The iPhone app's sample library (code SAMPLE): CC0 and public-domain pictures from Wikimedia Commons, listed with their authors in tools/ios/sample-library/SOURCES.md. Made by tools/ios/sample-library.sh."
-  ( cd "$work/release" && ls | grep -vx 'c0c0c0c0c0c0c0c0__current.json' | xargs gh release upload "$tag" --repo "$repo" --clobber )
+  # The files first, then the list that vouches for them, then current.json.
+  ( cd "$work/release" && ls | grep -vxE 'c0c0c0c0c0c0c0c0__current.json|files.json|files.sig' | xargs gh release upload "$tag" --repo "$repo" --clobber )
+  gh release upload "$tag" --repo "$repo" --clobber "$work/release/files.json" "$work/release/files.sig"
   gh release upload "$tag" --repo "$repo" --clobber "$work/release/c0c0c0c0c0c0c0c0__current.json"
   echo "uploaded generation $generation"
 fi

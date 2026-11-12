@@ -1728,10 +1728,15 @@ other, made by `tools/ios/sample-library.sh`: 47 CC0 and public-domain files on 
 own, indexed by the engine over the app's own decoders with B/32 on the CPU, then `phone_publish`
 under a fixed library id and signed by the sample library's own key
 (`mv_mobile_parity_desktop sample-publish`). The catalogue and the originals are flattened into the
-GitHub release `sample-library`, one file per (root, path): `<root id>__<path with '/' as "__">`, and
-`roots.json` stands for the service's root list. On the phone, `sample::static_remote`
-(`src/mobile/sample.*`) is the `remote_file` over that folder; the host does the HTTPS
-(`mv_fetch_fn`, `SampleFetch.swift`). `mv_pair_parse` reads the code `SAMPLE` or
+GitHub release `sample-library`, one file per (root, path): `<root id>__<path with '/' as "__">`.
+`files.json`, signed by the same key (`files.sig`: Ed25519 over `kFilesContext` and the bytes), gives
+the root list and the size and SHA-256 of every file sync does not check itself: everything but
+`current.json`, `gen/` and `models/` under the catalogue root, so the JPEG-512 pack, `library.json`
+and every original. On the phone, `sample::static_remote` (`src/mobile/sample.*`) is the `remote_file`
+over that folder; the host does the HTTPS (`mv_fetch_fn`, `SampleFetch.swift`). It passes the
+catalogue's own files through by range, for sync to check, and reads any other file only from a
+whole copy whose hash matched the list (kept in `<thumb cache>/verified`, which Forget removes);
+a file not listed is never fetched. `mv_pair_parse` reads the code `SAMPLE` or
 `mediaviewer://sample` as a code with `sample = 1`, the sample's library id and pinned key, and no
 service; `mv_link_open` with `static_base` opens the link over the folder. Sync, the thumb cache,
 `mv_file_read` and the catalogue's search are unchanged, so the sample is checked as a NAS's

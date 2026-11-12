@@ -38,7 +38,7 @@ Things to try:
 
 About the sample library: its photos and clips come from Wikimedia Commons and are CC0 or in the
 public domain. It is read from a GitHub release of this app's open-source repository, over HTTPS,
-and checked against a signature before it is used, exactly as a library from a NAS is. Nothing about
+and every file is checked against a signature before it is used, as a library from a NAS is. Nothing about
 the user is sent: the app collects no data, has no accounts and no analytics.
 
 For a real library, a person needs MediaViewer on a Mac or Windows PC with its Local search and

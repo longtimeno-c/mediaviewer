@@ -309,7 +309,9 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
     l->cache_dir = c->cache_dir;
     l->thumb_capacity = c->thumb_cache_bytes ? c->thumb_cache_bytes : 2ull << 30;
     if (is_static) {
-      l->fixed = std::make_unique<sample::static_remote>(c->static_base, host_fetch(c->fetch, c->fetch_ctx));
+      l->fixed = std::make_unique<sample::static_remote>(c->static_base, host_fetch(c->fetch, c->fetch_ctx),
+                                                         l->sync.publisher_key, l->sync.library_id,
+                                                         l->cache_dir + "/verified");
       l->remote = l->fixed.get();
     } else {
       l->session = std::make_unique<link_session>(l->service);

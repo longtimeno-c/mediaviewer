@@ -291,6 +291,13 @@ public final class AppModel {
     viewerFocus = nil
   }
 
+  /// The library the sample library would replace on this phone, by name; nil when nothing
+  /// would be lost (no library, or the sample itself). Opening the sample asks first (§11.1).
+  public static func sampleWouldReplace(_ connection: ConnectionSnapshot) -> String? {
+    guard connection.hasLibrary, !connection.isSample else { return nil }
+    return connection.libraryName.isEmpty ? "your library" : connection.libraryName
+  }
+
   /// Leaves the Connect screen without pairing: back to the library, or to Welcome when there is none.
   func leaveConnect() {
     if connection.hasLibrary { returnToLibrary() } else { stage = .welcome }

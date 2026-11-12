@@ -253,6 +253,8 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   /// The sample library (§11.1), read from its static folder on GitHub rather than a Synology. The
   /// app says so wherever the library's source is named.
   public var isSample = false
+  /// The paired library's name, as its code gave it ("" with none): said when something would replace it.
+  public var libraryName = ""
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

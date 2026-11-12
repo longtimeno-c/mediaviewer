@@ -159,12 +159,25 @@ def flatten(volume, sub, release):
         for f in files:
             if not f.startswith("."):
                 add(MEDIA_ROOT, volume, os.path.relpath(os.path.join(r, f), volume))
-    json.dump({"roots": [{"id": CATALOGUE_ROOT, "label": "Catalogue"}, {"id": MEDIA_ROOT, "label": shares.pop()}]},
-              open(os.path.join(release, "roots.json"), "w"))
+    # The signed list (src/mobile/sample.h): every file sync does not check against the catalogue's
+    # signature itself (current.json, gen/, models/) is named here with its size and SHA-256, so
+    # the phone reads nothing the publisher's key did not vouch for. sample-library.sh signs it.
+    listed = []
+    for name, rel in sorted(names.items()):
+        if name.startswith(CATALOGUE_ROOT + "__") and (rel == "current.json" or rel.startswith(("gen/", "models/"))):
+            continue
+        path = os.path.join(release, name)
+        listed.append({"name": name, "size": os.path.getsize(path),
+                       "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()})
+    doc = {"format": 1, "library_id": manifest["library_id"],
+           "roots": [{"id": CATALOGUE_ROOT, "label": "Catalogue"}, {"id": MEDIA_ROOT, "label": shares.pop()}],
+           "files": listed}
+    with open(os.path.join(release, "files.json"), "w") as f:
+        json.dump(doc, f, separators=(",", ":"))
     sizes = {"catalogue": 0, "media": 0}
     for name in os.listdir(release):
         sizes["catalogue" if name.startswith(CATALOGUE_ROOT) else "media"] += os.path.getsize(os.path.join(release, name))
-    print(f"release: {len(names) + 1} files; the phone copies {sizes['catalogue'] / 1e6:.1f} MB of catalogue "
+    print(f"release: {len(names) + 2} files, {len(listed)} in the signed list; the phone copies {sizes['catalogue'] / 1e6:.1f} MB of catalogue "
           f"(tower included) once; originals {sizes['media'] / 1e6:.1f} MB, read on demand")
 
 
@@ -172,6 +185,10 @@ class RangeHandler(http.server.SimpleHTTPRequestHandler):
     """GET with one Range, as GitHub's release CDN answers. Tests only, loopback only."""
 
     def do_GET(self):
+        # Every header the app sent, for the test to check that nothing about the person is.
+        if os.environ.get("MV_SAMPLE_HEADERS"):
+            with open(os.environ["MV_SAMPLE_HEADERS"], "a") as log:
+                log.write(json.dumps({k: v for k, v in self.headers.items()}) + "\n")
         path = self.translate_path(self.path)
         if not os.path.isfile(path):
             self.send_error(404)

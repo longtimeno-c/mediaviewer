@@ -40,6 +40,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private static let catalogueKey = "link.catalogue"
   private static let libraryKey = "link.libraryID"
   private static let sampleKey = "link.sample"
+  private static let nameKey = "link.libraryName"
 
   /// The paired library's id as last published; "" with none or before the first publish. A plain
   /// stored value, cheap enough for launch.
@@ -59,6 +60,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if paired {
       first.libraryID = Self.storedLibraryID
       first.isSample = defaults.bool(forKey: Self.sampleKey)
+      first.libraryName = defaults.string(forKey: Self.nameKey) ?? ""
     }
     snapshot = first
     opened = Task.detached(priority: .userInitiated) { [weak self] in await self?.openStored() }
@@ -157,6 +159,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       // Until the stored record is read at launch, the id launch stamped stands.
       next.libraryID = next.hasLibrary ? (record?.libraryID ?? snapshot.libraryID) : ""
       next.isSample = next.hasLibrary && (record.map(\.isSample) ?? snapshot.isSample)
+      next.libraryName = next.hasLibrary ? (record?.libraryName ?? snapshot.libraryName) : ""
       snapshot = next
       return (next, Array(continuations.values))
     }
@@ -164,6 +167,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
     defaults.set(value.libraryID, forKey: Self.libraryKey)
     defaults.set(value.isSample, forKey: Self.sampleKey)
+    defaults.set(value.libraryName, forKey: Self.nameKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
                     "epoch": NSNumber(value: info.epoch)], forKey: Self.catalogueKey)

@@ -10,7 +10,8 @@
 # at it (MV_SAMPLE_BASE); nothing else is reachable from the app's sample transport. Then runs
 # UITests/SampleLibraryTests: a wrong code, SAMPLE, the copy, the grid, six searches, a photo, a
 # clip, Forget. Afterwards checks that each search's first answers are pictures tagged for it in
-# sources.json, and that Forget left nothing of the library in the app's container.
+# sources.json, that Forget left nothing of the library in the app's container, and that no request
+# carried anything but a fixed user agent, the range and the usual transport headers.
 # MV_SAMPLE_FILE=1 serves it as a file:// folder instead of over loopback HTTP.
 set -euo pipefail
 work="${1:?work}"; udid="${2:?udid}"; app="${3:?app}"; out="${4:?out}"
@@ -18,12 +19,13 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 bundle=io.github.longtimeno-c.mediaviewer.mobile
 port=18470
 mkdir -p "$out"; out="$(cd "$out" && pwd -P)"; work="$(cd "$work" && pwd -P)"
-[[ -f $work/release/roots.json ]] || { echo "no $work/release: run tools/ios/sample-library.sh first" >&2; exit 2; }
+[[ -f $work/release/files.sig ]] || { echo "no $work/release: run tools/ios/sample-library.sh first" >&2; exit 2; }
 
 if [[ ${MV_SAMPLE_FILE:-} == 1 ]]; then
   base="file://$work/release/"
 else
-  python3 -I "$root/tools/ios/sample_library.py" serve "$work/release" "$port" > "$out/serve.log" 2>&1 &
+  rm -f "$out/headers.jsonl"
+  MV_SAMPLE_HEADERS="$out/headers.jsonl" python3 -I "$root/tools/ios/sample_library.py" serve "$work/release" "$port" > "$out/serve.log" 2>&1 &
   server=$!
   trap 'kill $server 2>/dev/null || true' EXIT
   base="http://127.0.0.1:$port/"
@@ -41,9 +43,9 @@ TEST_RUNNER_MV_SAMPLE_BASE="$base" TEST_RUNNER_MV_SAMPLE_OUT="$out" \
   | tee "$out/xcodebuild.txt" | grep -E 'error:|Test Case|\*\* TEST' || true
 
 data="$(xcrun simctl get_app_container "$udid" "$bundle" data)"
-python3 -I - "$root/tools/ios/sample-library/sources.json" "$work/release" "$out/answers.json" "$data" <<'PY'
+python3 -I - "$root/tools/ios/sample-library/sources.json" "$work/release" "$out/answers.json" "$data" "$out/headers.jsonl" <<'PY'
 import json, os, sqlite3, sys
-sources, release, answers, data = sys.argv[1:5]
+sources, release, answers, data, headers = sys.argv[1:6]
 tags = {}
 for e in json.load(open(sources))["items"]:
     t = set(e["tags"]) | {w for w in e["title"].lower().replace(",", " ").split()}
@@ -68,5 +70,10 @@ left = [os.path.join(r, f) for r, _, fs in os.walk(lib) for f in fs] if os.path.
 thumbs = os.path.join(data, "Library/Caches/thumbs")
 left += [os.path.join(r, f) for r, _, fs in os.walk(thumbs) for f in fs] if os.path.isdir(thumbs) else []
 print("after Forget:", "nothing left" if not left else f"{len(left)} files left, e.g. {left[0]}")
-sys.exit(1 if failed or left else 0)
+# Nothing about the person in a request: a fixed user agent, any language, no cookies.
+sent = [json.loads(l) for l in open(headers)] if os.path.exists(headers) else []
+told = {(k.lower(), v) for h in sent for k, v in h.items() if k.lower() not in ("host", "range", "accept", "accept-encoding", "connection", "cache-control", "pragma")}
+odd = told - {("user-agent", "MediaViewer"), ("accept-language", "*")}
+print(f"headers over {len(sent)} requests:", sorted(told) if not odd else f"UNEXPECTED {sorted(odd)}")
+sys.exit(1 if failed or left or odd or (os.path.exists(headers) and not sent) else 0)
 PY

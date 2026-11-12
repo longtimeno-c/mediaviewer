@@ -760,18 +760,19 @@ tools/ios/sample-library.sh <work folder> <generation> --upload
 `<generation>` must be above the one on the release, or phones that have the sample keep theirs. The
 script downloads each original from Wikimedia Commons (its SHA-1 pinned, its licence rechecked),
 makes 2048 px JPEGs and 1280 px H.264 clips (the OS's encoder, no x264), indexes them on a disk image
-of their own with the AI pack's B/32 on the CPU, publishes with `phone_publish`, and refuses a
-catalogue that names this Mac's home folder or user. It signs with
+of their own with the AI pack's B/32 on the CPU, publishes with `phone_publish`, refuses a
+catalogue that names this Mac's home folder or user, and signs `files.json` (every original's and
+the JPEG-512 pack's SHA-256) with `mv_mobile_parity_desktop sample-sign`. It signs with
 `~/Dev/.mv-toolchain/devkey/sample-library-publisher.key` (`MV_SAMPLE_KEY`), whose public half is
 pinned in `src/mobile/sample.h`: losing it means a new key and an app update, so keep a copy. The
-upload puts `current.json` last. It leaves older generations' files on the release; delete them
+upload puts the files first, then `files.json` and `files.sig`, then `current.json`. It leaves older generations' files on the release; delete them
 by hand once the new one has been out for a day.
 
 In the Simulator, with a Debug build ad hoc signed as for `search-live.sh`: the folder is served on
 127.0.0.1 with ranges, the app is pointed at it (`MV_SAMPLE_BASE`, Debug builds only), and
 `SampleLibraryTests` walks a wrong code, `SAMPLE`, the copy, six searches, a photo, a clip and Forget;
-then the script checks each search's first three answers against the pictures' tags and that Forget
-left nothing in the app's container:
+then the script checks each search's first three answers against the pictures' tags, that Forget
+left nothing in the app's container, and that requests carried no header about the person:
 
 ```bash
 tools/ios/sample-library-sim.sh <work folder> <Simulator UDID> <MediaViewer.app> <out>
