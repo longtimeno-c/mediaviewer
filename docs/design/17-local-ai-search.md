@@ -1614,7 +1614,8 @@ names; nothing about it is logged or sent.
 
 ## Setting a phone up
 
-The Phone access card (`PhoneLinkView.swift`) asks and watches; `engine_phone_link.cpp` does the work on a
+The Phone access card (`PhoneLinkView.swift` on the Mac, `ManagePanel.Phone.cs` on Windows, the same words and
+requests) asks and watches; `engine_phone_link.cpp` does the work on a
 thread of its own, made at the first request, reaching the network through Driftwire
 ([28](28-driftwire.md#claiming-and-pairing-phone-access)). The QR is `catalog::pair_url`, made once the
 service has taken a code, good for five minutes. Beside it is the check code (`driftwire::pairing_check`, `pair_check.h`: 80

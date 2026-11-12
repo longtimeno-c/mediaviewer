@@ -861,6 +861,21 @@ public interface IAddonPieces
     void InstallPieces(IReadOnlyList<string> pieceIds);
 }
 
+/// <summary>
+/// Settings → Add-ons on one add-on's page, for its Install button (the Mac's
+/// hostShowAddon): Local search's Phone access card asks for Driftwire's. A new
+/// interface, never new members on <see cref="IAddonHost2"/>: an installed
+/// pack's chrome was compiled against that as it is. A chrome compiled against
+/// this reaches it only from a method that can fail to load on an older host;
+/// without it, the button does nothing.
+/// </summary>
+public interface IAddonPages
+{
+    /// <summary>Opens Settings on the page of <paramref name="addonId"/> ("driftwire").
+    /// Any thread (the host marshals to its UI thread); never blocks.</summary>
+    void ShowAddonPage(string addonId);
+}
+
 /// <summary>The search commands the native router forwards (ShowAddon kinds).</summary>
 public static class SearchCommand
 {

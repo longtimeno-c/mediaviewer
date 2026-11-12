@@ -49,6 +49,9 @@
     <Compile Include="..\Shared\PeopleWords.cs" Link="Shared\PeopleWords.cs" />
     <!-- The app mark on the add-on's own windows (title bar, taskbar). -->
     <Compile Include="..\Shared\AppIcon.cs" Link="Shared\AppIcon.cs" />
+    <!-- Phone access: the pairing code's QR and the card's words (Chrome.Tests runs them). -->
+    <Compile Include="..\Shared\QrCode.cs" Link="Shared\QrCode.cs" />
+    <Compile Include="..\Shared\PhoneWords.cs" Link="Shared\PhoneWords.cs" />
   </ItemGroup>
 
   <ItemGroup>

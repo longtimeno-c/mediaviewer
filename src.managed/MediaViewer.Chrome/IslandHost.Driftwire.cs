@@ -40,6 +40,26 @@ public static partial class IslandHost
 
     private static bool DriftwireInstalled => SlotAddonRows.Any(r => r.Id == DriftwireId);
 
+    /// <summary>
+    /// UI thread (IAddonPages): Settings on an add-on's page; for one that is
+    /// not installed (Driftwire before its install), the add-ons list, where its
+    /// row offers Install. The Mac's MVShowAddonPage.
+    /// </summary>
+    private static void HostShowAddonPage(string id)
+    {
+        string? page = SlotAddonRows.Any(r => r.Id == id) ? id : null;
+        if (!_settingsVisible)
+        {
+            _addonPageWanted = page;
+            _addonListWanted = page is null;
+            Send(Command.OpenSettings);
+            return;
+        }
+        _showGeneralSettings?.Invoke();
+        if (page is not null) OpenAddonPage(page);
+        else ShowAddonList();
+    }
+
     /// <summary>UI thread: Driftwire's window with these files as the ones to send.
     /// False when it is not loaded.</summary>
     private static bool OpenDriftwire(List<string> paths)

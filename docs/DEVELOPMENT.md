@@ -568,16 +568,21 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
-### Phone access on the Mac (plan: `docs/plans/mobile.md`)
+### Phone access on the Mac and Windows (plan: `docs/plans/mobile.md`)
 
 Claiming a NAS service, the QR, revoking, nearby sync and moving the signing key. Tests, always filtered by tag:
 `mv_import_tests "[phone-pairing]"` (loopback), `mv_import_tests "[phone-pairing-bonjour]"` (this machine's
 mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"`, and in `src.swift/AIChrome`,
-`swift test --filter PhoneQRTests`. To try it without a Synology, run `driftwire serve` on this Mac with
-a `serve.json` naming a folder, and give the card that machine's address.
+`swift test --filter PhoneQRTests`, and for the Windows card's QR and words
+`dotnet test src.managed/MediaViewer.Chrome.Tests` (any OS). To try it without a Synology, run
+`driftwire serve` on this computer with a `serve.json` naming a folder, and give the card that machine's address.
 
-Not done: the Windows card (the shared C++ is written but only CI can compile it), a Bonjour advert on
-Windows and Linux, and any run against a real Synology or phone.
+The Windows card is `src.managed/MediaViewer.Ai.Chrome/ManagePanel.Phone.cs` (QR: `Shared/QrCode.cs`,
+words: `Shared/PhoneWords.cs`); its signing key is in Credential Manager sealed with DPAPI
+(`secrets_win.cpp`). Windows advertises the nearby service with `advert_win.cpp` (DnsServiceRegister).
+
+Not done: the Windows card and advert driven on a Windows machine (compiled by CI only), a Bonjour
+advert on Linux, and any run against a real Synology or phone.
 
 ### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
 
