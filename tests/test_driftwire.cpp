@@ -733,6 +733,37 @@ TEST_CASE("driftwire: a set too big for Bluetooth says to use Wi-Fi before Send"
 
 // ---- what is kept across launches (#442) ------------------------------------------------------------
 
+TEST_CASE("driftwire: the menu's Tunnel row is the window's switch, once a relay server is set", "[driftwire]") {
+  sp::view v;
+  CHECK(sp::build_menu(v).find(R"("id":"tunnel")") == std::string::npos);  // no relay server: no row
+  v.relay_server = "relay.example:47614#TEST-RELAY-KEY-0123456789";
+  v.tunnel_relay = "relay.example:47614";
+  auto doc = mv::json::parse(sp::build_menu(v));
+  REQUIRE(doc);
+  const mv::json::value* row = nullptr;
+  for (const auto& r : doc->find("items")->a) {
+    if (const std::string* id = r.str("id"); id && *id == "tunnel") row = &r;
+  }
+  REQUIRE(row);
+  CHECK(*row->str("kind") == "toggle");
+  CHECK(*row->str("label") == "Tunnel through relay.example:47614");
+  CHECK_FALSE(row->find("value")->b);
+  CHECK(sp::build_menu(v).find("TEST-RELAY-KEY") == std::string::npos);  // never the key
+  v.tunnel = true;
+  CHECK(sp::build_menu(v).find(R"("id":"tunnel","label":"Tunnel through relay.example:47614","value":true)") !=
+        std::string::npos);
+  // A long name is cut at a character, within the host's label limit.
+  v.tunnel_relay = std::string(90, 'a') + "\xC3\xA9" + std::string(40, 'b') + ":1";
+  const auto long_doc = mv::json::parse(sp::build_menu(v));
+  REQUIRE(long_doc);
+  for (const auto& r : long_doc->find("items")->a) {
+    if (const std::string* label = r.str("label")) {
+      CHECK(label->size() <= 120);
+      CHECK(label->find("\xC3\xE2") == std::string::npos);  // not cut inside the é
+    }
+  }
+}
+
 TEST_CASE("driftwire: the menu-bar menu's rows are the window's switches, with what is happening now",
           "[driftwire]") {
   sp::view v;

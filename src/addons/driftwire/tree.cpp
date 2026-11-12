@@ -931,6 +931,16 @@ std::string build_menu(const view& v) {
   menu_separator(w);
   menu_toggle(w, "receiving", "Receive from Nearby", v.receiving);
   menu_toggle(w, "internet", "Send and Receive over the Internet", v.internet);
+  // The Tunnel (slice 3), once a relay server is set: the window's switch.
+  if (!v.tunnel_relay.empty()) {
+    std::string label = tunnel_label(v);
+    if (label.size() > 100) {
+      std::size_t cut = 97;
+      while (cut > 0 && (static_cast<unsigned char>(label[cut]) & 0xC0) == 0x80) --cut;  // at a character
+      label = label.substr(0, cut) + "\xE2\x80\xA6";
+    }
+    menu_toggle(w, "tunnel", label, v.tunnel);
+  }
   menu_toggle(w, "background", kBackgroundLabel, v.background);
   w.end_array().end_object();
   return w.take();
