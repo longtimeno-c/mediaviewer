@@ -2166,6 +2166,11 @@ after `publish`, on **stable** releases only and only when the repository variab
 `packaging/linux/repo/install.sh`, the page's `packaging/linux/repo/index.html`. On macOS
 `install.sh` installs nothing and prints the `brew install` line.
 
+The same deploy carries the site's own pages from `packaging/site`, copied as they are: the front
+page and the iPhone app's privacy and support pages (`/iphone/privacy/`, `/iphone/support/`), whose
+URLs are in its App Store listing (`src.ios/AppStore/listing.md`). A change to them reaches the
+site only with the next stable release's deploy.
+
 **The key** (step 1 above), on a trusted machine with GnuPG 2.2 or newer:
 
 ```sh
