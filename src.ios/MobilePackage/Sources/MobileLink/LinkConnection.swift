@@ -362,9 +362,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     continuation.yield(.skipped(.mac))
     continuation.yield(.working(.synology))
     let probeDir = FileManager.default.temporaryDirectory.appendingPathComponent("sample-probe-\(UUID().uuidString)")
-    let probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
+    var probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
                               fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
                               local: "", publicName: "", identity: "", accessKey: "", deviceName: await deviceName(), sample: true)
+    // GUEST: the sample library as a guest, its time counted from now (§8.2's demo; no NAS).
+    if parsed.grant_for_s > 0 { probe.accessUntil = Date().timeIntervalSince1970 + Double(parsed.grant_for_s) }
     let (status, report) = await withLinkCancel { cancel in
       await onLinkQueue { () -> (Int32, mv_route_report) in
         defer { try? FileManager.default.removeItem(at: probeDir) }
@@ -429,7 +431,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       if replacing { routeEpoch += 1 }
       return connectGeneration
     }
-    let (answered, report, grant) = await onLinkQueue { () -> (Int32, mv_route_report, Double?) in
+    let (fromLink, report, grant) = await onLinkQueue { () -> (Int32, mv_route_report, Double?) in
       var report = mv_route_report()
       let status = replacing ? mv_link_reconnect(link.raw, nil, &report) : mv_link_connect(link.raw, nil, &report)
       var expires: Int64 = 0
@@ -440,8 +442,14 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       return (status, report, known == 1 && expires > 0 ? Double(expires) : nil)
     }
     guard lock.withLock({ generation == connectGeneration && !forgotten }) else { return }  // a newer one is running
+    var answered = fromLink
+    // The sample library has no NAS to end a guest's time: in sample mode only, the phone stands
+    // in for it, and the end it recorded at pairing is the NAS's "expired" (owner 2026-11-12:
+    // every phone feature demoable in SAMPLE).
+    let sampleEnd = lock.withLock { record?.isSample == true ? record?.accessUntil : nil }
+    if let sampleEnd, sampleEnd <= Date().timeIntervalSince1970 { answered = Int32(MV_LINK_ACCESS_ENDED.rawValue) }
     var status = answered
-    if status == 0, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
+    if status == 0, sampleEnd == nil, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
     // §8.2: the NAS's "expired" shows the end and deletes the copy; the phone's own clock past
     // the end the NAS gave only says so, and only when no route answered at all.
     var unreachable = false

@@ -255,8 +255,9 @@ void mv_cancel_free(mv_cancel* c) { delete c; }
 int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
   return catch_all([&]() -> int32_t {
     if (!text || !out) return MV_LINK_INVALID;
-    const bool is_sample = sample::is_code(text);
-    auto p = is_sample ? result<pair_payload>(sample::payload()) : parse_pair_payload(text);
+    const bool is_guest = sample::is_guest_code(text);
+    const bool is_sample = is_guest || sample::is_code(text);
+    auto p = is_sample ? result<pair_payload>(sample::payload(is_guest)) : parse_pair_payload(text);
     if (!p) return MV_LINK_INVALID;
     std::memset(out, 0, sizeof *out);
     out->sample = is_sample ? 1 : 0;
