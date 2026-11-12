@@ -91,12 +91,16 @@ they are not repeated. No other company's name is used as a keyword.
 | Sign-in required | Unticked: the app has no account |
 | Version release | Left as it was (automatically release after approval) |
 
-**App Review notes** (2262 of 4000; saved 2026-11-12, from the sample-library branch's `review-notes.md`, with the real setup described as Mac-only and the attached-QR line dropped)
+**App Review notes** (2524 of 4000; saved and read back 2026-11-12. The demo code leads; button labels checked against `SetupScreens.swift` on the sample-library branch)
 
 ```text
-MediaViewer for NAS searches and views a photo and video library that lives on the person's own Synology NAS. In a real setup, MediaViewer on the person's Mac indexes their library and publishes a search catalogue to a small MediaViewer service on the NAS; the phone pairs with that service by scanning a QR code the Mac shows, then searches the catalogue on the phone and fetches photos and clips from the NAS. You do not need a Mac or a NAS to review the app: the code SAMPLE opens a signed demo library of public-domain pictures, read over HTTPS.
+DEMO CODE: SAMPLE
 
-To open the sample library:
+No account, no sign-in, and no Mac or NAS needed. On the first screen tap "Scan code", then "Enter a code" at the bottom of the scan screen. Type SAMPLE in "Code or link" and tap "Open". The app asks "Open the sample library?": tap "Open sample library". A demo library of public-domain photos and clips opens. (Opening the link mediaviewer://sample does the same.)
+
+MediaViewer for NAS searches and views a photo and video library that lives on the person's own Synology NAS. In a real setup, MediaViewer on the person's Mac indexes their library and publishes a search catalogue to a small MediaViewer service on the NAS; the phone pairs with that service by scanning a QR code the Mac shows, then searches the catalogue on the phone and fetches photos and clips from the NAS.
+
+Opening the sample library, step by step:
 
 1. Launch the app and tap "Scan code". If iOS asks for the camera, you may allow or decline it.
 2. At the bottom of the scan screen, tap "Enter a code".
