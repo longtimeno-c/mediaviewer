@@ -249,12 +249,12 @@ endif()
 set(_C "${_S}/cli")
 if(WIN32)
   # *_win.cpp: may include <windows.h>
-  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp)
+  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp ${_C}/serve_tty_win.cpp)
 elseif(APPLE)
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm ${_C}/serve_tty_posix.cpp)
   set_source_files_properties(${_C}/update_net_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp ${_C}/serve_tty_posix.cpp)
 endif()
 # Where `driftwire` asks whether a newer version is out, and whose installers
 # `driftwire update` runs (cli/update.h): the site release.yml deploys.
@@ -275,7 +275,7 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/nas_update.cpp ${_C}/nas_update.h
-  ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
+  ${_C}/term.h ${_C}/data_dir.h ${_C}/serve_tty.h ${_driftwire_cli_port}
 )
 target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)
 # The NAS package's update key (docs/plans/nas-setup.md §6): 64 hex digits of
