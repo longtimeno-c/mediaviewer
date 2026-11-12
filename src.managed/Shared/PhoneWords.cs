@@ -11,8 +11,14 @@ internal sealed record PhonePublishState(
     public static readonly PhonePublishState None = new(false, "", 0, "", "", 0, 0);
 }
 
-/// <summary>A paired phone: its name and the hex of its device key.</summary>
-internal sealed record PhoneDevice(string Name, string Key);
+/// <summary>A paired phone: its name, the hex of its device key, and its access (NAS clock).</summary>
+internal sealed record PhoneDevice(string Name, string Key)
+{
+    public bool Limited { get; init; }   // has an end
+    public long Expires { get; init; }   // unix, 0 = no end
+    public bool Expired { get; init; }
+    public bool Guest { get; init; }     // paired by a guest code
+}
 
 /// <summary>A named folder the service shares; "Catalogue" is the catalogue's own.</summary>
 internal sealed record PhoneFolder(string Id, string Label, string Path)
@@ -51,14 +57,26 @@ internal sealed record PhoneLinkState
     public string AskingName { get; init; } = "";
     public string AskingKey { get; init; } = "";
     public string AskingFingerprint { get; init; } = "";
+    public string NasPassphrase { get; init; } = "";  // "set" | "none" | "broken" | "" (a NAS too old to say)
+    public IReadOnlyList<string> NasFeatures { get; init; } = Array.Empty<string>();
+    public long UnlockedSeconds { get; init; }        // left on this computer's unlock; 0 = locked
+    public long LockedUntil { get; init; }            // unix; the NAS refuses tries until then
+    public long QrForSeconds { get; init; }           // the code showing is a guest code for this long
+
+    /// <summary>The NAS takes guest codes, time limits and a passphrase.</summary>
+    public bool NasHasFeatures => NasFeatures.Contains("passphrase");
 
     /// <summary>Whether two reads would draw the same card (records compare lists by reference).</summary>
     // The catalogue's fraction moves on every read while it publishes: the card
     // updates its progress line in place, so that alone is not a change.
     public bool SameAs(PhoneLinkState o) =>
-        this with { Phones = o.Phones, Folders = o.Folders, Added = o.Added,
+        this with { Phones = o.Phones, Folders = o.Folders, Added = o.Added, NasFeatures = o.NasFeatures,
+                    // The unlock counts down each second; the card says minutes, so only those count.
+                    UnlockedSeconds = (UnlockedSeconds + 59) / 60 == (o.UnlockedSeconds + 59) / 60
+                        ? o.UnlockedSeconds : UnlockedSeconds,
                     Catalogue = Catalogue is { } c ? c with { Fraction = o.Catalogue?.Fraction ?? 0 } : null } == o &&
-        Phones.SequenceEqual(o.Phones) && Folders.SequenceEqual(o.Folders) && Added.SequenceEqual(o.Added);
+        Phones.SequenceEqual(o.Phones) && Folders.SequenceEqual(o.Folders) && Added.SequenceEqual(o.Added) &&
+        NasFeatures.SequenceEqual(o.NasFeatures);
 }
 
 /// <summary>
@@ -95,7 +113,13 @@ internal static class PhoneWords
             var phones = new List<PhoneDevice>();
             foreach (JsonElement d in Items(o, "devices"))
                 if (d.ValueKind == JsonValueKind.Object && Has(d, "name") && Has(d, "key"))
-                    phones.Add(new PhoneDevice(Str(d, "name"), Str(d, "key")));
+                    phones.Add(new PhoneDevice(Str(d, "name"), Str(d, "key"))
+                    {
+                        Limited = Bool(d, "limited", false),
+                        Expires = Int(d, "expires"),
+                        Expired = Bool(d, "expired", false),
+                        Guest = Bool(d, "guest", false),
+                    });
             var folders = new List<PhoneFolder>();
             foreach (JsonElement f in Items(o, "folders"))
                 if (f.ValueKind == JsonValueKind.Object && Has(f, "id") && Has(f, "label") && Has(f, "path"))
@@ -136,6 +160,12 @@ internal static class PhoneWords
                 AskingName = Str(o, "asking_name"),
                 AskingKey = Str(o, "asking_key"),
                 AskingFingerprint = Str(o, "asking_fingerprint"),
+                NasPassphrase = Str(o, "nas_passphrase"),
+                NasFeatures = Items(o, "nas_features").Where(f => f.ValueKind == JsonValueKind.String)
+                                                    .Select(f => f.GetString() ?? "").ToList(),
+                UnlockedSeconds = Int(o, "unlocked_s"),
+                LockedUntil = Int(o, "locked_until"),
+                QrForSeconds = Int(o, "qr_for_s"),
             };
         }
         catch (JsonException)
@@ -197,8 +227,64 @@ internal static class PhoneWords
         "revoke_waits" => "Removed here. The NAS will be told when it can be reached.",
         "no_driftwire" => "This copy of MediaViewer can't keep phone keys.",
         "no_local_search" => "Install Local search to publish a catalogue.",
+        "needs_unlock" => "Enter the NAS passphrase to do that.",
+        "passphrase" => "That is not the NAS passphrase.",
+        "passphrase_short" => "A passphrase needs at least 10 characters.",
+        "no_passphrase" => "This NAS has no passphrase yet. Enter a new one twice to choose it.",
+        "slow_down" => "Try again in a moment.",
+        "wrong_service" => "That is a different NAS from the one this computer claimed.",
+        "nas_too_old" => "Update the NAS service to use this.",
         _ => "That didn't work.",
     };
+
+    /// <summary>The error line, with what the state adds: the lockout's end, and a claim that went
+    /// through on a NAS too old to keep a passphrase. `clock` turns a unix time into "14:20".</summary>
+    public static string? ErrorText(PhoneLinkState s, Func<long, string> clock) => s.Error switch
+    {
+        "locked_out" => $"Too many tries. Try again at {clock(s.LockedUntil)}, or reset it on the NAS with driftwire serve passphrase reset.",
+        "nas_too_old" when s.Claimed && s.NasPassphrase is "" or "none" =>
+            "Claimed. Update the NAS service to protect it with a passphrase.",
+        _ => ErrorText(s.Error),
+    };
+
+    /// <summary>The NAS passphrase row's line.</summary>
+    public static string PassphraseDetail(PhoneLinkState s) => s.NasPassphrase switch
+    {
+        "set" => s.UnlockedSeconds > 0 ? $"Unlocked · {Math.Max(1, (s.UnlockedSeconds + 59) / 60)} min" : "Locked",
+        "none" => "None. Choose one so nobody else on your network can claim or change this service.",
+        "broken" => "The NAS can't read it. Reset it on the NAS with driftwire serve passphrase reset.",
+        _ => "Update the NAS service to use this.",
+    };
+
+    /// <summary>The durations a code or a phone's access can have, in the menus' order.</summary>
+    public static readonly (string Label, long Seconds)[] Durations =
+    {
+        ("1 hour", 3600), ("24 hours", 86400), ("7 days", 7 * 86400), ("30 days", 30 * 86400),
+    };
+    public const string Unlimited = "Until I remove it";
+
+    public static string DurationText(long seconds) => seconds switch
+    {
+        3600 => "1 hour",
+        86400 => "24 hours",
+        _ when seconds % 86400 == 0 => $"{seconds / 86400} days",
+        _ when seconds % 3600 == 0 => $"{seconds / 3600} hours",
+        _ => $"{Math.Max(1, seconds / 60)} minutes",
+    };
+
+    /// <summary>"Guest code · access for 24 hours from when it is scanned".</summary>
+    public static string GuestCodeLine(long seconds) =>
+        $"Guest code · access for {DurationText(seconds)} from when it is scanned";
+
+    /// <summary>A phone row's line: "Guest · Until Fri 14:00", "Guest · Expired yesterday", or its key.
+    /// `when` turns a unix time into "Fri 14:00".</summary>
+    public static string PhoneDetail(PhoneDevice d, long nowUnix, Func<long, string> when)
+    {
+        string lead = d.Guest ? "Guest · " : "";
+        if (!d.Limited || d.Expires == 0) return lead + KeyDetail(d.Key);
+        if (d.Expired || d.Expires <= nowUnix) return lead + "Expired " + Ago(nowUnix - d.Expires);
+        return lead + "Until " + when(d.Expires);
+    }
 
     /// <summary>The work under way, for the progress line; null for the quick ones.</summary>
     public static string? BusyText(string busy) => busy switch
@@ -211,6 +297,9 @@ internal static class PhoneWords
         "set_addresses" => "Checking the address",
         "folder" => "Setting up the folder",
         "takeover_ask" or "takeover_allow" or "takeover_restart" => "Updating the library",
+        "unlock" => "Unlocking",
+        "set_passphrase" => "Setting the passphrase",
+        "grant" => "Changing the phone's access",
         _ => null,
     };
 

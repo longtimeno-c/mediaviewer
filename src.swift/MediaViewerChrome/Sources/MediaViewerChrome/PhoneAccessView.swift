@@ -35,6 +35,10 @@ final class PhoneStore: ObservableObject {
   struct Phone: Identifiable, Equatable {
     let name: String
     let key: String
+    var limited = false
+    var expires: Int64 = 0  // unix on the NAS's clock, 0 = no end
+    var expired = false
+    var guest = false
     var id: String { key }
   }
   struct Folder: Identifiable, Equatable {
@@ -80,6 +84,13 @@ final class PhoneStore: ObservableObject {
     var askingName = ""
     var askingKey = ""
     var askingFingerprint = ""
+    var nasPassphrase = ""  // "set" | "none" | "broken" | "" (a NAS too old to say)
+    var nasFeatures: [String] = []
+    var unlockedSeconds: Int64 = 0
+    var lockedUntil: Int64 = 0
+    var qrForSeconds: Int64 = 0
+    /// The NAS takes guest codes, time limits and a passphrase.
+    var nasHasFeatures: Bool { nasFeatures.contains("passphrase") }
   }
 
   @Published private(set) var state = State()
@@ -145,7 +156,9 @@ final class PhoneStore: ObservableObject {
     s.warning = o["warning"] as? String ?? ""
     s.phones = (o["devices"] as? [[String: Any]] ?? []).compactMap {
       guard let n = $0["name"] as? String, let k = $0["key"] as? String else { return nil }
-      return Phone(name: n, key: k)
+      return Phone(name: n, key: k, limited: $0["limited"] as? Bool ?? false,
+                   expires: ($0["expires"] as? NSNumber)?.int64Value ?? 0,
+                   expired: $0["expired"] as? Bool ?? false, guest: $0["guest"] as? Bool ?? false)
     }
     s.folders = (o["folders"] as? [[String: Any]] ?? []).compactMap {
       guard let i = $0["id"] as? String, let l = $0["label"] as? String, let p = $0["path"] as? String else { return nil }
@@ -162,10 +175,15 @@ final class PhoneStore: ObservableObject {
     s.askingName = o["asking_name"] as? String ?? ""
     s.askingKey = o["asking_key"] as? String ?? ""
     s.askingFingerprint = o["asking_fingerprint"] as? String ?? ""
+    s.nasPassphrase = o["nas_passphrase"] as? String ?? ""
+    s.nasFeatures = o["nas_features"] as? [String] ?? []
+    s.unlockedSeconds = (o["unlocked_s"] as? NSNumber)?.int64Value ?? 0
+    s.lockedUntil = (o["locked_until"] as? NSNumber)?.int64Value ?? 0
+    s.qrForSeconds = (o["qr_for_s"] as? NSNumber)?.int64Value ?? 0
     return s
   }
 
-  func send(_ request: [String: String]) {
+  func send(_ request: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: request),
           let text = String(data: data, encoding: .utf8) else { return }
     _ = mv_chrome_phone_request(text)
@@ -208,8 +226,67 @@ final class PhoneStore: ObservableObject {
     case "revoke_waits": return "Removed here. The NAS will be told when it can be reached."
     case "no_driftwire": return "This copy of MediaViewer can't keep phone keys."
     case "no_local_search": return "Install Local search to publish a catalogue."
+    case "needs_unlock": return "Enter the NAS passphrase to do that."
+    case "passphrase": return "That is not the NAS passphrase."
+    case "passphrase_short": return "A passphrase needs at least 10 characters."
+    case "no_passphrase": return "This NAS has no passphrase yet. Enter a new one twice to choose it."
+    case "slow_down": return "Try again in a moment."
+    case "wrong_service": return "That is a different NAS from the one this computer claimed."
+    case "locked_out":
+      return "Too many tries. Try again at \(Self.clock(state.lockedUntil)), or reset it on the NAS with driftwire serve passphrase reset."
+    case "nas_too_old":
+      if state.claimed && (state.nasPassphrase.isEmpty || state.nasPassphrase == "none") {
+        return "Claimed. Update the NAS service to protect it with a passphrase."
+      }
+      return "Update the NAS service to use this."
     default: return "That didn't work."
     }
+  }
+
+  nonisolated static func clock(_ unix: Int64) -> String {
+    Date(timeIntervalSince1970: TimeInterval(unix)).formatted(date: .omitted, time: .shortened)
+  }
+
+  /// The NAS passphrase row's line.
+  var passphraseDetail: String {
+    switch state.nasPassphrase {
+    case "set":
+      return state.unlockedSeconds > 0 ? "Unlocked · \(max(1, (state.unlockedSeconds + 59) / 60)) min" : "Locked"
+    case "none": return "None. Choose one so nobody else on your network can claim or change this service."
+    case "broken": return "The NAS can't read it. Reset it on the NAS with driftwire serve passphrase reset."
+    default: return "Update the NAS service to use this."
+    }
+  }
+
+  /// The durations a code or a phone's access can have, in the menus' order.
+  static let durations: [(label: String, seconds: Int64)] = [
+    ("1 hour", 3600), ("24 hours", 86400), ("7 days", 7 * 86400), ("30 days", 30 * 86400),
+  ]
+  static let unlimited = "Until I remove it"
+
+  nonisolated static func durationText(_ seconds: Int64) -> String {
+    switch seconds {
+    case 3600: return "1 hour"
+    case 86400: return "24 hours"
+    case _ where seconds % 86400 == 0: return "\(seconds / 86400) days"
+    case _ where seconds % 3600 == 0: return "\(seconds / 3600) hours"
+    default: return "\(max(1, seconds / 60)) minutes"
+    }
+  }
+
+  nonisolated static func guestCodeLine(_ seconds: Int64) -> String {
+    "Guest code · access for \(durationText(seconds)) from when it is scanned"
+  }
+
+  /// A phone row's line: "Guest · Until Fri 14:00", "Guest · Expired yesterday", or its key.
+  nonisolated static func phoneDetail(_ p: Phone, now: Date = Date()) -> String {
+    let lead = p.guest ? "Guest · " : ""
+    guard p.limited, p.expires != 0 else { return lead + "Key \(p.key.prefix(8))" }
+    let end = Date(timeIntervalSince1970: TimeInterval(p.expires))
+    if p.expired || end <= now {
+      return lead + "Expired " + RelativeDateTimeFormatter().localizedString(for: end, relativeTo: now)
+    }
+    return lead + "Until " + end.formatted(.dateTime.weekday(.abbreviated).hour().minute())
   }
 
   var busyText: String? {
@@ -222,6 +299,9 @@ final class PhoneStore: ObservableObject {
     case "set_addresses": return "Checking the address"
     case "folder": return "Setting up the folder"
     case "takeover_ask", "takeover_allow", "takeover_restart": return "Updating the library"
+    case "unlock": return "Unlocking"
+    case "set_passphrase": return "Setting the passphrase"
+    case "grant": return "Changing the phone's access"
     default: return nil
     }
   }
@@ -268,7 +348,11 @@ struct PhoneAccessSection: View {
   @State private var newPath = ""
   @State private var confirmRestart = false
   @State private var confirmHandOver = false
-
+  @State private var passphrase = ""
+  @State private var passphraseAgain = ""
+  @State private var unlockWith = ""
+  @State private var changing = false
+  @State private var codeFor: Int64 = 0  // 0: until I remove it
   private var s: PhoneStore.State { model.state }
 
   var body: some View {
@@ -341,13 +425,34 @@ struct PhoneAccessSection: View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       SettingsRow(title: "Service on your NAS",
                   detail: "Claim it from the NAS's own network, once. Your Mac writes a one-time token to the share to prove it can.") {
-        SettingsButton(title: "Claim") { model.send(["do": "claim", "local": local, "public": publicName]) }
+        SettingsButton(title: "Claim") {
+          model.send(claimRequest())
+          passphrase = ""
+          passphraseAgain = ""
+        }
           .accessibilityLabel("Claim the service")
-          .disabled(!s.busy.isEmpty || local.isEmpty)
+          .disabled(!claimable)
       }
       field("Address on your network", hint: "nas.local:7878", text: $local)
       publicField
+      secure("NAS passphrase",
+             detail: "The one you set on the NAS with driftwire serve init. If it has none, choose one here: enter it twice, at least 10 characters.",
+             text: $passphrase)
+      secure("Again, to choose it", detail: "Leave empty when the NAS already has one.", text: $passphraseAgain)
     }
+  }
+
+  private func claimRequest() -> [String: Any] {
+    var r: [String: Any] = ["do": "claim", "local": local, "public": publicName]
+    if !passphrase.isEmpty {
+      r["passphrase"] = passphrase
+      r["new_passphrase"] = !passphraseAgain.isEmpty
+    }
+    return r
+  }
+
+  private var claimable: Bool {
+    s.busy.isEmpty && !local.isEmpty && (passphraseAgain.isEmpty || passphraseAgain == passphrase)
   }
 
   private var publicField: some View {
@@ -369,20 +474,47 @@ struct PhoneAccessSection: View {
 
   private var claimed: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+      passphraseRow
+      if s.error == "needs_unlock" { unlockRow }
       if s.qr.isEmpty {
         SettingsRow(title: "Add a phone",
-                    detail: s.added.last.map { "Added \($0)." } ?? "One scan pairs a phone with this Mac and your NAS.") {
-          SettingsButton(title: "Show code") { model.send(["do": "pair"]) }
-            .disabled(!s.busy.isEmpty)
+                    detail: s.added.last.map { "Added \($0)." } ?? "One scan pairs a phone with this Mac and your NAS.",
+                    labelsContent: false) {
+          HStack(spacing: MVTheme.space(8)) {
+            Picker("Access", selection: $codeFor) {
+              Text(PhoneStore.unlimited).tag(Int64(0))
+              ForEach(PhoneStore.durations, id: \.seconds) { d in Text(d.label).tag(d.seconds) }
+            }
+            .pickerStyle(.menu).frame(width: 160)
+            .disabled(!s.nasHasFeatures)
+            .help(s.nasHasFeatures ? "How long the phone that scans it may use this library" : "Update the NAS service to use this")
+            .accessibilityLabel("How long the phone may use this library")
+            SettingsButton(title: "Show code") { model.send(["do": "pair", "for_s": s.nasHasFeatures ? codeFor : 0]) }
+              .disabled(!s.busy.isEmpty)
+          }
         }
       } else {
         codeBlock
       }
       ForEach(s.phones) { phone in
-        SettingsRow(title: phone.name, detail: "Key \(phone.key.prefix(8))", labelsContent: false) {
-          SettingsButton(title: "Remove") { model.send(["do": "revoke", "key": phone.key]) }
-            .disabled(!s.busy.isEmpty)
-            .accessibilityLabel("Remove \(phone.name)")
+        SettingsRow(title: phone.name, detail: PhoneStore.phoneDetail(phone), labelsContent: false) {
+          HStack(spacing: MVTheme.space(8)) {
+            Menu(phone.limited ? "Extend" : "Limit…") {
+              ForEach(PhoneStore.durations, id: \.seconds) { d in
+                Button(d.label) { model.send(["do": "grant", "key": phone.key, "for_s": d.seconds]) }
+              }
+              if phone.limited {
+                Button(PhoneStore.unlimited) { model.send(["do": "grant", "key": phone.key, "for_s": 0]) }
+              }
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .disabled(!s.busy.isEmpty || !s.nasHasFeatures)
+            .help(s.nasHasFeatures ? "" : "Update the NAS service to use this")
+            .accessibilityLabel(phone.limited ? "Extend \(phone.name)'s access" : "Limit \(phone.name)'s access")
+            SettingsButton(title: "Remove") { model.send(["do": "revoke", "key": phone.key]) }
+              .disabled(!s.busy.isEmpty)
+              .accessibilityLabel("Remove \(phone.name)")
+          }
         }
       }
       if !s.reachable {
@@ -395,6 +527,62 @@ struct PhoneAccessSection: View {
     }
   }
 
+  // "NAS passphrase · Locked", Lock, and Change… or Choose…, with its fields inline.
+  @ViewBuilder private var passphraseRow: some View {
+    SettingsRow(title: "NAS passphrase", detail: model.passphraseDetail, labelsContent: false) {
+      HStack(spacing: MVTheme.space(8)) {
+        if s.nasPassphrase == "set" && s.unlockedSeconds > 0 {
+          SettingsButton(title: "Lock") { model.send(["do": "lock"]) }
+            .accessibilityLabel("Lock: forget the NAS key on this Mac")
+        }
+        if s.nasPassphrase == "set" || s.nasPassphrase == "none" {
+          SettingsButton(title: s.nasPassphrase == "set" ? "Change…" : "Choose…") { changing.toggle() }
+            .disabled(!s.busy.isEmpty)
+            .accessibilityLabel(s.nasPassphrase == "set" ? "Change the NAS passphrase" : "Choose a NAS passphrase")
+        }
+      }
+    }
+    if changing {
+      secure("New passphrase", detail: "At least 10 characters. Nothing on this Mac keeps it.", text: $passphrase)
+      secure("Again", detail: "", text: $passphraseAgain)
+      HStack(spacing: MVTheme.space(8)) {
+        Spacer()
+        SettingsButton(title: "Cancel") {
+          changing = false
+          passphrase = ""
+          passphraseAgain = ""
+        }
+        SettingsButton(title: "Set passphrase") {
+          model.send(["do": "set_passphrase", "passphrase": passphrase])
+          changing = false
+          passphrase = ""
+          passphraseAgain = ""
+        }
+        .disabled(passphrase.count < 10 || passphrase != passphraseAgain)
+      }
+    }
+  }
+
+  // A refused action asks for the passphrase here; unlocked, the person does it again.
+  private var unlockRow: some View {
+    SettingsRow(title: "Unlock", detail: "Enter the NAS passphrase, then do that again. This Mac keeps the key for 10 minutes and never the passphrase.",
+                labelsContent: false) {
+      HStack(spacing: MVTheme.space(8)) {
+        SecureField("NAS passphrase", text: $unlockWith, onCommit: unlock)
+          .textFieldStyle(.roundedBorder).frame(width: 200).font(MVTheme.font(12))
+          .accessibilityLabel("NAS passphrase")
+        SettingsButton(title: "Unlock", action: unlock)
+          .disabled(unlockWith.isEmpty || !s.busy.isEmpty)
+      }
+    }
+  }
+
+  private func unlock() {
+    guard !unlockWith.isEmpty else { return }
+    model.send(["do": "unlock", "passphrase": unlockWith])
+    unlockWith = ""
+  }
+
   private var codeBlock: some View {
     HStack(alignment: .top, spacing: MVTheme.space(16)) {
       PhoneQRImage(text: s.qr)
@@ -404,6 +592,9 @@ struct PhoneAccessSection: View {
         .accessibilityLabel("Code for your phone to scan")
       VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         Text("Scan with MediaViewer on your phone").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
+        if s.qrForSeconds > 0 {
+          Text(PhoneStore.guestCodeLine(s.qrForSeconds)).font(MVTheme.font(12)).foregroundStyle(MVTheme.title)
+        }
         Text("Your phone will show \(s.qrLibrary) and this code. Check they match before you confirm.")
           .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
@@ -493,6 +684,12 @@ struct PhoneAccessSection: View {
   }
 
   // MARK: pieces
+
+  private func secure(_ title: String, detail: String, text: Binding<String>) -> some View {
+    SettingsRow(title: title, detail: detail) {
+      SecureField("", text: text).textFieldStyle(.roundedBorder).frame(width: 240).font(MVTheme.font(12))
+    }
+  }
 
   private func note(_ text: String) -> some View {
     Text(text).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)

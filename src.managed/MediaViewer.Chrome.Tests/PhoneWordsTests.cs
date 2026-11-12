@@ -98,9 +98,12 @@ public class PhoneWordsTests
         string swift = Repo.Read("src.swift", "MediaViewerChrome", "Sources", "MediaViewerChrome", "PhoneAccessView.swift");
         var said = new List<string?>();
         foreach (string e in new[] { "refused", "unreachable", "bad_address", "too_many", "no_folder", "not_published",
-                                      "other_library", "no_key_store", "revoke_waits", "no_driftwire", "no_local_search" })
+                                      "other_library", "no_key_store", "revoke_waits", "no_driftwire", "no_local_search",
+                                      "needs_unlock", "passphrase", "passphrase_short", "no_passphrase", "slow_down",
+                                      "wrong_service", "nas_too_old" })
             said.Add(PhoneWords.ErrorText(e));
-        foreach (string b in new[] { "claim", "pair", "refresh", "revoke", "add_folder", "set_addresses", "folder", "takeover_ask" })
+        foreach (string b in new[] { "claim", "pair", "refresh", "revoke", "add_folder", "set_addresses", "folder", "takeover_ask",
+                                      "unlock", "set_passphrase", "grant" })
             said.Add(PhoneWords.BusyText(b));
         foreach (string w in new[] { "private", "carrier", "unresolved" }) said.Add(PhoneWords.WarningText(w));
         var loaded = new PhoneLinkState { LocalSearch = true };
@@ -108,6 +111,14 @@ public class PhoneWordsTests
             said.Add(PhoneWords.SearchDetail(loaded with { Catalogue = PhonePublishState.None with { Error = e } }, 0));
         said.Add(PhoneWords.SearchDetail(new PhoneLinkState(), 0));
         said.Add(PhoneWords.FolderDetail(new PhoneLinkState()));
+        foreach (string p in new[] { "set", "none", "broken", "" })
+            said.Add(PhoneWords.PassphraseDetail(new PhoneLinkState { NasPassphrase = p }));
+        said.Add(PhoneWords.Unlimited);
+        foreach ((string label, long _) in PhoneWords.Durations) said.Add(label);
+        // Built from parts on the Mac: the parts, as Swift writes them.
+        Assert.Contains("Too many tries. Try again at ", swift);
+        Assert.Contains("Claimed. Update the NAS service to protect it with a passphrase.", swift);
+        Assert.Contains("Guest code · access for ", swift);
         foreach (string? text in said)
         {
             Assert.NotNull(text);
@@ -115,5 +126,34 @@ public class PhoneWordsTests
         }
         Assert.Equal("That didn't work.", PhoneWords.ErrorText("something new"));
         Assert.Null(PhoneWords.ErrorText(""));
+    }
+
+    [Fact]
+    public void ThePassphraseAndTimedAccessAreRead()
+    {
+        PhoneLinkState s = PhoneWords.ParseLink("""
+            {"claimed":true,"nas_passphrase":"set","nas_features":["passphrase"],"unlocked_s":61,
+             "locked_until":0,"qr_for_s":86400,"error":"",
+             "devices":[{"name":"Ann","key":"0123456789abcdef","limited":true,"expires":2000,"expired":false,"guest":true},
+                        {"name":"Bea","key":"fedcba9876543210","limited":false,"expires":0}]}
+            """)!;
+        Assert.True(s.NasHasFeatures);
+        Assert.Equal("Unlocked · 2 min", PhoneWords.PassphraseDetail(s));
+        Assert.Equal("Locked", PhoneWords.PassphraseDetail(s with { UnlockedSeconds = 0 }));
+        Assert.Equal("Guest code · access for 24 hours from when it is scanned", PhoneWords.GuestCodeLine(s.QrForSeconds));
+        Assert.Equal("Guest code · access for 7 days from when it is scanned", PhoneWords.GuestCodeLine(7 * 86400));
+        Assert.Equal("Guest · Until Fri", PhoneWords.PhoneDetail(s.Phones[0], 1000, _ => "Fri"));
+        Assert.Equal("Guest · Expired 1 minute ago", PhoneWords.PhoneDetail(s.Phones[0], 2060, _ => "Fri"));
+        Assert.Equal("Key fedcba98", PhoneWords.PhoneDetail(s.Phones[1], 1000, _ => "Fri"));
+        Assert.False(PhoneWords.ParseLink("""{"nas_features":[]}""")!.NasHasFeatures);
+        // The lockout's line has its end; a claim on a NAS too old for a passphrase still says it went through.
+        Assert.StartsWith("Too many tries. Try again at 14:20,",
+                          PhoneWords.ErrorText(s with { Error = "locked_out", LockedUntil = 5 }, _ => "14:20"));
+        Assert.Equal("Claimed. Update the NAS service to protect it with a passphrase.",
+                     PhoneWords.ErrorText(s with { Error = "nas_too_old", NasPassphrase = "" }, _ => ""));
+        // The unlock counts down each second; only a new minute on the card is a change.
+        Assert.True(s.SameAs(s with { UnlockedSeconds = 70 }));
+        Assert.False(s.SameAs(s with { UnlockedSeconds = 1 }));
+        Assert.False(s.SameAs(s with { UnlockedSeconds = 0 }));
     }
 }

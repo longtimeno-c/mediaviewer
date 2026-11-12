@@ -102,6 +102,10 @@ internal class FakeInput : ContentControl
     /// MaxLength does; an add-on's settings page counts its limit in bytes.</summary>
     public int MaxUtf8Bytes { get; set; }
 
+    /// <summary>A passphrase: each character drawn as a dot, and never copied or cut
+    /// (paste still works). Nothing exposes the text to automation either way.</summary>
+    public bool Secret { get; init; }
+
     // The main chrome's fields keep Enter and Down even with no listener, as
     // they always have: the native router must not see them while one has focus.
     protected bool OwnsEnterAndDown { get; init; }
@@ -380,7 +384,7 @@ internal class FakeInput : ContentControl
 
     private bool CopySelection()
     {
-        if (!HasSelection) return false;
+        if (!HasSelection || Secret) return false;
         try
         {
             var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
@@ -499,6 +503,12 @@ internal class FakeInput : ContentControl
             _before.Text = Shown(_text[..start]);
             _selected.Text = Shown(_text[start..end]);
             _after.Text = Shown(_text[end..]);
+            if (Secret)
+            {
+                _before.Text = new string('\u2022', start);
+                _selected.Text = new string('\u2022', end - start);
+                _after.Text = new string('\u2022', _text.Length - end);
+            }
         }
         Brush ink = empty ? _look.Body() : _look.Title();
         _before.Foreground = ink;
