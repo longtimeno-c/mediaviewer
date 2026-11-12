@@ -11,11 +11,14 @@ header artwork are in `src.ios/AppStore` on the assets branch, uploaded separate
   (with `MV_DRIFTWIRE_REPO=1`, which is set). Until a stable release runs after the merge, `/iphone/...`
   answers 404 and the site's front page is still the old redirect to `driftwire/`. Apple checks the
   privacy policy URL at review.
-- **Review access.** The notes hold a marked placeholder for the review library (being built on
-  `claude/review-sample-library-73054c`). Replace it with the code or link and the steps.
-- **Contact.** First name, last name, phone and email under App Review Information are the owner's to
-  fill in.
-- **Build.** No build is attached to version 1.0 yet ("Add Build" on the version page).
+- **Review access.** The notes send the reviewer to the sample library (code SAMPLE). That needs a build
+  with `claude/review-sample-library-73054c` merged, and its `sample-library` GitHub release uploaded
+  (`tools/ios/sample-library.sh <work> 1 --upload`). Until both are true, SAMPLE does not work.
+- **Privacy page.** With the sample library, the app also reads a GitHub release over HTTPS. The privacy
+  page's "Who the app talks to" says only the NAS: add the sample library before submission.
+- **Contact.** Filled in by the owner on 2026-11-12.
+- **Build.** None attached. Build 1 is TestFlight internal-only, which App Store Connect will not attach
+  to a version; build 2 is to be uploaded without that flag.
 - **Windows.** The description and the app's own welcome screen say "Mac or Windows PC". The phone access
   card is built on the Mac only so far (`docs/DEVELOPMENT.md`, "Phone access on the Mac": the Windows card
   is not done). Either finish it before release or change "Mac or Windows PC" to "Mac" here and in the app.
@@ -88,26 +91,30 @@ they are not repeated. No other company's name is used as a keyword.
 | Sign-in required | Unticked: the app has no account |
 | Version release | Left as it was (automatically release after approval) |
 
-**App Review notes** (1443 of 4000)
+**App Review notes** (2262 of 4000; saved 2026-11-12, from the sample-library branch's `review-notes.md`, with the real setup described as Mac-only and the attached-QR line dropped)
 
 ```text
-MediaViewer for NAS is the phone companion to MediaViewer, a free photo and video viewer for Mac and Windows. There is no account and no sign-in. The app shows a library that MediaViewer on a computer has indexed and that a MediaViewer service on the person's own Synology NAS serves. The phone pairs with that service by scanning a QR code shown by MediaViewer on the computer (or by choosing a picture of the code, or pasting its link).
+MediaViewer for NAS searches and views a photo and video library that lives on the person's own Synology NAS. In a real setup, MediaViewer on the person's Mac indexes their library and publishes a search catalogue to a small MediaViewer service on the NAS; the phone pairs with that service by scanning a QR code the Mac shows, then searches the catalogue on the phone and fetches photos and clips from the NAS. You do not need a Mac or a NAS to review the app: the code SAMPLE opens a signed demo library of public-domain pictures, read over HTTPS.
 
->>> REVIEW ACCESS: TO BE FILLED IN BEFORE SUBMISSION <<<
-[A review library of sample photos only, its code or link, and the steps to pair with it go here.]
+To open the sample library:
 
-Once paired:
-1. The app copies the library's catalogue. Search then runs on the phone: try "dog on a beach", or a place or a year.
-2. Tap a result to view it; swipe through results; pinch to zoom.
-3. Library tab: browse by date or by folder. Clips play from the matching moment.
-4. In the viewer, the download button at the top right saves a copy to Photos.
-5. Settings shows the connection and "Forget this library".
+1. Launch the app and tap "Scan code". If iOS asks for the camera, you may allow or decline it.
+2. At the bottom of the scan screen, tap "Enter a code".
+3. Type SAMPLE and tap "Open". (Opening the link mediaviewer://sample does the same.)
+4. The app shows "Open the sample library?". Tap "Open sample library".
+5. The app copies the library's search catalogue, about 130 MB, from GitHub. On Wi-Fi this takes under a minute. Over mobile data the app asks first.
+6. The library appears: 44 photos and 3 short clips. A "Sample library" label at the top of the grid shows where it comes from.
 
-Permissions: Camera, only to scan the pairing code. Local network, to reach the NAS on the same network. Photos add-only, only when the person taps Save to Photos.
+Things to try:
 
-The app collects no data and talks only to the person's own NAS service. Encryption: standard algorithms (Noise protocol with libsodium), declared exempt in the build (ITSAppUsesNonExemptEncryption = NO).
+- Search tab: type "dog on a beach", "waterfall", "bridge at night" or "breakfast". Search runs entirely on the phone, with the same model and code as for a real library.
+- Tap a photo to open it; swipe between photos; pinch to zoom.
+- Open a clip from the "Clips" folder in the Library tab to play it.
+- Settings tab: the sample library is named, with where it comes from. "Forget the sample library" removes everything the app keeps for it and returns to the start.
 
-Source code: https://github.com/longtimeno-c/mediaviewer
+About the sample library: its photos and clips come from Wikimedia Commons and are CC0 or in the public domain. It is read from a GitHub release of this app's open-source repository, over HTTPS, and every file is checked against a signature before it is used, as a library from a NAS is. Nothing about the user is sent: the app collects no data, has no accounts and no analytics.
+
+For a real library, a person needs MediaViewer on a Mac with its Local search and Driftwire add-ons, a Synology NAS running the MediaViewer service, and a way to reach it from the internet. The app says so on its first screen.
 ```
 
 ## App Information
