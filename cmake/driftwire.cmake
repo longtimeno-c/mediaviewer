@@ -190,6 +190,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_update.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_nas_update.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
   # test_phone_pairing.cpp: the desk is the app's now (src/phone, cmake/phone.cmake).
@@ -273,6 +274,7 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/session.cpp ${_C}/session.h
   ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
   ${_C}/update.cpp ${_C}/update.h
+  ${_C}/nas_update.cpp ${_C}/nas_update.h
   ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
 )
 target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)

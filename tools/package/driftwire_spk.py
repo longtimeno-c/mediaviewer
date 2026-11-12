@@ -55,9 +55,32 @@ running() {
   [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
 }
 
+# A trial (cli/nas_update.h): the service clears it once five minutes up. A third
+# start with it still there puts the previous binary back and skips that version.
+trial() {
+  [ -f "$VAR/state/trial" ] || return 0
+  version=$(sed -n 1p "$VAR/state/trial")
+  starts=$(sed -n 2p "$VAR/state/trial")
+  starts=$(( ${starts:-0} + 1 ))
+  if [ "$starts" -ge 3 ] && [ -x "$VAR/bin/driftwire.prev" ]; then
+    mv -f "$VAR/bin/driftwire.prev" "$VAR/bin/driftwire"
+    echo "$version" >"$VAR/state/skip"
+    rm -f "$VAR/state/trial"
+  elif [ "$starts" -ge 3 ]; then
+    rm -f "$VAR/bin/driftwire"   # no previous: the package's own binary
+    echo "$version" >"$VAR/state/skip"
+    rm -f "$VAR/state/trial"
+  else
+    printf '%s\n%s\n' "$version" "$starts" >"$VAR/state/trial"
+  fi
+  BIN="$TARGET/bin/driftwire"
+  if [ -x "$VAR/bin/driftwire" ]; then BIN="$VAR/bin/driftwire"; fi
+}
+
 case "$1" in
   start)
     running && exit 0
+    trial
     nohup "$BIN" serve --data "$VAR/serve" >>"$VAR/serve.log" 2>&1 &
     echo $! >"$PIDFILE"
     exit 0

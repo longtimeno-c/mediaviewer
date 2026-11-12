@@ -151,5 +151,30 @@ class SpkTests(unittest.TestCase):
             self.assertIn('staged serve', calls.read_text())
 
 
+    def test_a_trial_that_never_settles_is_rolled_back(self):
+        data = spk.build_spk(BIN, 'x86_64', '1.0.0')
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            target, var, scripts = root / 'target', root / 'var', root / 'scripts'
+            for p in [target / 'bin', var / 'bin', var / 'state', scripts]:
+                p.mkdir(parents=True)
+            calls = root / 'calls.txt'
+            for name, tag in [(target / 'bin' / 'driftwire', 'package'), (var / 'bin' / 'driftwire', 'new'),
+                              (var / 'bin' / 'driftwire.prev', 'prev')]:
+                name.write_text(f'#!/bin/sh\necho {tag} >>"{calls}"\nexit 1\n')  # dies at once: never settles
+                os.chmod(name, 0o755)
+            (var / 'state' / 'trial').write_text('2.0.0\n0\n')
+            (scripts / 'start-stop-status').write_bytes(read(data, 'scripts/start-stop-status'))
+            os.chmod(scripts / 'start-stop-status', 0o755)
+            env = dict(os.environ, SYNOPKG_PKGVAR=str(var), SYNOPKG_PKGDEST=str(target))
+            for _ in range(3):
+                subprocess.run([str(scripts / 'start-stop-status'), 'start'], env=env, capture_output=True, timeout=30)
+                time.sleep(0.3)
+            self.assertFalse((var / 'state' / 'trial').exists())
+            self.assertEqual((var / 'state' / 'skip').read_text().strip(), '2.0.0')
+            self.assertIn('prev', (var / 'bin' / 'driftwire').read_text())  # the one before is back
+            self.assertEqual(calls.read_text().split(), ['new', 'new', 'prev'])
+
+
 if __name__ == '__main__':
     unittest.main()
