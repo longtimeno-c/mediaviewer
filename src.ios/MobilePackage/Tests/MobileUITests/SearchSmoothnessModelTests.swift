@@ -127,7 +127,6 @@ final class SearchShownTests: XCTestCase {
     service.hold = true
     search.rerun()
     XCTAssertFalse(search.didFail)
-    await settle(search) { search.shown == .searching }
-    XCTAssertEqual(search.shown, .searching)
+    XCTAssertEqual(search.shown, .searching, "the skeleton at once, never a blank page")
   }
 }

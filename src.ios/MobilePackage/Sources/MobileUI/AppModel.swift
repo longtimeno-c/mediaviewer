@@ -625,15 +625,17 @@ public final class SearchModel {
     }
     // Earlier results stay put while the new ones are found: typing never blanks the grid.
     phase = .searching
+    // A failure with nothing to show: its card goes with `didFail`, so the skeleton takes the
+    // page at once rather than a blank one until the delay.
+    if shown == .failed { shown = .searching }
     running = Task {
       try? await Task.sleep(for: .milliseconds(90))
       guard !Task.isCancelled else { return }
       let warming = Task {
         try? await Task.sleep(for: Self.skeletonDelay - .milliseconds(90))
         guard !Task.isCancelled else { return }
-        // Nothing answered yet (from the recents, or after a failure with nothing to show): the
-        // content's own empty geometry, not a blank.
-        if shown == .idle || shown == .failed { shown = .searching }
+        // Nothing answered yet, from the recents: the content's own empty geometry, not a blank.
+        if shown == .idle { shown = .searching }
         guard await service.isWarmingUp(), !Task.isCancelled else { return }
         isWarmingUp = true
       }
