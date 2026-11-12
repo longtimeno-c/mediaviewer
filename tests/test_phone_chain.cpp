@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "addons/ai/catalog.h"
-#include "addons/ai/catalog_chain.h"
+#include "catalogue/catalog_chain.h"
 #include "core/json.h"
 
 namespace cat = mv::ai::catalog;

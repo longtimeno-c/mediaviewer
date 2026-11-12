@@ -18,7 +18,7 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/ai/catalog.h"
+#include "catalogue/catalog.h"
 #include "core/result.h"
 
 namespace mv::ai::catalog {

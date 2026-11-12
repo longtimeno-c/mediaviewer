@@ -3,8 +3,8 @@
 // The desktop's half of phone access (docs/plans/mobile.md §7.2, §7.4, §7.5):
 // claiming `driftwire serve`, its devices and named folders, single-use
 // pairing codes, and the nearby service that hands a paired phone the newest
-// catalogue. Local search reaches all of this through the host table
-// (route_request, docs/design/18 "Add-ons calling add-ons").
+// catalogue. Part of the app since 2026-11-12 (docs/plans/phone-in-the-app.md):
+// phone/link.h drives it through route_request, one JSON request at a time.
 //
 // Worker threads only: every call may wait on the network or the OS's secret
 // store. No address, path or file name is logged. Portable (D9): only the
@@ -39,9 +39,10 @@ inline constexpr const char* kServiceName = "phone_service";     // what claimin
 inline constexpr const char* kDevicesName = "phone_devices";     // the phones this desktop has paired
 inline constexpr const char* kPendingName = "phone_revoke_pending";  // revoked here, the NAS not told yet
 void forget(secrets::store& store);
-// The add-on's "Remove everything" (#507): the phone's items above, then the
-// identity and the remembered devices (known::forget). Whether all are gone.
-[[nodiscard]] bool forget_addon(secrets::store& store);
+// The items above, moved from `from` (Driftwire's store, where they were kept
+// until 2026-11-12) to `to` where `to` has none: written, read back, then
+// removed from `from`. One that will not move stays there.
+void take_items(secrets::store& from, secrets::store& to);
 
 inline constexpr int kConnectMs = 5000;
 inline constexpr int kClaimTotalMs = 27000;  // under the host's 30 s per request
@@ -150,9 +151,9 @@ class desk {
   std::unique_ptr<state> st_;
 };
 
-// What Local search asks (docs/design/18 "Add-ons calling add-ons"): one method
-// and one JSON object in, one JSON object out. status::permission_denied for
-// any caller but Local search; status::not_found for a method it does not know.
+// What the phone link asks (phone/link.h): one method and one JSON object in,
+// one JSON object out. status::permission_denied for any caller but "phone";
+// status::not_found for a method it does not know.
 [[nodiscard]] result<std::string> route_request(desk& d, std::string_view caller, std::string_view method,
                                                 std::string_view request_json);
 

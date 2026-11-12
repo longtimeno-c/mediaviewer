@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/ai/catalog_chain.h"
+#include "catalogue/catalog_chain.h"
 
 #include <sodium.h>
 
@@ -11,7 +11,7 @@
 #include <map>
 #include <sstream>
 
-#include "addons/ai/sha256.h"
+#include "catalogue/sha256.h"
 #include "core/json.h"
 
 namespace mv::ai::catalog {

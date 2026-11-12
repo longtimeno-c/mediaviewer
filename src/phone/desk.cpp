@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/driftwire/desk.h"
+#include "phone/desk.h"
 
 #include <sodium.h>
 
@@ -114,9 +114,15 @@ void forget(secrets::store& store) {
   (void)store.erase(kPendingName);
 }
 
-bool forget_addon(secrets::store& store) {
-  forget(store);
-  return known::forget(store);
+void take_items(secrets::store& from, secrets::store& to) {
+  for (const char* name : {kKeyName, kServiceName, kDevicesName, kPendingName}) {
+    if (to.exists(name)) continue;
+    auto value = from.get(name);
+    if (!value) continue;
+    if (!to.put(name, *value)) continue;
+    auto back = to.get(name);
+    if (back && *back == *value) (void)from.erase(name);
+  }
 }
 
 std::optional<std::pair<std::string, std::uint16_t>> split_host_port(std::string_view text) {
@@ -610,7 +616,7 @@ std::string devices_json(const std::vector<device_row>& rows, bool reachable, bo
 }  // namespace
 
 result<std::string> route_request(desk& d, std::string_view caller, std::string_view method, std::string_view request_json) {
-  if (caller != "ai") return err(status::permission_denied);
+  if (caller != "phone") return err(status::permission_denied);
   const auto doc = json::parse(request_json.empty() ? std::string_view("{}") : request_json, 4);
   if (!doc) return err(status::invalid_arg);
   const auto text = [&](const char* k) -> std::string {

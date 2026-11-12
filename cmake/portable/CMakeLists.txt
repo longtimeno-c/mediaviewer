@@ -111,6 +111,7 @@ include("${MV_ROOT}/cmake/enhance.cmake")
 # Driftwire (docs/design/28): the engine, the add-on and the relay tool, and
 # their suites, on Linux.
 include("${MV_ROOT}/cmake/driftwire.cmake")
+include("${MV_ROOT}/cmake/phone.cmake")
 
 # ---- tests ----------------------------------------------------------------------
 enable_testing()

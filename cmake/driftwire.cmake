@@ -75,7 +75,6 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/handover.cpp ${_S}/handover.h
   ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
-  ${_S}/desk.cpp ${_S}/desk.h
   ${_S}/presence_keys.cpp ${_S}/presence_keys.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
@@ -192,7 +191,8 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_update.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
-  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core)
+  # test_phone_pairing.cpp: the desk is the app's now (src/phone, cmake/phone.cmake).
+  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone)
   target_compile_definitions(${target} PRIVATE
     MV_DRIFTWIRE_MODULE_PATH="$<TARGET_FILE:mv_driftwire>"
     MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json"

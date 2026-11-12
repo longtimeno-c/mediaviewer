@@ -17,6 +17,7 @@ std::string g_override;
 std::string g_addons_override;
 std::string g_open_addons_override;
 std::string g_addon_settings_override;
+std::string g_phone_override;
 std::string g_snapshot_override;
 std::string g_clipboard_override;
 
@@ -138,6 +139,24 @@ result<std::string> addon_settings_dir() {
     return err(status::io);
   }
   const std::wstring dir = std::wstring(local) + L"\\MediaViewer\\addon-settings";
+  return utf8_from_wide(dir.c_str());
+}
+
+void set_phone_dir_override(std::string_view utf8_dir) {
+  std::lock_guard lock(g_mu);
+  g_phone_override.assign(utf8_dir);
+}
+
+result<std::string> phone_dir() {
+  {
+    std::lock_guard lock(g_mu);
+    if (!g_phone_override.empty()) return g_phone_override;
+  }
+  wchar_t local[MAX_PATH]{};
+  if (FAILED(::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, local))) {
+    return err(status::io);
+  }
+  const std::wstring dir = std::wstring(local) + L"\\MediaViewer\\phone-access";
   return utf8_from_wide(dir.c_str());
 }
 

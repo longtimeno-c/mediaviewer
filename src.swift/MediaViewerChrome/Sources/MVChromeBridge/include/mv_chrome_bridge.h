@@ -219,6 +219,15 @@ uint64_t mv_chrome_tag_generation(void);
 // from a background task, never the main thread. Returns the byte length
 // needed, as the tables; a buffer too small is filled cut short. [any-thread]
 int32_t mv_chrome_storage_report(char* buf, int32_t size);
+// Settings -> Phone access (docs/plans/phone-in-the-app.md): part of the app,
+// with or without Local search. One JSON request {"do":...} for the feature's
+// own thread (phone/link.h); false when it does not parse or this is a later
+// window's process (Phone access is the first window's). [any-thread][no-block]
+bool mv_chrome_phone_request(const char* request_json);
+// The card's state, one JSON object (phone/link.h state_json); {"secondary":
+// true} in a later window. Returns the byte length needed, as the tables.
+// [any-thread][no-block]
+int32_t mv_chrome_phone_state(char* buf, int32_t size);
 // Clear: deletes every cached thumbnail and its row (the search cache and
 // metadata snapshots are untouched). A background task. [any-thread]
 bool mv_chrome_thumb_cache_clear(void);
