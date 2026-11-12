@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mobile/link.h"
 
+#include <sodium.h>
+
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
@@ -28,6 +30,8 @@ serve::client::options options_for(const service_config& c) {
   o.service_key = c.identity;
   o.id = c.device_id;
   o.name = c.device_name;
+  // Backup (1.1) as well: a service from before it leaves `write` out of its caps.
+  o.ops = serve::kAllOps | serve::kWriteOp;
   return o;
 }
 
@@ -238,7 +242,12 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
 
 // ---- link_session ------------------------------------------------------------------------------
 
-link_session::link_session(service_config c) : config_(std::move(c)) {}
+link_session::link_session(service_config c) : config_(std::move(c)) {
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), config_.device_key.data());
+  device_folder_id_ = serve::device_folder_id(pub);
+  sodium_memzero(pub.data(), pub.size());
+}
 
 link_session::~link_session() { disconnect(); }
 
@@ -460,6 +469,71 @@ expected link_session::read_range(const std::string& root, const std::string& re
       return err(status_of(code));
     }
     last_data = clock::now();
+    if (!sink((*chunk)->offset, (*chunk)->bytes)) {
+      (*stream)->cancel();
+      return err(status::cancelled);
+    }
+  }
+}
+
+result<bool> link_session::can_write() {
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  return ((*c)->caps().ops & serve::kWriteOp) != 0;
+}
+
+result<serve::client::write_done> link_session::write(const std::string& root, const std::string& rel, std::uint64_t size,
+                                                      const std::string& hash_hex, std::uint64_t at,
+                                                      const serve::client::read_fn& read,
+                                                      const std::function<void(std::uint64_t)>& progress,
+                                                      const cancel_flag* cancel, serve::client::write_refused* why,
+                                                      bool meta) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
+  auto r = (*c)->write(root, rel, size, hash_hex, at, read, progress, stop, why, meta);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<std::vector<serve::list_entry>> link_session::list_meta(const std::string& root, const std::string& rel) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->list(root, rel, nullptr, true);
+  if (!r && r.error() == status::io) dropped(*c);
+  return r;
+}
+
+expected link_session::read_meta(const std::string& root, const std::string& rel, const byte_sink& sink,
+                                 const cancel_flag* cancel) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  auto stream = (*c)->read_range(root, rel, 0, UINT64_MAX, serve::kMaxStreamCredit / 8, true, true);
+  if (!stream) {
+    dropped(*c);
+    return err(stream.error());
+  }
+  for (;;) {
+    if (cancel && cancel->stopped()) {
+      (*stream)->cancel();
+      return err(status::cancelled);
+    }
+    auto chunk = (*stream)->next(kStallMs);
+    if (!chunk) {
+      dropped(*c);
+      return err(status::io);
+    }
+    if (!*chunk) {
+      const auto code = (*stream)->code();
+      if (code == serve::end_code::ok) return {};
+      return err(status_of(code));
+    }
     if (!sink((*chunk)->offset, (*chunk)->bytes)) {
       (*stream)->cancel();
       return err(status::cancelled);

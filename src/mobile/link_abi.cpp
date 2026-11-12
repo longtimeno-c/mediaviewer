@@ -11,6 +11,9 @@
 #include <shared_mutex>
 #include <string>
 
+#include "addons/driftwire/wire.h"
+#include "core/json.h"
+#include "mobile/backup.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
 #include "mobile/link_payload.h"
@@ -577,6 +580,217 @@ int32_t mv_assets_list(mv_mobile_link* l, mv_listed_asset_fn fn, void* ctx) {
     for (const auto& a : rows) fn(ctx, a.id, a.kind, a.taken_at, a.duration_ms, a.name.c_str());
     return MV_LINK_OK;
   });
+}
+
+// ---- phone backup -------------------------------------------------------------------------
+
+namespace {
+
+// The host's PhotoKit, through its callback.
+class host_source final : public backup::source {
+ public:
+  mv_backup_export_fn fn = nullptr;
+  void* ctx = nullptr;
+  std::shared_ptr<cancel_flag> flag;
+  expected export_resource(const backup::item& it, std::size_t index, const std::string& path,
+                           const cancel_flag* cancel) override {
+    if (!fn) return err(status::internal);
+    if (cancel && cancel->stopped()) return err(status::cancelled);
+    mv_cancel handle;
+    handle.flag = flag;
+    switch (fn(ctx, it.local_id.c_str(), static_cast<std::int32_t>(index), path.c_str(), &handle)) {
+      case MV_LINK_OK: return {};
+      case MV_LINK_NOT_FOUND: return err(status::not_found);
+      case MV_LINK_CANCELLED: return err(status::cancelled);
+      default: return err(status::internal);
+    }
+  }
+};
+
+}  // namespace
+
+struct mv_backup {
+  std::unique_ptr<backup::target> target;
+  std::unique_ptr<backup::ledger> ledger;
+  std::string scratch, library_id;
+  std::mutex run_m;  // one run at a time
+  std::mutex m;
+  std::vector<backup::item> items;          // under m
+  std::vector<backup::failure> failures;    // under m
+  std::vector<std::string> remaining;       // under m
+};
+
+mv_backup* mv_backup_open(mv_mobile_link* l, const mv_backup_config* c) {
+  try {
+    if (!l || !c || !c->ledger_path || !c->scratch_dir || !c->library_id) return nullptr;
+    auto b = std::make_unique<mv_backup>();
+    if (l->session) {
+      b->target = backup::link_target(*l->session);
+    } else {
+      if (!c->sample_folder || !*c->sample_folder) return nullptr;
+      // The sample library has no device key: one fixed folder id, on this phone only.
+      b->target = backup::local_target(c->sample_folder, "0000000000000000");
+    }
+    auto opened = backup::ledger::open(c->ledger_path);
+    if (!opened) return nullptr;
+    b->ledger = std::move(*opened);
+    b->scratch = c->scratch_dir;
+    b->library_id = c->library_id;
+    return b.release();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void mv_backup_close(mv_backup* b) { delete b; }
+
+namespace {
+
+mv_link_status backup_status_of(status s) {
+  switch (s) {
+    case status::unsupported_format: return MV_LINK_TOO_OLD;
+    case status::permission_denied: return MV_LINK_DENIED;
+    case status::not_found: return MV_LINK_NOT_FOUND;
+    case status::cancelled: return MV_LINK_CANCELLED;
+    case status::io:
+    case status::timeout: return MV_LINK_UNREACHABLE;
+    default: return MV_LINK_INTERNAL;
+  }
+}
+
+}  // namespace
+
+int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !fn) return MV_LINK_INVALID;
+    auto folders = b->target->folders();
+    if (!folders) return backup_status_of(folders.error());
+    for (const auto& f : *folders) fn(ctx, f.id.c_str(), f.label.c_str(), f.writable ? 1 : 0);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !out) return MV_LINK_INVALID;
+    auto s = b->target->space(folder_id);
+    if (!s) return backup_status_of(s.error());
+    out->limit = s->limit;
+    out->used = s->used;
+    out->room = s->room;
+    return s->has_space ? MV_LINK_OK : MV_LINK_DENIED;
+  });
+}
+
+int32_t mv_backup_clear_items(mv_backup* b) {
+  if (!b) return MV_LINK_INVALID;
+  std::lock_guard lock(b->m);
+  b->items.clear();
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, int32_t year, int32_t month, int32_t day,
+                           const char* resources_json) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !key || !*key || !local_id || !resources_json) return MV_LINK_INVALID;
+    const auto doc = json::parse(resources_json, 3);
+    if (!doc || doc->k != json::kind::array) return MV_LINK_INVALID;
+    backup::item it;
+    it.key = key;
+    it.local_id = local_id;
+    it.year = year;
+    it.month = std::clamp(month, 1, 12);
+    it.day = std::clamp(day, 1, 31);
+    for (const auto& v : doc->a) {
+      const std::string* kind = v.str("kind");
+      const std::string* name = v.str("name");
+      // A name the service would refuse (a path, a hidden name) is not one Photos gives.
+      if (!kind || !name || name->empty() || !driftwire::safe_relative(*name) || name->find('/') != std::string::npos) {
+        return MV_LINK_INVALID;
+      }
+      it.resources.push_back({*kind, *name});
+    }
+    std::lock_guard lock(b->m);
+    b->items.push_back(std::move(it));
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_backup_cancelled(mv_cancel* c) { return c && c->flag && c->flag->stopped() ? 1 : 0; }
+
+int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_cancel* cancel,
+                      mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !export_fn || !backup::valid_layout(layout)) return MV_LINK_INVALID;
+    std::lock_guard run(b->run_m);
+    backup::options o;
+    o.library_id = b->library_id;
+    o.root = folder_id;
+    o.folders = static_cast<backup::layout>(layout);
+    o.scratch_dir = b->scratch;
+    host_source src;
+    src.fn = export_fn;
+    src.ctx = ctx;
+    src.flag = cancel ? cancel->flag : std::make_shared<cancel_flag>();
+    backup::engine e(o, *b->target, src, *b->ledger);
+    {
+      std::lock_guard lock(b->m);
+      e.set_items(b->items);
+    }
+    backup::status_report last;
+    const auto st = e.run(src.flag.get(), [&](const backup::status_report& r) {
+      last = r;
+      if (!status_fn) return;
+      mv_backup_status out{};
+      out.state = static_cast<int32_t>(r.now);
+      out.total = r.total;
+      out.backed_up = r.backed_up;
+      out.files_done = r.files_done;
+      out.copied = r.copied;
+      out.bytes = r.bytes;
+      out.current_fraction = r.current_fraction;
+      out.failed = r.failures.size();
+      put(out.current, r.current);
+      status_fn(ctx, &out);
+    });
+    std::lock_guard lock(b->m);
+    b->failures = last.failures;
+    b->remaining = e.remaining();
+    return static_cast<int32_t>(st);
+  });
+}
+
+int32_t mv_backup_failures(mv_backup* b, mv_backup_failure_fn fn, void* ctx) {
+  if (!b || !fn) return MV_LINK_INVALID;
+  std::vector<backup::failure> rows;
+  {
+    std::lock_guard lock(b->m);
+    rows = b->failures;
+  }
+  for (const auto& f : rows) fn(ctx, f.key.c_str(), f.name.c_str(), f.why.c_str());
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_remaining(mv_backup* b, mv_backup_key_fn fn, void* ctx) {
+  if (!b || !fn) return MV_LINK_INVALID;
+  std::vector<std::string> keys;
+  {
+    std::lock_guard lock(b->m);
+    keys = b->remaining;
+  }
+  for (const auto& k : keys) fn(ctx, k.c_str());
+  return MV_LINK_OK;
+}
+
+void mv_backup_remove_local(const char* sample_folder, const char* ledger_path) {
+  try {
+    std::error_code ec;
+    if (sample_folder && *sample_folder) std::filesystem::remove_all(std::filesystem::path(sample_folder), ec);
+    if (ledger_path && *ledger_path) {
+      for (const char* suffix : {"", "-wal", "-shm"}) std::filesystem::remove(std::filesystem::path(std::string(ledger_path) + suffix), ec);
+    }
+  } catch (...) {
+  }
 }
 
 }  // extern "C"

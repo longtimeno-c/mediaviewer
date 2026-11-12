@@ -125,6 +125,18 @@ class link_session final : public remote_file {
                                     std::uint64_t length, const byte_sink& sink, const cancel_flag* cancel,
                                     bool bulk) override;
 
+  // Phone backup (1.1, src/mobile/backup.h): the service's write op and a backup
+  // folder's meta folder. status::unsupported_format: the service is from before 1.1.
+  [[nodiscard]] result<bool> can_write();
+  [[nodiscard]] result<driftwire::serve::client::write_done> write(
+      const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
+      std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
+      const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta = false);
+  [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list_meta(const std::string& root, const std::string& rel);
+  [[nodiscard]] expected read_meta(const std::string& root, const std::string& rel, const byte_sink& sink,
+                                   const cancel_flag* cancel);
+  [[nodiscard]] const std::string& device_folder_id() const noexcept { return device_folder_id_; }
+
  private:
   // The live client, connecting first if there is none.
   [[nodiscard]] result<std::shared_ptr<driftwire::serve::client>> client(const cancel_flag* cancel);
@@ -133,6 +145,7 @@ class link_session final : public remote_file {
   [[nodiscard]] expected race_locked(route_report& report, const cancel_flag* cancel, int timeout_ms);  // connect_m_ held
 
   service_config config_;
+  std::string device_folder_id_;  // serve::device_folder_id of this phone's public key
   mutable std::mutex connect_m_;  // single-flight connect; held across the race, on a worker
   mutable std::mutex m_;          // guards live_
   std::shared_ptr<driftwire::serve::client> live_;
