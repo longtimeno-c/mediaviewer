@@ -4,6 +4,7 @@
 
 #include <sodium.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -186,6 +187,42 @@ bool skipped(const std::string& var, std::string_view version) {
   std::string text = read_file(var + "/state/skip");
   while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
   return !text.empty() && !newer_version(version, text);
+}
+
+std::string_view this_arch() {
+#if defined(__x86_64__) || defined(_M_X64)
+  return "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  return "aarch64";
+#else
+  return "";
+#endif
+}
+
+std::optional<std::array<std::uint8_t, 32>> pinned_key(std::string_view hex) {
+  if (!hex_ok(hex, 32)) return std::nullopt;
+  const auto bytes = from_hex(hex);
+  std::array<std::uint8_t, 32> out{};
+  std::copy(bytes.begin(), bytes.end(), out.begin());
+  return out;
+}
+
+std::chrono::seconds next_delay(bool first, std::uint32_t random) {
+  using std::chrono::seconds;
+  // First: 10 to 70 minutes after starting. Then: 24 hours, give or take 2.
+  if (first) return seconds(600 + random % 3600);
+  return seconds(22 * 3600 + random % (4 * 3600));
+}
+
+outcome check_once(const std::string& site, const std::string& var, std::string_view arch,
+                   std::span<const std::uint8_t, 32> pinned, std::string_view current, const check_io& c) {
+  if (arch.empty() || site.empty() || !c.get_json) return outcome::nothing;
+  const auto text = c.get_json(site + "/nas/latest.json");
+  if (!text) return outcome::failed;
+  const auto o = verify_latest(*text, arch, pinned, current);
+  if (!o) return o.error() == status::not_found ? outcome::nothing : outcome::refused;
+  if (skipped(var, o->version)) return outcome::nothing;
+  return install(o.value(), var, c.install) ? outcome::installed : outcome::failed;
 }
 
 }  // namespace mv::driftwire::cli::nas_update

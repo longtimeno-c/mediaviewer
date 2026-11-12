@@ -77,11 +77,30 @@ trial() {
   if [ -x "$VAR/bin/driftwire" ]; then BIN="$VAR/bin/driftwire"; fi
 }
 
+# Keeps the service up: each start counts toward a trial; exit 75 (an update was
+# installed, cli/nas_update.h kRestartForUpdate) starts the new one at once; any
+# other exit is a crash, tried again after a pause. TERM stops it and the service.
+supervise() {
+  child=""
+  trap '[ -n "$child" ] && kill "$child" 2>/dev/null; [ -n "$child" ] && wait "$child" 2>/dev/null; exit 0' TERM INT
+  while :; do
+    BIN="$TARGET/bin/driftwire"
+    if [ -x "$VAR/bin/driftwire" ]; then BIN="$VAR/bin/driftwire"; fi
+    trial
+    MV_NAS_VAR="$VAR" "$BIN" serve --data "$VAR/serve" >>"$VAR/serve.log" 2>&1 &
+    child=$!
+    wait "$child"
+    code=$?
+    child=""
+    [ "$code" -eq 75 ] && continue
+    sleep "${MV_NAS_RESTART_PAUSE:-30}"   # (the variable is for the package's tests)
+  done
+}
+
 case "$1" in
   start)
     running && exit 0
-    trial
-    nohup "$BIN" serve --data "$VAR/serve" >>"$VAR/serve.log" 2>&1 &
+    supervise </dev/null >/dev/null 2>&1 &
     echo $! >"$PIDFILE"
     exit 0
     ;;

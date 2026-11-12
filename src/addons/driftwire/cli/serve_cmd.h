@@ -10,7 +10,8 @@ namespace mv::driftwire::cli {
 
 // Runs a.cmd == command::serve. Exit codes as the rest of the program: 0, 1
 // when it could not run, 2 for a usage error. `test_hooks`: --test-loopback
-// and a config with port 0 are honoured (the test build).
-[[nodiscard]] int run_serve(const args& a, bool test_hooks);
+// and a config with port 0 are honoured (the test build). `version`: this
+// program's, for `serve self-test` and the package's daily update check.
+[[nodiscard]] int run_serve(const args& a, bool test_hooks, const char* version);
 
 }  // namespace mv::driftwire::cli

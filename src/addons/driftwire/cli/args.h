@@ -39,7 +39,7 @@ enum class command : std::uint8_t { session, send, receive, code, devices, updat
 
 // `driftwire serve`: the service itself (no terminal, docs/design/28 "The NAS
 // service"), or one of its local chores.
-enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_code, disown, status, passphrase_set, passphrase_reset, grant };
+enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_code, disown, status, passphrase_set, passphrase_reset, grant, self_test };
 
 struct args {
   command cmd = command::session;

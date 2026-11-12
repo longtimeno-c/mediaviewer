@@ -1566,8 +1566,12 @@ No address, path or file name is ever logged.
   (`cli/nas_update.*`, `"[nas-update]"`): an Ed25519-signed `latest.json` per arch, a staged
   download checked by SHA-256 and size and self-tested before it replaces `var/bin/driftwire`, the
   one before kept as `.prev`, and the package's `start-stop-status` rolling back after three failed
-  starts. Not wired yet: the service's daily check, `--self-test`, the restart after an install,
-  the pinned release key, and signing `latest.json` in a release.
+  starts. Wired: inside the package (`start-stop-status` sets `MV_NAS_VAR` and supervises the
+  service), a build with `MV_NAS_UPDATE_KEY` checks 10–70 minutes after starting and then daily
+  (±2 h), runs the download as `serve self-test` (keys readable, `serve.json` valid, changes
+  nothing), and exits 75 after installing; the supervisor starts the new binary at once and counts
+  each start toward the trial; five minutes up clears it. Not built: signing `latest.json` in a
+  release and the static NAS builds in CI, so no build pins a key yet and none updates itself.
 - **Claiming from the desktop**: writing the token into `.mediaviewer/` over SMB. Needs a claim
   operation (a capability; only while there is no owner, and only from the NAS's own network, the
   plan says), and the `add` / `revoke` / folder changes as owner operations over the channel. Today

@@ -26,8 +26,10 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,5 +72,40 @@ void trial_passed(const std::string& var);
 
 // A version rolled back from is not offered again until a newer one is.
 [[nodiscard]] bool skipped(const std::string& var, std::string_view version);
+
+// ---- the daily check (run by `driftwire serve` in the package) ----
+
+// The service's exit code after installing: the package's start-stop-status
+// starts the new binary at once (and counts it as a start of the trial).
+inline constexpr int kRestartForUpdate = 75;
+// A trial is over once the service has been up this long.
+inline constexpr std::chrono::minutes kTrialSettles{5};
+
+// This build's architecture as latest.json names it; "" for one the NAS
+// package is not built for (then nothing is checked).
+[[nodiscard]] std::string_view this_arch();
+
+// The pinned key, from 64 hex digits (the build's MV_NAS_UPDATE_KEY); nullopt
+// when the build has none (a build of one's own: it never updates itself).
+[[nodiscard]] std::optional<std::array<std::uint8_t, 32>> pinned_key(std::string_view hex);
+
+// How long until the next check: the first a while after starting (so a
+// restart loop does not hammer the site), then daily, each with jitter.
+[[nodiscard]] std::chrono::seconds next_delay(bool first, std::uint32_t random);
+
+enum class outcome : std::uint8_t {
+  nothing,    // no newer version for this arch, or it was rolled back from
+  installed,  // staged, checked, self-tested and in var/bin: restart now
+  refused,    // latest.json was not signed by the pinned key, or not an offer
+  failed,     // the site, the download or the self-test failed: try tomorrow
+};
+struct check_io {
+  // latest.json's text; nullopt when it could not be fetched.
+  std::function<std::optional<std::string>(const std::string& url)> get_json;
+  io install;
+};
+// One check: <site>/nas/latest.json, verified, and installed when newer.
+[[nodiscard]] outcome check_once(const std::string& site, const std::string& var, std::string_view arch,
+                                 std::span<const std::uint8_t, 32> pinned, std::string_view current, const check_io& c);
 
 }  // namespace mv::driftwire::cli::nas_update

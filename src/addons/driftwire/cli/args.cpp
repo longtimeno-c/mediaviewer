@@ -237,13 +237,15 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.serve_key = words[1];
       } else if (what == "status" && words.size() == 1) {
         a.serve = serve_action::status;
+      } else if (what == "self-test" && words.size() == 1) {
+        a.serve = serve_action::self_test;
       } else if (what == "passphrase" && words.size() == 2 && words[1] == "set") {
         a.serve = serve_action::passphrase_set;
       } else if (what == "passphrase" && words.size() == 2 && words[1] == "reset") {
         a.serve = serve_action::passphrase_reset;
       } else {
         out.error = "serve takes init, status, devices, add NAME KEY, revoke NAME-OR-KEY, pair-code [SECONDS], "
-                    "grant NAME-OR-KEY, disown or passphrase set|reset";
+                    "grant NAME-OR-KEY, disown, self-test or passphrase set|reset";
       }
       if (out.error.empty()) {
         const bool timed = a.serve == serve_action::add || a.serve == serve_action::pair_code || a.serve == serve_action::grant;

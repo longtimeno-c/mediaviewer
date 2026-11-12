@@ -166,14 +166,53 @@ class SpkTests(unittest.TestCase):
             (var / 'state' / 'trial').write_text('2.0.0\n0\n')
             (scripts / 'start-stop-status').write_bytes(read(data, 'scripts/start-stop-status'))
             os.chmod(scripts / 'start-stop-status', 0o755)
-            env = dict(os.environ, SYNOPKG_PKGVAR=str(var), SYNOPKG_PKGDEST=str(target))
-            for _ in range(3):
-                subprocess.run([str(scripts / 'start-stop-status'), 'start'], env=env, capture_output=True, timeout=30)
-                time.sleep(0.3)
+            env = dict(os.environ, SYNOPKG_PKGVAR=str(var), SYNOPKG_PKGDEST=str(target), MV_NAS_RESTART_PAUSE='0')
+            ss = str(scripts / 'start-stop-status')
+            subprocess.run([ss, 'start'], env=env, capture_output=True, timeout=30)
+            # The supervisor restarts each crash: three starts of the trial, then the one before.
+            for _ in range(100):
+                if calls.exists() and len(calls.read_text().split()) >= 4:
+                    break
+                time.sleep(0.05)
+            subprocess.run([ss, 'stop'], env=env, capture_output=True, timeout=30)
             self.assertFalse((var / 'state' / 'trial').exists())
             self.assertEqual((var / 'state' / 'skip').read_text().strip(), '2.0.0')
             self.assertIn('prev', (var / 'bin' / 'driftwire').read_text())  # the one before is back
-            self.assertEqual(calls.read_text().split(), ['new', 'new', 'prev'])
+            self.assertEqual(calls.read_text().split()[:3], ['new', 'new', 'prev'])
+
+    def test_an_installed_update_is_started_at_once_and_stop_ends_both(self):
+        data = spk.build_spk(BIN, 'x86_64', '1.0.0')
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            target, var, scripts = root / 'target', root / 'var', root / 'scripts'
+            for p in [target / 'bin', var / 'bin', scripts]:
+                p.mkdir(parents=True)
+            calls = root / 'calls.txt'
+            # The package's binary "installs" an update and exits 75; the new one runs until stopped.
+            (target / 'bin' / 'driftwire').write_text(
+                f'#!/bin/sh\necho "old $MV_NAS_VAR" >>"{calls}"\n'
+                f'printf \'#!/bin/sh\\necho new >>"{calls}"\\necho $$ >"{root}/new.pid"\\nexec sleep 60\\n\' >"{var}/bin/driftwire"\n'
+                f'chmod 755 "{var}/bin/driftwire"\nexit 75\n')
+            os.chmod(target / 'bin' / 'driftwire', 0o755)
+            (scripts / 'start-stop-status').write_bytes(read(data, 'scripts/start-stop-status'))
+            os.chmod(scripts / 'start-stop-status', 0o755)
+            env = dict(os.environ, SYNOPKG_PKGVAR=str(var), SYNOPKG_PKGDEST=str(target), MV_NAS_RESTART_PAUSE='5')
+            ss = str(scripts / 'start-stop-status')
+            self.assertEqual(subprocess.run([ss, 'start'], env=env, capture_output=True, timeout=30).returncode, 0)
+            for _ in range(100):
+                if calls.exists() and 'new' in calls.read_text():
+                    break
+                time.sleep(0.05)
+            started = time.monotonic()
+            self.assertEqual(calls.read_text().split(), ['old', str(var), 'new'])  # no pause before the new one
+            self.assertEqual(subprocess.run([ss, 'status'], env=env, capture_output=True, timeout=30).returncode, 0)
+            self.assertEqual(subprocess.run([ss, 'stop'], env=env, capture_output=True, timeout=30).returncode, 0)
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertEqual(subprocess.run([ss, 'status'], env=env, capture_output=True, timeout=30).returncode, 3)
+            # The service went with the supervisor: nothing is left sleeping.
+            pid = int((root / 'new.pid').read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
 
 
 if __name__ == '__main__':

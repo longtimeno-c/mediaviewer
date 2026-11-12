@@ -54,8 +54,10 @@ floor (DSM 7.0 onward would work unchanged), and libsodium already falls back to
 - `conf/privilege`: run as the package user.
 - `conf/resource`: `port-config` for TCP 7878 (the port DSM's forwarding wizard then offers), and
   `data-share` for the share the person picks in the wizard, read-only for the package user.
-- `scripts/start-stop-status`: runs `var/bin/driftwire` if a verified update is staged there, else
-  `target/bin/driftwire`, as `driftwire serve --data var/serve`, and stops it.
+- `scripts/start-stop-status`: supervises `var/bin/driftwire` if a verified update is staged there, else
+  `target/bin/driftwire`, as `driftwire serve --data var/serve`: exit 75 (an update installed) starts
+  the new one at once, a crash is retried after 30 s, each start counts toward a trial; `stop` ends
+  both.
 - `scripts/postinst`: `driftwire serve init` (the identity and access key in `var/serve`, 0700) and a
   `serve.json` naming the picked share; nothing else. **The service starts unclaimed** and waits for a
   desktop on its own network (§5).

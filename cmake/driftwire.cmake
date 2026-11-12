@@ -278,7 +278,12 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
 )
 target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)
-target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="${MV_DRIFTWIRE_SITE_URL}")
+# The NAS package's update key (docs/plans/nas-setup.md §6): 64 hex digits of
+# the Ed25519 public key that signs <site>/nas/latest.json. Empty (the default,
+# every build of one's own): `driftwire serve` never updates itself.
+set(MV_NAS_UPDATE_KEY "" CACHE STRING "Ed25519 public key (hex) pinned for the NAS service's self-update")
+target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="${MV_DRIFTWIRE_SITE_URL}"
+                                                         MV_NAS_UPDATE_KEY="${MV_NAS_UPDATE_KEY}")
 if(WIN32)
   # winhttp: the update check (update_net_win.cpp), Windows' own DLL.
   target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp)

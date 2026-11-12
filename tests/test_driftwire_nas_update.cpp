@@ -9,8 +9,10 @@
 #include <sodium.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -193,4 +195,76 @@ TEST_CASE("nas update: a version rolled back from is skipped until a newer one",
   CHECK(nu::skipped(s.var(), "1.4.0"));
   CHECK(nu::skipped(s.var(), "1.3.0"));
   CHECK_FALSE(nu::skipped(s.var(), "1.4.1"));
+}
+
+TEST_CASE("nas update: the daily check installs a signed newer offer and nothing else", "[nas-update]") {
+  keypair k, other;
+  scratch s;
+  const std::string bytes = "new";
+  nu::offer o{"1.4.0", "x86_64", "https://example.com/x", sha_of(bytes), bytes.size()};
+  std::string asked;
+  std::string served = latest(o, sign(k, o));
+  nu::check_io c;
+  c.get_json = [&](const std::string& url) -> std::optional<std::string> {
+    asked = url;
+    if (served.empty()) return std::nullopt;
+    return served;
+  };
+  int fetched = 0;
+  c.install.fetch = [&](const std::string&, const std::string& to) -> mv::expected {
+    ++fetched;
+    std::ofstream(to, std::ios::binary) << bytes;
+    return {};
+  };
+  c.install.self_test = [](const std::string&) { return true; };
+  // Not built for this NAS, or no key: nothing is asked.
+  CHECK(nu::check_once("https://site", s.var(), "", k.pub, "1.3.0", c) == nu::outcome::nothing);
+  CHECK(asked.empty());
+  // Signed by another key: refused, nothing fetched.
+  CHECK(nu::check_once("https://site", s.var(), "x86_64", other.pub, "1.3.0", c) == nu::outcome::refused);
+  CHECK(asked == "https://site/nas/latest.json");
+  CHECK(fetched == 0);
+  // Not newer, or for another arch: nothing.
+  CHECK(nu::check_once("https://site", s.var(), "x86_64", k.pub, "1.4.0", c) == nu::outcome::nothing);
+  CHECK(nu::check_once("https://site", s.var(), "aarch64", k.pub, "1.3.0", c) == nu::outcome::nothing);
+  // Rolled back from before: skipped.
+  fs::create_directories(fs::path(s.var()) / "state");
+  std::ofstream(fs::path(s.var()) / "state" / "skip") << "1.4.0\n";
+  CHECK(nu::check_once("https://site", s.var(), "x86_64", k.pub, "1.3.0", c) == nu::outcome::nothing);
+  CHECK(fetched == 0);
+  fs::remove(fs::path(s.var()) / "state" / "skip");
+  // The site not answering: failed, try tomorrow.
+  served.clear();
+  CHECK(nu::check_once("https://site", s.var(), "x86_64", k.pub, "1.3.0", c) == nu::outcome::failed);
+  served = latest(o, sign(k, o));
+  // A good one: installed.
+  CHECK(nu::check_once("https://site", s.var(), "x86_64", k.pub, "1.3.0", c) == nu::outcome::installed);
+  CHECK(read(fs::path(s.var()) / "bin" / "driftwire") == "new");
+  CHECK(read(fs::path(s.var()) / "state" / "trial") == "1.4.0\n0\n");
+  // A self-test that fails: failed, nothing changes.
+  c.install.self_test = [](const std::string&) { return false; };
+  nu::offer o2{"1.5.0", "x86_64", "https://example.com/y", sha_of(bytes), bytes.size()};
+  served = latest(o2, sign(k, o2));
+  CHECK(nu::check_once("https://site", s.var(), "x86_64", k.pub, "1.4.0", c) == nu::outcome::failed);
+  CHECK(read(fs::path(s.var()) / "bin" / "driftwire.prev") == "");  // still the 1.4.0 install's
+}
+
+TEST_CASE("nas update: the pinned key, this arch, and the delays", "[nas-update]") {
+  CHECK_FALSE(nu::pinned_key(""));
+  CHECK_FALSE(nu::pinned_key("zz"));
+  CHECK_FALSE(nu::pinned_key(std::string(63, 'a')));
+  const auto k = nu::pinned_key(std::string(62, '0') + "ff");
+  REQUIRE(k);
+  CHECK((*k)[31] == 0xff);
+#if defined(__x86_64__) || defined(__aarch64__)
+  CHECK_FALSE(nu::this_arch().empty());
+#endif
+  using std::chrono::hours;
+  using std::chrono::minutes;
+  for (std::uint32_t r : {0u, 1u, 12345u, 0xffffffffu}) {
+    CHECK(nu::next_delay(true, r) >= minutes(10));
+    CHECK(nu::next_delay(true, r) <= minutes(70));
+    CHECK(nu::next_delay(false, r) >= hours(22));
+    CHECK(nu::next_delay(false, r) <= hours(26));
+  }
 }

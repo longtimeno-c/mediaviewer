@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <array>
 #include <cstdio>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -24,6 +26,8 @@
 #include <vector>
 
 #include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/nas_update.h"
+#include "addons/driftwire/cli/update.h"
 #include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/net.h"
@@ -42,7 +46,10 @@
 #endif
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
@@ -125,7 +132,145 @@ bool write_config(const std::string& path, const serve::config& c) {
   return !ec;
 }
 
-int run_service(const args& a, bool test_hooks, const std::string& data, secrets::store& store) {
+#ifndef MV_NAS_UPDATE_KEY
+#define MV_NAS_UPDATE_KEY ""  // a build of one's own: never updates itself
+#endif
+
+#if !defined(_WIN32)
+// Runs the staged binary once as `serve self-test --data DATA`, its output
+// dropped; true when it exits 0 within 30 s.
+bool run_self_test(const std::string& binary, const std::string& data) {
+  const pid_t pid = ::fork();
+  if (pid < 0) return false;
+  if (pid == 0) {
+    const int null = ::open("/dev/null", O_RDWR);
+    if (null >= 0) {
+      (void)::dup2(null, 0);
+      (void)::dup2(null, 1);
+      (void)::dup2(null, 2);
+    }
+    const char* argv[] = {binary.c_str(), "serve", "self-test", "--data", data.c_str(), nullptr};
+    ::execv(binary.c_str(), const_cast<char* const*>(argv));
+    ::_exit(127);
+  }
+  for (int i = 0; i < 300; ++i) {
+    int st = 0;
+    const pid_t r = ::waitpid(pid, &st, WNOHANG);
+    if (r == pid) return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    if (r < 0) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  (void)::kill(pid, SIGKILL);
+  (void)::waitpid(pid, nullptr, 0);
+  return false;
+}
+
+// The package's daily check (cli/nas_update.h). Only inside the package
+// (start-stop-status sets MV_NAS_VAR) and only in a build with a pinned key.
+class nas_updater {
+ public:
+  nas_updater(std::string var, std::string data, std::string version, std::array<std::uint8_t, 32> key)
+      : var_(std::move(var)), data_(std::move(data)), version_(std::move(version)), key_(key) {
+    thread_ = std::thread([this] { loop(); });
+  }
+  ~nas_updater() {
+    {
+      std::lock_guard lock(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();  // a fetch in flight ends by its own timeout (60 s, 5 min for the binary)
+  }
+  bool installed() const { return installed_.load(); }
+
+ private:
+  void loop() {
+    const auto started = std::chrono::steady_clock::now();
+    bool trial = std::filesystem::exists(fs_path(var_ + "/state/trial"));
+    bool first = true;
+    auto next = started + nas_update::next_delay(true, randombytes_random());
+    std::unique_lock lock(m_);
+    while (!stop_) {
+      auto wake = next;
+      if (trial) wake = std::min(wake, started + nas_update::kTrialSettles);
+      cv_.wait_until(lock, wake, [this] { return stop_; });
+      if (stop_) break;
+      const auto now = std::chrono::steady_clock::now();
+      if (trial && now >= started + nas_update::kTrialSettles) {
+        nas_update::trial_passed(var_);  // up five minutes: this version stays
+        trial = false;
+      }
+      if (now < next) continue;
+      lock.unlock();
+      const auto got = check();
+      lock.lock();
+      first = false;
+      next = std::chrono::steady_clock::now() + nas_update::next_delay(first, randombytes_random());
+      if (got == nas_update::outcome::installed) {
+        installed_.store(true);
+        g_stop.store(true);  // the main loop stops the service; start-stop-status starts the new one
+        break;
+      }
+    }
+  }
+
+  nas_update::outcome check() {
+    nas_update::check_io c;
+    c.get_json = [](const std::string& url) -> std::optional<std::string> {
+      const http_answer r = https_get(url, 64 * 1024, 60000);
+      if (r.status != 200) return std::nullopt;
+      return r.body;
+    };
+    c.install.fetch = [](const std::string& url, const std::string& to) -> expected {
+      const http_answer r = https_get(url, std::size_t{1} << 30, 300000);
+      if (r.status != 200 || r.body.empty()) return err(status::io);
+      std::ofstream out(fs_path(to), std::ios::binary | std::ios::trunc);
+      out.write(r.body.data(), static_cast<std::streamsize>(r.body.size()));
+      out.flush();
+      if (!out) return err(status::io);
+      return {};
+    };
+    c.install.self_test = [data = data_](const std::string& binary) { return run_self_test(binary, data); };
+    const auto got = nas_update::check_once(site_url(nullptr), var_, nas_update::this_arch(), key_, version_, c);
+    // Numbers and words only: the log may be read beside the shares (rule 6).
+    switch (got) {
+      case nas_update::outcome::installed: print("driftwire serve: update installed; restarting\n"); break;
+      case nas_update::outcome::refused: print("driftwire serve: update offer refused (signature)\n", true); break;
+      case nas_update::outcome::failed: print("driftwire serve: update check failed; next tomorrow\n"); break;
+      case nas_update::outcome::nothing: break;
+    }
+    return got;
+  }
+
+  static std::filesystem::path fs_path(const std::string& s) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+  }
+
+  std::string var_, data_, version_;
+  std::array<std::uint8_t, 32> key_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  bool stop_ = false;
+  std::atomic<bool> installed_{false};
+  std::thread thread_;
+};
+#endif
+
+// `serve self-test`: what an update runs before it is installed. Reads the
+// data folder and changes nothing: the keys are there and readable,
+// serve.json parses, and this program runs on this NAS.
+int run_self_test_here(const std::string& data, secrets::store& store, bool test_hooks, const char* version) {
+  const auto identity = store.get(known::kIdentityName);
+  const auto access = store.get(serve::kAccessKeyName);
+  if (!identity || identity->size() != 32 || !access || access->size() != 32) return fail("self-test: the keys cannot be read.", 1);
+  std::ifstream f(data + "/" + kConfigFile, std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  if (!f.is_open() || !serve::parse_config(text, test_hooks)) return fail(std::string("self-test: ") + kConfigFile + " is not valid.", 1);
+  print(std::string("driftwire ") + version + " self-test ok\n");
+  return 0;
+}
+
+int run_service(const args& a, bool test_hooks, const std::string& data, secrets::store& store, const char* version) {
   if (!only_mine_writes(data) || !only_mine_writes(data + "/" + kConfigFile)) {
     return fail(std::string("the data folder and ") + kConfigFile + " must be writable by this user alone.", 1);
   }
@@ -164,10 +309,27 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   char line[96];
   std::snprintf(line, sizeof line, "driftwire serve: listening on port %u\n", static_cast<unsigned>((*srv)->port()));
   print(line);
-  while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  (*srv)->stop();
+  bool updated = false;
+  {
+#if !defined(_WIN32)
+    std::unique_ptr<nas_updater> updater;
+    const char* var = std::getenv("MV_NAS_VAR");
+    if (!test_hooks && var && *var) {
+      if (const auto key = nas_update::pinned_key(MV_NAS_UPDATE_KEY)) {
+        updater = std::make_unique<nas_updater>(var, data, version, *key);
+      }
+    }
+#else
+    (void)version;
+#endif
+    while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    (*srv)->stop();
+#if !defined(_WIN32)
+    updated = updater && updater->installed();
+#endif
+  }
   print("driftwire serve: stopped\n");
-  return 0;
+  return updated ? nas_update::kRestartForUpdate : 0;
 }
 
 // One line from stdin, its newline gone; echo off when it is a terminal.
@@ -535,7 +697,7 @@ int run_devices(secrets::store& store) {
 
 }  // namespace
 
-int run_serve(const args& a, bool test_hooks) {
+int run_serve(const args& a, bool test_hooks, const char* version) {
 #if !defined(_WIN32)
   // It faces the internet, and its keys would then be root's: it runs as its own unprivileged user.
   if (!test_hooks && ::geteuid() == 0) return fail("it must not run as root; run it as its own user.", 1);
@@ -550,7 +712,9 @@ int run_serve(const args& a, bool test_hooks) {
   if (!store) return fail("its secrets folder must be this user's alone (mode 700).", 1);
   switch (a.serve) {
     case serve_action::run:
-      return run_service(a, test_hooks, data, *store);
+      return run_service(a, test_hooks, data, *store, version);
+    case serve_action::self_test:
+      return run_self_test_here(data, *store, test_hooks, version);
     case serve_action::init:
       return run_init(a, *store);
     case serve_action::status:
