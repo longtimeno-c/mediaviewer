@@ -19,9 +19,11 @@ public enum AccessEnd {
 
   /// `serviceSaidEnded`: the NAS refused this phone as expired. `noRouteAnswered`: nothing answered
   /// at all (not a refusal of another kind). `storedEnd`: the end the NAS last gave, unix seconds.
+  /// `wasEnded`: the last word was already "ended" (kept across launches): no answer changes nothing.
   public static func decide(serviceSaidEnded: Bool, noRouteAnswered: Bool, storedEnd: Double?,
-                            now: Double) -> Decision {
+                            now: Double, wasEnded: Bool = false) -> Decision {
     if serviceSaidEnded { return Decision(showEnded: true, dropLocalCopy: true) }
+    if noRouteAnswered, wasEnded { return Decision(showEnded: true, dropLocalCopy: false) }
     // Offline, past the end this phone was told: said, never acted on. The owner may have
     // extended it meanwhile, and a phone's clock can be wrong.
     if noRouteAnswered, let end = storedEnd, end <= now { return Decision(showEnded: true, dropLocalCopy: false) }

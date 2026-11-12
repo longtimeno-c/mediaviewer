@@ -20,6 +20,12 @@ final class AccessEndTests: XCTestCase {
     // Answered with something else (a revoke, a wrong service): never "ended", whatever the clock.
     XCTAssertEqual(AccessEnd.decide(serviceSaidEnded: false, noRouteAnswered: false, storedEnd: now - 1, now: now),
                    .init(showEnded: false, dropLocalCopy: false))
+    // Already ended (a refusal, or an end the owner shortened), then offline: still ended, nothing more deleted.
+    XCTAssertEqual(AccessEnd.decide(serviceSaidEnded: false, noRouteAnswered: true, storedEnd: nil, now: now, wasEnded: true),
+                   .init(showEnded: true, dropLocalCopy: false))
+    // Already ended, then answered (an extension): the end is over.
+    XCTAssertEqual(AccessEnd.decide(serviceSaidEnded: false, noRouteAnswered: false, storedEnd: nil, now: now, wasEnded: true),
+                   .init(showEnded: false, dropLocalCopy: false))
     // An unlimited phone has no end to pass.
     XCTAssertEqual(AccessEnd.decide(serviceSaidEnded: false, noRouteAnswered: true, storedEnd: nil, now: now),
                    .init(showEnded: false, dropLocalCopy: false))

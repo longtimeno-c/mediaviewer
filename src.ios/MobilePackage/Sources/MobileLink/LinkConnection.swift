@@ -466,7 +466,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if case .unreachable = Self.state(answered, report) { unreachable = true }
     let end = AccessEnd.decide(serviceSaidEnded: answered == Int32(MV_LINK_ACCESS_ENDED.rawValue),
                                noRouteAnswered: answered != 0 && unreachable,
-                               storedEnd: lock.withLock { record?.accessUntil }, now: Date().timeIntervalSince1970)
+                               storedEnd: lock.withLock { record?.accessUntil }, now: Date().timeIntervalSince1970,
+                               wasEnded: current.synology == .accessEnded)
     if end.showEnded { status = Int32(MV_LINK_ACCESS_ENDED.rawValue) }
     if end.dropLocalCopy { await dropLocalCopy(of: link) }
     let info = await catalogueNow(link: link)
