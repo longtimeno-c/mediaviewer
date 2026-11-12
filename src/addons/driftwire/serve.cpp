@@ -22,6 +22,7 @@
 #include "addons/driftwire/channel.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/net.h"
+#include "addons/driftwire/owner_pass.h"
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
 #include "io/file_port.h"
@@ -37,6 +38,9 @@ constexpr int kHelloMs = 3000;
 constexpr int kServeHelloMs = 5000;
 // The desktop writing the claim's nonce over SMB, at most.
 constexpr int kClaimProofMs = 12000;
+// The desktop's answer to the passphrase step of a claim: a person may be
+// typing it, then Argon2id runs (about a second at 256 MiB).
+constexpr int kClaimAnswerMs = 120000;
 // First messages remembered as seen, against a replay of a recorded one. Only
 // ones that opened under the key go in, so a stranger cannot flush it.
 constexpr std::size_t kSeenFirsts = 4096;
@@ -102,6 +106,14 @@ struct conn {
   std::array<std::uint8_t, 32> device{};
   bool has_device = false;  // under m
   bool is_owner = false;    // set before its session starts
+  // The owner's passphrase on this session (its session thread's own):
+  // the challenge outstanding, and the unlock with the verifier it was for.
+  owner::key32 nonce{};
+  bool has_nonce = false;
+  std::int64_t nonce_at = 0;
+  std::int64_t unlocked_until = 0;
+  owner::key32 unlocked_pk{};
+  std::int64_t unlocked_set = 0;
   std::atomic<bool> done{false};
   std::thread t;
 };
@@ -199,6 +211,24 @@ struct server::state {
   [[nodiscard]] bool redeem(channel& ch, const std::array<std::uint8_t, 32>& peer);
   [[nodiscard]] std::pair<end_code, std::string> admin(conn& c, std::string_view request);
 
+  // ---- the owner's passphrase (owner_pass.h) ----
+  std::function<std::int64_t()> now_unix;
+  std::chrono::milliseconds min_answer_gap{1000};
+  std::mutex pass_m;  // the lockout: read, changed and written under it
+  clock::time_point last_answer[2]{};  // under pass_m: claim, owner
+  enum which_counter : int { claim_counter = 0, owner_counter = 1 };
+  [[nodiscard]] std::int64_t now() const { return now_unix ? now_unix() : static_cast<std::int64_t>(std::time(nullptr)); }
+  // The counter's lock, if it is locked now (0: not).
+  [[nodiscard]] std::int64_t locked_until(which_counter which);
+  // A signed answer to `nonce`, checked and counted. `why` and `until` say
+  // why not: "locked-out" (until), "slow-down", "passphrase".
+  [[nodiscard]] bool answer(which_counter which, const owner::verifier& v, const owner::signature& sig, const channel& ch,
+                            const owner::key32& nonce, std::string& why, std::int64_t& until);
+  // Whether `c` may make a change that adds access now (§3.4). Not: the
+  // refusal to send.
+  [[nodiscard]] std::optional<std::pair<end_code, std::string>> needs_unlock(conn& c);
+  [[nodiscard]] std::string owner_fields();
+
   secrets::store* store = nullptr;
   bool loopback_only = false;
   int max_sessions = 8;
@@ -206,6 +236,7 @@ struct server::state {
   int per_minute = 30;
 
   std::array<std::uint8_t, 32> identity{}, access_key{};
+  std::array<std::uint8_t, 32> identity_public{};  // what clients pin, and sign over
   std::unique_ptr<net::listener> listen;
   std::uint16_t port = 0;
   std::atomic<bool> stopping{false};
@@ -231,7 +262,7 @@ struct server::state {
 
   std::atomic<std::uint64_t> n_evicted{0};
   std::atomic<std::uint64_t> n_accepted{0}, n_over{0}, n_hello{0}, n_key{0}, n_replay{0}, n_unpaired{0}, n_sessions{0};
-  std::atomic<std::uint64_t> n_paired{0}, n_bad_codes{0};
+  std::atomic<std::uint64_t> n_paired{0}, n_bad_codes{0}, n_wrong_pass{0}, n_unlocks{0};
 
   ~state() {
     sodium_memzero(identity.data(), identity.size());
@@ -686,7 +717,7 @@ void server::state::session(conn& c) {
     version = std::clamp(hello->version, kMinVersion, kVersion);
     if (hello->min_version <= kVersion && hello->version >= kMinVersion) ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0));
   }
-  if (!ch.send(msg::serve_caps, caps_json(version, ops))) return;
+  if (!ch.send(msg::serve_caps, caps_json(version, ops, (ops & kAdminOp) != 0 ? owner_fields() : std::string()))) return;
   if (ops == 0) {
     // Nothing in common (one side too old). The answer said so.
     ch.flush(kCancelWaitMs);
@@ -971,6 +1002,134 @@ bool server::state::publish_config(config next) {
   return true;
 }
 
+// ---- the owner's passphrase -----------------------------------------------------------------
+
+namespace {
+
+std::string hex_of(std::span<const std::uint8_t> b) {
+  std::string out(b.size() * 2, '0');
+  sodium_bin2hex(out.data(), out.size() + 1, b.data(), b.size());
+  return out;
+}
+
+template <std::size_t N>
+std::optional<std::array<std::uint8_t, N>> from_hex(const std::string* s) {
+  if (!s || s->size() != N * 2) return std::nullopt;
+  std::array<std::uint8_t, N> out{};
+  std::size_t len = 0;
+  if (sodium_hex2bin(out.data(), out.size(), s->data(), s->size(), nullptr, &len, nullptr) != 0 || len != N) return std::nullopt;
+  return out;
+}
+
+std::pair<end_code, std::string> refusal_json(std::string_view why, std::int64_t until = 0) {
+  json::writer w;
+  w.begin_object().key("why").string(why);
+  if (until > 0) w.key("until").integer(until);
+  w.end_object();
+  return {end_code::refused, w.take()};
+}
+
+// The salt, the cost and a nonce: what a client needs to sign.
+void challenge_fields(json::writer& w, const owner::verifier& v, const owner::key32& nonce) {
+  w.key("salt").string(hex_of(v.salt));
+  w.key("ops").integer(static_cast<std::int64_t>(v.ops));
+  w.key("mem").integer(static_cast<std::int64_t>(v.mem));
+  w.key("nonce").string(hex_of(nonce));
+}
+
+// {"salt","ops","mem","pk"}: a verifier a client made, checked before it is kept.
+std::optional<owner::verifier> parse_new_verifier(const json::value* v, std::int64_t now) {
+  if (!v || v->k != json::kind::object) return std::nullopt;
+  const auto ops = v->integer("ops");
+  const auto mem = v->integer("mem");
+  const auto salt = from_hex<owner::kSaltBytes>(v->str("salt"));
+  const auto pk = from_hex<32>(v->str("pk"));
+  if (!ops || !mem || *ops <= 0 || *mem <= 0 || !salt || !pk) return std::nullopt;
+  if (!owner::sane_cost(static_cast<std::uint64_t>(*ops), static_cast<std::uint64_t>(*mem))) return std::nullopt;
+  owner::verifier out;
+  out.ops = static_cast<std::uint64_t>(*ops);
+  out.mem = static_cast<std::uint64_t>(*mem);
+  out.salt = *salt;
+  out.pk = *pk;
+  out.set = now;
+  return out;
+}
+
+const char* stored_name(owner::stored s) {
+  return s == owner::stored::set ? "set" : s == owner::stored::none ? "none" : "broken";
+}
+
+}  // namespace
+
+std::int64_t server::state::locked_until(which_counter which) {
+  std::lock_guard lock(pass_m);
+  const auto t = now();
+  const auto l = owner::load_lockout(*store, t);
+  const owner::counter& c = which == claim_counter ? l.claim : l.owner;
+  return c.locked(t) ? c.until : 0;
+}
+
+bool server::state::answer(which_counter which, const owner::verifier& v, const owner::signature& sig, const channel& ch,
+                           const owner::key32& nonce, std::string& why, std::int64_t& until) {
+  const auto peer = ch.peer_key();
+  if (!peer) {
+    why = "passphrase";
+    return false;
+  }
+  std::lock_guard lock(pass_m);
+  const auto t = now();
+  auto l = owner::load_lockout(*store, t);
+  owner::counter& c = which == claim_counter ? l.claim : l.owner;
+  if (c.locked(t)) {
+    why = "locked-out";
+    until = c.until;
+    return false;
+  }
+  const auto steady = clock::now();
+  if (last_answer[which] != clock::time_point{} && steady - last_answer[which] < min_answer_gap) {
+    why = "slow-down";
+    return false;
+  }
+  last_answer[which] = steady;
+  if (owner::check(v, sig, std::span<const std::uint8_t, owner::kBindingBytes>(ch.handshake_hash()), nonce, identity_public, *peer)) {
+    if (c.misses != 0 || c.level != 0 || c.until != 0) {
+      c.success();
+      (void)owner::save_lockout(*store, l);
+    }
+    return true;
+  }
+  n_wrong_pass.fetch_add(1);
+  c.miss(t);
+  (void)owner::save_lockout(*store, l);  // not kept: the next load is as before, and a fault never unlocks
+  why = c.locked(t) ? "locked-out" : "passphrase";
+  until = c.locked(t) ? c.until : 0;
+  return false;
+}
+
+std::optional<std::pair<end_code, std::string>> server::state::needs_unlock(conn& c) {
+  owner::verifier v;
+  switch (owner::load(*store, v)) {
+    case owner::stored::none:
+      return std::nullopt;  // none set yet: as before this existed (call C4)
+    case owner::stored::unreadable:
+      return std::pair<end_code, std::string>{end_code::error, {}};
+    case owner::stored::set:
+      break;
+  }
+  if (c.unlocked_until > now() && c.unlocked_pk == v.pk && c.unlocked_set == v.set) return std::nullopt;
+  return refusal_json("needs-unlock");
+}
+
+std::string server::state::owner_fields() {
+  owner::verifier v;
+  const auto s = owner::load(*store, v);
+  json::writer w;
+  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).end_array();
+  w.key("passphrase").string(stored_name(s)).end_object();
+  std::string out = w.take();
+  return out.substr(1, out.size() - 2);
+}
+
 void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::string& folder) {
   message m;
   const auto peer = ch->peer_key();
@@ -979,6 +1138,10 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
     return;
   }
   (void)c;
+  // A desktop that can take the passphrase step says so; one from before it
+  // does not, and claims as it always did while no passphrase is set.
+  bool speaks_passphrase = false;
+  if (const auto first = json::parse(m.text(), 2)) speaks_passphrase = first->integer("passphrase") == 1;
   // Owned and not its owner: closed with no reason given, before any
   // challenge, so this ends as a refusal and never as "it may have gone
   // through". The caller can still tell this from a challenge (unowned) or a
@@ -1016,6 +1179,75 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
       return;
     }
   }
+  // Only now, past the write proof, is anything said about a passphrase
+  // (docs/plans/nas-owner-and-guests.md §3.3): a reader of the share learns
+  // nothing about it. The owner's own re-claim is counted on the owner's
+  // counter, so guesses at claims cannot lock it out.
+  const which_counter counter = store->exists(kOwnerName) ? owner_counter : claim_counter;
+  std::optional<owner::verifier> to_set;
+  {
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    if (s == owner::stored::unreadable) {
+      (void)ch->cancel(kCancelWaitMs, "error");
+      return;
+    }
+    if (s == owner::stored::set) {
+      if (!speaks_passphrase) {
+        (void)ch->cancel(kCancelWaitMs, "passphrase");  // an older desktop: it must be updated
+        return;
+      }
+      if (locked_until(counter) != 0) {
+        (void)ch->cancel(kCancelWaitMs, "locked-out");
+        return;
+      }
+      owner::key32 nonce{};
+      randombytes_buf(nonce.data(), nonce.size());
+      json::writer w;
+      w.begin_object().key("passphrase").string("set");
+      challenge_fields(w, v, nonce);
+      w.end_object();
+      if (!ch->send(msg::serve_claim_challenge, w.str()) || !ch->receive(m, kClaimAnswerMs) || m.type != msg::serve_claim) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+      const auto doc = json::parse(m.text(), 2);
+      const auto sig = doc ? from_hex<64>(doc->str("sig")) : std::nullopt;
+      std::string why;
+      std::int64_t until = 0;
+      if (!sig) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+      if (!answer(counter, v, *sig, *ch, nonce, why, until)) {
+        (void)ch->cancel(kCancelWaitMs, why);
+        return;
+      }
+    } else if (speaks_passphrase) {
+      // None yet: the claim chooses it, and only its public key comes here.
+      if (!ch->send(msg::serve_claim_challenge, std::string_view("{\"passphrase\":\"none\"}")) || !ch->receive(m, kClaimAnswerMs) ||
+          m.type != msg::serve_claim) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+      const auto doc = json::parse(m.text(), 3);
+      to_set = doc ? parse_new_verifier(doc->find("set"), now()) : std::nullopt;
+      if (!to_set) {
+        (void)ch->cancel(kCancelWaitMs, "protocol");
+        return;
+      }
+    }
+  }
+  // Kept before the owner, so a service is never owned with the passphrase
+  // its claim chose missing; never over one that is there (a racing claim
+  // that set one first wins it, and this one loses below).
+  const auto keep_passphrase = [&]() -> bool {
+    if (!to_set) return true;
+    std::lock_guard pass(pass_m);
+    owner::verifier there;
+    if (owner::load(*store, there) != owner::stored::none) return true;
+    return owner::save(*store, *to_set);
+  };
   std::unique_lock lock(claim_m);
   // Two desktops at once: the first through this lock is the owner. The owner
   // claiming again (its first answer was lost) gets the same answer; nothing
@@ -1027,6 +1259,10 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
       ch->shutdown();  // a racing claim lost: no reason given (see above for what the caller can tell)
       return;
     }
+    if (!keep_passphrase()) {
+      (void)ch->cancel(kCancelWaitMs, "error");
+      return;
+    }
     send_claimed(*ch);
     return;
   }
@@ -1036,7 +1272,7 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
       next.roots.size() < kMaxRoots) {
     next.roots.push_back({new_root_id(), kCatalogueLabel, catalogue});
   }
-  if (!publish_config(std::move(next))) {
+  if (!publish_config(std::move(next)) || !keep_passphrase()) {
     lock.unlock();
     (void)ch->cancel(kCancelWaitMs, "error");
     return;
@@ -1138,6 +1374,78 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     return v ? *v : std::string();
   };
   const auto device_key = [&]() -> std::optional<std::array<std::uint8_t, 32>> { return parse_key_hex(text("key")); };
+
+  // ---- the passphrase (docs/plans/nas-owner-and-guests.md §3) ----
+  if (*what == "owner_status") {
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    const bool unlocked = s == owner::stored::set && !needs_unlock(c);
+    json::writer w;
+    w.begin_object().key("passphrase").string(stored_name(s));
+    w.key("unlocked_s").integer(unlocked ? std::max<std::int64_t>(0, c.unlocked_until - now()) : 0);
+    w.key("locked_until").integer(locked_until(owner_counter));
+    w.end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "challenge") {
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    if (s == owner::stored::unreadable) return {end_code::error, {}};
+    if (s == owner::stored::none) return refusal_json("no-passphrase");
+    if (const auto until = locked_until(owner_counter)) return refusal_json("locked-out", until);
+    randombytes_buf(c.nonce.data(), c.nonce.size());
+    c.has_nonce = true;
+    c.nonce_at = now();
+    json::writer w;
+    w.begin_object();
+    challenge_fields(w, v, c.nonce);
+    w.end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "unlock") {
+    const auto sig = from_hex<64>(doc->str("sig"));
+    if (!sig) return {end_code::bad_request, {}};
+    // One answer per challenge, and only a fresh one.
+    const bool fresh = c.has_nonce && now() - c.nonce_at <= owner::kChallengeSeconds && now() >= c.nonce_at;
+    c.has_nonce = false;
+    if (!fresh) return refusal_json("no-challenge");
+    owner::verifier v;
+    const auto s = owner::load(*store, v);
+    if (s == owner::stored::unreadable) return {end_code::error, {}};
+    if (s == owner::stored::none) return refusal_json("no-passphrase");
+    std::string why;
+    std::int64_t until = 0;
+    if (!answer(owner_counter, v, *sig, *c.ch, c.nonce, why, until)) return refusal_json(why, until);
+    n_unlocks.fetch_add(1);
+    c.unlocked_until = now() + owner::kUnlockSeconds;
+    c.unlocked_pk = v.pk;
+    c.unlocked_set = v.set;
+    json::writer w;
+    w.begin_object().key("unlocked_s").integer(owner::kUnlockSeconds).end_object();
+    return {end_code::ok, w.take()};
+  }
+  if (*what == "lock") {
+    c.unlocked_until = 0;
+    c.has_nonce = false;
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "set_passphrase") {
+    // None yet: the owner's device key is enough (call C4). Set: unlocked.
+    if (auto refused = needs_unlock(c)) return *refused;
+    auto next = parse_new_verifier(doc->find("set"), now());
+    if (!next) return {end_code::bad_request, {}};
+    std::lock_guard lock(pass_m);
+    if (!owner::save(*store, *next)) return {end_code::error, {}};
+    owner::verifier back;
+    if (owner::load(*store, back) != owner::stored::set || back.pk != next->pk) return {end_code::error, {}};
+    c.unlocked_until = 0;  // this session unlocks again, with the new one
+    return {end_code::ok, "{}"};
+  }
+  // What adds access, or changes what is served, needs an unlocked session
+  // once there is a passphrase (§3.4). Revoking and reading never do.
+  if (*what == "add_device" || *what == "pair_code" || *what == "add_root" || *what == "remove_root") {
+    if (auto refused = needs_unlock(c)) return *refused;
+  }
 
   if (*what == "devices") {
     bool waiting = false;
@@ -1301,6 +1609,8 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.own_network = o.own_network;
   st.save_config = o.save_config;
   st.devices_lock = o.devices_lock;
+  st.now_unix = o.now_unix;
+  st.min_answer_gap = std::chrono::milliseconds(std::max(0, o.min_answer_gap_ms));
   st.store = o.store;
   st.loopback_only = o.loopback_only;
   st.max_sessions = o.max_sessions;
@@ -1318,6 +1628,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   if (!identity || identity->size() != st.identity.size()) return err(status::not_found);
   std::memcpy(st.identity.data(), identity->data(), st.identity.size());
   sodium_memzero(identity->data(), identity->size());
+  crypto_scalarmult_base(st.identity_public.data(), st.identity.data());
   net::reserve_sockets(kReserveSockets);
   if (o.make_listener) {
     st.listen = o.make_listener();
@@ -1348,6 +1659,8 @@ counters server::stats() const noexcept {
   c.bad_codes = st_->n_bad_codes.load();
   c.sessions = st_->n_sessions.load();
   c.evicted = st_->n_evicted.load();
+  c.wrong_passphrase = st_->n_wrong_pass.load();
+  c.unlocks = st_->n_unlocks.load();
   return c;
 }
 

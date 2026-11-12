@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "addons/driftwire/channel.h"
+#include "addons/driftwire/owner_pass.h"
 #include "addons/driftwire/serve_wire.h"
 #include "core/result.h"
 
@@ -84,8 +85,20 @@ class client {
   [[nodiscard]] result<stat_info> stat(const std::string& root, const std::string& rel, end_code* code = nullptr);
 
   // One request of the owner's (kAdminOp in `ops`). The answer's JSON. Refused,
-  // or not the owner: status::permission_denied; `code` says how it ended.
-  [[nodiscard]] result<std::string> admin(const std::string& request_json, end_code* code = nullptr);
+  // or not the owner: status::permission_denied; `code` says how it ended,
+  // and `refusal` gets the stream's JSON however it ended ({"why",...} on a
+  // refusal; empty from a service that gave none).
+  [[nodiscard]] result<std::string> admin(const std::string& request_json, end_code* code = nullptr,
+                                          std::string* refusal = nullptr);
+
+  // The owner's passphrase (docs/plans/nas-owner-and-guests.md §3.2): asks for
+  // a challenge, has `derive` make the signer from the salt and cost the
+  // service sent (Argon2id runs there, on this thread), and answers it. The
+  // answer's JSON ({"unlocked_s"}). Refused: status::permission_denied, and
+  // `refusal` says why ({"why":"passphrase"|"locked-out"|...}). A cost outside
+  // owner::sane_cost is never paid: status::corrupt.
+  using derive_fn = std::function<std::optional<owner::signer>(const owner::salt_t&, std::uint64_t ops, std::uint64_t mem)>;
+  [[nodiscard]] result<std::string> unlock(const derive_fn& derive, std::string* refusal = nullptr);
 
   // Ends the session.
   void close() noexcept;
@@ -113,9 +126,22 @@ struct claim_answer {
 // dropped): the claim may still have gone through, and claiming again from
 // the same device returns the same keys. Any earlier failure is a refusal or
 // silence, status::permission_denied.
+//
+// The owner's passphrase (docs/plans/nas-owner-and-guests.md §3.3). With
+// `pass`, the claim says it can take the passphrase step: a service that has
+// one asks for a signature, made by `pass->sign` from the salt and cost it
+// sends (Argon2id runs there); one that has none takes `pass->set`, and the
+// claim fails with nothing to set. Without `pass`, the claim is as before
+// this, and a service with a passphrase refuses it. `why` gets the service's
+// reason when it gave one ("passphrase", "locked-out", "slow-down", ...).
+struct claim_passphrase {
+  std::function<std::optional<owner::signer>(const owner::salt_t& salt, std::uint64_t ops, std::uint64_t mem)> sign;
+  std::optional<owner::verifier> set;
+};
 [[nodiscard]] result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
                                          const std::array<std::uint8_t, 32>& device_key, const std::string& name,
                                          const std::function<bool(std::string_view nonce)>& prove,
-                                         std::chrono::steady_clock::time_point deadline);
+                                         std::chrono::steady_clock::time_point deadline,
+                                         const claim_passphrase* pass = nullptr, std::string* why = nullptr);
 
 }  // namespace mv::driftwire::serve

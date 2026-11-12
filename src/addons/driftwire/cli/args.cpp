@@ -50,7 +50,9 @@ std::string help_text() {
          "  driftwire serve              run the NAS service (no terminal needed), serving the\n"
          "         [--data DIR]          folders in DIR/serve.json to paired devices; serve init\n"
          "                               makes its keys, serve devices|add|revoke|pair-code its pairings,\n"
-         "                               serve disown forgets the desktop that claimed it\n"
+         "                               serve disown forgets the desktop that claimed it,\n"
+         "                               serve status shows its identity and passphrase, serve passphrase\n"
+         "                               set|reset changes or clears the owner's passphrase (here only)\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -117,6 +119,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         want_once = true;
       } else if (t.name == "--data") {
         if (!value(a.data, "a folder")) return out;
+      } else if (t.name == "--passphrase-stdin" && flag) {
+        a.passphrase_stdin = true;
+      } else if (t.name == "--no-passphrase" && flag) {
+        a.no_passphrase = true;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -220,8 +226,23 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.serve_key = words[1];
       } else if (what == "disown" && words.size() == 1) {
         a.serve = serve_action::disown;
+      } else if (what == "status" && words.size() == 1) {
+        a.serve = serve_action::status;
+      } else if (what == "passphrase" && words.size() == 2 && words[1] == "set") {
+        a.serve = serve_action::passphrase_set;
+      } else if (what == "passphrase" && words.size() == 2 && words[1] == "reset") {
+        a.serve = serve_action::passphrase_reset;
       } else {
-        out.error = "serve takes init, devices, add NAME KEY, revoke NAME-OR-KEY, pair-code [SECONDS] or disown";
+        out.error = "serve takes init, status, devices, add NAME KEY, revoke NAME-OR-KEY, pair-code [SECONDS], disown "
+                    "or passphrase set|reset";
+      }
+      if (out.error.empty() && (a.passphrase_stdin || a.no_passphrase)) {
+        const bool asks = a.serve == serve_action::init || a.serve == serve_action::passphrase_set ||
+                          a.serve == serve_action::passphrase_reset;
+        if (!asks || (a.passphrase_stdin && a.no_passphrase) ||
+            (a.no_passphrase && a.serve == serve_action::passphrase_set)) {
+          out.error = "--passphrase-stdin and --no-passphrase go with serve init or serve passphrase, one of them";
+        }
       }
       return out;
     }

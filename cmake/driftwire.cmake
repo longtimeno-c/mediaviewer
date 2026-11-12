@@ -99,6 +99,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
   ${_S}/serve_wire.cpp ${_S}/serve_wire.h
+  ${_S}/owner_pass.cpp ${_S}/owner_pass.h
   ${_S}/serve.cpp ${_S}/serve.h
   ${_S}/serve_client.cpp ${_S}/serve_client.h
   ${_S}/desk.cpp ${_S}/desk.h ${_S}/advert.h
@@ -212,6 +213,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_serve_owner.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"

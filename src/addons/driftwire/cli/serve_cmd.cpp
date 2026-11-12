@@ -10,6 +10,7 @@
 #include <csignal>
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -24,13 +25,19 @@
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/net.h"
+#include "addons/driftwire/owner_pass.h"
 #include "addons/driftwire/secrets.h"
 #include "addons/driftwire/serve.h"
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <sys/stat.h>
+#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -155,7 +162,108 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   return 0;
 }
 
-int run_init(secrets::store& store) {
+// One line from stdin, its newline gone; echo off when it is a terminal.
+// False at the end of input.
+bool read_line(std::string& out, bool hidden) {
+  out.clear();
+#if defined(_WIN32)
+  HANDLE in = ::GetStdHandle(STD_INPUT_HANDLE);
+  DWORD mode = 0;
+  const bool console = hidden && ::GetConsoleMode(in, &mode);
+  if (console) ::SetConsoleMode(in, mode & ~static_cast<DWORD>(ENABLE_ECHO_INPUT));
+#else
+  termios before{};
+  const bool console = hidden && ::isatty(STDIN_FILENO) && ::tcgetattr(STDIN_FILENO, &before) == 0;
+  if (console) {
+    termios quiet = before;
+    quiet.c_lflag &= ~static_cast<tcflag_t>(ECHO);
+    (void)::tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
+  }
+#endif
+  bool got = false;
+  for (int c; (c = std::fgetc(stdin)) != EOF;) {
+    got = true;
+    if (c == '\n') break;
+    if (out.size() < serve::owner::kMaxBytes + 1) out.push_back(static_cast<char>(c));
+  }
+  if (!out.empty() && out.back() == '\r') out.pop_back();
+#if defined(_WIN32)
+  if (console) ::SetConsoleMode(in, mode);
+#else
+  if (console) (void)::tcsetattr(STDIN_FILENO, TCSAFLUSH, &before);
+#endif
+  if (console) print("\n");
+  return got;
+}
+
+bool stdin_is_terminal() {
+#if defined(_WIN32)
+  DWORD mode = 0;
+  return ::GetConsoleMode(::GetStdHandle(STD_INPUT_HANDLE), &mode) != 0;
+#else
+  return ::isatty(STDIN_FILENO) != 0;
+#endif
+}
+
+struct wiped_string {
+  std::string s;
+  ~wiped_string() {
+    if (!s.empty()) sodium_memzero(s.data(), s.size());
+  }
+};
+
+// The owner's passphrase: typed twice on the terminal, or one line of stdin
+// (--passphrase-stdin). Empty with `why` set when there is none to have.
+bool ask_passphrase(const args& a, wiped_string& out, std::string& why) {
+  if (a.passphrase_stdin) {
+    if (!read_line(out.s, false)) {
+      why = "no passphrase on stdin.";
+      return false;
+    }
+  } else {
+    if (!stdin_is_terminal()) {
+      why = "no terminal to ask for the owner's passphrase: give --passphrase-stdin (or, for init, --no-passphrase).";
+      return false;
+    }
+    print("Owner's passphrase (at least 10 characters): ");
+    if (!read_line(out.s, true)) {
+      why = "no passphrase given.";
+      return false;
+    }
+    wiped_string again;
+    print("Again: ");
+    if (!read_line(again.s, true) || again.s.size() != out.s.size() ||
+        sodium_memcmp(again.s.data(), out.s.data(), out.s.size()) != 0) {
+      why = "the two did not match; nothing changed.";
+      return false;
+    }
+  }
+  if (!serve::owner::acceptable(out.s)) {
+    why = "a passphrase needs at least 10 characters; nothing changed.";
+    return false;
+  }
+  return true;
+}
+
+// Argon2id at 256 MiB (call C11), kept as a verifier: the passphrase itself is never written.
+int set_passphrase(const std::string& passphrase, secrets::store& store) {
+  const auto v = serve::owner::make(passphrase, std::time(nullptr));
+  if (!v) return fail("could not stretch the passphrase (not enough memory?); nothing changed.", 1);
+  if (!serve::owner::save(store, *v)) return fail("could not keep the passphrase.", 1);
+  return 0;
+}
+
+int run_init(const args& a, secrets::store& store) {
+  // The passphrase first, so a mistyped one leaves nothing half done; never
+  // over one that is set (`serve passphrase set` changes it).
+  serve::owner::verifier there;
+  const auto held = serve::owner::load(store, there);
+  if (held == serve::owner::stored::unreadable) return fail("the owner's passphrase there cannot be read; run `serve passphrase reset`.", 1);
+  wiped_string pass;
+  if (held == serve::owner::stored::none && !a.no_passphrase) {
+    std::string why;
+    if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  }
   std::array<std::uint8_t, 32> pub{}, key{};
   bool made = false;
   if (!serve::set_up(store, pub, key, made)) return fail("could not write the service's keys.", 1);
@@ -163,7 +271,74 @@ int run_init(secrets::store& store) {
   std::string out = "identity " + key_hex(pub) + "\n";
   if (made) out += "access-key " + key_hex(key) + "\n";
   sodium_memzero(key.data(), key.size());
+  if (!pass.s.empty()) {
+    if (const int r = set_passphrase(pass.s, store); r != 0) {
+      print(out);
+      return r;
+    }
+  }
+  const bool has = serve::owner::load(store, there) == serve::owner::stored::set;
+  out += std::string("passphrase ") + (has ? "set" : "none") + "\n";
   print(out);
+  return 0;
+}
+
+int run_status(secrets::store& store) {
+  const auto identity = store.get(known::kIdentityName);
+  if (!identity || identity->size() != 32) return fail("no keys yet: run `driftwire serve init` first.", 1);
+  std::array<std::uint8_t, 32> priv{}, pub{};
+  std::memcpy(priv.data(), identity->data(), priv.size());
+  crypto_scalarmult_base(pub.data(), priv.data());
+  sodium_memzero(priv.data(), priv.size());
+  std::string out = "identity " + key_hex(pub) + "\n";
+  out += std::string("owner ") + (store.exists(serve::kOwnerName) ? "claimed" : "none") + "\n";
+  serve::owner::verifier v;
+  const auto s = serve::owner::load(store, v);
+  out += std::string("passphrase ") +
+         (s == serve::owner::stored::set ? "set" : s == serve::owner::stored::none ? "none" : "unreadable (run serve passphrase reset)") + "\n";
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  const auto l = serve::owner::load_lockout(store, now);
+  for (const auto& [label, c] : {std::pair<const char*, serve::owner::counter>{"claims", l.claim}, {"owner", l.owner}}) {
+    out += std::string("lockout ") + label + " ";
+    out += c.locked(now) ? "until " + std::to_string(c.until) + " (unix seconds)" : std::to_string(c.misses) + " wrong";
+    out += "\n";
+  }
+  print(out);
+  return 0;
+}
+
+// Here, as the service's user, whoever can run this can edit the store
+// anyway, so it asks nothing first (call C3).
+int run_passphrase_set(const args& a, secrets::store& store) {
+  serve::owner::verifier there;
+  if (serve::owner::load(store, there) == serve::owner::stored::unreadable) {
+    return fail("the passphrase there cannot be read; run `serve passphrase reset`.", 1);
+  }
+  wiped_string pass;
+  std::string why;
+  if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  if (const int r = set_passphrase(pass.s, store); r != 0) return r;
+  print("passphrase set; unlocked sessions end\n");
+  return 0;
+}
+
+// Recovery: the passphrase and both lockouts go; a new one is asked for
+// unless --no-passphrase.
+int run_passphrase_reset(const args& a, secrets::store& store) {
+  wiped_string pass;
+  if (!a.no_passphrase) {
+    std::string why;
+    if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  }
+  if (!serve::owner::reset(store)) return fail("could not clear the passphrase.", 1);
+  std::string line = "passphrase reset at " + std::to_string(std::time(nullptr)) + "; lockouts cleared\n";
+  if (!pass.s.empty()) {
+    if (const int r = set_passphrase(pass.s, store); r != 0) return r;
+    line += "new passphrase set\n";
+  } else {
+    line += "no passphrase now: the next claim or the owner's Mac chooses one\n";
+  }
+  print(line);
   return 0;
 }
 
@@ -266,7 +441,13 @@ int run_serve(const args& a, bool test_hooks) {
     case serve_action::run:
       return run_service(a, test_hooks, data, *store);
     case serve_action::init:
-      return run_init(*store);
+      return run_init(a, *store);
+    case serve_action::status:
+      return run_status(*store);
+    case serve_action::passphrase_set:
+      return run_passphrase_set(a, *store);
+    case serve_action::passphrase_reset:
+      return run_passphrase_reset(a, *store);
     case serve_action::devices:
       return run_devices(*store);
     case serve_action::add:

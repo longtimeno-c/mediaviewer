@@ -65,6 +65,9 @@ inline constexpr const char* kCatalogueFolder = ".mediaviewer";
 inline constexpr const char* kCatalogueLabel = "Catalogue";
 [[nodiscard]] std::array<std::uint8_t, 32> claim_key(std::string_view token_hex);
 
+// What an owner's session can use beyond the operations (serve_caps "features").
+inline constexpr const char* kFeaturePassphrase = "passphrase";
+
 // How often the paired list is read again, for revocations.
 inline constexpr int kDevicesRecheckMs = 2000;
 
@@ -79,6 +82,8 @@ struct counters {
   std::uint64_t bad_codes = 0;      // pairing codes that were wrong, spent or expired
   std::uint64_t sessions = 0;       // admitted
   std::uint64_t evicted = 0;        // a waiting hello closed to make room for a newer connection
+  std::uint64_t wrong_passphrase = 0;  // owner or claim answers that did not verify
+  std::uint64_t unlocks = 0;           // owner sessions unlocked by the passphrase
 };
 
 // The fuzz harness: one session's handling of what an admitted client sends,
@@ -108,6 +113,12 @@ class server {
     std::function<bool(const config&)> save_config;
     // Taken around every change of the paired list ("": none), against `serve add`.
     std::string devices_lock;
+    // The owner's passphrase (owner_pass.h). Unix seconds now: the tests move
+    // it. Empty: the system clock.
+    std::function<std::int64_t()> now_unix;
+    // Answers to a passphrase challenge, per counter, at least this far apart:
+    // a guesser waits, and the service only ever verifies a signature.
+    int min_answer_gap_ms = 1000;
   };
 
   // Listens and returns. status::not_found when the store has no usable
