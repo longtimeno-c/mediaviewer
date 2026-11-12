@@ -93,16 +93,30 @@ supervise() {
     code=$?
     child=""
     [ "$code" -eq 75 ] && continue
-    sleep "${MV_NAS_RESTART_PAUSE:-30}"   # (the variable is for the package's tests)
+    # A pause TERM cuts short (waited on, not run in the foreground). The variable is the tests'.
+    sleep "${MV_NAS_RESTART_PAUSE:-30}" &
+    child=$!
+    wait "$child"
+    child=""
   done
 }
 
 case "$1" in
   start)
     running && exit 0
-    supervise </dev/null >/dev/null 2>&1 &
+    # Its own process, detached from whoever called (Package Center, a test): every
+    # descriptor its own, so the caller's pipes close when this script returns
+    # (dash, DSM's /bin/sh, keeps them on a backgrounded function).
+    if command -v nohup >/dev/null 2>&1; then
+      nohup "$0" supervise </dev/null >/dev/null 2>&1 &
+    else
+      "$0" supervise </dev/null >/dev/null 2>&1 &
+    fi
     echo $! >"$PIDFILE"
     exit 0
+    ;;
+  supervise)
+    supervise
     ;;
   stop)
     if running; then
