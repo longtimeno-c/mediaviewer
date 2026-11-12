@@ -1533,6 +1533,32 @@ Synology hardware or Linux (`file_store` and sockets are portable, but only macO
 Windows. On Windows, `file_store` relies on the per-user profile's ACL; there are no POSIX modes
 to check.
 
+### Phone backup: the write grant (1.1)
+
+`serve_backup.*`; plan: `docs/plans/mobile.md` §10b, §10b.1 (owner's calls B1–B7, 2026-11-12), M11.
+A named folder can be a **backup folder**: `"backup":{"limit","reserve"}` in `serve.json`, set by the
+owner's `add_root` or `set_backup` (the Mac card's "Phones back up to this folder", limit and free space
+to keep, both editable). A phone that lists `write` in its hello is given the op; an older service
+leaves it out of `serve_caps`, and the phone says the service needs updating. Which devices may write
+is one function, `server::options::may_write` (default: every device on the paired list, never the
+owner's session); the grants plan (`docs/plans/nas-owner-and-guests.md`) fills it in.
+
+A write is a stream the other way: `stream_open {"op":"write","root","rel","at","size","hash"}`, the
+service's `stream_credit`, the client's `stream_data` at the offsets it expects. The service, in order:
+refuses anything but a backup folder this device may write (`not-allowed`), a name over 200 bytes
+(`name`); makes the folders beneath the root, never through a link; answers at once when an identical
+file (name or a numbered form, size, BLAKE3) is already there; holds the bytes against the limit
+(`limit`) and the volume's reserve, counting every folder's held bytes (`full`); writes
+`.<name>.<device id>.mvpart`, hidden; with every byte there, flushes, hashes what is on disk and renames
+without replacing (`" (2)"` for a taken name), one commit at a time per folder. A wrong hash removes the
+part (`hash`). Never replaced or removed: anything but a device's **own** `.mvpart` (appended to on
+resume from `have`, removed on a bad hash or when the whole file turns up) and that device's own
+`.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`), the one file replaced, bounded by
+the reserve and not the limit. Writes count against `kMaxStreams`; a small file costs 4 KiB against the
+limit. The phone's side is `src/mobile/backup.*` (ledger, run, the sample library's on-phone target
+through the same `commit_part`). Tests: `[driftwire-serve]` "serve backup:", `[phone-pairing]`,
+`[mobile-link]` "backup:". Not run: a real NAS, a real exFAT or SMB volume, Windows.
+
 ## What moves, and how it lands
 
 `transfer.h`. Copies only: an original is only ever read (rule 5).

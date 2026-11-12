@@ -781,6 +781,12 @@ tools/ios/sample-library-sim.sh <work folder> <Simulator UDID> <MediaViewer.app>
 `MV_SAMPLE_FILE=1` serves it as a `file://` folder instead. The core's side, over a folder of a
 publisher's real `deliver()`, is in `mv_mobile_link_tests "sample*"`.
 
+The same run checks phone backup (1.1) in the sample library: it grants Photos and adds 12 generated
+plain-colour pictures to the Simulator (never anyone's own photos), `test4b` backs them up to "Sample
+NAS on this iPhone", and the script checks that folder (each picture once, whole, no `.mvpart`, the
+ledger copy there) before Forget and that Forget removes it. The backup core alone:
+`mv_mobile_link_tests "backup:*"`; the service's write grant: `mv_import_tests "serve backup*"`.
+
 ## Run
 
 ```powershell

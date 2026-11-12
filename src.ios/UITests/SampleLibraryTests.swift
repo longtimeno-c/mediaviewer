@@ -125,6 +125,48 @@ final class SampleLibraryTests: XCTestCase {
     save("07-clip")
   }
 
+  /// Release 1.1 (§10b): backup in the sample library goes to "Sample NAS on this iPhone", a folder in
+  /// the app's own container, through the real backup code. The script grants Photos and adds
+  /// generated pictures first, then checks the folder against them (and that Forget removes it).
+  func test4b_BackupGoesToTheSampleFolder() throws {
+    let app = try launch()
+    XCTAssertTrue(app.buttons.matching(gridTile).firstMatch.waitForExistence(timeout: 30))
+    app.buttons["Settings"].firstMatch.tap()
+    let row = app.buttons["settings.backup"]
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "Settings has no Backup row")
+    if !row.isHittable { app.swipeUp() }
+    row.tap()
+    XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Nothing leaves this phone'")).firstMatch
+      .waitForExistence(timeout: 10), "The Backup screen does not say the sample backup stays on the phone")
+    save("06b-backup-start")
+    app.buttons["backup.folder"].tap()
+    let sample = app.buttons["backup.folder.Sample NAS on this iPhone"]
+    XCTAssertTrue(sample.waitForExistence(timeout: 15), "The sample folder is not offered")
+    sample.tap()
+    save("06c-backup-choose")
+    app.buttons["backup.choose.done"].tap()
+    let line = app.staticTexts["backup.line"]
+    XCTAssertTrue(line.waitForExistence(timeout: 60), "Backup did not start")
+    let deadline = Date().addingTimeInterval(300)
+    var sawRunning = false
+    while Date() < deadline {
+      if !sawRunning, app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Copying '")).count > 0 {
+        sawRunning = true
+        save("06d-backup-running")
+      }
+      if line.label.hasSuffix(" 0 to go") { break }
+      if app.staticTexts["backup.state"].exists { break }  // a stop state, such as the 250 MB limit
+      usleep(300_000)
+    }
+    save("06e-backup-done")
+    XCTAssertTrue(line.label.contains(" backed up · "), "No progress line: \(line.label)")
+    XCTAssertFalse(line.label.hasPrefix("0 of 0"), "No photos were listed")
+    let words = app.staticTexts["backup.state"].exists ? app.staticTexts["backup.state"].label : ""
+    XCTAssertTrue(line.label.hasSuffix(" 0 to go") || words.contains("250 MB"), "Backup stopped early: \(line.label) \(words)")
+    try line.label.write(to: URL(fileURLWithPath: env["MV_SAMPLE_OUT"]!).appendingPathComponent("backup-line.txt"),
+                         atomically: true, encoding: .utf8)
+  }
+
   func test5_ForgetRemovesIt() throws {
     let app = try launch()
     XCTAssertTrue(app.buttons.matching(gridTile).firstMatch.waitForExistence(timeout: 30))

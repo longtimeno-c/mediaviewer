@@ -885,6 +885,15 @@ requirements in §2.2.
 
 ### M11 — Phone backup, 1.1 (iOS and the service; the year-and-month layout is on the Mac)
 
+**Built (2026-11-12, branch `claude/phone-backup-m11`):** the service's write grant (`docs/design/28`, "Phone
+backup: the write grant"), the phone's ledger and run (`src/mobile/backup.*`, `mv_backup_*`), the Backup
+screen and its states, PhotoKit (`MobileLink/LinkBackup.swift`), the sample library's on-phone target, the
+Mac card's backup folder with its limit and reserve and whether this Mac indexes it, and the 1.1 store copy.
+The year-and-month layout already existed on the Mac (`backup::layout::year_month`, #414). Shown on loopback
+and in the Simulator only; the verify line below needs a device, a real NAS and 1,000 real files. Not built:
+pausing backup while a photo loads (§8.2's lane rule; backup runs on its own queue but does not yet yield),
+the Windows card's backup rows (the engine JSON is shared), the write permission inside the grants plan.
+
 §10b: Backup screen, folder picker from the service's named folders, PhotoKit source, verified write
 through the service, storage limit, ledger on the phone and the NAS.
 
