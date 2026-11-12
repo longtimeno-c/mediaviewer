@@ -121,7 +121,8 @@ struct lockout {
 [[nodiscard]] std::string lockout_json(const lockout& l);
 [[nodiscard]] std::optional<lockout> parse_lockout(std::string_view json);
 // Missing: no misses. There and unreadable: both locked for
-// kFirstLockSeconds from `now` (a tampered or broken file never unlocks).
+// kFirstLockSeconds from `now`, and that lock is written back so it lasts
+// kFirstLockSeconds, not for ever (a broken file never unlocks at once).
 [[nodiscard]] lockout load_lockout(secrets::store& store, std::int64_t now);
 [[nodiscard]] bool save_lockout(secrets::store& store, const lockout& l);
 

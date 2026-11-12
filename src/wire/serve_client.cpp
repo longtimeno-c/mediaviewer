@@ -503,7 +503,12 @@ result<std::string> client::unlock(const derive_fn& derive, std::string* refusal
   if (!challenge) return challenge;
   const auto doc = json::parse(*challenge, 2);
   const auto sig = doc ? sign_challenge(*doc, *st_->ch, st_->device_public, derive, min_ops, min_mem) : std::nullopt;
-  if (!sig) return err(status::corrupt);
+  if (!sig) {
+    // Not signed here: a cost below the floor, or no key for this salt. The
+    // challenge itself is no refusal.
+    if (refusal) *refusal = "{\"why\":\"cost\"}";
+    return err(status::corrupt);
+  }
   json::writer w;
   w.begin_object().key("do").string("unlock").key("sig").string(*sig).end_object();
   return admin(w.str(), &code, refusal);

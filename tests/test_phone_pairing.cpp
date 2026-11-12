@@ -982,19 +982,18 @@ TEST_CASE("phone pairing: the Mac proves a passphrase set at init, extends a gue
   REQUIRE(mac.d->start_pairing());
 }
 
-TEST_CASE("phone pairing: a slow-down keeps the Mac's key, and the reason reaches the card", "[phone-pairing]") {
+TEST_CASE("phone pairing: right after an unlock the next action goes through, and a changed passphrase drops the key", "[phone-pairing]") {
   nas n;
-  n.answer_gap_ms = 60000;  // one owner answer a minute: the second always comes too soon
+  n.answer_gap_ms = 60000;  // wrong answers a minute apart: a right one never waits
   n.srv->stop();
   n.srv.reset();
   n.start();
   desktop mac;
   REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, true));
-  REQUIRE(mac.d->unlock(kPass));  // the owner counter's one answer this minute
-  mac.d->release();               // the card lets the session go between requests
-  // A new session needs an unlock: the kept key is too soon, and is not forgotten for that.
-  CHECK_FALSE(mac.d->start_pairing());
-  CHECK(why_desk(*mac.d) == "slow-down");
+  REQUIRE(mac.d->unlock(kPass));
+  mac.d->release();  // the card lets the session go between requests
+  // A new session needs an unlock: the kept key answers at once, and is not turned away as too soon.
+  REQUIRE(mac.d->start_pairing());
   auto status = mac.d->owner_status();
   REQUIRE(status);
   CHECK(status->unlocked_s > 0);

@@ -1240,12 +1240,13 @@ bool server::state::answer(which_counter which, const owner::verifier& v, const 
     until = c.until;
     return false;
   }
+  // Wrong answers are spaced out; a right one never waits (the Mac unlocking
+  // a fresh session right after another must not be told to slow down).
   const auto at = steady();
   if (last_answer[which] != clock::time_point{} && at - last_answer[which] < min_answer_gap) {
     why = "slow-down";
     return false;
   }
-  last_answer[which] = at;
   // Counted as a miss before it is checked: a store that cannot be written
   // must never mean guesses that are never counted.
   c.miss(t);
@@ -1260,6 +1261,7 @@ bool server::state::answer(which_counter which, const owner::verifier& v, const 
     return true;
   }
   n_wrong_pass.fetch_add(1);
+  last_answer[which] = at;
   why = c.locked(t) ? "locked-out" : "passphrase";
   until = c.locked(t) ? c.until : 0;
   return false;
