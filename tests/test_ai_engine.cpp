@@ -8050,11 +8050,46 @@ struct fake_driftwire {
   std::vector<std::string> calls;
   std::mutex m;
   std::function<void()> on_pair;  // runs before "pair" is answered, outside the lock (a test holds it there)
+  // The owner's passphrase (docs/plans/nas-owner-and-guests.md §8.1): with it
+  // set and not unlocked, "pair" is refused needs-unlock.
+  bool passphrase = false, unlocked = false;
+  std::string refusal = "{}";
+  std::int64_t last_for_s = -1;
+  std::vector<std::string> limited;  // keys of devices that are timed (one day from now)
   mv::result<std::string> operator()(const std::string& target, const std::string& method, const std::string& json) {
     if (method == "pair" && on_pair) on_pair();
     std::lock_guard lock(m);
     calls.push_back(method);
     if (target != "driftwire") return mv::err(mv::status::not_found);
+    const auto asked_doc = mv::json::parse(json.empty() ? std::string("{}") : json, 4);
+    if (method == "owner_status") {
+      mv::json::writer w;
+      w.begin_object().key("passphrase").string(passphrase ? "set" : "none").key("features").begin_array().string("passphrase").end_array();
+      w.key("unlocked_s").integer(unlocked ? 600 : 0).key("locked_until").integer(0).end_object();
+      return w.take();
+    }
+    if (method == "last_refusal") return refusal;
+    if (method == "unlock") {
+      if (!asked_doc || !asked_doc->str("passphrase") || *asked_doc->str("passphrase") != "a long owner passphrase") {
+        refusal = "{\"why\":\"passphrase\"}";
+        return mv::err(mv::status::permission_denied);
+      }
+      unlocked = true;
+      refusal = "{}";
+      return std::string("{}");
+    }
+    if (method == "lock") {
+      unlocked = false;
+      return std::string("{}");
+    }
+    if (method == "grant") {
+      last_for_s = asked_doc ? asked_doc->integer("for_s").value_or(-1) : -1;
+      return std::string("{}");
+    }
+    if (method == "pair" && passphrase && !unlocked) {
+      refusal = "{\"why\":\"needs-unlock\"}";
+      return mv::err(mv::status::permission_denied);
+    }
     if (method == "status") {
       mv::json::writer w;
       w.begin_object().key("claimed").boolean(claimed).key("pending_revokes").integer(pending).key("local").string("192.168.1.5:7878").key("public").string("nas.example.com:7878").key("machine").string("Studio Mac").end_object();
@@ -8063,11 +8098,19 @@ struct fake_driftwire {
     if (method == "devices") {
       mv::json::writer w;
       w.begin_object().key("reachable").boolean(true).key("code_waiting").boolean(waiting).key("devices").begin_array();
-      for (const auto& [n, k] : devices) w.begin_object().key("name").string(n).key("key").string(k).end_object();
+      for (const auto& [n, k] : devices) {
+        w.begin_object().key("name").string(n).key("key").string(k);
+        if (std::find(limited.begin(), limited.end(), k) != limited.end()) {
+          w.key("limited").boolean(true).key("expires").integer(static_cast<std::int64_t>(std::time(nullptr)) + 86400);
+          w.key("expired").boolean(false).key("guest").boolean(true).key("scoped").boolean(false);
+        }
+        w.end_object();
+      }
       w.end_array().end_object();
       return w.take();
     }
     if (method == "pair") {
+      last_for_s = asked_doc ? asked_doc->integer("for_s").value_or(0) : 0;
       const auto asked = mv::json::parse(json, 4);
       mv::json::writer w;
       w.begin_object()
@@ -8163,6 +8206,70 @@ TEST_CASE("phone link: a code is one QR with the library, the key and the servic
       8000));
   CHECK(after.find("added")->a[0].s == "iPhone");
   CHECK(after.str("qr")->empty());
+}
+
+TEST_CASE("phone link: the passphrase, guest codes and timed phones reach the card", "[ai][engine][phone-link]") {
+  fake_driftwire d;
+  {
+    std::lock_guard lock(d.m);
+    d.passphrase = true;
+    d.devices.emplace_back("Visitor", std::string(64, 'e'));
+    d.limited.push_back(std::string(64, 'e'));
+  }
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
+  auto v = link_done(a);
+  CHECK(*v.str("nas_passphrase") == "set");
+  REQUIRE(v.find("nas_features"));
+  CHECK(v.find("nas_features")->a.size() == 1);
+  CHECK(v.integer("unlocked_s") == 0);
+  const auto& phones = v.find("devices")->a;
+  REQUIRE(phones.size() == 1);
+  CHECK(phones[0].boolean("limited") == true);
+  CHECK(phones[0].boolean("guest") == true);
+  CHECK(phones[0].integer("expires") > static_cast<std::int64_t>(std::time(nullptr)));
+  // A code while locked: the card is told it needs the passphrase, not just "refused".
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
+  v = link_done(a);
+  CHECK(*v.str("error") == "needs_unlock");
+  CHECK(v.str("qr")->empty());
+  // A wrong passphrase, then the right one, and a guest code for a day.
+  REQUIRE(a.phone().request("{\"do\":\"unlock\",\"passphrase\":\"wrong\"}"));
+  CHECK(*link_done(a).str("error") == "passphrase");
+  REQUIRE(a.phone().request("{\"do\":\"unlock\",\"passphrase\":\"a long owner passphrase\"}"));
+  v = link_done(a);
+  CHECK(*v.str("error") == "");
+  CHECK(v.integer("unlocked_s") == 600);
+  // The passphrase is never in what the card is shown.
+  CHECK(a.phone().state_json().find("a long owner passphrase") == std::string::npos);
+  REQUIRE(a.phone().request("{\"do\":\"pair\",\"for_s\":86400}"));
+  v = link_done(a);
+  REQUIRE(!v.str("qr")->empty());
+  CHECK(v.integer("qr_for_s") == 86400);
+  const auto qr = mv::json::parse(qr_json(*v.str("qr")), 4);
+  REQUIRE(qr);
+  REQUIRE(qr->find("grant"));
+  CHECK(qr->find("grant")->integer("for_s") == 86400);
+  {
+    std::lock_guard lock(d.m);
+    CHECK(d.last_for_s == 86400);
+  }
+  // Extend from the card.
+  REQUIRE(a.phone().request("{\"do\":\"grant\",\"key\":\"" + std::string(64, 'e') + "\",\"for_s\":604800}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(d.m);
+    CHECK(d.last_for_s == 604800);
+  }
 }
 
 TEST_CASE("phone link: a takeover asked on the share, allowed, then published", "[ai][engine][phone-link]") {

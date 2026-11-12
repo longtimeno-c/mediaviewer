@@ -87,6 +87,9 @@ struct pair_payload {
   std::string service_identity_hex, access_key_hex;
   std::string code;
   std::int64_t expires = 0;
+  // A guest code (docs/plans/nas-owner-and-guests.md §4.4): the access it
+  // gives, shown on the phone before it is confirmed; 0 for none.
+  std::int64_t grant_for_s = 0;
 };
 [[nodiscard]] std::string pair_url(const pair_payload& p);
 

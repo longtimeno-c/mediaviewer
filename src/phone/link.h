@@ -82,6 +82,10 @@ class link {
   //   refresh, claim {local, public}, pair, pair_stop, revoke {key},
   //   add_folder {label, path}, remove_folder {id}, set_addresses {local, public},
   //   takeover_ask, takeover_restart, takeover_allow {key}: as before the move.
+  // The owner's passphrase and timed phones (docs/plans/nas-owner-and-guests.md §8.1):
+  //   claim also takes {passphrase, new_passphrase}; pair {for_s} makes a guest code;
+  //   unlock {passphrase}, lock, set_passphrase {passphrase}, grant {key, for_s (0: no limit)}.
+  // A passphrase is handed to the desk and never kept here or shown in state_json.
   [[nodiscard]] expected request(const std::string& request_json);
   // The card's state, one JSON object (docs/plans/phone-in-the-app.md §3). [no-block]
   [[nodiscard]] std::string state_json() const;
@@ -96,6 +100,9 @@ class link {
  private:
   struct row {
     std::string name, key;
+    // A timed or scoped phone, as the NAS last said (docs/plans/nas-owner-and-guests.md §8.1).
+    bool limited = false, expired = false, guest = false, scoped = false;
+    std::int64_t expires = 0;
   };
   struct folder_row {
     std::string id, label, path;
@@ -130,6 +137,11 @@ class link {
     double retry_s = 0;
     std::chrono::steady_clock::time_point retry_at{};
     std::string other_fingerprint, asking_name, asking_key, asking_fingerprint;
+    // The NAS owner's side (§3): "set", "none", "broken", "" (a NAS too old to say).
+    std::string nas_passphrase;
+    std::vector<std::string> nas_features;
+    std::int64_t unlocked_s = 0, locked_until = 0;
+    std::int64_t qr_for_s = 0;  // the code showing is a guest code for this long
   };
 
   void loop();

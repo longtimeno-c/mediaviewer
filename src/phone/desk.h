@@ -23,6 +23,8 @@
 #include <vector>
 
 #include "wire/link.h"
+#include "wire/grants.h"
+#include "wire/owner_pass.h"
 #include "wire/net.h"
 #include "wire/secrets.h"
 #include "wire/serve.h"
@@ -38,6 +40,7 @@ inline constexpr const char* kKeyName = "phone_desk_key";        // this desktop
 inline constexpr const char* kServiceName = "phone_service";     // what claiming learned
 inline constexpr const char* kDevicesName = "phone_devices";     // the phones this desktop has paired
 inline constexpr const char* kPendingName = "phone_revoke_pending";  // revoked here, the NAS not told yet
+inline constexpr const char* kGrantsName = "phone_grants";          // the timed phones, as the NAS last said
 void forget(secrets::store& store);
 // The items above, moved from `from` (Driftwire's store, where they were kept
 // until 2026-11-12) to `to` where `to` has none: written, read back, then
@@ -73,6 +76,19 @@ struct pairing {
 struct device_row {
   std::string name;
   key32 key{};
+  // A timed or scoped phone (docs/plans/nas-owner-and-guests.md §5), as the
+  // NAS last said; `limited` false for an unlimited one.
+  bool limited = false;
+  std::int64_t expires = 0;  // unix, the NAS's clock; 0: no end
+  bool expired = false, guest = false, scoped = false;
+};
+
+// The NAS's owner side (§3): what it can do and where the owner stands.
+struct owner_state {
+  std::string passphrase;  // "set", "none", "broken"; "" from a service too old to say
+  std::vector<std::string> features;
+  std::int64_t unlocked_s = 0;    // left on this desktop's unlock; 0: locked
+  std::int64_t locked_until = 0;  // unix: too many wrong answers until then
 };
 
 struct root_row {
@@ -90,6 +106,10 @@ class desk {
     std::function<bool(const net::address&)> own_network;
     bool nearby_loopback = false;  // the tests: the nearby service on loopback only
     bool advertise = true;         // false: no Bonjour (the tests)
+    // The owner's passphrase (§3.1): the cost of a new one, and the least a
+    // challenge may ask (the tests use owner::kMinOps/kMinMem).
+    std::uint64_t pass_ops = serve::owner::kOps, pass_mem = serve::owner::kMem;
+    std::uint64_t floor_ops = serve::owner::kFloorOps, floor_mem = serve::owner::kFloorMem;
   };
   explicit desk(options o);
   ~desk();
@@ -103,15 +123,36 @@ class desk {
   // status::permission_denied: the service said no, or stayed silent because
   // it already has an owner or this is not its own network (it never says
   // which). status::io: the share cannot be written, or nothing answered.
+  //
+  // The owner's passphrase (§3.3): with one, the claim takes the passphrase
+  // step; `new_passphrase` chooses it for a NAS that has none (an existing one
+  // is proven, never replaced). Without one, it claims as before, and a NAS
+  // with a passphrase refuses it (last_refusal says "passphrase").
   [[nodiscard]] expected claim(const std::string& share_folder, const std::string& local,
-                               const std::string& public_name);
+                               const std::string& public_name, const std::string& passphrase = {},
+                               bool new_passphrase = false);
+  // The owner's unlock: Argon2id here, a signature there. The key it makes is
+  // kept in memory for owner::kUnlockSeconds (call C2: never stored), and a
+  // request the NAS refuses for want of an unlock is retried with it once.
+  [[nodiscard]] expected unlock(const std::string& passphrase);
+  // Forgets that key, and ends the NAS's unlock of this session.
+  [[nodiscard]] expected lock();
+  // Sets the passphrase (none yet: the device key is enough; set: unlocked).
+  [[nodiscard]] expected set_passphrase(const std::string& next);
+  [[nodiscard]] result<owner_state> owner_status();
+  // A device's limit from now: `for_s` seconds, or 0 for no limit at all.
+  [[nodiscard]] expected grant(const key32& key, std::int64_t for_s);
+  // The NAS's last refusal, {"why":...,"until":...} ("{}" when the last request went through).
+  [[nodiscard]] std::string last_refusal();
   // A new public name for the QR ("" for none).
   [[nodiscard]] expected set_public_name(const std::string& public_name);
   // The service's address on its own network changed ("host:port").
   [[nodiscard]] expected set_local(const std::string& local);
 
   // A single-use code the service will take for `ttl_ms`.
-  [[nodiscard]] result<pairing> start_pairing(int ttl_ms = kDefaultPairTtlMs);
+  // `for_s` > 0: a guest code, whose phone gets that long from when it scans
+  // (needs a NAS that has grants; status::unsupported_format from one too old).
+  [[nodiscard]] result<pairing> start_pairing(int ttl_ms = kDefaultPairTtlMs, std::int64_t for_s = 0);
   // Withdraws the code waiting on the service (Cancel, or it ran out here).
   [[nodiscard]] expected stop_pairing();
   // Whether the last code is still waiting on the service: false once a phone

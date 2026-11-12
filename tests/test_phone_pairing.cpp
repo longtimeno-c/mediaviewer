@@ -145,6 +145,9 @@ struct desktop {
     o.nearby_loopback = true;
     o.advertise = false;
     o.own_network = [](const sp::net::address&) { return true; };
+    // The owner's passphrase at the cheapest cost, so the tests stay quick.
+    o.pass_ops = o.floor_ops = mv::driftwire::serve::owner::kMinOps;
+    o.pass_mem = o.floor_mem = mv::driftwire::serve::owner::kMinMem;
     d = std::make_unique<desk::desk>(std::move(o));
   }
 };
@@ -873,6 +876,123 @@ TEST_CASE("phone pairing: grants and durations parse strictly", "[phone-pairing]
   CHECK(back->front().roots->empty());  // empty stays empty: none, never all
   CHECK_FALSE(back->front().allows("a1a1a1a1a1a1a1a1", false));
   CHECK(back->front().allows("a1a1a1a1a1a1a1a1", true));
+}
+
+// ---- the Mac's side of the passphrase and timed phones (desk) ---------------------------------
+
+std::string why_desk(desk::desk& d) { return why_in(d.last_refusal()); }
+
+TEST_CASE("phone pairing: the Mac chooses the passphrase at its claim, then unlocks, locks and adds a guest", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  // A NAS with none: the claim chooses one, and the Mac keeps the key it made for ten minutes.
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, true));
+  owner::verifier v;
+  REQUIRE(owner::load(*n.store, v) == owner::stored::set);
+  auto status = mac.d->owner_status();
+  REQUIRE(status);
+  CHECK(status->passphrase == "set");
+  CHECK(std::find(status->features.begin(), status->features.end(), "passphrase") != status->features.end());
+  CHECK(status->unlocked_s > 0);
+  // Adding needs an unlock: the kept key does it, with nobody asked.
+  REQUIRE(mac.d->start_pairing());
+  CHECK(mac.d->last_refusal() == "{}");
+  // Locked: the next addition is refused, and says why, until the person unlocks again.
+  REQUIRE(mac.d->lock());
+  CHECK_FALSE(mac.d->start_pairing());
+  CHECK(why_desk(*mac.d) == "needs-unlock");
+  CHECK_FALSE(mac.d->unlock("not the passphrase at all"));
+  CHECK(why_desk(*mac.d) == "passphrase");
+  REQUIRE(mac.d->unlock(kPass));
+  // A guest code: its phone is on the NAS's grants and the Mac's own, never on either paired list.
+  auto guest_code = mac.d->start_pairing(desk::kDefaultPairTtlMs, 24 * 3600);
+  REQUIRE(guest_code);
+  const key32 guest = random_key();
+  auto phone = n.phone(guest, guest_code->code, nullptr, "Visitor");
+  REQUIRE(phone);
+  CHECK((*phone)->caps().has_grant);
+  auto rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  const key32 pub = public_of(guest);
+  const auto it = std::find_if(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub; });
+  REQUIRE(it != rows->end());
+  CHECK(it->limited);
+  CHECK(it->guest);
+  CHECK(it->expires > 0);
+  CHECK(known::load_named(*mac.store, desk::kDevicesName).empty());  // the Mac's nearby list: unlimited only
+  CHECK(mac.store->exists(desk::kGrantsName));
+  // Removing is the device key's alone, even locked.
+  REQUIRE(mac.d->lock());
+  REQUIRE(mac.d->revoke(pub));
+  rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  CHECK(std::none_of(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub; }));
+}
+
+TEST_CASE("phone pairing: the Mac proves a passphrase set at init, extends a guest, and changes it", "[phone-pairing]") {
+  nas n;
+  init_passphrase(n);
+  desktop mac;
+  // No passphrase: refused, and it says so.
+  CHECK_FALSE(mac.d->claim(utf8(n.share), n.local(), ""));
+  CHECK(why_desk(*mac.d) == "passphrase");
+  // Choosing a new one on a NAS that has one never replaces it: it is checked, and wrong.
+  CHECK_FALSE(mac.d->claim(utf8(n.share), n.local(), "", "a different long passphrase", true));
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), "", kPass, false));
+  auto code = mac.d->start_pairing(desk::kDefaultPairTtlMs, 3600);
+  REQUIRE(code);
+  const key32 guest = random_key();
+  const std::int64_t t0 = std::time(nullptr);
+  n.fake_now = t0;
+  REQUIRE(n.phone(guest, code->code));
+  const key32 pub = public_of(guest);
+  // Extended from the card: a longer end.
+  REQUIRE(mac.d->grant(pub, 7 * 24 * 3600));
+  auto rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  const auto row = std::find_if(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub; });
+  REQUIRE(row != rows->end());
+  CHECK(row->expires == t0 + 7 * 24 * 3600);
+  // Made unlimited: it moves to the paired lists.
+  REQUIRE(mac.d->grant(pub, 0));
+  rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  CHECK(std::any_of(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub && !r.limited; }));
+  CHECK(known::load_named(*mac.store, desk::kDevicesName).size() == 1);
+  // A new passphrase, and the old one no longer unlocks.
+  REQUIRE(mac.d->set_passphrase("the replacement passphrase"));
+  REQUIRE(mac.d->lock());
+  CHECK_FALSE(mac.d->unlock(kPass));
+  REQUIRE(mac.d->unlock("the replacement passphrase"));
+  REQUIRE(mac.d->start_pairing());
+}
+
+TEST_CASE("phone pairing: the route carries the passphrase and the limits to the card", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  auto claimed = desk::route_request(*mac.d, "phone", "claim",
+                                     "{\"share\":\"" + utf8(n.share) + "\",\"local\":\"" + n.local() +
+                                         "\",\"passphrase\":\"" + kPass + "\",\"new_passphrase\":true}");
+  REQUIRE(claimed);
+  auto status = desk::route_request(*mac.d, "phone", "owner_status", "{}");
+  REQUIRE(status);
+  CHECK(status->find("\"passphrase\":\"set\"") != std::string::npos);
+  auto pair = desk::route_request(*mac.d, "phone", "pair", "{\"for_s\":3600}");
+  REQUIRE(pair);
+  const auto doc = mv::json::parse(*pair, 2);
+  REQUIRE(doc);
+  REQUIRE(n.phone(random_key(), *doc->str("code")));
+  auto devices = desk::route_request(*mac.d, "phone", "devices", "{}");
+  REQUIRE(devices);
+  CHECK(devices->find("\"limited\":true") != std::string::npos);
+  CHECK(devices->find("\"guest\":true") != std::string::npos);
+  REQUIRE(desk::route_request(*mac.d, "phone", "lock", "{}"));
+  CHECK_FALSE(desk::route_request(*mac.d, "phone", "pair", "{}"));
+  auto why = desk::route_request(*mac.d, "phone", "last_refusal", "{}");
+  REQUIRE(why);
+  CHECK(why_in(*why) == "needs-unlock");
+  REQUIRE(desk::route_request(*mac.d, "phone", "unlock", std::string("{\"passphrase\":\"") + kPass + "\"}"));
+  CHECK(desk::route_request(*mac.d, "phone", "pair", "{}"));
 }
 
 TEST_CASE("phone pairing: a phone is never told the salt", "[phone-pairing]") {
