@@ -154,8 +154,12 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     do {
       // The library in the name too: after Forget and another pairing, an id can come back.
       let library = String(connection.libraryID.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
-      return try await originals.file(key: "\(library)-\(asset)-\(size)", size: size) { part in
-        let status = await Self.readOriginal(link: link, asset: asset, size: size, to: part) { done in progress(done, total) }
+      let connection = self.connection
+      return try await originals.file(key: "\(library)-\(asset)-\(size)", size: size,
+                                      place: { move in try connection.whileLive(link) { try move() } != nil }) { part in
+        let status = await Self.readOriginal(connection: connection, link: link, asset: asset, size: size, to: part) {
+          done in progress(done, total)
+        }
         switch status {
         case 0: return
         case 11: throw CancellationError()
@@ -190,10 +194,13 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
   }
 
   /// Writes the whole original to `part`, which the store then checks and moves in.
-  private static func readOriginal(link: LinkHandle, asset: Int64, size: UInt64, to part: URL, progress: @escaping (Int64) -> Void) async -> Int32 {
+  private static func readOriginal(connection: LinkConnection, link: LinkHandle, asset: Int64, size: UInt64, to part: URL,
+                                   progress: @escaping (Int64) -> Void) async -> Int32 {
     await withLinkCancel { cancel in
       await onLinkQueue {
-        guard FileManager.default.createFile(atPath: part.path, contents: nil), let file = try? FileHandle(forWritingTo: part) else { return 13 }
+        // Created only while the library is still paired: Forget may be removing the folder.
+        guard let made = connection.whileLive(link, { FileManager.default.createFile(atPath: part.path, contents: nil) }) else { return 11 }
+        guard made, let file = try? FileHandle(forWritingTo: part) else { return 13 }
         defer { try? file.close() }
         let writer = FileWriter(file: file, progress: progress)
         let box = Unmanaged.passRetained(writer)

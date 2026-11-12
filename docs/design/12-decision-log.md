@@ -16,6 +16,30 @@ the Mac sending files as a Driftwire transfer that skips Accept. Instead the Mac
 receive path, resume is `read_range`, and "newest wins" is the check it already does on `current.json`.
 The Mac's identity is not in the QR, so nothing pins it; the catalogue's signature is the trust.
 
+**A sample library, opened by a code, in every build (owner, 2026-11-12).** Reverses two earlier
+calls: "no sample library" (2026-11-09, `docs/plans/mobile.md` §2, which also removed the Welcome
+screen's "Try the sample library"), and §11.1's order for App Review, where a review server and a
+reusable review grant came first and a demo mode was the last resort. The owner: "maybe there is a
+specific code that can be entered that will just open a test library? that seems easiest. all
+simulated", and "in built on all app versions". Why: App Review cannot reach a NAS, a review server
+must stay up for every future update, and the app does nothing without one. What is built: the code
+`SAMPLE` on the Scan screen ("Enter a code"), or `mediaviewer://sample` as a QR code or link, opens a
+real signed generation from the GitHub release `sample-library` (`src/mobile/sample.*`). Only the
+transport is simulated: `sample::static_remote` is a second `remote_file`, HTTPS range reads done by
+the host (`SampleFetch.swift`), so the pinned-key signature, the newest-wins rule, every manifest
+hash, the install, the tiny pack, the JPEG-512 cache, originals, clips and search on the phone are
+the code a NAS library runs. Downloaded, not bundled: the B/32 text tower alone is 127 MB, which every
+install would carry for a library few customers open; the download is free, needs no server
+process, and the app grows by code only. Its own publisher key (the secret is off the repository),
+a fixed library id, read-only. Write access to the release is not enough to put a file on a phone:
+the originals, clips and JPEG-512 pack are listed with their SHA-256 in `files.json`, signed by the
+same key, and checked whole before use (review fix, 2026-11-12). Nothing about the person is sent:
+no cookies, no cache, a fixed user agent "MediaViewer" and any language; GitHub sees an address, as
+for any download. Never hidden (App Review guideline
+2.3.1): the Enter-a-code prompt says to type SAMPLE for it, the grid carries a "Sample library" chip,
+Settings names it and where it comes from, and Forget removes it like any library. Cost: a release
+of about 185 MB on GitHub that must stay published, a key to keep, and one more `remote_file`.
+
 **Claim tokens do not expire (2026-11-10).** Reading one needs access to the share, and that access could write a
 new one, so an expiry adds nothing, while comparing a NAS clock with a file's time could lock a person out.
 

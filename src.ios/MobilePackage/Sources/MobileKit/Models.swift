@@ -250,6 +250,11 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   /// Which paired library this snapshot is about ("" with none), stamped when it is published, so a
   /// late snapshot is never read as another library's.
   public var libraryID: String = ""
+  /// The sample library (§11.1), read from its static folder on GitHub rather than a Synology. The
+  /// app says so wherever the library's source is named.
+  public var isSample = false
+  /// The paired library's name, as its code gave it ("" with none): said when something would replace it.
+  public var libraryName = ""
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {
@@ -273,10 +278,13 @@ public struct LibraryIdentity: Hashable, Sendable {
   public let name: String
   /// Short enough to compare by eye: "7F3A 92C1".
   public let fingerprint: String
+  /// The sample library's code: nothing on a computer to compare with.
+  public let isSample: Bool
 
-  public init(name: String, fingerprint: String) {
+  public init(name: String, fingerprint: String, isSample: Bool = false) {
     self.name = name
     self.fingerprint = fingerprint
+    self.isSample = isSample
   }
 }
 
@@ -304,6 +312,8 @@ public enum PairingFailure: Error, Hashable, Sendable {
   case codeNotReadable
   case synologyUnreachable([AddressFailure])
   case serviceTooOld
+  /// It answered with something not signed by the key the code pins (the sample library's list).
+  case catalogueRejected
 }
 
 public enum CopyEvent: Hashable, Sendable {

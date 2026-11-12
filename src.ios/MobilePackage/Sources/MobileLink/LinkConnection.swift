@@ -33,12 +33,17 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private let work = TrackedWork()
   private let continued = ContinuedCopy()  // the BGContinuedProcessingTask's bookkeeping (iOS 26)
   private var opened: Task<Void, Never>?
+  /// Each write into the library's folders runs under it (`whileLive`); Forget closes it before it
+  /// removes them. Opened for each handle the library is opened with.
+  private let writes = WriteGate()
 
   private let monitor = NWPathMonitor()
   private let defaults = UserDefaults.standard
   private static let pairedKey = "link.paired"
   private static let catalogueKey = "link.catalogue"
   private static let libraryKey = "link.libraryID"
+  private static let sampleKey = "link.sample"
+  private static let nameKey = "link.libraryName"
 
   /// The paired library's id as last published; "" with none or before the first publish. A plain
   /// stored value, cheap enough for launch.
@@ -55,7 +60,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
                            catalogue: Self.catalogue(from: defaults.object(forKey: Self.catalogueKey) as? [String: Any]),
                            cacheBytes: 0)
       : .noLibrary
-    if paired { first.libraryID = Self.storedLibraryID }
+    if paired {
+      first.libraryID = Self.storedLibraryID
+      first.isSample = defaults.bool(forKey: Self.sampleKey)
+      first.libraryName = defaults.string(forKey: Self.nameKey) ?? ""
+    }
     snapshot = first
     opened = Task.detached(priority: .userInitiated) { [weak self] in await self?.openStored() }
     monitor.pathUpdateHandler = { [weak self] path in self?.pathChanged(path) }
@@ -69,6 +78,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   deinit { monitor.cancel() }
 
   private func openStored() async {
+    // A Forget while the stored library opens wins: it is not adopted afterwards.
+    let era = writes.era
     let opened: (PairingRecord, LinkHandle)? = await onLinkQueue {
       guard let record = PairingRecord.load(), let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }) else { return nil }
       LinkFolders.prepare()
@@ -80,9 +91,23 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       return (record, handle)
     }
     if let (record, handle) = opened {
-      lock.withLock {
+      // Adopted, and its writes allowed, in one step, and only if nothing was forgotten or paired
+      // meanwhile.
+      let adopted = lock.withLock { () -> Bool in
+        guard !forgotten, self.handle == nil, writes.open(for: handle, ifNotClosedSince: era) else { return false }
         self.record = record
         self.handle = handle
+        return true
+      }
+      guard adopted else {
+        mv_link_shut_down(handle.raw)  // waits for its own writers; then it is dropped
+        if lock.withLock({ forgotten && self.handle == nil }) {
+          // Forget ran while this opened, and its removal may have run first: what the open made
+          // (the library folder, the caches) goes the same way. No pairing can start meanwhile:
+          // pairing waits for this open to finish.
+          await onLinkQueue { Self.removeLibraryFiles() }
+        }
+        return
       }
       // Stamps the id on what launch showed, for an install from before the id was stored.
       if current.libraryID != record.libraryID { publish { _ in } }
@@ -113,6 +138,19 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   func awaitLink() async -> LinkHandle? {
     await lock.withLock({ opened })?.value
     return link
+  }
+
+  /// A write into this phone's folders for `link`'s library (moving in an original, creating a
+  /// downloaded clip): run only while that library is still the paired one, and finished before
+  /// Forget removes the folders. Keep it short: a create or a move, never a download (the bytes go
+  /// into a file already open, which a removal does not bring back). nil when refused.
+  func whileLive<T>(_ link: LinkHandle, _ body: () throws -> T) rethrows -> T? {
+    // The gate, and inside it the connection's own word on which library is live, as before.
+    let ran: T?? = try writes.whileLive(link) { () throws -> T? in
+      guard lock.withLock({ handle === link && !forgotten }) else { return nil }
+      return try body()
+    }
+    return ran ?? nil
   }
 
   /// Bumped on every connect and network change: anything measured on the old route is stale.
@@ -152,12 +190,16 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       change(&next)
       // Until the stored record is read at launch, the id launch stamped stands.
       next.libraryID = next.hasLibrary ? (record?.libraryID ?? snapshot.libraryID) : ""
+      next.isSample = next.hasLibrary && (record.map(\.isSample) ?? snapshot.isSample)
+      next.libraryName = next.hasLibrary ? (record?.libraryName ?? snapshot.libraryName) : ""
       snapshot = next
       return (next, Array(continuations.values))
     }
     guard let (value, list) = published else { return }
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
     defaults.set(value.libraryID, forKey: Self.libraryKey)
+    defaults.set(value.isSample, forKey: Self.sampleKey)
+    defaults.set(value.libraryName, forKey: Self.nameKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
                     "epoch": NSNumber(value: info.epoch)], forKey: Self.catalogueKey)
@@ -202,7 +244,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       let status = code.withCString { mv_pair_parse($0, Int64(Date().timeIntervalSince1970), &info) }
       if status == 2 { throw PairingFailure.codeExpired }
       guard status == 0 else { throw PairingFailure.codeNotReadable }
-      return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint))
+      return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint),
+                             isSample: info.sample != 0)
     }
   }
 
@@ -234,6 +277,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       throw PairingFailure.codeNotReadable
     }
 
+    if parsed.sample != 0 {
+      try await runSamplePairing(parsed, continuation: continuation)
+      return
+    }
+
     // Pairing with the Mac itself waits for nearby sync (M4b): the code names only the service.
     continuation.yield(.skipped(.mac))
 
@@ -263,6 +311,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
     // The code was good. A library already on this phone goes now, all of it, as Forget would:
     // its copies stop and its files go before the new one is written (the person agreed to this).
+    _ = await awaitLink()  // launch's open first: it may still adopt, or clean up after, the stored library
     if lock.withLock({ self.record != nil || self.handle != nil }) {
       await removeLibrary(keepingDeviceKey: true)
     }
@@ -287,6 +336,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.handle = handle
       self.forgotten = false
       connectGeneration += 1  // the last library's connect, still running, publishes nothing
+      writes.open(for: handle)  // with the handle, under the same lock
     }
     work.reopen()
     publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
@@ -294,6 +344,66 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
     continuation.yield(.working(.outsideRoute))
     continuation.yield(.outsideRoute(await OutsideRoute.test(publicName: record.publicName)))
+    await retry()
+  }
+
+  /// The sample library (§11.1): no computer, no service and nothing to redeem. Its folder must
+  /// answer before anything on the phone changes; then it is stored and opened as any library is,
+  /// and the same sync copies, checks and installs its signed catalogue.
+  private func runSamplePairing(_ parsed: mv_pair_info,
+                                continuation: AsyncThrowingStream<PairingEvent, Error>.Continuation) async throws {
+    continuation.yield(.skipped(.mac))
+    continuation.yield(.working(.synology))
+    let probeDir = FileManager.default.temporaryDirectory.appendingPathComponent("sample-probe-\(UUID().uuidString)")
+    let probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
+                              fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
+                              local: "", publicName: "", identity: "", accessKey: "", deviceName: await deviceName(), sample: true)
+    let (status, report) = await withLinkCancel { cancel in
+      await onLinkQueue { () -> (Int32, mv_route_report) in
+        defer { try? FileManager.default.removeItem(at: probeDir) }
+        guard let handle = LinkHandle.open(record: probe, deviceKey: Data(), libraryDir: probeDir.appendingPathComponent("library"),
+                                           cacheDir: probeDir.appendingPathComponent("thumbs")) else {
+          return (Int32(MV_LINK_INTERNAL.rawValue), mv_route_report())
+        }
+        var report = mv_route_report()
+        return (mv_link_connect(handle.raw, cancel.raw, &report), report)
+      }
+    }
+    switch status {
+    case 0: break
+    case 11: throw CancellationError()
+    case 12: throw PairingFailure.catalogueRejected  // answered, but not signed by the sample's key
+    default: throw PairingFailure.synologyUnreachable(Self.failures(of: report))
+    }
+
+    // As with any pairing, the library already here goes first, all of it.
+    _ = await awaitLink()  // launch's open first: it may still adopt, or clean up after, the stored library
+    if lock.withLock({ self.record != nil || self.handle != nil }) {
+      await removeLibrary(keepingDeviceKey: true)
+    }
+    let record = probe
+    let handle: LinkHandle = try await onLinkQueue {
+      guard record.save() else { throw PairingFailure.codeNotReadable }
+      LinkFolders.prepare()
+      LinkFolders.keepOnlyThumbs(of: record.libraryID)
+      guard let handle = LinkHandle.open(record: record, deviceKey: Data(), libraryDir: LinkFolders.library,
+                                         cacheDir: LinkFolders.thumbs(for: record.libraryID)) else {
+        throw PairingFailure.codeNotReadable
+      }
+      return handle
+    }
+    lock.withLock {
+      self.record = record
+      self.handle = handle
+      self.forgotten = false
+      connectGeneration += 1
+      writes.open(for: handle)  // with the handle, under the same lock
+    }
+    work.reopen()
+    publish { $0 = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0) }
+    continuation.yield(.passed(.synology))
+    // Always over the internet: there is no route of its own to test.
+    continuation.yield(.skipped(.outsideRoute))
     await retry()
   }
 
@@ -362,18 +472,27 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       record = nil
       return out
     }
+    // A write already past its check finishes now; every later one is refused.
+    writes.close()
     cancel?.fire()
+    // Returns once the core's own writers (tiles, the sample's verified copies) are done.
     if let link { mv_link_shut_down(link.raw) }
     await work.stopAndWait()
     await onLinkQueue {
-      mv_library_remove(LinkFolders.library.path)
-      try? FileManager.default.removeItem(at: LinkFolders.thumbs)
-      try? FileManager.default.removeItem(at: LinkFolders.originals)
-      try? FileManager.default.removeItem(at: LinkFolders.clips)
+      Self.removeLibraryFiles()
       PairingRecord.clear()
       if !keepingDeviceKey { DeviceKey.clear() }
     }
     publish { $0 = .noLibrary }
+  }
+
+  /// Everything a library leaves in this phone's folders. Link queue only; after the handles that
+  /// write there are shut down.
+  private static func removeLibraryFiles() {
+    mv_library_remove(LinkFolders.library.path)
+    try? FileManager.default.removeItem(at: LinkFolders.thumbs)
+    try? FileManager.default.removeItem(at: LinkFolders.originals)
+    try? FileManager.default.removeItem(at: LinkFolders.clips)
   }
 
   private func catalogueNow(link: LinkHandle) async -> CatalogueInfo? {
@@ -390,6 +509,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0)
     case 7: return .serviceTooOld
     case 5: return .deviceRevoked
+    case 12: return .publisherChanged  // the sample library's list: not signed by the pinned key
     default:
       // A route that answered "not on the list" is the service speaking for the library: this
       // phone was removed, whatever the other routes did.

@@ -41,6 +41,9 @@ typedef enum mv_link_status {
   MV_LINK_WAITING = 19,       /* the copy stopped because bytes may not move now (mobile data) */
 } mv_link_status;
 
+/* Return 0 to stop the read. */
+typedef int32_t (*mv_sink_fn)(void* ctx, uint64_t offset, const uint8_t* data, size_t size);
+
 /* ---- pairing ------------------------------------------------------------- */
 
 /* The scanned code, parsed and not yet trusted. */
@@ -55,6 +58,7 @@ typedef struct mv_pair_info {
   char code[256];
   int64_t expires;
   char fingerprint[32]; /* compare with the desktop's */
+  int32_t sample;       /* 1: the sample library's code (no service, never expires; see below) */
 } mv_pair_info;
 
 typedef struct mv_route_failure {
@@ -74,13 +78,31 @@ mv_cancel* mv_cancel_new(void);
 void mv_cancel_fire(mv_cancel* c);
 void mv_cancel_free(mv_cancel* c);
 
-/* MV_LINK_EXPIRED when now_unix is past the code's expiry. */
+/* MV_LINK_EXPIRED when now_unix is past the code's expiry. The sample library's code ("SAMPLE", or
+ * mediaviewer://sample) parses too, with sample = 1, its own library and publisher key, and no service. */
 int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out);
+
+/* ---- the sample library (docs/plans/mobile.md 11.1) ---------------------------
+ * A real signed catalogue in a static HTTPS folder (a GitHub release), opened by
+ * mv_link_open with `static_base` and the host's HTTPS GET as `fetch`. Sync,
+ * pictures and originals then run exactly as over the link. */
+
+/* The folder every build opens the sample library from, ending in '/'. */
+const char* mv_sample_base(void);
+
+/* Polled while a fetch waits: 1 stop now. */
+typedef int32_t (*mv_stopped_fn)(void* ctx);
+/* The host's HTTPS GET. BLOCKS (a core worker calls it). Bytes [at, at + length) of `url` (length
+ * UINT64_MAX: to the end) go to `sink` in order, offsets from 0 at `at`; a 0 from the sink stops the
+ * read. Returns MV_LINK_OK, MV_LINK_NOT_FOUND (a 404), MV_LINK_CANCELLED (stopped or the sink said
+ * stop) or MV_LINK_UNREACHABLE. Must poll `stopped` while it waits for the network. */
+typedef int32_t (*mv_fetch_fn)(void* ctx, const char* url, uint64_t at, uint64_t length, mv_sink_fn sink, void* sink_ctx,
+                               mv_stopped_fn stopped, void* stopped_ctx);
 
 /* A new X25519 device key. */
 int32_t mv_device_key_new(uint8_t private_key[32], uint8_t public_key[32]);
 
-/* BLOCKS. Redeems the code on the first route that answers. */
+/* BLOCKS. Redeems the code on the first route that answers. The sample library's needs none: MV_LINK_OK. */
 int32_t mv_pair_redeem(const mv_pair_info* info, const uint8_t device_key[32], const char* device_name,
                        mv_cancel* cancel, mv_route_report* report);
 
@@ -100,17 +122,25 @@ typedef struct mv_link_config {
   const uint8_t* device_key;    /* 32: private */
   const uint8_t* publisher_key; /* 32: pinned at pairing */
   uint64_t thumb_cache_bytes;
+  /* The sample library: non-NULL reads the static folder at this URL through `fetch`, in place of
+   * the service; identity, access_key, device_key, local and public_name are then unused. */
+  const char* static_base;
+  mv_fetch_fn fetch;
+  void* fetch_ctx; /* outlives the link */
 } mv_link_config;
 
 mv_mobile_link* mv_link_open(const mv_link_config* config);
 void mv_link_close(mv_mobile_link* link);
 
 /* BLOCKS. Keeps a live connection (the report says how it was reached); races the routes only when
- * there is none. Never cuts reads in flight. */
+ * there is none. Never cuts reads in flight. The sample library: its folder's host answered with a
+ * file list signed by the pinned key; MV_LINK_REJECTED when it answered with one that is not. */
 int32_t mv_link_connect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
 /* BLOCKS. The network changed: races again and swaps the winner in; reads in flight finish on the old one. */
 int32_t mv_link_reconnect(mv_mobile_link* link, mv_cancel* cancel, mv_route_report* report);
-/* "Forget this library": cuts every read and refuses every later connect. Close it afterwards. */
+/* "Forget this library": cuts every read and refuses every later connect. Returns once nothing the
+ * core writes for this library (JPEG-512 tiles, the sample library's verified copies) is being
+ * written, and none is written later, so the folders can be removed. Close it afterwards. */
 void mv_link_shut_down(mv_mobile_link* link);
 int32_t mv_link_is_connected(const mv_mobile_link* link);
 void mv_link_disconnect(mv_mobile_link* link);
@@ -154,8 +184,6 @@ void mv_library_remove(const char* library_dir);
 
 typedef void (*mv_bytes_fn)(void* ctx, const uint8_t* data, size_t size);
 typedef void (*mv_done_fn)(void* ctx, int32_t status, const uint8_t* data, size_t size);
-/* Return 0 to stop the read. */
-typedef int32_t (*mv_sink_fn)(void* ctx, uint64_t offset, const uint8_t* data, size_t size);
 typedef void (*mv_moment_fn)(void* ctx, int64_t start_ms, int32_t kind, const char* text);
 
 /* Local and fast: the 64 px tile. MV_LINK_NOT_FOUND when none exists. */

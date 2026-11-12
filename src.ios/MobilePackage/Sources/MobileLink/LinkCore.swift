@@ -38,6 +38,7 @@ final class LinkHandle: @unchecked Sendable {
   deinit { mv_link_close(raw) }
 
   static func open(record: PairingRecord, deviceKey: Data, libraryDir: URL, cacheDir: URL) -> LinkHandle? {
+    if record.isSample { return openSample(record: record, libraryDir: libraryDir, cacheDir: cacheDir) }
     guard let identity = Data(hex: record.identity), let access = Data(hex: record.accessKey),
           let publisher = Data(hex: record.publisherKey), identity.count == 32, access.count == 32,
           publisher.count == 32, deviceKey.count == 32 else { return nil }
@@ -68,6 +69,37 @@ final class LinkHandle: @unchecked Sendable {
                     }
                   }
                 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+extension LinkHandle {
+  /// The sample library: the same link, reading the static folder through `SampleFetch` (§11.1).
+  fileprivate static func openSample(record: PairingRecord, libraryDir: URL, cacheDir: URL) -> LinkHandle? {
+    guard let publisher = Data(hex: record.publisherKey), publisher.count == 32 else { return nil }
+    let base = SampleFetch.base
+    return publisher.withUnsafeBytes { p in
+      libraryDir.path.withCString { lib in
+        cacheDir.path.withCString { cache in
+          record.libraryID.withCString { id in
+            record.deviceName.withCString { name in
+              base.withCString { b in
+                var c = mv_link_config()
+                c.library_dir = lib
+                c.cache_dir = cache
+                c.library_id = id
+                c.device_name = name
+                c.publisher_key = p.bindMemory(to: UInt8.self).baseAddress
+                c.thumb_cache_bytes = 256 << 20  // 47 pictures: a small cache is all of them
+                c.static_base = b
+                c.fetch = SampleFetch.callback
+                c.fetch_ctx = SampleFetch.context
+                return mv_link_open(&c).map { LinkHandle(raw: $0) }
               }
             }
           }

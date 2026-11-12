@@ -1723,6 +1723,42 @@ a thumbnail pack under the fold size goes after 2 hours, because folding replace
 **Ranking.** Exact ties break by asset id, then time (`vector_store::ranked_before`, `finish`,
 the text passes), so a phone and its desktop list the same rows in the same order.
 
+**The sample library (2026-11-12, [plan](../plans/mobile.md) §11.1).** A generation like any
+other, made by `tools/ios/sample-library.sh`: 47 CC0 and public-domain files on a disk image of their
+own, indexed by the engine over the app's own decoders with B/32 on the CPU, then `phone_publish`
+under a fixed library id and signed by the sample library's own key
+(`mv_mobile_parity_desktop sample-publish`). The catalogue and the originals are flattened into the
+GitHub release `sample-library`, one file per (root, path): `<root id>__<path with '/' as "__">`.
+`files.json`, signed by the same key (`{"signature", "list"}` in one asset, so a republish never pairs a list
+with another's signature; Ed25519 over `kFilesContext` and the list's bytes), gives
+the root list and the size and SHA-256 of every file sync does not check itself: everything but
+`current.json`, `gen/` and `models/` under the catalogue root, so the JPEG-512 pack, `library.json`
+and every original. On the phone, `sample::static_remote` (`src/mobile/sample.*`) is the `remote_file`
+over that folder; the host does the HTTPS (`mv_fetch_fn`, `SampleFetch.swift`). It passes the
+catalogue's own files through by range, for sync to check, and reads any other file only from a
+whole copy whose hash matched the list (kept in `<thumb cache>/verified` as `<name>.<16 hex of its
+hash>`, so a republished file with the same name and size is fetched again; Forget removes it);
+a file not listed is never fetched. A download belongs to the file, not to the reader that began
+it: a reader that cancels (a seek in a clip, a swipe past a photo) leaves what arrived in a
+`.part` named by the file's hash, and the next reader rehashes that prefix and asks for the rest by
+range. A reader waiting for another's download honours its own cancel. Forget leaves nothing behind for any library, NAS or
+sample: `mv_link_shut_down` stops every read in flight (each fetch polls it) and returns only once
+the core's own writers are done and refuse any later write: the sample's verified copies and the
+JPEG-512 tiles. The app's own writers (an original moved into its store, a downloaded clip
+created) run under `LinkConnection.whileLive`, which refuses a library that is forgotten or
+replaced; Forget passes that gate before it removes the folders, so a late write cannot bring
+one back. Bytes still streaming into a file already open land in a removed file and vanish. The verified copies count
+in the cache size Settings shows and stay under 256 MB, least recently read first (the whole
+library is about 55 MB). A file list the pinned key did not sign is `MV_LINK_REJECTED` from connect,
+check and copy, shown as "didn't pass its signature check", not as unreachable. The clip
+throughput probe is skipped for the sample: its clips are a few megabytes, played from the
+verified copy. `mv_pair_parse` reads the code `SAMPLE` or
+`mediaviewer://sample` as a code with `sample = 1`, the sample's library id and pinned key, and no
+service; `mv_link_open` with `static_base` opens the link over the folder. Sync, the thumb cache,
+`mv_file_read` and the catalogue's search are unchanged, so the sample is checked as a NAS's
+catalogue is: a file whose hash is not the manifest's, or a `current.json` the pinned key did not
+sign, is refused.
+
 ## Photos library source (macOS)
 
 A Photos result's path stays its key: the host lists it as a virtual item and resolves it to the

@@ -62,8 +62,8 @@ struct LibraryScreen: View {
                  onDismiss: notice.canDismiss ? {
                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { model.dismiss(notice) }
                  } : nil,
-                 actionTitle: notice.action == .scan ? "Scan code" : nil,
-                 action: notice.action == .scan ? { model.isScanning = true } : nil)
+                 actionTitle: notice.action == .scan ? "Scan code" : notice.action == .retry ? "Try again" : nil,
+                 action: noticeAction(notice))
         .padding(.horizontal, Theme.inset)
         .padding(.vertical, 8)
         .arrives(reduceMotion: reduceMotion)
@@ -85,7 +85,7 @@ private struct PlaceBar: View {
       HStack(spacing: 8) {
         path(library)
         if let chip = model.routeChip {
-          RouteChip(text: chip) { model.tab = .connection }
+          RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
             .arrives(reduceMotion: reduceMotion)
         }
       }
@@ -184,15 +184,29 @@ struct ChipLabel<Content: View>: View {
   }
 }
 
+extension LibraryScreen {
+  /// What a notice's button does: scan a new code, or try the connection again.
+  fileprivate func noticeAction(_ notice: LibraryNotice) -> (() -> Void)? {
+    switch notice.action {
+    case .scan: return { model.isScanning = true }
+    case .retry:
+      let connection = model.services.connection
+      return { Task { await connection.retry() } }
+    case nil: return nil
+    }
+  }
+}
+
 struct RouteChip: View {
   let text: String
+  var tone: Color = Theme.warm
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
       Text(text)
         .font(.caption.weight(.medium))
-        .foregroundStyle(Theme.warm)
+        .foregroundStyle(tone)
         .fixedSize()
     }
     .accessibilityHint("Shows the connection")

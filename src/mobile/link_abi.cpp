@@ -16,6 +16,7 @@
 #include "mobile/link_payload.h"
 #include "mobile/link_thumbs.h"
 #include "mobile/mv_mobile_link.h"
+#include "mobile/sample.h"
 #include "mobile/sync.h"
 
 using namespace mv;
@@ -30,7 +31,10 @@ struct mv_mobile_link {
   sync_config sync;
   std::string cache_dir;
   std::uint64_t thumb_capacity = 0;
+  // One of the two: the Driftwire link to the service, or the sample library's static folder.
   std::unique_ptr<link_session> session;
+  std::unique_ptr<sample::static_remote> fixed;
+  remote_file* remote = nullptr;  // whichever it is
   std::unique_ptr<thumb_cache> thumbs;
 
   std::mutex copy_m;  // one copy per library at a time
@@ -152,7 +156,7 @@ mv_link_status resolve_asset(mv_mobile_link* l, std::int64_t asset, std::string&
     std::lock_guard lock(l->roots_m);
     auto found = l->label_to_root.find(ref->second.share);
     if (!l->roots_known || found == l->label_to_root.end()) {
-      auto listed = l->session->roots();
+      auto listed = l->remote->roots();
       if (!listed) return status_of_read(listed.error());
       l->label_to_root.clear();
       for (const auto& r : *listed) l->label_to_root[r.label] = r.id;
@@ -175,6 +179,62 @@ auto catch_all(Fn fn) noexcept -> decltype(fn()) {
   }
 }
 
+// The host's HTTPS GET behind the static folder: the C callback, with the core's
+// cancel flag as its `stopped`.
+sample::fetch_fn host_fetch(mv_fetch_fn fetch, void* ctx) {
+  return [fetch, ctx](const std::string& url, std::uint64_t at, std::uint64_t length, const byte_sink& sink,
+                      const std::function<bool()>& stop) -> expected {
+    struct call {
+      const byte_sink* sink;
+      const std::function<bool()>* stop;
+    } c{&sink, &stop};
+    const mv_sink_fn to_sink = [](void* p, uint64_t offset, const uint8_t* data, size_t size) -> int32_t {
+      auto* k = static_cast<call*>(p);
+      if (*k->stop && (*k->stop)()) return 0;
+      try {  // nothing unwinds through the host's frames
+        return (*k->sink)(offset, std::span<const std::uint8_t>(data, size)) ? 1 : 0;
+      } catch (...) {
+        return 0;
+      }
+    };
+    const mv_stopped_fn stopped = [](void* p) -> int32_t {
+      const auto* k = static_cast<const call*>(p);
+      return *k->stop && (*k->stop)() ? 1 : 0;
+    };
+    const int32_t s = fetch(ctx, url.c_str(), at, length, to_sink, &c, stopped, &c);
+    switch (s) {
+      case MV_LINK_OK: return {};
+      case MV_LINK_NOT_FOUND: return err(status::not_found);
+      case MV_LINK_CANCELLED: return err(status::cancelled);
+      default: return err(status::io);
+    }
+  };
+}
+
+// The sample library's "connect": its folder answers with its root list.
+int32_t connect_static(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
+  auto done = l->fixed->connect(cancel ? cancel->flag.get() : nullptr);
+  route_report r;
+  if (done) {
+    r.address = l->fixed->host();
+    r.over_internet = true;
+  } else {
+    r.failures.push_back({l->fixed->host(), route_problem::unreachable});
+  }
+  fill_report(r, report);
+  if (done) return MV_LINK_OK;
+  if (done.error() == status::permission_denied) return MV_LINK_REJECTED;  // answered, with a list we refuse
+  return done.error() == status::cancelled ? MV_LINK_CANCELLED : MV_LINK_UNREACHABLE;
+}
+
+// The sample library's file list must be signed before sync looks at anything: a refused one is
+// "rejected", as a catalogue with a bad signature is, not "unreachable".
+bool static_list_refused(mv_mobile_link* l) {
+  if (!l->fixed) return false;
+  auto roots = l->fixed->roots();
+  return !roots && roots.error() == status::permission_denied;
+}
+
 }  // namespace
 
 extern "C" {
@@ -194,9 +254,11 @@ void mv_cancel_free(mv_cancel* c) { delete c; }
 int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
   return catch_all([&]() -> int32_t {
     if (!text || !out) return MV_LINK_INVALID;
-    auto p = parse_pair_payload(text);
+    const bool is_sample = sample::is_code(text);
+    auto p = is_sample ? result<pair_payload>(sample::payload()) : parse_pair_payload(text);
     if (!p) return MV_LINK_INVALID;
     std::memset(out, 0, sizeof *out);
+    out->sample = is_sample ? 1 : 0;
     put(out->library_id, p->library_id);
     put(out->library_name, p->library_name);
     std::memcpy(out->publisher_key, p->publisher_key.data(), 32);
@@ -207,7 +269,7 @@ int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
     put(out->code, p->code);
     out->expires = p->expires;
     put(out->fingerprint, p->fingerprint);
-    if (p->expires <= now_unix) return MV_LINK_EXPIRED;
+    if (!is_sample && p->expires <= now_unix) return MV_LINK_EXPIRED;
     return MV_LINK_OK;
   });
 }
@@ -225,6 +287,7 @@ int32_t mv_pair_redeem(const mv_pair_info* info, const uint8_t device_key[32], c
                        mv_cancel* cancel, mv_route_report* report) {
   return catch_all([&]() -> int32_t {
     if (!info || !device_key) return MV_LINK_INVALID;
+    if (info->sample) return MV_LINK_OK;  // nothing to redeem: the folder is read-only and open to all
     route_report r;
     auto done = pair_device(service_of(info, device_key, device_name), info->code, r, cancel ? cancel->flag.get() : nullptr);
     fill_report(r, report);
@@ -235,17 +298,18 @@ int32_t mv_pair_redeem(const mv_pair_info* info, const uint8_t device_key[32], c
 
 mv_mobile_link* mv_link_open(const mv_link_config* c) {
   try {
-    if (!c || !c->library_dir || !c->cache_dir || !c->library_id || !c->identity || !c->access_key || !c->device_key ||
-        !c->publisher_key) {
-      return nullptr;
-    }
+    const bool is_static = c && c->static_base;
+    if (!c || !c->library_dir || !c->cache_dir || !c->library_id || !c->publisher_key) return nullptr;
+    if (is_static ? !c->fetch : (!c->identity || !c->access_key || !c->device_key)) return nullptr;
     auto l = std::make_unique<mv_mobile_link>();
-    l->service.local = or_empty(c->local);
-    l->service.public_name = or_empty(c->public_name);
     l->service.device_name = or_empty(c->device_name);
-    l->service.identity = key_at(c->identity);
-    l->service.access_key = key_at(c->access_key);
-    l->service.device_key = key_at(c->device_key);
+    if (!is_static) {
+      l->service.local = or_empty(c->local);
+      l->service.public_name = or_empty(c->public_name);
+      l->service.identity = key_at(c->identity);
+      l->service.access_key = key_at(c->access_key);
+      l->service.device_key = key_at(c->device_key);
+    }
     l->sync.library_dir = c->library_dir;
     l->sync.library_id = c->library_id;
     l->sync.publisher_key = key_at(c->publisher_key);
@@ -253,8 +317,16 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
     std::filesystem::create_directories(l->sync.library_dir, ec);
     l->cache_dir = c->cache_dir;
     l->thumb_capacity = c->thumb_cache_bytes ? c->thumb_cache_bytes : 2ull << 30;
-    l->session = std::make_unique<link_session>(l->service);
-    l->thumbs = std::make_unique<thumb_cache>(l->cache_dir, l->thumb_capacity, *l->session);
+    if (is_static) {
+      l->fixed = std::make_unique<sample::static_remote>(c->static_base, host_fetch(c->fetch, c->fetch_ctx),
+                                                         l->sync.publisher_key, l->sync.library_id,
+                                                         l->cache_dir + "/verified");
+      l->remote = l->fixed.get();
+    } else {
+      l->session = std::make_unique<link_session>(l->service);
+      l->remote = l->session.get();
+    }
+    l->thumbs = std::make_unique<thumb_cache>(l->cache_dir, l->thumb_capacity, *l->remote);
     reload_view(l.get());
     return l.release();
   } catch (...) {
@@ -267,6 +339,7 @@ void mv_link_close(mv_mobile_link* l) { delete l; }
 int32_t mv_link_connect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
   return catch_all([&]() -> int32_t {
     if (!l) return MV_LINK_INVALID;
+    if (l->fixed) return connect_static(l, cancel, report);
     route_report r;
     auto done = l->session->connect(r, cancel ? cancel->flag.get() : nullptr);
     fill_report(r, report);
@@ -278,6 +351,13 @@ int32_t mv_link_connect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* r
 int32_t mv_link_reconnect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
   return catch_all([&]() -> int32_t {
     if (!l) return MV_LINK_INVALID;
+    if (l->fixed) {
+      {
+        std::lock_guard lock(l->roots_m);
+        l->roots_known = false;
+      }
+      return connect_static(l, cancel, report);
+    }
     route_report r;
     auto done = l->session->reconnect(r, cancel ? cancel->flag.get() : nullptr);
     fill_report(r, report);
@@ -291,20 +371,32 @@ int32_t mv_link_reconnect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report*
 }
 
 void mv_link_shut_down(mv_mobile_link* l) {
-  if (l) l->session->shut_down();
+  if (!l) return;
+  // The reads first, so the waits below are short; then the core's own writers drain.
+  if (l->fixed) l->fixed->shut_down();  // waits for its verified copies too
+  else l->session->shut_down();
+  l->thumbs->shut_down();
 }
 
-int32_t mv_link_is_connected(const mv_mobile_link* l) { return l && l->session->connected() ? 1 : 0; }
+int32_t mv_link_is_connected(const mv_mobile_link* l) {
+  if (!l) return 0;
+  return (l->fixed ? l->fixed->connected() : l->session->connected()) ? 1 : 0;
+}
 
 void mv_link_disconnect(mv_mobile_link* l) {
-  if (l) l->session->disconnect();
+  if (!l) return;
+  if (l->fixed) l->fixed->disconnect();
+  else l->session->disconnect();
 }
+
+const char* mv_sample_base(void) { return sample::kBase.data(); }
 
 int32_t mv_sync_check(mv_mobile_link* l, mv_sync_report* report) {
   return catch_all([&]() -> int32_t {
     if (!l || !report) return MV_LINK_INVALID;
-    auto plan = check_catalogue(*l->session, l->sync);
     std::memset(report, 0, sizeof *report);
+    if (static_list_refused(l)) return report->outcome = MV_LINK_REJECTED;
+    auto plan = check_catalogue(*l->remote, l->sync);
     report->outcome = status_of_outcome(plan.outcome);
     report->epoch = plan.epoch;
     report->generation = plan.generation;
@@ -327,7 +419,11 @@ int32_t mv_sync_copy(mv_mobile_link* l, mv_cancel* cancel, mv_sync_allowed_fn al
     // remove what the first just installed. The check is made inside the lock,
     // against installed.json as it is now.
     std::lock_guard one(l->copy_m);
-    sync_plan plan = check_catalogue(*l->session, l->sync);
+    if (static_list_refused(l)) {
+      if (report) report->outcome = MV_LINK_REJECTED;
+      return MV_LINK_REJECTED;
+    }
+    sync_plan plan = check_catalogue(*l->remote, l->sync);
     if (report) {
       report->epoch = plan.epoch;
       report->generation = plan.generation;
@@ -339,7 +435,7 @@ int32_t mv_sync_copy(mv_mobile_link* l, mv_cancel* cancel, mv_sync_allowed_fn al
       return status_of_outcome(plan.outcome);
     }
     const auto outcome = copy_catalogue(
-        *l->session, l->sync, plan,
+        *l->remote, l->sync, plan,
         [&](std::uint64_t done, std::uint64_t total) {
           if (progress) progress(ctx, done, total);
         },
@@ -412,7 +508,11 @@ int32_t mv_thumb_request(mv_mobile_link* l, int64_t asset, int32_t lane, mv_done
   });
 }
 
-uint64_t mv_thumb_bytes_used(const mv_mobile_link* l) { return l ? l->thumbs->bytes_used() : 0; }
+uint64_t mv_thumb_bytes_used(const mv_mobile_link* l) {
+  if (!l) return 0;
+  // The sample library's verified pictures and clips are kept on the phone too.
+  return l->thumbs->bytes_used() + (l->fixed ? l->fixed->verified_bytes() : 0);
+}
 
 int32_t mv_asset_read(mv_mobile_link* l, int64_t asset, mv_asset_info* out) {
   return catch_all([&]() -> int32_t {
@@ -434,7 +534,7 @@ int32_t mv_file_read(mv_mobile_link* l, int64_t asset, uint64_t at, uint64_t len
     if (!l || !sink) return MV_LINK_INVALID;
     std::string root, rel;
     if (const auto found = resolve_asset(l, asset, root, rel); found != MV_LINK_OK) return found;
-    auto done = l->session->read_range(
+    auto done = l->remote->read_range(
         root, rel, at, length,
         [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
         cancel ? cancel->flag.get() : nullptr, bulk != 0);

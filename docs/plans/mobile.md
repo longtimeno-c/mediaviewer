@@ -107,8 +107,10 @@ and a read-only first version is easier to get through review and to trust.
 backup with the app closed · NAS administration · Android.
 
 **Who it is for:** someone who already runs the desktop app against a NAS. Setup is one path: scan
-the code shown by MediaViewer on a Mac or Windows PC (owner, 2026-11-09). There is no sample
-library, no search for a NAS and no typing a server in by hand.
+the code shown by MediaViewer on a Mac or Windows PC (owner, 2026-11-09). There is no search for a
+NAS and no typing a server in by hand. **Changed 2026-11-12 (owner):** one more code, `SAMPLE`, opens
+a sample library with no Mac and no NAS, in every build, for App Review and for anyone trying the
+app (§11.1). The Welcome screen still offers only the scan.
 
 ### 2.1 The first setup (owner, 2026-11-10)
 
@@ -162,7 +164,10 @@ stop. A reversal needs a dated row in `docs/design/12-decision-log.md`.
 | 10 | **Encryption filing and France** | The app encrypts with libsodium rather than iOS, so it is not exempt. Apple asks for a French declaration when an app uses standard algorithms the OS does not provide and is sold in France [Apple]. Whether Noise and CPace count as standard needs a lawyer's reading. | Leave France out of the first release so the filing cannot hold up launch, and add it once the declaration is done. |
 
 **The way in for App Review** is not a call but is required work. Apple expects a working demo
-account or demo mode [Apple], and a single-use, short-lived code cannot be that. See §11.1 and M10.
+account or demo mode [Apple], and a single-use, short-lived code cannot be that. **Decided
+2026-11-12 (owner):** a fixed code, `SAMPLE`, opens a sample library in every build; this reverses
+the no-sample-library call and puts the sample before a review server (`12-decision-log.md`, "A
+sample library, opened by a code"). See §11.1 and M10.
 
 ## 4. Architecture
 
@@ -628,19 +633,33 @@ over: native PhotoKit, and streaming rather than staging originals.
 | Backup (1.1) | Folder, folder layout, how much is done, what is left | Running; paused off Wi-Fi; folder not allowed by the service; storage limit reached; NAS full |
 | Connection | Synology status, where the catalogue came from and when, cache size, forget | Each failure names its cause |
 
-**App Review** needs a way in without owning a NAS, and there is no sample library to give it.
-Apple expects a working demo account or demo mode [Apple]. The way in is:
+**App Review, and anyone without a NAS (built 2026-11-12, owner):** the code `SAMPLE`, typed on
+the Scan screen ("Enter a code"), or `mediaviewer://sample` as a QR code or link, opens the **sample
+library**: 44 photos and 3 short clips from Wikimedia Commons, CC0 or public domain, with no
+identifiable face (`tools/ios/sample-library/SOURCES.md`). It is in every build, Release and
+TestFlight included, and nothing about it is hidden:
 
-- A dedicated review server: a small always-on machine running the service, holding sample photos
-  only and never the owner's library. It has to stay up for every future update, not just the first.
-- A **review grant** made on purpose from the desktop: read-only, reusable, long-lived and
-  revocable, unlike the single-use pairing code. Its QR image and steps go in the review notes.
-- No special reviewer behaviour in the app. It follows the normal scan path, because hidden
-  features are their own reason for rejection [Apple].
+- The Enter-a-code prompt says "type SAMPLE to try the sample library". The next page is "Open the
+  sample library?" with what it is and where it comes from, and its own check code.
+- Only the transport is simulated. The catalogue is a real generation, made by the desktop's own
+  indexer and `phone_publish` with the B/32 tower, signed by a sample-library publisher key (not the
+  owner's) and read from the GitHub release `sample-library` through a static `remote_file`
+  (`src/mobile/sample.*`, the host's HTTPS in `SampleFetch.swift`). The same sync checks its signature,
+  generation and every hash and installs it; search, the grid, the viewer and clips are the real code.
+  The pictures and clips themselves, and the JPEG-512 pack, are listed with their hashes in
+  `files.json`, signed by the same key, and each is checked whole before it is shown.
+- Downloaded rather than bundled, because the text tower is 127 MB: the phone copies about 131 MB
+  once (the tower, `catalog.db`, `labels.f32`, `tiny.pack`), then the JPEG-512 pack (3 MB) and
+  originals (50 MB in all) as they are viewed. The app itself grows by code only.
+- Labelled while open: a "Sample library" chip on the grid, which opens Settings; Settings names it,
+  what it is and that it comes from GitHub; Forget says "Forget the sample library" and removes
+  everything, as for any library. Pairing a real library replaces it; entering SAMPLE with a real
+  library paired asks first ("Replace <name> with the sample library?") and changes nothing on Keep.
+- `tools/ios/sample-library.sh` makes it again from `sources.json` (licences rechecked each time) and
+  uploads it, current.json last. The review notes are `src.ios/AppStore/review-notes.md`.
 
-If reviewers cannot scan from the notes, the fallback is a link carrying the same payload. A demo
-mode is the last resort, needs Apple's approval, and would reopen the owner's no-sample-library
-call (§16).
+The review server and review grant are no longer needed for 1.0. A grant may still come later for
+showing a real NAS to someone.
 
 ### 11.2 Design rules
 
@@ -685,7 +704,8 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 | Replay of an old signed catalogue | `(epoch, generation)` only goes up (§5, rule 7) |
 | A swapped JPEG-512 tile | Not checked per tile: a pack's hash is in the signed manifest, but the phone reads tiles by range and cannot hash the pack. A tile reaches only ImageIO, from a service the phone proved is the paired one, so the threat is someone who can write the share and swaps a pack in place. A per-tile hash in `thumbs.idx` would close it (open). |
 | An unclaimed service on the NAS | Claimed only once, only from its own network, and only by a desktop that can write to the share (§7.2) |
-| The review grant leaks | It opens only the review server's sample photos and is revocable |
+| The sample library's release is replaced | The phone pins the sample publisher's key (compiled in). The catalogue is checked as a NAS's is: `current.json`'s signature, then every file against the signed manifest. Every other file (the root list, the JPEG-512 pack, each original and clip) must be in `files.json`, which the same key signs with its size and SHA-256; it is fetched whole and hashed before any byte reaches ImageIO or AVFoundation, and an unlisted file is never read. So write access to the release alone cannot put a picture on a phone. The secret key is not in the repository. |
+| The sample library sends something about the person | Only HTTPS reads of the release's files: no cookies, no cache, a fixed `User-Agent: MediaViewer` (not the app's build, the OS or the device) and `Accept-Language: *`, besides the range and the transport's own headers (checked in `sample-library-sim.sh`). GitHub sees the address, as for any download. Not tracking, so nothing for `NSPrivacyTrackingDomains`; the App Privacy answers stay "no data collected". |
 | Lost phone | iOS data protection, Keychain device-only, optional Face ID, "Forget this library" wipes everything; revoking the phone from the desktop removes it from both the NAS service and the Mac's paired devices |
 | Cloud backup copies the catalogue | Excluded from backup (§8.3) |
 | The catalogue on the NAS reveals names, places, text | No worse than the share it sits on, which already holds the files. Encrypting it with a key from the QR is a later option. |
@@ -735,8 +755,8 @@ measured before and after on both platforms.
   an old service and the reverse · in 1.1, backup killed at every step leaves no `.part` counted as
   done · a file removed from the NAS is copied again · a ledger restored after reinstall re-copies
   nothing.
-- **Ship:** TestFlight first, then the App Store with the review access from §11.1 and the filings
-  from §12. Builds on TestFlight expire after 90 days, so it is a stage and not a channel.
+- **Ship:** TestFlight first, then the App Store with the sample library from §11.1 (its release
+  uploaded first) and the filings from §12. Builds on TestFlight expire after 90 days, so it is a stage and not a channel.
 
 ## 15. The slices
 
@@ -837,9 +857,10 @@ Completion hook with the file list, indexer trigger, publish. I3–I5 fixed here
 ### M10 — Ship 1.0 (iOS)
 
 People, details, failure states, accessibility, privacy manifest, encryption filing (call 10), the
-review server and review grant (§11.1), and App Store material that states the requirements in §2.2.
+sample library and its review notes (§11.1, built 2026-11-12), and App Store material that states the
+requirements in §2.2.
 
-> **Verify:** Every row of §11.3 reproduced on a device; from a clean install on a NAT64 network, the review notes alone get a person from the scan to a search result on the review server; the App Store build contains no GPL or LGPL code and ships under the recorded licence permission.
+> **Verify:** Every row of §11.3 reproduced on a device; from a clean install on a NAT64 network, the review notes alone get a person from the code SAMPLE to a search result in the sample library; the App Store build contains no GPL or LGPL code and ships under the recorded licence permission.
 
 ### M11 — Phone backup, 1.1 (iOS and the service; the year-and-month layout is on the Mac)
 
@@ -870,14 +891,14 @@ Tombstones, a change feed in `index.db`, segment files.
 | The Synology cannot run the service | S5: unsupported CPU or DSM blocks it | Container if available, else the §17 fallback. Models that fail stay off the supported list. |
 | The Synology's building has no public IP | The forward never answers | Public IPv6 where it exists, then a relay the owner runs (Driftwire already has `relay.h`), or the §17 fallback |
 | The forwarded service is compromised | Any | It sees only its named folders and cannot delete; signed updates close the hole; the TrueNAS's snapshots are the recovery |
-| App Review cannot get in | The review server and grant fail, or Apple will not accept them | Settle this with a TestFlight external review before the first submission. A demo mode is the last resort and reopens the no-sample-library call. |
+| App Review cannot get in | The sample library is not found, or Apple asks for a real NAS | The review notes name the code and the steps; settle it with a TestFlight external review before the first submission. A review server is the fallback. |
 | Too few people can set it up | Failed reachability tests, poor reviews | Say the requirements up front (§2.2); a relay or other NAS brands next |
-| The review server lapses | An update is rejected because it was down | Monitor it as release infrastructure |
+| The sample library's release goes | An update is rejected because SAMPLE finds nothing | Keep the `sample-library` release published; check it before each submission |
 | People have libraries the phone cannot hold | Real sizes | M12 sooner |
 | A catalogue bug corrupts a desktop index | Any | The publisher only reads. Keep it that way. |
 
 **Where it needs you:** an iPhone and the real Synology for S1–S5, a lawyer for calls 1 and 10, and
-an always-on review server for M10. Nothing in this environment can measure or settle them.
+the sample library's release uploaded before M10's submission. Nothing in this environment can measure or settle them.
 
 ## 17. Later, not now
 

@@ -291,6 +291,18 @@ public final class AppModel {
     viewerFocus = nil
   }
 
+  /// The library the sample library would replace on this phone, by name; nil when nothing
+  /// would be lost (no library, or the sample itself). Opening the sample asks first (§11.1).
+  public static func sampleWouldReplace(_ connection: ConnectionSnapshot) -> String? {
+    guard connection.hasLibrary, !connection.isSample else { return nil }
+    return connection.libraryName.isEmpty ? "your library" : connection.libraryName
+  }
+
+  /// Leaves the Connect screen without pairing: back to the library, or to Welcome when there is none.
+  func leaveConnect() {
+    if connection.hasLibrary { returnToLibrary() } else { stage = .welcome }
+  }
+
   /// Leaves a scan started from a library that is already paired.
   func returnToLibrary() {
     stage = .main
@@ -344,12 +356,17 @@ public final class AppModel {
     switch connection.synology {
     case .deviceRevoked:
       first = LibraryNotice(id: "revoked", message: FailureCopy.deviceRevoked, canDismiss: false, action: .scan)
+    case .publisherChanged where connection.isSample:
+      // Not another computer: what arrived from GitHub was not signed by the sample's key.
+      first = LibraryNotice(id: "publisher", message: FailureCopy.sampleRejected, canDismiss: true, action: .retry)
     case .publisherChanged:
       first = LibraryNotice(id: "publisher", message: FailureCopy.publisherChanged, canDismiss: false, action: .scan)
     case .serviceTooOld:
       first = LibraryNotice(id: "service", message: FailureCopy.serviceTooOld, canDismiss: true, action: nil)
     case .unreachable:
-      first = LibraryNotice(id: "unreachable", message: FailureCopy.synologyUnreachable, canDismiss: true, action: nil)
+      first = LibraryNotice(id: "unreachable",
+                            message: connection.isSample ? FailureCopy.sampleUnreachable : FailureCopy.synologyUnreachable,
+                            canDismiss: true, action: nil)
     case .reachableOnlyOnItsOwnNetwork:
       first = LibraryNotice(id: "own-network", message: FailureCopy.ownNetworkOnly, canDismiss: true, action: nil)
     case .reachable:
@@ -408,6 +425,8 @@ public final class AppModel {
   /// only once the card that said it is gone.
   public var routeChip: String? {
     guard libraryNotice == nil else { return nil }
+    // Said on every visit, not once: nobody should take the sample for their own library (§11.1).
+    if connection.isSample { return "Sample library" }
     switch connection.synology {
     case .unreachable: return connection.macNearby ? "From your Mac" : "On this phone"
     case .reachableOnlyOnItsOwnNetwork: return "On this phone"
