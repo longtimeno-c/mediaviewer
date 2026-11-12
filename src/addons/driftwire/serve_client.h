@@ -101,7 +101,7 @@ class client {
   // owner::sane_cost is never paid: status::corrupt.
   using derive_fn = std::function<std::optional<owner::signer>(const owner::salt_t&, std::uint64_t ops, std::uint64_t mem)>;
   [[nodiscard]] result<std::string> unlock(const derive_fn& derive, std::string* refusal = nullptr,
-                                           std::uint64_t min_ops = owner::kOps, std::uint64_t min_mem = owner::kMem);
+                                           std::uint64_t min_ops = owner::kFloorOps, std::uint64_t min_mem = owner::kFloorMem);
 
   // Ends the session.
   void close() noexcept;
@@ -149,8 +149,8 @@ struct claim_passphrase {
   std::optional<std::array<std::uint8_t, 32>> service_key;
   // The least cost a challenge may ask for: a fake service asking for less
   // would get an answer cheap to attack offline.
-  std::uint64_t min_ops = owner::kOps;
-  std::uint64_t min_mem = owner::kMem;
+  std::uint64_t min_ops = owner::kFloorOps;
+  std::uint64_t min_mem = owner::kFloorMem;
 };
 [[nodiscard]] result<claim_answer> claim(std::shared_ptr<link> l, const std::array<std::uint8_t, 32>& key,
                                          const std::array<std::uint8_t, 32>& device_key, const std::string& name,

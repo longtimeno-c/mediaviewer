@@ -234,8 +234,11 @@ struct server::state {
   void run_claim(conn& c, std::unique_ptr<channel> ch, const std::string& folder);
   void send_claimed(channel& ch);
   // A serve_pair from a device that is not unlimited (`m`): spends the code
-  // and puts the device on the list its limit says. False: refused, said.
-  [[nodiscard]] bool redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m);
+  // and puts the device on the list its limit says. `live`: the device has a
+  // live grant, so a code that is no good is not a refusal (it goes on, as an
+  // unlimited phone that scans again does). False: refused, and said.
+  enum class redeemed { paired, bad_code_live, refused };
+  [[nodiscard]] redeemed redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m, bool live);
   [[nodiscard]] std::pair<end_code, std::string> admin(conn& c, std::string_view request);
 
   // ---- the owner's passphrase (owner_pass.h) ----
@@ -888,11 +891,13 @@ void server::state::serve_connection(conn* c) {
         return;
       }
       if (m.type == msg::serve_pair) {
-        if (!redeem(*opened, *peer, m)) {
+        const auto r = redeem(*opened, *peer, m, acc.a == access::live);
+        if (r == redeemed::refused) {
           n_unpaired.fetch_add(1);
           (void)opened->cancel(kCancelWaitMs, "not-paired");  // says nothing new after a bad code's own reason
           return;
         }
+        if (r == redeemed::bad_code_live && !opened->send(msg::serve_paired, std::string_view("{}"))) return;
         acc = access_of(*peer);
         if (acc.a != access::full && acc.a != access::live) {
           (void)opened->cancel(kCancelWaitMs, "error");
@@ -1433,11 +1438,12 @@ bool server::state::set_access(const std::string& name, const std::array<std::ui
   const auto t = now();
   (void)grants::prune(limited, t);
   const bool was_unlimited = std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == key; });
-  const bool was_limited = std::any_of(limited.begin(), limited.end(), [&](const grants::grant& x) { return x.key == key; });
+  const bool was_live = std::any_of(limited.begin(), limited.end(), [&](const grants::grant& x) { return x.key == key && !x.expired(t); });
   std::erase_if(devices, [&](const known::device& d) { return d.key == key; });
   std::erase_if(limited, [&](const grants::grant& x) { return x.key == key; });
-  // Room for it, unless it was here already (a live one moving lists, or renamed).
-  const bool counted = was_unlimited || was_limited;
+  // Room for it, unless it is already one of the live ones (moving lists, or
+  // renamed). An expired guest coming back is a new live one.
+  const bool counted = was_unlimited || was_live;
   if (!counted && !grants::make_room(limited, devices.size(), t)) {
     full = true;
     return false;
@@ -1453,31 +1459,42 @@ bool server::state::set_access(const std::string& name, const std::array<std::ui
     d.key = key;
     devices.push_back(std::move(d));
   }
-  // The grant goes in before the paired list loses it, so a device moving to
-  // a limit is never, even for a moment, on neither (it would be cut).
-  if (!grants::save(*store, limited)) return false;
-  if (!known::save(*store, devices)) return false;
-  return known::load(*store).size() == devices.size();
+  // The list it goes to is written first, then the one it leaves, so it is
+  // never, even for a moment, on neither (the watch would cut it). On both
+  // for a moment, or after a failed second write, the grant wins (access_of,
+  // cut_unpaired): never more access than either list gives.
+  if (g) {
+    if (!grants::save(*store, limited)) return false;
+    if (!known::save(*store, devices)) return false;
+  } else {
+    if (!known::save(*store, devices) || known::load(*store).size() != devices.size()) return false;
+    if (!grants::save(*store, limited)) return false;
+  }
+  return true;
 }
 
 server::state::device_access server::state::access_of(const std::array<std::uint8_t, 32>& key) {
   device_access out;
+  // A grant wins over the paired list: a key on both (a move between them
+  // half done) gets the limit, never more.
+  std::vector<grants::grant> limited;
+  if (!grants::load(*store, limited)) {
+    out.a = access::unreadable;  // nobody gets in on a list that cannot be read; the paired list still can
+  } else {
+    for (auto& g : limited) {
+      if (g.key != key) continue;
+      out.a = g.expired(now()) ? access::expired : access::live;
+      out.g = std::move(g);
+      return out;
+    }
+  }
   const auto devices = known::load(*store);
   if (std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == key; })) {
     out.a = access::full;
+    out.g.reset();
     return out;
   }
-  std::vector<grants::grant> limited;
-  if (!grants::load(*store, limited)) {
-    out.a = access::unreadable;  // nobody it lists gets in
-    return out;
-  }
-  for (auto& g : limited) {
-    if (g.key != key) continue;
-    out.a = g.expired(now()) ? access::expired : access::live;
-    out.g = std::move(g);
-    return out;
-  }
+  if (out.a != access::unreadable) out.a = access::none;
   return out;
 }
 
@@ -1489,28 +1506,36 @@ std::shared_ptr<const config> server::state::cfg_for(const std::optional<grants:
   return mine;
 }
 
-bool server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m) {
+server::state::redeemed server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m,
+                                              bool live) {
   const auto p = parse_pair(m.text());
   // Taken and counted as redeeming under one lock, so the owner's devices
   // answer sees the code waiting or the phone saved, never neither.
   std::optional<grants::limit> gives = p ? take_code(p->code, true) : std::nullopt;  // counted by take_code
   // A code from `driftwire serve pair-code` (no desktop) is kept in the store
-  // instead: unlimited in the old list, limited in its own.
+  // instead: unlimited in the old list, limited in its own. Spent under the
+  // same locks as the lists (and the command line's file lock), so two
+  // connections with one code cannot both read it before either spends it.
   if (p && !gives) {
-    if (redeem_pair_code(*store, p->code, std::time(nullptr))) {
-      gives = grants::limit{};
-    } else {
-      gives = grants::redeem_guest_code(*store, p->code, now());
+    std::lock_guard lock(devices_m);
+    std::unique_ptr<net::instance_lock> held;
+    if (may_change_devices(held)) {
+      if (redeem_pair_code(*store, p->code, std::time(nullptr))) {
+        gives = grants::limit{};
+      } else {
+        gives = grants::redeem_guest_code(*store, p->code, now());
+      }
     }
     if (gives) {
-      std::lock_guard lock(codes_m);
+      std::lock_guard counted(codes_m);
       ++redeeming;
     }
   }
   if (!gives) {
     n_bad_codes.fetch_add(1);
+    if (live) return redeemed::bad_code_live;
     (void)ch.cancel(kCancelWaitMs, "bad-code");
-    return false;
+    return redeemed::refused;
   }
   struct done_redeeming {
     state& s;
@@ -1532,10 +1557,10 @@ bool server::state::redeem(channel& ch, const std::array<std::uint8_t, 32>& peer
   bool full = false;
   if (!set_access(p->name.empty() ? std::string("Phone") : p->name, peer, g, full)) {
     (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "error");
-    return false;
+    return redeemed::refused;
   }
   n_paired.fetch_add(1);
-  return ch.send(msg::serve_paired, std::string_view("{}")).has_value();
+  return ch.send(msg::serve_paired, std::string_view("{}")).has_value() ? redeemed::paired : redeemed::refused;
 }
 
 std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view request) {
@@ -1874,8 +1899,10 @@ void server::state::cut_unpaired() {
           if (x.key == c->device) g = &x;
         }
       }
-      if (unlimited) {
-        // Made unlimited while connected: what it reads only grows.
+      if (!grants_ok && !unlimited) {
+        why = "revoked";  // a grants list that cannot be read keeps nobody on it
+      } else if (!g && unlimited) {
+        // Unlimited (or made so while connected: what it reads only grows).
       } else if (!g) {
         why = "revoked";
       } else if (g->expired(t)) {

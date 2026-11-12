@@ -39,6 +39,10 @@ inline constexpr std::uint64_t kMem = 256ull * 1024 * 1024;
 // accept a cost too cheap to mean anything.
 inline constexpr std::uint64_t kMinOps = 2, kMaxOps = 10;
 inline constexpr std::uint64_t kMinMem = 32ull * 1024 * 1024, kMaxMem = 1024ull * 1024 * 1024;
+// What a client asks of a challenge at least, by default: the cost C11 allows
+// a small NAS (64 MiB) and no less, so a fake service cannot get an answer
+// cheaper to attack than the real one would ask for.
+inline constexpr std::uint64_t kFloorOps = kOps, kFloorMem = 64ull * 1024 * 1024;
 inline constexpr std::size_t kSaltBytes = 16;
 inline constexpr std::size_t kBindingBytes = 64;  // noise::kHashBytes
 inline constexpr std::size_t kMinChars = 10;      // code points, nothing else asked

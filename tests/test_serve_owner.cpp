@@ -17,6 +17,8 @@
 #include "driftwire_fixture.h"
 
 #include "addons/driftwire/channel.h"
+#include "addons/driftwire/grants.h"
+#include "addons/driftwire/known.h"
 #include "addons/driftwire/net.h"
 #include "addons/driftwire/owner_pass.h"
 #include "addons/driftwire/secrets.h"
@@ -282,5 +284,38 @@ TEST_CASE("serve owner: the command line sets, shows and resets the passphrase, 
   // The flags go only where a passphrase is asked for.
   out = run("devices --no-passphrase", "", code);
   CHECK(code != 0);
+
+  // Timed phones from the command line: on the grants alone, changed by grant, listed by devices.
+  key32 pub{};
+  const key32 priv = random_key();
+  crypto_scalarmult_base(pub.data(), priv.data());
+  char hexkey[65];
+  sodium_bin2hex(hexkey, sizeof hexkey, pub.data(), pub.size());
+  out = run(std::string("add Guest ") + hexkey + " --for 24h", "", code);
+  CHECK(code == 0);
+  CHECK(out.find("paired until") != std::string::npos);
+  std::vector<mv::driftwire::serve::grants::grant> limited;
+  REQUIRE(mv::driftwire::serve::grants::load(*store, limited));
+  REQUIRE(limited.size() == 1);
+  CHECK(sp::known::load(*store).empty());
+  CHECK(run("devices", "", code).find("Guest  " + std::string(hexkey) + "  until ") != std::string::npos);
+  out = run("grant Guest --forever", "", code);
+  CHECK(code == 0);
+  REQUIRE(mv::driftwire::serve::grants::load(*store, limited));
+  CHECK(limited.empty());
+  CHECK(sp::known::load(*store).size() == 1);
+  CHECK(run("grant Guest", "", code).find("--forever") != std::string::npos);
+  CHECK(code != 0);
+  CHECK(run("devices --for 1h", "", code).find("--for") != std::string::npos);
+  CHECK(code != 0);
+  // A guest code is kept in its own value, never the old one.
+  out = run("pair-code 600 --for 7d", "", code);
+  CHECK(code == 0);
+  CHECK(out.size() == 33);
+  CHECK(store->exists(mv::driftwire::serve::grants::kGuestCodesName));
+  CHECK_FALSE(store->exists("library_pair_codes"));
+  out = run(std::string("revoke Guest"), "", code);
+  CHECK(code == 0);
+  CHECK(sp::known::load(*store).empty());
 }
 #endif

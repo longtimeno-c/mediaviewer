@@ -39,7 +39,7 @@ enum class command : std::uint8_t { session, send, receive, code, devices, updat
 
 // `driftwire serve`: the service itself (no terminal, docs/design/28 "The NAS
 // service"), or one of its local chores.
-enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_code, disown, status, passphrase_set, passphrase_reset };
+enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_code, disown, status, passphrase_set, passphrase_reset, grant };
 
 struct args {
   command cmd = command::session;
@@ -57,6 +57,9 @@ struct args {
   // serve init / passphrase: one line of stdin instead of the terminal, or none at all (init).
   bool passphrase_stdin = false;
   bool no_passphrase = false;
+  // serve add / pair-code / grant: --for DURATION ("24h", "7d", "90m", seconds), or grant --forever.
+  std::string for_duration;
+  bool forever = false;
   // The test build's.
   bool test_loopback = false;
   std::string test_data;

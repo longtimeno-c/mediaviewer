@@ -34,10 +34,15 @@ bool root_id(std::string_view s) {
   return s.size() == 16 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
 }
 
+// Sorted and unique, so the same set always reads back the same (the watch
+// compares them, and a reordering must not cut a phone).
 void write_roots(json::writer& w, const std::optional<std::vector<std::string>>& roots) {
   if (!roots) return;
+  std::vector<std::string> ids = *roots;
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
   w.key("roots").begin_array();
-  for (const auto& r : *roots) w.string(r);
+  for (const auto& r : ids) w.string(r);
   w.end_array();
 }
 
@@ -52,6 +57,8 @@ bool read_roots(const json::value& v, std::optional<std::vector<std::string>>& o
     if (e.k != json::kind::string || !root_id(e.s)) return false;
     ids.push_back(e.s);
   }
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
   out = std::move(ids);
   return true;
 }
