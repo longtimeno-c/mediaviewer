@@ -1644,6 +1644,13 @@ for a service too old to wait at a relay.
   Throughput on loopback, 64 MB, three runs alternated (`"[.phone-upgrade-bench]"`): relay
   619/649/661 MB/s, direct 659/686/671 MB/s; loopback shows only the relay's copying, not a real
   relay's distance, which is where the upgrade pays. Not run: a real NAT, a real relay.
+  Limits on what a paired phone can ask: candidates must be unicast and elsewhere (no unspecified,
+  loopback, multicast, broadcast or link-local address; `usable_candidate`), at most 8; one ask per
+  device per 30 s and 4 punches at once, the slot taken before anything is gathered. A punch admits
+  each connection it opens (8 at most) and the phone tries its handshake on each in turn, so two
+  paths opening at once cannot leave the sides on different ones (not reproducible on loopback; by
+  review only). Known cost: the service gathers its candidates on the session's reader, so that
+  session's other requests wait up to 3 s (the relay's own answer, normally a few ms).
 - **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's
   `set_relay` and the QR field in `"[phone-pairing]"`): a paired client lists and range-reads through
   an in-process relay on `127.0.0.1` with no 32-byte run of the file in the relay's bytes; a wrong

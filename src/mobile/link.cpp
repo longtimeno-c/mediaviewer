@@ -406,13 +406,16 @@ std::uint32_t link_session::live_caps_ops() const {
 // ---- a direct path after the relay (docs/plans/nas-relay.md §9) --------------------------------
 
 void link_session::set_upgrade_policy(bool on_cellular, bool allowed_on_cellular) noexcept {
+  std::lock_guard lock(up_m_);
+  const bool before = upgrade_allowed();
   on_cellular_.store(on_cellular);
   cellular_ok_.store(allowed_on_cellular);
-  {
-    std::lock_guard lock(up_m_);
-    if (upgrade_allowed()) up_now_ = true;  // just allowed again (Wi-Fi, or switched on): try now
+  // Only a change to allowed (onto Wi-Fi, or switched on) tries at once; the host
+  // says this often, and anything else keeps the 1, 5, 15, 60 minute spacing.
+  if (!before && upgrade_allowed()) {
+    up_now_ = true;
+    up_cv_.notify_all();
   }
-  up_cv_.notify_all();
 }
 
 bool link_session::upgrade_allowed() const noexcept { return !on_cellular_.load() || cellular_ok_.load(); }
@@ -420,14 +423,19 @@ bool link_session::upgrade_allowed() const noexcept { return !on_cellular_.load(
 void link_session::start_upgrades() {
   std::lock_guard lock(up_m_);
   up_now_ = true;
-  if (up_stop_ || upgrader_.joinable()) {
+  if (up_stop_) return;
+  if (up_running_) {
     up_cv_.notify_all();
     return;
   }
+  // One that ended (moved, or the link was not relayed then): its thread has
+  // returned, so this join does not wait; a new relayed link gets a new one.
+  if (upgrader_.joinable()) upgrader_.join();
   try {
+    up_running_ = true;
     upgrader_ = std::thread([this] { upgrade_loop(); });
   } catch (...) {
-    // No thread: the relay stays, as when a try fails.
+    up_running_ = false;  // no thread: the relay stays, as when a try fails
   }
 }
 
@@ -437,6 +445,7 @@ void link_session::stop_upgrades(bool join) noexcept {
     std::lock_guard lock(up_m_);
     up_stop_ = true;
     if (up_rz_) up_rz_->shutdown();  // the punch and the ask end now
+    if (up_link_) up_link_->shutdown();  // and a handshake on a punched link
     if (join) t = std::move(upgrader_);
   }
   up_cv_.notify_all();
@@ -450,7 +459,7 @@ void link_session::upgrade_loop() {
   std::unique_lock lock(up_m_);
   while (!up_stop_) {
     up_cv_.wait_until(lock, next, [&] { return up_stop_ || up_now_; });
-    if (up_stop_) return;
+    if (up_stop_) break;
     if (!up_now_ && clock::now() < next) continue;
     up_now_ = false;
     lock.unlock();
@@ -462,10 +471,11 @@ void link_session::upgrade_loop() {
     bool moved = false;
     if (relayed && upgrade_allowed()) moved = try_upgrade();
     lock.lock();
-    if (moved || !relayed) return;  // direct now, or nothing to move (a new relayed link starts it again)
+    if (moved || !relayed) break;  // direct now, or nothing to move (a new relayed link starts it again)
     next = clock::now() + std::chrono::minutes(kAfterMinutes[std::min(tried, std::size(kAfterMinutes) - 1)]);
     ++tried;
   }
+  up_running_ = false;  // under up_m_; the thread returns now
 }
 
 bool link_session::try_upgrade() {
@@ -531,13 +541,31 @@ bool link_session::try_upgrade() {
   std::vector<dw::net::endpoint> peers;
   for (const auto& t : serve::parse_candidates(*answer)) peers.push_back({t.address, t.port});
   if (peers.empty()) return false;
-  auto punched = rz->next(peers, serve::kPunchMs);
-  if (!punched) return false;
-  // The whole handshake again on the new path: only this phone completes it.
-  serve::refusal why = serve::refusal::none;
-  auto direct = serve::client::open(std::shared_ptr<dw::link>(std::move(*punched)), options_for(config_), &why);
-  if (!direct) return false;
-  std::shared_ptr<serve::client> fresh(std::move(*direct));
+  // Every connection the punch makes, in turn, until one completes the whole
+  // handshake: where more than one path opens, the two sides may hold
+  // different ones first. Only this phone can complete it on any of them.
+  std::shared_ptr<serve::client> fresh;
+  const auto until = clock::now() + std::chrono::milliseconds(serve::kPunchMs);
+  for (int n = 0; n < 8 && !fresh; ++n) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - clock::now()).count();
+    if (left <= 0) break;
+    auto punched = rz->next(peers, static_cast<int>(left));
+    if (!punched) break;
+    std::shared_ptr<dw::link> l(std::move(*punched));
+    {
+      std::lock_guard lock(up_m_);
+      if (up_stop_) return false;
+      up_link_ = l;
+    }
+    serve::refusal why = serve::refusal::none;
+    auto direct = serve::client::open(l, options_for(config_), &why);
+    {
+      std::lock_guard lock(up_m_);
+      up_link_.reset();
+    }
+    if (direct) fresh = std::move(*direct);
+  }
+  if (!fresh) return false;
   std::lock_guard single(connect_m_);
   std::lock_guard lock(m_);
   if (shut_ || live_ != c) {

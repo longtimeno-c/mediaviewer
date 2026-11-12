@@ -118,7 +118,7 @@ struct relayed_nas {
 
   // A phone through the relay: its token from the access key and its own key.
   mv::result<std::unique_ptr<serve::client>> through_relay(const key32& device, const key32& access_key,
-                                                           serve::refusal* why = nullptr) {
+                                                           serve::refusal* why = nullptr, bool upgrade = false) {
     auto l = sp::net::connect({"127.0.0.1", rendezvous->port()}, 3000);
     REQUIRE(l);
     const auto t = serve::relay_token(access_key, public_of(device));
@@ -132,6 +132,7 @@ struct relayed_nas {
     o.service_key = identity;
     o.id = "cccccccccccccccc";
     o.name = "phone";
+    if (upgrade) o.ops |= serve::kUpgradeOp;
     return serve::client::open(std::shared_ptr<sp::link>(std::move(*joined)), o, why);
   }
 };
@@ -304,4 +305,43 @@ TEST_CASE("phone relay: a relay that never answers does not hold up a stop", "[p
   CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
   quit.store(true);
   acceptor.join();
+}
+
+TEST_CASE("phone relay: a direct path is asked only toward somewhere else, and not again at once", "[phone-relay]") {
+  using C = serve::candidate;
+  // Out on the internet: never this machine, a broadcast, a multicast or a link-local address.
+  for (const C& bad : {C{"0.0.0.0", 80}, C{"127.0.0.1", 80}, C{"224.0.0.1", 80}, C{"255.255.255.255", 80},
+                       C{"169.254.1.1", 80}, C{"::", 80}, C{"::1", 80}, C{"ff02::1", 80}, C{"fe80::1", 80}, C{"203.0.113.5", 0}}) {
+    CHECK_FALSE(serve::usable_candidate(bad, false));
+  }
+  for (const C& good : {C{"203.0.113.5", 4000}, C{"192.168.1.20", 4000}, C{"2001:db8::5", 4000}}) {
+    CHECK(serve::usable_candidate(good, false));
+  }
+  // The tests' service punches on loopback alone.
+  CHECK(serve::usable_candidate(C{"127.0.0.1", 4000}, true));
+  CHECK_FALSE(serve::usable_candidate(C{"203.0.113.5", 4000}, true));
+
+  relayed_nas n;
+  std::unique_ptr<serve::client> c;
+  REQUIRE(eventually([&] {
+    auto got = n.through_relay(n.phone, n.access, nullptr, true);
+    if (!got) return false;
+    c = std::move(*got);
+    return true;
+  }));
+  REQUIRE((c->caps().ops & serve::kUpgradeOp) != 0);  // a relayed session is offered it
+  serve::end_code code{};
+  // Nothing usable: refused before any port opens.
+  CHECK_FALSE(c->admin(serve::candidates_json({{"224.0.0.1", 80}, {"0.0.0.0", 80}}, "upgrade"), &code));
+  CHECK(code == serve::end_code::bad_request);
+  // A usable one: the service answers with its own (and punches toward nobody here).
+  auto answer = c->admin(serve::candidates_json({{"127.0.0.1", 9}}, "upgrade"), &code);
+  REQUIRE(answer);
+  CHECK_FALSE(serve::parse_candidates(*answer).empty());
+  // Asked again at once: the device's cooldown.
+  CHECK_FALSE(c->admin(serve::candidates_json({{"127.0.0.1", 9}}, "upgrade"), &code));
+  CHECK(code == serve::end_code::too_many);
+  c->close();
+  // A direct connection is never offered it.
+  CHECK(n.srv->stats().punched == 0);
 }

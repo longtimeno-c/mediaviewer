@@ -347,6 +347,7 @@ struct server::state {
   static constexpr std::size_t kMaxPunches = 4;
   std::mutex punch_m;
   std::list<punch> punches;  // under punch_m
+  std::map<std::array<std::uint8_t, 32>, clock::time_point> punch_last;  // under punch_m: each device's last ask
   std::atomic<std::uint64_t> n_punched{0};
   std::pair<end_code, std::string> upgrade(conn& c, std::string_view request);
   std::vector<candidate> gather_candidates(net::tcp_rendezvous& rz);
@@ -826,7 +827,9 @@ void server::state::session(conn& c, std::optional<message> first_message) {
     version = std::clamp(hello->version, kMinVersion, kVersion);
     if (hello->min_version <= kVersion && hello->version >= kMinVersion) {
       // A direct path is offered only to a phone that came in through the relay.
-      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0) | (c.relayed && !lan_only ? kUpgradeOp : 0));
+      // (A punched one is direct already: not offered again.)
+      const bool punched = c.source.starts_with("punch:");
+      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : 0) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0));
     }
   }
   std::string extra = (ops & kAdminOp) != 0 ? owner_fields() : std::string();
@@ -1019,6 +1022,7 @@ void server::state::serve_connection(conn* c) {
     c->has_device = true;
   }
   n_sessions.fetch_add(1);
+  if (c->source.starts_with("punch:")) n_punched.fetch_add(1);  // moved: counted once its session is up
   session(*c, std::move(hello));
   {
     std::lock_guard lock(c->m);
@@ -2291,8 +2295,9 @@ std::vector<candidate> server::state::gather_candidates(net::tcp_rendezvous& rz)
       relay.push_back({net::address_text(found.front()), relay_port});
     }
     if (!relay.empty()) {
-      if (auto l = rz.next(relay, 3000)) {
-        if (auto seen = relay::ask_seen(**l, 3000)) {
+      // Short: this runs on the session's reader (the relay answered a moment ago).
+      if (auto l = rz.next(relay, 1500)) {
+        if (auto seen = relay::ask_seen(**l, 1500)) {
           const bool known = std::any_of(out.begin(), out.end(), [&](const candidate& c) {
             return c.address == seen->address && c.port == seen->port;
           });
@@ -2305,15 +2310,31 @@ std::vector<candidate> server::state::gather_candidates(net::tcp_rendezvous& rz)
   return out;
 }
 
+namespace {
+
+constexpr auto kPunchCooldown = std::chrono::seconds(30);  // per device, between asks
+constexpr int kMaxPunchLinks = 8;                          // connections one punch admits at most
+
+}  // namespace
+
 std::pair<end_code, std::string> server::state::upgrade(conn& c, std::string_view request) {
-  const auto theirs = parse_candidates(request);
-  if (theirs.empty()) return {end_code::bad_request, {}};
+  std::vector<net::endpoint> peers;
+  for (const auto& t : parse_candidates(request)) {
+    if (usable_candidate(t, loopback_only)) peers.push_back({t.address, t.port});
+  }
+  if (peers.empty()) return {end_code::bad_request, {}};
   std::array<std::uint8_t, 32> device{};
   {
     std::lock_guard lock(c.m);
     if (!c.has_device) return {end_code::refused, {}};
     device = c.device;
   }
+  auto opened = net::open_rendezvous(loopback_only);
+  if (!opened) return {end_code::error, {}};
+  std::shared_ptr<net::tcp_rendezvous> rz(std::move(*opened));
+  // The slot first, under the lock (no two asks pass the caps together), with
+  // its port, so stop() cuts the gathering too.
+  punch* slot = nullptr;
   {
     std::lock_guard lock(punch_m);
     std::erase_if(punches, [](punch& p) {
@@ -2321,29 +2342,37 @@ std::pair<end_code, std::string> server::state::upgrade(conn& c, std::string_vie
       if (p.t.joinable()) p.t.join();
       return true;
     });
-    if (stopping.load() || punches.size() >= kMaxPunches ||
+    const auto now = clock::now();
+    std::erase_if(punch_last, [&](const auto& e) { return now - e.second > kPunchCooldown; });
+    if (stopping.load() || punches.size() >= kMaxPunches || punch_last.count(device) != 0 ||
         std::any_of(punches.begin(), punches.end(), [&](const punch& p) { return p.device == device; })) {
       return {end_code::too_many, {}};
     }
+    punch_last[device] = now;
+    slot = &punches.emplace_back();
+    slot->device = device;
+    slot->rz = rz;
   }
-  auto opened = net::open_rendezvous(loopback_only);
-  if (!opened) return {end_code::error, {}};
-  std::shared_ptr<net::tcp_rendezvous> rz(std::move(*opened));
   const auto mine = gather_candidates(*rz);
-  std::vector<net::endpoint> peers;
-  for (const auto& t : theirs) peers.push_back({t.address, t.port});
   std::lock_guard lock(punch_m);
-  if (stopping.load()) return {end_code::refused, {}};
-  punch& p = punches.emplace_back();
-  p.device = device;
-  p.rz = rz;
+  if (stopping.load()) {
+    punches.remove_if([&](const punch& p) { return &p == slot; });
+    return {end_code::refused, {}};
+  }
   try {
-    p.t = std::thread([this, rz, peers, device, done = p.done] {
+    slot->t = std::thread([this, rz, peers, device, done = slot->done] {
+      // Every connection the punch makes is admitted (a few at most): where
+      // more than one path opens, the two sides may hold different ones, and
+      // the handshake the phone runs picks the real one; the rest say nothing
+      // and close at the hello's limit.
+      const auto until = clock::now() + std::chrono::milliseconds(kPunchMs);
       try {
-        if (auto l = rz->next(peers, kPunchMs); l && !stopping.load()) {
-          // A connection like any other: its handshake, the device check and the
-          // grant all run. Only this device goes on through it, as on the relay.
-          n_punched.fetch_add(1);
+        for (int n = 0; n < kMaxPunchLinks && !stopping.load(); ++n) {
+          const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - clock::now()).count();
+          if (left <= 0) break;
+          auto l = rz->next(peers, static_cast<int>(left));
+          if (!l) break;
+          if (stopping.load()) break;
           admit(std::move(*l), "punch:" + key_hex(device).substr(0, 16), std::string(), net::address{}, true, device);
         }
       } catch (...) {
@@ -2352,7 +2381,7 @@ std::pair<end_code, std::string> server::state::upgrade(conn& c, std::string_vie
       done->store(true);
     });
   } catch (...) {
-    punches.pop_back();
+    punches.remove_if([&](const punch& p) { return &p == slot; });
     return {end_code::error, {}};
   }
   return {end_code::ok, candidates_json(mine, "")};

@@ -74,6 +74,10 @@ struct candidate {
 [[nodiscard]] std::string candidates_json(const std::vector<candidate>& c, std::string_view what);
 // At most kMaxCandidates numeric addresses with a port; anything else left out.
 [[nodiscard]] std::vector<candidate> parse_candidates(std::string_view json);
+// A candidate the service will send a SYN to: unicast and somewhere else, never
+// unspecified, loopback (but for `loopback_only`, the tests: 127/8 alone),
+// multicast, broadcast or link-local.
+[[nodiscard]] bool usable_candidate(const candidate& c, bool loopback_only);
 [[nodiscard]] const char* op_name(op o) noexcept;
 [[nodiscard]] std::optional<op> parse_op(std::string_view name) noexcept;
 [[nodiscard]] constexpr std::uint32_t op_bit(op o) noexcept { return 1u << static_cast<unsigned>(o); }

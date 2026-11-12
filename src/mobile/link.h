@@ -88,8 +88,8 @@ struct route_failure {
 struct route_report {
   std::string address;     // the one that answered
   bool over_internet = false;
-  bool relayed = false;
-  bool upgraded = false;   // moved from the relay to a direct path it punched    // through the person's own relay (the mobile-data rules apply as over the internet)
+  bool relayed = false;   // through the person's own relay (the mobile-data rules apply as over the internet)
+  bool upgraded = false;  // moved from the relay to a direct path it punched
   std::vector<route_failure> failures;  // the ones that did not
 };
 
@@ -181,6 +181,8 @@ class link_session final : public remote_file {
   bool up_stop_ = false;     // under up_m_
   bool up_now_ = false;      // under up_m_: try at once (a fresh relayed link, or the tests)
   std::shared_ptr<driftwire::net::tcp_rendezvous> up_rz_;  // under up_m_: the try in flight's port
+  std::shared_ptr<driftwire::link> up_link_;               // under up_m_: a punched link mid-handshake
+  bool up_running_ = false;  // under up_m_: the thread has not returned yet
 };
 
 }  // namespace mv::mobile

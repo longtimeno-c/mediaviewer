@@ -443,6 +443,26 @@ std::vector<candidate> parse_candidates(std::string_view text) {
   return out;
 }
 
+// A candidate worth a SYN: a unicast address of somewhere, never this machine's
+// loopback, an unspecified, multicast, broadcast or link-local one (a paired
+// phone must not be able to make the NAS connect to its own services).
+bool usable_candidate(const candidate& c, bool loopback_only) {
+  const auto a = net::parse_address(c.address);
+  if (!a || c.port == 0) return false;
+  const auto& b = a->bytes;
+  if (loopback_only) return !a->v6 && b[0] == 127;
+  if (!a->v6) {
+    if (b[0] == 0 || b[0] == 127 || b[0] >= 224) return false;     // unspecified, loopback, multicast, reserved, broadcast
+    if (b[0] == 169 && b[1] == 254) return false;                  // link-local
+    return true;
+  }
+  static constexpr std::array<std::uint8_t, 16> kZero{}, kOne{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+  if (b == kZero || b == kOne) return false;                       // unspecified, loopback
+  if (b[0] == 0xff) return false;                                  // multicast
+  if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return false;         // link-local
+  return true;
+}
+
 bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port) {
   if (address.empty() || address.size() > 255) return false;  // the phone's limit for an address too
   for (const char ch : address) {
