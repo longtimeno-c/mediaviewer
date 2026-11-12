@@ -252,7 +252,7 @@ engine::~engine() {
 
 void engine::post() {
   std::lock_guard serial(post_m_);
-  std::string tree, settings;
+  std::string tree, settings, menu;
   bool busy = false;
   const bool with_settings = host_.settings_shown();
   {
@@ -260,6 +260,8 @@ void engine::post() {
     tree = build_tree(v_);
     if (with_settings) settings = build_settings_tree(v_);
     busy = transfer_running_ && !stopping_.load();
+    // The menu-bar item / tray icon exists only while the background is on.
+    if (v_.background && !stopping_.load()) menu = build_menu(v_);
   }
   last_post_ = std::chrono::steady_clock::now();
   host_.post_tree(tree);
@@ -270,6 +272,8 @@ void engine::post() {
     busy_shown_ = busy;
     host_.post_busy(busy ? kBusyWhat : "");
   }
+  // Rebuilt only when a row changes (a percentage moves in whole steps).
+  if (menu != menu_shown_ && host_.post_menu(menu)) menu_shown_ = menu;
 }
 
 void engine::post_throttled() {

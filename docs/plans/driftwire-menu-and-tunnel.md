@@ -1,6 +1,6 @@
 # Driftwire: a fuller menu-bar menu, then a tunnel through your own relay
 
-Status: **slice 1 under way** (2026-11-12, owner's ask). **Slices 2 and 3 built** on branch
+Status: **slice 1 built** (#665, in main, 2026-11-12). **Slices 2 and 3 built** on branch
 `claude/driftwire-tunnel-70ba6c` (2026-11-12, the owner's ask that day; draft PR): forwarding on
 the relay server and the local proxy, with the switch in the window, the settings page and
 `/tunnel`, and the system proxy (PAC, Use for all apps). Slices 4 and 5 stay proposals. What was

@@ -228,6 +228,11 @@ struct view {
 // The settings page's tree (contribution API 8, place "settings"): the
 // window's settings with the same node ids, no transfer and no tiles. Pure; tested.
 [[nodiscard]] std::string build_settings_tree(const view& v);
+// The menu-bar item / tray icon's own rows (host table keep_menu,
+// docs/plans/driftwire-menu-and-tunnel.md): what is happening now, Cancel,
+// Send Files..., and the window's receiving / internet / background toggles
+// under the same ids. Pure; tested.
+[[nodiscard]] std::string build_menu(const view& v);
 
 // What the engine needs from the host.
 class engine_host {
@@ -292,6 +297,12 @@ class engine_host {
   // #510: a transfer is running ("" once it has ended), so the host's Restart
   // now and an update's reload wait for it rather than cut it off.
   virtual void post_busy(const std::string& what) { (void)what; }
+  // The kept menu's rows (build_menu), or "" for none. False when the host did
+  // not take them (not attached yet): the next post tries again.
+  virtual bool post_menu(const std::string& menu_json) {
+    (void)menu_json;
+    return true;
+  }
 };
 
 // The status text while Keep receiving is on.
@@ -755,6 +766,7 @@ class engine {
   std::atomic<bool> stopping_{false};
 
   std::mutex post_m_;  // one post at a time, so trees arrive in order
+  std::string menu_shown_;   // under post_m_: the kept menu's rows the host has
   bool busy_shown_ = false;  // under post_m_: post_busy said a transfer runs (#510)
   std::atomic<std::chrono::steady_clock::time_point> last_post_{};
   std::mutex control_m_;

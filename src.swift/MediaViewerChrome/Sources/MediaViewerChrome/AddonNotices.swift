@@ -11,7 +11,9 @@
 //   no notification centre), the screen opens instead, as it did before #452;
 // - permission is asked when an add-on asks (a toggle turned on), never at
 //   launch;
-// - while an add-on keeps the process, a menu-bar item: its label, Open
+// - while an add-on keeps the process, a menu-bar item: its label, the
+//   add-on's own rows (keep_menu: lines, checkmark toggles, buttons, a Send
+//   Files… open panel; docs/plans/driftwire-menu-and-tunnel.md), Open
 //   <screen>, Open MediaViewer, Quit MediaViewer. main_mac.mm hides the
 //   viewer rather than quitting while the list is not empty.
 //
@@ -31,7 +33,8 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     var revision: Int
     var key: String { "\(addon)/\(id)" }
   }
-  private struct Keep: Equatable { var addon, screen, title, label: String }
+  private struct MenuRow: Equatable { var kind, id, label: String; var value: Bool }
+  private struct Keep: Equatable { var addon, screen, title, label: String; var menu: [MenuRow] }
 
   private var shown: [String: Notice] = [:]
   private var asked = 0
@@ -64,7 +67,13 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     }
     let k: [Keep] = (doc["keep"] as? [[String: Any]] ?? []).compactMap {
       guard let a = $0["addon"] as? String, let s = $0["screen"] as? String else { return nil }
-      return Keep(addon: a, screen: s, title: $0["title"] as? String ?? s, label: $0["label"] as? String ?? "")
+      let rows: [MenuRow] = ($0["menu"] as? [[String: Any]] ?? []).compactMap { r in
+        guard let kind = r["kind"] as? String else { return nil }
+        return MenuRow(kind: kind, id: r["id"] as? String ?? "", label: r["label"] as? String ?? "",
+                       value: r["value"] as? Bool ?? false)
+      }
+      return Keep(addon: a, screen: s, title: $0["title"] as? String ?? s, label: $0["label"] as? String ?? "",
+                  menu: rows)
     }
     if k != keeps {
       keeps = k
@@ -195,6 +204,10 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     head.isEnabled = false
     menu.addItem(head)
     menu.addItem(.separator())
+    for k in keeps where !k.menu.isEmpty {
+      for row in k.menu { menu.addItem(menuItem(row, of: k)) }
+      menu.addItem(.separator())
+    }
     for k in keeps {
       menu.addItem(entry("Open \(k.title)") {
         mv_chrome_background_window_shown()
@@ -205,6 +218,53 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     menu.addItem(.separator())
     menu.addItem(entry("Quit MediaViewer") { mv_chrome_background_quit() })
     item.menu = menu
+  }
+
+  /// One of the add-on's rows. A toggle sends its new value, a files row the
+  /// paths chosen in an open panel (nothing when it is cancelled), a button null.
+  private func menuItem(_ row: MenuRow, of k: Keep) -> NSMenuItem {
+    switch row.kind {
+    case "separator":
+      return .separator()
+    case "toggle":
+      let item = entry(row.label) { Self.menuAction(k.addon, row.id, row.value ? "false" : "true") }
+      item.state = row.value ? .on : .off
+      return item
+    case "button":
+      return entry(row.label) { Self.menuAction(k.addon, row.id, nil) }
+    case "files":
+      return entry(row.label) { Self.chooseFiles(k.addon, row.id) }
+    default:  // "text": what is happening now
+      let item = NSMenuItem(title: row.label, action: nil, keyEquivalent: "")
+      item.isEnabled = false
+      return item
+    }
+  }
+
+  private static func menuAction(_ addon: String, _ id: String, _ value: String?) {
+    _ = addon.withCString { a in
+      id.withCString { i in
+        if let value { return value.withCString { mv_chrome_slots_menu_action(a, i, $0) } }
+        return mv_chrome_slots_menu_action(a, i, nil)
+      }
+    }
+  }
+
+  private static func chooseFiles(_ addon: String, _ id: String) {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = true
+    panel.prompt = "Choose"
+    // From the menu bar the app may have no window in front (accessory): bring
+    // the panel forward rather than leave it behind the active app.
+    NSApp.activate(ignoringOtherApps: true)
+    guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+    let paths = panel.urls.map(\.path)
+    guard let data = try? JSONSerialization.data(withJSONObject: paths), let json = String(data: data, encoding: .utf8)
+    else { return }
+    mv_chrome_background_window_shown()
+    menuAction(addon, id, json)
   }
 
   private final class Handler: NSObject {
