@@ -31,6 +31,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// Bumped whenever the library is removed (Forget, or a pairing over it): work begun for the
   /// library before cannot touch the one after.
   private var libraryEpoch = 0
+  /// The sample guest's end a connect is already scheduled for.
+  private var sampleEndScheduled: Double? = nil
   private var copyCancel: LinkCancel?
   // One first copy at a time: a new one (Copy over mobile data) waits for the old one's defer.
   private let oneCopy = OneAtATime()
@@ -48,6 +50,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private static let catalogueKey = "link.catalogue"
   private static let libraryKey = "link.libraryID"
   private static let sampleKey = "link.sample"
+  /// The last word was "your access ended": launch opens on the ended card, not a first copy.
+  private static let endedKey = "link.accessEnded"
   private static let nameKey = "link.libraryName"
 
   /// The paired library's id as last published; "" with none or before the first publish. A plain
@@ -61,7 +65,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // What launch paints first comes from a stored value: no Keychain, no files on the main thread.
     let paired = defaults.bool(forKey: Self.pairedKey)
     var first = paired
-      ? ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false,
+      ? ConnectionSnapshot(hasLibrary: true, synology: defaults.bool(forKey: Self.endedKey) ? .accessEnded : .unreachable([]),
+                           macNearby: false,
                            catalogue: Self.catalogue(from: defaults.object(forKey: Self.catalogueKey) as? [String: Any]),
                            cacheBytes: 0)
       : .noLibrary
@@ -205,6 +210,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
     defaults.set(value.libraryID, forKey: Self.libraryKey)
     defaults.set(value.isSample, forKey: Self.sampleKey)
+    defaults.set(value.hasLibrary && value.synology == .accessEnded, forKey: Self.endedKey)
     defaults.set(value.libraryName, forKey: Self.nameKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
@@ -362,9 +368,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     continuation.yield(.skipped(.mac))
     continuation.yield(.working(.synology))
     let probeDir = FileManager.default.temporaryDirectory.appendingPathComponent("sample-probe-\(UUID().uuidString)")
-    let probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
+    var probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
                               fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
                               local: "", publicName: "", identity: "", accessKey: "", deviceName: await deviceName(), sample: true)
+    // GUEST: the sample library as a guest, its time counted from now (§8.2's demo; no NAS).
+    if parsed.grant_for_s > 0 { probe.accessUntil = Date().timeIntervalSince1970 + Double(parsed.grant_for_s) }
     let (status, report) = await withLinkCancel { cancel in
       await onLinkQueue { () -> (Int32, mv_route_report) in
         defer { try? FileManager.default.removeItem(at: probeDir) }
@@ -429,8 +437,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       if replacing { routeEpoch += 1 }
       return connectGeneration
     }
-    let (answered, report, grant) = await onLinkQueue { () -> (Int32, mv_route_report, Double?) in
+    // The sample library as a guest, past its end: no request to GitHub (the phone is its NAS).
+    let standInEnded = sampleGuestEnded()
+    let (fromLink, report, grant) = await onLinkQueue { () -> (Int32, mv_route_report, Double?) in
       var report = mv_route_report()
+      if standInEnded { return (Int32(MV_LINK_ACCESS_ENDED.rawValue), report, nil) }
       let status = replacing ? mv_link_reconnect(link.raw, nil, &report) : mv_link_connect(link.raw, nil, &report)
       var expires: Int64 = 0
       var scoped: Int32 = 0
@@ -440,15 +451,23 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       return (status, report, known == 1 && expires > 0 ? Double(expires) : nil)
     }
     guard lock.withLock({ generation == connectGeneration && !forgotten }) else { return }  // a newer one is running
+    var answered = fromLink
+    // The sample library has no NAS to end a guest's time: in sample mode only, the phone stands
+    // in for it, and the end it recorded at pairing is the NAS's "expired" (owner 2026-11-12:
+    // every phone feature demoable in SAMPLE).
+    let sampleEnd = lock.withLock { record?.isSample == true ? record?.accessUntil : nil }
+    if sampleGuestEnded() { answered = Int32(MV_LINK_ACCESS_ENDED.rawValue) }
+    if let sampleEnd, answered == 0 { scheduleSampleEnd(at: sampleEnd) }
     var status = answered
-    if status == 0, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
+    if status == 0, sampleEnd == nil, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
     // §8.2: the NAS's "expired" shows the end and deletes the copy; the phone's own clock past
     // the end the NAS gave only says so, and only when no route answered at all.
     var unreachable = false
     if case .unreachable = Self.state(answered, report) { unreachable = true }
     let end = AccessEnd.decide(serviceSaidEnded: answered == Int32(MV_LINK_ACCESS_ENDED.rawValue),
                                noRouteAnswered: answered != 0 && unreachable,
-                               storedEnd: lock.withLock { record?.accessUntil }, now: Date().timeIntervalSince1970)
+                               storedEnd: lock.withLock { record?.accessUntil }, now: Date().timeIntervalSince1970,
+                               wasEnded: current.synology == .accessEnded)
     if end.showEnded { status = Int32(MV_LINK_ACCESS_ENDED.rawValue) }
     if end.dropLocalCopy { await dropLocalCopy(of: link) }
     let info = await catalogueNow(link: link)
@@ -461,6 +480,31 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // Not for a library replaced while this connect ran (another pairing, Forget).
     if status == 0, lock.withLock({ generation == connectGeneration && handle === link && !forgotten }) {
       work.run(priority: .utility) { [weak self] in await self?.quietSync(link) }
+    }
+  }
+
+  /// The sample guest's end (code GUEST) has come, on this phone's clock.
+  private func sampleGuestEnded() -> Bool {
+    lock.withLock {
+      AccessEnd.sampleGuestEnded(isSample: record?.isSample == true, accessUntil: record?.accessUntil,
+                                 now: Date().timeIntervalSince1970)
+    }
+  }
+
+  /// In sample-guest mode, a connect at the end itself, so the demo ends while it is watched, as a
+  /// NAS's watch would cut the session. One at a time; a Forget or a pairing makes it a no-op.
+  private func scheduleSampleEnd(at end: Double) {
+    let epoch = lock.withLock { () -> Int? in
+      guard sampleEndScheduled != end else { return nil }
+      sampleEndScheduled = end
+      return libraryEpoch
+    }
+    guard let epoch else { return }
+    Task { [weak self] in
+      let wait = max(0, end - Date().timeIntervalSince1970) + 1
+      try? await Task.sleep(for: .seconds(wait))
+      guard let self, self.lock.withLock({ self.libraryEpoch == epoch && !self.forgotten }) else { return }
+      await self.retry()
     }
   }
 
@@ -524,7 +568,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
   private func quietSync(_ link: LinkHandle) async {
-    guard current.catalogue != nil, mayCopyQuietly else { return }
+    guard current.catalogue != nil, mayCopyQuietly, !sampleGuestEnded() else { return }
     let report = await onLinkQueue { () -> mv_sync_report in
       var report = mv_sync_report()
       _ = mv_sync_check(link.raw, &report)
@@ -550,6 +594,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       forgotten = true
       libraryEpoch += 1
       localCopyDropped = false
+      sampleEndScheduled = nil
       let out = (handle, copyCancel)
       handle = nil
       record = nil
@@ -681,9 +726,20 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   private func runCopy(overMobileData: Bool, continuation: AsyncThrowingStream<CopyEvent, Error>.Continuation) async throws {
     guard let link = await awaitLink(), !lock.withLock({ forgotten }) else { throw CopyFailure.synologyUnreachable }
+    // An ended access copies nothing: a NAS refuses it, and the sample guest's stand-in does too.
+    // The connect that says so on the card runs apart from this copy, never awaited here: it
+    // stops and waits for tracked work, this copy among it.
+    if sampleGuestEnded() {
+      Task { [weak self] in await self?.retry() }
+      throw CopyFailure.accessEnded
+    }
     let status = await onLinkQueue { () -> Int32 in
       var report = mv_route_report()
       return mv_link_connect(link.raw, nil, &report)  // keeps a live link
+    }
+    if status == Int32(MV_LINK_ACCESS_ENDED.rawValue) {
+      Task { [weak self] in await self?.retry() }
+      throw CopyFailure.accessEnded
     }
     guard status == 0 else { throw CopyFailure.synologyUnreachable }
     let check = await onLinkQueue { () -> mv_sync_report in

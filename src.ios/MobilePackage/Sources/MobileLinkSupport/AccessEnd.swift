@@ -19,13 +19,22 @@ public enum AccessEnd {
 
   /// `serviceSaidEnded`: the NAS refused this phone as expired. `noRouteAnswered`: nothing answered
   /// at all (not a refusal of another kind). `storedEnd`: the end the NAS last gave, unix seconds.
+  /// `wasEnded`: the last word was already "ended" (kept across launches): no answer changes nothing.
   public static func decide(serviceSaidEnded: Bool, noRouteAnswered: Bool, storedEnd: Double?,
-                            now: Double) -> Decision {
+                            now: Double, wasEnded: Bool = false) -> Decision {
     if serviceSaidEnded { return Decision(showEnded: true, dropLocalCopy: true) }
+    if noRouteAnswered, wasEnded { return Decision(showEnded: true, dropLocalCopy: false) }
     // Offline, past the end this phone was told: said, never acted on. The owner may have
     // extended it meanwhile, and a phone's clock can be wrong.
     if noRouteAnswered, let end = storedEnd, end <= now { return Decision(showEnded: true, dropLocalCopy: false) }
     return Decision(showEnded: false, dropLocalCopy: false)
+  }
+
+  /// The sample library as a guest (code GUEST) has no NAS to end it: in sample mode only, the
+  /// phone stands in for one, and this says whether that end has come.
+  public static func sampleGuestEnded(isSample: Bool, accessUntil: Double?, now: Double) -> Bool {
+    guard isSample, let end = accessUntil else { return false }
+    return end <= now
   }
 
   /// Runs `remove` only while the library stored on this phone is still `expected` (a pairing over

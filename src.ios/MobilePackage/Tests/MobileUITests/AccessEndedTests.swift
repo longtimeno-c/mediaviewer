@@ -41,6 +41,16 @@ final class AccessEndedTests: XCTestCase {
     XCTAssertEqual(LibraryIdentity(name: "Family", fingerprint: "7F3A 92C1", guestFor: 3_600).guestFor, 3_600)
   }
 
+  /// An ended access with its copy gone shows the library and the card, never a copy that would be refused.
+  @MainActor
+  func testAnEndedLibraryIsNotCopiedAgain() {
+    let ended = ConnectionSnapshot(hasLibrary: true, synology: .accessEnded, macNearby: false, catalogue: nil, cacheBytes: 0)
+    XCTAssertEqual(AppModel.stage(for: ended), .main)
+    let neverCopied = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0)
+    XCTAssertEqual(AppModel.stage(for: neverCopied), .firstCopy)
+    XCTAssertEqual(AppModel.stage(for: .noLibrary), .welcome)
+  }
+
   func testTheSnapshotCarriesTheEndAndTheState() {
     var s = ConnectionSnapshot(hasLibrary: true, synology: .accessEnded, macNearby: false, catalogue: nil, cacheBytes: 0)
     XCTAssertNil(s.accessUntil)

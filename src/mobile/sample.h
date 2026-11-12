@@ -49,10 +49,21 @@ inline constexpr std::string_view kPublisherKey = "2329be451a7c5d60c7ebd45f8d919
 // A GitHub release of this repository. Free, no server process, read-only to the phone.
 inline constexpr std::string_view kBase = "https://github.com/longtimeno-c/mediaviewer/releases/download/sample-library/";
 
+// The same library as a guest (docs/plans/nas-owner-and-guests.md §8.2, owner
+// 2026-11-12: every phone feature demoable in SAMPLE): access for kGuestSeconds
+// from pairing. With no NAS to end it, the phone stands in for one in sample
+// mode only. Nothing in the published folder changes.
+inline constexpr std::string_view kGuestCode = "GUEST";
+inline constexpr std::string_view kGuestLink = "mediaviewer://sample-guest";
+inline constexpr std::int64_t kGuestSeconds = 600;
+
 // Whether `text` is the sample code or its link.
 [[nodiscard]] bool is_code(std::string_view text);
-// The sample library as a scanned code would describe it: no service, no expiry.
-[[nodiscard]] pair_payload payload();
+// Whether `text` is the guest sample code or its link.
+[[nodiscard]] bool is_guest_code(std::string_view text);
+// The sample library as a scanned code would describe it: no service, no expiry;
+// `guest`, with the guest code's grant.
+[[nodiscard]] pair_payload payload(bool guest = false);
 
 // The file name of (root, rel) in the static folder; nullopt when either holds
 // anything but letters, digits, '.', '_', '-', ' ' (as '_') and '/' (as "__"), or

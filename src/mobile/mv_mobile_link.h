@@ -59,7 +59,7 @@ typedef struct mv_pair_info {
   char code[256];
   int64_t expires;
   char fingerprint[32]; /* compare with the desktop's */
-  int32_t sample;       /* 1: the sample library's code (no service, never expires; see below) */
+  int32_t sample;       /* 1: the sample library's code, or its guest code GUEST (no service; see below) */
   /* A guest code: the access it gives, in seconds from when it is redeemed (0: unlimited), and
    * whether it is to some folders only. Shown before the person confirms. */
   int64_t grant_for_s;

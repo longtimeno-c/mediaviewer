@@ -986,6 +986,31 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
 
 // ---- the sample library (docs/plans/mobile.md §11.1): a static folder, the same sync ----------
 
+TEST_CASE("sample: GUEST is the same library as a ten-minute guest, with no service", "[mobile-link]") {
+  CHECK(mob::sample::is_guest_code("GUEST"));
+  CHECK(mob::sample::is_guest_code(" guest\n"));
+  CHECK(mob::sample::is_guest_code("mediaviewer://sample-guest"));
+  CHECK(mob::sample::is_guest_code("MediaViewer://Sample-Guest/"));
+  CHECK_FALSE(mob::sample::is_guest_code("SAMPLE"));
+  CHECK_FALSE(mob::sample::is_guest_code("GUESTS"));
+  CHECK_FALSE(mob::sample::is_code("GUEST"));
+  const auto guest = mob::sample::payload(true);
+  const auto plain = mob::sample::payload();
+  CHECK(guest.grant_for_s == mob::sample::kGuestSeconds);
+  CHECK(plain.grant_for_s == 0);
+  // The same signed library: the same id, key and check code; only the grant differs.
+  CHECK(guest.library_id == plain.library_id);
+  CHECK(guest.publisher_key == plain.publisher_key);
+  CHECK(guest.fingerprint == plain.fingerprint);
+  // Through the C ABI, as the app reads it.
+  mv_pair_info info{};
+  REQUIRE(mv_pair_parse("GUEST", 0, &info) == MV_LINK_OK);
+  CHECK(info.sample == 1);
+  CHECK(info.grant_for_s == mob::sample::kGuestSeconds);
+  REQUIRE(mv_pair_parse("SAMPLE", 0, &info) == MV_LINK_OK);
+  CHECK(info.grant_for_s == 0);
+}
+
 TEST_CASE("sample: one fixed code and its link, nothing else", "[mobile-link]") {
   CHECK(mob::sample::is_code("SAMPLE"));
   CHECK(mob::sample::is_code("  sample\n"));

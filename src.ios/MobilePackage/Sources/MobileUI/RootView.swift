@@ -28,9 +28,10 @@ public struct RootView: View {
       ScanScreen().environment(model).preferredColorScheme(.dark).tint(Theme.accent)
     }
     // The link MediaViewer shows beside its code, for when the camera cannot be used (§11.1).
-    // mediaviewer://sample is the sample library's QR code and link (§11.1), opened the same way.
+    // mediaviewer://sample is the sample library's QR code and link (§11.1), opened the same way;
+    // mediaviewer://sample-guest the same library as a guest (nas-owner-and-guests.md §8.2).
     .onOpenURL { url in
-      guard url.scheme == "mediaviewer", url.host == "pair" || url.host == "sample" else { return }
+      guard url.scheme == "mediaviewer", url.host == "pair" || url.host == "sample" || url.host == "sample-guest" else { return }
       model.openedPairLink(url.absoluteString)
     }
     // An alert, not a confirmation dialog: one up here would keep Settings' Forget dialog from showing.

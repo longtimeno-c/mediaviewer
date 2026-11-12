@@ -70,6 +70,8 @@ public enum FailureCopy {
     case .notEnoughSpace(let bytes): return "There isn't enough space on this phone. The library needs \(ProgressWords.size(bytes))."
     case .catalogueRejected:
       return sample ? "What arrived isn't the signed sample library." : "What arrived doesn't match what your computer published."
+    case .accessEnded:
+      return "Your access to this library has ended, so it isn't copied. Ask its owner to extend it."
     }
   }
 
