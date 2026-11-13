@@ -153,6 +153,7 @@ ADDONS = {
         "notice": ("Driftwire add-on for MediaViewer. GPL-3.0-or-later.\n"
                    "Its link is encrypted with libsodium (ISC) and files are checked with BLAKE3 (CC0-1.0):\n"
                    "linked in on macOS, the app's own copies on Windows.\n"
+                   "The Tunnel's TLS is BoringSSL (Apache-2.0), linked in on both.\n"
                    "Files move only to a MediaViewer the person there accepted, over the local network\n"
                    "or Bluetooth. No account, no cloud, no internet relay.\n"),
     },
