@@ -138,6 +138,27 @@ struct relayed_nas {
   }
 };
 
+
+// Joins the waiter for `device`'s token, again while the service has not yet
+// registered a fresh one (it does so after each pair; slower on a loaded CI runner).
+mv::result<std::unique_ptr<sp::link>> join_waiter(const relayed_nas& n, const key32& device) {
+  const auto t = serve::relay_token(n.access, public_of(device));
+  relay::token tok{};
+  std::memcpy(tok.data(), t.data(), tok.size());
+  mv::status last = mv::status::io;
+  for (int i = 0; i < 60; ++i) {
+    auto l = sp::net::connect({"127.0.0.1", n.rendezvous->port()}, 3000);
+    if (!l) {
+      last = l.error();
+    } else if (auto joined = relay::join(std::move(*l), tok, 5000, [] { return false; })) {
+      return joined;
+    } else {
+      last = joined.error();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  return mv::err(last);
+}
 }  // namespace
 
 TEST_CASE("phone relay: a paired phone reaches the service through the person's own relay", "[phone-relay]") {
@@ -200,12 +221,8 @@ TEST_CASE("phone relay: a claim never comes in through the relay", "[phone-relay
   const std::string token(64, 'a');
   fs::create_directories(n.library / ".mediaviewer");
   { std::ofstream(n.library / serve::kClaimTokenFile) << token; }
-  auto l = sp::net::connect({"127.0.0.1", n.rendezvous->port()}, 3000);
-  REQUIRE(l);
-  const auto t = serve::relay_token(n.access, public_of(n.phone));  // the only waiter there is
-  relay::token tok{};
-  std::memcpy(tok.data(), t.data(), tok.size());
-  auto joined = relay::join(std::move(*l), tok, 5000, [] { return false; });
+  auto joined = join_waiter(n, n.phone);  // the only waiter there is
+  INFO("join: " << (joined ? "ok" : mv::status_name(joined.error())));
   REQUIRE(joined);
   auto claimed = serve::claim(std::shared_ptr<sp::link>(std::move(*joined)), serve::claim_key(token), random_key(), "Intruder",
                               [](std::string_view) { return true; }, std::chrono::steady_clock::now() + std::chrono::seconds(5));
@@ -234,12 +251,8 @@ TEST_CASE("phone relay: only the device a waiter is for gets through it", "[phon
   REQUIRE(known::save(*n.store, {a, b}));
   REQUIRE(eventually([&] { return n.through_relay(other, n.access).has_value(); }, 20));
   // The phone, holding the access key, takes the tablet's waiter: refused after the handshake.
-  auto l = sp::net::connect({"127.0.0.1", n.rendezvous->port()}, 3000);
-  REQUIRE(l);
-  const auto t = serve::relay_token(n.access, public_of(other));
-  relay::token tok{};
-  std::memcpy(tok.data(), t.data(), tok.size());
-  auto joined = relay::join(std::move(*l), tok, 5000, [] { return false; });
+  auto joined = join_waiter(n, other);
+  INFO("join: " << (joined ? "ok" : mv::status_name(joined.error())));
   REQUIRE(joined);
   serve::client::options o;
   o.access_key = n.access;
