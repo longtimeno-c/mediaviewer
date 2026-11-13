@@ -184,6 +184,11 @@ class host_bridge final : public mv::driftwire::engine_host {
     if (MV_SP_HAS(notice_authorize)) (void)h_->notice_authorize(h_->host);
   }
 
+  bool post_menu(const std::string& menu_json) override {
+    if (!MV_SP_HAS(keep_menu)) return true;  // an older host: the four fixed rows
+    return h_->keep_menu(h_->host, menu_json.c_str()) == MV_OK;
+  }
+
   bool keep_alive(bool on) override {
     if (!MV_SP_HAS(keep_alive)) return true;  // an older host: nothing to keep
     return h_->keep_alive(h_->host, on ? 1 : 0, kScreen, mv::driftwire::kReceivingStatus) == MV_OK;
@@ -316,6 +321,24 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       return MV_OK;
     }
     if (!e->screen_id || std::strcmp(e->screen_id, kScreen) != 0) return MV_OK;
+    if (e->kind == MV_SLOT_EVENT_MENU) {
+      // A row of the menu-bar item / tray icon's menu (build_menu). Its ids are
+      // the window's, so a toggle or Cancel is the window's own change; Send
+      // Files... puts the chosen files on the Send card and opens the window.
+      const std::string node = e->node_id;
+      const std::string value = e->value_json ? e->value_json : "";
+      if (node == "send_files") {
+        const auto paths = paths_of(e->value_json);
+        if (paths.empty()) return MV_OK;
+        g->get().set_files(paths);
+        (void)g->host->screen_show(g->host->host, kScreen, 1);
+      } else if (node == "out_cancel" || node == "in_cancel") {
+        g->get().on_event(node, MV_SLOT_EVENT_CLICK, "");
+      } else if (node == "receiving" || node == "internet" || node == "background") {
+        g->get().on_event(node, MV_SLOT_EVENT_CHANGE, value);
+      }
+      return MV_OK;
+    }
     if (e->kind == MV_SLOT_EVENT_NOTICE) {
       // #452: Decline in the system notification is the window's Decline.
       // "decline:<offer>" (#502) reaches only that offer; a bare "decline"

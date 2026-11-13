@@ -47,8 +47,10 @@ struct LayeredImages: ImageLadder {
   let local: ImageLadder
   let remote: LinkImages
 
+  /// The sharpest picture in memory first: a tile that already showed its JPEG-512 paints it
+  /// again in its first frame, rather than the 64 px tile and then a second swap.
   func cachedImage(for id: MediaID) -> UIImage? {
-    local.cachedImage(for: id) ?? remote.cachedImage(for: id)
+    remote.memoryImage(for: id) ?? local.cachedImage(for: id) ?? remote.cachedImage(for: id)
   }
 
   /// The tile from the phone's own catalogue: no network, so it paints offline and first.

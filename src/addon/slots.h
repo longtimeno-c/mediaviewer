@@ -259,7 +259,7 @@ class slot_registry {
   // (#512): the screen a click opens, the item's own or the add-on's only
   // window / pane / sheet; absent when there is none (the item stays text).
   [[nodiscard]] std::string status_json() const;
-  // #452: {"ask": n, "keep": [{"addon","screen","title","label"}],
+  // #452: {"ask": n, "keep": [{"addon","screen","title","label","menu"?:[rows]}],
   //  "notices": [{"addon","id","screen","title","body","action","action_label","revision"}]}.
   [[nodiscard]] std::string notices_json() const;
   // #452: some add-on asks to keep the process with every window closed.
@@ -269,6 +269,11 @@ class slot_registry {
   [[nodiscard]] std::string busy_what() const;
   // #452: a notice's button was clicked: MV_SLOT_EVENT_NOTICE to its add-on.
   status notice_action(const std::string& addon_id, const std::string& notice_id, const std::string& action_id);
+  // docs/plans/driftwire-menu-and-tunnel.md slice 1: a row of a kept add-on's
+  // menu was picked: MV_SLOT_EVENT_MENU to it, after checking the row exists
+  // with that kind (a toggle's value a boolean, a files row's an array of
+  // strings, a button's anything). not_found for an unknown row or add-on.
+  status menu_action(const std::string& addon_id, const std::string& item_id, const std::string& value_json);
 
   // ---- the add-on answers (host table v3; any thread) ---------------------------
   status post_screen(const std::string& addon_id, const std::string& screen_id,
@@ -323,6 +328,15 @@ class slot_registry {
                      std::optional<notice_fields> notice);
   status ask_notice_permission(const std::string& addon_id);
   status keep_alive(const std::string& addon_id, bool on, const std::string& screen_id, std::string label);
+  // Host table keep_menu: the kept menu's own rows ({"items":[..]}; "" or an
+  // empty list removes them). invalid_arg for a bad list (more than 16 rows,
+  // an unknown kind, a bad id or label).
+  struct menu_row {
+    std::string kind, id, label;
+    bool value = false;
+    bool operator==(const menu_row&) const = default;
+  };
+  status keep_menu(const std::string& addon_id, std::string_view menu_json);
   // #510 (host table busy_post): "" ends it. In notices_json's "busy".
   status post_busy(const std::string& addon_id, std::string what);
 
@@ -418,6 +432,7 @@ class slot_registry {
   };
   std::map<std::pair<std::string, std::string>, notice_state> notices_;  // (addon, notice)
   std::map<std::string, std::pair<std::string, std::string>> keep_;    // addon -> (screen, label)
+  std::map<std::string, std::vector<menu_row>> keep_menu_;              // addon -> its menu rows
   std::map<std::string, std::string> busy_;                            // addon -> what (#510)
   std::uint64_t notice_asks_ = 0;
   std::uint64_t notice_revision_ = 0;

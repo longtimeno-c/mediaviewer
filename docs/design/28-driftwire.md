@@ -526,8 +526,17 @@ process (`keep_alive`), and the hosts do the rest.
   a Quit that hid the app kept an old version running past updates). The viewer drops what it
   showed (no clip plays, the folder and its watch close; `returnToWelcome` / `return_to_welcome`) and its window is hidden, not
   closed. On the Mac the app then leaves the Dock (accessory policy) and a **menu-bar item**
-  stays; on Windows a **notification-area icon**. Both menus: "Driftwire: receiving", **Open
-  Driftwire**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). Opening the app
+  stays; on Windows a **notification-area icon**. Both menus: "Driftwire: receiving", then
+  Driftwire's own rows (2026-11-12, host table `keep_menu`, `build_menu`;
+  [plan](../plans/driftwire-menu-and-tunnel.md)): what is happening now ("Sending to Ann's
+  MacBook · 42%", "Laptop wants to send you files"; never the code or a file name) with **Cancel
+  Sending** / **Cancel Receiving** while it can be cancelled, **Send Files…** (the system's open
+  panel; the files go to the Send card and the window opens), and checkmarks for **Receive from
+  Nearby**, **Send and Receive over the Internet** and **Receive when MediaViewer is closed**,
+  which are the window's `receiving`, `internet` and `background` toggles under the same ids
+  (turning the first or last off ends the background, and the menu goes with it); then **Open
+  Driftwire**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). The rows are
+  re-sent only when one changes (a percentage moves in whole steps). Opening the app
   again (Finder, Spotlight, Start, a file) brings the hidden window back. Logout, restart and shut
   down, and an update's restart, quit as before. Only the process that holds
   `driftwire.json.lock` keeps itself; another window's process quits as usual. Hidden, a staged

@@ -52,6 +52,7 @@ final class LiveSearchTests: XCTestCase {
       field.typeText(query + "\n")
       // Answered: every tile on screen says it answers these words, or the "Nothing" page names them.
       var last: [String] = []
+      var seen: [String]?
       var total = 0
       var answered = false
       let start = Date()
@@ -60,8 +61,11 @@ final class LiveSearchTests: XCTestCase {
         let tiles = visibleTiles(app)
         let mine = !tiles.isEmpty && tiles.allSatisfy { $0.answering == query }
         let nothing = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Nothing' AND label CONTAINS %@", query)).count > 0
-        if mine || (nothing && tiles.isEmpty) {
-          last = tiles.map(\.id)
+        // Tiles glide from one answer to the next: the order holds once two looks agree.
+        let order = tiles.map(\.id)
+        defer { seen = order }
+        if (mine && order == seen) || (nothing && tiles.isEmpty) {
+          last = order
           total = tiles.first?.total ?? 0
           answered = true
           break
