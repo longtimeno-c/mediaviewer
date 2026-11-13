@@ -17,7 +17,7 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/driftwire/serve_wire.h"
+#include "wire/serve_wire.h"
 
 namespace mv::mobile::files {
 

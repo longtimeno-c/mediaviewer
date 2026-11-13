@@ -1929,6 +1929,8 @@ TEST_CASE("sound tower: wanted only for a catalogue whose clips the pinned tower
   CHECK(mv_sound_total_bytes() == mob::sound::total_bytes());
   CHECK(std::string(mv_sound_base()).back() == '/');
   fs::remove_all(root);
+}
+
 namespace {
 
 constexpr const char* kPhoneRelayKey = "mobile-loopback-relay-key-0123";
@@ -1963,6 +1965,10 @@ std::unique_ptr<dw::relay::server> relay_for(rig& r) {
   r.relay_address = "127.0.0.1:" + std::to_string((*started)->port());
   r.start();
   return std::move(*started);
+}
+
+}  // namespace
+
 // ---- file mode (docs/plans/phone-in-the-app.md §4) ----------------------------------------------
 
 namespace {
@@ -2221,6 +2227,9 @@ TEST_CASE("upgrade: relayed and direct throughput, alternated", "[.phone-upgrade
     REQUIRE(report.upgraded);
     const double direct = read_all(moved);
     std::printf("{\"case\":\"phone_upgrade\",\"run\":%d,\"relay_MBps\":%.0f,\"direct_MBps\":%.0f}\n", run, via_relay, direct);
+  }
+}
+
 TEST_CASE("file mode: library.json and no catalogue the phone can verify is file mode, not a failure",
           "[mobile-link][mobile-files]") {
   SECTION("no current.json") {

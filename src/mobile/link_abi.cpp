@@ -12,7 +12,7 @@
 #include <shared_mutex>
 #include <string>
 
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 #include "mobile/files.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
