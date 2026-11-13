@@ -1013,9 +1013,12 @@ TEST_CASE("phone pairing: right after an unlock the next action goes through, an
 TEST_CASE("phone pairing: the route carries the passphrase and the limits to the card", "[phone-pairing]") {
   nas n;
   desktop mac;
-  auto claimed = desk::route_request(*mac.d, "phone", "claim",
-                                     "{\"share\":\"" + utf8(n.share) + "\",\"local\":\"" + n.local() +
-                                         "\",\"passphrase\":\"" + kPass + "\",\"new_passphrase\":true}");
+  // Written, not pasted: a Windows path's backslashes are escapes in JSON.
+  mv::json::writer req;
+  req.begin_object().key("share").string(utf8(n.share)).key("local").string(n.local());
+  req.key("passphrase").string(kPass).key("new_passphrase").boolean(true).end_object();
+  auto claimed = desk::route_request(*mac.d, "phone", "claim", req.str());
+  INFO("claim: " << (claimed ? std::string("ok") : std::string(mv::status_name(claimed.error()))));
   REQUIRE(claimed);
   auto status = desk::route_request(*mac.d, "phone", "owner_status", "{}");
   REQUIRE(status);
