@@ -978,13 +978,13 @@ void link::run(const std::string& request) {
     if (library_id.empty()) return fail("not_published");
     auto secret = signing_key(false);
     if (!secret) return fail("not_published");
-    const auto publisher = catalog::public_of(*secret);
+    const auto signing_public = catalog::public_of(*secret);
     const std::int64_t for_s = std::max<std::int64_t>(0, doc->integer("for_s").value_or(0));
     json::writer w;
     w.begin_object()
         .key("ttl_ms").integer(static_cast<std::int64_t>(o_.code_ttl_s * 1000))
         .key("library_id").string(library_id)
-        .key("publisher_key").string(catalog::to_hex(publisher));
+        .key("publisher_key").string(catalog::to_hex(signing_public));
     if (for_s > 0) w.key("for_s").integer(for_s);
     w.end_object();
     auto answer = route("pair", w.str());
@@ -994,7 +994,7 @@ void link::run(const std::string& request) {
     catalog::pair_payload p;
     p.library_id = library_id;
     p.library_name = last_part(destination);
-    p.publisher_key = publisher;
+    p.publisher_key = signing_public;
     const auto field = [&](const char* k) -> std::string {
       const std::string* v = a->str(k);
       return v ? *v : std::string();

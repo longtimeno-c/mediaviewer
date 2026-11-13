@@ -225,7 +225,7 @@ class tcp_listener final : public listener {
     return accept_endpoint(timeout_ms, from, ignored);
   }
 
-  result<std::unique_ptr<link>> accept_endpoint(int timeout_ms, address& from, std::uint16_t& port) override {
+  result<std::unique_ptr<link>> accept_endpoint(int timeout_ms, address& from, std::uint16_t& peer_port) override {
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
     for (;;) {
       if (down_.load()) return err(status::cancelled);
@@ -237,7 +237,7 @@ class tcp_listener final : public listener {
         const SOCKET c = ::accept(s_, reinterpret_cast<sockaddr*>(&peer), &len);
         if (c != INVALID_SOCKET) {
           from = address_of(reinterpret_cast<const sockaddr*>(&peer));
-          port = port_of(peer);
+          peer_port = port_of(peer);
           return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
         }
         const int e = ::WSAGetLastError();

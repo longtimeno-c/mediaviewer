@@ -1416,11 +1416,11 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
         (void)ch->cancel(kCancelWaitMs, "locked-out");
         return;
       }
-      owner::key32 nonce{};
-      randombytes_buf(nonce.data(), nonce.size());
+      owner::key32 challenge{};
+      randombytes_buf(challenge.data(), challenge.size());
       json::writer w;
       w.begin_object().key("passphrase").string("set");
-      challenge_fields(w, v, nonce);
+      challenge_fields(w, v, challenge);
       w.end_object();
       if (!ch->send(msg::serve_claim_challenge, w.str()) || !ch->receive(m, kClaimAnswerMs) || m.type != msg::serve_claim) {
         (void)ch->cancel(kCancelWaitMs, "protocol");
@@ -1434,7 +1434,7 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
         (void)ch->cancel(kCancelWaitMs, "protocol");
         return;
       }
-      if (!answer(counter, v, *sig, *ch, nonce, why, until)) {
+      if (!answer(counter, v, *sig, *ch, challenge, why, until)) {
         (void)ch->cancel(kCancelWaitMs, why);
         return;
       }
@@ -1970,8 +1970,8 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     const std::string address = text("address");
     const std::string key = text("key");
     std::string host;
-    std::uint16_t port = 0;
-    if (!address.empty() && (!parse_relay_address(address, host, port) || key.size() < relay::kMinKeyChars ||
+    std::uint16_t relay_port = 0;
+    if (!address.empty() && (!parse_relay_address(address, host, relay_port) || key.size() < relay::kMinKeyChars ||
                              key.size() > 4096)) {
       return {end_code::bad_request, {}};
     }
@@ -2223,8 +2223,8 @@ std::string token_hex(const std::array<std::uint8_t, 16>& t) {
 void server::state::wait_at_relay(waiter& w, const std::string& relay_key) {
   const auto stopped = [&] { return stopping.load() || w.stop.load(); };
   std::string host;
-  std::uint16_t port = 0;
-  if (!parse_relay_address(w.relay, host, port)) return;  // set_relay refuses these; a hand-edited serve.json waits nowhere
+  std::uint16_t relay_port = 0;
+  if (!parse_relay_address(w.relay, host, relay_port)) return;  // set_relay refuses these; a hand-edited serve.json waits nowhere
   const auto t = relay_token(access_key, w.device);
   relay::token tok{};
   std::memcpy(tok.data(), t.data(), tok.size());
@@ -2234,9 +2234,9 @@ void server::state::wait_at_relay(waiter& w, const std::string& relay_key) {
     relay_cv.wait_for(lock, std::chrono::milliseconds(ms), [&] { return stopped(); });
   };
   const auto connect = [&]() -> result<std::unique_ptr<link>> {
-    if (relay_connect) return relay_connect(host, port, kRelayConnectMs);
+    if (relay_connect) return relay_connect(host, relay_port, kRelayConnectMs);
     for (const auto& a : net::resolve(host)) {
-      if (auto c = net::connect(net::endpoint{net::address_text(a), port}, kRelayConnectMs)) return std::move(*c);
+      if (auto c = net::connect(net::endpoint{net::address_text(a), relay_port}, kRelayConnectMs)) return std::move(*c);
     }
     return err(status::io);
   };
@@ -2283,32 +2283,32 @@ void server::state::wait_at_relay(waiter& w, const std::string& relay_key) {
 // and its public side as the person's relay sees it (kAsk from that port).
 std::vector<candidate> server::state::gather_candidates(net::tcp_rendezvous& rz) {
   std::vector<candidate> out;
-  const std::uint16_t port = rz.port();
+  const std::uint16_t here = rz.port();
   if (loopback_only) {
-    out.push_back({"127.0.0.1", port});
+    out.push_back({"127.0.0.1", here});
   } else {
     for (const auto& a : net::local_addresses()) {
       if (out.size() >= kMaxCandidates - 1) break;
-      out.push_back({net::address_text(a), port});
+      out.push_back({net::address_text(a), here});
     }
   }
   std::string host;
   std::uint16_t relay_port = 0;
   if (parse_relay_address(cfg()->relay, host, relay_port)) {
-    std::vector<net::endpoint> relay;
+    std::vector<net::endpoint> relay_at;
     if (const auto a = net::parse_address(host)) {
-      relay.push_back({net::address_text(*a), relay_port});
+      relay_at.push_back({net::address_text(*a), relay_port});
     } else if (const auto found = net::resolve(host); !found.empty()) {
-      relay.push_back({net::address_text(found.front()), relay_port});
+      relay_at.push_back({net::address_text(found.front()), relay_port});
     }
-    if (!relay.empty()) {
-      // Short: this runs on the session's reader (the relay answered a moment ago).
-      if (auto l = rz.next(relay, 1500)) {
-        if (auto seen = relay::ask_seen(**l, 1500)) {
+    if (!relay_at.empty()) {
+      // Short: the relay answered this service a moment ago.
+      if (auto l = rz.next(relay_at, 1500)) {
+        if (auto said = relay::ask_seen(**l, 1500)) {
           const bool known = std::any_of(out.begin(), out.end(), [&](const candidate& c) {
-            return c.address == seen->address && c.port == seen->port;
+            return c.address == said->address && c.port == said->port;
           });
-          if (!known && out.size() < kMaxCandidates) out.push_back({seen->address, seen->port});
+          if (!known && out.size() < kMaxCandidates) out.push_back({said->address, said->port});
         }
         (*l)->shutdown();
       }

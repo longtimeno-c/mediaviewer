@@ -176,7 +176,7 @@ class tcp_listener final : public listener {
     return accept_endpoint(timeout_ms, from, ignored);
   }
 
-  result<std::unique_ptr<link>> accept_endpoint(int timeout_ms, address& from, std::uint16_t& port) override {
+  result<std::unique_ptr<link>> accept_endpoint(int timeout_ms, address& from, std::uint16_t& peer_port) override {
     // Short polls, so shutdown() is noticed without closing the fd under a
     // thread that is using it.
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
@@ -191,7 +191,7 @@ class tcp_listener final : public listener {
         if (c >= 0) {
           const endpoint e = endpoint_of(peer);
           from = parse_address(e.address).value_or(address{});
-          port = e.port;
+          peer_port = e.port;
           return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
         }
         if (errno != EINTR && errno != EAGAIN && errno != ECONNABORTED) return err(status::io);
