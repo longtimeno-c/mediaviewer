@@ -7,10 +7,13 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 
+#include "addons/driftwire/wire.h"
+#include "mobile/files.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
 #include "mobile/link_payload.h"
@@ -47,6 +50,13 @@ struct mv_mobile_link {
   std::mutex roots_m;
   std::map<std::string, std::string> label_to_root;  // under roots_m; empty until asked
   bool roots_known = false;
+  // File mode: whether each root is the catalogue's own folder (holds library.json), asked once
+  // per connection. Under roots_m.
+  std::map<std::string, bool> catalogue_root;
+};
+
+struct mv_file_index {
+  mv::mobile::files::index index;
 };
 
 namespace {
@@ -105,6 +115,7 @@ mv_link_status status_of_outcome(sync_outcome o) {
     case sync_outcome::unreachable: return MV_LINK_UNREACHABLE;
     case sync_outcome::cancelled: return MV_LINK_CANCELLED;
     case sync_outcome::waiting: return MV_LINK_WAITING;
+    case sync_outcome::no_catalogue: return MV_LINK_NO_CATALOGUE;
   }
   return MV_LINK_INTERNAL;
 }
@@ -325,6 +336,7 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
     l->sync.library_dir = c->library_dir;
     l->sync.library_id = c->library_id;
     l->sync.publisher_key = key_at(c->publisher_key);
+    l->sync.file_mode = !is_static;
     std::error_code ec;
     std::filesystem::create_directories(l->sync.library_dir, ec);
     l->cache_dir = c->cache_dir;
@@ -399,6 +411,7 @@ int32_t mv_link_reconnect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report*
     {
       std::lock_guard lock(l->roots_m);
       l->roots_known = false;
+      l->catalogue_root.clear();
     }
     if (!done) return status_of_route(done.error(), r);
     return MV_LINK_OK;
@@ -480,6 +493,10 @@ int32_t mv_sync_check(mv_mobile_link* l, mv_sync_report* report) {
     report->needed_bytes = plan.needed_bytes;
     if (plan.outcome == sync_outcome::copy_available || plan.outcome == sync_outcome::up_to_date) {
       if (!plan.catalogue_root.empty()) l->thumbs->set_catalogue_root(plan.catalogue_root);
+    }
+    if (plan.outcome == sync_outcome::no_catalogue && !plan.library_root.empty()) {
+      std::lock_guard lock(l->roots_m);
+      l->catalogue_root[plan.library_root] = true;
     }
     return report->outcome;
   });
@@ -650,6 +667,134 @@ int32_t mv_assets_list(mv_mobile_link* l, mv_listed_asset_fn fn, void* ctx) {
       l->view->for_each_asset([&](const generation_view::listed_asset& a) { rows.push_back(a); });
     }
     for (const auto& a : rows) fn(ctx, a.id, a.kind, a.taken_at, a.duration_ms, a.name.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+// ---- file mode ---------------------------------------------------------------------------------
+
+int32_t mv_files_roots(mv_mobile_link* l, mv_root_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    auto listed = l->remote->roots();
+    if (!listed) return status_of_read(listed.error());
+    std::vector<driftwire::serve::root_info> keep;
+    for (const auto& r : *listed) {
+      std::optional<bool> known;
+      {
+        std::lock_guard lock(l->roots_m);
+        if (auto it = l->catalogue_root.find(r.id); it != l->catalogue_root.end()) known = it->second;
+      }
+      if (!known) {
+        // The catalogue's folder is the one root whose top holds library.json; a stat each, once.
+        auto st = l->remote->stat(r.id, "library.json");
+        if (!st && st.error() != status::not_found && st.error() != status::permission_denied) {
+          return status_of_read(st.error());
+        }
+        known = st && !st->dir;
+        std::lock_guard lock(l->roots_m);
+        l->catalogue_root[r.id] = *known;
+      }
+      if (!*known) keep.push_back(r);
+    }
+    for (const auto& r : keep) fn(ctx, r.id.c_str(), r.label.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_list(mv_mobile_link* l, const char* root, const char* rel, mv_file_entry_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !fn) return MV_LINK_INVALID;
+    const std::string r = root, p = or_empty(rel);
+    if (!p.empty() && !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    auto listed = l->remote->list(r, p);
+    if (!listed) return status_of_read(listed.error());
+    for (const auto& e : files::shown(*listed)) {
+      mv_file_entry out{e.name.c_str(), e.size, e.mtime, e.dir ? 1 : 0, e.dir ? -1 : static_cast<int32_t>(e.k)};
+      fn(ctx, &out);
+    }
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_read(mv_mobile_link* l, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
+                      mv_cancel* cancel, mv_sink_fn sink, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel || !sink) return MV_LINK_INVALID;
+    const std::string p = rel;
+    if (p.empty() || !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    auto done = l->remote->read_range(
+        root, p, at, length,
+        [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
+        cancel ? cancel->flag.get() : nullptr, bulk != 0);
+    return done ? MV_LINK_OK : status_of_read(done.error());
+  });
+}
+
+int32_t mv_files_fields(const char* make, const char* model, const char* lens, const char* comment, const mv_file_tag* tags,
+                        size_t count, mv_text_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!fn || (count && !tags)) return MV_LINK_INVALID;
+    std::vector<files::tag> list;
+    list.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+      if (!tags[i].raw_tag || !tags[i].value) continue;
+      list.push_back({tags[i].raw_tag, tags[i].value});
+    }
+    for (const auto& f : files::fields_of(or_empty(make), or_empty(model), or_empty(lens), or_empty(comment), list)) {
+      fn(ctx, f.c_str());
+    }
+    return MV_LINK_OK;
+  });
+}
+
+mv_file_index* mv_file_index_new(void) {
+  try {
+    return new mv_file_index();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void mv_file_index_free(mv_file_index* index) { delete index; }
+
+int32_t mv_file_index_names(mv_file_index* index, const char* const* names, size_t count) {
+  return catch_all([&]() -> int32_t {
+    if (!index || (count && !names)) return MV_LINK_INVALID;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (size_t i = 0; i < count; ++i) list.emplace_back(or_empty(names[i]));
+    index->index.set_names(std::move(list));
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_file_index_fields(mv_file_index* index, size_t i, const char* const* fields, size_t count) {
+  return catch_all([&]() -> int32_t {
+    if (!index || (count && !fields)) return MV_LINK_INVALID;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (size_t k = 0; k < count; ++k) {
+      if (fields[k]) list.emplace_back(fields[k]);
+    }
+    index->index.set_fields(i, list);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_file_index_match(const mv_file_index* index, const char* typed, mv_file_hit_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!index || !fn) return MV_LINK_INVALID;
+    for (const auto& h : index->index.match(or_empty(typed))) fn(ctx, h.index, h.why.empty() ? nullptr : h.why.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_file_index_counts(const mv_file_index* index, size_t* tagged, size_t* count) {
+  return catch_all([&]() -> int32_t {
+    if (!index) return MV_LINK_INVALID;
+    if (tagged) *tagged = index->index.tagged();
+    if (count) *count = index->index.count();
     return MV_LINK_OK;
   });
 }

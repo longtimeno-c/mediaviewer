@@ -40,7 +40,8 @@ struct LibraryScreen: View {
 
   private var emptyWords: some View {
     Text(model.library.failure != nil ? "" : model.library.scope == .everything
-         ? "Nothing here yet. Photos appear once MediaViewer on your computer publishes them."
+         ? (model.connection.fileMode ? FailureCopy.fileModeTop
+            : "Nothing here yet. Photos appear once MediaViewer on your computer publishes them.")
          : "This folder has no photos or clips.")
       .font(.subheadline)
       .foregroundStyle(Theme.body)
@@ -150,7 +151,7 @@ private struct PlaceBar: View {
         ForEach(library.subfolders) { folder in
           Button { library.enter(folder) } label: { chip(folder) }
             .buttonStyle(TileButtonStyle())
-            .accessibilityLabel("\(folder.name), \(folder.itemCount) items")
+            .accessibilityLabel(folder.itemCount >= 0 ? "\(folder.name), \(folder.itemCount) items" : folder.name)
         }
       }
       .padding(.horizontal, Theme.inset)
@@ -164,7 +165,10 @@ private struct PlaceBar: View {
     ChipLabel {
       Image(systemName: "folder.fill").font(.footnote).foregroundStyle(Theme.body)
       Text(folder.name).font(.subheadline).foregroundStyle(Theme.title).fixedSize()
-      Text(folder.itemCount, format: .number).font(.caption.monospacedDigit()).foregroundStyle(Theme.body).fixedSize()
+      // A NAS folder in file mode has no count until it is opened (-1).
+      if folder.itemCount >= 0 {
+        Text(folder.itemCount, format: .number).font(.caption.monospacedDigit()).foregroundStyle(Theme.body).fixedSize()
+      }
     }
   }
 }

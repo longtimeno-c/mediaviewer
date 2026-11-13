@@ -18,7 +18,8 @@ struct SearchScreen: View {
         .navigationTitle("Search")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: Binding(get: { search.text }, set: { search.setText($0) }),
-                    placement: .navigationBarDrawer(displayMode: .always), prompt: "Type what you remember")
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: search.capability == .filesOnly ? "Find files by name or tag in this folder" : "Type what you remember")
         .onSubmit(of: .search) { search.submit() }
     }
     .task { await search.prepare() }
@@ -77,6 +78,11 @@ struct SearchScreen: View {
 
   @ViewBuilder
   private var topNotices: some View {
+    if model.search.capability == .filesOnly {
+      FileSearchLines()
+        .padding(.horizontal, Theme.inset)
+        .padding(.vertical, 8)
+    }
     if model.search.isWarmingUp {
       ProgressLine(verb: "Getting search ready", fraction: nil)
         .padding(.horizontal, Theme.inset)
@@ -123,12 +129,43 @@ private struct NothingFound: View {
   }
 
   private var hint: String {
+    if model.search.capability == .filesOnly { return FailureCopy.fileSearchHint }
     var parts: [String] = []
     if model.search.filters.isEmpty { parts.append("Try fewer words, or a person, place or year.") }
     if let catalogue = model.connection.catalogue {
       parts.append("This catalogue was updated \(catalogue.updatedAt.formatted(.relative(presentation: .named))), so anything newer won't show.")
     }
     return parts.joined(separator: " ")
+  }
+}
+
+/// File search (no catalogue yet, docs/plans/phone-in-the-app.md §4): what it searched, "N of M",
+/// and what it cannot do.
+private struct FileSearchLines: View {
+  @Environment(AppModel.self) private var model
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text(FailureCopy.smartSearchNeedsLocalSearch)
+        .font(.footnote)
+        .foregroundStyle(Theme.body)
+      if let scope = model.search.fileScope {
+        Text(count(scope))
+          .font(.footnote.weight(.medium).monospacedDigit())
+          .foregroundStyle(Theme.title)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .fixedSize(horizontal: false, vertical: true)
+  }
+
+  private func count(_ scope: SearchModel.FileScope) -> String {
+    guard let folder = scope.folderName else { return FailureCopy.fileSearchNoFolder }
+    var line = "\(scope.found.formatted()) of \(scope.outOf.formatted()) in \(folder)"
+    if let reading = scope.readingTags {
+      line += " · Still reading tags — \(reading.done.formatted()) of \(reading.total.formatted())"
+    }
+    return line
   }
 }
 
@@ -212,6 +249,13 @@ private struct RecentsList: View {
     List {
       if search.capability == .unsupportedTower {
         NoticeCard(message: FailureCopy.unsupportedTower)
+          .listRowBackground(Color.clear)
+          .listRowInsets(EdgeInsets(top: 8, leading: Theme.inset, bottom: 8, trailing: Theme.inset))
+      }
+      if search.capability == .filesOnly {
+        Text(FailureCopy.smartSearchNeedsLocalSearch)
+          .font(.footnote)
+          .foregroundStyle(Theme.body)
           .listRowBackground(Color.clear)
           .listRowInsets(EdgeInsets(top: 8, leading: Theme.inset, bottom: 8, trailing: Theme.inset))
       }

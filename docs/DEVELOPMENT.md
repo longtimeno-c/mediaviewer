@@ -628,7 +628,10 @@ small sample library, publishes it with `mv_publish_test_library`, runs `driftwi
 --test-loopback` on 127.0.0.1:18452 (never the public DHT) and writes the pairing link and its QR
 picture. Add the picture to the Simulator's Photos and use "Choose a picture", or open the link
 with `xcrun simctl openurl booted "$(cat <folder>/pair-link.txt)"`. `demo-service.sh <folder> stop`
-stops it. The code lasts 15 minutes and works once.
+stops it. The code lasts 15 minutes and works once. With `DEMO_FILE_MODE=1` the share keeps only
+`library.json`, so the phone opens the library in file mode (`docs/plans/phone-in-the-app.md` §4);
+`mv_publish_test_library photos nas work 2` in that folder then publishes a catalogue with the same
+key, which the phone takes on its next sync. File mode's core tests: `mv_mobile_link_tests "[mobile-files]"`.
 
 The fixtures app:
 

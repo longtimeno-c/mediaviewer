@@ -137,6 +137,23 @@ enum LinkFolders {
   static let thumbs = cache("thumbs")
   static let originals = cache("originals")
   static let clips = cache("clips")
+  /// File mode's tag cache and grid pictures (docs/plans/phone-in-the-app.md §4).
+  static let files = cache("files")
+
+  /// One library's file-mode tag cache.
+  static func fileFacts(for libraryID: String) -> URL {
+    files.appendingPathComponent(safeName(libraryID), isDirectory: true).appendingPathComponent("facts.json")
+  }
+
+  /// One library's file-mode grid pictures.
+  static func fileThumbs(for libraryID: String) -> URL {
+    files.appendingPathComponent(safeName(libraryID), isDirectory: true).appendingPathComponent("thumbs", isDirectory: true)
+  }
+
+  private static func safeName(_ libraryID: String) -> String {
+    let name = String(libraryID.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" })
+    return name.isEmpty ? "library" : name
+  }
 
   private static func cache(_ name: String) -> URL {
     FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent(name, isDirectory: true)
@@ -161,7 +178,7 @@ enum LinkFolders {
 
   /// Off the main thread only.
   static func prepare() {
-    for url in [library, thumbs, originals, clips] {
+    for url in [library, thumbs, originals, clips, files] {
       try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
                                                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
       var u = url

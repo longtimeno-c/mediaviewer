@@ -69,18 +69,51 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
   public let item: MediaItem
   /// A speech or scene hit opens the clip at this moment.
   public let moment: Moment?
+  /// File search: the tag a match was found in ("Canon EOS R5"), shown under its tile; nil for a
+  /// name match and for the catalogue's search.
+  public let why: String?
   public var id: String { item.id.raw + (moment.map { "@\($0.seconds)" } ?? "") }
 
-  public init(item: MediaItem, moment: Moment?) {
+  public init(item: MediaItem, moment: Moment?, why: String? = nil) {
     self.item = item
     self.moment = moment
+    self.why = why
+  }
+}
+
+/// One search's answer. The catalogue's search fills `hits` only; file search (a library with no
+/// catalogue, docs/plans/phone-in-the-app.md §4) also says what it searched.
+public struct SearchAnswer: Sendable {
+  public struct Progress: Hashable, Sendable {
+    public let done: Int
+    public let total: Int
+    public init(done: Int, total: Int) {
+      self.done = done
+      self.total = total
+    }
+  }
+
+  public let hits: [SearchHit]
+  /// File search: how many files the folder searched holds ("N of M").
+  public let outOf: Int?
+  /// File search: the folder searched, by name; nil when no folder is open.
+  public let folderName: String?
+  /// File search: tags still being read in that folder; nil once all are.
+  public let readingTags: Progress?
+
+  public init(hits: [SearchHit], outOf: Int? = nil, folderName: String? = nil, readingTags: Progress? = nil) {
+    self.hits = hits
+    self.outOf = outOf
+    self.folderName = folderName
+    self.readingTags = readingTags
   }
 }
 
 public struct Folder: Identifiable, Hashable, Sendable {
   public let id: String
   public let name: String
-  /// Everything in this folder and the folders beneath it.
+  /// Everything in this folder and the folders beneath it; -1 when that is not known (a NAS
+  /// folder in file mode, which is never walked).
   public let itemCount: Int
   public let hasSubfolders: Bool
 
@@ -297,6 +330,9 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   /// When this phone's access ends, as the service last said it (on the service's clock); nil for
   /// a phone with no time limit.
   public var accessUntil: Date? = nil
+  /// The library has no catalogue yet, and is its NAS's folders (docs/plans/phone-in-the-app.md
+  /// §4): browsed folder by folder and searched by name and tag. Ends when a catalogue arrives.
+  public var fileMode = false
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

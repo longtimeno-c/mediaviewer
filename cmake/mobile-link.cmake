@@ -14,6 +14,10 @@ add_library(mv_mobile_link STATIC
   ${_M}/sync.cpp ${_M}/sync.h
   ${_M}/sample.cpp ${_M}/sample.h
   ${_M}/sound_fetch.cpp ${_M}/sound_fetch.h ${_M}/sound_tower.h
+  ${_M}/files.cpp ${_M}/files.h
+  # File mode searches with the desktop's own fields and match (docs/design/06 "Search text"):
+  # pure, nothing of Exiv2.
+  ${MV_SOURCE_ROOT}/src/meta/search.cpp ${MV_SOURCE_ROOT}/src/meta/search.h
   ${_M}/link_abi.cpp ${_M}/mv_mobile_link.h)
 target_include_directories(mv_mobile_link PUBLIC "${MV_SOURCE_ROOT}/src")
 target_compile_features(mv_mobile_link PUBLIC cxx_std_20)

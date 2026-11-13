@@ -61,6 +61,13 @@ public enum FailureCopy {
   public static let libraryFailed = "Couldn't read this library on the phone."
   public static let peopleFailed = "Couldn't read the people in this library."
   public static let searchFailed = "Search isn't working right now."
+  // File mode (docs/plans/phone-in-the-app.md §4): a library with no catalogue yet.
+  public static let smartSearchNeedsLocalSearch =
+    "Smart search (words, faces, places and sounds) needs Local search. Install it on your Mac or PC and index this library."
+  public static let fileSearchNoFolder = "Open a folder in Library to search it."
+  public static let fileSearchHint = "File search looks at the names and tags of the files in this folder."
+  public static let fileModeTop = "Choose a folder."
+  public static let fileModeSettings = "Folders, searched by name and tag"
   public static let clipStopped = "This clip stopped playing."
 
   public static func line(for failure: CopyFailure, sample: Bool = false) -> String {

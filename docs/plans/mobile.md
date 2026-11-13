@@ -740,6 +740,21 @@ TestFlight included, and nothing about it is hidden:
 - `tools/ios/sample-library.sh` makes it again from `sources.json` (licences rechecked each time) and
   uploads it, current.json last. The review notes are `src.ios/AppStore/review-notes.md`.
 
+**A library with no catalogue yet (file mode, built 2026-11-12, `docs/plans/phone-in-the-app.md` §4):**
+when every named folder answers, one holds this library's `library.json` and none holds a
+`current.json`, the check says so (`MV_LINK_NO_CATALOGUE`) and the library opens as its named folders,
+browsed folder by folder. A `current.json` the phone refuses is still "published from a different
+computer" (§11.3), and a folder that did not answer is still unreachable: file mode is never a guess.
+Search is the desktop's File search over the folder on screen, by name and by tag, with the desktop's
+own fields and match (`src/mobile/files.*`, `meta/search.cpp`); tags come from each photo's first
+256 KiB, read once with its grid picture, parsed by ImageIO and kept by path, size and mtime. Items are
+`file:<root>/<path>`. The catalogue check runs on any network; the next sync that finds a signed
+catalogue copies it (on Wi-Fi) and the library becomes the catalogue's. Not in the sample library.
+The plan it builds, `docs/plans/phone-in-the-app.md` §4, is on `claude/win-phone-card` and lands with
+#668. Known gaps against the desktop: clips have no tags (names only), made-with is not derived (the
+desktop's generator table is not linked on the phone; Software and CreatorTool still match), and
+subfolders are not filtered by name in the search.
+
 The review server and review grant are no longer needed for 1.0. A grant may still come later for
 showing a real NAS to someone.
 

@@ -60,6 +60,7 @@ struct MediaTile: View {
         }
       }
       .clipped()
+      .overlay(alignment: .bottomLeading) { caption }
       .overlay(alignment: .bottomTrailing) { badge }
       .contentShape(Rectangle())
       .task(id: entry.item.id) { await load() }
@@ -88,6 +89,22 @@ struct MediaTile: View {
     var change = Transaction(animation: fade ? .easeOut(duration: 0.18) : nil)
     change.disablesAnimations = !fade
     withTransaction(change) { loaded = Loaded(id: id, image: image) }
+  }
+
+  /// File search: the tag a match was found in, under the tile's picture.
+  @ViewBuilder
+  private var caption: some View {
+    if let caption = entry.caption {
+      Text(caption)
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(.white)
+        .lineLimit(1)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
+    }
   }
 
   @ViewBuilder
@@ -181,7 +198,7 @@ struct MediaGrid<Header: View>: View {
       MediaTile(entry: entry, images: model.services.images, fadesIn: entries.ids != nil)
     }
     .buttonStyle(TileButtonStyle())
-    .accessibilityLabel(entry.accessibilityName)
+    .accessibilityLabel(entry.caption.map { "\(entry.accessibilityName), \($0)" } ?? entry.accessibilityName)
     // Never spoken: lets a test name which item a tile is (the live parity run).
     .accessibilityIdentifier(answering.isEmpty ? "tile:\(entry.item.id.raw)" : "tile:\(entry.item.id.raw)|\(answering)")
     .modifier(TransitionSource(id: source, namespace: namespace))

@@ -6,6 +6,7 @@
 #   tools/ios/demo-service.sh <folder> [desktop build dir]     start, print the pairing link
 #   tools/ios/demo-service.sh <folder> stop                    stop the service
 # DEMO_LIBRARY=<id> publishes under another library id (pair one library over another).
+# DEMO_FILE_MODE=1 leaves only library.json on the share: the phone opens it in file mode.
 #
 # Makes a small sample library (generated pictures and two clips), publishes a signed catalogue
 # with the test publisher, and runs `driftwire serve --test-loopback` on 127.0.0.1:18452. Writes the
@@ -84,6 +85,11 @@ rm -rf nas work data; mkdir -p nas work data; chmod 700 data
 "$pub" photos nas work 1 "library=${DEMO_LIBRARY:-e2e-library-1}" > publish.txt
 publisher="$(grep publisher_key= publish.txt | cut -d= -f2)"
 library="$(grep library_id= publish.txt | cut -d= -f2)"
+# DEMO_FILE_MODE=1: the share as the desktop leaves it before Local search has published anything,
+# library.json only, so the phone opens the library in file mode (docs/plans/phone-in-the-app.md §4).
+if [[ ${DEMO_FILE_MODE:-} == 1 ]]; then
+  find nas/.mediaviewer -mindepth 1 -maxdepth 1 ! -name library.json -exec rm -rf {} +
+fi
 cat > data/serve.json <<JSON
 {"port":$port,"name":"Demo NAS","roots":[{"id":"a1a1a1a1a1a1a1a1","label":"Photos","path":"$out/photos"},{"id":"c2c2c2c2c2c2c2c2","label":"Catalogue","path":"$out/nas/.mediaviewer"}]}
 JSON

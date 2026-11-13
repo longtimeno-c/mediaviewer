@@ -7,6 +7,7 @@ import AVFoundation
 import CMobileLink
 import Foundation
 import MobileKit
+import MobileLinkSupport
 import UIKit
 
 public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
@@ -15,15 +16,32 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   private let loaderQueue = DispatchQueue(label: "mediaviewer.link.avloader")
   private static let scheme = "mvlink"
   private var loaders: [Int64: ClipLoader] = [:]
+  /// File mode's clips by item id, the last few only (an AVURLAsset holds its loader weakly).
+  private var fileLoaders: [String: ClipLoader] = [:]
+  private var fileLoaderOrder: [String] = []
+  static let fileLoadersKept = 4
   private let lock = NSLock()
   private var measured: (epoch: Int, mbps: Int)?  // per route: a network change measures again
 
   public init(connection: LinkConnection, images: LinkImages) {
     self.connection = connection
     self.images = images
+    super.init()
+    // Another library paired, or Forget: no loader of the last one's stays.
+    Task.detached(priority: .utility) { [weak self] in
+      var watch = LinkConnection.LibraryChange(current: connection.current.libraryID)
+      for await snapshot in connection.updates() where watch.changed(to: snapshot.libraryID) || !snapshot.hasLibrary {
+        guard let self else { return }
+        self.lock.withLock {
+          self.fileLoaders.removeAll()
+          self.fileLoaderOrder.removeAll()
+        }
+      }
+    }
   }
 
   public func route(for item: MediaItem) async -> ClipRoute {
+    if FilePath.isFile(item.id.raw) { return await fileRoute(for: item) }
     guard let asset = Int64(item.id.raw), let link = await connection.awaitLink() else { return .unavailable(.synologyUnreachable) }
     var info = mv_asset_info()
     guard mv_asset_read(link.raw, asset, &info) == 0 else { return .unavailable(.originalGone) }
@@ -52,6 +70,25 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     return .stream(av)
   }
 
+  /// File mode: the clip by its path. Played as it streams; there is no catalogue duration to
+  /// weigh it against the link first.
+  private func fileRoute(for item: MediaItem) async -> ClipRoute {
+    guard let entry = images.files.entry(for: item.id) else { return .unavailable(.originalGone) }
+    guard let link = await connection.awaitLink() else { return .unavailable(.synologyUnreachable) }
+    let ext = (item.fileName as NSString).pathExtension.lowercased()
+    guard ["mp4", "mov", "m4v"].contains(ext) else {
+      return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(entry.size))
+    }
+    guard let (asset, loader) = images.files.clipAsset(entry, link: link) else { return .unavailable(.originalGone) }
+    lock.withLock {
+      fileLoaders[item.id.raw] = loader
+      fileLoaderOrder.removeAll { $0 == item.id.raw }
+      fileLoaderOrder.append(item.id.raw)
+      while fileLoaderOrder.count > Self.fileLoadersKept { fileLoaders[fileLoaderOrder.removeFirst()] = nil }
+    }
+    return .stream(asset)
+  }
+
   /// What a clip can count on: measured once per connection, from the file itself, on the first play.
   private func throughput(link: LinkHandle, asset: Int64, size: UInt64) async -> Int? {
     let epoch = connection.epoch
@@ -75,6 +112,7 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   }
 
   public func moments(for item: MediaItem) async -> [Moment] {
+    guard !FilePath.isFile(item.id.raw) else { return [] }  // moments are the catalogue's
     guard let asset = Int64(item.id.raw), let link = await connection.awaitLink() else { return [] }
     final class Collector { var rows: [Moment] = [] }
     let collector = Collector()
@@ -115,11 +153,28 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   }
 
   private func runDownload(item: MediaItem, report: @escaping (Int64, Int64) -> Void) async throws -> URL {
-    guard let asset = Int64(item.id.raw), let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
-    var info = mv_asset_info()
-    guard mv_asset_read(link.raw, asset, &info) == 0 else { throw MediaFailure.originalGone }
+    guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
+    let read: ClipRead
+    let total: Int64
+    if FilePath.isFile(item.id.raw) {
+      guard let entry = images.files.entry(for: item.id) else { throw MediaFailure.originalGone }
+      read = images.files.readFunction(entry, link: link)
+      total = Int64(entry.size)
+    } else {
+      guard let asset = Int64(item.id.raw) else { throw MediaFailure.synologyUnreachable }
+      var info = mv_asset_info()
+      guard mv_asset_read(link.raw, asset, &info) == 0 else { throw MediaFailure.originalGone }
+      read = { start, length, cancel, sink in
+        let box = Unmanaged.passRetained(BlockBox(sink))
+        defer { box.release() }
+        return mv_file_read(link.raw, asset, start, length, 1, cancel.raw, { ctx, _, data, count in
+          guard let ctx, let data else { return 0 }
+          return Unmanaged<BlockBox>.fromOpaque(ctx).takeUnretainedValue().body(Data(bytes: data, count: count)) ? 1 : 0
+        }, box.toOpaque())
+      }
+      total = Int64(info.size)
+    }
     let target = LinkFolders.clips.appendingPathComponent(item.fileName)
-    let total = Int64(info.size)
     let connection = self.connection
     let status = await withLinkCancel { cancel in
       await onLinkQueue {
@@ -131,18 +186,12 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
         guard made, let file = try? FileHandle(forWritingTo: target) else { return Int32(13) }
         defer { try? file.close() }
         var written: Int64 = 0
-        let context = Unmanaged.passRetained(BlockBox { data -> Bool in
+        return read(0, UInt64.max, cancel) { data -> Bool in
           do { try file.write(contentsOf: data) } catch { return false }
           written += Int64(data.count)
           report(written, total)
           return true
-        })
-        let done = mv_file_read(link.raw, asset, 0, UInt64.max, 1, cancel.raw, { ctx, _, data, length in
-          guard let ctx, let data else { return 0 }
-          return Unmanaged<BlockBox>.fromOpaque(ctx).takeUnretainedValue().body(Data(bytes: data, count: length)) ? 1 : 0
-        }, context.toOpaque())
-        context.release()
-        return done
+        }
       }
     }
     switch status {
@@ -155,25 +204,40 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   }
 }
 
-private final class BlockBox {
+final class BlockBox {
   let body: (Data) -> Bool
   init(_ body: @escaping (Data) -> Bool) { self.body = body }
 }
 
+/// Reads bytes [start, start + length) of one clip (length UInt64.max: to the end), handing each
+/// chunk to `sink` (false stops it). Blocks; returns an mv_link_status.
+typealias ClipRead = @Sendable (_ start: UInt64, _ length: UInt64, _ cancel: LinkCancel,
+                                _ sink: @escaping (Data) -> Bool) -> Int32
+
 /// One clip's AVAssetResourceLoader: every byte-range request becomes a cancellable read on the link.
 final class ClipLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
-  private let link: LinkHandle
-  private let asset: Int64
   private let size: UInt64
   private let ext: String
+  private let read: ClipRead
   private var running: [ObjectIdentifier: LinkCancel] = [:]
   private let lock = NSLock()
 
-  init(link: LinkHandle, asset: Int64, size: UInt64, ext: String) {
-    self.link = link
-    self.asset = asset
+  /// A catalogue asset's original.
+  convenience init(link: LinkHandle, asset: Int64, size: UInt64, ext: String) {
+    self.init(size: size, ext: ext) { start, length, cancel, sink in
+      let box = Unmanaged.passRetained(BlockBox(sink))
+      defer { box.release() }
+      return mv_file_read(link.raw, asset, start, length, 0, cancel.raw, { ctx, _, bytes, count in
+        guard let ctx, let bytes else { return 0 }
+        return Unmanaged<BlockBox>.fromOpaque(ctx).takeUnretainedValue().body(Data(bytes: bytes, count: count)) ? 1 : 0
+      }, box.toOpaque())
+    }
+  }
+
+  init(size: UInt64, ext: String, read: @escaping ClipRead) {
     self.size = size
     self.ext = ext
+    self.read = read
   }
 
   func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest) -> Bool {
@@ -193,12 +257,8 @@ final class ClipLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked Send
     let length = data.requestsAllDataToEndOfResource ? UInt64.max : UInt64(data.requestedLength) - (start - UInt64(data.requestedOffset))
     let queueCancel = cancel
     linkNetQueue.async { [self] in
-      let box = Unmanaged.passRetained(ResponseBox(request: request, cancel: queueCancel))
-      let status = mv_file_read(link.raw, asset, start, length, 0, queueCancel.raw, { ctx, _, bytes, count in
-        guard let ctx, let bytes else { return 0 }
-        return Unmanaged<ResponseBox>.fromOpaque(ctx).takeUnretainedValue().deliver(Data(bytes: bytes, count: count)) ? 1 : 0
-      }, box.toOpaque())
-      box.release()
+      let response = ResponseBox(request: request, cancel: queueCancel)
+      let status = read(start, length, queueCancel) { response.deliver($0) }
       lock.withLock { running[key] = nil }
       guard status != 11 else { return }  // AVPlayer cancelled it
       if status == 0 {

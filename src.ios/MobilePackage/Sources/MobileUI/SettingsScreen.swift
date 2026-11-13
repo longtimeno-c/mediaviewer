@@ -42,6 +42,9 @@ struct SettingsScreen: View {
             if let end = model.connection.accessUntil {
               InfoRow(label: "Access", value: FailureCopy.accessUntil(end))
             }
+            if model.connection.fileMode {
+              InfoRow(label: "Catalogue", value: FailureCopy.fileModeSettings)
+            }
             if let catalogue = model.connection.catalogue {
               InfoRow(label: "Catalogue from",
                       value: model.connection.isSample ? "GitHub" : catalogue.source == .synology ? "Your Synology" : "Your Mac, nearby")

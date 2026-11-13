@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <set>
 
 #include "addons/ai/catalog.h"
@@ -158,6 +159,7 @@ namespace {
 // another library. Fills `out` only on success.
 struct current_read {
   sync_outcome failed = sync_outcome::unreachable;
+  status read_error = status::ok;  // the read's own failure, when it failed
   std::optional<catalog::current_info> info;
 };
 
@@ -165,6 +167,7 @@ current_read read_current(remote_file& remote, const std::string& root, const sy
   current_read out;
   auto text = read_small(remote, root, "current.json", kMaxCurrentBytes, nullptr);
   if (!text) {
+    out.read_error = text.error();
     out.failed = outcome_of_read(text.error());
     if (text.error() == status::corrupt) out.failed = sync_outcome::rejected;
     return out;
@@ -178,22 +181,64 @@ current_read read_current(remote_file& remote, const std::string& root, const sy
   return out;
 }
 
+// Whether `root` holds a library.json naming this library: the desktop wrote it when the folder
+// was chosen (phone-in-the-app.md §2), before any catalogue. Not signed, and not trusted for
+// anything but this: the service the phone reached is already the pinned one, and file mode only
+// lists the folders it names.
+constexpr std::uint64_t kMaxLibraryBytes = 256u * 1024;
+bool names_library(remote_file& remote, const std::string& root, const sync_config& c) {
+  auto text = read_small(remote, root, "library.json", kMaxLibraryBytes, nullptr);
+  if (!text) return false;
+  const auto doc = json::parse(*text, 6);
+  const std::string* id = doc ? doc->str("library_id") : nullptr;
+  return id && *id == c.library_id;
+}
+
 // The root that holds a current.json signed for this library: a root of the
 // wrong library or a forged file is not it. Roots are trusted only as far as
-// their signed content.
-std::string find_root(remote_file& remote, const sync_config& c, sync_outcome& failed) {
+// their signed content. With none, `failed` says why, in this order:
+//   - a read that did not answer (a timeout, the link): unreachable, never file mode on a guess;
+//   - a current.json this phone refuses (another key, another library): rejected, so the phone
+//     says the library was published from a different computer (§11.3), not file mode;
+//   - no current.json anywhere, and a root holding this library's library.json: no_catalogue
+//     (`library_root` names it): file mode;
+//   - otherwise unreachable.
+std::string find_root(remote_file& remote, const sync_config& c, sync_outcome& failed, std::string& library_root) {
   auto roots = remote.roots();
   if (!roots) {
     failed = outcome_of_read(roots.error());
     return {};
   }
   bool saw_rejected = false;
+  std::optional<sync_outcome> read_failed;
+  std::vector<std::string> absent;  // answered: no current.json there
   for (const auto& r : *roots) {
     auto attempt = read_current(remote, r.id, c);
     if (attempt.info) return r.id;
-    if (attempt.failed == sync_outcome::rejected) saw_rejected = true;
+    if (attempt.failed == sync_outcome::rejected) {
+      saw_rejected = true;
+    } else if (attempt.read_error == status::not_found) {
+      absent.push_back(r.id);
+    } else if (!read_failed) {
+      read_failed = attempt.failed;  // unreachable or cancelled
+    }
   }
-  failed = saw_rejected ? sync_outcome::rejected : sync_outcome::unreachable;
+  if (read_failed) {
+    failed = *read_failed;
+    return {};
+  }
+  if (saw_rejected) {
+    failed = sync_outcome::rejected;
+    return {};
+  }
+  for (const auto& id : absent) {
+    if (c.file_mode && names_library(remote, id, c)) {
+      library_root = id;
+      failed = sync_outcome::no_catalogue;
+      return {};
+    }
+  }
+  failed = sync_outcome::unreachable;
   return {};
 }
 
@@ -212,7 +257,7 @@ sync_plan check_catalogue(remote_file& remote, const sync_config& c) {
   if (root.empty() || (!current.info && current.failed == sync_outcome::unreachable)) {
     // Never asked yet, or that root no longer holds it: a folder may have moved.
     sync_outcome failed = sync_outcome::unreachable;
-    root = find_root(remote, c, failed);
+    root = find_root(remote, c, failed, plan.library_root);
     if (root.empty()) {
       plan.outcome = failed;
       return plan;
