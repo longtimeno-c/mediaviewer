@@ -12,6 +12,13 @@
 // (from `driftwire serve pair-code --for`) are kept in their own value for the
 // same reason: the old one's fixed rows would be redeemed as unlimited.
 //
+// Phone backup (B2): a phone with only backup turned off is kept here too, with no
+// expiry and no folders. A service binary from before backup rejects such a row, and
+// with it the whole list, so after a rollback past backup every limited phone (timed,
+// scoped, guest, backup off) is refused until the owner removes and pairs them again;
+// unlimited phones keep working. Rolling back is not supported once a phone's backup
+// has been turned off.
+//
 // Times are the service's own clock, in unix seconds. Portable (D9).
 #pragma once
 

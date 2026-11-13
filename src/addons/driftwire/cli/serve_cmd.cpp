@@ -619,6 +619,7 @@ int run_pair_code(const args& a, secrets::store& store, const std::string& data)
     if (!for_s) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
     serve::grants::limit gives;
     gives.for_s = *for_s;
+    gives.backup = false;  // a guest backs nothing up (docs/plans/mobile.md §10b.1, B2)
     code = serve::grants::issue_guest_code(store, seconds, gives, std::time(nullptr));
   } else {
     code = serve::issue_pair_code(store, seconds, std::time(nullptr));

@@ -77,6 +77,8 @@ internal sealed record PhoneLinkState
 
     /// <summary>The NAS can wait at the person's own relay (docs/plans/nas-relay.md).</summary>
     public bool NasHasRelay => NasFeatures.Contains("relay");
+    /// <summary>The NAS service takes phone backups (1.1): backup folders and the per-phone switch.</summary>
+    public bool NasHasBackup => NasFeatures.Contains("backup");
 
     /// <summary>Whether two reads would draw the same card (records compare lists by reference).</summary>
     // The catalogue's fraction moves on every read while it publishes: the card

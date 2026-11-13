@@ -101,6 +101,8 @@ final class PhoneStore: ObservableObject {
     var relay = ""  // the person's own relay, "host:port"; its key stays on the NAS
     /// The NAS takes guest codes, time limits and a passphrase.
     var nasHasFeatures: Bool { nasFeatures.contains("passphrase") }
+    /// The NAS service takes phone backups (1.1): backup folders and the per-phone switch.
+    var nasHasBackup: Bool { nasFeatures.contains("backup") }
     /// The NAS can wait at the person's own relay (docs/plans/nas-relay.md).
     var nasHasRelay: Bool { nasFeatures.contains("relay") }
   }
@@ -331,8 +333,10 @@ final class PhoneStore: ObservableObject {
   nonisolated static func gigabytes(_ bytes: Int64) -> String {
     let gb = Double(bytes) / 1e9
     if gb >= 10 { return String(Int(gb.rounded())) }
-    let text = String(format: "%.2f", gb)
-    return text.hasSuffix("0") ? String(text.dropLast()) : text
+    var text = String(format: "%.2f", gb)
+    while text.hasSuffix("0") { text.removeLast() }
+    if text.hasSuffix(".") { text.removeLast() }
+    return text
   }
 
   /// "500" or "1,5" (GB) to bytes; nil when it is not a number.
@@ -599,10 +603,12 @@ struct PhoneAccessSection: View {
               if phone.limited {
                 Button(PhoneStore.unlimited) { model.send(["do": "grant", "key": phone.key, "for_s": 0]) }
               }
-              Divider()
-              // Phone backup (B2): turning it on adds access (the passphrase, once set); off never needs it.
-              Button(phone.backup ? "Stop backups from this phone" : "Let this phone back up") {
-                model.send(["do": "phone_backup", "key": phone.key, "on": !phone.backup])
+              if s.nasHasBackup {
+                Divider()
+                // Phone backup (B2): turning it on adds access (the passphrase, once set); off never needs it.
+                Button(phone.backup ? "Stop backups from this phone" : "Let this phone back up") {
+                  model.send(["do": "phone_backup", "key": phone.key, "on": !phone.backup])
+                }
               }
             }
             .menuStyle(.borderlessButton).fixedSize()
@@ -800,6 +806,8 @@ struct PhoneAccessSection: View {
       HStack(spacing: MVTheme.space(8)) {
         Toggle("Phones back up to this folder", isOn: $newIsBackup)
           .toggleStyle(.checkbox)
+          .disabled(!s.nasHasBackup)
+          .help(s.nasHasBackup ? "" : "Update the NAS service to use this")
           .accessibilityLabel("Phones back up their photos to this folder")
         if newIsBackup {
           Text("Limit").foregroundStyle(MVTheme.body)

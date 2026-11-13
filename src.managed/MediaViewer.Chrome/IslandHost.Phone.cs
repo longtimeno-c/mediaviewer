@@ -428,7 +428,7 @@ public static partial class IslandHost
         {
             string key = phone.Key;
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
-            buttons.Children.Add(PhoneTipHolder(PhoneAccessMenu(phone, s.NasHasFeatures, busy, now),
+            buttons.Children.Add(PhoneTipHolder(PhoneAccessMenu(phone, s.NasHasFeatures, busy, now, s.NasHasBackup),
                                                 s.NasHasFeatures ? null : "Update the NAS service to use this"));
             Button remove = PhoneButton("Remove", () => PhoneRequest(("do", "revoke"), ("key", key)), $"Remove {phone.Name}");
             remove.IsEnabled = !busy;
@@ -474,7 +474,9 @@ public static partial class IslandHost
                                         PollPhone();
                                     },
                                     "Phones back up their photos to this folder");
-        backup.Children.Add(toggle);
+        toggle.IsEnabled = s.NasHasBackup && !busy;
+        // A disabled control shows no tooltip (docs/design/20 "Craft rules"): its holder carries the reason.
+        backup.Children.Add(PhoneTipHolder(toggle, s.NasHasBackup ? null : "Update the NAS service to use this"));
         if (_phoneNewIsBackup)
         {
             backup.Children.Add(PhoneNote("Limit"));
@@ -499,7 +501,7 @@ public static partial class IslandHost
         return holder;
     }
 
-    private static Button PhoneAccessMenu(PhoneDevice phone, bool features, bool busy, long now)
+    private static Button PhoneAccessMenu(PhoneDevice phone, bool features, bool busy, long now, bool backup = false)
     {
         string name = phone.Limited ? $"Extend {phone.Name}'s access" : $"Limit {phone.Name}'s access";
         Button menu = PhoneButton(phone.Limited ? "Extend" : "Limit…", () => { }, name);
@@ -517,13 +519,16 @@ public static partial class IslandHost
             column.Children.Add(SettingsButton(label + " from now", () => Grant(seconds)));
         if (phone.Limited) column.Children.Add(SettingsButton(PhoneWords.Unlimited, () => Grant(0)));
         // Phone backup (B2): turning it on adds access (the passphrase, once set); off never needs it.
-        bool backupOn = phone.Backup;
-        column.Children.Add(SettingsButton(backupOn ? "Stop backups from this phone" : "Let this phone back up", () =>
+        if (backup)
         {
-            flyout.Hide();
-            _ = PhoneNative.Request(PhoneWords.PhoneBackupRequest(key, !backupOn));
-            PollPhone();
-        }));
+            bool backupOn = phone.Backup;
+            column.Children.Add(SettingsButton(backupOn ? "Stop backups from this phone" : "Let this phone back up", () =>
+            {
+                flyout.Hide();
+                _ = PhoneNative.Request(PhoneWords.PhoneBackupRequest(key, !backupOn));
+                PollPhone();
+            }));
+        }
         menu.Flyout = flyout;
         PhoneFlyouts.Add(flyout);
         menu.IsEnabled = !busy && features;

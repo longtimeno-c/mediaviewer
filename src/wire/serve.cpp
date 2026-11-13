@@ -9,7 +9,6 @@
 #include <condition_variable>
 #include <cstring>
 #include <ctime>
-#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -251,7 +250,9 @@ struct server::state {
     access a = access::none;
     std::optional<grants::grant> g;
   };
-  [[nodiscard]] device_access access_of(const std::array<std::uint8_t, 32>& key);
+  // `retry`: a device on neither list is read once more after 50 ms (the command line
+  // moving it between them); the write path does not wait for that.
+  [[nodiscard]] device_access access_of(const std::array<std::uint8_t, 32>& key, bool retry = true);
   struct lists {
     std::vector<known::device> devices;
     std::vector<grants::grant> limited;
@@ -405,9 +406,31 @@ struct server::state {
   [[nodiscard]] bool device_may_write(const conn& c, const root_config& root) {
     if (c.is_owner || !root.backup) return false;
     if (may_write_override) return may_write_override(c.device);
-    const auto acc = access_of(c.device);
+    const auto acc = access_for_write(c.device);
     if (acc.a == access::full) return true;
     return acc.a == access::live && acc.g && acc.g->backup && acc.g->allows(root.id, false);
+  }
+  // The device's access, read from the store at most once a second per device (a backup opens
+  // a write per file), and at once after this service changes a list. Within the watch's 2 s.
+  std::mutex write_access_m;
+  std::map<std::array<std::uint8_t, 32>, std::pair<clock::time_point, device_access>> write_access;  // under write_access_m
+  [[nodiscard]] device_access access_for_write(const std::array<std::uint8_t, 32>& key) {
+    const auto t = clock::now();
+    {
+      std::lock_guard lock(write_access_m);
+      if (const auto it = write_access.find(key); it != write_access.end() && t - it->second.first < std::chrono::seconds(1)) {
+        return it->second.second;
+      }
+    }
+    auto acc = access_of(key, false);
+    std::lock_guard lock(write_access_m);
+    if (write_access.size() > 256) write_access.clear();
+    write_access[key] = {t, acc};
+    return acc;
+  }
+  void forget_write_access() {
+    std::lock_guard lock(write_access_m);
+    write_access.clear();
   }
 
   void accept_loop();
@@ -1707,7 +1730,7 @@ std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
   json::writer w;
-  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).end_array();
+  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).end_array();
   w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
   w.key("passphrase").string(stored_name(s)).end_object();
   std::string out = w.take();
@@ -1907,6 +1930,11 @@ bool server::state::add_device(const std::string& name, const std::array<std::ui
 
 bool server::state::set_access(const std::string& name, const std::array<std::uint8_t, 32>& key,
                                const std::optional<grants::grant>& g, bool& full) {
+  // Whatever happens below, the write path reads the lists afresh next time.
+  struct forget_cached {
+    state& s;
+    ~forget_cached() { s.forget_write_access(); }
+  } forget{*this};
   full = false;
   std::lock_guard lock(devices_m);
   std::unique_ptr<net::instance_lock> held;
@@ -1960,7 +1988,7 @@ bool server::state::set_access(const std::string& name, const std::array<std::ui
   return true;
 }
 
-server::state::device_access server::state::access_of(const std::array<std::uint8_t, 32>& key) {
+server::state::device_access server::state::access_of(const std::array<std::uint8_t, 32>& key, bool retry) {
   const auto once = [&](const lists& l) {
     device_access out;
     // A grant wins over the paired list: a key on both (a move between them
@@ -1983,7 +2011,7 @@ server::state::device_access server::state::access_of(const std::array<std::uint
     return out;
   };
   auto out = once(read_lists());
-  if (out.a == access::none) {
+  if (out.a == access::none && retry) {
     // The command line moves a device between the lists from another process:
     // a device on neither is read again before it is turned away.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -2142,7 +2170,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
   // What adds access, or changes what is served, needs an unlocked session
   // once there is a passphrase (§3.4). Revoking and reading never do.
   if (*what == "add_device" || *what == "pair_code" || *what == "add_root" || *what == "remove_root" ||
-      *what == "set_relay") {
+      *what == "set_relay" || *what == "set_backup") {
     // (grant and guest_code check for themselves.)
     if (auto refused = needs_unlock(c)) return *refused;
   }
@@ -2360,8 +2388,19 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
   };
   if (*what == "set_backup") {
     // Changing either one moves and removes nothing: a lower limit only stops new writes.
+    // {"id","backup":false}: no longer a backup folder (its files stay; phones stop writing).
     const std::string id = text("id");
     const json::value* b = doc->find("backup");
+    if (b && b->k == json::kind::boolean && !b->b) {
+      std::lock_guard lock(claim_m);
+      config next = *cfg();
+      auto it = std::find_if(next.roots.begin(), next.roots.end(), [&](const root_config& r) { return r.id == id; });
+      if (it == next.roots.end()) return {end_code::not_found, {}};
+      it->backup = false;
+      it->limit = it->reserve = 0;
+      if (!publish_config(std::move(next))) return {end_code::error, {}};
+      return {end_code::ok, "{}"};
+    }
     std::uint64_t limit = 0, reserve = 0;
     if (!b || b->k != json::kind::object || !backup_sizes(*b, limit, reserve)) return {end_code::bad_request, {}};
     std::lock_guard lock(claim_m);

@@ -314,6 +314,12 @@ TEST_CASE("serve owner: the command line sets, shows and resets the passphrase, 
   CHECK(out.size() == 33);
   CHECK(store->exists(mv::driftwire::serve::grants::kGuestCodesName));
   CHECK_FALSE(store->exists("library_pair_codes"));
+  {
+    // A guest backs nothing up (phone backup, docs/plans/mobile.md §10b.1, B2).
+    const auto raw = store->get(mv::driftwire::serve::grants::kGuestCodesName);
+    REQUIRE(raw);
+    CHECK(std::string(raw->begin(), raw->end()).find("\"backup\":false") != std::string::npos);
+  }
   // grant keeps a scope: only the time changes, and --forever keeps it scoped.
   {
     std::vector<mv::driftwire::serve::grants::grant> scoped(1);

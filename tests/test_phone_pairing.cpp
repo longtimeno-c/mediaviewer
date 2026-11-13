@@ -463,13 +463,21 @@ TEST_CASE("phone pairing: what adds access needs an unlock; what takes it away d
   std::string refusal;
   for (const std::string& r : {code_request, std::string("{\"do\":\"add_device\",\"name\":\"X\",\"key\":\"") +
                                                  mv::driftwire::key_hex(random_key()) + "\"}",
-                               std::string("{\"do\":\"remove_root\",\"id\":\"a1a1a1a1a1a1a1a1\"}")}) {
+                               std::string("{\"do\":\"remove_root\",\"id\":\"a1a1a1a1a1a1a1a1\"}"),
+                               // Making a folder a backup folder, or raising its limit, adds access too (phone backup).
+                               std::string("{\"do\":\"set_backup\",\"id\":\"a1a1a1a1a1a1a1a1\",\"backup\":{\"limit\":1000}}")}) {
     CHECK_FALSE((*s)->admin(r, nullptr, &refusal));
     CHECK(why_in(refusal) == "needs-unlock");
   }
   // Reading and taking away work on the device key alone.
   CHECK((*s)->admin("{\"do\":\"devices\"}"));
   CHECK((*s)->admin("{\"do\":\"pair_cancel\"}"));
+  // A phone's backup off takes access away: no unlock. On again adds it: an unlock (B2).
+  const std::string phone_hex = mv::driftwire::key_hex(public_of(phone));
+  CHECK((*s)->admin("{\"do\":\"grant\",\"key\":\"" + phone_hex + "\",\"backup\":false}"));
+  CHECK_FALSE(n.has_device(phone));
+  CHECK_FALSE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + phone_hex + "\",\"backup\":true}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
   CHECK((*s)->admin("{\"do\":\"revoke\",\"key\":\"" + mv::driftwire::key_hex(public_of(phone)) + "\"}"));
   CHECK_FALSE(n.has_device(phone));
 
@@ -2091,6 +2099,20 @@ TEST_CASE("phone pairing: backup is a phone's grant; off stops its writes and mo
     // It still reads.
     CHECK(c->list(*id, ""));
   }
+  // Extending a timed phone keeps backup off; "Until I remove it" gives it back.
+  REQUIRE(mac.d->grant(pub, 3600));
+  rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  {
+    const auto r = std::find_if(rows->begin(), rows->end(), [&](const desk::device_row& x) { return x.key == pub; });
+    REQUIRE(r != rows->end());
+    CHECK(r->limited);
+    CHECK_FALSE(r->backup);
+  }
+  REQUIRE(mac.d->grant(pub, 0));
+  CHECK(n.has_device(phone));
+  REQUIRE(mac.d->set_phone_backup(pub, false));
+  CHECK(on_grants(n, phone));
   // On again: unlimited, back on the paired list, and it writes.
   REQUIRE(mac.d->set_phone_backup(pub, true));
   CHECK(n.has_device(phone));

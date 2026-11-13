@@ -8,6 +8,7 @@
 #include "phone/link.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -338,15 +339,24 @@ bool nas_covered_by(const std::string& nas, const std::string& local) {
   };
   std::vector<std::string> n = split(nas);
   const std::vector<std::string> l = split(local);
-  if (n.size() >= 2 && n[0].rfind("volume", 0) == 0) n.erase(n.begin());  // share/...
+  if (n.size() >= 2 && n[0].rfind("volume", 0) == 0) n.erase(n.begin());  // Synology /volumeN/share/...
+  else if (n.size() >= 3 && n[0] == "mnt") n.erase(n.begin(), n.begin() + 2);  // TrueNAS /mnt/<pool>/share/...
   if (n.empty()) return false;
-  for (std::size_t i = 0; i < l.size(); ++i) {
-    if (l[i] != n[0]) continue;
-    const std::size_t rest = l.size() - i;
-    if (rest > n.size()) continue;
-    if (std::equal(l.begin() + static_cast<std::ptrdiff_t>(i), l.end(), n.begin())) return true;
+  // Where the share is mounted: right under /Volumes on a Mac, the second part of a
+  // \\host\share path on Windows. Anywhere else (a local ~/Pictures/photo) is not it.
+  const bool unc = local.rfind("\\\\", 0) == 0 || local.rfind("//", 0) == 0;
+  std::size_t at = 0;
+  if (l.size() >= 2 && l[0] == "volumes") {
+    at = 1;
+  } else if (unc && l.size() >= 2) {
+    at = 1;
+  } else {
+    return false;
   }
-  return false;
+  if (l[at] != n[0] && l[at].rfind(n[0] + "-", 0) != 0) return false;  // "photo-1": a second mount of it
+  const std::size_t rest = l.size() - at;
+  if (rest > n.size()) return false;
+  return std::equal(l.begin() + static_cast<std::ptrdiff_t>(at) + 1, l.end(), n.begin() + 1);
 }
 
 }  // namespace
