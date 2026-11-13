@@ -1899,6 +1899,8 @@ manifest, clients reject updates. The production public key is already pinned in
 The `driftwire` command line's packages come from `cmake/driftwire-cli`
 ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire)); CI and the release build them
 on Ubuntu 22.04 with GCC 12 (`.github/actions/driftwire-cli-linux`), so they run from glibc 2.35 up.
+vcpkg's BoringSSL (the Tunnel's TLS, linked in statically like libsodium; its Apache-2.0 notice is
+in the packages' copyright file) needs `nasm` and Go to build: `sudo apt-get install nasm golang-go`.
 
 ```sh
 cmake -S cmake/driftwire-cli -B build-cli -G Ninja -DCMAKE_BUILD_TYPE=Release \

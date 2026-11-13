@@ -12,3 +12,11 @@ set(VCPKG_TARGET_ARCHITECTURE x64)
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE dynamic)
 set(VCPKG_DISABLE_COMPILER_TRACKING ON)
+
+# BoringSSL (the Driftwire Tunnel's TLS, slice 4) links into the Driftwire
+# engine statically, as on the Mac and Linux: no ssl.dll / crypto.dll for the
+# add-on pack or the driftwire zip to carry, and none for anything else to
+# pick up by name. Apache-2.0; its notice ships in the packages' copyright.
+if(PORT STREQUAL "boringssl")
+  set(VCPKG_LIBRARY_LINKAGE static)
+endif()
