@@ -105,7 +105,7 @@ catalogue) opens in **file mode**:
 ## 4b. As built (2026-11-12)
 
 Steps 1–4 are built on `claude/win-phone-card`: `src/wire` (591161fa), `src/catalogue` and `src/phone`
-with ABI 0.40 (fdc4c3c7, review fixes 17739f71), and the two cards. One change from §2.4: Local search
+with ABI 0.40, now 0.41 after main took 0.40 for the kept menu (fdc4c3c7, review fixes 17739f71), and the two cards. One change from §2.4: Local search
 was **not** reduced to a `catalogue_build` entry. Its publisher (automatic triggers, deliveries that wait
 for the share, retries, thumbnails) is intricate, and rewriting it for the core would have risked it for
 no difference a person sees. It keeps building and delivering through its existing `phone_publish` /

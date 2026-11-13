@@ -576,7 +576,7 @@ Part of the app since 2026-11-12, with or without Local search: Settings → Pho
 `src.managed/Shared/PhoneWords.cs`, the Windows QR in `Shared/QrCode.cs`). The work is `src/phone`
 (`link.*` the state machine, `desk.*` claim/codes/devices/nearby, `app.*` the one link per process) over
 `src/wire` (Driftwire's protocol) and `src/catalogue` (keys, `library.json`, current.json, delivery);
-hosts reach it through `mv_phone_*` (ABI 0.40) and the Mac bridge `mv_chrome_phone_*`. Local search,
+hosts reach it through `mv_phone_*` (ABI 0.41) and the Mac bridge `mv_chrome_phone_*`. Local search,
 when loaded, is a catalogue source (its `phone_publish` / `phone_json`). Only the first window's process
 runs it. Keys are in the OS store under "MediaViewer Phone access" (Credential Manager sealed with DPAPI
 on Windows, the Keychain on the Mac), copied once from "MediaViewer Local search" and "MediaViewer Driftwire".

@@ -462,7 +462,7 @@ MV_API mv_status MV_CALL mv_thumb_cache_clear(mv_session_t session);
 MV_API mv_status MV_CALL mv_thumb_cache_sweep(mv_session_t session);
 MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
 
-/* 0.40 (docs/plans/phone-in-the-app.md, owner 2026-11-12). Settings -> Phone
+/* 0.41 (docs/plans/phone-in-the-app.md, owner 2026-11-12). Settings -> Phone
  * access, part of the app: the NAS folder, the service on the NAS, the code a
  * phone scans, the paired phones, the nearby copy. Works with no add-on; Local
  * search, when loaded, provides the catalogue.

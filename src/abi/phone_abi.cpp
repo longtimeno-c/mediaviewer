@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// 0.40: Settings -> Phone access (mediaviewer.h, phone/app.h).
+// 0.41: Settings -> Phone access (mediaviewer.h, phone/app.h).
 #include <mediaviewer/mediaviewer.h>
 
 #include <cstring>
