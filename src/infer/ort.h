@@ -64,8 +64,9 @@ class runtime {
   runtime& operator=(const runtime&) = delete;
 
   // Loads onnxruntime from `dir` (the folder holding onnxruntime.dll /
-  // libonnxruntime.dylib), creates the environment with telemetry off
-  // (rule 6: ORT's own ETW events never fire for us).
+  // libonnxruntime.dylib) and creates the environment with ORT's telemetry
+  // off (rule 6). Outside Windows dylib::open keeps its uploader from being
+  // created at all; see docs/design/17, "Runtime".
   [[nodiscard]] static result<std::unique_ptr<runtime>> load(const std::string& dir_utf8);
 
   [[nodiscard]] bool has_provider(backend b) const noexcept;

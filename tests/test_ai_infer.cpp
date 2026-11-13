@@ -141,6 +141,28 @@ TEST_CASE("the tokenizer normalises and splits like CLIP's", "[ai][infer]") {
   CHECK(clip_tokenizer::pieces("they're") == std::vector<std::string>{"they", "'re"});
 }
 
+#if !defined(_WIN32)
+// Rule 6: outside Windows, official ORT builds create Microsoft's 1DS uploader
+// unless this is set before the library starts. The folder does not exist, so
+// nothing here depends on a pack, or on ORT's own CI check (CI=true turns the
+// uploader off by itself, which would hide a regression in a run of the real one).
+TEST_CASE("the runtime's telemetry uploader is switched off before the library loads", "[ai][infer]") {
+  static constexpr const char* kOff = "ORT_DISABLE_TELEMETRY";
+  const std::string nowhere = utf8(fs::temp_directory_path() / "mv-no-such-ort-folder");
+
+  ::unsetenv(kOff);
+  CHECK_FALSE(mv::infer::runtime::load(nowhere));
+  REQUIRE(std::getenv(kOff) != nullptr);
+  CHECK(std::string(std::getenv(kOff)) == "1");
+
+  // A value that would leave the uploader on is replaced.
+  ::setenv(kOff, "0", 1);
+  CHECK_FALSE(mv::infer::runtime::load(nowhere));
+  REQUIRE(std::getenv(kOff) != nullptr);
+  CHECK(std::string(std::getenv(kOff)) == "1");
+}
+#endif
+
 TEST_CASE("half floats and int8 vectors round-trip within their precision", "[ai][infer]") {
   for (float f : {0.0f, 1.0f, -2.5f, 0.1f, 65504.0f, 1e-5f, -0.333f}) {
     const float back = mv::infer::from_half(mv::infer::to_half(f));
