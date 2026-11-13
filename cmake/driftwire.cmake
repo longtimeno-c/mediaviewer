@@ -248,12 +248,12 @@ endif()
 set(_C "${_S}/cli")
 if(WIN32)
   # *_win.cpp: may include <windows.h>
-  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp)
+  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/secret_line_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp)
 elseif(APPLE)
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/secret_line_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm)
   set_source_files_properties(${_C}/update_net_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/secret_line_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp)
 endif()
 # Where `driftwire` asks whether a newer version is out, and whose installers
 # `driftwire update` runs (cli/update.h): the site release.yml deploys.

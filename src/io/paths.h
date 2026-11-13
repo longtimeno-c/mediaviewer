@@ -39,9 +39,10 @@ void set_open_addons_dir_override(std::string_view utf8_dir);  // tests; empty r
 void set_addon_settings_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
 // Phone access (docs/plans/phone-in-the-app.md): the library's folder, id and
-// epoch, a code left on the NAS, and the nearby copy. %LocalAppData%\MediaViewer\
-// phone-access on Windows, ~/Library/Application Support/MediaViewer/Phone
-// Access on Mac. NOT created here: the first thing written makes it.
+// epoch, a code left on the NAS, and the nearby copy: "MediaViewer\phone-access"
+// under %LocalAppData% on Windows, "MediaViewer/Phone Access" under
+// ~/Library/Application Support on Mac. NOT created here: the first thing
+// written makes it.
 [[nodiscard]] result<std::string> phone_dir();
 void set_phone_dir_override(std::string_view utf8_dir);  // tests; empty restores
 

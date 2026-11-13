@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/secret_line.h"
 #include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/net.h"
@@ -33,17 +34,8 @@
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
+#if !defined(_WIN32)
 #include <sys/stat.h>
-#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -168,48 +160,13 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   return 0;
 }
 
-// One line from stdin, its newline gone; echo off when it is a terminal.
-// False at the end of input.
+// One line from stdin, its newline gone; echo off when it is a terminal
+// (secret_line.h, one file per platform). False at the end of input.
 bool read_line(std::string& out, bool hidden) {
-  out.clear();
-  out.reserve(serve::owner::kMaxBytes + 2);  // never reallocated: no copy left behind unwiped
-#if defined(_WIN32)
-  HANDLE in = ::GetStdHandle(STD_INPUT_HANDLE);
-  DWORD mode = 0;
-  const bool console = hidden && ::GetConsoleMode(in, &mode);
-  if (console) ::SetConsoleMode(in, mode & ~static_cast<DWORD>(ENABLE_ECHO_INPUT));
-#else
-  termios before{};
-  const bool console = hidden && ::isatty(STDIN_FILENO) && ::tcgetattr(STDIN_FILENO, &before) == 0;
-  if (console) {
-    termios quiet = before;
-    quiet.c_lflag &= ~static_cast<tcflag_t>(ECHO);
-    (void)::tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
-  }
-#endif
-  bool got = false;
-  for (int c; (c = std::fgetc(stdin)) != EOF;) {
-    got = true;
-    if (c == '\n') break;
-    if (out.size() < serve::owner::kMaxBytes + 1) out.push_back(static_cast<char>(c));
-  }
-  if (!out.empty() && out.back() == '\r') out.pop_back();
-#if defined(_WIN32)
-  if (console) ::SetConsoleMode(in, mode);
-#else
-  if (console) (void)::tcsetattr(STDIN_FILENO, TCSAFLUSH, &before);
-#endif
-  if (console) print("\n");
+  bool echo_was_off = false;
+  const bool got = read_secret_line(out, hidden, serve::owner::kMaxBytes + 1, echo_was_off);
+  if (echo_was_off) print("\n");  // the newline the terminal did not show
   return got;
-}
-
-bool stdin_is_terminal() {
-#if defined(_WIN32)
-  DWORD mode = 0;
-  return ::GetConsoleMode(::GetStdHandle(STD_INPUT_HANDLE), &mode) != 0;
-#else
-  return ::isatty(STDIN_FILENO) != 0;
-#endif
 }
 
 struct wiped_string {

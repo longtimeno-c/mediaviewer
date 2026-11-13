@@ -146,11 +146,18 @@ namespace {
 
 std::vector<std::uint8_t> signed_bytes(std::span<const std::uint8_t, kBindingBytes> binding, const key32& nonce,
                                        const key32& service, const key32& client) {
-  std::vector<std::uint8_t> m(kSignLabel, kSignLabel + sizeof kSignLabel - 1);
-  m.insert(m.end(), binding.begin(), binding.end());
-  m.insert(m.end(), nonce.begin(), nonce.end());
-  m.insert(m.end(), service.begin(), service.end());
-  m.insert(m.end(), client.begin(), client.end());
+  // Sized once and filled in place (GCC 12's -Warray-bounds misreads a chain of inserts at -O3).
+  constexpr std::size_t label = sizeof kSignLabel - 1;
+  std::vector<std::uint8_t> m(label + kBindingBytes + 3 * 32);
+  std::uint8_t* at = m.data();
+  std::memcpy(at, kSignLabel, label);
+  at += label;
+  std::memcpy(at, binding.data(), kBindingBytes);
+  at += kBindingBytes;
+  for (const key32* k : {&nonce, &service, &client}) {
+    std::memcpy(at, k->data(), 32);
+    at += 32;
+  }
   return m;
 }
 

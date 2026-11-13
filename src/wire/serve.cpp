@@ -1319,11 +1319,11 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
         (void)ch->cancel(kCancelWaitMs, "locked-out");
         return;
       }
-      owner::key32 nonce{};
-      randombytes_buf(nonce.data(), nonce.size());
+      owner::key32 pass_nonce{};
+      randombytes_buf(pass_nonce.data(), pass_nonce.size());
       json::writer w;
       w.begin_object().key("passphrase").string("set");
-      challenge_fields(w, v, nonce);
+      challenge_fields(w, v, pass_nonce);
       w.end_object();
       if (!ch->send(msg::serve_claim_challenge, w.str()) || !ch->receive(m, kClaimAnswerMs) || m.type != msg::serve_claim) {
         (void)ch->cancel(kCancelWaitMs, "protocol");
@@ -1337,7 +1337,7 @@ void server::state::run_claim(conn& c, std::unique_ptr<channel> ch, const std::s
         (void)ch->cancel(kCancelWaitMs, "protocol");
         return;
       }
-      if (!answer(counter, v, *sig, *ch, nonce, why, until)) {
+      if (!answer(counter, v, *sig, *ch, pass_nonce, why, until)) {
         (void)ch->cancel(kCancelWaitMs, why);
         return;
       }
