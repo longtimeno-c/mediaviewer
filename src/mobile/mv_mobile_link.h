@@ -39,7 +39,7 @@ typedef enum mv_link_status {
   MV_LINK_INTERNAL = 17,
   MV_LINK_NO_FOLDER = 18,     /* the service has no folder named for this file's share */
   MV_LINK_WAITING = 19,       /* the copy stopped because bytes may not move now (mobile data) */
-  MV_LINK_NO_CATALOGUE = 20,  /* sync: a named folder's library.json names this library, every folder answered,
+  MV_LINK_NO_CATALOGUE = 21,  /* (20 is MV_LINK_ACCESS_ENDED, #667) sync: a named folder's library.json names this library, every folder answered,
                                  and none holds a current.json: open it in file mode (see below) */
 } mv_link_status;
 

@@ -58,7 +58,7 @@ public struct FilePath: Hashable, Sendable {
 /// When the library is in file mode, from what the last catalogue check said. Status numbers are
 /// mv_mobile_link.h's.
 public enum FileModeRule {
-  public static let noCatalogue: Int32 = 20
+  public static let noCatalogue: Int32 = 21  // MV_LINK_NO_CATALOGUE (20 is MV_LINK_ACCESS_ENDED, #667)
   public static let copyAvailable: Int32 = 16
   public static let installed: Int32 = 0
   public static let upToDate: Int32 = 15
