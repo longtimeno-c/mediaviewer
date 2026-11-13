@@ -1376,6 +1376,8 @@ build/bin/mv_import_tests "[cli][e2e]"        # POSIX: two mv_driftwire_cli_test
 build/bin/mv-driftwire-relay --port 47614      # --key-file F (or MV_RELAY_KEY; else it makes a key and prints it once) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
 # The Tunnel: key holders' forwards go to ports 80 and 443 unless told otherwise; none turns it off.
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,443 --max-forwards 64
+# Slice 4: also on 443 behind TLS, a web site to anyone without the key (BoringSSL; brew install nasm go first)
+build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tls-cert fullchain.pem --tls-key privkey.pem --decoy-dir site/
 # With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
 curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
@@ -3629,8 +3631,17 @@ what comes next in [the plan](plans/driftwire-menu-and-tunnel.md).
   Mac's network settings and asks for an administrator, so it waits for a hand check (turn the
   Tunnel on, approve, check System Settings -> Network -> Details -> Proxies, turn it off, check
   it is back; kill MediaViewer with it on, start again, check). `sysproxy_win.cpp` is CI's.
-- **Not run:** a real filtered network; a browser pointed at the proxy by hand; the menu-bar row
-  (slice 1's branch); Linux. Not built: slices 4 and 5.
+- **Slice 4 (looking like HTTPS):** BoringSSL from vcpkg (needs `nasm` and `go` from Homebrew on
+  the Mac; CI installs them). `"driftwire tls*"` passes: the ClientHello's JA4 is
+  `t13d1516h2_8daaf6152771_d8a2da3f94cd` (parts a and b pinned to Chrome's), the same across two
+  hellos with permuted extensions; a forward inside TLS after the knock; a browser's GET answered
+  as a web site (200, 404), Driftwire's own head without a knock and a wrong-key knock answered as
+  one too, plain bytes on the TLS port closed; the engine's switch through the TLS port and back.
+  Not run: a real network's DPI, a real certificate.
+- **The menu's Tunnel row:** `build_menu` and the `MV_SLOT_EVENT_MENU` branch, after #665 merged;
+  `"[driftwire]"` covers the row. The menu itself was not opened by hand.
+- **Not run:** a real filtered network; a browser pointed at the proxy by hand; Linux. Not
+  built: slice 5.
 
 ### Driftwire relays (issue #472, 2026-10-18)
 

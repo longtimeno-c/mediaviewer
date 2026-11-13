@@ -262,6 +262,15 @@ result<std::unique_ptr<proxy>> proxy::start(options o) {
   if (!l) return err(l.error());
   std::unique_ptr<proxy> p(new proxy(std::move(o)));
   p->server_ = *server;
+  if (p->opts_.tls) {
+    if (!tls::available()) return err(status::unsupported_format);
+    const auto k = tls::derive_knock_key(server->key);  // Argon2id: once a start
+    if (!k) return err(status::out_of_memory);
+    p->knock_ = *k;
+    std::string host = server->at.substr(0, server->at.rfind(':'));
+    if (host.size() > 1 && host.front() == '[') host = host.substr(1, host.size() - 2);
+    if (!net::parse_address(host)) p->sni_ = host;  // a name, as a browser sends it
+  }
   p->listener_ = std::move(*l);
   p->snap_.port = p->listener_->port();
   proxy* raw = p.get();
@@ -388,7 +397,9 @@ result<std::unique_ptr<link>> proxy::open(const target& to, relay::forward_answe
     std::lock_guard lock(m_);
     resolved_ = at;
   }
-  auto c = opts_.connect ? opts_.connect(*at, kReachConnectMs) : net::connect(*at, kReachConnectMs);
+  net::endpoint to_server = *at;
+  if (opts_.tls) to_server.port = opts_.tls_port;
+  auto c = opts_.connect ? opts_.connect(to_server, kReachConnectMs) : net::connect(to_server, kReachConnectMs);
   if (!c) {
     std::lock_guard lock(m_);
     resolved_.reset();  // its address may have changed
@@ -403,8 +414,17 @@ result<std::unique_ptr<link>> proxy::open(const target& to, relay::forward_answe
       return err(status::cancelled);
     }
   }
-  return relay::forward(std::make_unique<shared_link>(raw), server_.key, to.host, to.port, relay::kForwardWaitMs,
-                        said);
+  std::unique_ptr<link> hop = std::make_unique<shared_link>(raw);
+  if (opts_.tls) {
+    // Slice 4: TLS with Chrome's ClientHello, and the knock, first.
+    auto t = tls::client(std::move(hop), sni_, &knock_);
+    if (!t) {
+      said = relay::forward_answer::failed;
+      return err(t.error());
+    }
+    hop = std::move(*t);
+  }
+  return relay::forward(std::move(hop), server_.key, to.host, to.port, relay::kForwardWaitMs, said);
 }
 
 void proxy::serve(std::shared_ptr<link> local, const std::shared_ptr<std::shared_ptr<link>>& remote) {

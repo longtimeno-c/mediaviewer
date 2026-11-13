@@ -137,6 +137,10 @@
       "platform": "windows | osx"
     },
     {
+      "name": "boringssl",
+      "platform": "windows | osx"
+    },
+    {
       "name": "ftxui",
       "platform": "windows | osx"
     }

@@ -537,6 +537,17 @@ result<std::unique_ptr<link>> first_bytes(std::unique_ptr<link> l, int wait_ms, 
 
 // ---- the server -------------------------------------------------------------------------
 
+// A link two owners can shut down (the server's worker list, and the TLS or
+// sealed link over it).
+struct shared_link final : link {
+  std::shared_ptr<link> l;
+  explicit shared_link(std::shared_ptr<link> x) : l(std::move(x)) {}
+  expected write_all(std::span<const std::uint8_t> b) override { return l->write_all(b); }
+  result<std::size_t> read_some(std::span<std::uint8_t> into, int ms) override { return l->read_some(into, ms); }
+  void shutdown() noexcept override { l->shutdown(); }
+  transport via() const noexcept override { return l->via(); }
+};
+
 struct server::waiter {
   token t{};
   std::shared_ptr<link> partner;                         // under server::m_
@@ -558,15 +569,30 @@ result<std::unique_ptr<server>> server::start(options o) {
   if (!l) return err(l.error());
   std::unique_ptr<server> s(new server(std::move(o)));
   s->listener_ = std::move(*l);
+  if (s->opts_.tls_port != 0) {
+    // Slice 4: the certificate, the knock's key (Argon2id, once), the port.
+    auto ctx = tls::make_server_context(s->opts_.tls_cert, s->opts_.tls_key, s->opts_.tls_name);
+    if (!ctx) return err(ctx.error());
+    const auto k = tls::derive_knock_key(s->opts_.key);
+    if (!k) return err(status::out_of_memory);
+    auto tl = s->opts_.loopback_only ? net::listen(true) : net::listen_internet(s->opts_.tls_port, false);
+    if (!tl) return err(tl.error());
+    s->tls_ctx_ = std::move(*ctx);
+    s->knock_ = *k;
+    s->tls_listener_ = std::move(*tl);
+  }
   server* raw = s.get();
-  s->accept_thread_ = std::thread([raw] { raw->accept_loop(); });
+  s->accept_thread_ = std::thread([raw] { raw->accept_loop(*raw->listener_, false); });
+  if (s->tls_listener_) s->tls_accept_thread_ = std::thread([raw] { raw->accept_loop(*raw->tls_listener_, true); });
   return s;
 }
 
 server::~server() {
   stop_.store(true);
   if (listener_) listener_->shutdown();
+  if (tls_listener_) tls_listener_->shutdown();
   if (accept_thread_.joinable()) accept_thread_.join();
+  if (tls_accept_thread_.joinable()) tls_accept_thread_.join();
   std::vector<worker> all;
   {
     std::lock_guard lock(m_);
@@ -578,6 +604,27 @@ server::~server() {
 }
 
 std::uint16_t server::port() const noexcept { return listener_ ? listener_->port() : 0; }
+std::uint16_t server::tls_port() const noexcept { return tls_listener_ ? tls_listener_->port() : 0; }
+
+void server::release_handshake(const net::address& from) {
+  std::lock_guard lock(m_);
+  --handshaking_;
+  if (--handshaking_from_[from] <= 0) handshaking_from_.erase(from);
+}
+
+void server::handle_tls(std::shared_ptr<link> l, const net::address& from) {
+  tls::accepted_as as = tls::accepted_as::failed;
+  auto t = tls::accept(*tls_ctx_, std::make_unique<shared_link>(l), knock_, opts_.decoy, as);
+  if (as != tls::accepted_as::relay || !t) {
+    release_handshake(from);
+    std::lock_guard lock(m_);
+    if (as == tls::accepted_as::website) ++counts_.website;
+    l->shutdown();
+    return;
+  }
+  // The hop, as on the plain port (its handshake slot still held).
+  handle(std::shared_ptr<link>(std::move(t)), from);
+}
 
 server::counts server::snapshot() const {
   std::lock_guard lock(m_);
@@ -597,10 +644,10 @@ void server::reap_locked() {
   }
 }
 
-void server::accept_loop() {
+void server::accept_loop(net::listener& from_listener, bool tls) {
   while (!stop_.load()) {
     net::address peer;
-    auto c = listener_->accept_from(500, peer);
+    auto c = from_listener.accept_from(500, peer);
     if (!c) {
       if (c.error() == status::cancelled) return;
       if (c.error() != status::timeout) std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -621,9 +668,9 @@ void server::accept_loop() {
     ++handshaking_from_[from];
     auto done = std::make_shared<std::atomic<bool>>(false);
     try {
-      workers_.push_back({std::thread([this, l, done, from] {
+      workers_.push_back({std::thread([this, l, done, from, tls] {
                             try {
-                              handle(l, from);
+                              tls ? handle_tls(l, from) : handle(l, from);
                             } catch (...) {
                               l->shutdown();
                             }
@@ -926,14 +973,6 @@ void server::serve_forward(std::shared_ptr<link> l, std::string host, std::uint1
     ++counts_.forwarded;
   }
   // The client's side sealed, the host's as it is (the browser's own TLS).
-  struct shared_link final : link {
-    std::shared_ptr<link> l;
-    explicit shared_link(std::shared_ptr<link> x) : l(std::move(x)) {}
-    expected write_all(std::span<const std::uint8_t> b) override { return l->write_all(b); }
-    result<std::size_t> read_some(std::span<std::uint8_t> into, int ms) override { return l->read_some(into, ms); }
-    void shutdown() noexcept override { l->shutdown(); }
-    transport via() const noexcept override { return l->via(); }
-  };
   sealed_link client(std::make_unique<shared_link>(l), std::move(to_client), std::move(from_client));
   const auto r = splice(client, **target, opts_.forward_lim, [this] { return stop_.load(); });
   std::lock_guard lock(m_);

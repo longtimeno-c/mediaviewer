@@ -216,6 +216,10 @@ struct view {
   // The plan's slice 5 adds a VPN mode beside this one; the switch stays
   // `tunnel` and a mode joins it then. Today always "proxy".
   std::string tunnel_mode = "proxy";
+  // Slice 4: "Look like a web site (port 443)": the relay's TLS port, off by
+  // default, and whether this build has TLS at all.
+  bool tunnel_tls = false;
+  bool tunnel_tls_available = false;
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -397,6 +401,8 @@ class engine {
     // and the driftwire program, a stand-in in the tests. Empty: the
     // computer's setting is never touched.
     std::function<std::unique_ptr<sysproxy::port>()> make_sysproxy;
+    // Slice 4, the tests: the relay's TLS port (0: the prefs', 443 unless set).
+    std::uint16_t tunnel_tls_port = 0;
   };
 
   engine(engine_host& host, options opts);
@@ -741,6 +747,7 @@ class engine {
   // thread's, and the destructor's once it has stopped.
   std::unique_ptr<sysproxy::port> sysproxy_;
   std::optional<sysproxy::record> proxy_record_;
+  std::uint16_t tunnel_tls_port_ = 443;  // under m_: the prefs' (slice 4)
   // A URL whose setting was declined or failed: not asked again (no second
   // administrator prompt at every reconcile) until the person flips the
   // Tunnel or Use for all apps (proxy_retry_).

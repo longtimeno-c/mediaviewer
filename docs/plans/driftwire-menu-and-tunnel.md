@@ -3,7 +3,8 @@
 Status: **slice 1 built** (#665, in main, 2026-11-12). **Slices 2 and 3 built** on branch
 `claude/driftwire-tunnel-70ba6c` (2026-11-12, the owner's ask that day; draft PR): forwarding on
 the relay server and the local proxy, with the switch in the window, the settings page and
-`/tunnel`, and the system proxy (PAC, Use for all apps). Slices 4 and 5 stay proposals. What was
+`/tunnel`, and the system proxy (PAC, Use for all apps); slice 1's menu has the Tunnel row. **Slice 4
+built** (owner's ask 2026-11-12, [spike](driftwire-tls-spike.md)). Slice 5 under way. What was
 built is in [28 "The Tunnel"](../design/28-driftwire.md#the-tunnel-2026-11-12).
 
 ## Why
@@ -100,7 +101,8 @@ gates hold (nothing here touches the render path; the menu is chrome).
   - Not a VPN: apps that ignore the system proxy (many command-line tools, some games, anything
     over UDP) keep using the network directly. The window says so in one line. The SOCKS5
     hostname is resolved at the relay, so DNS filtering on the Wi-Fi does not see it.
-- **4. Looking like HTTPS.** The relay on TCP 443 behind TLS 1.3 with a browser's ClientHello,
+- **4. Looking like HTTPS.** *(Built: BoringSSL, Chrome's ClientHello, the knock, the web site;
+  [spike](driftwire-tls-spike.md), [28](../design/28-driftwire.md#the-tunnel-2026-11-12).)* The relay on TCP 443 behind TLS 1.3 with a browser's ClientHello,
   the sealed hop inside; a connection that does not authenticate is answered as an ordinary web
   site. For networks that block what looks like a tunnel. Its own spike first.
 - **5. Driftwire VPN: every app, not only those that follow the proxy** (owner, 2026-11-12).

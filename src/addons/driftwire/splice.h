@@ -78,6 +78,7 @@
 #include "addons/driftwire/link.h"
 #include "addons/driftwire/net.h"
 #include "addons/driftwire/noise.h"
+#include "addons/driftwire/tls.h"
 
 namespace mv::driftwire::relay {
 
@@ -296,6 +297,13 @@ class server {
     }();
     // The tests: forward to loopback and private addresses too.
     bool forward_private = false;
+    // Slice 4 (tls.h): a second port where the hop runs inside TLS behind
+    // the knock, and anything else is answered as a web site. 0: none.
+    // With loopback_only, the OS picks it (tls_port() says which).
+    std::uint16_t tls_port = 0;
+    std::string tls_cert, tls_key;  // PEM files; empty: a self-signed one for tls_name
+    std::string tls_name;
+    tls::decoy decoy;
     // How a forward reaches its host (net::resolve, then net::connect, when
     // empty; the tests).
     std::function<result<std::unique_ptr<link>>(const std::string& host, std::uint16_t port, int timeout_ms,
@@ -307,12 +315,14 @@ class server {
     std::uint64_t bytes = 0;  // spliced, both ways, every splice that ended
     std::uint64_t forwarded = 0, forwarding = 0;  // forwards made, and open now
     std::uint64_t forward_refused = 0;            // key holders' forwards said no to
+    std::uint64_t website = 0;                    // TLS connections answered as a web site
   };
   [[nodiscard]] static result<std::unique_ptr<server>> start(options o);
   ~server();
   server(const server&) = delete;
   server& operator=(const server&) = delete;
   [[nodiscard]] std::uint16_t port() const noexcept;
+  [[nodiscard]] std::uint16_t tls_port() const noexcept;
   [[nodiscard]] counts snapshot() const;
   // Where a connection counts toward kPerSource: its IPv6 /64, or its IPv4 /24.
   [[nodiscard]] static net::address source_of(const net::address& a) noexcept;
@@ -320,8 +330,11 @@ class server {
  private:
   struct waiter;
   explicit server(options o) : opts_(std::move(o)) {}
-  void accept_loop();
+  void accept_loop(net::listener& from, bool tls);
   void handle(std::shared_ptr<link> l, const net::address& from);
+  // Slice 4: TLS and the knock first, then handle(), or the web site.
+  void handle_tls(std::shared_ptr<link> l, const net::address& from);
+  void release_handshake(const net::address& from);
   void serve_waiter(std::shared_ptr<link> l, const token& t, std::unique_ptr<noise::cipher_state> to_waiter,
                     const net::address& from);
   void serve_forward(std::shared_ptr<link> l, std::string host, std::uint16_t port,
@@ -331,6 +344,10 @@ class server {
   options opts_;
   std::unique_ptr<net::listener> listener_;
   std::thread accept_thread_;
+  std::unique_ptr<net::listener> tls_listener_;
+  std::thread tls_accept_thread_;
+  std::unique_ptr<tls::server_context> tls_ctx_;
+  tls::knock_key knock_{};
   std::atomic<bool> stop_{false};
   mutable std::mutex m_;
   std::condition_variable cv_;

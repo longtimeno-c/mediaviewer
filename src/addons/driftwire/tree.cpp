@@ -640,6 +640,17 @@ void tunnel_controls(writer& w, const view& v) {
     return;
   }
   if (!v.tunnel_note.empty()) text(w, "tunnel_problem", v.tunnel_note, "secondary");
+  // Slice 4 (tls.h): the relay's TLS port, for networks that block what
+  // does not look like a web site. Only in a build with TLS.
+  if (v.tunnel_tls_available) {
+    toggle(w, "tunnel_tls", "Look like a web site (port 443)", v.tunnel_tls);
+    if (v.tunnel_tls) {
+      text(w, "tunnel_tls_note",
+           "Your relay server needs --tls-port 443 for this (and ideally a real certificate). To anyone without "
+           "your key it looks like an ordinary web site.",
+           "caption");
+    }
+  }
   // The system proxy (sysproxy.h): on by default.
   toggle(w, "tunnel_all_apps", "Use for all apps", v.tunnel_all_apps);
   if (v.tunnel_all_apps && !v.tunnel_system_note.empty()) {

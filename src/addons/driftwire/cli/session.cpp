@@ -1310,6 +1310,25 @@ struct session::impl {
     } else if (name == "/relay-server") {
       open_field(field_kind::relay_server);
     } else if (name == "/tunnel") {
+      if (rest.rfind("https", 0) == 0) {
+        // /tunnel https on|off: slice 4, the relay's TLS port.
+        if (!v.tunnel_tls_available) {
+          flash("This driftwire has no TLS (built without BoringSSL).");
+          return;
+        }
+        const auto tls_on = on_off(trim(rest.substr(5)));
+        if (!tls_on) {
+          say(tone::info, std::string("Look like a web site (port 443): ") + (v.tunnel_tls ? "on" : "off"),
+              {"/tunnel https on or /tunnel https off changes it (kept for next time)."});
+          return;
+        }
+        ev("tunnel_tls", 2, *tls_on ? "true" : "false");
+        refresh_view();
+        say(tone::info, std::string(*tls_on ? "On" : "Off") + ": Look like a web site (port 443)",
+            {*tls_on ? "The Tunnel reaches your relay server on 443, inside TLS. It needs --tls-port 443 there."
+                     : "The Tunnel reaches your relay server on its own port."});
+        return;
+      }
       if (rest.rfind("apps", 0) == 0) {
         // /tunnel apps on|off: the system proxy, "Use for all apps".
         const auto apps = on_off(trim(rest.substr(4)));

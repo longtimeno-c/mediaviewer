@@ -1427,11 +1427,30 @@ only the laptop there is no such machine. Plan and later slices:
   view's `tunnel_mode` is "proxy" until the plan's slice 5 adds a VPN mode beside the same switch. A
   site's own refusal (a port, a private address) is answered to the browser (SOCKS5 reply 2 or 4,
   HTTP 403 or 502) and is not the tunnel's problem.
+- **Looking like HTTPS** (slice 4, `tls.*`; [spike](../plans/driftwire-tls-spike.md)). With
+  **Look like a web site (port 443)** (`tunnel_tls`, off by default; `/tunnel https`) the Tunnel
+  reaches the relay on its TLS port (`mv-driftwire-relay --tls-port 443`) through BoringSSL with
+  Chrome's ClientHello: GREASE, permuted extensions, ECH GREASE, ALPS, brotli certificate
+  compression offered, X25519MLKEM768 first, Chrome's ciphers and signature algorithms, ALPN `h2`
+  and `http/1.1`, SNI when the relay is a name. Its JA4 in the tests is
+  `t13d1516h2_8daaf6152771_d8a2da3f94cd` (the first two parts pinned to Chrome's; the third moves
+  with Chrome's own codepoints). TLS is camouflage only: the client does not check the
+  certificate, since the hop inside (CPace, then Noise, unchanged) proves the key. Inside TLS the
+  client's first 32 bytes are the **knock**, a keyed BLAKE2b of the session's TLS exporter
+  (`EXPORTER-driftwire-knock`) keyed by an Argon2id hash of the server key; good for its own
+  session only. With it, the hop runs as on the plain port (every role). Without it, whatever came
+  is the start of an HTTP request and the relay answers as a web site (`Server: nginx`; a small
+  built-in page, or `--decoy-dir`; 404, 405 and 400 as a web server would; 10 s idle). The
+  certificate is `--tls-cert` / `--tls-key` (a real one passes a prober's look best), else a
+  self-signed one for `--tls-name`. Codes keep the relay's plain port (a sender holds no server
+  key to knock with). A network that breaks TLS with its own certificate sees the knock; Argon2id
+  makes offline guesses at a typed key slow, and a made key is out of reach. `relay.pv` is
+  unchanged: TLS makes no claim here and the hop inside is the same bytes.
 - **What it exposes.** The Wi-Fi sees a connection to the relay's address; the sites see the
   relay's address; the relay sees which hosts are visited, never the content of HTTPS. A network
   that allows only listed sites, or breaks TLS with its own certificate, defeats this as it does
-  every tunnel. Slice 4 (looking like HTTPS on 443) and slice 5 (a VPN for every app) are in the
-  plan, not built.
+  every tunnel; looking like HTTPS (above) helps only against filters that block what does not
+  look like a web site. Slice 5 (a VPN for every app) is in the plan.
 
 ## What moves, and how it lands
 
@@ -1759,10 +1778,9 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 ## Not built
 
-- **The Tunnel's later slices** ([plan](../plans/driftwire-menu-and-tunnel.md)): looking like
-  HTTPS on TCP 443 (slice 4), and a VPN for every app with UDP forwarding (slice 5). The system
-  proxy is not set on Linux, and on Windows only for the LAN connection's entry. The proxy does not move to another relay
-  or retry a stream; a relay's address is resolved once per proxy (again after a failed connect).
+- **The Tunnel's later slice** ([plan](../plans/driftwire-menu-and-tunnel.md)): a VPN for every app
+  with UDP forwarding (slice 5). The system proxy is not set on Linux, and on Windows only for the
+  LAN connection's entry. Codes do not use the relay's TLS port.
 
 - **#500's ask before an own relay** (low): A's own computer relays without asking, so a stranger
   who made the code, by stalling direct connections, learns R's home address. The fix is a

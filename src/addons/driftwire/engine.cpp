@@ -161,6 +161,9 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.tunnel_relay = tunnel::relay_shown(v_.relay_server);
   tunnel_port_ = kept.tunnel_port;
   v_.tunnel_all_apps = kept.tunnel_all_apps;
+  v_.tunnel_tls = kept.tunnel_tls;
+  v_.tunnel_tls_available = tls::available();
+  tunnel_tls_port_ = kept.tunnel_tls_port;
   if (opts_.make_sysproxy) sysproxy_ = opts_.make_sysproxy();
   // A setting Driftwire made and did not undo (a crash, a power cut): the
   // control thread puts it back at its first reconcile, below.
@@ -313,6 +316,8 @@ void engine::save_now() {
     p.tunnel = v_.tunnel;
     p.tunnel_port = tunnel_port_;
     p.tunnel_all_apps = v_.tunnel_all_apps;
+    p.tunnel_tls = v_.tunnel_tls;
+    p.tunnel_tls_port = tunnel_tls_port_;
   }
   {
     std::lock_guard lock(control_m_);
@@ -451,18 +456,22 @@ void engine::reconcile() {
 
 void engine::sync_tunnel() {
   std::string relay;
-  bool want = false;
-  std::uint16_t port = 0;
+  bool want = false, tls = false;
+  std::uint16_t port = 0, tls_port = 0;
   {
     std::lock_guard lock(m_);
     want = v_.tunnel && !stopping_.load() && !opts_.offline;
     relay = v_.relay_server;
     port = tunnel_port_;
+    tls = v_.tunnel_tls && tls::available();
+    tls_port = opts_.tunnel_tls_port ? opts_.tunnel_tls_port : tunnel_tls_port_;
   }
+  // What the proxy runs with: a change of any restarts it.
+  const std::string made_for = relay + (tls ? "\n" + std::to_string(tls_port) : std::string());
   std::unique_ptr<tunnel::proxy> drop;
   {
     std::lock_guard lock(tunnel_m_);
-    if (tunnel_ && (!want || tunnel_for_ != relay)) {
+    if (tunnel_ && (!want || tunnel_for_ != made_for)) {
       drop = std::move(tunnel_);
       tunnel_for_.clear();
     }
@@ -490,6 +499,8 @@ void engine::sync_tunnel() {
       tunnel::proxy::options o;
       o.relay = relay;
       o.port = port;
+      o.tls = tls;
+      o.tls_port = tls_port;
       o.changed = [this] { tunnel_changed(); };
       auto made = tunnel::proxy::start(std::move(o));
       if (made) {
@@ -497,7 +508,7 @@ void engine::sync_tunnel() {
         {
           std::lock_guard lock(tunnel_m_);
           tunnel_ = std::move(*made);
-          tunnel_for_ = relay;
+          tunnel_for_ = made_for;
         }
         bool save = false;
         {
@@ -1969,6 +1980,17 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     if (in) in->set_relay(*text);
     request_save();
     request_reconcile();  // the Tunnel follows the field (sync_tunnel)
+    return;
+  }
+  if (node == "tunnel_tls" && kind == kChange && value && value->k == json::kind::boolean) {
+    // Slice 4: the relay's TLS port, looking like a web site; off by default.
+    {
+      std::lock_guard lock(m_);
+      v_.tunnel_tls = value->b;
+    }
+    request_reconcile();
+    request_save();
+    post();
     return;
   }
   if (node == "tunnel_all_apps" && kind == kChange && value && value->k == json::kind::boolean) {

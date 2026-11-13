@@ -42,6 +42,10 @@ struct prefs {
   std::uint16_t tunnel_port = 0;
   // "Use for all apps" (on by default): the system proxy points at it.
   bool tunnel_all_apps = true;
+  // Slice 4: "Look like a web site": the relay's TLS port (off by default),
+  // and which port that is (443 unless the file says another).
+  bool tunnel_tls = false;
+  std::uint16_t tunnel_tls_port = 443;
   bool operator==(const prefs&) const = default;
 };
 

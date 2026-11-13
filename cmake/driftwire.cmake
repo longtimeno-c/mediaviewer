@@ -48,6 +48,35 @@ if(NOT MV_SODIUM_HAS_MLKEM768)
                       "or a libsodium built from source")
 endif()
 
+# The Tunnel looking like HTTPS (slice 4, docs/plans/driftwire-tls-spike.md):
+# BoringSSL (Apache-2.0), Chrome's own TLS, for a browser's ClientHello. The
+# vcpkg port installs it as the OpenSSL package; it must be BoringSSL (the
+# ClientHello calls are its own). Without it, tls_none.cpp: the Tunnel runs on
+# the relay's plain port only.
+find_package(OpenSSL CONFIG QUIET)
+set(MV_DRIFTWIRE_TLS OFF)
+if(TARGET OpenSSL::SSL)
+  cmake_push_check_state()
+  set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
+  check_cxx_source_compiles("
+#include <openssl/ssl.h>
+#if !defined(OPENSSL_IS_BORINGSSL)
+#error not BoringSSL
+#endif
+int main() { SSL_CTX* c = SSL_CTX_new(TLS_method()); SSL_CTX_set_permute_extensions(c, 1); return 0; }"
+    MV_HAS_BORINGSSL)
+  cmake_pop_check_state()
+  if(MV_HAS_BORINGSSL)
+    set(MV_DRIFTWIRE_TLS ON)
+  endif()
+endif()
+if(MV_DRIFTWIRE_TLS)
+  set(_driftwire_tls ${_S}/tls_boringssl.cpp)
+else()
+  message(STATUS "Driftwire: no BoringSSL; the Tunnel's HTTPS look (slice 4) is left out")
+  set(_driftwire_tls ${_S}/tls_none.cpp)
+endif()
+
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
@@ -93,6 +122,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/relay.cpp ${_S}/relay.h
   ${_S}/tunnel.cpp ${_S}/tunnel.h
   ${_S}/sysproxy.h ${_S}/sysproxy_record.cpp
+  ${_S}/tls.h ${_S}/tls_common.cpp ${_driftwire_tls}
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -103,6 +133,10 @@ add_library(mv_driftwire_engine STATIC
 target_include_directories(mv_driftwire_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
 target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options ${MV_SODIUM_TARGET} ${MV_BLAKE3_TARGET}
   Threads::Threads)
+if(MV_DRIFTWIRE_TLS)
+  target_link_libraries(mv_driftwire_engine PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(mv_driftwire_engine PUBLIC MV_DRIFTWIRE_TLS=1)
+endif()
 set_target_properties(mv_driftwire_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(WIN32)

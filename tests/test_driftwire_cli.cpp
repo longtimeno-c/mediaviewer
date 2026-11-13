@@ -1396,6 +1396,8 @@ TEST_CASE("driftwire cli session: /tunnel turns the Tunnel on and off and says i
   REQUIRE(ann.shows("HTTPS_PROXY=http://127.0.0.1:"));
   type_line(ann, "/settings");
   REQUIRE(ann.shows("Tunnel: on, 127.0.0.1:"));
+  type_line(ann, "/tunnel https");
+  REQUIRE(ann.shows("Look like a web site (port 443): off"));
   type_line(ann, "/tunnel off");
   REQUIRE(ann.shows("Off: Tunnel"));
   CHECK_FALSE(has(ann.text(), ro.key));  // the key is never said

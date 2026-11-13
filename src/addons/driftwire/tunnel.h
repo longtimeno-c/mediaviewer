@@ -41,6 +41,7 @@
 #include "addons/driftwire/link.h"
 #include "addons/driftwire/net.h"
 #include "addons/driftwire/splice.h"
+#include "addons/driftwire/tls.h"
 
 namespace mv::driftwire::tunnel {
 
@@ -118,6 +119,10 @@ class proxy {
     // Something changed that the window shows (streams opened or ended, a
     // problem). Any of the proxy's threads, never under its lock.
     std::function<void()> changed;
+    // Slice 4 (tls.h): reach the relay on its TLS port, with Chrome's
+    // ClientHello and the knock, instead of the plain one.
+    bool tls = false;
+    std::uint16_t tls_port = tls::kDefaultPort;
   };
   struct snapshot {
     std::uint16_t port = 0;
@@ -152,6 +157,8 @@ class proxy {
 
   options opts_;
   relay_server_field server_;
+  std::string sni_;          // the relay's name for TLS ("" for an address)
+  tls::knock_key knock_{};   // with opts_.tls
   std::unique_ptr<net::listener> listener_;
   std::thread accept_thread_;
   std::atomic<bool> stop_{false};

@@ -18,6 +18,7 @@
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/relay.h"
 #include "addons/driftwire/splice.h"
+#include "addons/driftwire/tls.h"
 #include "addons/driftwire/tunnel.h"
 
 namespace relay = mv::driftwire::relay;
@@ -1574,4 +1575,183 @@ TEST_CASE("driftwire tunnel: a declined system proxy says so once, and asks agai
   eng.on_event("tunnel_all_apps", 2, "true");
   REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
   CHECK(os->sets == 2);
+}
+
+// ---- slice 4: looking like HTTPS (tls.h) ---------------------------------------------------
+
+namespace tls = mv::driftwire::tls;
+
+namespace {
+
+relay::server::options tls_options(std::uint16_t echo_port) {
+  auto o = forward_options(echo_port);
+  o.tls_port = 1;  // loopback: the OS picks (tls_port())
+  o.tls_name = "relay.example";
+  return o;
+}
+
+// What a TLS client says first: the ClientHello's record, from the bytes it sent.
+std::vector<std::uint8_t> first_record(const std::vector<std::uint8_t>& sent) {
+  REQUIRE(sent.size() >= 5);
+  const std::size_t n = 5 + (std::size_t{sent[3]} << 8 | sent[4]);
+  REQUIRE(sent.size() >= n);
+  return {sent.begin(), sent.begin() + static_cast<std::ptrdiff_t>(n)};
+}
+
+std::string https_get(std::uint16_t port, const std::string& request) {
+  auto t = tls::client(dial(port), "relay.example", nullptr);  // a browser: no knock
+  REQUIRE(t);
+  say(**t, request);
+  std::string got;
+  std::vector<std::uint8_t> buf(4096);
+  for (;;) {
+    auto n = (*t)->read_some(buf, 15000);
+    if (!n || *n == 0) break;
+    got.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  return got;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire tls: the web site a prober sees, read with care", "[driftwire]") {
+  const tls::decoy builtin;
+  auto r = tls::decoy_response("GET / HTTP/1.1\r\nHost: a\r\n\r\n", builtin);
+  CHECK(r.rfind("HTTP/1.1 200 OK", 0) == 0);
+  CHECK(r.find("Server: nginx") != std::string::npos);
+  CHECK(r.find("Welcome") != std::string::npos);
+  CHECK(tls::decoy_response("GET /admin HTTP/1.1\r\n\r\n", builtin).rfind("HTTP/1.1 404", 0) == 0);
+  CHECK(tls::decoy_response("POST / HTTP/1.1\r\n\r\n", builtin).rfind("HTTP/1.1 405", 0) == 0);
+  CHECK(tls::decoy_response("\x16\x03\x01garbage", builtin).rfind("HTTP/1.1 400", 0) == 0);
+  const auto head = tls::decoy_response("HEAD / HTTP/1.1\r\n\r\n", builtin);
+  CHECK(head.find("Welcome") == std::string::npos);  // a HEAD has no body
+  scratch_dir dir("driftwire_tls_decoy");
+  write_bytes(dir / "site" / "index.html", std::vector<std::uint8_t>{'h', 'i'});
+  write_bytes(dir / "secret.txt", std::vector<std::uint8_t>{'n', 'o'});
+  const tls::decoy site{utf8(dir / "site")};
+  CHECK(tls::decoy_response("GET / HTTP/1.1\r\n\r\n", site).find("\r\n\r\nhi") != std::string::npos);
+  CHECK(tls::decoy_response("GET /../secret.txt HTTP/1.1\r\n\r\n", site).rfind("HTTP/1.1 404", 0) == 0);
+  CHECK(tls::decoy_response("GET /%2e%2e/secret.txt HTTP/1.1\r\n\r\n", site).rfind("HTTP/1.1 404", 0) == 0);
+  // The knock: keyed by the server key, one per exporter.
+  const auto k1 = tls::derive_knock_key(kKey);
+  const auto k2 = tls::derive_knock_key("another key entirely, 2");
+  REQUIRE(k1);
+  REQUIRE(k2);
+  CHECK(*k1 != *k2);
+  const std::array<std::uint8_t, 32> e1{1}, e2{2};
+  CHECK(tls::knock_of(*k1, e1) != tls::knock_of(*k1, e2));
+  CHECK(tls::knock_of(*k1, e1) != tls::knock_of(*k2, e1));
+  CHECK_FALSE(tls::ja4_of(std::vector<std::uint8_t>{0x17, 3, 3, 0, 0}));
+}
+
+TEST_CASE("driftwire tls: the ClientHello is Chrome's by JA4, and the Tunnel forwards inside TLS", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  const auto tp = (*s)->tls_port();
+  REQUIRE(tp != 0);
+  const auto k = tls::derive_knock_key(kKey);
+  REQUIRE(k);
+  auto tap = std::make_unique<wiretap>(dial(tp));
+  auto sent = tap->sent;
+  auto t = tls::client(std::move(tap), "relay.example", &*k);
+  REQUIRE(t);
+  // The fingerprint a filter matches: TLS 1.3, SNI, 15 ciphers, 16
+  // extensions, h2; Chrome's cipher hash.
+  const auto ja4 = tls::ja4_of(first_record(*sent));
+  REQUIRE(ja4);
+  INFO(*ja4);
+  CHECK(ja4->substr(0, 10) == "t13d1516h2");
+  CHECK(ja4->substr(11, 12) == "8daaf6152771");
+  // The permuted extensions: a second hello's order differs, its JA4 does not.
+  {
+    auto tap2 = std::make_unique<wiretap>(dial(tp));
+    auto sent2 = tap2->sent;
+    auto t2 = tls::client(std::move(tap2), "relay.example", &*k);
+    REQUIRE(t2);
+    CHECK(tls::ja4_of(first_record(*sent2)) == ja4);
+  }
+  // The sealed hop inside: a forward to the echo server.
+  relay::forward_answer said{};
+  auto f = relay::forward(std::move(*t), kKey, "127.0.0.1", echo.port(), relay::kForwardWaitMs, said);
+  REQUIRE(f);
+  CHECK(said == relay::forward_answer::ok);
+  say(**f, "inside tls");
+  CHECK(hear(**f, 10) == "INSIDE TLS");
+  // Neither the key nor the host is in what went on the wire (TLS's own
+  // SNI names only the relay).
+  const std::string key = kKey;
+  CHECK_FALSE(contains(*sent, key));
+  CHECK_FALSE(contains(*sent, std::string("inside tls")));
+  CHECK((*s)->snapshot().forwarded == 1);
+}
+
+TEST_CASE("driftwire tls: without the knock, the relay is an ordinary web site", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  const auto tp = (*s)->tls_port();
+  // A browser.
+  const auto page = https_get(tp, "GET / HTTP/1.1\r\nHost: relay.example\r\nUser-Agent: Mozilla/5.0\r\n\r\n");
+  CHECK(page.rfind("HTTP/1.1 200 OK", 0) == 0);
+  CHECK(page.find("Server: nginx") != std::string::npos);
+  CHECK(https_get(tp, "GET /wp-admin HTTP/1.1\r\nHost: relay.example\r\n\r\n").rfind("HTTP/1.1 404", 0) == 0);
+  // A prober that speaks Driftwire's own hop inside TLS, without the knock:
+  // a web server's 400, never a CPace answer.
+  {
+    auto t = tls::client(dial(tp), "relay.example", nullptr);
+    REQUIRE(t);
+    say(**t, std::string("MVRL\x03\x02\x00\x00", 8) + std::string(48, 'x'));
+    std::string got;
+    std::vector<std::uint8_t> buf(4096);
+    for (;;) {
+      auto n = (*t)->read_some(buf, 15000);
+      if (!n || *n == 0) break;
+      got.append(reinterpret_cast<const char*>(buf.data()), *n);
+    }
+    CHECK((got.empty() || got.rfind("HTTP/1.1 400", 0) == 0));
+  }
+  // A knock made with the wrong key: the same.
+  {
+    const auto wrong = tls::derive_knock_key("not the server's key at all");
+    REQUIRE(wrong);
+    auto t = tls::client(dial(tp), "relay.example", &*wrong);
+    REQUIRE(t);
+    relay::forward_answer said{};
+    CHECK_FALSE(relay::forward(std::move(*t), kKey, "127.0.0.1", echo.port(), 15000, said));
+  }
+  // Plain bytes on the TLS port (not TLS at all): closed.
+  CHECK(says_and_is_closed(tp, std::vector<std::uint8_t>{'G', 'E', 'T', ' ', '/', '\r', '\n', '\r', '\n'}));
+  const auto c = (*s)->snapshot();
+  CHECK(c.website >= 4);
+  CHECK(c.forwarded == 0);
+}
+
+TEST_CASE("driftwire tls: the Tunnel's Look like a web site switch goes through the TLS port", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  scratch_dir dir("driftwire_tunnel_tls");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  fake_host host(dir / "received");
+  auto o = far_end::options("Ann", {});
+  o.tunnel_tls_port = (*s)->tls_port();
+  sp::engine eng(host, o);
+  eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*s)->port()) + "#" + kKey + "\"");
+  CHECK(eng.snapshot().tunnel_tls_available);
+  CHECK_FALSE(eng.snapshot().tunnel_tls);  // off by default
+  eng.on_event("tunnel_tls", 2, "true");
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
+  CHECK(sp::build_tree(eng.snapshot()).find("\"id\":\"tunnel_tls\"") != std::string::npos);
+  const auto pp = static_cast<std::uint16_t>(std::stoi(eng.snapshot().tunnel_address.substr(10)));
+  CHECK(curl_connect(pp, "127.0.0.1:" + std::to_string(echo.port())));
+  CHECK((*s)->snapshot().forwarded == 1);
+  CHECK((*s)->snapshot().website == 0);
+  // Off again: the plain port.
+  eng.on_event("tunnel_tls", 2, "false");
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
+  REQUIRE(eventually([&] { return curl_connect(pp, "127.0.0.1:" + std::to_string(echo.port())); }));
 }
