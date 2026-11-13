@@ -7,6 +7,7 @@ import SwiftUI
 
 struct SearchScreen: View {
   @Environment(AppModel.self) private var model
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     let search = model.search
@@ -23,10 +24,23 @@ struct SearchScreen: View {
     .task { await search.prepare() }
   }
 
-  @ViewBuilder
+  /// One answer glides into the next: tiles that stay move to their new place, new ones fade in,
+  /// gone ones fade out. A spring, so a quicker answer takes over from one still moving. Reduce
+  /// Motion cuts.
+  private var answerMotion: Animation? {
+    reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.9)
+  }
+
+  /// The last answer stays on screen until the next is ready (`SearchModel.shown`).
   private var content: some View {
+    shownContent
+      .animation(answerMotion, value: model.search.answer)
+  }
+
+  @ViewBuilder
+  private var shownContent: some View {
     let search = model.search
-    switch search.phase {
+    switch search.shown {
     case .idle:
       RecentsList()
     case .failed:
@@ -40,11 +54,11 @@ struct SearchScreen: View {
         GridSkeleton()
       }
     case .searching, .results:
+      // Not dimmed while the next answer is found: a dim on every key was the flicker.
       MediaGrid(sections: [GridSection(id: "results", title: nil, range: search.entries.indices)], entries: search.entries,
                 context: "search", answering: "\(search.entries.count)|\(search.answered)") {
         topNotices
       }
-      .opacity(search.phase == .searching ? 0.6 : 1)
     case .nothing:
       // Centred while it fits; at the largest text sizes it is taller than a small phone, and
       // then it scrolls rather than run under the search field and the tab bar.
@@ -89,7 +103,7 @@ private struct NothingFound: View {
     let search = model.search
     VStack(spacing: 12) {
       VStack(spacing: 4) {
-        Text(search.text.isEmpty ? "Nothing matches these filters." : "Nothing found for “\(search.text)”.")
+        Text(search.answered.isEmpty ? "Nothing matches these filters." : "Nothing found for “\(search.answered)”.")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(Theme.title)
         Text(hint)

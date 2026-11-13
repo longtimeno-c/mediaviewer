@@ -733,6 +733,64 @@ TEST_CASE("driftwire: a set too big for Bluetooth says to use Wi-Fi before Send"
 
 // ---- what is kept across launches (#442) ------------------------------------------------------------
 
+TEST_CASE("driftwire: the menu-bar menu's rows are the window's switches, with what is happening now",
+          "[driftwire]") {
+  sp::view v;
+  v.receiving = true;
+  v.background = true;
+  v.file_names = {"IMG_1.JPG"};
+  std::string menu = sp::build_menu(v);
+  INFO(menu);
+  auto doc = mv::json::parse(menu);
+  REQUIRE(doc);
+  const auto& items = doc->find("items")->a;
+  REQUIRE(items.size() == 5);  // Send Files…, a line, three toggles
+  CHECK(*items[0].str("kind") == "files");
+  CHECK(*items[0].str("id") == "send_files");
+  CHECK(*items[2].str("id") == "receiving");
+  CHECK(items[2].find("value")->b);
+  CHECK(*items[3].str("id") == "internet");
+  CHECK_FALSE(items[3].find("value")->b);
+  CHECK(*items[4].str("id") == "background");
+  CHECK(*items[4].str("label") == sp::kBackgroundLabel);
+  CHECK(menu.find("IMG_1.JPG") == std::string::npos);  // never a file name (rule 6)
+
+  // A send under way: the line with whole percent, and Cancel with the window's id.
+  v.out = sp::view::out_phase::sending;
+  v.out_peer = "Ann\xE2\x80\x99s MacBook";
+  v.out_bytes = 421;
+  v.out_total = 1000;
+  menu = sp::build_menu(v);
+  CHECK(menu.find("Sending to Ann\xE2\x80\x99s MacBook \xC2\xB7 42%") != std::string::npos);
+  CHECK(menu.find(R"("id":"out_cancel")") != std::string::npos);
+  v.out_bytes = 425;
+  CHECK(sp::build_menu(v) == menu);  // the same whole percent: nothing to rebuild
+
+  // An offer, then a receive: no code in the menu, Cancel while bytes move.
+  v.out = sp::view::out_phase::idle;
+  v.in = sp::view::in_phase::connecting;
+  v.in_peer = "Laptop";
+  v.in_code = "123456";
+  menu = sp::build_menu(v);
+  CHECK(menu.find("Laptop wants to send you files") != std::string::npos);
+  CHECK(menu.find("123456") == std::string::npos);
+  CHECK(menu.find("_cancel") == std::string::npos);
+  v.in = sp::view::in_phase::receiving;
+  v.in_total = 200;
+  v.in_bytes = 100;
+  menu = sp::build_menu(v);
+  CHECK(menu.find("Receiving from Laptop \xC2\xB7 50%") != std::string::npos);
+  CHECK(menu.find(R"("id":"in_cancel")") != std::string::npos);
+
+  // A long name is cut at a character, within the host's 120-byte label.
+  v.in_peer = std::string(59, 'a') + "\xC3\xA9" + std::string(40, 'b');
+  const auto long_menu = mv::json::parse(sp::build_menu(v));  // kept alive for the loop
+  REQUIRE(long_menu);
+  for (const auto& row : long_menu->find("items")->a) {
+    if (const std::string* label = row.str("label")) CHECK(label->size() <= 120);
+  }
+}
+
 TEST_CASE("driftwire: the settings page is the window's settings, with the window's ids", "[driftwire]") {
   sp::view v;
   v.my_name = "Studio";

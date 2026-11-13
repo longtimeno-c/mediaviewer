@@ -6,7 +6,7 @@ using System.Text;
 namespace MediaViewer.Interop;
 
 /// <summary>
-/// Settings → Phone access, part of the app (ABI 0.40, docs/plans/phone-in-the-app.md):
+/// Settings → Phone access, part of the app (ABI 0.41, docs/plans/phone-in-the-app.md):
 /// one JSON request for the feature's own thread, and the card's state. Every
 /// call is [no-block]; nothing here logs a path, an address or a key (rule 6).
 /// </summary>
