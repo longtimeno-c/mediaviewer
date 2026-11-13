@@ -53,9 +53,12 @@ endif()
 # vcpkg port installs it as the OpenSSL package; it must be BoringSSL (the
 # ClientHello calls are its own). Without it, tls_none.cpp: the Tunnel runs on
 # the relay's plain port only.
+# The fuzz build (MV_FUZZ) leaves it out: its harnesses are /MT and libFuzzer's
+# runtime will not link with a static /MD library, and it fuzzes Driftwire's
+# parsers, not TLS.
 find_package(OpenSSL CONFIG QUIET)
 set(MV_DRIFTWIRE_TLS OFF)
-if(TARGET OpenSSL::SSL)
+if(TARGET OpenSSL::SSL AND NOT MV_FUZZ)
   cmake_push_check_state()
   set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
   check_cxx_source_compiles("

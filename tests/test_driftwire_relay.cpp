@@ -1118,6 +1118,28 @@ bool curl_connect(std::uint16_t proxy_port, const std::string& authority, std::s
   return hear(*l, hello.size()) == upper(hello);
 }
 
+// As curl_connect, but false (never a failed REQUIRE) when any step fails:
+// for a proxy that may be restarting.
+bool try_curl_connect(std::uint16_t proxy_port, const std::string& authority) {
+  auto c = sp::net::connect({"127.0.0.1", proxy_port}, 1000);
+  if (!c) return false;
+  auto& l = **c;
+  const std::string ask = "CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\n\r\n";
+  if (!l.write_all({reinterpret_cast<const std::uint8_t*>(ask.data()), ask.size()})) return false;
+  std::string head;
+  std::uint8_t b = 0;
+  while (head.find("\r\n\r\n") == std::string::npos && head.size() < 4096) {
+    if (!sp::read_exact(l, {&b, 1}, 10000)) return false;
+    head.push_back(static_cast<char>(b));
+  }
+  if (head.rfind("HTTP/1.1 200", 0) != 0) return false;
+  const std::string hello = "hello again";
+  if (!l.write_all({reinterpret_cast<const std::uint8_t*>(hello.data()), hello.size()})) return false;
+  std::vector<std::uint8_t> back(hello.size());
+  if (!sp::read_exact(l, back, 10000)) return false;
+  return std::string(back.begin(), back.end()) == upper(hello);
+}
+
 }  // namespace
 
 TEST_CASE("driftwire tunnel: proxy requests are read with care", "[driftwire]") {
@@ -1753,5 +1775,7 @@ TEST_CASE("driftwire tls: the Tunnel's Look like a web site switch goes through 
   // Off again: the plain port.
   eng.on_event("tunnel_tls", 2, "false");
   REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
-  REQUIRE(eventually([&] { return curl_connect(pp, "127.0.0.1:" + std::to_string(echo.port())); }));
+  // The proxy restarts on the same port: until it listens again a connect is
+  // refused, so probe without a REQUIRE (one inside eventually ends the test).
+  REQUIRE(eventually([&] { return try_curl_connect(pp, "127.0.0.1:" + std::to_string(echo.port())); }));
 }
