@@ -15,9 +15,11 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
-#include "addons/driftwire/serve_client.h"
+#include "wire/net.h"
+#include "wire/serve_client.h"
 #include "core/result.h"
 
 namespace mv::mobile {
@@ -57,11 +59,15 @@ class remote_file {
 struct service_config {
   std::string local;        // "host:port", may be empty
   std::string public_name;  // "name:port", may be empty
+  std::string relay;        // the person's own relay, "host:port", may be empty: tried last
   key32 identity{};         // the service's pinned public key
   key32 access_key{};
   key32 device_key{};       // this phone's X25519 private key
   std::string device_id = "0000000000000000";
   std::string device_name = "iPhone";
+  // Ask for a direct path once on the relay (docs/plans/nas-relay.md §9).
+  bool upgrade = false;
+  bool loopback_only = false;  // the tests: punch on 127.0.0.1 only
 };
 
 enum class route_problem : std::uint8_t {
@@ -71,6 +77,7 @@ enum class route_problem : std::uint8_t {
   too_old,
   busy,
   bad_code,       // the pairing code was wrong, spent or expired
+  expired,        // this phone's limited access has ended (docs/plans/nas-owner-and-guests.md §4.3)
 };
 
 struct route_failure {
@@ -81,6 +88,8 @@ struct route_failure {
 struct route_report {
   std::string address;     // the one that answered
   bool over_internet = false;
+  bool relayed = false;   // through the person's own relay (the mobile-data rules apply as over the internet)
+  bool upgraded = false;  // moved from the relay to a direct path it punched
   std::vector<route_failure> failures;  // the ones that did not
 };
 
@@ -116,6 +125,15 @@ class link_session final : public remote_file {
     if (c) dropped(c);
   }
   [[nodiscard]] bool connected() const;
+  // Whether a direct path may be tried now (nas-relay.md §9.2): on Wi-Fi
+  // always; on mobile data only with the person's setting on (default on).
+  // The host says which network it is on and what the setting is.
+  void set_upgrade_policy(bool on_cellular, bool allowed_on_cellular) noexcept;
+  // The tests: try a direct path now, and wait for it (true when it moved).
+  [[nodiscard]] bool upgrade_now_for_test();
+  // The live connection's limit, as the service said it in serve_caps: 1
+  // limited, 0 unlimited, -1 no live connection (nothing known).
+  [[nodiscard]] int grant(std::int64_t& expires_unix, bool& scoped) const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list(const std::string& root,
@@ -146,6 +164,15 @@ class link_session final : public remote_file {
   void dropped(const std::shared_ptr<driftwire::serve::client>& c) noexcept;
   [[nodiscard]] bool is_shut() const;
   [[nodiscard]] expected race_locked(route_report& report, const cancel_flag* cancel, int timeout_ms);  // connect_m_ held
+  // The direct path after the relay: one thread while the live link is relayed,
+  // trying at once, then after 1, 5 and 15 minutes, then hourly.
+  void start_upgrades();
+  // Ends a try in flight at once (its port shut); `join` waits for the thread.
+  void stop_upgrades(bool join) noexcept;
+  void upgrade_loop();
+  [[nodiscard]] bool try_upgrade();
+  [[nodiscard]] std::uint32_t live_caps_ops() const;
+  [[nodiscard]] bool upgrade_allowed() const noexcept;
 
   service_config config_;
   std::string device_folder_id_;  // serve::device_folder_id of this phone's public key
@@ -162,6 +189,16 @@ class link_session final : public remote_file {
   std::condition_variable streams_cv_;
   std::size_t streams_ = 0;  // under streams_m_
   bool shut_ = false;         // under m_
+
+  std::atomic<bool> on_cellular_{false}, cellular_ok_{true};
+  std::mutex up_m_;
+  std::condition_variable up_cv_;
+  std::thread upgrader_;     // under up_m_
+  bool up_stop_ = false;     // under up_m_
+  bool up_now_ = false;      // under up_m_: try at once (a fresh relayed link, or the tests)
+  std::shared_ptr<driftwire::net::tcp_rendezvous> up_rz_;  // under up_m_: the try in flight's port
+  std::shared_ptr<driftwire::link> up_link_;               // under up_m_: a punched link mid-handshake
+  bool up_running_ = false;  // under up_m_: the thread has not returned yet
 };
 
 }  // namespace mv::mobile

@@ -8,7 +8,11 @@
 
 #include "catch_compat.h"
 
+#include <array>
+#include <atomic>
+#include <algorithm>
 #include <filesystem>
+#include <map>
 #include <future>
 #include <fstream>
 #include <memory>
@@ -16,17 +20,22 @@
 #include <sqlite3.h>
 
 #include "addons/ai/catalog.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/secrets.h"
-#include "addons/driftwire/serve.h"
+#include "wire/known.h"
+#include "wire/pair_check.h"
+#include "wire/secrets.h"
+#include "wire/grants.h"
+#include "wire/serve.h"
+#include "wire/splice.h"
 #include "addons/driftwire/transfer.h"
+#include "mobile/files.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
 #include "mobile/link_payload.h"
 #include "mobile/link_thumbs.h"
 #include "mobile/mv_mobile_link.h"
 #include "mobile/sample.h"
+#include "mobile/sound_fetch.h"
+#include "mobile/sound_tower.h"
 #include "mobile/sync.h"
 #include "mobile/testing.h"
 
@@ -167,10 +176,14 @@ struct rig {
   publisher pub{catalogue_home, dir.root / "work"};
   std::uint16_t port = 0;
   std::string payload;
+  std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
 
   std::string photos_label = "Photos";
+  std::string relay_address;  // the person's own relay, for start(): the service waits there
 
-  explicit rig(std::size_t payload_bytes = 300000, std::string label = "Photos")
+  // `publish_first` false: the share as the desktop leaves it when the folder is chosen and no
+  // catalogue has been published yet (library.json only: file mode).
+  explicit rig(std::size_t payload_bytes = 300000, std::string label = "Photos", bool publish_first = true)
       : payload(payload_bytes, 'x'), photos_label(std::move(label)) {
     REQUIRE(sodium_init() >= 0);
     fs::create_directories(data);
@@ -182,7 +195,12 @@ struct rig {
     REQUIRE(serve::set_up(*store, identity, access, made));
     REQUIRE(made);
     write_file(photos / "2024" / "pic.bin", std::string(70000, 'p'));
-    pub.publish(1, payload);
+    if (publish_first) {
+      pub.publish(1, payload);
+    } else {
+      write_file(catalogue_home / ".mediaviewer" / "library.json",
+                 "{\"format\":1,\"library_id\":\"" + pub.library_id + "\",\"public_key\":\"" + catalog::to_hex(pub.pub) + "\"}");
+    }
     start();
   }
 
@@ -197,7 +215,12 @@ struct rig {
     o.cfg.name = "NAS";
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
+    o.cfg.relay = relay_address;
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
+    o.now_unix = [this] {
+      const auto t = fake_now.load();
+      return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
+    };
     auto s = serve::server::start(o);
     REQUIRE(s);
     srv = std::move(*s);
@@ -365,6 +388,63 @@ TEST_CASE("pairing: a good code once; a used code, a wrong service and no access
   CHECK(s4.connect(silent, nullptr, 1500).error() == mv::status::io);
 }
 
+TEST_CASE("pairing: a guest code gives a time, the link reports it, and its end is not a removal", "[mobile-link]") {
+  rig r;
+  const std::int64_t t0 = std::time(nullptr);
+  r.fake_now = t0;
+  serve::grants::limit gives;
+  gives.for_s = 24 * 3600;
+  const std::string code = serve::grants::issue_guest_code(*r.store, 600, gives, t0);
+  REQUIRE_FALSE(code.empty());
+  mob::route_report report;
+  REQUIRE(mob::pair_device(r.config(), code, report));
+  mob::link_session s(r.config());
+  mob::route_report connected;
+  REQUIRE(s.connect(connected));
+  std::int64_t expires = 0;
+  bool scoped = true;
+  REQUIRE(s.grant(expires, scoped) == 1);
+  CHECK(expires == t0 + gives.for_s);
+  CHECK_FALSE(scoped);
+  // An unlimited phone has none.
+  rig other;
+  other.pair_now();
+  mob::link_session unlimited(other.config());
+  REQUIRE(unlimited.connect(connected));
+  CHECK(unlimited.grant(expires, scoped) == 0);
+  mob::link_session never(other.config());
+  CHECK(never.grant(expires, scoped) == -1);  // not connected: nothing known
+  // The day ends: refused, and the route says the access ended, not that the phone was removed.
+  r.fake_now = t0 + gives.for_s;
+  mob::route_report ended;
+  CHECK(s.reconnect(ended).error() == mv::status::permission_denied);
+  CHECK(std::any_of(ended.failures.begin(), ended.failures.end(),
+                    [](const mob::route_failure& f) { return f.problem == mob::route_problem::expired; }));
+  CHECK(std::none_of(ended.failures.begin(), ended.failures.end(),
+                     [](const mob::route_failure& f) { return f.problem == mob::route_problem::not_paired; }));
+}
+
+TEST_CASE("link payload: a guest code's grant is read for the confirm screen", "[mobile-link]") {
+  rig r;
+  const std::string json =
+      "{\"v\":1,\"library_id\":\"" + r.pub.library_id + "\",\"library_name\":\"Family\",\"publisher_key\":\"" +
+      catalog::to_hex(r.pub.pub) + "\",\"service\":{\"local\":\"" + r.config().local + "\",\"public\":\"\",\"identity\":\"" +
+      catalog::to_hex(r.identity) + "\"},\"access_key\":\"" + catalog::to_hex(r.access) +
+      "\",\"code\":\"abc\",\"expires\":99999999999,\"grant\":{\"for_s\":604800,\"scoped\":false}}";
+  std::string b64(sodium_base64_ENCODED_LEN(json.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+  sodium_bin2base64(b64.data(), b64.size(), reinterpret_cast<const unsigned char*>(json.data()), json.size(),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  b64.resize(std::strlen(b64.c_str()));
+  auto p = mob::parse_pair_payload("mediaviewer://pair#" + b64);
+  REQUIRE(p);
+  CHECK(p->grant_for_s == 604800);
+  CHECK_FALSE(p->grant_scoped);
+  // An unlimited code has none.
+  auto plain = mob::parse_pair_payload(payload_text(r, 99999999999));
+  REQUIRE(plain);
+  CHECK(plain->grant_for_s == 0);
+}
+
 TEST_CASE("link race: a dead local address loses to the named public route", "[mobile-link]") {
   rig r;
   r.pair_now();
@@ -462,6 +542,7 @@ TEST_CASE("sync: copy, hash check, install, resume, signatures and generations",
     const std::string old_current = read_all(base / "current.json");
     r.pub.publish(2, r.payload);
     fs::create_directories(library / "engine" / "1-1");  // search's work folder for generation 1
+    fs::create_directories(library / "engine" / "1-1+sound");  // and the one with sound search's model
     auto next = mob::check_catalogue(s, cfg);
     REQUIRE(next.outcome == mob::sync_outcome::copy_available);
     REQUIRE(mob::copy_catalogue(s, cfg, next, nullptr, nullptr) == mob::sync_outcome::installed);
@@ -470,6 +551,7 @@ TEST_CASE("sync: copy, hash check, install, resume, signatures and generations",
     CHECK(installed->high_generation == 2);
     CHECK_FALSE(fs::exists(library / "gen" / "1-1"));
     CHECK_FALSE(fs::exists(library / "engine" / "1-1"));
+    CHECK_FALSE(fs::exists(library / "engine" / "1-1+sound"));
 
     // Lower generation, correctly signed: refused, and the catalogue stays.
     write_file(base / "current.json", old_current);
@@ -918,6 +1000,31 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
 }
 
 // ---- the sample library (docs/plans/mobile.md §11.1): a static folder, the same sync ----------
+
+TEST_CASE("sample: GUEST is the same library as a ten-minute guest, with no service", "[mobile-link]") {
+  CHECK(mob::sample::is_guest_code("GUEST"));
+  CHECK(mob::sample::is_guest_code(" guest\n"));
+  CHECK(mob::sample::is_guest_code("mediaviewer://sample-guest"));
+  CHECK(mob::sample::is_guest_code("MediaViewer://Sample-Guest/"));
+  CHECK_FALSE(mob::sample::is_guest_code("SAMPLE"));
+  CHECK_FALSE(mob::sample::is_guest_code("GUESTS"));
+  CHECK_FALSE(mob::sample::is_code("GUEST"));
+  const auto guest = mob::sample::payload(true);
+  const auto plain = mob::sample::payload();
+  CHECK(guest.grant_for_s == mob::sample::kGuestSeconds);
+  CHECK(plain.grant_for_s == 0);
+  // The same signed library: the same id, key and check code; only the grant differs.
+  CHECK(guest.library_id == plain.library_id);
+  CHECK(guest.publisher_key == plain.publisher_key);
+  CHECK(guest.fingerprint == plain.fingerprint);
+  // Through the C ABI, as the app reads it.
+  mv_pair_info info{};
+  REQUIRE(mv_pair_parse("GUEST", 0, &info) == MV_LINK_OK);
+  CHECK(info.sample == 1);
+  CHECK(info.grant_for_s == mob::sample::kGuestSeconds);
+  REQUIRE(mv_pair_parse("SAMPLE", 0, &info) == MV_LINK_OK);
+  CHECK(info.grant_for_s == 0);
+}
 
 TEST_CASE("sample: one fixed code and its link, nothing else", "[mobile-link]") {
   CHECK(mob::sample::is_code("SAMPLE"));
@@ -1658,4 +1765,737 @@ TEST_CASE("sample: Forget through the C ABI stops a tile write whose read has al
     if (it->is_regular_file()) ++tiles;
   }
   CHECK(tiles == 0);  // nothing written into the folder Forget removes next
+}
+
+// ---- the sound text tower's download (docs/plans/mobile.md §9, "Sound search") ------------------
+
+namespace {
+
+std::string read_text(const fs::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+std::string sha_hex(std::string_view bytes) {
+  unsigned char h[crypto_hash_sha256_BYTES];
+  crypto_hash_sha256(h, reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
+  return catalog::to_hex(std::span<const std::uint8_t>(h, sizeof h));
+}
+
+// A release in memory: the files by URL, every request seen, and a way to make one fail.
+struct fake_release {
+  std::map<std::string, std::string> files;
+  std::vector<std::pair<std::string, uint64_t>> asked;  // url, from
+  int32_t answer = MV_LINK_OK;
+  std::size_t cut_after = SIZE_MAX;  // stop delivering after this many bytes in all (a dropped line)
+  std::size_t sent = 0;
+};
+
+int32_t fake_fetch(void* ctx, const char* url, uint64_t at, uint64_t length, mv_sink_fn sink, void* sink_ctx,
+                   mv_stopped_fn stopped, void* stopped_ctx) {
+  auto* r = static_cast<fake_release*>(ctx);
+  r->asked.emplace_back(url, at);
+  if (r->answer != MV_LINK_OK) return r->answer;
+  const auto it = r->files.find(url);
+  if (it == r->files.end()) return MV_LINK_NOT_FOUND;
+  const std::string& body = it->second;
+  const uint64_t end = length == UINT64_MAX ? body.size() : std::min<uint64_t>(body.size(), at + length);
+  for (uint64_t i = at; i < end; i += 3) {  // small chunks, so `allowed` is asked often
+    if (stopped && stopped(stopped_ctx)) return MV_LINK_CANCELLED;
+    if (r->sent >= r->cut_after) return MV_LINK_UNREACHABLE;
+    const std::size_t n = static_cast<std::size_t>(std::min<uint64_t>(3, end - i));
+    if (!sink(sink_ctx, i - at, reinterpret_cast<const uint8_t*>(body.data() + i), n)) return MV_LINK_CANCELLED;
+    r->sent += n;
+  }
+  return MV_LINK_OK;
+}
+
+struct sound_fixture {
+  fs::path root = fs::temp_directory_path() / ("mv-sound-" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+  std::string a = "model file A, the first", b = "tokens: the second file, a little longer";
+  std::string sa = sha_hex(a), sb = sha_hex(b);  // the pin's views point here
+  std::array<mob::sound::pinned_file, 2> pin{};
+  fake_release release;
+  sound_fixture() {
+    fs::remove_all(root);
+    fs::create_directories(root);
+    pin = {{{"a.bin", sa, a.size()}, {"b.txt", sb, b.size()}}};
+    release.files["https://example.invalid/r/a.bin"] = a;
+    release.files["https://example.invalid/r/b.txt"] = b;
+  }
+  ~sound_fixture() {
+    std::error_code ec;
+    fs::remove_all(root, ec);
+  }
+  std::string library() const { return root.string(); }
+  fs::path dir() const { return fs::path(mob::sound::folder(library())); }
+  int32_t fetch(mv_sync_allowed_fn allowed = nullptr, void* ctx = nullptr, const mob::cancel_flag* cancel = nullptr) {
+    return mob::sound::fetch_all(library(), "https://example.invalid/r/", &fake_fetch, &release, cancel, allowed, nullptr, ctx,
+                                 pin);
+  }
+};
+
+int32_t never(void*) { return 0; }
+
+}  // namespace
+
+TEST_CASE("sound tower: downloaded, hashed and recorded; a second run asks for nothing", "[mobile-link]") {
+  sound_fixture f;
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  CHECK(mob::sound::ready(f.dir().string(), f.pin));
+  CHECK(read_text(f.dir() / "a.bin") == f.a);
+  CHECK(read_text(f.dir() / "b.txt") == f.b);
+  CHECK_FALSE(fs::exists(f.dir() / "a.bin.part"));
+  CHECK(mob::sound::bytes_on_disk(f.library()) >= f.a.size() + f.b.size());
+  f.release.asked.clear();
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  CHECK(f.release.asked.empty());
+}
+
+TEST_CASE("sound tower: a dropped download resumes where it stopped", "[mobile-link]") {
+  sound_fixture f;
+  f.release.cut_after = f.a.size() + 7;  // all of a, then part of b
+  CHECK(f.fetch() == MV_LINK_UNREACHABLE);
+  CHECK(fs::exists(f.dir() / "a.bin"));
+  REQUIRE(fs::exists(f.dir() / "b.txt.part"));
+  const auto have = fs::file_size(f.dir() / "b.txt.part");
+  CHECK(have > 0);
+  f.release.cut_after = SIZE_MAX;
+  f.release.asked.clear();
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  REQUIRE(f.release.asked.size() == 1);
+  CHECK(f.release.asked[0].first == "https://example.invalid/r/b.txt");
+  CHECK(f.release.asked[0].second == have);
+  CHECK(read_text(f.dir() / "b.txt") == f.b);
+}
+
+TEST_CASE("sound tower: a file that is not the pinned one is deleted, never kept or resumed", "[mobile-link]") {
+  sound_fixture f;
+  f.release.files["https://example.invalid/r/b.txt"] = std::string(f.b.size(), 'x');  // the right size, not the file
+  CHECK(f.fetch() == MV_LINK_REJECTED);
+  CHECK_FALSE(fs::exists(f.dir() / "b.txt"));
+  CHECK_FALSE(fs::exists(f.dir() / "b.txt.part"));
+  CHECK_FALSE(mob::sound::ready(f.dir().string(), f.pin));
+  // A verified record left by hand does not make a wrong file right either.
+  std::ofstream(f.dir() / "b.txt", std::ios::binary) << std::string(f.b.size(), 'x');
+  CHECK(f.fetch() == MV_LINK_REJECTED);
+  CHECK_FALSE(fs::exists(f.dir() / "b.txt"));
+}
+
+TEST_CASE("sound tower: no bytes move while the Wi-Fi rule says no, and a gone pin says so", "[mobile-link]") {
+  sound_fixture f;
+  CHECK(f.fetch(&never) == MV_LINK_WAITING);
+  CHECK(f.release.asked.empty());
+  CHECK_FALSE(fs::exists(f.dir() / "a.bin.part"));
+  f.release.files.erase("https://example.invalid/r/b.txt");
+  CHECK(f.fetch() == MV_LINK_NOT_FOUND);
+  CHECK_FALSE(mob::sound::ready(f.dir().string(), f.pin));
+  mob::cancel_flag stop;
+  stop.stop = true;
+  CHECK(f.fetch(nullptr, nullptr, &stop) == MV_LINK_CANCELLED);
+}
+
+TEST_CASE("sound tower: an older pin's files are cleared, the record is per pin", "[mobile-link]") {
+  sound_fixture f;
+  fs::create_directories(f.dir());
+  std::ofstream(f.dir() / "old-text.onnx") << "an older tower";
+  std::ofstream(f.dir() / std::string(mob::sound::kVerified)) << "old-text.onnx 00\n";
+  REQUIRE(f.fetch() == MV_LINK_OK);
+  CHECK_FALSE(fs::exists(f.dir() / "old-text.onnx"));
+  CHECK(read_text(f.dir() / std::string(mob::sound::kVerified)) == mob::sound::verified_text(f.pin));
+  CHECK_FALSE(mob::sound::ready(f.dir().string()));  // the app's own pin is another
+}
+
+TEST_CASE("sound tower: wanted only for a catalogue whose clips the pinned tower answers", "[mobile-link]") {
+  const fs::path root = fs::temp_directory_path() / "mv-sound-wanted";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto make = [&](const std::string& spec) {
+    fs::remove(root / "catalog.db");
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open((root / "catalog.db").string().c_str(), &db) == SQLITE_OK);
+    const std::string sql = "CREATE TABLE frames(id INTEGER PRIMARY KEY, asset_id INTEGER, spec TEXT);"
+                            "CREATE INDEX frames_spec ON frames(spec);"
+                            "INSERT INTO frames(asset_id, spec) VALUES(1, 'clip-vit-l14/fp16/pre1'), (2, '" + spec + "');";
+    REQUIRE(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+  make(std::string(mob::sound::kSpec));
+  CHECK(mv_sound_wanted(root.string().c_str()) == 1);
+  make("clap-other/fp16/pre1");
+  CHECK(mv_sound_wanted(root.string().c_str()) == 0);
+  CHECK(mv_sound_wanted((root / "missing").string().c_str()) == 0);
+  CHECK(mv_sound_wanted(nullptr) == 0);
+  CHECK(mv_sound_total_bytes() == mob::sound::total_bytes());
+  CHECK(std::string(mv_sound_base()).back() == '/');
+  fs::remove_all(root);
+}
+
+namespace {
+
+constexpr const char* kPhoneRelayKey = "mobile-loopback-relay-key-0123";
+
+std::string with_relay(const std::string& qr, const std::string& relay_json) {
+  // The code's JSON with a "relay" member added, encoded again.
+  const std::string b64 = qr.substr(std::strlen("mediaviewer://pair#"));
+  std::string json(b64.size(), '\0');
+  std::size_t n = 0;
+  REQUIRE(sodium_base642bin(reinterpret_cast<unsigned char*>(json.data()), json.size(), b64.data(), b64.size(), nullptr, &n,
+                            nullptr, sodium_base64_VARIANT_URLSAFE_NO_PADDING) == 0);
+  json.resize(n);
+  json.pop_back();  // the closing brace
+  json += ",\"relay\":" + relay_json + "}";
+  std::string out(sodium_base64_ENCODED_LEN(json.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+  sodium_bin2base64(out.data(), out.size(), reinterpret_cast<const unsigned char*>(json.data()), json.size(),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  out.resize(std::strlen(out.c_str()));
+  return "mediaviewer://pair#" + out;
+}
+
+// The rig's service, started again waiting at a loopback relay (never a public one).
+std::unique_ptr<dw::relay::server> relay_for(rig& r) {
+  dw::relay::server::options ro;
+  ro.key = kPhoneRelayKey;
+  ro.loopback_only = true;
+  auto started = dw::relay::server::start(ro);
+  REQUIRE(started);
+  const std::string key = kPhoneRelayKey;
+  REQUIRE(r.store->put(serve::kRelayKeyName, std::vector<std::uint8_t>(key.begin(), key.end())));
+  r.srv.reset();
+  r.relay_address = "127.0.0.1:" + std::to_string((*started)->port());
+  r.start();
+  return std::move(*started);
+}
+
+}  // namespace
+
+// ---- file mode (docs/plans/phone-in-the-app.md §4) ----------------------------------------------
+
+namespace {
+
+mv_mobile_link* open_link(const std::string& cache, const mob::sync_config& cfg, const mob::service_config& service) {
+  mv_link_config c{};
+  c.library_dir = cfg.library_dir.c_str();
+  c.cache_dir = cache.c_str();
+  c.library_id = cfg.library_id.c_str();
+  c.local = service.local.c_str();
+  c.public_name = service.public_name.c_str();
+  c.device_name = service.device_name.c_str();
+  c.identity = service.identity.data();
+  c.access_key = service.access_key.data();
+  c.device_key = service.device_key.data();
+  c.publisher_key = cfg.publisher_key.data();
+  return mv_link_open(&c);
+}
+
+using hit_list = std::vector<std::pair<std::size_t, std::string>>;
+
+hit_list hits_of(const std::vector<mob::files::index::hit>& hits) {
+  hit_list out;
+  for (const auto& h : hits) out.emplace_back(h.index, h.why);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("link payload: the person's own relay is read when there, and an old code still parses", "[mobile-link]") {
+  rig r;
+  const std::string plain = payload_text(r, 2000000000);
+  const auto old = mob::parse_pair_payload(plain);
+  REQUIRE(old);
+  CHECK(old->relay.empty());
+  const auto with = mob::parse_pair_payload(with_relay(plain, R"({"address":"relay.example.com:7879"})"));
+  REQUIRE(with);
+  CHECK(with->relay == "relay.example.com:7879");
+  CHECK(with->fingerprint == old->fingerprint);  // the relay is not part of what is compared
+  // A relay that is not an address is left out, never a reason to refuse the code.
+  for (const char* bad : {R"({"address":"no-port"})", R"({"address":"a:0"})", R"("relay.example.com:7879")", R"({"address":7})"}) {
+    const auto p = mob::parse_pair_payload(with_relay(plain, bad));
+    REQUIRE(p);
+    CHECK(p->relay.empty());
+  }
+  mv_pair_info info;
+  REQUIRE(mv_pair_parse(with_relay(plain, R"({"address":"relay.example.com:7879"})").c_str(), 0, &info) == MV_LINK_OK);
+  CHECK(std::string(info.relay) == "relay.example.com:7879");
+}
+
+TEST_CASE("link race: with no direct route, the phone gets in through its own relay; with one, the direct route wins", "[mobile-link]") {
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const std::string relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  // Direct routes dead: in through the relay, end to end, and reads work.
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = relay;
+  bool got_in = false;
+  for (int i = 0; i < 40 && !got_in; ++i) {  // the service's waiter registers a moment after it starts
+    mob::link_session s(c);
+    mob::route_report report;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (s.connect(report, nullptr, 6000)) {
+      got_in = true;
+      // Every direct route refused at once: the relay did not wait out its 1.5 s.
+      CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1400));
+      CHECK(report.relayed);
+      CHECK(report.over_internet);
+      CHECK(report.address == relay);
+      auto roots = s.roots();
+      REQUIRE(roots);
+      CHECK_FALSE(roots->empty());
+      std::string got;
+      REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+        got.append(reinterpret_cast<const char*>(b.data()), b.size());
+        return true;
+      }, nullptr, false));
+      CHECK(got == std::string(70000, 'p'));
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+  }
+  CHECK(got_in);
+  // A working direct route: it wins, the relay is never asked.
+  mob::service_config direct = r.config();
+  direct.relay = relay;
+  mob::link_session d(direct);
+  mob::route_report report;
+  REQUIRE(d.connect(report));
+  CHECK_FALSE(report.relayed);
+  CHECK(report.address != relay);  // either direct route, never the relay
+  // Another phone with the access key but not paired: the relay has no waiter for it.
+  mob::service_config stranger = c;
+  stranger.device_key = random_key();
+  mob::link_session st(stranger);
+  mob::route_report none;
+  CHECK_FALSE(st.connect(none, nullptr, 4000));
+}
+
+TEST_CASE("pairing: a new code is never redeemed through the relay", "[mobile-link]") {
+  rig r;
+  auto rendezvous = relay_for(r);
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  const std::string code = serve::issue_pair_code(*r.store, 600, std::time(nullptr));
+  mob::route_report report;
+  CHECK_FALSE(mob::pair_device(c, code, report, nullptr, 3000));
+  CHECK_FALSE(report.relayed);
+}
+
+// ---- a direct path after the relay (docs/plans/nas-relay.md §9): loopback only ----------------
+
+namespace {
+
+mob::service_config relayed_only(rig& r, const dw::relay::server& rendezvous) {
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = "127.0.0.1:" + std::to_string(rendezvous.port());
+  c.upgrade = true;
+  c.loopback_only = true;
+  return c;
+}
+
+bool connect_relayed(mob::link_session& s, mob::route_report& report) {
+  for (int i = 0; i < 40; ++i) {  // the service's waiter registers a moment after it starts
+    if (s.connect(report, nullptr, 6000)) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("upgrade: the relay says what it sees of a connection", "[phone-upgrade]") {
+  dw::relay::server::options ro;
+  ro.key = kPhoneRelayKey;
+  ro.loopback_only = true;
+  auto rendezvous = dw::relay::server::start(ro);
+  REQUIRE(rendezvous);
+  auto l = dw::net::connect({"127.0.0.1", (*rendezvous)->port()}, 3000);
+  REQUIRE(l);
+  const auto seen = dw::relay::ask_seen(**l, 3000);
+  REQUIRE(seen);
+  CHECK(seen->address == "127.0.0.1");
+  CHECK(seen->port != 0);
+  CHECK(seen->port != (*rendezvous)->port());
+  CHECK((*rendezvous)->snapshot().asked == 1);
+}
+
+TEST_CASE("upgrade: a relayed phone moves to a direct path, and a read across the move finishes", "[phone-upgrade]") {
+  rig r(300000);
+  write_file(r.photos / "big.bin", std::string(8 * 1024 * 1024, 'b'));
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  mob::link_session s(relayed_only(r, *rendezvous));
+  // On mobile data with the setting off: it stays on the relay.
+  s.set_upgrade_policy(true, false);
+  mob::route_report report;
+  REQUIRE(connect_relayed(s, report));
+  REQUIRE(report.relayed);
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
+  REQUIRE(s.connect(report));
+  CHECK(report.relayed);
+  CHECK_FALSE(report.upgraded);
+  CHECK(r.srv->stats().punched == 0);
+  // A read on the relayed link, and the setting switched on half way through it.
+  std::string got;
+  bool switched = false;
+  REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "big.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    got.append(reinterpret_cast<const char*>(b.data()), b.size());
+    if (!switched && got.size() > 1024 * 1024) {
+      switched = true;
+      s.set_upgrade_policy(true, true);
+      // Wait for the move while this read still holds the relayed client.
+      for (int i = 0; i < 120; ++i) {
+        mob::route_report now;
+        if (s.connect(now) && now.upgraded) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    }
+    return true;
+  }, nullptr, false));
+  CHECK(got.size() == 8u * 1024 * 1024);
+  CHECK(got == std::string(8 * 1024 * 1024, 'b'));
+  REQUIRE(s.connect(report));
+  CHECK(report.upgraded);
+  CHECK_FALSE(report.relayed);
+  CHECK(r.srv->stats().punched >= 1);
+  // Later reads go direct.
+  std::string again;
+  REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    again.append(reinterpret_cast<const char*>(b.data()), b.size());
+    return true;
+  }, nullptr, false));
+  CHECK(again == std::string(70000, 'p'));
+}
+
+TEST_CASE("upgrade: nothing is tried on a direct route, and Forget ends a try at once", "[phone-upgrade]") {
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  mob::service_config direct = r.config();
+  direct.relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  direct.upgrade = true;
+  direct.loopback_only = true;
+  mob::link_session d(direct);
+  mob::route_report report;
+  REQUIRE(d.connect(report));
+  CHECK_FALSE(report.relayed);
+  CHECK_FALSE(d.upgrade_now_for_test());
+  // A relayed one with the try running: Forget does not wait out the punch.
+  auto s = std::make_unique<mob::link_session>(relayed_only(r, *rendezvous));
+  REQUIRE(connect_relayed(*s, report));
+  const auto t0 = std::chrono::steady_clock::now();
+  s->shut_down();
+  s.reset();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+}
+
+TEST_CASE("upgrade: relayed and direct throughput, alternated", "[.phone-upgrade-bench]") {
+  rig r;
+  constexpr std::size_t kBytes = 64u * 1024 * 1024;
+  write_file(r.photos / "bench.bin", std::string(kBytes, 'x'));
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const auto read_all = [&](mob::link_session& s) {
+    std::size_t n = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "bench.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+      n += b.size();
+      return true;
+    }, nullptr, true));
+    REQUIRE(n == kBytes);
+    return static_cast<double>(kBytes) / 1e6 / std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  };
+  for (int run = 0; run < 3; ++run) {
+    mob::service_config c = relayed_only(r, *rendezvous);
+    mob::link_session relayed(c);
+    relayed.set_upgrade_policy(true, false);  // held on the relay
+    mob::route_report report;
+    REQUIRE(connect_relayed(relayed, report));
+    REQUIRE(report.relayed);
+    const double via_relay = read_all(relayed);
+    mob::link_session moved(c);
+    REQUIRE(connect_relayed(moved, report));
+    for (int i = 0; i < 100 && !report.upgraded; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      REQUIRE(moved.connect(report));
+    }
+    REQUIRE(report.upgraded);
+    const double direct = read_all(moved);
+    std::printf("{\"case\":\"phone_upgrade\",\"run\":%d,\"relay_MBps\":%.0f,\"direct_MBps\":%.0f}\n", run, via_relay, direct);
+  }
+}
+
+TEST_CASE("file mode: library.json and no catalogue the phone can verify is file mode, not a failure",
+          "[mobile-link][mobile-files]") {
+  SECTION("no current.json") {
+    rig r(300000, "Photos", false);
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    const auto plan = mob::check_catalogue(s, r.sync_config());
+    CHECK(plan.outcome == mob::sync_outcome::no_catalogue);
+    CHECK(plan.library_root == "c2c2c2c2c2c2c2c2");
+  }
+  SECTION("a current.json signed by a key this phone did not pin is refused, not file mode (§11.3)") {
+    rig r(300000, "Photos", false);
+    auto [other_pub, other_secret] = catalog::make_keypair();
+    (void)other_pub;
+    r.pub.publish(1, r.payload, &other_secret);
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::rejected);
+  }
+  SECTION("another library's library.json is not this library: no file mode") {
+    rig r(300000, "Photos", false);
+    write_file(r.catalogue_home / ".mediaviewer" / "library.json", "{\"format\":1,\"library_id\":\"someone-else\"}");
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::unreachable);
+  }
+  SECTION("a signed catalogue later: the next check offers it, as for any library") {
+    rig r(300000, "Photos", false);
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    REQUIRE(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::no_catalogue);
+    r.pub.publish(1, r.payload);
+    CHECK(mob::check_catalogue(s, r.sync_config()).outcome == mob::sync_outcome::copy_available);
+  }
+}
+
+TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a file's bytes",
+          "[mobile-link][mobile-files]") {
+  rig r(300000, "Photos", false);
+  write_file(r.photos / "Trip" / "IMG_0001.JPG", std::string(5000, 'j'));
+  write_file(r.photos / "Trip" / "clip.MOV", std::string(100, 'm'));
+  write_file(r.photos / "Trip" / "notes.txt", "no");
+  write_file(r.photos / "Trip" / ".hidden.jpg", "no");
+  write_file(r.photos / "Trip" / "song.mp3", "no");
+  fs::create_directories(r.photos / "Trip" / "Day 2");
+  r.pair_now();
+  const auto cfg = r.sync_config();
+  const auto service = r.config();
+  const std::string cache = (r.dir.root / "thumbs").string();
+  mv_mobile_link* l = open_link(cache, cfg, service);
+  REQUIRE(l);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  mv_sync_report sync{};
+  CHECK(mv_sync_check(l, &sync) == MV_LINK_NO_CATALOGUE);
+  CHECK(mv_sync_copy(l, nullptr, nullptr, nullptr, nullptr, &sync) == MV_LINK_NO_CATALOGUE);
+  mv_catalogue_info info{};
+  REQUIRE(mv_catalogue_read(l, &info) == MV_LINK_OK);
+  CHECK(info.present == 0);  // nothing installed
+
+  std::vector<std::pair<std::string, std::string>> roots;
+  REQUIRE(mv_files_roots(l, [](void* ctx, const char* id, const char* label) {
+            static_cast<std::vector<std::pair<std::string, std::string>>*>(ctx)->emplace_back(id, label);
+          }, &roots) == MV_LINK_OK);
+  REQUIRE(roots.size() == 1);  // the catalogue's own folder is not one to browse
+  CHECK(roots[0].first == "a1a1a1a1a1a1a1a1");
+  CHECK(roots[0].second == "Photos");
+
+  struct seen {
+    std::string name;
+    std::uint64_t size;
+    int dir;
+    int kind;
+  };
+  std::vector<seen> entries;
+  const mv_file_entry_fn collect_entries = [](void* ctx, const mv_file_entry* e) {
+    static_cast<std::vector<seen>*>(ctx)->push_back({e->name, e->size, e->dir, e->kind});
+  };
+  REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "Trip", collect_entries, &entries) == MV_LINK_OK);
+  std::sort(entries.begin(), entries.end(), [](const seen& a, const seen& b) { return a.name < b.name; });
+  REQUIRE(entries.size() == 3);
+  CHECK((entries[0].name == "Day 2" && entries[0].dir == 1 && entries[0].kind == -1));
+  CHECK((entries[1].name == "IMG_0001.JPG" && entries[1].size == 5000 && entries[1].kind == 0));
+  CHECK((entries[2].name == "clip.MOV" && entries[2].kind == 2));
+
+  entries.clear();
+  REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "", collect_entries, &entries) == MV_LINK_OK);
+  CHECK(entries.size() == 2);  // "2024" and "Trip"
+  CHECK(mv_files_list(l, "a1a1a1a1a1a1a1a1", "../x", collect_entries, &entries) == MV_LINK_INVALID);
+
+  std::string got;
+  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+    return 1;
+  };
+  REQUIRE(mv_files_read(l, "a1a1a1a1a1a1a1a1", "Trip/IMG_0001.JPG", 100, 50, 0, nullptr, collect, &got) == MV_LINK_OK);
+  CHECK(got == std::string(50, 'j'));
+  CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "Trip/gone.jpg", 0, 10, 0, nullptr, collect, &got) == MV_LINK_NOT_FOUND);
+  CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "", 0, 10, 0, nullptr, collect, &got) == MV_LINK_INVALID);
+  mv_link_close(l);
+}
+
+TEST_CASE("file mode: what a folder shows, by the D5 table", "[mobile-files]") {
+  using mob::files::kind;
+  CHECK(mob::files::kind_of("a.JPG") == kind::photo);
+  CHECK(mob::files::kind_of("a.heic") == kind::photo);
+  CHECK(mob::files::kind_of("a.CR3") == kind::raw);
+  CHECK(mob::files::kind_of("a.mov") == kind::clip);
+  CHECK(mob::files::kind_of("a.mp3") == kind::none);
+  CHECK(mob::files::kind_of("a.pdf") == kind::none);
+  CHECK(mob::files::kind_of("README") == kind::none);
+  const std::vector<dw::serve::list_entry> listing{
+      {"b.jpg", 1, 2, false}, {".mediaviewer", 0, 0, true}, {"Sub", 0, 0, true}, {"x.txt", 1, 1, false}, {".a.jpg", 1, 1, false}};
+  const auto out = mob::files::shown(listing);
+  REQUIRE(out.size() == 2);
+  CHECK((out[0].name == "b.jpg" && out[0].k == kind::photo && !out[0].dir));
+  CHECK((out[1].name == "Sub" && out[1].dir));
+}
+
+TEST_CASE("file mode: the fields are the desktop's, in its why-order", "[mobile-files]") {
+  using mob::files::tag;
+  CHECK(mob::files::camera_line("Canon", "Canon EOS R5") == "Canon EOS R5");
+  CHECK(mob::files::camera_line("NIKON CORPORATION", "NIKON Z 6") == "NIKON CORPORATION NIKON Z 6");
+  CHECK(mob::files::camera_line("Apple ", "iPhone 15 Pro ") == "Apple iPhone 15 Pro");
+  CHECK(mob::files::camera_line("", "X100V") == "X100V");
+  CHECK(mob::files::camera_line("FUJIFILM", "") == "FUJIFILM");
+
+  const std::vector<tag> tags{{"Exif.Image.Make", "Canon"},
+                              {"Exif.Image.Software", "Adobe Lightroom"},
+                              {"Xmp.dc.title", "Lisbon at dusk"},
+                              {"Iptc.Application2.Caption", "Tram 28 by the cathedral"},
+                              {"Xmp.dc.subject", "Portugal, trams, Canon"},
+                              {"Iptc.Application2.Keywords", "Alfama"},
+                              {"Exif.Image.Artist", "Ana Sá"},
+                              {"Exif.Image.ImageDescription", "OLYMPUS DIGITAL CAMERA"}};
+  const auto fields = mob::files::fields_of("Canon", "Canon EOS R5", "RF24-70mm F2.8 L IS USM", "", tags);
+  // "Canon" (the make, and the keyword) is already inside the camera line, and the placeholder
+  // makes no field.
+  const std::vector<std::string> want{"Canon EOS R5", "RF24-70mm F2.8 L IS USM", "Adobe Lightroom", "Lisbon at dusk",
+                                      "Tram 28 by the cathedral", "Portugal", "trams", "Alfama", "Ana Sá"};
+  CHECK(fields == want);
+}
+
+TEST_CASE("file mode: names then tags, case- and accent-insensitive, with the why", "[mobile-files]") {
+  mob::files::index idx;
+  idx.set_names({"IMG_0001.JPG", "Crème brûlée.jpg", "r5-test.jpg", "IMG_0002.JPG", "IMG_0003.HEIC"});
+  const std::vector<std::string> canon{"Canon EOS R5", "Ana Sá"};
+  const std::vector<std::string> iphone{"Apple iPhone 15 Pro", "Portugália"};
+  const std::vector<std::string> chatgpt{"ChatGPT"};
+  idx.set_fields(0, canon);
+  idx.set_fields(2, canon);
+  idx.set_fields(3, iphone);
+  idx.set_fields(4, chatgpt);
+  idx.set_fields(99, chatgpt);  // a listing replaced meanwhile: ignored
+  CHECK(idx.count() == 5);
+  CHECK(idx.tagged() == 4);
+
+  // A name match first (no why), then a tag match on a file not already matched by name.
+  CHECK(hits_of(idx.match("R5")) == hit_list{{2, ""}, {0, "Canon EOS R5"}});
+  CHECK(hits_of(idx.match("CREME BRULEE")) == hit_list{{1, ""}});
+  CHECK(hits_of(idx.match("  crème ")) == hit_list{{1, ""}});
+  CHECK(hits_of(idx.match("portugalia")) == hit_list{{3, "Portugália"}});
+  CHECK(hits_of(idx.match("PORTUGÁLIA")) == hit_list{{3, "Portugália"}});
+  // Every word must be found; the why is the field the first word matched in.
+  CHECK(hits_of(idx.match("sa canon")) == hit_list{{0, "Ana Sá"}, {2, "Ana Sá"}});
+  CHECK(hits_of(idx.match("canon iphone")).empty());
+  CHECK(hits_of(idx.match("chatgpt")) == hit_list{{4, "ChatGPT"}});
+  // One folded letter matches names only: as a tag it would light up every camera make.
+  CHECK(hits_of(idx.match("c")) == hit_list{{1, ""}, {4, ""}});
+  CHECK(idx.match("   ").empty());
+  idx.set_names({"a.jpg"});
+  CHECK(idx.tagged() == 0);
+  CHECK(idx.match("canon").empty());
+}
+
+TEST_CASE("file mode: the fields and the index through the C ABI", "[mobile-files]") {
+  const mv_file_tag tags[] = {{"Xmp.dc.subject", "Lisboa, Tram"}, {"Exif.Image.Software", nullptr}};
+  std::vector<std::string> fields;
+  REQUIRE(mv_files_fields("SONY", "ILCE-7M4", nullptr, "a comment", tags, 2,
+                          [](void* ctx, const char* t) { static_cast<std::vector<std::string>*>(ctx)->push_back(t); },
+                          &fields) == MV_LINK_OK);
+  CHECK(fields == std::vector<std::string>{"SONY ILCE-7M4", "a comment", "Lisboa", "Tram"});
+
+  mv_file_index* idx = mv_file_index_new();
+  REQUIRE(idx);
+  const char* names[] = {"DSC0001.ARW", "DSC0002.ARW"};
+  REQUIRE(mv_file_index_names(idx, names, 2) == MV_LINK_OK);
+  const char* f[] = {"SONY ILCE-7M4", "Lisboa"};
+  REQUIRE(mv_file_index_fields(idx, 1, f, 2) == MV_LINK_OK);
+  std::size_t tagged = 0, count = 0;
+  REQUIRE(mv_file_index_counts(idx, &tagged, &count) == MV_LINK_OK);
+  CHECK((tagged == 1 && count == 2));
+  hit_list got;
+  REQUIRE(mv_file_index_match(idx, "lisbóa", [](void* ctx, size_t i, const char* why) {
+            static_cast<hit_list*>(ctx)->emplace_back(i, why ? why : "");
+          }, &got) == MV_LINK_OK);
+  CHECK(got == hit_list{{1, "Lisboa"}});
+  mv_file_index_free(idx);
+}
+
+namespace {
+
+// A NAS in memory: two named folders, files by "root/rel", and a read that fails as told.
+class scripted_remote final : public mob::remote_file {
+ public:
+  std::map<std::string, std::string> files;
+  std::map<std::string, mv::status> failing;  // "root/rel" -> the read's error
+
+  mv::result<std::vector<dw::serve::root_info>> roots() override {
+    return std::vector<dw::serve::root_info>{{"a1", "Photos"}, {"c2", "Catalogue"}};
+  }
+  mv::result<std::vector<dw::serve::list_entry>> list(const std::string&, const std::string&) override {
+    return mv::err(mv::status::not_found);
+  }
+  mv::result<dw::serve::stat_info> stat(const std::string&, const std::string&) override {
+    return mv::err(mv::status::not_found);
+  }
+  mv::expected read_range(const std::string& root, const std::string& rel, std::uint64_t at, std::uint64_t length,
+                          const mob::byte_sink& sink, const mob::cancel_flag*, bool) override {
+    const std::string key = root + "/" + rel;
+    if (auto f = failing.find(key); f != failing.end()) return mv::err(f->second);
+    auto it = files.find(key);
+    if (it == files.end()) return mv::err(mv::status::not_found);
+    const std::string& text = it->second;
+    if (at >= text.size()) return {};
+    const auto n = std::min<std::uint64_t>(length, text.size() - at);
+    if (!sink(at, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()) + at, n))) {
+      return mv::err(mv::status::cancelled);
+    }
+    return {};
+  }
+};
+
+}  // namespace
+
+TEST_CASE("file mode is never a guess: a folder that did not answer is unreachable", "[mobile-files]") {
+  REQUIRE(sodium_init() >= 0);
+  scratch dir;
+  mob::sync_config cfg;
+  cfg.library_dir = (dir.root / "phone").string();
+  cfg.library_id = "lib-1";
+  scripted_remote nas;
+  nas.files["c2/library.json"] = "{\"format\":1,\"library_id\":\"lib-1\"}";
+  SECTION("every folder answered, none has a catalogue: file mode") {
+    const auto plan = mob::check_catalogue(nas, cfg);
+    CHECK(plan.outcome == mob::sync_outcome::no_catalogue);
+    CHECK(plan.library_root == "c2");
+  }
+  SECTION("one folder's current.json read timed out: unreachable, ask again later") {
+    nas.failing["a1/current.json"] = mv::status::timeout;
+    CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::unreachable);
+  }
+  SECTION("the link dropped on the catalogue's own folder: unreachable") {
+    nas.failing["c2/current.json"] = mv::status::io;
+    CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::unreachable);
+  }
+  SECTION("a current.json that is not one: refused") {
+    nas.files["c2/current.json"] = "not signed";
+    CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::rejected);
+  }
 }

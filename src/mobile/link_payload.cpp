@@ -6,8 +6,8 @@
 
 #include <vector>
 
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/transfer.h"
+#include "wire/pair_check.h"
+#include "wire/keys.h"
 #include "core/json.h"
 #include "mobile/link.h"
 
@@ -100,6 +100,17 @@ result<pair_payload> parse_pair_payload(std::string_view text) {
   p.public_name = *pub;
   p.code = *code;
   p.expires = *expires;
+  if (const json::value* g = doc->find("grant"); g && g->k == json::kind::object) {
+    const auto for_s = g->integer("for_s");
+    if (for_s && *for_s > 0 && *for_s <= 365 * 24 * 3600) p.grant_for_s = *for_s;
+    p.grant_scoped = g->boolean("scoped") == true;
+  }
+  // An address that does not parse is left out, never a reason to refuse the
+  // code: the direct routes still work.
+  if (const json::value* r = doc->find("relay"); r && r->k == json::kind::object) {
+    const std::string* address = r->str("address");
+    if (text_ok(address, kMaxAddress, false) && !address->empty() && address_ok(*address)) p.relay = *address;
+  }
   p.fingerprint = driftwire::pairing_check(p.library_id, p.publisher_key, p.identity, p.access_key);
   return p;
 }

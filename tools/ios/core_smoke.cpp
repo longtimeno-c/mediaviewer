@@ -28,10 +28,10 @@
 
 #include "addons/ai/engine.h"
 #include "addons/driftwire/engine.h"
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 #include "addons/driftwire/power.h"
 #include "addons/driftwire/presence.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 #include "infer/models.h"
 #include "infer/ort.h"
 

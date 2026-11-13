@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 
 namespace mv::driftwire {
 

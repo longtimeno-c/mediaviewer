@@ -43,6 +43,13 @@ Things to try:
   state. Nothing is uploaded anywhere: the copies stay on this iPhone, inside the app, and "Forget the
   sample library" removes them. With a real library the folder is on the person's own NAS, and only that
   NAS receives the photos.
+- Guest access: a library's owner can give a phone access for a limited time. To see it, forget
+  the sample library in Settings, then enter the code GUEST instead of SAMPLE (or open
+  mediaviewer://sample-guest). The confirm screen says "Guest access for 10 minutes", and Settings
+  shows "Access until …". When the ten minutes are up (with the app open, or the next time it is
+  opened) the app says the access has ended, removes the library's copy from the phone, and offers
+  "Try again" rather than a new code; nothing is copied again. With a real NAS the owner can then
+  extend it; here, forget the library in Settings and enter GUEST again.
 
 About the sample library: its photos and clips come from Wikimedia Commons and are CC0 or in the
 public domain. It is read from a GitHub release of this app's open-source repository, over HTTPS,

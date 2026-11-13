@@ -10,6 +10,8 @@ public enum LinkServices {
     public let clips: LinkClips
     public let library: InterimLibrary
     public let backup: LinkBackup
+    /// File mode: the library and its search when there is no catalogue yet.
+    public var files: LinkFiles { images.files }
   }
 
   public static func make() -> Bundle {

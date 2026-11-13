@@ -10,7 +10,7 @@
 #include <set>
 #include <thread>
 
-#include "addons/ai/sha256.h"
+#include "catalogue/sha256.h"
 
 namespace mv::ai {
 namespace {

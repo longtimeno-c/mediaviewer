@@ -167,7 +167,10 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Unit tests
-        timeout-minutes: 20
+        timeout-minutes: 30
+        # By 2026-11-13 main's macOS core tests took 15.0 of 20 and #668 passed
+        # all 2128 at 20:00 (driftwire resume 61 s, privacy 40 s; no test hung),
+        # so they get 30, inside the job's 240.
         # A hosted macOS runner has no audio output device, so the audio clock
         # never advances: "plays 0.6 s, then pauses" stays at the seek point. The
         # one case that measures real playback time is left to a Mac with audio.
@@ -278,6 +281,7 @@ jobs:
       # the Homebrew tap's formula (ruby checks and evaluates it).
       - run: python3 tools/package/test_driftwire_windows.py -v
       - run: python3 tools/package/test_homebrew_formula.py -v
+      - run: python3 tools/package/test_driftwire_spk.py -v  # the Synology package (docs/plans/nas-setup.md)
 
   # ---------------------------------------------------------------------------
   # Milestone G (docs/design/18): the shared Import engine, add-on host and verified

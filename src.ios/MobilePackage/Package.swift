@@ -20,6 +20,7 @@ let simTriplet = simCore + "/vcpkg_installed/arm64-ios-simulator/lib"
 let coreLink: [String] = [
   simCore + "/libmv_mobile_test_fixture.a", simCore + "/libmv_mobile_search.a", simCore + "/libmv_ai_engine.a",
   simCore + "/libmv_infer.a", simCore + "/libmv_model_fetch.a", simCore + "/libmv_driftwire_engine.a",
+  simCore + "/libmv_wire.a", simCore + "/libmv_catalogue.a", simCore + "/libmv_sha256.a",
   simTriplet + "/libsqlite3.a", simTriplet + "/libsodium.a", simTriplet + "/libblake3.a",
   simCore + "/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
   "-lc++", "-framework", "CoreML", "-framework", "Network", "-framework", "Security", "-framework", "SystemConfiguration",

@@ -39,6 +39,9 @@ typedef enum mv_link_status {
   MV_LINK_INTERNAL = 17,
   MV_LINK_NO_FOLDER = 18,     /* the service has no folder named for this file's share */
   MV_LINK_WAITING = 19,       /* the copy stopped because bytes may not move now (mobile data) */
+  MV_LINK_ACCESS_ENDED = 20,  /* this phone's time-limited access is over (not a removal: it may be extended) */
+  MV_LINK_NO_CATALOGUE = 21,  /* (20 is MV_LINK_ACCESS_ENDED, #667) sync: a named folder's library.json names this library, every folder answered,
+                                 and none holds a current.json: open it in file mode (see below) */
 } mv_link_status;
 
 /* Return 0 to stop the read. */
@@ -58,12 +61,19 @@ typedef struct mv_pair_info {
   char code[256];
   int64_t expires;
   char fingerprint[32]; /* compare with the desktop's */
-  int32_t sample;       /* 1: the sample library's code (no service, never expires; see below) */
+  int32_t sample;       /* 1: the sample library's code, or its guest code GUEST (no service; see below) */
+  /* A guest code: the access it gives, in seconds from when it is redeemed (0: unlimited), and
+   * whether it is to some folders only. Shown before the person confirms. */
+  int64_t grant_for_s;
+  int32_t grant_scoped;
+  /* The person's own relay, "host:port", tried after the direct routes; empty for none (an older
+   * code). Keep it with the pairing and pass it to mv_link_config.relay. */
+  char relay[256];
 } mv_pair_info;
 
 typedef struct mv_route_failure {
   char address[256];
-  int32_t problem; /* 0 unreachable, 1 wrong service, 2 not paired, 3 too old, 4 busy, 5 bad code */
+  int32_t problem; /* 0 unreachable, 1 wrong service, 2 not paired, 3 too old, 4 busy, 5 bad code, 6 access ended */
 } mv_route_failure;
 
 typedef struct mv_route_report {
@@ -71,6 +81,8 @@ typedef struct mv_route_report {
   int32_t over_internet;
   int32_t failure_count;
   mv_route_failure failures[4];
+  int32_t relayed;  /* 1: through the person's own relay (over_internet is 1 too) */
+  int32_t upgraded; /* 1: moved from the relay to a direct path it punched (address is "direct") */
 } mv_route_report;
 
 typedef struct mv_cancel mv_cancel;
@@ -127,10 +139,23 @@ typedef struct mv_link_config {
   const char* static_base;
   mv_fetch_fn fetch;
   void* fetch_ctx; /* outlives the link */
+  const char* relay; /* the person's own relay from the pairing, or NULL / "" for none */
 } mv_link_config;
 
 mv_mobile_link* mv_link_open(const mv_link_config* config);
 void mv_link_close(mv_mobile_link* link);
+
+/* The live connection's limit, as the service gave it: 1 when this phone's access is limited
+ * (`expires_unix` its end on the service's clock, 0 none; `scoped` 1 for some folders only), 0 when
+ * it is unlimited, -1 when there is no live connection (nothing is known: keep what you had).
+ * Never blocks. */
+int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
+
+/* A direct path after the relay (docs/plans/nas-relay.md 9): once the link is through the person's
+ * own relay, the core tries to punch a direct one and moves to it. On Wi-Fi always; on mobile data
+ * only when `allowed_on_cellular` (Settings, "Faster direct connection on mobile data", default on).
+ * Call it at open and whenever the network or the setting changes. Never blocks. */
+void mv_link_set_upgrade(mv_mobile_link* link, int32_t on_cellular, int32_t allowed_on_cellular);
 
 /* BLOCKS. Keeps a live connection (the report says how it was reached); races the routes only when
  * there is none. Never cuts reads in flight. The sample library: its folder's host answered with a
@@ -180,6 +205,29 @@ int32_t mv_catalogue_read(mv_mobile_link* link, mv_catalogue_info* out);
 /* Removes the library's files; forget the keys separately. */
 void mv_library_remove(const char* library_dir);
 
+/* ---- the sound text tower (docs/plans/mobile.md 9, "Sound search"; sound_tower.h) -------
+ * The catalogue carries every clip's sound vectors; the text half that puts a typed query in
+ * their space is one pinned download, kept in <library_dir>/sound/ (so Forget removes it).
+ * Every file is hashed against the pin in the app before it is kept. */
+
+/* The release it comes from, ending in '/'. */
+const char* mv_sound_base(void);
+/* Its size in all, for "the size first" (8.4). */
+uint64_t mv_sound_total_bytes(void);
+/* 1 when it is here and verified. Reads a small file. */
+int32_t mv_sound_ready(const char* library_dir);
+/* Bytes it holds on the phone, a partial download included: part of the cache size shown. */
+uint64_t mv_sound_bytes(const char* library_dir);
+/* 1 when this generation's clips have sounds the pinned tower answers (one indexed probe). */
+int32_t mv_sound_wanted(const char* generation_dir);
+/* BLOCKS. Downloads what is missing through `fetch`, resuming, and verifies it. base_url NULL:
+ * mv_sound_base(). `allowed` (NULL: always) is asked before each file and with each chunk.
+ * Returns MV_LINK_OK (ready), MV_LINK_WAITING, MV_LINK_CANCELLED, MV_LINK_UNREACHABLE,
+ * MV_LINK_NOT_FOUND (a pinned file is gone from the release), MV_LINK_REJECTED (a file was not
+ * the pinned one and is deleted), MV_LINK_NO_SPACE or MV_LINK_INTERNAL. */
+int32_t mv_sound_fetch(const char* library_dir, const char* base_url, mv_fetch_fn fetch, void* fetch_ctx, mv_cancel* cancel,
+                       mv_sync_allowed_fn allowed, mv_sync_progress_fn progress, void* ctx);
+
 /* ---- pictures and files, by assets.id ------------------------------------ */
 
 typedef void (*mv_bytes_fn)(void* ctx, const uint8_t* data, size_t size);
@@ -212,6 +260,54 @@ int32_t mv_moments_get(mv_mobile_link* link, int64_t asset, mv_moment_fn fn, voi
 /* Until the search session's library store lands: every photo and clip, newest first. */
 typedef void (*mv_listed_asset_fn)(void* ctx, int64_t asset, int32_t kind, int64_t taken_at, int64_t duration_ms, const char* name);
 int32_t mv_assets_list(mv_mobile_link* link, mv_listed_asset_fn fn, void* ctx);
+
+/* ---- file mode (docs/plans/phone-in-the-app.md 4, landing with #668) ---------
+ * A library with no catalogue yet is the NAS's named folders. Paths are a service
+ * root id plus a '/'-separated path under it ("" for its top). Never logged. */
+
+typedef void (*mv_root_fn)(void* ctx, const char* id, const char* label);
+/* BLOCKS. The named folders, without the one that holds the catalogue (`.mediaviewer`). */
+int32_t mv_files_roots(mv_mobile_link* link, mv_root_fn fn, void* ctx);
+
+typedef struct mv_file_entry {
+  const char* name;
+  uint64_t size;
+  int64_t mtime;
+  int32_t dir;  /* 1: a folder */
+  int32_t kind; /* files: 0 photo, 1 RAW, 2 clip (the D5 table); -1 for a folder */
+} mv_file_entry;
+typedef void (*mv_file_entry_fn)(void* ctx, const mv_file_entry* entry);
+/* BLOCKS. One folder: its folders and the files this phone shows, hidden names left out, in the
+ * service's order. MV_LINK_NOT_FOUND, MV_LINK_DENIED, MV_LINK_UNREACHABLE. */
+int32_t mv_files_list(mv_mobile_link* link, const char* root, const char* rel, mv_file_entry_fn fn, void* ctx);
+/* BLOCKS. A range of one file, as mv_file_read. */
+int32_t mv_files_read(mv_mobile_link* link, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
+                      mv_cancel* cancel, mv_sink_fn sink, void* ctx);
+
+/* File search: the desktop's fields, fold and match (docs/design/16 "File search", 06 "Search text").
+ * Nothing here blocks. */
+typedef struct mv_file_tag {
+  const char* raw_tag; /* as Exiv2 names it: "Exif.Image.Software", "Iptc.Application2.Keywords", "Xmp.dc.subject" */
+  const char* value;   /* a list as "a, b" */
+} mv_file_tag;
+typedef void (*mv_text_fn)(void* ctx, const char* text);
+/* A file's search fields in the desktop's why-order, each handed to `fn`. Any string may be NULL. */
+int32_t mv_files_fields(const char* make, const char* model, const char* lens, const char* comment, const mv_file_tag* tags,
+                        size_t count, mv_text_fn fn, void* ctx);
+
+/* The folder on screen. Thread-safe. */
+typedef struct mv_file_index mv_file_index;
+mv_file_index* mv_file_index_new(void);
+void mv_file_index_free(mv_file_index* index);
+/* A new listing; every file's fields are forgotten. */
+int32_t mv_file_index_names(mv_file_index* index, const char* const* names, size_t count);
+int32_t mv_file_index_fields(mv_file_index* index, size_t i, const char* const* fields, size_t count);
+/* `why` is NULL for a name match, else the field the first word matched in ("Canon EOS R5"). Names
+ * first, in listing order, then tags. */
+typedef void (*mv_file_hit_fn)(void* ctx, size_t index, const char* why);
+int32_t mv_file_index_match(const mv_file_index* index, const char* typed, mv_file_hit_fn fn, void* ctx);
+/* How many files have their fields, of how many. */
+int32_t mv_file_index_counts(const mv_file_index* index, size_t* tagged, size_t* count);
 
 /* ---- phone backup, release 1.1 (docs/plans/mobile.md 10b) ---------------------
  * The phone's photos and videos to a backup folder on the NAS, while the app is open.

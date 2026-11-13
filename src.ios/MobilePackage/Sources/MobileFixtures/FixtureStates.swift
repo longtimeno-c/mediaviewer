@@ -14,6 +14,7 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case welcome
   case scan
   case connectConfirm = "connect.confirm"
+  case connectConfirmGuest = "connect.confirmGuest"
   case connectNotMatched = "connect.notMatched"
   case connectIdentifyFails = "connect.identifyFails"
   case connectWorking = "connect.working"
@@ -39,6 +40,7 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryServiceTooOld = "library.serviceTooOld"
   case libraryPublisherChanged = "library.publisherChanged"
   case libraryRevoked = "library.revoked"
+  case libraryAccessEnded = "library.accessEnded"
   case libraryHandedOver = "library.handedOver"
   case settingsLight = "settings.light"
   case libraryEmpty = "library.empty"
@@ -152,6 +154,9 @@ final class FixtureRun {
       snapshot = .with(.publisherChanged)
     case .libraryRevoked:
       snapshot = .with(.deviceRevoked)
+    case .libraryAccessEnded:
+      snapshot = .with(.accessEnded)
+      snapshot.accessUntil = Date(timeIntervalSince1970: 1_794_000_000)
     case .libraryHandedOver:
       let base = FixtureWorld.connected()
       let raised = base.catalogue.map { CatalogueInfo(source: $0.source, updatedAt: $0.updatedAt, itemCount: $0.itemCount, epoch: 2) }
@@ -247,6 +252,7 @@ final class FixtureRun {
   func arrive() async {
     if state == .connectIdentifyFails { model.setStageForChecking(.connect(code: "fixture:identify-fails-once")); return }
     if state == .connectConfirm { model.setStageForChecking(.connect(code: "fixture:good")); return }
+    if state == .connectConfirmGuest { model.setStageForChecking(.connect(code: "fixture:guest")); return }
     if state == .connectNotMatched { model.setStageForChecking(.connect(code: "fixture:good", start: .notMatched)); return }
     if let code = Self.code(for: state) {
       let readsCode = state == .connectExpired || state == .connectNotReadable

@@ -11,9 +11,9 @@
 
 #include <sodium.h>
 
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/serve_wire.h"
-#include "addons/driftwire/wire.h"
+#include "wire/pair_check.h"
+#include "wire/serve_wire.h"
+#include "wire/wire.h"
 #include "core/json.h"
 
 namespace mv::mobile::sample {
@@ -71,13 +71,21 @@ bool is_code(std::string_view text) {
          (t.size() == kLink.size() + 1 && t.back() == '/' && same_ignoring_case(t.substr(0, kLink.size()), kLink));
 }
 
-pair_payload payload() {
+bool is_guest_code(std::string_view text) {
+  const std::string_view t = trimmed(text);
+  return same_ignoring_case(t, kGuestCode) || same_ignoring_case(t, kGuestLink) ||
+         (t.size() == kGuestLink.size() + 1 && t.back() == '/' &&
+          same_ignoring_case(t.substr(0, kGuestLink.size()), kGuestLink));
+}
+
+pair_payload payload(bool guest) {
   pair_payload p;
   p.library_id = std::string(kLibraryID);
   p.library_name = std::string(kLibraryName);
   (void)hex_key(kPublisherKey, p.publisher_key);  // a constant: checked by the tests
-  p.code = std::string(kCode);
+  p.code = std::string(guest ? kGuestCode : kCode);
   p.expires = 0;
+  if (guest) p.grant_for_s = kGuestSeconds;
   // No service: identity and access key stay zero, so the check code covers the
   // library and its publisher alone.
   p.fingerprint = driftwire::pairing_check(p.library_id, p.publisher_key, p.identity, p.access_key);

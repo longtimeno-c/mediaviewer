@@ -51,6 +51,7 @@ final class LinkHandle: @unchecked Sendable {
                 record.libraryID.withCString { id in
                   record.local.withCString { local in
                     record.publicName.withCString { pub in
+                      (record.relay ?? "").withCString { relay in
                       record.deviceName.withCString { name in
                         var c = mv_link_config()
                         c.library_dir = lib
@@ -58,6 +59,7 @@ final class LinkHandle: @unchecked Sendable {
                         c.library_id = id
                         c.local = local
                         c.public_name = pub
+                        c.relay = relay
                         c.device_name = name
                         c.identity = i.bindMemory(to: UInt8.self).baseAddress
                         c.access_key = a.bindMemory(to: UInt8.self).baseAddress
@@ -65,6 +67,7 @@ final class LinkHandle: @unchecked Sendable {
                         c.publisher_key = p.bindMemory(to: UInt8.self).baseAddress
                         c.thumb_cache_bytes = 2 << 30
                         return mv_link_open(&c).map { LinkHandle(raw: $0) }
+                      }
                       }
                     }
                   }
@@ -134,6 +137,23 @@ enum LinkFolders {
   static let thumbs = cache("thumbs")
   static let originals = cache("originals")
   static let clips = cache("clips")
+  /// File mode's tag cache and grid pictures (docs/plans/phone-in-the-app.md §4).
+  static let files = cache("files")
+
+  /// One library's file-mode tag cache.
+  static func fileFacts(for libraryID: String) -> URL {
+    files.appendingPathComponent(safeName(libraryID), isDirectory: true).appendingPathComponent("facts.json")
+  }
+
+  /// One library's file-mode grid pictures.
+  static func fileThumbs(for libraryID: String) -> URL {
+    files.appendingPathComponent(safeName(libraryID), isDirectory: true).appendingPathComponent("thumbs", isDirectory: true)
+  }
+
+  private static func safeName(_ libraryID: String) -> String {
+    let name = String(libraryID.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" })
+    return name.isEmpty ? "library" : name
+  }
 
   private static func cache(_ name: String) -> URL {
     FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent(name, isDirectory: true)
@@ -158,7 +178,7 @@ enum LinkFolders {
 
   /// Off the main thread only.
   static func prepare() {
-    for url in [library, thumbs, originals, clips] {
+    for url in [library, thumbs, originals, clips, files] {
       try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
                                                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
       var u = url

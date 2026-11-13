@@ -17,7 +17,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private let lock = NSLock()
   private var snapshot: ConnectionSnapshot
   private var continuations: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
-  private var handle: LinkHandle?
+  // Under `lock`, as every write of it is: the core is told the network and the setting at once.
+  private var handle: LinkHandle? { didSet { if let handle { Self.applyUpgrade(handle, mobileData: pathExpensive) } } }
   private var record: PairingRecord?
   // Until the first answer from the path monitor the network is treated as mobile data (§8.4).
   private var pathKnown = false
@@ -26,7 +27,24 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var routeEpoch = 0
   private var connectGeneration = 0
   private var forgotten = false
+  /// The local copy was dropped for an access that ended (dropLocalCopy); cleared by a connection that gets in.
+  private var localCopyDropped = false
+  /// Bumped whenever the library is removed (Forget, or a pairing over it): work begun for the
+  /// library before cannot touch the one after.
+  private var libraryEpoch = 0
+  /// The sample guest's end a connect is already scheduled for.
+  private var sampleEndScheduled: Double? = nil
+  /// File mode (docs/plans/phone-in-the-app.md §4): the last check found this library's folders but
+  /// no catalogue. Stamped on every snapshot with no catalogue, as the library's id is.
+  private var fileModeNow = false
   private var copyCancel: LinkCancel?
+  // Sound search's download (§9): its state as published, one run at a time, the person's say-so
+  // for mobile data (until the download ends), and its cancel for Forget.
+  private var soundState: SoundSearchState = .notNeeded
+  private var soundRunning = false
+  private var soundAgain = false  // asked while a run was going: run once more when it ends
+  private var soundOverMobileData = false
+  private var soundCancel: LinkCancel?
   // One first copy at a time: a new one (Copy over mobile data) waits for the old one's defer.
   private let oneCopy = OneAtATime()
   // Everything that writes into the library: Forget cancels it and waits before deleting.
@@ -47,7 +65,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private static let catalogueKey = "link.catalogue"
   private static let libraryKey = "link.libraryID"
   private static let sampleKey = "link.sample"
+  /// The last word was "your access ended": launch opens on the ended card, not a first copy.
+  private static let endedKey = "link.accessEnded"
   private static let nameKey = "link.libraryName"
+  private static let fileModeKey = "link.fileMode"
 
   /// The paired library's id as last published; "" with none or before the first publish. A plain
   /// stored value, cheap enough for launch.
@@ -60,7 +81,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     // What launch paints first comes from a stored value: no Keychain, no files on the main thread.
     let paired = defaults.bool(forKey: Self.pairedKey)
     var first = paired
-      ? ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false,
+      ? ConnectionSnapshot(hasLibrary: true, synology: defaults.bool(forKey: Self.endedKey) ? .accessEnded : .unreachable([]),
+                           macNearby: false,
                            catalogue: Self.catalogue(from: defaults.object(forKey: Self.catalogueKey) as? [String: Any]),
                            cacheBytes: 0)
       : .noLibrary
@@ -68,11 +90,17 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       first.libraryID = Self.storedLibraryID
       first.isSample = defaults.bool(forKey: Self.sampleKey)
       first.libraryName = defaults.string(forKey: Self.nameKey) ?? ""
+      first.fileMode = first.catalogue == nil && defaults.bool(forKey: Self.fileModeKey)
     }
+    fileModeNow = first.fileMode
     snapshot = first
     opened = Task.detached(priority: .userInitiated) { [weak self] in await self?.openStored() }
     monitor.pathUpdateHandler = { [weak self] path in self?.pathChanged(path) }
     monitor.start(queue: DispatchQueue(label: "mediaviewer.link.path"))
+    // Settings' "Faster direct connection on mobile data" reaches the core when it is switched.
+    NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
+      self?.settingsChanged()
+    }
     NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in
       guard let self else { return }
       Task { await self.retry() }  // keeps a live link; races only when there is none
@@ -196,6 +224,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       next.libraryID = next.hasLibrary ? (record?.libraryID ?? snapshot.libraryID) : ""
       next.isSample = next.hasLibrary && (record.map(\.isSample) ?? snapshot.isSample)
       next.libraryName = next.hasLibrary ? (record?.libraryName ?? snapshot.libraryName) : ""
+      next.soundSearch = next.hasLibrary ? soundState : .notNeeded
+      next.accessUntil = next.hasLibrary ? record?.accessUntil.map { Date(timeIntervalSince1970: $0) } : nil
+      // A catalogue ends file mode, and so does having no library.
+      if !next.hasLibrary || next.catalogue != nil { fileModeNow = false }
+      next.fileMode = fileModeNow
       snapshot = next
       return (next, Array(continuations.values))
     }
@@ -203,7 +236,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     defaults.set(value.hasLibrary, forKey: Self.pairedKey)
     defaults.set(value.libraryID, forKey: Self.libraryKey)
     defaults.set(value.isSample, forKey: Self.sampleKey)
+    defaults.set(value.hasLibrary && value.synology == .accessEnded, forKey: Self.endedKey)
     defaults.set(value.libraryName, forKey: Self.nameKey)
+    defaults.set(value.fileMode, forKey: Self.fileModeKey)
     if let info = value.catalogue {
       defaults.set(["updatedAt": info.updatedAt.timeIntervalSince1970, "itemCount": info.itemCount,
                     "epoch": NSNumber(value: info.epoch)], forKey: Self.catalogueKey)
@@ -221,6 +256,18 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   // MARK: The network
 
+  /// A direct path after the relay (docs/plans/nas-relay.md §9): on Wi-Fi always, on mobile data
+  /// as Settings says. The core enforces it; this only tells it. Never blocks.
+  private static func applyUpgrade(_ handle: LinkHandle, mobileData: Bool) {
+    mv_link_set_upgrade(handle.raw, mobileData ? 1 : 0, LinkPreferences.directOnMobileDataEnabled() ? 1 : 0)
+  }
+
+  private func settingsChanged() {
+    lock.withLock {
+      if let handle { Self.applyUpgrade(handle, mobileData: pathExpensive) }
+    }
+  }
+
   private func pathChanged(_ path: NWPath) {
     let signature = "\(path.status)|" + path.availableInterfaces.map { "\($0.type)-\($0.name)" }.joined(separator: ",")
     let (first, changed) = lock.withLock { () -> (Bool, Bool) in
@@ -228,6 +275,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       let changed = !first && signature != pathSignature
       pathKnown = true
       pathExpensive = path.isExpensive
+      if let handle { Self.applyUpgrade(handle, mobileData: path.isExpensive) }
       pathSignature = signature
       if changed { routeEpoch += 1 }
       return (first, changed)
@@ -249,7 +297,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       if status == 2 { throw PairingFailure.codeExpired }
       guard status == 0 else { throw PairingFailure.codeNotReadable }
       return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint),
-                             isSample: info.sample != 0)
+                             isSample: info.sample != 0,
+                             guestFor: info.grant_for_s > 0 ? TimeInterval(info.grant_for_s) : nil)
     }
   }
 
@@ -324,7 +373,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
                                fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
                                local: linkString(parsed.local), publicName: linkString(parsed.public_name),
                                identity: linkBytes(parsed.identity).hexString, accessKey: linkBytes(parsed.access_key).hexString,
-                               deviceName: deviceName)
+                               deviceName: deviceName, relay: linkString(parsed.relay))
     let handle: LinkHandle = try await onLinkQueue {
       guard record.save() else { throw PairingFailure.codeNotReadable }
       LinkFolders.prepare()  // again: a Forget removed them, with their backup exclusion
@@ -339,6 +388,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.record = record
       self.handle = handle
       self.forgotten = false
+      fileModeNow = false
       connectGeneration += 1  // the last library's connect, still running, publishes nothing
       writes.open(for: handle)  // with the handle, under the same lock
     }
@@ -359,9 +409,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     continuation.yield(.skipped(.mac))
     continuation.yield(.working(.synology))
     let probeDir = FileManager.default.temporaryDirectory.appendingPathComponent("sample-probe-\(UUID().uuidString)")
-    let probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
+    var probe = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
                               fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
                               local: "", publicName: "", identity: "", accessKey: "", deviceName: await deviceName(), sample: true)
+    // GUEST: the sample library as a guest, its time counted from now (§8.2's demo; no NAS).
+    if parsed.grant_for_s > 0 { probe.accessUntil = Date().timeIntervalSince1970 + Double(parsed.grant_for_s) }
     let (status, report) = await withLinkCancel { cancel in
       await onLinkQueue { () -> (Int32, mv_route_report) in
         defer { try? FileManager.default.removeItem(at: probeDir) }
@@ -400,6 +452,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       self.record = record
       self.handle = handle
       self.forgotten = false
+      fileModeNow = false
       connectGeneration += 1
       writes.open(for: handle)  // with the handle, under the same lock
     }
@@ -426,14 +479,41 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       if replacing { routeEpoch += 1 }
       return connectGeneration
     }
-    let (status, report) = await onLinkQueue {
+    // The sample library as a guest, past its end: no request to GitHub (the phone is its NAS).
+    let standInEnded = sampleGuestEnded()
+    let (fromLink, report, grant) = await onLinkQueue { () -> (Int32, mv_route_report, Double?) in
       var report = mv_route_report()
+      if standInEnded { return (Int32(MV_LINK_ACCESS_ENDED.rawValue), report, nil) }
       let status = replacing ? mv_link_reconnect(link.raw, nil, &report) : mv_link_connect(link.raw, nil, &report)
-      return (status, report)
+      var expires: Int64 = 0
+      var scoped: Int32 = 0
+      // -1: the live link closed meanwhile, so nothing is known and the stored end stands.
+      let known = status == 0 ? mv_link_grant(link.raw, &expires, &scoped) : -1
+      if known < 0 { return (status, report, Double.nan) }
+      return (status, report, known == 1 && expires > 0 ? Double(expires) : nil)
     }
     guard lock.withLock({ generation == connectGeneration && !forgotten }) else { return }  // a newer one is running
+    var answered = fromLink
+    // The sample library has no NAS to end a guest's time: in sample mode only, the phone stands
+    // in for it, and the end it recorded at pairing is the NAS's "expired" (owner 2026-11-12:
+    // every phone feature demoable in SAMPLE).
+    let sampleEnd = lock.withLock { record?.isSample == true ? record?.accessUntil : nil }
+    if sampleGuestEnded() { answered = Int32(MV_LINK_ACCESS_ENDED.rawValue) }
+    if let sampleEnd, answered == 0 { scheduleSampleEnd(at: sampleEnd) }
+    var status = answered
+    if status == 0, sampleEnd == nil, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
+    // §8.2: the NAS's "expired" shows the end and deletes the copy; the phone's own clock past
+    // the end the NAS gave only says so, and only when no route answered at all.
+    var unreachable = false
+    if case .unreachable = Self.state(answered, report) { unreachable = true }
+    let end = AccessEnd.decide(serviceSaidEnded: answered == Int32(MV_LINK_ACCESS_ENDED.rawValue),
+                               noRouteAnswered: answered != 0 && unreachable,
+                               storedEnd: lock.withLock { record?.accessUntil }, now: Date().timeIntervalSince1970,
+                               wasEnded: current.synology == .accessEnded)
+    if end.showEnded { status = Int32(MV_LINK_ACCESS_ENDED.rawValue) }
+    if end.dropLocalCopy { await dropLocalCopy(of: link) }
     let info = await catalogueNow(link: link)
-    let cache = Int64(mv_thumb_bytes_used(link.raw))
+    let cache = Self.cacheBytes(link)
     // Checked again as it publishes: a pairing during the read above makes this news stale.
     publish(from: link, generation: generation) {
       $0 = ConnectionSnapshot(hasLibrary: true, synology: Self.state(status, report), macNearby: false,
@@ -443,21 +523,116 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if status == 0, lock.withLock({ generation == connectGeneration && handle === link && !forgotten }) {
       work.run(priority: .utility) { [weak self] in await self?.quietSync(link) }
     }
+    // Sound search comes from the project's release, not the NAS: whatever the NAS said.
+    work.run(priority: .utility) { [weak self] in await self?.soundSync(link) }
+  }
+
+  /// What this library keeps on the phone: the JPEG-512 tiles and sound search's model.
+  private static func cacheBytes(_ link: LinkHandle) -> Int64 {
+    Int64(mv_thumb_bytes_used(link.raw)) + Int64(mv_sound_bytes(LinkFolders.library.path))
+  }
+
+  /// The sample guest's end (code GUEST) has come, on this phone's clock.
+  private func sampleGuestEnded() -> Bool {
+    lock.withLock {
+      AccessEnd.sampleGuestEnded(isSample: record?.isSample == true, accessUntil: record?.accessUntil,
+                                 now: Date().timeIntervalSince1970)
+    }
+  }
+
+  /// In sample-guest mode, a connect at the end itself, so the demo ends while it is watched, as a
+  /// NAS's watch would cut the session. One at a time; a Forget or a pairing makes it a no-op.
+  private func scheduleSampleEnd(at end: Double) {
+    let epoch = lock.withLock { () -> Int? in
+      guard sampleEndScheduled != end else { return nil }
+      sampleEndScheduled = end
+      return libraryEpoch
+    }
+    guard let epoch else { return }
+    Task { [weak self] in
+      let wait = max(0, end - Date().timeIntervalSince1970) + 1
+      try? await Task.sleep(for: .seconds(wait))
+      guard let self, self.lock.withLock({ self.libraryEpoch == epoch && !self.forgotten }) else { return }
+      await self.retry()
+    }
+  }
+
+  /// The service's word on this phone's time limit, kept with the pairing.
+  private func noteAccess(until end: Double?) {
+    let changed = lock.withLock { () -> Bool in
+      guard var r = record, r.accessUntil != end else { return false }
+      r.accessUntil = end
+      record = r
+      _ = r.save()
+      return true
+    }
+    if changed { publish { _ in } }
+    lock.withLock { localCopyDropped = false }
+  }
+
+  /// A time-limited phone whose access ended keeps nothing of the library but its pairing
+  /// (call C6): the catalogue, the tiles, the originals and the clips go, and an extension
+  /// fetches them again. Once per ending: a "Try again" that is still refused deletes nothing more.
+  private func dropLocalCopy(of expected: LinkHandle) async {
+    // Only for the library whose connection was refused, and only while it is still the one here:
+    // a Forget or a pairing meanwhile (libraryEpoch) leaves everything to that.
+    let started = lock.withLock { () -> (epoch: Int, id: String, cancel: LinkCancel?)? in
+      guard !localCopyDropped, !forgotten, let r = record, handle === expected else { return nil }
+      localCopyDropped = true
+      handle = nil
+      return (libraryEpoch, r.libraryID, copyCancel)
+    }
+    guard let started else { return }
+    writes.close()
+    started.cancel?.fire()
+    lock.withLock { soundCancel }?.fire()  // sound search's download writes into the library too
+    mv_link_shut_down(expected.raw)
+    await work.stopAndWait()
+    let reopened: LinkHandle? = await onLinkQueue {
+      // The pairing record is read and written on this queue too, so this is the library still
+      // stored, or nothing is touched.
+      guard let device = DeviceKey.loadOrMake(new: { mv_device_key_new($0, $1) }),
+            AccessEnd.dropIfStill(started.id, stored: { PairingRecord.load()?.libraryID }, remove: { Self.removeLibraryFiles() }),
+            let record = PairingRecord.load() else { return nil }
+      LinkFolders.prepare()
+      LinkFolders.keepOnlyThumbs(of: record.libraryID)
+      return LinkHandle.open(record: record, deviceKey: device, libraryDir: LinkFolders.library,
+                             cacheDir: LinkFolders.thumbs(for: record.libraryID))
+    }
+    let adopted = lock.withLock { () -> Bool in
+      guard let reopened, !forgotten, handle == nil, libraryEpoch == started.epoch else { return false }
+      handle = reopened
+      writes.open(for: reopened)
+      connectGeneration += 1  // a connect begun on the old handle publishes nothing
+      return true
+    }
+    guard adopted, let reopened else {
+      if let reopened { mv_link_shut_down(reopened.raw) }
+      return
+    }
+    work.reopen()
+    publish(from: reopened) {
+      $0 = ConnectionSnapshot(hasLibrary: true, synology: .accessEnded, macNearby: false, catalogue: nil, cacheBytes: 0)
+    }
   }
 
   /// A newer generation, on Wi-Fi only: the catalogue the person is using stays until it is ready.
+  /// In file mode the same check is how the first catalogue arrives (phone-in-the-app.md §4).
   private func quietSync(_ link: LinkHandle) async {
-    guard current.catalogue != nil, mayCopyQuietly else { return }
+    // The check is a few kilobytes and always allowed (§8.4): on mobile data too, so a library
+    // can learn it has a catalogue, or that it was refused. Only the copy waits for Wi-Fi.
+    guard current.catalogue != nil || current.fileMode, !sampleGuestEnded() else { return }
     let report = await onLinkQueue { () -> mv_sync_report in
       var report = mv_sync_report()
       _ = mv_sync_check(link.raw, &report)
       return report
     }
+    setFileMode(afterCheck: report.outcome, from: link)
     if report.outcome == 12 {  // not signed by the key this phone pinned: say so (§11.3)
       publish(from: link) { $0 = ConnectionSnapshot(hasLibrary: $0.hasLibrary, synology: .publisherChanged, macNearby: false, catalogue: $0.catalogue, cacheBytes: $0.cacheBytes) }
       return
     }
-    guard report.outcome == 16 else { return }
+    guard report.outcome == 16, mayCopyQuietly else { return }
     let (done, _) = await copy(link: link, cancel: nil, allowExpensive: false, progress: nil)
     if done == 0, let info = await catalogueNow(link: link) { publishCatalogue(info, from: link) }
   }
@@ -469,16 +644,23 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private func removeLibrary(keepingDeviceKey: Bool) async {
     // Stop first, wait, then delete: a copy still running (or waiting for Wi-Fi) must not write
     // into a wiped library, and must not keep Forget waiting.
-    let (link, cancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?) in
+    let (link, cancel, soundCancel) = lock.withLock { () -> (LinkHandle?, LinkCancel?, LinkCancel?) in
       forgotten = true
-      let out = (handle, copyCancel)
+      let out = (handle, copyCancel, self.soundCancel)
+      libraryEpoch += 1
+      localCopyDropped = false
+      sampleEndScheduled = nil
+      fileModeNow = false
       handle = nil
       record = nil
+      soundState = .notNeeded
+      soundOverMobileData = false
       return out
     }
     // A write already past its check finishes now; every later one is refused.
     writes.close()
     cancel?.fire()
+    soundCancel?.fire()
     // Returns once the core's own writers (tiles, the sample's verified copies) are done.
     if let backup = lock.withLock({ beforeRemoval }) { await backup() }
     if let link { mv_link_shut_down(link.raw) }
@@ -498,6 +680,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     try? FileManager.default.removeItem(at: LinkFolders.thumbs)
     try? FileManager.default.removeItem(at: LinkFolders.originals)
     try? FileManager.default.removeItem(at: LinkFolders.clips)
+    try? FileManager.default.removeItem(at: LinkFolders.files)
   }
 
   private func catalogueNow(link: LinkHandle) async -> CatalogueInfo? {
@@ -511,15 +694,25 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   private static func state(_ status: Int32, _ report: mv_route_report) -> SynologyState {
     switch status {
-    case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0)
+    case 0: return .reachable(address: linkString(report.address), overInternet: report.over_internet != 0,
+                              relayed: report.relayed != 0)
     case 7: return .serviceTooOld
     case 5: return .deviceRevoked
+    case 20: return .accessEnded
     case 12: return .publisherChanged  // the sample library's list: not signed by the pinned key
     default:
       // A route that answered "not on the list" is the service speaking for the library: this
       // phone was removed, whatever the other routes did.
+      if ended(in: report) { return .accessEnded }
       if revoked(in: report) { return .deviceRevoked }
       return .unreachable(failures(of: report))
+    }
+  }
+
+  private static func ended(in report: mv_route_report) -> Bool {
+    withUnsafeBytes(of: report.failures) { raw in
+      let list = raw.bindMemory(to: mv_route_failure.self)
+      return (0..<Int(report.failure_count)).contains { list[$0].problem == 6 }
     }
   }
 
@@ -593,9 +786,20 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
 
   private func runCopy(overMobileData: Bool, continuation: AsyncThrowingStream<CopyEvent, Error>.Continuation) async throws {
     guard let link = await awaitLink(), !lock.withLock({ forgotten }) else { throw CopyFailure.synologyUnreachable }
+    // An ended access copies nothing: a NAS refuses it, and the sample guest's stand-in does too.
+    // The connect that says so on the card runs apart from this copy, never awaited here: it
+    // stops and waits for tracked work, this copy among it.
+    if sampleGuestEnded() {
+      Task { [weak self] in await self?.retry() }
+      throw CopyFailure.accessEnded
+    }
     let status = await onLinkQueue { () -> Int32 in
       var report = mv_route_report()
       return mv_link_connect(link.raw, nil, &report)  // keeps a live link
+    }
+    if status == Int32(MV_LINK_ACCESS_ENDED.rawValue) {
+      Task { [weak self] in await self?.retry() }
+      throw CopyFailure.accessEnded
     }
     guard status == 0 else { throw CopyFailure.synologyUnreachable }
     let check = await onLinkQueue { () -> mv_sync_report in
@@ -606,6 +810,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     switch check.outcome {
     case 15, 14:
       if let info = await catalogueNow(link: link) { publishCatalogue(info, from: link) }
+      return
+    case FileModeRule.noCatalogue:
+      // The folders are there and no catalogue is: the library opens in file mode.
+      setFileMode(afterCheck: check.outcome, from: link)
       return
     case 16: break
     case 12: throw CopyFailure.catalogueRejected
@@ -656,6 +864,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
         if let info = await catalogueNow(link: link) { publishCatalogue(info, from: link) }
         return
       case 19: continue  // left Wi-Fi: wait for it, then pick up where it stopped
+      case FileModeRule.noCatalogue:  // gone from the share since the check
+        succeeded = true
+        setFileMode(afterCheck: status, from: link)
+        return
       case 11:
         throw CancellationError()
       case 12:
@@ -668,9 +880,149 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
   }
 
+  /// File mode from what a catalogue check said, for `link`'s library only.
+  private func setFileMode(afterCheck outcome: Int32, from link: LinkHandle) {
+    let changed = lock.withLock { () -> Bool in
+      guard handle === link, !forgotten else { return false }
+      let next = FileModeRule.fileMode(afterCheck: outcome, hasCatalogue: snapshot.catalogue != nil, wasFileMode: fileModeNow)
+      guard next != fileModeNow else { return false }
+      fileModeNow = next
+      return true
+    }
+    if changed { publish(from: link) { _ in } }
+  }
+
   /// Work on a library that has since been replaced (another pairing, or Forget) says nothing.
   private func publishCatalogue(_ info: CatalogueInfo, from link: LinkHandle) {
     publish(from: link) { $0 = ConnectionSnapshot(hasLibrary: $0.hasLibrary, synology: $0.synology, macNearby: false, catalogue: info, cacheBytes: $0.cacheBytes) }
+    // A first catalogue, or one whose clips were heard by another model: sound search follows it.
+    work.run(priority: .utility) { [weak self] in await self?.soundSync(link) }
+  }
+
+  // MARK: Sound search (§9)
+
+  /// Where sound search's model comes from. A Debug build may be pointed at a test folder
+  /// (`MV_SOUND_BASE`); a release reads only the core's.
+  static var soundBase: String {
+    #if DEBUG
+    if let override = ProcessInfo.processInfo.environment["MV_SOUND_BASE"], !override.isEmpty {
+      return override.hasSuffix("/") ? override : override + "/"
+    }
+    #endif
+    return String(cString: mv_sound_base())
+  }
+
+  public func downloadSoundSearch(overMobileData: Bool) async {
+    lock.withLock {
+      if overMobileData { soundOverMobileData = true }
+      // The person asked: a damaged download or a missing file is tried again.
+      if case .unavailable = soundState { soundState = .notNeeded }
+    }
+    guard let link = await awaitLink() else { return }
+    work.run(priority: .userInitiated) { [weak self] in await self?.soundSync(link) }
+  }
+
+  private func setSound(_ state: SoundSearchState, from link: LinkHandle, cacheBytes: Int64? = nil) {
+    let changed = lock.withLock { () -> Bool in
+      guard handle === link, !forgotten else { return false }
+      soundState = state
+      return true
+    }
+    guard changed else { return }
+    publish(from: link) { snapshot in
+      if let cacheBytes {
+        snapshot = ConnectionSnapshot(hasLibrary: snapshot.hasLibrary, synology: snapshot.synology, macNearby: snapshot.macNearby,
+                                      catalogue: snapshot.catalogue, cacheBytes: cacheBytes)
+      }
+    }
+  }
+
+  /// Whether this library's clips want the phone's sound model, and the download if so: on Wi-Fi,
+  /// or on mobile data once the person allowed it. One at a time; a later call while one runs
+  /// finds it running and leaves it.
+  private func soundSync(_ link: LinkHandle) async {
+    let start = lock.withLock { () -> Bool in
+      guard !forgotten, handle === link else { return false }
+      if soundRunning {
+        soundAgain = true
+        return false
+      }
+      // Gone or damaged: not again on every connection (152 MB each time) until the next launch or
+      // the person's Try again.
+      if case .unavailable(let problem) = soundState, problem == .gone || problem == .rejected { return false }
+      soundRunning = true
+      return true
+    }
+    guard start else { return }
+    defer {
+      let again = lock.withLock { () -> Bool in
+        soundRunning = false
+        defer { soundAgain = false }
+        return soundAgain && !forgotten && handle === link
+      }
+      if again { work.run(priority: .utility) { [weak self] in await self?.soundSync(link) } }
+    }
+    let library = LinkFolders.library.path
+    let wanted = await onLinkQueue { () -> Bool in
+      var info = mv_catalogue_info()
+      guard mv_catalogue_read(link.raw, &info) == 0, info.present != 0 else { return false }
+      return mv_sound_wanted(linkString(info.dir)) != 0
+    }
+    guard wanted else { return setSound(.notNeeded, from: link) }
+    if mv_sound_ready(library) != 0 { return setSound(.ready, from: link) }
+    let total = Int64(mv_sound_total_bytes())
+    let have = min(Int64(mv_sound_bytes(library)), total)
+    let overMobileData = lock.withLock { soundOverMobileData }
+    guard overMobileData || mayCopyQuietly else { return setSound(.waitingForWiFi(totalBytes: total - have), from: link) }
+
+    let cancel = LinkCancel()
+    lock.withLock { soundCancel = cancel }
+    defer { lock.withLock { if soundCancel === cancel { soundCancel = nil } } }
+    if lock.withLock({ forgotten }) { return }
+    setSound(.downloading(doneBytes: have, totalBytes: total), from: link)
+    // A percent at a time: each publish is a snapshot for every screen and a defaults write.
+    let shown = SoundPercent()
+    let box = CopyCallbacks(progress: { [weak self] done, all in
+      guard shown.changed(done: done, total: all) else { return }
+      self?.setSound(.downloading(doneBytes: Int64(done), totalBytes: Int64(all)), from: link)
+    }) { [weak self] in
+      guard let self else { return false }
+      return self.lock.withLock { !self.forgotten && self.pathKnown && (overMobileData || !self.pathExpensive) }
+    }
+    let base = Self.soundBase
+    let status: Int32 = await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        soundQueue.async {
+          let context = Unmanaged.passRetained(box)
+          let status = base.withCString { base in
+            mv_sound_fetch(library, base, SampleFetch.callback, SampleFetch.context, cancel.raw, { ctx in
+              guard let ctx else { return 0 }
+              return Unmanaged<CopyCallbacks>.fromOpaque(ctx).takeUnretainedValue().allowed() ? 1 : 0
+            }, { ctx, done, total in
+              guard let ctx else { return }
+              Unmanaged<CopyCallbacks>.fromOpaque(ctx).takeUnretainedValue().report(done, total)
+            }, context.toOpaque())
+          }
+          context.release()
+          continuation.resume(returning: status)
+        }
+      }
+    } onCancel: { cancel.fire() }
+    switch status {
+    case 0:
+      lock.withLock { soundOverMobileData = false }
+      setSound(.ready, from: link, cacheBytes: Self.cacheBytes(link))
+    case 19:  // left Wi-Fi: the next connection on Wi-Fi picks up where it stopped
+      setSound(.waitingForWiFi(totalBytes: total - min(Int64(mv_sound_bytes(library)), total)), from: link,
+               cacheBytes: Self.cacheBytes(link))
+    case 11:  // Forget (which says nothing), or the work stopping: picked up on the next connection
+      setSound(.waitingForWiFi(totalBytes: total - min(Int64(mv_sound_bytes(library)), total)), from: link,
+               cacheBytes: Self.cacheBytes(link))
+    case 9: setSound(.unavailable(.gone), from: link, cacheBytes: Self.cacheBytes(link))
+    case 12: setSound(.unavailable(.rejected), from: link, cacheBytes: Self.cacheBytes(link))
+    case 13: setSound(.unavailable(.notEnoughSpace), from: link, cacheBytes: Self.cacheBytes(link))
+    default: setSound(.unavailable(.offline), from: link, cacheBytes: Self.cacheBytes(link))
+    }
   }
 
   // MARK: Continued processing (iOS 26)
@@ -774,6 +1126,19 @@ private final class OnceFlag: @unchecked Sendable {
   func take() -> Bool { lock.withLock { defer { taken = true }; return !taken } }
 }
 
+
+/// Sound search's download blocks a thread for minutes: never the link's own queue.
+private let soundQueue = DispatchQueue(label: "mediaviewer.link.sound", qos: .utility)
+
+/// The download's progress, one whole percent at a time. Called on the download's thread only.
+private final class SoundPercent: @unchecked Sendable {
+  private var last = -1
+  func changed(done: UInt64, total: UInt64) -> Bool {
+    let percent = total == 0 ? 100 : Int(done * 100 / total)
+    defer { last = percent }
+    return percent != last
+  }
+}
 
 private final class CopyCallbacks: @unchecked Sendable {
   private let progress: ((UInt64, UInt64) -> Void)?

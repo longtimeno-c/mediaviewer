@@ -10,6 +10,14 @@ Trade-offs for the D1–D9 decisions are in [01-decisions.md](01-decisions.md).
 
 ## Phone access
 
+**Phone access is part of the app, not an add-on (2026-11-12, owner).** It pairs a phone, claims and
+manages the NAS service, serves nearby and keeps the publisher key with no add-on installed: the phone app
+is its own product and must work without Local search. This is a deliberate exception to the 2026-10-11
+rule that optional features ship as add-ons carrying their own code. The Driftwire protocol it needs moves
+to `src/wire` (linked by the core, the Driftwire add-on, the `driftwire` CLI and iOS), the feature to
+`src/phone`; Local search only builds the catalogue the core signs and delivers. Plan:
+[phone-in-the-app.md](../plans/phone-in-the-app.md).
+
 **Nearby sync is the NAS's protocol, pulled by the phone (2026-11-10).** `docs/plans/mobile.md` §7.5 describes
 the Mac sending files as a Driftwire transfer that skips Accept. Instead the Mac runs a LAN-only
 `serve::server` over a local copy and the phone reads it as it reads the NAS. The phone needs no second

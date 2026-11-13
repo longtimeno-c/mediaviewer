@@ -12,9 +12,9 @@
 #include <map>
 #include <set>
 
-#include "addons/driftwire/serve_backup.h"
-#include "addons/driftwire/serve_wire.h"
-#include "addons/driftwire/wire.h"
+#include "wire/serve_backup.h"
+#include "wire/serve_wire.h"
+#include "wire/wire.h"
 #include "core/json.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"

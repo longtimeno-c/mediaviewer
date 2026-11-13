@@ -51,7 +51,7 @@ public struct MediaItem: Identifiable, Hashable, Sendable {
 
 /// A place inside a clip that a search or the index knows about.
 public struct Moment: Identifiable, Hashable, Sendable {
-  public enum Kind: Hashable, Sendable { case speech, scene, wordsOnScreen }
+  public enum Kind: Hashable, Sendable { case speech, scene, wordsOnScreen, sound }
   public let seconds: TimeInterval
   public let kind: Kind
   /// What was said, what is on screen, or a short name for the scene.
@@ -69,18 +69,51 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
   public let item: MediaItem
   /// A speech or scene hit opens the clip at this moment.
   public let moment: Moment?
+  /// File search: the tag a match was found in ("Canon EOS R5"), shown under its tile; nil for a
+  /// name match and for the catalogue's search.
+  public let why: String?
   public var id: String { item.id.raw + (moment.map { "@\($0.seconds)" } ?? "") }
 
-  public init(item: MediaItem, moment: Moment?) {
+  public init(item: MediaItem, moment: Moment?, why: String? = nil) {
     self.item = item
     self.moment = moment
+    self.why = why
+  }
+}
+
+/// One search's answer. The catalogue's search fills `hits` only; file search (a library with no
+/// catalogue, docs/plans/phone-in-the-app.md §4) also says what it searched.
+public struct SearchAnswer: Sendable {
+  public struct Progress: Hashable, Sendable {
+    public let done: Int
+    public let total: Int
+    public init(done: Int, total: Int) {
+      self.done = done
+      self.total = total
+    }
+  }
+
+  public let hits: [SearchHit]
+  /// File search: how many files the folder searched holds ("N of M").
+  public let outOf: Int?
+  /// File search: the folder searched, by name; nil when no folder is open.
+  public let folderName: String?
+  /// File search: tags still being read in that folder; nil once all are.
+  public let readingTags: Progress?
+
+  public init(hits: [SearchHit], outOf: Int? = nil, folderName: String? = nil, readingTags: Progress? = nil) {
+    self.hits = hits
+    self.outOf = outOf
+    self.folderName = folderName
+    self.readingTags = readingTags
   }
 }
 
 public struct Folder: Identifiable, Hashable, Sendable {
   public let id: String
   public let name: String
-  /// Everything in this folder and the folders beneath it.
+  /// Everything in this folder and the folders beneath it; -1 when that is not known (a NAS
+  /// folder in file mode, which is never walked).
   public let itemCount: Int
   public let hasSubfolders: Bool
 
@@ -215,14 +248,29 @@ public struct AddressFailure: Hashable, Sendable, Identifiable {
   }
 }
 
+/// Settings the core reads as well as the screen (docs/plans/nas-relay.md §9.2).
+public enum LinkPreferences {
+  /// "Faster direct connection on mobile data": once on the person's relay, try a direct path on
+  /// mobile data too (on Wi-Fi it is always tried). On unless switched off (owner, 2026-11-12).
+  public static let directOnMobileData = "directPathOnMobileData"
+  public static func directOnMobileDataEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+    defaults.object(forKey: directOnMobileData) as? Bool ?? true
+  }
+}
+
 public enum SynologyState: Hashable, Sendable {
-  case reachable(address: String, overInternet: Bool)
+  /// `relayed`: through the person's own relay (docs/plans/nas-relay.md); overInternet is true too,
+  /// so the mobile-data rules are the same as over the internet.
+  case reachable(address: String, overInternet: Bool, relayed: Bool = false)
   case unreachable([AddressFailure])
   case reachableOnlyOnItsOwnNetwork
   case serviceTooOld
   case publisherChanged
   /// The computer removed this phone from the library.
   case deviceRevoked
+  /// This phone's time-limited access ended (docs/plans/nas-owner-and-guests.md §8.2). Not a
+  /// removal: if the owner extends it, the phone gets straight back in.
+  case accessEnded
 }
 
 public struct CatalogueInfo: Hashable, Sendable {
@@ -241,6 +289,28 @@ public struct CatalogueInfo: Hashable, Sendable {
   }
 }
 
+/// Sound search (§9, "Sound search"): the catalogue carries what each clip sounds like; the phone
+/// downloads once the half of the Mac's sound model that reads a typed query.
+public enum SoundSearchState: Hashable, Sendable {
+  /// No library, or its clips were not listened to by the model a phone can run.
+  case notNeeded
+  /// The download waits for Wi-Fi unless the person allows mobile data; the size comes first (§8.4).
+  case waitingForWiFi(totalBytes: Int64)
+  case downloading(doneBytes: Int64, totalBytes: Int64)
+  case ready
+  case unavailable(SoundSearchProblem)
+}
+
+public enum SoundSearchProblem: Hashable, Sendable {
+  /// The download did not answer; it is tried again on the next connection.
+  case offline
+  case notEnoughSpace
+  /// This version's model is no longer where it was published: an app update brings another.
+  case gone
+  /// What arrived was not the model this version expects, and was deleted.
+  case rejected
+}
+
 public struct ConnectionSnapshot: Hashable, Sendable {
   public let hasLibrary: Bool
   public let synology: SynologyState
@@ -255,6 +325,14 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   public var isSample = false
   /// The paired library's name, as its code gave it ("" with none): said when something would replace it.
   public var libraryName = ""
+  /// Whether search hears clips, and the download that makes it (stamped when published).
+  public var soundSearch: SoundSearchState = .notNeeded
+  /// When this phone's access ends, as the service last said it (on the service's clock); nil for
+  /// a phone with no time limit.
+  public var accessUntil: Date? = nil
+  /// The library has no catalogue yet, and is its NAS's folders (docs/plans/phone-in-the-app.md
+  /// §4): browsed folder by folder and searched by name and tag. Ends when a catalogue arrives.
+  public var fileMode = false
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {
@@ -280,11 +358,15 @@ public struct LibraryIdentity: Hashable, Sendable {
   public let fingerprint: String
   /// The sample library's code: nothing on a computer to compare with.
   public let isSample: Bool
+  /// A guest code (docs/plans/nas-owner-and-guests.md §8.2): how long access lasts from pairing,
+  /// as the code says. nil for an ordinary code. The NAS holds the real limit.
+  public let guestFor: TimeInterval?
 
-  public init(name: String, fingerprint: String, isSample: Bool = false) {
+  public init(name: String, fingerprint: String, isSample: Bool = false, guestFor: TimeInterval? = nil) {
     self.name = name
     self.fingerprint = fingerprint
     self.isSample = isSample
+    self.guestFor = guestFor
   }
 }
 
@@ -397,6 +479,8 @@ public enum CopyFailure: Error, Hashable, Sendable {
   case notEnoughSpace(neededBytes: Int64)
   /// What arrived does not match what the computer published and signed.
   case catalogueRejected
+  /// This phone's time-limited access ended (nas-owner-and-guests.md §8.2): nothing is copied.
+  case accessEnded
 }
 
 public enum DownloadEvent: Sendable {

@@ -48,6 +48,9 @@ public enum SearchCapability: Hashable, Sendable {
   case ready
   /// The library's meaning search needs a model this phone cannot run.
   case unsupportedTower
+  /// No catalogue yet: the desktop's File search, by name and tag over the folder open in the
+  /// library (docs/plans/phone-in-the-app.md §4).
+  case filesOnly
 }
 
 public protocol SearchService: Sendable {
@@ -62,6 +65,14 @@ public protocol SearchService: Sendable {
   /// True while a search would be waiting for the model to load. Asked only after a search has
   /// already taken a moment, so a quick answer never mentions it.
   func isWarmingUp() async -> Bool
+  /// `search`, with what file search says about it. Honours cancellation as `search` does.
+  func answer(_ query: String, filters: SearchFilters) async throws -> SearchAnswer
+}
+
+public extension SearchService {
+  func answer(_ query: String, filters: SearchFilters) async throws -> SearchAnswer {
+    SearchAnswer(hits: try await search(query, filters: filters))
+  }
 }
 
 public protocol ConnectionService: Sendable {
@@ -85,6 +96,13 @@ public protocol CatalogueSync: Sendable {
   /// Finishes when the catalogue is on the phone; throws `CopyFailure`. Cancelling the iteration
   /// stops the copy.
   func firstCopy(overMobileData: Bool) -> AsyncThrowingStream<CopyEvent, Error>
+  /// Sound search's download (§9): now, over mobile data too when the person says so. Progress and
+  /// the outcome arrive as `ConnectionSnapshot.soundSearch`.
+  func downloadSoundSearch(overMobileData: Bool) async
+}
+
+public extension CatalogueSync {
+  func downloadSoundSearch(overMobileData: Bool) async {}
 }
 
 public enum ClipRoute {

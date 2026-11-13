@@ -22,9 +22,9 @@
 #include <memory>
 #include <string>
 
-#include "addons/driftwire/link.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/wire.h"
+#include "wire/link.h"
+#include "wire/net.h"
+#include "wire/wire.h"
 
 namespace mv::driftwire {
 

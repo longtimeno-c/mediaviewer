@@ -36,22 +36,22 @@
 #include <vector>
 
 #include "addons/driftwire/bt_pipe.h"
-#include "addons/driftwire/channel.h"
+#include "wire/channel.h"
 #include "addons/driftwire/bencode.h"
-#include "addons/driftwire/cpace.h"
+#include "wire/cpace.h"
 #include "addons/driftwire/dht.h"
 #include "addons/driftwire/dht_item.h"
 #include "addons/driftwire/invite.h"
-#include "addons/driftwire/known.h"
+#include "wire/known.h"
 #include "addons/driftwire/mapping.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/noise.h"
+#include "wire/net.h"
+#include "wire/noise.h"
 #include "addons/driftwire/relay.h"
-#include "addons/driftwire/serve.h"
-#include "addons/driftwire/serve_wire.h"
-#include "addons/driftwire/splice.h"
+#include "wire/serve.h"
+#include "wire/serve_wire.h"
+#include "wire/splice.h"
 #include "addons/driftwire/transfer.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 
 namespace sp = mv::driftwire;
 namespace noise = mv::driftwire::noise;

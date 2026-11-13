@@ -19,11 +19,11 @@
 #include <random>
 #include <set>
 
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/secrets.h"
-#include "addons/driftwire/serve.h"
-#include "addons/driftwire/serve_backup.h"
-#include "addons/driftwire/net.h"
+#include "wire/known.h"
+#include "wire/secrets.h"
+#include "wire/serve.h"
+#include "wire/serve_backup.h"
+#include "wire/net.h"
 #include "mobile/backup.h"
 #include "mobile/link.h"
 

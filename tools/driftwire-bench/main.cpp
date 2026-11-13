@@ -61,9 +61,9 @@
 #include <sys/resource.h>
 #endif
 
-#include "addons/driftwire/channel.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/stages.h"
+#include "wire/channel.h"
+#include "wire/net.h"
+#include "wire/stages.h"
 #include "addons/driftwire/transfer.h"
 #include "io/file_port.h"
 

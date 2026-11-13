@@ -63,13 +63,25 @@ $allowed = [ordered]@{
     # rules of io::verified_copy), compiled into its own module as Places
     # compiles io/mapped_file: still nothing of the core is linked, and geo,
     # which add-ons already use, sits on io.
-    'addons' = @('addons', 'geo', 'infer', 'io', 'core')
-    'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
+    # 2026-11-12 (docs/plans/phone-in-the-app.md): Driftwire's protocol, out of
+    # addons/ so the app's phone feature can link it. It sits on io (the file
+    # port the NAS service reads through) and core's header-only pieces; it
+    # never includes addons/, so nothing of an add-on reaches the app this way.
+    'wire'   = @('wire', 'io', 'core')
+    # 2026-11-12: the catalogue a phone reads, generic half (keys, current.json,
+    # delivery, the key's chain); Local search, the app's phone feature and the
+    # phone link it. libsodium and core's header-only pieces only.
+    'catalogue' = @('catalogue', 'wire', 'io', 'core')
+    # 2026-11-12: Phone access in the app (desk, the link, the app's one link):
+    # over the protocol and the catalogue; a peer of addon, below abi and shell.
+    'phone'  = @('phone', 'wire', 'catalogue', 'io', 'core')
+    'addons' = @('addons', 'wire', 'catalogue', 'geo', 'infer', 'io', 'core')
+    'abi'    = @('abi', 'addon', 'phone', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # docs/design/23: the Mac app's main() hands `--search-agent` to nle's agent.
     # Issue #610: shellext too, for the Quick Look extension (shell/quicklook_mac.mm,
     # its own executable, never the app) to share the Explorer handler's portable
     # half. The app itself includes nothing of shellext.
-    'shell'  = @('shell', 'shellext', 'abi', 'addon', 'nle', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
+    'shell'  = @('shell', 'shellext', 'abi', 'addon', 'phone', 'nle', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # PR 15: Explorer's host (the thumbnail handler DLL). A sibling of shell; it
     # reaches the core through image/ and codec/, and (#610) through
     # player/poster.h for a clip's poster. It never includes shell.

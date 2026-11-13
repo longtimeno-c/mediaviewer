@@ -35,11 +35,11 @@
 #include "addons/driftwire/cli/theme.h"
 #include "addons/driftwire/cli/update.h"
 #include "addons/driftwire/engine.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/net.h"
+#include "wire/known.h"
+#include "wire/net.h"
 #include "addons/driftwire/power.h"
 #include "addons/driftwire/prefs.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 
 #ifndef MV_DRIFTWIRE_CLI_VERSION
 #define MV_DRIFTWIRE_CLI_VERSION "0.0.0"
@@ -192,11 +192,11 @@ int main(int argc, char** argv) {
 
   if (a.cmd == cli::command::devices) return list_devices();
 #if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
-  if (a.cmd == cli::command::serve) return cli::run_serve(a, true);
+  if (a.cmd == cli::command::serve) return cli::run_serve(a, true, MV_DRIFTWIRE_CLI_VERSION);
 #else
   // The one mode with no terminal: it answers no one at a keyboard, only
   // devices already paired (docs/design/28 "The NAS service").
-  if (a.cmd == cli::command::serve) return cli::run_serve(a, false);
+  if (a.cmd == cli::command::serve) return cli::run_serve(a, false, MV_DRIFTWIRE_CLI_VERSION);
 #endif
 #if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
   if (a.cmd == cli::command::update) return run_update();

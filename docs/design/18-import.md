@@ -444,7 +444,8 @@ Add-ons link nothing of each other. One asks another through the host table: `ad
 json, reply)` lands on the other's slot worker through its `mv.request.1` interface, with the caller's id
 filled in by the host so the answering add-on can decide who it serves. The answer's JSON comes back on the
 caller's thread. `MV_ERR_NOT_FOUND` means that add-on is not there, and the caller offers to install it.
-Phone access is the first user: Local search asks Driftwire (`desk::route_request`).
+Phone access was the first user (Local search asking Driftwire); since 2026-11-12 it is part of the app
+([plan](../plans/phone-in-the-app.md)), so no add-on serves `mv.request.1` today.
 
 ## Commands
 

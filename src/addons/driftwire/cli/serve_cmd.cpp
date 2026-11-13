@@ -7,30 +7,42 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <vector>
 
 #include "addons/driftwire/cli/data_dir.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/secrets.h"
-#include "addons/driftwire/serve.h"
+#include "addons/driftwire/cli/nas_update.h"
+#include "addons/driftwire/cli/serve_tty.h"
+#include "addons/driftwire/cli/update.h"
+#include "wire/grants.h"
+#include "wire/known.h"
+#include "wire/net.h"
+#include "wire/owner_pass.h"
+#include "wire/secrets.h"
+#include "wire/serve.h"
 #include "addons/driftwire/transfer.h"
 #include "core/json.h"
 
 #if !defined(_WIN32)
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -89,6 +101,7 @@ bool load_devices(secrets::store& store, std::vector<known::device>& out) {
 
 // Whole and renamed in, owner-only: the running service is the only writer.
 bool write_config(const std::string& path, const serve::config& c) {
+  // config_json writes the backup folders and the relay too.
   const std::string text = serve::config_json(c);
   const std::string tmp = path + ".part";
   {
@@ -105,7 +118,145 @@ bool write_config(const std::string& path, const serve::config& c) {
   return !ec;
 }
 
-int run_service(const args& a, bool test_hooks, const std::string& data, secrets::store& store) {
+#ifndef MV_NAS_UPDATE_KEY
+#define MV_NAS_UPDATE_KEY ""  // a build of one's own: never updates itself
+#endif
+
+#if !defined(_WIN32)
+// Runs the staged binary once as `serve self-test --data DATA`, its output
+// dropped; true when it exits 0 within 30 s.
+bool run_self_test(const std::string& binary, const std::string& data) {
+  const pid_t pid = ::fork();
+  if (pid < 0) return false;
+  if (pid == 0) {
+    const int null = ::open("/dev/null", O_RDWR);
+    if (null >= 0) {
+      (void)::dup2(null, 0);
+      (void)::dup2(null, 1);
+      (void)::dup2(null, 2);
+    }
+    const char* argv[] = {binary.c_str(), "serve", "self-test", "--data", data.c_str(), nullptr};
+    ::execv(binary.c_str(), const_cast<char* const*>(argv));
+    ::_exit(127);
+  }
+  for (int i = 0; i < 300; ++i) {
+    int st = 0;
+    const pid_t r = ::waitpid(pid, &st, WNOHANG);
+    if (r == pid) return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    if (r < 0) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  (void)::kill(pid, SIGKILL);
+  (void)::waitpid(pid, nullptr, 0);
+  return false;
+}
+
+// The package's daily check (cli/nas_update.h). Only inside the package
+// (start-stop-status sets MV_NAS_VAR) and only in a build with a pinned key.
+class nas_updater {
+ public:
+  nas_updater(std::string var, std::string data, std::string version, std::array<std::uint8_t, 32> key)
+      : var_(std::move(var)), data_(std::move(data)), version_(std::move(version)), key_(key) {
+    thread_ = std::thread([this] { loop(); });
+  }
+  ~nas_updater() {
+    {
+      std::lock_guard lock(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();  // a fetch in flight ends by its own timeout (60 s, 5 min for the binary)
+  }
+  bool installed() const { return installed_.load(); }
+
+ private:
+  void loop() {
+    const auto started = std::chrono::steady_clock::now();
+    bool trial = std::filesystem::exists(fs_path(var_ + "/state/trial"));
+    bool first = true;
+    auto next = started + nas_update::next_delay(true, randombytes_random());
+    std::unique_lock lock(m_);
+    while (!stop_) {
+      auto wake = next;
+      if (trial) wake = std::min(wake, started + nas_update::kTrialSettles);
+      cv_.wait_until(lock, wake, [this] { return stop_; });
+      if (stop_) break;
+      const auto now = std::chrono::steady_clock::now();
+      if (trial && now >= started + nas_update::kTrialSettles) {
+        nas_update::trial_passed(var_);  // up five minutes: this version stays
+        trial = false;
+      }
+      if (now < next) continue;
+      lock.unlock();
+      const auto got = check();
+      lock.lock();
+      first = false;
+      next = std::chrono::steady_clock::now() + nas_update::next_delay(first, randombytes_random());
+      if (got == nas_update::outcome::installed) {
+        installed_.store(true);
+        g_stop.store(true);  // the main loop stops the service; start-stop-status starts the new one
+        break;
+      }
+    }
+  }
+
+  nas_update::outcome check() {
+    nas_update::check_io c;
+    c.get_json = [](const std::string& url) -> std::optional<std::string> {
+      const http_answer r = https_get(url, 64 * 1024, 60000);
+      if (r.status != 200) return std::nullopt;
+      return r.body;
+    };
+    c.install.fetch = [](const std::string& url, const std::string& to) -> expected {
+      const http_answer r = https_get(url, std::size_t{1} << 30, 300000);
+      if (r.status != 200 || r.body.empty()) return err(status::io);
+      std::ofstream out(fs_path(to), std::ios::binary | std::ios::trunc);
+      out.write(r.body.data(), static_cast<std::streamsize>(r.body.size()));
+      out.flush();
+      if (!out) return err(status::io);
+      return {};
+    };
+    c.install.self_test = [data = data_](const std::string& binary) { return run_self_test(binary, data); };
+    const auto got = nas_update::check_once(site_url(nullptr), var_, nas_update::this_arch(), key_, version_, c);
+    // Numbers and words only: the log may be read beside the shares (rule 6).
+    switch (got) {
+      case nas_update::outcome::installed: print("driftwire serve: update installed; restarting\n"); break;
+      case nas_update::outcome::refused: print("driftwire serve: update offer refused (signature)\n", true); break;
+      case nas_update::outcome::failed: print("driftwire serve: update check failed; next tomorrow\n"); break;
+      case nas_update::outcome::nothing: break;
+    }
+    return got;
+  }
+
+  static std::filesystem::path fs_path(const std::string& s) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+  }
+
+  std::string var_, data_, version_;
+  std::array<std::uint8_t, 32> key_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  bool stop_ = false;
+  std::atomic<bool> installed_{false};
+  std::thread thread_;
+};
+#endif
+
+// `serve self-test`: what an update runs before it is installed. Reads the
+// data folder and changes nothing: the keys are there and readable,
+// serve.json parses, and this program runs on this NAS.
+int run_self_test_here(const std::string& data, secrets::store& store, bool test_hooks, const char* version) {
+  const auto identity = store.get(known::kIdentityName);
+  const auto access = store.get(serve::kAccessKeyName);
+  if (!identity || identity->size() != 32 || !access || access->size() != 32) return fail("self-test: the keys cannot be read.", 1);
+  std::ifstream f(data + "/" + kConfigFile, std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  if (!f.is_open() || !serve::parse_config(text, test_hooks)) return fail(std::string("self-test: ") + kConfigFile + " is not valid.", 1);
+  print(std::string("driftwire ") + version + " self-test ok\n");
+  return 0;
+}
+
+int run_service(const args& a, bool test_hooks, const std::string& data, secrets::store& store, const char* version) {
   if (!only_mine_writes(data) || !only_mine_writes(data + "/" + kConfigFile)) {
     return fail(std::string("the data folder and ") + kConfigFile + " must be writable by this user alone.", 1);
   }
@@ -144,13 +295,111 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   char line[96];
   std::snprintf(line, sizeof line, "driftwire serve: listening on port %u\n", static_cast<unsigned>((*srv)->port()));
   print(line);
-  while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  (*srv)->stop();
+  bool updated = false;
+  {
+#if !defined(_WIN32)
+    std::unique_ptr<nas_updater> updater;
+    const char* var = std::getenv("MV_NAS_VAR");
+    if (!test_hooks && var && *var) {
+      if (const auto key = nas_update::pinned_key(MV_NAS_UPDATE_KEY)) {
+        updater = std::make_unique<nas_updater>(var, data, version, *key);
+      }
+    }
+#else
+    (void)version;
+#endif
+    while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    (*srv)->stop();
+#if !defined(_WIN32)
+    updated = updater && updater->installed();
+#endif
+  }
   print("driftwire serve: stopped\n");
+  return updated ? nas_update::kRestartForUpdate : 0;
+}
+
+// One line from stdin, its newline gone; echo off when it is a terminal.
+// False at the end of input.
+bool read_line(std::string& out, bool hidden) {
+  out.clear();
+  out.reserve(serve::owner::kMaxBytes + 2);  // never reallocated: no copy left behind unwiped
+  bool console = false;
+  bool got = false;
+  {
+  const serve_echo_off quiet(hidden);
+  console = quiet.active();
+  for (int c; (c = std::fgetc(stdin)) != EOF;) {
+    got = true;
+    if (c == '\n') break;
+    if (out.size() < serve::owner::kMaxBytes + 1) out.push_back(static_cast<char>(c));
+  }
+  if (!out.empty() && out.back() == '\r') out.pop_back();
+  }  // echo back on
+  if (console) print("\n");
+  return got;
+}
+
+bool stdin_is_terminal() { return serve_stdin_is_terminal(); }
+
+struct wiped_string {
+  std::string s;
+  ~wiped_string() {
+    if (!s.empty()) sodium_memzero(s.data(), s.size());
+  }
+};
+
+// The owner's passphrase: typed twice on the terminal, or one line of stdin
+// (--passphrase-stdin). Empty with `why` set when there is none to have.
+bool ask_passphrase(const args& a, wiped_string& out, std::string& why) {
+  if (a.passphrase_stdin) {
+    if (!read_line(out.s, false)) {
+      why = "no passphrase on stdin.";
+      return false;
+    }
+  } else {
+    if (!stdin_is_terminal()) {
+      why = "no terminal to ask for the owner's passphrase: give --passphrase-stdin (or, for init, --no-passphrase).";
+      return false;
+    }
+    print("Owner's passphrase (at least 10 characters): ");
+    if (!read_line(out.s, true)) {
+      why = "no passphrase given.";
+      return false;
+    }
+    wiped_string again;
+    print("Again: ");
+    if (!read_line(again.s, true) || again.s.size() != out.s.size() ||
+        sodium_memcmp(again.s.data(), out.s.data(), out.s.size()) != 0) {
+      why = "the two did not match; nothing changed.";
+      return false;
+    }
+  }
+  if (!serve::owner::acceptable(out.s)) {
+    why = "a passphrase needs at least 10 characters; nothing changed.";
+    return false;
+  }
+  return true;
+}
+
+// Argon2id at 256 MiB (call C11), kept as a verifier: the passphrase itself is never written.
+int set_passphrase(const std::string& passphrase, secrets::store& store) {
+  const auto v = serve::owner::make(passphrase, std::time(nullptr));
+  if (!v) return fail("could not stretch the passphrase (not enough memory?); nothing changed.", 1);
+  if (!serve::owner::save(store, *v)) return fail("could not keep the passphrase.", 1);
   return 0;
 }
 
-int run_init(secrets::store& store) {
+int run_init(const args& a, secrets::store& store) {
+  // The passphrase first, so a mistyped one leaves nothing half done; never
+  // over one that is set (`serve passphrase set` changes it).
+  serve::owner::verifier there;
+  const auto held = serve::owner::load(store, there);
+  if (held == serve::owner::stored::unreadable) return fail("the owner's passphrase there cannot be read; run `serve passphrase reset`.", 1);
+  wiped_string pass;
+  if (held == serve::owner::stored::none && !a.no_passphrase) {
+    std::string why;
+    if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  }
   std::array<std::uint8_t, 32> pub{}, key{};
   bool made = false;
   if (!serve::set_up(store, pub, key, made)) return fail("could not write the service's keys.", 1);
@@ -158,7 +407,105 @@ int run_init(secrets::store& store) {
   std::string out = "identity " + key_hex(pub) + "\n";
   if (made) out += "access-key " + key_hex(key) + "\n";
   sodium_memzero(key.data(), key.size());
+  if (!pass.s.empty()) {
+    if (const int r = set_passphrase(pass.s, store); r != 0) {
+      print(out);
+      return r;
+    }
+  }
+  const bool has = serve::owner::load(store, there) == serve::owner::stored::set;
+  out += std::string("passphrase ") + (has ? "set" : "none") + "\n";
   print(out);
+  return 0;
+}
+
+int run_status(secrets::store& store) {
+  const auto identity = store.get(known::kIdentityName);
+  if (!identity || identity->size() != 32) return fail("no keys yet: run `driftwire serve init` first.", 1);
+  std::array<std::uint8_t, 32> priv{}, pub{};
+  std::memcpy(priv.data(), identity->data(), priv.size());
+  crypto_scalarmult_base(pub.data(), priv.data());
+  sodium_memzero(priv.data(), priv.size());
+  std::string out = "identity " + key_hex(pub) + "\n";
+  out += std::string("owner ") + (store.exists(serve::kOwnerName) ? "claimed" : "none") + "\n";
+  serve::owner::verifier v;
+  const auto s = serve::owner::load(store, v);
+  out += std::string("passphrase ") +
+         (s == serve::owner::stored::set ? "set" : s == serve::owner::stored::none ? "none" : "unreadable (run serve passphrase reset)") + "\n";
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  const auto l = serve::owner::load_lockout(store, now);
+  for (const auto& [label, c] : {std::pair<const char*, serve::owner::counter>{"claims", l.claim}, {"owner", l.owner}}) {
+    out += std::string("lockout ") + label + " ";
+    out += c.locked(now) ? "until " + std::to_string(c.until) + " (unix seconds)" : std::to_string(c.misses) + " wrong";
+    out += "\n";
+  }
+  print(out);
+  return 0;
+}
+
+// Here, as the service's user, whoever can run this can edit the store
+// anyway, so it asks nothing first (call C3).
+int run_passphrase_set(const args& a, secrets::store& store) {
+  serve::owner::verifier there;
+  if (serve::owner::load(store, there) == serve::owner::stored::unreadable) {
+    return fail("the passphrase there cannot be read; run `serve passphrase reset`.", 1);
+  }
+  wiped_string pass;
+  std::string why;
+  if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  if (const int r = set_passphrase(pass.s, store); r != 0) return r;
+  print("passphrase set; unlocked sessions end\n");
+  return 0;
+}
+
+// Recovery: a new passphrase replaces the old, and both lockouts go. It is
+// stretched first, so a NAS without the memory for it is left as it was,
+// never with none (with none, the next claim would choose it).
+int run_passphrase_reset(const args& a, secrets::store& store) {
+  wiped_string pass;
+  std::string why;
+  if (!ask_passphrase(a, pass, why)) return fail(why, 2);
+  const auto v = serve::owner::make(pass.s, std::time(nullptr));
+  if (!v) return fail("could not stretch the passphrase (not enough memory?); nothing changed.", 1);
+  // Written over the old one, never through "none": an unowned service is
+  // claimable with whatever passphrase the claim brings while there is none.
+  if (!serve::owner::save(store, *v)) return fail("could not write the new passphrase; the old one stays.", 1);
+  (void)store.erase(serve::owner::kLockoutName);
+  if (store.exists(serve::owner::kLockoutName)) return fail("the new passphrase is set, but the lockouts could not be cleared.", 1);
+  print("passphrase reset at " + std::to_string(std::time(nullptr)) + "; lockouts cleared; unlocked sessions end\n");
+  return 0;
+}
+
+// A device on the list its limit says (grants.h): unlimited in the paired
+// list, timed only in the grants, never both. The list it goes to is written
+// first, as the service does. Under the file lock.
+int put_device(secrets::store& store, const std::string& name, const std::array<std::uint8_t, 32>& key,
+               std::optional<serve::grants::grant> limit, std::int64_t now) {
+  std::vector<known::device> devices;
+  if (!load_devices(store, devices)) return fail("the device list cannot be read; not changing it.", 1);
+  std::vector<serve::grants::grant> limited;
+  if (!serve::grants::load(store, limited)) return fail("the timed device list cannot be read; not changing it.", 1);
+  (void)serve::grants::prune(limited, now);
+  const bool was_unlimited = std::any_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == key; });
+  const bool was_live = std::any_of(limited.begin(), limited.end(), [&](const auto& g) { return g.key == key && !g.expired(now); });
+  std::erase_if(devices, [&](const known::device& d) { return d.key == key; });
+  std::erase_if(limited, [&](const auto& g) { return g.key == key; });
+  if (!was_unlimited && !was_live && !serve::grants::make_room(limited, devices.size(), now)) {
+    return fail("too many paired devices; revoke one first.", 1);
+  }
+  if (limit) {
+    serve::grants::grant g = std::move(*limit);
+    g.name = name;
+    g.key = key;
+    limited.push_back(std::move(g));
+    if (!serve::grants::save(store, limited) || !known::save(store, devices)) return fail("could not save the device lists.", 1);
+  } else {
+    known::device d;
+    d.name = name;
+    d.key = key;
+    devices.push_back(std::move(d));
+    if (!known::save(store, devices) || !serve::grants::save(store, limited)) return fail("could not save the device lists.", 1);
+  }
   return 0;
 }
 
@@ -167,22 +514,19 @@ int run_add(const args& a, secrets::store& store, const std::string& data) {
   if (!key) return fail("that is not a device key (64 hex digits).", 2);
   const auto lock = net::try_lock_instance(data + "/serve-devices.lock");
   if (!lock) return fail("the device list is being changed by something else; try again.", 1);
-  std::vector<known::device> devices;
-  if (!load_devices(store, devices)) return fail("the device list cannot be read; not changing it.", 1);
-  for (auto& d : devices) {
-    if (d.key == *key) {
-      d.name = a.name;
-      if (!known::save(store, devices)) return fail("could not save the device list.", 1);
-      print("updated\n");
-      return 0;
-    }
+  if (!a.for_duration.empty()) {
+    const auto for_s = serve::grants::parse_duration(a.for_duration);
+    if (!for_s) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    serve::grants::grant g;
+    g.expires = now + *for_s;
+    g.created = now;
+    if (const int r = put_device(store, a.name, *key, std::move(g), now); r != 0) return r;
+    print("paired until " + std::to_string(now + *for_s) + " (unix seconds)\n");
+    return 0;
   }
-  if (devices.size() >= known::kMaxDevices) return fail("too many paired devices; revoke one first.", 1);
-  known::device d;
-  d.name = a.name;
-  d.key = *key;
-  devices.push_back(std::move(d));
-  if (!known::save(store, devices)) return fail("could not save the device list.", 1);
+  // Unlimited: on the paired list alone (a timed one with this key becomes unlimited).
+  if (const int r = put_device(store, a.name, *key, std::nullopt, std::time(nullptr)); r != 0) return r;
   print("paired\n");
   return 0;
 }
@@ -192,16 +536,68 @@ int run_revoke(const args& a, secrets::store& store, const std::string& data) {
   if (!lock) return fail("the device list is being changed by something else; try again.", 1);
   std::vector<known::device> devices;
   if (!load_devices(store, devices)) return fail("the device list cannot be read; not changing it.", 1);
+  std::vector<serve::grants::grant> limited;
+  if (!serve::grants::load(store, limited)) return fail("the timed device list cannot be read; not changing it.", 1);
   const auto key = parse_key_hex(a.serve_key);
-  const auto before = devices.size();
+  const auto before = devices.size() + limited.size();
   std::erase_if(devices, [&](const known::device& d) { return (key && d.key == *key) || d.name == a.serve_key; });
-  if (devices.size() == before) return fail("no such device.", 1);
+  std::erase_if(limited, [&](const serve::grants::grant& g) { return (key && g.key == *key) || g.name == a.serve_key; });
+  if (devices.size() + limited.size() == before) return fail("no such device.", 1);
   // save() does not report a last entry it could not erase: read it back.
   std::vector<known::device> kept;
-  if (!known::save(store, devices) || !load_devices(store, kept) || kept.size() != devices.size()) {
+  if (!serve::grants::save(store, limited) || !known::save(store, devices) || !load_devices(store, kept) ||
+      kept.size() != devices.size()) {
     return fail("could not save the device list; the device may still be paired.", 1);
   }
   print("revoked\n");
+  return 0;
+}
+
+// A device's limit from now: --for D (timed) or --forever (unlimited again).
+// Here, as the service's user, it asks nothing (call C3).
+int run_grant(const args& a, secrets::store& store, const std::string& data) {
+  const auto lock = net::try_lock_instance(data + "/serve-devices.lock");
+  if (!lock) return fail("the device list is being changed by something else; try again.", 1);
+  std::vector<known::device> devices;
+  if (!load_devices(store, devices)) return fail("the device list cannot be read; not changing it.", 1);
+  std::vector<serve::grants::grant> limited;
+  if (!serve::grants::load(store, limited)) return fail("the timed device list cannot be read; not changing it.", 1);
+  const auto key = parse_key_hex(a.serve_key);
+  std::optional<std::pair<std::string, std::array<std::uint8_t, 32>>> found;
+  std::optional<serve::grants::grant> current;  // its grant now, if it is a timed or scoped one
+  int matches = 0;
+  for (const auto& d : devices) {
+    if ((key && d.key == *key) || d.name == a.serve_key) {
+      found.emplace(d.name, d.key);
+      ++matches;
+    }
+  }
+  for (const auto& g : limited) {
+    if ((key && g.key == *key) || g.name == a.serve_key) {
+      if (!found || found->second != g.key) ++matches;
+      found.emplace(g.name, g.key);
+      current = g;
+    }
+  }
+  if (!found) return fail("no such device.", 1);
+  if (matches > 1) return fail("more than one device has that name; give its key.", 2);
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  // Its folders, whether it is a guest and when it was added stay as they are:
+  // only the time changes.
+  std::optional<serve::grants::grant> next;
+  if (!a.forever) {
+    const auto parsed = serve::grants::parse_duration(a.for_duration);
+    if (!parsed) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
+    next = current.value_or(serve::grants::grant{});
+    if (!current) next->created = now;
+    next->expires = now + *parsed;
+  } else if (current && current->roots) {
+    next = *current;  // no end, still only its folders
+    next->expires = 0;
+  }
+  if (const int r = put_device(store, found->first, found->second, next, now); r != 0) return r;
+  print(next && next->expires != 0 ? "until " + std::to_string(next->expires) + " (unix seconds)\n"
+                                   : std::string(next ? "no end, its folders only\n" : "unlimited\n"));
   return 0;
 }
 
@@ -216,7 +612,17 @@ int run_pair_code(const args& a, secrets::store& store, const std::string& data)
   }
   const auto lock = net::try_lock_instance(data + "/serve-devices.lock");
   if (!lock) return fail("the device list is being changed by something else; try again.", 1);
-  const std::string code = serve::issue_pair_code(store, seconds, std::time(nullptr));
+  std::string code;
+  if (!a.for_duration.empty()) {
+    // A guest code: its phone gets this long from when it is redeemed (call C7).
+    const auto for_s = serve::grants::parse_duration(a.for_duration);
+    if (!for_s) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
+    serve::grants::limit gives;
+    gives.for_s = *for_s;
+    code = serve::grants::issue_guest_code(store, seconds, gives, std::time(nullptr));
+  } else {
+    code = serve::issue_pair_code(store, seconds, std::time(nullptr));
+  }
   if (code.empty()) return fail("could not keep the code.", 1);
   print(code + "\n");
   return 0;
@@ -232,19 +638,31 @@ int run_disown(secrets::store& store) {
 
 int run_devices(secrets::store& store) {
   const auto devices = known::load(store);
-  if (devices.empty()) {
-    print("No paired devices.\n");
-    return 0;
+  std::vector<serve::grants::grant> limited;
+  const bool readable = serve::grants::load(store, limited);
+  if (devices.empty() && limited.empty()) {
+    print(readable ? "No paired devices.\n" : "No paired devices; the timed list cannot be read.\n");
+    return readable ? 0 : 1;
   }
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
   std::string out;
   for (const auto& d : devices) out += d.name + "  " + key_hex(d.key) + "\n";
+  for (const auto& g : limited) {
+    out += g.name + "  " + key_hex(g.key) + "  ";
+    out += g.expired(now) ? "expired " : "until ";
+    out += g.expires != 0 ? std::to_string(g.expires) + " (unix seconds)" : std::string("no end");
+    if (g.roots) out += "  " + std::to_string(g.roots->size()) + " folders";
+    if (g.guest) out += "  guest";
+    out += "\n";
+  }
+  if (!readable) out += "(the timed list cannot be read)\n";
   print(out);
   return 0;
 }
 
 }  // namespace
 
-int run_serve(const args& a, bool test_hooks) {
+int run_serve(const args& a, bool test_hooks, const char* version) {
 #if !defined(_WIN32)
   // It faces the internet, and its keys would then be root's: it runs as its own unprivileged user.
   if (!test_hooks && ::geteuid() == 0) return fail("it must not run as root; run it as its own user.", 1);
@@ -259,9 +677,19 @@ int run_serve(const args& a, bool test_hooks) {
   if (!store) return fail("its secrets folder must be this user's alone (mode 700).", 1);
   switch (a.serve) {
     case serve_action::run:
-      return run_service(a, test_hooks, data, *store);
+      return run_service(a, test_hooks, data, *store, version);
+    case serve_action::self_test:
+      return run_self_test_here(data, *store, test_hooks, version);
     case serve_action::init:
-      return run_init(*store);
+      return run_init(a, *store);
+    case serve_action::status:
+      return run_status(*store);
+    case serve_action::grant:
+      return run_grant(a, *store, data);
+    case serve_action::passphrase_set:
+      return run_passphrase_set(a, *store);
+    case serve_action::passphrase_reset:
+      return run_passphrase_reset(a, *store);
     case serve_action::devices:
       return run_devices(*store);
     case serve_action::add:

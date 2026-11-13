@@ -27,18 +27,25 @@ final class Generation: @unchecked Sendable {
   private var warmed = false
   let createdUnix: Int64
   let itemCount: Int
+  /// Search hears clips (§9): sound search's model was here and answers this catalogue.
+  let hearsSound: Bool
 
-  init(directory: URL, libraryRoot: URL, work: URL) throws {
+  /// `sound`: sound search's model folder (§9), when it is on the phone; nil otherwise.
+  init(directory: URL, libraryRoot: URL, work: URL, sound: URL? = nil) throws {
     var options = mv_mobile_open_options(
-      struct_size: UInt32(MemoryLayout<mv_mobile_open_options>.size), generation_dir: nil, library_dir: nil, work_dir: nil)
+      struct_size: UInt32(MemoryLayout<mv_mobile_open_options>.size), generation_dir: nil, library_dir: nil, work_dir: nil,
+      sound_dir: nil)
     var out: OpaquePointer?
     let status = directory.path.withCString { dir in
       libraryRoot.path.withCString { library in
         work.path.withCString { work in
-          options.generation_dir = dir
-          options.library_dir = library
-          options.work_dir = work
-          return mv_mobile_library_open(&options, &out)
+          (sound?.path ?? "").withCString { sound in
+            options.generation_dir = dir
+            options.library_dir = library
+            options.work_dir = work
+            options.sound_dir = sound.pointee == 0 ? nil : sound
+            return mv_mobile_library_open(&options, &out)
+          }
         }
       }
     }
@@ -61,6 +68,7 @@ final class Generation: @unchecked Sendable {
     number = info.generation
     createdUnix = info.created_unix
     itemCount = Int(info.assets)
+    hearsSound = info.has_sound != 0
   }
 
   /// True once: the caller then starts what follows the first paint.
@@ -71,9 +79,11 @@ final class Generation: @unchecked Sendable {
     }
   }
 
-  /// (epoch, generation) only goes up (§5 rule 7).
+  /// (epoch, generation) only goes up (§5 rule 7). The same generation opened again once sound
+  /// search's model has arrived replaces the one opened without it.
   func isNewer(than other: Generation) -> Bool {
-    (epoch, number) > (other.epoch, other.number)
+    if (epoch, number) == (other.epoch, other.number) { return hearsSound && !other.hearsSound }
+    return (epoch, number) > (other.epoch, other.number)
   }
 
   deinit {

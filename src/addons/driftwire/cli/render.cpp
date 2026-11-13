@@ -9,7 +9,7 @@
 
 #include "addons/driftwire/cli/text.h"
 #include "addons/driftwire/eta.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 
 namespace mv::driftwire::cli {
 

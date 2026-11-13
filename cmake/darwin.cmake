@@ -524,6 +524,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 # The Driftwire add-on (docs/design/28): libmv_driftwire.dylib in
 # build/addons/driftwire, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
+# Phone access, part of the app (docs/plans/phone-in-the-app.md).
+include("${CMAKE_CURRENT_LIST_DIR}/phone.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -755,6 +757,7 @@ function(mv_mac_host target)
     mv_image
     mv_canvas
     mv_shell
+    mv_phone
     mv_io
     mv_player
     imgui::imgui
@@ -1198,7 +1201,7 @@ if(MV_BUILD_TESTS)
       tests/test_nle.cpp
       tests/test_mobile_search.cpp  # docs/plans/mobile.md M5
     )
-    target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
+    target_link_libraries(mv_ai_tests PRIVATE mv_phone mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
       mv_mobile_search mv_mobile_test_fixture Catch2::Catch2WithMain)
     target_include_directories(mv_ai_tests PRIVATE src tests)
     target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"

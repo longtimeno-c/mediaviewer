@@ -34,7 +34,7 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/driftwire/serve_client.h"
+#include "wire/serve_client.h"
 #include "core/result.h"
 #include "mobile/link.h"
 

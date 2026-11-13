@@ -14074,6 +14074,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // nothing is unloaded. Before 2026-09-27 the loaded set was torn down by
   // static destruction after main returned, joining a pack's model load or
   // inference batch (seconds), and could free it under a chrome read.
+  // Phone access lets go of Local search and of the NAS first; it never waits
+  // on the NAS (docs/plans/phone-in-the-app.md, phone/app.h).
+  (void)mv_phone_stop();
   (void)mv_addon_quit();
   // #452: a sign-in start that nothing kept removes its own entry (one registry
   // delete; the window is gone).

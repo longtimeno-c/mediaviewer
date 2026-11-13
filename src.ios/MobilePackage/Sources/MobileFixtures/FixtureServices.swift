@@ -426,6 +426,7 @@ struct FixtureConnection: ConnectionService {
       world.identifyFailures -= 1
       throw PairingFailure.synologyUnreachable(FixtureConnection.triedAddresses)
     }
+    if code == "fixture:guest" { return LibraryIdentity(name: "Home library", fingerprint: "7F3A 92C1", guestFor: 86_400) }
     return LibraryIdentity(name: "Home library", fingerprint: "7F3A 92C1")
   }
 

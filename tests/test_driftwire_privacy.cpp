@@ -15,9 +15,9 @@
 #include <Security/Security.h>
 #endif
 
-#include "addons/driftwire/known.h"
+#include "wire/known.h"
 #include "addons/driftwire/relay.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 
 namespace known = mv::driftwire::known;
 namespace secrets = mv::driftwire::secrets;
