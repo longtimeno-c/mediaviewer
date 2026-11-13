@@ -180,6 +180,29 @@ int32_t mv_catalogue_read(mv_mobile_link* link, mv_catalogue_info* out);
 /* Removes the library's files; forget the keys separately. */
 void mv_library_remove(const char* library_dir);
 
+/* ---- the sound text tower (docs/plans/mobile.md 9, "Sound search"; sound_tower.h) -------
+ * The catalogue carries every clip's sound vectors; the text half that puts a typed query in
+ * their space is one pinned download, kept in <library_dir>/sound/ (so Forget removes it).
+ * Every file is hashed against the pin in the app before it is kept. */
+
+/* The release it comes from, ending in '/'. */
+const char* mv_sound_base(void);
+/* Its size in all, for "the size first" (8.4). */
+uint64_t mv_sound_total_bytes(void);
+/* 1 when it is here and verified. Reads a small file. */
+int32_t mv_sound_ready(const char* library_dir);
+/* Bytes it holds on the phone, a partial download included: part of the cache size shown. */
+uint64_t mv_sound_bytes(const char* library_dir);
+/* 1 when this generation's clips have sounds the pinned tower answers (one indexed probe). */
+int32_t mv_sound_wanted(const char* generation_dir);
+/* BLOCKS. Downloads what is missing through `fetch`, resuming, and verifies it. base_url NULL:
+ * mv_sound_base(). `allowed` (NULL: always) is asked before each file and with each chunk.
+ * Returns MV_LINK_OK (ready), MV_LINK_WAITING, MV_LINK_CANCELLED, MV_LINK_UNREACHABLE,
+ * MV_LINK_NOT_FOUND (a pinned file is gone from the release), MV_LINK_REJECTED (a file was not
+ * the pinned one and is deleted), MV_LINK_NO_SPACE or MV_LINK_INTERNAL. */
+int32_t mv_sound_fetch(const char* library_dir, const char* base_url, mv_fetch_fn fetch, void* fetch_ctx, mv_cancel* cancel,
+                       mv_sync_allowed_fn allowed, mv_sync_progress_fn progress, void* ctx);
+
 /* ---- pictures and files, by assets.id ------------------------------------ */
 
 typedef void (*mv_bytes_fn)(void* ctx, const uint8_t* data, size_t size);

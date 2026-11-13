@@ -17,6 +17,8 @@
 #include "mobile/link_thumbs.h"
 #include "mobile/mv_mobile_link.h"
 #include "mobile/sample.h"
+#include "mobile/sound_fetch.h"
+#include "mobile/sound_tower.h"
 #include "mobile/sync.h"
 
 using namespace mv;
@@ -390,6 +392,46 @@ void mv_link_disconnect(mv_mobile_link* l) {
 }
 
 const char* mv_sample_base(void) { return sample::kBase.data(); }
+
+const char* mv_sound_base(void) { return sound::kBase.data(); }
+
+uint64_t mv_sound_total_bytes(void) { return sound::total_bytes(); }
+
+// A yes or no: a throw is a no, never catch_all's MV_LINK_INTERNAL (non-zero).
+int32_t mv_sound_ready(const char* library_dir) {
+  try {
+    return library_dir && sound::ready(sound::folder(library_dir)) ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+uint64_t mv_sound_bytes(const char* library_dir) {
+  try {
+    return library_dir ? sound::bytes_on_disk(library_dir) : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+int32_t mv_sound_wanted(const char* generation_dir) {
+  try {
+    return generation_dir && sound::wanted(generation_dir) ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+int32_t mv_sound_fetch(const char* library_dir, const char* base_url, mv_fetch_fn fetch, void* fetch_ctx, mv_cancel* cancel,
+                       mv_sync_allowed_fn allowed, mv_sync_progress_fn progress, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!library_dir || !fetch) return MV_LINK_INVALID;
+    std::string base = base_url && *base_url ? base_url : std::string(sound::kBase);
+    if (base.back() != '/') base += '/';
+    return sound::fetch_all(library_dir, base, fetch, fetch_ctx, cancel ? cancel->flag.get() : nullptr, allowed, progress,
+                            ctx);
+  });
+}
 
 int32_t mv_sync_check(mv_mobile_link* l, mv_sync_report* report) {
   return catch_all([&]() -> int32_t {

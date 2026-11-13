@@ -914,7 +914,8 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     const std::string sounds = p->profile().sounds;
     if (sounds.empty()) return err(status::unsupported_format);  // a tier without sound search
     MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(dir, sounds), join(p->fetched("ai-audio"), sounds)));
-    if (!files_present({spec.audio_file, spec.text_file, spec.vocab_file})) return err(status::not_found);
+    // The text half only: a phone has no audio tower (docs/plans/mobile.md §9, "Sound search").
+    if (!files_present({spec.text_file, spec.vocab_file, spec.merges_file})) return err(status::not_found);
     infer::session_options cpu;
     cpu.on = infer::backend::cpu;
     cpu.threads = 2;

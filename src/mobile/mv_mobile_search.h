@@ -55,6 +55,10 @@ typedef struct mv_mobile_open_options {
   const char* generation_dir;
   const char* library_dir;
   const char* work_dir;
+  /* The sound text tower's folder (sound_tower.h; mv_sound_fetch in mv_mobile_link.h), or NULL.
+   * Loaded only when it is verified and the catalogue has clip sounds it answers; the engine then
+   * works in work_dir + "+sound", so one opened without it keeps work_dir. */
+  const char* sound_dir;
 } mv_mobile_open_options;
 
 mv_mobile_status mv_mobile_library_open(const mv_mobile_open_options* options, mv_mobile_library** out);
@@ -68,6 +72,7 @@ typedef struct mv_mobile_library_info {
   uint32_t assets;    /* photos and clips */
   uint32_t people;    /* named */
   uint32_t has_tiny;  /* 1 when tiny.pack is here */
+  uint32_t has_sound; /* 1 when search hears clips: the sound tower was given and answers them */
   char active_spec[128];
 } mv_mobile_library_info;
 mv_mobile_status mv_mobile_library_info_get(const mv_mobile_library* library, mv_mobile_library_info* out);

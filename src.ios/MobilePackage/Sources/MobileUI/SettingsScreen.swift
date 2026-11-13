@@ -38,6 +38,7 @@ struct SettingsScreen: View {
               InfoRow(label: "Items", value: catalogue.itemCount.formatted())
             }
             InfoRow(label: "Saved on this phone", value: ProgressWords.size(model.connection.cacheBytes))
+            soundSearch
           }
           section("Look") {
             Picker("Appearance", selection: $appearance) {
@@ -88,6 +89,45 @@ struct SettingsScreen: View {
       .background(Theme.ground)
       .navigationTitle("Settings")
       .navigationBarTitleDisplayMode(.inline)
+    }
+  }
+
+  /// §9 "Sound search": what clips sound like, once its model is on the phone. Shown only for a
+  /// library whose clips the Mac listened to.
+  @ViewBuilder
+  private var soundSearch: some View {
+    switch model.connection.soundSearch {
+    case .notNeeded:
+      EmptyView()
+    case .ready:
+      InfoRow(label: "Sound search", value: "On")
+    case .downloading(let done, let total):
+      InfoRow(label: "Sound search", value: "Downloading · " + ProgressWords.amounts(done, of: total))
+    case .waitingForWiFi(let bytes):
+      InfoRow(label: "Sound search", value: "Waiting for Wi-Fi")
+      Text("Search can find clips by what they sound like once a \(ProgressWords.size(bytes)) model is on this phone. It downloads on Wi-Fi.")
+        .font(.footnote)
+        .foregroundStyle(Theme.body)
+        .fixedSize(horizontal: false, vertical: true)
+      Button("Download now over mobile data") {
+        Task { await model.services.sync.downloadSoundSearch(overMobileData: true) }
+      }
+      .buttonStyle(QuietButtonStyle(color: Theme.accent))
+    case .unavailable(let problem):
+      InfoRow(label: "Sound search", value: Self.words(problem))
+      if problem == .offline || problem == .rejected {
+        Button("Try again") { Task { await model.services.sync.downloadSoundSearch(overMobileData: false) } }
+          .buttonStyle(QuietButtonStyle(color: Theme.accent))
+      }
+    }
+  }
+
+  private static func words(_ problem: SoundSearchProblem) -> String {
+    switch problem {
+    case .offline: return "Couldn't download"
+    case .notEnoughSpace: return "Not enough space on this phone"
+    case .gone: return "Needs an app update"
+    case .rejected: return "The download was damaged"
     }
   }
 

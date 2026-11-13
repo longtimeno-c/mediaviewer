@@ -137,6 +137,9 @@ class catalogue {
   // (no transcript answers), the busiest for a catalogue from before the key.
   // Speech needs no model.
   [[nodiscard]] std::string speech_spec() const;
+  // True when some clip has vectors under this index key: a sound tower is worth loading only
+  // for a catalogue whose clips were heard by the tower it answers (sound_tower.h).
+  [[nodiscard]] bool has_vectors(std::string_view spec) const;
   // The asset id at this path in the catalogue, for the engine's tile calls.
   [[nodiscard]] std::optional<std::int64_t> id_at(const std::string& path) const;
 

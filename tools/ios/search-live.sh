@@ -20,6 +20,9 @@
 # MV_LIVE_REUSE=1 keeps a finished publish (<out>/mac.jsonl) and starts at step 3; the image then
 # stays attached when the run ends. Without it the image is detached on the way out.
 # MV_LIVE_QUERIES and MV_LIVE_MAC: another query list and the Mac's answers to it (answer-engine).
+# MV_LIVE_SOUND=<folder>: sound search's model (tools/ios/clap_text_phone.py's output) served on
+# 127.0.0.1 for a Debug app, which downloads it and searches with it; the Mac side always hears.
+# MV_LIVE_SOUND=release: the app downloads it from the project's release, as a phone does.
 set -euo pipefail
 data_src="${1:?data}"; folder="${2:?folder}"; udid="${3:?udid}"; out="${4:?out}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -34,6 +37,11 @@ mnt="$out/mnt"
 # This script's own service only: the pid in serve.pid, and only while it is still our
 # `driftwire serve` (a reused pid is someone else's process).
 stop_own_service() {
+  if [[ -f $out/sound-serve.pid ]]; then
+    local spid; spid="$(cat "$out/sound-serve.pid")"
+    if ps -p "$spid" -o command= 2>/dev/null | grep -q "http.server 18463"; then kill "$spid" 2>/dev/null || true; fi
+    rm -f "$out/sound-serve.pid"
+  fi
   [[ -f $out/serve.pid ]] || return 0
   local pid; pid="$(cat "$out/serve.pid")"
   if ps -p "$pid" -o command= 2>/dev/null | grep -q "mv_driftwire_cli_test serve"; then kill "$pid" 2>/dev/null || true; fi
@@ -134,6 +142,15 @@ PY
 # Only this script's own service from an earlier run, never whatever else holds the port.
 stop_own_service; sleep 1
 "$cli" serve --data "$out/serve" --test-loopback > "$out/serve.log" 2>&1 & echo $! > "$out/serve.pid"
+sound_base=""
+if [[ ${MV_LIVE_SOUND:-} == release ]]; then
+  sound_base="release"
+elif [[ -n ${MV_LIVE_SOUND:-} ]]; then
+  # Plain files on loopback; the app asks from byte 0 and checks every file against its pin.
+  python3 -I -m http.server 18463 --bind 127.0.0.1 --directory "$MV_LIVE_SOUND" > "$out/sound-serve.log" 2>&1 &
+  echo $! > "$out/sound-serve.pid"
+  sound_base="http://127.0.0.1:18463/"
+fi
 sleep 1
 
 bundle=io.github.longtimeno-c.mediaviewer.mobile
@@ -143,7 +160,7 @@ xcrun simctl keychain "$udid" reset
 xcrun simctl install "$udid" "$out/MediaViewer.app"
 mkdir -p "$out/shots"
 cd "$root/src.ios"
-TEST_RUNNER_MV_LIVE_PAYLOAD="$payload" TEST_RUNNER_MV_LIVE_QUERIES="${MV_LIVE_QUERIES:-$out/work/queries.txt}" TEST_RUNNER_MV_LIVE_OUT="$out/shots" \
+TEST_RUNNER_MV_LIVE_SOUND_BASE="$sound_base" TEST_RUNNER_MV_LIVE_PAYLOAD="$payload" TEST_RUNNER_MV_LIVE_QUERIES="${MV_LIVE_QUERIES:-$out/work/queries.txt}" TEST_RUNNER_MV_LIVE_OUT="$out/shots" \
   xcodebuild test -project MediaViewerMobile.xcodeproj -scheme MediaViewerFixtures -destination "platform=iOS Simulator,id=$udid" \
   -derivedDataPath "$out/dd-tests" CODE_SIGNING_ALLOWED=NO -only-testing:MediaViewerUITests/LiveSearchTests | grep -E 'error:|Test Case|\*\* TEST'
 

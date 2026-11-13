@@ -706,8 +706,10 @@ copy it to `<out>/MediaViewer.app`. Without a signature it has no keychain and c
 index is only read. The Mac's side runs with the index's own compute and quality (`MV_LIVE_CPU=1`:
 the CPU at quality High), and needs every AI piece installed. It answers `place:`
 with the Places add-on's own rule (`place_query`); clip routes are not walked. Tiles come from
-ImageIO and AVFoundation, which cannot read every clip. The phone has no sound tower, so a query the
-Mac answers by sound differs. The script detaches its disk image on the way out (not with `MV_LIVE_REUSE=1`); afterwards delete
+ImageIO and AVFoundation, which cannot read every clip. With `MV_LIVE_SOUND=<folder>` (the output of
+`tools/ios/clap_text_phone.py`, below) the folder is served on 127.0.0.1, a Debug app downloads sound
+search's model from it (`MV_SOUND_BASE`) and the queries wait until Settings says Sound search is On;
+without it the phone has no sound tower, and a query the Mac answers by sound differs. The script detaches its disk image on the way out (not with `MV_LIVE_REUSE=1`); afterwards delete
 `<out>` (the image holds copies of the files, `data/` a copy of the index and faces) with
 `hdiutil detach <out>/mnt; rm -rf <out>`. `tools/ios/small-screen.sh <out>` runs every screen on an iPhone SE
 (3rd generation) Simulator at the largest text size.
@@ -725,8 +727,10 @@ tools/ios/run-parity.sh <nas>/.mediaviewer/gen/000001 <nas>/.mediaviewer <pack> 
 
 `publish` makes `queries.local.txt` from the catalogue's own names, places and cameras, so those
 stay out of the repo. Numbers from this are Simulator numbers, not phone numbers. Both sides run
-without the sound text tower, which the manifest does not carry; `MV_PARITY_WITH_SOUND=1` keeps it
-on the desktop side. The run fails below 200 queries, on a query listed twice, and when the
+without the sound text tower by default; `MV_PARITY_WITH_SOUND=1` keeps it on the desktop side, and
+`SIMCTL_CHILD_MV_PARITY_SOUND_DIR=<folder>` gives the phone engine sound search's model (a folder the
+phone's download would have verified: the pinned files and `verified.txt`). `mv_mobile_parity` also
+prints the process's physical footprint, the figure iOS holds an app to. The run fails below 200 queries, on a query listed twice, and when the
 two desktop runs disagree. `place:` is covered only through the labels the catalogue stores: the
 desktop app answers it through the Places add-on, which neither half loads. `RealCatalogueTests` drives the real app and is skipped unless
 `TEST_RUNNER_MV_REAL_CATALOGUE` names a folder for its screenshots. MobileCore's own tests (generation
@@ -735,6 +739,20 @@ swaps, tiles and warm-up, over generations the publisher builds) run in a Simula
 ```bash
 tools/ios/run-mobilecore-tests.sh
 ```
+
+### Sound search's model for the phone (plan: `docs/plans/mobile.md` §9, "Sound search")
+
+The phone downloads the text half of the Mac's CLAP once, from the GitHub release `clap-text-phone-1`,
+and keeps it only if each file matches the size and SHA-256 in `src/mobile/sound_tower.h`. To make the
+files again (onnxruntime 1.30, onnx and numpy, in a venv of their own; it downloads the pinned 501 MB
+fp32 export from Hugging Face unless `--fp32` names a copy), and print the pin lines:
+
+```bash
+python3 tools/ios/clap_text_phone.py --out <folder>
+```
+
+The same input gives the same bytes. A new export is a new pin: a new release tag, the lines in
+`sound_tower.h`, and an app update; the old release stays for the builds that name it.
 
 ### The sample library (code `SAMPLE`; plan: `docs/plans/mobile.md` §11.1)
 

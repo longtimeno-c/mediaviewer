@@ -449,6 +449,12 @@ std::string catalogue::speech_spec() const {
   return q.next() ? q.text(0) : std::string();
 }
 
+bool catalogue::has_vectors(std::string_view spec) const {
+  stmt q(db_, "SELECT 1 FROM frames WHERE spec = ?1 LIMIT 1");  // frames_spec: one probe
+  q.bind(1, std::string(spec));
+  return q.next();
+}
+
 std::optional<std::int64_t> catalogue::id_at(const std::string& path) const {
   stmt q(db_, "SELECT id FROM assets WHERE path = ?1");
   q.bind(1, path);

@@ -21,10 +21,12 @@ enum LiveServices {
   }
 
   /// A new `CatalogueInfo` is the only "catalogue changed" signal: the sync has installed a
-  /// generation, so open what installed.json now names.
+  /// generation, so open what installed.json now names. Sound search's model arriving (§9) opens
+  /// the same generation again, with it.
   private static func reopenOnNewCatalogue(_ catalogue: LocalCatalogue, connection: LinkConnection) {
     Task.detached(priority: .utility) {
       var last = connection.current.catalogue
+      var hears = connection.current.soundSearch == .ready
       var library = LinkConnection.LibraryChange(current: connection.current.libraryID)
       for await snapshot in connection.updates() {
         // Forgotten, or another library paired over this one: the open catalogue goes too, or
@@ -33,8 +35,14 @@ enum LiveServices {
           catalogue.forgetInForce()
           last = nil
         }
-        guard snapshot.catalogue != last else { continue }
+        let nowHears = snapshot.soundSearch == .ready
+        // At launch the model may be here from before: the generation opened with it.
+        guard snapshot.catalogue != last || (nowHears && !hears && !catalogue.hearsSound) else {
+          hears = nowHears
+          continue
+        }
         last = snapshot.catalogue
+        hears = nowHears
         if snapshot.catalogue != nil { try? await catalogue.reloadInstalled() }
       }
     }

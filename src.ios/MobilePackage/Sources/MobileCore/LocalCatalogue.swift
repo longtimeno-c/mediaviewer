@@ -35,9 +35,20 @@ public struct LibraryLocation: Sendable {
   public var installedFile: URL { root.appendingPathComponent("installed.json") }
 
   var generations: URL { root.appendingPathComponent("gen", isDirectory: true) }
+  /// The engine's work folder; the core adds "+sound" when it lays sound search's model out, so
+  /// the engine of the same generation opened without it keeps its own.
   func work(for generation: URL) -> URL {
     root.appendingPathComponent("engine", isDirectory: true).appendingPathComponent(generation.lastPathComponent, isDirectory: true)
   }
+
+  /// Sound search's model (§9; src/mobile/sound_tower.h), as the link downloads it.
+  public var soundFolder: URL {
+    root.appendingPathComponent("sound", isDirectory: true).appendingPathComponent("clap-general", isDirectory: true)
+  }
+
+  /// Whether sound search's model is here, verified: the record the download writes last. The
+  /// core checks it whole (each file's size, every hash named) when the library opens.
+  var hasSoundModel: Bool { FileManager.default.fileExists(atPath: soundFolder.appendingPathComponent("verified.txt").path) }
 
   private struct Installed: Decodable {
     let dir: String
@@ -118,7 +129,8 @@ public final class LocalCatalogue: @unchecked Sendable {
 
   private static func open(_ directory: URL, in root: LibraryLocation) throws -> Generation {
     beforeOpen?(directory)
-    return try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory))
+    return try Generation(directory: directory, libraryRoot: root.root, work: root.work(for: directory),
+                          sound: root.hasSoundModel ? root.soundFolder : nil)
   }
 
   /// Puts `g` in force unless a newer (epoch, generation) already is: opens can finish in any
@@ -198,6 +210,10 @@ public final class LocalCatalogue: @unchecked Sendable {
     guard let g = try? await generation() else { return nil }
     return Self.info(of: g)
   }
+
+  /// Whether the generation in force hears clips already (sound search's model was there when it
+  /// opened): its model's arrival then needs no second open.
+  public var hearsSound: Bool { lock.withLock { current?.hearsSound ?? false } }
 
   /// What is known without waiting: nil until the generation has opened.
   public var infoIfOpen: CatalogueInfo? { lock.withLock { current.map(Self.info(of:)) } }
@@ -476,6 +492,7 @@ private final class CoreSearch: SearchService, @unchecked Sendable {
     let kind: Moment.Kind
     if hit.match & MV_MOBILE_MATCH_SPEECH != 0 { kind = .speech }
     else if hit.match & MV_MOBILE_MATCH_TEXT != 0 { kind = .wordsOnScreen }
+    else if hit.match & MV_MOBILE_MATCH_SOUND != 0 { kind = .sound }  // what the clip sounds like (§9)
     else { kind = .scene }
     return Moment(seconds: TimeInterval(hit.pts_ms) / 1000, kind: kind, text: text)
   }

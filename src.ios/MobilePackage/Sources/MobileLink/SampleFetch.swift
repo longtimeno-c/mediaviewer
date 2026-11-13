@@ -1,7 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The sample library's transport (docs/plans/mobile.md §11.1): the core's `mv_fetch_fn`, an HTTPS GET
-// of a byte range from the static folder src/mobile/sample.h names. Called on a core worker and
+// of a byte range from the static folder src/mobile/sample.h names. Sound search's model (§9) comes
+// the same way, from the release src/mobile/sound_tower.h names, each file hashed against its pin. Called on a core worker and
 // blocks it, as the link's own reads do; never on the main thread. Nothing about the person is
 // sent: no cookies, no cache; the user agent is a fixed "MediaViewer" (not the build, the OS
 // or the device) and the language "*", so a request says nothing a range does not. The core uses
@@ -115,11 +116,11 @@ final class SampleFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     return transfer.status
   }
 
-  /// Only https, and only the folder the core named: a Debug build's test folder may be a loopback
-  /// server or a file:// folder.
+  /// Only https, and only the folders the core named (the sample library's, sound search's model's):
+  /// a Debug build's test folder may be a loopback server or a file:// folder.
   private static func allowed(_ url: URL) -> Bool {
-    guard let base = URL(string: base) else { return false }
-    guard url.absoluteString.hasPrefix(base.absoluteString) else { return false }
+    let bases = [base, LinkConnection.soundBase].compactMap { URL(string: $0)?.absoluteString }
+    guard bases.contains(where: { url.absoluteString.hasPrefix($0) }) else { return false }
     #if DEBUG
     if url.isFileURL || url.host == "127.0.0.1" || url.host == "localhost" { return true }
     #endif
