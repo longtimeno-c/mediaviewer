@@ -215,14 +215,29 @@ public struct AddressFailure: Hashable, Sendable, Identifiable {
   }
 }
 
+/// Settings the core reads as well as the screen (docs/plans/nas-relay.md §9.2).
+public enum LinkPreferences {
+  /// "Faster direct connection on mobile data": once on the person's relay, try a direct path on
+  /// mobile data too (on Wi-Fi it is always tried). On unless switched off (owner, 2026-11-12).
+  public static let directOnMobileData = "directPathOnMobileData"
+  public static func directOnMobileDataEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+    defaults.object(forKey: directOnMobileData) as? Bool ?? true
+  }
+}
+
 public enum SynologyState: Hashable, Sendable {
-  case reachable(address: String, overInternet: Bool)
+  /// `relayed`: through the person's own relay (docs/plans/nas-relay.md); overInternet is true too,
+  /// so the mobile-data rules are the same as over the internet.
+  case reachable(address: String, overInternet: Bool, relayed: Bool = false)
   case unreachable([AddressFailure])
   case reachableOnlyOnItsOwnNetwork
   case serviceTooOld
   case publisherChanged
   /// The computer removed this phone from the library.
   case deviceRevoked
+  /// This phone's time-limited access ended (docs/plans/nas-owner-and-guests.md §8.2). Not a
+  /// removal: if the owner extends it, the phone gets straight back in.
+  case accessEnded
 }
 
 public struct CatalogueInfo: Hashable, Sendable {
@@ -279,6 +294,9 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   public var libraryName = ""
   /// Whether search hears clips, and the download that makes it (stamped when published).
   public var soundSearch: SoundSearchState = .notNeeded
+  /// When this phone's access ends, as the service last said it (on the service's clock); nil for
+  /// a phone with no time limit.
+  public var accessUntil: Date? = nil
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {
@@ -304,11 +322,15 @@ public struct LibraryIdentity: Hashable, Sendable {
   public let fingerprint: String
   /// The sample library's code: nothing on a computer to compare with.
   public let isSample: Bool
+  /// A guest code (docs/plans/nas-owner-and-guests.md §8.2): how long access lasts from pairing,
+  /// as the code says. nil for an ordinary code. The NAS holds the real limit.
+  public let guestFor: TimeInterval?
 
-  public init(name: String, fingerprint: String, isSample: Bool = false) {
+  public init(name: String, fingerprint: String, isSample: Bool = false, guestFor: TimeInterval? = nil) {
     self.name = name
     self.fingerprint = fingerprint
     self.isSample = isSample
+    self.guestFor = guestFor
   }
 }
 
@@ -423,6 +445,8 @@ public enum CopyFailure: Error, Hashable, Sendable {
   case notEnoughSpace(neededBytes: Int64)
   /// What arrived does not match what the computer published and signed.
   case catalogueRejected
+  /// This phone's time-limited access ended (nas-owner-and-guests.md §8.2): nothing is copied.
+  case accessEnded
 }
 
 public enum DownloadEvent: Sendable {

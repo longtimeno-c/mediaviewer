@@ -1,6 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/engine.h"
+#include "catalogue/publisher.h"
+#include "catalogue/catalog_chain.h"
 
 #include <ctime>
 #include <random>
@@ -567,7 +569,6 @@ void engine::stop() noexcept {
     }
     if (t.joinable()) t.join();
   }
-  phone_link_stop();
   // After the control thread (which sets it): no change is called in after this.
   if (watching_) {
     (void)host_.watch_tree({}, nullptr, nullptr);
@@ -5538,26 +5539,6 @@ static bool write_shared_list(const std::string& file, const std::vector<catalog
   return static_cast<bool>(out);
 }
 
-std::vector<catalog::shared_file> read_shared_list(const std::string& file) {
-  std::ifstream in(fs_path(file), std::ios::binary);
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  std::vector<catalog::shared_file> out;
-  const auto doc = json::parse(ss.str(), 4);
-  if (!doc || doc->k != json::kind::array) return out;
-  for (const json::value& v : doc->a) {
-    catalog::shared_file f;
-    const std::string* source = v.str("source");
-    const std::string* rel = v.str("rel");
-    if (!source || !rel) continue;
-    f.source = *source;
-    f.rel = *rel;
-    f.size = static_cast<std::uint64_t>(std::max<std::int64_t>(0, v.integer("size").value_or(0)));
-    out.push_back(std::move(f));
-  }
-  return out;
-}
-
 static double wall_now() {
   return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
@@ -5778,6 +5759,13 @@ std::string engine::phone_json() const {
   w.key("thumbs_left").boolean(phone_.thumbs_left);
   w.key("needs_bytes").integer(static_cast<std::int64_t>(phone_.needs_bytes));
   w.key("deliver_attempts").integer(static_cast<std::int64_t>(phone_.deliver_attempts));
+  // What the app's Phone access needs (docs/plans/phone-in-the-app.md): who
+  // this library is, and the newest generation built here, for the nearby copy.
+  w.key("library_id").string(phone_.library_id);
+  w.key("epoch").integer(static_cast<std::int64_t>(phone_.epoch));
+  if (const std::uint64_t newest = std::max(phone_.waiting, phone_.generation); newest != 0) {
+    w.key("gen_dir").string(data_dir_ + "/phone/gen/" + std::to_string(newest));
+  }
   w.end_object();
   return w.take();
 }
@@ -5848,7 +5836,6 @@ std::vector<std::int64_t> engine::phone_carried_roots() {
 // The control loop's tick. Nothing here waits, and it adds no wakeup: the loop
 // runs anyway. While nothing changed it is a lock and a few comparisons.
 void engine::phone_tick(bool walked) {
-  phone_link_tick();
   if (options_.read_only) return;
   std::uint64_t waiting = 0;
   std::string published_stamp;
@@ -5995,6 +5982,42 @@ void engine::fill_phone_thumbs(catalog::thumb_store& store, const std::vector<st
   left = !done || !done->complete;
 }
 
+result<std::vector<std::uint8_t>> engine::phone_key(bool make) {
+  if (deps_.key_store) {
+    auto store = deps_.key_store();
+    return catalog::publisher_key(store.get(), nullptr, make);
+  }
+  auto store = driftwire::secrets::os_store(catalog::kPublisherService);
+  auto legacy = driftwire::secrets::os_store(catalog::kLegacyService);
+  return catalog::publisher_key(store.get(), legacy.get(), make);
+}
+
+// The share's library.json is the app's (Phone access writes it when the
+// person chooses the folder, and follows a key's move). Signed with this key,
+// its id is the one to publish under while nothing has been, and its epoch
+// only ever goes forward. Whether anything changed (saved).
+bool engine::adopt_phone_library(const std::string& destination, std::span<const std::uint8_t> public_key) {
+  auto lib = catalog::read_library(destination);
+  if (!lib || lib->public_key != catalog::to_hex(public_key)) return false;
+  bool changed = false;
+  {
+    std::lock_guard lock(phone_m_);
+    const bool never_published = phone_.generation == 0 && phone_.waiting == 0;
+    if (lib->library_id == phone_.library_id) {
+      if (lib->epoch > phone_.epoch) {
+        phone_.epoch = lib->epoch;
+        changed = true;
+      }
+    } else if (never_published || phone_.library_id.empty()) {
+      phone_.library_id = lib->library_id;
+      phone_.epoch = lib->epoch;
+      changed = true;
+    }
+  }
+  if (changed) (void)save_phone_state();
+  return changed;
+}
+
 void engine::run_phone_publish(const std::string& destination, bool automatic) {
   const auto finish = [&](const std::string& why) {
     std::lock_guard lock(phone_m_);
@@ -6026,24 +6049,19 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
   // The private key lives only in the OS's store. A build that has none (a
   // development build without the entitlement) cannot publish: a key made for
   // one run would be a new publisher to every phone next time.
-  auto keys = deps_.key_store ? deps_.key_store() : driftwire::secrets::os_store("MediaViewer Local search");
-  if (!keys) return finish("no_key_store");
-  static constexpr const char* kKeyName = "catalogue-signing-key";
-  std::vector<std::uint8_t> secret;
-  if (auto kept = keys->get(kKeyName)) {
-    secret = std::move(*kept);
-  } else {
-    secret = catalog::make_keypair().second;
-    if (secret.empty()) return finish("no_key_store");  // no usable libsodium: never store an empty key
-    if (!keys->put(kKeyName, secret)) return finish("no_key_store");
-    auto back = keys->get(kKeyName);  // a store that does not keep it is no store
-    if (!back || *back != secret) return finish("no_key_store");
-  }
+  // The key is the app's Phone access's (catalogue/publisher.h), shared with it.
+  auto signing = phone_key(true);
+  if (!signing) return finish("no_key_store");
+  const std::vector<std::uint8_t> secret = std::move(*signing);
   const std::vector<std::uint8_t> public_key = catalog::public_of(secret);
   if (public_key.empty()) return finish("no_key_store");
   {
     std::lock_guard lock(phone_m_);
     phone_.fingerprint = catalog::fingerprint(public_key);
+  }
+  if (adopt_phone_library(destination, public_key)) {
+    std::lock_guard lock(phone_m_);
+    library_id = phone_.library_id;
   }
 
   // Away is not an error yet: the Mac is carried. A library that has reached
@@ -6287,12 +6305,14 @@ void engine::run_phone_deliver() {
   }
   if (wall_now() < retry_at) return finish(last_error);
 
-  auto keys = deps_.key_store ? deps_.key_store() : driftwire::secrets::os_store("MediaViewer Local search");
-  if (!keys) return finish("no_key_store");
-  auto secret = keys->get("catalogue-signing-key");
+  auto secret = phone_key(false);
   if (!secret) return finish("no_key_store");
   const std::vector<std::uint8_t> public_key = catalog::public_of(*secret);
   if (public_key.empty()) return finish("no_key_store");
+  if (adopt_phone_library(destination, public_key)) {
+    std::lock_guard lock(phone_m_);
+    library_id = phone_.library_id;
+  }
   deliver_phone_generation(*secret, public_key, library_id, finish, set_progress);
 }
 
@@ -6346,7 +6366,7 @@ void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, c
   d.public_key = public_key;
   d.secret_key = secret;
   d.now_unix = static_cast<std::int64_t>(std::time(nullptr));
-  d.shared = read_shared_list(gen_dir + ".shared.json");
+  d.shared = catalog::read_shared_list(gen_dir + ".shared.json");
   const auto out_of_room = [&]() {
     auto v = host_.volume_of(destination);
     if (!v) return false;

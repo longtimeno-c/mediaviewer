@@ -9,6 +9,7 @@
 #include "catch_compat.h"
 
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <future>
 #include <map>
@@ -18,10 +19,12 @@
 #include <sqlite3.h>
 
 #include "addons/ai/catalog.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/pair_check.h"
-#include "addons/driftwire/secrets.h"
-#include "addons/driftwire/serve.h"
+#include "wire/known.h"
+#include "wire/pair_check.h"
+#include "wire/secrets.h"
+#include "wire/grants.h"
+#include "wire/serve.h"
+#include "wire/splice.h"
 #include "addons/driftwire/transfer.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
@@ -171,8 +174,10 @@ struct rig {
   publisher pub{catalogue_home, dir.root / "work"};
   std::uint16_t port = 0;
   std::string payload;
+  std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
 
   std::string photos_label = "Photos";
+  std::string relay_address;  // the person's own relay, for start(): the service waits there
 
   explicit rig(std::size_t payload_bytes = 300000, std::string label = "Photos")
       : payload(payload_bytes, 'x'), photos_label(std::move(label)) {
@@ -201,7 +206,12 @@ struct rig {
     o.cfg.name = "NAS";
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
+    o.cfg.relay = relay_address;
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
+    o.now_unix = [this] {
+      const auto t = fake_now.load();
+      return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
+    };
     auto s = serve::server::start(o);
     REQUIRE(s);
     srv = std::move(*s);
@@ -367,6 +377,63 @@ TEST_CASE("pairing: a good code once; a used code, a wrong service and no access
   mob::link_session s4(no_key);
   mob::route_report silent;
   CHECK(s4.connect(silent, nullptr, 1500).error() == mv::status::io);
+}
+
+TEST_CASE("pairing: a guest code gives a time, the link reports it, and its end is not a removal", "[mobile-link]") {
+  rig r;
+  const std::int64_t t0 = std::time(nullptr);
+  r.fake_now = t0;
+  serve::grants::limit gives;
+  gives.for_s = 24 * 3600;
+  const std::string code = serve::grants::issue_guest_code(*r.store, 600, gives, t0);
+  REQUIRE_FALSE(code.empty());
+  mob::route_report report;
+  REQUIRE(mob::pair_device(r.config(), code, report));
+  mob::link_session s(r.config());
+  mob::route_report connected;
+  REQUIRE(s.connect(connected));
+  std::int64_t expires = 0;
+  bool scoped = true;
+  REQUIRE(s.grant(expires, scoped) == 1);
+  CHECK(expires == t0 + gives.for_s);
+  CHECK_FALSE(scoped);
+  // An unlimited phone has none.
+  rig other;
+  other.pair_now();
+  mob::link_session unlimited(other.config());
+  REQUIRE(unlimited.connect(connected));
+  CHECK(unlimited.grant(expires, scoped) == 0);
+  mob::link_session never(other.config());
+  CHECK(never.grant(expires, scoped) == -1);  // not connected: nothing known
+  // The day ends: refused, and the route says the access ended, not that the phone was removed.
+  r.fake_now = t0 + gives.for_s;
+  mob::route_report ended;
+  CHECK(s.reconnect(ended).error() == mv::status::permission_denied);
+  CHECK(std::any_of(ended.failures.begin(), ended.failures.end(),
+                    [](const mob::route_failure& f) { return f.problem == mob::route_problem::expired; }));
+  CHECK(std::none_of(ended.failures.begin(), ended.failures.end(),
+                     [](const mob::route_failure& f) { return f.problem == mob::route_problem::not_paired; }));
+}
+
+TEST_CASE("link payload: a guest code's grant is read for the confirm screen", "[mobile-link]") {
+  rig r;
+  const std::string json =
+      "{\"v\":1,\"library_id\":\"" + r.pub.library_id + "\",\"library_name\":\"Family\",\"publisher_key\":\"" +
+      catalog::to_hex(r.pub.pub) + "\",\"service\":{\"local\":\"" + r.config().local + "\",\"public\":\"\",\"identity\":\"" +
+      catalog::to_hex(r.identity) + "\"},\"access_key\":\"" + catalog::to_hex(r.access) +
+      "\",\"code\":\"abc\",\"expires\":99999999999,\"grant\":{\"for_s\":604800,\"scoped\":false}}";
+  std::string b64(sodium_base64_ENCODED_LEN(json.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+  sodium_bin2base64(b64.data(), b64.size(), reinterpret_cast<const unsigned char*>(json.data()), json.size(),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  b64.resize(std::strlen(b64.c_str()));
+  auto p = mob::parse_pair_payload("mediaviewer://pair#" + b64);
+  REQUIRE(p);
+  CHECK(p->grant_for_s == 604800);
+  CHECK_FALSE(p->grant_scoped);
+  // An unlimited code has none.
+  auto plain = mob::parse_pair_payload(payload_text(r, 99999999999));
+  REQUIRE(plain);
+  CHECK(plain->grant_for_s == 0);
 }
 
 TEST_CASE("link race: a dead local address loses to the named public route", "[mobile-link]") {
@@ -924,6 +991,31 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
 }
 
 // ---- the sample library (docs/plans/mobile.md §11.1): a static folder, the same sync ----------
+
+TEST_CASE("sample: GUEST is the same library as a ten-minute guest, with no service", "[mobile-link]") {
+  CHECK(mob::sample::is_guest_code("GUEST"));
+  CHECK(mob::sample::is_guest_code(" guest\n"));
+  CHECK(mob::sample::is_guest_code("mediaviewer://sample-guest"));
+  CHECK(mob::sample::is_guest_code("MediaViewer://Sample-Guest/"));
+  CHECK_FALSE(mob::sample::is_guest_code("SAMPLE"));
+  CHECK_FALSE(mob::sample::is_guest_code("GUESTS"));
+  CHECK_FALSE(mob::sample::is_code("GUEST"));
+  const auto guest = mob::sample::payload(true);
+  const auto plain = mob::sample::payload();
+  CHECK(guest.grant_for_s == mob::sample::kGuestSeconds);
+  CHECK(plain.grant_for_s == 0);
+  // The same signed library: the same id, key and check code; only the grant differs.
+  CHECK(guest.library_id == plain.library_id);
+  CHECK(guest.publisher_key == plain.publisher_key);
+  CHECK(guest.fingerprint == plain.fingerprint);
+  // Through the C ABI, as the app reads it.
+  mv_pair_info info{};
+  REQUIRE(mv_pair_parse("GUEST", 0, &info) == MV_LINK_OK);
+  CHECK(info.sample == 1);
+  CHECK(info.grant_for_s == mob::sample::kGuestSeconds);
+  REQUIRE(mv_pair_parse("SAMPLE", 0, &info) == MV_LINK_OK);
+  CHECK(info.grant_for_s == 0);
+}
 
 TEST_CASE("sample: one fixed code and its link, nothing else", "[mobile-link]") {
   CHECK(mob::sample::is_code("SAMPLE"));
@@ -1828,4 +1920,272 @@ TEST_CASE("sound tower: wanted only for a catalogue whose clips the pinned tower
   CHECK(mv_sound_total_bytes() == mob::sound::total_bytes());
   CHECK(std::string(mv_sound_base()).back() == '/');
   fs::remove_all(root);
+namespace {
+
+constexpr const char* kPhoneRelayKey = "mobile-loopback-relay-key-0123";
+
+std::string with_relay(const std::string& qr, const std::string& relay_json) {
+  // The code's JSON with a "relay" member added, encoded again.
+  const std::string b64 = qr.substr(std::strlen("mediaviewer://pair#"));
+  std::string json(b64.size(), '\0');
+  std::size_t n = 0;
+  REQUIRE(sodium_base642bin(reinterpret_cast<unsigned char*>(json.data()), json.size(), b64.data(), b64.size(), nullptr, &n,
+                            nullptr, sodium_base64_VARIANT_URLSAFE_NO_PADDING) == 0);
+  json.resize(n);
+  json.pop_back();  // the closing brace
+  json += ",\"relay\":" + relay_json + "}";
+  std::string out(sodium_base64_ENCODED_LEN(json.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+  sodium_bin2base64(out.data(), out.size(), reinterpret_cast<const unsigned char*>(json.data()), json.size(),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  out.resize(std::strlen(out.c_str()));
+  return "mediaviewer://pair#" + out;
+}
+
+// The rig's service, started again waiting at a loopback relay (never a public one).
+std::unique_ptr<dw::relay::server> relay_for(rig& r) {
+  dw::relay::server::options ro;
+  ro.key = kPhoneRelayKey;
+  ro.loopback_only = true;
+  auto started = dw::relay::server::start(ro);
+  REQUIRE(started);
+  const std::string key = kPhoneRelayKey;
+  REQUIRE(r.store->put(serve::kRelayKeyName, std::vector<std::uint8_t>(key.begin(), key.end())));
+  r.srv.reset();
+  r.relay_address = "127.0.0.1:" + std::to_string((*started)->port());
+  r.start();
+  return std::move(*started);
+}
+
+}  // namespace
+
+TEST_CASE("link payload: the person's own relay is read when there, and an old code still parses", "[mobile-link]") {
+  rig r;
+  const std::string plain = payload_text(r, 2000000000);
+  const auto old = mob::parse_pair_payload(plain);
+  REQUIRE(old);
+  CHECK(old->relay.empty());
+  const auto with = mob::parse_pair_payload(with_relay(plain, R"({"address":"relay.example.com:7879"})"));
+  REQUIRE(with);
+  CHECK(with->relay == "relay.example.com:7879");
+  CHECK(with->fingerprint == old->fingerprint);  // the relay is not part of what is compared
+  // A relay that is not an address is left out, never a reason to refuse the code.
+  for (const char* bad : {R"({"address":"no-port"})", R"({"address":"a:0"})", R"("relay.example.com:7879")", R"({"address":7})"}) {
+    const auto p = mob::parse_pair_payload(with_relay(plain, bad));
+    REQUIRE(p);
+    CHECK(p->relay.empty());
+  }
+  mv_pair_info info;
+  REQUIRE(mv_pair_parse(with_relay(plain, R"({"address":"relay.example.com:7879"})").c_str(), 0, &info) == MV_LINK_OK);
+  CHECK(std::string(info.relay) == "relay.example.com:7879");
+}
+
+TEST_CASE("link race: with no direct route, the phone gets in through its own relay; with one, the direct route wins", "[mobile-link]") {
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const std::string relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  // Direct routes dead: in through the relay, end to end, and reads work.
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = relay;
+  bool got_in = false;
+  for (int i = 0; i < 40 && !got_in; ++i) {  // the service's waiter registers a moment after it starts
+    mob::link_session s(c);
+    mob::route_report report;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (s.connect(report, nullptr, 6000)) {
+      got_in = true;
+      // Every direct route refused at once: the relay did not wait out its 1.5 s.
+      CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1400));
+      CHECK(report.relayed);
+      CHECK(report.over_internet);
+      CHECK(report.address == relay);
+      auto roots = s.roots();
+      REQUIRE(roots);
+      CHECK_FALSE(roots->empty());
+      std::string got;
+      REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+        got.append(reinterpret_cast<const char*>(b.data()), b.size());
+        return true;
+      }, nullptr, false));
+      CHECK(got == std::string(70000, 'p'));
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+  }
+  CHECK(got_in);
+  // A working direct route: it wins, the relay is never asked.
+  mob::service_config direct = r.config();
+  direct.relay = relay;
+  mob::link_session d(direct);
+  mob::route_report report;
+  REQUIRE(d.connect(report));
+  CHECK_FALSE(report.relayed);
+  CHECK(report.address != relay);  // either direct route, never the relay
+  // Another phone with the access key but not paired: the relay has no waiter for it.
+  mob::service_config stranger = c;
+  stranger.device_key = random_key();
+  mob::link_session st(stranger);
+  mob::route_report none;
+  CHECK_FALSE(st.connect(none, nullptr, 4000));
+}
+
+TEST_CASE("pairing: a new code is never redeemed through the relay", "[mobile-link]") {
+  rig r;
+  auto rendezvous = relay_for(r);
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  const std::string code = serve::issue_pair_code(*r.store, 600, std::time(nullptr));
+  mob::route_report report;
+  CHECK_FALSE(mob::pair_device(c, code, report, nullptr, 3000));
+  CHECK_FALSE(report.relayed);
+}
+
+// ---- a direct path after the relay (docs/plans/nas-relay.md §9): loopback only ----------------
+
+namespace {
+
+mob::service_config relayed_only(rig& r, const dw::relay::server& rendezvous) {
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:1";
+  c.public_name = "localhost:1";
+  c.relay = "127.0.0.1:" + std::to_string(rendezvous.port());
+  c.upgrade = true;
+  c.loopback_only = true;
+  return c;
+}
+
+bool connect_relayed(mob::link_session& s, mob::route_report& report) {
+  for (int i = 0; i < 40; ++i) {  // the service's waiter registers a moment after it starts
+    if (s.connect(report, nullptr, 6000)) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("upgrade: the relay says what it sees of a connection", "[phone-upgrade]") {
+  dw::relay::server::options ro;
+  ro.key = kPhoneRelayKey;
+  ro.loopback_only = true;
+  auto rendezvous = dw::relay::server::start(ro);
+  REQUIRE(rendezvous);
+  auto l = dw::net::connect({"127.0.0.1", (*rendezvous)->port()}, 3000);
+  REQUIRE(l);
+  const auto seen = dw::relay::ask_seen(**l, 3000);
+  REQUIRE(seen);
+  CHECK(seen->address == "127.0.0.1");
+  CHECK(seen->port != 0);
+  CHECK(seen->port != (*rendezvous)->port());
+  CHECK((*rendezvous)->snapshot().asked == 1);
+}
+
+TEST_CASE("upgrade: a relayed phone moves to a direct path, and a read across the move finishes", "[phone-upgrade]") {
+  rig r(300000);
+  write_file(r.photos / "big.bin", std::string(8 * 1024 * 1024, 'b'));
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  mob::link_session s(relayed_only(r, *rendezvous));
+  // On mobile data with the setting off: it stays on the relay.
+  s.set_upgrade_policy(true, false);
+  mob::route_report report;
+  REQUIRE(connect_relayed(s, report));
+  REQUIRE(report.relayed);
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
+  REQUIRE(s.connect(report));
+  CHECK(report.relayed);
+  CHECK_FALSE(report.upgraded);
+  CHECK(r.srv->stats().punched == 0);
+  // A read on the relayed link, and the setting switched on half way through it.
+  std::string got;
+  bool switched = false;
+  REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "big.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    got.append(reinterpret_cast<const char*>(b.data()), b.size());
+    if (!switched && got.size() > 1024 * 1024) {
+      switched = true;
+      s.set_upgrade_policy(true, true);
+      // Wait for the move while this read still holds the relayed client.
+      for (int i = 0; i < 120; ++i) {
+        mob::route_report now;
+        if (s.connect(now) && now.upgraded) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    }
+    return true;
+  }, nullptr, false));
+  CHECK(got.size() == 8u * 1024 * 1024);
+  CHECK(got == std::string(8 * 1024 * 1024, 'b'));
+  REQUIRE(s.connect(report));
+  CHECK(report.upgraded);
+  CHECK_FALSE(report.relayed);
+  CHECK(r.srv->stats().punched >= 1);
+  // Later reads go direct.
+  std::string again;
+  REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+    again.append(reinterpret_cast<const char*>(b.data()), b.size());
+    return true;
+  }, nullptr, false));
+  CHECK(again == std::string(70000, 'p'));
+}
+
+TEST_CASE("upgrade: nothing is tried on a direct route, and Forget ends a try at once", "[phone-upgrade]") {
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  mob::service_config direct = r.config();
+  direct.relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  direct.upgrade = true;
+  direct.loopback_only = true;
+  mob::link_session d(direct);
+  mob::route_report report;
+  REQUIRE(d.connect(report));
+  CHECK_FALSE(report.relayed);
+  CHECK_FALSE(d.upgrade_now_for_test());
+  // A relayed one with the try running: Forget does not wait out the punch.
+  auto s = std::make_unique<mob::link_session>(relayed_only(r, *rendezvous));
+  REQUIRE(connect_relayed(*s, report));
+  const auto t0 = std::chrono::steady_clock::now();
+  s->shut_down();
+  s.reset();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+}
+
+TEST_CASE("upgrade: relayed and direct throughput, alternated", "[.phone-upgrade-bench]") {
+  rig r;
+  constexpr std::size_t kBytes = 64u * 1024 * 1024;
+  write_file(r.photos / "bench.bin", std::string(kBytes, 'x'));
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const auto read_all = [&](mob::link_session& s) {
+    std::size_t n = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    REQUIRE(s.read_range("a1a1a1a1a1a1a1a1", "bench.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+      n += b.size();
+      return true;
+    }, nullptr, true));
+    REQUIRE(n == kBytes);
+    return static_cast<double>(kBytes) / 1e6 / std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  };
+  for (int run = 0; run < 3; ++run) {
+    mob::service_config c = relayed_only(r, *rendezvous);
+    mob::link_session relayed(c);
+    relayed.set_upgrade_policy(true, false);  // held on the relay
+    mob::route_report report;
+    REQUIRE(connect_relayed(relayed, report));
+    REQUIRE(report.relayed);
+    const double via_relay = read_all(relayed);
+    mob::link_session moved(c);
+    REQUIRE(connect_relayed(moved, report));
+    for (int i = 0; i < 100 && !report.upgraded; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      REQUIRE(moved.connect(report));
+    }
+    REQUIRE(report.upgraded);
+    const double direct = read_all(moved);
+    std::printf("{\"case\":\"phone_upgrade\",\"run\":%d,\"relay_MBps\":%.0f,\"direct_MBps\":%.0f}\n", run, via_relay, direct);
+  }
 }

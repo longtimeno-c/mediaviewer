@@ -40,7 +40,7 @@
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
 #include "addons/ai/cloud_files.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 #include "addons/ai/pdf_reader.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
@@ -284,13 +284,6 @@ struct engine_deps {
   // Tests: a starter's step right after its thread exists.
   std::function<void()> phone_start_hook;  // a failed delivery waits this, doubling, to an hour
   double phone_thumb_budget_s = 1800;
-  // A revoke the NAS has not heard: asked again after this, doubling to an hour.
-  double phone_link_retry_s = 30;
-  // How long a pairing code lives on the NAS (and a code left at quit is
-  // worth withdrawing).
-  double phone_link_code_ttl_s = 300;
-  // The tests: right after a hand-over is written, before anything reads it back.
-  std::function<void()> phone_link_after_hand_over;
   // Tests only: after a worker commits a transcript window, before memory
   // follows it; after load_audio installs a Whisper and its lines.
   std::function<void()> after_speech_commit;
@@ -527,10 +520,6 @@ class engine {
   [[nodiscard]] expected phone_publish(const std::string& destination);
   void phone_cancel() noexcept;
   [[nodiscard]] std::string phone_json() const;
-  // Setting a phone up (engine_phone_link.cpp): the service on the NAS, the
-  // QR, the paired phones, moving the signing key, the nearby copy. [no-block]
-  [[nodiscard]] expected phone_link(const std::string& request_json);
-  [[nodiscard]] std::string phone_link_json() const;
   void transfer_cancel() noexcept;
 
   // ---- for tests -----------------------------------------------------------------
@@ -1350,60 +1339,9 @@ class engine {
   [[nodiscard]] std::vector<std::int64_t> phone_carried_roots();
   [[nodiscard]] std::string phone_stamp(std::span<const std::int64_t> roots) const;
   [[nodiscard]] result<std::vector<std::string>> stored_place_matches(const std::string& place);
-  // engine_phone_link.cpp: one request at a time on its own thread, made at
-  // the first one, so nothing runs for someone who never turned this on.
-  struct phone_link_view {
-    bool driftwire = true;      // false: the Driftwire add-on is not here (the card offers it)
-    std::string busy, error;
-    bool claimed = false, reachable = true;
-    std::string local, public_name, warning;
-    struct phone_row {
-      std::string name, key;
-    };
-    std::vector<phone_row> devices;
-    struct folder_row {
-      std::string id, label, path;
-    };
-    std::vector<folder_row> folders;
-    std::string qr_url, qr_library, qr_fingerprint;
-    std::int64_t qr_expires = 0;
-    std::vector<std::string> added;   // phones paired while this card showed a code
-    bool nearby = false;
-    std::uint64_t prepared = 0;       // the generation the nearby copy holds
-    std::uint64_t tried = 0;          // the last one the tick asked to copy
-    bool other_publisher = false;     // another desktop's key is on the share
-    bool mismatch = false;            // the share's library.json goes back on what this desktop publishes
-    bool handed_over = false;         // this desktop signed the library away; until the share names its key again
-    bool code_left = false;           // a code was on screen when Local search last stopped
-    std::int64_t code_left_until = 0; // unix seconds: the NAS has dropped it by then anyway
-    bool flags_unsaved = false;       // phone/link.json could not be written
-    bool flags_dirty = false;         // to be written once the lock is let go
-    bool pairing = false;             // the link thread's own: it is making a code now
-    bool flags_read = false;          // phone/link.json was read (or is not there): it may be written
-    bool code_waiting = false;        // the code shown is still on the service
-    std::int64_t pending = 0;         // revokes the NAS has not heard
-    double retry_s = 0;               // until the next try, doubling
-    std::chrono::steady_clock::time_point retry_at{};
-    std::string other_fingerprint;
-    std::string asking_name, asking_key, asking_fingerprint;  // another desktop wants this library
-  };
-  void phone_link_loop();
-  void phone_link_do(const std::string& request);
-  void phone_link_refresh(bool phones_only = false);
-  void phone_link_prepare_nearby();
-  void phone_link_tick();
-  void phone_link_stop() noexcept;
-  void phone_link_load_flags();
-  void phone_link_save_flags();
-  [[nodiscard]] result<std::string> phone_route(const char* method, const std::string& json);
-  [[nodiscard]] result<std::vector<std::uint8_t>> phone_signing_key(bool make);
-  mutable std::mutex phone_link_m_;
-  phone_link_view link_;                     // under phone_link_m_
-  std::deque<std::string> link_requests_;    // under phone_link_m_
-  std::condition_variable phone_link_cv_;
-  std::thread phone_link_thread_;            // under phone_link_m_
-  bool link_tick_seen_ = false;              // the control thread's
-  std::vector<std::string> link_before_;     // the link thread's: keys when the code went up
+  // The publisher key, shared with the app's Phone access (catalogue/publisher.h).
+  [[nodiscard]] result<std::vector<std::uint8_t>> phone_key(bool make);
+  bool adopt_phone_library(const std::string& destination, std::span<const std::uint8_t> public_key);
   mutable std::mutex phone_m_;
   mutable std::mutex phone_save_m_;  // taken before phone_m_
   bool phone_stopped_ = false;       // under phone_m_: stop() has taken the thread

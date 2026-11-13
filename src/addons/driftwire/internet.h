@@ -44,7 +44,7 @@
 #include "addons/driftwire/dht.h"
 #include "addons/driftwire/invite.h"
 #include "addons/driftwire/mapping.h"
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 #include "addons/driftwire/race.h"
 
 namespace mv::driftwire {

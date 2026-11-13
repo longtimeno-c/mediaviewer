@@ -31,7 +31,7 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 #include "core/result.h"
 
 namespace mv::driftwire::dht {

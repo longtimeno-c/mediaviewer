@@ -25,6 +25,13 @@ struct pair_payload {
   std::array<std::uint8_t, 32> access_key{};
   std::string code;
   std::int64_t expires = 0;
+  // A guest code's grant (docs/plans/nas-owner-and-guests.md §4.4), shown before
+  // confirming; the service holds the real one against the code.
+  std::int64_t grant_for_s = 0;
+  bool grant_scoped = false;
+  // The person's own relay, "host:port" (docs/plans/nas-relay.md): tried after
+  // the direct routes. Optional; a QR from before has none.
+  std::string relay;
   std::string fingerprint;  // driftwire::pairing_check over the library, both keys and the access key
 };
 

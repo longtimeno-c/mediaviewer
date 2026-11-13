@@ -38,12 +38,12 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/admission.h"
-#include "addons/driftwire/channel.h"
+#include "wire/admission.h"
+#include "wire/channel.h"
 #include "addons/driftwire/eta.h"
 #include "addons/driftwire/handover.h"
 #include "addons/driftwire/internet.h"
-#include "addons/driftwire/known.h"
+#include "wire/known.h"
 #include "addons/driftwire/power.h"
 #include "addons/driftwire/prefs.h"
 #include "addons/driftwire/relay.h"

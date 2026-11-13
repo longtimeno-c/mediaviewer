@@ -31,11 +31,11 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/driftwire/channel.h"
+#include "wire/channel.h"
 #include "addons/driftwire/internet.h"
 #include "addons/driftwire/invite.h"
 #include "addons/driftwire/race.h"
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 
 namespace mv::driftwire::relay {
 

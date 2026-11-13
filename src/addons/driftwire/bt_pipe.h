@@ -35,7 +35,7 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/driftwire/link.h"
+#include "wire/link.h"
 
 namespace mv::driftwire::bt {
 

@@ -1357,9 +1357,11 @@ link. The tests check that no 32-byte run of the file passes through either rela
 
 ## Claiming and pairing (phone access)
 
-`desk.*`, `advert*`, the owner's half of `serve.*`; plan: `docs/plans/mobile.md` §7.2, §7.4, §7.5.
-The Driftwire add-on holds the desktop's side of a phone. Local search asks for it through the host
-table (`route_request`, [18](18-import.md#add-ons-calling-add-ons)), and refuses any other caller.
+`src/phone/desk.*`, `wire/advert*`, the owner's half of `wire/serve.*`; plans: `docs/plans/mobile.md` §7.2,
+§7.4, §7.5 and `docs/plans/phone-in-the-app.md`. Since 2026-11-12 the desktop's side of a phone is the app's,
+not the Driftwire add-on's: the app's phone link (`src/phone/link.*`) asks the desk through `route_request`,
+which takes only the caller "phone". Its items are in the OS store under "MediaViewer Phone access", copied
+once from Driftwire's (`desk::take_items`).
 
 **Claiming.** Only for a connection from its own network (`net::on_link`, loopback included), and only
 while the service has no owner or, once it has, for a hello the access key does not open (so a phone's
@@ -1399,12 +1401,62 @@ which is its own list too (`phone_devices`), so one scan pairs with both. A revo
 desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`), and Local
 search asks again by itself, from 30 s and doubling to an hour, until the service has it.
 
+**The owner's passphrase** (`owner_pass.h`; plan: `docs/plans/nas-owner-and-guests.md` §3, owner calls
+made 2026-11-12). A second factor beside the owner's device key and, for a claim, the share token and
+write proof. Set at `serve init` (recommended: it closes the race in which someone else on the network
+claims first) or by the first claim. The passphrase is stretched with Argon2id (3 passes, 256 MiB) into the
+seed of an Ed25519 key; the service stores only the salt, the cost and the public key
+(`owner_passphrase`), never the passphrase or anything that can answer for it. To prove it, the owner
+signs a fresh nonce bound to the session's Noise handshake hash (`channel::handshake_hash`; a library
+channel keeps no resume secret, so `pairing_secret()` is a constant there and is not used), the
+service's identity and its own device key. A client refuses a challenge cheaper than 64 MiB, so a fake
+service cannot ask for a cheap answer.
+
+- **The claim** gains a third round trip after the write proof (`serve_claim_challenge`, 38): a
+  signature when a passphrase is set, or the public key to set when none is. Nothing about it is said
+  before the write proof. A desktop from before this claims a NAS with none as it always did, and is
+  refused (`passphrase`) by one that has one. A claim can pin the identity `serve status` shows.
+- **What needs it** (call C1): adding a device, a pairing or guest code, extending or widening a
+  grant, adding or removing a named folder, changing the passphrase. A session is unlocked for 10
+  minutes of steady time (`challenge`, `unlock`, `lock`, `owner_status`). Reading, revoking, cancelling
+  a code and shortening or narrowing a grant need the device key alone, so a stolen Mac can only take
+  access away, and a revoke queued while the NAS is away still goes through. With no passphrase set
+  (a NAS claimed before this) the device key does everything, as before (call C4).
+- **Wrong answers** are counted per counter (claims; the owner's sessions and its own re-claim) in
+  `owner_lockout`, written before the answer is checked: 5 free, then 15 minutes doubling to a day,
+  and wrong answers at most one a second (a right one never waits). A broken lockout file reads as
+  locked for 15 minutes and is written back readable.
+- **Recovery**: `driftwire serve passphrase reset` on the NAS, as the service's user, which can edit
+  the store anyway (so the command line never asks for the passphrase, call C3). The new one is
+  stretched first and written over the old; the lockouts go. A NAS rolled back to a binary from before
+  this ignores the passphrase: that fails open, and only signed updates can stop it.
+
+**Timed and scoped phones** (`grants.h`; plan §5). A device with an expiry or a set of named folders is
+kept in `library_grants` and never in the paired list, which keeps its format: a service, or a Mac,
+from before this reads only that list, so after a rollback it refuses a guest rather than letting it
+in for ever. Guest codes from `pair-code --for` live in their own value (`library_guest_codes`) for the
+same reason. The owner's `guest_code` makes one; its phone's time starts when it is redeemed.
+
+- At connect an unlimited phone goes on; anyone else's first message decides: a code is redeemed (an
+  expired guest re-invited gets the new grant; an unlimited phone that scans a guest code stays
+  unlimited; a live guest with a spent code goes on with the grant it has), a live grant goes on, and
+  an expired one is refused `expired`. The 2 s watch cuts an expired session with `expired` and
+  refreshes one whose limit changed with `folders-changed`; both lists are read together, and a revoke
+  is read twice before anyone is cut. A key on both lists is treated by its grant.
+- A scoped phone sees only its folders and the Catalogue; anything else is refused like an unknown id,
+  and an empty list is none. **Folder scope is not offered yet** (call C5): the catalogue covers every
+  folder, so it waits for per-scope catalogues. `devices` never lists a limited device, because a Mac
+  from before this copies that list into its nearby service; `grants` does, with expired ones for 7 days.
+- `serve_caps` tells the owner `features` and the passphrase state, and a limited phone its end.
+
 **Nearby.** `desk::start_nearby` runs a second `serve::server` on the Mac over the local copy, `lan_only`,
 never claimable, with its keys in memory so its timer never wakes the Keychain. It takes the same access key
 and the same device list, and is advertised as `_mediaviewer._tcp` (TXT `v=1`, `lib=` the first 16 hex of the
 library id's SHA-256; `advert_mac.cpp`). The phone reads it exactly as it reads the NAS, so a paired phone
 needs no Accept and a dropped transfer resumes by `read_range`. Its identity is made per run and nothing
-pins it: the catalogue's signature is the trust. Windows and Linux have `advert_none.cpp`, so no advert yet.
+pins it: the catalogue's signature is the trust. Windows registers the same service with its own mDNS responder (`advert_win.cpp`, `DnsServiceRegister`; the
+instance is `MediaViewer-` and six random hex digits, since Windows does not rename on a conflict). Linux has
+`advert_none.cpp`, so no advert yet.
 
 ## The NAS service (`driftwire serve`)
 
@@ -1415,11 +1467,16 @@ nothing else. It never touches the DHT, a router's mapping or the beacon.
 
 ```
 driftwire serve [--data DIR]              the service, with no terminal: DIR/serve.json, DIR/secrets
-driftwire serve init                      makes the identity and library access key; shows the key once
-driftwire serve devices                   lists paired devices
-driftwire serve add NAME KEY              pairs a device by its public key (64 hex digits)
+driftwire serve init                      makes the identity and library access key; shows the key once;
+     [--passphrase-stdin | --no-passphrase]   asks for the owner's passphrase on the terminal
+driftwire serve status                    identity, owner, passphrase set or not, both lockouts
+driftwire serve devices                   lists paired devices, and timed ones with their end
+driftwire serve add NAME KEY [--for D]    pairs a device by its public key (64 hex digits); --for: timed
+driftwire serve grant NAME-OR-KEY         --for D (24h, 7d, 90m, seconds) or --forever: a device's limit
 driftwire serve revoke NAME-OR-KEY        revokes one; a running session is cut within 2 s
-driftwire serve pair-code [SECONDS]       prints a single-use pairing code for the QR (default 600 s)
+driftwire serve pair-code [S] [--for D]   prints a single-use pairing code for the QR (default 600 s);
+                                          --for: a guest code, whose phone gets D from when it scans
+driftwire serve passphrase set|reset      changes the owner's passphrase; reset is the recovery (below)
 ```
 
 `serve.json`, normally written by the desktop at setup:
@@ -1515,9 +1572,16 @@ No address, path or file name is ever logged.
   be run as that user too, because the keys are its alone and root is refused. Spike S5 has to
   confirm DSM allows this. Its firewall rule and port forward are the setup
   guide's.
-- **Unattended signed updates**: the installer channels notify only. An update must replace the
-  binary and restart without touching `--data`, or every phone pairs again. Needs a signed channel
-  and a service restart hook. Not started.
+- **Unattended signed updates** ([nas-setup.md](../plans/nas-setup.md) §6): the core is built
+  (`cli/nas_update.*`, `"[nas-update]"`): an Ed25519-signed `latest.json` per arch, a staged
+  download checked by SHA-256 and size and self-tested before it replaces `var/bin/driftwire`, the
+  one before kept as `.prev`, and the package's `start-stop-status` rolling back after three failed
+  starts. Wired: inside the package (`start-stop-status` sets `MV_NAS_VAR` and supervises the
+  service), a build with `MV_NAS_UPDATE_KEY` checks 10–70 minutes after starting and then daily
+  (±2 h), runs the download as `serve self-test` (keys readable, `serve.json` valid, changes
+  nothing), and exits 75 after installing; the supervisor starts the new binary at once and counts
+  each start toward the trial; five minutes up clears it. Not built: signing `latest.json` in a
+  release and the static NAS builds in CI, so no build pins a key yet and none updates itself.
 - **Claiming from the desktop**: writing the token into `.mediaviewer/` over SMB. Needs a claim
   operation (a capability; only while there is no owner, and only from the NAS's own network, the
   plan says), and the `add` / `revoke` / folder changes as owner operations over the channel. Today
@@ -1541,6 +1605,70 @@ network or a real forwarded port (M2b's "from outside the building"), a seek und
 Synology hardware or Linux (`file_store` and sockets are portable, but only macOS ran them here),
 Windows. On Windows, `file_store` relies on the per-user profile's ACL; there are no POSIX modes
 to check.
+
+### Through the person's own relay (piece 3, 2026-11-12)
+
+Plan and owner calls: [nas-relay.md](../plans/nas-relay.md). **There is no public relay and there
+will not be one** (owner, 2026-11-12): away from home without a forwarded port, a phone reaches the
+NAS only through a `driftwire-relay` the person runs on their own server. Settings → Phone access
+says so on its **Relay (your own server)** row (Mac and Windows), which is greyed, with the reason,
+for a service too old to wait at a relay.
+
+- **The service waits at it** (`serve.cpp` `relay_loop` / `wait_at_relay`). With `"relay"` in
+  `serve.json` and the server's key in the secret store (`relay_key`), the service keeps one waiter
+  per paired device, at most `kMaxRelayWaiters` (4, the relay's per-source cap), each re-registering
+  every `kReregisterMs`. A waiter's token is `relay_token(access_key, device_pub)` = BLAKE2b-128 keyed
+  by the access key over `"MediaViewer relay token v1" || device_pub`: opaque to the relay, unrelated
+  across libraries, not computable without the access key. A revoked device's waiter goes.
+- **A relayed link is admitted like a direct one** (`admit()`), keyed `relay:<token hex>` instead of
+  the relay's shared address, and is never the service's own network: no claim comes through a
+  relay. Noise XX+psk0 and the device-key check run end to end; the relay carries ciphertext only.
+  `stats().relayed` counts them.
+- **Set from the desktop, never put in the QR.** The owner's `set_relay {address, key}` verb (owner
+  only, needs an unlocked session once there is a passphrase; feature `"relay"` in the caps) writes
+  the address to `serve.json` and the key to the store; `owner_status` and the caps report the
+  address only. The pairing QR stays `"v":1` and gains an optional `"relay":{"address"}`, which an
+  older app ignores.
+- **The phone tries it last** (`src/mobile/link.cpp`): a paired phone's race adds the relay 1.5 s
+  after the direct routes and joins its own waiter with `relay::join` under its own token; a direct
+  route that answers always wins, pairing never goes through the relay, and the route report and
+  Settings say "Connected through your relay" (it counts as over the internet for the mobile-data
+  rules). The code's `"relay"` is read when there and kept with the pairing; an old code has none.
+- **Known limits:** an expired guest has no waiter, so a re-invite code is redeemed only over a
+  direct route (at home or through a forwarded port); a phone's race gives the relay the full time
+  after its start (5 s, from 1.5 s), and starts it at once when every direct route has already failed.
+- **Then a direct path** (owner call 4, 2026-11-12; [plan §9](../plans/nas-relay.md)). No DHT: the
+  service still never touches it. With a session up through the relay, a phone whose service offers
+  `kUpgradeOp` (granted only to a relayed session) sends its candidates inside the session
+  (`serve_upgrade` on serve_admin's frame): its own network's addresses at a `tcp_rendezvous` port,
+  and its public side as the relay sees it, asked from that same port with the relay's new **`kAsk`**
+  role (the server says the address and port it sees, in the clear, and closes; an older relay
+  refuses it). The service answers with its own, gathered the same way, and both punch for 10 s.
+  The phone runs the whole handshake again on the new path, which the service admits bound to that
+  device as on the relay, and swaps it in as a reconnect does: reads running on the relayed client
+  finish there, later ones go direct. A failed try stays on the relay and tries again after 1, 5
+  and 15 minutes, then hourly; Forget ends a try at once. On mobile data only with Settings →
+  **Faster direct connection on mobile data** on (default on), enforced in the core
+  (`mv_link_set_upgrade`); on Wi-Fi always. Tests: `"[phone-upgrade]"` (loopback only).
+  Throughput on loopback, 64 MB, three runs alternated (`"[.phone-upgrade-bench]"`): relay
+  619/649/661 MB/s, direct 659/686/671 MB/s; loopback shows only the relay's copying, not a real
+  relay's distance, which is where the upgrade pays. Not run: a real NAT, a real relay.
+  Limits on what a paired phone can ask: candidates must be unicast and elsewhere (no unspecified,
+  loopback, multicast, broadcast or link-local address; `usable_candidate`), at most 8; one ask per
+  device per 30 s and 4 punches at once, the slot taken before anything is gathered. A punch admits
+  each connection it opens (8 at most) and the phone tries its handshake on each in turn, so two
+  paths opening at once cannot leave the sides on different ones (not reproducible on loopback; by
+  review only). The gathering and the answer run on the punch's own thread, never the session's
+  reader: a range read or a clip's next range asked meanwhile is answered at once (tested with a
+  2 s gathering).
+- **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's
+  `set_relay` and the QR field in `"[phone-pairing]"`): a paired client lists and range-reads through
+  an in-process relay on `127.0.0.1` with no 32-byte run of the file in the relay's bytes; a wrong
+  access key and a revoked phone get nothing; a claim never comes in through it; a changed key
+  restarts the waiters; only the waiter's own device gets through it; a silent relay does not hold
+  up a stop. The phone's side is in `"[mobile-link]"` (the race through the relay, the direct route
+  winning, an old code, pairing never relayed). Never a public relay or the public DHT. The phone's
+  Swift tests were not run with it (no iOS core build here); the Swift side compiles.
 
 ## What moves, and how it lands
 
@@ -1838,16 +1966,23 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 ## Where it lives
 
+Since 2026-11-12 the protocol is `src/wire` (target `mv_wire`, `cmake/wire.cmake`), so the app's phone feature
+can link it with no add-on installed ([plan](../plans/phone-in-the-app.md)): `wire.*`, `keys.*`, `noise.*`,
+`cpace.*`, `stages.*`, `channel.*`, `link.h`, `net*`, `machine_*`, `admission.h`, `secrets*`, `known.*`,
+`serve*`, `pair_check.*`, `advert*`. The rest is `src/addons/driftwire` (`mv_driftwire_engine`, over `mv_wire`).
+The namespace stays `mv::driftwire`. The pair's hourly DHT keys left `known` for `presence_keys.*`, so the
+protocol has no DHT.
+
 | Piece | Code |
 |---|---|
-| Wire, code, path rule, beacon | `src/addons/driftwire/wire.*` |
+| Wire, code, path rule, beacon | `src/wire/wire.*` |
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
 | Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
 | The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
 | Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |
 | The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
-| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*` |
+| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*`, `presence_keys.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
@@ -1862,7 +1997,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
-| Phone access | `desk.*` (claim, devices, codes, nearby, the route), `advert*` (Bonjour) |
+| Phone access (the app's, `src/phone`) | `phone/desk.*` (claim, devices, codes, nearby, the route), `wire/advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
 | The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |

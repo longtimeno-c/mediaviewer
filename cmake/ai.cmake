@@ -243,6 +243,9 @@ endif()
 set_target_properties(mv_infer PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# The catalogue's generic half and the shared SHA-256 (src/catalogue).
+include("${CMAKE_CURRENT_LIST_DIR}/catalogue.cmake")
+
 # ---- mv_model_fetch ---------------------------------------------------------------
 # The model downloader (#482 T3): a plain, resumable, verified GET of the
 # Hugging Face files an add-on's signed manifest pins (`remote`). Nothing in it
@@ -250,12 +253,10 @@ set_target_properties(mv_infer PROPERTIES POSITION_INDEPENDENT_CODE ON
 add_library(mv_model_fetch STATIC
   ${R}/src/addons/ai/fetch.cpp
   ${R}/src/addons/ai/fetch.h
-  ${R}/src/addons/ai/sha256.cpp
-  ${R}/src/addons/ai/sha256.h
   ${MV_FETCH_PLATFORM}
 )
 target_include_directories(mv_model_fetch PUBLIC "${R}/src")
-target_link_libraries(mv_model_fetch PUBLIC mv_project_options)
+target_link_libraries(mv_model_fetch PUBLIC mv_project_options mv_sha256)
 if(APPLE)
   target_link_libraries(mv_model_fetch PRIVATE "-framework Foundation")
 elseif(WIN32)
@@ -273,15 +274,12 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/catalog.cpp
   ${R}/src/addons/ai/nfc.cpp
   ${R}/src/addons/ai/catalog.h
-  ${R}/src/addons/ai/catalog_chain.cpp
-  ${R}/src/addons/ai/engine_phone_link.cpp
-  ${R}/src/addons/ai/catalog_chain.h
-  ${R}/src/addons/driftwire/secrets.h
-  # iOS: mv_driftwire_engine carries secrets_file.cpp and secrets_ios.cpp (linked below).
-  $<$<NOT:$<PLATFORM_ID:iOS>>:${R}/src/addons/driftwire/secrets_file.cpp>
-  $<$<PLATFORM_ID:Windows>:${R}/src/addons/driftwire/secrets_win.cpp>
-  $<$<PLATFORM_ID:Darwin>:${R}/src/addons/driftwire/secrets_mac.cpp>
-  $<$<PLATFORM_ID:Linux>:${R}/src/addons/driftwire/secrets_linux.cpp>
+  ${R}/src/wire/secrets.h
+  # iOS: mv_wire carries secrets_file.cpp and secrets_ios.cpp (linked below).
+  $<$<NOT:$<PLATFORM_ID:iOS>>:${R}/src/wire/secrets_file.cpp>
+  $<$<PLATFORM_ID:Windows>:${R}/src/wire/secrets_win.cpp>
+  $<$<PLATFORM_ID:Darwin>:${R}/src/wire/secrets_mac.cpp>
+  $<$<PLATFORM_ID:Linux>:${R}/src/wire/secrets_linux.cpp>
   ${R}/src/addons/ai/vectors.cpp
   ${R}/src/addons/ai/vectors.h
   ${R}/src/addons/ai/vocabulary.cpp
@@ -317,7 +315,7 @@ add_library(mv_ai_engine STATIC
 target_include_directories(mv_ai_engine PUBLIC "${R}/src" "${R}/src/abi/include")
 # PDFium's C headers for pdf_pdfium.cpp alone (the library is loaded at run time).
 set_source_files_properties(${R}/src/addons/ai/pdf_pdfium.cpp PROPERTIES INCLUDE_DIRECTORIES "${MV_PDFIUM_INCLUDE}")
-target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_model_fetch mv_project_options PRIVATE ${MV_SQLITE_TARGET})
+target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_model_fetch mv_catalogue mv_project_options PRIVATE ${MV_SQLITE_TARGET})
 find_package(Threads REQUIRED)
 target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
 # The catalogue's Ed25519 signature (docs/plans/mobile.md §5).
@@ -332,7 +330,7 @@ if(APPLE AND NOT IOS)
                         "-framework CoreGraphics")
 endif()
 if(IOS)
-  target_link_libraries(mv_ai_engine PRIVATE mv_driftwire_engine)  # secrets::os_store
+  target_link_libraries(mv_ai_engine PRIVATE mv_wire)  # secrets::os_store
 endif()
 if(WIN32)
   target_link_libraries(mv_ai_engine PRIVATE dxgi advapi32 crypt32)  # machine() (#482); the signing key

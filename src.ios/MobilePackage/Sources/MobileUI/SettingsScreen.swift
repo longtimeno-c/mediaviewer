@@ -6,11 +6,19 @@
 import MobileKit
 import SwiftUI
 
+/// Settings' words, shared with the tests.
+enum SettingsCopy {
+  static let directOnMobileData = "Faster direct connection on mobile data"
+  static let directOnMobileDataDetail =
+    "When MediaViewer reaches your Synology through your own relay, it tries to connect to it directly, which is faster. On Wi-Fi it always tries."
+}
+
 struct SettingsScreen: View {
   @Environment(AppModel.self) private var model
   @State private var confirmingForget = false
   @AppStorage(Preferences.filmstrip) private var showsFilmstrip = true
   @AppStorage(Preferences.appearance) private var appearance = "dark"
+  @AppStorage(Preferences.directOnMobileData) private var directOnMobileData = true
 
   var body: some View {
     NavigationStack {
@@ -24,12 +32,15 @@ struct SettingsScreen: View {
                 .font(.footnote)
                 .foregroundStyle(Theme.body)
                 .fixedSize(horizontal: false, vertical: true)
-              if case .reachable(let address, _) = model.connection.synology {
+              if case .reachable(let address, _, _) = model.connection.synology {
                 InfoRow(label: "Served from", value: address)
               }
-            } else if case .reachable(let address, _) = model.connection.synology {
+            } else if case .reachable(let address, _, _) = model.connection.synology {
               InfoRow(label: "Synology", value: synologyWords)
               InfoRow(label: "Address", value: address)
+            }
+            if let end = model.connection.accessUntil {
+              InfoRow(label: "Access", value: FailureCopy.accessUntil(end))
             }
             if let catalogue = model.connection.catalogue {
               InfoRow(label: "Catalogue from",
@@ -39,6 +50,26 @@ struct SettingsScreen: View {
             }
             InfoRow(label: "Saved on this phone", value: ProgressWords.size(model.connection.cacheBytes))
             soundSearch
+          }
+          section("Mobile data") {
+            Toggle(isOn: $directOnMobileData) {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(SettingsCopy.directOnMobileData).font(.subheadline).foregroundStyle(Theme.title)
+                Text(SettingsCopy.directOnMobileDataDetail)
+                  .font(.footnote)
+                  .foregroundStyle(Theme.body)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .tint(Theme.accent)
+            // VoiceOver: the name, then the detail once as the hint (not read twice from the label).
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(SettingsCopy.directOnMobileData)
+            .accessibilityValue(directOnMobileData ? "On" : "Off")
+            .accessibilityHint(SettingsCopy.directOnMobileDataDetail)
+            .accessibilityAddTraits(.isToggle)
+            .accessibilityAction { directOnMobileData.toggle() }
+            .accessibilityIdentifier("directOnMobileData")
           }
           section("Look") {
             Picker("Appearance", selection: $appearance) {
@@ -151,7 +182,8 @@ struct SettingsScreen: View {
   }
 
   private var synologyWords: String {
-    if case .reachable(_, overInternet: false) = model.connection.synology { return "Connected on its own network" }
+    if case .reachable(_, overInternet: false, _) = model.connection.synology { return "Connected on its own network" }
+    if case .reachable(_, _, relayed: true) = model.connection.synology { return "Connected through your relay" }
     return "Connected over the internet"
   }
 
@@ -182,6 +214,9 @@ struct SettingsScreen: View {
       NoticeCard(message: FailureCopy.publisherChanged, actionTitle: "Scan code") { model.isScanning = true }
     case .deviceRevoked:
       NoticeCard(message: FailureCopy.deviceRevoked, actionTitle: "Scan code") { model.isScanning = true }
+    case .accessEnded:
+      NoticeCard(message: FailureCopy.accessEnded(library: model.connection.libraryName, at: model.connection.accessUntil),
+                 actionTitle: "Try again") { Task { await model.services.connection.retry() } }
     }
   }
 }

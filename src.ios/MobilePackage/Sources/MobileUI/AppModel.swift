@@ -160,8 +160,7 @@ public final class AppModel {
     let now = services.connection.current
     Self.noteFirstEpoch(of: now.catalogue)
     connection = now
-    // A library paired but never copied (the app was killed mid-copy) goes back to the copy.
-    stage = !now.hasLibrary ? .welcome : now.catalogue == nil ? .firstCopy : .main
+    stage = Self.stage(for: now)
     library = LibraryModel(store: services.library)
     search = SearchModel(service: services.search)
     // §8.4: the catalogue opens before SwiftUI finishes attaching.
@@ -189,18 +188,33 @@ public final class AppModel {
   }
   #endif
 
+  /// Where launch picks up. A library paired but never copied (the app was killed mid-copy) goes
+  /// back to the copy, unless its access has ended: then the library, empty, with the ended card
+  /// (§8.2), never a copy the NAS would refuse.
+  static func stage(for s: ConnectionSnapshot) -> Stage {
+    if !s.hasLibrary { return .welcome }
+    if s.catalogue == nil, s.synology != .accessEnded { return .firstCopy }
+    return .main
+  }
+
   private func followConnection() async {
     for await snapshot in services.connection.updates() {
       if snapshot.synology != connection.synology { dismissedNotices.removeAll() }
       let newCatalogue = snapshot.catalogue != nil && snapshot.catalogue != connection.catalogue
       Self.noteFirstEpoch(of: snapshot.catalogue)
       connection = snapshot
+      // The access ended during a copy: the library, with the card that says so.
+      if stage == .firstCopy, snapshot.hasLibrary, snapshot.synology == .accessEnded {
+        stage = .main
+        Task { await loadLibrary() }  // the grid, empty, under the ended card: never a skeleton left waiting
+        continue
+      }
       guard stage == .main else {
         if newCatalogue { reloadNeeded = true }
         continue
       }
-      if snapshot.hasLibrary, snapshot.catalogue == nil {
-        stage = .firstCopy
+      if snapshot.hasLibrary, snapshot.catalogue == nil, snapshot.synology != .accessEnded {
+        stage = .firstCopy  // an extension, or a copy never made: copied again
       } else if newCatalogue {
         reload()
       }
@@ -369,6 +383,10 @@ public final class AppModel {
     switch connection.synology {
     case .deviceRevoked:
       first = LibraryNotice(id: "revoked", message: FailureCopy.deviceRevoked, canDismiss: false, action: .scan)
+    case .accessEnded:
+      first = LibraryNotice(id: "access-ended",
+                            message: FailureCopy.accessEnded(library: connection.libraryName, at: connection.accessUntil),
+                            canDismiss: false, action: .retry)
     case .publisherChanged where connection.isSample:
       // Not another computer: what arrived from GitHub was not signed by the sample's key.
       first = LibraryNotice(id: "publisher", message: FailureCopy.sampleRejected, canDismiss: true, action: .retry)

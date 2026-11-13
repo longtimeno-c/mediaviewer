@@ -22,10 +22,11 @@
 #endif
 
 #include "addons/ai/catalog.h"
-#include "addons/ai/catalog_chain.h"
+#include "catalogue/catalog_chain.h"
+#include "phone/link.h"
 #include "addons/ai/nfc.h"
 #include "codec/decode.h"
-#include "addons/ai/sha256.h"
+#include "catalogue/sha256.h"
 #include "mobile/catalogue.h"
 
 #include <algorithm>
@@ -1152,6 +1153,7 @@ struct rig {
     api.tag_facts = &tag_facts_maybe_old;
   }
   ~rig() {
+    link_.reset();  // it calls into the engine (its catalogue source)
     eng.reset();
     {
       std::lock_guard lock(g_tag_m);
@@ -1186,9 +1188,6 @@ struct rig {
       return std::vector<std::string>{utf8(dir / "tower" / "text.onnx"), utf8(dir / "tower" / "vocab.json")};
     };
     d.phone_quiet_s = phone_quiet;
-    d.phone_link_retry_s = link_retry;
-    d.phone_link_after_hand_over = after_hand_over;
-    d.phone_link_code_ttl_s = code_ttl;
     d.phone_min_interval_s = phone_interval;
     d.phone_share_poll_s = phone_poll;
     d.phone_thumb_budget_s = phone_budget;
@@ -1321,6 +1320,7 @@ struct rig {
   }
 
   void start(mv::ai::engine_options options = kTestOptions) {
+    link_.reset();
     eng.reset();
     options.background_threads = false;  // see kTestOptions (issue #154)
     mv::ai::engine_deps d = deps();
@@ -1363,6 +1363,35 @@ struct rig {
 
   bool no_key_store = false;
   std::function<mv::result<std::string>(const std::string&, const std::string&, const std::string&)> route;
+  // The app's Phone access (phone/link.h) over this engine as its catalogue
+  // source, made at a test's first use, as the app's is; in this rig's data
+  // folder, where Local search kept it before the move (2026-11-12).
+  std::unique_ptr<mv::phone::link> link_;
+  mv::phone::link& phone() {
+    if (link_) return *link_;
+    mv::phone::link::options o;
+    o.data_dir = utf8(dir / "data" / "phone");
+    o.key_store = [this]() -> std::unique_ptr<mv::driftwire::secrets::store> {
+      if (no_key_store) return nullptr;
+      fs::create_directories(dir / "keys");
+      return mv::driftwire::secrets::file_store(utf8(dir / "keys"));
+    };
+    o.route = [this](const char* method, const std::string& json) -> mv::result<std::string> {
+      if (!route) return mv::err(mv::status::not_found);
+      return route("driftwire", method, json);
+    };
+    o.machine_name = "Studio Mac";
+    o.retry_s = link_retry;
+    o.code_ttl_s = code_ttl;
+    o.tick_s = 0.2;
+    o.after_hand_over = after_hand_over;
+    link_ = std::make_unique<mv::phone::link>(std::move(o));
+    engine* e = eng.get();
+    link_->set_source({[e](const std::string& d) { return e->phone_publish(d); }, [e] { e->phone_cancel(); },
+                       [e] { return e->phone_json(); }});
+    link_->resume();
+    return *link_;
+  }
   // The publisher's timing; the defaults are far enough apart that a test
   // which does not ask for automatic publishing never sees one.
   double phone_quiet = 3600;
@@ -8001,7 +8030,7 @@ mv::json::value link_done(rig& r) {
   mv::json::value v;
   REQUIRE(wait_for(
       [&] {
-        auto t = mv::json::parse(r.eng->phone_link_json());
+        auto t = mv::json::parse(r.phone().state_json());
         if (!t || !t->str("busy") || !t->str("busy")->empty()) return false;
         v = *t;
         return true;
@@ -8021,11 +8050,46 @@ struct fake_driftwire {
   std::vector<std::string> calls;
   std::mutex m;
   std::function<void()> on_pair;  // runs before "pair" is answered, outside the lock (a test holds it there)
+  // The owner's passphrase (docs/plans/nas-owner-and-guests.md §8.1): with it
+  // set and not unlocked, "pair" is refused needs-unlock.
+  bool passphrase = false, unlocked = false;
+  std::string refusal = "{}";
+  std::int64_t last_for_s = -1;
+  std::vector<std::string> limited;  // keys of devices that are timed (one day from now)
   mv::result<std::string> operator()(const std::string& target, const std::string& method, const std::string& json) {
     if (method == "pair" && on_pair) on_pair();
     std::lock_guard lock(m);
     calls.push_back(method);
     if (target != "driftwire") return mv::err(mv::status::not_found);
+    const auto asked_doc = mv::json::parse(json.empty() ? std::string("{}") : json, 4);
+    if (method == "owner_status") {
+      mv::json::writer w;
+      w.begin_object().key("passphrase").string(passphrase ? "set" : "none").key("features").begin_array().string("passphrase").end_array();
+      w.key("unlocked_s").integer(unlocked ? 600 : 0).key("locked_until").integer(0).end_object();
+      return w.take();
+    }
+    if (method == "last_refusal") return refusal;
+    if (method == "unlock") {
+      if (!asked_doc || !asked_doc->str("passphrase") || *asked_doc->str("passphrase") != "a long owner passphrase") {
+        refusal = "{\"why\":\"passphrase\"}";
+        return mv::err(mv::status::permission_denied);
+      }
+      unlocked = true;
+      refusal = "{}";
+      return std::string("{}");
+    }
+    if (method == "lock") {
+      unlocked = false;
+      return std::string("{}");
+    }
+    if (method == "grant") {
+      last_for_s = asked_doc ? asked_doc->integer("for_s").value_or(-1) : -1;
+      return std::string("{}");
+    }
+    if (method == "pair" && passphrase && !unlocked) {
+      refusal = "{\"why\":\"needs-unlock\"}";
+      return mv::err(mv::status::permission_denied);
+    }
     if (method == "status") {
       mv::json::writer w;
       w.begin_object().key("claimed").boolean(claimed).key("pending_revokes").integer(pending).key("local").string("192.168.1.5:7878").key("public").string("nas.example.com:7878").key("machine").string("Studio Mac").end_object();
@@ -8034,11 +8098,19 @@ struct fake_driftwire {
     if (method == "devices") {
       mv::json::writer w;
       w.begin_object().key("reachable").boolean(true).key("code_waiting").boolean(waiting).key("devices").begin_array();
-      for (const auto& [n, k] : devices) w.begin_object().key("name").string(n).key("key").string(k).end_object();
+      for (const auto& [n, k] : devices) {
+        w.begin_object().key("name").string(n).key("key").string(k);
+        if (std::find(limited.begin(), limited.end(), k) != limited.end()) {
+          w.key("limited").boolean(true).key("expires").integer(static_cast<std::int64_t>(std::time(nullptr)) + 86400);
+          w.key("expired").boolean(false).key("guest").boolean(true).key("scoped").boolean(false);
+        }
+        w.end_object();
+      }
       w.end_array().end_object();
       return w.take();
     }
     if (method == "pair") {
+      last_for_s = asked_doc ? asked_doc->integer("for_s").value_or(0) : 0;
       const auto asked = mv::json::parse(json, 4);
       mv::json::writer w;
       w.begin_object()
@@ -8086,7 +8158,7 @@ void publish_to(rig& a, const fs::path& nas) {
 TEST_CASE("phone link: with Driftwire missing, the card is told", "[ai][engine][phone-link]") {
   rig a;
   a.start();
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("driftwire") == false);
 }
 
@@ -8102,7 +8174,7 @@ TEST_CASE("phone link: a code is one QR with the library, the key and the servic
   fs::create_directories(nas);
   publish_to(a, nas);
 
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   const auto v = link_done(a);
   REQUIRE(v.str("error"));
   CHECK(*v.str("error") == "");
@@ -8126,7 +8198,7 @@ TEST_CASE("phone link: a code is one QR with the library, the key and the servic
   mv::json::value after;
   REQUIRE(wait_for(
       [&] {
-        auto t = mv::json::parse(a.eng->phone_link_json());
+        auto t = mv::json::parse(a.phone().state_json());
         if (!t || t->find("added")->a.empty()) return false;
         after = *t;
         return true;
@@ -8134,6 +8206,72 @@ TEST_CASE("phone link: a code is one QR with the library, the key and the servic
       8000));
   CHECK(after.find("added")->a[0].s == "iPhone");
   CHECK(after.str("qr")->empty());
+}
+
+TEST_CASE("phone link: the passphrase, guest codes and timed phones reach the card", "[ai][engine][phone-link]") {
+  fake_driftwire d;
+  {
+    std::lock_guard lock(d.m);
+    d.passphrase = true;
+    d.devices.emplace_back("Visitor", std::string(64, 'e'));
+    d.limited.push_back(std::string(64, 'e'));
+  }
+  rig a;
+  a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
+  a.file("red_car.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
+  REQUIRE(a.idle());
+  const fs::path nas = a.dir / "Photos";
+  fs::create_directories(nas);
+  publish_to(a, nas);
+
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
+  auto v = link_done(a);
+  CHECK(*v.str("nas_passphrase") == "set");
+  REQUIRE(v.find("nas_features"));
+  CHECK(v.find("nas_features")->a.size() == 1);
+  CHECK(v.integer("unlocked_s") == 0);
+  const auto& phones = v.find("devices")->a;
+  REQUIRE(phones.size() == 1);
+  CHECK(phones[0].boolean("limited") == true);
+  CHECK(phones[0].boolean("guest") == true);
+  CHECK(phones[0].integer("expires") > static_cast<std::int64_t>(std::time(nullptr)));
+  // A code while locked: the card is told it needs the passphrase, not just "refused".
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
+  v = link_done(a);
+  CHECK(*v.str("error") == "needs_unlock");
+  CHECK(v.str("qr")->empty());
+  // A wrong passphrase, then the right one, and a guest code for a day.
+  REQUIRE(a.phone().request("{\"do\":\"unlock\",\"passphrase\":\"wrong\"}"));
+  CHECK(*link_done(a).str("error") == "passphrase");
+  REQUIRE(a.phone().request("{\"do\":\"unlock\",\"passphrase\":\"a long owner passphrase\"}"));
+  v = link_done(a);
+  CHECK(*v.str("error") == "");
+  // Counted down from when the NAS said 600 (link.cpp state_json), not the snapshot.
+  CHECK(*v.integer("unlocked_s") > 590);
+  CHECK(*v.integer("unlocked_s") <= 600);
+  // The passphrase is never in what the card is shown.
+  CHECK(a.phone().state_json().find("a long owner passphrase") == std::string::npos);
+  REQUIRE(a.phone().request("{\"do\":\"pair\",\"for_s\":86400}"));
+  v = link_done(a);
+  REQUIRE(!v.str("qr")->empty());
+  CHECK(v.integer("qr_for_s") == 86400);
+  const auto qr = mv::json::parse(qr_json(*v.str("qr")), 4);
+  REQUIRE(qr);
+  REQUIRE(qr->find("grant"));
+  CHECK(qr->find("grant")->integer("for_s") == 86400);
+  {
+    std::lock_guard lock(d.m);
+    CHECK(d.last_for_s == 86400);
+  }
+  // Extend from the card.
+  REQUIRE(a.phone().request("{\"do\":\"grant\",\"key\":\"" + std::string(64, 'e') + "\",\"for_s\":604800}"));
+  (void)link_done(a);
+  {
+    std::lock_guard lock(d.m);
+    CHECK(d.last_for_s == 604800);
+  }
 }
 
 TEST_CASE("phone link: a takeover asked on the share, allowed, then published", "[ai][engine][phone-link]") {
@@ -8162,12 +8300,12 @@ TEST_CASE("phone link: a takeover asked on the share, allowed, then published", 
   // Its index is about these photos' folder; the share is the same place.
   REQUIRE(b.eng->phone_publish(utf8(nas)));
   CHECK(*phone_done(b).str("error") == "other_library");
-  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(b).boolean("other_publisher") == true);
 
-  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"takeover_ask\"}"));
   CHECK(*link_done(b).str("error") == "");
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   const auto asked = link_done(a);
   REQUIRE(*asked.str("asking_name") == "Studio Mac");
 
@@ -8176,7 +8314,7 @@ TEST_CASE("phone link: a takeover asked on the share, allowed, then published", 
     std::lock_guard lock(da.m);
     da.devices.emplace_back("iPhone", std::string(64, 'd'));
   }
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(a);
   {
     std::lock_guard lock(da.m);
@@ -8185,7 +8323,7 @@ TEST_CASE("phone link: a takeover asked on the share, allowed, then published", 
   // The old desktop's person agrees: its key signs the move.
   mv::json::writer w;
   w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
-  REQUIRE(a.eng->phone_link(w.str()));
+  REQUIRE(a.phone().request(w.str()));
   CHECK(*link_done(a).str("error") == "");
   // The old desktop stops offering its own catalogue nearby: its key is not the library's now.
   {
@@ -8194,7 +8332,7 @@ TEST_CASE("phone link: a takeover asked on the share, allowed, then published", 
   }
 
   // The new one finds its key on the share and takes the library over.
-  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(b).boolean("other_publisher") == false);
   REQUIRE(b.eng->phone_publish(utf8(nas)));
   // No folder of b's is on this NAS in the test; what matters is the identity.
@@ -8226,20 +8364,20 @@ TEST_CASE("phone link: Cancel, expiry and a new code withdraw the code on the se
     std::lock_guard lock(d.m);
     return std::count(d.calls.begin(), d.calls.end(), std::string(m));
   };
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   (void)link_done(a);
   const auto before = count("pair_stop");
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair_stop\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair_stop\"}"));
   (void)link_done(a);
   CHECK(count("pair_stop") == before + 1);
   // A code the service no longer holds (spent by a re-scan) comes down from the card.
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   CHECK_FALSE(link_done(a).str("qr")->empty());
   {
     std::lock_guard lock(d.m);
     d.waiting = false;
   }
-  REQUIRE(wait_for([&] { return mv::json::parse(a.eng->phone_link_json())->str("qr")->empty(); }, 8000));
+  REQUIRE(wait_for([&] { return mv::json::parse(a.phone().state_json())->str("qr")->empty(); }, 8000));
 }
 
 TEST_CASE("phone link: a revoke the NAS missed is retried until it lands", "[ai][engine][phone-link]") {
@@ -8259,7 +8397,8 @@ TEST_CASE("phone link: a revoke the NAS missed is retried until it lands", "[ai]
     std::lock_guard lock(d.m);
     return std::count(d.calls.begin(), d.calls.end(), std::string("devices"));
   };
-  // Nobody touches the card: the engine keeps trying by itself.
+  (void)a.phone();  // the app resumes it at launch (mv::phone::resume_app)
+  // Nobody touches the card: the link keeps trying by itself.
   REQUIRE(wait_for([&] { return devices_asked() >= 3; }, 15000));
   {
     std::lock_guard lock(d.m);
@@ -8294,7 +8433,7 @@ TEST_CASE("phone link: the share never moves this desktop's library or epoch bac
 
   // Moving up is how a takeover lands: taken.
   rewrite(id, 5);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("mismatch") == false);
   a.file("green_field.jpg");
   REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
@@ -8304,7 +8443,7 @@ TEST_CASE("phone link: the share never moves this desktop's library or epoch bac
 
   // A restored or edited file that goes back: refused, and the card says so.
   rewrite(id, 3);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("mismatch") == true);
   a.file("blue_sea.jpg");
   REQUIRE(a.eng->index_folder(utf8(a.photos()), true));
@@ -8315,7 +8454,7 @@ TEST_CASE("phone link: the share never moves this desktop's library or epoch bac
 
   // Another library's id under this key: never adopted over a library phones already follow.
   rewrite("someone-else", 9);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("mismatch") == true);
   REQUIRE(a.eng->phone_publish(utf8(nas)));
   CHECK(*phone_done(a).str("error") == "other_library");
@@ -8343,13 +8482,13 @@ TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be re
     da.devices.emplace_back("iPhone", std::string(64, 'd'));
   }
   b.start();
-  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(b);
   REQUIRE(b.eng->phone_publish(utf8(nas)));
   (void)phone_done(b);
-  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"takeover_ask\"}"));
   (void)link_done(b);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   const auto asked = link_done(a);
   REQUIRE_FALSE(asked.str("asking_key")->empty());
   {
@@ -8358,11 +8497,11 @@ TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be re
   }
   mv::json::writer w;
   w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
-  REQUIRE(a.eng->phone_link(w.str()));
+  REQUIRE(a.phone().request(w.str()));
   const auto after = link_done(a);
   CHECK(after.boolean("other_publisher") == true);
   // A later look while the share still cannot be read changes nothing.
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("other_publisher") == true);
   ::chmod(utf8(nas / ".mediaviewer/library.json").c_str(), 0644);
   {
@@ -8371,12 +8510,12 @@ TEST_CASE("phone link: a hand-over stops nearby even when the share cannot be re
     CHECK(std::find(da.calls.begin(), da.calls.end(), std::string("nearby")) == da.calls.end());
   }
   // Readable again, and naming the new desktop: still not this one's.
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("other_publisher") == true);
 #endif
 }
 
-TEST_CASE("phone link: Local search stopping lets go of the NAS without waiting on it", "[ai][engine][phone-link]") {
+TEST_CASE("phone link: the app quitting lets go of the NAS without waiting on it", "[ai][engine][phone-link]") {
   fake_driftwire d;  // before the rig: its engine calls this until it is gone
   rig a;
   a.route = [&](const std::string& t, const std::string& m, const std::string& j) { return d(t, m, j); };
@@ -8387,13 +8526,13 @@ TEST_CASE("phone link: Local search stopping lets go of the NAS without waiting 
   const fs::path nas = a.dir / "Photos";
   fs::create_directories(nas);
   publish_to(a, nas);
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   REQUIRE_FALSE(link_done(a).str("qr")->empty());
   {
     std::lock_guard lock(d.m);
     d.calls.clear();
   }
-  a.eng->stop();
+  a.link_.reset();  // the app quitting (mv::phone::stop_app); Local search stopping no longer touches the NAS
   std::lock_guard lock(d.m);
   // Only what is on this Mac: quitting never waits on the NAS (the code lapses there).
   CHECK(std::find(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == d.calls.end());
@@ -8416,7 +8555,7 @@ TEST_CASE("phone link: a claim that timed out is claimed once more", "[ai][engin
     std::lock_guard lock(d.m);
     d.calls.clear();
   }
-  REQUIRE(a.eng->phone_link("{\"do\":\"claim\",\"local\":\"nas.local:7878\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"claim\",\"local\":\"nas.local:7878\"}"));
   const auto v = link_done(a);
   CHECK(*v.str("error") == "");
   std::lock_guard lock(d.m);
@@ -8441,42 +8580,44 @@ TEST_CASE("phone link: a hand-over survives a restart, and handing back clears i
   b.start();
   REQUIRE(b.eng->phone_publish(utf8(nas)));
   (void)phone_done(b);
-  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"takeover_ask\"}"));
   (void)link_done(b);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   auto asked = link_done(a);
   mv::json::writer w;
   w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
-  REQUIRE(a.eng->phone_link(w.str()));
+  REQUIRE(a.phone().request(w.str()));
   REQUIRE(link_done(a).boolean("other_publisher") == true);
 
   // Local search restarts while the share cannot be read: still handed over.
   const std::string lib = utf8(nas / ".mediaviewer/library.json");
   ::chmod(lib.c_str(), 0);
+  a.link_.reset();
   a.eng.reset();
   a.start();
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("other_publisher") == true);
   ::chmod(lib.c_str(), 0644);
 
   // b hands the library back: a's key is on the share again, and a publishes.
-  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(b);
-  REQUIRE(a.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"takeover_ask\"}"));
   (void)link_done(a);
-  REQUIRE(b.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"refresh\"}"));
   auto back = link_done(b);
   REQUIRE_FALSE(back.str("asking_key")->empty());
   mv::json::writer w2;
   w2.begin_object().key("do").string("takeover_allow").key("key").string(*back.str("asking_key")).end_object();
-  REQUIRE(b.eng->phone_link(w2.str()));
+  REQUIRE(b.phone().request(w2.str()));
   (void)link_done(b);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("other_publisher") == false);
   // And that stays so after another restart.
+  a.link_.reset();
   a.eng.reset();
   a.start();
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("other_publisher") == false);
 #endif
 }
@@ -8492,15 +8633,16 @@ TEST_CASE("phone link: a code left showing at quit is withdrawn at the next star
   const fs::path nas = a.dir / "Photos";
   fs::create_directories(nas);
   publish_to(a, nas);
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  a.link_.reset();
   a.eng.reset();
   {
     std::lock_guard lock(d.m);
     d.calls.clear();
   }
   a.start();
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(a);
   std::lock_guard lock(d.m);
   CHECK(std::count(d.calls.begin(), d.calls.end(), std::string("pair_stop")) == 1);
@@ -8517,8 +8659,9 @@ void quit_with_a_code(rig& a, fake_driftwire& d) {
   const fs::path nas = a.dir / "Photos";
   fs::create_directories(nas);
   publish_to(a, nas);
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   REQUIRE_FALSE(link_done(a).str("qr")->empty());
+  a.link_.reset();
   a.eng.reset();
   std::lock_guard lock(d.m);
   d.calls.clear();
@@ -8541,7 +8684,7 @@ TEST_CASE("phone link: a pair after a failed stale withdraw keeps its code", "[a
     d.pair_stop_error = mv::status::io;  // the NAS is briefly away
   }
   a.start();
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(a);
   CHECK(count_of(d, "pair_stop") >= 1);  // tried (once per refresh, the start's own too), failed, still owed
   {
@@ -8549,18 +8692,18 @@ TEST_CASE("phone link: a pair after a failed stale withdraw keeps its code", "[a
     d.pair_stop_error = mv::status::ok;
     d.calls.clear();
   }
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   const auto v = link_done(a);
   CHECK_FALSE(v.str("qr")->empty());
   CHECK(count_of(d, "pair_stop") == 0);  // the new code is not withdrawn by the old debt
   // And the debt is gone: a later look withdraws nothing.
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair_stop\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair_stop\"}"));
   (void)link_done(a);
   {
     std::lock_guard lock(d.m);
     d.calls.clear();
   }
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(a);
   CHECK(count_of(d, "pair_stop") == 0);
 }
@@ -8578,9 +8721,9 @@ TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definit
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(2200));
     a.start();
-    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
     (void)link_done(a);
-    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
     (void)link_done(a);
     CHECK(count_of(d, "pair_stop") == 0);  // nothing left to withdraw: the NAS dropped it
   }
@@ -8595,7 +8738,7 @@ TEST_CASE("phone link: a code left at quit lapses with its lifetime or a definit
     }
     a.start();
     for (int i = 0; i < 3; ++i) {
-      REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+      REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
       (void)link_done(a);
     }
     CHECK(count_of(d, "pair_stop") == 1);  // asked once; that answer settles it
@@ -8612,7 +8755,7 @@ TEST_CASE("phone link: a request queued while a code is made does not let the ol
     d.pair_stop_error = mv::status::io;  // the old code could not be withdrawn
   }
   a.start();
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(a);
   {
     std::lock_guard lock(d.m);
@@ -8628,7 +8771,7 @@ TEST_CASE("phone link: a request queued while a code is made does not let the ol
     gate_cv.notify_all();
     gate_cv.wait(g, [&] { return open; });
   };
-  REQUIRE(a.eng->phone_link("{\"do\":\"pair\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"pair\"}"));
   {
     std::unique_lock g(gate_m);
     REQUIRE(gate_cv.wait_for(g, std::chrono::seconds(10), [&] { return reached; }));
@@ -8637,7 +8780,7 @@ TEST_CASE("phone link: a request queued while a code is made does not let the ol
     std::lock_guard lock(d.m);
     d.calls.clear();
   }
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));  // busy now says "refresh"
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));  // busy now says "refresh"
   {
     std::lock_guard g(gate_m);
     open = true;
@@ -8660,14 +8803,14 @@ TEST_CASE("phone link: a busy or not-yet-loaded Driftwire does not settle a code
       d.pair_stop_error = transient;
     }
     a.start();
-    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
     (void)link_done(a);
     {
       std::lock_guard lock(d.m);
       d.pair_stop_error = mv::status::ok;
       d.calls.clear();
     }
-    REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+    REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
     (void)link_done(a);
     CHECK(count_of(d, "pair_stop") == 1);  // still owed, and asked again
   }
@@ -8695,9 +8838,10 @@ TEST_CASE("phone link: an engine stopped while its phone ticks never leaves a th
   // Stopped at every point of a tick: the destructor of a joinable thread
   // would end the process here.
   for (int i = 0; i < 25; ++i) {
+    a.link_.reset();
     a.eng.reset();
     a.start();
-    if (i % 3 == 0) (void)a.eng->phone_link("{\"do\":\"refresh\"}");
+    if (i % 3 == 0) (void)a.phone().request("{\"do\":\"refresh\"}");
     std::this_thread::sleep_for(std::chrono::milliseconds(i % 7));
   }
   SUCCEED();
@@ -8717,8 +8861,9 @@ TEST_CASE("phone link: a link.json that cannot be read is never taken as no hand
   const fs::path nas = a.dir / "Photos";
   fs::create_directories(nas);
   publish_to(a, nas);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(a);
+  a.link_.reset();
   a.eng.reset();
   const fs::path link = a.dir / "data" / "phone" / "link.json";
   fs::create_directories(link.parent_path());
@@ -8732,14 +8877,14 @@ TEST_CASE("phone link: a link.json that cannot be read is never taken as no hand
   ::chmod(utf8(link).c_str(), 0);
   ::chmod(share.c_str(), 0);
   a.start();
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   const auto v = link_done(a);
   ::chmod(share.c_str(), 0644);
   CHECK(v.boolean("other_publisher") == true);  // closed: it may say handed over
   ::chmod(utf8(link).c_str(), 0644);
   CHECK(read_all(link) == before);              // and not written over blind
   // The share reads again and names this key: that, and only that, ends it.
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   CHECK(link_done(a).boolean("other_publisher") == false);
 #endif
 }
@@ -8759,9 +8904,10 @@ TEST_CASE("phone link: a hand-over is written down even when link.json could not
   REQUIRE(a.idle());
   fs::create_directories(nas);
   publish_to(a, nas);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   (void)link_done(a);
   // a restarts with a link.json it cannot read.
+  a.link_.reset();
   a.eng.reset();
   const fs::path link = a.dir / "data" / "phone" / "link.json";
   fs::create_directories(link.parent_path());
@@ -8774,14 +8920,14 @@ TEST_CASE("phone link: a hand-over is written down even when link.json could not
   b.start();
   REQUIRE(b.eng->phone_publish(utf8(nas)));
   (void)phone_done(b);
-  REQUIRE(b.eng->phone_link("{\"do\":\"takeover_ask\"}"));
+  REQUIRE(b.phone().request("{\"do\":\"takeover_ask\"}"));
   (void)link_done(b);
-  REQUIRE(a.eng->phone_link("{\"do\":\"refresh\"}"));
+  REQUIRE(a.phone().request("{\"do\":\"refresh\"}"));
   const auto asked = link_done(a);
   REQUIRE_FALSE(asked.str("asking_key")->empty());
   mv::json::writer w;
   w.begin_object().key("do").string("takeover_allow").key("key").string(*asked.str("asking_key")).end_object();
-  REQUIRE(a.eng->phone_link(w.str()));
+  REQUIRE(a.phone().request(w.str()));
   CHECK(*link_done(a).str("error") == "");
   ::chmod(utf8(link).c_str(), 0644);
   // The hand-over is on disk: a restart with the share unreadable still knows it.

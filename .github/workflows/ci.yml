@@ -281,6 +281,7 @@ jobs:
       # the Homebrew tap's formula (ruby checks and evaluates it).
       - run: python3 tools/package/test_driftwire_windows.py -v
       - run: python3 tools/package/test_homebrew_formula.py -v
+      - run: python3 tools/package/test_driftwire_spk.py -v  # the Synology package (docs/plans/nas-setup.md)
 
   # ---------------------------------------------------------------------------
   # Milestone G (docs/design/18): the shared Import engine, add-on host and verified

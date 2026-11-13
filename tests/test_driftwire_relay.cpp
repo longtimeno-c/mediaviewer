@@ -13,9 +13,9 @@
 #include "driftwire_fixture.h"
 
 #include "addons/driftwire/invite.h"
-#include "addons/driftwire/known.h"
+#include "wire/known.h"
 #include "addons/driftwire/relay.h"
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 
 namespace relay = mv::driftwire::relay;
 namespace invite = mv::driftwire::invite;

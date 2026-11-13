@@ -16,7 +16,7 @@
 #include <set>
 
 #include "addons/ai/catalog.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 #include "core/json.h"
 
 namespace mv::mobile {

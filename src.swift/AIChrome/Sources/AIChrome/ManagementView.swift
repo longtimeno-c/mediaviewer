@@ -202,7 +202,6 @@ final class ManagementModel: ObservableObject {
 
   /// Settings → Import and export (docs/design/17 "Sharing an index").
   let transfer: IndexTransferModel
-  let phone: PhoneAccessModel
   /// A later MediaViewer window's reader (AITable.readOnly): the view shows
   /// only what works there — People and their photos — and says where the
   /// rest is.
@@ -214,8 +213,6 @@ final class ManagementModel: ObservableObject {
     photosSupported = table.hasPhotos
     photosAccess = PhotosLibrary.status
     transfer = IndexTransferModel(table: table)
-    phone = PhoneAccessModel(table: table)
-    phone.link.getDriftwire = { [weak self] in self?.chrome?.hostShowAddon("driftwire") }
     transfer.changed = { [weak self] in
       guard let self else { return }
       self.reloadSettings()
@@ -299,7 +296,6 @@ final class ManagementModel: ObservableObject {
     let fetch = FetchLine.from(s)
     if fetch != live.fetch { live.fetch = fetch }
     transfer.poll()
-    phone.poll()
   }
 
   func setPaused(_ paused: Bool) {
@@ -1271,8 +1267,11 @@ struct ManagementView: View {
                                peopleOn: model.facesOn && model.facesReady, docsOn: model.documentFiles)
         }
       }
-      if model.phone.available {
-        section("Phone access") { PhoneAccessSection(model: model.phone) }
+      section("Phone access") {
+        Text("Your phone searches this index once you publish it. Phone access is in Settings, under its own heading.")
+          .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(12)
       }
       section("People") {
         row("Find people in your photos",

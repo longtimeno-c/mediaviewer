@@ -69,6 +69,8 @@ void fill_report(const route_report& r, mv_route_report* out) {
   std::memset(out, 0, sizeof *out);
   put(out->address, r.address);
   out->over_internet = r.over_internet ? 1 : 0;
+  out->relayed = r.relayed ? 1 : 0;
+  out->upgraded = r.upgraded ? 1 : 0;
   const std::size_t n = std::min<std::size_t>(r.failures.size(), 4);
   out->failure_count = static_cast<std::int32_t>(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -85,6 +87,7 @@ mv_link_status status_of_route(status s, const route_report& r) {
     for (const auto& f : r.failures) {
       if (f.problem == route_problem::wrong_service) return MV_LINK_WRONG_SERVICE;
       if (f.problem == route_problem::bad_code) return MV_LINK_BAD_CODE;
+      if (f.problem == route_problem::expired) return MV_LINK_ACCESS_ENDED;
     }
     return MV_LINK_NOT_PAIRED;
   }
@@ -120,6 +123,7 @@ service_config service_of(const mv_pair_info* i, const std::uint8_t* device_key,
   service_config c;
   c.local = i->local;
   c.public_name = i->public_name;
+  c.relay = i->relay;  // unused for pairing, kept for the session alike
   c.identity = key_at(i->identity);
   c.access_key = key_at(i->access_key);
   c.device_key = key_at(device_key);
@@ -256,8 +260,9 @@ void mv_cancel_free(mv_cancel* c) { delete c; }
 int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
   return catch_all([&]() -> int32_t {
     if (!text || !out) return MV_LINK_INVALID;
-    const bool is_sample = sample::is_code(text);
-    auto p = is_sample ? result<pair_payload>(sample::payload()) : parse_pair_payload(text);
+    const bool is_guest = sample::is_guest_code(text);
+    const bool is_sample = is_guest || sample::is_code(text);
+    auto p = is_sample ? result<pair_payload>(sample::payload(is_guest)) : parse_pair_payload(text);
     if (!p) return MV_LINK_INVALID;
     std::memset(out, 0, sizeof *out);
     out->sample = is_sample ? 1 : 0;
@@ -270,7 +275,10 @@ int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
     std::memcpy(out->access_key, p->access_key.data(), 32);
     put(out->code, p->code);
     out->expires = p->expires;
+    out->grant_for_s = p->grant_for_s;
+    out->grant_scoped = p->grant_scoped ? 1 : 0;
     put(out->fingerprint, p->fingerprint);
+    put(out->relay, p->relay);
     if (!is_sample && p->expires <= now_unix) return MV_LINK_EXPIRED;
     return MV_LINK_OK;
   });
@@ -308,6 +316,8 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
     if (!is_static) {
       l->service.local = or_empty(c->local);
       l->service.public_name = or_empty(c->public_name);
+      l->service.relay = or_empty(c->relay);
+      l->service.upgrade = true;  // asked only on a relayed link, and only as mv_link_set_upgrade allows
       l->service.identity = key_at(c->identity);
       l->service.access_key = key_at(c->access_key);
       l->service.device_key = key_at(c->device_key);
@@ -337,6 +347,29 @@ mv_mobile_link* mv_link_open(const mv_link_config* c) {
 }
 
 void mv_link_close(mv_mobile_link* l) { delete l; }
+
+void mv_link_set_upgrade(mv_mobile_link* l, int32_t on_cellular, int32_t allowed_on_cellular) {
+  try {
+    if (l && l->session) l->session->set_upgrade_policy(on_cellular != 0, allowed_on_cellular != 0);
+  } catch (...) {
+  }
+}
+
+int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {
+  return catch_all([&]() -> int32_t {
+    if (expires_unix) *expires_unix = 0;
+    if (scoped) *scoped = 0;
+    if (!l) return -1;
+    if (l->fixed || !l->session) return 0;  // the sample library: never limited
+    std::int64_t e = 0;
+    bool s = false;
+    const int r = l->session->grant(e, s);
+    if (r != 1) return r;
+    if (expires_unix) *expires_unix = e;
+    if (scoped) *scoped = s ? 1 : 0;
+    return 1;
+  });
+}
 
 int32_t mv_link_connect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
   return catch_all([&]() -> int32_t {
