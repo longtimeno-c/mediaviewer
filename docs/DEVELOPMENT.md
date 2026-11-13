@@ -2751,7 +2751,7 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
     (checked against the signed `SHA256SUMS`, run, upgraded 0.1.37 → 0.1.38, removed, nothing left
     in the home) and as root into `/usr/local` (removed, `/usr/local` exactly as before).
   - `driftwire_repo.py smoke` passes as root (all of the apt and tarball checks above, in one run).
-- **Compiled by CI only:** the Windows halves (`term_win.cpp`, `data_dir_win.cpp`, the UTF-8 argv
+- **Compiled by CI only:** the Windows halves (`term_win.cpp`, `serve_tty_win.cpp`, `data_dir_win.cpp`, the UTF-8 argv
   and console print, the Windows branches of the tests; the end-to-end test is POSIX only) and the
   macOS build; the `driftwire-cli-linux` job (Ubuntu 22.04 x64 and arm64, GCC 12, vcpkg) and the
   artefact steps, with its repository step; the release's `linux-cli` and `driftwire-repo` jobs
