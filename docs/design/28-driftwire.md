@@ -1466,8 +1466,14 @@ only the laptop there is no such machine. Plan and later slices:
   the app's bundle that hands packets to the add-on over loopback after a token, with
   `includeAllNetworks` as the kill switch (`vpn_mac.mm`, `mac_tunnel/`; Apple's entitlement owed,
   [12](12-decision-log.md#driftwire)); on Windows Wintun, routes `0.0.0.0/1` and `128.0.0.0/1`,
-  the relay's own route kept, DNS on the adapter (`vpn_win.cpp`; the DLL's licence and an elevated
-  helper owed; no kill switch yet, so the switch is not offered there); none on Linux yet. Until an
+  the relay's own route kept, DNS on the adapter, and the kill switch as WFP filters in a sublayer of
+  Driftwire's own (only the tunnel, the relay, loopback, the local networks and DHCP out; not a
+  dynamic session, so they outlive a crash, and go at stop, the next start or a reboot)
+  (`vpn_win.cpp`; the DLL's licence and running elevated owed); none on Linux yet. The Mac provider
+  builds and embeds with `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON` (`cmake/darwin-tunnel.cmake`; `macpack.py`
+  puts it in `Contents/Library/SystemExtensions` and signs it with the entitlement only for a team);
+  the add-on reads the extension's signature and offers the VPN only when it carries the
+  packet tunnel's Network Extension entitlement. Until an
   OS can start it, the window says why and the proxy carries on.
 - **What it exposes.** The Wi-Fi sees a connection to the relay's address; the sites see the
   relay's address; the relay sees which hosts are visited, never the content of HTTPS. A network
@@ -1803,8 +1809,10 @@ second while bytes move; those posts update chrome and never present the canvas.
 ## Not built
 
 - **The Tunnel, owed** ([plan](../plans/driftwire-menu-and-tunnel.md)): Apple's Network Extension
-  entitlement and the extension's embedding (the Mac VPN), Wintun's licence call and an elevated
-  helper (the Windows VPN), Windows' kill switch (WFP), Linux's interface. The system proxy is not
+  entitlement on the team's profile (the Mac VPN; the build and embedding exist, off by default),
+  Wintun's licence call and a way to run elevated (the Windows VPN: an elevated helper would be a
+  second program, which "add-ons carry their own code" rules out, so this is the owner's call),
+  Linux's interface (the Linux catch-up order is open, CLAUDE.md). The system proxy is not
   set on Linux, and on Windows only for the LAN connection's entry. Codes do not use the relay's
   TLS port. The VPN's stack does no ICMP (a ping gets nothing) and no IP fragments.
 

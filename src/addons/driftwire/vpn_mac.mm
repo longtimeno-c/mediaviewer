@@ -21,6 +21,7 @@
 // waits for the system's answers with a timeout.
 #import <Foundation/Foundation.h>
 #import <NetworkExtension/NetworkExtension.h>
+#import <Security/Security.h>
 #import <SystemExtensions/SystemExtensions.h>
 
 #include <sodium.h>
@@ -67,8 +68,28 @@ constexpr int kSystemMs = 15000;     // the preferences, the tunnel's start
 constexpr int kProviderMs = 20000;   // the provider connects back
 
 NSString* extension_id() {
-  NSString* app = NSBundle.mainBundle.bundleIdentifier ?: @"com.longtimeno-c.MediaViewer";
+  NSString* app = NSBundle.mainBundle.bundleIdentifier ?: @"io.github.longtimeno-c.mediaviewer";
   return [app stringByAppendingString:@".DriftwireTunnel"];
+}
+
+// Whether the extension at `path` is signed with the packet tunnel's Network
+// Extension entitlement (its signature read, nothing run).
+bool signed_for_packet_tunnel(NSString* path) {
+  SecStaticCodeRef code = nullptr;
+  if (SecStaticCodeCreateWithPath((__bridge CFURLRef)[NSURL fileURLWithPath:path], kSecCSDefaultFlags, &code) !=
+      errSecSuccess) {
+    return false;
+  }
+  CFDictionaryRef info = nullptr;
+  const OSStatus s = SecCodeCopySigningInformation(code, kSecCSSigningInformation, &info);
+  CFRelease(code);
+  if (s != errSecSuccess || !info) return false;
+  NSDictionary* d = CFBridgingRelease(info);
+  NSDictionary* ent = d[(__bridge NSString*)kSecCodeInfoEntitlementsDict];
+  NSArray* ne = [ent[@"com.apple.developer.networking.networkextension"] isKindOfClass:NSArray.class]
+                    ? ent[@"com.apple.developer.networking.networkextension"]
+                    : nil;
+  return [ne containsObject:@"packet-tunnel-provider-systemextension"];
 }
 
 bool wait(dispatch_semaphore_t s, int ms) {
@@ -93,6 +114,12 @@ class mac_port final : public os_port {
     if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
       return "All traffic (VPN) needs MediaViewer's network extension, which this build does not carry yet (it "
              "waits for Apple's Network Extension entitlement). The proxy works without it.";
+    }
+    // A build that carries it but not signed with Apple's entitlement (a
+    // developer's ad hoc assemble): macOS would refuse to load it.
+    if (!signed_for_packet_tunnel(path)) {
+      return "All traffic (VPN) needs MediaViewer's network extension signed with Apple's Network Extension "
+             "entitlement, and this build's is not. The proxy works without it.";
     }
     return {};
   }

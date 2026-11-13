@@ -17,13 +17,20 @@
 // default route without touching it), and the relay's own address through
 // the route it had before. The local networks keep their own, more specific,
 // routes. DNS: the adapter's resolver is the tunnel's (198.18.0.2), with the
-// lowest interface metric. Block when the tunnel is down needs WFP filters:
-// not built on Windows (block_unavailable()).
+// lowest interface metric.
+//
+// Block when the tunnel is down: WFP filters in a sublayer of Driftwire's
+// own (kSublayer) let out only the tunnel's adapter, the relay's own
+// address, loopback, the local networks and DHCP, and block everything
+// else, IPv4 and IPv6. Not a dynamic session: the filters outlive a crash
+// (a kill switch that vanished with the process would leak), and are taken
+// away by stop(), by the next start, or by a reboot (they are not persistent).
 #include <winsock2.h>
 #include <ws2ipdef.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <windows.h>
+#include <fwpmu.h>
 
 #include <algorithm>
 #include <atomic>
@@ -100,6 +107,132 @@ struct wintun {
   }
 };
 
+// Driftwire's WFP sublayer: every kill-switch filter is in it, so one
+// sweep finds them all (a crash's leftovers too). {9e1f6b52-4c7a-4d6e-b0b3-2d5f1a8c7e41}
+constexpr GUID kSublayer = {0x9e1f6b52, 0x4c7a, 0x4d6e, {0xb0, 0xb3, 0x2d, 0x5f, 0x1a, 0x8c, 0x7e, 0x41}};
+
+struct wfp {
+  HANDLE engine = nullptr;
+  bool open() {
+    if (engine) return true;
+    FWPM_SESSION0 session{};  // not FWPM_SESSION_FLAG_DYNAMIC: the filters outlive the process
+    return ::FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, &session, &engine) == ERROR_SUCCESS;
+  }
+  void close() {
+    if (engine) ::FwpmEngineClose0(engine);
+    engine = nullptr;
+  }
+  // Every filter in the sublayer, and the sublayer.
+  void clear() {
+    if (!open()) return;
+    FWPM_FILTER_ENUM_TEMPLATE0 t{};
+    t.layerKey = GUID{};
+    t.enumType = FWP_FILTER_ENUM_OVERLAPPING;
+    t.actionMask = 0xFFFFFFFF;
+    for (const GUID& layer : {FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6}) {
+      t.layerKey = layer;
+      HANDLE e = nullptr;
+      if (::FwpmFilterCreateEnumHandle0(engine, &t, &e) != ERROR_SUCCESS) continue;
+      for (;;) {
+        FWPM_FILTER0** got = nullptr;
+        UINT32 n = 0;
+        if (::FwpmFilterEnum0(engine, e, 64, &got, &n) != ERROR_SUCCESS || n == 0) {
+          if (got) ::FwpmFreeMemory0(reinterpret_cast<void**>(&got));
+          break;
+        }
+        for (UINT32 i = 0; i < n; ++i) {
+          if (::IsEqualGUID(got[i]->subLayerKey, kSublayer)) (void)::FwpmFilterDeleteById0(engine, got[i]->filterId);
+        }
+        ::FwpmFreeMemory0(reinterpret_cast<void**>(&got));
+      }
+      (void)::FwpmFilterDestroyEnumHandle0(engine, e);
+    }
+    (void)::FwpmSubLayerDeleteByKey0(engine, &kSublayer);
+  }
+  bool add(const GUID& layer, FWP_ACTION_TYPE action, UINT8 weight, FWPM_FILTER_CONDITION0* conds, UINT32 n) {
+    FWPM_FILTER0 f{};
+    f.displayData.name = const_cast<wchar_t*>(L"Driftwire VPN: block when the tunnel is down");
+    f.layerKey = layer;
+    f.subLayerKey = kSublayer;
+    f.action.type = action;
+    f.weight.type = FWP_UINT8;
+    f.weight.uint8 = weight;
+    f.filterCondition = conds;
+    f.numFilterConditions = n;
+    UINT64 id = 0;
+    return ::FwpmFilterAdd0(engine, &f, nullptr, &id) == ERROR_SUCCESS;
+  }
+  // Only the tunnel, the relay, loopback, the local networks and DHCP out.
+  bool block(const NET_LUID& tunnel, const settings& s) {
+    clear();
+    if (!open()) return false;
+    if (::FwpmTransactionBegin0(engine, 0) != ERROR_SUCCESS) return false;
+    FWPM_SUBLAYER0 sub{};
+    sub.subLayerKey = kSublayer;
+    sub.displayData.name = const_cast<wchar_t*>(L"Driftwire VPN");
+    sub.weight = 0xFFFF;
+    bool ok = ::FwpmSubLayerAdd0(engine, &sub, nullptr) == ERROR_SUCCESS;
+    UINT64 luid = tunnel.Value;
+    for (const GUID& layer : {FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6}) {
+      const bool v4 = ::IsEqualGUID(layer, FWPM_LAYER_ALE_AUTH_CONNECT_V4);
+      FWPM_FILTER_CONDITION0 c{};
+      // The tunnel's own adapter.
+      c.fieldKey = FWPM_CONDITION_IP_LOCAL_INTERFACE;
+      c.matchType = FWP_MATCH_EQUAL;
+      c.conditionValue.type = FWP_UINT64;
+      c.conditionValue.uint64 = &luid;
+      ok = ok && add(layer, FWP_ACTION_PERMIT, 15, &c, 1);
+      // Loopback (the add-on's own proxy and the extension's pump).
+      FWPM_FILTER_CONDITION0 lo{};
+      lo.fieldKey = FWPM_CONDITION_FLAGS;
+      lo.matchType = FWP_MATCH_FLAGS_ALL_SET;
+      lo.conditionValue.type = FWP_UINT32;
+      lo.conditionValue.uint32 = FWP_CONDITION_FLAG_IS_LOOPBACK;
+      ok = ok && add(layer, FWP_ACTION_PERMIT, 14, &lo, 1);
+      if (v4) {
+        // The relay's own address, the local networks, DHCP's broadcast.
+        for (const auto& a : s.exclude) {
+          if (a.v6) continue;
+          FWPM_FILTER_CONDITION0 r{};
+          r.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+          r.matchType = FWP_MATCH_EQUAL;
+          r.conditionValue.type = FWP_UINT32;
+          r.conditionValue.uint32 = static_cast<UINT32>(a.bytes[0]) << 24 | static_cast<UINT32>(a.bytes[1]) << 16 |
+                                    static_cast<UINT32>(a.bytes[2]) << 8 | a.bytes[3];
+          ok = ok && add(layer, FWP_ACTION_PERMIT, 13, &r, 1);
+        }
+        for (const auto& n : s.exclude_nets) {
+          if (n.base.v6 || n.prefix <= 0 || n.prefix > 32) continue;
+          FWP_V4_ADDR_AND_MASK m{};
+          m.addr = static_cast<UINT32>(n.base.bytes[0]) << 24 | static_cast<UINT32>(n.base.bytes[1]) << 16 |
+                   static_cast<UINT32>(n.base.bytes[2]) << 8 | n.base.bytes[3];
+          m.mask = n.prefix == 32 ? 0xFFFFFFFFu : ~(0xFFFFFFFFu >> n.prefix);
+          m.addr &= m.mask;
+          FWPM_FILTER_CONDITION0 r{};
+          r.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+          r.matchType = FWP_MATCH_EQUAL;
+          r.conditionValue.type = FWP_V4_ADDR_MASK;
+          r.conditionValue.v4AddrMask = &m;
+          ok = ok && add(layer, FWP_ACTION_PERMIT, 13, &r, 1);
+        }
+        FWPM_FILTER_CONDITION0 dhcp{};
+        dhcp.fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+        dhcp.matchType = FWP_MATCH_EQUAL;
+        dhcp.conditionValue.type = FWP_UINT16;
+        dhcp.conditionValue.uint16 = 67;
+        ok = ok && add(layer, FWP_ACTION_PERMIT, 12, &dhcp, 1);
+      }
+      // Everything else.
+      ok = ok && add(layer, FWP_ACTION_BLOCK, 0, nullptr, 0);
+    }
+    if (!ok) {
+      (void)::FwpmTransactionAbort0(engine);
+      return false;
+    }
+    return ::FwpmTransactionCommit0(engine) == ERROR_SUCCESS;
+  }
+};
+
 bool elevated() {
   HANDLE token = nullptr;
   if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
@@ -164,9 +297,6 @@ class win_port final : public os_port {
              "waits for a decision). The proxy works without it.";
     }
     return {};
-  }
-  std::string block_unavailable() override {
-    return "Block when the tunnel is down is not on Windows yet.";
   }
 
   result<std::unique_ptr<device>> start(const settings& s) override {
@@ -259,6 +389,15 @@ class win_port final : public os_port {
       stop_locked();
       return err(status::io);
     }
+    // Block when the tunnel is down (a crash's leftovers are swept either way).
+    if (s.kill_switch) {
+      if (!wfp_.block(luid, s)) {
+        stop_locked();
+        return err(status::io);
+      }
+    } else {
+      wfp_.clear();
+    }
     return std::unique_ptr<device>(std::make_unique<wintun_device>(w_, session_));
   }
 
@@ -269,6 +408,8 @@ class win_port final : public os_port {
 
  private:
   void stop_locked() {
+    wfp_.clear();  // the kill switch's filters go with the tunnel
+    wfp_.close();
     if (session_) w_.end(session_);
     session_ = nullptr;
     if (adapter_) w_.close(adapter_);  // its address, routes and DNS go with it
@@ -282,6 +423,7 @@ class win_port final : public os_port {
   WINTUN_ADAPTER_HANDLE adapter_ = nullptr;   // under m_
   WINTUN_SESSION_HANDLE session_ = nullptr;   // under m_
   std::vector<MIB_IPFORWARD_ROW2> kept_routes_;  // under m_
+  wfp wfp_;                                   // under m_
 };
 
 }  // namespace

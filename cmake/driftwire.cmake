@@ -185,12 +185,13 @@ if(WIN32)
   # C++/WinRT for the Bluetooth bearer (Windows.Devices.Bluetooth,
   # windowsapp.lib). Its projection throws; bt_win.cpp catches every call.
   # iphlpapi: the VPN's address, routes and DNS on the Wintun adapter (slice 5, vpn_win.cpp).
-  target_link_libraries(mv_driftwire PRIVATE windowsapp ole32 iphlpapi)
+  # fwpuclnt: the VPN's kill switch (WFP filters, vpn_win.cpp).
+  target_link_libraries(mv_driftwire PRIVATE windowsapp ole32 iphlpapi fwpuclnt)
   set_source_files_properties(${_S}/bt_win.cpp PROPERTIES COMPILE_OPTIONS "/bigobj")
 elseif(APPLE)
   # NetworkExtension, SystemExtensions: the VPN (slice 5, vpn_mac.mm).
   target_link_libraries(mv_driftwire PRIVATE "-framework Foundation" "-framework CoreBluetooth"
-    "-framework NetworkExtension" "-framework SystemExtensions")
+    "-framework NetworkExtension" "-framework SystemExtensions" "-framework Security")
   set_source_files_properties(${_S}/bt_mac.mm ${_S}/vpn_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 endif()
 target_compile_definitions(mv_driftwire PRIVATE MV_DRIFTWIRE_VERSION="${MV_DRIFTWIRE_VERSION}")

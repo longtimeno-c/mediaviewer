@@ -5,8 +5,9 @@ Status: **slice 1 built** (#665, in main, 2026-11-12). **Slices 2 and 3 built** 
 the relay server and the local proxy, with the switch in the window, the settings page and
 `/tunnel`, and the system proxy (PAC, Use for all apps); slice 1's menu has the Tunnel row. **Slice 4
 built** (owner's ask 2026-11-12, [spike](driftwire-tls-spike.md)). **Slice 5 built** in shared code with
-the OS halves written; owed: Apple's entitlement (Mac), Wintun's licence call and an elevated
-helper (Windows), WFP's kill switch (Windows), Linux. What was
+the OS halves written (the Mac provider builds and embeds behind `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON`;
+Windows' kill switch is WFP filters); owed: Apple's entitlement (Mac), Wintun's licence call and
+a way to run elevated (Windows; owner's call), Linux. What was
 built is in [28 "The Tunnel"](../design/28-driftwire.md#the-tunnel-2026-11-12).
 
 ## Why

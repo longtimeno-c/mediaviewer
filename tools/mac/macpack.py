@@ -52,6 +52,16 @@ MDIMPORTER_NAME = "MediaViewerSpotlight"
 # launchd job and the extension are separate files.
 FCP_APPEX_NAME = "MediaViewerSearch"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Driftwire VPN (the Tunnel's slice 5): the packet tunnel provider, a system
+# extension in Contents/Library/SystemExtensions, embedded only from a build
+# with -DMV_DRIFTWIRE_PACKET_TUNNEL=ON. Its Network Extension entitlement must
+# be on the team's Developer ID profile (Apple grants it): a release signs it
+# with TUNNEL_ENTITLEMENTS; an ad hoc assemble cannot carry that restricted
+# entitlement, so its copy is signed without it and macOS will not load it.
+TUNNEL_SYSEXT_NAME = "DriftwireTunnel"
+TUNNEL_ENTITLEMENTS = REPO_ROOT / "src" / "addons" / "driftwire" / "mac_tunnel" / "DriftwireTunnel.entitlements"
+SYSEXT_INSTALL = "com.apple.developer.system-extension.install"
+NETWORK_EXTENSION = "com.apple.developer.networking.networkextension"
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no macOS needed): tested by tools/mac/test_macpack.py.
@@ -442,6 +452,12 @@ def cmd_assemble(args: argparse.Namespace) -> None:
         shutil.copyfile(args.fcp_appex_plist, fcp / "Info.plist")
         roots.append((fcp_exe, "@executable_path/../../../../Frameworks"))
 
+    # The Tunnel's slice 5: the VPN's packet tunnel provider (links the system only).
+    if args.tunnel_sysext_exe:
+        if not args.tunnel_sysext_plist:
+            raise SystemExit("macpack: --tunnel-sysext-exe needs --tunnel-sysext-plist")
+        embed_tunnel(contents, Path(args.tunnel_sysext_exe), Path(args.tunnel_sysext_plist))
+
     bundle_dylibs(app, roots, [args.dylib_dir])
 
     sign_app(app, identity="-", appex_entitlements=Path(args.appex_entitlements), hardened=False,
@@ -486,9 +502,31 @@ DRIFTWIRE_GROUP_SUFFIX = ".driftwire"
 APP_GROUPS = "com.apple.security.application-groups"
 
 
+def tunnel_sysexts(app: Path) -> list[Path]:
+    """The Driftwire VPN's system extension(s) assembled into `app`."""
+    folder = app / "Contents" / "Library" / "SystemExtensions"
+    return sorted(folder.glob("*.systemextension")) if folder.is_dir() else []
+
+
+def embed_tunnel(contents: Path, exe: Path, plist: Path) -> Path:
+    """Puts the packet tunnel provider at Contents/Library/SystemExtensions/
+    <its bundle id>.systemextension (the name macOS looks it up by)."""
+    with open(plist, "rb") as f:
+        bundle_id = plistlib.load(f)["CFBundleIdentifier"]
+    sysext = contents / "Library" / "SystemExtensions" / f"{bundle_id}.systemextension" / "Contents"
+    (sysext / "MacOS").mkdir(parents=True)
+    target = sysext / "MacOS" / TUNNEL_SYSEXT_NAME
+    shutil.copyfile(exe, target)
+    target.chmod(0o755)
+    shutil.copyfile(plist, sysext / "Info.plist")
+    return target
+
+
 def app_entitlements(app: Path, team_id: str | None, into: Path) -> Path:
     """The app's entitlements file to sign with: APP_ENTITLEMENTS, plus
-    Driftwire's app group when the team is known (written to `into`)."""
+    Driftwire's app group when the team is known (written to `into`), and
+    with the VPN's system extension inside, the right to install it and the
+    packet tunnel's Network Extension value."""
     if not team_id:
         return APP_ENTITLEMENTS
     if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
@@ -498,6 +536,9 @@ def app_entitlements(app: Path, team_id: str | None, into: Path) -> Path:
     with open(APP_ENTITLEMENTS, "rb") as f:
         ent = plistlib.load(f)
     ent[APP_GROUPS] = [f"{team_id}.{bundle_id}{DRIFTWIRE_GROUP_SUFFIX}"]
+    if tunnel_sysexts(app):
+        ent[SYSEXT_INSTALL] = True
+        ent[NETWORK_EXTENSION] = ["packet-tunnel-provider-systemextension"]
     with open(into, "wb") as f:
         plistlib.dump(ent, f)
     return into
@@ -539,6 +580,9 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
                  preserve_entitlements=fcp_appex_entitlements is None)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
+    for sysext in tunnel_sysexts(app):
+        # The Network Extension entitlement only with the team that holds it.
+        codesign(sysext, identity, hardened, entitlements=TUNNEL_ENTITLEMENTS if team_id else None)
     with tempfile.TemporaryDirectory() as tmp:
         codesign(app, identity, hardened,
                  entitlements=app_entitlements(app, team_id, Path(tmp) / "MediaViewer.entitlements"))
@@ -842,6 +886,8 @@ def main(argv: list[str]) -> None:
                    help="the search agent's launchd job, <Mach service>.plist (runs MediaViewer --search-agent)")
     a.add_argument("--fcp-appex-plist", help="its Info.plist")
     a.add_argument("--fcp-appex-entitlements", help="its sandbox and app group")
+    a.add_argument("--tunnel-sysext-exe", help="DriftwireTunnel, the VPN's packet tunnel provider (slice 5)")
+    a.add_argument("--tunnel-sysext-plist", help="its Info.plist")
     a.set_defaults(func=cmd_assemble)
 
     r = sub.add_parser("release", help="sign, notarize, disk image, update archive, appcast")

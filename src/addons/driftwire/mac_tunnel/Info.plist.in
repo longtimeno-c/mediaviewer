@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>$(MV_APP_ID).DriftwireTunnel</string>
+  <string>@MV_MAC_BUNDLE_ID@.DriftwireTunnel</string>
   <key>CFBundleName</key>
   <string>DriftwireTunnel</string>
   <key>CFBundleDisplayName</key>
@@ -13,15 +13,15 @@
   <key>CFBundleExecutable</key>
   <string>DriftwireTunnel</string>
   <key>CFBundleShortVersionString</key>
-  <string>$(MV_DRIFTWIRE_VERSION)</string>
+  <string>@MV_DRIFTWIRE_VERSION@</string>
   <key>CFBundleVersion</key>
-  <string>$(MV_DRIFTWIRE_VERSION)</string>
+  <string>@MV_DRIFTWIRE_VERSION@</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NetworkExtension</key>
   <dict>
     <key>NEMachServiceName</key>
-    <string>$(MV_TEAM_ID).$(MV_APP_ID).DriftwireTunnel</string>
+    <string>@MV_TUNNEL_MACH_PREFIX@.@MV_MAC_BUNDLE_ID@.DriftwireTunnel</string>
     <key>NEProviderClasses</key>
     <dict>
       <key>com.apple.networkextension.packet-tunnel</key>

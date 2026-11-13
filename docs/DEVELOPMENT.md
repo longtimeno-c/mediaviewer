@@ -1380,7 +1380,9 @@ build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tls-cert fullchain.pem --tls-key privkey.pem --decoy-dir site/
 # Slice 5 (the VPN): DNS to this resolver; UDP ports beyond 53 only if listed
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --dns 9.9.9.9 --forward-udp-ports 53
-xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/driftwire/mac_tunnel/PacketTunnelProvider.swift
+xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/driftwire/mac_tunnel/*.swift
+# The VPN's provider built and embedded (it runs only once Apple's entitlement is on the team):
+cmake -S . -B build -DMV_DRIFTWIRE_PACKET_TUNNEL=ON && cmake --build build --target mediaviewer_app
 # With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
 curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
@@ -3656,7 +3658,11 @@ what comes next in [the plan](plans/driftwire-menu-and-tunnel.md).
   src/addons/driftwire/mac_tunnel/PacketTunnelProvider.swift`); `vpn_mac.mm` builds in the add-on.
   `"[driftwire]"` 293 cases and `"[addon]"` 74 pass; the Mac PR 1 gate passes (p99 16.75 ms at a
   16.67 ms refresh, max 22.9 ms; idle 0 presents, 0.03 % of a core).
-  **Not run:** the Mac extension (Apple's entitlement owed; not built or embedded), `vpn_win.cpp`
+  With `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON` the provider builds (arm64), `mediaviewer_app` embeds it at
+  `Contents/Library/SystemExtensions/io.github.longtimeno-c.mediaviewer.DriftwireTunnel.systemextension`,
+  ad hoc signed with no entitlements (read back from its signature), and the app's deep signature
+  verifies; `test_macpack` covers the embedding, the signing order and the app's install right.
+  **Not run:** the Mac extension (Apple's entitlement owed: not loadable), `vpn_win.cpp`
   (CI compiles it; Wintun's licence call and an elevated helper owed), any real interface, routes
   or DNS; Linux.
 - **Not run:** a real filtered network; a browser pointed at the proxy by hand; Linux.

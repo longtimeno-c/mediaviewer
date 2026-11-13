@@ -6,9 +6,12 @@ to and from the add-on over loopback. It holds no relay, key or TCP/IP stack.
 
 **Owed before it can ship:** Apple's Network Extension entitlement
 (`packet-tunnel-provider-systemextension`) on the signing team's Developer ID profile. Until
-then it is not built (`-DMV_DRIFTWIRE_PACKET_TUNNEL=ON` builds it but cannot sign it), it is not
-embedded in `MediaViewer.app/Contents/Library/SystemExtensions/`, and the add-on's VPN switch
-says the build does not carry it. The app also needs `com.apple.developer.system-extension.install`
+then it is off by default. `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON` builds it (`cmake/darwin-tunnel.cmake`,
+swiftc, the app's architectures) and `macpack.py assemble` embeds it in
+`MediaViewer.app/Contents/Library/SystemExtensions/<app id>.DriftwireTunnel.systemextension`, signed
+ad hoc without the entitlement (macOS will not load that copy, and the add-on, reading its
+signature, says so instead of offering the VPN); `macpack.py release --team-id` signs it with
+`DriftwireTunnel.entitlements` and gives the app the right to install it. The app also needs `com.apple.developer.system-extension.install`
 and the same Network Extension value on its own entitlements once granted.
 
 Why it lives in the app's bundle (bending "add-ons carry their own code"): macOS loads a system

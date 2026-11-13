@@ -100,6 +100,8 @@ endif()
 # --- docs/design/23: the Final Cut Pro search agent and workflow extension ----------
 # In the bundle, dormant until turned on in Settings > Local search.
 include("${CMAKE_CURRENT_LIST_DIR}/darwin-fcp.cmake")
+# The Tunnel's slice 5: Driftwire VPN's system extension (off by default).
+include("${CMAKE_CURRENT_LIST_DIR}/darwin-tunnel.cmake")
 
 # --- MediaViewerThumbnails: the Quick Look thumbnail extension -----------------
 # An app extension's entry point is NSExtensionMain; the principal class is
@@ -170,8 +172,9 @@ list(APPEND MV_ASSEMBLE_ARGS
   --mdimporter-plist "${CMAKE_BINARY_DIR}/packaging/MediaViewerSpotlight-Info.plist")
 # docs/design/23: the FCP agent and extension (arm64 builds; cmake/darwin-fcp.cmake).
 list(APPEND MV_ASSEMBLE_ARGS ${MV_FCP_ASSEMBLE_ARGS})
+list(APPEND MV_ASSEMBLE_ARGS ${MV_TUNNEL_ASSEMBLE_ARGS})
 add_custom_target(mediaviewer_app
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/mac/macpack.py" ${MV_ASSEMBLE_ARGS}
-  DEPENDS MediaViewer MediaViewerThumbnails MediaViewerClipJob MediaViewerSpotlight ${MV_FCP_ASSEMBLE_DEPENDS}
+  DEPENDS MediaViewer MediaViewerThumbnails MediaViewerClipJob MediaViewerSpotlight ${MV_FCP_ASSEMBLE_DEPENDS} ${MV_TUNNEL_ASSEMBLE_DEPENDS}
   COMMENT "Assemble MediaViewer.app (PR 20)"
   VERBATIM)
