@@ -1378,6 +1378,9 @@ build/bin/mv-driftwire-relay --port 47614      # --key-file F (or MV_RELAY_KEY; 
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,443 --max-forwards 64
 # Slice 4: also on 443 behind TLS, a web site to anyone without the key (BoringSSL; brew install nasm go first)
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tls-cert fullchain.pem --tls-key privkey.pem --decoy-dir site/
+# Slice 5 (the VPN): DNS to this resolver; UDP ports beyond 53 only if listed
+build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --dns 9.9.9.9 --forward-udp-ports 53
+xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/driftwire/mac_tunnel/PacketTunnelProvider.swift
 # With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
 curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
@@ -3640,8 +3643,21 @@ what comes next in [the plan](plans/driftwire-menu-and-tunnel.md).
   Not run: a real network's DPI, a real certificate.
 - **The menu's Tunnel row:** `build_menu` and the `MV_SLOT_EVENT_MENU` branch, after #665 merged;
   `"[driftwire]"` covers the row. The menu itself was not opened by hand.
-- **Not run:** a real filtered network; a browser pointed at the proxy by hand; Linux. Not
-  built: slice 5.
+- **Slice 5 (Driftwire VPN):** `"driftwire vpn*"` passes: packets made and read (RFC 1071's
+  checksum, IPv4 and IPv6, TCP and UDP, a fragment refused); the stack against a scripted app (the
+  handshake and MSS, data both ways in MSS segments, an out-of-order segment refused with a
+  duplicate ACK, a retransmission on the timer, FIN both ways, RST, a stray segment reset); the
+  relay's datagram flows (an echo, its resolver, a refused port, an unknown kind); the runner end to
+  end (an app's DNS and a TCP connection through a stand-in interface and the relay on loopback);
+  the engine's switch (the proxy steps aside, the relay and the LAN left out of the routes, the kill
+  switch, back to the proxy). The provider typechecks (`xcrun swiftc -typecheck
+  src/addons/driftwire/mac_tunnel/PacketTunnelProvider.swift`); `vpn_mac.mm` builds in the add-on.
+  `"[driftwire]"` 293 cases and `"[addon]"` 74 pass; the Mac PR 1 gate passes (p99 16.75 ms at a
+  16.67 ms refresh, max 22.9 ms; idle 0 presents, 0.03 % of a core).
+  **Not run:** the Mac extension (Apple's entitlement owed; not built or embedded), `vpn_win.cpp`
+  (CI compiles it; Wintun's licence call and an elevated helper owed), any real interface, routes
+  or DNS; Linux.
+- **Not run:** a real filtered network; a browser pointed at the proxy by hand; Linux.
 
 ### Driftwire relays (issue #472, 2026-10-18)
 

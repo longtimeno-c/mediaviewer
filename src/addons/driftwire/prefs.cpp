@@ -45,6 +45,8 @@ std::optional<prefs> parse(const std::string& text) {
   p.tunnel = doc->boolean("tunnel").value_or(false);
   p.tunnel_all_apps = doc->boolean("tunnel_all_apps").value_or(true);
   p.tunnel_tls = doc->boolean("tunnel_tls").value_or(false);
+  p.tunnel_vpn = doc->boolean("tunnel_vpn").value_or(false);
+  p.tunnel_block = doc->boolean("tunnel_block").value_or(false);
   if (const auto tp = doc->integer("tunnel_tls_port"); tp && *tp >= 1 && *tp <= 65535) {
     p.tunnel_tls_port = static_cast<std::uint16_t>(*tp);
   }
@@ -84,7 +86,8 @@ bool save_prefs(const std::string& path, const prefs& p) {
   w.key("relay").boolean(p.relay).key("relay_server").string(p.relay_server);
   w.key("tunnel").boolean(p.tunnel).key("tunnel_port").integer(p.tunnel_port);
   w.key("tunnel_all_apps").boolean(p.tunnel_all_apps);
-  w.key("tunnel_tls").boolean(p.tunnel_tls).key("tunnel_tls_port").integer(p.tunnel_tls_port).end_object();
+  w.key("tunnel_tls").boolean(p.tunnel_tls).key("tunnel_tls_port").integer(p.tunnel_tls_port);
+  w.key("tunnel_vpn").boolean(p.tunnel_vpn).key("tunnel_block").boolean(p.tunnel_block).end_object();
   const std::string text = w.take();
   const std::string fresh = path + ".new";
   (void)io::remove_file(fresh);  // a leftover from a write that stopped

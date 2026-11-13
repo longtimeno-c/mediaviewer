@@ -4,7 +4,9 @@ Status: **slice 1 built** (#665, in main, 2026-11-12). **Slices 2 and 3 built** 
 `claude/driftwire-tunnel-70ba6c` (2026-11-12, the owner's ask that day; draft PR): forwarding on
 the relay server and the local proxy, with the switch in the window, the settings page and
 `/tunnel`, and the system proxy (PAC, Use for all apps); slice 1's menu has the Tunnel row. **Slice 4
-built** (owner's ask 2026-11-12, [spike](driftwire-tls-spike.md)). Slice 5 under way. What was
+built** (owner's ask 2026-11-12, [spike](driftwire-tls-spike.md)). **Slice 5 built** in shared code with
+the OS halves written; owed: Apple's entitlement (Mac), Wintun's licence call and an elevated
+helper (Windows), WFP's kill switch (Windows), Linux. What was
 built is in [28 "The Tunnel"](../design/28-driftwire.md#the-tunnel-2026-11-12).
 
 ## Why
@@ -105,7 +107,10 @@ gates hold (nothing here touches the render path; the menu is chrome).
   [spike](driftwire-tls-spike.md), [28](../design/28-driftwire.md#the-tunnel-2026-11-12).)* The relay on TCP 443 behind TLS 1.3 with a browser's ClientHello,
   the sealed hop inside; a connection that does not authenticate is answered as an ordinary web
   site. For networks that block what looks like a tunnel. Its own spike first.
-- **5. Driftwire VPN: every app, not only those that follow the proxy** (owner, 2026-11-12).
+- **5. Driftwire VPN: every app, not only those that follow the proxy** (owner, 2026-11-12). *(Built:
+  `netstack`, `vpn`, the relay's datagram flows, the switch and the menu's choice; the Mac
+  extension and Wintun half written, not run: see the status above and
+  [28](../design/28-driftwire.md#the-tunnel-2026-11-12).)*
   A virtual network interface carries all of the machine's traffic over the same forwarded
   streams as slice 3. No new protocol, and no change to the relay beyond UDP forwarding.
   - **On the laptop, packets become connections** (a userspace TCP/IP stack, "tun2socks"

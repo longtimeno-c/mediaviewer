@@ -104,6 +104,70 @@ inline constexpr std::string_view kPacPath = "/driftwire-tunnel.pac";
 [[nodiscard]] std::uint8_t socks_reply_for(relay::forward_answer a) noexcept;
 [[nodiscard]] std::string http_reply_for(relay::forward_answer a);
 
+// ---- reaching the relay: the proxy's, and the VPN's (slice 5) -------------------------------
+
+// Where a stream's connection to the relay is kept while it opens, so its
+// owner can end it from another thread (its own lock).
+class remote_slot {
+ public:
+  // False (and `l` shut down) when the slot was ended first.
+  bool set(std::shared_ptr<link> l) {
+    std::lock_guard lock(m_);
+    if (ended_) {
+      l->shutdown();
+      return false;
+    }
+    l_ = std::move(l);
+    return true;
+  }
+  void end() {
+    std::lock_guard lock(m_);
+    ended_ = true;
+    if (l_) l_->shutdown();
+  }
+
+ private:
+  std::mutex m_;
+  std::shared_ptr<link> l_;
+  bool ended_ = false;
+};
+
+// One forward at a time per call: the relay server resolved once (again
+// after a failed connect), kOpensAtOnce being opened at once, TLS and the
+// knock first when asked (slice 4), then relay::forward. A TCP connection or
+// a datagram flow (kind) either way.
+class dialer {
+ public:
+  struct options {
+    std::string relay;  // "<address or name>:<port>#<key>"
+    bool tls = false;
+    std::uint16_t tls_port = tls::kDefaultPort;
+    connect_fn connect;  // net::connect when empty
+  };
+  // status::invalid_arg for a relay field that is not one; Argon2id runs here with tls.
+  [[nodiscard]] static result<std::unique_ptr<dialer>> make(options o);
+  // `remote` (optional): where the connection to the server is kept while
+  // it opens, so stop() and an owner's destructor can end it.
+  [[nodiscard]] result<std::unique_ptr<link>> open(const std::string& host, std::uint16_t port,
+                                                   relay::forward_answer& said,
+                                                   const std::shared_ptr<remote_slot>& remote = nullptr,
+                                                   std::uint8_t kind = relay::kForwardTcp);
+  void stop();  // every waiting open() returns cancelled
+  [[nodiscard]] const std::string& relay_at() const noexcept { return server_.at; }
+
+ private:
+  explicit dialer(options o) : opts_(std::move(o)) {}
+  options opts_;
+  relay_server_field server_;
+  std::string sni_;         // the relay's name for TLS ("" for an address)
+  tls::knock_key knock_{};  // with opts_.tls
+  std::mutex m_;
+  std::condition_variable turn_cv_;
+  int opening_ = 0;                        // under m_
+  bool stopped_ = false;                   // under m_
+  std::optional<net::endpoint> resolved_;  // under m_
+};
+
 // ---- the proxy ----------------------------------------------------------------------------
 
 class proxy {
@@ -148,29 +212,24 @@ class proxy {
   void accept_loop();
   // `remote`: where the stream's connection to the server is kept, so the
   // destructor can end a handshake in progress.
-  void serve(std::shared_ptr<link> local, const std::shared_ptr<std::shared_ptr<link>>& remote);
+  void serve(std::shared_ptr<link> local, const std::shared_ptr<remote_slot>& remote);
   // A forward to `to` at the relay server (waits for a turn among
   // kOpensAtOnce); the stream, or what the server said.
   [[nodiscard]] result<std::unique_ptr<link>> open(const target& to, relay::forward_answer& said,
-                                                   const std::shared_ptr<std::shared_ptr<link>>& remote);
+                                                   const std::shared_ptr<remote_slot>& remote);
   void note(relay::forward_answer a, bool opened);
 
   options opts_;
-  relay_server_field server_;
-  std::string sni_;          // the relay's name for TLS ("" for an address)
-  tls::knock_key knock_{};   // with opts_.tls
+  std::unique_ptr<dialer> dial_;
   std::unique_ptr<net::listener> listener_;
   std::thread accept_thread_;
   std::atomic<bool> stop_{false};
   mutable std::mutex m_;
-  std::condition_variable turn_cv_;
-  int opening_ = 0;                          // under m_
-  std::optional<net::endpoint> resolved_;    // under m_: the server, resolved once (again after a failure)
   struct worker {
     std::thread t;
     std::shared_ptr<std::atomic<bool>> done;
     std::shared_ptr<link> l;
-    std::shared_ptr<std::shared_ptr<link>> remote;  // its contents under m_
+    std::shared_ptr<remote_slot> remote;
   };
   std::vector<worker> workers_;  // under m_
   snapshot snap_;                // under m_ (port set at start)

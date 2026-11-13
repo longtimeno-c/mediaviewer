@@ -100,6 +100,16 @@ inline constexpr std::uint8_t kForwarding = 'F', kForwardOff = 'O', kForwardPort
 // flow (UDP, for the plan's slice 5 VPN: DNS and QUIC) takes another value
 // and an older server answers kForwardKind.
 inline constexpr std::uint8_t kForwardTcp = 0;
+// Slice 5 (the VPN): a datagram flow. The stream then carries datagrams,
+// each as a 2-byte length and itself (write_datagram / read_datagram), in
+// sealed frames as a TCP forward's bytes. The server sends them from one UDP
+// socket of its own to the host and port, and only that host's answers come
+// back. Ports it carries: --forward-udp-ports (53 by default; QUIC's 443 is
+// off, so browsers use TCP). kDnsHost names the server's own resolver.
+inline constexpr std::uint8_t kForwardUdp = 1;
+inline constexpr std::string_view kDnsHost = "dns.driftwire";
+inline constexpr std::size_t kMaxDatagram = 1500;
+inline constexpr int kUdpIdleMs = 60000;
 inline constexpr std::size_t kWordBytes = 1 + noise::kTagBytes;
 // A connection to a relay server finishes its handshake within this.
 inline constexpr int kHelloMs = 5000;
@@ -235,7 +245,13 @@ enum class forward_answer : std::uint8_t {
 // later packet layer (a userspace TCP/IP stack under a VPN) per TCP flow.
 [[nodiscard]] result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string& key,
                                                     const std::string& host, std::uint16_t port, int wait_ms,
-                                                    forward_answer& said);
+                                                    forward_answer& said, std::uint8_t kind = kForwardTcp);
+// A datagram flow's framing (kForwardUdp), either side.
+[[nodiscard]] expected write_datagram(link& l, std::span<const std::uint8_t> datagram);
+// The next whole datagram into `out`; status::timeout when none came (a
+// part read stays in `part` for the next call).
+[[nodiscard]] expected read_datagram(link& l, std::vector<std::uint8_t>& part, std::vector<std::uint8_t>& out,
+                                     int timeout_ms);
 // A host a forward may name: 1..kMaxHostBytes of letters, digits, '.', '-',
 // '_' and ':' (an IPv6 address). Pure.
 [[nodiscard]] bool forward_host_ok(std::string_view host) noexcept;
@@ -297,6 +313,11 @@ class server {
     }();
     // The tests: forward to loopback and private addresses too.
     bool forward_private = false;
+    // Slice 5: the UDP ports a key holder's datagram flows may reach (DNS
+    // by default; empty: none), and the resolver kDnsHost means (the
+    // system's first, else 1.1.1.1:53; private allowed: it is this server's own).
+    std::vector<std::uint16_t> forward_udp_ports{53};
+    std::optional<net::endpoint> dns_upstream;
     // Slice 4 (tls.h): a second port where the hop runs inside TLS behind
     // the knock, and anything else is answered as a web site. 0: none.
     // With loopback_only, the OS picks it (tls_port() says which).
@@ -339,6 +360,8 @@ class server {
                     const net::address& from);
   void serve_forward(std::shared_ptr<link> l, std::string host, std::uint16_t port,
                      std::unique_ptr<noise::cipher_state> to_client, std::unique_ptr<noise::cipher_state> from_client);
+  void serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t port,
+                 std::unique_ptr<noise::cipher_state> to_client, std::unique_ptr<noise::cipher_state> from_client);
   void reap_locked();
 
   options opts_;

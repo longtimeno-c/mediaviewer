@@ -164,6 +164,14 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.tunnel_tls = kept.tunnel_tls;
   v_.tunnel_tls_available = tls::available();
   tunnel_tls_port_ = kept.tunnel_tls_port;
+  v_.tunnel_vpn = kept.tunnel_vpn;
+  v_.tunnel_block = kept.tunnel_block;
+  if (opts_.make_vpn) vpn_port_ = opts_.make_vpn();
+  if (vpn_port_) {
+    v_.tunnel_vpn_note = vpn_port_->unavailable();  // cheap by contract: no prompt, no wait
+    v_.tunnel_vpn_available = v_.tunnel_vpn_note.empty();
+    v_.tunnel_block_available = vpn_port_->block_unavailable().empty();
+  }
   if (opts_.make_sysproxy) sysproxy_ = opts_.make_sysproxy();
   // A setting Driftwire made and did not undo (a crash, a power cut): the
   // control thread puts it back at its first reconcile, below.
@@ -229,11 +237,18 @@ engine::~engine() {
     // The Tunnel's proxy (the control thread has stopped: nothing starts it
     // again). Destroyed outside tunnel_m_: its threads take it to report.
     std::unique_ptr<tunnel::proxy> t;
+    std::unique_ptr<vpn::runner> v;
     {
       std::lock_guard lock(tunnel_m_);
       t = std::move(tunnel_);
+      v = std::move(vpn_run_);
     }
     t.reset();
+    // Slice 5: the VPN's streams, then the interface, its routes and DNS.
+    if (v) {
+      v.reset();
+      if (vpn_port_) vpn_port_->stop();
+    }
     // Quitting: the computer's proxy setting goes back to what it was.
     sync_system_proxy(0, false);
   }
@@ -317,6 +332,8 @@ void engine::save_now() {
     p.tunnel_port = tunnel_port_;
     p.tunnel_all_apps = v_.tunnel_all_apps;
     p.tunnel_tls = v_.tunnel_tls;
+    p.tunnel_vpn = v_.tunnel_vpn;
+    p.tunnel_block = v_.tunnel_block;
     p.tunnel_tls_port = tunnel_tls_port_;
   }
   {
@@ -466,6 +483,16 @@ void engine::sync_tunnel() {
     tls = v_.tunnel_tls && tls::available();
     tls_port = opts_.tunnel_tls_port ? opts_.tunnel_tls_port : tunnel_tls_port_;
   }
+  // Slice 5: with All traffic (VPN) chosen and the interface able to start,
+  // the VPN runs and the proxy (and the system proxy) step aside.
+  bool vpn_wanted = false, block = false;
+  {
+    std::lock_guard lock(m_);
+    vpn_wanted = want && v_.tunnel_vpn && v_.tunnel_vpn_available && !relay.empty();
+    block = v_.tunnel_block && v_.tunnel_block_available;
+  }
+  const bool vpn_runs = sync_vpn(vpn_wanted, relay, tls, tls_port, block);
+  if (vpn_runs) want = false;
   // What the proxy runs with: a change of any restarts it.
   const std::string made_for = relay + (tls ? "\n" + std::to_string(tls_port) : std::string());
   std::unique_ptr<tunnel::proxy> drop;
@@ -614,13 +641,98 @@ void engine::sync_system_proxy(std::uint16_t port, bool want) {
   }
 }
 
+bool engine::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_t tls_port, bool block) {
+  const std::string made_for =
+      relay + "\n" + (tls ? std::to_string(tls_port) : std::string("-")) + (block ? "\nblock" : "");
+  std::unique_ptr<vpn::runner> drop;
+  {
+    std::lock_guard lock(tunnel_m_);
+    if (vpn_run_ && (!on || vpn_for_ != made_for)) {
+      drop = std::move(vpn_run_);
+      vpn_for_.clear();
+    }
+  }
+  if (drop) {
+    drop.reset();  // every stream reset, its threads joined
+    if (vpn_port_) vpn_port_->stop();  // the interface, its routes and DNS go
+    host_.log(2, "driftwire: vpn off");
+  }
+  {
+    std::lock_guard lock(tunnel_m_);
+    if (vpn_run_) return true;
+  }
+  const auto proxy_mode = [&] {
+    std::lock_guard lock(m_);
+    v_.tunnel_mode = "proxy";
+    return false;
+  };
+  if (!on || !vpn_port_) return proxy_mode();
+  std::string why;
+  const auto field = relay_server_of(relay, why);
+  if (!field) return proxy_mode();  // the proxy's notes say why
+  vpn::settings s;
+  s.kill_switch = block;
+  s.relay_name = field->at.substr(0, field->at.rfind(':'));
+  // Left out of the tunnel: the relay itself, and every local network.
+  if (const auto at = relay_endpoint(field->at)) {
+    if (const auto a = net::parse_address(at->address)) s.exclude.push_back(*a);
+  }
+  for (const auto& n : net::local_subnets()) {
+    if (!net::is_public(n.base) || n.prefix >= 8) s.exclude_nets.push_back(n);
+  }
+  std::string note;
+  auto dev = vpn_port_->start(s);
+  if (!dev) {
+    note = dev.error() == status::permission_denied
+               ? "All traffic (VPN) was not allowed on this computer: the proxy carries the apps that follow it."
+               : "All traffic (VPN) could not start: the proxy carries the apps that follow it.";
+    log_status("vpn", dev.error());
+  } else {
+    vpn::runner::options o;
+    o.dial = {relay, tls, tls_port, {}};
+    o.dev = std::move(*dev);
+    o.s = s;
+    o.changed = [this] { tunnel_changed(); };
+    auto r = vpn::runner::start(std::move(o));
+    if (r) {
+      std::lock_guard lock(tunnel_m_);
+      vpn_run_ = std::move(*r);
+      vpn_for_ = made_for;
+    } else {
+      vpn_port_->stop();
+      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it.";
+      log_status("vpn", r.error());
+    }
+  }
+  bool runs = false;
+  {
+    std::lock_guard lock(tunnel_m_);
+    runs = static_cast<bool>(vpn_run_);
+  }
+  if (runs) host_.log(2, "driftwire: vpn on");
+  std::lock_guard lock(m_);
+  v_.tunnel_mode = runs ? "vpn" : "proxy";
+  if (!note.empty()) v_.tunnel_vpn_note = note;
+  return runs;
+}
+
 void engine::tunnel_changed() {
   std::optional<tunnel::proxy::snapshot> s;
+  std::optional<vpn::runner::snapshot> vs;
   {
     std::lock_guard lock(tunnel_m_);
     if (tunnel_) s = tunnel_->state();
+    if (vpn_run_) vs = vpn_run_->state();
   }
-  if (s) {
+  if (vs) {
+    std::lock_guard lock(m_);
+    v_.tunnel_mode = "vpn";
+    v_.tunnel_address.clear();
+    v_.tunnel_note = vs->problem;
+    v_.tunnel_open = vs->tcp_open;
+    v_.tunnel_streams = vs->tcp_made;
+  }
+  if (s && !vs) {  // the VPN's state wins while both are briefly alive
     std::lock_guard lock(m_);
     v_.tunnel_address = "127.0.0.1:" + std::to_string(s->port);
     v_.tunnel_note = s->problem;
@@ -1980,6 +2092,22 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     if (in) in->set_relay(*text);
     request_save();
     request_reconcile();  // the Tunnel follows the field (sync_tunnel)
+    return;
+  }
+  if ((node == "tunnel_vpn" || node == "tunnel_block") && kind == kChange && value &&
+      value->k == json::kind::boolean) {
+    // Slice 5: All traffic (VPN), and its kill switch; both off by default.
+    {
+      std::lock_guard lock(m_);
+      (node == "tunnel_vpn" ? v_.tunnel_vpn : v_.tunnel_block) = value->b;
+      if (node == "tunnel_vpn" && vpn_port_ && value->b) {
+        v_.tunnel_vpn_note = vpn_port_->unavailable();
+        v_.tunnel_vpn_available = v_.tunnel_vpn_note.empty();
+      }
+    }
+    request_reconcile();
+    request_save();
+    post();
     return;
   }
   if (node == "tunnel_tls" && kind == kChange && value && value->k == json::kind::boolean) {

@@ -1943,6 +1943,23 @@ MTU are never changed by the app.
 
 Issues #410 and #413, [28](28-driftwire.md).
 
+**The Tunnel's VPN mode puts one thin piece in the app's bundle (owner asked for slice 5,
+2026-11-12; confirm).** The owner asked for Driftwire VPN (slice 5 of
+[the plan](../plans/driftwire-menu-and-tunnel.md)): every app's traffic through the person's own
+relay, not only those that follow the proxy. On the Mac that needs a Network Extension packet
+tunnel provider, and macOS loads a system extension only from the app that installs it, so it
+cannot ship inside the add-on. This bends "add-ons carry their own code" (2026-10-11): the
+extension (`src/addons/driftwire/mac_tunnel`) is a thin pump. It holds no relay, key or TCP/IP
+stack, does nothing unless the Driftwire add-on starts it, and passes packets to the add-on over
+loopback after a token; the stack, the flows and the relay stay in the add-on (`vpn.cpp`,
+`netstack.cpp`). Owed before it ships: Apple's Network Extension entitlement on the signing team
+(never faked; the extension is not built or embedded until then). On Windows the interface is
+Wintun, loaded at run time from beside the add-on; shipping `wintun.dll` waits for the owner's
+licence call ([11](11-licensing.md)), and creating its adapter needs an administrator (an
+elevated helper is owed). The TCP/IP stack is Driftwire's own (`netstack.cpp`, the app side of each
+connection only): lwIP (BSD-3, compatible) is not in vcpkg, and accepting a connection to any
+address needs patches to it.
+
 **Sharepoint is now Driftwire, everywhere (owner, 2026-10-19).** Microsoft already sells a product
 called SharePoint, so the add-on was renamed in full: its name on screen, its id (`driftwire`), its
 files and folders, the release packages (`mediaviewer-addon-driftwire-*`), the relay tool

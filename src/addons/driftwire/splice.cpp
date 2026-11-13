@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 
 #include "addons/driftwire/cpace.h"
@@ -434,7 +435,7 @@ forward_answer answer_of(std::uint8_t w) {
 }  // namespace
 
 result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string& key, const std::string& host,
-                                      std::uint16_t port, int wait_ms, forward_answer& said) {
+                                      std::uint16_t port, int wait_ms, forward_answer& said, std::uint8_t kind) {
   said = forward_answer::failed;
   if (!l || !forward_host_ok(host) || port == 0 || key.size() < kMinKeyChars) return err(status::invalid_arg);
   if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
@@ -475,7 +476,7 @@ result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string
     return fail(status::permission_denied);
   }
   std::vector<std::uint8_t> ask;
-  ask.push_back(kForwardTcp);
+  ask.push_back(kind);
   ask.push_back(static_cast<std::uint8_t>(port >> 8));
   ask.push_back(static_cast<std::uint8_t>(port));
   ask.push_back(static_cast<std::uint8_t>(host.size()));
@@ -496,6 +497,38 @@ result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string
   said = answer_of(*w);
   if (said != forward_answer::ok) return fail(status::permission_denied);
   return std::unique_ptr<link>(std::make_unique<sealed_link>(std::move(l), std::move(to_server), std::move(from_server)));
+}
+
+expected write_datagram(link& l, std::span<const std::uint8_t> d) {
+  if (d.size() > kMaxDatagram) return err(status::invalid_arg);
+  std::vector<std::uint8_t> out;
+  out.reserve(2 + d.size());
+  out.push_back(static_cast<std::uint8_t>(d.size() >> 8));
+  out.push_back(static_cast<std::uint8_t>(d.size()));
+  out.insert(out.end(), d.begin(), d.end());
+  return l.write_all(out);
+}
+
+expected read_datagram(link& l, std::vector<std::uint8_t>& part, std::vector<std::uint8_t>& out, int timeout_ms) {
+  const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+  std::array<std::uint8_t, 2048> buf{};
+  for (;;) {
+    if (part.size() >= 2) {
+      const std::size_t n = static_cast<std::size_t>(part[0]) << 8 | part[1];
+      if (n > kMaxDatagram) return err(status::corrupt);
+      if (part.size() >= 2 + n) {
+        out.assign(part.begin() + 2, part.begin() + 2 + static_cast<std::ptrdiff_t>(n));
+        part.erase(part.begin(), part.begin() + 2 + static_cast<std::ptrdiff_t>(n));
+        return {};
+      }
+    }
+    const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - clock::now()).count();
+    if (left <= 0) return err(status::timeout);
+    auto got = l.read_some(buf, static_cast<int>(left));
+    if (!got) return err(got.error());
+    if (*got == 0) return err(status::io);
+    part.insert(part.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*got));
+  }
 }
 
 result<std::size_t> relayed_link::read_some(std::span<std::uint8_t> into, int timeout_ms) {
@@ -781,8 +814,11 @@ void server::handle(std::shared_ptr<link> l, const net::address& from) {
   if (*role == kForwarder) {
     auto from_client = std::make_unique<noise::cipher_state>();
     from_client->init(keys->responder_to_initiator);
+    if (fwd_kind == kForwardUdp) {
+      return serve_udp(std::move(l), std::move(fwd_host), fwd_port, std::move(to_client), std::move(from_client));
+    }
     if (fwd_kind != kForwardTcp) {
-      // A kind this server does not carry (a datagram flow): said, sealed.
+      // A kind this server does not carry: said, sealed.
       (void)write_word(*l, *to_client, kForwardKind);
       l->shutdown();
       std::lock_guard lock(m_);
@@ -926,6 +962,131 @@ result<std::unique_ptr<link>> connect_host(const std::string& host, std::uint16_
 }
 
 }  // namespace
+
+namespace {
+
+// The system's first resolver (POSIX: /etc/resolv.conf), else 1.1.1.1.
+net::endpoint default_dns() {
+  if (std::FILE* f = std::fopen("/etc/resolv.conf", "r")) {
+    char line[256];
+    while (std::fgets(line, sizeof line, f)) {
+      char addr[128] = {};
+      if (std::sscanf(line, " nameserver %127s", addr) == 1 && net::parse_address(addr)) {
+        std::fclose(f);
+        return {addr, 53};
+      }
+    }
+    std::fclose(f);
+  }
+  return {"1.1.1.1", 53};
+}
+
+}  // namespace
+
+void server::serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t port,
+                       std::unique_ptr<noise::cipher_state> to_client,
+                       std::unique_ptr<noise::cipher_state> from_client) {
+  const auto say = [&](forward_answer a) { return write_word(*l, *to_client, word_of(a)); };
+  const auto no = [&](forward_answer a) {
+    (void)say(a);
+    l->shutdown();
+    std::lock_guard lock(m_);
+    ++counts_.forward_refused;
+  };
+  // Where: the server's resolver, or a public address of the host.
+  std::optional<net::endpoint> to;
+  if (host == kDnsHost) {
+    to = opts_.dns_upstream ? *opts_.dns_upstream : default_dns();
+  } else {
+    if (opts_.forward_udp_ports.empty()) return no(forward_answer::off);
+    if (std::find(opts_.forward_udp_ports.begin(), opts_.forward_udp_ports.end(), port) ==
+        opts_.forward_udp_ports.end()) {
+      return no(forward_answer::port);
+    }
+    std::vector<net::address> addrs;
+    if (const auto lit = net::parse_address(host)) {
+      addrs.push_back(*lit);
+    } else {
+      addrs = net::resolve(host);
+    }
+    for (const auto& a : addrs) {
+      if (opts_.forward_private || net::is_public(a)) {
+        to = net::endpoint{net::address_text(a), port};
+        break;
+      }
+    }
+    if (!to) return no(addrs.empty() ? forward_answer::unreachable : forward_answer::not_public);
+  }
+  {
+    std::lock_guard lock(m_);
+    if (static_cast<int>(counts_.forwarding) >= opts_.max_forwards) {
+      ++counts_.forward_refused;
+      (void)say(forward_answer::busy);
+      l->shutdown();
+      return;
+    }
+    ++counts_.forwarding;
+  }
+  struct give_back {
+    server& s;
+    ~give_back() {
+      std::lock_guard lock(s.m_);
+      --s.counts_.forwarding;
+    }
+  } given{*this};
+  const auto target = net::parse_address(to->address);
+  auto sock = target ? net::open_udp(target->v6) : result<std::unique_ptr<net::udp_socket>>(err(status::invalid_arg));
+  if (!sock) return no(forward_answer::unreachable);
+  if (stop_.load() || !say(forward_answer::ok)) {
+    l->shutdown();
+    return;
+  }
+  {
+    std::lock_guard lock(m_);
+    ++counts_.forwarded;
+  }
+  sealed_link client(std::make_unique<shared_link>(l), std::move(to_client), std::move(from_client));
+  std::atomic<bool> over{false};
+  std::atomic<std::int64_t> last{now_ns()};
+  std::atomic<std::uint64_t> moved{0};
+  // The answers: only from where the flow goes.
+  std::thread back([&] {
+    std::vector<std::uint8_t> buf(kMaxDatagram);
+    while (!over.load() && !stop_.load()) {
+      net::endpoint from;
+      auto n = (*sock)->receive_from(buf, 250, from);
+      if (!n) {
+        if (n.error() != status::timeout) break;
+        continue;
+      }
+      const auto fa = net::parse_address(from.address);
+      if (!fa || *fa != *target || from.port != to->port) continue;
+      if (!write_datagram(client, std::span<const std::uint8_t>(buf.data(), *n))) break;
+      moved += *n;
+      last.store(now_ns());
+    }
+    over.store(true);
+    client.shutdown();
+  });
+  std::vector<std::uint8_t> part, d;
+  while (!over.load() && !stop_.load()) {
+    auto r = read_datagram(client, part, d, 250);
+    if (!r) {
+      if (r.error() != status::timeout) break;
+      if (now_ns() - last.load() > std::int64_t{kUdpIdleMs} * 1'000'000) break;
+      continue;
+    }
+    if (!(*sock)->send_to(d, *to)) break;
+    moved += d.size();
+    last.store(now_ns());
+  }
+  over.store(true);
+  (*sock)->shutdown();
+  back.join();
+  client.shutdown();
+  std::lock_guard lock(m_);
+  counts_.bytes += moved.load();
+}
 
 void server::serve_forward(std::shared_ptr<link> l, std::string host, std::uint16_t port,
                            std::unique_ptr<noise::cipher_state> to_client,

@@ -52,6 +52,7 @@
 #include "addons/driftwire/transfer.h"
 #include "addons/driftwire/sysproxy.h"
 #include "addons/driftwire/tunnel.h"
+#include "addons/driftwire/vpn.h"
 #include "addons/driftwire/udp_hub.h"
 
 namespace mv::driftwire {
@@ -220,6 +221,15 @@ struct view {
   // default, and whether this build has TLS at all.
   bool tunnel_tls = false;
   bool tunnel_tls_available = false;
+  // Slice 5 (vpn.h): "All traffic (VPN)" instead of the proxy (off by
+  // default; shown once this computer's interface can start), "Block when
+  // the tunnel is down" (the kill switch, off by default), and why the VPN
+  // cannot start here ("" when it can).
+  bool tunnel_vpn = false;
+  bool tunnel_block = false;
+  bool tunnel_vpn_available = false;
+  std::string tunnel_vpn_note;
+  bool tunnel_block_available = false;
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -403,6 +413,9 @@ class engine {
     std::function<std::unique_ptr<sysproxy::port>()> make_sysproxy;
     // Slice 4, the tests: the relay's TLS port (0: the prefs', 443 unless set).
     std::uint16_t tunnel_tls_port = 0;
+    // Slice 5: the OS's virtual interface (vpn::make_os_port in the add-on;
+    // a stand-in in the tests). Empty: no VPN, the proxy only.
+    std::function<std::unique_ptr<vpn::os_port>()> make_vpn;
   };
 
   engine(engine_host& host, options opts);
@@ -585,6 +598,8 @@ class engine {
   // the proxy on `port` (0: at nothing of ours), its record kept or dropped.
   void sync_system_proxy(std::uint16_t port, bool want);
   void write_proxy_record();
+  // Slice 5, the control thread: the VPN started or stopped; true when it runs.
+  bool sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_t tls_port, bool block);
   // `source`: where it came from (source_of; "": not known).
   void on_internet_link(std::unique_ptr<link> l, bool code = false, std::string source = {});
   // #472, the sender's side of a protocol 2 send, on its own thread while
@@ -741,6 +756,10 @@ class engine {
   std::mutex tunnel_m_;
   std::unique_ptr<tunnel::proxy> tunnel_;  // under tunnel_m_
   std::string tunnel_for_;                 // under tunnel_m_: the relay field it was started with
+  // Slice 5: the VPN while it runs (instead of tunnel_), and the OS's port.
+  std::unique_ptr<vpn::runner> vpn_run_;   // under tunnel_m_
+  std::string vpn_for_;                    // under tunnel_m_
+  std::unique_ptr<vpn::os_port> vpn_port_;  // made in the constructor; the control thread's after
   std::uint16_t tunnel_port_ = 0;          // under m_: the port to try first (kept in the prefs)
   // The system proxy: the OS's port and the record of what Driftwire set
   // (in driftwire_proxy.json beside the prefs while it is set). The control

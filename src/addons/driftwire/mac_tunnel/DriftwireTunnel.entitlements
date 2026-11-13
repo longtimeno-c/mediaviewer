@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- OWED: Apple grants the Network Extension capability (packet-tunnel-provider,
+     Developer ID: "-systemextension") to the signing team on request. Until it is
+     on the team's profile this file cannot be signed with, and the extension is
+     not built or embedded (MV_DRIFTWIRE_PACKET_TUNNEL=OFF). Never faked. -->
+<plist version="1.0">
+<dict>
+  <key>com.apple.developer.networking.networkextension</key>
+  <array>
+    <string>packet-tunnel-provider-systemextension</string>
+  </array>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>
