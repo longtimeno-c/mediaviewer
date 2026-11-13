@@ -13,6 +13,7 @@ add_library(mv_mobile_link STATIC
   ${_M}/link_thumbs.cpp ${_M}/link_thumbs.h
   ${_M}/sync.cpp ${_M}/sync.h
   ${_M}/sample.cpp ${_M}/sample.h
+  ${_M}/backup.cpp ${_M}/backup.h
   ${_M}/sound_fetch.cpp ${_M}/sound_fetch.h ${_M}/sound_tower.h
   ${_M}/files.cpp ${_M}/files.h
   # File mode searches with the desktop's own fields and match (docs/design/06 "Search text"):

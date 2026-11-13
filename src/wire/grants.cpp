@@ -82,6 +82,7 @@ std::string encode_codes(const std::vector<stored_code>& codes) {
   w.begin_object().key("v").integer(1).key("codes").begin_array();
   for (const auto& c : codes) {
     w.begin_object().key("hash").string(hex(c.hash)).key("valid_until").integer(c.valid_until).key("for_s").integer(c.gives.for_s);
+    w.key("backup").boolean(c.gives.backup);
     write_roots(w, c.gives.roots);
     w.end_object();
   }
@@ -107,6 +108,8 @@ bool load_codes(secrets::store& store, std::vector<stored_code>& out) {
     c.hash = *h;
     c.valid_until = *until;
     c.gives.for_s = *for_s;
+    // A code kept before backup existed gives none: guests start with it off (B2).
+    c.gives.backup = e.boolean("backup").value_or(false);
     out.push_back(std::move(c));
   }
   return true;
@@ -135,6 +138,7 @@ std::string encode(const std::vector<grant>& list) {
     w.begin_object();
     w.key("key").string(hex(g.key)).key("name").string(g.name);
     w.key("expires").integer(g.expires).key("guest").boolean(g.guest).key("created").integer(g.created);
+    w.key("backup").boolean(g.backup);
     write_roots(w, g.roots);
     w.end_object();
   }
@@ -161,8 +165,10 @@ std::optional<std::vector<grant>> decode(std::string_view text) {
         !read_roots(e, g.roots)) {
       return std::nullopt;
     }
+    // Kept before backup existed: a guest has it off, anyone else on (B2).
+    g.backup = e.boolean("backup").value_or(!*guest);
     // A grant with no limit at all belongs in the paired list, not here.
-    if (*expires == 0 && !g.roots) return std::nullopt;
+    if (*expires == 0 && !g.roots && g.backup) return std::nullopt;
     g.key = *key;
     g.name = *name;
     g.expires = *expires;

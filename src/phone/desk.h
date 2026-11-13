@@ -81,6 +81,7 @@ struct device_row {
   bool limited = false;
   std::int64_t expires = 0;  // unix, the NAS's clock; 0: no end
   bool expired = false, guest = false, scoped = false;
+  bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
 };
 
 // The NAS's owner side (§3): what it can do and where the owner stands.
@@ -94,6 +95,15 @@ struct owner_state {
 
 struct root_row {
   std::string id, label, path;
+  // A backup folder (phone backup, 1.1): its limit and reserve, and what the
+  // service counted in it and would still take.
+  bool backup = false;
+  std::uint64_t limit = 0, reserve = 0, used = 0, room = 0;
+};
+// A backup folder's sizes, in bytes.
+struct backup_sizes {
+  std::uint64_t limit = 0;
+  std::uint64_t reserve = 0;
 };
 
 class desk {
@@ -185,7 +195,14 @@ class desk {
   [[nodiscard]] expected revoke(const key32& key);
 
   [[nodiscard]] result<std::vector<root_row>> roots();
-  [[nodiscard]] result<std::string> add_root(const std::string& label, const std::string& path);
+  // With `backup`, a backup folder: phones may create files there under its limit.
+  [[nodiscard]] result<std::string> add_root(const std::string& label, const std::string& path,
+                                             std::optional<backup_sizes> backup = std::nullopt);
+  // Makes a named folder a backup folder, or changes its limit and reserve.
+  // A lower limit moves and removes nothing: it only stops new writes.
+  [[nodiscard]] expected set_backup(const std::string& id, backup_sizes sizes);
+  // A phone's backup flag (B2): on adds access (an unlock, once there is a passphrase); off does not.
+  [[nodiscard]] expected set_phone_backup(const key32& key, bool on);
   [[nodiscard]] expected remove_root(const std::string& id);
 
   // The nearby service over `folder` (the Catalogue root) for the paired phones,

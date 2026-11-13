@@ -5740,6 +5740,15 @@ void engine::phone_cancel() noexcept {
 }
 
 std::string engine::phone_json() const {
+  // Local search's folders, for Phone access's "indexed" line on a backup folder
+  // (docs/plans/mobile.md §10b.1, B7). Taken first: status_m_ is never held with phone_m_.
+  std::vector<std::string> search_roots;
+  {
+    std::lock_guard roots(status_m_);
+    for (const auto& r : roots_cache_) {
+      if (r.enabled && r.recursive) search_roots.push_back(r.path);
+    }
+  }
   json::writer w;
   std::lock_guard lock(phone_m_);
   w.begin_object();
@@ -5766,6 +5775,9 @@ std::string engine::phone_json() const {
   if (const std::uint64_t newest = std::max(phone_.waiting, phone_.generation); newest != 0) {
     w.key("gen_dir").string(data_dir_ + "/phone/gen/" + std::to_string(newest));
   }
+  w.key("search_roots").begin_array();
+  for (const auto& p : search_roots) w.string(p);
+  w.end_array();
   w.end_object();
   return w.take();
 }

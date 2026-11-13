@@ -85,6 +85,8 @@ class link {
   // The owner's passphrase and timed phones (docs/plans/nas-owner-and-guests.md §8.1):
   //   claim also takes {passphrase, new_passphrase}; pair {for_s} makes a guest code;
   //   unlock {passphrase}, lock, set_passphrase {passphrase}, grant {key, for_s (0: no limit)}.
+  // Phone backup (docs/plans/mobile.md §10b.1): add_folder also takes {backup:"1", limit, reserve}
+  //   (decimal bytes); set_backup {id, limit, reserve}; phone_backup {key, on} (a phone's grant).
   // A passphrase is handed to the desk and never kept here or shown in state_json.
   [[nodiscard]] expected request(const std::string& request_json);
   // The card's state, one JSON object (docs/plans/phone-in-the-app.md §3). [no-block]
@@ -103,9 +105,15 @@ class link {
     // A timed or scoped phone, as the NAS last said (docs/plans/nas-owner-and-guests.md §8.1).
     bool limited = false, expired = false, guest = false, scoped = false;
     std::int64_t expires = 0;
+    bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
   };
   struct folder_row {
     std::string id, label, path;
+    // A backup folder (phone backup, 1.1): its sizes, and whether Local search on
+    // this computer covers it, so what phones send reaches search (§10b.1, B7).
+    bool backup = false;
+    std::uint64_t limit = 0, reserve = 0, used = 0, room = 0;
+    bool indexed = false;
   };
   // Who this library is (folder.json) and what Local search last said.
   struct publisher {
@@ -161,6 +169,9 @@ class link {
   void load_state();
   void save_state();
   void read_source();
+  // Whether a backup folder's NAS path is under one of Local search's roots here (the
+  // "search_roots" Local search reports): the card's "indexed" line (§10b.1, B7).
+  [[nodiscard]] bool indexed_here(const std::string& nas_path) const;
   void choose_folder(const std::string& path);
   void adopt_from_source();
   [[nodiscard]] result<std::string> route(const char* method, const std::string& json);

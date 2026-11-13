@@ -34,6 +34,9 @@ public static partial class IslandHost
     private static PhoneLinkState? _phoneShown;
     private static Microsoft.UI.Dispatching.DispatcherQueueTimer? _phoneTimer;
     private static FakeInput? _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath;
+    // Phone backup (1.1): a new backup folder's sizes, and whether the new folder is one.
+    private static FakeInput? _phoneNewLimit, _phoneNewReserve;
+    private static bool _phoneNewIsBackup;
     // The NAS passphrase: never kept here or in the core (owner call C2), only typed.
     private static FakeInput? _phonePass, _phonePassAgain, _phoneUnlock;
     // The person's own relay: its key goes to the NAS and is kept nowhere here.
@@ -62,6 +65,11 @@ public static partial class IslandHost
         _phonePublic = PhoneInput("photos.example.com:7878", "Address from outside");
         _phoneNewLabel = PhoneInput("Label", "Name of the new shared folder", 120);
         _phoneNewPath = PhoneInput("Folder on the NAS, like /volume1/Video", "Path of the new shared folder on the NAS", 0);
+        _phoneNewLimit = PhoneInput("GB", "Storage limit in gigabytes", 70);
+        _phoneNewReserve = PhoneInput("GB", "Free space to keep on the NAS, in gigabytes", 60);
+        _phoneNewReserve.SetText("1");
+        _phoneNewLimit.Changed += PhoneFieldsChanged;
+        _phoneNewReserve.Changed += PhoneFieldsChanged;
         _phoneLocal.Changed += PhoneFieldsChanged;
         _phoneLocal.Submitted += SavePhoneAddresses;
         _phonePublic.Submitted += SavePhoneAddresses;
@@ -190,7 +198,7 @@ public static partial class IslandHost
     private static void DetachPhoneInputs()
     {
         foreach (FrameworkElement? f in new FrameworkElement?[]
-                 { _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath, _phonePass, _phonePassAgain, _phoneUnlock,
+                 { _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath, _phoneNewLimit, _phoneNewReserve, _phonePass, _phonePassAgain, _phoneUnlock,
                    _phoneRelayAddress, _phoneRelayKey, _phoneCodeFor })
             if (f?.Parent is Panel p) p.Children.Remove(f);
     }
@@ -420,7 +428,7 @@ public static partial class IslandHost
         {
             string key = phone.Key;
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
-            buttons.Children.Add(PhoneTipHolder(PhoneAccessMenu(phone, s.NasHasFeatures, busy, now),
+            buttons.Children.Add(PhoneTipHolder(PhoneAccessMenu(phone, s.NasHasFeatures, busy, now, s.NasHasBackup),
                                                 s.NasHasFeatures ? null : "Update the NAS service to use this"));
             Button remove = PhoneButton("Remove", () => PhoneRequest(("do", "revoke"), ("key", key)), $"Remove {phone.Name}");
             remove.IsEnabled = !busy;
@@ -433,15 +441,17 @@ public static partial class IslandHost
         AddPhoneRelay(rows, s, busy);
         foreach (PhoneFolder f in s.Folders)
         {
-            FrameworkElement control = new Border();
+            var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+            string id = f.Id;
+            if (f.Backup) controls.Children.Add(BackupLimitMenu(f, busy));
             if (!f.IsCatalogue)
             {
-                string id = f.Id;
                 Button stop = PhoneButton("Stop sharing", () => PhoneRequest(("do", "remove_folder"), ("id", id)), $"Stop sharing {f.Label}");
                 stop.IsEnabled = !busy;
-                control = stop;
+                controls.Children.Add(stop);
             }
-            rows.Children.Add(SettingsRow(f.Label, f.Path, control, keepName: !f.IsCatalogue));
+            rows.Children.Add(SettingsRow(f.Backup ? $"{f.Label} · phone backup" : f.Label,
+                                          f.Backup ? PhoneWords.BackupDetail(f) : f.Path, controls, keepName: !f.IsCatalogue));
         }
         var add = new Grid { ColumnSpacing = Space(8), Padding = Pad(12) };
         add.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -454,6 +464,28 @@ public static partial class IslandHost
         Grid.SetColumn(_phoneAdd, 2);
         add.Children.Add(_phoneAdd);
         rows.Children.Add(add);
+        // "Phones back up to this folder", with its limit and the free space to keep (§10b.1, B1, B5).
+        var backup = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8), Padding = Pad(12) };
+        Button toggle = PhoneButton(_phoneNewIsBackup ? "Phones back up to this folder: on" : "Phones back up to this folder: off",
+                                    () =>
+                                    {
+                                        _phoneNewIsBackup = !_phoneNewIsBackup;
+                                        if (_phoneNewIsBackup && _phoneNewLimit!.Text.Length == 0) _phoneNewLimit.SetText("1000");
+                                        PollPhone();
+                                    },
+                                    "Phones back up their photos to this folder");
+        toggle.IsEnabled = s.NasHasBackup && !busy;
+        // A disabled control shows no tooltip (docs/design/20 "Craft rules"): its holder carries the reason.
+        backup.Children.Add(PhoneTipHolder(toggle, s.NasHasBackup ? null : "Update the NAS service to use this"));
+        if (_phoneNewIsBackup)
+        {
+            backup.Children.Add(PhoneNote("Limit"));
+            backup.Children.Add(_phoneNewLimit!);
+            backup.Children.Add(PhoneNote("GB, keep free"));
+            backup.Children.Add(_phoneNewReserve!);
+            backup.Children.Add(PhoneNote("GB"));
+        }
+        rows.Children.Add(backup);
     }
 
     // Extend (a timed phone) or Limit… (an unlimited one): a Button with a Flyout of
@@ -469,7 +501,7 @@ public static partial class IslandHost
         return holder;
     }
 
-    private static Button PhoneAccessMenu(PhoneDevice phone, bool features, bool busy, long now)
+    private static Button PhoneAccessMenu(PhoneDevice phone, bool features, bool busy, long now, bool backup = false)
     {
         string name = phone.Limited ? $"Extend {phone.Name}'s access" : $"Limit {phone.Name}'s access";
         Button menu = PhoneButton(phone.Limited ? "Extend" : "Limit…", () => { }, name);
@@ -486,6 +518,17 @@ public static partial class IslandHost
         foreach ((string label, long seconds) in PhoneWords.ExtendDurations(phone, now))
             column.Children.Add(SettingsButton(label + " from now", () => Grant(seconds)));
         if (phone.Limited) column.Children.Add(SettingsButton(PhoneWords.Unlimited, () => Grant(0)));
+        // Phone backup (B2): turning it on adds access (the passphrase, once set); off never needs it.
+        if (backup)
+        {
+            bool backupOn = phone.Backup;
+            column.Children.Add(SettingsButton(backupOn ? "Stop backups from this phone" : "Let this phone back up", () =>
+            {
+                flyout.Hide();
+                _ = PhoneNative.Request(PhoneWords.PhoneBackupRequest(key, !backupOn));
+                PollPhone();
+            }));
+        }
         menu.Flyout = flyout;
         PhoneFlyouts.Add(flyout);
         menu.IsEnabled = !busy && features;
@@ -841,8 +884,49 @@ public static partial class IslandHost
         string path = _phoneNewPath!.Text;
         if (_phoneAdd is not { IsEnabled: true } || !path.StartsWith('/')) return;
         string label = _phoneNewLabel!.Text.Length == 0 ? PhoneWords.ShareLabel(path) : _phoneNewLabel.Text;
+        if (_phoneNewIsBackup)
+        {
+            long? limit = PhoneWords.Bytes(_phoneNewLimit!.Text), reserve = PhoneWords.Bytes(_phoneNewReserve!.Text);
+            if (limit is not > 0 || reserve is null) return;
+            _phoneNewLabel.SetText("");
+            _phoneNewPath.SetText("");
+            _phoneNewIsBackup = false;
+            PhoneRequest(("do", "add_folder"), ("label", label), ("path", path), ("backup", "1"),
+                         ("limit", limit.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                         ("reserve", reserve.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            return;
+        }
         _phoneNewLabel.SetText("");
         _phoneNewPath.SetText("");
         PhoneRequest(("do", "add_folder"), ("label", label), ("path", path));
+    }
+
+    // A backup folder's Change limit: a flyout with its limit and the free space to keep.
+    private static Button BackupLimitMenu(PhoneFolder f, bool busy)
+    {
+        Button menu = PhoneButton("Change limit", () => { }, $"Change the storage limit of {f.Label}");
+        var column = new StackPanel { Spacing = Space(4) };
+        var flyout = new Flyout { Content = column };
+        FakeInput limit = PhoneInput("GB", "Storage limit in gigabytes", 70);
+        FakeInput reserve = PhoneInput("GB", "Free space to keep on the NAS, in gigabytes", 60);
+        limit.SetText(PhoneWords.Gigabytes(f.Limit));
+        reserve.SetText(PhoneWords.Gigabytes(f.Reserve));
+        column.Children.Add(PhoneNote("Limit (GB)"));
+        column.Children.Add(limit);
+        column.Children.Add(PhoneNote("Keep free (GB)"));
+        column.Children.Add(reserve);
+        string id = f.Id;
+        column.Children.Add(SettingsButton("Save", () =>
+        {
+            long? l = PhoneWords.Bytes(limit.Text), r = PhoneWords.Bytes(reserve.Text);
+            if (l is not > 0 || r is null) return;
+            flyout.Hide();
+            _ = PhoneNative.Request(PhoneWords.SetBackupRequest(id, l.Value, r.Value));
+            PollPhone();
+        }));
+        menu.Flyout = flyout;
+        PhoneFlyouts.Add(flyout);
+        menu.IsEnabled = !busy;
+        return menu;
     }
 }

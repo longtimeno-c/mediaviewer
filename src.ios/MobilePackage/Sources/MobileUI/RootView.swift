@@ -96,27 +96,17 @@ private struct TabBarShrinks: ViewModifier {
   }
 }
 
-// Backup (release 1.1, docs/plans/mobile.md §10b) is not in this release: its slot above the tab
-// bar compiles only with MV_BACKUP, which no build defines yet.
+// Phone backup (release 1.1, docs/plans/mobile.md §10b): its line above the tab bar while it runs.
 private extension View {
   func transferStrip(_ model: AppModel) -> some View {
-    #if MV_BACKUP
     modifier(TransferStrip(activity: model.transfer))
-    #else
-    self
-    #endif
   }
 
   func transferAccessory(_ model: AppModel) -> some View {
-    #if MV_BACKUP
     modifier(TransferAccessory(activity: model.transfer))
-    #else
-    self
-    #endif
   }
 }
 
-#if MV_BACKUP
 /// The slot above the tab bar, there only while something is running (iOS 26.1 and later).
 private struct TransferAccessory: ViewModifier {
   let activity: TransferActivity?
@@ -177,4 +167,3 @@ private struct TransferLine: View {
       .fixedSize(horizontal: true, vertical: false)
   }
 }
-#endif

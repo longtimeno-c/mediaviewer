@@ -345,6 +345,7 @@ struct desk::state {
       r.expired = g.expired(now);
       r.guest = g.guest;
       r.scoped = g.roots.has_value();
+      r.backup = g.backup;
       out.push_back(std::move(r));
     }
     return out;
@@ -370,11 +371,12 @@ struct desk::state {
         g.key = r.key;
         g.expires = r.expires;
         g.guest = r.guest;
+        g.backup = r.backup;
         if (r.scoped) {
           if (const auto it = known_roots.find(r.key); it != known_roots.end()) g.roots = it->second;
         }
         if (r.scoped && !g.roots) g.roots = std::vector<std::string>{};  // its folders unknown here: none nearby
-        if (g.expires == 0 && !g.roots) g.roots = std::vector<std::string>{};
+        if (g.expires == 0 && !g.roots && g.backup) g.roots = std::vector<std::string>{};
         limited.push_back(std::move(g));
         continue;
       }
@@ -658,6 +660,8 @@ result<std::vector<device_row>> desk::refresh_devices() {
       r.expires = *expires;
       r.expired = v.boolean("expired").value_or(false);
       r.guest = v.boolean("guest").value_or(false);
+      // A service from before backup says nothing: a guest has it off, anyone else on.
+      r.backup = v.boolean("backup").value_or(!r.guest);
       if (const json::value* roots = v.find("roots"); roots && roots->k == json::kind::array) {
         r.scoped = true;
         std::vector<std::string> ids;
@@ -722,21 +726,48 @@ result<std::vector<root_row>> desk::roots() {
     const std::string* label = v.str("label");
     const std::string* path = v.str("path");
     if (!id || !label || !path) return err(status::corrupt);
-    out.push_back({*id, *label, *path});
+    root_row row{*id, *label, *path};
+    if (const json::value* b = v.find("backup"); b && b->k == json::kind::object) {
+      const auto num = [&](const char* k) { return static_cast<std::uint64_t>(std::max<std::int64_t>(0, b->integer(k).value_or(0))); };
+      row.backup = true;
+      row.limit = num("limit");
+      row.reserve = num("reserve");
+      row.used = num("used");
+      row.room = num("room");
+    }
+    out.push_back(std::move(row));
   }
   return out;
 }
 
-result<std::string> desk::add_root(const std::string& label, const std::string& path) {
+result<std::string> desk::add_root(const std::string& label, const std::string& path, std::optional<backup_sizes> backup) {
   std::lock_guard lock(st_->m);
   st_->load();
   json::writer w;
-  w.begin_object().key("do").string("add_root").key("label").string(label).key("path").string(path).end_object();
+  w.begin_object().key("do").string("add_root").key("label").string(label).key("path").string(path);
+  if (backup) {
+    w.key("backup").begin_object();
+    w.key("limit").integer(static_cast<std::int64_t>(backup->limit)).key("reserve").integer(static_cast<std::int64_t>(backup->reserve));
+    w.end_object();
+  }
+  w.end_object();
   MV_TRY(const std::string text, st_->ask(w.str()));
   const auto doc = json::parse(text, 4);
   const std::string* id = doc ? doc->str("id") : nullptr;
   if (!id) return err(status::corrupt);
   return *id;
+}
+
+expected desk::set_backup(const std::string& id, backup_sizes sizes) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("set_backup").key("id").string(id).key("backup").begin_object();
+  w.key("limit").integer(static_cast<std::int64_t>(sizes.limit)).key("reserve").integer(static_cast<std::int64_t>(sizes.reserve));
+  w.end_object().end_object();
+  MV_TRY(const std::string done, st_->ask(w.str()));
+  (void)done;
+  return {};
 }
 
 expected desk::remove_root(const std::string& id) {
@@ -849,6 +880,16 @@ expected desk::grant(const key32& key, std::int64_t for_s) {
   return {};
 }
 
+expected desk::set_phone_backup(const key32& key, bool on) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("grant").key("key").string(key_hex(key)).key("backup").boolean(on).end_object();
+  MV_TRY(const std::string done, st_->ask(w.str()));
+  (void)done;
+  return {};
+}
+
 std::string desk::last_refusal() {
   std::lock_guard lock(st_->m);
   return st_->refusal;
@@ -955,6 +996,7 @@ std::string devices_json(const std::vector<device_row>& rows, bool reachable, bo
       w.key("limited").boolean(true).key("expires").integer(r.expires).key("expired").boolean(r.expired);
       w.key("guest").boolean(r.guest).key("scoped").boolean(r.scoped);
     }
+    w.key("backup").boolean(r.backup);
     w.end_object();
   }
   w.end_array().end_object();
@@ -1039,12 +1081,38 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     MV_TRY(const auto rows, d.roots());
     json::writer w;
     w.begin_object().key("roots").begin_array();
-    for (const auto& r : rows) w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
+    for (const auto& r : rows) {
+      w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path);
+      if (r.backup) {
+        w.key("backup").begin_object();
+        w.key("limit").integer(static_cast<std::int64_t>(r.limit)).key("reserve").integer(static_cast<std::int64_t>(r.reserve));
+        w.key("used").integer(static_cast<std::int64_t>(r.used)).key("room").integer(static_cast<std::int64_t>(r.room));
+        w.end_object();
+      }
+      w.end_object();
+    }
     w.end_array().end_object();
     return w.take();
   }
+  // {"limit","reserve"} at the top of the request, bytes; nullopt when absent or not sizes.
+  const auto sizes = [&]() -> std::optional<backup_sizes> {
+    const auto limit = doc->integer("limit");
+    if (!limit || *limit <= 0) return std::nullopt;
+    const auto reserve = doc->find("reserve") ? doc->integer("reserve") : std::optional<std::int64_t>(static_cast<std::int64_t>(serve::kDefaultReserve));
+    if (!reserve || *reserve < 0) return std::nullopt;
+    return backup_sizes{static_cast<std::uint64_t>(*limit), static_cast<std::uint64_t>(*reserve)};
+  };
+  if (method == "set_backup") {
+    const auto s = sizes();
+    if (!s) return err(status::invalid_arg);
+    MV_TRY_VOID(d.set_backup(text("id"), *s));
+    return std::string("{}");
+  }
   if (method == "add_root") {
-    MV_TRY(const std::string id, d.add_root(text("label"), text("path")));
+    const bool backup = doc->boolean("backup").value_or(false);
+    const auto s = sizes();
+    if (backup && !s) return err(status::invalid_arg);
+    MV_TRY(const std::string id, d.add_root(text("label"), text("path"), backup ? s : std::nullopt));
     json::writer w;
     w.begin_object().key("id").string(id).end_object();
     return w.take();
@@ -1097,6 +1165,13 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     const auto key = parse_key_hex(text("key"));
     if (!key) return err(status::invalid_arg);
     MV_TRY_VOID(d.grant(*key, doc->integer("for_s").value_or(0)));
+    return std::string("{}");
+  }
+  if (method == "phone_backup") {
+    const auto key = parse_key_hex(text("key"));
+    const auto on = doc->boolean("on");
+    if (!key || !on) return err(status::invalid_arg);
+    MV_TRY_VOID(d.set_phone_backup(*key, *on));
     return std::string("{}");
   }
   if (method == "last_refusal") return d.last_refusal();

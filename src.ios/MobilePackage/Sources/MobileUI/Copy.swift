@@ -97,6 +97,42 @@ public enum FailureCopy {
     "Nothing was paired. Scan the code again from MediaViewer on your own computer."
   public static let noMobileData = "No mobile data right now, so the route from outside wasn't tested."
 
+  // Phone backup (1.1, §10b, §11.1).
+  public static let backupPausedOffWiFi = "Backup is paused until this phone is on Wi-Fi."
+  public static let backupFolderNotAllowed =
+    "Your Synology doesn't let this phone write to that folder. The owner can allow it in MediaViewer on their computer."
+  public static let backupLimitReached =
+    "The backup folder has reached the storage limit set for it. Raise the limit in MediaViewer on your computer, or choose another folder."
+  public static let backupNASFull = "Your Synology is full, so nothing more can be backed up."
+  public static let backupServiceTooOld = "The MediaViewer service on your Synology needs updating before it can take backups."
+  public static let backupFolderGone = "That backup folder isn't on your Synology any more. Choose another."
+  public static let backupNoFolders =
+    "Your Synology has no backup folder yet. Add one in MediaViewer on your computer, under Phone access."
+  public static let backupNoPhotos = "MediaViewer isn't allowed to read Photos. You can change that in Settings."
+  public static let backupLimited = "Only the photos you chose for MediaViewer are backed up."
+  /// Owner's call B8 (2026-11-12).
+  public static let backupSkipped = "Hidden photos, and the other frames of a burst, are not backed up."
+  public static let backupNotIndexed =
+    "New photos appear in search once your computer has indexed the backup folder and published the library again."
+  public static let backupSampleAbout =
+    "With the sample library, backup copies your photos to a folder inside MediaViewer on this iPhone, so you can see how it works. Nothing leaves this phone, and Forget removes the folder."
+  public static let sampleBackupFolder = "Sample NAS on this iPhone"
+
+  public static func backupLine(for state: BackupState, sample: Bool = false) -> String? {
+    switch state {
+    case .pausedOffWiFi: return backupPausedOffWiFi
+    case .folderNotAllowed: return backupFolderNotAllowed
+    case .limitReached:
+      return sample ? "The sample folder on this iPhone is full (250 MB). Forget the sample library to empty it." : backupLimitReached
+    case .nasFull: return sample ? "This iPhone is nearly full, so the sample backup stopped." : backupNASFull
+    case .unreachable: return sample ? sampleUnreachable : synologyUnreachable
+    case .serviceTooOld: return backupServiceTooOld
+    case .folderGone: return backupFolderGone
+    case .noPhotosAccess: return backupNoPhotos
+    case .off, .checking, .running, .done: return nil
+    }
+  }
+
   public static func cannotDecode(_ format: String) -> String {
     "This phone can't open \(format) files. Showing the thumbnail."
   }

@@ -51,10 +51,18 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryFailed = "library.failed"
   case libraryUnreachableThenStale = "library.unreachableThenStale"
   case libraryFolderEmpty = "library.folderEmpty"
-  #if MV_BACKUP
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
-  #endif
+  case backupChoose = "backup.chooseFolder"
+  case backupRunning = "backup.running"
+  case backupDone = "backup.done"
+  case backupPausedWiFi = "backup.pausedOffWiFi"
+  case backupNotAllowed = "backup.folderNotAllowed"
+  case backupLimit = "backup.limitReached"
+  case backupFull = "backup.nasFull"
+  case backupTooOld = "backup.serviceTooOld"
+  case backupNoPhotos = "backup.noPhotosAccess"
+  case backupSample = "backup.sample"
   case searchRecents = "search.recents"
   case searchTyping = "search.typing"
   case searchResults = "search.results"
@@ -195,10 +203,20 @@ final class FixtureRun {
     case .clipGone: world.clipMode = .fails(.originalGone)
     case .peopleNone: world.hasPeople = false
     case .libraryEmpty: world.libraryEmpty = true
-    #if MV_BACKUP
     case .libraryBackup: world.transferTicks = 3600
     case .libraryBackupEnds: world.transferTicks = 8
-    #endif
+    case .backupChoose: world.backupNoFolder = true
+    case .backupRunning: world.backupState = .running
+    case .backupDone: world.backupState = .done
+    case .backupPausedWiFi: world.backupState = .pausedOffWiFi
+    case .backupNotAllowed: world.backupState = .folderNotAllowed
+    case .backupLimit: world.backupState = .limitReached
+    case .backupFull: world.backupState = .nasFull
+    case .backupTooOld: world.backupState = .serviceTooOld
+    case .backupNoPhotos: world.backupState = .noPhotosAccess
+    case .backupSample:
+      world.backupSample = true
+      world.backupState = .running
     default: break
     }
     self.world = world
@@ -262,6 +280,10 @@ final class FixtureRun {
       try? await Task.sleep(for: .seconds(4))
       world.hasPeople = true
       world.publish(FixtureWorld.connected(age: 60))
+    case .backupChoose, .backupRunning, .backupDone, .backupPausedWiFi, .backupNotAllowed, .backupLimit, .backupFull,
+         .backupTooOld, .backupNoPhotos, .backupSample:
+      model.tab = .connection
+      model.showsBackup = true
     case .searchFailed:
       model.tab = .search
       model.search.setText("boats at sunset")

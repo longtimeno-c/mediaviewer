@@ -22,6 +22,7 @@
 #include "wire/pair_check.h"
 #include "wire/serve.h"
 #include "wire/serve_client.h"
+#include "io/content_hash.h"
 
 #if defined(__APPLE__)
 #include <dns_sd.h>
@@ -462,13 +463,21 @@ TEST_CASE("phone pairing: what adds access needs an unlock; what takes it away d
   std::string refusal;
   for (const std::string& r : {code_request, std::string("{\"do\":\"add_device\",\"name\":\"X\",\"key\":\"") +
                                                  mv::driftwire::key_hex(random_key()) + "\"}",
-                               std::string("{\"do\":\"remove_root\",\"id\":\"a1a1a1a1a1a1a1a1\"}")}) {
+                               std::string("{\"do\":\"remove_root\",\"id\":\"a1a1a1a1a1a1a1a1\"}"),
+                               // Making a folder a backup folder, or raising its limit, adds access too (phone backup).
+                               std::string("{\"do\":\"set_backup\",\"id\":\"a1a1a1a1a1a1a1a1\",\"backup\":{\"limit\":1000}}")}) {
     CHECK_FALSE((*s)->admin(r, nullptr, &refusal));
     CHECK(why_in(refusal) == "needs-unlock");
   }
   // Reading and taking away work on the device key alone.
   CHECK((*s)->admin("{\"do\":\"devices\"}"));
   CHECK((*s)->admin("{\"do\":\"pair_cancel\"}"));
+  // A phone's backup off takes access away: no unlock. On again adds it: an unlock (B2).
+  const std::string phone_hex = mv::driftwire::key_hex(public_of(phone));
+  CHECK((*s)->admin("{\"do\":\"grant\",\"key\":\"" + phone_hex + "\",\"backup\":false}"));
+  CHECK_FALSE(n.has_device(phone));
+  CHECK_FALSE((*s)->admin("{\"do\":\"grant\",\"key\":\"" + phone_hex + "\",\"backup\":true}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
   CHECK((*s)->admin("{\"do\":\"revoke\",\"key\":\"" + mv::driftwire::key_hex(public_of(phone)) + "\"}"));
   CHECK_FALSE(n.has_device(phone));
 
@@ -1711,6 +1720,63 @@ TEST_CASE("phone pairing: the real program is claimed, keeps it across a restart
 }
 #endif
 
+// ---- backup folders (phone backup, 1.1) -------------------------------------------------------
+
+TEST_CASE("phone pairing: the owner adds a backup folder, and changes its limit and reserve", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  const fs::path backup = n.dir.root() / "phone-backup";
+  fs::create_directories(backup);
+  put_file(backup / "already.jpg", std::string(1000, 'x'));
+
+  auto id = mac.d->add_root("Phone backup", utf8(backup), mv::driftwire::desk::backup_sizes{1u << 20, 0});
+  REQUIRE(id);
+  auto roots = mac.d->roots();
+  REQUIRE(roots);
+  const auto row = std::find_if(roots->begin(), roots->end(), [&](const auto& r) { return r.id == *id; });
+  REQUIRE(row != roots->end());
+  CHECK(row->backup);
+  CHECK(row->limit == (1u << 20));
+  CHECK(row->used >= 1000);
+
+  auto p = mac.d->start_pairing();
+  REQUIRE(p);
+  const key32 phone = random_key();
+  REQUIRE(n.phone(phone, p->code));
+  serve::client::options o;
+  o.access_key = n.access;
+  o.device_key = phone;
+  o.service_key = n.identity;
+  o.id = "cccccccccccccccc";
+  o.ops = serve::kAllOps | serve::kWriteOp;
+  auto c = serve::client::open(n.connect(), o);
+  REQUIRE(c);
+  const std::string photo(600 * 1024, 'p');
+  const std::string hash =
+      mv::io::hash_bytes(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(photo.data()), photo.size())).hex();
+  const serve::client::read_fn read = [&](std::uint64_t at, std::span<std::uint8_t> into) -> mv::result<std::size_t> {
+    const std::size_t k = std::min<std::size_t>(into.size(), photo.size() - static_cast<std::size_t>(at));
+    std::memcpy(into.data(), photo.data() + at, k);
+    return k;
+  };
+  serve::client::write_refused why;
+  REQUIRE((*c)->write(*id, "2026/11/a.jpg", photo.size(), hash, 0, read, {}, nullptr, &why));
+  // A second one would pass the limit: refused. The owner raises it: taken.
+  CHECK_FALSE((*c)->write(*id, "2026/11/b.jpg", photo.size(), hash, 0, read, {}, nullptr, &why));
+  CHECK(why.why == serve::kWhyLimit);
+  REQUIRE(mac.d->set_backup(*id, {8u << 20, 0}));
+  auto again = (*c)->write(*id, "2026/11/b.jpg", photo.size(), hash, 0, read, {}, nullptr, &why);
+  REQUIRE(again);
+  CHECK(again->name == "2026/11/b.jpg");
+  // The catalogue is never a backup folder.
+  roots = mac.d->roots();
+  REQUIRE(roots);
+  const auto cat = std::find_if(roots->begin(), roots->end(), [](const auto& r) { return r.label == "Catalogue"; });
+  REQUIRE(cat != roots->end());
+  CHECK_FALSE(mac.d->set_backup(cat->id, {1u << 20, 0}));
+}
+
 // ---- Phone access in the app (docs/plans/phone-in-the-app.md) --------------------------------
 
 namespace {
@@ -1959,4 +2025,142 @@ TEST_CASE("phone pairing: the person's own relay is set from the desktop and car
   v = app.ask(R"({"do":"set_relay","address":"","key":""})");
   CHECK(*v.str("relay") == "");
   CHECK_FALSE(n.store->exists(serve::kRelayKeyName));
+}
+
+// ---- phone backup as a phone's grant (docs/plans/mobile.md §10b.1, B2) ------------------------
+
+namespace {
+
+bool backup_write(serve::client& c, const std::string& root, const std::string& rel, serve::client::write_refused& why) {
+  const std::string photo(4096, 'b');
+  const std::string hash =
+      mv::io::hash_bytes(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(photo.data()), photo.size())).hex();
+  const serve::client::read_fn read = [&](std::uint64_t at, std::span<std::uint8_t> into) -> mv::result<std::size_t> {
+    const std::size_t k = std::min<std::size_t>(into.size(), photo.size() - static_cast<std::size_t>(at));
+    std::memcpy(into.data(), photo.data() + at, k);
+    return k;
+  };
+  return c.write(root, rel, photo.size(), hash, 0, read, {}, nullptr, &why).has_value();
+}
+
+std::unique_ptr<serve::client> writer(const nas& n, const key32& device) {
+  serve::client::options o;
+  o.access_key = n.access;
+  o.device_key = device;
+  o.service_key = n.identity;
+  o.id = "dddddddddddddddd";
+  o.ops = serve::kAllOps | serve::kWriteOp;
+  auto c = serve::client::open(n.connect(), o);
+  REQUIRE(c);
+  return std::move(*c);
+}
+
+}  // namespace
+
+TEST_CASE("phone pairing: backup is a phone's grant; off stops its writes and moves it to the grants, on lets it write",
+          "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  const fs::path backup = n.dir.root() / "phone-backup";
+  fs::create_directories(backup);
+  auto id = mac.d->add_root("Phone backup", utf8(backup), desk::backup_sizes{8u << 20, 0});
+  REQUIRE(id);
+  auto p = mac.d->start_pairing();
+  REQUIRE(p);
+  const key32 phone = random_key();
+  REQUIRE(n.phone(phone, p->code));
+  const key32 pub = public_of(phone);
+
+  serve::client::write_refused why;
+  {
+    auto c = writer(n, phone);
+    CHECK(backup_write(*c, *id, "2026/11/a.jpg", why));
+  }
+  // Off: a reduction, on the device key alone. The phone moves to the grants (an older NAS refuses it there).
+  REQUIRE(mac.d->set_phone_backup(pub, false));
+  CHECK(on_grants(n, phone));
+  CHECK_FALSE(n.has_device(phone));
+  auto rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  const auto row = std::find_if(rows->begin(), rows->end(), [&](const desk::device_row& r) { return r.key == pub; });
+  REQUIRE(row != rows->end());
+  CHECK_FALSE(row->backup);
+  {
+    auto c = writer(n, phone);
+    CHECK_FALSE(backup_write(*c, *id, "2026/11/b.jpg", why));
+    CHECK(why.why == serve::kWhyNotAllowed);
+    auto roots = c->roots();
+    REQUIRE(roots);
+    const auto folder = std::find_if(roots->begin(), roots->end(), [&](const serve::root_info& r) { return r.id == *id; });
+    REQUIRE(folder != roots->end());
+    CHECK(folder->backup);
+    CHECK_FALSE(folder->writable);
+    // It still reads.
+    CHECK(c->list(*id, ""));
+  }
+  // Extending a timed phone keeps backup off; "Until I remove it" gives it back.
+  REQUIRE(mac.d->grant(pub, 3600));
+  rows = mac.d->refresh_devices();
+  REQUIRE(rows);
+  {
+    const auto r = std::find_if(rows->begin(), rows->end(), [&](const desk::device_row& x) { return x.key == pub; });
+    REQUIRE(r != rows->end());
+    CHECK(r->limited);
+    CHECK_FALSE(r->backup);
+  }
+  REQUIRE(mac.d->grant(pub, 0));
+  CHECK(n.has_device(phone));
+  REQUIRE(mac.d->set_phone_backup(pub, false));
+  CHECK(on_grants(n, phone));
+  // On again: unlimited, back on the paired list, and it writes.
+  REQUIRE(mac.d->set_phone_backup(pub, true));
+  CHECK(n.has_device(phone));
+  CHECK_FALSE(on_grants(n, phone));
+  {
+    auto c = writer(n, phone);
+    CHECK(backup_write(*c, *id, "2026/11/c.jpg", why));
+  }
+}
+
+TEST_CASE("phone pairing: a guest code's phone backs nothing up, and the grant keeps it", "[phone-pairing]") {
+  // The stored forms first: a grant with backup off and no other limit is a grant; one with nothing
+  // limited at all is refused; one kept before backup existed has it off for a guest, on for others.
+  serve::grants::grant g;
+  g.name = "Phone";
+  g.key = random_key();
+  g.backup = false;
+  auto back = serve::grants::decode(serve::grants::encode({g}));
+  REQUIRE(back);
+  REQUIRE(back->size() == 1);
+  CHECK_FALSE(back->front().backup);
+  g.backup = true;
+  CHECK_FALSE(serve::grants::decode(serve::grants::encode({g})));
+  const std::string old_guest = R"({"v":1,"grants":[{"key":")" + std::string(64, 'a') +
+                                R"(","name":"G","expires":5,"guest":true,"created":1}]})";
+  auto old = serve::grants::decode(old_guest);
+  REQUIRE(old);
+  CHECK_FALSE(old->front().backup);
+
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto owner_session = m.session();
+  REQUIRE(owner_session);
+  const fs::path folder = n.dir.root() / "guest-backup";
+  fs::create_directories(folder);
+  auto added = (*owner_session)->admin(R"({"do":"add_root","label":"Phone backup","path":")" + utf8(folder) +
+                                       R"(","backup":{"limit":8000000,"reserve":0}})");
+  REQUIRE(added);
+  const auto doc = mv::json::parse(*added, 4);
+  REQUIRE(doc);
+  const std::string root = *doc->str("id");
+  const std::string code(32, 'e');
+  REQUIRE((*owner_session)->admin(guest_code_request(code, 3600)));
+  const key32 guest = random_key();
+  REQUIRE(n.phone(guest, code, nullptr, "Guest phone"));
+  auto c = writer(n, guest);
+  serve::client::write_refused why;
+  CHECK_FALSE(backup_write(*c, root, "x.jpg", why));
+  CHECK(why.why == serve::kWhyNotAllowed);
 }

@@ -3,13 +3,21 @@
 // Timed and scoped phone access on `driftwire serve`
 // (docs/plans/nas-owner-and-guests.md §5, §6.3, §6.4).
 //
-// A device with any limit (an expiry, or a set of named folders) is kept
+// A device with any limit (an expiry, a set of named folders, or phone backup
+// turned off: docs/plans/mobile.md §10b.1, B2) is kept
 // here and NEVER in the paired list (known.h's `devices`): a service binary
 // from before this reads only that list, so after a rollback it refuses every
 // guest instead of letting one in for ever. Unlimited devices stay in
 // `devices`, whose format does not change. Pairing codes that carry a grant
 // (from `driftwire serve pair-code --for`) are kept in their own value for the
 // same reason: the old one's fixed rows would be redeemed as unlimited.
+//
+// Phone backup (B2): a phone with only backup turned off is kept here too, with no
+// expiry and no folders. A service binary from before backup rejects such a row, and
+// with it the whole list, so after a rollback past backup every limited phone (timed,
+// scoped, guest, backup off) is refused until the owner removes and pairs them again;
+// unlimited phones keep working. Rolling back is not supported once a phone's backup
+// has been turned off.
 //
 // Times are the service's own clock, in unix seconds. Portable (D9).
 #pragma once
@@ -41,7 +49,9 @@ struct limit {
   // Named folder ids it may see; nullopt: all of them. The Catalogue is
   // always allowed. An empty list is no folders, never all.
   std::optional<std::vector<std::string>> roots;
-  [[nodiscard]] bool any() const noexcept { return for_s != 0 || roots.has_value(); }
+  // May create files in the backup folders (phone backup, 1.1). Off is a limit.
+  bool backup = true;
+  [[nodiscard]] bool any() const noexcept { return for_s != 0 || roots.has_value() || !backup; }
 };
 
 struct grant {
@@ -51,6 +61,7 @@ struct grant {
   std::optional<std::vector<std::string>> roots;
   bool guest = false;        // paired by a guest code
   std::int64_t created = 0;
+  bool backup = true;        // may create files in the backup folders (B2); a guest code gives it off
   [[nodiscard]] bool expired(std::int64_t now) const noexcept { return expires != 0 && now >= expires; }
   // Whether a named folder may be read; `catalogue` true for the Catalogue root.
   [[nodiscard]] bool allows(std::string_view root_id, bool catalogue) const;

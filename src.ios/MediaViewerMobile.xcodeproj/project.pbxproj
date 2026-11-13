@@ -340,6 +340,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MediaViewer backs up your photos and videos to the folder you choose on your own NAS. With the sample library they are copied only to a folder inside MediaViewer on this iPhone. Nothing goes anywhere else.";
 				INFOPLIST_FILE = App/Info/MediaViewer.plist;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -424,6 +425,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MediaViewer backs up your photos and videos to the folder you choose on your own NAS. With the sample library they are copied only to a folder inside MediaViewer on this iPhone. Nothing goes anywhere else.";
 				INFOPLIST_FILE = App/Info/MediaViewer.plist;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

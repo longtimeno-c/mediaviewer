@@ -9,6 +9,10 @@
 #include <cstring>
 #include <set>
 
+
+#include <climits>
+#include <cstdint>
+
 #include "core/json.h"
 #include "wire/net.h"
 
@@ -16,12 +20,17 @@ namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 6> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 7> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
                                                              {op::read_range, "read_range"},
                                                              {op::admin, "admin"},
-                                                             {op::upgrade, "upgrade"}}};
+                                                             {op::upgrade, "upgrade"},
+                                                             {op::write, "write"}}};
+
+bool lower_hex64(std::string_view s) noexcept {
+  return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
 
 void put_u32(std::uint8_t* p, std::uint32_t v) noexcept {
   for (int i = 0; i < 4; ++i) p[i] = static_cast<std::uint8_t>(v >> (8 * i));
@@ -158,6 +167,12 @@ std::vector<std::uint8_t> encode_open(const open_request& r) {
     if (r.length != UINT64_MAX) w.key("len").integer(static_cast<std::int64_t>(r.length));
     if (r.bulk) w.key("bulk").boolean(true);
   }
+  if (r.kind == op::write) {
+    w.key("at").integer(static_cast<std::int64_t>(r.at));
+    w.key("size").integer(static_cast<std::int64_t>(r.size));
+    w.key("hash").string(r.hash);
+  }
+  if (r.meta) w.key("meta").boolean(true);
   if (r.credit != 0) w.key("credit").integer(static_cast<std::int64_t>(r.credit));
   w.end_object();
   const std::string text = w.take();
@@ -202,6 +217,22 @@ std::optional<open_request> parse_open(std::span<const std::uint8_t> body, bool&
     }
     if (doc->find("bulk") && !doc->boolean("bulk")) return std::nullopt;
     r.bulk = doc->boolean("bulk").value_or(false);
+  }
+  if (r.kind == op::write) {
+    const auto at = doc->integer("at");
+    const auto size = doc->integer("size");
+    const std::string* hash = doc->str("hash");
+    if (!in_range(size, 0, static_cast<std::int64_t>(kMaxFileBytes)) || !in_range(at, 0, *size) || !hash ||
+        !lower_hex64(*hash) || r.rel.empty()) {
+      return std::nullopt;
+    }
+    r.at = static_cast<std::uint64_t>(*at);
+    r.size = static_cast<std::uint64_t>(*size);
+    r.hash = *hash;
+  }
+  if (const json::value* m = doc->find("meta")) {
+    if (m->k != json::kind::boolean) return std::nullopt;
+    r.meta = doc->boolean("meta").value_or(false);
   }
   return r;
 }
@@ -263,7 +294,12 @@ std::optional<end_msg> parse_end(std::span<const std::uint8_t> body) noexcept {
 std::string roots_json(std::span<const root_info> roots) {
   json::writer w;
   w.begin_object().key("roots").begin_array();
-  for (const auto& r : roots) w.begin_object().key("id").string(r.id).key("label").string(r.label).end_object();
+  for (const auto& r : roots) {
+    w.begin_object().key("id").string(r.id).key("label").string(r.label);
+    // Only on a backup folder, so a reader from before 1.1 sees exactly what it did.
+    if (r.backup) w.key("backup").boolean(true).key("writable").boolean(r.writable);
+    w.end_object();
+  }
   w.end_array().end_object();
   return w.take();
 }
@@ -278,7 +314,10 @@ std::optional<std::vector<root_info>> parse_roots(std::string_view text) {
     const std::string* id = v.str("id");
     const std::string* label = v.str("label");
     if (!id || !valid_id(*id) || !label || label->size() > kMaxLabelBytes) return std::nullopt;
-    out.push_back({*id, *label});
+    root_info info{*id, *label};
+    info.backup = v.boolean("backup").value_or(false);
+    info.writable = info.backup && v.boolean("writable").value_or(false);
+    out.push_back(std::move(info));
   }
   return out;
 }
@@ -291,8 +330,13 @@ std::string stat_json(const stat_info& s) {
       .key("mtime")
       .integer(s.mtime)
       .key("dir")
-      .boolean(s.dir)
-      .end_object();
+      .boolean(s.dir);
+  if (s.has_space) {
+    w.key("limit").integer(static_cast<std::int64_t>(s.limit));
+    w.key("used").integer(static_cast<std::int64_t>(s.used));
+    w.key("room").integer(static_cast<std::int64_t>(s.room));
+  }
+  w.end_object();
   return w.take();
 }
 
@@ -307,6 +351,16 @@ std::optional<stat_info> parse_stat(std::string_view text) {
   s.size = static_cast<std::uint64_t>(*size);
   s.mtime = *mtime;
   s.dir = *dir;
+  if (doc->find("limit")) {
+    const auto limit = doc->integer("limit");
+    const auto used = doc->integer("used");
+    const auto room = doc->integer("room");
+    if (!in_range(limit, 0, INT64_MAX) || !in_range(used, 0, INT64_MAX) || !in_range(room, 0, INT64_MAX)) return std::nullopt;
+    s.has_space = true;
+    s.limit = static_cast<std::uint64_t>(*limit);
+    s.used = static_cast<std::uint64_t>(*used);
+    s.room = static_cast<std::uint64_t>(*room);
+  }
   return s;
 }
 
@@ -405,13 +459,56 @@ result<config> parse_config(std::string_view text, bool any_port) {
     const bool posix = path->front() == '/';
     const bool drive = path->size() > 2 && (*path)[1] == ':' && ((*path)[2] == '\\' || (*path)[2] == '/');
     if (!posix && !drive) return err(status::invalid_arg);
-    c.roots.push_back({*id, *label, *path});
+    root_config rc{*id, *label, *path};
+    if (const json::value* b = v.find("backup")) {
+      if (b->k != json::kind::object) return err(status::invalid_arg);
+      const auto limit = b->integer("limit");
+      const auto reserve = b->integer("reserve");
+      if (!in_range(limit, 0, INT64_MAX) || (b->find("reserve") && !in_range(reserve, 0, INT64_MAX))) {
+        return err(status::invalid_arg);
+      }
+      rc.backup = true;
+      rc.limit = static_cast<std::uint64_t>(*limit);
+      rc.reserve = reserve ? static_cast<std::uint64_t>(*reserve) : kDefaultReserve;
+    }
+    c.roots.push_back(std::move(rc));
   }
   if (const std::string* relay = doc->str("relay")) {
     if (relay->size() > 300) return err(status::invalid_arg);
     c.relay = *relay;
   }
   return c;
+}
+
+std::string config_json(const config& c) {
+  json::writer w;
+  w.begin_object().key("port").integer(c.port).key("name").string(c.name).key("roots").begin_array();
+  for (const auto& r : c.roots) {
+    w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path);
+    if (r.backup) {
+      w.key("backup").begin_object();
+      w.key("limit").integer(static_cast<std::int64_t>(r.limit));
+      w.key("reserve").integer(static_cast<std::int64_t>(r.reserve));
+      w.end_object();
+    }
+    w.end_object();
+  }
+  w.end_array();
+  if (!c.relay.empty()) w.key("relay").string(c.relay);
+  w.end_object();
+  return w.take();
+}
+
+std::string device_folder_id(const std::array<std::uint8_t, 32>& device_public) {
+  std::array<std::uint8_t, 32> h{};
+  crypto_generichash(h.data(), h.size(), device_public.data(), device_public.size(), nullptr, 0);
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out(16, '0');
+  for (std::size_t i = 0; i < 8; ++i) {
+    out[2 * i] = kHex[h[i] >> 4];
+    out[2 * i + 1] = kHex[h[i] & 15];
+  }
+  return out;
 }
 
 std::string candidates_json(const std::vector<candidate>& c, std::string_view what) {

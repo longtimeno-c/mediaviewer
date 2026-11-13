@@ -1170,7 +1170,7 @@ if(MV_BUILD_TESTS)
   # MV_AI_EVAL_DIR) point at staged files. arm64 only, like the pack.
   if(TARGET mv_ai)
     include("${CMAKE_CURRENT_LIST_DIR}/mobile-link.cmake")
-    add_executable(mv_mobile_link_tests tests/test_mobile_link.cpp src/addons/driftwire/bt_none.cpp)
+    add_executable(mv_mobile_link_tests tests/test_mobile_link.cpp tests/test_mobile_backup.cpp src/addons/driftwire/bt_none.cpp)
     target_link_libraries(mv_mobile_link_tests PRIVATE mv_mobile_link mv_driftwire_engine mv_ai_engine mv_io mv_infer
                           Catch2::Catch2WithMain ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET})
     target_include_directories(mv_mobile_link_tests PRIVATE src tests)

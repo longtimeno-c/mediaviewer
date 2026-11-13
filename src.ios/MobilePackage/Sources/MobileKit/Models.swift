@@ -457,7 +457,6 @@ public struct SearchFilterOptions: Hashable, Sendable {
   public static let none = SearchFilterOptions(people: [], places: [], dates: [], cameras: [])
 }
 
-#if MV_BACKUP
 /// Long work that carries on while the person uses the app, such as a phone backup. It shows above
 /// the tab bar only while it runs.
 public struct TransferActivity: Hashable, Sendable {
@@ -474,7 +473,6 @@ public struct TransferActivity: Hashable, Sendable {
     self.fraction = fraction
   }
 }
-#endif
 
 public enum CopyFailure: Error, Hashable, Sendable {
   case synologyUnreachable

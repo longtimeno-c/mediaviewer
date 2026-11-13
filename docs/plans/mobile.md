@@ -694,6 +694,33 @@ reason. With limited Photos access, it says only the chosen photos are covered.
 on its next walk and the next published catalogue includes them. The app says so if the folder
 is not indexed.
 
+### 10b.1 Open calls for 1.1 (written 2026-11-12, before M11 is built)
+
+What §10b and §7.2 leave open. Each has a recommendation; none is built until answered.
+
+| # | Call | Recommendation |
+|---|---|---|
+| B1 | **Who names the backup folder.** | The owner, on the desktop card: "Add a backup folder" is the existing "Add folder" with a storage limit, and the service marks that named folder writable. The phone picks among the writable folders the service lists (usually one) and never names a NAS path. |
+| B2 | **Who may write.** Today every paired phone holds a read-only grant. | Every paired phone may create files in every backup folder. A scoped or temporary grant (being built separately for `driftwire serve`) can take that away; a read-only grant never writes. |
+| B3 | **The ledger copy on the NAS replaces itself** (§10b says temp file and rename), which breaks "never replaces a file". | Allow exactly one exception: the service replaces `<folder>/.mediaviewer-phone-backup/<device id>/ledger.json`, and only for the device whose id it is. Every other write creates a new file or fails. |
+| B4 | **An interrupted large file.** A 4 GB clip killed at 3.9 GB starts over. | The service may append to, or remove, a `.part` it made itself for that same device, never anything else. A run resumes a `.part` from its size; the service still hashes the whole file on disk before the rename. |
+| B5 | **What the storage limit counts.** | The bytes in that backup folder as the service counts them (walked at start, then kept up to date by its own writes, including `.part` files). Separately, "NAS full" when the volume would keep less than 1 GB free after the file. The card asks for a limit, suggesting the smaller of 1 TB and half the free space. |
+| B6 | **Backup in the sample library** (owner: SAMPLE must demo every feature, and must never upload anyone's photos). | The real backup code with the person's own Photos as the source (so the Photos prompt and limited access are seen), into a clearly labelled **"Sample NAS on this iPhone"** folder in the app's own storage, through the same C++ writer the service uses. Its storage limit is 250 MB, so "Storage limit reached" can be seen. Nothing leaves the phone. Forget removes the folder and its ledger. No change to the `sample-library` release, so no republish. |
+| B8 | **Bursts and hidden photos.** | **Settled (owner, 2026-11-12): not backed up.** Hidden photos are left out, and of a burst only the photo Photos shows for it is copied, not the other frames. The Backup screen and the listing say so. |
+| B7 | **The desktop indexes what arrives.** | The backup folder is chosen from the desktop's own search roots on that share (or added as one when chosen), so its next walk indexes it and the next publish carries it to the phone. The card says when it is not indexed. |
+
+**Answers (owner, 2026-11-12).** B6 as recommended. B3 and B4 both allowed. B1, B5, B7 as
+recommended, and the storage limit and the free-space reserve are both set per backup folder on the
+card and can be changed later. B2: worked out with the owner-passphrase and grants plan
+(`docs/plans/nas-owner-and-guests.md`, agreed with that session 2026-11-12): a grant gains `backup`
+(may create files in backup folders). A device is on the paired list (`known.h` `devices`) only when it
+has no expiry, no folder scope and backup allowed; any other device, a phone with backup off included,
+lives only in `library_grants`, which an older NAS never reads, so it fails closed. Guest codes default
+to backup off. Turning backup on is additive (needs the owner's unlock), off is reducing, and the 2 s
+watch cuts a session whose backup flag changed. `may_write` reads the session's grant: none (unlimited)
+may write; otherwise `grant.backup` and the grant's folders. Until the grants branch
+(`claude/nas-owner-passphrase-grants`) merges, every paired phone may write.
+
 **#46** (phone to desktop through Import) is a different route and stays open. Its findings carry
 over: native PhotoKit, and streaming rather than staging originals.
 
@@ -960,6 +987,15 @@ requirements in §2.2.
 > **Verify:** Every row of §11.3 reproduced on a device; from a clean install on a NAT64 network, the review notes alone get a person from the code SAMPLE to a search result in the sample library; the App Store build contains no GPL or LGPL code and ships under the recorded licence permission.
 
 ### M11 — Phone backup, 1.1 (iOS and the service; the year-and-month layout is on the Mac)
+
+**Built (2026-11-12, branch `claude/phone-backup-m11`):** the service's write grant (`docs/design/28`, "Phone
+backup: the write grant"), the phone's ledger and run (`src/mobile/backup.*`, `mv_backup_*`), the Backup
+screen and its states, PhotoKit (`MobileLink/LinkBackup.swift`), the sample library's on-phone target, the
+Mac card's backup folder with its limit and reserve and whether this Mac indexes it, and the 1.1 store copy.
+The year-and-month layout already existed on the Mac (`backup::layout::year_month`, #414). Shown on loopback
+and in the Simulator only; the verify line below needs a device, a real NAS and 1,000 real files. Not built:
+pausing backup while a photo loads (§8.2's lane rule; backup runs on its own queue but does not yet yield),
+the Windows card's backup rows (the engine JSON is shared), the write permission inside the grants plan.
 
 §10b: Backup screen, folder picker from the service's named folders, PhotoKit source, verified write
 through the service, storage limit, ledger on the phone and the NAS.

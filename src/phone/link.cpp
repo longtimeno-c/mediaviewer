@@ -8,6 +8,7 @@
 #include "phone/link.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -315,6 +316,66 @@ void link::save_state() {
 
 // ---- Local search ------------------------------------------------------------------------
 
+namespace {
+
+// Whether the NAS path of a backup folder ("/volume1/photo/Phone backup") is under the
+// computer's Local search root `local` ("/Volumes/photo", "/Volumes/photo/Phone backup",
+// "\\nas\photo"): the share is the folder right under /volumeN on a Synology, mounted under
+// its own name, compared without case. A heuristic for the card's wording; it never changes
+// what is indexed.
+bool nas_covered_by(const std::string& nas, const std::string& local) {
+  const auto split = [](const std::string& p) {
+    std::vector<std::string> out;
+    std::string part;
+    for (char ch : p + "/") {
+      if (ch == '/' || ch == '\\') {
+        if (!part.empty()) out.push_back(part);
+        part.clear();
+      } else {
+        part += static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch - 'A' + 'a' : ch);
+      }
+    }
+    return out;
+  };
+  std::vector<std::string> n = split(nas);
+  const std::vector<std::string> l = split(local);
+  if (n.size() >= 2 && n[0].rfind("volume", 0) == 0) n.erase(n.begin());  // Synology /volumeN/share/...
+  else if (n.size() >= 3 && n[0] == "mnt") n.erase(n.begin(), n.begin() + 2);  // TrueNAS /mnt/<pool>/share/...
+  if (n.empty()) return false;
+  // Where the share is mounted: right under /Volumes on a Mac, the second part of a
+  // \\host\share path on Windows. Anywhere else (a local ~/Pictures/photo) is not it.
+  const bool unc = local.rfind("\\\\", 0) == 0 || local.rfind("//", 0) == 0;
+  std::size_t at = 0;
+  if (l.size() >= 2 && l[0] == "volumes") {
+    at = 1;
+  } else if (unc && l.size() >= 2) {
+    at = 1;
+  } else {
+    return false;
+  }
+  if (l[at] != n[0] && l[at].rfind(n[0] + "-", 0) != 0) return false;  // "photo-1": a second mount of it
+  const std::size_t rest = l.size() - at;
+  if (rest > n.size()) return false;
+  return std::equal(l.begin() + static_cast<std::ptrdiff_t>(at) + 1, l.end(), n.begin() + 1);
+}
+
+}  // namespace
+
+bool link::indexed_here(const std::string& nas_path) const {
+  std::string text;
+  {
+    std::lock_guard lock(m_);
+    text = pub_.source_json;
+  }
+  const auto doc = json::parse(text, 4);
+  const json::value* roots = doc ? doc->find("search_roots") : nullptr;
+  if (!roots || roots->k != json::kind::array) return false;
+  for (const auto& r : roots->a) {
+    if (r.k == json::kind::string && nas_covered_by(nas_path, r.s)) return true;
+  }
+  return false;
+}
+
 void link::read_source() {
   std::string text;
   bool any = false;
@@ -570,6 +631,7 @@ void link::refresh(bool phones_only) {
           r.expired = v.boolean("expired").value_or(false);
           r.guest = v.boolean("guest").value_or(false);
           r.scoped = v.boolean("scoped").value_or(false);
+          r.backup = v.boolean("backup").value_or(!r.guest);
           rows.push_back(std::move(r));
         }
       }
@@ -606,7 +668,18 @@ void link::refresh(bool phones_only) {
           const std::string* id = v.str("id");
           const std::string* label = v.str("label");
           const std::string* path = v.str("path");
-          if (id && label && path) rows.push_back({*id, *label, *path});
+          if (!id || !label || !path) continue;
+          folder_row row{*id, *label, *path};
+          if (const json::value* b = v.find("backup"); b && b->k == json::kind::object) {
+            const auto num = [&](const char* k) { return static_cast<std::uint64_t>(std::max<std::int64_t>(0, b->integer(k).value_or(0))); };
+            row.backup = true;
+            row.limit = num("limit");
+            row.reserve = num("reserve");
+            row.used = num("used");
+            row.room = num("room");
+            row.indexed = indexed_here(*path);
+          }
+          rows.push_back(std::move(row));
         }
       }
       std::lock_guard lock(m_);
@@ -1054,7 +1127,17 @@ void link::run(const std::string& request) {
     prepare_nearby();
     return;
   }
-  if (what == "add_folder" || what == "remove_folder") {
+  if (what == "add_folder" || what == "remove_folder" || what == "set_backup") {
+    // Sizes come from the card as decimal byte counts (strings, as the card's fields are).
+    const auto bytes = [&](const char* k) -> std::int64_t {
+      const std::string t = text(k);
+      std::int64_t v = 0;
+      for (char ch : t) {
+        if (ch < '0' || ch > '9' || v > (INT64_MAX - 9) / 10) return -1;
+        v = v * 10 + (ch - '0');
+      }
+      return t.empty() ? -1 : v;
+    };
     json::writer w;
     w.begin_object();
     if (what == "add_folder") {
@@ -1062,9 +1145,25 @@ void link::run(const std::string& request) {
     } else {
       w.key("id").string(text("id"));
     }
+    if (what == "set_backup" || text("backup") == "1") {
+      const auto limit = bytes("limit");
+      const auto reserve = bytes("reserve");
+      if (limit <= 0 || reserve < 0) return fail("invalid_arg");
+      if (what == "add_folder") w.key("backup").boolean(true);
+      w.key("limit").integer(limit).key("reserve").integer(reserve);
+    }
     w.end_object();
-    if (auto r = route(what == "add_folder" ? "add_root" : "remove_root", w.str()); !r) return fail_status(r.error());
+    const char* verb = what == "add_folder" ? "add_root" : what == "remove_folder" ? "remove_root" : "set_backup";
+    if (auto r = route(verb, w.str()); !r) return fail_status(r.error());
     refresh();
+    return;
+  }
+  if (what == "phone_backup") {
+    json::writer w;
+    w.begin_object().key("key").string(text("key")).key("on").boolean(doc->boolean("on").value_or(false)).end_object();
+    if (auto r = route("phone_backup", w.str()); !r) return fail_status(r.error());
+    refresh();
+    prepare_nearby();
     return;
   }
   // ---- the owner's passphrase and timed phones ----
@@ -1192,6 +1291,7 @@ std::string link::state_json() const {
     // A timed or scoped phone: its end (unix, the NAS's clock; 0 none) and whether it has passed.
     w.key("limited").boolean(d.limited).key("expires").integer(d.expires).key("expired").boolean(d.expired);
     w.key("guest").boolean(d.guest).key("scoped").boolean(d.scoped);
+    w.key("backup").boolean(d.backup);
     w.end_object();
   }
   w.end_array();
@@ -1210,7 +1310,15 @@ std::string link::state_json() const {
   w.key("locked_until").integer(v_.locked_until);
   w.key("qr_for_s").integer(v_.qr_for_s);
   w.key("folders").begin_array();
-  for (const auto& f : v_.folders) w.begin_object().key("id").string(f.id).key("label").string(f.label).key("path").string(f.path).end_object();
+  for (const auto& f : v_.folders) {
+    w.begin_object().key("id").string(f.id).key("label").string(f.label).key("path").string(f.path);
+    if (f.backup) {
+      w.key("backup").boolean(true).key("indexed").boolean(f.indexed);
+      w.key("limit").integer(static_cast<std::int64_t>(f.limit)).key("reserve").integer(static_cast<std::int64_t>(f.reserve));
+      w.key("used").integer(static_cast<std::int64_t>(f.used)).key("room").integer(static_cast<std::int64_t>(f.room));
+    }
+    w.end_object();
+  }
   w.end_array();
   w.key("qr").string(v_.qr_url);
   w.key("qr_library").string(v_.qr_library);

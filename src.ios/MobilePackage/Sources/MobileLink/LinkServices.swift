@@ -9,6 +9,7 @@ public enum LinkServices {
     public let images: LinkImages
     public let clips: LinkClips
     public let library: InterimLibrary
+    public let backup: LinkBackup
     /// File mode: the library and its search when there is no catalogue yet.
     public var files: LinkFiles { images.files }
   }
@@ -18,6 +19,6 @@ public enum LinkServices {
     connection.becomeShared()
     let images = LinkImages(connection: connection)
     return Bundle(connection: connection, images: images, clips: LinkClips(connection: connection, images: images),
-                  library: InterimLibrary(connection: connection))
+                  library: InterimLibrary(connection: connection), backup: LinkBackup(connection: connection))
   }
 }

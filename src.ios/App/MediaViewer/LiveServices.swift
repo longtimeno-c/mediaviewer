@@ -22,7 +22,7 @@ enum LiveServices {
     let search = ModeSearch(catalogue: catalogue.search, files: link.files.search) { connection.current }
     return Services(library: library, images: images, search: search,
                     connection: link.connection, sync: link.connection, clips: link.clips,
-                    saver: PhotoLibrarySaver(originals: link.images))
+                    saver: PhotoLibrarySaver(originals: link.images), backup: link.backup)
   }
 
   /// A new `CatalogueInfo` is the only "catalogue changed" signal: the sync has installed a

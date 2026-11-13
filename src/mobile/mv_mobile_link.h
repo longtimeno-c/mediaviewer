@@ -309,6 +309,102 @@ int32_t mv_file_index_match(const mv_file_index* index, const char* typed, mv_fi
 /* How many files have their fields, of how many. */
 int32_t mv_file_index_counts(const mv_file_index* index, size_t* tagged, size_t* count);
 
+/* ---- phone backup, release 1.1 (docs/plans/mobile.md 10b) ---------------------
+ * The phone's photos and videos to a backup folder on the NAS, while the app is open.
+ * The host lists Photos (newest first) with mv_backup_add_item and exports one
+ * resource at a time when asked; the core keeps the ledger, files by date, and
+ * writes through the service. With the sample library the "NAS" is a folder on
+ * this phone, labelled "Sample NAS on this iPhone": nothing is sent anywhere. */
+
+typedef struct mv_backup mv_backup;
+
+typedef struct mv_backup_config {
+  const char* ledger_path;   /* Application Support, excluded from iCloud backup */
+  const char* scratch_dir;   /* one exported resource at a time */
+  const char* library_id;
+  const char* sample_folder; /* the sample library only: its on-phone "NAS" folder */
+} mv_backup_config;
+
+/* Holds a reference to `link`: close the backup before the link. */
+mv_backup* mv_backup_open(mv_mobile_link* link, const mv_backup_config* config);
+/* Waits for a run in flight to return (fire its cancel first). */
+void mv_backup_close(mv_backup* b);
+
+/* A backup folder the service offers. writable 0: not one this phone may write to. */
+typedef void (*mv_backup_folder_fn)(void* ctx, const char* id, const char* label, int32_t writable);
+/* BLOCKS. MV_LINK_TOO_OLD: the service is from before 1.1. */
+int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx);
+
+typedef struct mv_backup_space {
+  uint64_t limit; /* the folder's storage limit */
+  uint64_t used;
+  uint64_t room;  /* what may still be written: the limit or the NAS's free space, whichever is less */
+} mv_backup_space;
+/* BLOCKS. */
+int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out);
+
+/* The photos to back up, newest first. MV_LINK_INVALID for no resources, a name that is a path, or a
+ * year outside 1900-9999. resources_json: [{"kind":"photo|video|live_video|raw|other","name":"IMG_0412.HEIC"}].
+ * key: PHCloudIdentifier where iCloud Photos gives one, else "local:" + the local identifier.
+ * year, month, day: the capture date where it was taken. */
+int32_t mv_backup_clear_items(mv_backup* b);
+int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, int32_t year, int32_t month, int32_t day,
+                           const char* resources_json);
+
+/* BLOCKS (the core's run thread calls it). Writes resource `index` of the photo `local_id`, the
+ * original as shot (from iCloud first if need be), to `path`. MV_LINK_OK, MV_LINK_NOT_FOUND (gone from
+ * Photos), MV_LINK_CANCELLED, or MV_LINK_INTERNAL. Must poll `cancel` (mv_backup_cancelled).
+ * ymd[3] holds the item's year, month and day; set it to the capture date read from the file, where
+ * it was taken, when the file says (it then files the rest of the photo too). */
+typedef int32_t (*mv_backup_export_fn)(void* ctx, const char* local_id, int32_t index, const char* path, mv_cancel* cancel,
+                                       int32_t ymd[3]);
+int32_t mv_backup_cancelled(mv_cancel* cancel);
+
+typedef enum mv_backup_state {
+  MV_BACKUP_IDLE = 0,
+  MV_BACKUP_CHECKING = 1,
+  MV_BACKUP_RUNNING = 2,
+  MV_BACKUP_DONE = 3,
+  MV_BACKUP_PAUSED_WIFI = 4,
+  MV_BACKUP_NOT_ALLOWED = 5, /* the folder is not one this phone may write to */
+  MV_BACKUP_LIMIT = 6,       /* the folder's storage limit is reached */
+  MV_BACKUP_FULL = 7,        /* the NAS is full */
+  MV_BACKUP_UNREACHABLE = 8,
+  MV_BACKUP_TOO_OLD = 9,
+  MV_BACKUP_NO_FOLDER = 10,
+  MV_BACKUP_NO_ACCESS = 11,
+  MV_BACKUP_DONE_FAILURES = 12, /* everything it could copy is backed up; mv_backup_failures says what not */
+} mv_backup_state;
+
+typedef struct mv_backup_status {
+  int32_t state; /* mv_backup_state */
+  uint64_t total;
+  uint64_t backed_up;
+  uint64_t files_done;
+  uint64_t copied;          /* files this run */
+  uint64_t bytes;           /* sent this run */
+  double current_fraction;
+  char current[256];        /* the file being copied: this phone's own screen only */
+  uint64_t failed;
+} mv_backup_status;
+typedef void (*mv_backup_status_fn)(void* ctx, const mv_backup_status* status);
+
+/* BLOCKS, until done, a state that stops it, or `cancel`. layout: 1 year, 2 year/month/day,
+ * 4 one folder, 5 year/month (the default). MV_LINK_OK with the last mv_backup_state in *state_out,
+ * or a mv_link_status for a bad argument. */
+int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_cancel* cancel,
+                      mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx, int32_t* state_out);
+
+/* The last run's failures: the photo's key, the file, and why ("gone", "export", "hash", "error"). */
+typedef void (*mv_backup_failure_fn)(void* ctx, const char* key, const char* name, const char* why);
+int32_t mv_backup_failures(mv_backup* b, mv_backup_failure_fn fn, void* ctx);
+/* Keys of the photos not backed up yet, as of the last run. */
+typedef void (*mv_backup_key_fn)(void* ctx, const char* key);
+int32_t mv_backup_remaining(mv_backup* b, mv_backup_key_fn fn, void* ctx);
+
+/* Forget: removes the sample library's on-phone "NAS" and a ledger. Nothing on a real NAS is touched. */
+void mv_backup_remove_local(const char* sample_folder, const char* ledger_path);
+
 #ifdef __cplusplus
 }
 #endif

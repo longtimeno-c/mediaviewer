@@ -816,6 +816,12 @@ tools/ios/sample-library-sim.sh <work folder> <Simulator UDID> <MediaViewer.app>
 `MV_SAMPLE_FILE=1` serves it as a `file://` folder instead. The core's side, over a folder of a
 publisher's real `deliver()`, is in `mv_mobile_link_tests "sample*"`.
 
+The same run checks phone backup (1.1) in the sample library: it grants Photos and adds 12 generated
+plain-colour pictures to the Simulator (never anyone's own photos), `test4b` backs them up to "Sample
+NAS on this iPhone", and the script checks that folder (each picture once, whole, no `.mvpart`, the
+ledger copy there) before Forget and that Forget removes it. The backup core alone:
+`mv_mobile_link_tests "backup:*"`; the service's write grant: `mv_import_tests "serve backup*"`.
+
 Typing a search, recorded, so two builds can be compared doing the same thing (the grid flicker,
 2026-11-12). `SearchSmoothnessTests` opens the sample library from the release if the app has none,
 types three queries a letter at a time and refines each; the script records the screen
@@ -2261,6 +2267,11 @@ after `publish`, on **stable** releases only and only when the repository variab
 `MV_DRIFTWIRE_REPO` is `1`. Each deploy replaces the whole Pages site. The installer's source is
 `packaging/linux/repo/install.sh`, the page's `packaging/linux/repo/index.html`. On macOS
 `install.sh` installs nothing and prints the `brew install` line.
+
+The same deploy carries the site's own pages from `packaging/site`, copied as they are: the front
+page and the iPhone app's privacy and support pages (`/iphone/privacy/`, `/iphone/support/`), whose
+URLs are in its App Store listing (`src.ios/AppStore/listing.md`). A change to them reaches the
+site only with the next stable release's deploy.
 
 **The key** (step 1 above), on a trusted machine with GnuPG 2.2 or newer:
 

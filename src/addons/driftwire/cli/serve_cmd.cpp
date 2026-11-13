@@ -101,18 +101,12 @@ bool load_devices(secrets::store& store, std::vector<known::device>& out) {
 
 // Whole and renamed in, owner-only: the running service is the only writer.
 bool write_config(const std::string& path, const serve::config& c) {
-  json::writer w;
-  w.begin_object().key("port").integer(c.port).key("name").string(c.name).key("roots").begin_array();
-  for (const auto& r : c.roots) {
-    w.begin_object().key("id").string(r.id).key("label").string(r.label).key("path").string(r.path).end_object();
-  }
-  w.end_array();
-  if (!c.relay.empty()) w.key("relay").string(c.relay);
-  w.end_object();
+  // config_json writes the backup folders and the relay too.
+  const std::string text = serve::config_json(c);
   const std::string tmp = path + ".part";
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    f.write(w.str().data(), static_cast<std::streamsize>(w.str().size()));
+    f.write(text.data(), static_cast<std::streamsize>(text.size()));
     if (!f.flush()) return false;
   }
 #if !defined(_WIN32)
@@ -625,6 +619,7 @@ int run_pair_code(const args& a, secrets::store& store, const std::string& data)
     if (!for_s) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
     serve::grants::limit gives;
     gives.for_s = *for_s;
+    gives.backup = false;  // a guest backs nothing up (docs/plans/mobile.md §10b.1, B2)
     code = serve::grants::issue_guest_code(store, seconds, gives, std::time(nullptr));
   } else {
     code = serve::issue_pair_code(store, seconds, std::time(nullptr));

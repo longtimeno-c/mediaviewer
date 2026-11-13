@@ -16,7 +16,8 @@
 //      go no further: message 3 needs the device's key);
 //   4. only then does it do any key work or say anything;
 //   5. the device key from the finished handshake must be a paired one:
-//      paired devices hold a read-only grant on the named folders; a device
+//      paired devices hold a read grant on the named folders, and may create
+//      files in the backup folders (serve_backup.h); a device
 //      that is not paired, or was revoked, is told so, sealed, and refused.
 //
 // A running session is cut within kDevicesRecheckMs of its device being
@@ -69,6 +70,9 @@ inline constexpr const char* kCatalogueLabel = "Catalogue";
 inline constexpr const char* kFeaturePassphrase = "passphrase";
 // The service can wait at the person's own relay (docs/plans/nas-relay.md).
 inline constexpr const char* kFeatureRelay = "relay";
+// Phone backup (1.1): backup folders and the backup flag on a phone's grant, so the cards
+// show their controls only to a service that has them.
+inline constexpr const char* kFeatureBackup = "backup";
 // The relay server's key, in the service's secret store (never serve.json).
 inline constexpr const char* kRelayKeyName = "relay_key";
 // Waiters at the relay, one per paired device: the relay's own per-source cap.
@@ -122,6 +126,13 @@ class server {
     std::function<bool(const config&)> save_config;
     // Taken around every change of the paired list ("": none), against `serve add`.
     std::string devices_lock;
+    // Phone backup (1.1): whether a device may create files in the backup
+    // folders. Empty: its grant decides (docs/plans/mobile.md §10b.1, B2): an
+    // unlimited paired device may, a limited one only with `backup` on and only
+    // in its folders, and the owner's session never. The tests set it.
+    std::function<bool(const std::array<std::uint8_t, 32>&)> may_write;
+    // Tests: a volume's free bytes, instead of asking the OS.
+    std::function<std::uint64_t(const std::string&)> free_bytes;
     // The owner's passphrase (owner_pass.h). Unix seconds now: the tests move
     // it. Empty: the system clock.
     std::function<std::int64_t()> now_unix;

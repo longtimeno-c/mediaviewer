@@ -36,10 +36,12 @@ final class FixtureWorld: @unchecked Sendable {
   /// Save to Photos is refused, as when the person said no to adding to Photos.
   var photosRefused = false
   var searchFails = false
-  #if MV_BACKUP
   /// Stand-in backup: nil runs nothing, otherwise how many ticks it runs for.
   var transferTicks: Int?
-  #endif
+  /// The Backup screen's state, when a fixture opens it.
+  var backupState: BackupState?
+  var backupSample = false
+  var backupNoFolder = false
   var recents = ["boats at sunset", "mountains by a lake", "birthday cake", "receipt from the hardware shop"]
   var downloadedClips: Set<MediaID> = []
   private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
@@ -71,15 +73,9 @@ final class FixtureWorld: @unchecked Sendable {
 
   func services() -> Services {
     let images = FixtureImages(world: self)
-    #if MV_BACKUP
     return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
                     connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
-                    clips: FixtureClips(world: self), saver: FixtureSaver(world: self), transfers: FixtureTransfers(world: self))
-    #else
-    return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
-                    connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
-                    clips: FixtureClips(world: self), saver: FixtureSaver(world: self))
-    #endif
+                    clips: FixtureClips(world: self), saver: FixtureSaver(world: self), backup: FixtureBackup(world: self))
   }
 }
 
@@ -569,38 +565,89 @@ struct FixtureClips: ClipService {
   }
 }
 
-#if MV_BACKUP
-/// A phone backup in the words of §10b, so the slot above the tab bar can be checked before the
-/// backup itself exists (release 1.1).
-struct FixtureTransfers: TransferMonitor {
+/// A phone backup in the words of §10b: the strip above the tab bar, and the Backup screen in
+/// each of §11.1's states.
+final class FixtureBackup: BackupService, @unchecked Sendable {
   let world: FixtureWorld
+  private let lock = NSLock()
+  private var snapshot: BackupSnapshot
+  private var listeners: [UUID: AsyncStream<BackupSnapshot>.Continuation] = [:]
+  private var runner: Task<Void, Never>?
+  private static let nas = BackupFolder(id: "c3c3c3c3c3c3c3c3", label: "Phone backup", writable: true)
+  private static let sample = BackupFolder(id: "5a3b1e0f5a3b1e0f", label: "Sample NAS on this iPhone", writable: true)
 
-  func activity() -> AsyncStream<TransferActivity?> {
+  init(world: FixtureWorld) {
+    self.world = world
+    var s = BackupSnapshot(state: .off, backedUp: 1_204, total: 18_320, isSample: world.backupSample)
+    if !world.backupNoFolder { s.folder = world.backupSample ? Self.sample : Self.nas }
+    s.space = BackupSpace(limitBytes: 500_000_000_000, usedBytes: 41_200_000_000, roomBytes: 458_800_000_000)
+    if let state = world.backupState {
+      s.state = state
+      if state == .running { s.currentName = "IMG_0412.HEIC"; s.currentFraction = 0.4 }
+      if state == .limitReached { s.space = BackupSpace(limitBytes: 500_000_000_000, usedBytes: 500_000_000_000, roomBytes: 0) }
+      if state == .done { s.backedUp = s.total }
+    }
+    if world.backupState == .running, world.backupSample { s.total = 120; s.backedUp = 37 }
+    snapshot = s
+    if let ticks = world.transferTicks { run(ticks: ticks) }
+  }
+
+  var current: BackupSnapshot { lock.withLock { snapshot } }
+
+  func updates() -> AsyncStream<BackupSnapshot> {
     AsyncStream { continuation in
-      let task = Task {
-        guard let ticks = world.transferTicks else {
-          continuation.yield(nil)
-          continuation.finish()
-          return
-        }
-        let total = 18_320
-        for tick in 0..<ticks {
-          let done = 1_204 + tick
-          continuation.yield(TransferActivity(
-            line: "\(done.formatted()) of \(total.formatted()) backed up · \((total - done).formatted()) to go",
-            shortLine: "\(done.formatted()) of \(total.formatted())",
-            fraction: Double(done) / Double(total)))
-          try? await Task.sleep(for: .seconds(1))
-          if Task.isCancelled { break }
-        }
-        continuation.yield(nil)
-        continuation.finish()
+      let id = UUID()
+      lock.withLock { listeners[id] = continuation }
+      continuation.yield(current)
+      continuation.onTermination = { [weak self] _ in self?.lock.withLock { self?.listeners[id] = nil } }
+    }
+  }
+
+  private func change(_ body: (inout BackupSnapshot) -> Void) {
+    let (value, list) = lock.withLock { () -> (BackupSnapshot, [AsyncStream<BackupSnapshot>.Continuation]) in
+      body(&snapshot)
+      return (snapshot, Array(listeners.values))
+    }
+    list.forEach { $0.yield(value) }
+  }
+
+  private func run(ticks: Int) {
+    runner?.cancel()
+    runner = Task {
+      change { $0.state = .running }
+      for _ in 0..<ticks {
+        try? await Task.sleep(for: .seconds(1))
+        if Task.isCancelled { return }
+        change { $0.backedUp = min($0.total, $0.backedUp + 1); $0.currentName = "IMG_\(4000 + $0.backedUp).HEIC" }
       }
-      continuation.onTermination = { _ in task.cancel() }
+      change { $0.state = .done; $0.currentName = nil; $0.backedUp = $0.total }
+    }
+  }
+
+  func folders() async throws -> [BackupFolder] {
+    if world.backupSample { return [Self.sample] }
+    return [Self.nas, BackupFolder(id: "d4d4d4d4d4d4d4d4", label: "Family backup", writable: false)]
+  }
+  func requestPhotosAccess() async -> Bool { true }
+  func choose(folder: BackupFolder, layout: BackupLayout) async {
+    change { $0.folder = folder; $0.layout = layout; $0.state = .off }
+  }
+  func setAutomatic(_ on: Bool) { change { $0.automatic = on } }
+  func setAllowsSleep(_ on: Bool) { change { $0.allowsSleep = on } }
+  func start(overMobileData: Bool) { run(ticks: 3600) }
+  func stop() {
+    runner?.cancel()
+    change { $0.state = .off; $0.currentName = nil }
+  }
+  func notBackedUp() async -> [String] { (0..<min(60, current.toGo)).map { "fixture-\($0)" } }
+  func thumbnail(ofPhoto id: String, side: CGFloat) async -> UIImage? {
+    let hue = CGFloat(abs(id.hashValue) % 360) / 360
+    return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { ctx in
+      UIColor(hue: hue, saturation: 0.45, brightness: 0.7, alpha: 1).setFill()
+      ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
     }
   }
 }
-#endif
 
 struct FixtureSaver: PhotoSaver {
   let world: FixtureWorld

@@ -1606,6 +1606,43 @@ Synology hardware or Linux (`file_store` and sockets are portable, but only macO
 Windows. On Windows, `file_store` relies on the per-user profile's ACL; there are no POSIX modes
 to check.
 
+### Phone backup: the write grant (1.1)
+
+`src/wire/serve_backup.*`, `src/wire/grants.*`; plan: `docs/plans/mobile.md` §10b, §10b.1 (owner's calls
+B1–B8, 2026-11-12), M11. A named folder can be a **backup folder**: `"backup":{"limit","reserve"}` in
+`serve.json`, set by the owner's `add_root` or `set_backup` (Settings → Phone access on the Mac and on
+Windows: "Phones back up to this folder", the limit and the free space to keep, both editable, and
+whether Local search on that computer covers the folder, from the `search_roots` Local search reports in
+its `phone_json`). A phone that lists `write` in its hello is given the op (a name on the wire; this
+build's bit is `1u << 6`); an older service leaves it out of `serve_caps`, and the phone says the
+service needs updating.
+
+**Who may write is a phone's grant** (B2, with `docs/plans/nas-owner-and-guests.md`): a grant carries
+`backup`. A device is on the paired list only with no expiry, no folder scope and backup allowed; a phone
+with backup off lives only in `library_grants`, which an older NAS never reads, so it fails closed. A
+guest code gives backup off; "Until I remove it" for every folder gives it back. The owner's `grant` verb
+takes `backup` (alone, it keeps the expiry and the folders); turning it on adds access and needs the
+unlock once there is a passphrase, off never does. Each write asks the device's grant afresh
+(`device_may_write`), so a change applies to the next file; a scoped grant writes only in its folders.
+The tests' `server::options::may_write` stands in for the grants.
+
+A write is a stream the other way: `stream_open {"op":"write","root","rel","at","size","hash"}`, the
+service's `stream_credit`, the client's `stream_data` at the offsets it expects. The service, in order:
+refuses anything but a backup folder this device may write (`not-allowed`), a name over 200 bytes
+(`name`); makes the folders beneath the root, never through a link; answers at once when an identical
+file (name or a numbered form, size, BLAKE3) is already there; holds the bytes against the limit
+(`limit`) and the volume's reserve, counting every folder's held bytes (`full`); writes
+`.<name>.<device id>.mvpart`, hidden; with every byte there, flushes, hashes what is on disk and renames
+without replacing (`" (2)"` for a taken name), one commit at a time per folder. A wrong hash removes the
+part (`hash`). Never replaced or removed: anything but a device's **own** `.mvpart` (appended to on
+resume from `have`, removed on a bad hash or when the whole file turns up) and that device's own
+`.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`), the one file replaced, bounded by
+the reserve and not the limit. Writes count against `kMaxStreams`; a small file costs 4 KiB against the
+limit. The phone's side is `src/mobile/backup.*` (ledger, run, the sample library's on-phone target
+through the same `commit_part`). Tests: `[driftwire-serve]` "serve backup:", `[phone-pairing]` (the
+backup folder, the grant flag, a guest code), `[mobile-link]` "backup:". Not run: a real NAS, a real
+exFAT or SMB volume, Windows (the WinUI rows compile only in CI).
+
 ### Through the person's own relay (piece 3, 2026-11-12)
 
 Plan and owner calls: [nas-relay.md](../plans/nas-relay.md). **There is no public relay and there

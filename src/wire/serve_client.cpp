@@ -48,6 +48,7 @@ struct client::state {
     std::uint32_t consumed = 0;  // since credit last went out
     std::uint32_t window = 0;
     std::uint64_t queued = 0;    // bytes in `queue`
+    std::uint64_t send_credit = 0;  // a write: bytes the service will take now
   };
 
   std::mutex m;
@@ -113,6 +114,20 @@ void client::state::reader_loop() {
         ch->shutdown();
         break;
       }
+    } else if (in.type == msg::stream_credit) {
+      // A write's credit, from the service.
+      const auto c = parse_credit(in.body);
+      if (!c) break;
+      std::shared_ptr<stream_slot> slot;
+      {
+        std::lock_guard lock(this->m);
+        const auto it = slots.find(c->id);
+        if (it != slots.end()) slot = it->second;
+      }
+      if (!slot) continue;
+      std::lock_guard lock(slot->m);
+      slot->send_credit += c->bytes;
+      slot->cv.notify_all();
     } else if (in.type == msg::stream_end) {
       const auto e = parse_end(in.body);
       if (!e) break;
@@ -289,9 +304,11 @@ result<std::optional<client::read_stream::chunk>> client::read_stream::next(int 
 
 result<std::unique_ptr<client::read_stream>> client::read_range(const std::string& root, const std::string& rel,
                                                                 std::uint64_t at, std::uint64_t length,
-                                                                std::uint32_t window, bool bulk) {
+                                                                std::uint32_t window, bool bulk, bool meta) {
+  if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);  // an older service would read root/<rel>
   open_request r;
   r.kind = op::read_range;
+  r.meta = meta;
   r.root = root;
   r.rel = rel;
   r.at = at;
@@ -364,9 +381,11 @@ result<std::vector<root_info>> client::roots(end_code* code) {
   return *parsed;
 }
 
-result<stat_info> client::stat(const std::string& root, const std::string& rel, end_code* code) {
+result<stat_info> client::stat(const std::string& root, const std::string& rel, end_code* code, bool meta) {
+  if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;
   r.kind = op::stat;
+  r.meta = meta;
   r.root = root;
   r.rel = rel;
   auto slot = st_->open_slot(r);
@@ -384,9 +403,12 @@ result<stat_info> client::stat(const std::string& root, const std::string& rel, 
   return *parsed;
 }
 
-result<std::vector<list_entry>> client::list(const std::string& root, const std::string& rel, end_code* code) {
+result<std::vector<list_entry>> client::list(const std::string& root, const std::string& rel, end_code* code,
+                                             bool meta, bool* truncated) {
+  if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;
   r.kind = op::list;
+  r.meta = meta;
   r.root = root;
   r.rel = rel;
   r.credit = 1024 * 1024;
@@ -407,7 +429,115 @@ result<std::vector<list_entry>> client::list(const std::string& root, const std:
   if (*done != end_code::ok) return err(status::permission_denied);
   auto parsed = parse_listing(slot->collected);
   if (!parsed) return err(status::corrupt);
+  if (truncated) {
+    const auto doc = json::parse(slot->end_json, 4);
+    *truncated = doc && doc->boolean("truncated").value_or(false);
+  }
   return *parsed;
+}
+
+result<client::write_done> client::write(const std::string& root, const std::string& rel, std::uint64_t size,
+                                         const std::string& hash_hex, std::uint64_t at, const read_fn& read,
+                                         const std::function<void(std::uint64_t)>& progress,
+                                         const std::atomic<bool>* cancel, write_refused* why, bool meta) {
+  if (why) *why = {};
+  if ((st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
+  open_request r;
+  r.kind = op::write;
+  r.root = root;
+  r.rel = rel;
+  r.at = at;
+  r.size = size;
+  r.hash = hash_hex;
+  r.meta = meta;
+  auto slot = st_->open_slot(r);
+  if (auto s = st_->ch->send(msg::stream_open, encode_open(r)); !s) {
+    st_->remove(r.id);
+    return err(s.error());
+  }
+  struct removed {
+    const std::shared_ptr<state>& st;
+    std::uint32_t id;
+    ~removed() { st->remove(id); }
+  } on_exit{st_, r.id};
+  const auto gone = [&] { return st_->closing.load() || st_->ch->closed(); };
+  const auto cancelled = [&] { return cancel && cancel->load(); };
+  std::vector<std::uint8_t> buf(kDataHeaderBytes + kBulkChunk);
+  std::uint64_t offset = at;
+  // Silence for this long, with bytes owed either way, is a dead link.
+  auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRequestMs);
+  while (offset < size) {
+    std::uint64_t may = 0;
+    {
+      std::unique_lock lock(slot->m);
+      while (slot->send_credit == 0 && !slot->ended) {
+        if (gone()) return err(status::io);
+        if (cancelled()) break;
+        if (slot->cv.wait_for(lock, std::chrono::milliseconds(200)) == std::cv_status::timeout &&
+            std::chrono::steady_clock::now() >= until) {
+          lock.unlock();
+          (void)st_->ch->send(msg::stream_cancel, encode_cancel(r.id));
+          return err(status::timeout);
+        }
+      }
+      if (slot->ended) break;  // refused, or already there
+      may = slot->send_credit;
+    }
+    if (cancelled()) {
+      (void)st_->ch->send(msg::stream_cancel, encode_cancel(r.id));
+      return err(status::cancelled);
+    }
+    const auto want = static_cast<std::size_t>(std::min<std::uint64_t>({may, kBulkChunk, size - offset}));
+    auto got = read(offset, std::span<std::uint8_t>(buf).subspan(kDataHeaderBytes, want));
+    if (!got || *got == 0) {
+      // The phone's file went or shrank: the service keeps what it had.
+      (void)st_->ch->send(msg::stream_cancel, encode_cancel(r.id));
+      return err(got ? status::io : got.error());
+    }
+    put_data_header(std::span<std::uint8_t, kDataHeaderBytes>(buf.data(), kDataHeaderBytes), r.id, offset);
+    if (auto s = st_->ch->send(msg::stream_data, std::span<const std::uint8_t>(buf).first(kDataHeaderBytes + *got)); !s) {
+      return err(s.error());
+    }
+    offset += *got;
+    {
+      std::lock_guard lock(slot->m);
+      slot->send_credit -= *got;
+    }
+    until = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRequestMs);
+    if (progress) progress(offset);
+  }
+  // Everything is sent: the service flushes, hashes and renames, which on a big
+  // file takes a while. Wait while the link lives (the cancel still ends the wait).
+  {
+    std::unique_lock lock(slot->m);
+    while (!slot->ended) {
+      if (gone()) return err(status::io);
+      if (cancelled()) return err(status::cancelled);
+      slot->cv.wait_for(lock, std::chrono::milliseconds(200));
+    }
+  }
+  const auto doc = json::parse(slot->end_json, 4);
+  if (*slot->ended == end_code::ok) {
+    const std::string* name = doc ? doc->str("name") : nullptr;
+    if (!name) return err(status::corrupt);
+    return write_done{*name, doc->boolean("existing").value_or(false)};
+  }
+  if (why && doc) {
+    if (const std::string* w = doc->str("why")) why->why = *w;
+    if (const auto have = doc->integer("have"); have && *have >= 0) why->have = static_cast<std::uint64_t>(*have);
+  }
+  switch (*slot->ended) {
+    case end_code::refused:
+      return err(status::permission_denied);
+    case end_code::not_found:
+      return err(status::not_found);
+    case end_code::error:
+      return err(why && why->why == kWhyHash ? status::corrupt : status::io);
+    case end_code::unsupported:
+      return err(status::unsupported_format);
+    default:
+      return err(status::invalid_arg);
+  }
 }
 
 result<std::string> client::admin(const std::string& request_json, end_code* code, std::string* refusal) {

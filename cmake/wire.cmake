@@ -72,6 +72,7 @@ add_library(mv_wire STATIC
   ${_W}/owner_pass.cpp ${_W}/owner_pass.h
   ${_W}/grants.cpp ${_W}/grants.h
   ${_W}/serve.cpp ${_W}/serve.h
+  ${_W}/serve_backup.cpp ${_W}/serve_backup.h
   ${_W}/serve_client.cpp ${_W}/serve_client.h
   ${_W}/pair_check.cpp ${_W}/pair_check.h
   ${_W}/splice.cpp ${_W}/splice.h

@@ -18,12 +18,20 @@ internal sealed record PhoneDevice(string Name, string Key)
     public long Expires { get; init; }   // unix, 0 = no end
     public bool Expired { get; init; }
     public bool Guest { get; init; }     // paired by a guest code
+    public bool Backup { get; init; } = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
 }
 
 /// <summary>A named folder the service shares; "Catalogue" is the catalogue's own.</summary>
 internal sealed record PhoneFolder(string Id, string Label, string Path)
 {
     public bool IsCatalogue => Label == "Catalogue";
+    // Phone backup (1.1): phones may create files here, under these sizes.
+    public bool Backup { get; init; }
+    public long Limit { get; init; }
+    public long Reserve { get; init; }
+    public long Used { get; init; }
+    public long Room { get; init; }
+    public bool Indexed { get; init; }   // Local search on this PC covers it (§10b.1, B7)
 }
 
 /// <summary>mv_phone_state_json: the folder, the service, the code, the phones (docs/plans/phone-in-the-app.md).</summary>
@@ -69,6 +77,8 @@ internal sealed record PhoneLinkState
 
     /// <summary>The NAS can wait at the person's own relay (docs/plans/nas-relay.md).</summary>
     public bool NasHasRelay => NasFeatures.Contains("relay");
+    /// <summary>The NAS service takes phone backups (1.1): backup folders and the per-phone switch.</summary>
+    public bool NasHasBackup => NasFeatures.Contains("backup");
 
     /// <summary>Whether two reads would draw the same card (records compare lists by reference).</summary>
     // The catalogue's fraction moves on every read while it publishes: the card
@@ -123,11 +133,20 @@ internal static class PhoneWords
                         Expires = Int(d, "expires"),
                         Expired = Bool(d, "expired", false),
                         Guest = Bool(d, "guest", false),
+                        Backup = Bool(d, "backup", !Bool(d, "guest", false)),
                     });
             var folders = new List<PhoneFolder>();
             foreach (JsonElement f in Items(o, "folders"))
                 if (f.ValueKind == JsonValueKind.Object && Has(f, "id") && Has(f, "label") && Has(f, "path"))
-                    folders.Add(new PhoneFolder(Str(f, "id"), Str(f, "label"), Str(f, "path")));
+                    folders.Add(new PhoneFolder(Str(f, "id"), Str(f, "label"), Str(f, "path"))
+                    {
+                        Backup = Bool(f, "backup", false),
+                        Limit = Int(f, "limit"),
+                        Reserve = Int(f, "reserve"),
+                        Used = Int(f, "used"),
+                        Room = Int(f, "room"),
+                        Indexed = Bool(f, "indexed", false),
+                    });
             var added = new List<string>();
             foreach (JsonElement a in Items(o, "added"))
                 if (a.ValueKind == JsonValueKind.String) added.Add(a.GetString() ?? "");
@@ -292,6 +311,44 @@ internal static class PhoneWords
     public static string GrantRequest(string key, long forSeconds) =>
         new System.Text.Json.Nodes.JsonObject { ["do"] = "grant", ["key"] = key, ["for_s"] = forSeconds }.ToJsonString();
 
+    /// <summary>A phone's backup flag (B2): on adds access, off never needs the passphrase.</summary>
+    public static string PhoneBackupRequest(string key, bool on) =>
+        new System.Text.Json.Nodes.JsonObject { ["do"] = "phone_backup", ["key"] = key, ["on"] = on }.ToJsonString();
+
+    /// <summary>A backup folder's sizes, decimal bytes as the link takes them.</summary>
+    public static string SetBackupRequest(string id, long limit, long reserve) =>
+        new System.Text.Json.Nodes.JsonObject
+        {
+            ["do"] = "set_backup", ["id"] = id,
+            ["limit"] = limit.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["reserve"] = reserve.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        }.ToJsonString();
+
+    /// <summary>A backup folder's line: its path, sizes, and whether this PC indexes it.</summary>
+    public static string BackupDetail(PhoneFolder f) =>
+        $"{f.Path} · {Gigabytes(f.Used)} of {Gigabytes(f.Limit)} GB used, keeps {Gigabytes(f.Reserve)} GB free. " +
+        (f.Indexed
+            ? "Indexed by this PC: what phones send reaches search after the next scan."
+            : "Not in Local search on this PC yet: add this folder there so what phones send reaches search.");
+
+    /// <summary>Bytes as GB for the fields: "500" or "1.5".</summary>
+    public static string Gigabytes(long bytes)
+    {
+        double gb = bytes / 1e9;
+        if (gb >= 10) return Math.Round(gb).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Math.Round(gb, 2).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>"500" or "1,5" (GB) to bytes; null when it is not a number.</summary>
+    public static long? Bytes(string gigabytes)
+    {
+        string t = gigabytes.Trim().Replace(',', '.');
+        if (!double.TryParse(t, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double v) ||
+            v < 0 || v >= 1e6 || double.IsNaN(v))
+            return null;
+        return (long)Math.Round(v * 1e9);
+    }
+
     /// <summary>The relay's key is at least 16 characters, as driftwire-relay takes it.</summary>
     public const int RelayKeyMinimum = 16;
 
@@ -322,7 +379,8 @@ internal static class PhoneWords
     /// `when` turns a unix time into "Fri 14:00".</summary>
     public static string PhoneDetail(PhoneDevice d, long nowUnix, Func<long, string> when)
     {
-        string lead = d.Guest ? "Guest · " : "";
+        // Backup is said only where it is not the usual: a guest that may back up, a phone that may not.
+        string lead = d.Guest ? (d.Backup ? "Guest · Backs up · " : "Guest · ") : (d.Backup ? "" : "No backup · ");
         if (!d.Limited || d.Expires == 0) return lead + KeyDetail(d.Key);
         if (d.Expired || d.Expires <= nowUnix) return lead + "Expired " + Ago(nowUnix - d.Expires);
         return lead + "Until " + when(d.Expires);

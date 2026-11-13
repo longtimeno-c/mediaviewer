@@ -39,6 +39,8 @@ final class PhoneStore: ObservableObject {
     var expires: Int64 = 0  // unix on the NAS's clock, 0 = no end
     var expired = false
     var guest = false
+    /// May back up to the backup folders (phone backup, docs/plans/mobile.md §10b.1, B2).
+    var backup = true
     var id: String { key }
   }
   struct Folder: Identifiable, Equatable {
@@ -46,6 +48,13 @@ final class PhoneStore: ObservableObject {
     let label: String
     let path: String
     var isCatalogue: Bool { label == "Catalogue" }
+    // Phone backup (1.1): phones may create files here, under these sizes.
+    var backup = false
+    var limit: Int64 = 0
+    var reserve: Int64 = 0
+    var used: Int64 = 0
+    var room: Int64 = 0
+    var indexed = false
   }
   /// Local search's catalogue rows (its phone_json, as the link passes it on).
   struct Catalogue: Equatable {
@@ -92,6 +101,8 @@ final class PhoneStore: ObservableObject {
     var relay = ""  // the person's own relay, "host:port"; its key stays on the NAS
     /// The NAS takes guest codes, time limits and a passphrase.
     var nasHasFeatures: Bool { nasFeatures.contains("passphrase") }
+    /// The NAS service takes phone backups (1.1): backup folders and the per-phone switch.
+    var nasHasBackup: Bool { nasFeatures.contains("backup") }
     /// The NAS can wait at the person's own relay (docs/plans/nas-relay.md).
     var nasHasRelay: Bool { nasFeatures.contains("relay") }
   }
@@ -159,13 +170,22 @@ final class PhoneStore: ObservableObject {
     s.warning = o["warning"] as? String ?? ""
     s.phones = (o["devices"] as? [[String: Any]] ?? []).compactMap {
       guard let n = $0["name"] as? String, let k = $0["key"] as? String else { return nil }
+      let guest = $0["guest"] as? Bool ?? false
       return Phone(name: n, key: k, limited: $0["limited"] as? Bool ?? false,
                    expires: ($0["expires"] as? NSNumber)?.int64Value ?? 0,
-                   expired: $0["expired"] as? Bool ?? false, guest: $0["guest"] as? Bool ?? false)
+                   expired: $0["expired"] as? Bool ?? false, guest: guest,
+                   backup: $0["backup"] as? Bool ?? !guest)
     }
     s.folders = (o["folders"] as? [[String: Any]] ?? []).compactMap {
       guard let i = $0["id"] as? String, let l = $0["label"] as? String, let p = $0["path"] as? String else { return nil }
-      return Folder(id: i, label: l, path: p)
+      var f = Folder(id: i, label: l, path: p)
+      f.backup = $0["backup"] as? Bool ?? false
+      f.limit = ($0["limit"] as? NSNumber)?.int64Value ?? 0
+      f.reserve = ($0["reserve"] as? NSNumber)?.int64Value ?? 0
+      f.used = ($0["used"] as? NSNumber)?.int64Value ?? 0
+      f.room = ($0["room"] as? NSNumber)?.int64Value ?? 0
+      f.indexed = $0["indexed"] as? Bool ?? false
+      return f
     }
     s.qr = o["qr"] as? String ?? ""
     s.qrLibrary = o["qr_library"] as? String ?? ""
@@ -300,9 +320,36 @@ final class PhoneStore: ObservableObject {
     "Guest code · access for \(durationText(seconds)) from when it is scanned"
   }
 
+  /// A backup folder's line: its path, sizes, and whether this Mac indexes it (§10b.1, B7).
+  nonisolated static func backupDetail(_ f: Folder) -> String {
+    let sizes = "\(gigabytes(f.used)) of \(gigabytes(f.limit)) GB used, keeps \(gigabytes(f.reserve)) GB free"
+    let indexed = f.indexed
+      ? "Indexed by this Mac: what phones send reaches search after the next scan."
+      : "Not in Local search on this Mac yet: add this folder there so what phones send reaches search."
+    return "\(f.path) · \(sizes). \(indexed)"
+  }
+
+  /// Bytes as GB for the card's fields, "500" or "1.5".
+  nonisolated static func gigabytes(_ bytes: Int64) -> String {
+    let gb = Double(bytes) / 1e9
+    if gb >= 10 { return String(Int(gb.rounded())) }
+    var text = String(format: "%.2f", gb)
+    while text.hasSuffix("0") { text.removeLast() }
+    if text.hasSuffix(".") { text.removeLast() }
+    return text
+  }
+
+  /// "500" or "1,5" (GB) to bytes; nil when it is not a number.
+  nonisolated static func bytes(_ gigabytes: String) -> Int64? {
+    let t = gigabytes.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+    guard let v = Double(t), v >= 0, v < 1e6 else { return nil }
+    return Int64((v * 1e9).rounded())
+  }
+
   /// A phone row's line: "Guest · Until Fri 14:00", "Guest · Expired yesterday", or its key.
   nonisolated static func phoneDetail(_ p: Phone, now: Date = Date()) -> String {
-    let lead = p.guest ? "Guest · " : ""
+    // Backup is said only where it is not the usual: a guest that may back up, a phone that may not.
+    let lead = p.guest ? (p.backup ? "Guest · Backs up · " : "Guest · ") : (p.backup ? "" : "No backup · ")
     guard p.limited, p.expires != 0 else { return lead + "Key \(p.key.prefix(8))" }
     let end = Date(timeIntervalSince1970: TimeInterval(p.expires))
     if p.expired || end <= now {
@@ -368,6 +415,12 @@ struct PhoneAccessSection: View {
   @State private var publicName = ""
   @State private var newLabel = ""
   @State private var newPath = ""
+  @State private var newIsBackup = false
+  @State private var newLimitGB = ""
+  @State private var newReserveGB = "1"
+  @State private var editing: String?  // a backup folder whose sizes are being changed
+  @State private var editLimitGB = ""
+  @State private var editReserveGB = ""
   @State private var confirmRestart = false
   @State private var confirmHandOver = false
   @State private var passphrase = ""
@@ -550,6 +603,13 @@ struct PhoneAccessSection: View {
               if phone.limited {
                 Button(PhoneStore.unlimited) { model.send(["do": "grant", "key": phone.key, "for_s": 0]) }
               }
+              if s.nasHasBackup {
+                Divider()
+                // Phone backup (B2): turning it on adds access (the passphrase, once set); off never needs it.
+                Button(phone.backup ? "Stop backups from this phone" : "Let this phone back up") {
+                  model.send(["do": "phone_backup", "key": phone.key, "on": !phone.backup])
+                }
+              }
             }
             .menuStyle(.borderlessButton).fixedSize()
             .disabled(!s.busy.isEmpty || !s.nasHasFeatures)
@@ -678,12 +738,44 @@ struct PhoneAccessSection: View {
   private var folders: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       ForEach(s.folders) { f in
-        SettingsRow(title: f.label, detail: f.path, labelsContent: false) {
-          if !f.isCatalogue {
-            SettingsButton(title: "Stop sharing") { model.send(["do": "remove_folder", "id": f.id]) }
+        SettingsRow(title: f.backup ? "\(f.label) · phone backup" : f.label,
+                    detail: f.backup ? PhoneStore.backupDetail(f) : f.path, labelsContent: false) {
+          HStack(spacing: MVTheme.space(8)) {
+            if f.backup {
+              SettingsButton(title: "Change limit") {
+                editing = f.id
+                editLimitGB = PhoneStore.gigabytes(f.limit)
+                editReserveGB = PhoneStore.gigabytes(f.reserve)
+              }
               .disabled(!s.busy.isEmpty)
-              .accessibilityLabel("Stop sharing \(f.label)")
+              .accessibilityLabel("Change the storage limit of \(f.label)")
+            }
+            if !f.isCatalogue {
+              SettingsButton(title: "Stop sharing") { model.send(["do": "remove_folder", "id": f.id]) }
+                .disabled(!s.busy.isEmpty)
+                .accessibilityLabel("Stop sharing \(f.label)")
+            }
           }
+        }
+        if editing == f.id {
+          HStack(spacing: MVTheme.space(8)) {
+            Text("Limit").foregroundStyle(MVTheme.body)
+            TextField("GB", text: $editLimitGB).textFieldStyle(.roundedBorder).frame(width: 70)
+              .accessibilityLabel("Storage limit in gigabytes")
+            Text("GB, keep free").foregroundStyle(MVTheme.body)
+            TextField("GB", text: $editReserveGB).textFieldStyle(.roundedBorder).frame(width: 60)
+              .accessibilityLabel("Free space to keep on the NAS, in gigabytes")
+            Text("GB").foregroundStyle(MVTheme.body)
+            SettingsButton(title: "Save") {
+              if let l = PhoneStore.bytes(editLimitGB), l > 0, let r = PhoneStore.bytes(editReserveGB) {
+                model.send(["do": "set_backup", "id": f.id, "limit": String(l), "reserve": String(r)])
+              }
+              editing = nil
+            }
+            .disabled((PhoneStore.bytes(editLimitGB) ?? 0) <= 0 || PhoneStore.bytes(editReserveGB) == nil)
+            SettingsButton(title: "Cancel") { editing = nil }
+          }
+          .font(MVTheme.font(12))
         }
       }
       HStack(spacing: MVTheme.space(8)) {
@@ -694,15 +786,45 @@ struct PhoneAccessSection: View {
           .accessibilityLabel("Path of the new shared folder on the NAS")
         SettingsButton(title: "Add") {
           let label = newLabel.isEmpty ? PhoneStore.shareLabel(forPath: newPath) : newLabel
-          model.send(["do": "add_folder", "label": label, "path": newPath])
+          var request: [String: Any] = ["do": "add_folder", "label": label, "path": newPath]
+          if newIsBackup, let l = PhoneStore.bytes(newLimitGB), let r = PhoneStore.bytes(newReserveGB) {
+            request["backup"] = "1"
+            request["limit"] = String(l)
+            request["reserve"] = String(r)
+          }
+          model.send(request)
           newLabel = ""
           newPath = ""
+          newIsBackup = false
         }
-        .disabled(!s.busy.isEmpty || !newPath.hasPrefix("/") || PhoneStore.shareLabel(forPath: newPath).isEmpty)
+        .disabled(!s.busy.isEmpty || !newPath.hasPrefix("/") || PhoneStore.shareLabel(forPath: newPath).isEmpty
+                  || (newIsBackup && ((PhoneStore.bytes(newLimitGB) ?? 0) <= 0 || PhoneStore.bytes(newReserveGB) == nil)))
         .accessibilityLabel("Add the shared folder")
       }
       .font(MVTheme.font(12))
-      .padding(MVTheme.space(12))
+      .padding(.horizontal, MVTheme.space(12)).padding(.top, MVTheme.space(12))
+      HStack(spacing: MVTheme.space(8)) {
+        Toggle("Phones back up to this folder", isOn: $newIsBackup)
+          .toggleStyle(.checkbox)
+          .disabled(!s.nasHasBackup)
+          .help(s.nasHasBackup ? "" : "Update the NAS service to use this")
+          .accessibilityLabel("Phones back up their photos to this folder")
+        if newIsBackup {
+          Text("Limit").foregroundStyle(MVTheme.body)
+          TextField("GB", text: $newLimitGB).textFieldStyle(.roundedBorder).frame(width: 70)
+            .accessibilityLabel("Storage limit in gigabytes")
+          Text("GB, keep free").foregroundStyle(MVTheme.body)
+          TextField("GB", text: $newReserveGB).textFieldStyle(.roundedBorder).frame(width: 60)
+            .accessibilityLabel("Free space to keep on the NAS, in gigabytes")
+          Text("GB").foregroundStyle(MVTheme.body)
+        }
+      }
+      .font(MVTheme.font(12))
+      .padding(.horizontal, MVTheme.space(12)).padding(.bottom, MVTheme.space(12))
+      .onChange(of: newIsBackup) { _, on in
+        // §10b.1 B5: a suggestion the owner changes; the service refuses past what is really free.
+        if on && newLimitGB.isEmpty { newLimitGB = "1000" }
+      }
     }
   }
 
