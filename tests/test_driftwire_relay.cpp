@@ -1775,7 +1775,14 @@ TEST_CASE("driftwire tls: the Tunnel's Look like a web site switch goes through 
   // Off again: the plain port.
   eng.on_event("tunnel_tls", 2, "false");
   REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
-  // The proxy restarts on the same port: until it listens again a connect is
-  // refused, so probe without a REQUIRE (one inside eventually ends the test).
-  REQUIRE(eventually([&] { return try_curl_connect(pp, "127.0.0.1:" + std::to_string(echo.port())); }));
+  // The proxy restarts: on the same port when it can be had again, else on
+  // one the OS picks, so follow the address the window shows. Until it
+  // listens a connect is refused: probe without a REQUIRE (one inside
+  // eventually ends the test).
+  REQUIRE(eventually([&] {
+    const auto at = eng.snapshot().tunnel_address;
+    if (at.size() <= 10) return false;
+    const auto now = static_cast<std::uint16_t>(std::stoi(at.substr(10)));
+    return try_curl_connect(now, "127.0.0.1:" + std::to_string(echo.port()));
+  }));
 }
