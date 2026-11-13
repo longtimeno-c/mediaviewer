@@ -781,4 +781,92 @@ std::string build_tree(const view& v) {
   return w.take();
 }
 
+namespace {
+// A device name in a menu line: at most 60 bytes, cut at a character.
+std::string menu_name(const std::string& name) {
+  if (name.size() <= 60) return name;
+  std::size_t n = 60;
+  while (n > 0 && (static_cast<unsigned char>(name[n]) & 0xC0) == 0x80) --n;
+  return name.substr(0, n) + "\xE2\x80\xA6";
+}
+
+std::string percent_text(std::uint64_t done, std::uint64_t total) {
+  if (total == 0) return {};
+  const auto pct = static_cast<unsigned>(std::min<std::uint64_t>(100, done * 100 / total));
+  return " \xC2\xB7 " + std::to_string(pct) + "%";
+}
+
+void menu_text(writer& w, const std::string& label) {
+  w.begin_object().key("kind").string("text").key("label").string(label).end_object();
+}
+void menu_row(writer& w, const char* kind, const char* id, const std::string& label) {
+  w.begin_object().key("kind").string(kind).key("id").string(id).key("label").string(label).end_object();
+}
+void menu_toggle(writer& w, const char* id, const std::string& label, bool value) {
+  w.begin_object().key("kind").string("toggle").key("id").string(id).key("label").string(label);
+  w.key("value").boolean(value).end_object();
+}
+void menu_separator(writer& w) { w.begin_object().key("kind").string("separator").end_object(); }
+}  // namespace
+
+std::string build_menu(const view& v) {
+  writer w;
+  w.begin_object().key("items").begin_array();
+  // What is happening now, and Cancel while it can be cancelled.
+  bool shown = false, cancel_out = false, cancel_in = false;
+  const std::string out_peer = menu_name(v.out_peer), in_peer = menu_name(v.in_peer);
+  switch (v.in) {
+    case view::in_phase::connecting:
+      menu_text(w, in_peer + " wants to send you files");
+      shown = true;
+      break;
+    case view::in_phase::asking:
+      menu_text(w, in_peer + " wants to send you " + count_text(v.in_count, v.in_total));
+      shown = true;
+      break;
+    case view::in_phase::receiving:
+      menu_text(w, v.in_reconnecting ? "Reconnecting to " + in_peer + "\xE2\x80\xA6"
+                                     : "Receiving from " + in_peer + percent_text(v.in_bytes, v.in_total));
+      shown = cancel_in = true;
+      break;
+    default:
+      break;
+  }
+  const std::string to = out_peer.empty() ? std::string("a code") : out_peer;
+  switch (v.out) {
+    case view::out_phase::waiting_wifi:
+    case view::out_phase::connecting:
+    case view::out_phase::reaching:
+      menu_text(w, "Connecting to " + to + "\xE2\x80\xA6");
+      shown = cancel_out = true;
+      break;
+    case view::out_phase::confirming:
+    case view::out_phase::naming:
+      menu_text(w, "Finish in Driftwire to send to " + to);
+      shown = cancel_out = true;
+      break;
+    case view::out_phase::waiting:
+      menu_text(w, "Waiting for " + to + " to accept");
+      shown = cancel_out = true;
+      break;
+    case view::out_phase::sending:
+      menu_text(w, v.out_reconnecting ? "Reconnecting to " + to + "\xE2\x80\xA6"
+                                      : "Sending to " + to + percent_text(v.out_bytes, v.out_total));
+      shown = cancel_out = true;
+      break;
+    default:
+      break;
+  }
+  if (cancel_out) menu_row(w, "button", "out_cancel", "Cancel Sending");
+  if (cancel_in) menu_row(w, "button", "in_cancel", "Cancel Receiving");
+  if (shown) menu_separator(w);
+  menu_row(w, "files", "send_files", "Send Files\xE2\x80\xA6");
+  menu_separator(w);
+  menu_toggle(w, "receiving", "Receive from Nearby", v.receiving);
+  menu_toggle(w, "internet", "Send and Receive over the Internet", v.internet);
+  menu_toggle(w, "background", kBackgroundLabel, v.background);
+  w.end_array().end_object();
+  return w.take();
+}
+
 }  // namespace mv::driftwire

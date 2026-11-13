@@ -32,6 +32,12 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
 
   private func assetID(_ id: MediaID) -> Int64? { Int64(id.raw) }
 
+  /// The JPEG-512 if it is in memory, and nothing slower: what a grid tile shown before paints in
+  /// its first frame.
+  public func memoryImage(for id: MediaID) -> UIImage? {
+    memory.object(library: connection.libraryID, generation: id.catalogue, id: id.raw)
+  }
+
   public func cachedImage(for id: MediaID) -> UIImage? {
     guard let asset = assetID(id) else { return nil }
     let library = connection.libraryID

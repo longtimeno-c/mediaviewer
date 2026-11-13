@@ -108,6 +108,27 @@ final class ScrollHitchTests: XCTestCase {
     }
   }
 
+  /// Typing a search a letter at a time over the 20,000-item fixture: each key brings a new answer,
+  /// so this is the grid going from one answer to the next (the owner's flicker, 2026-11-12).
+  func testSearchTypingHitches() throws {
+    let app = launched("search.recents")
+    let field = app.searchFields.firstMatch
+    XCTAssertTrue(field.waitForExistence(timeout: 30))
+    XCTAssertTrue(app.staticTexts["frame-stats"].waitForExistence(timeout: 10))
+    field.tap()
+    sleep(2)
+    try assertRunsAtFullRate(app)
+    let queries = ["boats at sunset", "mountain lake", "beach", "snow in the city", "forest"]
+    var round = 0
+    measure(metrics: metrics(app), options: options) {
+      let query = queries[round % queries.count]
+      round += 1
+      if field.buttons["Clear text"].exists { field.buttons["Clear text"].tap() }
+      for letter in query { field.typeText(String(letter)); usleep(120_000) }
+      usleep(800_000)
+    }
+  }
+
   func testViewerPagingHitches() throws { try pageThrough("viewer") }
 
   /// No full-size pictures arrive here, so the difference from the test above is what they cost.
