@@ -4,7 +4,9 @@
 // owner 2026-11-12): the NAS folder, what the phone searches, the service on
 // the NAS (claim, addresses, named folders), the code a phone scans with its
 // check code, the paired phones, and handing the library to or from another
-// computer. Works with Local search or without it. The work is the app's own
+// computer. Set up the service… offers this Mac, a Synology or something else
+// (docs/plans/self-hosted.md §16): this Mac through the installed driftwire
+// program, on the link's thread. Works with Local search or without it. The work is the app's own
 // thread's (phone/link.h, through mv_chrome_phone_*); this only asks and
 // watches. Keys and addresses shown here never reach a log (rule 6). The
 // Windows twin is IslandHost.Phone.cs, with the same words (Shared/PhoneWords.cs).
@@ -65,7 +67,26 @@ final class PhoneStore: ObservableObject {
     var published: Int64 = 0
     var assets: Int64 = 0
   }
+  /// This computer as the server (docs/plans/self-hosted.md slice 6): what the
+  /// host's own files say, read by the link thread (phone/self_host.h).
+  struct Host: Equatable {
+    var installed = false  // the driftwire program is on this Mac
+    var setUp = false      // a folder is shared
+    var running = false
+    var atLogin = false
+    var servicePort: Int64 = 0
+    var relayPort: Int64 = 0
+    var configuredPort: Int64 = 0
+    var folders: Int64 = 0
+    var offline: Int64 = 0
+    var name = ""
+    var duckdns = ""
+    var keepers: [String] = []  // the router's and DuckDNS's lines, as the host wrote them
+  }
   struct State: Equatable {
+    var host: Host?
+    var hostStep = ""  // "share", "name", "start", "claim" while a setup runs
+    var hostSaid = ""  // the driftwire program's own words for a step that failed
     var starting = false
     var secondary = false
     var driftwire = true
@@ -115,7 +136,7 @@ final class PhoneStore: ObservableObject {
   /// While Settings shows the card: read now and every half second (a small
   /// JSON from memory; nothing touches the network on this thread).
   func appeared() {
-    poll()
+    send(["do": "host_status"])  // whether this Mac hosts the server: three small files, on the link's thread
     guard timer == nil else { return }
     let t = Timer(timeInterval: 0.5, repeats: true) { _ in
       Task { @MainActor in PhoneStore.shared.poll() }
@@ -204,6 +225,24 @@ final class PhoneStore: ObservableObject {
     s.lockedUntil = (o["locked_until"] as? NSNumber)?.int64Value ?? 0
     s.qrForSeconds = (o["qr_for_s"] as? NSNumber)?.int64Value ?? 0
     s.relay = o["relay"] as? String ?? ""
+    if let h = o["host"] as? [String: Any] {
+      var host = Host()
+      host.installed = h["installed"] as? Bool ?? false
+      host.setUp = h["set_up"] as? Bool ?? false
+      host.running = h["running"] as? Bool ?? false
+      host.atLogin = h["at_login"] as? Bool ?? false
+      host.servicePort = (h["service_port"] as? NSNumber)?.int64Value ?? 0
+      host.relayPort = (h["relay_port"] as? NSNumber)?.int64Value ?? 0
+      host.configuredPort = (h["configured_port"] as? NSNumber)?.int64Value ?? 0
+      host.folders = (h["folders"] as? NSNumber)?.int64Value ?? 0
+      host.offline = (h["offline"] as? NSNumber)?.int64Value ?? 0
+      host.name = h["name"] as? String ?? ""
+      host.duckdns = h["duckdns"] as? String ?? ""
+      host.keepers = h["keepers"] as? [String] ?? []
+      s.host = host
+    }
+    s.hostStep = o["host_step"] as? String ?? ""
+    s.hostSaid = o["host_said"] as? String ?? ""
     return s
   }
 
@@ -212,6 +251,19 @@ final class PhoneStore: ObservableObject {
           let text = String(data: data, encoding: .utf8) else { return }
     _ = mv_chrome_phone_request(text)
     poll()
+  }
+
+  /// A folder or drive on this Mac for the host to share ("This computer").
+  func chooseHostFolder(backup: Bool) -> String? {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.canCreateDirectories = true
+    panel.prompt = "Share"
+    panel.message = backup ? "Choose a folder on this Mac for phones to back up into."
+                           : "Choose a folder or drive on this Mac for your phone to read."
+    guard panel.runModal() == .OK, let url = panel.url else { return nil }
+    return url.path
   }
 
   func chooseFolder() {
@@ -256,6 +308,19 @@ final class PhoneStore: ObservableObject {
     case "no_passphrase": return "This server has no passphrase yet. Enter a new one twice to choose it."
     case "slow_down": return "Try again in a moment."
     case "wrong_service": return "That is a different server from the one this computer claimed."
+    case "no_driftwire_program": return PhoneStore.installLine
+    case "host_no_folders": return "Choose a folder for your phone to read."
+    case "host_no_library": return "Choose a folder for your phone to read, not only a backup folder."
+    case "host_twice": return "That folder is in the list twice."
+    case "host_bad_name": return "That isn't a DuckDNS name. Use the name you chose there, like home or home.duckdns.org."
+    case "host_bad_token": return "That isn't a DuckDNS token. Copy it from duckdns.org; it looks like 1a2b3c4d-…"
+    case "host_share": return state.hostSaid.isEmpty ? "The folder couldn't be shared." : "Couldn't share it: \(state.hostSaid)"
+    case "host_name": return state.hostSaid.isEmpty ? "DuckDNS didn't take the name." : "DuckDNS: \(state.hostSaid)"
+    case "host_start":
+      return state.hostSaid.isEmpty ? "The server didn't start." : "The server didn't start: \(state.hostSaid)"
+    case "host_not_listening": return "The server started but isn't answering yet. Another program may be using its port."
+    case "host_no_network": return "Claimed, but this Mac isn't on a network, so a phone can't reach it yet."
+    case "host_failed": return "The driftwire program couldn't be run."
     case "locked_out":
       return "Too many tries. Try again at \(Self.clock(state.lockedUntil)), or reset it on the server with driftwire serve passphrase reset."
     case "nas_too_old":
@@ -371,6 +436,15 @@ final class PhoneStore: ObservableObject {
     case "unlock": return "Unlocking"
     case "set_passphrase": return "Setting the passphrase"
     case "grant": return "Changing the phone's access"
+    case "host_start": return "Starting the server"
+    case "host_setup":
+      switch state.hostStep {
+      case "share": return "Sharing the folders"
+      case "name": return "Naming it on DuckDNS"
+      case "start": return "Starting the server"
+      case "claim": return "Claiming it"
+      default: return "Setting up this Mac"
+      }
     default: return nil
     }
   }
@@ -382,6 +456,25 @@ final class PhoneStore: ObservableObject {
     case "unresolved": return "This name doesn't resolve yet."
     default: return nil
     }
+  }
+
+  /// How to get the driftwire program, which runs the server (the app does not carry it).
+  nonisolated static let installLine =
+    "This Mac needs the driftwire program to be the server. Install it once with brew install longtimeno-c/tap/driftwire (no administrator), then choose Check again."
+
+  /// The status row's line for a server on this Mac: never a path or an address.
+  nonisolated static func hostDetail(_ h: Host) -> String {
+    guard h.running else {
+      return h.atLogin ? "Not running. It starts when you log in; Start runs it now."
+                       : "Not running, and not set to start at login. Start runs it and keeps it starting at login."
+    }
+    var parts = ["Running"]
+    if h.servicePort > 0 { parts.append("port \(h.servicePort)") } else { parts.append("not listening yet") }
+    if !h.duckdns.isEmpty { parts.append("\(h.duckdns).duckdns.org") }
+    if h.offline > 0 { parts.append(h.offline == 1 ? "1 drive not connected" : "\(h.offline) drives not connected") }
+    var line = parts.joined(separator: " · ")
+    if !h.keepers.isEmpty { line += "\n" + h.keepers.joined(separator: "\n") }
+    return line
   }
 
   /// The phone's search, said once: smart with Local search, by name and tag without.
@@ -434,7 +527,21 @@ struct PhoneAccessSection: View {
   @State private var relayEditing = false
   @State private var relayAddress = ""
   @State private var relayKey = ""
+  // Set up the service… (docs/plans/self-hosted.md §8): three supported ways, none preferred over the others.
+  @State private var setupOpen = false
+  @State private var setupKind: SetupKind = .thisComputer
+  @State private var hostFolders: [HostFolder] = []
+  @State private var duckName = ""
+  @State private var duckToken = ""
   private var s: PhoneStore.State { model.state }
+
+  enum SetupKind: Hashable { case thisComputer, synology, other }
+  struct HostFolder: Identifiable, Equatable {
+    let path: String
+    let backup: Bool
+    var id: String { path }
+    var label: String { backup ? "Phone backup" : PhoneStore.shareLabel(forPath: path) }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
@@ -472,6 +579,148 @@ struct PhoneAccessSection: View {
 
   @ViewBuilder private var content: some View {
     if let line = model.busyText { ProgressLine(verb: line, fraction: nil, timed: false) }
+    if let h = s.host, h.setUp { hostRow(h) }
+    // Until a service is claimed; and again after a setup on this Mac that stopped part way.
+    if !s.claimed && (s.folder.isEmpty || (s.host?.setUp ?? false)) {
+      setUp
+    } else {
+      library
+    }
+    if let e = model.errorText {
+      Text(e).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  // MARK: set up the service (this computer, a Synology, something else)
+
+  @ViewBuilder private var setUp: some View {
+    SettingsRow(title: "Your server",
+                detail: "Where your phone reads your library: this Mac, a Synology, or another computer you run. Each works the same way.",
+                labelsContent: false) {
+      if !setupOpen {
+        SettingsButton(title: "Set up the service…") {
+          setupOpen = true
+          model.send(["do": "host_status"])
+        }
+      }
+    }
+    if setupOpen {
+      Picker("Where", selection: $setupKind) {
+        Text("This computer").tag(SetupKind.thisComputer)
+        Text("A Synology").tag(SetupKind.synology)
+        Text("Something else").tag(SetupKind.other)
+      }
+      .pickerStyle(.segmented).labelsHidden()
+      .padding(.horizontal, MVTheme.space(12))
+      .accessibilityLabel("Where the service runs")
+      switch setupKind {
+      case .thisComputer: thisComputer
+      case .synology:
+        note("Install the MediaViewer package on your Synology: Package Center → Manual Install, choose the file, accept the warning about a package not from Synology, and pick the shared folder. Then choose that folder below and claim it.")
+          .padding(.horizontal, MVTheme.space(12))
+        library
+      case .other:
+        note("Run driftwire serve on the computer that keeps your library (driftwire serve init, then driftwire serve). Then choose its folder below and claim it.")
+          .padding(.horizontal, MVTheme.space(12))
+        library
+      }
+    }
+  }
+
+  @ViewBuilder private var thisComputer: some View {
+    if !(s.host?.installed ?? false) {
+      SettingsRow(title: "The driftwire program", detail: PhoneStore.installLine, labelsContent: false) {
+        SettingsButton(title: "Check again") { model.send(["do": "host_status"]) }
+          .disabled(!s.busy.isEmpty)
+      }
+    } else {
+      ForEach(hostFolders) { f in
+        SettingsRow(title: f.backup ? "\(f.label) · phones back up here" : f.label, detail: f.path, labelsContent: false) {
+          SettingsButton(title: "Remove") { hostFolders.removeAll { $0.id == f.id } }
+            .disabled(!s.busy.isEmpty)
+            .accessibilityLabel("Don't share \(f.label)")
+        }
+      }
+      SettingsRow(title: "Folders to share",
+                  detail: hostFolders.isEmpty
+                    ? "A folder or a whole drive your phone reads, and a folder phones back up into if you want one."
+                    : "Your phone reads these. The first one holds the library.",
+                  labelsContent: false) {
+        HStack(spacing: MVTheme.space(8)) {
+          SettingsButton(title: "Add folder…") { addHostFolder(backup: false) }
+            .accessibilityLabel("Add a folder or drive to share")
+          SettingsButton(title: "Add backup folder…") { addHostFolder(backup: true) }
+            .accessibilityLabel("Add a folder for phones to back up into")
+        }
+        .disabled(!s.busy.isEmpty)
+      }
+      SettingsRow(title: "DuckDNS name",
+                  detail: "Optional, free at duckdns.org: how your phone finds this Mac away from home. DuckDNS learns your home's address, nothing about your files.") {
+        TextField("home.duckdns.org", text: $duckName)
+          .textFieldStyle(.roundedBorder).frame(width: 240).font(MVTheme.font(12))
+          .accessibilityLabel("DuckDNS name")
+      }
+      if !duckNameTyped.isEmpty {
+        secure("DuckDNS token", detail: "From your duckdns.org page. Kept by the server on this Mac, never shown again.", text: $duckToken)
+          .accessibilityLabel("DuckDNS token")
+      }
+      SettingsRow(title: "Set up this Mac",
+                  detail: "It runs while you're logged in, starts by itself when you log in, and keeps this Mac awake while it serves (the display may still sleep). No administrator.",
+                  labelsContent: false) {
+        SettingsButton(title: "Set up") { setUpThisComputer() }
+          .disabled(!hostReady)
+          .accessibilityLabel("Set up this Mac as your server")
+      }
+    }
+  }
+
+  private var hostReady: Bool {
+    s.busy.isEmpty && hostFolders.contains { !$0.backup } && (duckNameTyped.isEmpty || !duckToken.isEmpty)
+  }
+
+  private var duckNameTyped: String { duckName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+  private func addHostFolder(backup: Bool) {
+    guard let path = model.chooseHostFolder(backup: backup), !hostFolders.contains(where: { $0.path == path }) else { return }
+    hostFolders.append(HostFolder(path: path, backup: backup))
+  }
+
+  private func setUpThisComputer() {
+    guard hostReady else { return }
+    // The folders phones read first: the first of them holds the library.
+    let ordered = hostFolders.filter { !$0.backup } + hostFolders.filter { $0.backup }
+    var request: [String: Any] = [
+      "do": "host_setup",
+      "folders": ordered.map { f -> [String: Any] in
+        var o: [String: Any] = ["path": f.path, "backup": f.backup]
+        if f.backup { o["label"] = f.label }
+        return o
+      },
+    ]
+    if !duckNameTyped.isEmpty {
+      request["duckdns"] = duckNameTyped
+      request["duckdns_token"] = duckToken
+    }
+    model.send(request)
+    duckToken = ""  // handed on; the server keeps it, this Mac doesn't
+  }
+
+  // "This computer · Running · port 7878 · home.duckdns.org", and Start when it isn't.
+  private func hostRow(_ h: PhoneStore.Host) -> some View {
+    SettingsRow(title: h.name.isEmpty ? "This Mac is your server" : "This Mac is your server · \(h.name)",
+                detail: PhoneStore.hostDetail(h), labelsContent: false) {
+      if !h.running {
+        SettingsButton(title: "Start") { model.send(["do": "host_start"]) }
+          .disabled(!s.busy.isEmpty)
+          .accessibilityLabel("Start the server on this Mac")
+      }
+    }
+  }
+
+  // MARK: the library on the server
+
+  @ViewBuilder private var library: some View {
     SettingsRow(title: "Folder on your server",
                 detail: s.folder.isEmpty ? "Where your phone reads your library. Nothing is written there until you choose it." : s.folder,
                 labelsContent: false) {
@@ -488,10 +737,6 @@ struct PhoneAccessSection: View {
       if s.otherPublisher { otherPublisher }
       if !s.askingName.isEmpty { asking }
       if !s.claimed { claim } else { claimed }
-    }
-    if let e = model.errorText {
-      Text(e).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
@@ -919,6 +1164,7 @@ struct PhoneAccessSection: View {
   }
 
   private func forgetSecrets() {
+    duckToken = ""
     relayKey = ""
     relayEditing = false
     passphrase = ""

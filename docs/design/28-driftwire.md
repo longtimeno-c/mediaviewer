@@ -1799,8 +1799,12 @@ leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the
   5, then every 15 minutes, a plain refusal three times at most), and the router keeper the outside ports a phone and the laptop
   dial (`service_outside_port`, `relay_outside_port`, `tls_outside_port`). In the test build
   (`loopback_only`) both stay idle and say so, unless built for a stand-in.
-- **Not yet:** the desktop's "This computer" (slice 6), watching for a volume arriving (the minute's
-  recheck only).
+- **From the desktop** (slice 6, [plan](../plans/self-hosted.md) §17): Settings → Phone access →
+  Set up the service… → **This computer** runs the installed program's `host share` and
+  `host start-at-login on` on the phone link's thread, writes the DuckDNS name where slice 5's
+  `host name duckdns` does, claims the host over loopback and shows a code; its status row reads `state.json` and
+  `host.lock`. The app does not carry the program ([12](12-decision-log.md#driftwire), 2026-11-14).
+- **Not yet:** watching for a volume arriving (the minute's recheck only).
 - **Tested** (`"[host]"`, loopback only): the arguments, `host.json`, sharing rules, the three entries'
   texts and the files written into a home of the test's own (the OS's tools never run in a test), the
   drive checks (`/dev` as a real mount point), the service process in-process (relay alone, a share

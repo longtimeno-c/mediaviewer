@@ -131,6 +131,76 @@ public class PhoneWordsTests
         Assert.Null(PhoneWords.ErrorText(""));
     }
 
+    // This PC as the server (docs/plans/self-hosted.md slice 6): the same words as the Mac's.
+    [Fact]
+    public void TheSetupWordsAreTheMacs()
+    {
+        string swift = Repo.Read("src.swift", "MediaViewerChrome", "Sources", "MediaViewerChrome", "PhoneAccessView.swift");
+        var said = new List<string?>();
+        foreach (string e in new[] { "host_no_folders", "host_no_library", "host_twice", "host_bad_name", "host_bad_token",
+                                      "host_share", "host_name", "host_start", "host_not_listening", "host_no_network",
+                                      "host_failed" })
+            said.Add(PhoneWords.ErrorText(e));
+        foreach (string step in new[] { "share", "name", "start", "claim", "" })
+            said.Add(PhoneWords.BusyText(new PhoneLinkState { Busy = "host_setup", HostStep = step }));
+        said.Add(PhoneWords.BusyText("host_start"));
+        said.Add(PhoneWords.HostDetail(new PhoneHost { AtLogin = true }));
+        said.Add(PhoneWords.HostDetail(new PhoneHost()));
+        foreach (string? text in said)
+        {
+            Assert.NotNull(text);
+            Assert.Contains("\"" + text!.Replace("this PC", "this Mac") + "\"", swift);
+        }
+        // Built from parts: the parts, as Swift writes them.
+        Assert.Contains("\"Couldn't share it: \\(state.hostSaid)\"", swift);
+        Assert.Contains("\"DuckDNS: \\(state.hostSaid)\"", swift);
+        Assert.Contains("\"The server didn't start: \\(state.hostSaid)\"", swift);
+        foreach (string title in new[] { "This computer", "A Synology", "Something else", "Set up the service…", "Folders to share",
+                                         "DuckDNS name", "DuckDNS token", "Add folder…", "Add backup folder…", "Check again" })
+            Assert.Contains("\"" + title + "\"", swift);
+        // The install line is each OS's own: Homebrew on the Mac, install.ps1 here.
+        Assert.Contains("install.ps1 | iex", PhoneWords.InstallLine);
+        Assert.Contains("brew install longtimeno-c/tap/driftwire", swift);
+    }
+
+    [Fact]
+    public void TheHostIsReadAndTheSetupAskedForInOneRequest()
+    {
+        PhoneLinkState s = PhoneWords.ParseLink("""
+            {"error":"host_share","host_step":"","host_said":"not a folder: E:\\Gone",
+             "host":{"installed":true,"set_up":true,"running":true,"at_login":true,"service_port":7878,"relay_port":47614,
+                     "configured_port":7878,"folders":2,"offline":1,"name":"Studio","duckdns":"home",
+                     "keepers":["router: port 7878 mapped (UPnP)"]}}
+            """)!;
+        Assert.NotNull(s.Host);
+        PhoneHost h = s.Host!;
+        Assert.True(h.Running);
+        Assert.Equal(7878, h.ServicePort);
+        Assert.Equal("Running · port 7878 · home.duckdns.org · 1 drive not connected\nrouter: port 7878 mapped (UPnP)",
+                     PhoneWords.HostDetail(h));
+        Assert.Equal("Couldn't share it: not a folder: E:\\Gone", PhoneWords.ErrorText(s, _ => ""));
+        Assert.True(s.SameAs(PhoneWords.ParseLink("""
+            {"error":"host_share","host_step":"","host_said":"not a folder: E:\\Gone",
+             "host":{"installed":true,"set_up":true,"running":true,"at_login":true,"service_port":7878,"relay_port":47614,
+                     "configured_port":7878,"folders":2,"offline":1,"name":"Studio","duckdns":"home",
+                     "keepers":["router: port 7878 mapped (UPnP)"]}}
+            """)!));
+        Assert.False(s.SameAs(s with { Host = h with { Running = false } }));
+        Assert.Null(PhoneWords.ParseLink("{}")!.Host);
+
+        var folders = new List<PhoneHostFolder> { new(@"D:\Backup", true), new(@"E:\Photos", false) };
+        Assert.Equal("Phone backup", folders[0].Label);
+        Assert.Equal("Photos", folders[1].Label);
+        // The folders phones read first; the token only beside a name.
+        Assert.Equal("""{"do":"host_setup","folders":[{"path":"E:\\Photos","backup":false},{"path":"D:\\Backup","backup":true,"label":"Phone backup"}]}""",
+                     PhoneWords.HostSetupRequest(folders, "", ""));
+        Assert.Contains("\"duckdns\":\"home\",\"duckdns_token\":\"t\"", PhoneWords.HostSetupRequest(folders, "home", "t"));
+        Assert.True(PhoneWords.HostReady(folders, "", "", false));
+        Assert.False(PhoneWords.HostReady(folders, "home", "", false));
+        Assert.False(PhoneWords.HostReady(folders, "", "", true));
+        Assert.False(PhoneWords.HostReady(new[] { new PhoneHostFolder(@"D:\B", true) }, "", "", false));
+    }
+
     [Fact]
     public void ThePassphraseAndTimedAccessAreRead()
     {

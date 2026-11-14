@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "core/result.h"
+#include "phone/self_host.h"
 #include "wire/secrets.h"
 
 namespace mv::phone {
@@ -69,6 +70,16 @@ class link {
     // The app's link lives to the end of the process: stop() lets a request
     // still waiting on the NAS finish on its own instead of joining it.
     bool detach_on_stop = false;
+    // This computer as the server (phone/self_host.h, docs/plans/self-hosted.md
+    // slice 6): where the installed driftwire is. Empty: self_host::find().
+    std::function<self_host::where()> self_host;
+    // Starts the host and keeps it starting at login. Empty: the program's own
+    // `host start-at-login on` (the tests start a test build of the host instead).
+    std::function<expected(const self_host::where&)> start_host;
+    // This computer's address on its own network, for the phone's code.
+    // Empty: the address on the route to the default gateway.
+    std::function<std::string()> lan_address;
+    int host_wait_ms = 30000;  // for the started host to listen
   };
 
   explicit link(options o);
@@ -87,7 +98,15 @@ class link {
   //   unlock {passphrase}, lock, set_passphrase {passphrase}, grant {key, for_s (0: no limit)}.
   // Phone backup (docs/plans/mobile.md §10b.1): add_folder also takes {backup:"1", limit, reserve}
   //   (decimal bytes); set_backup {id, limit, reserve}; phone_backup {key, on} (a phone's grant).
-  // A passphrase is handed to the desk and never kept here or shown in state_json.
+  // This computer as the server (docs/plans/self-hosted.md slice 6), through the
+  // installed driftwire program (phone/self_host.h):
+  //   host_status          read the host's files again (the card's status row)
+  //   host_setup {folders:[{path, label, backup}], duckdns, duckdns_token}
+  //                        shares the folders, names the host on DuckDNS, starts it
+  //                        (and at login), makes the first folder the library's,
+  //                        claims it over loopback, sets its addresses and shows a code
+  //   host_start           starts it again (and at login)
+  // A passphrase or token is handed on and never kept here or shown in state_json.
   [[nodiscard]] expected request(const std::string& request_json);
   // The card's state, one JSON object (docs/plans/phone-in-the-app.md §3). [no-block]
   [[nodiscard]] std::string state_json() const;
@@ -156,6 +175,12 @@ class link {
     // time left from now, not the snapshot (state_json).
     std::chrono::steady_clock::time_point unlocked_until{};
     std::int64_t qr_for_s = 0;  // the code showing is a guest code for this long
+    // This computer as the server: what the host's files said when last read,
+    // the step a setup is at ("share", "name", "start", "claim"; "" when
+    // none runs) and what the program said when a step failed (its own words).
+    self_host::host_status host;
+    bool host_read = false;
+    std::string host_step, host_said;
   };
 
   void loop();
@@ -174,6 +199,11 @@ class link {
   [[nodiscard]] bool indexed_here(const std::string& nas_path) const;
   void choose_folder(const std::string& path);
   void adopt_from_source();
+  // This computer as the server: read its host's files; set it up from the card.
+  void read_host();
+  void host_setup(const std::string& request);
+  [[nodiscard]] self_host::where host_where() const;
+  [[nodiscard]] expected start_host_now(const self_host::where& w);
   [[nodiscard]] result<std::string> route(const char* method, const std::string& json);
   [[nodiscard]] result<std::vector<std::uint8_t>> signing_key(bool make);
   void start_thread_locked();

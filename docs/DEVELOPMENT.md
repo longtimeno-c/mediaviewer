@@ -582,7 +582,14 @@ when loaded, is a catalogue source (its `phone_publish` / `phone_json`). Only th
 runs it. Keys are in the OS store under "MediaViewer Phone access" (Credential Manager sealed with DPAPI
 on Windows, the Keychain on the Mac), copied once from "MediaViewer Local search" and "MediaViewer Driftwire".
 
-Tests, always filtered by tag: `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
+**This computer** (Set up the service…, [self-hosted.md](plans/self-hosted.md) §16) needs the
+`driftwire` program installed (`brew install longtimeno-c/tap/driftwire`, or `install.ps1`); the app finds
+it and runs its `host` commands (`src/phone/self_host.*`). To try the card against a local build, put
+`build/bin/driftwire` on one of the places it looks (`~/.local/bin/driftwire`); remove the login entry
+afterwards with `driftwire host start-at-login off`.
+
+Tests, always filtered by tag: `mv_import_tests "[phone-self-host]"` (the setup against the test build of
+`driftwire host` on loopback), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
 claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
 machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the app's link over
 a Local search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`),

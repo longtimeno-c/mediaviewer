@@ -83,7 +83,7 @@ child_process::~child_process() {
   close_handle(impl_->job);
 }
 
-expected child_process::start(std::string_view exe_utf8, std::span<const std::string> args) {
+expected child_process::start(std::string_view exe_utf8, std::span<const std::string> args, bool stderr_too) {
   if (impl_->process != nullptr) return err(status::internal);
   SECURITY_ATTRIBUTES sa{};
   sa.nLength = sizeof(sa);
@@ -109,7 +109,7 @@ expected child_process::start(std::string_view exe_utf8, std::span<const std::st
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdInput = in_read;
   si.hStdOutput = out_write;
-  si.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
+  si.hStdError = stderr_too ? out_write : ::GetStdHandle(STD_ERROR_HANDLE);
   PROCESS_INFORMATION pi{};
   const BOOL ok = ::CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, TRUE,
                                    CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi);

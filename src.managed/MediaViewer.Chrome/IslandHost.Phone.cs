@@ -5,6 +5,7 @@ using MediaViewer.Shared;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
 
@@ -15,7 +16,9 @@ namespace MediaViewer.Chrome;
 /// owner 2026-11-12), with or without Local search: the NAS folder, what the
 /// phone searches, the service on the NAS (claim, addresses, named folders),
 /// the code a phone scans with its check code, the paired phones and Remove,
-/// and handing the library to or from another computer. The Mac twin is
+/// and handing the library to or from another computer. Set up the service…
+/// offers this PC, a Synology or something else (docs/plans/self-hosted.md §16).
+/// The Mac twin is
 /// PhoneAccessView.swift; the words are Shared/PhoneWords.cs, checked against it.
 /// </summary>
 /// <remarks>
@@ -55,6 +58,12 @@ public static partial class IslandHost
     private static ProgressLine? _phonePublishLine;
     private static Button? _phoneClaim, _phoneAdd;
     private static bool _phoneConfirmRestart, _phoneConfirmHandOver;
+    // Set up the service… (docs/plans/self-hosted.md §8): three supported ways, none preferred.
+    private static bool _phoneSetupOpen;
+    private static int _phoneSetupKind;  // 0 this PC, 1 a Synology, 2 something else
+    private static readonly List<PhoneHostFolder> PhoneHostFolders = new();
+    private static FakeInput? _phoneDuckName, _phoneDuckToken;
+    private static Button? _phoneHostGo;
 
     private static void AddPhoneSettings(StackPanel view)
     {
@@ -88,6 +97,15 @@ public static partial class IslandHost
         _phoneRelayAddress.Changed += PhoneFieldsChanged;
         _phoneRelayKey.Changed += PhoneFieldsChanged;
         _phoneRelayKey.Submitted += SavePhoneRelay;
+        _phoneDuckName = PhoneInput("home.duckdns.org", "DuckDNS name");
+        _phoneDuckToken = PhoneSecret("Token", "DuckDNS token");
+        _phoneDuckName.Changed += () =>
+        {
+            // The token's row comes and goes with the name: draw again when that changes.
+            if ((_phoneDuckName.Text.Trim().Length > 0) != IsInTree(_phoneDuckToken) && _phoneShown is { } shown) ShowPhone(shown);
+            PhoneFieldsChanged();
+        };
+        _phoneDuckToken.Changed += PhoneFieldsChanged;
         _phoneCodeFor = new ComboBox { FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Title), Width = 170 };
         _phoneCodeFor.Items.Add(PhoneWords.Unlimited);
         foreach ((string label, long _) in PhoneWords.Durations) _phoneCodeFor.Items.Add(label);
@@ -124,6 +142,8 @@ public static partial class IslandHost
     private static void RefreshPhone()
     {
         if (_phoneRows is null) return;
+        // Whether this PC hosts the server: three small files, read on the link's thread.
+        _ = PhoneNative.Request("{\"do\":\"host_status\"}");
         PollPhone();
         if (_phoneTimer is null && _dispatcher is not null)
         {
@@ -151,6 +171,7 @@ public static partial class IslandHost
         _phonePassAgain?.SetText("");
         _phoneUnlock?.SetText("");
         _phoneRelayKey?.SetText("");
+        _phoneDuckToken?.SetText("");
         _phoneRelayEditing = false;
         _phoneChanging = false;
         _phoneUnlockWanted = false;
@@ -199,7 +220,7 @@ public static partial class IslandHost
     {
         foreach (FrameworkElement? f in new FrameworkElement?[]
                  { _phoneLocal, _phonePublic, _phoneNewLabel, _phoneNewPath, _phoneNewLimit, _phoneNewReserve, _phonePass, _phonePassAgain, _phoneUnlock,
-                   _phoneRelayAddress, _phoneRelayKey, _phoneCodeFor })
+                   _phoneRelayAddress, _phoneRelayKey, _phoneCodeFor, _phoneDuckName, _phoneDuckToken })
             if (f?.Parent is Panel p) p.Children.Remove(f);
     }
 
@@ -218,6 +239,7 @@ public static partial class IslandHost
         _phoneSetPass = null;
         _phoneUnlockGo = null;
         _phoneRelaySave = null;
+        _phoneHostGo = null;
         bool busy = s.Busy.Length > 0;
         if (!s.OtherPublisher) _phoneConfirmRestart = false;
         if (s.AskingName.Length == 0) _phoneConfirmHandOver = false;
@@ -237,12 +259,178 @@ public static partial class IslandHost
             rows.Children.Add(PhoneNote("This copy of MediaViewer can't keep phone keys."));
             return;
         }
-        if (PhoneWords.BusyText(s.Busy) is string line)
+        if (PhoneWords.BusyText(s) is string line)
         {
             var progress = new ProgressLine();
             progress.Show(line, null);
             rows.Children.Add(progress.Root);
         }
+        if (s.Host is { SetUp: true } host) AddPhoneHostRow(rows, host, busy);
+        // Until a service is claimed; and again after a setup on this PC that stopped part way.
+        if (!s.Claimed && (s.Folder.Length == 0 || s.Host is { SetUp: true })) AddPhoneSetUp(rows, s, busy);
+        else AddPhoneLibrary(rows, s, busy);
+        if (PhoneWords.ErrorText(s, PhoneClock) is string e) rows.Children.Add(PhoneNote(e));
+        // A secret whose row is not drawn holds nothing.
+        if (!IsInTree(_phonePass)) { _phonePass!.SetText(""); _phonePassAgain!.SetText(""); }
+        if (!IsInTree(_phoneUnlock)) _phoneUnlock!.SetText("");
+        if (!IsInTree(_phoneDuckToken)) _phoneDuckToken!.SetText("");
+        PhoneFieldsChanged();
+        RefocusPhone(rows, refocus);
+    }
+
+    // ---- set up the service: this PC, a Synology, something else ----
+
+    private static void AddPhoneSetUp(StackPanel rows, PhoneLinkState s, bool busy)
+    {
+        FrameworkElement open = new Border();
+        if (!_phoneSetupOpen)
+        {
+            Button b = PhoneButton("Set up the service…", () =>
+            {
+                _phoneSetupOpen = true;
+                PhoneRequest(("do", "host_status"));
+                if (_phoneShown is { } shown) ShowPhone(shown);
+            });
+            b.IsEnabled = !busy;
+            open = b;
+        }
+        rows.Children.Add(SettingsRow("Your server",
+            "Where your phone reads your library: this PC, a Synology, or another computer you run. Each works the same way.",
+            open, keepName: true));
+        if (!_phoneSetupOpen) return;
+        var choices = new Grid { ColumnSpacing = Space(4), Margin = Pad(12, 0, 12, 0) };
+        string[] names = { "This computer", "A Synology", "Something else" };
+        for (int i = 0; i < names.Length; ++i)
+        {
+            choices.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            int kind = i;
+            ToggleButton t = SettingsTab(names[i]);
+            // The chosen one lifts (Craft rules: selection is a wash, the ring is the keyboard's).
+            t.Resources["ToggleButtonBackgroundChecked"] = Brush(ChromeColour.HoverWash);
+            t.IsChecked = _phoneSetupKind == i;
+            t.Click += (_, _) =>
+            {
+                _phoneSetupKind = kind;
+                if (_phoneShown is { } shown) ShowPhone(shown);
+            };
+            AutomationProperties.SetName(t, names[i]);
+            TrackPhoneFocus(t, names[i]);
+            Grid.SetColumn(t, i);
+            choices.Children.Add(t);
+        }
+        AutomationProperties.SetName(choices, "Where the service runs");
+        rows.Children.Add(choices);
+        switch (_phoneSetupKind)
+        {
+            case 0:
+                AddPhoneThisComputer(rows, s, busy);
+                break;
+            case 1:
+                rows.Children.Add(PhoneIndented(PhoneNote(
+                    "Install the MediaViewer package on your Synology: Package Center → Manual Install, choose the file, accept the warning about a package not from Synology, and pick the shared folder. Then choose that folder below and claim it.")));
+                AddPhoneLibrary(rows, s, busy);
+                break;
+            default:
+                rows.Children.Add(PhoneIndented(PhoneNote(
+                    "Run driftwire serve on the computer that keeps your library (driftwire serve init, then driftwire serve). Then choose its folder below and claim it.")));
+                AddPhoneLibrary(rows, s, busy);
+                break;
+        }
+    }
+
+    private static FrameworkElement PhoneIndented(FrameworkElement e)
+    {
+        e.Margin = Pad(12, 0, 12, 0);
+        return e;
+    }
+
+    private static void AddPhoneThisComputer(StackPanel rows, PhoneLinkState s, bool busy)
+    {
+        if (s.Host is not { Installed: true })
+        {
+            Button again = PhoneButton("Check again", () => PhoneRequest(("do", "host_status")));
+            again.IsEnabled = !busy;
+            rows.Children.Add(SettingsRow("The driftwire program", PhoneWords.InstallLine, again, keepName: true));
+            return;
+        }
+        foreach (PhoneHostFolder f in PhoneHostFolders.ToList())
+        {
+            Button remove = PhoneButton("Remove", () =>
+            {
+                PhoneHostFolders.Remove(f);
+                if (_phoneShown is { } shown) ShowPhone(shown);
+            }, $"Don't share {f.Label}");
+            remove.IsEnabled = !busy;
+            rows.Children.Add(SettingsRow(f.Backup ? $"{f.Label} · phones back up here" : f.Label, f.Path, remove, keepName: true));
+        }
+        var add = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+        Button addFolder = PhoneButton("Add folder…", () => _ = AddPhoneHostFolder(false), "Add a folder or drive to share");
+        Button addBackup = PhoneButton("Add backup folder…", () => _ = AddPhoneHostFolder(true), "Add a folder for phones to back up into");
+        addFolder.IsEnabled = addBackup.IsEnabled = !busy;
+        add.Children.Add(addFolder);
+        add.Children.Add(addBackup);
+        rows.Children.Add(SettingsRow("Folders to share",
+            PhoneHostFolders.Count == 0
+                ? "A folder or a whole drive your phone reads, and a folder phones back up into if you want one."
+                : "Your phone reads these. The first one holds the library.",
+            add, keepName: true));
+        rows.Children.Add(SettingsRow("DuckDNS name",
+            "Optional, free at duckdns.org: how your phone finds this PC away from home. DuckDNS learns your home's address, nothing about your files.",
+            _phoneDuckName!, keepName: true));
+        if (_phoneDuckName!.Text.Trim().Length > 0)
+            rows.Children.Add(SettingsRow("DuckDNS token", "From your duckdns.org page. Kept by the server on this PC, never shown again.",
+                                          _phoneDuckToken!, keepName: true));
+        _phoneHostGo = PhoneButton("Set up", SetUpThisComputer, "Set up this PC as your server");
+        rows.Children.Add(SettingsRow("Set up this PC",
+            "It runs while you're logged in, starts by itself when you log in, and keeps this PC awake while it serves (the display may still sleep). No administrator.",
+            _phoneHostGo, keepName: true));
+    }
+
+    private static async Task AddPhoneHostFolder(bool backup)
+    {
+        var picker = new FolderPicker();
+        picker.FileTypeFilter.Add("*");
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, _themeWindow);
+        Windows.Storage.StorageFolder? folder;
+        try { folder = await picker.PickSingleFolderAsync(); }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or UnauthorizedAccessException)
+        {
+            return;
+        }
+        // A library (Pictures in the side bar) has no path: not a folder to share.
+        if (folder is null || string.IsNullOrEmpty(folder.Path)) return;
+        if (PhoneHostFolders.Any(f => string.Equals(f.Path, folder.Path, StringComparison.OrdinalIgnoreCase))) return;
+        PhoneHostFolders.Add(new PhoneHostFolder(folder.Path, backup));
+        if (_phoneShown is { } shown) ShowPhone(shown);
+    }
+
+    private static void SetUpThisComputer()
+    {
+        string name = _phoneDuckName!.Text.Trim(), token = _phoneDuckToken!.Text;
+        if (!PhoneWords.HostReady(PhoneHostFolders, name, token, _phoneShown is { Busy.Length: > 0 })) return;
+        string request = PhoneWords.HostSetupRequest(PhoneHostFolders, name, token);
+        _phoneDuckToken.SetText("");  // handed on; the server keeps it, this PC doesn't
+        _ = PhoneRequestJson(request);
+    }
+
+    // "This PC is your server · Running · port 7878 · home.duckdns.org", and Start when it isn't.
+    private static void AddPhoneHostRow(StackPanel rows, PhoneHost h, bool busy)
+    {
+        FrameworkElement control = new Border();
+        if (!h.Running)
+        {
+            Button start = PhoneButton("Start", () => PhoneRequest(("do", "host_start")), "Start the server on this PC");
+            start.IsEnabled = !busy;
+            control = start;
+        }
+        rows.Children.Add(SettingsRow(h.Name.Length == 0 ? "This PC is your server" : $"This PC is your server · {h.Name}",
+                                      PhoneWords.HostDetail(h), control, keepName: true));
+    }
+
+    // ---- the library on the server ----
+
+    private static void AddPhoneLibrary(StackPanel rows, PhoneLinkState s, bool busy)
+    {
         Button choose = PhoneButton(s.Folder.Length == 0 ? "Choose…" : "Change…", () => _ = ChoosePhoneFolder(), "Choose the folder on your server");
         choose.IsEnabled = !busy && s.Catalogue is not { Running: true };
         rows.Children.Add(SettingsRow("Folder on your server", PhoneWords.FolderDetail(s), choose, keepName: true));
@@ -260,12 +448,6 @@ public static partial class IslandHost
             if (!s.Claimed) AddPhoneClaim(rows, busy);
             else AddPhoneClaimed(rows, s, busy);
         }
-        if (PhoneWords.ErrorText(s, PhoneClock) is string e) rows.Children.Add(PhoneNote(e));
-        // A secret whose row is not drawn holds nothing.
-        if (!IsInTree(_phonePass)) { _phonePass!.SetText(""); _phonePassAgain!.SetText(""); }
-        if (!IsInTree(_phoneUnlock)) _phoneUnlock!.SetText("");
-        PhoneFieldsChanged();
-        RefocusPhone(rows, refocus);
     }
 
     private static bool IsInTree(FrameworkElement? e) => e?.Parent is not null;
@@ -877,6 +1059,8 @@ public static partial class IslandHost
         _phoneNewLabel!.PlaceholderText = path.Length == 0 ? "Label" : PhoneWords.ShareLabel(path);
         if (_phoneAdd is not null)
             _phoneAdd.IsEnabled = !busy && path.StartsWith('/') && PhoneWords.ShareLabel(path).Length > 0;
+        if (_phoneHostGo is not null)
+            _phoneHostGo.IsEnabled = PhoneWords.HostReady(PhoneHostFolders, _phoneDuckName!.Text.Trim(), _phoneDuckToken!.Text, busy);
     }
 
     private static void AddPhoneFolder()

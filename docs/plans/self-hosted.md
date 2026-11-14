@@ -242,7 +242,7 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 5. **`host setup`** (the guided run) and `/host` in the interactive program; the QR in the terminal.
    **Built 2026-11-14** with the keepers wired into `host` (§16).
 6. **The desktop card's "This computer"** on Mac and Windows (both halves, D9), and the copy changes
-   on the phone and desktop, demoable in SAMPLE.
+   on the phone and desktop, demoable in SAMPLE. **Copy built 2026-11-14 (§15); the card (§16).**
 7. **`host vpn on`** and the relay line; `docs/design/28` gains "Self-hosting", `docs/DEVELOPMENT.md`
    the run recipe. **Built 2026-11-14** (§16).
 8. Later: Let's Encrypt via DNS-01; a custom DDNS URL; the laptop as a `serve` client.
@@ -395,7 +395,7 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   level adds the server's offline folders after its own (a library with a catalogue too), each chip an
   unplugged drive with "Not connected"; a tap says the drive isn't connected and opens nothing. The
   sample's `static_remote::roots()` adds one, "Travel drive" (not in `files.json`; no republish).
-- **Not yet:** the desktop card's **This computer** choice (wave 2); an offline backup folder is still
+- **Not yet (at the time):** the desktop card's **This computer** choice (§16); an offline backup folder is still
   offered in the phone's backup picker; a catalogue folder whose root is offline is not marked (the
   catalogue's folders are not tied to the service's roots on the phone).
 
@@ -474,3 +474,51 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   prints the relay's own port (the same unless the router picked another; `host status` shows it).
   The QR's size: a shorter payload (the hex keys) would need a new payload version on the phone.
 
+
+## 17. Slice 6's desktop card, as built (2026-11-14)
+
+- **Set up the service…** in Settings → Phone access (Mac `PhoneAccessView.swift`, Windows
+  `IslandHost.Phone.cs`, words in `Shared/PhoneWords.cs` checked against the Swift) when no folder is
+  chosen and nothing is claimed: **This computer** · **A Synology** (the Package Center steps in one line,
+  then the existing folder and claim rows, unchanged) · **Something else** (`driftwire serve init`, then
+  the same rows). No choice is preselected over another beyond the picker's first place.
+- **This computer**, one request (`{"do":"host_setup","folders":[…],"duckdns","duckdns_token"}`) to the
+  phone link's own thread (`src/phone/link.cpp` `host_setup`, `src/phone/self_host.*`); nothing blocks
+  the UI thread, and no new C ABI call is needed (`mv_phone_request` / `mv_phone_state_json`, ABI
+  unchanged). In order: the folders checked (one that phones read, absolute paths, none twice; the
+  DuckDNS name and token by `ddns`'s own rules, the tests compare both); each folder not yet shared
+  through the installed program's `driftwire host share PATH [--label L] [--backup]` (its own rules and
+  words: a refusal shows its line; labels made unique first, since it refuses one in use, and folders
+  already shared matched as the OS matches paths); the DuckDNS name where slice 5's `host name duckdns`
+  puts it (`host.json` `ddns` + `ddns_stamp`, the token as `ddns_token` in `<data>/host/secrets`, 0700),
+  because that command asks at a terminal only, and an unreadable `host.json` is left alone; `driftwire host start-at-login on`, which registers the entry and starts the
+  host through the OS (never the app's child; up to 150 s for Task Scheduler); up to 30 s for the port
+  in `state.json` to answer on loopback (a file left by a crashed host names a dead port);
+  the first folder phones read becomes the library's folder (`library.json`); the claim over loopback
+  (127.0.0.1, then ::1); the addresses (this computer's on the route to its gateway, and
+  `name.duckdns.org:PORT` from outside, PORT being the router keeper's `service_outside_port` once it
+  has mapped one, else an address typed before stays); then a code, as **Add a
+  phone** makes it. A setup that stopped part way (claimed nothing yet) offers the choice again.
+- **The program** is found where its installers put it (Homebrew's `/opt/homebrew/bin` and
+  `/usr/local/bin`, `~/.local/bin`; `%LOCALAPPDATA%\Programs\Driftwire`; then PATH), and the data
+  folder as the program picks it. With none installed the card gives its one install line and
+  **Check again**. The app still does not carry it (decision log, 2026-11-14).
+- **The status row** ("This Mac/PC is your server · NAME"): running or not, the service's port, the
+  DuckDNS name, drives not connected, and the keepers' own lines from `state.json` (the router's and
+  DuckDNS's: CGNAT and hand-forward words come from `host_ports::advice` there), with **Start** when it
+  is not running. Read when Settings opens and at the link's 30 s tick, never per frame.
+- **Tests:** `"[phone-self-host]"` in `mv_import_tests` (the places against the command line's own
+  constants, state.json and host.json read and written, the inputs; and against the test build of the
+  program on loopback: shared, started, claimed, addresses, a code; a DuckDNS name in the code and the
+  token in the host's store and nowhere the card reads; refusals before anything runs; no program),
+  `PhoneAccessTests` (Swift), `PhoneWordsTests` (C#, against the Swift). `io::child_process` gained an
+  opt-in to read the child's stderr with its stdout.
+- **Not done:** either card driven on screen (the Mac one built and its tests run; the Windows one
+  compiled on the Mac and its words tested, never run); a real `host start-at-login on` from the app
+  (the tests start the test build instead); **the DuckDNS name does nothing on this branch alone**: the
+  keepers (`host_keepers()` returns none here), `host.json`'s `ddns` key, the `host name duckdns`
+  command and a `host_settings_json` that keeps that key come with the host-setup branch (slices 5 and
+  7), so until it is merged the card writes a name the host does not read yet and a later
+  `host stay-awake` would drop it; the router and DuckDNS status lines likewise; the phone's LAN address is this computer's IPv4 at setup and is not followed
+  if DHCP moves it (the card's address field still changes it); a host set up from the terminal shows its
+  status row but the card offers no unshare or rename (the terminal does).
