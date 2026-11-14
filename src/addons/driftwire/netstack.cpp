@@ -205,6 +205,17 @@ struct stack::conn {
   std::size_t window_shown = kRecvWindow;  // the window last advertised
 };
 
+namespace {
+// Just past each limit: tick() acts on "more than", so at the limit itself it
+// would find nothing due and the timer would spin until it passed.
+constexpr auto kPastDue = std::chrono::milliseconds(1);
+}  // namespace
+
+// When this connection's resend (data, FIN or SYN-ACK) falls due, for tick().
+stack::clock::time_point stack::resend_due(const conn& c) {
+  return c.last_send + std::chrono::milliseconds(c.rto) + kPastDue;
+}
+
 class stack::tcp_link final : public link {
  public:
   tcp_link(stack& s, std::shared_ptr<conn> c) : s_(s), c_(std::move(c)) {}
@@ -295,6 +306,7 @@ void stack::on_tcp_packet(const parsed& p, std::vector<std::vector<std::uint8_t>
     c->mss = t.mss ? std::min(t.mss, ours) : static_cast<std::uint16_t>(p.f.v6 ? 1220 : 536);
     c->last_send = c->last_seen = now;
     conns_.emplace(p.f, c);
+    if (cb_.timer) cb_.timer(resend_due(*c));  // the SYN-ACK's resend
     out.push_back(make_tcp(p.f, {c->iss, c->rcv_nxt, static_cast<std::uint8_t>(kSyn | kAck),
                                  static_cast<std::uint16_t>(kRecvWindow), ours},
                            {}));
@@ -323,6 +335,8 @@ void stack::on_tcp_packet(const parsed& p, std::vector<std::vector<std::uint8_t>
     if (!c.established && t.ack == c.iss + 1) {
       c.established = true;
       c.snd_una = c.iss + 1;
+      c.rto = kRtoMs;  // the data's own timer starts fresh, not with the SYN-ACK's backoff
+      c.retries = 0;
     }
     if (c.established && after(t.ack, c.snd_una) && !after(t.ack, c.snd_nxt)) {
       std::uint32_t acked = t.ack - c.snd_una;
@@ -334,8 +348,11 @@ void stack::on_tcp_packet(const parsed& p, std::vector<std::vector<std::uint8_t>
       c.sendbuf.erase(c.sendbuf.begin(), c.sendbuf.begin() + static_cast<std::ptrdiff_t>(drop));
       c.snd_una = t.ack;
       c.retries = 0;
+      const bool backed_off = c.rto != kRtoMs;
       c.rto = kRtoMs;
       c.last_send = now;
+      // A backed-off timer, reset with data still out, falls due sooner than the ticker expects.
+      if (backed_off && c.snd_nxt != c.snd_una && cb_.timer) cb_.timer(resend_due(c));
       cv_.notify_all();  // room in the send buffer
     }
     c.snd_wnd = t.window;
@@ -368,6 +385,7 @@ void stack::on_tcp_packet(const parsed& p, std::vector<std::vector<std::uint8_t>
 
 void stack::send_data_locked(conn& c, std::vector<std::vector<std::uint8_t>>& out, bool resend) {
   if (!c.established || c.reset) return;
+  const bool was_quiet = c.snd_nxt == c.snd_una;  // no resend timer running for it
   if (resend) {
     c.snd_nxt = c.snd_una;
     if (c.fin_sent && !c.fin_acked) c.fin_sent = false;
@@ -394,6 +412,7 @@ void stack::send_data_locked(conn& c, std::vector<std::vector<std::uint8_t>>& ou
     sent = true;
   }
   if (sent && (resend || c.snd_nxt != c.snd_una)) c.last_send = clock::now();
+  if (sent && was_quiet && !resend && c.snd_nxt != c.snd_una && cb_.timer) cb_.timer(resend_due(c));  // its timer starts
 }
 
 result<std::size_t> stack::read(const std::shared_ptr<conn>& cp, std::span<std::uint8_t> into, int timeout_ms) {
@@ -516,6 +535,22 @@ void stack::tick() {
     }
   }
   emit(out);
+}
+
+std::optional<std::chrono::steady_clock::time_point> stack::next_deadline() const {
+  std::lock_guard lock(m_);
+  std::optional<clock::time_point> next;
+  const auto take = [&](clock::time_point t) {
+    if (!next || t < *next) next = t;
+  };
+  for (const auto& [f, cp] : conns_) {
+    const conn& c = *cp;
+    take(c.last_seen + std::chrono::milliseconds(kIdleMs) + kPastDue);
+    if (!c.established || c.snd_nxt != c.snd_una) take(resend_due(c));
+    // A connection closed both ways is erased where that happens
+    // (on_tcp_packet), so nothing here waits to forget one.
+  }
+  return next;
 }
 
 }  // namespace mv::driftwire::vpn

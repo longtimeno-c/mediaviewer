@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/tunnel.h"
 
+#include <sodium.h>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -260,7 +262,7 @@ result<std::unique_ptr<proxy>> proxy::start(options o) {
   if (o.port != 0) l = net::listen(true, o.port);
   if (!l) l = net::listen(true);
   if (!l) return err(l.error());
-  auto d = dialer::make({o.relay, o.tls, o.tls_port, o.connect});
+  auto d = dialer::make({o.relay, o.tls, o.tls_port, o.connect, std::nullopt});  // the desktop derives it
   if (!d) return err(d.error());
   std::unique_ptr<proxy> p(new proxy(std::move(o)));
   p->dial_ = std::move(*d);
@@ -375,9 +377,15 @@ result<std::unique_ptr<dialer>> dialer::make(options o) {
   d->server_ = *server;
   if (d->opts_.tls) {
     if (!tls::available()) return err(status::unsupported_format);
-    const auto k = tls::derive_knock_key(server->key);  // Argon2id: once a start
-    if (!k) return err(status::out_of_memory);
-    d->knock_ = *k;
+    if (d->opts_.knock) {
+      d->knock_ = *d->opts_.knock;  // derived by whoever had the memory for it
+      sodium_memzero(d->opts_.knock->data(), d->opts_.knock->size());  // one copy kept, not two
+      d->opts_.knock.reset();
+    } else {
+      const auto k = tls::derive_knock_key(server->key);  // Argon2id: once a start
+      if (!k) return err(status::out_of_memory);
+      d->knock_ = *k;
+    }
     std::string host = server->at.substr(0, server->at.rfind(':'));
     if (host.size() > 1 && host.front() == '[') host = host.substr(1, host.size() - 2);
     if (!net::parse_address(host)) d->sni_ = host;  // a name, as a browser sends it

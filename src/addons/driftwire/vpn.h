@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -99,6 +100,7 @@ class runner {
   struct snapshot {
     std::uint32_t tcp_open = 0;
     std::uint64_t tcp_made = 0, udp_flows = 0, failed = 0;
+    std::uint64_t ticks = 0;  // times the ticker woke (the tests' idle check)
     std::string problem;  // the relay's (the key, forwarding off, no answer)
   };
   [[nodiscard]] static result<std::unique_ptr<runner>> start(options o);
@@ -115,6 +117,9 @@ class runner {
   void serve_udp(std::shared_ptr<udp_flow> u);
   void note(relay::forward_answer a, bool opened);
   void reap_locked();
+  // Wakes the ticker if `due` is sooner than what it sleeps to (min: always,
+  // for a worker to reap and for stop).
+  void kick(std::chrono::steady_clock::time_point due = std::chrono::steady_clock::time_point::min());
 
   options opts_;
   std::unique_ptr<tunnel::dialer> dial_;
@@ -122,7 +127,15 @@ class runner {
   std::atomic<bool> stop_{false};
   std::thread pump_thread_, tick_thread_;
   mutable std::mutex m_;
+  // The ticker's own: a leaf, never held while calling anything, so the
+  // stack may kick() under its lock (netstack.h `callbacks::timer`).
+  std::mutex tick_m_;
   std::condition_variable tick_cv_;
+  std::uint64_t kicks_ = 0;  // under tick_m_
+  // What the ticker sleeps to (max while it is awake, or with no deadline):
+  // a kick due no sooner is left alone, so busy connections do not wake it
+  // once per round trip. Under tick_m_.
+  std::chrono::steady_clock::time_point armed_ = std::chrono::steady_clock::time_point::max();
   struct worker {
     std::thread t;
     std::shared_ptr<std::atomic<bool>> done;

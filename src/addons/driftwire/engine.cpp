@@ -689,7 +689,7 @@ bool engine::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_t
     log_status("vpn", dev.error());
   } else {
     vpn::runner::options o;
-    o.dial = {relay, tls, tls_port, {}};
+    o.dial = {relay, tls, tls_port, {}, std::nullopt};  // the knock key derived here
     o.dev = std::move(*dev);
     o.s = s;
     o.changed = [this] { tunnel_changed(); };

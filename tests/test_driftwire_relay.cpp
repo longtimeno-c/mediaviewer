@@ -1751,6 +1751,41 @@ TEST_CASE("driftwire tls: without the knock, the relay is an ordinary web site",
   CHECK(c.forwarded == 0);
 }
 
+TEST_CASE("driftwire tls: a dialer given the knock key uses it and derives none", "[driftwire]") {
+  // The iOS packet tunnel extension cannot hold Argon2id's 64 MiB: the app
+  // derives the key and hands it over (docs/plans/phone-vpn.md).
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  const auto open_with = [&](const tls::knock_key& k) {
+    tunnel::dialer::options o;
+    o.relay = "127.0.0.1:" + std::to_string((*s)->port()) + "#" + kKey;
+    o.tls = true;
+    o.tls_port = (*s)->tls_port();
+    o.knock = k;
+    auto d = tunnel::dialer::make(std::move(o));
+    REQUIRE(d);
+    relay::forward_answer said{};
+    return (*d)->open("127.0.0.1", echo.port(), said);
+  };
+  const auto right = tls::derive_knock_key(kKey);
+  REQUIRE(right);
+  auto f = open_with(*right);
+  REQUIRE(f);
+  say(**f, "given key");
+  CHECK(hear(**f, 9) == "GIVEN KEY");
+  CHECK((*s)->snapshot().forwarded == 1);
+  // A wrong key handed in is the one used: the relay sees no knock and is a
+  // web site. Had the dialer derived its own from the relay field, this
+  // would have forwarded.
+  const auto wrong = tls::derive_knock_key("not the server's key at all");
+  REQUIRE(wrong);
+  CHECK_FALSE(open_with(*wrong));
+  CHECK((*s)->snapshot().forwarded == 1);
+  CHECK((*s)->snapshot().website >= 1);
+}
+
 TEST_CASE("driftwire tls: the Tunnel's Look like a web site switch goes through the TLS port", "[driftwire]") {
   if (!tls::available()) SKIP("this build has no BoringSSL");
   scratch_dir dir("driftwire_tunnel_tls");
