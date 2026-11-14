@@ -179,11 +179,36 @@ std::string login_entry_for(os o, const env& e, const std::string& host_folder) 
   return {};
 }
 
+namespace {
+std::mutex& bundled_m() {
+  static std::mutex* m = new std::mutex();
+  return *m;
+}
+std::string& bundled_program() {
+  static std::string* p = new std::string();
+  return *p;
+}
+}  // namespace
+
+void set_bundled(std::string program) {
+  std::lock_guard lock(bundled_m());
+  bundled_program() = std::move(program);
+}
+
+std::string bundled() {
+  std::lock_guard lock(bundled_m());
+  return bundled_program();
+}
+
 where find() {
   const os o = this_os();
   const env e = read_env();
   where w;
-  for (const auto& c : program_candidates(o, e)) {
+  // The Phone access add-on's own copy first (bundled.h): the card runs it, and
+  // the login entry it writes points at it. A separately installed driftwire
+  // keeps its own place and its own updates; it is used only without one.
+  if (const std::string b = bundled(); !b.empty() && is_file(b)) w.program = b;
+  for (const auto& c : w.program.empty() ? program_candidates(o, e) : std::vector<std::string>{}) {
     if (is_file(c)) {
       w.program = c;
       break;

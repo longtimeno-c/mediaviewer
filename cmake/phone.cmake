@@ -47,6 +47,7 @@ add_library(mv_phone STATIC
   ${_P}/self_host.cpp ${_P}/self_host.h
   ${_P}/screens.cpp ${_P}/screens.h
   ${_P}/qr.cpp ${_P}/qr.h
+  ${_P}/bundled.cpp ${_P}/bundled.h
   ${_phone_dir}
 )
 target_include_directories(mv_phone PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")

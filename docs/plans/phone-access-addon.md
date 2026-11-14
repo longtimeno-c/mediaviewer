@@ -147,3 +147,31 @@ module builds in `cmake/portable`).
 - **Installing for a desktop set up before the move.** The owner's call is "offered"; a desktop with a
   library set up before sees the offer with the line from §3.5. Installing it without asking was
   not chosen.
+
+## 8. The `driftwire` program inside the add-on (owner, 2026-11-14: "Yes, ship it inside") — in progress
+
+Reopens the decision-log row "The app runs an installed `driftwire` for 'This computer'" (2026-11-14); its
+amending row lands with the build. Started on this branch: `bundled.*` (install into a stable
+`<feature dir>/bin`, copy beside then rename into place; on Windows the running .exe renamed aside first) and
+`self_host::find()` preferring the add-on's copy. **Still owed:**
+
+- The add-on installs its copy at load (worker) and calls `self_host::set_bundled`; CMake copies
+  `mv_driftwire_cli` into `build/addons/phone-access`; addon-pack includes it; release.yml signs it
+  (Developer ID via macpack, the Windows step's filter gains `exe`); NOTICE names BoringSSL (Apache-2.0),
+  FTXUI (MIT), libsodium (ISC), BLAKE3 per [11](../design/11-licensing.md).
+- **Updates (the owner's question):** a MediaViewer update never touches `<feature dir>/bin`, so it never
+  stops or replaces the running host. An add-on update installs the new copy beside and renames it in; the
+  supervisor sees its program change and ends 75 (`cli/host_cmd.h`), the login entry starts the new one
+  (Windows: the task's 5-minute retry); phones see one reconnect. A separately installed CLI keeps its own
+  path and channel; the login entry points at whichever program last ran `host start-at-login on` (the
+  card's Set up / Start run the add-on's copy). The Synology's signed feed is unaffected.
+- **Removal:** a new optional export `mv_addon_removed(data_dir, keep_data)` called on every Remove; the add-on
+  runs its copy's `host start-at-login off` (which ends the task / boots out the agent) when the entry points
+  at it, then `bundled::remove`. Shared drives and pairings stay.
+- A loopback test of the staged swap (the supervisor running from `bin/driftwire` ends 75 after `install`),
+  beside `[host]`'s exit-75 test.
+- **The server's menu** (#686 §4, session `host-tray`): its `src/phone/host_tray.*` and the shell keep move into
+  this add-on once both branches merge (keep_alive + keep_menu with `host_tray::build()`'s rows; a "login"
+  flag on keep_alive owed). Its glue started beside `mv_phone_resume`, which this branch removes.
+- **Desktop as a client** (`src/remote`, another session): the card can't call the app's `mv_chrome_remote_pair`;
+  a line pointing to File → Connect to a Server… with a Copy link button is owed in `screens.cpp`.
