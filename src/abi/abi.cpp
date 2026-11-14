@@ -301,7 +301,8 @@ struct mv_session {
     bool loaded = false;
     bool photos_inside = false;
     bool search_incomplete = false;
-    std::string cover_thumb;
+    // Up to io::kFolderCovers JPEG-512 paths, the tile's big photo first.
+    std::vector<std::string> cover_thumbs;
   };
   std::vector<folder_card> folder_subdirs;
   std::string folder_dir;
@@ -1309,7 +1310,7 @@ void refresh_subdirs(mv_session* session) {
         card.subdir_count = old.subdir_count;
         card.requested = old.requested;
         card.loaded = old.loaded;
-        card.cover_thumb = old.cover_thumb;
+        card.cover_thumbs = old.cover_thumbs;
         break;
       }
     }
@@ -1370,7 +1371,7 @@ void submit_folder_summary(mv_session* session, uint32_t index) {
   const auto correlation = mv::abi::current_correlation_id();
   (void)session->jobs.submit_at(
       mv::background_generation,
-      [session, path, folder_gen](const mv::job_context& ctx) -> status {
+      [session, path, folder_gen, correlation, index](const mv::job_context& ctx) -> status {
         const auto stale = [&] {
           return session->folder_generation.load(std::memory_order_relaxed) != folder_gen;
         };
@@ -1390,23 +1391,40 @@ void submit_folder_summary(mv_session* session, uint32_t index) {
           return summary.error();
         }
         const auto value = std::move(summary).value();
-        std::string cover_thumb;
-        if (value.has_cover) {
-          auto thumb = cached_thumb_path(session, value.cover.path_utf8, value.cover.mtime_unix,
-                                         value.cover.size, ctx, folder_gen);
-          if (thumb) cover_thumb = std::move(thumb).value();
+        // The big photo publishes as soon as it exists (the tile's first pixel
+        // is never behind the small ones); the rest follow, one completion more.
+        const auto publish = [&](std::vector<std::string> thumbs) {
+          std::lock_guard lock(session->folder_mutex);
+          for (auto& card : session->folder_subdirs) {
+            if (card.path != path) continue;
+            card.media_count = value.media_count;
+            card.subdir_count = value.subdir_count;
+            card.photos_inside = value.photos_inside;
+            card.search_incomplete = value.search_incomplete;
+            card.loaded = true;
+            card.cover_thumbs = std::move(thumbs);
+            break;
+          }
+        };
+        std::vector<std::string> thumbs;
+        for (std::size_t i = 0; i < value.covers.size(); ++i) {
+          const auto& cover = value.covers[i];
+          auto thumb = cached_thumb_path(session, cover.path_utf8, cover.mtime_unix, cover.size, ctx,
+                                         folder_gen);
+          if (!thumb && thumb.error() == status::cancelled) break;
+          if (thumb) thumbs.push_back(std::move(thumb).value());
+          if (i == 0 && thumbs.size() == 1 && value.covers.size() > 1) {
+            publish(thumbs);
+            mv_completion early{};
+            early.kind = MV_COMPLETION_FOLDER_SUMMARY;
+            early.status = static_cast<uint32_t>(status::ok);
+            early.correlation_id = correlation;
+            early.generation = folder_gen;
+            early.payload = static_cast<int64_t>(index);
+            session->push_completion(early);
+          }
         }
-        std::lock_guard lock(session->folder_mutex);
-        for (auto& card : session->folder_subdirs) {
-          if (card.path != path) continue;
-          card.media_count = value.media_count;
-          card.subdir_count = value.subdir_count;
-          card.photos_inside = value.photos_inside;
-          card.search_incomplete = value.search_incomplete;
-          card.loaded = true;
-          card.cover_thumb = std::move(cover_thumb);
-          break;
-        }
+        publish(std::move(thumbs));
         return status::ok;
       },
       [session, correlation, index, folder_gen](mv::job_id id, mv::generation, status result) {
@@ -2606,7 +2624,7 @@ mv_status MV_CALL mv_thumb_cache_clear(mv_session_t session) {
     // chrome's next request regenerates them rather than loading nothing.
     std::lock_guard lock(session->folder_mutex);
     for (auto& item : session->folder_items) item.thumb_path.clear();
-    for (auto& card : session->folder_subdirs) card.cover_thumb.clear();
+    for (auto& card : session->folder_subdirs) card.cover_thumbs.clear();
     return status::ok;
   }));
 }
@@ -3048,9 +3066,10 @@ mv_status MV_CALL mv_folder_summary_at(mv_session_t session, uint32_t index,
     s.media_count = card.media_count;
     s.subdir_count = card.subdir_count;
     if (card.loaded) s.flags |= 1u;
-    if (!card.cover_thumb.empty()) s.flags |= 2u;
+    if (!card.cover_thumbs.empty()) s.flags |= 2u;
     if (card.photos_inside) s.flags |= 4u;
     if (card.search_incomplete) s.flags |= 8u;
+    s.cover_count = static_cast<uint32_t>(card.cover_thumbs.size());
     *out_summary = s;
     return status::ok;
   }));
@@ -3062,7 +3081,21 @@ mv_status MV_CALL mv_folder_summary_cover_thumb_path(mv_session_t session, uint3
     MV_REQUIRE(valid(session), "session must not be null");
     std::lock_guard lock(session->folder_mutex);
     MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
-    return copy_utf8(session->folder_subdirs[index].cover_thumb, utf8, cap, out_bytes);
+    const auto& thumbs = session->folder_subdirs[index].cover_thumbs;
+    return copy_utf8(thumbs.empty() ? std::string{} : thumbs.front(), utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_summary_cover_thumb_path_at(mv_session_t session, uint32_t index,
+                                                        uint32_t slot, char* utf8, uint32_t cap,
+                                                        uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_summary_cover_thumb_path_at", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
+    const auto& thumbs = session->folder_subdirs[index].cover_thumbs;
+    MV_REQUIRE(slot < thumbs.size(), "slot out of range");
+    return copy_utf8(thumbs[slot], utf8, cap, out_bytes);
   }));
 }
 

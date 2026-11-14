@@ -110,25 +110,39 @@ result<folder_summary> summarize_dir(std::string_view utf8_dir, int max_depth, i
   if (!subs) return err(subs.error());
 
   folder_summary out;
-  out.media_count = static_cast<std::uint32_t>(files.value().size());
+  std::vector<dir_entry>& own = files.value();
+  out.media_count = static_cast<std::uint32_t>(own.size());
   out.subdir_count = static_cast<std::uint32_t>(subs.value().size());
-  if (!files.value().empty()) {
+  if (!own.empty()) {
+    // Spread across the listing: 0, n/3, 2n/3 (distinct for any n >= 3).
+    const std::size_t n = own.size();
+    const std::size_t k = std::min(n, kFolderCovers);
+    out.covers.reserve(k);
+    for (std::size_t i = 0; i < k; ++i) out.covers.push_back(std::move(own[i * n / k]));
     out.has_cover = true;
-    out.cover = std::move(files.value().front());
+    out.cover = out.covers.front();
     return out;
   }
   int visits = max_visits;
   for (const subdir_entry& sub : subs.value()) {
-    const cover_walk step = find_cover(sub.path_utf8, max_depth - 1, visits, out.cover);
+    dir_entry found;
+    const cover_walk step = find_cover(sub.path_utf8, max_depth - 1, visits, found);
     if (step.found) {
-      out.has_cover = true;
-      out.photos_inside = true;
-      return out;
+      out.covers.push_back(std::move(found));
+      if (out.covers.size() == kFolderCovers) break;
+      continue;
     }
     if (step.stopped_early) {
-      out.search_incomplete = true;
-      return out;
+      // With a cover in hand the answer is already "photos inside"; only a
+      // walk that found nothing is unfinished.
+      if (out.covers.empty()) out.search_incomplete = true;
+      break;
     }
+  }
+  if (!out.covers.empty()) {
+    out.has_cover = true;
+    out.photos_inside = true;
+    out.cover = out.covers.front();
   }
   return out;
 }

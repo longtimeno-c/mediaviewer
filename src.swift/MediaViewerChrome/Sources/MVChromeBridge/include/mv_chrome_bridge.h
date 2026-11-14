@@ -315,6 +315,12 @@ typedef void (*mv_chrome_folder_summary_fn)(const char* folder_path_utf8, bool o
                                             int32_t media_count, int32_t subfolder_count,
                                             int32_t flags, const char* cover_thumb_path_utf8);
 void mv_chrome_set_folder_summary_callback(mv_chrome_folder_summary_fn callback);
+// The tile's small photos (one big, two small; io/dir.h kFolderCovers), after
+// the summary above delivered the big one: `slot` 1 or 2, main thread, never
+// for a folder whose summary failed. A folder with one photo gets none.
+typedef void (*mv_chrome_folder_cover_fn)(const char* folder_path_utf8, int32_t slot,
+                                          const char* cover_thumb_path_utf8);
+void mv_chrome_set_folder_cover_callback(mv_chrome_folder_cover_fn callback);
 // Breadcrumb: root … current. `mv_chrome_crumb_path` copies the full path
 // (the last component is the label); false if out of range.
 int32_t mv_chrome_crumb_count(void);
