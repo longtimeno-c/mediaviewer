@@ -808,6 +808,8 @@ include("${CMAKE_SOURCE_DIR}/cmake/places.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/driftwire.cmake")
 # Phone access, part of the app (docs/plans/phone-in-the-app.md).
 include("${CMAKE_SOURCE_DIR}/cmake/phone.cmake")
+# Another desktop opens the host's drives (docs/plans/desktop-client.md): part of the app.
+include("${CMAKE_SOURCE_DIR}/cmake/remote.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -1171,6 +1173,8 @@ if(MV_BUILD_TESTS)
   add_executable(mv_tests
     tests/crt_no_dialogs.cpp
     tests/test_result.cpp
+    # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
+    tests/test_desktop_client.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
     tests/test_boot_timeline.cpp
@@ -1379,6 +1383,8 @@ if(MV_BUILD_TESTS)
   endif()
   target_link_libraries(mv_tests PRIVATE
     ${MV_SQLITE_TARGET}  # docs/design/26: the Photos backup engine's manifest
+    mv_remote
+    mv_wire
     mv_core
     mv_gfx
     mv_player

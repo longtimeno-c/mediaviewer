@@ -526,6 +526,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
 # Phone access, part of the app (docs/plans/phone-in-the-app.md).
 include("${CMAKE_CURRENT_LIST_DIR}/phone.cmake")
+# Another desktop opens the host's drives (docs/plans/desktop-client.md): part of the app.
+include("${CMAKE_CURRENT_LIST_DIR}/remote.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -939,6 +941,8 @@ if(MV_BUILD_TESTS)
     # docs/design/26: virtual items in a result list (the Photos library as a folder).
     tests/test_folder_virtual_mac.cpp
     src/shell/folder_model_mac.cpp
+    # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
+    tests/test_desktop_client.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (docs/design/09: no RAW in git).
     tests/test_probe.cpp
@@ -1055,6 +1059,8 @@ if(MV_BUILD_TESTS)
     tests/test_places.cpp
   )
   target_link_libraries(mv_tests PRIVATE
+    mv_remote
+    mv_wire
     mv_core
     mv_io
     mv_gfx
