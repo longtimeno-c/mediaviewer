@@ -142,6 +142,8 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_check_library.cpp"
   "${MV_ROOT}/src/shell/photos_backup.cpp"
   "${MV_ROOT}/src/shell/photos_backup_library.cpp"
+  # photos_backup.cpp logs (mv::log, core/trace.h): its sink, as cmake/linux.cmake has it.
+  "${MV_ROOT}/src/core/trace_posix.cpp"
   "${MV_ROOT}/tests/test_json.cpp"
 )
 target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
