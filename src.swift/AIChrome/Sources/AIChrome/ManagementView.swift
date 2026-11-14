@@ -1202,8 +1202,10 @@ struct ManagementView: View {
           Button("Add a folder…") { model.addFolder() }
             .help("Index a folder and every folder inside it.")
           ForEach(model.suggestedFolders) { folder in
-            Button("Index \(folder.name)") { model.indexFolder(folder.path) }
-              .help(folder.path)
+            // "Add Pictures folder", not "Index Pictures": the same verb as
+            // "Add a folder…" beside it, and plainly a folder, not a kind of file.
+            Button("Add \(folder.name) folder") { model.indexFolder(folder.path) }
+              .help("Your \(folder.name) folder isn't indexed yet. Adds \(folder.path) and its subfolders.")
           }
           Spacer()
         }

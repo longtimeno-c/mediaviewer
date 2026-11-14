@@ -1347,7 +1347,7 @@ internal sealed partial class ManagePanel
         return null;
     }
 
-    // "Index Pictures" / "Index Videos": the user's own folders, wherever
+    // "Add Pictures folder" / "Add Videos folder": the user's own folders, wherever
     // Windows keeps them, while no folder covers them (folder_coverage).
     private void ShowSuggestions()
     {
@@ -1364,9 +1364,11 @@ internal sealed partial class ManagePanel
             try { covered = _api.FolderCoverage(dir); }  // [no-block]
             catch (MediaViewerException) { continue; }
             if (covered != 0) continue;
-            Button b = _look.Button("Index " + name, () => RootCall(() => _api.IndexFolder(dir, recursive: true)));
-            ToolTipService.SetToolTip(b, dir);
-            AutomationProperties.SetName(b, $"Index your {name} folder and its subfolders");
+            // "Add Pictures folder", not "Index Pictures": the same verb as "Add a
+            // folder…" beside it, and plainly a folder, not a kind of file.
+            Button b = _look.Button($"Add {name} folder", () => RootCall(() => _api.IndexFolder(dir, recursive: true)));
+            ToolTipService.SetToolTip(b, $"Your {name} folder isn't indexed yet. Adds {dir} and its subfolders.");
+            AutomationProperties.SetName(b, $"Add your {name} folder and its subfolders");
             _suggest.Children.Add(b);
         }
     }
