@@ -404,6 +404,10 @@ typedef struct mv_addon_route_point {
  * Return non-zero to continue, zero to stop. */
 typedef int32_t(MV_CALL* mv_addon_path_fn)(void* user, const char* path_utf8);
 
+/* One place label (place_labels): `index` into the points asked about; `label_utf8`
+ * "Sintra, Lisbon, Portugal", or "" for a point with none. Non-zero to continue. */
+typedef int32_t(MV_CALL* mv_addon_label_fn)(void* user, uint32_t index, const char* label_utf8);
+
 /* Asks for an info-pane section's tree for the file on screen. */
 typedef struct mv_slot_info_request {
   uint32_t struct_size;
@@ -554,6 +558,32 @@ typedef struct mv_addon_slots {
   void(MV_CALL* event)(void* addon, const mv_slot_event* event);
 } mv_addon_slots;
 
+/* One add-on asking another (mv_host_api.addon_request, docs/design/18). */
+typedef void(MV_CALL* mv_addon_reply_fn)(void* user, const char* json_utf8);
+#define MV_REQUEST_INTERFACE "mv.request.1"
+typedef struct mv_addon_request_api {
+  uint32_t struct_size;
+  uint32_t reserved;
+  /* On the add-on's slot worker. `caller_id` is the asking add-on's id, from
+   * the host, so an add-on can answer only those it knows. `reply` once, with
+   * the answer's JSON, before returning MV_OK. */
+  mv_status(MV_CALL* handle)(void* addon, const char* caller_id, const char* method, const char* request_json,
+                             mv_addon_reply_fn reply, void* user);
+} mv_addon_request_api;
+
+/* The answer to the host's place_labels (2026-11-10), its own interface so no
+ * add-on that fills mv.slots.1 has to change. The label the Info pane would
+ * show at a GPS point, "" for none. On the add-on's slot worker. `*needed` is
+ * the bytes including the NUL; MV_ERR_INVALID_ARG when `capacity` is less.
+ * MV_ERR_NOT_FOUND: no place database. */
+#define MV_PLACE_LABELS_INTERFACE "mv.place_labels.1"
+typedef struct mv_addon_place_labels {
+  uint32_t struct_size;
+  uint32_t reserved;
+  mv_status(MV_CALL* place_label)(void* addon, double lat, double lon, char* out_utf8, uint32_t capacity,
+                                  uint32_t* needed);
+} mv_addon_place_labels;
+
 typedef struct mv_host_api {
   uint32_t struct_size;
   uint32_t host_api;          /* MV_ADDON_HOST_API of the host */
@@ -697,7 +727,9 @@ typedef struct mv_host_api {
   /* [worker-thread] walk_files, with the files only a cloud provider has
    * (OneDrive online-only, evicted iCloud Drive) listed too and flagged
    * MV_ADDON_FILE_CLOUD_ONLY. walk_files leaves those out: everything it lists
-   * can be read without the network. Appended: read it only when
+   * can be read without the network. MV_ERR_IO after files were visited
+   * means the listing is partial (a share dropped mid-walk): what was visited
+   * is real, and what was not may still exist. Appended: read it only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* walk_files2)(void* host, const char* root_utf8, int32_t max_depth,
                                   mv_addon_walk2_fn visit, void* user);
@@ -1045,9 +1077,49 @@ typedef struct mv_host_api {
    * never a path or file name (rule 6); ids [a-z0-9_], <= 64. NULL, "" or an
    * empty list removes them. Picking a row sends MV_SLOT_EVENT_MENU.
    * MV_ERR_INVALID_ARG for a bad list; MV_ERR_NOT_FOUND before the add-on is
-   * attached (retry). Appended after still_extend, last: read only when
+   * attached (retry). Appended after still_extend: read only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* keep_menu)(void* host, const char* menu_json);
+  /* ---- the phone's catalogue (docs/plans/mobile.md §5, docs/design/17) -------- */
+  /* [any-thread, CPU only] A smaller JPEG of a JPEG, long edge at most
+   * `max_edge` (8..512), `quality` 1..100: decoded at a DCT scale and averaged
+   * down, never enlarged; an image already small enough is encoded again at
+   * this quality. `*out_size` is always the bytes needed; MV_ERR_INVALID_ARG
+   * with it larger than `capacity`: call again. MV_ERR_CORRUPT: not a JPEG.
+   * Appended after keep_menu: read this and place_labels only when
+   * `struct_size` covers them and the pointer is non-NULL. */
+  mv_status(MV_CALL* jpeg_shrink)(void* host, const uint8_t* jpeg, uint64_t jpeg_size, uint32_t max_edge,
+                                  uint32_t quality, uint8_t* out, uint64_t capacity, uint64_t* out_size);
+  /* [worker-thread] Place labels for GPS points, as the loaded add-on that
+   * answers `place:` (Places) names them, under the person's own settings.
+   * `visit` is called on the caller's thread, once per point in order; 0 stops
+   * it (MV_ERR_CANCELLED). Blocks until done. MV_ERR_NOT_FOUND when no loaded
+   * add-on can (Places is not installed, or too old). Nothing is sent
+   * anywhere: the labels come from the database on this machine (rule 6). */
+  mv_status(MV_CALL* place_labels)(void* host, const mv_addon_route_point* points, uint32_t count,
+                                   mv_addon_label_fn visit, void* user);
+  /* ---- add-ons calling add-ons (docs/design/18 "Add-ons calling add-ons") ------ */
+  /* [worker-thread] One request to the loaded add-on `addon_id`, answered on
+   * its slot worker: the only way one add-on reaches another. `method` and
+   * `request_json` mean what that add-on documents; the host tells it who is
+   * asking. `reply` gets the answer's JSON once, on the caller's thread,
+   * before this returns. Blocks until answered, at most 30 s
+   * (MV_ERR_TIMEOUT). Never from a slot worker: the answering add-on's worker
+   * may be busy with this caller's own work. MV_ERR_NOT_FOUND: that add-on
+   * is not installed, not loaded, too old for this, or does not know the
+   * method (the caller offers to install it). Appended after place_labels:
+   * read only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* addon_request)(void* host, const char* addon_id, const char* method, const char* request_json,
+                                    mv_addon_reply_fn reply, void* user);
+  /* [worker-thread] A JPEG-512 made now and stored nowhere: the viewer's cache
+   * is the viewer's. `pts_ms` < 0: the file's own picture (a still's, an audio
+   * file's cover art); >= 0: a clip's moment or a document's page. `*out_size`
+   * is always the bytes needed; MV_ERR_INVALID_ARG with it larger than
+   * `capacity`: call again. MV_ERR_UNSUPPORTED_FORMAT: it has no picture.
+   * Appended after addon_request: read only when `struct_size` covers it and
+   * the pointer is non-NULL. */
+  mv_status(MV_CALL* thumbnail_make)(void* host, const char* path_utf8, int64_t pts_ms, uint8_t* out,
+                                     uint64_t capacity, uint64_t* out_size);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u

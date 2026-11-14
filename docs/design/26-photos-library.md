@@ -179,6 +179,7 @@ the deep network path once docs/design/24's PR 49 lands, since the copy goes thr
   |---|---|
   | Year | `<destination>/YYYY/<original name>` (Import has no such layout) |
   | Year and day (default) | `<destination>/YYYY/YYYY-MM-DD/<original name>` |
+  | Year and month | `<destination>/YYYY/MM/<original name>` |
   | Year, month and day | `<destination>/YYYY/MM/DD/<original name>` |
   | Day | `<destination>/YYYY-MM-DD/<original name>` |
   | Flat | `<destination>/<original name>` |

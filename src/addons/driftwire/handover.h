@@ -41,10 +41,10 @@
 #include <span>
 #include <thread>
 
-#include "addons/driftwire/channel.h"
+#include "wire/channel.h"
 #include "addons/driftwire/dht.h"
 #include "addons/driftwire/meet.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 
 namespace mv::driftwire {
 

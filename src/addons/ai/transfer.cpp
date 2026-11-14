@@ -20,6 +20,12 @@ namespace mv::ai::transfer {
 namespace {
 
 // A prepared statement that finalizes itself; binds are 1-based.
+// A row loop ends on "no more rows" and on a read error alike, and these files
+// live on shares and are not trusted. Every step that fails is noted here, and
+// a transaction checks it before it commits, so a damaged file is refused
+// instead of landing as a shorter one. One operation per thread at a time.
+thread_local bool t_read_failed = false;
+
 class stmt {
  public:
   stmt(sqlite3* db, const char* sql) { sqlite3_prepare_v2(db, sql, -1, &s_, nullptr); }
@@ -51,7 +57,16 @@ class stmt {
     sqlite3_reset(s_);
     sqlite3_clear_bindings(s_);
   }
-  bool step_row() { return s_ && sqlite3_step(s_) == SQLITE_ROW; }
+  bool step_row() {
+    if (!s_) {
+      t_read_failed = true;  // a statement that never prepared has no rows to say so
+      return false;
+    }
+    const int rc = sqlite3_step(s_);
+    if (rc == SQLITE_ROW) return true;
+    if (rc != SQLITE_DONE) t_read_failed = true;
+    return false;
+  }
   bool run() {
     if (!s_) return false;
     const int rc = sqlite3_step(s_);
@@ -262,8 +277,10 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
     std::filesystem::remove(fs_path(part), e2);
     return err(s);
   };
-  // A new file renamed into place at the end: no journal to keep.
-  ok = exec(x, "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;") && exec(x, kSchema);
+  t_read_failed = false;
+  // A new file renamed into place at the end: no journal to keep, and each
+  // commit flushed, so a failed write is heard here rather than by an importer.
+  ok = exec(x, "PRAGMA journal_mode=OFF; PRAGMA synchronous=FULL;") && exec(x, kSchema);
   if (!ok) return fail(status::io);
   {
     stmt a(x, "ATTACH ?1 AS src");
@@ -390,7 +407,7 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
     n.people = count_of(x, "SELECT COUNT(*) FROM people");
     if (!ok) return fail(status::io);
   }
-  if (!exec(x, "COMMIT")) return fail(status::io);
+  if (t_read_failed || !exec(x, "COMMIT")) return fail(status::io);
   exec(x, "DETACH src");
   if (with_faces) exec(x, "DETACH fdb");
   c.report(0.5);
@@ -427,12 +444,21 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
       }
       if ((i & 15) == 15) c.report(0.5 + 0.5 * static_cast<double>(i) / static_cast<double>(want.size()));
     }
-    if (!ok || !exec(x, "COMMIT")) return fail(status::io);
+    if (!ok || t_read_failed || !exec(x, "COMMIT")) return fail(status::io);
   }
   // Indexes an import's lookups use (it never relies on them: the file is not trusted).
-  exec(x, "CREATE INDEX assets_root ON assets(root_id);");
-  sqlite3_close_v2(x);
+  if (!exec(x, "CREATE INDEX assets_root ON assets(root_id);")) return fail(status::io);
+  const int closed = sqlite3_close_v2(x);
   x = nullptr;
+  if (closed != SQLITE_OK) return fail(status::io);
+  // Read it back before it gets its name: the name is the promise that it is whole.
+  {
+    auto back = open_untrusted(part);
+    if (!back) return fail(status::io);
+    db_closer checked{*back};
+    stmt q(*back, "PRAGMA quick_check(1)");
+    if (!q.step_row() || q.text(0) != "ok") return fail(status::corrupt);
+  }
   std::filesystem::rename(fs_path(part), fs_path(dest), ec);
   if (ec) {
     std::filesystem::remove(fs_path(part), ec);
@@ -448,6 +474,7 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
 result<file_info> inspect(const std::string& file) {
   MV_TRY(sqlite3* db, open_untrusted(file));
   db_closer closer{db};
+  t_read_failed = false;
   file_info f;
   if (info_value(db, "format") != kFormat) return err(status::unsupported_format);
   const std::string v = info_value(db, "version");
@@ -498,6 +525,7 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
                       import_counts& n, const control& c) {
   MV_TRY(sqlite3* x, open_untrusted(file));
   db_closer closer{x};
+  t_read_failed = false;
   if (info_value(x, "format") != kFormat) return err(status::unsupported_format);
 
   std::map<std::int64_t, const root_target*> target_of;
@@ -741,6 +769,7 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
     }
     if (!ok) return rollback(status::io);
   }
+  if (t_read_failed) return rollback(status::corrupt);
   if (!exec(db, "COMMIT")) return rollback(status::io);
   c.report(0.7);
   return {};
@@ -750,6 +779,7 @@ expected import_faces(sqlite3* fdb, const std::string& file, const std::string& 
                       std::span<const imported_asset> assets, import_counts& n, const control& c) {
   MV_TRY(sqlite3* x, open_untrusted(file));
   db_closer closer{x};
+  t_read_failed = false;
   if (info_value(x, "faces") != "1" || info_value(x, "face_spec") != face_spec || face_spec.empty()) return {};
 
   // The assets that take the file's faces: scanned there, and neither scanned
@@ -889,6 +919,7 @@ expected import_faces(sqlite3* fdb, const std::string& file, const std::string& 
     }
   }
   if (!ok) return rollback(status::io);
+  if (t_read_failed) return rollback(status::corrupt);
   if (!exec(fdb, "COMMIT")) return rollback(status::io);
   return {};
 }
@@ -898,6 +929,7 @@ expected import_thumbs(const std::string& file, std::span<const imported_asset> 
   if (!io.store || !io.stat) return {};
   MV_TRY(sqlite3* x, open_untrusted(file));
   db_closer closer{x};
+  t_read_failed = false;
   if (info_value(x, "thumbs") != "1") return {};
   std::unordered_map<std::int64_t, const imported_asset*> by_file;
   for (const imported_asset& a : assets) by_file[a.file_id] = &a;
@@ -933,6 +965,7 @@ expected import_thumbs(const std::string& file, std::span<const imported_asset> 
       ++n.thumbs_skipped;
     }
   }
+  if (t_read_failed) return err(status::corrupt);  // the index is in; the pictures stopped short
   return {};
 }
 

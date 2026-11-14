@@ -5,7 +5,7 @@
 #include <algorithm>
 
 #include "addons/driftwire/meet.h"
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 
 namespace mv::driftwire {
 
@@ -51,6 +51,18 @@ std::optional<net::endpoint> relay_endpoint(const std::string& text) {
   // IPv4 first: a sender's network has it more often than IPv6.
   const auto v4 = std::find_if(all.begin(), all.end(), [](const net::address& a) { return !a.v6; });
   return net::endpoint{net::address_text(v4 != all.end() ? *v4 : all.front()), port->port};
+}
+
+std::vector<net::address> relay_addresses(const std::string& text) {
+  if (const auto e = parse_hostport(text)) {
+    if (const auto a = net::parse_address(e->address)) return {*a};
+    return {};
+  }
+  const auto colon = text.rfind(':');
+  if (colon == std::string::npos || colon == 0 || text.front() == '[') return {};
+  const std::string host = text.substr(0, colon);
+  if (!parse_hostport("0.0.0.0" + text.substr(colon)) || host.size() > 253) return {};
+  return net::resolve(host);
 }
 
 std::optional<relay_server_field> relay_server_of(const std::string& text, std::string& why) {

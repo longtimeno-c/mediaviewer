@@ -119,7 +119,7 @@ endif()
 
 # Instrument everything that links mv_project_options.
 set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_meta mv_geo mv_places_engine
-  mv_driftwire_engine
+  mv_driftwire_engine mv_wire
   # Issue #610: fuzz_thumbnail's clip path (player/poster.cpp; FFmpeg stays a
   # prebuilt DLL, uninstrumented, like the other dependencies).
   mv_player)

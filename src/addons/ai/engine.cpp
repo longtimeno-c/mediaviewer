@@ -1,8 +1,19 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/engine.h"
+#include "catalogue/publisher.h"
+#include "catalogue/catalog_chain.h"
+
+#include <ctime>
+#include <random>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "addons/ai/machine.h"
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 #include <algorithm>
 #include <numeric>
@@ -192,11 +203,12 @@ expected engine::start() {
   if (options_.read_only) {
     // A reader creates nothing: no folder, no schema, no settings file.
     load_settings();
-    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db")));
+    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db"), options_.immutable));
     db_ = std::move(db);
   } else {
     MV_TRY_VOID(host_.make_directories(data_dir_));
     load_settings();
+    load_phone_state();
     MV_TRY(auto db, index_db::open(join(data_dir_, "index.db")));
     db_ = std::move(db);
   }
@@ -519,16 +531,44 @@ std::int64_t engine::asset_of_key_locked(const std::string& key) const {
 void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
   transfer_cancel_ = true;  // an export making thumbnails stops at the next one
+  phone_cancel_ = true;
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
-  control_cv_.notify_all();
-  work_cv_.notify_all();
-  search_cv_.notify_all();
-  fetch_cv_.notify_all();
+  // Every wake goes through the lock, so a thread about to wait (an immutable
+  // reader's has no timeout) cannot miss it. Each loop checks stopping_ under
+  // its own mutex before it waits. Taking
+  // that mutex once, after stopping_ is set, means a loop is either still
+  // before its check (and sees stopping_) or parked (and gets the notify):
+  // a notify sent with no lock can fall between the two, and a loop that
+  // waits with no timeout then never wakes, and stop() never returns.
+  const auto wake = [](std::mutex& m, std::condition_variable& cv) {
+    { std::lock_guard lock(m); }
+    cv.notify_all();
+  };
+  wake(control_m_, control_cv_);
+  wake(work_m_, work_cv_);
+  wake(search_m_, search_cv_);
+  wake(fetch_m_, fetch_cv_);
   if (fetch_thread_.joinable()) fetch_thread_.join();  // a download in flight cancels (stopping_)
-  dl_stop_ = true;
+  {
+    std::lock_guard lock(dl_m_);
+    dl_stop_ = true;
+  }
   dl_cv_.notify_all();
   if (download_thread_.joinable()) download_thread_.join();  // a model download stops between chunks
   if (control_.joinable()) control_.join();
+  // Phone access after the control thread: its tick starts both threads, and
+  // a tick between their joins and its own would start one nobody joins.
+  // Taken out under the lock their starters hold, which see stopping_ and
+  // phone_stopped_ there, and joined without it (start_phone_thread).
+  {
+    std::thread t;
+    {
+      std::lock_guard lock(phone_m_);
+      phone_stopped_ = true;
+      t = std::move(phone_thread_);
+    }
+    if (t.joinable()) t.join();
+  }
   // After the control thread (which sets it): no change is called in after this.
   if (watching_) {
     (void)host_.watch_tree({}, nullptr, nullptr);
@@ -745,6 +785,13 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       if (x < 0 || x > 2) return err(status::invalid_arg);
       reload = settings_.quality != static_cast<std::uint32_t>(x);
       settings_.quality = static_cast<std::uint32_t>(x);
+    } else if (key == "phone_auto") {
+      // Publishing after a scan goes quiet; "Publish now" is always there.
+      {
+        std::lock_guard pl(phone_m_);
+        phone_.auto_on = x != 0;
+      }
+      (void)save_phone_state();
     } else if (key == "pause_on_battery_percent") {
       settings_.battery_percent = static_cast<int>(std::clamp(x, 0.0, 100.0));
     } else if (key == "index_cap_bytes") {
@@ -1541,6 +1588,7 @@ void engine::load_models() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    forget_speech_locked(nullptr);
   }
   end_answer_swap();
   retire(std::move(old_build.model));
@@ -2046,15 +2094,14 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
     if (!replacing) return;
     // The piece went: its models first (a worker holding one finishes its
     // clip with its own copy), then what they answered from.
-    {
-      std::lock_guard lock(models_m_);
+    // The Whisper and what it answers go together, in one section.
+    install_speech(std::string(), [&] {
       sound_ = {};
       speech_ = {};
       publish_pieces_locked();
-    }
+    });
     sounds_.reset(0);
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
+    if (deps_.after_speech_install) deps_.after_speech_install();
     return;
   }
   // The stored vectors and transcripts first, then the models: a job that
@@ -2065,18 +2112,17 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
       sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
     });
   }
-  if (speech.model) {
-    load_speech(speech.spec_key);
-  } else {
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
-  }
-  {
-    std::lock_guard lock(models_m_);
+  // With a Whisper: its transcript where it wrote one, else whichever Whisper
+  // did (Auto on the CPU picks the fast one; the high one may have written
+  // every transcript there is). Without one, no transcript answers. Read
+  // outside the locks; swapped in with the Whisper, in one section.
+  const std::string preferred = speech.model ? speech.spec_key : std::string();
+  install_speech(preferred, [&] {
     sound_ = std::move(sound);
     speech_ = std::move(speech);
     publish_pieces_locked();
-  }
+  });
+  if (deps_.after_speech_install) deps_.after_speech_install();
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -2176,6 +2222,8 @@ void engine::load_labels() {
     }
   }
   if (vocab.empty()) {
+    // A reader writes nothing and embeds nothing: without the file every row passes.
+    if (options_.read_only) return;
     vocab.reserve(std::size_t{count} * dim);
     for (std::string_view w : words) {
       if (stopping_ || reload_models_) return;
@@ -2284,8 +2332,8 @@ void engine::download_loop() {
       dl_cv_.wait(lock, [this] { return dl_kick_ || stopping_.load(); });
       if (stopping_) return;
       dl_kick_ = false;
+      dl_stop_ = false;  // under dl_m_: stop() sets it there, and this must not undo that
     }
-    dl_stop_ = false;
     dl_running_ = true;
     auto last_post = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     const auto progress = [&](const fetch_progress& p) {
@@ -2524,6 +2572,7 @@ void engine::control_loop() {
       last_state = state;
     }
     if (people_changed_.exchange(false)) post(MV_ADDON_EVENT_AI_PEOPLE);
+    phone_tick(walked || backstop);
     std::unique_lock lock(control_m_);
     control_cv_.wait_for(lock, std::chrono::milliseconds(more_tags ? 0 : 1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
@@ -2548,6 +2597,12 @@ void engine::reader_loop() {
   refresh_counts();
   post(MV_ADDON_EVENT_AI_STATUS);
   double last = now_s();
+  if (options_.immutable) {
+    // Nothing can have been committed: no timer, so an idle phone wakes for nothing.
+    std::unique_lock lock(control_m_);
+    control_cv_.wait(lock, [this] { return stopping_.load(); });
+    return;
+  }
   while (!stopping_) {
     {
       std::unique_lock lock(control_m_);
@@ -2584,6 +2639,32 @@ bool engine::load_reader() {
     std::lock_guard lock(settings_m_);
     s = settings_;
   }
+  // People and transcripts need no model: they go in first, so a search by
+  // name, date, place or words said answers while the tower is still loading
+  // (docs/plans/mobile.md §9, "Readiness"), or when it cannot load at all.
+  std::uint32_t quality = 0;
+  for (std::uint32_t q : deps_.qualities()) {
+    if (!deps_.clip_spec_key || deps_.clip_spec_key(q) == active) {
+      quality = q;
+      break;
+    }
+  }
+  // People: names and faces only (search, the query language). The reader
+  // clusters nothing, so the threshold and width it is opened with are unused.
+  std::unique_ptr<faces_db> people;
+  if (s.faces) {
+    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) people = std::move(*f);
+  }
+  reader_speech_spec_ = deps_.speech_spec_key && quality != 0 ? deps_.speech_spec_key(quality) : std::string();
+  {
+    std::lock_guard lock(models_m_);
+    faces_ = std::move(people);
+    speech_ = {};
+    speech_.spec_key = reader_speech_spec_;
+  }
+  load_speech(reader_speech_spec_);  // "": no Whisper here, so no transcript answers
+  catalogue_ready_ = true;
+
   // The tower whose vectors are in the index answers; the reader never
   // changes which (the app decides, and a migration it finishes shows up as
   // a new active_spec).
@@ -2601,12 +2682,6 @@ bool engine::load_reader() {
   for (const std::string& p : answer.meta.generic_prompts) {
     if (auto v = answer.model->embed_text(p)) answer.generic.push_back(std::move(*v));
   }
-  // People: names and faces only (search, the query language). The reader
-  // clusters nothing, so the threshold and width it is opened with are unused.
-  std::unique_ptr<faces_db> people;
-  if (s.faces) {
-    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) people = std::move(*f);
-  }
   loaded_sound sound;
   if (deps_.open_sound_text) {
     if (auto so = deps_.open_sound_text()) {
@@ -2617,8 +2692,6 @@ bool engine::load_reader() {
       }
     }
   }
-  // Speech needs no model: the transcripts are rows, matched as words.
-  reader_speech_spec_ = deps_.speech_spec_key ? deps_.speech_spec_key(answer.meta.quality) : std::string();
   loaded_clip old;
   begin_answer_swap();
   {
@@ -2626,10 +2699,7 @@ bool engine::load_reader() {
     old = std::move(answer_);
     build_ = answer;  // what status reads; a reader builds nothing
     answer_ = std::move(answer);
-    faces_ = std::move(people);
     sound_ = std::move(sound);
-    speech_ = {};
-    speech_.spec_key = reader_speech_spec_;
     publish_pieces_locked();
   }
   reader_frame_ = 0;
@@ -2647,12 +2717,7 @@ bool engine::load_reader() {
     });
   }
   load_docs(true);  // #354 D3: the passage vectors, with the ai-docs piece
-  if (!reader_speech_spec_.empty()) {
-    load_speech(reader_speech_spec_);
-  } else {
-    std::lock_guard lock(speech_m_);
-    speech_rows_.clear();
-  }
+  load_labels();    // the label bar answers here as it does in the app
   end_answer_swap();
   old = {};
   return true;
@@ -2682,7 +2747,7 @@ void engine::catch_up_reader() {
     std::lock_guard lock(models_m_);
     sound_spec = sound_.model ? sound_.spec_key : std::string();
     if (faces_) {
-      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) faces_ = std::move(*f);
+      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128, options_.immutable)) faces_ = std::move(*f);
     }
   }
   begin_answer_swap();
@@ -2712,7 +2777,7 @@ void engine::catch_up_reader() {
       }, reader_meaning_);
     }
   }
-  if (!reader_speech_spec_.empty()) load_speech(reader_speech_spec_);
+  load_speech(reader_speech_spec_);
   load_cues();
   end_answer_swap();
 }
@@ -2938,15 +3003,21 @@ void engine::scan_root(const root_row& root) {
   std::vector<index_db::seen_file> batch;
   std::vector<std::int64_t> changed;
   bool failed = false;
-  const expected walked = walk_dir(root, root.path, root.recursive ? 64 : 0, kinds, gen, batch, changed, failed);
+  std::uint64_t listed = 0;  // every file the walk saw, of any kind
+  const expected walked = walk_dir(root, root.path, root.recursive ? 64 : 0, kinds, gen, batch, changed, failed, &listed);
   if (!walked && walked.error() != status::cancelled) {
     // An unreachable root (a share offline, a card pulled) keeps its index:
     // deleting rows because a drive is absent would throw work away. Settings
     // says so on the folder's row (roots_json "error") instead of "Up to date".
+    // A walk that failed part way is the same, and what it did find is kept,
+    // and indexed now: its new and changed files go to the workers as after
+    // any walk (nothing is gone, and the root is not marked as checked).
+    (void)see_batch(root, batch, gen, changed);
     {
       std::lock_guard lock(status_m_);
       root_errors_.insert(root.id);
     }
+    after_scan(root, {}, changed, false);
     post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
     return;
   }
@@ -2959,12 +3030,26 @@ void engine::scan_root(const root_row& root) {
   if (stopping_ || !walked) return;
   if (!see_batch(root, batch, gen, changed)) failed = true;
   if (failed) return;
+  // A walk that found nothing at all where this root had files is more often a
+  // share that left its empty mount point behind than a folder emptied on
+  // purpose: the rows wait, and the folder's row says it cannot be read.
+  if (listed == 0) {
+    if (const auto unseen = db_->unseen_assets(root.id, gen); unseen && !unseen->empty()) {
+      {
+        std::lock_guard lock(status_m_);
+        root_errors_.insert(root.id);
+      }
+      post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
+      return;
+    }
+  }
+  keep_unlistable(root, gen);
   end_root_scan(root, gen, changed);
 }
 
 expected engine::walk_dir(const root_row& root, const std::string& dir, int depth, walk_kinds kinds,
                           std::int64_t gen, std::vector<index_db::seen_file>& batch,
-                          std::vector<std::int64_t>& changed, bool& failed) {
+                          std::vector<std::int64_t>& changed, bool& failed, std::uint64_t* listed) {
   const auto flush = [&] {
     if (!see_batch(root, batch, gen, changed)) failed = true;
   };
@@ -2973,6 +3058,7 @@ expected engine::walk_dir(const root_row& root, const std::string& dir, int dept
   std::map<std::string, std::vector<host::entry>> by_dir;
   const expected walked = host_.walk(dir, depth, [&](const host::entry& e) {
     if (stopping_) return false;
+    if (listed) ++*listed;
     const std::string key = path_key(e.path);
     const int k = media_kind_of_name(e.path);
     // #355: audio only while the setting is on; off, it costs nothing past the name.
@@ -2980,7 +3066,10 @@ expected engine::walk_dir(const root_row& root, const std::string& dir, int dept
     by_dir[key_parent(key)].push_back(e);
     return true;
   });
-  if (!walked) return walked;
+  // A walk that failed part way (a share dropping) still listed what it
+  // listed: those files are real, so they count. The failure comes back at
+  // the end, and what the walk did not reach is not taken for gone.
+  if (!walked && walked.error() == status::cancelled) return walked;
   if (stopping_) return err(status::cancelled);
   for (auto& [parent, files] : by_dir) {
     std::vector<std::string> names;
@@ -3038,7 +3127,7 @@ expected engine::walk_dir(const root_row& root, const std::string& dir, int dept
       if (batch.size() >= 512) flush();
     }
   }
-  return {};
+  return walked;
 }
 
 void engine::scan_dirs(const root_row& root, const std::map<std::string, std::uint32_t>& dirs) {
@@ -3054,8 +3143,16 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
   std::vector<std::string> plain, trees;  // walked: their unseen rows are gone
   bool failed = false;
   bool root_checked = false;
+  // Cut short (the root stopped answering, the index could not take a batch):
+  // what was found is kept and indexed now, nothing is gone, and the root is
+  // not marked as checked; the next walk does the rest.
+  const auto partial = [&] {
+    if (!failed) (void)see_batch(root, batch, gen, changed);
+    after_scan(root, {}, changed, false);
+  };
   for (const auto& [dir, flags] : dirs) {
-    if (stopping_ || failed) return;
+    if (stopping_) return;
+    if (failed) return partial();
     const std::string key = path_key(dir);
     if (key != root_key && !under(key, root_key)) continue;
     // A root that is only its own folder: what happens below it is not ours
@@ -3068,7 +3165,7 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
       // answers is it gone, and everything that was under it with it.
       if (!root_checked) {
         const auto rs = host_.stat(root.path);
-        if (!rs || !rs->is_directory) return;  // the backstop's walk says "unreadable"
+        if (!rs || !rs->is_directory) return partial();  // the backstop's walk says "unreadable"
         root_checked = true;
       }
       trees.push_back(dir);
@@ -3085,7 +3182,12 @@ void engine::scan_dirs(const root_row& root, const std::map<std::string, std::ui
     }
     (depth > 0 ? trees : plain).push_back(dir);
   }
-  if (!see_batch(root, batch, gen, changed) || failed) return;
+  if (stopping_) return;
+  if (failed || !see_batch(root, batch, gen, changed)) {
+    failed = true;
+    return partial();
+  }
+  if (!trees.empty()) keep_unlistable(root, gen, &trees);
   auto gone = db_->end_scan_dirs(root.id, gen, plain, trees);
   after_scan(root, gone ? *gone : std::vector<std::int64_t>{}, changed);
 }
@@ -3151,8 +3253,10 @@ void engine::scan_photos(const root_row& root) {
   bool failed = false;
   // The library's first walk adds everything; only later walks add news.
   photos_note_new_ = db_->assets_in_root(root.id) > 0;
+  std::uint64_t listed = 0;  // what the enumeration saw
   const expected walked = photos_->enumerate([&](const photos_item& it) {
     if (stopping_ || failed) return false;
+    ++listed;
     batch.push_back(index_db::seen_file{photos_key(it.id), it.mtime, it.size, it.kind});
     {
       std::lock_guard lock(photos_tags_m_);
@@ -3161,8 +3265,35 @@ void engine::scan_photos(const root_row& root) {
     if (batch.size() >= 512 && !see_batch(root, batch, gen, changed)) failed = true;
     return !failed;
   });
-  if (!walked || stopping_ || failed) return;  // keep what is indexed
-  if (!see_batch(root, batch, gen, changed)) return;
+  if (stopping_) return;
+  if (!walked || failed || !see_batch(root, batch, gen, changed)) {
+    // Keep what is indexed, and index what the enumeration did find (as a
+    // folder walk that failed part way does): nothing is gone.
+    if (walked && !failed) failed = true;  // the last batch did not go in
+    if (!walked && !failed) (void)see_batch(root, batch, gen, changed);
+    after_scan(root, {}, changed, false);
+    return;
+  }
+  // An enumeration that saw nothing where this library had assets is more
+  // often a library that is not there (its drive unmounted, the System Photo
+  // Library being switched) than one emptied on purpose: the rows wait, and
+  // the library's row says it cannot be read, as a folder's does. Otherwise
+  // every asset would be dropped, and embedded again when it came back.
+  if (listed == 0) {
+    if (const auto unseen = db_->unseen_assets(root.id, gen); unseen && !unseen->empty()) {
+      {
+        std::lock_guard lock(status_m_);
+        root_errors_.insert(root.id);
+      }
+      after_scan(root, {}, changed, false);
+      post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
+      return;
+    }
+  }
+  {
+    std::lock_guard lock(status_m_);
+    if (root_errors_.erase(root.id) != 0) post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
+  }
   end_root_scan(root, gen, changed);
 }
 
@@ -3255,6 +3386,7 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    forget_speech_locked(&drop);
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -3267,13 +3399,60 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
   work_cv_.notify_all();
 }
 
+// A folder refused to the walk is skipped, and the walk is complete without
+// it, but its files are not gone (a share remounted as another user refuses
+// folders it used to show; their embeddings took hours). Before the rows a
+// walk did not see are deleted, each one's folder is asked: the nearest folder
+// that still exists must list. Only unseen rows cost anything here, and only
+// one listing per folder. `trees`: a walk of only these folders, deep; without
+// it, of the whole root. Either way the folders it started from have listed.
+void engine::keep_unlistable(const root_row& root, std::int64_t gen, const std::vector<std::string>* trees) {
+  auto unseen = db_->unseen_assets(root.id, gen, trees);
+  if (!unseen || unseen->empty()) return;
+  std::map<std::string, bool> readable;  // folder -> can a listing of it be believed
+  if (trees) {
+    for (const std::string& t : *trees) readable[t] = true;
+  } else {
+    readable[root.path] = true;
+  }
+  const auto can_read = [&](const std::string& start) {
+    if (const auto it = readable.find(start); it != readable.end()) return it->second;
+    std::string dir = start;
+    bool ok = false;
+    for (;;) {
+      if (const auto known = readable.find(dir); known != readable.end()) {
+        ok = known->second;
+        break;
+      }
+      // A file where the folder was says the folder is gone, as no name at all does.
+      if (const auto st = host_.stat(dir); st && st->is_directory) {
+        ok = static_cast<bool>(host_.walk(dir, 0, [](const host::entry&) { return true; }));
+        readable.emplace(dir, ok);
+        break;
+      }
+      const std::size_t slash = dir.find_last_of("/\\");
+      if (dir.size() <= root.path.size() || slash == std::string::npos) break;  // not even the root answers
+      dir.resize(slash);
+    }
+    readable.emplace(start, ok);
+    return ok;
+  };
+  std::vector<std::int64_t> keep;
+  for (const auto& [id, path] : *unseen) {
+    if (stopping_) return;
+    const std::size_t slash = path.find_last_of("/\\");
+    if (slash != std::string::npos && !can_read(path.substr(0, slash))) keep.push_back(id);
+  }
+  if (!keep.empty()) (void)db_->mark_seen(keep, gen);
+}
+
 void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed) {
   auto gone = db_->end_scan(root.id, gen);
   after_scan(root, gone ? *gone : std::vector<std::int64_t>{}, changed);
 }
 
 void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& gone,
-                        const std::vector<std::int64_t>& changed) {
+                        const std::vector<std::int64_t>& changed, bool walked_whole) {
   if (!gone.empty()) {
     std::lock_guard lock(assets_m_);
     for (std::int64_t id : gone) erase_asset_locked(id);
@@ -3297,6 +3476,7 @@ void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& g
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    forget_speech_locked(&drop);
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -3311,7 +3491,7 @@ void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& g
       faces_scanned_.erase(id);
     }
   }
-  (void)db_->touch_root(root.id, unix_now());
+  if (walked_whole) (void)db_->touch_root(root.id, unix_now());
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -4327,12 +4507,15 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
                             next_ms)) {
       return;
     }
-    {
-      std::lock_guard lock(speech_m_);
-      for (const speech_in& r : rows) {
-        speech_rows_.push_back(speech_row{item.asset.id, r.start_ms, r.text, infer::speech_words(r.text)});
-      }
-    }
+    if (deps_.after_speech_commit) deps_.after_speech_commit();
+    // One rule for what memory holds of a clip: exactly what
+    // index_db::each_speech reads for it under the Whisper chosen now (not the
+    // one this worker started with). Every committed window, with or without a
+    // Whisper, marks the clip dirty; settling reads dirty clips outside the
+    // locks and installs each one unless it was marked again meanwhile.
+    note_speech_commit(item.asset.id);
+    settle_speech();
+    if (deps_.after_speech_settle) deps_.after_speech_settle();
     {
       std::lock_guard lock(status_m_);
       units_done_ += static_cast<double>(consumed) / 16000.0;
@@ -5109,6 +5292,7 @@ expected engine::root_remove(std::int64_t id) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    forget_speech_locked(&drop);
     cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
                                    [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
                     cue_rows_.end());
@@ -5197,6 +5381,7 @@ expected engine::clear_index() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    forget_speech_locked(nullptr);
     cue_rows_.clear();
   }
   {
@@ -5235,6 +5420,8 @@ namespace {
 std::string machine_label() {
 #if defined(_WIN32)
   std::string os = "Windows";
+#elif defined(__APPLE__) && !TARGET_OS_OSX
+  std::string os = "iOS";
 #elif defined(__APPLE__)
   std::string os = "macOS";
 #else
@@ -5318,6 +5505,966 @@ std::string engine::transfer_json() const {
 }
 
 void engine::transfer_cancel() noexcept { transfer_cancel_ = true; }
+
+// ---- Phone access (docs/plans/mobile.md §5, §6) ----------------------------------------
+
+namespace {
+
+std::string random_id() {
+  std::random_device rd;
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  for (int i = 0; i < 32; ++i) out.push_back(kHex[rd() & 15u]);
+  return out;
+}
+
+}  // namespace
+
+// Where each shared file of a built generation comes from, beside it, so a
+// generation that waits for the share can still be delivered after a restart.
+static bool write_shared_list(const std::string& file, const std::vector<catalog::shared_file>& list) {
+  json::writer w;
+  w.begin_array();
+  for (const catalog::shared_file& f : list) {
+    w.begin_object();
+    w.key("source").string(f.source);
+    w.key("rel").string(f.rel);
+    w.key("size").integer(static_cast<std::int64_t>(f.size));
+    w.end_object();
+  }
+  w.end_array();
+  std::ofstream out(fs_path(file), std::ios::binary | std::ios::trunc);
+  out << w.str();
+  out.flush();
+  return static_cast<bool>(out);
+}
+
+static double wall_now() {
+  return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void engine::load_phone_state() {
+  std::ifstream in(fs_path(join(data_dir_, "phone/state.json")), std::ios::binary);
+  if (!in) return;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const auto doc = json::parse(ss.str(), 4);
+  if (!doc || doc->k != json::kind::object) return;
+  std::lock_guard lock(phone_m_);
+  if (const std::string* s = doc->str("library_id")) phone_.library_id = *s;
+  if (const std::string* s = doc->str("destination")) phone_.destination = *s;
+  phone_.generation = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("generation").value_or(0)));
+  phone_.high_water = std::max(phone_.generation,
+                               static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("high_water").value_or(0))));
+  phone_.epoch = static_cast<std::uint64_t>(std::max<std::int64_t>(1, doc->integer("epoch").value_or(1)));
+  if (const std::string* s = doc->str("fingerprint")) phone_.fingerprint = *s;
+  phone_.published_unix = doc->integer("published").value_or(0);
+  phone_.assets = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("assets").value_or(0)));
+  phone_.auto_on = doc->boolean("auto").value_or(true);
+  phone_.waiting = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("waiting").value_or(0)));
+  phone_.waiting_assets = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("waiting_assets").value_or(0)));
+  phone_.waiting_created = doc->integer("waiting_created").value_or(0);
+  if (const std::string* s = doc->str("stamp")) phone_.stamp = *s;
+  if (const std::string* s = doc->str("waiting_stamp")) phone_.waiting_stamp = *s;
+  if (const std::string* s = doc->str("share_device")) phone_.share_device = *s;
+  phone_.thumbs_left = doc->boolean("thumbs_left").value_or(false);
+  if (const json::value* v = doc->find("last_attempt"); v && v->k == json::kind::number) phone_.last_attempt = v->d;
+  if (const json::value* list = doc->find("kept_roots"); list && list->k == json::kind::array) {
+    for (const json::value& v : list->a) {
+      catalog::root_map m;
+      m.id = v.integer("id").value_or(0);
+      if (const std::string* x = v.str("path")) m.path = *x;
+      if (const std::string* x = v.str("uuid")) m.uuid = *x;
+      if (const std::string* x = v.str("share")) m.share = *x;
+      if (const std::string* x = v.str("sub")) m.sub = *x;
+      phone_.roots.push_back(std::move(m));
+    }
+  }
+  if (const json::value* roots = doc->find("roots"); roots && roots->k == json::kind::object) {
+    for (const auto& [key, v] : roots->o) {
+      if (v.k == json::kind::string) phone_.root_ids[key] = v.s;
+    }
+  }
+}
+
+bool engine::save_phone_state() const {
+  // One writer at a time, each writing what is current when it holds this: a
+  // run that just ended and the next one may both save, and the older
+  // snapshot must never land last (it could lower high_water).
+  std::lock_guard saving(phone_save_m_);
+  phone_view v;
+  {
+    std::lock_guard lock(phone_m_);
+    v = phone_;
+  }
+  return write_phone_state(v);
+}
+
+// A run's last step: its state is on disk before anyone can see the run has
+// ended, and the new state and the end appear together. Nothing of the run
+// happens after `running` reads false, so whoever starts the next one may
+// join this thread at once.
+void engine::finish_phone(const std::function<void(phone_view&)>& change, const std::string& error) {
+  std::lock_guard saving(phone_save_m_);
+  phone_view v;
+  {
+    std::lock_guard lock(phone_m_);
+    v = phone_;
+  }
+  change(v);
+  (void)write_phone_state(v);
+  std::lock_guard lock(phone_m_);
+  change(phone_);
+  phone_.running = false;
+  phone_.phase.clear();
+  phone_.error = error;
+}
+
+// The one way a publisher thread starts. The old thread is joined with no
+// lock held: it may still take phone_m_ on its way out.
+bool engine::start_phone_thread(const char* phase, const std::function<bool(const phone_view&)>& admit,
+                                std::function<void()> body) {
+  std::thread old;
+  {
+    std::lock_guard lock(phone_m_);
+    if (phone_.running || phone_stopped_ || stopping_) return false;
+    if (admit && !admit(phone_)) return false;
+    phone_.running = true;
+    phone_.fraction = 0;
+    phone_.phase = phase;
+    phone_.error.clear();
+    phone_cancel_ = false;
+    old = std::move(phone_thread_);
+  }
+  if (old.joinable()) old.join();  // it has ended: `running` was false
+  // Made and stored under one hold of phone_m_: the new thread cannot end
+  // (that takes phone_m_) before phone_thread_ owns it, so no other starter
+  // can see it ended and find an empty slot to fill.
+  std::lock_guard lock(phone_m_);
+  if (phone_stopped_ || stopping_) {  // stop() came between: nothing starts now
+    phone_.running = false;
+    phone_.phase.clear();
+    phone_.error = "cancelled";
+    return false;
+  }
+  phone_thread_ = std::thread([this, run = std::move(body)] {
+    if (options_.background_threads) platform::enter_background();  // §6: background only
+    // Off the ABI's guard: nothing may leave this thread, or the app goes with it.
+    try {
+      run();
+    } catch (...) {
+      std::lock_guard done(phone_m_);
+      phone_.running = false;
+      phone_.phase.clear();
+      phone_.error = "failed";
+    }
+    if (deps_.phone_thread_exit_hook) deps_.phone_thread_exit_hook();
+  });
+  if (deps_.phone_start_hook) deps_.phone_start_hook();  // tests: the thread exists, the slot is ours
+  return true;
+}
+
+bool engine::write_phone_state(const phone_view& v) const {
+  if (deps_.phone_save_hook) deps_.phone_save_hook();
+  json::writer w;
+  {
+    w.begin_object();
+    w.key("library_id").string(v.library_id);
+    w.key("destination").string(v.destination);
+    w.key("generation").integer(static_cast<std::int64_t>(v.generation));
+    w.key("high_water").integer(static_cast<std::int64_t>(v.high_water));
+    w.key("epoch").integer(static_cast<std::int64_t>(v.epoch));
+    w.key("fingerprint").string(v.fingerprint);
+    w.key("published").integer(v.published_unix);
+    w.key("assets").integer(static_cast<std::int64_t>(v.assets));
+    w.key("auto").boolean(v.auto_on);
+    w.key("waiting").integer(static_cast<std::int64_t>(v.waiting));
+    w.key("waiting_assets").integer(static_cast<std::int64_t>(v.waiting_assets));
+    w.key("waiting_created").integer(v.waiting_created);
+    w.key("stamp").string(v.stamp);
+    w.key("waiting_stamp").string(v.waiting_stamp);
+    w.key("thumbs_left").boolean(v.thumbs_left);
+    w.key("share_device").string(v.share_device);
+    w.key("last_attempt").number(v.last_attempt);
+    w.key("kept_roots").begin_array();
+    for (const catalog::root_map& m : v.roots) {
+      w.begin_object();
+      w.key("id").integer(m.id);
+      w.key("path").string(m.path);
+      w.key("uuid").string(m.uuid);
+      w.key("share").string(m.share);
+      w.key("sub").string(m.sub);
+      w.end_object();
+    }
+    w.end_array();
+    w.key("roots").begin_object();
+    for (const auto& [key, uuid] : v.root_ids) w.key(key).string(uuid);
+    w.end_object();
+    w.end_object();
+  }
+  const std::string dir = join(data_dir_, "phone");
+  std::error_code ec;
+  std::filesystem::create_directories(fs_path(dir), ec);
+  const std::string tmp = join(dir, "state.json.tmp");
+  {
+    std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out << w.str();
+    out.flush();
+    if (!out) return false;
+  }
+  std::filesystem::rename(fs_path(tmp), fs_path(join(dir, "state.json")), ec);
+  return !ec;
+}
+
+expected engine::phone_publish(const std::string& destination) {
+  if (options_.read_only) return err(status::unsupported_format);
+  if (destination.empty()) return err(status::invalid_arg);
+  if (stopping_.load()) return err(status::cancelled);  // quitting: nothing new starts
+  const bool started = start_phone_thread(
+      "building",
+      [&](const phone_view&) {
+        phone_.destination = destination;  // under phone_m_, held by the caller
+        return true;
+      },
+      [this, destination] { run_phone_publish(destination, false); });
+  if (!started && stopping_.load()) return err(status::cancelled);
+  return started ? expected{} : err(status::busy);
+}
+
+void engine::phone_cancel() noexcept {
+  phone_cancel_ = true;
+  // The person said stop: neither the next poll nor the next quiet scan undoes it at once.
+  phone_cancelled_at_ =
+      std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string engine::phone_json() const {
+  // Local search's folders, for Phone access's "indexed" line on a backup folder
+  // (docs/plans/mobile.md §10b.1, B7). Taken first: status_m_ is never held with phone_m_.
+  std::vector<std::string> search_roots;
+  {
+    std::lock_guard roots(status_m_);
+    for (const auto& r : roots_cache_) {
+      if (r.enabled && r.recursive) search_roots.push_back(r.path);
+    }
+  }
+  json::writer w;
+  std::lock_guard lock(phone_m_);
+  w.begin_object();
+  w.key("running").boolean(phone_.running);
+  w.key("phase").string(phone_.phase);
+  w.key("fraction").number(phone_.fraction);
+  w.key("error").string(phone_.error);
+  w.key("destination").string(phone_.destination);
+  w.key("generation").integer(static_cast<std::int64_t>(phone_.generation));
+  w.key("fingerprint").string(phone_.fingerprint);
+  w.key("published").integer(phone_.published_unix);
+  w.key("assets").integer(static_cast<std::int64_t>(phone_.assets));
+  w.key("waiting").integer(static_cast<std::int64_t>(phone_.waiting));
+  w.key("auto").boolean(phone_.auto_on);
+  w.key("runs").integer(static_cast<std::int64_t>(phone_.runs));
+  w.key("thumbs_made").integer(static_cast<std::int64_t>(phone_.thumbs_made));
+  w.key("thumbs_left").boolean(phone_.thumbs_left);
+  w.key("needs_bytes").integer(static_cast<std::int64_t>(phone_.needs_bytes));
+  w.key("deliver_attempts").integer(static_cast<std::int64_t>(phone_.deliver_attempts));
+  // What the app's Phone access needs (docs/plans/phone-in-the-app.md): who
+  // this library is, and the newest generation built here, for the nearby copy.
+  w.key("library_id").string(phone_.library_id);
+  w.key("epoch").integer(static_cast<std::int64_t>(phone_.epoch));
+  if (const std::uint64_t newest = std::max(phone_.waiting, phone_.generation); newest != 0) {
+    w.key("gen_dir").string(data_dir_ + "/phone/gen/" + std::to_string(newest));
+  }
+  w.key("search_roots").begin_array();
+  for (const auto& p : search_roots) w.string(p);
+  w.end_array();
+  w.end_object();
+  return w.take();
+}
+
+void engine::phone_publish_auto() {
+  // The control thread: starting a thread is all it does here.
+  std::string destination;
+  {
+    std::lock_guard lock(phone_m_);
+    destination = phone_.destination;
+  }
+  (void)start_phone_thread("building", {}, [this, destination] { run_phone_publish(destination, true); });
+}
+
+void engine::phone_deliver_waiting() {
+  (void)start_phone_thread("sending", [](const phone_view& v) { return v.waiting != 0; },
+                           [this] { run_phone_deliver(); });
+}
+
+std::string engine::phone_stamp(std::span<const std::int64_t> roots) const {
+  // What a generation would carry: its folders' rows and the people in them,
+  // never `seen`, so a walk that finds nothing moves nothing here. Runs when a
+  // scan has just ended, never on a timer.
+  // "" while People is on and its database is not open yet: not comparable.
+  bool people = false;
+  {
+    std::lock_guard lock(settings_m_);
+    people = settings_.faces;
+  }
+  std::string names;
+  {
+    std::lock_guard lock(models_m_);
+    if (people && !faces_) return {};
+    if (faces_) names = faces_->people_stamp(db_->asset_ids_in(roots));
+  }
+  return db_->content_stamp(db_->meta("active_spec"), roots) + "|" + names;
+}
+
+std::vector<std::int64_t> engine::phone_carried_roots() {
+  std::vector<catalog::root_map> kept;
+  std::string device;
+  {
+    std::lock_guard lock(phone_m_);
+    kept = phone_.roots;
+    device = phone_.share_device;
+  }
+  std::vector<std::int64_t> out;
+  for (const root_row& r : db_->roots()) {
+    if (!r.enabled || is_photos_key(r.path)) continue;
+    bool on = std::any_of(kept.begin(), kept.end(), [&](const catalog::root_map& m) { return m.id == r.id; });
+    if (!on && !device.empty()) {
+      // A folder added since: asked once, and not at all while its volume is away.
+      const std::string key = device + '\n' + r.path;  // another share is another question
+      const auto known = phone_root_on_share_.find(key);
+      if (known != phone_root_on_share_.end()) {
+        on = known->second;
+      } else if (auto v = host_.volume_of(r.path)) {
+        on = device == std::string_view(v->device_key);
+        phone_root_on_share_[key] = on;
+      }
+    }
+    if (on) out.push_back(r.id);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// The control loop's tick. Nothing here waits, and it adds no wakeup: the loop
+// runs anyway. While nothing changed it is a lock and a few comparisons.
+void engine::phone_tick(bool walked) {
+  if (options_.read_only) return;
+  std::uint64_t waiting = 0;
+  std::string published_stamp;
+  bool thumbs_left = false;
+  double last_attempt = 0;
+  bool running = false;
+  {
+    std::lock_guard lock(phone_m_);
+    if (!phone_.auto_on || phone_.destination.empty()) return;
+    if (phone_.generation == 0 && phone_.waiting == 0) return;  // never turned on
+    running = phone_.running;
+    waiting = phone_.waiting;
+    // What is on its way counts: a change is against the newest generation built.
+    published_stamp = waiting != 0 ? phone_.waiting_stamp : phone_.stamp;
+    thumbs_left = phone_.thumbs_left;
+    last_attempt = phone_.last_attempt;
+  }
+  const double t = now_s();
+  bool idle = false;
+  {
+    std::lock_guard wl(work_m_);
+    idle = queue_exhausted_ && busy_workers_ == 0;
+  }
+  // Noted even while a publish runs: its stamp was taken before this scan.
+  if (walked) phone_check_ = true;
+  if (!idle) {
+    phone_was_busy_ = true;
+    phone_quiet_since_ = 0;
+    return;
+  }
+  if (phone_was_busy_) {
+    phone_was_busy_ = false;
+    phone_check_ = true;
+  }
+  if (running) return;
+  if (phone_recheck_.exchange(false)) phone_check_ = true;
+  if (phone_check_) {
+    const std::string stamp = phone_stamp(phone_carried_roots());
+    if (!stamp.empty()) {
+      phone_check_ = false;
+      phone_changed_ = stamp != published_stamp;
+      if (phone_changed_) phone_quiet_since_ = t;
+    }
+  }
+  const double now_wall = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+  if (now_wall - phone_cancelled_at_.load() < deps_.phone_min_interval_s) return;
+  // Anything newer goes first: what it builds is what should arrive.
+  const bool quiet = !phone_changed_ || (phone_quiet_since_ != 0 && t - phone_quiet_since_ >= deps_.phone_quiet_s);
+  if ((phone_changed_ || thumbs_left) && quiet && now_wall - last_attempt >= deps_.phone_min_interval_s &&
+      !power_state().on_battery) {  // as indexing: background work waits for power
+    phone_changed_ = false;
+    phone_publish_auto();
+    return;
+  }
+  if (waiting != 0 && t >= phone_next_poll_ && !power_state().on_battery) {
+    phone_next_poll_ = t + deps_.phone_share_poll_s;
+    phone_deliver_waiting();
+  }
+}
+
+result<std::vector<std::string>> engine::stored_place_matches(const std::string& place) {
+  const std::string want = text::fold(place);
+  if (want.size() < 2) return std::vector<std::string>{};
+  const bool prefix = want.size() >= 4;
+  std::unordered_map<std::string, bool> known;
+  std::vector<std::string> out;
+  db_->each_place([&](const std::string& path, const std::string& label) {
+    auto [it, fresh] = known.try_emplace(label, false);
+    if (fresh) {
+      // As Places rules: a whole name of the label, or the start of one from
+      // four letters; a point at sea is no place to look for.
+      const std::string folded = text::fold(label);
+      if (!folded.starts_with("at sea")) {
+        std::size_t i = 0;
+        while (i <= folded.size() && !it->second) {
+          std::size_t end = folded.find(',', i);
+          if (end == std::string::npos) end = folded.size();
+          std::size_t a = i, b = end;
+          while (a < b && folded[a] == ' ') ++a;
+          while (b > a && folded[b - 1] == ' ') --b;
+          const std::string_view part(folded.data() + a, b - a);
+          it->second = part == want || (prefix && part.starts_with(want));
+          i = end + 1;
+        }
+      }
+    }
+    if (it->second) out.push_back(path);
+  });
+  return out;
+}
+
+// A JPEG-512 for the catalogue: the viewer's when it has one, otherwise made
+// now and stored nowhere, so a publish does not fill the viewer's cache.
+result<std::vector<std::uint8_t>> engine::phone_thumb(const catalog::thumb_want& w) {
+  if (auto hit = host_.thumbnail_jpeg(w.path, -1)) return hit;
+  // A clip's tile is its poster, as export_thumb; a document's its first page.
+  const std::int64_t ms = w.kind == static_cast<int>(asset_kind::video)
+                              ? std::min<std::int64_t>(std::max<std::int64_t>(w.duration_ms, 0) / 10, 3000)
+                              : w.kind == static_cast<int>(asset_kind::document) ? 0 : -1;
+  if (ms >= 0) {
+    if (auto hit = host_.thumbnail_jpeg(w.path, ms)) return hit;
+  }
+  if (stopping_ || phone_cancel_) return err(status::cancelled);
+  if (host_.has_thumbnail_make()) return host_.thumbnail_make(w.path, ms);
+  transfer::thumb_want t;  // an older host: its cache is the only way
+  t.path = w.path;
+  t.video = w.kind == static_cast<int>(asset_kind::video);
+  t.duration_ms = w.duration_ms;
+  return export_thumb(t, phone_cancel_);
+}
+
+void engine::fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots,
+                               const std::string& destination, bool& left) {
+  left = false;
+  auto wants = store.missing(join(data_dir_, "index.db"), roots, host_.has_jpeg_shrink());
+  if (!wants || wants->empty()) return;
+  const auto cancelled = [this] { return stopping_.load() || phone_cancel_.load(); };
+  catalog::thumb_fill_io io;
+  io.jpeg512 = [this](const catalog::thumb_want& w) { return phone_thumb(w); };
+  if (host_.has_jpeg_shrink()) {
+    io.tiny = [this](std::span<const std::uint8_t> jpeg) {
+      return host_.jpeg_shrink(jpeg, catalog::kTinyEdge, catalog::kTinyQuality);
+    };
+  }
+  // As Import yields: for as long as the viewer wants the machine.
+  io.yield = [this, cancelled] {
+    while (!cancelled() && host_.should_yield()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  };
+  io.share_present = [&destination] {
+    std::error_code ec;
+    return std::filesystem::is_directory(fs_path(destination), ec);
+  };
+  const catalog::control c{cancelled, [this](double f) {
+                             std::lock_guard lock(phone_m_);
+                             phone_.phase = "thumbnails";
+                             phone_.fraction = f;
+                           },
+                           {}};
+  auto done = store.fill(*wants, io, c, deps_.phone_thumb_budget_s);
+  if (done) {
+    std::lock_guard lock(phone_m_);
+    phone_.thumbs_made += done->made;
+  }
+  left = !done || !done->complete;
+}
+
+result<std::vector<std::uint8_t>> engine::phone_key(bool make) {
+  if (deps_.key_store) {
+    auto store = deps_.key_store();
+    return catalog::publisher_key(store.get(), nullptr, make);
+  }
+  auto store = driftwire::secrets::os_store(catalog::kPublisherService);
+  auto legacy = driftwire::secrets::os_store(catalog::kLegacyService);
+  return catalog::publisher_key(store.get(), legacy.get(), make);
+}
+
+// The share's library.json is the app's (Phone access writes it when the
+// person chooses the folder, and follows a key's move). Signed with this key,
+// its id is the one to publish under while nothing has been, and its epoch
+// only ever goes forward. Whether anything changed (saved).
+bool engine::adopt_phone_library(const std::string& destination, std::span<const std::uint8_t> public_key) {
+  auto lib = catalog::read_library(destination);
+  if (!lib || lib->public_key != catalog::to_hex(public_key)) return false;
+  bool changed = false;
+  {
+    std::lock_guard lock(phone_m_);
+    const bool never_published = phone_.generation == 0 && phone_.waiting == 0;
+    if (lib->library_id == phone_.library_id) {
+      if (lib->epoch > phone_.epoch) {
+        phone_.epoch = lib->epoch;
+        changed = true;
+      }
+    } else if (never_published || phone_.library_id.empty()) {
+      phone_.library_id = lib->library_id;
+      phone_.epoch = lib->epoch;
+      changed = true;
+    }
+  }
+  if (changed) (void)save_phone_state();
+  return changed;
+}
+
+void engine::run_phone_publish(const std::string& destination, bool automatic) {
+  const auto finish = [&](const std::string& why) {
+    std::lock_guard lock(phone_m_);
+    phone_.running = false;
+    phone_.phase.clear();
+    phone_.error = why;
+  };
+  const auto set_progress = [this](const char* phase, double f) {
+    std::lock_guard lock(phone_m_);
+    phone_.phase = phase;
+    phone_.fraction = f;
+  };
+  std::string library_id;
+  std::map<std::string, std::string> ids;
+  std::vector<catalog::root_map> kept_roots;
+  {
+    std::lock_guard lock(phone_m_);
+    if (phone_.library_id.empty()) phone_.library_id = random_id();
+    library_id = phone_.library_id;
+    ids = phone_.root_ids;
+    kept_roots = phone_.roots;
+    phone_.last_attempt =
+        std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    ++phone_.runs;
+  }
+  const std::string active = db_->meta("active_spec");
+  if (active.empty()) return finish("no_index");
+
+  // The private key lives only in the OS's store. A build that has none (a
+  // development build without the entitlement) cannot publish: a key made for
+  // one run would be a new publisher to every phone next time.
+  // The key is the app's Phone access's (catalogue/publisher.h), shared with it.
+  auto signing = phone_key(true);
+  if (!signing) return finish("no_key_store");
+  const std::vector<std::uint8_t> secret = std::move(*signing);
+  const std::vector<std::uint8_t> public_key = catalog::public_of(secret);
+  if (public_key.empty()) return finish("no_key_store");
+  {
+    std::lock_guard lock(phone_m_);
+    phone_.fingerprint = catalog::fingerprint(public_key);
+  }
+  if (adopt_phone_library(destination, public_key)) {
+    std::lock_guard lock(phone_m_);
+    library_id = phone_.library_id;
+  }
+
+  // Away is not an error yet: the Mac is carried. A library that has reached
+  // the share before builds from what it knew then, and waits.
+  std::optional<mv_addon_volume> there;
+  if (auto v = host_.volume_of(destination)) there = *v;
+  auto published = there ? catalog::published_generation(destination, library_id, public_key)
+                         : result<std::uint64_t>(err(status::io));
+  if (!published && published.error() == status::permission_denied) return finish("other_library");
+  const bool reachable = there && published;
+  if (!reachable && kept_roots.empty()) return finish("unreachable");
+
+  std::vector<catalog::root_map> roots;
+  if (reachable) {
+    // Only what the NAS holds: a folder on this Mac's own disk, or the Photos
+    // library, is nothing a phone could ever open from the share.
+    for (const root_row& r : db_->roots()) {
+      if (!r.enabled || is_photos_key(r.path)) continue;
+      auto v = host_.volume_of(r.path);
+      if (!v || std::string_view(v->device_key) != std::string_view(there->device_key)) continue;
+      catalog::root_map m;
+      m.id = r.id;
+      m.path = r.path;
+      const std::string key = std::to_string(r.id);
+      auto it = ids.find(key);
+      if (it == ids.end()) it = ids.emplace(key, random_id()).first;
+      m.uuid = it->second;
+      // "dev://me@nas.local/Photos": the share's name and nothing about who mounted it.
+      std::string_view device(v->device_key);
+      while (!device.empty() && (device.back() == '/' || device.back() == '\\')) device.remove_suffix(1);
+      const std::size_t slash = device.find_last_of("/\\");
+      m.share = std::string(slash == std::string_view::npos ? device : device.substr(slash + 1));
+      std::string sub = r.path.substr(std::min(r.path.size(), std::string_view(v->root_utf8).size()));
+      std::replace(sub.begin(), sub.end(), '\\', '/');
+      while (!sub.empty() && sub.front() == '/') sub.erase(sub.begin());
+      m.sub = std::move(sub);
+      roots.push_back(std::move(m));
+    }
+  } else {
+    const auto rows = db_->roots();
+    for (const catalog::root_map& m : kept_roots) {
+      const bool still = std::any_of(rows.begin(), rows.end(), [&](const root_row& r) { return r.id == m.id && r.enabled; });
+      if (still) roots.push_back(m);
+    }
+  }
+  if (roots.empty()) return finish("no_folders");
+
+  // Stamped before the snapshot: what lands during the build is seen as a
+  // change by the next quiet scan, never lost.
+  std::vector<std::int64_t> carried;
+  for (const catalog::root_map& r : roots) carried.push_back(r.id);
+  std::sort(carried.begin(), carried.end());
+  const std::string stamp = phone_stamp(carried);  // "" (People still loading) never reads as "the same"
+  bool nothing_new = false;
+  {
+    std::lock_guard lock(phone_m_);
+    nothing_new = automatic && stamp == (phone_.waiting != 0 ? phone_.waiting_stamp : phone_.stamp);
+  }
+
+  const std::string local = join(data_dir_, "phone/gen");
+  std::uint64_t made_before = 0;
+  {
+    std::lock_guard lock(phone_m_);
+    made_before = phone_.thumbs_made;
+  }
+  std::unique_ptr<catalog::thumb_store> thumbs;
+  if (auto opened = catalog::thumb_store::open(join(data_dir_, "phone/thumbs"))) thumbs = std::move(*opened);
+  bool thumbs_left = false;
+  if (thumbs) {
+    std::vector<std::int64_t> root_ids;
+    for (const catalog::root_map& r : roots) root_ids.push_back(r.id);
+    if (reachable) {
+      (void)thumbs->reconcile(destination);
+      fill_phone_thumbs(*thumbs, root_ids, destination, thumbs_left);
+    }
+  }
+  std::uint64_t made_after = 0;
+  {
+    std::lock_guard lock(phone_m_);
+    made_after = phone_.thumbs_made;
+    if (reachable) phone_.thumbs_left = thumbs_left;  // away, nothing was tried: what was left still is
+  }
+  // An hourly run for thumbnails that made none has nothing to tell a phone.
+  if (nothing_new && made_after == made_before) return finish(reachable ? "" : "unreachable");
+  if (stopping_ || phone_cancel_) {
+    (void)save_phone_state();
+    return finish("cancelled");
+  }
+  if (thumbs) {
+    if (const expected sealed = thumbs->seal(); !sealed) return finish("failed");
+  }
+
+  std::uint64_t generation = 0;
+  std::uint64_t epoch = 1;
+  {
+    std::lock_guard lock(phone_m_);
+    phone_.root_ids = ids;
+    phone_.roots = roots;
+    if (there) phone_.share_device = there->device_key;
+    generation = std::max(phone_.high_water, published ? *published : 0) + 1;
+    phone_.high_water = generation;  // saved below, before the NAS sees it
+    epoch = phone_.epoch;
+  }
+  const catalog::control building{
+      [this] { return stopping_.load() || phone_cancel_.load(); },
+      [&](double f) { set_progress("building", f); },
+      [this] {
+        for (int i = 0; i < 500 && !stopping_ && !phone_cancel_ && host_.should_yield(); ++i) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+      },
+  };
+  catalog::build_options b;
+  b.index_db = join(data_dir_, "index.db");
+  b.out_dir = join(local, std::to_string(generation));
+  b.library_id = library_id;
+  b.generation = generation;
+  b.epoch = epoch;
+  b.created_unix = static_cast<std::int64_t>(std::time(nullptr));
+  b.active_spec = active;
+  b.labels_file = join(data_dir_, "labels.f32");
+  bool people = false;
+  // The Whisper this Mac reads `said:` from first (load_speech), so a phone
+  // prefers the same transcript wherever a clip has two.
+  std::string speech_spec;
+  {
+    std::lock_guard lock(models_m_);
+    if (speech_.model) speech_spec = speech_.spec_key;
+  }
+  {
+    json::writer w;
+    std::lock_guard lock(settings_m_);
+    w.begin_object();
+    w.key("speech_spec").string(speech_spec);
+    w.key("audio_files").boolean(settings_.audio_files);
+    w.key("document_files").boolean(settings_.document_files);
+    w.key("tier").string(settings_.tier);
+    people = settings_.faces;
+    w.key("faces").boolean(people);
+    w.end_object();
+    b.settings_json = w.take();
+  }
+  b.roots = roots;
+  b.thumbs = thumbs.get();
+  if (people) b.faces_db = join(data_dir_, "faces.db");
+  b.place_labels = [this](std::span<const std::pair<double, double>> points) -> result<std::vector<std::string>> {
+    std::vector<mv_addon_route_point> at;
+    at.reserve(points.size());
+    for (const auto& p : points) at.push_back({p.first, p.second});
+    return host_.place_labels(at);
+  };
+  b.model_spec = active;
+  if (deps_.text_tower_files) b.model_files = deps_.text_tower_files(active);
+  auto built = catalog::build(b, building);
+  if (!built) return finish(built.error() == status::cancelled ? "cancelled" : "failed");
+  if (!write_shared_list(b.out_dir + ".shared.json", built->shared)) return finish("failed");
+
+  // Only the newest waits: a phone gains nothing from an older one.
+  {
+    std::error_code ec;
+    const std::string keep = std::to_string(generation);
+    for (std::filesystem::directory_iterator it(fs_path(local), ec), end; !ec && it != end; it.increment(ec)) {
+      const auto name = it->path().filename();
+      if (name != fs_path(keep) && name != fs_path(keep + ".shared.json")) {
+        std::error_code e2;
+        std::filesystem::remove_all(it->path(), e2);
+      }
+    }
+  }
+  const auto waits = [&](phone_view& v) {
+    v.waiting = generation;
+    v.waiting_stamp = stamp;
+    v.waiting_assets = built->assets;
+    v.waiting_created = b.created_unix;
+    v.destination = destination;
+  };
+  // With the share away the run ends here: saved, then waiting and ended in one
+  // step, so nobody sees it waiting while a publish still says busy.
+  if (!reachable) return finish_phone(waits, "unreachable");
+  {
+    std::lock_guard lock(phone_m_);
+    waits(phone_);
+  }
+  // The library's identity reaches this disk before it can reach the NAS: a
+  // quit during the first delivery must not leave a folder this library no
+  // longer recognises as its own.
+  if (!save_phone_state()) return finish("failed");
+
+  thumbs.reset();  // no database stays open across the copy
+  deliver_phone_generation(secret, public_key, library_id, finish, set_progress);
+}
+
+void engine::run_phone_deliver() {
+  const auto finish = [&](const std::string& why) {
+    std::lock_guard lock(phone_m_);
+    phone_.running = false;
+    phone_.phase.clear();
+    if (!why.empty() || phone_.error.empty()) phone_.error = why;
+  };
+  const auto set_progress = [this](const char* phase, double f) {
+    std::lock_guard lock(phone_m_);
+    phone_.phase = phase;
+    phone_.fraction = f;
+  };
+  std::string library_id, destination, last_error;
+  bool was_seen = true;
+  std::uint64_t last_free = 0;
+  double retry_at = 0;
+  {
+    std::lock_guard lock(phone_m_);
+    library_id = phone_.library_id;
+    destination = phone_.destination;
+    was_seen = phone_.share_seen;
+    last_free = phone_.last_free;
+    retry_at = phone_.retry_at;
+    last_error = phone_.deliver_error;
+  }
+  // The cheap question first: nothing else happens while the share is away.
+  std::error_code ec;
+  if (!std::filesystem::is_directory(fs_path(destination), ec)) {
+    {
+      std::lock_guard lock(phone_m_);
+      phone_.share_seen = false;
+    }
+    return finish("unreachable");
+  }
+  auto v = host_.volume_of(destination);
+  if (!v) return finish("unreachable");
+  // The share came back, or room appeared: what stopped the last try may be gone.
+  static constexpr std::uint64_t kRoomWorthRetrying = 64u << 20;
+  const bool fresh = !was_seen || v->free_bytes >= last_free + kRoomWorthRetrying;
+  {
+    std::lock_guard lock(phone_m_);
+    phone_.share_seen = true;
+    phone_.last_free = v->free_bytes;
+    if (fresh) {
+      phone_.retry_at = 0;
+      phone_.retries = 0;
+      retry_at = 0;
+    }
+  }
+  if (wall_now() < retry_at) return finish(last_error);
+
+  auto secret = phone_key(false);
+  if (!secret) return finish("no_key_store");
+  const std::vector<std::uint8_t> public_key = catalog::public_of(*secret);
+  if (public_key.empty()) return finish("no_key_store");
+  if (adopt_phone_library(destination, public_key)) {
+    std::lock_guard lock(phone_m_);
+    library_id = phone_.library_id;
+  }
+  deliver_phone_generation(*secret, public_key, library_id, finish, set_progress);
+}
+
+void engine::note_phone_delivery_failed(const std::string& why) {
+  std::lock_guard lock(phone_m_);
+  phone_.deliver_error = why;
+  phone_.retries = std::min(phone_.retries + 1, 16);
+  phone_.retry_at = wall_now() + std::min(deps_.phone_retry_base_s * std::pow(2.0, phone_.retries - 1), 3600.0);
+}
+
+std::uint64_t engine::phone_bytes_needed(const std::string& gen_dir, const std::vector<catalog::shared_file>& shared,
+                                         const std::string& destination) const {
+  std::uint64_t need = 0;
+  std::error_code ec;
+  for (std::filesystem::directory_iterator it(fs_path(gen_dir), ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e;
+    const auto n = it->file_size(e);
+    if (!e) need += static_cast<std::uint64_t>(n);
+  }
+  for (const catalog::shared_file& f : shared) {
+    std::error_code e;
+    if (!std::filesystem::exists(fs_path(destination + "/.mediaviewer/" + f.rel), e)) need += f.size;
+  }
+  return need;
+}
+
+void engine::deliver_phone_generation(const std::vector<std::uint8_t>& secret, const std::vector<std::uint8_t>& public_key,
+                                      const std::string& library_id, const std::function<void(const std::string&)>& finish,
+                                      const std::function<void(const char*, double)>& set_progress) {
+  std::uint64_t generation = 0, epoch = 1, assets = 0;
+  std::int64_t created = 0;
+  std::string stamp, destination;
+  {
+    std::lock_guard lock(phone_m_);
+    generation = phone_.waiting;
+    epoch = phone_.epoch;
+    stamp = phone_.waiting_stamp;
+    assets = phone_.waiting_assets;
+    created = phone_.waiting_created;
+    destination = phone_.destination;
+    ++phone_.deliver_attempts;
+  }
+  const std::string local = join(data_dir_, "phone/gen");
+  const std::string gen_dir = join(local, std::to_string(generation));
+  catalog::deliver_options d;
+  d.gen_dir = gen_dir;
+  d.destination = destination;
+  d.library_id = library_id;
+  d.generation = generation;
+  d.epoch = epoch;
+  d.public_key = public_key;
+  d.secret_key = secret;
+  d.now_unix = static_cast<std::int64_t>(std::time(nullptr));
+  d.shared = catalog::read_shared_list(gen_dir + ".shared.json");
+  const auto out_of_room = [&]() {
+    auto v = host_.volume_of(destination);
+    if (!v) return false;
+    const std::uint64_t need = phone_bytes_needed(gen_dir, d.shared, destination);
+    // A dead run's part folder is ours and deliver() removes it first: its room counts.
+    std::uint64_t dead = 0;
+    std::error_code ec;
+    const std::string gen_root = destination + "/.mediaviewer/gen";
+    for (std::filesystem::directory_iterator it(fs_path(gen_root), ec), end; !ec && it != end; it.increment(ec)) {
+      if (it->path().extension() != ".part") continue;
+      std::error_code e;
+      for (std::filesystem::recursive_directory_iterator f(it->path(), e), stop; !e && f != stop; f.increment(e)) {
+        std::error_code e3;
+        if (!f->is_regular_file(e3) || e3) continue;
+        const auto size = f->file_size(e3);
+        if (!e3) dead += static_cast<std::uint64_t>(size);  // on error it is uintmax_t(-1)
+      }
+    }
+    const std::uint64_t room = v->free_bytes + dead;
+    {
+      std::lock_guard lock(phone_m_);
+      phone_.needs_bytes = room < need ? need : 0;
+      phone_.last_free = v->free_bytes;
+    }
+    return room < need;
+  };
+  if (out_of_room()) {
+    note_phone_delivery_failed("no_space");
+    return finish("no_space");
+  }
+  d.retention_file = join(data_dir_, "phone/unused.json");
+  d.arrivals_file = join(data_dir_, "phone/arrivals.json");
+  d.make_directories = [this](const std::string& dir) { return host_.make_directories(dir); };
+  d.copy = [this](const std::string& from, const std::string& to) {
+    return host_.copy_verified(from, to, [this] { return stopping_.load() || phone_cancel_.load(); });
+  };
+  const catalog::control sending{
+      [this] { return stopping_.load() || phone_cancel_.load(); },
+      [&](double f) { set_progress("sending", f); },
+      [this] {
+        for (int i = 0; i < 500 && !stopping_ && !phone_cancel_ && host_.should_yield(); ++i) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+      },
+  };
+  if (const expected sent = catalog::deliver(d, sending); !sent) {
+    if (sent.error() == status::cancelled) return finish("cancelled");
+    if (out_of_room()) {
+      note_phone_delivery_failed("no_space");
+      return finish("no_space");
+    }
+    if (sent.error() == status::not_found || sent.error() == status::invalid_arg) {
+      // A pack on neither side, or the share is ahead of this number: this
+      // generation can never land. The next run builds another.
+      phone_recheck_ = true;  // the next tick compares, and a new build follows
+      return finish_phone(
+          [](phone_view& v) {
+            v.waiting = 0;
+            v.waiting_stamp.clear();
+            v.stamp.clear();
+          },
+          "unreachable");
+    }
+    const std::string why = sent.error() == status::permission_denied ? "other_library" : "unreachable";
+    note_phone_delivery_failed(why);
+    return finish(why);
+  }
+  if (auto store = catalog::thumb_store::open(join(data_dir_, "phone/thumbs"))) (void)(*store)->delivered();
+  // The share has it: saved, then the new generation and the end of the run
+  // appear together, so a publish asked for the moment it shows is never busy.
+  (void)finish;
+  finish_phone(
+      [&](phone_view& v) {
+        v.generation = generation;
+        v.published_unix = created;
+        v.assets = assets;
+        v.waiting = 0;
+        v.stamp = stamp;
+        v.waiting_stamp.clear();
+        v.retries = 0;
+        v.retry_at = 0;
+        v.deliver_error.clear();
+        v.needs_bytes = 0;
+      },
+      "");
+}
 
 void engine::set_transfer_progress(double f) {
   {
@@ -5482,7 +6629,7 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
   if (o.face_spec.empty()) o.faces = false;
   if (o.thumbs && host_.has_thumbnail_bytes()) {
-    o.thumb = [this](const transfer::thumb_want& w) { return export_thumb(w); };
+    o.thumb = [this](const transfer::thumb_want& w) { return export_thumb(w, transfer_cancel_); };
   }
   transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
   auto r = transfer::write(job.file, o, c);
@@ -5509,14 +6656,14 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   return w.take();
 }
 
-result<std::vector<std::uint8_t>> engine::export_thumb(const transfer::thumb_want& w) {
+result<std::vector<std::uint8_t>> engine::export_thumb(const transfer::thumb_want& w, const std::atomic<bool>& cancel) {
   if (auto hit = host_.thumbnail_jpeg(w.path, w.pts_ms)) return hit;
   // Never made here (the file or moment was never on screen): made now, as
   // the viewer and a result tile would, between the viewer's busy spells.
-  for (int i = 0; i < 500 && !stopping_ && !transfer_cancel_ && host_.should_yield(); ++i) {
+  for (int i = 0; i < 500 && !stopping_ && !cancel && host_.should_yield(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
-  if (stopping_ || transfer_cancel_) return err(status::cancelled);
+  if (stopping_ || cancel) return err(status::cancelled);
   if (w.pts_ms < 0 && !w.video) {
     if (auto made = host_.thumbnail(w.path); !made) return err(made.error());
     return host_.thumbnail_jpeg(w.path, -1);
@@ -5676,7 +6823,10 @@ std::string engine::run_import(const transfer_job& job, mv::status& st) {
           std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
       };
-      (void)transfer::import_thumbs(job.file, assets, io, n, c);
+      if (const expected thumbs = transfer::import_thumbs(job.file, assets, io, n, c);
+          !thumbs && thumbs.error() != status::cancelled) {
+        n.thumbs_damaged = true;
+      }
     }
   } else {
     st = r.error();
@@ -5711,6 +6861,7 @@ std::string engine::run_import(const transfer_job& job, mv::status& st) {
   w.key("people_why").string(people_why);
   w.key("thumbs").integer(static_cast<std::int64_t>(n.thumbs));
   w.key("thumbs_skipped").integer(static_cast<std::int64_t>(n.thumbs_skipped));
+  w.key("thumbs_damaged").boolean(n.thumbs_damaged);
   w.end_object();
   return w.take();
 }
@@ -5946,7 +7097,8 @@ void engine::finish(search_state& st) {
   // commit order, a reader's loads from the database, and the two must rank
   // alike (docs/design/23).
   std::sort(st.rows.begin(), st.rows.end(), [](const result_row& a, const result_row& b) {
-    return a.rank != b.rank ? a.rank > b.rank : a.asset < b.asset;
+    if (a.rank != b.rank) return a.rank > b.rank;
+    return a.asset != b.asset ? a.asset < b.asset : a.pts_ms < b.pts_ms;
   });
   st.row_of.clear();
   for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
@@ -5982,8 +7134,7 @@ void engine::newest_first(search_state& st, const std::set<std::int64_t>& allowe
   }
   std::sort(rows.begin(), rows.end(), [](const dated& a, const dated& b) {
     if (a.when != b.when) return a.when > b.when;
-    if (a.path != b.path) return a.path < b.path;
-    return a.asset < b.asset;
+    return a.asset < b.asset;  // not the path: a phone's are not this machine's
   });
   // A result list holds at most 1,000 rows (add_row).
   if (rows.size() > 1000) rows.resize(1000);
@@ -6566,13 +7717,149 @@ void engine::process_scan(const work_item& item) {
   (void)commit(work_state::done, pages ? std::int64_t{pages.value()} : std::int64_t{next_blank});
 }
 
-void engine::load_speech(const std::string& spec) {
-  std::vector<speech_row> rows;
-  (void)db_->each_speech(spec, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text) {
-    rows.push_back(speech_row{asset, start, text, infer::speech_words(text)});
-  });
+void engine::load_speech(const std::string& preferred) {
+  // No Whisper chosen (""): no transcript answers, as when the audio piece is
+  // removed (2026-09-27: a removed piece clears what it answered; cues, in
+  // their own table, stay). Readers follow the app here.
+  install_speech(preferred, nullptr);
+}
+
+void engine::note_speech_commit(std::int64_t asset) {
   std::lock_guard lock(speech_m_);
-  speech_rows_ = std::move(rows);
+  const std::uint64_t mark = ++speech_mark_;
+  speech_dirty_[asset] = mark;
+  // Only a full install reading now needs to know (it re-reads what changed
+  // under its read); with none, nothing is kept, so this never grows.
+  if (!speech_installs_.empty()) speech_committed_[asset] = mark;
+}
+
+void engine::forget_speech_locked(const std::set<std::int64_t>* assets) {
+  // Rows just left memory and the index (assets dropped, the index cleared):
+  // a change like a commit. A settle that read one of these clips before must
+  // not put it back, so a dirty clip's mark moves (it stays dirty; the next
+  // settle reads what the index holds now), and a full install reading now
+  // must not put them back either: it re-reads the dropped clips, or after a
+  // clear installs nothing it read before it.
+  for (auto& [id, mark] : speech_dirty_) {
+    if (!assets || assets->count(id)) mark = ++speech_mark_;
+  }
+  if (speech_installs_.empty()) return;
+  if (!assets) {
+    speech_cleared_mark_ = ++speech_mark_;
+    speech_committed_.clear();  // what was committed before the clear is gone with it
+    speech_dropped_.clear();
+    return;
+  }
+  // Recorded apart from commits: an install filters these out of what it read
+  // in one pass, and never reads them again (a photo has no lines at all).
+  for (const std::int64_t id : *assets) speech_dropped_[id] = ++speech_mark_;
+}
+
+void engine::prune_speech_committed_locked() {
+  // Entries older than every full install still reading are no use to any.
+  if (speech_installs_.empty()) {
+    speech_committed_.clear();
+    speech_dropped_.clear();
+    return;
+  }
+  const std::uint64_t oldest = *speech_installs_.begin();
+  for (auto* record : {&speech_committed_, &speech_dropped_}) {
+    for (auto it = record->begin(); it != record->end();) {
+      it = it->second <= oldest ? record->erase(it) : std::next(it);
+    }
+  }
+}
+
+void engine::install_speech(const std::string& preferred, const std::function<void()>& with_locks) {
+  // Every full install, one way: read outside the locks, install with
+  // whatever must change with it (the Whisper), then settle the clips
+  // committed after the read began, which it may not hold.
+  std::uint64_t start = 0;
+  {
+    std::lock_guard lock(speech_m_);
+    start = speech_mark_;
+    speech_installs_.insert(start);  // from here, commits and drops are recorded for this read
+  }
+  std::vector<speech_row> rows = read_speech(preferred);  // no lock held: SQLite and tokenising
+  if (deps_.after_speech_read) deps_.after_speech_read();
+  {
+    std::lock_guard lock(models_m_);
+    std::lock_guard held(speech_m_);
+    // The index was cleared during the read: nothing read before the clear stands.
+    if (speech_cleared_mark_ > start) rows.clear();
+    // Assets dropped during the read: their lines leave what was read in one
+    // pass, never a read or an erase per asset under these locks.
+    const auto dropped_since = [&](std::int64_t id) {
+      auto d = speech_dropped_.find(id);
+      return d != speech_dropped_.end() && d->second > start ? d->second : std::uint64_t{0};
+    };
+    if (!speech_dropped_.empty()) {
+      rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const speech_row& r) { return dropped_since(r.asset) != 0; }),
+                 rows.end());
+    }
+    speech_rows_ = std::move(rows);
+    if (with_locks) with_locks();
+    for (auto it = speech_dirty_.begin(); it != speech_dirty_.end();) {
+      it = it->second <= start ? speech_dirty_.erase(it) : std::next(it);  // committed before the read: in it
+    }
+    for (const auto& [id, mark] : speech_committed_) {
+      // Committed during the read, and not dropped after: maybe not as the read saw it.
+      if (mark > start && dropped_since(id) < mark) speech_dirty_[id] = ++speech_mark_;
+    }
+    speech_installs_.erase(speech_installs_.find(start));
+    prune_speech_committed_locked();
+  }
+  settle_speech();
+}
+
+void engine::settle_speech() {
+  for (;;) {
+    std::string chosen;
+    std::vector<std::pair<std::int64_t, std::uint64_t>> dirty;
+    {
+      std::lock_guard lock(models_m_);
+      chosen = speech_.model ? speech_.spec_key : std::string();
+      std::lock_guard held(speech_m_);
+      if (speech_dirty_.empty()) return;
+      dirty.assign(speech_dirty_.begin(), speech_dirty_.end());
+    }
+    std::vector<std::vector<speech_row>> reads;
+    reads.reserve(dirty.size());
+    for (const auto& [id, mark] : dirty) reads.push_back(read_speech(chosen, id));  // O(clip) each, no lock held
+    std::lock_guard lock(models_m_);
+    std::lock_guard held(speech_m_);
+    if ((speech_.model ? speech_.spec_key : std::string()) != chosen) continue;  // another Whisper meanwhile
+    // The clips still as they were read: their old lines out in one pass, the new ones in.
+    std::unordered_set<std::int64_t> settled;
+    for (std::size_t i = 0; i < dirty.size(); ++i) {
+      auto it = speech_dirty_.find(dirty[i].first);
+      if (it == speech_dirty_.end() || it->second != dirty[i].second) continue;  // marked again: next pass
+      settled.insert(dirty[i].first);
+      speech_dirty_.erase(it);
+    }
+    if (settled.empty()) continue;
+    speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                      [&](const speech_row& r) { return settled.count(r.asset) != 0; }),
+                       speech_rows_.end());
+    for (std::size_t i = 0; i < dirty.size(); ++i) {
+      if (!settled.count(dirty[i].first)) continue;
+      speech_rows_.insert(speech_rows_.end(), std::make_move_iterator(reads[i].begin()),
+                          std::make_move_iterator(reads[i].end()));
+    }
+  }
+}
+
+std::vector<engine::speech_row> engine::read_speech(const std::string& preferred, std::int64_t only_asset) {
+  std::vector<speech_row> rows;
+  if (preferred.empty()) return rows;
+  (void)db_->each_speech(
+      preferred,
+      [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text, bool chosen) {
+        (void)chosen;
+        rows.push_back(speech_row{asset, start, text, infer::speech_words(text)});
+      },
+      only_asset);
+  return rows;
 }
 
 namespace {
@@ -6727,7 +8014,11 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
       if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT);
     }
   }
-  std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
+  std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) {
+    if (std::get<0>(a) != std::get<0>(b)) return std::get<0>(a) > std::get<0>(b);
+    if (std::get<1>(a) != std::get<1>(b)) return std::get<1>(a) < std::get<1>(b);
+    return std::get<2>(a) < std::get<2>(b);
+  });
   if (found.size() > 2000) found.resize(2000);
   for (auto& [rank, asset, start, text, match] : found) {
     std::string snippet = text.size() > 160 ? text.substr(0, 157) + "..." : text;
@@ -6759,7 +8050,10 @@ void engine::merge_documents(search_state& st, const std::string& query,
     if (rank >= 0) found.push_back(hit{rank, p.asset, p.page, p.text});
     return true;
   });
-  std::stable_sort(found.begin(), found.end(), [](const hit& a, const hit& b) { return a.rank > b.rank; });
+  std::stable_sort(found.begin(), found.end(), [](const hit& a, const hit& b) {
+    if (a.rank != b.rank) return a.rank > b.rank;
+    return a.asset != b.asset ? a.asset < b.asset : a.page < b.page;
+  });
   if (found.size() > 2000) found.resize(2000);
   for (hit& h : found) {
     add_row(st, h.asset, h.page, h.rank / 2.0f, h.rank, MV_AI_MATCH_TEXT, passage_snippet(h.text, want));
@@ -6883,10 +8177,24 @@ std::vector<vector_store::hit> engine::picture_hits(const std::string& text,
   return {};
 }
 
+bool engine::answerable_now(const std::string& query_text) {
+  if (models_ready_) return true;
+  if (!catalogue_ready_) return false;
+  std::vector<query::person_name> names;
+  {
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      for (auto& [id, name] : faces_->names()) names.push_back({id, std::move(name)});
+    }
+  }
+  const query::plan plan = query::resolve(query::parse(query_text), names);
+  return plan.text.empty() && plan.not_text.empty();
+}
+
 std::uint64_t engine::search_text(const std::string& query_text, const std::string& scope_dir,
                                   std::uint32_t scope, std::uint32_t kinds) {
   return submit([this, query_text, scope_dir, scope, kinds](search_state& st) {
-    if (!models_ready_) return;
+    if (!models_ready_ && !catalogue_ready_) return;
     std::uint32_t precision;
     {
       std::lock_guard lock(settings_m_);
@@ -6917,6 +8225,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
     }
     if (plan.impossible) return;
+    // A reader whose tower is not in yet answers only what needs none.
+    if (!models_ready_ && (!plan.text.empty() || !plan.not_text.empty())) return;
     // #441: which place a place: / in: term names is the Places add-on's
     // answer (the host's place_matches, over the whole index), intersected
     // here with the rest of the query: in every place named, in none left
@@ -6933,6 +8243,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       };
       const auto keys_in = [&](const std::string& place) -> std::optional<std::set<std::string>> {
         auto paths = host_.place_matches(place, keep_going);
+        // A phone has no Places: the labels the catalogue stores answer instead.
+        if (!paths && paths.error() == status::not_found && options_.read_only) paths = stored_place_matches(place);
         if (!paths) return std::nullopt;
         std::set<std::string> keys;
         for (const std::string& p : *paths) keys.insert(path_key(p));
@@ -7142,7 +8454,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
           if (allowed->count(f.asset)) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
         }
       }
-      std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+      std::sort(hits.begin(), hits.end(), &vector_store::ranked_before);
       return hits;
     };
     // A lone word that starts a name: those people first ("Trist" while it is
@@ -7312,7 +8624,7 @@ std::uint64_t engine::search_person(std::int64_t person, const std::string& scop
     for (const face_row& f : faces) {
       if (allow(f.asset)) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
     }
-    std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    std::sort(hits.begin(), hits.end(), &vector_store::ranked_before);
     group(st, hits, false, 0);
     finish(st);
   });
@@ -7343,7 +8655,7 @@ std::uint64_t engine::search_this_person(const std::string& path, std::int64_t p
     }
     std::vector<vector_store::hit> hits;
     for (const face_row& f : faces) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
-    std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    std::sort(hits.begin(), hits.end(), &vector_store::ranked_before);
     group(st, hits, false, 0);
     finish(st);
   });

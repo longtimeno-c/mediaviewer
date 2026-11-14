@@ -93,6 +93,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -106,6 +107,25 @@
 struct sqlite3;
 
 namespace mv::ai {
+
+// An sqlite3_open_v2 URI (SQLITE_OPEN_URI) for a database nothing can ever
+// change, in a generation the publisher signed (docs/plans/mobile.md §5):
+// immutable=1 takes no locks and looks for no journal.
+[[nodiscard]] inline std::string immutable_uri(const std::string& path_utf8) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  std::string out = "file:";
+  for (const char ch : path_utf8) {
+    const auto c = static_cast<unsigned char>(ch);
+    if (c == '?' || c == '#' || c == '%' || c == ' ' || c < 0x20) {
+      out += '%';
+      out += kHex[c >> 4];
+      out += kHex[c & 0xF];
+    } else {
+      out += ch;
+    }
+  }
+  return out + "?immutable=1";
+}
 
 // 3: a document (#354, schema 9); 4: an audio file (#355, schema 8).
 enum class asset_kind : std::uint8_t { photo = 1, video = 2, document = 3, audio = 4 };
@@ -307,10 +327,17 @@ class index_db {
   // snapshot while the app goes on indexing. A missing file (nothing indexed
   // yet) is status::not_found; an index of another schema is
   // status::unsupported_format.
-  [[nodiscard]] static result<std::unique_ptr<index_db>> open_read_only(const std::string& path_utf8);
+  [[nodiscard]] static result<std::unique_ptr<index_db>> open_read_only(const std::string& path_utf8, bool immutable = false);
   // PRAGMA data_version: changes when another connection commits. A reader
   // polls it to learn the app has indexed more.
   [[nodiscard]] std::int64_t data_version();
+  // What a phone's catalogue would carry, as one string: the rows that matter,
+  // never `seen`, so a walk that finds nothing leaves it the same.
+  // Only `roots`: a folder a generation does not carry changes nothing in it.
+  [[nodiscard]] std::string content_stamp(const std::string& spec, std::span<const std::int64_t> roots);
+  [[nodiscard]] std::vector<std::int64_t> asset_ids_in(std::span<const std::int64_t> roots);  // sorted
+  // A catalogue's stored place labels (docs/plans/mobile.md §5).
+  void each_place(const std::function<void(const std::string& path, const std::string& label)>& visit);
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
 
   // ---- roots ------------------------------------------------------------------
@@ -359,6 +386,12 @@ class index_db {
                                                        std::int64_t generation);
   // Deletes `root`'s assets not seen in `generation` (removed files). Returns
   // their ids so the search matrix can drop them.
+  // The rows of `root` the walk of `generation` has not seen (with `trees`,
+  // only those under these folders), and a way to spare some of them from
+  // end_scan (a folder the walk was refused).
+  [[nodiscard]] result<std::vector<std::pair<std::int64_t, std::string>>> unseen_assets(
+      std::int64_t root, std::int64_t generation, const std::vector<std::string>* trees = nullptr);
+  [[nodiscard]] expected mark_seen(const std::vector<std::int64_t>& ids, std::int64_t generation);
   [[nodiscard]] result<std::vector<std::int64_t>> end_scan(std::int64_t root, std::int64_t generation);
   // end_scan for a walk of some folders only (docs/plans/index-watcher.md):
   // deletes `root`'s assets not seen in `generation` that are files of a
@@ -419,10 +452,16 @@ class index_db {
   [[nodiscard]] expected commit_speech(std::int64_t asset, const std::string& spec,
                                        std::span<const speech_in> segments, work_state state,
                                        std::int64_t resume_ms);
+  // Each clip's transcript, one Whisper's per clip: `preferred`'s where it
+  // wrote one, else the Whisper that wrote the most lines in the index (by
+  // name on a tie), so `said:` reads what was transcribed whichever model
+  // is chosen now. `visit` learns whether the line is `preferred`'s.
+  // `only_asset` > 0: that clip alone, by the same rule.
   [[nodiscard]] expected each_speech(
-      const std::string& spec,
-      const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms,
-                               const std::string& text)>& visit);
+      const std::string& preferred,
+      const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms, const std::string& text,
+                               bool preferred_spec)>& visit,
+      std::int64_t only_asset = 0);
   // #406: a clip's cues, with progress under kCueSpec, in one transaction.
   // `replace_from` other than -1 first drops the asset's cues starting at or
   // after it (a resumed pass sends them again; kAllCues drops every one).
@@ -561,6 +600,13 @@ class index_db {
                                        const std::string& after);
   std::mutex m_;
   sqlite3* db_ = nullptr;
+  // Lines per Whisper over the whole speech table, for each_speech's
+  // fallback on one clip (under m_): counted once, kept up to date by
+  // commit_speech, marked stale by every method that can remove lines.
+  std::map<std::string, std::int64_t> speech_totals_;
+  bool speech_totals_valid_ = false;
+  std::int64_t speech_totals_version_ = -1;
+  [[nodiscard]] const std::map<std::string, std::int64_t>& speech_totals_locked();
   std::string path_;
 };
 

@@ -170,22 +170,30 @@ final class SettingsStore: ObservableObject {
 // including rows whose descriptions wrap at smaller window sizes. One surface:
 // the fill marks the row, no hairline around it, words 12 pt from its edge
 // (docs/design/20 "Craft rules"; IslandHost.Settings.cs SettingsRow).
-private struct SettingsRow<Content: View>: View {
+struct SettingsRow<Content: View>: View {
   let title: String
   let detail: String
+  /// False when the content names itself ("Remove Pixel", two buttons).
+  var labelsContent = true
   @ViewBuilder let content: () -> Content
 
   var body: some View {
     HStack(spacing: MVTheme.space(24)) {
       VStack(alignment: .leading, spacing: MVTheme.space(4)) {
         Text(title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
-        Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-          .fixedSize(horizontal: false, vertical: true)
+        if !detail.isEmpty {
+          Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      content()
-        .labelsHidden()
-        .accessibilityLabel(title)
+      if labelsContent {
+        content()
+          .labelsHidden()
+          .accessibilityLabel(title)
+      } else {
+        content().labelsHidden()
+      }
     }
     .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -243,7 +251,7 @@ private struct SettingsToggle: View {
   }
 }
 
-private struct SettingsButton: View {
+struct SettingsButton: View {
   let title: String
   let action: () -> Void
   var body: some View {
@@ -598,6 +606,10 @@ struct SettingsView: View {
         // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
         section("Storage")
         StorageSection()
+        // docs/plans/phone-in-the-app.md: Phone access is the app's, with or
+        // without Local search.
+        section("Phone access")
+        PhoneAccessSection()
         // docs/design/26: the Photos library's backup, once the library was added
         // (Local search -> Add Photos Library); absent otherwise.
         PhotosBackupSection()

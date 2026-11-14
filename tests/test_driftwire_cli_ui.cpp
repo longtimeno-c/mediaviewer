@@ -37,7 +37,7 @@
 #include "addons/driftwire/cli/term.h"
 #include "addons/driftwire/cli/text.h"
 #include "addons/driftwire/cli/theme.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 #include "driftwire_cli_vt.h"
 #include "import_fixture.h"
 

@@ -42,8 +42,8 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/link.h"
-#include "addons/driftwire/net.h"
+#include "wire/link.h"
+#include "wire/net.h"
 
 namespace mv::driftwire {
 

@@ -23,13 +23,13 @@
 #include <vector>
 
 #include "addon/screen.h"
-#include "addons/driftwire/channel.h"
+#include "wire/channel.h"
 #include "addons/driftwire/engine.h"
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 #include "addons/driftwire/prefs.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/secrets.h"
 #include "addons/driftwire/transfer.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 #include "import_fixture.h"
 #include "io/file_port.h"
 

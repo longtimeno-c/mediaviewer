@@ -35,7 +35,7 @@
 
 #include <mediaviewer/mediaviewer_addon.h>
 
-#include "addons/ai/sha256.h"
+#include "catalogue/sha256.h"
 #include "addons/enhance/diffusion.h"
 #include "addons/enhance/remove.h"
 #include "addon/screen.h"

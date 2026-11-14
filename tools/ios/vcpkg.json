@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "mediaviewer-ios-core",
+  "version": "0.1.0",
+  "$comment": "The iOS build's native dependencies (cmake/ios.cmake), and nothing else: every port here must be free of GPL and LGPL code, which tools/ios/licence_check.py enforces. Keep the baseline in sync with the root manifest.",
+  "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
+  "dependencies": [
+    "blake3",
+    "libsodium",
+    { "name": "sqlite3", "features": ["fts5"] }
+  ]
+}

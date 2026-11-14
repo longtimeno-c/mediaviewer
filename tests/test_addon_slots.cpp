@@ -538,6 +538,22 @@ namespace {
 // waits for release(); "fail" returns an error having posted nothing.
 class place_client final : public mv::addon::slot_client {
  public:
+  std::atomic<int> labelled_off_caller{0};
+  std::atomic<int> requests_off_caller{0};
+  status request(const char* caller_id, const char* method, const char* json, std::string& out) override {
+    if (std::this_thread::get_id() != caller) ++requests_off_caller;
+    if (std::string_view(method) == "unsupported") return status::unsupported_format;
+    out = std::string(caller_id) + "/" + method + "/" + json;
+    return status::ok;
+  }
+  std::thread::id caller = std::this_thread::get_id();
+  status place_label(double lat, double, std::string& out) override {
+    if (std::this_thread::get_id() != caller) ++labelled_off_caller;
+    char b[32];
+    std::snprintf(b, sizeof b, "%g", lat);
+    out = lat == 0 ? std::string() : std::string(b);
+    return status::ok;
+  }
   explicit place_client(slot_registry& r) : r_(r) {}
   status info_section(const mv_slot_info_request&) override { return status::ok; }
   status search(const mv_slot_search_request& q) override {
@@ -668,6 +684,27 @@ TEST_CASE("a place term's assets come from the provider that declares place:, or
     CHECK_FALSE(r.is_stale(chrome));            // and the chrome's search was not replaced
     // Nothing of it reached the chrome's results.
     CHECK(mv::json::parse(r.search_json(MV_SLOT_SCOPE_LOCAL))->find("rows")->a.empty());
+  }
+  SECTION("one add-on asks another, on the answering add-on's worker") {
+    auto got = r.addon_request("places", "ai", "ping", "{\"a\":1}");
+    REQUIRE(got);
+    CHECK(*got == "ai/ping/{\"a\":1}");
+    CHECK(pc->requests_off_caller.load() == 1);
+  }
+  SECTION("asking an add-on that is not there, or takes no requests") {
+    auto missing = r.addon_request("not-installed", "ai", "ping", "{}");
+    REQUIRE_FALSE(missing);
+    CHECK(missing.error() == status::not_found);
+    auto unknown = r.addon_request("places", "ai", "unsupported", "{}");
+    REQUIRE_FALSE(unknown);
+    CHECK(unknown.error() == status::not_found);
+  }
+  SECTION("place labels for a catalogue, one call on the add-on's worker per point") {
+    const std::vector<std::pair<double, double>> points{{38.8, -9.4}, {51.5, -0.1}, {0.0, 0.0}};
+    std::vector<std::string> out;
+    REQUIRE(r.provider_labels("place:", points, out));
+    CHECK(out == std::vector<std::string>{"38.8", "51.5", ""});
+    CHECK(pc->labelled_off_caller.load() == 3);
   }
   SECTION("a provider that fails says nothing: done, no rows") {
     auto paths = r.provider_paths("place:", "fail", keep_going);

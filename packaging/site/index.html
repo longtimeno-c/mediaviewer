@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- Copyright (C) 2026 longtimeno-c
+     SPDX-License-Identifier: GPL-3.0-or-later
+     The GitHub Pages site's front page: what is here. The iPhone app's App Store Marketing URL.
+     Copied into the site as it is by tools/package/driftwire_repo.py.
+     No external assets, no scripts, nothing that tracks. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediaViewer</title>
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #1d2125; --muted: #5b636b; --rule: #dfe2e5; --accent: #0f7f7a;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ab; --rule: #2c3237; --accent: #4fc4bc; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif;
+}
+main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+h1 { font-size: 2rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+h2 { font-size: 1.15rem; margin: 2.25rem 0 .5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+p, li { max-width: 40rem; }
+.lead { font-size: 1.1rem; color: var(--muted); margin-top: 0; }
+a { color: var(--accent); }
+.small { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>MediaViewer</h1>
+<p class="lead">A fast photo and video viewer for Windows and macOS. Find any photo, or any moment
+in any video, by typing what you remember.</p>
+<p>Free and open source. Search is computed on your own computer, and nothing about your files
+leaves it. <a href="https://github.com/longtimeno-c/mediaviewer#readme">What it does</a> &middot;
+<a href="https://github.com/longtimeno-c/mediaviewer/releases/latest">Download</a></p>
+
+<h2>MediaViewer for NAS, on iPhone and iPad</h2>
+<p>Search the library MediaViewer indexed on your computer from your phone, anywhere, with the
+photos and clips coming from your own Synology NAS. Needs MediaViewer on a Mac or Windows PC and a
+Synology running the MediaViewer service.</p>
+<p><a href="iphone/support/">Support</a> &middot; <a href="iphone/privacy/">Privacy</a></p>
+
+<h2>driftwire</h2>
+<p>Send files to MediaViewer or another driftwire nearby, or anywhere with a code, from a
+terminal. <a href="driftwire/">Install driftwire</a></p>
+
+<p class="small"><a href="https://github.com/longtimeno-c/mediaviewer">github.com/longtimeno-c/mediaviewer</a></p>
+</main>
+</body>
+</html>

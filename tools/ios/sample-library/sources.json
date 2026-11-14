@@ -1,0 +1,716 @@
+{
+ "note": "The sample library's pictures and clips (docs/plans/mobile.md 11.1). CC0 or public domain only, no identifiable faces. tools/ios/sample-library.sh downloads each original, checks its SHA-1 and licence, and makes the library from them.",
+ "items": [
+  {
+   "file": "Dogs/gizmo-the-jack-russell.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "Gizmo the Jack Russell.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Gizmo_the_Jack_Russell.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/5/56/Gizmo_the_Jack_Russell.jpg",
+   "sha1": "4fce801fee417656d9a968c4d3fd576d7bf06816",
+   "bytes": 727971,
+   "licence": "Public domain",
+   "author": "Widge292",
+   "date": "2010-04-22"
+  },
+  {
+   "file": "Dogs/dog-smiling-at-the-camera-reta-buenos-aires-arge.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "Dog smiling at the camera - Reta, Buenos Aires, Argentina (04-01-2024).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Dog_smiling_at_the_camera_-_Reta,_Buenos_Aires,_Argentina_(04-01-2024).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/e/ee/Dog_smiling_at_the_camera_-_Reta%2C_Buenos_Aires%2C_Argentina_%2804-01-2024%29.jpg",
+   "sha1": "8cb7bc35b8c5e0dbb745beaf815dba0364aa26d2",
+   "bytes": 6362645,
+   "licence": "CC0",
+   "author": "Maxd2",
+   "date": "2024-01-04 15:19:18"
+  },
+  {
+   "file": "Dogs/avu-su.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "Avu su.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Avu_su.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/e/eb/Avu_su.jpg",
+   "sha1": "77f06acad127c64536dc8ce1558f58941afa4c83",
+   "bytes": 530219,
+   "licence": "CC0",
+   "author": "Komavo",
+   "date": "2026-01-11 13:05:21"
+  },
+  {
+   "file": "Dogs/cairn-terrier-sleeping-on-the-beach.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "Cairn Terrier sleeping on the beach.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Cairn_Terrier_sleeping_on_the_beach.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/f/f0/Cairn_Terrier_sleeping_on_the_beach.jpg",
+   "sha1": "8bd24450fcf61420e8a2e2f86101f73029f11649",
+   "bytes": 1189890,
+   "licence": "Public domain",
+   "author": "Amanxseattle",
+   "date": "2008"
+  },
+  {
+   "file": "Dogs/san-juan-island-united-states.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "San Juan Island, United States (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:San_Juan_Island,_United_States_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/9/90/San_Juan_Island%2C_United_States_%28Unsplash%29.jpg",
+   "sha1": "df2065aa5d6e71be5d81a51b80e460428b78425d",
+   "bytes": 9462408,
+   "licence": "CC0",
+   "author": "jesse orrico jessedo81",
+   "date": "2016-04-05"
+  },
+  {
+   "file": "Dogs/9908bacquit-taberna-bauang-la-union-69.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "9908Bacquit Taberna, Bauang, La Union 69.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:9908Bacquit_Taberna,_Bauang,_La_Union_69.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/6/65/9908Bacquit_Taberna%2C_Bauang%2C_La_Union_69.jpg",
+   "sha1": "e7f348ceaf17d053a1d0b680977e6dce155cce24",
+   "bytes": 6809783,
+   "licence": "CC0",
+   "author": "Judgefloro",
+   "date": "2020-03-05 14:24:00"
+  },
+  {
+   "file": "Dogs/dog-on-a-beach.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "Dog on a beach (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Dog_on_a_beach_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/e/e6/Dog_on_a_beach_%28Unsplash%29.jpg",
+   "sha1": "ea2f7c35de681b1ea25c5a6539089976e0b28850",
+   "bytes": 3584020,
+   "licence": "CC0",
+   "author": "Meg Sanchez megsanchez",
+   "date": "2016-03-20"
+  },
+  {
+   "file": "Dogs/josie-swims-in-valois-bay.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "Josie swims in Valois Bay.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Josie_swims_in_Valois_Bay.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/4/43/Josie_swims_in_Valois_Bay.jpg",
+   "sha1": "5184b9b169d26edb684546c8cddc73557d6fc36b",
+   "bytes": 4642641,
+   "licence": "CC0",
+   "author": "Carocaropilates",
+   "date": "2024-07-14 13:09:18"
+  },
+  {
+   "file": "Dogs/new-brighton-beach-dog-exercise-area-07.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog",
+    "beach"
+   ],
+   "title": "New Brighton Beach dog exercise area 07.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:New_Brighton_Beach_dog_exercise_area_07.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/a/a0/New_Brighton_Beach_dog_exercise_area_07.jpg",
+   "sha1": "1dc631d1f9d6bb49752052bd957d357c5ecc8c25",
+   "bytes": 3667109,
+   "licence": "CC0",
+   "author": "Aliceinthealice",
+   "date": "2025-04-05 13:45:13"
+  },
+  {
+   "file": "Dogs/german-shepherd-beagle-mix.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog"
+   ],
+   "title": "Овачарско куче во Дојран, German Shepherd Beagle Mix.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:%D0%9E%D0%B2%D0%B0%D1%87%D0%B0%D1%80%D1%81%D0%BA%D0%BE_%D0%BA%D1%83%D1%87%D0%B5_%D0%B2%D0%BE_%D0%94%D0%BE%D1%98%D1%80%D0%B0%D0%BD,_German_Shepherd_Beagle_Mix.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/9/94/%D0%9E%D0%B2%D0%B0%D1%87%D0%B0%D1%80%D1%81%D0%BA%D0%BE_%D0%BA%D1%83%D1%87%D0%B5_%D0%B2%D0%BE_%D0%94%D0%BE%D1%98%D1%80%D0%B0%D0%BD%2C_German_Shepherd_Beagle_Mix.jpg",
+   "sha1": "61b98318ababe4374584e964582e8ecaffbf0ac9",
+   "bytes": 2040463,
+   "licence": "CC0",
+   "author": "Делфина",
+   "date": "2018-05-12 08:37:46"
+  },
+  {
+   "file": "Dogs/german-shepherd-beagle-mix-2.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog"
+   ],
+   "title": "Овачарско куче, German Shepherd Beagle Mix.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:%D0%9E%D0%B2%D0%B0%D1%87%D0%B0%D1%80%D1%81%D0%BA%D0%BE_%D0%BA%D1%83%D1%87%D0%B5,_German_Shepherd_Beagle_Mix.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/e/e4/%D0%9E%D0%B2%D0%B0%D1%87%D0%B0%D1%80%D1%81%D0%BA%D0%BE_%D0%BA%D1%83%D1%87%D0%B5%2C_German_Shepherd_Beagle_Mix.jpg",
+   "sha1": "717e0550fec2848020c5531daebefb0333f00420",
+   "bytes": 1517313,
+   "licence": "CC0",
+   "author": "Делфина",
+   "date": "2018-05-12 08:37:50"
+  },
+  {
+   "file": "Dogs/hog-canyon-lake-washington-50196851922.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog"
+   ],
+   "title": "Hog Canyon Lake, Washington (50196851922).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Hog_Canyon_Lake,_Washington_(50196851922).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/0/03/Hog_Canyon_Lake%2C_Washington_%2850196851922%29.jpg",
+   "sha1": "2b1c51278b004cd8df5f49f1f169dfafe10804c4",
+   "bytes": 2679340,
+   "licence": "Public domain",
+   "author": "BLM Oregon & Washington",
+   "date": "Taken on 6 August 2"
+  },
+  {
+   "file": "Dogs/happy-white-pomeranian.jpg",
+   "kind": "photo",
+   "tags": [
+    "dog"
+   ],
+   "title": "Happy white pomeranian.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Happy_white_pomeranian.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/7/73/Happy_white_pomeranian.jpg",
+   "sha1": "f84a20ec188db3473545eabfe568efe752b83c50",
+   "bytes": 40985938,
+   "licence": "CC0",
+   "author": "Joselodos",
+   "date": "2025-04-13 13:12:14"
+  },
+  {
+   "file": "Beaches/the-sea-cliff-bridge-nsw-aust-21016079739.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "The Sea Cliff Bridge. NSW Aust. (21016079739).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:The_Sea_Cliff_Bridge._NSW_Aust._(21016079739).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/1/11/The_Sea_Cliff_Bridge._NSW_Aust._%2821016079739%29.jpg",
+   "sha1": "4a8e8acbce54b43172d0d6ff3890312ae1edffd1",
+   "bytes": 6966558,
+   "licence": "CC0",
+   "author": "Bernard Spragg. NZ from Christchurch, New Zealand",
+   "date": "2015-08-29 15:26"
+  },
+  {
+   "file": "Beaches/sunset-lone-ranch-beach-oregon.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Sunset, Lone Ranch Beach, Oregon.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Sunset,_Lone_Ranch_Beach,_Oregon.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/4/47/Sunset%2C_Lone_Ranch_Beach%2C_Oregon.jpg",
+   "sha1": "d34bf6c627125c155ccd23dadae403108bdb1717",
+   "bytes": 11870173,
+   "licence": "CC0",
+   "author": "Bonnie Moreland",
+   "date": "Taken on 13 Septemb"
+  },
+  {
+   "file": "Beaches/waves-crashing-on-rocky-coast-at-heceta-beach.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Waves crashing on rocky coast at Heceta Beach (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Waves_crashing_on_rocky_coast_at_Heceta_Beach_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/7/7e/Waves_crashing_on_rocky_coast_at_Heceta_Beach_%28Unsplash%29.jpg",
+   "sha1": "baa5507d8ae5c67107544882405b5a4926c220e8",
+   "bytes": 18767044,
+   "licence": "CC0",
+   "author": "Nathan Anderson nathananderson",
+   "date": "2016-07-21"
+  },
+  {
+   "file": "Beaches/stormy-orange-beach-sunset.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Stormy orange beach sunset (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Stormy_orange_beach_sunset_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/a/a0/Stormy_orange_beach_sunset_%28Unsplash%29.jpg",
+   "sha1": "6c390ffcb96715288f69ef70a83b4febac9def6a",
+   "bytes": 8177775,
+   "licence": "CC0",
+   "author": "Quino Al quinoal",
+   "date": "2016-06-26"
+  },
+  {
+   "file": "Beaches/negombo-beach-resort-pool.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Negombo Beach resort pool (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Negombo_Beach_resort_pool_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/9/9a/Negombo_Beach_resort_pool_%28Unsplash%29.jpg",
+   "sha1": "0347b3a56e4d199f8b5af39d0dc9493e6af33b3c",
+   "bytes": 9801835,
+   "licence": "CC0",
+   "author": "Recal Media recalmedia",
+   "date": "2016-04-14"
+  },
+  {
+   "file": "Beaches/sunset-reflected-in-the-sea-s-waves.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Sunset reflected in the sea's waves (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Sunset_reflected_in_the_sea%27s_waves_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/5/53/Sunset_reflected_in_the_sea%27s_waves_%28Unsplash%29.jpg",
+   "sha1": "c8114512c43065f2972c7d5647833b0cf53eb7fe",
+   "bytes": 3451377,
+   "licence": "CC0",
+   "author": "Austin Neill arstyy",
+   "date": "2016-10-12"
+  },
+  {
+   "file": "Beaches/kahala-beach-park-island.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Kahala Beach Park Island (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Kahala_Beach_Park_Island_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/1/15/Kahala_Beach_Park_Island_%28Unsplash%29.jpg",
+   "sha1": "cf10346866fdba8de874042c62be6dd23981bc12",
+   "bytes": 11282125,
+   "licence": "CC0",
+   "author": "Brandon Kawamura brandonkawamura",
+   "date": "2017-03-14"
+  },
+  {
+   "file": "Beaches/boulders-beach-south-africa.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Boulders Beach, South Africa.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Boulders_Beach,_South_Africa.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/1/1b/Boulders_Beach%2C_South_Africa.jpg",
+   "sha1": "ed38da4e245b19a0074ba06d110a04ec2e204f30",
+   "bytes": 25466009,
+   "licence": "CC0",
+   "author": "jeffgreenca",
+   "date": "2017-05-01 02:40:54"
+  },
+  {
+   "file": "Beaches/fishing-boats-morning-beach-rincon-de-la-victori.jpg",
+   "kind": "photo",
+   "tags": [
+    "beach"
+   ],
+   "title": "Fishing boats, morning, Beach, Rincon de la Victoria, Andalusia, Spain.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Fishing_boats,_morning,_Beach,_Rincon_de_la_Victoria,_Andalusia,_Spain.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/6/6b/Fishing_boats%2C_morning%2C_Beach%2C_Rincon_de_la_Victoria%2C_Andalusia%2C_Spain.jpg",
+   "sha1": "892cf30276923a4a148c2133ec829284aa0cc3c4",
+   "bytes": 9871927,
+   "licence": "CC0",
+   "author": "Jebulon",
+   "date": "2014-08-01"
+  },
+  {
+   "file": "Cities/saint-peter-s-basilica-sant-angelo-bridge-by-nig.jpg",
+   "kind": "photo",
+   "tags": [
+    "city"
+   ],
+   "title": "Saint Peter's Basilica, Sant'Angelo bridge, by night, Rome, Italy.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Saint_Peter%27s_Basilica,_Sant%27Angelo_bridge,_by_night,_Rome,_Italy.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/3/36/Saint_Peter%27s_Basilica%2C_Sant%27Angelo_bridge%2C_by_night%2C_Rome%2C_Italy.jpg",
+   "sha1": "a71f468fbca249a32ec13ff7670ff8b92ac69a2f",
+   "bytes": 9651946,
+   "licence": "CC0",
+   "author": "Jebulon",
+   "date": "2013-08-23"
+  },
+  {
+   "file": "Cities/evening-falls-on-a-mountain-town.jpg",
+   "kind": "photo",
+   "tags": [
+    "city"
+   ],
+   "title": "Evening falls on a mountain town (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Evening_falls_on_a_mountain_town_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/a/ab/Evening_falls_on_a_mountain_town_%28Unsplash%29.jpg",
+   "sha1": "e65edce927983cdb28dc4cf0397d1e9dcf658b70",
+   "bytes": 3834269,
+   "licence": "CC0",
+   "author": "Yoosun Won showkin9",
+   "date": "2015-09-01"
+  },
+  {
+   "file": "Cities/brooklyn-bridge-new-york-united-states.jpg",
+   "kind": "photo",
+   "tags": [
+    "city"
+   ],
+   "title": "Brooklyn Bridge, New York, United States (Unsplash xbusTJ7IUu0).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Brooklyn_Bridge,_New_York,_United_States_(Unsplash_xbusTJ7IUu0).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/1/18/Brooklyn_Bridge%2C_New_York%2C_United_States_%28Unsplash_xbusTJ7IUu0%29.jpg",
+   "sha1": "d561a51572cbc81f40c4b885d28d25a1973eaa7d",
+   "bytes": 17879711,
+   "licence": "CC0",
+   "author": "Luca Bravo lucabravo",
+   "date": "2017-06-05"
+  },
+  {
+   "file": "Cities/brooklyn-bridge-at-night.jpg",
+   "kind": "photo",
+   "tags": [
+    "city"
+   ],
+   "title": "Brooklyn Bridge at night.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Brooklyn_Bridge_at_night.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/b/bb/Brooklyn_Bridge_at_night.jpg",
+   "sha1": "7574af59e4783a09506a214384e3dca27216bdfc",
+   "bytes": 7725744,
+   "licence": "CC0",
+   "author": "Kai Pilger",
+   "date": "Taken on 17 April 2"
+  },
+  {
+   "file": "Cities/panorama-of-brooklyn-bridge-and-manhattan.jpg",
+   "kind": "photo",
+   "tags": [
+    "city"
+   ],
+   "title": "Panorama of Brooklyn bridge and Manhattan.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Panorama_of_Brooklyn_bridge_and_Manhattan.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/d/d3/Panorama_of_Brooklyn_bridge_and_Manhattan.jpg",
+   "sha1": "f54f87cebbd235ba4265956d574f1d936f0ed9fa",
+   "bytes": 3173745,
+   "licence": "CC0",
+   "author": "Luca Bravo",
+   "date": "2017-06-04"
+  },
+  {
+   "file": "Food/fruit-viktualienmarkt-dsc08600.jpg",
+   "kind": "photo",
+   "tags": [
+    "food"
+   ],
+   "title": "Fruit - Viktualienmarkt - DSC08600.JPG",
+   "page": "https://commons.wikimedia.org/wiki/File:Fruit_-_Viktualienmarkt_-_DSC08600.JPG",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/3/37/Fruit_-_Viktualienmarkt_-_DSC08600.JPG",
+   "sha1": "0e2c345fdae82e4133334ca6fd4bd1b0a029d307",
+   "bytes": 4894661,
+   "licence": "Public domain",
+   "author": "Daderot",
+   "date": "2011-05-03 07:10:17"
+  },
+  {
+   "file": "Food/breakfast-in-le-grand-st-marc-rouen-2025-03-23.jpg",
+   "kind": "photo",
+   "tags": [
+    "food"
+   ],
+   "title": "Breakfast in Le Grand St Marc, Rouen 2025-03-23.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Breakfast_in_Le_Grand_St_Marc,_Rouen_2025-03-23.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/d/da/Breakfast_in_Le_Grand_St_Marc%2C_Rouen_2025-03-23.jpg",
+   "sha1": "d331e98d278e22ab41d5bf598119b4f70309bdb4",
+   "bytes": 9605106,
+   "licence": "CC0",
+   "author": "Andy Li",
+   "date": "2025-03-23 08:18:28"
+  },
+  {
+   "file": "Food/breakfast-at-jo-co-handcross-2026-07-31.jpg",
+   "kind": "photo",
+   "tags": [
+    "food"
+   ],
+   "title": "Breakfast at JO.CO, Handcross 2026-07-31.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Breakfast_at_JO.CO,_Handcross_2026-07-31.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/0/0a/Breakfast_at_JO.CO%2C_Handcross_2026-07-31.jpg",
+   "sha1": "b2eef76070984f4949160aff4fa3501df06bef27",
+   "bytes": 9582411,
+   "licence": "CC0",
+   "author": "Andy Li",
+   "date": "2026-07-31 09:25:18"
+  },
+  {
+   "file": "Food/breakfast-table-with-pancakes.jpg",
+   "kind": "photo",
+   "tags": [
+    "food"
+   ],
+   "title": "Breakfast table with pancakes (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Breakfast_table_with_pancakes_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/b/bf/Breakfast_table_with_pancakes_%28Unsplash%29.jpg",
+   "sha1": "39e0b968535128ff0d7950b235e290ce442a309c",
+   "bytes": 3457721,
+   "licence": "CC0",
+   "author": "Anthony DELANOIX anthonydelanoix",
+   "date": "2016-12-04"
+  },
+  {
+   "file": "Food/cup-of-coffee-in-cafe-butter-prenzlauer-berg-ber.jpg",
+   "kind": "photo",
+   "tags": [
+    "food"
+   ],
+   "title": "Cup of coffee in Café Butter - Prenzlauer Berg, Berlin.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Cup_of_coffee_in_Caf%C3%A9_Butter_-_Prenzlauer_Berg,_Berlin.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/7/7e/Cup_of_coffee_in_Caf%C3%A9_Butter_-_Prenzlauer_Berg%2C_Berlin.jpg",
+   "sha1": "e32d72906edb40b8b0ea2836f473b1d31dd913eb",
+   "bytes": 1258883,
+   "licence": "CC0",
+   "author": "Edward",
+   "date": "2019-10-27 15:01:53"
+  },
+  {
+   "file": "Forests/bad-pyrmont-deutschland.jpg",
+   "kind": "photo",
+   "tags": [
+    "forest"
+   ],
+   "title": "Bad Pyrmont, Deutschland (Unsplash CoD2Q92UaEg).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Bad_Pyrmont,_Deutschland_(Unsplash_CoD2Q92UaEg).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/7/79/Bad_Pyrmont%2C_Deutschland_%28Unsplash_CoD2Q92UaEg%29.jpg",
+   "sha1": "cc71b052cd71d0b511a7ca9078c1a7ed8ce4ae82",
+   "bytes": 14692529,
+   "licence": "CC0",
+   "author": "Sebastian Unrau sebastian_unrau",
+   "date": "2015-10-27"
+  },
+  {
+   "file": "Forests/blue-stream-with-a-waterfall.jpg",
+   "kind": "photo",
+   "tags": [
+    "forest"
+   ],
+   "title": "Blue stream with a waterfall (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Blue_stream_with_a_waterfall_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/3/31/Blue_stream_with_a_waterfall_%28Unsplash%29.jpg",
+   "sha1": "705940514ed82d4e5c305c98d87769e5be6463c9",
+   "bytes": 22425225,
+   "licence": "CC0",
+   "author": "Steve Bittinger sbittinger",
+   "date": "2016-03-19"
+  },
+  {
+   "file": "Forests/butte-creek-waterfall-oregon-31900065663.jpg",
+   "kind": "photo",
+   "tags": [
+    "forest"
+   ],
+   "title": "Butte Creek Waterfall, Oregon (31900065663).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Butte_Creek_Waterfall,_Oregon_(31900065663).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/5/5c/Butte_Creek_Waterfall%2C_Oregon_%2831900065663%29.jpg",
+   "sha1": "42d186cc2a158aa6b1fac09399e348c91681052f",
+   "bytes": 10498878,
+   "licence": "CC0",
+   "author": "Bonnie from United States",
+   "date": "2016-04-28 10:35"
+  },
+  {
+   "file": "Forests/clark-creek-waterfall-olympic-national-forest-22.jpg",
+   "kind": "photo",
+   "tags": [
+    "forest"
+   ],
+   "title": "Clark Creek Waterfall, Olympic National Forest (22964586384).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Clark_Creek_Waterfall,_Olympic_National_Forest_(22964586384).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/a/ac/Clark_Creek_Waterfall%2C_Olympic_National_Forest_%2822964586384%29.jpg",
+   "sha1": "03ee9ea309d48325be8a09b3e8fdf2d781559043",
+   "bytes": 5337645,
+   "licence": "Public domain",
+   "author": "U.S. Forest Service- Pacific Northwest Region",
+   "date": "2015-05-23 15:11"
+  },
+  {
+   "file": "Forests/beelitz-heilstatten-20261018-01.jpg",
+   "kind": "photo",
+   "tags": [
+    "forest"
+   ],
+   "title": "Beelitz-Heilstätten 20261018 01.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Beelitz-Heilst%C3%A4tten_20261018_01.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/0/0e/Beelitz-Heilst%C3%A4tten_20261018_01.jpg",
+   "sha1": "635abb8ce5a9a624760966d08299c7aeb4b08125",
+   "bytes": 13150289,
+   "licence": "CC0",
+   "author": "NutzerAusBerlin",
+   "date": "2026-10-18 11:16:40"
+  },
+  {
+   "file": "Mountains/snow-covered-mountain-peaks-in-moraine-lake.jpg",
+   "kind": "photo",
+   "tags": [
+    "mountain"
+   ],
+   "title": "Snow covered mountain peaks in Moraine Lake (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Snow_covered_mountain_peaks_in_Moraine_Lake_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/9/92/Snow_covered_mountain_peaks_in_Moraine_Lake_%28Unsplash%29.jpg",
+   "sha1": "6bb92573b540be3da10c2d13c97823509fb2fe73",
+   "bytes": 1738929,
+   "licence": "CC0",
+   "author": "Ezra Jeffrey emcomeau",
+   "date": "2016-06-15"
+  },
+  {
+   "file": "Mountains/clouds-mirrored-in-a-mountain-lake.jpg",
+   "kind": "photo",
+   "tags": [
+    "mountain"
+   ],
+   "title": "Clouds mirrored in a mountain lake (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Clouds_mirrored_in_a_mountain_lake_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/d/d1/Clouds_mirrored_in_a_mountain_lake_%28Unsplash%29.jpg",
+   "sha1": "d407ee5c340d401ea92106e81b53d058a55917cf",
+   "bytes": 17397944,
+   "licence": "CC0",
+   "author": "Ales Krivec aleskrivec",
+   "date": "2015-10-19"
+  },
+  {
+   "file": "Mountains/beautiful-mountain-reflection.jpg",
+   "kind": "photo",
+   "tags": [
+    "mountain"
+   ],
+   "title": "Beautiful mountain reflection (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Beautiful_mountain_reflection_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/c/c4/Beautiful_mountain_reflection_%28Unsplash%29.jpg",
+   "sha1": "7647d6d4a39970d3b388fa5b3c78e610954c6814",
+   "bytes": 1811340,
+   "licence": "CC0",
+   "author": "Johannes Plenio jplenio",
+   "date": "Taken on 1 Septembe"
+  },
+  {
+   "file": "Mountains/tall-snow-capped-mountain-peak.jpg",
+   "kind": "photo",
+   "tags": [
+    "mountain"
+   ],
+   "title": "Tall snow-capped mountain peak (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Tall_snow-capped_mountain_peak_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/1/1a/Tall_snow-capped_mountain_peak_%28Unsplash%29.jpg",
+   "sha1": "261c10561441a5a40727df6dc6163ac7a4acd8d8",
+   "bytes": 11040567,
+   "licence": "CC0",
+   "author": "Les Anderson lesanderson",
+   "date": "2017-01-11"
+  },
+  {
+   "file": "Mountains/lake-blanche-reflection-31122974596.jpg",
+   "kind": "photo",
+   "tags": [
+    "mountain"
+   ],
+   "title": "Lake Blanche Reflection (31122974596).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Lake_Blanche_Reflection_(31122974596).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/7/7e/Lake_Blanche_Reflection_%2831122974596%29.jpg",
+   "sha1": "800f1ec2514196892806bdabc4b2603cb54d8cd8",
+   "bytes": 25565080,
+   "licence": "Public domain",
+   "author": "Intermountain Forest Service, USDA Region 4 Photography",
+   "date": "2016-06-02 20:07"
+  },
+  {
+   "file": "Mountains/white-mountain-with-wooded-slopes.jpg",
+   "kind": "photo",
+   "tags": [
+    "mountain"
+   ],
+   "title": "White mountain with wooded slopes (Unsplash).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:White_mountain_with_wooded_slopes_(Unsplash).jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/0/0f/White_mountain_with_wooded_slopes_%28Unsplash%29.jpg",
+   "sha1": "22e80138f60115c19c283e5fdb43a2c8da68bf05",
+   "bytes": 21823313,
+   "licence": "CC0",
+   "author": "Drew Patrick Miller drewpatrickmiller",
+   "date": "2014-04-02"
+  },
+  {
+   "file": "Mountains/utah-dunes-landscape-west-desert-district.jpg",
+   "kind": "photo",
+   "tags": [
+    "mountain"
+   ],
+   "title": "Utah Dunes Landscape - West Desert District.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Utah_Dunes_Landscape_-_West_Desert_District.jpg",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/c/cb/Utah_Dunes_Landscape_-_West_Desert_District.jpg",
+   "sha1": "74ab899dd443dd19c0ffb31dd618be3debf05694",
+   "bytes": 5356067,
+   "licence": "Public domain",
+   "author": "Bureau of Land Management - Utah/Bob Wick",
+   "date": "Taken on 22 April 2"
+  },
+  {
+   "file": "Clips/saint-anthony-falls-video.mp4",
+   "kind": "clip",
+   "tags": [],
+   "title": "Saint Anthony Falls video.webm",
+   "page": "https://commons.wikimedia.org/wiki/File:Saint_Anthony_Falls_video.webm",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/0/0b/Saint_Anthony_Falls_video.webm",
+   "sha1": "d1d88666fd646d76abb8f32b33fc51c4976eed97",
+   "bytes": 22032089,
+   "licence": "CC0",
+   "author": "Runner1928",
+   "date": "2014-09-27",
+   "seconds": 11
+  },
+  {
+   "file": "Clips/klosterneuburg-korneuburg-timelapse.mp4",
+   "kind": "clip",
+   "tags": [],
+   "title": "Klosterneuburg-Korneuburg-Timelapse.webm",
+   "page": "https://commons.wikimedia.org/wiki/File:Klosterneuburg-Korneuburg-Timelapse.webm",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/a/a9/Klosterneuburg-Korneuburg-Timelapse.webm",
+   "sha1": "bf091dd4c668891247b3dd031f2144845382478b",
+   "bytes": 10886830,
+   "licence": "CC0",
+   "author": "TheRo",
+   "date": "2007-02-04",
+   "seconds": 16
+  },
+  {
+   "file": "Clips/body-surfing-a-wave.mp4",
+   "kind": "clip",
+   "tags": [],
+   "title": "Body surfing a wave.webm",
+   "page": "https://commons.wikimedia.org/wiki/File:Body_surfing_a_wave.webm",
+   "original": "https://upload.wikimedia.org/wikipedia/commons/2/21/Body_surfing_a_wave.webm",
+   "sha1": "e268f09d9e56154e74f86ded9043e0632cbe9bad",
+   "bytes": 8973206,
+   "licence": "CC0",
+   "author": "JaredMcKenzie",
+   "date": "2026-08-29",
+   "seconds": 15
+  }
+ ]
+}

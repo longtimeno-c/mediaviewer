@@ -29,6 +29,8 @@
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
+#include "abi/phone_source.h"
+#include "phone/app.h"
 #include "shell/addons_mac.h"
 
 #include <mediaviewer/mediaviewer_ai.h>
@@ -679,6 +681,8 @@ mv::addon::host_services ai_services() {
   svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
   svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
   svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
+  svc.jpeg_shrink = &mv::addon::media::jpeg_shrink;     // the phone's catalogue
+  svc.thumbnail_make = &mv::addon::media::make_thumbnail_jpeg;
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;
@@ -700,6 +704,7 @@ void unload_ai() {
   }
   s.ai.chrome = nil;
   s.ai.table = nullptr;
+  mv::phone::set_app_source({});  // nothing calls the pack's phone entries from here
   // #398: other add-ons' locations_of_index stop reading the pack's index now
   // (a walk in flight stops at its next row). The wait for it to leave the
   // pack runs on addon_queue(), ahead of the retire queued there: never on
@@ -769,6 +774,8 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
   mv::addon::publish_ai_faces(mv::addon::ai_faces(static_cast<const mv_ai_api*>(table)));  // edit-refresh S10
   mv::addon::publish_ai_person_faces(mv::addon::ai_person_faces(static_cast<const mv_ai_api*>(table)));  // Faces donors
+  // Phone access's catalogue (docs/plans/phone-in-the-app.md): the writer only.
+  if (!s.reader) mv::phone::set_app_source(mv::abi::ai_catalogue_source(static_cast<const mv_ai_api*>(table)));
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.

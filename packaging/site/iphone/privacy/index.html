@@ -1,0 +1,121 @@
+<!doctype html>
+<!-- Copyright (C) 2026 longtimeno-c
+     SPDX-License-Identifier: GPL-3.0-or-later
+     The privacy policy of the iPhone and iPad app, MediaViewer for NAS: the App Store listing's
+     Privacy Policy URL. Copied into the GitHub Pages site as it is by
+     tools/package/driftwire_repo.py. Every claim here is checked against src.ios and src/mobile
+     (src.ios/AppStore/listing.md says where); change the page in the same change as the code.
+     No external assets, no scripts, nothing that tracks. -->
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy: MediaViewer for NAS</title>
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #1d2125; --muted: #5b636b; --rule: #dfe2e5; --accent: #0f7f7a;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ab; --rule: #2c3237; --accent: #4fc4bc; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif;
+}
+main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+h1 { font-size: 2rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+h2 { font-size: 1.15rem; margin: 2.25rem 0 .5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+p, li { max-width: 40rem; }
+.lead { font-size: 1.1rem; color: var(--muted); margin-top: 0; }
+a { color: var(--accent); }
+.small { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>Privacy</h1>
+<p class="lead">MediaViewer for NAS, for iPhone and iPad. Last changed 12 November 2026.</p>
+
+<p><strong>The app collects no data.</strong> There is no account to make, no analytics, no
+advertising, no tracking and no crash reports sent anywhere. Nothing you do in the app, and
+nothing about your photos and videos, is sent to Oakforge Studios LTD, the app's publisher, or to
+anyone else. We run no server for this app.</p>
+
+<h2>Who the app talks to</h2>
+<p>Only the MediaViewer service on your own NAS, at the addresses in the code you scanned from
+MediaViewer on your computer: its address on its own network and, if you set one up, its name on
+the internet. Every connection is encrypted end to end, and the app checks that the service is the
+one it paired with before it asks for anything. The service only lets in phones you paired, and
+only reads the folders you chose to share with them.</p>
+<p>Over that connection the app copies your library's catalogue and fetches thumbnails, photos and
+clips as you look at them. It writes to your NAS only if you turn on phone backup: then it copies
+this phone's photos and videos into the one backup folder set up for phones on your computer, under
+the storage limit set there. It never replaces or deletes a file on your NAS.</p>
+<p>During setup, on a phone with mobile data, the app tries once to reach your NAS's internet name
+over mobile data, so it can tell you whether the app will work away from home. Looking up that
+name goes through your network's or carrier's name service, as any app's connection does.</p>
+
+<h2>Permissions</h2>
+<ul>
+<li><strong>Camera.</strong> Only to scan the code MediaViewer shows on your computer. The picture
+is read on the phone to find the code; it is not saved or sent.</li>
+<li><strong>Local network.</strong> To reach your NAS on the network you are on.</li>
+<li><strong>Photos, add only.</strong> Asked for the first time you tap Save to Photos, and used
+only to add the copy you asked for. Add-only access cannot see or read anything already in your
+Photos library.</li>
+<li><strong>Photos, read.</strong> Asked only when you turn on phone backup, and used only to copy
+your photos and videos, as they were shot, to the backup folder on your own NAS. You can allow all
+of them or only the ones you choose. With the sample library the "NAS" is a folder inside the app on
+this phone, so nothing leaves the phone. Backup never deletes anything from Photos.</li>
+</ul>
+<p>You can turn any of these off in the Settings app. Without the camera you cannot pair a new
+library; without Photos you cannot save copies or back up; everything else keeps working.</p>
+
+<h2>What is kept on your phone</h2>
+<ul>
+<li><strong>The catalogue</strong> of your library, copied from your NAS so that search works
+without a connection: file names, folders, dates, places, camera details, the names of people you
+named in MediaViewer on your computer, words found in pictures and words said in clips, small
+thumbnails, and the model the app searches with.</li>
+<li><strong>A cache</strong> of thumbnails, photos and clips you opened, so they show again
+quickly. iOS may clear it when the phone needs space.</li>
+<li><strong>Your recent searches</strong> (the last 20), which you can remove one by one or clear
+on the search screen.</li>
+<li><strong>The pairing keys</strong> that let the phone into your NAS, in the iOS Keychain, kept on
+this device only.</li>
+<li><strong>The app's settings</strong>, such as its appearance.</li>
+<li><strong>The backup record</strong>, if you use phone backup: for each photo backed up, which one
+it was (iCloud Photos' identifier for it), its file name, size and checksum, and where it went. A
+copy is kept in the backup folder on your NAS so a reinstall or a new phone need not copy everything
+again. With the sample library, the photos it backed up are also kept, in a folder inside the app.</li>
+</ul>
+<p>The catalogue, the cache and your recent searches are kept out of iCloud and computer backups,
+so a copy of your library's catalogue does not leave the phone that way. They are protected by
+iOS's data protection, locked until you first unlock the phone after it starts.</p>
+
+<h2>Removing it</h2>
+<p><strong>Settings &rarr; Forget this library</strong> removes everything the app keeps about the
+library: the catalogue, the cache, your recent searches, the pairing keys, the backup record and,
+with the sample library, its backup folder. Nothing on your NAS changes: photos already backed up
+there stay. You can also remove the phone from MediaViewer on your computer, after which the service
+on your NAS no longer lets it in. Deleting the app removes its files with it.</p>
+
+<h2>Children</h2>
+<p>The app is not aimed at children and collects nothing from anyone.</p>
+
+<h2>Changes</h2>
+<p>If this ever changes, this page changes first, with a new date at the top. The app's source
+code is public, so anyone can check what it does.</p>
+
+<h2>Contact</h2>
+<p>Questions about privacy: open an issue at
+<a href="https://github.com/longtimeno-c/mediaviewer/issues">github.com/longtimeno-c/mediaviewer/issues</a>.
+Issues are public, so please leave out anything personal.</p>
+
+<p class="small"><a href="../support/">Support</a> &middot; <a href="../../">MediaViewer</a>
+&middot; Oakforge Studios LTD</p>
+</main>
+</body>
+</html>

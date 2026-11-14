@@ -83,13 +83,15 @@ mv_status MV_CALL t_walk(void*, const char* root, int32_t depth, mv_addon_walk_f
 mv_status MV_CALL t_walk2(void*, const char* root, int32_t depth, mv_addon_walk2_fn visit, void* user) {
   return guarded([&] {
     if (!root || !visit) return MV_ERR_INVALID_ARG;
+    bool incomplete = false;
     auto r = io::walk_files(root, depth, [&](const io::tree_entry& e) {
       mv_addon_file_entry2 fe{sizeof(mv_addon_file_entry2), e.cloud_only ? MV_ADDON_FILE_CLOUD_ONLY : 0u,
                               e.path_utf8.c_str(), e.relative_utf8.c_str(), e.name_utf8.c_str(),
                               e.size, e.mtime_unix};
       return visit(user, &fe) != 0;
-    });
-    return r ? MV_OK : to_mv(r.error());
+    }, &incomplete);
+    if (!r) return to_mv(r.error());
+    return incomplete ? MV_ERR_IO : MV_OK;  // what could be listed has been
   });
 }
 
@@ -1350,6 +1352,75 @@ mv_status MV_CALL t_still_extend(void* host, const char* path, float* out) {
   });
 }
 
+mv_status MV_CALL t_jpeg_shrink(void* host, const uint8_t* jpeg, uint64_t size, uint32_t max_edge, uint32_t quality,
+                                uint8_t* out, uint64_t capacity, uint64_t* out_size) {
+  return guarded([&] {
+    if (!jpeg || size == 0 || !out_size || max_edge < 8 || max_edge > 512 || quality < 1 || quality > 100) {
+      return MV_ERR_INVALID_ARG;
+    }
+    const auto& fn = self(host).services().jpeg_shrink;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto made = fn(std::span<const std::uint8_t>(jpeg, static_cast<std::size_t>(size)), max_edge, quality);
+    if (!made) return to_mv(made.error());
+    *out_size = static_cast<uint64_t>(made->size());
+    if (!out || made->size() > capacity) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, made->data(), made->size());
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_addon_request(void* host, const char* addon_id, const char* method, const char* request_json,
+                                  mv_addon_reply_fn reply, void* user) {
+  return guarded([&] {
+    if (!addon_id || !method || !reply) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    const std::string json = request_json ? request_json : "{}";
+    auto got = t.services().addon_request ? t.services().addon_request(addon_id, method, json)
+                                          : t.slots().addon_request(addon_id, t.addon_id(), method, json);
+    if (!got) return to_mv(got.error());
+    reply(user, got->c_str());
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_thumbnail_make(void* host, const char* path, int64_t pts_ms, uint8_t* out, uint64_t capacity,
+                                   uint64_t* out_size) {
+  return guarded([&] {
+    if (!path || !out_size) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().thumbnail_make;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto made = fn(path, pts_ms);
+    if (!made) return to_mv(made.error());
+    *out_size = static_cast<uint64_t>(made->size());
+    if (!out || made->size() > capacity) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, made->data(), made->size());
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_place_labels(void* host, const mv_addon_route_point* points, uint32_t count,
+                                 mv_addon_label_fn visit, void* user) {
+  return guarded([&] {
+    if ((!points && count != 0) || !visit) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    std::vector<std::pair<double, double>> at;
+    at.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) at.emplace_back(points[i].lat, points[i].lon);
+    std::vector<std::string> labels;
+    if (const auto& fn = t.services().place_labels) {
+      auto got = fn(at);
+      if (!got) return to_mv(got.error());
+      labels = std::move(*got);
+    } else if (const expected got = t.slots().provider_labels("place:", at, labels); !got) {
+      return to_mv(got.error());
+    }
+    for (uint32_t i = 0; i < count && i < labels.size(); ++i) {
+      if (visit(user, i, labels[i].c_str()) == 0) return MV_ERR_CANCELLED;
+    }
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* rgb, uint32_t w, uint32_t h,
                                 uint32_t stride, const char* suffix, char* out, uint32_t cap) {
   return guarded([&] {
@@ -1540,6 +1611,10 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   if (svc_.still_faces) api_.still_faces = &t_still_faces;  // edit-refresh S10
   if (svc_.still_extend) api_.still_extend = &t_still_extend;  // edit-refresh S6
   api_.keep_menu = &t_keep_menu;  // 0.40
+  if (svc_.jpeg_shrink) api_.jpeg_shrink = &t_jpeg_shrink;      // the phone's catalogue
+  api_.place_labels = &t_place_labels;
+  api_.addon_request = &t_addon_request;
+  if (svc_.thumbnail_make) api_.thumbnail_make = &t_thumbnail_make;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
@@ -1669,7 +1744,7 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
       slot_registry& reg = out->table_->slots();
       contributions c = info.m.slots;
       for (const manifest_command& cmd : info.m.commands) c.commands.push_back(cmd.id);
-      if (reg.attach(info.id, info.m.name, std::move(c), native_slot_client(api.addon, table), info.dir) ==
+      if (reg.attach(info.id, info.m.name, std::move(c), native_slot_client(api.addon, table, static_cast<const mv_addon_place_labels*>(out->query(MV_PLACE_LABELS_INTERFACE)), static_cast<const mv_addon_request_api*>(out->query(MV_REQUEST_INTERFACE))), info.dir) ==
           status::ok) {
         out->slots_ = &reg;
       }

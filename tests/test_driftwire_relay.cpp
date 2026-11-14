@@ -15,10 +15,10 @@
 #include <cctype>
 
 #include "addons/driftwire/invite.h"
-#include "addons/driftwire/known.h"
+#include "wire/known.h"
 #include "addons/driftwire/relay.h"
-#include "addons/driftwire/splice.h"
-#include "addons/driftwire/tls.h"
+#include "wire/splice.h"
+#include "wire/tls.h"
 #include "addons/driftwire/tunnel.h"
 
 namespace relay = mv::driftwire::relay;
@@ -153,7 +153,7 @@ TEST_CASE("driftwire relay: a rendezvous head carries its role and version, and 
   CHECK(relay::parse_head(h) == relay::kWaiter);
   for (std::size_t i = 0; i < h.size(); ++i) {
     auto bad = h;
-    bad[i] ^= 2;
+    bad[i] ^= 0x40;  // not 2: roles 0-3 (sender, waiter, forwarder, kAsk) are all real
     CHECK_FALSE(relay::parse_head(bad));  // magic, version, role, reserved
   }
   auto v2 = h;

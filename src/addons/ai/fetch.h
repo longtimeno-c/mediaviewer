@@ -50,6 +50,10 @@ struct http_reply {
 class http_transport {
  public:
   virtual ~http_transport() = default;
+  // While set (by fetcher::run, for the call), a transport that waits looks
+  // at this every so often and gives up, so quitting never waits on a
+  // stalled network.
+  const std::atomic<bool>* stop = nullptr;
   // GET `url`, from byte `from` (a Range request when > 0). `head` gets the
   // final status before any body; false stops there. `body` gets each chunk
   // of a 200 / 206; false stops the transfer. Blocks until done or stopped.

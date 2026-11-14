@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "addons/ai/fetch.h"
-#include "addons/ai/sha256.h"
+#include "catalogue/sha256.h"
 
 namespace fs = std::filesystem;
 

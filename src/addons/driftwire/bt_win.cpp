@@ -48,7 +48,7 @@
 
 #include "addons/driftwire/bt_pipe.h"
 #include "addons/driftwire/presence.h"
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 
 namespace mv::driftwire {
 

@@ -134,7 +134,9 @@ jobs:
         run: ./tools/install-windows-app-runtime.ps1
 
       - name: Unit tests
-        timeout-minutes: 20
+        # 25, as CI's Release legs (ci.yml): the 0.1.42 release timed out at 20
+        # (2026-11-14) with no test hung.
+        timeout-minutes: 25
         # The corpus-gated cases are CI's Build job (tests/corpus.h); a release
         # does not regenerate 1.5 GB of clips. Saying '0' out loud is what
         # test_corpus.cpp's CI guard accepts as a decision rather than an oversight.
@@ -710,7 +712,9 @@ jobs:
           cmake --build build --config Release --target mediaviewer_app
 
       - name: Unit tests
-        timeout-minutes: 20
+        # 30, as CI's macOS core (ci.yml): the 0.1.42 release timed out at 20
+        # (2026-11-14) with no test hung.
+        timeout-minutes: 30
         run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
 
       - name: Bundle policy

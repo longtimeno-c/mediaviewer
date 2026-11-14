@@ -81,8 +81,9 @@ enum class layout : std::uint8_t {
   year_month_day = 2,  // YYYY/MM/DD
   day = 3,             // YYYY-MM-DD
   flat = 4,            // the destination itself
+  year_month = 5,      // YYYY/MM
 };
-inline constexpr std::uint8_t kLayoutCount = 5;
+inline constexpr std::uint8_t kLayoutCount = 6;
 
 struct options {
   std::string destination;  // the folder the user chose

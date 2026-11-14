@@ -1,0 +1,6 @@
+{
+  "$comment": "The iOS triplets live with the others; no overlay ports, so the iOS build cannot pick up the desktop's patched LibRaw.",
+  "overlay-triplets": [
+    "../vcpkg/triplets"
+  ]
+}

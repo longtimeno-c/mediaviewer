@@ -94,6 +94,7 @@ result<clip_spec> read_clip_spec(const std::string& folder, const std::string& f
   const auto doc = json::parse(text, 8);
   if (!doc || doc->k != json::kind::object) return err(status::corrupt);
   clip_spec s;
+  s.model_json = join(folder, "model.json");
   const std::string* id = doc->str("id");
   const std::string* name = doc->str("name");
   const std::string* precision = doc->str("precision");

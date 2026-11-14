@@ -87,6 +87,9 @@ class win_transport final : public http_transport {
     if (!head(reply.status)) return reply;
     std::vector<std::uint8_t> buf(1 << 20);
     for (;;) {
+      // Stopping: no further read. One read already waiting on a stalled
+      // connection still ends only with WinHTTP's receive timeout (60 s).
+      if (stop && stop->load()) break;
       DWORD got = 0;
       if (!WinHttpReadData(request.h, buf.data(), static_cast<DWORD>(buf.size()), &got)) {
         reply.error = "transfer cut (" + std::to_string(GetLastError()) + ")";

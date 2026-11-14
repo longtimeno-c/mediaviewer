@@ -139,6 +139,19 @@ struct host_services {
   // the photo being edited at `path` (left, top, right, bottom fractions of
   // the edited picture); all 0 when none. Empty leaves still_extend NULL.
   std::function<std::array<float, 4>(const std::string& path)> still_extend;
+  // The phone's catalogue (docs/plans/mobile.md §5): a smaller JPEG of a JPEG
+  // (media::jpeg_shrink). Empty leaves jpeg_shrink NULL.
+  std::function<result<std::vector<std::uint8_t>>(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
+                                                  std::uint32_t quality)>
+      jpeg_shrink;
+  // A JPEG-512 made now and not stored (media::make_thumbnail_jpeg).
+  std::function<result<std::vector<std::uint8_t>>(const std::string& path, std::int64_t pts_ms)> thumbnail_make;
+  // The labels of GPS points. Empty: the add-on that answers `place:`
+  // (slot_registry::provider_labels, Places). Tests inject a fake.
+  std::function<result<std::vector<std::string>>(std::span<const std::pair<double, double>> points)> place_labels;
+  // One add-on asking another. Empty: slot_registry::addon_request. Tests inject a fake.
+  std::function<result<std::string>(const std::string& target, const std::string& method, const std::string& json)>
+      addon_request;
   std::function<result<std::string>(const std::string& source, const rgb_image& pixels, const std::string& suffix)>
       write_still;
   // #606: a clip's GPS route from its telemetry (meta::read_route in both

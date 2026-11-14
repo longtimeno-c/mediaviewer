@@ -11,7 +11,8 @@
 namespace mv::import {
 namespace {
 
-constexpr int kSchemaVersion = 1;
+// 2: `library.root`, `seq.root` and journal targets may be volume keys.
+constexpr int kSchemaVersion = 2;
 
 // A prepared statement that finalizes itself. Binds are 1-based, as SQLite's.
 class stmt {
@@ -172,7 +173,9 @@ result<std::unique_ptr<library_index>> library_index::open(const std::string& db
       "  PRIMARY KEY(job, unit, member));");
   if (!created) return err(status::io);
   {
-    stmt s(idx->db_, "INSERT OR IGNORE INTO meta(key, value) VALUES('schema', ?1)");
+    stmt s(idx->db_,
+           "INSERT INTO meta(key, value) VALUES('schema', ?1) "
+           "ON CONFLICT(key) DO UPDATE SET value = excluded.value");
     s.bind(1, std::to_string(kSchemaVersion)).run();
   }
   return idx;
@@ -219,6 +222,55 @@ std::vector<library_row> library_index::all_rows() {
   stmt s(db_, "SELECT root, rel, size, mtime, hash FROM library ORDER BY root, rel");
   while (s.step_row()) out.push_back(library_from(s));
   return out;
+}
+
+std::vector<std::string> library_index::legacy_roots() {
+  std::lock_guard lock(mutex_);
+  std::vector<std::string> out;
+  stmt s(db_,
+         "SELECT root FROM library WHERE substr(root, 1, 4) <> 'vol:' "
+         "UNION SELECT root FROM seq WHERE substr(root, 1, 4) <> 'vol:'");
+  while (s.step_row()) out.push_back(s.text(0));
+  return out;
+}
+
+std::vector<library_row> library_index::sample_rows(const std::string& root, int limit) {
+  std::lock_guard lock(mutex_);
+  std::vector<library_row> out;
+  std::int64_t count = 0;
+  {
+    stmt c(db_, "SELECT COUNT(*) FROM library WHERE root = ?1");
+    c.bind(1, root);
+    if (c.step_row()) count = c.i64(0);
+  }
+  if (count == 0 || limit <= 0) return out;
+  // Every step-th row in path order, so old folders moved to an archive
+  // cannot fill the sample.
+  const std::int64_t step = (count + limit - 1) / limit;
+  stmt s(db_,
+         "SELECT root, rel, size, mtime, hash FROM (SELECT root, rel, size, mtime, hash, "
+         "ROW_NUMBER() OVER (ORDER BY rel) - 1 AS n FROM library WHERE root = ?1) "
+         "WHERE n % ?2 = 0");
+  s.bind(1, root).bind(2, step);
+  while (s.step_row()) out.push_back(library_from(s));
+  return out;
+}
+
+expected library_index::adopt_root(const std::string& root, const std::string& key) {
+  std::lock_guard lock(mutex_);
+  if (!exec("BEGIN IMMEDIATE")) return err(status::io);
+  bool ok = false;
+  {
+    stmt update(db_, "UPDATE OR IGNORE library SET root = ?2 WHERE root = ?1");
+    stmt leftover(db_, "DELETE FROM library WHERE root = ?1");
+    stmt seq_up(db_,
+                "INSERT INTO seq(root, day, last) SELECT ?2, day, last FROM seq WHERE root = ?1 "
+                "ON CONFLICT(root, day) DO UPDATE SET last = MAX(last, excluded.last)");
+    stmt seq_old(db_, "DELETE FROM seq WHERE root = ?1");
+    ok = update.bind(1, root).bind(2, key).run() && leftover.bind(1, root).run() &&
+         seq_up.bind(1, root).bind(2, key).run() && seq_old.bind(1, root).run();
+  }
+  return finish(ok);
 }
 
 // Byte-wise prefixes: substr on TEXT counts characters, the length is bytes.
@@ -492,6 +544,28 @@ void library_index::journal_set(std::uint64_t job, std::uint32_t unit, std::uint
         .bind(3, static_cast<std::int64_t>(member)).bind(4, static_cast<std::int64_t>(state))
         .bind(5, reason).run();
   }
+}
+
+expected library_index::journal_set_targets(const std::vector<journal_row>& rows) {
+  std::lock_guard lock(mutex_);
+  if (!exec("BEGIN IMMEDIATE")) return err(status::io);
+  bool ok = true;
+  {
+    stmt s(db_,
+           "UPDATE journal SET targets = ?4, target_roots = ?5 "
+           "WHERE job = ?1 AND unit = ?2 AND member = ?3");
+    for (const journal_row& r : rows) {
+      s.reset();
+      s.bind(1, static_cast<std::int64_t>(r.job)).bind(2, static_cast<std::int64_t>(r.unit))
+          .bind(3, static_cast<std::int64_t>(r.member)).bind(4, strings_json(r.targets))
+          .bind(5, strings_json(r.target_roots));
+      if (!s.run()) {
+        ok = false;
+        break;
+      }
+    }
+  }
+  return finish(ok);
 }
 
 std::vector<journal_row> library_index::journal(std::uint64_t job) {

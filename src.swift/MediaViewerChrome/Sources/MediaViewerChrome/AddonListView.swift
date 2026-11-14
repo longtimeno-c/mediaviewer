@@ -63,6 +63,16 @@ final class AddonNav: ObservableObject {
   static let importPage = "import"
   static let localSearchPage = "ai"
   static let othersPage = "others"
+  /// A pack's chrome asks for an add-on's page (its Install button): the
+  /// notification's object is the add-on id. Packs link nothing of the app.
+  static let showRequest = Notification.Name("MVShowAddonPage")
+
+  private init() {
+    NotificationCenter.default.addObserver(forName: Self.showRequest, object: nil, queue: .main) { note in
+      guard let id = note.object as? String else { return }
+      MainActor.assumeIsolated { AddonNav.shared.show(id) }
+    }
+  }
 
   @Published private(set) var page: String?
   /// Asked for while Settings was closed: shown when it opens.
@@ -355,4 +365,3 @@ private struct AddonStorageBlock: View {
     .onChange(of: settings.visible) { _, visible in if visible { storage.refresh() } }
   }
 }
-

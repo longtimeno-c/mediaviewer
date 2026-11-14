@@ -36,9 +36,10 @@
 #include <string_view>
 #include <vector>
 
-#include "addons/driftwire/channel.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/stages.h"
+#include "wire/channel.h"
+#include "wire/keys.h"
+#include "wire/net.h"
+#include "wire/stages.h"
 #include "io/file_port.h"
 
 namespace mv::driftwire {
@@ -107,10 +108,6 @@ struct kept_state {
   std::optional<resume_plan::partial_file> partial;  // `at`: its bytes on stable storage
 };
 
-// An identity key as the offer and the accept carry it ("key": 64 hex
-// digits), and back (nullopt for anything else).
-[[nodiscard]] std::string key_hex(const std::array<std::uint8_t, 32>& key);
-[[nodiscard]] std::optional<std::array<std::uint8_t, 32>> parse_key_hex(std::string_view hex);
 
 // bytes moved so far (both ends), files finished so far.
 using progress_fn = std::function<void(std::uint64_t bytes, std::uint32_t files)>;
@@ -161,9 +158,6 @@ enum class outcome : std::uint8_t {
 };
 [[nodiscard]] const char* outcome_name(outcome o) noexcept;
 
-// The longest a cancel waits to be said before the link closes (#511): for
-// the frame being written, then for the peer to acknowledge it.
-inline constexpr int kCancelWaitMs = 250;
 
 struct transfer_result {
   outcome how = outcome::failed;

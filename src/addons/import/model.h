@@ -162,6 +162,9 @@ struct plan_result {
   preset settings;
   std::string destination;  // resolved
   std::string backup;       // resolved; empty = off
+  // What import.db calls them (host.h, dest_locator).
+  std::string destination_key;
+  std::string backup_key;
   std::vector<plan_unit> units;
 };
 

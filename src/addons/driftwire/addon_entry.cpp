@@ -27,9 +27,9 @@
 #include <vector>
 
 #include "addons/driftwire/engine.h"
-#include "addons/driftwire/known.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/secrets.h"
+#include "wire/known.h"
+#include "wire/net.h"
+#include "wire/secrets.h"
 #include "core/json.h"
 #include "io/file_port.h"
 
@@ -397,7 +397,14 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
 extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_forget(const char* /*data_dir_utf8*/) {
   return guard([&] {
     auto store = mv::driftwire::secrets::os_store();
-    if (store && !mv::driftwire::known::forget(*store)) return MV_ERR_IO;
+    if (!store) return MV_OK;
+    // Phone access kept its items here before it moved into the app
+    // (2026-11-12, docs/plans/phone-in-the-app.md); the app takes them on
+    // first use, so these are only what was never taken.
+    for (const char* name : {"phone_desk_key", "phone_service", "phone_devices", "phone_revoke_pending"}) {
+      (void)store->erase(name);
+    }
+    if (!mv::driftwire::known::forget(*store)) return MV_ERR_IO;
     return MV_OK;
   });
 }

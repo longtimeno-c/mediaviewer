@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <chrono>
 
-#include "addons/driftwire/wire.h"
+#include "wire/wire.h"
 #include "core/json.h"
 
 namespace mv::driftwire::bt {

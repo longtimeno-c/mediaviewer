@@ -30,6 +30,7 @@ struct clip_spec {
   std::uint32_t quality = 1;  // mv_ai_quality: 1 fast, 2 high
   std::uint32_t dim = 512;
   clip_norm norm;
+  std::string model_json;  // absolute: this tower's model.json
   std::string image_file;  // absolute
   std::string text_file;
   std::string vocab_file;

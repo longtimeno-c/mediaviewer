@@ -69,6 +69,11 @@
        Bluetooth. Without these keys macOS refuses (Bluetooth: ends the app). -->
   <key>NSLocalNetworkUsageDescription</key>
   <string>Driftwire finds other MediaViewers on your network and sends them photos and videos you choose, after the person there accepts. Nothing goes to the internet.</string>
+  <!-- Phone access (docs/plans/mobile.md §7.5): the nearby service's advert. -->
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_mediaviewer._tcp</string>
+  </array>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Driftwire uses Bluetooth to find MediaViewers nearby and send them a few photos when you are not on the same network. Nothing moves until the person there accepts.</string>
   <key>NSHumanReadableCopyright</key>

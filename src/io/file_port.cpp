@@ -11,6 +11,22 @@
 
 namespace mv::io {
 
+namespace detail {
+bool relative_parts(std::string_view rel, std::vector<std::string_view>& parts) {
+  parts.clear();
+  if (rel.empty()) return true;
+  for (;;) {
+    const auto slash = rel.find('/');
+    const std::string_view part = rel.substr(0, slash);
+    if (part.empty() || part == "." || part == ".." || part.find('\\') != std::string_view::npos) return false;
+    parts.push_back(part);
+    if (slash == std::string_view::npos) return true;
+    rel.remove_prefix(slash + 1);
+  }
+}
+}  // namespace detail
+
+
 namespace {
 #if defined(_WIN32)
 constexpr char kSep = '\\';

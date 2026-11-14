@@ -102,6 +102,10 @@ internal class FakeInput : ContentControl
     /// MaxLength does; an add-on's settings page counts its limit in bytes.</summary>
     public int MaxUtf8Bytes { get; set; }
 
+    /// <summary>A passphrase: each character drawn as a dot, and never copied or cut
+    /// (paste still works). Nothing exposes the text to automation either way.</summary>
+    public bool Secret { get; init; }
+
     // The main chrome's fields keep Enter and Down even with no listener, as
     // they always have: the native router must not see them while one has focus.
     protected bool OwnsEnterAndDown { get; init; }
@@ -380,7 +384,7 @@ internal class FakeInput : ContentControl
 
     private bool CopySelection()
     {
-        if (!HasSelection) return false;
+        if (!HasSelection || Secret) return false;
         try
         {
             var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
@@ -404,6 +408,9 @@ internal class FakeInput : ContentControl
             var view = Windows.ApplicationModel.DataTransfer.Clipboard.GetContent();
             if (!view.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.Text)) return;
             string pasted = await view.GetTextAsync();
+            // A passphrase copied from a password manager often ends in a line
+            // break: trimmed, never turned into a space that would make it wrong.
+            if (Secret) pasted = pasted.Trim('\r', '\n', '\t');
             // One line: breaks and tabs become spaces, other controls go.
             var line = new System.Text.StringBuilder(pasted.Length);
             foreach (char ch in pasted)
@@ -496,9 +503,19 @@ internal class FakeInput : ContentControl
         else
         {
             int start = SelStart, end = SelEnd;
-            _before.Text = Shown(_text[..start]);
-            _selected.Text = Shown(_text[start..end]);
-            _after.Text = Shown(_text[end..]);
+            if (Secret)
+            {
+                // The text itself never reaches a TextBlock: a dot per character.
+                _before.Text = new string('\u2022', start);
+                _selected.Text = new string('\u2022', end - start);
+                _after.Text = new string('\u2022', _text.Length - end);
+            }
+            else
+            {
+                _before.Text = Shown(_text[..start]);
+                _selected.Text = Shown(_text[start..end]);
+                _after.Text = Shown(_text[end..]);
+            }
         }
         Brush ink = empty ? _look.Body() : _look.Title();
         _before.Foreground = ink;

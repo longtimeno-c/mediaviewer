@@ -18,6 +18,7 @@
 #include <cfgmgr32.h>
 #include <dbt.h>
 #include <setupapi.h>
+#include <winnetwk.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -26,6 +27,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+// WNetGetConnectionW. In the source so the portable CMake list stays as it is.
+#pragma comment(lib, "mpr.lib")
 
 namespace mv::io {
 namespace {
@@ -142,6 +146,30 @@ bool is_network_path(std::string_view utf8_path) noexcept {
   return ::GetDriveTypeW(root) == DRIVE_REMOTE;
 }
 
+// "\\server\share", lower case, for a mapped drive root or a UNC root; empty if
+// it is neither. ASCII folding: Windows compares these case-insensitively.
+static std::string share_name(const std::wstring& root) {
+  std::wstring unc;
+  if (root.size() >= 8 && root.compare(0, 8, L"\\\\?\\UNC\\") == 0) {
+    unc = L"\\\\" + root.substr(8);
+  } else if (root.size() >= 2 && root[0] == L'\\' && root[1] == L'\\' &&
+             root.compare(0, 4, L"\\\\?\\") != 0 && root.compare(0, 4, L"\\\\.\\") != 0) {
+    unc = root;
+  } else if (root.size() >= 2 && root[1] == L':') {
+    const wchar_t local[] = {root[0], L':', L'\0'};
+    wchar_t remote[1024]{};
+    DWORD size = static_cast<DWORD>(std::size(remote));
+    if (::WNetGetConnectionW(local, remote, &size) != NO_ERROR) return {};
+    unc = remote;
+  }
+  while (!unc.empty() && (unc.back() == L'\\' || unc.back() == L'/')) unc.pop_back();
+  std::string out = narrow(unc);
+  for (char& c : out) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return out;
+}
+
 result<volume_info> volume_of(std::string_view utf8_path) {
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
@@ -182,7 +210,10 @@ result<volume_info> volume_of(std::string_view utf8_path) {
     out.device_key = key;
     if (!out.removable) out.removable = bus_is_removable(dev);
   } else {
-    out.device_key = (out.network ? "net:" : "vol:") + out.root_utf8;
+    // A share is the same share by drive letter or UNC name, whichever letter
+    // it has today; Import's ledger and its per-device lock both rely on that.
+    const std::string share = out.network ? share_name(root_w) : std::string();
+    out.device_key = share.empty() ? (out.network ? "net:" : "vol:") + out.root_utf8 : "net:" + share;
   }
   return out;
 }

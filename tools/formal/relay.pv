@@ -1,6 +1,6 @@
 (* The hop to a relay server of the person's own (protocol 3, #500), as a
    forwarder uses it: the Tunnel (2026-11-12, docs/plans/driftwire-menu-and-tunnel.md).
-   src/addons/driftwire/splice.cpp, `forward` and `server::handle`:
+   src/wire/splice.cpp, `forward` and `server::handle`:
 
      C -> S  "MVRL" 3 kForwarder 0 0, sid, Ya = gen(key, sid)^ya   (CPace on the server key)
      S -> C  Yb

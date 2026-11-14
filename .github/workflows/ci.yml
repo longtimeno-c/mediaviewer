@@ -167,7 +167,10 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Unit tests
-        timeout-minutes: 20
+        timeout-minutes: 30
+        # By 2026-11-13 main's macOS core tests took 15.0 of 20 and #668 passed
+        # all 2128 at 20:00 (driftwire resume 61 s, privacy 40 s; no test hung),
+        # so they get 30, inside the job's 240.
         # A hosted macOS runner has no audio output device, so the audio clock
         # never advances: "plays 0.6 s, then pauses" stays at the seek point. The
         # one case that measures real playback time is left to a Mac with audio.
@@ -196,6 +199,53 @@ jobs:
           name: driftwire-macos-arm64
           path: driftwire-macos/*.tar.gz
           if-no-files-found: error
+
+  # The iPhone engines (cmake/ios.cmake): both SDKs, the licence check inside
+  # the build, and the run-time smoke in a Simulator.
+  ios-core:
+    name: iOS core (${{ matrix.sdk }})
+    if: github.event_name != 'schedule'
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphoneos, iphonesimulator]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+          brew install ninja autoconf autoconf-archive automake libtool
+
+      - name: Licence check's own tests
+        run: python3 tools/ios/test_licence_check.py
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-ios -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build (includes the licence check)
+        run: cmake --build build-ios
+
+      - name: Smoke in a Simulator
+        if: matrix.sdk == 'iphonesimulator'
+        run: tools/ios/run-simulator-smoke.sh "$PWD/build-ios/bin/mv_ios_core_smoke"
 
   windows-chrome:
     name: WinUI chrome
@@ -232,6 +282,7 @@ jobs:
       # the Homebrew tap's formula (ruby checks and evaluates it).
       - run: python3 tools/package/test_driftwire_windows.py -v
       - run: python3 tools/package/test_homebrew_formula.py -v
+      - run: python3 tools/package/test_driftwire_spk.py -v  # the Synology package (docs/plans/nas-setup.md)
 
   # ---------------------------------------------------------------------------
   # Milestone G (docs/design/18): the shared Import engine, add-on host and verified
@@ -625,7 +676,7 @@ jobs:
     runs-on: windows-latest
     # ASan runs the same suite several times slower; its leg gets the room
     # below, the others keep the tighter budget that catches a hang early.
-    timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 85 || 50 }}
+    timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 105 || 50 }}
     strategy:
       fail-fast: false
       matrix:
@@ -729,7 +780,10 @@ jobs:
         # 2026-11-09 main's msvc Release took 18.6-18.9 of its 20 min and #659
         # timed out with 2101 of 2110 done (the document sweeps 82 s slower than
         # the run before; no test hung), so Release gets 25, inside its job's 50.
-        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 60 || matrix.config == 'Debug' && 35 || 25 }}
+        # By 2026-11-12 main's ASan took 57.8 of its 60 and #663 timed out with
+        # 2218 of 2228 done (the PDF sweep 437 s, PPTX 357 s; no test hung), so
+        # ASan gets 80 (job 105).
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 80 || matrix.config == 'Debug' && 35 || 25 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
           # A missing clip or sample FAILS here instead of skipping

@@ -223,6 +223,100 @@ expected remove_tree(std::string_view utf8_dir) {
   return remove_tree_w(dir) ? expected{} : err(status::io);
 }
 
+namespace {
+
+// `driftwire serve`: every folder of a walk, open until the walk is done.
+// FILE_LIST_DIRECTORY, because a share mode counts only for an open that
+// reads data: without FILE_SHARE_DELETE, a held folder cannot be renamed and
+// replaced with a junction, so the path below it keeps meaning the same.
+class held_folders {
+ public:
+  held_folders() = default;
+  held_folders(const held_folders&) = delete;
+  held_folders& operator=(const held_folders&) = delete;
+  ~held_folders() {
+    for (HANDLE h : held_) ::CloseHandle(h);
+  }
+  // `path` must be a real folder (no link), and stays held.
+  expected hold(const std::wstring& path) {
+    HANDLE h = ::CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return err(status::io);
+    held_.push_back(h);
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!::GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag)) return err(status::io);
+    if ((tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IsReparseTagNameSurrogate(tag.ReparseTag)) {
+      return err(status::permission_denied);
+    }
+    if (!(tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return err(status::io);
+    return {};
+  }
+
+ private:
+  std::vector<HANDLE> held_;
+};
+
+// `root`, and every part of `parts` but the last `leave` under it, held; the
+// path of the last part held.
+result<std::wstring> hold_beneath(std::string_view root, const std::vector<std::string_view>& parts, std::size_t leave,
+                                  held_folders& held) {
+  std::wstring path = wide(root);
+  if (path.empty()) return err(status::invalid_arg);
+  while (path.size() > 3 && (path.back() == L'\\' || path.back() == L'/')) path.pop_back();
+  for (std::size_t i = 0; i + leave < parts.size(); ++i) {
+    const std::wstring part = wide(parts[i]);
+    if (part.empty()) return err(status::invalid_arg);
+    path += L'\\';
+    path += part;
+    if (auto r = held.hold(path); !r) return err(r.error());
+  }
+  return path;
+}
+
+}  // namespace
+
+result<std::vector<dir_child>> list_beneath(std::string_view root, std::string_view relative_slash,
+                                            bool with_directories) {
+  detail::simulated_round_trip();
+  std::vector<std::string_view> parts;
+  if (root.empty() || !detail::relative_parts(relative_slash, parts)) return err(status::invalid_arg);
+  held_folders held;
+  auto path = hold_beneath(root, parts, 0, held);
+  if (!path) return err(path.error());
+  const std::string dir = narrow(*path);
+  const auto st = stat_path(dir);
+  if (!st.has_value() || !st.value().is_directory) return err(status::io);
+  return list_children(dir, with_directories);
+}
+
+result<file_stat> stat_beneath(std::string_view root, std::string_view relative_slash) {
+  detail::simulated_round_trip();
+  std::vector<std::string_view> parts;
+  if (root.empty() || !detail::relative_parts(relative_slash, parts)) return err(status::invalid_arg);
+  if (parts.empty()) return stat_path(root);
+  held_folders held;
+  auto parent = hold_beneath(root, parts, 1, held);
+  if (!parent) return err(parent.error());
+  const std::wstring path = *parent + L'\\' + wide(parts.back());
+  HANDLE h = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return err(status::io);
+  FILE_ATTRIBUTE_TAG_INFO tag{};
+  BY_HANDLE_FILE_INFORMATION info{};
+  const bool ok = ::GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag) &&
+                  ::GetFileInformationByHandle(h, &info);
+  ::CloseHandle(h);
+  if (!ok) return err(status::io);
+  if ((tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IsReparseTagNameSurrogate(tag.ReparseTag)) {
+    return err(status::permission_denied);
+  }
+  file_stat out;
+  out.size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+  out.mtime_unix = unix_from_filetime(info.ftLastWriteTime);
+  out.is_directory = (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  return out;
+}
+
 result<std::vector<dir_child>> list_children(std::string_view utf8_dir, bool with_directories) {
   std::wstring dir = wide(utf8_dir);
   if (dir.empty()) return err(status::invalid_arg);
@@ -458,6 +552,17 @@ expected file_reader::open_same(std::string_view utf8_path, const file_id& expec
   return {};
 }
 
+expected file_reader::open_beneath(std::string_view root, std::string_view relative_slash) {
+  close();
+  std::vector<std::string_view> parts;
+  if (root.empty() || !detail::relative_parts(relative_slash, parts) || parts.empty()) return err(status::invalid_arg);
+  held_folders held;
+  auto parent = hold_beneath(root, parts, 1, held);
+  if (!parent) return err(parent.error());
+  // open_same refuses a link at the last part, and the folders above are held.
+  return open_same(narrow(*parent + L'\\' + wide(parts.back())), file_id{});
+}
+
 result<std::size_t> file_reader::read(std::span<std::uint8_t> into) {
   if (!impl_) return err(status::invalid_arg);
   if (impl_->overlapped) {
@@ -649,8 +754,30 @@ std::wstring long_form(const std::wstring& path) {
   return path;
 }
 
+// How far a walk's listing can be trusted (file_port.h walk_files).
+struct walk_trust {
+  bool incomplete = false;  // something failed that says nothing about the files
+  bool vanished = false;    // a name it had just listed was gone: check the root after
+};
+
+void note_walk_failure(walk_trust& t, DWORD error) {
+  switch (error) {
+    case ERROR_ACCESS_DENIED:
+    case ERROR_INVALID_NAME:
+    case ERROR_FILENAME_EXCED_RANGE:
+    case ERROR_DIRECTORY:
+      return;  // this folder, for good: the walk is as complete as it can be
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      t.vanished = true;
+      return;
+    default:
+      t.incomplete = true;  // ERROR_BAD_NETPATH, ERROR_NETNAME_DELETED, ERROR_SEM_TIMEOUT, ...
+  }
+}
+
 bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int max_depth,
-              std::vector<tree_entry>& out) {
+              std::vector<tree_entry>& out, walk_trust& trust) {
   std::wstring glob = dir;
   if (!glob.empty() && glob.back() != L'\\' && glob.back() != L'/') glob.push_back(L'\\');
   const std::wstring prefix = glob;
@@ -658,7 +785,11 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
   WIN32_FIND_DATAW fd{};
   HANDLE find = ::FindFirstFileExW(long_form(glob).c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
                                    nullptr, FIND_FIRST_EX_LARGE_FETCH);
-  if (find == INVALID_HANDLE_VALUE) return depth > 0;
+  if (find == INVALID_HANDLE_VALUE) {
+    if (depth == 0) return false;  // the root is an error
+    note_walk_failure(trust, ::GetLastError());
+    return true;  // a subfolder is skipped
+  }
   std::vector<std::wstring> subdirs;
   do {
     const std::wstring_view name(fd.cFileName);
@@ -691,10 +822,12 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
                     (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE)) != 0;
     out.push_back(std::move(e));
   } while (::FindNextFileW(find, &fd));
+  // Read before FindClose can touch it: a listing cut short ends the same loop.
+  if (::GetLastError() != ERROR_NO_MORE_FILES) trust.incomplete = true;
   ::FindClose(find);
   for (const std::wstring& sub : subdirs) {
     const std::string sub8 = narrow(sub);
-    walk_dir(prefix + sub, rel.empty() ? sub8 : rel + "/" + sub8, depth + 1, max_depth, out);
+    walk_dir(prefix + sub, rel.empty() ? sub8 : rel + "/" + sub8, depth + 1, max_depth, out, trust);
   }
   return true;
 }
@@ -777,11 +910,18 @@ result<std::vector<std::string>> child_directories(std::string_view utf8_dir) {
 }
 
 expected walk_files(std::string_view utf8_root, int max_depth,
-                    const std::function<bool(const tree_entry&)>& visit) {
+                    const std::function<bool(const tree_entry&)>& visit, bool* incomplete) {
   const std::wstring root = wide(utf8_root);
   if (root.empty()) return err(status::invalid_arg);
   std::vector<tree_entry> entries;
-  if (!walk_dir(root, std::string(), 0, max_depth, entries)) return err(status::io);
+  walk_trust trust;
+  if (!walk_dir(root, std::string(), 0, max_depth, entries, trust)) return err(status::io);
+  // A folder deleted under the walk, or the whole share gone, which can also
+  // read as "not found": the root answers only in the first case.
+  if (trust.vanished && ::GetFileAttributesW(long_form(root).c_str()) == INVALID_FILE_ATTRIBUTES) {
+    trust.incomplete = true;
+  }
+  if (incomplete) *incomplete = trust.incomplete;
   std::sort(entries.begin(), entries.end(), [](const tree_entry& a, const tree_entry& b) {
     return a.relative_utf8 < b.relative_utf8;
   });

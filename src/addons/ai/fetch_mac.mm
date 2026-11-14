@@ -8,8 +8,10 @@
 
 #import <Foundation/Foundation.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -30,15 +32,30 @@ struct exchange {
 }  // namespace
 }  // namespace mv::ai
 
+// The delegate shares the exchange with get(): the session may still call it
+// after get() has stopped waiting (a cancelled task that is slow to finish),
+// and it lets go only when the session is invalidated.
 @interface MVFetchDelegate : NSObject <NSURLSessionDataDelegate>
-@property(nonatomic, assign) mv::ai::exchange* x;
+- (void)attach:(std::shared_ptr<mv::ai::exchange>)x;
 @end
 
-@implementation MVFetchDelegate
+@implementation MVFetchDelegate {
+  std::shared_ptr<mv::ai::exchange> _x;
+}
+- (void)attach:(std::shared_ptr<mv::ai::exchange>)x {
+  _x = std::move(x);
+}
+- (void)URLSession:(NSURLSession*)session didBecomeInvalidWithError:(NSError*)error {
+  _x.reset();
+}
 - (void)URLSession:(NSURLSession*)session
               dataTask:(NSURLSessionDataTask*)task
     didReceiveResponse:(NSURLResponse*)response
      completionHandler:(void (^)(NSURLSessionResponseDisposition))done {
+  if (!_x) {
+    done(NSURLSessionResponseCancel);
+    return;
+  }
   const int code = [response isKindOfClass:[NSHTTPURLResponse class]]
                        ? static_cast<int>(static_cast<NSHTTPURLResponse*>(response).statusCode)
                        : 0;
@@ -51,19 +68,22 @@ struct exchange {
 }
 
 - (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)task didReceiveData:(NSData*)data {
-  std::unique_lock lock(_x->m);
-  if (_x->stop) {
+  if (!_x) return;
+  const std::shared_ptr<mv::ai::exchange> x = _x;  // kept for this call whatever happens to _x
+  std::unique_lock lock(x->m);
+  if (x->stop) {
     [task cancel];
     return;
   }
   const auto* p = static_cast<const std::uint8_t*>(data.bytes);
-  _x->chunks.emplace_back(p, p + data.length);
+  x->chunks.emplace_back(p, p + data.length);
   // Back-pressure: a slow disk must not pile gigabytes up in memory.
-  _x->cv.notify_all();
-  _x->cv.wait(lock, [self] { return _x->chunks.size() < 64 || _x->stop; });
+  x->cv.notify_all();
+  x->cv.wait(lock, [&x] { return x->chunks.size() < 64 || x->stop; });
 }
 
 - (void)URLSession:(NSURLSession*)session task:(NSURLSessionTask*)task didCompleteWithError:(NSError*)error {
+  if (!_x) return;
   {
     std::lock_guard lock(_x->m);
     if (error && error.code != NSURLErrorCancelled) {
@@ -83,7 +103,8 @@ class mac_transport final : public http_transport {
   http_reply get(const std::string& url, std::uint64_t from, const std::function<bool(int)>& head,
                  const std::function<bool(std::span<const std::uint8_t>)>& body) override {
     http_reply reply;
-    exchange x;
+    const auto shared = std::make_shared<exchange>();
+    exchange& x = *shared;
     @autoreleasepool {
       NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
       config.HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever;
@@ -94,7 +115,7 @@ class mac_transport final : public http_transport {
       config.timeoutIntervalForRequest = 60;
       config.HTTPAdditionalHeaders = @{@"User-Agent" : @"MediaViewer"};
       MVFetchDelegate* delegate = [MVFetchDelegate new];
-      delegate.x = &x;
+      [delegate attach:shared];
       NSOperationQueue* queue = [NSOperationQueue new];
       queue.maxConcurrentOperationCount = 1;
       NSURLSession* session = [NSURLSession sessionWithConfiguration:config delegate:delegate delegateQueue:queue];
@@ -114,16 +135,29 @@ class mac_transport final : public http_transport {
 
       bool wanted = false;
       std::unique_lock lock(x.m);
-      x.cv.wait(lock, [&] { return x.status >= 0 || x.finished; });
+      // Waits that look at the stop flag every quarter second: the session
+      // gives up on a stalled connection only after its 60 s idle timeout.
+      const auto stopping = [&] { return stop && stop->load(); };
+      const auto wait = [&](const auto& ready) {
+        while (!x.cv.wait_for(lock, std::chrono::milliseconds(250), ready)) {
+          if (stopping()) return false;
+        }
+        return true;
+      };
+      if (!wait([&] { return x.status >= 0 || x.finished; })) x.stop = true;
       reply.status = x.status < 0 ? 0 : x.status;
-      if (x.status >= 0) {
+      if (x.status >= 0 && !x.stop) {
         lock.unlock();
         wanted = head(x.status);
         lock.lock();
       }
       if (!wanted) x.stop = true;
       while (wanted) {
-        x.cv.wait(lock, [&] { return !x.chunks.empty() || x.finished; });
+        if (!wait([&] { return !x.chunks.empty() || x.finished; })) {
+          x.stop = true;
+          x.cv.notify_all();
+          break;
+        }
         if (x.chunks.empty() && x.finished) break;
         std::vector<std::uint8_t> chunk = std::move(x.chunks.front());
         x.chunks.pop_front();
@@ -142,7 +176,8 @@ class mac_transport final : public http_transport {
       lock.unlock();
       [task cancel];
       lock.lock();
-      x.cv.wait(lock, [&] { return x.finished; });
+      // A cancelled task completes promptly; bounded all the same.
+      (void)x.cv.wait_for(lock, std::chrono::seconds(5), [&] { return x.finished; });
       reply.error = x.error;
       if (!x.error.empty() && reply.status == 0) reply.status = 0;
       lock.unlock();

@@ -1,0 +1,4 @@
+module CMobileTestFixture {
+  header "../../../../../tests/mobile_generation_fixture.h"
+  export *
+}

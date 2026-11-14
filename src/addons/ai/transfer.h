@@ -170,6 +170,7 @@ struct import_counts {
   std::uint64_t people_joined = 0;
   std::uint64_t thumbs = 0;
   std::uint64_t thumbs_skipped = 0;  // the file here differs, or is not reachable
+  bool thumbs_damaged = false;       // the file's thumbnails could not all be read
 };
 
 // This machine's path for a file-relative one under `dir`.

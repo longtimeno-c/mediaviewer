@@ -219,7 +219,7 @@ class DriftwireRepoTest(unittest.TestCase):
             'driftwire/driftwire.repo', 'driftwire/index.html', 'driftwire/install.ps1', 'driftwire/install.sh',
             'driftwire/key.asc', 'driftwire/key.gpg', 'driftwire/latest.json',
             'driftwire/rpm/driftwire-1.2.3-1.aarch64.rpm', 'driftwire/rpm/driftwire-1.2.3-1.x86_64.rpm',
-            'index.html'])
+            'index.html', 'iphone/privacy/index.html', 'iphone/support/index.html'])
         self.assertIn('driftwire/rpm/repodata/repomd.xml', repodata)
         self.assertIn('driftwire/rpm/repodata/repomd.xml.asc', repodata)
         self.assertTrue(any(f.endswith('-primary.xml.gz') for f in repodata))
@@ -819,6 +819,30 @@ class PageTarballExampleTest(unittest.TestCase):
 
     def test_the_only_one_otherwise(self):
         self.assertEqual(self.page(('aarch64',)), 'driftwire-1.2.3-linux-aarch64.tar.gz')
+
+
+class StaticPagesTest(unittest.TestCase):
+    """packaging/site lands in the site as it is: the front page and the iPhone app's privacy and
+    support pages, whose URLs are in the App Store listing. Pages with nothing that loads from
+    elsewhere or runs, links only to this site and GitHub. No tools needed."""
+
+    def test_copied_with_nothing_external(self):
+        tmp = Path(tempfile.mkdtemp(prefix='dwstatic-'))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        packages = repo.Packages('1.2.3', {'amd64': tmp / 'driftwire_1.2.3_amd64.deb'}, {},
+                                 {'x86_64': tmp / 'driftwire-1.2.3-linux-x86_64.tar.gz'})
+        signer = type('Signer', (), {'fingerprints': ['0123456789ABCDEF0123456789ABCDEF01234567']})()
+        repo.build_pages(tmp / 'site', tmp / 'site/driftwire', packages, BASE, signer)
+        for name in ('index.html', 'iphone/privacy/index.html', 'iphone/support/index.html'):
+            page = (tmp / 'site' / name).read_text()
+            self.assertEqual(page, (repo.STATIC_PAGES / name).read_text(), name)
+            for banned in ('<script', '<link', '<img', '<iframe', 'src=', '@import', 'url('):
+                self.assertNotIn(banned, page.lower(), name)
+            for href in re.findall(r'href="([^"]+)"', page):
+                self.assertTrue('://' not in href or href.startswith('https://github.com/longtimeno-c/mediaviewer'),
+                                f'{name}: {href}')
+        self.assertIn('href="driftwire/"', (tmp / 'site/index.html').read_text())
+        self.assertIn('href="iphone/privacy/"', (tmp / 'site/index.html').read_text())
 
 
 if __name__ == '__main__':

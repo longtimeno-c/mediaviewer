@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/faces.h"
 
+#include "addons/ai/index_db.h"
+
 #include <sqlite3.h>
 
 #include <algorithm>
@@ -267,7 +269,7 @@ result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, const 
 }
 
 result<std::unique_ptr<faces_db>> faces_db::open_read_only(const std::string& path, float same_person,
-                                                           std::uint32_t dim) {
+                                                           std::uint32_t dim, bool immutable) {
   std::unique_ptr<faces_db> d(new faces_db());
   d->path_ = path;
   d->serial_ = ++g_serial;
@@ -275,11 +277,12 @@ result<std::unique_ptr<faces_db>> faces_db::open_read_only(const std::string& pa
   d->rules_.join = same_person;
   d->rules_.core = same_person;
   d->dim_ = dim;
-  if (sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) !=
-      SQLITE_OK) {
-    return err(status::unsupported_format);
-  }
+  const int opened = immutable ? sqlite3_open_v2(immutable_uri(path).c_str(), &d->db_,
+                                                 SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI, nullptr)
+                               : sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
+  if (opened != SQLITE_OK) return err(status::unsupported_format);
   sqlite3_busy_timeout(d->db_, 5000);
+  if (immutable) sqlite3_db_config(d->db_, SQLITE_DBCONFIG_DEFENSIVE, 1, nullptr);
   std::set<std::string> cols;
   {
     stmt s(d->db_, "PRAGMA table_info(faces)");
@@ -968,6 +971,23 @@ std::vector<person_row> faces_db::people(std::uint32_t min_faces, const std::set
       return a.faces > b.faces;
     });
   }
+  return out;
+}
+
+std::string faces_db::people_stamp(std::span<const std::int64_t> assets) {
+  std::lock_guard lock(m_);
+  std::uint64_t n = 0, mix = 0;
+  std::set<std::string> names;
+  stmt s(db_, "SELECT f.asset_id, f.person_id, p.name FROM faces f JOIN people p ON p.id = f.person_id WHERE p.name != ''");
+  while (s.step_row()) {
+    const std::int64_t asset = s.i64(0);
+    if (!std::binary_search(assets.begin(), assets.end(), asset)) continue;
+    ++n;
+    mix += static_cast<std::uint64_t>(asset) * static_cast<std::uint64_t>(s.i64(1));
+    names.insert(std::to_string(s.i64(1)) + ":" + s.text(2));
+  }
+  std::string out = std::to_string(n) + "/" + std::to_string(mix);
+  for (const std::string& name : names) out += "/" + name;
   return out;
 }
 
