@@ -760,6 +760,7 @@ function(mv_mac_host target)
     mv_canvas
     mv_shell
     mv_phone
+    mv_remote
     mv_io
     mv_player
     imgui::imgui

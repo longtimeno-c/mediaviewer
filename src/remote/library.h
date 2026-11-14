@@ -46,6 +46,13 @@ enum class reach : std::uint8_t {
 };
 [[nodiscard]] const char* reach_name(reach r) noexcept;
 
+// What the host says when a server's folder or a pairing did not work
+// (docs/plans/desktop-client.md §3 "Unreachable, offline, ended"), the same
+// words on both hosts. `server` is the server's name.
+[[nodiscard]] std::string open_problem_words(status st, reach r, std::string_view server);
+[[nodiscard]] std::string pair_problem_words(status st, std::string_view server);
+[[nodiscard]] std::string stale_words(std::string_view server);
+
 struct server_info {
   std::string id;    // 16 hex: from the service's identity
   std::string name;  // the library's name in the code, else "Server"

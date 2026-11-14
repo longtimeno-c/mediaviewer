@@ -108,6 +108,11 @@ final class FolderTreeStore: ObservableObject {
   /// folder; whether its listing is what is on screen.
   @Published private(set) var photosAvailable = false
   @Published private(set) var photosOpen = false
+  /// docs/plans/desktop-client.md: another computer's folders, one row per paired
+  /// server, pinned above the open folder's tree; the remote folder on screen.
+  @Published private(set) var servers: [RemoteServer] = []
+  @Published private(set) var remoteOpen = ""
+  private var serversGeneration: UInt64 = 0
   private var revealedKey = ""
 
   private init() {
@@ -136,6 +141,23 @@ final class FolderTreeStore: ObservableObject {
     if photos != photosAvailable { photosAvailable = photos }
     let photosShown = mv_chrome_photos_library_open()
     if photosShown != photosOpen { photosOpen = photosShown }
+    let gen = mv_chrome_remote_generation()
+    if gen != serversGeneration {
+      serversGeneration = gen
+      let rows = readServerLines()
+      if rows != servers.map(\.plain) {
+        let old = Dictionary(servers.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        servers = rows.map { r in
+          let s = old[r.key] ?? RemoteServer(name: r.name, key: r.key)
+          s.state = r.state
+          return s
+        }
+      }
+    }
+    var keyBuf = [CChar](repeating: 0, count: 4096)
+    _ = keyBuf.withUnsafeMutableBufferPointer { mv_chrome_remote_open_key($0.baseAddress, Int32($0.count)) }
+    let openKey = String(cString: keyBuf)
+    if openKey != remoteOpen { remoteOpen = openKey }
     let crumbs = readCrumbs()
     // Only what moved is published: a poll runs on every pass of the main run
     // loop while the tree is up, and an unchanged write would redraw it.
@@ -161,6 +183,20 @@ final class FolderTreeStore: ObservableObject {
     }
   }
 
+  private func readServerLines() -> [RemoteServer.Plain] {
+    var buf = [CChar](repeating: 0, count: 8 * 1024)
+    while true {
+      let needed = Int(buf.withUnsafeMutableBufferPointer { mv_chrome_remote_servers($0.baseAddress, Int32($0.count)) })
+      if needed < 0 { return [] }
+      if needed < buf.count { break }
+      buf = [CChar](repeating: 0, count: needed + 1)
+    }
+    return String(cString: buf).split(separator: "\n").compactMap { line in
+      let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+      return f.count == 3 ? RemoteServer.Plain(name: String(f[0]), key: String(f[1]), state: String(f[2])) : nil
+    }
+  }
+
   private func readCrumbs() -> [(name: String, path: String)] {
     var out: [(String, String)] = []
     var buf = [CChar](repeating: 0, count: 4096)
@@ -176,6 +212,84 @@ final class FolderTreeStore: ObservableObject {
       out.append((leaf.isEmpty ? path : leaf, path))
     }
     return out
+  }
+}
+
+/// One paired server (docs/plans/desktop-client.md): its node lists the named
+/// folders through mv_chrome_list_subdirectories, off the main actor.
+@MainActor
+final class RemoteServer: ObservableObject, Identifiable {
+  struct Plain: Equatable {
+    let name: String
+    let key: String
+    let state: String
+  }
+  let name: String
+  let key: String
+  let node: TreeNode
+  @Published var state = "unknown"
+  nonisolated var id: String { key }
+  var plain: Plain { Plain(name: name, key: key, state: state) }
+
+  init(name: String, key: String) {
+    self.name = name
+    self.key = key
+    node = TreeNode(name: name, path: key)
+  }
+
+  /// What the row says beside the name when the server is not simply there.
+  var note: String? {
+    switch state {
+    case "unreachable": return "Can't reach it"
+    case "access_ended": return "Access ended"
+    case "wrong_service": return "Not the paired server"
+    case "too_old": return "Needs an update"
+    default: return nil
+    }
+  }
+}
+
+private struct RemoteServerRow: View {
+  @ObservedObject var server: RemoteServer
+  @ObservedObject var node: TreeNode
+  let current: String
+
+  init(server: RemoteServer, current: String) {
+    self.server = server
+    self.node = server.node
+    self.current = current
+  }
+
+  var body: some View {
+    DisclosureGroup(isExpanded: $node.isExpanded) {
+      if let kids = node.children {
+        ForEach(kids) { TreeRow(node: $0, current: current, cursor: nil, depth: 1) }
+      }
+    } label: {
+      Button {
+        node.isExpanded = true  // a server's top is its folders: open the row
+      } label: {
+        HStack(spacing: MVTheme.space(6)) {
+          Image(systemName: "externaldrive.connected.to.line.below")
+          Text(server.name).lineLimit(1).truncationMode(.middle)
+          if let note = server.note {
+            Text(note).foregroundStyle(MVTheme.body).lineLimit(1)
+          }
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, MVTheme.space(6))
+        .padding(.vertical, MVTheme.space(2))
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(current.hasPrefix(server.key) ? MVTheme.accent : MVTheme.title)
+      .fontWeight(current.hasPrefix(server.key) ? .semibold : .regular)
+      .help("\(server.name): another computer's folders, read-only from here.")
+      .contextMenu {
+        Button("Forget This Server") { server.key.withCString { mv_chrome_remote_forget($0) } }
+      }
+    }
+    .id(server.key)
   }
 }
 
@@ -316,6 +430,14 @@ struct FolderTreeView: View {
         photosRow
         Divider()
       }
+      if !store.servers.isEmpty {
+        VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+          ForEach(store.servers) { RemoteServerRow(server: $0, current: store.remoteOpen) }
+        }
+        .padding(.horizontal, MVTheme.space(10))
+        .padding(.vertical, MVTheme.space(6))
+        Divider()
+      }
       if let root = store.root {
         ScrollViewReader { proxy in
           ScrollView {
@@ -345,7 +467,7 @@ struct FolderTreeView: View {
             if let path, focused { proxy.scrollTo(path) }
           }
         }
-      } else if !store.photosOpen {
+      } else if !store.photosOpen && store.remoteOpen.isEmpty {
         Text("No folder open").foregroundStyle(MVTheme.body).padding(MVTheme.space(14))
         Spacer()
       } else {

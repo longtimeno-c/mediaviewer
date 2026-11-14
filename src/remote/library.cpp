@@ -132,6 +132,45 @@ const char* reach_name(reach r) noexcept {
   return "unknown";
 }
 
+std::string open_problem_words(status st, reach r, std::string_view server) {
+  const std::string name(server.empty() ? std::string_view("the server") : server);
+  if (r == reach::access_ended || st == status::permission_denied) {
+    return "This computer's access to " + name + " has ended. Connect again with a new code from " + name + ".";
+  }
+  if (r == reach::wrong_service) return "Something answered as " + name + " but is not it. Nothing was read from it.";
+  if (r == reach::too_old || st == status::unsupported_format) {
+    return name + " runs an older driftwire than this app needs. Update it there.";
+  }
+  if (st == status::not_found) return "This folder's drive isn't connected to " + name + " right now.";
+  if (r == reach::unreachable || st == status::io || st == status::timeout) {
+    return "Can't reach " + name + " right now. Its folders show again when it answers.";
+  }
+  return "This folder on " + name + " could not be opened.";
+}
+
+std::string pair_problem_words(status st, std::string_view server) {
+  const std::string name(server.empty() ? std::string_view("the server") : server);
+  switch (st) {
+    case status::invalid_arg:
+      return "That is not a pairing code. Copy the whole code or link from the other computer.";
+    case status::timeout:
+      return "That code has expired. Make a new one on " + name + ".";
+    case status::permission_denied:
+      return name + " did not take the code: it was used already, has expired, or is another server's. Make a new one there.";
+    case status::unsupported_format:
+      return name + " runs an older driftwire than this app needs. Update it there.";
+    case status::cancelled:
+      return {};
+    default:
+      return "Can't reach " + name + ". Check it is on, and on a network this computer can reach.";
+  }
+}
+
+std::string stale_words(std::string_view server) {
+  const std::string name(server.empty() ? std::string_view("the server") : server);
+  return "Can't reach " + name + " right now. This folder is shown as it was; what was opened here before still opens.";
+}
+
 struct library::server_rt {
   std::string id, name, local, public_name, relay, library_id;
   key32 identity{};

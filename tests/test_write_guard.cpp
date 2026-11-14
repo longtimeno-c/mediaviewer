@@ -46,3 +46,17 @@ TEST_CASE("a list opener's read-only files are protected until replaced", "[shel
   CHECK_FALSE(write_protected(previews[0]));
   CHECK_FALSE(mv::shell::any_write_protected(mixed));
 }
+
+TEST_CASE("a remote folder's keys and cache are read-only, with their own words", "[shell][write_guard][desktop-client]") {
+  using namespace mv::shell;
+  CHECK(write_protected("remote:0123456789abcdef/a1a1a1a1a1a1a1a1/IMG_0001.JPG"));
+  CHECK(is_remote("remote:0123456789abcdef/a1a1a1a1a1a1a1a1/IMG_0001.JPG"));
+  set_remote_cache_prefix("/Users/x/Library/Caches/MediaViewer/Remote");
+  CHECK(write_protected("/Users/x/Library/Caches/MediaViewer/Remote/0123456789abcdef/h/IMG_0001.JPG"));
+  CHECK_FALSE(write_protected("/Users/x/Library/Caches/MediaViewer/RemoteX/a.jpg"));
+  CHECK(std::string(write_protected_notice("remote:0123456789abcdef/a1a1a1a1a1a1a1a1/a.jpg")) ==
+        kRemoteWriteProtectedNotice);
+  CHECK(std::string(write_protected_notice("photos:abc")) == kWriteProtectedNotice);
+  set_remote_cache_prefix("");
+  CHECK_FALSE(write_protected("/Users/x/Library/Caches/MediaViewer/Remote/0123456789abcdef/h/IMG_0001.JPG"));
+}
