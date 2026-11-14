@@ -21,6 +21,12 @@ std::string_view trim(std::string_view s) noexcept {
   return s;
 }
 
+answer only(outcome o) {
+  answer a;
+  a.what = o;
+  return a;
+}
+
 std::int64_t steady_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
       .count();
@@ -190,7 +196,7 @@ duckdns::duckdns(fetch_fn fetch, std::string base, int timeout_ms)
 answer duckdns::update(const request& r) {
   // Never a URL built from anything parse_subdomain / parse_token would refuse.
   if (parse_subdomain(r.subdomain) != r.subdomain || parse_token(r.token) != r.token) {
-    return answer{.what = outcome::refused};
+    return only(outcome::refused);
   }
   // One deadline for the whole update, however many requests it takes.
   const std::int64_t deadline = steady_ms() + timeout_ms_;
@@ -348,7 +354,7 @@ void keeper::run() {
     busy_ = true;
     moved_ = false;
     lock.unlock();
-    const answer a = o_.dns ? o_.dns->update(r) : answer{.what = outcome::no_answer};
+    const answer a = o_.dns ? o_.dns->update(r) : only(outcome::no_answer);
     lock.lock();
     busy_ = false;
     const std::int64_t done = steady_ms();

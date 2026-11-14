@@ -41,6 +41,8 @@ net::address addr(const char* text) { return *net::parse_address(text); }
 // A stand-in DuckDNS on 127.0.0.1: each request's path is kept, and answered
 // by the next scripted reply (the last one again once the script runs out).
 struct reply {
+  reply() = default;
+  explicit reply(std::string b, int st = 200, int hang = 0) : status(st), body(std::move(b)), hang_ms(hang) {}
   int status = 200;
   std::string body = "OK";
   int hang_ms = 0;  // wait this long before answering (a timeout)
@@ -148,7 +150,7 @@ ddns::fetch_answer loopback_get(const std::string& url, int timeout_ms) {
 }
 
 ddns::request req(std::optional<net::address> v4 = std::nullopt, std::optional<net::address> v6 = std::nullopt) {
-  return {.subdomain = kSub, .token = kToken, .ipv4 = v4, .ipv6 = v6};
+  return {.subdomain = kSub, .token = kToken, .ipv4 = v4, .ipv6 = v6, .clear_ipv6 = false};
 }
 
 // Every log line, kept.
@@ -259,7 +261,7 @@ TEST_CASE("ddns: the update URL", "[driftwire][ddns]") {
 
 TEST_CASE("ddns: one update against a stand-in DuckDNS: OK, KO, an error, a timeout", "[driftwire][ddns]") {
   SECTION("OK") {
-    stand_in s({{.body = "OK\n198.51.100.7\n\nUPDATED"}});
+    stand_in s({reply("OK\n198.51.100.7\n\nUPDATED")});
     ddns::duckdns d(loopback_get, s.base(), 2000);
     const auto a = d.update(req());
     CHECK(a.what == ddns::outcome::ok);
@@ -270,17 +272,17 @@ TEST_CASE("ddns: one update against a stand-in DuckDNS: OK, KO, an error, a time
     CHECK(p[0] == std::string("/update?domains=myhome-42&token=") + kToken + "&ip=&ipv6=&verbose=true");
   }
   SECTION("KO") {
-    stand_in s({{.body = "KO"}});
+    stand_in s({reply("KO")});
     ddns::duckdns d(loopback_get, s.base(), 2000);
     CHECK(d.update(req()).what == ddns::outcome::refused);
   }
   SECTION("an HTTP error") {
-    stand_in s({{.status = 502, .body = "Bad Gateway"}});
+    stand_in s({reply("Bad Gateway", 502)});
     ddns::duckdns d(loopback_get, s.base(), 2000);
     CHECK(d.update(req()).what == ddns::outcome::bad_answer);
   }
   SECTION("a timeout") {
-    stand_in s({{.body = "OK", .hang_ms = 1500}});
+    stand_in s({reply("OK", 200, 1500)});
     ddns::duckdns d(loopback_get, s.base(), 300);
     const auto t0 = std::chrono::steady_clock::now();
     CHECK(d.update(req()).what == ddns::outcome::no_answer);
@@ -298,9 +300,9 @@ TEST_CASE("ddns: one update against a stand-in DuckDNS: OK, KO, an error, a time
 }
 
 TEST_CASE("ddns: an IPv6 record DuckDNS still holds is cleared when the port is not open on v6", "[driftwire][ddns]") {
-  stand_in s({{.body = "OK\n198.51.100.7\n2a01:4f8::7\nNOCHANGE"},
-              {.body = "OK\n\n\nUPDATED"},
-              {.body = "OK\n198.51.100.7\n\nUPDATED"}});
+  stand_in s({reply("OK\n198.51.100.7\n2a01:4f8::7\nNOCHANGE"),
+              reply("OK\n\n\nUPDATED"),
+              reply("OK\n198.51.100.7\n\nUPDATED")});
   ddns::duckdns d(loopback_get, s.base(), 2000);
   const auto a = d.update(req());
   CHECK(a.what == ddns::outcome::ok);
@@ -314,7 +316,7 @@ TEST_CASE("ddns: an IPv6 record DuckDNS still holds is cleared when the port is 
   CHECK_FALSE(has(p[2], "clear"));
 
   // Told one may be left (the keeper's first update), it clears even when the answer does not show it.
-  s.set_script({{.body = "OK\n198.51.100.7\n\nNOCHANGE"}});
+  s.set_script({reply("OK\n198.51.100.7\n\nNOCHANGE")});
   auto hinted = req();
   hinted.clear_ipv6 = true;
   CHECK(d.update(hinted).what == ddns::outcome::ok);
@@ -325,7 +327,7 @@ TEST_CASE("ddns: an IPv6 record DuckDNS still holds is cleared when the port is 
   REQUIRE(s.count() == 7);
 
   // With the port open on v6, the record is sent, never cleared.
-  s.set_script({{.body = "OK\n198.51.100.7\n2a01:4f8::7\nUPDATED"}});
+  s.set_script({reply("OK\n198.51.100.7\n2a01:4f8::7\nUPDATED")});
   const auto b = d.update(req(std::nullopt, addr("2a01:4f8::7")));
   CHECK(b.what == ddns::outcome::ok);
   CHECK(b.ipv6 == addr("2a01:4f8::7"));
@@ -366,7 +368,7 @@ TEST_CASE("ddns: the schedule: every 5 minutes, at once on a change, at most onc
 }
 
 TEST_CASE("ddns: the keeper updates at start, on its period, and at once on a change", "[driftwire][ddns]") {
-  stand_in s({{.body = "OK\n198.51.100.7\n\nUPDATED"}});
+  stand_in s({reply("OK\n198.51.100.7\n\nUPDATED")});
   log_lines log;
   ddns::keeper k({.subdomain = kSub,
                   .token = kToken,
@@ -438,7 +440,7 @@ TEST_CASE("ddns: the keeper updates at start, on its period, and at once on a ch
 }
 
 TEST_CASE("ddns: the keeper backs off while DuckDNS refuses or does not answer", "[driftwire][ddns]") {
-  stand_in s({{.body = "KO"}});
+  stand_in s({reply("KO")});
   log_lines log;
   ddns::keeper k({.subdomain = kSub,
                   .token = kToken,
@@ -457,7 +459,7 @@ TEST_CASE("ddns: the keeper backs off while DuckDNS refuses or does not answer",
   CHECK(st.last_ok == 0);
 
   // DuckDNS answers again: the next try succeeds and the count resets.
-  s.set_script({{.body = "OK\n198.51.100.7\n\nNOCHANGE"}});
+  s.set_script({reply("OK\n198.51.100.7\n\nNOCHANGE")});
   REQUIRE(s.wait_for(n + 1, 1500ms));
   for (int i = 0; i < 100 && k.status().last != ddns::outcome::ok; ++i) std::this_thread::sleep_for(10ms);
   st = k.status();
@@ -476,10 +478,11 @@ TEST_CASE("ddns: the keeper backs off while DuckDNS refuses or does not answer",
 }
 
 TEST_CASE("ddns: a keeper whose DuckDNS hangs still stops", "[driftwire][ddns]") {
-  stand_in s({{.body = "OK", .hang_ms = 3000}});
+  stand_in s({reply("OK", 200, 3000)});
   ddns::keeper k({.subdomain = kSub,
                   .token = kToken,
                   .dns = std::make_unique<ddns::duckdns>(loopback_get, s.base(), 300),
+                  .log = {},
                   .when = fast()});
   k.start();
   REQUIRE(s.wait_for(1, 1s));
@@ -521,7 +524,7 @@ TEST_CASE("ddns: the name check compares what resolves with what DuckDNS set", "
 }
 
 TEST_CASE("ddns: a subdomain or token that is not parse_*'s never reaches a request", "[driftwire][ddns]") {
-  stand_in s({{.body = "OK"}});
+  stand_in s({reply("OK")});
   ddns::duckdns d(loopback_get, s.base(), 2000);
   auto r = req();
   r.subdomain = "home&ip=1.2.3.4";
