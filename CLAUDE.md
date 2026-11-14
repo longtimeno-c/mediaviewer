@@ -1,323 +1,74 @@
 # MediaViewer
 
-Windows viewer for a real camera dump — photos and video in one folder. Opens everything
-instantly and pans without a dropped frame. The first release ships the viewer through
-PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
-Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
-kept hostable; macOS is a second host of the same core (`docs/design/15-platforms.md`, D9), not a
-UI-only port. **One PR number per feature on both platforms:** the Mac host (built as old
-PRs 16–20) is the Mac halves of PRs 1–8, both platforms are at PR 9, and every PR from 9 lands
-on Windows and macOS together (D9 amended 2026-09-24). **Linux is a third host** (D9 amended
-2026-10-23, `docs/plans/linux.md`); the order of its halves is still open (the plan recommends its
-halves of PRs 1–8 first, then of what has landed since, then every PR on all three).
-16–19 is the Import add-on, 20–24 AI search, 27–28 Voice query.
+A fast photo + video viewer for camera dumps. Windows and macOS (Linux in progress), one C++ core.
 
-**v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
-Light editing and trim follow in future updates. Not a develop module.
-Not an NLE. Not a movie player — audio files play one at a time, no playlists (D5, 2026-10-03).
+**Stack:** C++20 core behind a flat C ABI (`src/abi`) · chrome: C# WinUI 3 (`src.managed`),
+SwiftUI (`src.swift`), Qt/QML planned for Linux · canvas: D3D11 / Metal / EGL, owned by C++ ·
+FFmpeg for video · CMake + vcpkg.
 
-**Stack:** C# WinUI 3 shell · C++20 core behind a flat C ABI · Direct3D 11 canvas ·
-FFmpeg + D3D11VA · libjpeg-turbo / libspng / libwebp / libheif / LibRaw · Exiv2 · SQLite ·
-CMake + vcpkg.
+The design changes often. Docs describe the current state, not rules — if a better approach
+fits the task, take it and update the doc it touches.
 
-`docs/design/` describes how the product works today, one subsystem per doc; it replaced the
-original `plan/` spec once that was built (2026-10-03, full text in git history). New work is
-planned in `docs/plans/`; when a plan lands, fold what it built into `docs/design/`.
-
-## Source of truth
-
-Read `docs/design/README.md` first, then the doc for the area you are touching:
-
-| Doc | When to read |
-|---|---|
-| `docs/design/01-decisions.md` | Before any stack, shell, codec, or scope change |
-| `docs/design/02-architecture.md` | Modules, threading, memory budgets |
-| `docs/design/03-rendering.md` | Swapchain, pacing, colour, resampling |
-| `docs/design/04-image-pipeline.md` | Decoders, tiling, prefetch, thumbs |
-| `docs/design/05-video-pipeline.md` | FFmpeg + D3D11VA, A/V clock, seek |
-| `docs/design/06-metadata.md` | Read model, atomic writes, RAW sidecars |
-| `docs/design/07-photo-editing.md` | EditStack, evaluation, export |
-| `docs/design/08-video-editing.md` | Two-path trim, remux, extract |
-| `docs/design/09-build-and-test.md` | Toolchain, harnesses, gates, Windows integration |
-| `docs/design/10-roadmap.md` | What each PR delivered, and its verify line |
-| `docs/design/11-licensing.md` | Linkage, FFmpeg configure, Exiv2 |
-| `docs/design/12-decision-log.md` | Why current behaviour is the way it is — do not re-reverse quietly |
-| `docs/design/13-updates-and-telemetry.md` | Updater, crash reports, privacy line |
-| `docs/design/14-abi.md` | C ABI between host and core |
-| `docs/design/15-platforms.md` | One core, two hosts and a third coming (Linux) — **D9**. Read before any new Win32/D3D11, Cocoa/Metal or Wayland/EGL/Qt leak out of the hosts / `gfx/` |
-| `docs/design/16-commands.md` | Command table, key router, default keys. Read before adding a key, overlay, or chrome command |
-| `docs/design/17-local-ai-search.md` | Local AI search add-on |
-| `docs/design/18-import.md` | Import add-on; the add-on mechanism |
-| `docs/design/19-voice.md` | Voice query (parser only; the add-on is not built) |
-| `docs/design/20-edit-workspace.md` | The Edit button / `Enter`, the docked Edit pane, every-tag metadata editing; its "Craft rules" govern every chrome surface on both hosts — read before any UI change |
-| `docs/design/21-video-editor.md` | The Video Editor window |
-| `docs/design/22-editor-addon.md` | Editor add-on (not built) |
-| `docs/design/23-nle-search.md` | Local search inside Final Cut Pro (Mac-only D9 exception), FCPXML export |
-| `docs/design/24-transfer.md` | Network-speed verified copies. Read before touching `io/verified_copy` or the file port |
-| `docs/design/26-photos-library.md` | The Mac Photos library as a folder (virtual list items), its backup, and the display-matrix fix for clips. Read before touching `photos:` keys, the folder model's lists, or the video blitters |
-| `docs/design/27-places.md` | Places: offline reverse geocoding (`src/geo`, `tools/geo`), the place database, the label rule, the Places add-on. Read before touching GPS → place names, place search or the map |
-| `docs/design/28-driftwire.md` | Driftwire (#410, #413): sending files to a MediaViewer nearby (beacon, sealed link, code, verified receive, Bluetooth), the gallery's Shift-click range, drag-out and share icon. Read before touching the add-on, the network or Bluetooth ports, or the gallery's selection |
-| `docs/design/29-enhance.md` | Enhance (#297): a restored copy of the item on screen from a model downloaded on request; the sheet, per-kind model downloads, the host's sound rows and `edit/sound_writer.h`. Read before touching the add-on, its models or the sound rows |
-| `docs/design/25-open-addons.md` | PRs 55–60 (PR 55 built; owner calls made 2026-10-03: script sandbox, no network, any add-on licence): add-ons from anyone, installed from a file or a link and signed by their publisher; the contribution model (themes first). Read before any third-party add-on, theme or contribution-point work |
-| `docs/plans/` | Forward plans not yet built (e.g. `audio-and-documents.md`, `linux.md`) |
-
-If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
-If you reverse a decision, add a dated row to `docs/design/12-decision-log.md` with the reason.
-
-## Rules that don't bend
-
-1. **Nothing that can block touches the UI or render thread** — no decode, no I/O, no encode.
-2. **The canvas is a native swapchain C++ owns**, never a XAML `Image` or `MediaPlayerElement`.
-   On Windows that swapchain is D3D11. If `SwapChainPanel` cannot hold the pacing gate, drop
-   to a native HWND/DComp island. Never silently degrade the canvas to XAML. One present path
-   per OS — Metal is the macOS sequel, not a second Windows path; on Linux it is OpenGL via EGL
-   on a surface C++ owns, never a Qt item and never a toolkit's frame clock.
-3. **First pixel is never the full decode**: memory cache → disk thumb → embedded RAW
-   preview → downscaled decode. Full resolution is a refinement.
-4. **Zero dropped frames while panning a cached image at display refresh** — measured, not
-   eyeballed. Every PR must still pass PR 1's present-loop verify.
-5. **Never modify an original.** RAW gets an XMP sidecar. Edits and trims write new files.
-6. **Nothing about a user's files leaves the machine** — no paths, filenames, pixels, or
-   EXIF in crash reports or telemetry.
-7. **Never require a Store codec pack.** Probe OS codec, prefer it when hardware-backed,
-   fall back to the bundled decoder silently.
-
-## Performance is the product — strict
-
-Speed is the reason this app exists. Treat every change as a performance change until
-numbers say otherwise.
-
-- **No regression ships.** A change must not make any of these worse on either platform:
-  launch → first pixel, launch → full resolution, arrow → next photo (cached, cold, quick,
-  held), pan pacing (PR 1 gate), idle cost (0 presents, ~0 % CPU on a still), video pacing.
-  "Within noise" means repeated runs overlap, not one lucky run.
-- **Measure, don't argue.** A perf claim needs before/after numbers from the same machine,
-  same build configuration, same files, runs alternated (base, new, base, new), warm cache
-  as the published runs are. Build the base in its own worktree/build dir (never an
-  incremental rebuild of a different commit in one dir). Quote the lab JSON, not
-  impressions. If the harness cannot see the case, extend the harness first
-  (`--browse-soak`, `--soak --json`, `mv_tests "[.perf-bench]"`), then change the code.
-- **Know what a gate is blind to.** The pacing soak says the render thread presented on
-  time, not that media kept its rate or that the right pixels arrived; check cadence,
-  first pixel and full-resolution time separately.
-- **The view comes first.** Work for what is on screen runs on the foreground queue and
-  starts as early as its inputs exist: never behind a folder scan, a sort, the chrome
-  attaching, a thumbnail sweep, or a poll. Chrome (.NET/WinUI, SwiftUI) never gates the
-  core — the core open starts before the chrome loads.
-- **Never throw away work you are about to need.** Cancel on navigation, but hand work
-  the new view wants to the new generation instead of restarting it (see `job_context::
-  handed_off_via`). Deduplicate in-flight work by path.
-- **Hot paths:** no allocation or copy you can avoid (decode straight into the final
-  buffer), no per-frame or per-item lookups you can hoist, no locks held across I/O or
-  decode, no `stat()`/syscall per file you do not need, caches keyed by content identity
-  (path + size + mtime), transforms built once and reused. Parallelise only measured hot
-  loops (`core/parallel.h`), capped so presents keep a core.
-- **Budgets are budgets.** ~2 ms/frame uploads, 512 MB viewer LRU, ±2 prefetch window,
-  foreground RAW threads capped for presents. Changing one needs a measurement and a
-  line in `docs/design/12-decision-log.md`.
-- **Report honestly.** Numbers that did not improve, cases the harness did not cover and
-  platforms not measured go in the PR description, not under the rug.
-
-## Decided — do not reopen
-
-| # | Call |
-|---|---|
-| **D1** | C# WinUI 3 chrome + C++ core. ImGui is the PR 1 present lab and the F3 overlay, never shipped chrome. **Amended 2026-10-23 (owner): Linux chrome is Qt 6 / QML**, the canvas a child `QWindow` C++ presents into. |
-| **D2** | FFmpeg + D3D11VA on *your* `ID3D11Device`, presented on the same swapchain as photos. Not libmpv. Not MF as the primary path. `IMFMediaEngine` is an escape hatch behind `IVideoSource` if the A/V clock overruns PR 5. |
-| **D3** | Bundle decoders. Never require a Store pack. |
-| **D4** | v1 ships the PR 1–7 viewer in PR 8. Photo editing/export waits for PR 10–11; metadata tools and further Windows integration are future updates. |
-| **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2; **on the Mac also Apple ProRes** (amended 2026-09-29, hardware decode only). **Amended 2026-10-03 (owner): also audio — MP3, M4A, M4P (FairPlay: shown, never played) — and documents — PDF, DOCX** (`docs/plans/audio-and-documents.md`); these are Open With only, never made the default. **Amended 2026-10-15 (owner, #429): also PPTX** (a document, same rules as DOCX). JPEG XL / EXR / PSD / SVG / DDS wait. |
-| **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
-| **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
-| **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
-| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is the Mac halves of PRs 1–8 (built as Milestone F, old PRs 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. **Amended 2026-09-24: from PR 9 every PR is dual-track** — one shared core change, a WinUI half and a SwiftUI half, HLSL + MSL twins, a verify line per platform; done only when both hold. No Vulkan. **Amended 2026-10-23 (owner): Linux is a third host** — OpenGL via EGL, Wayland first (X11 runs, ungated); Qt 6 / QML chrome; GLSL the third twin; FFmpeg + VA-API. No Vulkan on any OS (`docs/plans/linux.md`). The order of the Linux halves is not decided (plan §10, call 8); until it is, PRs stay dual-track as above, and shared code stays hostable on Linux (the hostable-core rule, applied to the third host). |
-
-Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path **on one OS**.
-
-## Open — do not silently decide
-
-- **A quiet machine for the D6 gate.** Closed on owner sign-off 2026-09-24 (no recorded
-  soak artefact); every PR still inherits the gate. `docs/design/12-decision-log.md`.
-- **Whether WinUI 3 XAML islands hold up** is answered by PR 3, not by preference.
-  The canvas is already native (D1 amendment). Fallback: a WinUI app with
-  `SwapChainPanel` and an accepted composed frame.
-- **Linux's open calls** — video decode on NVIDIA, the audio clock API, the OS floor and
-  architectures, the update channel and its signing, bundling Qt, crash reports, Bluetooth for
-  Driftwire, and the order of the Linux catch-up (PRs 1–8, then 9–60, or 1–8 and then tri-track
-  at once) with the rule for PRs until then: `docs/plans/linux.md` §10. Do not settle them in code.
-
-## How to implement
-
-Builds, tests, policy checks, and local validation runs are authorized as part of
-implementation. Run the checks needed to verify a change without asking for
-confirmation each time, including the present lab and frame-time soaks.
-
-Other agents may be working in the same checkout. Preserve their edits and do
-not revert unrelated changes. If concurrent work prevents a meaningful build,
-validate the current PR in an isolated checkout and report which source was
-tested. Keep changes to shared files compatible with the other work.
-
-Work is **one PR slice** from a plan in `docs/plans/` (what landed is in `docs/design/10-roadmap.md`). Do not merge PR N+1 until N's verify
-holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR 1) still hold.
-
-- The verify line is the success criterion. Quote it before you start; do not invent a
-  different one.
-- Do not implement v1.1 ops, formats, smart cut, HDR swapchain, or AppContainer “while you're here.”
-  The stack is designed to take them later; adding them now is scope. Do not skip a D9 port in
-  order to call Win32, **Cocoa/Metal or Wayland/EGL/Qt** from `image/`, `player/`, `edit/`, or `meta/`.
-- From PR 9 a slice has two host halves. Build both, and run the verify line on both
-  platforms plus both present-loop gates (PR 1 on Windows, Mac PR 1 on Mac). A slice green on one
-  platform only is not done, and PR N+1 does not merge until it is (a host half may start ahead
-  on a branch). Once CI's Linux GPU runner is enabled, every PR also keeps Linux PR 1's gate
-  (`present-gates` fails on it).
-- **A PR whose task is not complete opens as a draft** (`gh pr create --draft`): a partial
-  slice ("Part of #N"), a feature left switched off, or a host half still missing. Only whether
-  the task it was given is done decides this — not CI results or performance numbers.
-- Do not add a format that is not in the D5 set (as amended).
-- Do not build a batch metadata engine before the read pane has been used. PR 12 wrote
-  rating, orientation, and user comment only; from PR 29 (owner, 2026-09-26) the pane edits
-  any single tag of the file on screen, still through PR 12's checked writer, sidecar rule and
-  snapshot. That is not a batch engine: one file, one change set.
-- Crash reporting should land with the format long tail (PR 7), not wait for PR 8.
-  The updater must exist before the first build that leaves this machine.
-  Telemetry waits for PR 8 and is **default off**.
-
-## README vs DEVELOPMENT
-
-`README.md` at the repo root is **marketing**: the product page someone sees on GitHub.
-It says what MediaViewer is, where to download it, what it does, the measured speed
-charts, what is coming, a five-line build-from-source, and the licence. Keep it short
-and in the voice of a product page.
-
-**Never put logs in the README.** No status reports, PR-by-PR progress, "not yet
-verified" caveats, verify-line results, dated notes, runbooks, command-line flag lists,
-test commands or harness output. Those belong in **`docs/DEVELOPMENT.md`**, the
-contributor notes: build and run recipes for both platforms, the key table, tests and
-gates, crash-report and packaging runbooks, the performance suite, and "Where this
-actually is" (the honest status). How things work and why stays in `docs/design/`.
-
-Keep `docs/DEVELOPMENT.md` up to date in the same change that would make it stale:
-build, run or test commands; layout, dependencies or toolchain; a roadmap PR landing;
-install/update or licence changes; a new verify or harness. Write it for someone cloning
-the repo. Link to `docs/design/` rather than pasting it.
-
-Touch the README only when the *product* changes in a way a user would notice (a new
-format, feature, platform, release, or re-measured chart). Its charts come from
-`python tools/perf/regenerate.py` (see DEVELOPMENT, "Performance suite"): re-measure and
-redraw, never edit a number or an SVG by hand. If a README number changes, it is because
-a report in `docs/perf/` changed.
-
-## Native core (C++20)
-
-Deliberately narrow subset: RAII, `std::unique_ptr` / `ComPtr`, `std::span`,
-`std::string_view`, designated initializers. **No exceptions on the hot path**
-(`std::expected`-style results). No RTTI. No `std::shared_ptr` in the render loop.
-No deep template metaprogramming. Compile `/W4 /WX /permissive- /GR- /utf-8`.
-
-Dependencies point **downward only**:
-`shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core`.
-No back-edges. Add-ons (`src/addons/<name>`, Milestone G) link nothing of the core and reach it
-only through the host function table (`mediaviewer_addon.h`, `docs/design/18-import.md`). After D1, chrome is C#; the native top is the C ABI. From PR 4, `HWND` /
-`ID3D11*` / `wchar_t` paths stay in `shell/` and the D3D11 backend (`docs/design/15-platforms.md`).
-
-Five thread roles. UI and render **never** wait on I/O, decode, or a lock a worker holds.
-Decode workers create **immutable** GPU textures with `D3D11_SUBRESOURCE_DATA` on Windows
-(free-threaded device). Communication is SPSC rings of POD plus one MPMC job queue.
-Every job carries a **generation counter** tied to view intent; navigation bumps it.
-
-## C ABI
-
-Designed in PR 1, not retrofitted.
-
-- Opaque handles, POD structs, no C++ types, no STL, no exceptions across the line.
-- Every call returns a status code. Catch everything at the boundary.
-- C# wraps every native resource in `SafeHandle` / `IDisposable`.
-- C++ does not call the WinUI dispatcher (or any host dispatcher). Completions are a queue
-  the shell pumps, or a documented any-thread callback that the host marshals.
-- Give every core call a correlation id so a managed error can be tied to the native
-  failure (crash reporting, `docs/design/13-updates-and-telemetry.md`).
-
-## Canvas and colour
-
-- Flip-model swapchain, waitable frame-latency object, `SetMaximumFrameLatency(1)`.
-- Wait on the waitable object **before** recording the frame, never `Sleep`.
-- Uploads budgeted (~2 ms/frame). Idle → stop presenting (0 % GPU on a still).
-- Springs (`ω=18, ζ=1`) for pan/zoom, not fixed-step tweens.
-- Viewer LRU should not keep every image as FP16 in VRAM. FP16 is the edit working
-  space; the display path blits to 8-bit sRGB in v1.
-- Display-referred JPEG/HEIC: ICC → linear → sRGB encode. Do **not** Reinhard/ACES a
-  camera JPEG. Tone-map HDR/PQ/HLG sources; iPhone HDR HEVC needs a SDR map in v1
-  even if HDR *output* waits.
-
-## Video
-
-- Create the FFmpeg D3D11VA device from **our** `ID3D11Device`
-  (`D3D11_CREATE_DEVICE_VIDEO_SUPPORT` + `ID3D10Multithread`).
-- Decoded surfaces are decoder-pool memory. Copy or retain into a small presentation
-  queue of **our** textures before present — do not bind DPB surfaces as the swapchain
-  source.
-- NV12: R8 + R8G8 SRVs. P010: R16 + R16G16. Do not assume BT.709 limited range.
-- Audio is the master clock (WASAPI shared). No-audio clips fall back to QPC.
-- Hardware encode (NVENC / QSV / AMF / MF) for re-encode. **No x264/x265, no software
-  HEVC encoder, no `--enable-gpl` FFmpeg.**
-
-## Licensing (enforced in the build)
-
-- FFmpeg, libheif, libde265, LibRaw, and Exiv2 (if kept) are **dynamic-link only**.
-- FFmpeg configure: LGPL only. CI fails on `--enable-gpl`, `--enable-nonfree`, or a
-  LibRaw GPL demosaic pack.
-- `libheif` for HEIC decode: libde265 and/or FFmpeg — **not x265**.
-- Pin the vcpkg baseline. Reproducible builds beat fresh deps.
-
-## Privacy
-
-Opt-in telemetry, default off, no pre-ticked box. Crash reports: format, codec,
-dimensions, decoder version — never path, filename, bytes, or EXIF. Scrub usernames
-from stacks. Minidump filter must exclude decoded image heaps. Ask before first send.
-
-## Planned layout
+## Layout
 
 ```
-src/core     arena, job system, result<T>, logging (ETW is the Windows backend)
-src/io       async reads, directory watcher — portable headers, Windows impl in v1
-src/codec    decoder registry — one TU per format family
-src/image    Image, colour, tiles, GPU upload, VRAM LRU
-src/gfx      D3D11 backend in v1; headers consumed above gfx/ do not include d3d11.h (D9)
-src/player   demux/decode, A/V clock policy, transport; hwdecode/audio are ports
-src/meta     Exiv2 / libavformat, property model, writers
-src/edit     EditStack, GPU ops, export
-src/canvas   pan/zoom/springs; host publishes a POD input snapshot
-src/abi      C ABI surface
-src/shell    Windows host (Win32 window, islands, CLI), the Mac host (AppKit + Metal, `*_mac.mm`) and the Linux host (Wayland + EGL, `*_linux.cpp`)
-src/nle      Local search from an editing app (docs/design/23): a read-only host of the AI pack, FCPXML; the FCP agent/extension in `nle/mac`
-src.swift    SwiftUI chrome for the Mac host
-src.managed  C# WinUI 3 chrome
-src.qt       Qt 6 / QML chrome for the Linux host (from Linux PR 3)
-tests/
-tools/       frametime harness, golden-image runner, fuzzers
-docs/design  how it works; docs/plans  forward plans
+src/core src/io src/codec src/gfx   low-level: jobs, I/O, decoders, GPU backends
+src/image src/player src/meta src/edit src/canvas   features
+src/abi    C ABI the hosts call       src/shell  native hosts (Win32, *_mac.mm, *_linux.cpp)
+src/addons add-ons (talk to the core only via mediaviewer_addon.h)
+src.managed / src.swift / src.ios    chrome      tests/  tools/  docs/
 ```
 
-Adding a format is one file plus one registry line. Probe by magic bytes, never extension.
+Dependencies point downward (`shell → abi → features → codec/gfx/io → core`);
+`tools/check-module-graph.ps1` enforces it.
 
-## Build
+## Build and test
 
-Not scaffolded until PR 1. Target, from `docs/design/09-build-and-test.md`:
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+dotnet test src.managed\MediaViewer.Chrome.Tests\MediaViewer.Chrome.Tests.csproj -c Release
+```
 
-- CMake ≥ 3.28, vcpkg manifest mode, MSVC 2022, clang-cl in CI, .NET 8+ WinUI 3.
-- ASan configuration in CI.
-- Frame-time harness (`tools/frametime`) + PresentMon/ETW: p99 regress > 10 % or any
-  frame > 2× refresh interval fails the build.
-- Golden-image tests and per-decoder libFuzzer harnesses from PR 6/7.
-- Do not put the RAW corpus in git.
+macOS, Linux, iOS, packaging and the perf harnesses: search `docs/DEVELOPMENT.md` for the
+section you need — it is large, don't read it whole. Use your own build dir if another
+session may share the checkout.
 
-Until those commands exist, do not invent a different toolchain.
+## Standards
 
-## Explorer / install (when you get there)
+- **Tests:** every change comes with tests that would fail without it. Test behaviour, not
+  implementation; no sleeps or flaky timing; keep them fast. Fix or delete a flaky test,
+  don't retry it.
+- **CI stays green** (`.github/workflows/ci.yml`). Run the relevant local checks before
+  pushing; if a policy script in `tools/` fails, fix the cause.
+- **Clean UI:** consistent spacing, type and colour with the rest of the chrome; every
+  command reachable from the keyboard; check light and dark. Match both chromes when a
+  feature exists on both.
+- **Keep it simple:** smallest change that does the job, no speculative abstractions, no
+  drive-by refactors.
 
-- Thumbnail and property handlers are **out-of-process** COM surrogates. Loading
-  libheif/LibRaw/FFmpeg into Explorer is how you crash the shell.
-- File associations via `ProgId` / `OpenWithProgids` + Default Apps link. Never silently
-  hijack.
-- Per-user install to `%LocalAppData%\MediaViewer`. Primary channel is a signed
-  installer + Velopack, not Store-as-updater.
+## Hard technical constraints (these break things if ignored)
+
+- Never block the UI or render thread (no decode, I/O or waiting on a worker's lock).
+- Never modify a user's original file — write new files or sidecars.
+- No user paths, filenames, pixels or EXIF in crash reports or telemetry.
+- FFmpeg stays LGPL (no `--enable-gpl`/`nonfree`, no x264/x265); `tools/licence-check.ps1`.
+- Keep Win32/D3D11 and Cocoa/Metal code in `src/shell` and the `gfx/` backends so the core
+  builds on every OS (`tools/check-hostable-core.ps1`).
+- In the WinUI island host, controls like `ProgressBar`/`TextBox` fail-fast; see
+  `tools/check-winui-controls.ps1` for the list and the replacements.
+- For speed-sensitive changes (open, navigate, pan, playback), measure before/after.
+
+## Docs
+
+- `docs/design/NN-*.md` — how each subsystem works; read only the one you are touching
+  (index: `docs/design/README.md`). Update it if your change makes it wrong.
+- `docs/plans/` — ideas not built yet.
+- `README.md` is the product page: no status logs or dev notes there.
+- `docs/design/12-decision-log.md` is history. Don't read it unless you need the reason for
+  something; don't add to it for routine changes.
+
+## PRs
+
+Open a draft PR if the work is incomplete. Describe what changed and how it was tested.

@@ -1,102 +1,77 @@
 # 14 — The C ABI
 
-The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.41**).
+The flat C ABI between the hosts' chrome and the C++ core. The headers in
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) are the source of truth for
+every signature, struct and enum; this doc gives the conventions and the semantics the headers do
+not spell out.
 
-The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
+The Windows host is C# WinUI over `mediaviewer_core.dll`, through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
-the same core statically and calls it directly; it does not create an ABI session, but it uses
-the same portable pieces (`abi/clip_session`, the add-on host table, `player/playback_hold.h`).
+the core statically and calls it directly; it creates no ABI session but uses the same portable
+pieces (`abi/clip_session`, the add-on host table, `player/playback_hold.h`) and reaches most
+features through its chrome bridge (`mv_chrome_*` in `mv_chrome_bridge.h`).
 
 | Header | Contents |
 |---|---|
 | `mediaviewer.h` | Version, status, session, generations, completions, image open, folder model, result listings, video transport |
-| `mediaviewer_clip.h` | Clip jobs and the keyframe index (trim, remux, extract) |
+| `mediaviewer_clip.h` | Clip jobs and the keyframe index |
 | `mediaviewer_crash.h` | Crash-report context slots |
-| `mediaviewer_addon.h` | Add-on entry point, host function table, host-side add-on management |
+| `mediaviewer_addon.h` | Add-on entry point, host function table, add-on management, slots, scripts, phone |
 | `mediaviewer_import.h` | The Import add-on's interface (`mv.import.1`) |
 | `mediaviewer_ai.h` | The AI pack's interface (`mv.ai.1`) and the read-only reader entry |
 
 ## Shape
 
-A **flat C header**. No C++ types cross the line — no `std::`, no exceptions, no RTTI, no COM
-interfaces, no inheritance. Only:
+No C++ types cross: no `std::`, exceptions, RTTI, COM or inheritance. Only opaque handles, POD
+structs with fixed-width fields and explicit `reserved` padding, UTF-8 `const char*` with
+documented ownership, and function pointers always paired with a `void* user_data` / `ctx`.
+Everything is `extern "C"`; `MV_API` is `dllexport`/`dllimport` on Windows (export under
+`MV_BUILDING_CORE`), `MV_CALL` is `__cdecl`; both are empty elsewhere.
 
-- opaque handles (`typedef struct mv_session* mv_session_t;`)
-- POD structs with fixed-width fields and explicit padding (`reserved` fields)
-- `const char*` UTF-8 strings with documented ownership
-- function pointers, always paired with a `void* user_data` / `ctx`
-
-Everything is `extern "C"`. `MV_API` is `__declspec(dllexport/dllimport)` on Windows (export
-when `MV_BUILDING_CORE`) and `MV_CALL` is `__cdecl`; both are empty elsewhere.
-
-**Versioning:** `MV_ABI_VERSION_MAJOR 0`, `MV_ABI_VERSION_MINOR 15`. `mv_abi_version()` returns
-`(major << 16) | minor`. `MediaViewerSession.Create` throws unless the loaded DLL's major equals
-`ExpectedAbiMajor`. Minor bumps are additive; existing struct layouts do not change (new meaning
-goes into a former `reserved` field or a new flag bit).
+**Versioning.** `mv_abi_version()` returns `(major << 16) | minor`; the per-minor changelog is the
+comment on `MV_ABI_VERSION_MINOR` in `mediaviewer.h`. `MediaViewerSession.Create` throws unless the
+DLL's major equals `ExpectedAbiMajor`. Minor bumps are additive: layouts never change; new meaning
+goes into a former `reserved` field, a new flag bit, or fields appended behind a `struct_size`
+(older callers' sizes stay accepted, e.g. `mv_clip_request`).
 
 ## Error model
 
-```c
-typedef enum mv_status {
-  MV_OK = 0,
-  MV_ERR_INVALID_ARG = 1, MV_ERR_OUT_OF_MEMORY = 2, MV_ERR_IO = 3,
-  MV_ERR_UNSUPPORTED_FORMAT = 4, MV_ERR_CORRUPT = 5, MV_ERR_CANCELLED = 6,
-  MV_ERR_DEVICE_LOST = 7, MV_ERR_INTERNAL = 8,
-  /* 0.12 (issue #42, eject categories) */
-  MV_ERR_BUSY = 9, MV_ERR_NOT_REMOVABLE = 10, MV_ERR_PERMISSION_DENIED = 11,
-  MV_ERR_NOT_FOUND = 12, MV_ERR_TIMEOUT = 13
-} mv_status;
+Every fallible call returns `mv_status` (`core/status.h` mirrors the values).
+`mv_status_name` returns a static literal. `mv_last_error_message` (never NULL, `""` when none)
+and `mv_last_error_correlation_id` are per-thread, core-owned and valid until the next call on that
+thread; C# copies them at once.
 
-const char* mv_status_name(mv_status);          /* string literal; never freed */
-const char* mv_last_error_message(void);        /* calling thread's last failure; "" never NULL */
-uint64_t    mv_last_error_correlation_id(void);
-```
-
-Every fallible call returns `mv_status` (`core/status.h` mirrors the values). The last-error
-message is owned by the core, valid until the next call on that thread; C# copies it at once.
-
-**No exception crosses the boundary.** Every export is wrapped by `mv::abi::guard`
-([`src/abi/guard.h`](../../src/abi/guard.h)):
-
-```cpp
-extern "C" mv_status MV_CALL mv_thing_do(...) noexcept {
-  return mv::abi::guard("mv_thing_do", [&] { ...; return status::ok; });
-}
-```
-
-The guard takes a fresh process-wide **correlation id**, stamps the thread-local last-error
-slot, records the id as the last in-flight call for crash reports, traces the call, and maps
-`std::bad_alloc` → `MV_ERR_OUT_OF_MEMORY` and anything else → `MV_ERR_INTERNAL` with the
-message kept. The correlation id ties a managed `MediaViewerException` to the native minidump
-([13-updates-and-telemetry.md](13-updates-and-telemetry.md)); every completion carries one too.
+No exception crosses. Every export is wrapped in `mv::abi::guard("name", lambda)`
+([`src/abi/guard.h`](../../src/abi/guard.h)), which takes a fresh process-wide **correlation id**,
+stamps the thread's last-error slot, records the id as the last in-flight call for crash reports,
+traces the call, and maps `std::bad_alloc` → `MV_ERR_OUT_OF_MEMORY` and anything else →
+`MV_ERR_INTERNAL` with the message kept. The id ties a managed `MediaViewerException` to the native
+minidump ([13](13-updates-and-telemetry.md)); every completion carries one too.
 
 ## Ownership — the side that allocates, frees
 
 | Direction | Rule |
 |---|---|
-| Core → managed, strings | Either a core-owned pointer valid until the next call on that thread (last error) or a static literal (`mv_status_name`), or — the common case — **copied into a caller buffer** (below). |
-| Core → managed, data | POD structs filled by value; scalars in completion payloads. Never a pointer the caller frees. |
-| Managed → core, strings | Caller owns; the core copies before returning and never retains the pointer. |
-| Managed → core, buffers | Read during the call only (e.g. `mv_clip_request.ranges_ns`, `mv_folder_open_list` paths). |
+| Core → managed, strings | Copied into a caller buffer (the common case), or a core-owned per-thread pointer (last error), or a static literal |
+| Core → managed, data | POD filled by value; scalar completion payloads. Never a pointer the caller frees |
+| Managed → core, strings and buffers | Caller owns; read during the call only, never retained |
 
-**Caller-buffer strings** (`mv_folder_item_name` and every `…_path` / `…_name` call):
-UTF-8, `out_bytes` (optional) is the required size including the NUL; `cap == 0` returns the size
-and `MV_ERR_INVALID_ARG`; a short buffer is truncated with a NUL and still reports the full size.
-JSON-returning add-on calls use the same idea with `cap` / `needed`: short → `MV_ERR_INVALID_ARG`
-with `needed` set, and the caller retries.
+**Caller-buffer strings** (every `…_name` / `…_path` / text call): UTF-8; `out_bytes` (optional)
+gets the required size including the NUL; `cap == 0` returns the size and `MV_ERR_INVALID_ARG`; a
+short buffer is truncated with a NUL and still reports the full size. **JSON calls** use `cap` /
+`needed`: short → `MV_ERR_INVALID_ARG` with `needed` set; retry. `mv_folder_entries` (whole listing,
+one call, one lock) writes nothing when short and reports both sizes.
 
 ## Handles and `SafeHandle`
 
-The one opaque handle is the **session**. It is reference-counted:
-`mv_session_create` returns a count of one; `mv_session_retain` / `mv_session_release` adjust
-it. On the C# side it is `MvSessionHandle : SafeHandleZeroOrMinusOneIsInvalid`, whose
-`ReleaseHandle` calls `mv_session_release`; the wrapper never calls `retain` — it owns what the
-factory returned and releases exactly once.
+The only opaque handle is the **session**, reference-counted: `mv_session_create` returns one
+reference; `retain` / `release` adjust it. C# wraps it in `MvSessionHandle :
+SafeHandleZeroOrMinusOneIsInvalid`, whose `ReleaseHandle` calls `mv_session_release` exactly once;
+the wrapper never calls `retain`. The completion wait handle is session-owned; C# wraps it in a
+`SafeWaitHandle` with `ownsHandle: false` (never `CloseHandle` it). Images, frames and textures
+have no ABI handle.
 
-The completion wait handle is session-owned; C# wraps it in a `SafeWaitHandle` with
-`ownsHandle: false`. Images, frames and textures have no ABI handle at all (see
-[What crosses](#what-crosses-and-what-does-not)).
+`mv_session_config.worker_count` 0 → `max(1, cores − 2)`; `enable_etw` registers the ETW provider.
 
 ## Thread contract
 
@@ -105,627 +80,238 @@ Each function is annotated in the header:
 | Annotation | Meaning |
 |---|---|
 | `[any-thread]` | Safe from any thread, concurrently |
-| `[no-block]` | Returns without I/O, decode, or lock contention — safe from the UI thread |
-| `[ui-thread]` | Call on the chrome's UI thread (add-on `shutdown`, `mv_addon_unload`, `mv_addon_quit`) |
-| `[worker-thread]` | May read files, hash or run a model; call off the UI thread |
+| `[no-block]` | No I/O, decode or lock contention — safe on the UI thread |
+| `[ui-thread]` | Chrome UI thread only (add-on `shutdown`, `mv_addon_unload`, `mv_addon_quit`) |
+| `[worker-thread]` | May read files, hash or run a model |
 
-Almost every session call is `[any-thread][no-block]`: requests return a job id immediately and
-the answer arrives as a completion. The exceptions that touch the disk directly
-(`mv_list_subdirectories`, the add-on management calls) are documented as worker-only.
+Almost every session call is `[any-thread][no-block]`: it returns a job id and the answer arrives
+as a completion. Worker-only calls touch the disk directly: `mv_list_subdirectories`,
+`mv_storage_report_json`, `mv_thumb_cache_clear`, add-on management and open-add-on calls,
+`mv_script_reload` / `_restart`, `mv_slots_thumbnail_path`, `mv_eyes_json`, `mv_adjust_faces*`.
 
 ## Generations
 
-```c
-mv_status mv_session_bump_generation(mv_session_t, uint32_t* out_generation);
-mv_status mv_session_current_generation(mv_session_t, uint32_t* out_generation);
-```
-
-Every job carries the generation current at submission; a bump abandons everything queued at
-the old one at its next check ([02-architecture.md](02-architecture.md)). `mv_image_open` submits
-at the **current** generation (the caller bumps first when it replaces the view; without a bump
-it replaces rather than cancels). `mv_folder_select` and `mv_video_open` bump the view
-generation themselves. Thumbnail jobs ride a separate **folder** generation so arrow-key bumps
-do not cancel the filmstrip.
+Every job carries the generation current at submission; `mv_session_bump_generation` abandons
+everything queued at the old one at its next check ([02](02-architecture.md)). `mv_image_open`
+submits at the **current** generation (bump first to replace the view; without a bump it replaces
+rather than cancels). `mv_folder_select` and `mv_video_open` bump the view generation themselves.
+Thumbnail jobs ride a separate **folder** generation so arrow keys do not cancel the filmstrip.
 
 ## Completions — the core never touches the dispatcher
 
 The core never calls a host dispatcher or managed callback from a worker. It owns a completion
-queue and the host drains it:
+queue (`mv_completion`, 40 bytes, payload a kind-specific scalar, never a pointer); the host waits
+on `mv_completion_wait_handle` (manual-reset) and calls `mv_completion_drain`.
 
-```c
-typedef struct mv_completion {     /* 40 bytes */
-  uint32_t kind;                   /* mv_completion_kind */
-  uint32_t status;                 /* mv_status */
-  uint64_t job_id;
-  uint64_t correlation_id;
-  uint32_t generation;
-  uint32_t reserved;
-  int64_t  payload;                /* kind-specific scalar, never a pointer */
-} mv_completion;
+| Kind | Payload |
+|---|---|
+| `ECHO` 1 | byte length of the echoed text |
+| `IMAGE_OPENED` 2 | `(width << 32) \| height` |
+| `FOLDER_READY` 3 / `FOLDER_CHANGED` 4 | stop count (`CHANGED`: watcher relist or re-sort) |
+| `THUMB_READY` 5 | item index |
+| `FOLDER_SELECTED` 6 | selected index |
+| `VIDEO_OPENED` 7 / `VIDEO_ENDED` 8 | duration ns / 0 |
+| `VIDEO_STATE` 9 | `mv_play_state`, on every transition including host-requested ones |
+| `FOLDER_SUMMARY` 10 | subfolder index |
+| `CLIP_INDEX` 11 / `CLIP_JOB` 12 | keyframe count / `mv_clip_job_state` |
+| `PAGE_THUMB_READY` 13 | page; `generation` = the serial `mv_folder_page_thumbs` returned |
+| `ADDON` 100 | event payload; `job_id` = event id, `generation` = `mv_addon_event_kind` |
 
-void*    mv_completion_wait_handle(mv_session_t);   /* manual-reset event; do not CloseHandle */
-uint32_t mv_completion_drain(mv_session_t, mv_completion* out, uint32_t capacity);
-```
-
-| Kind | Value | Payload |
-|---|---|---|
-| `ECHO` | 1 | byte length of the echoed text |
-| `IMAGE_OPENED` | 2 | `(width << 32) \| height` |
-| `FOLDER_READY` | 3 | stop count |
-| `FOLDER_CHANGED` | 4 | stop count (watcher relist, re-sort) |
-| `THUMB_READY` | 5 | item index |
-| `FOLDER_SELECTED` | 6 | selected index |
-| `VIDEO_OPENED` | 7 | duration (ns) |
-| `VIDEO_ENDED` | 8 | 0 |
-| `VIDEO_STATE` | 9 | `mv_play_state`, pushed on every transition including host-requested ones |
-| `FOLDER_SUMMARY` | 10 | subfolder index |
-| `CLIP_INDEX` | 11 | keyframe count (`mediaviewer_clip.h`) |
-| `CLIP_JOB` | 12 | `mv_clip_job_state` (`mediaviewer_clip.h`) |
-| `PAGE_THUMB_READY` | 13 | page; `generation` = the serial `mv_folder_page_thumbs` returned |
-| `ADDON` | 100 | add-on event payload; `job_id` = event id, `generation` = `mv_addon_event_kind` |
-
-Draining is non-blocking and batched (a folder's 400 thumbnails are one drain). `IMAGE_OPENED`
-means pixels may be ready on the native canvas; draining does not wake an idle render thread —
-the shell wakes the presenter ([03-rendering.md](03-rendering.md)). The queue is capped at
-65,536 entries: a host that stops draining loses the oldest quarter at the cap, and every drop
-is counted and logged, never a `std::terminate` (issue #236). Both drain calls go through
-`mv_guard` like every other export.
-
-`mv_session_echo` is the minimal round trip (validate, copy, submit, return a job id, answer as
-`ECHO`), and `mv_session_job_stats` reports submitted / completed / cancelled / queue depth /
-workers / generation for the F3 overlay and tests.
-
-`mv_session_config`: `worker_count` 0 → `max(1, cores − 2)`; `enable_etw` registers the ETW
-provider.
+- Draining is non-blocking and batched: a folder's 400 thumbnails are one drain, not 400.
+- `IMAGE_OPENED` means pixels may be on the native canvas; draining does not wake an idle render
+  thread — the shell wakes the presenter ([03](03-rendering.md)).
+- The queue caps at 65,536: a host that stops draining loses the oldest quarter, counted and
+  logged, never a terminate.
+- `mv_session_echo` is the minimal round trip; `mv_session_job_stats` feeds F3 and tests.
+- Some features use a **listener** instead: one documented any-thread callback the host marshals
+  (`mv_slots_set_listener`, `mv_script_set_listener`; the Windows shell `PostMessageW`s to its
+  window). These are the shell's events, not the chrome's queue.
 
 ## What crosses, and what does not
 
-**Crosses:** open/close, navigation intent, folder item records, sort order, transport commands,
-clip-job requests and progress, UTF-8 paths (including paths to on-disk JPEG thumbnails),
+**Crosses:** open/close, navigation intent, folder item records, sort and filter state, transport
+commands, clip-job requests and progress, UTF-8 paths (including on-disk JPEG thumbnail paths),
 add-on JSON and POD status.
 
-**Does not cross:** pixels, textures, decoded frames, `ID3D11*` anything. The swapchain lives
-in C++; managed code tells the canvas its size and sends input. Edits do not cross either: the
-edit stack, crop mode and lossless/export jobs live in `shell/edit_session` (shared with the Mac
-host), and geometry reaches the render thread through the input snapshot. Key bindings and
-`command_id` stay in the shell ([16-commands.md](16-commands.md)).
+**Does not cross:** pixels, textures, decoded frames, `ID3D11*` anything. The swapchain lives in
+C++; managed code sends its size and input (through the published input snapshot — there is no
+input callback). Edits stay in `shell/edit_session` (shared with the Mac host); geometry reaches
+the render thread through the input snapshot. Key bindings and `command_id` stay in the shell
+([16](16-commands.md)). The one pixel handover is the add-on host table, in-process, to an
+add-on (below).
 
-The add-on host table is the one place 8-bit RGB pixels are handed over — to an add-on, inside
-the process, for indexing (below).
-
-**Native-only side door** ([`src/abi/native.h`](../../src/abi/native.h)): exported from the
-DLL for the C++ present lab, never P/Invoked — `attach_device` / `detach_device`,
-`take_ready_image` / `release_gpu_image` (wait-free handoff of the latest uploaded image),
-`image_ready_wait_handle`, `tiles_frame` / `tiles_stats`, the animation frame ring
-(`take_animation_frame`, `animation_*`), `poll_video`, `take_ready_video_frame` /
-`release_video_frame`, `video_open`, and `open_failed`. The navigation GPU LRU is native-only.
+**Native-only side door** ([`src/abi/native.h`](../../src/abi/native.h)): exported for the C++
+present lab, never P/Invoked — device attach/detach, the wait-free ready-image and video-frame
+handoffs, tile and animation-ring access, `poll_video`. The navigation GPU LRU is native-only.
 
 ## Image open
 
-```c
-typedef struct mv_image_info {   /* 24 bytes */
-  uint32_t width, height;
-  uint32_t format;               /* codec::format_family */
-  uint32_t icc_tagged;           /* an ICC profile (or sRGB chunk) was used */
-  uint32_t transfer_intent;      /* 0 = display-referred */
-  uint32_t page_count;           /* 0.16: pages in the file; 1 for a single-page still */
-} mv_image_info;
+`mv_image_open` → `IMAGE_OPENED`; `mv_session_image_info` describes the last opened image
+(`page_count` 1 for a single-page still). `mv_folder_select_page` opens page N of the selected
+stop (page 0 is what `mv_folder_select` showed).
 
-mv_status mv_image_open(mv_session_t, const char* utf8_path, uint64_t* out_job_id);
-/* 0.16: page `page` of the selected stop; IMAGE_OPENED follows. Page 0 = mv_folder_select. */
-mv_status mv_folder_select_page(mv_session_t, uint32_t page, uint64_t* out_job_id);
-mv_status mv_session_image_info(mv_session_t, mv_image_info* out);   /* last opened */
-```
+## Folder model
 
-## PR 4 — folder, thumbs, prefetch
+- **Stops, not files.** RAW+JPEG/HEIC and Live Photos (HEIC/JPG+MOV) pair at scan time;
+  ambiguous groups stay separate. Name, path, size, mtime, thumbs, decode and prefetch use the
+  **primary** (the still); `mv_folder_item_pair_path` returns the secondary (empty, `out_bytes` 1,
+  when unpaired). A Live Photo's motion opens with `mv_video_open` on the pair path. Counts are
+  stops; copy/move/drag/recycle expand to both halves host-side.
+- `mv_folder_item.flags`: bit 0 selected, bit 1 primary is RAW, bit 2 primary is a video **by
+  extension** (`io::is_video_name`; the play badge; never on a Live Photo; nothing probed).
+- `mv_folder_open`: `utf8_select_path` may be NULL (index 0); either half of a pair selects its
+  stop. The folder is watched; a change relists → `FOLDER_CHANGED`.
+- `mv_folder_select` bumps the view generation, publishes an LRU hit or opens, prefetches ±2, and
+  pushes `FOLDER_SELECTED` ([04](04-image-pipeline.md)).
+- Thumb path is empty until that index's `THUMB_READY`; `mv_folder_thumbs_visible` prioritises
+  on-screen thumbs (all are generated regardless).
+- **Page sidebar:** `mv_folder_page_thumbs` replaces the requested window; one background job
+  renders from one open (`image/page_thumbs.h`), cached as `path#page=N`; nothing is asked twice.
+  A completion with an older serial is stale; `mv_folder_page_thumb_path` is `MV_ERR_NOT_FOUND`
+  until ready.
+- **Sort and filters** are session-owned so filmstrip, gallery and arrows read one list. Setting
+  re-sorts on a worker, keeps the current stop, pushes `FOLDER_CHANGED`. Unknown sort-key bits mean
+  name. `mv_folder_set_kind_filter` (View ▸ Show) reads ratings/labels on a worker before its relist
+  and moves off a stop that fails; `mv_folder_note_metadata_written` drops its cache for one file.
+  The opened file and current stop survive `mv_folder_set_hidden_kinds`.
+- `mv_folder_renamed` is called **before** an F2 rename moves the file; the relist keeps the stop
+  selected under the new name with no decode.
+- `mv_folder_forget` drops a rewritten file's pixels from the path-keyed LRU (`MV_OK` if absent);
+  `mv_folder_forget_tags` re-reads its tags. `mv_folder_tag_search` answers from the tag pass,
+  never a file read.
+- **Child folders** ride the same relist (`io::list_subfolders`, natural order, housekeeping
+  folders dropped; unreadable subfolders still show the files). Summaries are lazy, a bounded
+  walk on a pool thread; `mv_folder_request_summary` is a no-op when loaded or out of range.
+- `mv_list_subdirectories` takes no session, worker only: `"name\tpath\n"` per subfolder (hidden,
+  system and dot dirs skipped, case-insensitive; tabs/newlines in names become spaces); `MV_ERR_IO`
+  if unreadable.
+- **Storage:** `mv_thumb_cache_set_cap` is process-wide (0 = none) and applies to the next sweep;
+  the session sweeps once after its first `IMAGE_OPENED`.
+- `mv_meta_parse_location` is pure (no session): the Location editor's text → point, blank or
+  invalid (with why).
 
-```c
-typedef struct mv_folder_item {  /* 32 bytes */
-  uint32_t index;
-  uint32_t flags;        /* bit 0 selected; bit 1 primary is a RAW (0.5);
-                            bit 2 primary is a video, by extension (0.15) */
-  uint64_t size_bytes;   /* of the primary */
-  int64_t  mtime_unix;   /* of the primary */
-  uint32_t pair_kind;    /* mv_pair_kind (0.5) */
-  uint32_t reserved1;
-} mv_folder_item;
+## Result listings
 
-mv_status mv_folder_open(mv_session_t, const char* utf8_dir, const char* utf8_select_path,
-                         uint64_t* out_job_id);          /* FOLDER_READY */
-mv_status mv_folder_count(mv_session_t, uint32_t* out_count);
-mv_status mv_folder_item_at(mv_session_t, uint32_t index, mv_folder_item* out);
-mv_status mv_folder_item_name / _path / _thumb_path / _pair_path(mv_session_t, uint32_t index,
-                         char* utf8, uint32_t cap, uint32_t* out_bytes);
-mv_status mv_folder_select(mv_session_t, uint32_t index, uint64_t* out_job_id);
-mv_status mv_folder_selected(mv_session_t, uint32_t* out_index);
-mv_status mv_folder_thumbs_visible(mv_session_t, uint32_t first, uint32_t count);
-mv_status mv_folder_page_thumbs(mv_session_t, uint32_t first, uint32_t count, uint32_t* out_serial);
-mv_status mv_folder_page_thumb_path(mv_session_t, uint32_t page, char* utf8, uint32_t cap,
-                                    uint32_t* out_bytes);
-mv_status mv_folder_close(mv_session_t);
-```
+`mv_folder_open_list` shows a non-directory listing (search results) through the same gallery,
+filmstrip, selection and thumbnail cache. Items keep the given order (sort does not apply), are
+never paired and not watched. An item with moment ≥ 0 is a clip that opens **paused** on that
+frame (exact seek); `moments_ms` may be NULL. While a list is open `mv_folder_directory` is `""`;
+`mv_folder_open` of a directory ends it. The Mac host has a direct twin.
 
-- `utf8_select_path` may be NULL (index 0). Either half of a pair selects the pair's stop.
-- The thumb path is empty until `THUMB_READY` for that index.
-- `mv_folder_select` bumps the view generation, publishes an LRU hit or opens, prefetches ±2,
-  and pushes `FOLDER_SELECTED` ([04-image-pipeline.md](04-image-pipeline.md)).
-- `mv_folder_thumbs_visible` makes on-screen thumbs first; skipping it still generates all.
-- `mv_folder_page_thumbs` (0.32, issue #429) is the page sidebar's: thumbnails of the selected
-  document's pages in a window, rendered by one background job from one open of the file
-  (`image/page_thumbs.h`) and kept in the thumbnail cache as `path#page=N` rows. A request
-  replaces the window, so a queued job skips pages flung past; pages landed or in flight are not
-  asked for twice. Each lands as `PAGE_THUMB_READY`; the serial changes with the selected stop,
-  and a completion carrying an older one is stale. `mv_folder_page_thumb_path` is
-  `MV_ERR_NOT_FOUND` until then.
-- The folder is watched; a change relists and pushes `FOLDER_CHANGED`.
-- `mv_folder_entries` (0.20, issue #226) returns the whole listing in one call under one lock:
-  an `mv_folder_entry` per stop (the `mv_folder_item`, the moment, and byte offsets of its
-  name, path, thumb path and pair path in one caller string block). Too small a buffer writes
-  nothing, reports both sizes and returns `MV_ERR_INVALID_ARG`; the host grows its kept buffers
-  and calls again. This is how the WinUI chrome reads a relist, rather than ~8 calls per stop.
+## Video
 
-## PR 7 — pairs are one stop (ABI 0.5)
+Times are `int64` nanoseconds ([05](05-video-pipeline.md)). `mv_video_open` bumps the view
+generation → `VIDEO_OPENED`; `close` is idempotent. `seek(exact=0)` lands on the nearest keyframe
+(scrub), `1` decodes to the frame. `step` works paused only. `set_rate` clamps to 0.25–4.0
+(pitch-corrected). `set_loop` with `b < 0` clears. `mv_probe_is_video` uses magic bytes.
+`mv_video_set_hold` (gallery covers the canvas) pauses and adopts new clips paused on their poster;
+release resumes only the clip that was playing, if still on screen and `resume` is 1
+(`player/playback_hold.h`). `mv_video_set_sound_look` is the Video Editor's gain envelope,
+separate from the listener's volume and mute.
 
-A folder item is a **navigation stop**, not a file. RAW+JPEG (or RAW+HEIC) and Live Photos
-(HEIC+MOV, JPG+MOV) are paired at scan time; ambiguous groups stay separate.
+## Clip jobs
 
-```c
-typedef enum mv_pair_kind { MV_PAIR_NONE = 0, MV_PAIR_RAW_JPEG = 1, MV_PAIR_LIVE_PHOTO = 2 } mv_pair_kind;
-```
+`mediaviewer_clip.h`, all `[any-thread][no-block]`; the logic is the portable `abi/clip_session`,
+one queue on both hosts ([08](08-video-editing.md)).
 
-- Name, path, size, mtime, thumbs, decode, prefetch and video detection use the **primary**
-  (the JPEG/HEIC still). `mv_folder_item_pair_path` returns the secondary (the RAW, or the MOV);
-  empty (`out_bytes` 1) when unpaired.
-- A Live Photo stop is a still; the host opens its motion with `mv_video_open` on the pair path.
-- `FOLDER_READY` / `FOLDER_CHANGED` payloads count stops. Copy, move, drag-out and Recycle Bin
-  expand to both halves on the host side.
-
-## PR 9 — sort and the folder tree (ABI 0.6)
-
-```c
-/* key in bits 0-2 (0 name, 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3 */
-mv_status mv_folder_set_sort(mv_session_t, int32_t packed);
-mv_status mv_folder_get_sort(mv_session_t, int32_t* out_packed);
-/* 0.19: MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS; the opened file and current stop stay */
-mv_status mv_folder_set_hidden_kinds(mv_session_t, uint32_t mask);
-/* 0.20: F2 is about to rename old to new (call before the file moves); the watcher's relist that
-   shows it keeps the stop selected under the new name, with no decode */
-mv_status mv_folder_renamed(mv_session_t, const char* old_utf8, const char* new_utf8);
-/* 0.22: View > Show. MV_FOLDER_HIDE_STILLS | _CLIPS | _RAW | _AUDIO | _DOCUMENTS | _UNMARKED;
-   `kept` (copied) is what _UNMARKED keeps. Its own relist moves off a stop that does not pass.
-   Also 0.23 (issue #207): MV_FOLDER_HIDE_REJECTED | _UNPICKED, and a colour label (1 Red ..
-   5 Purple) << MV_FOLDER_LABEL_SHIFT in MV_FOLDER_HIDE_OTHER_LABELS. Ratings and labels are
-   read on a worker before that relist; choosing one again re-applies it */
-mv_status mv_folder_set_kind_filter(mv_session_t, uint32_t mask, const char* const* kept,
-                                    uint32_t kept_count);
-/* 0.23 (issue #207): the host rewrote this file's rating / label; drop what the filter cached */
-mv_status mv_folder_note_metadata_written(mv_session_t, const char* utf8_path);
-/* 0.28 (#291): tag search over the open folder, from its tag pass; JSON
- * {"done","total","reading","hits":[[index,"why"],...]}. Never a read. */
-mv_status mv_folder_tag_search(mv_session_t, const char* query_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
-mv_status mv_folder_tag_generation(mv_session_t, uint64_t* out_generation);
-/* 0.28: a PR 12 write landed (maybe only in the sidecar): read its tags again */
-mv_status mv_folder_forget_tags(mv_session_t, const char* utf8_path);
-mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
-/* 0.34 (#612, 04 "Thumbnail cache upkeep"): Settings -> Storage. The report walks folders
- * ([worker]); `extra_utf8` adds the shell's places as "id<TAB>path" lines. Clear deletes every
- * cached thumbnail ([worker]); sweep queues the paced background sweep; the cap (0 = none, the
- * default) is process-wide and applies to the next sweep. */
-mv_status mv_storage_report_json(const char* extra_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
-mv_status mv_thumb_cache_clear(mv_session_t);
-mv_status mv_thumb_cache_sweep(mv_session_t);
-mv_status mv_thumb_cache_set_cap(uint64_t cap_bytes);
-/* 0.27 (#352): the Location editor's text -> MV_LOCATION_POINT (lat / lon, text = preview),
- * _BLANK (remove) or _INVALID (text = why). Pure, no session; mv_location_input is 152 bytes. */
-mv_status mv_meta_parse_location(const char* utf8, mv_location_input* out);
-```
-
-- The session owns the sort order, so filmstrip, gallery and arrow keys read one list. `set`
-  re-sorts on a worker, keeps the current stop, pushes `FOLDER_CHANGED`, and applies to later
-  opens. Unknown key bits mean name. Date-taken behaviour is in
-  [06-metadata.md](06-metadata.md).
-- `mv_list_subdirectories` takes no session: one directory read for the folder tree, worker
-  threads only. Writes `"name\tpath\n"` per subfolder (hidden, system and dot directories
-  skipped, case-insensitive order; tabs/newlines in names flattened to spaces). `MV_ERR_IO` if
-  unreadable. Managed: `MediaViewerSession.ListSubdirectories`.
-
-## PR 10 — forgetting a rewritten file (ABI 0.7)
-
-```c
-mv_status mv_folder_forget(mv_session_t, const char* utf8_path);
-```
-
-Drops a path's decoded pixels from the navigation LRU (the LRU is keyed by path) after a
-lossless rotate rewrote the file. `MV_OK` when it was not cached. Does not select, decode or
-touch the file.
-
-## PR 26 — child folders for gallery tiles (ABI 0.8)
-
-```c
-mv_status mv_folder_directory(mv_session_t, char* utf8, uint32_t cap, uint32_t* out_bytes);
-mv_status mv_folder_subfolder_count(mv_session_t, uint32_t* out_count);
-mv_status mv_folder_subfolder_name / _path(mv_session_t, uint32_t index, char*, uint32_t, uint32_t*);
-
-typedef struct mv_folder_summary {   /* 16 bytes */
-  uint32_t media_count;   /* media files directly in the folder */
-  uint32_t subdir_count;  /* direct child folders */
-  uint32_t flags;         /* bit 0 loaded, bit 1 has cover, bit 2 photos in a descendant,
-                             bit 3 bounded walk stopped early */
-  uint32_t reserved;
-} mv_folder_summary;
-
-mv_status mv_folder_summary_at(mv_session_t, uint32_t index, mv_folder_summary* out);
-mv_status mv_folder_summary_cover_thumb_path(mv_session_t, uint32_t index, char*, uint32_t, uint32_t*);
-mv_status mv_folder_request_summary(mv_session_t, uint32_t index);   /* FOLDER_SUMMARY */
-```
-
-Child directories ride the same relist as media items (`io::list_subfolders`: natural order,
-NAS/OS housekeeping folders dropped). A folder whose subfolders cannot be read still shows its
-files. Summaries are requested lazily and computed on a pool thread by a bounded walk;
-`mv_folder_request_summary` is a no-op when loaded or out of range.
-
-## Result listings (ABI 0.14)
-
-```c
-mv_status mv_folder_open_list(mv_session_t, const char* title_utf8, const char* const* paths_utf8,
-                              const int64_t* moments_ms, uint32_t count, uint32_t select_index,
-                              uint64_t* out_job_id);
-mv_status mv_folder_list_title(mv_session_t, char* utf8, uint32_t cap, uint32_t* out_bytes);
-mv_status mv_folder_item_moment(mv_session_t, uint32_t index, int64_t* out_ms);
-```
-
-A listing that is not a directory — search results — shown by the same gallery, filmstrip,
-selection, keyboard model and thumbnail cache. Items keep the given order (sort does not
-apply), are never paired and are not watched. An item with a moment ≥ 0 is a clip that opens
-**paused** on that frame (exact seek). `moments_ms` may be NULL. While a list is open
-`mv_folder_directory` reports `""`; `FOLDER_READY` carries the count; `mv_folder_open` of a
-directory ends the list. The Mac host has a direct twin.
-
-## PR 5 — video
-
-Times are `int64` nanoseconds ([05-video-pipeline.md](05-video-pipeline.md)).
-
-```c
-typedef enum mv_play_state { MV_PLAY_STOPPED, MV_PLAY_PLAYING, MV_PLAY_PAUSED, MV_PLAY_ENDED } mv_play_state;
-typedef enum mv_decoder_kind { MV_DECODER_NONE, MV_DECODER_D3D11VA, MV_DECODER_SOFTWARE } mv_decoder_kind;
-
-typedef struct mv_video_info {
-  int64_t duration_ns; uint32_t width, height; double frame_rate;   /* nominal only */
-  uint32_t audio_tracks, video_tracks, decoder /* mv_decoder_kind */, flags /* bit 0 audio, bit 1 10-bit */;
-  char codec_name[32];
-} mv_video_info;
-
-typedef struct mv_video_stats {
-  int64_t position_ns, audio_clock_ns;
-  double err_ms_p50, err_ms_p99, drift_slope_ms_per_min, playback_rate;
-  uint64_t frames_presented, frames_dropped_late, holds_cadence, holds_starved,
-           device_rebuilds, position_discontinuities;
-  uint32_t audio_master /* 0 = host-clock fallback */, fallback_reason;
-} mv_video_stats;
-```
-
-| Call | Notes |
-|---|---|
-| `mv_video_open(s, path, &job)` | Bumps the view generation; answer `VIDEO_OPENED` |
-| `mv_video_close(s)` | Idempotent |
-| `mv_video_play` / `mv_video_pause` | |
-| `mv_video_set_hold(s, hold, resume)` | 0.11. Gallery covers the canvas: pause, adopt new clips paused on their poster; on release resume only the clip that was playing (if still on screen and `resume` is 1). Play/pause while held are kept. Rule: `player/playback_hold.h` |
-| `mv_video_seek(s, ns, exact)` | `exact` 0 = nearest keyframe (scrub drag), 1 = decode to the frame |
-| `mv_video_step(s, ±1)` | Paused only; backward is a keyframe seek + forward decode |
-| `mv_video_set_rate(s, r)` | 0.25–4.0, clamped, pitch-corrected `atempo` chain |
-| `mv_video_set_volume` / `_set_muted` / `_select_audio_track` | volume 0.0–1.0 |
-| `mv_video_set_loop(s, a, b)` | A–B loop; `b < 0` clears |
-| `mv_video_position` / `_state` / `_get_info` / `_get_stats` | |
-| `mv_probe_is_video(s, path, &is)` | Magic bytes, not extension |
-
-## PR 13 / 14 — clip jobs and the keyframe index (ABI 0.10, 0.13)
-
-`mediaviewer_clip.h`. Every call is `[any-thread][no-block]`. The index is read from packets
-(never decoded) on a pool worker; only the newest request is read, and a superseded one is
-answered `MV_ERR_CANCELLED`. Jobs run on the clip queue's single worker. The logic is the
-portable `abi/clip_session`, which the Mac host links directly — one queue on both platforms.
-See [08-video-editing.md](08-video-editing.md).
-
-```c
-typedef enum mv_clip_op {
-  MV_CLIP_TRIM_KEYFRAME = 1, MV_CLIP_TRIM_REENCODE = 2, MV_CLIP_ROTATE = 3, MV_CLIP_SPLIT = 4,
-  MV_CLIP_REMOVE_MIDDLE = 5, MV_CLIP_REMUX = 6, MV_CLIP_FRAME = 7, MV_CLIP_AUDIO = 8,
-  MV_CLIP_ANIMATION = 9, MV_CLIP_KEEP_RANGES = 10 /* 0.13 */
-} mv_clip_op;
-typedef enum mv_clip_job_state { QUEUED = 1, RUNNING, DONE, FAILED, CANCELLED } mv_clip_job_state;
-
-typedef struct mv_clip_request {
-  uint32_t struct_size, op;
-  int64_t  in_ns, out_ns;              /* player timeline; out < 0 = the end */
-  uint32_t option;                     /* per op: rotate dir, remux target, frame/audio/anim format, cut mode */
-  uint32_t animation_width;            /* long edge, 0 = 480 */
-  uint32_t animation_fps;              /* 0 = 15 */
-  uint32_t reserved;
-  const int64_t* ranges_ns;            /* 0.13 KEEP_RANGES: flattened ascending [in,out) pairs */
-  uint32_t range_count, reserved2;
-} mv_clip_request;                     /* a request of the 0.10 size is still accepted */
-
-typedef struct mv_clip_progress {
-  uint64_t job_id; uint32_t state, op; double fraction; int64_t elapsed_ms, eta_ms /* -1 unknown */;
-  uint32_t error, output_count; char title_utf8[64]; char source_name_utf8[256];
-} mv_clip_progress;
-```
-
-| Call | Notes |
-|---|---|
-| `mv_clip_set_helper(s, path)` | The `MediaViewerClipJob` helper process. Jobs that open a decoder or encoder run there; if it cannot start they fail `MV_ERR_IO`. Stream-copy jobs run in process |
-| `mv_clip_index_request(s, path, &req)` / `mv_clip_index_get(...)` | Keyframe times + duration; the session keeps the last few answers |
-| `mv_clip_submit(s, source, &req, &job)` | Returns at once |
-| `mv_clip_cancel` / `mv_clip_retry` / `mv_clip_jobs` / `mv_clip_clear_finished` | Cancel leaves nothing behind; retry makes a new job |
-| `mv_clip_job_progress` / `mv_clip_job_output(s, job, index, …)` | Split has two outputs |
-
-Outputs are new files beside the source under a free name (`IMG_0001_trimmed.mp4`, then
-`" (2)"`), written to a hidden temporary first; a job never writes to its source and nothing logs
-a path. No pixel crosses: a frame export is a file the job writes.
-
-## Play badge — clips read apart from stills (ABI 0.15)
-
-`mv_folder_item.flags` bit 2 is set when the stop's primary is a video **by extension**
-(`io::is_video_name`, the same list the directory scan and the hosts' routing use). The gallery
-and filmstrip draw a play badge. A Live Photo stop is its still and never carries it. Nothing is
-opened or probed to set it.
+- The keyframe index is read from packets (never decoded) on a pool worker; only the newest
+  request is read, a superseded one answers `MV_ERR_CANCELLED`. The session keeps the last few.
+- Jobs run on the clip queue's single worker. Jobs that need a decoder or encoder run in the
+  `MediaViewerClipJob` helper (`mv_clip_set_helper`; `MV_ERR_IO` if it cannot start);
+  stream-copy runs in process. Cancel leaves nothing behind; retry makes a new job; split has two
+  outputs.
+- `mv_clip_request.look`: keyframe `KEEP_RANGES` carries only a turn and mute
+  (`MV_ERR_INVALID_ARG` for more); exact renders the look in the helper; `FRAME` applies turn,
+  mirror and crop.
+- Outputs are new files beside the source under a free name (`IMG_0001_trimmed.mp4`, then
+  `" (2)"`), written to a hidden temporary first. Never the source; nothing logs a path; no pixel
+  crosses.
 
 ## Crash context
 
-`mediaviewer_crash.h`: `mv_crash_context(&info)` returns stable addresses — `slot_count`
-fixed-size NUL-padded ASCII slots (one per in-flight decode, claimed by `begin_decode`; `slot_bytes` each) and a pointer to the
-last ABI call's correlation id. The host registers them as annotations with its out-of-process
-crash reporter; the core links no reporter. Slots hold only format family, decoder name and
-version, dimensions, bit depth and correlation id — never a path, filename, bytes or EXIF
-([13-updates-and-telemetry.md](13-updates-and-telemetry.md)).
+`mv_crash_context` returns stable addresses: fixed-size NUL-padded ASCII slots (one per in-flight
+decode, claimed by `begin_decode`) and a pointer to the last ABI call's correlation id. The host
+registers them with its out-of-process reporter; the core links none. Slots hold format family,
+decoder name/version, dimensions, bit depth and correlation id only — never a path, filename,
+bytes or EXIF ([13](13-updates-and-telemetry.md)).
 
 ## Add-ons
 
-`mediaviewer_addon.h` ([18-import.md](18-import.md) has the mechanism). An add-on is one shared
-library exporting `mv_addon_get(host_api, const mv_host_api*, mv_addon_api* out)`. It links
-nothing of the core and reaches it only through the host function table.
+`mediaviewer_addon.h`; the mechanism is in [18](18-import.md), open add-ons in
+[25](25-open-addons.md). An add-on is one shared library exporting `mv_addon_get(host_api,
+const mv_host_api*, mv_addon_api* out)`; it links nothing of the core.
 
-- **Forget** (#507). An optional second export, `mv_addon_forget(const char* data_dir)`: on
-  Remove without keeping data, after the add-on's shutdown and before its files go, the host
-  loads the verified library on its own (no `mv_addon_get`) and calls it, so the add-on deletes
-  what it keeps outside the data folder (Driftwire's Keychain / Credential Manager entries).
-  Absent is fine; a failure never blocks the removal (`addon::forget_outside_data`).
-
-- **Host API version** `MV_ADDON_HOST_API 2`, oldest served `MV_ADDON_HOST_API_OLDEST 1`.
-  Versions only append; `struct_size` lets an older add-on read a newer table. An add-on loads
-  when its manifest range meets `[OLDEST, HOST_API]` and receives `min(HOST_API, its max)`;
-  otherwise `mv_addon_get` returns `MV_ERR_UNSUPPORTED_FORMAT` and the app reports "needs an
-  update".
-- **`mv_host_api`** (v1): file walk / stat / mkdir / remove / hash (BLAKE3-256, optionally
-  uncached) / verified multi-target copy / write-new-file; volumes (list, of-path, eject, watch);
-  `capture_info`, the viewer's own pairing (`pair_names`) and JPEG-512 `thumbnail_path`;
-  scheduling (`should_yield` while the present loop is busy, `post_event` to the completion
-  queue, `next_correlation_id`); `data_dir`, `default_library_dir`; `log` (never a path, name or
-  hash). **v2 appends** pixels for the AI pack: `decode_still_rgb` (first-pixel quality,
-  colour-managed, oriented), a frame `sampler_*` with HDR tone-mapped to SDR, `video_frame_rgb`,
-  `moment_thumbnail`, `piece_dir`, `audio_*` (mono float PCM), `thumbnail_jpeg` /
-  `thumbnail_store_jpeg`, and `recycle_file` (Recycle Bin / Trash only). Pixels are 8-bit sRGB
-  RGB, stride `width * 3`, worker threads only.
-- **Edit ↔ add-ons, the Remove brush** ([plan](../plans/edit-adjust.md) slice 7). The host
-  table's `still_mask` (appended after `sound_keep`, version not bumped) answers what was brushed
-  over the photo being edited: dabs of three floats, u and v across the edited picture
-  `still_open` returns and the radius over its longer side. The Windows host sets them through
-  `mv_edit_still_mask`, the Mac host directly (`addon_media::set_still_mask`).
-- **Edit ↔ add-ons, Extend's frame** (edit-refresh S6). The host table's `still_extend`
-  (appended after `still_mask`, version not bumped) answers the margins the person dragged past the
-  edges of the photo being edited: four floats, left, top, right and bottom, each a fraction of the
-  edited picture `still_open` returns; all 0 when none is set or another photo is asked. The
-  Windows host sets them through `mv_edit_still_extend`, the Mac host directly
-  (`addon_media::set_still_extend`).
-- **Edit ↔ add-ons** ([plan](../plans/edit-adjust.md) slices 5–6). `still_open` answers the
-  still being edited with its edit applied; the Windows host sets that edit through
-  `mv_edit_still_set` (an opaque blob of this build's edit geometry and colour; host and
-  `mediaviewer_core` are built together) and the Mac host directly. `mv_ai_api` appends
-  `eyes_json` (the photo's faces and the same person's in candidate frames; refused while People
-  is off); the host reaches it through `addon/index_locations.h`'s `ai_eyes_json`, published and
-  retracted with the index-locations source, and Windows through `mv_open_closed_eyes`, which
-  runs the whole Open closed eyes job and returns the pane's note. docs/plans/edit-refresh.md S3:
-  `mv_eyes_json` (`mediaviewer_addon.h`, worker thread) hands the Windows exe the same answer
-  with no candidates, for the red-eye ring's snap and Find eyes; `MV_ERR_NOT_FOUND` without the
-  pack, `MV_ERR_INVALID_ARG` while People is off or when `cap` is short (`needed` says how much).
-  S8: `mv_adjust_faces(path, fix, boxes, count, note…)` runs the Faces tool's fix (`fix` -1 Do
-  all, 0 Open eyes, 1 Improve face; appended values follow `addon::media::face_fix`) on only the
-  faces whose boxes the canvas chose (x, y, w, h quads, matched to this run's answer; NULL every
-  face), worker thread, and returns the note; `mv_adjust_faces_to` (appended) also returns the
-  new file's path, so the host opens the result with Edit kept on its tab. The pack's `eyes_json` answer gains `"name"` and
-  `"photos"` per face (appended keys).
-- **Restore faces** (docs/plans/edit-refresh.md S10, [29](29-enhance.md)). `mv_ai_api` appends
-  `faces_json` (after `eyes_json`): the faces and five landmarks in pixels handed over (8-bit RGB,
-  no path), and with `other_rgb` (the same picture changed) each face's People cosine to the face
-  at the same place, `sim`. The host table appends `still_faces` last (after `still_mask`, version
-  not bumped) answering it from the published source (`index_locations.h` `ai_faces_json`,
-  published and retracted with the eyes): `MV_ERR_NOT_FOUND` without the pack,
-  `MV_ERR_PERMISSION_DENIED` while People is off. Both hosts set it (`addon_abi.cpp`,
-  `addons_mac.mm`).
-- **`mv_addon_api`**: `id`, `version`, `shutdown` (`[ui-thread]`), and `query(interface_id)`
-  returning a named interface — `"mv.import.1"` (`mv_import_api`, `mediaviewer_import.h`) or
-  `"mv.ai.1"` (`mv_ai_api`, `mediaviewer_ai.h`, [17-local-ai-search.md](17-local-ai-search.md)).
-  The AI pack also exports `mv_ai_reader_get`, a read-only instance of the same table for the
-  Final Cut Pro search agent.
-- **Events** post as `mv_completion{kind = MV_COMPLETION_ADDON (100), job_id = event id,
-  generation = mv_addon_event_kind, status, payload}`. Kinds 1–9 are Import (scan, plan, job
-  progress ~4 Hz, done, volume arrived/removed, verify, duplicates); 20–24 are the AI pack.
-- **Host-side management** (exported by the Windows DLL for C#; the Mac host calls `src/addon`
-  directly), worker-thread unless noted: `mv_addon_installed_json`, `mv_addon_check_manifest`
-  (Ed25519 signature against the pinned key), `mv_addon_sha256_file`, `mv_addon_make_staging`,
-  `mv_addon_install`, `mv_addon_family_usage`, `mv_addon_remove`, `mv_addon_load` (re-verifies,
-  loads, returns the interface and the chrome entry path; `MV_ERR_IO` when the OS would not load
-  a library that verified, with the reason in `mv_last_error_message`), `mv_addon_load_reader`
-  (the same through the AI pack's read-only door, for a window that does not host the add-ons;
-  `MV_ERR_NOT_FOUND` when nothing is indexed yet), `mv_addon_load_guest` (0.30, issue #402: the
-  add-on's own entry in such a window, for one that only reads; it never sweeps the store),
-  `mv_addon_slot_addons_json` (0.30: the add-ons a window loads for their screens and slots, from
-  their signed manifests, hashing no file), `mv_addon_unload`, `mv_addon_quit` /
-  `mv_addon_quit_wait(timeout_ms)` (`MV_ERR_TIMEOUT` → the host terminates without static
-  destructors), `mv_volume_watch` (card-arrival hint), and `mv_present_set_busy` (the render
-  loop's busy flag for `should_yield`).
+- **Host API version.** An add-on loads when its manifest range meets
+  `[MV_ADDON_HOST_API_OLDEST, MV_ADDON_HOST_API]` and receives `min(HOST_API, its max)`; otherwise
+  `MV_ERR_UNSUPPORTED_FORMAT` ("needs an update"). The table only appends; most rows are appended
+  **without** a version bump and are read only when `struct_size` covers them, so callers on both
+  sides check `struct_size` per row. The AI pack copies what the host's `struct_size` covers.
+- **`mv_host_api`** gives files (walk, stat, hash — BLAKE3-256, verified multi-target copy,
+  write-new-file, `recycle_file` to the Recycle Bin/Trash only), volumes, the viewer's pairing and
+  thumbnails, scheduling (`should_yield` while the present loop is busy — set by
+  `mv_present_set_busy`; `post_event` to the completion queue), `log` (never a path, name or hash),
+  and media for the AI pack and Enhance: decoded stills, frame samplers (HDR tone-mapped to SDR),
+  sound and frame read/write, still read/write. Pixels are 8-bit sRGB RGB, stride `width * 3`,
+  worker threads only. New files are published under a free name only when finished.
+- **Edit state for add-ons.** `still_open` answers the photo being edited with its edit applied;
+  `still_mask` (Remove brush dabs), `still_extend` (Extend margins, all 0 when unset or another
+  photo is asked) and `still_faces` describe it. Windows sets these through `mv_edit_still_set` /
+  `_mask` / `_extend` (an opaque blob: host and core are built together); the Mac host sets them
+  directly (`addon_media::set_*`). `still_faces` / `mv_eyes_json`: `MV_ERR_NOT_FOUND` without the
+  pack, refused while People is off.
+- **`mv_addon_api`**: `id`, `version`, `shutdown` (`[ui-thread]`), and `query(interface_id)` →
+  `"mv.import.1"`, `"mv.ai.1"` ([17](17-local-ai-search.md)) or `"mv.slots.1"`. The AI pack also
+  exports `mv_ai_reader_get`, a read-only instance for the Final Cut Pro agent. Optional
+  `mv_addon_forget(data_dir)`: on Remove without keeping data, after shutdown, the host loads the
+  verified library alone and calls it so it deletes what it keeps outside its data folder; a
+  failure never blocks removal.
+- **Events** post as `ADDON` completions (`generation` = event kind): 1–9 Import, 20–24 AI pack.
+- **Host-side management** (Windows DLL exports for C#; the Mac host calls `src/addon` directly),
+  worker-thread: install/check (Ed25519 against the pinned key)/remove/load. `mv_addon_load`
+  re-verifies before loading; `MV_ERR_IO` when the OS refuses a library that verified (reason in
+  `mv_last_error_message`). `mv_addon_load_reader` (AI pack's read-only door; `MV_ERR_NOT_FOUND`
+  when nothing is indexed) and `mv_addon_load_guest` serve windows that do not host the add-ons
+  and never sweep the store. `mv_addon_quit_wait` → `MV_ERR_TIMEOUT` means the host terminates
+  without static destructors.
 
 ## PR 55 — open add-ons (ABI 0.17)
 
-Minor bump, additive, in `mediaviewer_addon.h`: `mv_open_addon_inspect`, `mv_open_addon_install`,
-`mv_open_addon_list_json`, `mv_open_addon_remove`, `mv_open_addon_theme_json`
-([25](25-open-addons.md)). All **[worker-thread]** (they read and hash files), all JSON out with
-the `cap` / `needed` buffer rule. `inspect` answers `MV_OK` whenever it wrote its JSON, whatever
-the JSON says: a refused package is an answer, not an error. `install` takes the SHA-256 that
-`inspect` returned, so what is installed is what the person was shown; it is never called twice
-for a size. The Mac host reaches the same code through `mv_open_addons_*` in the chrome bridge.
-Both are thin wrappers over `src/addon/open_json.h`, which writes the one JSON both chromes read.
+`mv_open_addon_*` ([25](25-open-addons.md)): all `[worker-thread]`, JSON out with the `cap` /
+`needed` rule, thin wrappers over `src/addon/open_json.h` (the one JSON both chromes read; the Mac
+reaches it through `mv_open_addons_*`). `inspect` returns `MV_OK` whenever it wrote JSON — a
+refused package is an answer, not an error. `install` takes the SHA-256 `inspect` returned, so what
+is installed is what the person was shown. Install/remove reload scripts themselves.
 
-## PR 56 — contributed commands (ABI 0.18)
+Related calls in the same header: `mv_addon_commands_json` (manifest command rows, made live by the
+Windows shell), `mv_addon_settings_*` / `mv_open_addon_keymap_json` (settings pages, checked on
+set; keymap packs native applies).
 
-Minor bump, additive: `mv_addon_commands_json` returns the rows the loaded first-party add-ons'
-manifests contribute (`[{"addon","id","name","windows","mac","modes","payload"}]`), which the
-Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-contribution-model)).
-`mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
-`hint_text`. The Mac host reads the same manifests directly.
+## Slots, scripts and phone
 
-## Metadata pane facts — the chrome bridges (#290)
+- **`mv_slots_*`** (screens and slots, [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)):
+  `[any-thread][no-block]` — each call copies a registry table as JSON or posts a request to an
+  add-on's worker and returns its generation; changes arrive through `mv_slots_set_listener` as
+  change bits. `mv_slots_event` refuses a value the screen's tree could not produce
+  (`MV_ERR_INVALID_ARG`). `mv_slots_thumbnail_path` is `[worker-thread]`. Mac: `mv_chrome_slots_*`.
+- **`mv_script_*`** ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)): `reload` /
+  `restart` are `[worker-thread]`; the rest `[any-thread][no-block]` so the key handler can post a
+  command from the UI thread. Listener codes: 1 notice waiting, 2 an add-on started or stopped.
+  `MV_SCRIPT_STORE` / `MV_SCRIPT_SPIN` are verify rigs, inert unless set. The Mac host drives
+  `src/addon/script_host.h` directly.
+- **`mv_phone_*`**: all `[no-block]`; `mv_phone_resume` at launch (`MV_PHONE_SECONDARY` in a later
+  window's process, which runs none of it), `mv_phone_stop` at quit before the add-ons, never
+  waiting on the NAS.
 
-The metadata pane's record never crosses `mediaviewer.h`: each host reads the `meta::metadata`
-it already holds and hands its chrome text tables (`meta/tables.h`). #290 adds the record's
-provenance and position as POD beside them, so the map (#344) and the AI badge (#345) read
-numbers the core decided, never parse the "Made with" or "Location" rows. `mediaviewer.h` and
-its version are unchanged.
+## Chrome bridges (outside `mediaviewer.h`)
 
-**Windows** — `chrome_meta_args` ([`src/shell/chrome_host.h`](../../src/shell/chrome_host.h),
-`SetMetaData`) grows from 40 to **80 bytes**; the managed `ChromeMetaArgs` and
-`MetaDataArgsSize` match it and the attach probe refuses a mismatch (`-11`):
+The metadata pane's record never crosses `mediaviewer.h`: each host hands its chrome text tables
+(`meta/tables.h`, written by `meta::editable_properties_table` on both) plus POD facts (position,
+altitude, "made with", flag bits) so the map and AI badge read numbers the core decided rather than
+parsing rows. Windows: `chrome_meta_args` (80 bytes, `src/shell/chrome_host.h`), matched by managed
+`ChromeMetaArgs`; the attach probe refuses a size mismatch (`-11`). Mac: `mv_chrome_meta_facts`
+(`struct_size`-versioned). The AI-generated flag is positive evidence only; clear means "not
+stated" ([06](06-metadata.md#made-with-and-ai-provenance-290)). The AI badge's text comes from
+`shell/ai_badge.h`, pushed only on change (Windows optional entry `ShowAiBadge`; an older chrome
+has no badge).
 
-```c
-/* after summary, properties, streams, *_len, loading (40 bytes, unchanged) */
-double   where_lat, where_lon;   /* WGS 84 degrees; valid when facts & kMetaFactWhere */
-double   where_altitude_m;       /* metres, negative below sea level; facts & kMetaFactAltitude */
-uint64_t made_with;              /* UTF-8 summary.made_with, valid for the call only */
-int32_t  made_with_len;
-int32_t  facts;                  /* kMetaFactWhere 1, kMetaFactAltitude 2, kMetaFactAiGenerated 4,
-                                    #352: kMetaFactLocationSet 8, _Clear 16, _InOriginal 32 */
-```
-
-#352: the Location editor parks `"L\ttext"` on `chrome_cmd_meta_tags` (native reads it again
-with `meta::parse_location`; blank removes); its live preview calls `mv_meta_parse_location`.
-
-**Mac** — the chrome bridge (`mv_chrome_bridge.h`):
-
-```c
-typedef struct mv_chrome_meta_facts {
-  uint32_t struct_size;          /* in: sizeof as the caller knows it; only covered fields written */
-  uint32_t flags;                /* MV_META_FACT_WHERE 1, _ALTITUDE 2, _AI_GENERATED 4 */
-  double   lat, lon, altitude_m;
-} mv_chrome_meta_facts;
-bool    mv_chrome_meta_facts_get(mv_chrome_meta_facts* out);    /* false: no record */
-int32_t mv_chrome_meta_made_with(char* buf, int32_t size);      /* two-call, like the tables */
-/* #352: flags also MV_META_FACT_LOCATION_SET 8, _CLEAR 16, _IN_ORIGINAL 32 */
-bool    mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out);
-int32_t mv_chrome_meta_location_text(char* buf, int32_t size);  /* "38.7979, -9.3907" */
-void    mv_chrome_meta_set_location(const char* utf8);          /* blank removes */
-```
-
-`ai_generated` is set on positive evidence only; a clear flag means "not stated", never "not
-AI" ([06-metadata.md](06-metadata.md#made-with-and-ai-provenance-290)). The properties table's
-`space` column gains `c2pa`, `png_text`, `icc` and `xmp_raw`, whose access column is always `r`;
-both hosts now write that table with the same `meta::editable_properties_table`.
-
-**The AI badge (#345).** Not part of the pane: the host pushes the badge's text, decided by
-`shell/ai_badge.h`, whenever the item or its answer changes. Windows: an optional chrome entry
-`ShowAiBadge` taking `chrome_ai_badge_args` (48 bytes: `visible, x, y, width, height,
-title_len`, then UTF-8 `title` and `evidence` pointers, `evidence_len`, reserved; managed
-`ChromeAiBadgeArgs`), sent only when something changed; an older chrome without it simply has no
-badge. Mac: `MVChromeHost.makeAIBadgeView()` and `setAIBadge(title:evidence:)` from
-`main_mac.mm`, which also shows, hides and places the hosting view. Neither crosses
-`mediaviewer.h`.
-
-## PR 56 — settings pages and keymap packs (ABI 0.24)
-
-Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contribution API 2):
-`mv_addon_settings_json` (an add-on's settings page with its values, open or first-party id),
-`mv_addon_setting_set` (one value, checked against the page: `{"ok","message"}`),
-`mv_addon_settings_forget` (Remove without "keep its settings") and `mv_open_addon_keymap_json`
-(one keymap pack, which the Windows chrome parks for native to apply). The open list gains
-`settings` and `keymaps`, the installed list `settings`. The host function table gains
-`settings_get` after `walk_files2` (appended under `struct_size`, host API not bumped; the v3
-rows of 0.25 follow it): a native add-on reads its own page's values, fresh on every call. The Mac host reaches the same `open_json.h` calls through
-`mv_addons_settings_*` and `mv_open_addons_keymap` in the chrome bridge, and applies a pack with
-`mv_chrome_apply_keymap`.
-
-## PRs 58–59 — screens and slots (ABI 0.25)
-
-Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
-The chrome side, `mv_slots_*`, is **[any-thread][no-block]**: every call copies one of the
-registry's tables (JSON, the `cap` / `needed` rule) or posts a request to an add-on's worker and
-returns its generation; `mv_slots_set_listener` registers one any-thread callback with what
-changed, which the chrome marshals to its dispatcher (the core never calls a dispatcher).
-`mv_slots_event` refuses a value the screen's tree could not produce (`MV_ERR_INVALID_ARG`).
-`mv_slots_thumbnail_path` is **[worker-thread]**. The add-on side is the host function table's v3
-rows and the add-on's `mv.slots.1` interface; table versions still only append (PR 56's
-`settings_get` sits after `walk_files2`, before v3). The Mac host has the same calls as
-`mv_chrome_slots_*` in its bridge.
-
-## PR 57 — script add-ons (ABI 0.26)
-
-Minor bump, additive, in `mediaviewer_addon.h` ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)):
-`mv_script_set_listener`, `mv_script_reload(session)`, `mv_script_restart`, `mv_script_stop_all`,
-`mv_script_commands_json`, `mv_script_run_command`, `mv_script_set_key_notes`,
-`mv_script_status_json`, `mv_script_take_notices_json`; contribution API 3 (`MV_ADDON_CONTRIBUTION_API` is 5 with PRs 58–59).
-`reload` / `restart` read and hash files (**[worker-thread]**); the rest are
-**[any-thread][no-block]**, so the shell's key handler can post a command from the UI thread.
-Scripts reach the viewer through the session's own folder model calls, and back through the
-**listener**, a documented any-thread callback the shell marshals (`PostMessageW` to its window):
-1 a notice is waiting, 2 an add-on started or stopped. Not the completion queue: the chrome
-drains that, and these are the shell's. `mv_open_addon_install` / `_remove` reload the scripts
-themselves. The verify rigs `MV_SCRIPT_STORE` and `MV_SCRIPT_SPIN` are read by `mv_script_reload`
-and inert unless set. The Mac host drives
-`src/addon/script_host.h` directly; Swift reads `mv_open_addons_scripts` and calls
-`mv_open_addons_restart` in the chrome bridge.
-
-## Version history
-
-| Minor | Change |
-|---|---|
-| 0.5 | Pairs: `pair_kind` (was `reserved0`), flags bit 1, `mv_folder_item_pair_path` |
-| 0.6 | `mv_folder_set_sort` / `_get_sort`, `mv_list_subdirectories` |
-| 0.7 | `mv_folder_forget` |
-| 0.8 | Child folders and summaries, `FOLDER_SUMMARY` |
-| 0.10 | `mediaviewer_clip.h`, `CLIP_INDEX` / `CLIP_JOB` |
-| 0.11 | `mv_video_set_hold` |
-| 0.12 | Status codes 9–13 |
-| 0.13 | `MV_CLIP_KEEP_RANGES`, `ranges_ns` |
-| 0.14 | Result listings (`mv_folder_open_list`, `_list_title`, `_item_moment`) |
-| 0.15 | `mv_folder_item.flags` bit 2 (video) |
-| 0.16 | `mv_image_info.page_count` (was `reserved`), `mv_folder_select_page` — pages of a multi-page still |
-| 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
-| 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
-| 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
-| 0.20 | `mv_folder_entries` — the whole listing in one call (issue #226) |
-| 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
-| 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
-| 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
-| 0.24 | Settings pages and keymap packs: `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; host table `settings_get` |
-| 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
-| 0.26 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 (5 once PRs 58–59 joined) |
-| 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
-| 0.28 | `mv_folder_tag_search`, `mv_folder_tag_generation`, `mv_folder_forget_tags` (#291 file search by tag). Add-on host table: `tag_facts` appended last, after PR 56's `settings_get` and #348's v3 rows (no version bump; read when `struct_size` covers it). `mediaviewer_ai.h`: `MV_AI_MATCH_TAGS`. Mac bridge: `mv_chrome_tag_search`, `mv_chrome_tag_generation`. #405 (2026-10-15): `mv_addon_tag_facts` gained rating, ISO, aperture, focal length, shutter and label fields at its end (`MV_ADDON_TAG_FACTS_V1_SIZE` / `_V2_SIZE`); the host serves either size and returns the size it wrote. #406: host table `read_cues` appended after `tag_facts` (`mv_addon_cue`, `MV_ADDON_CUE_*`); `mediaviewer_ai.h`: `MV_AI_MATCH_TEXT` |
-| 0.29 | `mv_slots_command` (#410): one of a slot add-on's manifest commands, delivered to it as `MV_SLOT_EVENT_COMMAND` with the files its payload names (`slot_registry::run_command`). Screens: a `text_field` may carry `"pick": "folder"`. Mac bridge: `mv_chrome_slots_command`, and the gallery's range (#413) `mv_chrome_gallery_set_range`, `mv_chrome_gallery_range_generation`, `mv_chrome_gallery_range_count`. Island wire: `chrome_cmd_gallery_range` (1036) |
-| 0.30 | Slot add-ons in every window (#402): `mv_addon_load_guest` (a window that does not host the add-ons loads one that only reads, without touching the store) and `mv_addon_slot_addons_json` (which to load, from manifests, no file hashed). #398: host table `locations_of_index` appended after `read_cues` (the Local search index's located assets, generation-tagged, no file read); `mv_ai_api` `each_location` appended after `people_reanalyse`. The AI pack now requires the table only up to `read_cues` and copies what the host's `struct_size` covers |
-| 0.31 | Place terms (#441): `mv_slots_place_terms` (bits `MV_SLOTS_PLACE_TERMS`, `MV_SLOTS_PLACE_PROVIDER`: the Local search query has a `place:` / `in:<place>` term; a loaded add-on answers it). Host table `place_matches` appended after `locations_of_index`, with `mv_addon_path_fn`: the AI pack's engine gets the `place:` provider's paths for one place over the whole index (`slot_registry::provider_paths`), `MV_ERR_NOT_FOUND` with none. Mac bridge: the host's `placeTerms:` selector. #354 (2026-10-16): host table `document_text` appended after `keep_alive` (`mv_addon_doc_text`: a DOCX's text with each paragraph's page; a document's page as pixels is `video_frame_rgb` with `pts_ms` the page); `mediaviewer_ai.h`: `MV_AI_KIND_DOCUMENTS` (4; `MV_AI_KIND_ALL` 15), `MV_AI_FIND_TEXT`, `MV_AI_DOCS_*`, `mv_ai_status` `docs_total` / `docs_done` / `docs_locked` / `docs_failed` appended, `mv_ai_api` `root_set_documents` appended after `each_location`. #354 D2: `mv_ai_status` `pages_total` / `pages_done` appended (page pictures at `MV_AI_DOCS_PAGES`). #354 D4: `mv_ai_status` `scans_total` / `scans_done` appended (scanned PDF pages read by the OS) |
-| 0.32 | The page sidebar (#429): `mv_folder_page_thumbs`, `mv_folder_page_thumb_path`, `MV_COMPLETION_PAGE_THUMB_READY` (13). Mac bridge: `mv_chrome_request_page_thumbs`, `mv_chrome_select_page`, `kMenuPageSidebar`; `MVChromeHost.setPageSidebar` / `pageThumbReady` the other way. Island wire: `chrome_cmd_select_page` (1082), `chrome_cmd_image_opened` (1083), entries `ShowPageSidebar` / `SetPageSidebar` (`chrome_page_sidebar_args`) |
-| 0.33 | Notices and keep-alive (#452, [28 "In the background"](28-driftwire.md#in-the-background-452)): host table `notice_post` (an `mv_addon_notice`: screen, title, body, one button), `notice_authorize` and `keep_alive` appended after `place_matches`; `MV_SLOT_EVENT_NOTICE` (13) for the button; `mv_slots_notices_json` (change bit 64) and `mv_slots_notice_action`. Mac bridge: `mv_chrome_slots_notices`, `mv_chrome_slots_notice_action`, `mv_chrome_background_*`. Windows chrome entry `OpenAddonScreen`. #510 (2026-10-20): host table `busy_post` appended after `document_text` (work an add-on would not have cut off; `mv_slots_notices_json` gains `busy`), version not bumped; Mac bridge `mv_chrome_slot_addon_reload`, `mv_chrome_corner_changed`. #297 (2026-10-26, Enhance slice 4): host table `sound_open` / `sound_read` / `sound_close` (a file's sound at full quality, interleaved, the source's channels or a mix; `mv_addon_sound_info`) and `sound_write_open` / `sound_write` / `sound_write_finish` / `sound_write_close` (a new file beside the source: the OS's AAC in M4A, else FLAC; or the clip's picture stream-copied with the new sound; published under a free name only when finished) appended after `busy_post`, version not bumped. #297 slice 5: `frames_open` / `frames_read` / `frames_close` (every frame of a clip, sRGB RGB; `mv_addon_frames_info`) and `clip_write_open` / `clip_write_frame` / `clip_write_sound` / `clip_write_finish` / `clip_write_close` (a new clip on a hardware encoder, the source's sound copied or new; `mv_addon_clip_out`) appended after `sound_write_close`, version not bumped. #297 slice 3: `still_open` / `still_pixels` / `still_close` (a photo at full resolution as an export decodes it; `mv_addon_still_info`) and `still_write` (a new photo with the source's metadata, under a free name) appended after `clip_write_close`, version not bumped. #601 (2026-11-02, [27 "The folder map"](27-places.md#the-folder-map-601)): host table `open_item` appended after `still_write` (an info section asks the viewer to show a file of the folder of the file on screen; the registry carries it in `mv_slots_info_json`'s `"open": {path, revision}` and each chrome opens it once, if its listing holds it) and `MV_SLOT_EVENT_TAP` (14, a click on an interactive surface, `{x, y}`), version not bumped. #606 (2026-11-02): host table `route_of` (a clip's telemetry GPS route, `mv_addon_route_point`, thinned to the caller's capacity) appended after `open_item`, version not bumped; `MV_ADDON_TAG_HAS_ROUTE` (0x8) for `tag_facts`; `mv_addon_location.has` documented as a bit set, `MV_ADDON_LOCATION_HAS` / `_ROUTE` / `_ROUTE_POINT` (an older host sends 1, so `has != 0` still means coordinates); mv.ai.1 `each_location` streams a clip's route as `_ROUTE_POINT` rows after its own. Local search's watch (2026-11-02, [17](17-local-ai-search.md) "Folder roots persist"): host table `watch_tree` (folder trees watched for the add-on; `on_change` names the folder whose listing changed, with `MV_ADDON_TREE_SUBTREE` / `MV_ADDON_TREE_OVERFLOW`; `io::tree_watcher`) appended after `route_of`, version not bumped. Correcting people (2026-11-02, [17 "Corrections that hold"](17-local-ai-search.md#corrections-that-hold)): `mv_ai_api` `faces_assign` (`MV_AI_ASSIGN_PIN`), `faces_pin`, `faces_reject_json`, `person_rename_cover`, `person_merge_covers`, `person_merge_undo`, `person_review_json`, `unknown_faces_json`, `person_suggest_json`, `person_refine_json`, `people_dedupe_json` (`MV_AI_DRY_RUN`) appended after `root_set_documents`, `MV_AI_ASSIGN_UNDO`; a chrome calls each only when `struct_size` covers it. Command `search_this_person` appended (Ctrl+Shift+P; Windows `SearchCommand.ThisPerson` 5) |
-| 0.34 | Settings → Storage (#612, [04 "Thumbnail cache upkeep"](04-image-pipeline.md#thumbnail-cache-upkeep)): `mv_storage_report_json` (every place MediaViewer keeps, with sizes; a worker call), `mv_thumb_cache_clear`, `mv_thumb_cache_sweep`, `mv_thumb_cache_set_cap`. The session sweeps the cache once, after its first `IMAGE_OPENED`. Mac bridge: `mv_chrome_storage_report`, `mv_chrome_thumb_cache_clear`, `mv_chrome_thumb_cache_cap`, `mv_chrome_set_thumb_cache_cap` |
-| 0.35 | Enhance in the Video Editor ([29 "In the Video Editor"](29-enhance.md#in-the-video-editor-2026-11-02)): `mv_slots_editor_item` (the clip and the edit's kept `(in, out)` source ranges for an `editor_items` button, contribution API 11, delivered as `MV_SLOT_EVENT_COMMAND` with `{"path", "ranges_ns"}`; `slot_registry::invoke_editor_item`). Host table `frames_keep` / `sound_keep` appended after `watch_tree` (keep only those ranges of an open `frames_open` / `sound_open`, on the edit's own timeline; `core/keep_ranges.h`), version not bumped. Mac bridge: `mv_chrome_slots_editor_item` |
-| 0.36 | The Video Editor's look ([plan](../plans/video-editor-look.md)): `mv_clip_look` (quarter turns, `MV_CLIP_LOOK_FLIP_H` / `_FLIP_V` / `_MUTE`, `mv_clip_crop`, PR 11's five colour values, volume, fades, speed) and `mv_clip_request.look` appended after `reserved2` (64 bytes; a 0.13 caller's 56-byte request is still accepted). `KEEP_RANGES` on keyframes carries a turn and mute only (`MV_ERR_INVALID_ARG` for more); exact renders the look in the helper; `FRAME` applies its turn, mirror and crop. The helper wire gains an optional `"look"` object. Mac bridge: `mv_editor_view.look_*`, `mv_chrome_editor_edit` 17–27; Windows `chrome_editor_view_args` 104 → 120 bytes, `chrome_editor_action` 17–27. Slice 2 (version not bumped; chrome-only): Mac `mv_editor_view.look_light`, `mv_chrome_editor_set_light`, `mv_chrome_editor_edit` 28 (Auto) / 29 (Reset); Windows `chrome_editor_view_args` 144 bytes, `chrome_cmd_editor_light_*` 1100–1105, `chrome_editor_action` 28 / 29 |
-| 0.37 | The Video Editor's sound in playback ([plan](../plans/video-editor-look.md), slice 3): `mv_video_set_sound_look` (the edit's kept ranges, volume 0..2, fade in / out in ms; a gain on every decoded sample, `core/sound_envelope.h`, separate from the listener's volume and mute; volume 1 with no fades clears it). Mac bridge (chrome only): `mv_editor_view.look_mute` / `look_volume` / `look_fade_in_ms` / `look_fade_out_ms`, `mv_chrome_editor_set_sound`, `mv_chrome_editor_edit` 30 (mute); Windows `chrome_editor_view_args` 160 bytes, `chrome_cmd_editor_sound_*` 1106–1108, `chrome_editor_action` 30. Slice 4 (chrome only, version not bumped): Mac `mv_editor_view.look_speed`, `mv_chrome_editor_edit` 31–33; Windows `chrome_editor_view_args.look_speed` (156, in the old padding), `chrome_editor_action` 31–33 (`speed_half` / `_normal` / `_double`) |
-| 0.38 | The Places world map ([plan](../plans/places-world-map.md), [27 "The world map"](27-places.md#the-world-map)): `mv_slots_open_list_json` (the last list an add-on window asked the viewer to show: `{"revision","addon","title","paths","select"}`, the revision only grows). Host table `open_list` appended after `still_mask` (a window, pane or sheet, never an info section; 1–10 000 absolute paths or `photos:` keys), version not bumped. `MV_SLOT_EVENT_RESIZE` (15) for a `surface` with `"fill"`, contribution API 12. Slots change bit 128 (an add-on asked for the Local search index and none is attached: the chrome starts the AI pack without its panel) and `mv_slots_index_unavailable` (no pack will attach: the waiting walk stops). Mac bridge: `mv_chrome_slots_open_list`, `mv_addon2_index_wanted` |
-| 0.39 | Docked Edit screens (docs/plans/edit-refresh.md S5, [29 "Docked in Edit"](29-enhance.md#docked-in-edit-2026-11-05)): `MV_SLOT_PLACE_EDIT` (5, contribution API 13, a screen in place `"edit"` drawn in the Edit workspace's Enhance tab) and `mv_slots_screen_command` (the workspace opens the docked screen on the file on screen when it is not open, then delivers `MV_SLOT_EVENT_COMMAND` with screen = node = the screen id and one JSON object of at most 4096 bytes; `slot_registry::screen_command`). `screen_show` refuses a place `"edit"` screen. Mac bridge: `mv_chrome_edit_enhance_tool` / `mv_chrome_edit_enhance_result`; Windows `chrome_edit_action` 9–14. `MV_ADDON_CONTRIBUTION_API` 13 (2026-11-05, no ABI change): a `progress` node's `detail` and `timed` ([25](25-open-addons.md), [20 "Craft rules"](20-edit-workspace.md#craft-rules)) |
-| 0.40 | The kept menu's rows ([docs/plans/driftwire-menu-and-tunnel.md](../plans/driftwire-menu-and-tunnel.md) slice 1, [28 "In the background"](28-driftwire.md#in-the-background-452)): host table `keep_menu` appended after `still_extend` (an add-on's own rows for the menu-bar item / tray icon: text, toggle, button, files, separator; at most 16); `MV_SLOT_EVENT_MENU` (16) when one is picked; `mv_slots_notices_json`'s `keep` entries gain `menu`; `mv_slots_menu_action`. Mac bridge `mv_chrome_slots_menu_action` |
-| 0.41 | Phone access in the app ([plan](../plans/phone-in-the-app.md), owner 2026-11-12): `mv_phone_request` (one JSON request `{"do":…}` for the feature's thread), `mv_phone_state_json` (the card's state), `mv_phone_resume(flags)` (at launch; `MV_PHONE_SECONDARY` in a later window's process, which runs none of it) and `mv_phone_stop` (at quit, before the add-ons; never waits on the NAS). All [no-block]. Mac bridge: `mv_chrome_phone_request` / `mv_chrome_phone_state`. `mv_ai_api.phone_link` / `phone_link_json` are null from Local search now; `phone_json` gains `library_id`, `epoch` and `gen_dir`. The card's requests include the NAS owner's passphrase, guest codes and timed phones ([docs/plans/nas-owner-and-guests.md](../plans/nas-owner-and-guests.md) §8.1) |
-
-## Not built
-
-- A direct callback form (`mv_set_callback`) for the canvas input path; input reaches the core
-  through the published input snapshot instead.
-- Per-object image handles (`mv_image_t` with `retain` / `release`); `mv_image_open` returns a job
-  id and the only ABI handle is the session.
+Not built: per-object image handles (`mv_image_t`); a direct input callback (`mv_set_callback`).

@@ -1,99 +1,58 @@
 # Commands, keyboard, and mouse-free use
 
-The command table, the one key router, modes and focus, the default key map as defined in
-code, and the chrome behaviour around browse, overlays and search. MediaViewer is fully usable
-without a mouse.
+The command table, the key router, modes and focus, the default key map, and the chrome around
+browse, overlays and search. The app is fully usable without a mouse.
 
-Source of truth: [`src/shell/commands.h`](../../src/shell/commands.h) (ids, keys, modes),
-[`src/shell/command_table.cpp`](../../src/shell/command_table.cpp) (the default map and labels),
-[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution),
-[`src/shell/command_coverage.inc`](../../src/shell/command_coverage.inc) (which host handles
-which id, and which area of `run_command` / `runCommand:` runs it).
-Both hosts use the same table and router; tests are `tests/test_key_router*.cpp` and
-`tests/test_command_coverage.cpp`.
+| File | Holds |
+|---|---|
+| [`src/shell/commands.h`](../../src/shell/commands.h) | Ids, keys, modes |
+| [`src/shell/command_table.cpp`](../../src/shell/command_table.cpp) | Default map, labels |
+| [`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` | Mode and `Esc` resolution |
+| [`src/shell/command_coverage.inc`](../../src/shell/command_coverage.inc) | Which host handles each id, and where |
 
-The Mac's Settings list (`MvCommandSupported`) is the Mac half of that coverage file, so a
-command cannot be handled and missing from Settings, or listed and not dispatched. Import
-(`open_import`, `import_now`) and similar-search stay hidden until their add-on is loaded.
-`search_open` stays listed: with no AI pack it is file search. A command the Mac dispatcher
-does not run is a row with a reason, not a gap in a hand-kept switch. Windows handles the
-same ids; a few (`back`, the island arguments) are handled outside `run_command` and the
-coverage file says so. A new `command_id` fails the test until it has a row.
+Both hosts share the table and router. Tests: `tests/test_key_router*.cpp`,
+`tests/test_command_coverage.cpp`, `test_command_contract.cpp`. The Mac's Settings list
+(`MvCommandSupported`) is the Mac half of the coverage file, so a command cannot be dispatched
+and unlisted or vice versa; an unhandled id is a row with a reason. A new `command_id` fails the
+test until it has a row. A few Windows ids (`back`, island arguments) are handled outside
+`run_command`; the coverage file says so.
 
 ## One table, editable
 
-- `default_bindings()` is a static array of rows: `(key, mods, mode mask, repeat policy,
-  command, hold, release)`. `live_bindings()` starts as a copy; the **Settings** screen remaps
-  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?`,
-  Settings, and the shortcut column of the bar's menus and tooltips all read the live table
-  (a command's first bound row: `KeyOf` on Windows, `SettingsStore.keyLabel` on the Mac), so
-  they cannot drift. Settings captures a key the way the host edge translates it (symbols
-  through the active layout, keypad digits as their own keys), so any key that routes can be
-  recorded.
-- A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
-  is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
-  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**. What is saved
-  is every row that differs from the default, a row a swap left unbound included (key 0), and a
-  reload sets those rows as saved (`live_key_remaps` / `apply_key_remaps`). Replaying them
-  through the swapping rebind did not round-trip: a swap moved rows the list did not name, and
-  an unbound row came back on its default key (issue #153, `test_command_contract.cpp`).
-- **Mac menu bar** (issue #182). The items that show a chord (Settings `⌘,`, New Window, Open,
-  Folder Tree, Close Window) read it from the live table (`menu_chord`) after every remap, so a
-  remap moves the menu with the router; a chord another command also holds stays the router's.
-  Settings refuses a chord a fixed menu item owns (`⌘H`, `⌘Q`, `⌘M`, `⌘⌫`): the menu sees it
-  first. Mid-crop, a menu or command-bar item whose command has no crop row (Open, Go ▸ Next,
-  Settings, Folder Tree…) is off, as its key is (`command_live_in`).
-- Command ids are one wire space shared with the island's `chrome_command`: ids 1–19 predate the
-  table, 15/16/18/19/20 are reserved island → native notifications, 76 (`palette`) is retired.
-  Ids are never renumbered.
-- A row whose key is `none` is listed in Settings (so it can be given a key) but not routed or
-  shown in `?` — Open RAW / Open JPEG of a pair.
-- Island-only commands (`zoom_preset`, `select_item`, `gallery_activate`, the adjust sliders,
-  crop preset buttons…) carry an argument and have no key.
-- **Keymap packs** (PR 56, [25 "Keymap"](25-open-addons.md#7-the-contribution-model)): the
-  v1.1 "named layouts" come as add-ons. Settings → Keyboard shortcuts → **Key layout** lists every
-  layout of every installed add-on; **Apply** resets the table to `default_bindings()` and writes
-  the layout's keys into the rows it names (`shell/keymap.h` `apply_keymap`), once. From then it
-  is the person's table: persisted like a remap, kept when the add-on goes, and **Reset**
-  restores the defaults. `?` and Settings read the same live table, so they list what the layout
-  bound. A layout names commands by their enumerator (`next`, `toggle_mark`, `zoom_in`;
-  `command_slug`, stable, every command a row runs has one) or `<add-on id>/<command id>` for a
-  contributed row. **Its keys go to that command's rows in table order** (`"prev": ["Left", "H"]`
-  keeps Left and puts H where A was; `""` leaves a row without a key; rows past the list keep
-  theirs): a layout cannot add a row, because remaps persist by row index. A key it gives out is
-  taken from any other row holding it in an overlapping mode, which is left unbound (shown so),
-  rather than swapped. Unknown commands and keys are skipped and listed, not refused. The Mac
-  also refuses a chord a fixed menu item owns at capture; a layout is not checked against the
-  menu (owed). A saved table is put back exactly (`set_live_key`), unbound rows included.
-  What is saved is `live_key_remaps`: built-in rows off their default, never a built-in row its
-  add-on's own rows supersede, whose missing key exists only while that add-on is loaded; it is
-  saved as its default (issue #357). A contributed row's remap is saved apart, by its
-  `<add-on id>/<command id>` (`live_addon_key_remaps`: Windows `settings.ini [addon_keys]`, Mac
-  `mv.addonKeys`), since its index moves as add-ons come and go; it is kept while the add-on is
-  away and put back on the row when it returns. Reset clears it (2026-10-29).
-- **Add-on commands** (Import: `open_import`, `import_now`; Local search: `search_*`) are listed,
-  routed and shown only while their add-on is loaded (`set_addon_commands_available` per
-  family); otherwise the key falls through as if unbound. The exception is `Ctrl+F`, which runs
-  base-app **file search** when Local search is absent.
+- `default_bindings()`: static rows `(key, mods, mode mask, repeat policy, command, hold,
+  release)`. `live_bindings()` is a copy Settings remaps (`rebind_live`); Reset restores. Router,
+  `?`, Settings and menu/tooltip labels all read the live table (`KeyOf` / `SettingsStore.keyLabel`).
+- A remap onto a key held in an overlapping mode **swaps** the rows. Remaps persist **by row
+  index** (`settings.ini [keys]` / `NSUserDefaults`), so rows are only **appended**; every row off
+  its default (unbound included) is saved and restored exactly (`live_key_remaps`,
+  `apply_key_remaps`, `set_live_key`).
+- **Mac menu bar** chords read `menu_chord` from the live table; Settings refuses chords fixed
+  menu items own (`⌘H` `⌘Q` `⌘M` `⌘⌫`); mid-crop, items with no crop row are off (`command_live_in`).
+- Ids share the island's `chrome_command` wire space: 1–19 predate the table, 15/16/18/19/20 are
+  island → native notifications, 76 retired. Never renumbered.
+- Key `none`: in Settings, not routed or in `?`. Island-only commands (`zoom_preset`,
+  `select_item`, `gallery_activate`, sliders…) carry an argument and have no key.
+- **Keymap packs** ([25](25-open-addons.md#7-the-contribution-model)): Settings → Keyboard
+  shortcuts → **Key layout**. **Apply** resets to defaults and writes the layout once
+  (`shell/keymap.h` `apply_keymap`); then it is the person's table. Commands are `command_slug`s
+  or `<add-on id>/<command id>`; keys fill that command's rows in table order (`""` unbinds), so a
+  layout cannot add rows. A taken key leaves the other row unbound (no swap). Unknowns are skipped
+  and listed. Contributed rows' remaps save by name (`live_addon_key_remaps`, `[addon_keys]` /
+  `mv.addonKeys`).
+- **Add-on commands** (`open_import`, `import_now`, `search_*`) exist only while their add-on is
+  loaded (`set_addon_commands_available`); else the key falls through, except `Ctrl+F` → file search.
 
 ## One key router
 
-One router, on the UI thread, before the island's pre-translate. Pure: no platform calls, no
-allocation, no I/O on keydown. Platform keys are translated to `mv::shell::key` at the host edge
-(`main.cpp` / `main_mac.mm`), so nothing below `shell/` sees a key.
+UI thread, before the island's pre-translate; pure (no platform calls, allocation or I/O).
+Platform keys become `mv::shell::key` at the host edge (`main.cpp` / `main_mac.mm`).
 
-1. If a text control has focus (search, find, comment, tag edit), keys go to it; `Esc` blurs
-   back. The host makes sure the field gets the standard editing chords (`Ctrl+A/C/X/V/Z`,
-   `Ctrl+Y` redo on Windows).
-2. Otherwise `(key, mods, mode)` → row through an O(1) index (`key × mod combo × mode`, one byte
-   per slot), rebuilt only when the table changes.
-3. Mouse-move, wheel and pan/zoom springs stay native on the canvas; no marshalling hop per
-   event.
+1. A focused text control gets keys (with standard editing chords); `Esc` blurs.
+2. Else `(key, mods, mode)` → row via an O(1) index, rebuilt when the table changes.
+3. Mouse, wheel and springs stay native on the canvas.
 
-**Keys and layouts.** Letters are upper-case; symbol keys bind to the **character** the active
-layout produces (`?`, `+`, `\`) with Shift cleared, digits keep their key and Shift. Symbols that
-need AltGr (e.g. `\`, `[`, `]` on German / French layouts) do not resolve. On macOS both `⌘` and
-`Control` map to the table's `Ctrl`, `Option` to `Alt`, and the Mac Delete key is `Delete`.
+**Keys.** Letters upper-case; symbols bind to the layout's **character** (`?`, `+`, `\`) with
+Shift cleared; AltGr symbols do not resolve. macOS: `⌘`/`Control` → `Ctrl`, `Option` → `Alt`.
 
 **Repeat policy.**
 
@@ -101,433 +60,285 @@ need AltGr (e.g. `\`, `[`, `]` on German / French layouts) do not resolve. On ma
 |---|---|
 | `edge` | Down edge only; typematic repeats fall through |
 | `repeat` | Every down, including repeat |
-| `tap_hold` | Command on the down edge (a tap does not wait for key-up); the first repeat makes it a hold (`hold` per repeat), key-up sends `release`. Used for `Q` / `E` on a clip |
-| `momentary` | Command on down, `release` on up (hold `Z`, hold `\`, hold `Y`) |
+| `tap_hold` | Command on the down edge; first repeat makes it a hold (`hold` per repeat), key-up sends `release`. `Q` / `E` on a clip |
+| `momentary` | Command on down, `release` on up (hold `Z`, `\`, `Y`) |
 
-Up to four held keys are tracked independently; when the window loses activation, Settings
-opens, the canvas gives up focus (on the Mac a pane or the gallery taking first responder), or the
-table is rebuilt for an add-on's rows, every held key is released (`cancel_holds`). A hold keeps
-its own copy of the release it owes, so a rewritten table cannot lose it.
-
-**Keyboard pan** moves a tenth of the canvas per step through the springs. At fit `↑` `↓` are not a
-pan; in fullscreen `↓` reveals the strips for 3 s after the last navigation, as does the bottom
-hot edge.
+Up to four held keys; deactivation, Settings, focus loss or a table rebuild releases them
+(`cancel_holds`). Keyboard pan: a tenth of the canvas per step. In fullscreen, `↓` at fit reveals
+the strips for 3 s.
 
 ### Modes
 
-Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in this order:
+Resolved from state at every keydown (`resolve_mode`), never a stack, in this order:
 
 | Mode | When | Notes |
 |---|---|---|
-| **gallery** | The gallery grid is visible (and no popup) | Owns navigation even with canvas focus. Unmodified printable keys reach only gallery navigation, `G`, `F`, `?`, `/`; other letters are typeahead |
-| **island** | Filmstrip or gallery island has focus | In-pane traversal belongs to XAML; unmodified printable keys are typeahead. Named keys and chords still route |
-| **crop** | Crop mode on a still | Owns its keys; `A` `D`, `G`, `Ctrl+O` do nothing (walking away would drop the draft) |
-| **tool** | A canvas tool armed on a still (the Remove brush, red-eye, the white-balance picker; `shell/canvas_tool.h`), not in a slideshow | Layers over **browse**: only the tool's rows differ (below, "Canvas tools"). `blocked_in_tool` refuses rotate, flip, crop and the Bin always, and walking away (`A` `D`, `←` `→`, `Home` `End`, the folder walks, page skips) while strokes are pending; a refused key says why ("Remove or clear the strokes first") once, not per repeat. The same rule greys or refuses those commands from the menus and buttons |
-| **trim** | Trim armed on a clip (not in a slideshow) | Layers over **video**: unbound keys fall back to the video rows |
-| **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
-| **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
+| **gallery** | Gallery grid visible, no popup | Owns navigation even with canvas focus. Unmodified printable keys reach only gallery nav, `G`, `F`, `?`, `/`; other letters are typeahead |
+| **island** | Filmstrip or gallery island focused | XAML owns in-pane traversal; printable keys are typeahead; named keys and chords route |
+| **crop** | Crop mode on a still | Own keys; `A` `D`, `G`, `Ctrl+O` do nothing |
+| **tool** | Canvas tool armed on a still (`shell/canvas_tool.h`), not in a slideshow | Over **browse**. `blocked_in_tool` always refuses rotate, flip, crop, Bin; refuses walking away while strokes are pending, saying why once. Menus and buttons follow the same rule |
+| **trim** | Trim armed on a clip, not in a slideshow | Over **video** |
+| **runner** | Empty-window game up | `Space` jump/retry, `3` 2D/3D |
+| **loupe** | `Z` held | Over browse/video: only arrows and `Z` / `\` differ |
 | **slideshow** | Slideshow running | |
-| **skim** | A clip with the filmstrip hidden (`T`), paused or playing | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #416; #361's playing half reversed) |
-| **video** | Current item is a clip or an animation | |
+| **skim** | Clip with filmstrip hidden (`T`) | Over **video**: `←` `→` skip ±2 s like `Q` / `E` |
+| **video** | Clip or animation | |
 | **browse** | Otherwise | |
 
-The command bar and the transport strip are not modes: with them focused, `A` / `D` still walk the
-folder and `Q` / `E` still skip.
+The command bar and transport are not modes: focused, `A` / `D` still walk and `Q` / `E` skip.
 
 ### `Esc` walks out
 
-`resolve_back` picks one target per press, never quitting: text field → popup (`?`, go-to, find)
-→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → canvas tool (put down;
-the brush's strokes stay, dimmed, for Remove later) → trim (disarm, markers kept) → pane → gallery →
-slideshow → fullscreen → runner → canvas focus → result list ("Back to folder", the outermost:
-a search result list is a place, not an overlay). A list opened from the empty window (a search
-from the welcome) goes back to the empty window: the welcome card with its recent folders, the
-canvas cleared (2026-10-05; it used to leave the last result up, and on Windows did nothing).
-With nothing to leave, the key is not handled.
-A confirmation inside a pane field is part of that field's step (#352, the Location editor's
-"Remove location from this file?"): the first `Esc` is its Cancel and the field keeps the
-keyboard with its text, the next leaves the field. On the Mac that is the native alert; on
-Windows the router still resolves `blur_text`, and the host stops when the island answers that
-the drop only closed its confirmation (`SetMetaEdit` returns `S_FALSE`), as file search's field
-answers for its first `Esc`.
+`resolve_back` picks one target per press, never quits: text field → popup (`?`, go-to, find) →
+Settings → Live Photo motion → selected text → crop (cancel) → canvas tool (put down) → trim
+(disarm) → pane → gallery → slideshow → fullscreen → runner → canvas focus → result list ("Back
+to folder"; from the empty window, back to it). Nothing to leave: not handled. A confirmation in
+a pane field takes the first `Esc` (Windows: `SetMetaEdit` returns `S_FALSE`).
 `Ctrl+W` / `Alt+F4` close the window.
 
 ## Focus
 
-Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree,
-metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
-island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
-On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
-tree, gallery, Edit, metadata, adjust, jobs, the Edit icon rail (docs/plans/edit-refresh.md S2),
-transport, filmstrip, the AI badge while it is up —
-and then back to the canvas;
-`Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
+Visible rings: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree, metadata,
+adjust, Edit, jobs), command bar, transport. `Tab` / `Shift+Tab` cross the island boundary; `Esc`
+returns to the canvas; fullscreen hides chrome. Windows `Tab` order from the canvas: command bar,
+folder tree, gallery, Edit, metadata, adjust, jobs, Edit icon rail, transport, filmstrip, AI badge,
+canvas (`IslandHost.FocusOrder`).
 
-No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
-the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
+Only a clip's **transport bar** floats over the canvas (`shell/transport_autohide.h`): playing,
+it hides after `kTransportIdleMs` (2.5 s) until input wakes it; it stays while paused, hovered,
+focused, scrubbing or with a screen reader. Visual only, no repaint while idle.
 
-- Playing, it hides after `kTransportIdleMs` (2.5 s) with no activity; pointer movement, a click,
-  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, `←` `→` in skim mode, speed, mute,
-  `↑` `↓` volume), `Tab`, or a fullscreen change bring it back.
-- Paused, ended, hovered, scrubbing, a menu open, keyboard focus in it, or a screen reader running:
-  it stays. Never over the gallery or Settings, never on a Live Photo stop.
-- Fullscreen: the pointer hides with it while over the video. Windowed: never.
-- Visual only: no refit, no second action on the wake, no repaint while idle.
-
-The **AI badge** (#345, [06](06-metadata.md#the-ai-badge-345)) is the other small chrome over the
-canvas: bottom-right, above the transport on a clip, hidden under the gallery, Settings and the
-Video Editor. It is in the focus order (Mac: the key-view loop; Windows: the last ring of
-`IslandHost.FocusOrder`, after the filmstrip and before the canvas). Focus there
-shows its tooltip; it binds no keys, so the router keeps running viewer commands, as with the
-command bar. Never a present.
+The **AI badge** ([06](06-metadata.md#the-ai-badge-345)) sits bottom-right, is in the focus
+order, binds no keys, and never presents.
 
 ## Settings
 
-The Settings screen (`Ctrl+,`) holds the view preferences and the key table; both hosts lay it
-out the same way and store the view preferences as one flags word (`shell/settings.h`
-`view_settings`: Windows `settings.ini` `[view]`, Mac `mv.viewFlags`). Sections: Filmstrip,
-Browsing, **Viewer** (#345: "Show a badge on AI-generated images", on by default, owner
-2026-10-11, stored inverted as `kSettingHideAiBadge` so older settings read as on), File types,
-Appearance, then updates, **Storage** (#612: what MediaViewer keeps on disk with sizes, the
-thumbnail cache's limit, off by default, and Clear; measured off the UI thread,
-[04 "Thumbnail cache upkeep"](04-image-pipeline.md#thumbnail-cache-upkeep)) and add-ons. A change
-applies at once, without a relaunch; the AI badge switch pokes nothing the render thread reads.
+`Ctrl+,`. View preferences are one flags word (`shell/settings.h` `view_settings`:
+`settings.ini [view]` / `mv.viewFlags`). Sections: Filmstrip, Browsing, **Viewer** (AI badge, on;
+stored inverted as `kSettingHideAiBadge`), File types, Appearance, updates, **Storage**
+([04](04-image-pipeline.md#thumbnail-cache-upkeep)), add-ons, the key table. Changes apply at once.
 
 ## Default map
 
-FastStone / IrfanView muscle memory. Mode masks below: **Viewing** = browse, video, island,
-gallery (not slideshow); **Walk** = browse, video, slideshow; **All but crop** = every mode except
-crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
+FastStone / IrfanView muscle memory. Mode masks: **Viewing** = browse, video, island, gallery;
+**Walk** = browse, video, slideshow; **All but crop** = every mode except crop. Keys are
+Windows-style; on macOS read `⌘` for `Ctrl`.
 
 ### Browse
 
 | Key | Modes | Command |
 |---|---|---|
-| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip with the filmstrip hidden (`T`) they are `Q` / `E` instead (skim mode, below); with the strip up they walk, paused or playing |
-| `A` `D` | All but crop | Previous / next — on a clip too; transport is `Q` `E` |
+| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip with the filmstrip hidden: skim (`Q` / `E`) |
+| `A` `D` | All but crop | Previous / next, clips included |
 | `Backspace` | Walk | Previous |
-| `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
+| `Space` | browse | Next. Clip/animation: play / pause; slideshow: pause; runner: jump |
 | `Home` / `End` | Walk | First / last |
 | `PageUp` / `PageDown` | Walk | Back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX, PPTX, an ICO's sizes, a HEIC's top-level images); a notice says "Page n of m" |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX, PPTX, ICO sizes, HEIC top-level images); notice "Page n of m" |
 | `F5` | browse, video | Slideshow |
 | `F` / `F11` | all | Fullscreen |
 | `Ctrl+O` | All but crop | Open media… |
 | `Ctrl+Shift+O` | All but crop | Open folder… |
-| `Ctrl+E` | all | Reveal the current file in Explorer / Finder; a Mac Photos library item opens in Photos instead ([26](26-photos-library.md)) |
+| `Ctrl+E` | all | Reveal in Explorer / Finder; a Mac Photos library item opens in Photos ([26](26-photos-library.md)) |
 | `Ctrl+W` | all | Close window |
-| `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
+| `Ctrl+N` | all | New window (also File ▸ New Window and the Dock menu on the Mac) |
 | `Ctrl+,` | All but crop | Settings |
-| `Ctrl+G` | Viewing | Go to index. **Mac: not built** (no go-to popup yet; `⌘G` falls through) |
-| `/` | browse, video, gallery | Find by name, then by tag, in the loaded listing (gallery folder row: find a folder tile) |
+| `Ctrl+G` | Viewing | Go to index. Mac: not built |
+| `/` | browse, video, gallery | Find by name, then tag, in the listing (gallery folder row: a folder tile) |
 | `Ctrl+Shift+E` | All but crop | Folder tree: show and focus |
-| `Ctrl+↑` | Viewing | Up one folder, selecting the folder just left |
+| `Ctrl+↑` | Viewing | Up one folder, selecting the folder left |
 | `Ctrl+←` / `Ctrl+→` | browse, video | Previous / next sibling folder |
-| `Enter` | browse, video | Edit workspace (below) |
+| `Enter` | browse, video | Edit workspace |
 | `?` | all | Cheat sheet for the current mode |
 | `F3` | all | Frame-time overlay |
 | `R` | Viewing | Reset frame-time stats |
 | `Esc` | all | Back (above) |
-| *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
-| *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked → Picks → Not rejected → Red … Purple; Marked is passed over when nothing is marked), below. Listed in Settings |
-| *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list. Pinned folders lead it (#617) |
-| *(context menu)* | — | **Pin to top / Unpin** (#617): a welcome-card folder row's right-click menu (with Open and Remove from list); no key. Pins stay first on the card, the jump list, the Dock menu and Open Recent |
+| *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair**, listed in Settings. Mac: not built |
+| *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked → Picks → Not rejected → Red … Purple; Marked skipped when nothing is marked) |
+| *(menu)* | — | **Recent folders** (Open ▸ Recent folders / File ▸ Open Recent); pinned lead, vanished ones drop |
+| *(context menu)* | — | **Pin to top / Unpin** on a welcome-card folder row |
 
 ### View
 
 | Key | Modes | Command |
 |---|---|---|
-| `0` `1` `2` `3` `4` | Viewing | Fit / 100 % / 200 % / 400 % / Fill. The number row is zoom; ratings never take it |
+| `0` `1` `2` `3` `4` | Viewing | Fit / 100 % / 200 % / 400 % / Fill. Ratings never take the number row |
 | `Ctrl+0` | Viewing | Reset pan / zoom |
-| `+` (`=`) `-` | browse, video, island | Zoom in / out, toward the cursor when there is one, else the centre |
-| `+` (`=`) `-` | gallery | Larger / smaller thumbnails: 24 DIP steps, 80–344 DIP, initially 152; selection stays visible, size kept for the session |
-| `↑` `↓` | browse, video | Pan when zoomed. On a fitted clip: volume ±10 % (carries across clips) |
-| `Shift+arrows` | browse, video | Pan in all four directions |
-| `G` | All but crop | Gallery (below) |
+| `+` (`=`) `-` | browse, video, island | Zoom in / out toward the cursor, else the centre |
+| `+` (`=`) `-` | gallery | Thumbnail size: 24 DIP steps, 80–344, initially 152; kept for the session |
+| `↑` `↓` | browse, video | Pan when zoomed. Fitted clip: volume ±10 % (carries across clips) |
+| `Shift+arrows` | browse, video | Pan in four directions |
+| `G` | All but crop | Gallery |
 | `W` `S`, `↑` `↓` | gallery | Previous / next row |
-| `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
-| `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
-| `Shift+T` | browse, island | Page sidebar show / hide: page thumbnails down the left of a PDF, DOCX or PPTX while the filmstrip is hidden (below). Remembered (Windows `settings.ini` `[view] page_sidebar`, Mac `mv.pageSidebar`), on by default. Also View ▸ Page Sidebar |
-| *(unbound)* | browse | **Auto enhance** (`auto_enhance`): the Edit header's ✦ Auto on a still: tone, then white balance, one undo step; again right after takes it back ([20](20-edit-workspace.md) "Header", [07](07-photo-editing.md) "Auto"). Also Edit ▸ Auto Enhance on the Mac; listed in Settings |
-| *(unbound)* | Viewing | **Wider side pane** / **Narrower side pane** (`pane_wider` / `pane_narrower`): the right column 40 wider or narrower, 280–720 ([20](20-edit-workspace.md) "The right column"). Also View ▸ Wider / Narrower Side Pane; listed in Settings. Its edge drags too, and a double-click on the edge resets it to 360 |
+| `Enter` | gallery | Open the selection in the viewer (leaves fullscreen / slideshow, restores the filmstrip if enabled) |
+| `T` | all | Filmstrip show / hide (stored per mode: folder or single image) |
+| `Shift+T` | browse, island | Page sidebar show / hide (below). Remembered (`[view] page_sidebar` / `mv.pageSidebar`), on by default. Also View ▸ Page Sidebar |
+| *(unbound)* | browse | **Auto enhance** (`auto_enhance`): the Edit header's ✦ Auto ([07](07-photo-editing.md) "Auto") |
+| *(unbound)* | Viewing | **Wider / Narrower side pane** (`pane_wider` / `pane_narrower`): right column ±40, 280–720 ([20](20-edit-workspace.md) "The right column") |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
-| `Shift+O` | Viewing | AF-point quads from the maker notes already read |
-| `Shift+Z` | browse | Zoom to the AF point: springs to 100 % centred on the in-focus point (else the selected one; of several, the one nearest their middle), through any rotate / crop. Camera state only; the record is the one `Shift+O` reads (one read on the pool if nothing has asked yet). "No AF point recorded" when there is none; nothing when a crop has cut it away |
-| `I` | Viewing | Metadata pane: focuses it; `←` `→` change tab, `↓` reaches tag search; `Esc` returns to the canvas, a second `Esc` closes it |
-| `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
-| `Ctrl+C` | Viewing | With words selected in the still ([Text in images](#text-in-images)): copy that text. With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
-| hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
-| hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
-| `\|` | browse, video | **Two-up compare** (issue #208): the previous still (the one hold `\` shows) on the left, the current one on the right, under one camera (below). Toggle; `--compare` starts with it on |
-| `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
+| `Shift+O` | Viewing | AF-point quads from maker notes already read |
+| `Shift+Z` | browse | Zoom to the AF point: 100 % on the in-focus point (`shell/af_focus.h`); "No AF point recorded" when none |
+| `I` | Viewing | Metadata pane, focused: `←` `→` tabs, `↓` tag search; `Esc` to canvas, again closes |
+| `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex under the cursor (stills) |
+| `Ctrl+C` | Viewing | Selected words ([Text in images](#text-in-images)) → text; eyedropper on → `#RRGGBB  rgb(r, g, b)  x y`; else the marked (else current) file(s) |
+| hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge. Same texture |
+| hold `\` | browse, video | Previous item for burst pick, from the five-slot GPU LRU (Mac: the last still, kept on the GPU) |
+| `\|` | browse, video | **Two-up compare** toggle (below); `--compare` starts with it on |
+| `;` | browse, video | Play a Live Photo's motion once with audio; `;`, `Esc` or navigation return early. Mac: not built |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
 
-**Two-up compare.** `|` (the Shift twin of `\`, as `Shift+O` / `Shift+I` pair their keys)
-splits the canvas: the camera frames the current still in the right half, and the left half is a
-second draw of the previous still's texture, already resident, in the same present. No decode,
-no second present path; a tiled previous still draws its overview. Pan, zoom, the wheel (over
-either half, toward the same spot) and `0`–`4` move both: a same-size burst frame is the identical
-view, a different frame shows the same region at the same magnification relative to its fit
-(`shell/compare.h`, shared by both labs). Walking the folder keeps the split, so `D` through a burst
-compares each frame with the one before. Stills only: on a clip, in crop mode and under a
-slideshow blackout the canvas is one-up and the toggle waits; hold `\` does nothing while the split
-is up (the previous still is already on screen). A fitted view refits to its half.
+**Two-up compare** (`shell/compare.h`): current still right, the previous still's resident
+texture left, one present, no decode; pan/zoom/`0`–`4` move both at the same fit-relative scale;
+walking keeps the split. Stills only (one-up on a clip, in crop, under blackout).
 
-**Page sidebar** (issue #429). With the filmstrip hidden and a PDF, DOCX or PPTX of more than one
-page on screen, a strip of its page thumbnails runs down the left of the canvas, like Preview's:
-one per page with its number, the page on screen outlined, a click turns to that page (as
-`Ctrl+PageDown` would), and the strip scrolls on its own and follows the page as the document
-scrolls. It takes the filmstrip's role for a document: the filmstrip lists the folder's files, the
-sidebar this file's pages, and the two never show at once. `Shift+T` turns it off and on; asked for
-while the filmstrip is up over a document, a notice says to press `T`. It reserves its width on the
-canvas, as the docked Edit pane does on the right. Hidden under the gallery, Settings and
-fullscreen chrome-off; the folder tree, when open, sits beside it (Windows) or over it (Mac). How it
-renders: [04](04-image-pipeline.md) "Page sidebar".
+**Page sidebar.** Filmstrip hidden + multi-page PDF/DOCX/PPTX: page thumbnails down the left,
+current outlined, click turns the page. Never with the filmstrip; reserves its width; hidden
+under gallery, Settings, chrome-off fullscreen. Rendering: [04](04-image-pipeline.md) "Page sidebar".
 
-**Filmstrip hint.** Some input means something else while the filmstrip is up, and the hint says
-so (`shell/filmstrip_hint.h`, shared). Over a PDF or DOCX with the strip showing it reads "Press T
-to hide the filmstrip and scroll" (the wheel zooms until the strip is hidden); over a clip, "Press T
-to hide the filmstrip and skip 2 s with ← →" (the arrows walk the folder until it is hidden, issue
-#416). It is a small card in the window's bottom-right corner, above the filmstrip and above the
-resume-indexing notice when that is up, in that notice's look (Windows `IslandHost.HintNotice.cs`,
-entry `ShowHint`, an island of its own like the resume notice since #446; Mac `HintNoticeView.swift`);
-it was the title's status line, which nobody saw. It shows when such a document or clip comes on
-screen, when the filmstrip comes up under one, when the wheel zooms a document (at most once a
-second) and on a page turn, fades after eight seconds, and goes when nothing it covers is on screen.
-It takes no focus. Once `T` has hidden the strip over either subject, or the card's "Got it" was
-clicked, it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac
-`mv.hint.filmstripT`). There is one hint: each subject is a `strip_hint_subject` value and a string
-beside it, sharing the learned flag.
+**Filmstrip hint** (`shell/filmstrip_hint.h`; `IslandHost.HintNotice.cs` / `HintNoticeView.swift`):
+a bottom-right card, "Press T to hide the filmstrip and scroll" (document) or "…and skip 2 s with
+← →" (clip), when the strip changes what input does. Fades after 8 s, no focus; once `T` is used
+or "Got it" clicked it never returns (`[hints] filmstrip_t` / `mv.hint.filmstripT`).
 
-**Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
-by row; a click opens in the viewer. Child folders are big tiles when the folder holds only
-folders, one row above the photos when it holds both; up from the first photo row reaches that
-row, `Enter` opens a tile, `↓` returns, `/` finds a tile by name. A clip does not play under the
-gallery: opening it pauses a playing clip, a clip selected in it waits paused on its first frame,
-and closing it resumes only the clip that was playing. The folder path lives in the command bar
-left of `?` (a long middle collapses into a menu), with Up and Root buttons outside the trail.
+**Gallery.** Full-client grid: item / row navigation, click opens. Child folders are tiles (one
+row above photos in mixed folders); `Enter` opens, `/` finds a tile. Opening the gallery pauses a
+clip; closing resumes it. Folder path sits in the command bar left of `?`, with Up and Root.
 
 #### Gallery range and share (#413)
 
-- **Shift-click** selects every image from the selected cell (the anchor) to the clicked one, in
-  the grid's order (a file search's filter counts), and the grid stays open. A plain click still
-  opens one image. Further Shift-clicks keep the same anchor.
-- **Arrows** move one cell and never grow the range; marks stay the set `Insert` /
-  `Shift+Space` edit. Another selection, another folder, a relist or closing the grid ends the
-  range (on Windows native also drops it once its anchor is no longer selected).
-- **While a range stands** it is the selection: copy (`Ctrl+C` / `⌘C`), `F7` / `F8`, `Delete`,
-  copy path and Share act on it, in listing order, ahead of the marks. The range is tinted and
-  outlined; "N selected" sits over the grid on the Mac.
-- **Drag-out from the gallery** starts from any cell (the Mac picks the drag up below SwiftUI,
-  `GalleryDrag`, as the grid's scroll view never handed it to the cell). A cell of the range drags
-  the whole range, a marked cell the marks, any other cell itself; each file with its pair on
-  Windows, copy-only, originals untouched. The filmstrip's drag is unchanged.
-- **One share icon** ("Share") over the grid opens the share menu (below) for the gallery's
-  selection.
+- **Shift-click** selects anchor → clicked cell in grid order; the grid stays open. Arrows never
+  grow it; another selection, folder or relist ends it.
+- While it stands it is the selection for copy, `F7` / `F8`, `Delete`, copy path and Share, ahead
+  of marks.
+- **Drag-out** from any cell (Mac: `GalleryDrag`): a range cell drags the range, a marked cell the
+  marks, else itself.
+- **One share icon** ("Share") over the grid opens the share menu.
 
 #### Share (#444)
 
-One command, `share` (id 149, `Ctrl+Shift+S` / `⌘⇧S`), and every way in runs it: the key, the
-gallery's share icon, the command bar's **share button beside Home**, File ▸ Share… / Open ▸
-Share…, and **Share ▸** on the right-click menu of a gallery cell, a filmstrip cell and the canvas.
-`shell/share_menu.h` is the part both hosts share.
+One command, `share` (id 149, `Ctrl+Shift+S` / `⌘⇧S`), from the key, the gallery's share icon,
+the command bar's share button beside Home, File ▸ Share… / Open ▸ Share…, and **Share ▸** on the
+right-click menu of a gallery cell, filmstrip cell and the canvas. Shared part: `shell/share_menu.h`.
 
-- **Which files.** The selection: the gallery's range while it stands, else the marks, else the
-  current file. A right-click on a file that is part of the selection shares the selection; on any
-  other file, that file alone (`share_stops`). The bar button is off with nothing to share.
-- **The menu.** [Driftwire](28-driftwire.md) first (its window with those files, or its
-  one-click install when it is not there), then the system's targets: **Windows Share** (Mail,
-  Phone Link, Nearby Share, apps; `DataTransferManager`) on Windows, `NSSharingServicePicker`
-  (Mail, Messages, AirDrop, Notes…) on the Mac, where Driftwire is the picker's first entry (its
-  delegate puts it there). The right-click **Share ▸** submenu lists the same two entries; picking
-  one runs the command with that entry (`share_target`) and the clicked file.
-- **Sidecars.** Driftwire gets the files with their pair halves and takes each XMP itself; the
-  system sheet gets the media files only, never a sidecar (`share_system_files`).
-- **Nothing is read before a target is asked for**, and nothing is sent until one is picked
-  (rule 6). The UI thread only picks the stops. Windows walks the listing for pair halves on the
-  pool (`mv_folder_entries`) and the chrome shows the menu when that lands; the Mac lists both
-  halves of a pair as items, so its set is a walk of the in-memory listing with no syscall.
-- **Large sets on the Mac.** Opening `NSSharingServicePicker` costs about 0.09 ms per file on the
-  main thread (ShareKit stats and sandbox-checks every URL to match its targets: 65 ms warm for 500
-  files). Past 50 files the picker is shown with one file per kind and every target it offers is
-  wrapped to receive all the files when picked; a target that will not take that many (Mail and
-  Messages cap attachments) says so and sends nothing. 500 files: 65 → 21 ms warm, 139 → 94 ms on
-  the first open in a process (the first open's ~90 ms loads the share services, whatever the count).
-- **One route.** Driftwire's own **Send with Driftwire…** context entry is left out of the
-  right-click menus on both hosts: Share ▸ Driftwire is that route.
-- **Wire.** The island's command carries one float: `(clicked + 1) * 16 + from * 4 + target`
-  (`pack_share_request`; `from` only says where the menu is anchored). Native answers through the
-  chrome's `ShareMenu` entry (`chrome_share_args` + `{"files", "media"}`) on Windows and
-  `MVChromeHost.presentShare` on the Mac (`mv_chrome_share` is the Swift side's way in).
+- **Files**: range, else marks, else current; right-click on an unselected file shares it alone
+  (`share_stops`).
+- **Menu**: [Driftwire](28-driftwire.md) first (or its install), then Windows Share
+  (`DataTransferManager`) / `NSSharingServicePicker`. Picking sets `share_target`. Driftwire gets
+  pair halves and XMPs; the system gets media only (`share_system_files`).
+- Nothing read until asked, nothing sent until picked (rule 6); Windows finds pair halves on the
+  pool (`mv_folder_entries`).
+- Mac, past 50 files: the picker gets one file per kind and wrapped targets receive all (it costs
+  ~0.09 ms/file on the main thread).
+- **Wire**: float `(clicked + 1) * 16 + from * 4 + target` (`pack_share_request`); native answers
+  via `ShareMenu` (`chrome_share_args`) / `MVChromeHost.presentShare` (`mv_chrome_share`).
 
 ### Marks, copy, move
 
-Marks are a separate set from the selection, so arrow-key browsing never makes accidental ranges.
-The gallery's Shift-click range (above) is the one deliberate range: while it stands, the
-commands below act on it first.
+Marks are a set apart from the selection, so arrow browsing never makes ranges. The gallery's
+Shift-click range, while it stands, takes precedence.
 
 | Key | Modes | Command |
 |---|---|---|
 | `Insert` / `Shift+Space` | browse, video | Toggle mark on current |
-| `Ctrl+A` | Viewing | Mark all; with words selected in the still, select every word instead |
+| `Ctrl+A` | Viewing | Mark all; with words selected in the still, select every word |
 | `Ctrl+D` | Viewing | Unmark all |
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
-| `Delete` | browse, video, gallery | Recycle Bin / Trash, with confirm. The gallery's range if one stands, else marks if any, else current |
-| `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
+| `Delete` | browse, video, gallery | Recycle Bin / Trash, with confirm: range, else marks, else current |
+| `F2` | Viewing | Rename the current file (gallery: selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
-| `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
-| `Ctrl+Shift+S` | Viewing | Share: the share menu (Driftwire, then Windows Share / the macOS picker) |
-| `Ctrl+P` / `⌘P` | Viewing | Print: the still on screen with edits baked, or two or more marks as a contact sheet ([Print](#print)) |
+| `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker) |
+| `Ctrl+Shift+S` | Viewing | Share menu |
+| `Ctrl+P` / `⌘P` | Viewing | Print ([Print](#print)) |
 
-These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
-(Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
-Image, Print…; the Mac bar's Open carries Print… too). **View** carries Start Slideshow and a **Go** submenu (Next, Previous, First, Last), as the
-Mac's View and Go menus do. Each item posts its command's id, so it acts as the key does.
+Also in the Mac File menu and the Windows command bar's **Open** flyout; **View** has Start
+Slideshow and **Go**. Each item posts its command id.
 
-- **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
-  (hashed while read, read back uncached, compared) and only then the delete. I/O thread.
-- Copy / move never overwrite: a collision becomes `name (2).ext`. The last five destinations are
-  remembered.
-- **Rename** (`F2`, issue #210) is the item on screen only, never the marks: a field with the name
-  without its extension, selected (a WinUI flyout over the command bar on Windows, an alert on the
-  Mac); `Enter` renames, `Esc` does not. The extension stays. The pair's other half (RAW+JPEG, a
-  Live Photo's MOV) and each file's XMP sidecar move with it under one stem, so the pair stays a
-  pair and a rating stays with its file; the Mac, which lists both halves, finds the partner by the
-  scan-time pairing rule. Never overwrites: a taken name becomes `name (2)` for the whole group. It
-  runs on the I/O pool (`io::rename_stop`, [24](24-transfer.md) "Rename"); the stop stays selected
-  under its new name and what is on screen is not decoded again (Windows: `mv_folder_renamed`,
-  told before the file moves, so the watcher's relist follows it; Mac: the relist waits for the
-  rename). A mark moves with the file. Refused, with a notice, in a result list, for a Photos
-  library file, while the file has unsaved edits or a metadata write in flight, and for a name a
-  volume would refuse (a slash or backslash, `< > : " | ? *`, a trailing dot or space, Windows
-  device names).
-- **Delete** only uses the Recycle Bin / Trash. Where there is none (a share, some removable
-  drives, bin off) the item is refused, not deleted, and the user is told how many. Marks clear
-  only for items that succeeded. On the Mac, File ▸ Move to Trash (`⌘⌫`) is off while a text
-  field has the keyboard (there `⌘⌫` deletes to the start of the line), in trim or crop, with
-  the Video Editor open, and during a slideshow: the menu sees the key before anything else does.
-- **Drag-out** (mouse): a gallery or filmstrip cell drags the original file (and its pair) as
-  `CF_HDROP`, copy-only; a marked cell drags every marked item in listing order. The canvas drags
-  too (at fit on Windows, `⌘`-drag on the Mac). A drag of ours dropped on our own window is
-  refused.
-- **Opening** (argv, drop): a drop is taken anywhere on the window (on Windows: the canvas,
-  command bar, filmstrip, gallery, every pane, the Edit pane and the transport; a drag without
-  files is refused). The first entry that exists wins; a folder opens that folder, a file
-  opens its folder with the file selected; several files from one folder open it on the first; a
-  mixed drop opens the first file's folder. Nothing existing: nothing opens and the app beeps. A
-  watcher refresh keeps the current item selected; if it was removed the next one takes its
-  place (the previous one at the end).
+- **Move**: same volume = rename; across volumes a **verified** copy ([24](24-transfer.md)), then
+  delete. Copy / move never overwrite (`name (2).ext`); last five destinations kept.
+- **Rename** (`F2`): item on screen only, extension kept; pair half and XMP sidecars move under
+  one stem (`io::rename_stop`, [24](24-transfer.md) "Rename"), no re-decode. Refused in a result
+  list, for a Photos library file, with unsaved edits or a write in flight, or for invalid names.
+- **Delete**: Recycle Bin / Trash only; where there is none the item is refused and counted.
+- **Drag-out**: cells (and the canvas) drag originals plus pairs as `CF_HDROP`, copy-only; a
+  marked cell drags the marks.
+- **Opening** (argv, drop anywhere): first existing entry wins; a file opens its folder with it
+  selected; nothing existing beeps. A watcher refresh keeps the current item (else the next).
 
 ### Print
 
-`Ctrl+P` / `⌘P` (issue #614; File ▸ Print… and the bar's Open flyout) opens the OS print dialog.
-Plain `P` stays trim preview, which is trim mode only. Not mid-crop (the draft is not the stack
-yet) and not in a slideshow.
+`Ctrl+P` / `⌘P` (also File ▸ Print… and Open flyout) opens the OS print dialog. Not mid-crop, not
+in a slideshow. Plain `P` is trim preview.
 
-- **What prints.** Two or more marks (or the gallery's Shift-click range) print as an N-up
-  **contact sheet**; otherwise the **still on screen**, with its crop, turns, straighten and colour
-  adjusts baked exactly as Export / `Ctrl+Alt+C` bake them (`edit::render_picture`: the pixels the
-  export encodes, before the encode). A clip, audio or a playing animation has no still: the key
-  beeps. On a sheet the file on screen carries its session edits; the other marks print as they
-  are on disk (their stacks are keyed by size and mtime, which the UI thread does not stat). A
-  marked file that does not render as a still (a clip, audio, a file gone) is left out.
-- **Layout** ([`shell/print_layout.h`](../../src/shell/print_layout.h), pure, both hosts): points
-  on the paper, inside the device's printable area and at least a quarter inch from the edge.
-  One photo is **fit** (whole, centred, white around it; the default) or **fill** (covers the
-  area, the overflow cropped evenly). The sheet is **2×2, 3×4 or 4×5**; *Automatic* takes the
-  smallest that holds the marks on one page (12 marks are 3×4) and 4×5 over as many pages as
-  it takes past 20. Cells keep reading order with a 1/8 inch gutter; each picture fits its cell.
-  **File names** under the cells are off by default; the option adds one line of 8 pt type,
-  the name only (never the folder), truncated to the cell.
-- **Options** sit in the OS dialog: on Windows a page beside General in `PrintDlgEx` (an
-  in-memory dialog template, so no WinUI control is involved and `check-winui-controls.ps1`
-  has nothing to check); on the Mac the print panel's accessory (`NSPrintPanelAccessorizing`,
-  so the preview follows each change). The choice is kept for the run after a Print, not
-  saved; Cancel drops it.
-- **Threads** (rule 1). The bake is a full-resolution decode (a RAW develops in full), so it runs
-  on the pool and the status line says "Preparing to print…"; one print is prepared at a time.
-  It is resampled down (never up) to what the paper needs at 300 dpi
-  (`edit::shrink_to_box`). Windows shows the dialog and calls `StartDoc` on the UI thread, so
-  Microsoft Print to PDF's Save As belongs to the window, then bakes and draws every page on the
-  pool (the DC is used by one thread at a time) and posts back. The Mac bakes first, for the
-  paper Page Setup holds (a photo baked to cover it, which serves fit too), then runs
-  `NSPrintOperation` modal for the window with `canSpawnSeparateThread`, so pages spool off the
-  main thread.
-- **Colour.** The bake is sRGB (D6); a picture with no colour adjust keeps its own ICC profile,
-  as the export's PNG does. Windows draws a `BITMAPV5HEADER` DIB tagged `LCS_sRGB` or
-  `PROFILE_EMBEDDED` with ICM on; the Mac draws a `CGImage` in that colour space. The printer
-  driver / Quartz maps it to the device, so the print matches the export.
-- **Nothing is written.** The bake stays in memory. Cancelling the dialog, the PDF Save As, or a
-  failed bake (`AbortDoc` on Windows) leaves no file anywhere.
+- **What**: ≥ 2 marks (or a range) → N-up **contact sheet**; else the **still on screen** baked
+  as Export bakes it (`edit::render_picture`). No still → beep.
+- **Layout** ([`shell/print_layout.h`](../../src/shell/print_layout.h)): ≥ ¼ in margin; one photo
+  **fit** or **fill**; sheets **2×2, 3×4, 4×5** or *Automatic*; optional file names. Options live
+  in the OS dialog (`PrintDlgEx` page / `NSPrintPanelAccessorizing`), not saved.
+- **Threads**: the bake runs on the pool, shrunk to 300 dpi (`edit::shrink_to_box`); Windows
+  draws pages on the pool, the Mac uses `NSPrintOperation` with `canSpawnSeparateThread`.
+- **Colour**: sRGB (D6), or the source ICC with no colour adjust. Nothing is written to disk.
 
 ### Edit (stills)
 
 | Key | Modes | Command |
 |---|---|---|
-| `[` `]` | browse, crop | Rotate −90° / +90°. On a JPEG with nothing else in its stack, a lossless rewrite 0.4 s after the last key, atomically; the preview turns at once |
-| `H` / `V` | browse, crop | Flip horizontal / vertical (lossless on a JPEG, like rotate) |
+| `[` `]` | browse, crop | Rotate −90° / +90°. A JPEG with nothing else in its stack is rewritten losslessly, atomically, 0.4 s after the last key; the preview turns at once |
+| `H` / `V` | browse, crop | Flip horizontal / vertical (lossless on JPEG, like rotate) |
 | `Shift+C` | browse | Crop / straighten mode |
-| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it. In it `↑` `↓` choose a slider of an open section, `←` `→` change it (`Shift` ×10), `0` zeroes it, `A` runs its section's Auto, `R` resets all (both hosts) |
-| `Ctrl+Z` / `Ctrl+R` | browse, crop | Undo the last edit / reset to the original |
-| `Ctrl+S` | browse | Export the edits to a new file beside the original (`<name>-edit.jpg`); never overwrites |
-| hold `Y` | browse | Show the original (edit stack untouched) |
-| `Enter` | browse, video | Open / close the **Edit workspace** — Edit image on a still, Edit video on a clip ([edit workspace](20-edit-workspace.md)). `Shift+C` / `Shift+A` / `Ctrl+T` open it on Crop / Colour / Trim; with it open `I` / `Ctrl+J` select its Info / Jobs tabs |
+| `Shift+A` | browse | Adjust pane, focused (`↑` `↓` slider, `←` `→` change, `Shift` ×10, `0` zero, `A` Auto, `R` reset all); again hides |
+| `Ctrl+Z` / `Ctrl+R` | browse, crop | Undo last edit / reset to original |
+| `Ctrl+S` | browse | Export to a new file beside the original (`<name>-edit.jpg`); never overwrites |
+| hold `Y` | browse | Show the original |
+| `Enter` | browse, video | Open / close the **Edit workspace** ([20](20-edit-workspace.md)). `Shift+C` / `Shift+A` / `Ctrl+T` open it on Crop / Colour / Trim; open, `I` / `Ctrl+J` select Info / Jobs |
 
 ### Canvas tools
 
-docs/plans/edit-refresh.md S3 (`shell/canvas_tool.h`, [20](20-edit-workspace.md) "Canvas tools"). Rows in
-mode **tool**; everything else is the browse row underneath, minus what `blocked_in_tool` refuses.
+`shell/canvas_tool.h`, [20](20-edit-workspace.md) "Canvas tools". Rows in mode **tool**; else the
+browse row, minus what `blocked_in_tool` refuses.
 
 | Key | Modes | Command |
 |---|---|---|
-| `B` | browse, tool | **Remove brush** (`tool_brush`): opens Edit on the Enhance tab with the brush armed (owner call D). `Ctrl+B` stays the clip split |
-| `[` `]` (repeat) | tool | **Smaller / Bigger brush** (`tool_smaller` / `tool_bigger`): the ring ×1/1.2 / ×1.2, 4–400 px on screen, with a fading "48 px" beside it. Never rotates in this mode |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | tool | **Undo / Redo stroke** (`tool_undo` / `tool_redo`): one stroke; with red-eye, one fix (the edit stack's undo); with the brush and no stroke left, the edit's own undo |
-| `Backspace`, `Delete` | tool | **Clear strokes** (`tool_clear`); with red-eye, every fix off as one step. Never the Bin |
-| `Enter` | tool | **Apply tool** (`tool_apply`): Remove (Enhance takes what is brushed); otherwise the tool goes down |
-| hold `Space` | tool | **Pan while brushing** (`tool_pan` / `tool_pan_release`): a drag pans, the open hand shows. Never next |
-| `Alt` / `⌥` held | tool | The brush erases while it is down (the ring dashes); no row, read at the press |
-| `Esc` | tool | The tool goes down (strokes kept, dimmed) |
-| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): the rail (Red-eye, Faces; Extend has no rail icon since 2026-11-05), the Enhance tab's cards, Edit ▸ on the Mac, Settings. Faces arms the Faces tool (S8: a box per face, a click chooses it; the Faces panel's controls are `chrome_cmd_faces` on Windows, `mv_chrome_faces_op` on the Mac); Extend opens Enhance's sheet until S6 makes it a canvas tool |
+| `B` | browse, tool | **Remove brush** (`tool_brush`): Edit on the Enhance tab, brush armed. `Ctrl+B` stays clip split |
+| `[` `]` (repeat) | tool | **Smaller / Bigger brush** (`tool_smaller` / `tool_bigger`): ×1/1.2 / ×1.2, 4–400 px, fading size label. Never rotates here |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | tool | **Undo / Redo stroke** (`tool_undo` / `tool_redo`); red-eye: one fix; brush with no strokes: the edit's undo |
+| `Backspace`, `Delete` | tool | **Clear strokes** (`tool_clear`); red-eye: all fixes as one step. Never the Bin |
+| `Enter` | tool | **Apply tool** (`tool_apply`): Remove; otherwise puts the tool down |
+| hold `Space` | tool | **Pan while brushing** (`tool_pan` / `tool_pan_release`). Never next |
+| `Alt` / `⌥` held | tool | Brush erases (ring dashes); no row, read at the press |
+| `Esc` | tool | Tool down (strokes kept, dimmed) |
+| *(unbound)* | browse | **Red-eye tool** (`tool_red_eye`), **Faces tool** (`tool_faces`), **Extend edges** (`tool_extend`): from the rail, Enhance tab and Settings |
 
 ### Crop
 
 | Key | Command |
 |---|---|
-| Arrows | Move the crop rectangle 1 % of the frame |
-| `Shift` + arrows | Move its bottom-right corner (narrower / wider / shorter / taller) |
-| `,` `.` | Straighten −0.5° / +0.5° (±45°); an untouched rectangle follows the angle as its largest fit |
-| `[` `]` `H` `V` | Turn / flip with the draft carried along (no file write while cropping) |
-| `A` / `X` | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap portrait and landscape (`X` also turns Extend's ratio; in the other canvas tools it stays Reject) |
+| Arrows | Move the rectangle 1 % of the frame |
+| `Shift` + arrows | Move its bottom-right corner |
+| `,` `.` | Straighten −0.5° / +0.5° (±45°); an untouched rectangle tracks the largest fit |
+| `[` `]` `H` `V` | Turn / flip with the draft carried (no file write while cropping) |
+| `A` / `X` | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap orientation (`X` also turns Extend's ratio; elsewhere in tools it stays Reject) |
 | `Enter` | Apply: the draft joins the edit stack |
 | `Esc` | Cancel the draft |
 
-With the mouse, a press on the rectangle's edge or corner drags it and one inside moves it
-(a locked preset keeps its ratio); a press elsewhere pans as before
-([20](20-edit-workspace.md) Behaviour 4, `shell/crop_drag.h`).
+Mouse: an edge or corner drags it, inside moves it (locked presets keep ratio), elsewhere pans
+(`shell/crop_drag.h`).
 
 ### Rate
 
 | Key | Modes | Command |
 |---|---|---|
 | Numpad `0`–`5`, or `Ctrl+Shift+0`–`5` | Viewing | Rating (0 clears) |
-| `Ctrl+I` | Viewing | Show the metadata pane (Windows: on *All tags* with its comment editor open on the file's comment and the keyboard in it; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* tab with the keyboard in its search, where any tag, the comment included, is edited) |
-| `X` | browse, video | Reject (rating −1, Lightroom's and Bridge's "Rejected"); `X` on a rejected file clears it to unrated |
-| Numpad `6`–`9`, or `Ctrl+Shift+6`–`9` | Viewing | Colour label Red / Yellow / Green / Blue (Lightroom's keys); the label the file already has clears it |
+| `Ctrl+I` | Viewing | Metadata pane on *All tags* (Windows: comment editor focused; Mac: its search) |
+| `X` | browse, video | Reject (rating −1); on a rejected file, clears to unrated |
+| Numpad `6`–`9`, or `Ctrl+Shift+6`–`9` | Viewing | Colour label Red / Yellow / Green / Blue; the existing label clears |
 | `U` | browse, video | Clear the colour label |
 
-A rating, a reject or a label writes the item on screen only, on the I/O pool: a JPEG is
-rewritten in place, anything else gets an XMP sidecar. A label is XMP `xmp:Label` in the words
-Lightroom and Bridge write (Red, Yellow, Green, Blue, Purple), so each app shows the other's; the
-metadata pane's Label row has a swatch per colour (Purple has no key, as in Lightroom). `X` and `U`
-are letters, so they are browse and video only (the gallery and the strips type ahead). The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a
-sidecar took it). Not in a slideshow or crop. On macOS `⌘⇧3`/`4`/`5` are the system screenshot
-shortcuts (and `⌘⇧6` the Touch Bar one, on a Mac that has a Touch Bar) and do not reach the app unless turned off in System Settings; the keypad, or a remap,
-works regardless. To see only the keepers, or one colour, use View ▸ Show's cull filters (below,
-"Status, sort, filter, typeahead").
+Writes the item on screen only, on the I/O pool: JPEG in place, else an XMP sidecar ([06](06-metadata.md)).
+Labels are `xmp:Label` (Red … Purple; Purple has no key). Not in slideshow or crop. macOS
+reserves `⌘⇧3`–`6`; use the keypad.
 
 ### Video and trim
 
@@ -535,22 +346,22 @@ works regardless. To see only the keepers, or one colour, use View ▸ Show's cu
 |---|---|---|
 | `Space` | video | Play / pause |
 | tap `Q` / `E` | video | Skip −2 s / +2 s, exact, on the down edge |
-| hold `Q` / `E` | video | Skim ∓2 s per repeat with non-exact (keyframe) seeks; release settles exactly. Intent accumulates across the burst |
-| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, only while the filmstrip is hidden (issue #416). With the strip showing they walk the folder, paused or playing; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold keeps what it started as until key-up: a skim stays a skim if `T` shows the strip under it, a walk stays a walk if `T` hides it |
-| `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport strip's speed menu (`1x`) is a view of this; native owns the rate |
+| hold `Q` / `E` | video | Skim ∓2 s per repeat with keyframe seeks; release settles exactly; intent accumulates |
+| tap / hold `←` `→` | skim | As `Q` / `E`, only with the filmstrip hidden |
+| `Shift+Q` / `Shift+E` | video | Speed down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport's `1x` menu is a view of this |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
-| `,` `.` | video | Frame step (also on animations) |
-| `Shift+M` | video | Mute (`M` is left free). The transport's mute button and More flyout (volume, mute, audio track, A–B loop) are views of native's state, as the speed menu is; `↑` `↓` at fit are the volume |
+| `,` `.` | video | Frame step (also animations) |
+| `Shift+M` | video | Mute. The transport's **More** flyout (volume, mute, audio track, A–B loop) is a view of native state |
 | `Ctrl+T` | video, trim | Arm / disarm trim |
 | `[` `]` | trim | In / out marker at the playhead |
-| `P` | trim | Preview the cut: A–B loop over exactly what the keyframe save writes. A loop set from the More flyout replaces it and ends the preview |
-| `Enter` / `Shift+Enter` | trim | Save the keyframe cut (instant) / the frame-accurate re-encode (slower) |
+| `P` | trim | Preview the cut: A–B loop over what the keyframe save writes; a More-flyout loop replaces it |
+| `Enter` / `Shift+Enter` | trim | Save keyframe cut (instant) / frame-accurate re-encode |
 | `Ctrl+X` | trim | A copy without in–out |
-| `Backspace` / `Delete` | trim | Clear the markers (in trim, `Delete` never trashes the clip) |
+| `Backspace` / `Delete` | trim | Clear markers (never trashes the clip) |
 | `Ctrl+←` / `Ctrl+→` | trim | Previous / next keyframe |
-| `Ctrl+J` | Viewing, trim | Jobs pane: `↑` `↓` choose, `Delete` cancel, `R` retry, `Enter` reveal output |
+| `Ctrl+J` | Viewing, trim | Jobs pane: `↑` `↓` choose, `Delete` cancel, `R` retry, `Enter` reveal |
 | `Ctrl+S` / `Ctrl+B` | video, trim | Clip tools (rotate, split, frame, audio, remux, GIF / WebP) / split at the playhead |
-| Media keys | — | SMTC (Windows) / `MPRemoteCommandCenter` (macOS), same commands |
+| Media keys | — | SMTC (Windows) / `MPRemoteCommandCenter` (macOS) |
 
 ### Slideshow
 
@@ -559,293 +370,191 @@ works regardless. To see only the keepers, or one colour, use View ▸ Show's cu
 | `F5` | Start (from browse or video) |
 | `Space` | Pause |
 | `+` (`=`) `-` | Interval |
-| `.` | Blackout (the canvas idles) |
+| `.` | Blackout (canvas idles) |
 | `R` | Shuffle |
 | `Esc` | Leave |
 
-`F5` goes fullscreen if the window is not, and leaving puts it back. Next is the same navigation
-command as browse, on a UI-thread timer, so prefetch and the generation counter stay in play and
-a still between advances is zero presents. No transition pass. A clip advances at whichever is
-later, the interval or the end of the clip while it plays (a paused clip goes on the interval);
-a finite animation likewise, an endless one on the interval. Intervals 1 / 2 / 3 / 4 / 5 / 7 /
-10 / 15 / 20 / 30 / 60 s, default 4 s. Shuffle visits every item once per round, starting from the
-current one. Wrap is on. The slideshow is stills and clips from the folder; Mac's is stills only.
-While a slideshow runs (not paused), or a clip plays, the display and the machine are kept
-awake: `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)` on Windows, an
-`NSProcessInfo` activity on the Mac. Pause, the end of the clip, leaving and exit let it go.
+Fullscreen while running. Next is the browse command on a UI-thread timer (zero presents between
+advances, no transition); a playing clip advances at the later of interval and end. Intervals
+1/2/3/4/5/7/10/15/20/30/60 s, default 4 s. Mac: stills only. Keeps the display awake while running.
 
 ### Import (while the add-on is installed)
 
 | Windows | Mac | Command |
 |---|---|---|
-| `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (with the viewer's marks for "Marked in viewer") |
-| `Ctrl+Shift+F7` | `⌘⇧F7` | Import the marked (else current) files now with the last preset |
+| `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (viewer marks as "Marked in viewer") |
+| `Ctrl+Shift+F7` | `⌘⇧F7` | Import marked (else current) now with the last preset |
 
 ### Enhance (while the add-on is installed)
 
 | Windows | Mac | Command |
 |---|---|---|
-| `Ctrl+Shift+R` | `⌘⇧R` | Open Enhance for the marked (else current) file: the sheet for an audio file or a clip, the Edit pane's Enhance tab for a photo ([29](29-enhance.md)) |
+| `Ctrl+Shift+R` | `⌘⇧R` | Open Enhance for the marked (else current) file: the sheet for audio or a clip, the Edit pane's Enhance tab for a photo ([29](29-enhance.md)) |
 
-Inside the Import window (its own keys, not table rows): `Enter` imports (on a focused tile it
-opens that file in the viewer), `Ctrl+Enter` imports from anywhere, `Space` toggles a tile and
-pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctrl+Shift+Tab` the
-next / previous source, `Ctrl+J` ejects, `Esc` closes the window and the import carries on
-([import](18-import.md)).
+The Import window's own keys (not table rows) are in [18](18-import.md).
 
 ### Driftwire (while the add-on is installed)
 
-One row, **Driftwire**, with no default key (issue #410): it opens Driftwire's window with the
-marked or current files as the ones to send. Settings can give it a key like any row. The row is
-the add-on's manifest command; an add-on that fills slots and has no chrome gets it as a command
-event (`run_command`, [28](28-driftwire.md#host-pieces-this-added)).
+One row, **Driftwire**, no default key: opens Driftwire's window with marked or current files. It
+is the add-on's manifest command ([28](28-driftwire.md#host-pieces-this-added)).
 
 ### Add-on commands (PR 57, from scripts)
 
-An open add-on with a script ([25](25-open-addons.md)) contributes rows: a name, a default key
-and the script function it calls. They take the eight `addon_cmd_*` slots after any first-party
-add-on's rows, are listed in `?` and Settings, and are rebindable like any row. **Another
-maker's key never displaces the base app's:** when it clashes with a built-in row as bound now
-(remaps included), or with an earlier contributed row, in a mode they share, the key is dropped,
-the row stays listed without one, and Settings → Add-ons → From others says "Ctrl+O is already
-Open, so this command has no key" (`set_addon_commands`, `addon_command_notes_json`). Running one
-posts the call to the add-on's own worker and returns: the key never waits on a script. Keymap
-packs name these rows `<addon-id>/<command-id>`.
+Scripted add-ons ([25](25-open-addons.md)) fill the eight `addon_cmd_*` slots; rebindable. A key
+that clashes with a built-in or earlier row is dropped and Settings says why (`set_addon_commands`,
+`addon_command_notes_json`). Running posts to the add-on's worker; keys never wait on a script.
 
 ### Search
 
 | Key | Modes | Command |
 |---|---|---|
-| `Ctrl+F` | Viewing | **With Local search:** its panel, keyboard-focused. **Without:** file search (below) |
-| `Ctrl+Shift+F` | Viewing | Find similar to the still or paused frame on screen (Local search) |
-| `Ctrl+Shift+P` | Viewing | Find this person: the photos and moments of the largest face in the still or paused frame on screen (Local search, People on) |
-| `N` / `Shift+N` | video | On a clip opened from results: next / previous matching moment (Local search) |
+| `Ctrl+F` | Viewing | **With Local search:** its panel, focused. **Without:** file search |
+| `Ctrl+Shift+F` | Viewing | Find similar to the still or paused frame (Local search) |
+| `Ctrl+Shift+P` | Viewing | Find this person: largest face in the still or paused frame (Local search, People on) |
+| `N` / `Shift+N` | video | On a clip opened from results: next / previous matching moment |
 
-The same command runs from the search icon at the right end of the command bar's folder path
-(and beside "Search: …" while a result list is shown). In the Local search field typing searches
-([local search](17-local-ai-search.md)); `Tab` completes an offered name; `Enter` or `↓` moves
-into the results (waiting for words still being searched); in the grid arrows move, `Enter` opens
-the results in the viewer on that tile, `Ctrl+Enter` opens them all as the gallery, a typed
-character returns to the field; `Esc` returns to the field, then closes.
+Also from the search icon on the command bar's folder path. Local search field keys:
+[17](17-local-ai-search.md).
 
-**File search** (base app, no index): shows the gallery if hidden and opens "Find files by name
-or tag in this folder" over the grid. Typing filters the grid, folder tiles too, by a case- and
-accent-insensitive substring, ~70 ms after the last key, with an "N of M" count. A view over the
-gallery only: arrows move among matches; the viewer and filmstrip still walk the whole folder.
-`Enter` / `↓` go to the grid on the first match; `Esc` clears, then closes; closing the gallery
-or opening another folder closes it. Names are folded once per listing off the UI thread; a
-keystroke is one pass (≤ 2 ms for 10,000 items). No disk walk.
+**File search** (base app, no index): opens "Find files by name or tag in this folder" over the
+gallery. Typing filters the grid by case- and accent-insensitive substring (~70 ms debounce, "N
+of M"); viewer and filmstrip still walk the whole folder. `Enter` / `↓` to the first match; `Esc`
+clears, then closes. Names are folded once per listing off the UI thread; a keystroke is one pass.
 
-**Tags (#291).** After the name matches come the files whose tags hold every typed word:
-camera, lens, made-with, software, title, caption, keywords, creator
-([06](06-metadata.md) "Search text"). `R5` finds the Canon EOS R5 shots, `ChatGPT` the images it
-made. A tag match shows *why* under its tile ("Canon EOS R5"). The tags come from the folder's
-background tag pass, never from a read on a keystroke (`mv_chrome_tag_search` on the Mac,
-`mv_folder_tag_search` on Windows: a lookup in memory, ~1 ms at 20,000 files). The pass starts
-after the item on screen has its first image and yields to the viewer. While it is still reading,
-the bar says "Still reading tags — 340 of 2,000" and the results grow as it learns more (the
-chrome re-runs the search on `tag_generation`, polling only while a search is typed and tags
-are coming). A folder seen before answers at once (meta_cache.db). Place names (`portugal`)
-come from the Places add-on's search provider, whose rows join after these ([25](25-open-addons.md)
-§7, #348); the app's own tag text has none. Order: names, tags, providers.
+**Tags.** Name matches first, then files whose tags hold every word ([06](06-metadata.md)
+"Search text"), with the matching tag under the tile. From the background tag pass, never a read
+per keystroke (`mv_chrome_tag_search` / `mv_folder_tag_search`); results grow as the pass reads
+(re-run on `tag_generation`). Place names come from the Places add-on's provider
+([25](25-open-addons.md) §7). Order: names, tags, providers.
 
-`/` over files opens the same search on the Mac. On Windows it is the find box over the
-listing, which jumps to the first name match, else the first tag match with its tag shown
-("IMG_0412.JPG · Canon EOS R5").
+`/` opens the same search on the Mac; on Windows it is the find box (first name match, else
+first tag match).
 
 ### `?`
 
-`?` toggles a mode-sensitive cheat sheet generated from the live table
-(`describe_commands()`: id, modes, label, key label). On Windows it is a XAML flyout with
-`ShouldConstrainToRootBounds = false`, so a strip does not clip it; it does not composite onto the
-swapchain. On the Mac it is a SwiftUI overlay over the canvas, filtered the same way. Both list
-the bindings live in the mode underneath, as if the canvas had focus. Both lay the rows out in as
-many columns of at least 340 as the window holds, under a "Keyboard shortcuts" title and over the
-hint "Wheel zooms toward the cursor, drag pans. Keys change in Settings…" (issue #201). There is no
-command palette; Settings search and `?` cover finding a command.
+Mode-sensitive cheat sheet from the live table (`describe_commands()`), as if the canvas had
+focus: a XAML flyout (`ShouldConstrainToRootBounds = false`, never on the swapchain) / a SwiftUI
+overlay. No command palette.
 
 ### Empty window
 
-On an empty window `Space` starts the T-Rex runner. In it `Space` jumps / retries, `3` toggles a
-2D / 3D view (keeping the jump, obstacles and score), and `Esc` leaves: the runner sprints off and
-the scene folds away before the welcome card returns. Opening a file over the runner skips that.
+`Space` starts the T-Rex runner: `Space` jumps / retries, `3` toggles 2D / 3D, `Esc` leaves (the
+scene folds away before the welcome card). Opening a file skips that.
 
 ## Folder tree
 
-A left strip, hidden by default. `Ctrl+Shift+E` shows and focuses it: `↑` `↓` walk, `→` `←` open
-and close a folder, `Enter` opens it and returns to the canvas, `Esc` returns to the canvas and a
-second `Esc` closes it. Names only, from `mv_list_subdirectories` on a worker; no thumbnails.
-
-The tree is rooted at the browsing trail's root (the highest crumb, `shell/browse_path.h`), not the
-folder on screen: opening a child keeps the tree, expands the path down to the open folder, lists
-that folder again, marks it (filled folder, accent) and scrolls it to the middle (issue #201, both
-platforms). Opening from outside the trail (Open, a drop) starts a new trail and so a new root.
+Left strip, hidden by default; `Ctrl+Shift+E` shows and focuses (`↑` `↓` walk, `→` `←`
+expand/collapse, `Enter` opens, `Esc` to canvas, again closes). Names only, from
+`mv_list_subdirectories` on a worker. Rooted at the browsing trail's root (`shell/browse_path.h`),
+the open folder expanded and marked; opening outside the trail starts a new root.
 
 ## Overlays on the hot path
 
-All are extra draws in the same present, and a still with no animation still idles to zero
-presents ([rendering](03-rendering.md)). Toggles request one redraw.
+Extra draws in the same present; a still still idles to zero presents
+([rendering](03-rendering.md)). Toggles request one redraw.
 
 | Overlay | Cost |
 |---|---|
 | Loupe (hold `Z`) | Camera / viewport change; same texture |
 | Hold-previous (hold `\`) | The five-slot LRU; no second session |
-| Two-up compare (`\|`) | A second blit of the resident previous texture into the left half; same present |
-| Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
+| Two-up compare (`\|`) | Second blit of the resident previous texture; same present |
+| Clipping blinkies (`C`) | Shader; may present while on (animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
-| Around the picture (no key) | The theme's `canvas` token as the clear and in the blit; there is no canvas background of its own (issue #408, [12](12-decision-log.md)) |
-| On-canvas info (`O`) | Overlay text from the folder model and metadata already read |
-| AF-point quads (`Shift+O`) | A few quads from maker notes already in the property model |
-| Zoom to AF point (`Shift+Z`) | Camera target only (`shell/af_focus.h` → `camera::zoom_to`); the zoom's refinement is the usual one |
-| Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
-| Histogram | On the adjust pane, computed after the sliders settle |
+| Around the picture (no key) | The theme's `canvas` token as clear and in the blit ([12](12-decision-log.md)) |
+| On-canvas info (`O`) | Text from the folder model and metadata already read |
+| AF-point quads (`Shift+O`) | A few quads from maker notes already read |
+| Zoom to AF point (`Shift+Z`) | Camera target only (`shell/af_focus.h` → `camera::zoom_to`) |
+| Eyedropper (`Shift+I`) | One-pixel staging readback on demand |
+| Histogram | Adjust pane, after the sliders settle |
 
 ## Status, sort, filter, typeahead
 
 Chrome, in memory, no decode.
 
-- **Status:** filename, index / count, dimensions, zoom, rating. Index and counts come from the
-  folder model.
-- **Sort:** name, modified, size, type, date taken; ascending or descending
-  (`mv_folder_set_sort`, saved as `[view] sort` on Windows; View ▸ Sort By on both). Date-taken
-  keys come from the folder's tag pass (one bounded read per file, once ever, kept in
-  meta_cache.db) and the listing re-sorts in place once the pass ends; a file with no stamp sorts by
-  mtime.
-- **Show** (issue #206): View ▸ Show on both hosts (the menu bar and the command bar's View on the
-  Mac, the command bar's View on Windows): **All**, **Photos** (every still, RAW included),
-  **Videos**, **RAW** (a RAW, or a RAW+JPEG pair) or **Marked** (the marks as they are when it is
-  chosen; refused with a notice when nothing is marked). A view of the listing, for this run only,
-  never saved: the filmstrip, gallery, arrow keys and slideshow walk what is shown; copy, move and
-  delete act on marks as always. Choosing one moves the stop on screen to the nearest one shown; a
-  filter that matches nothing keeps the stop on screen. A relist keeps the file a folder was
-  opened on, so an explicit open still shows. The notice line says what is shown. A scan-time
-  flag over the listing already in memory: no decode, no I/O, no rescan (`io::keeps_stop`;
-  Windows `mv_folder_set_kind_filter`, the Mac host over its folder model's snapshot).
-- **Show, on the cull** (issue #207): View ▸ Show's second group filters on what `X`, the rating
-  keys and the label keys wrote: **Picks** (rated one star or more; XMP has no pick flag, and
-  Lightroom keeps its own in the catalog), **Not rejected** (everything but rating −1, unrated
-  included), and **Red**, **Yellow**, **Green**, **Blue** or **Purple** (that `xmp:Label`, in any
-  case). These are not scan-time flags: each file's rating and label is read on a worker
-  (`meta::read_cull_marks`, a bounded head read plus the sidecar, as date-taken sorting does) and
-  cached by path + size + mtime; a write this app makes drops its file's entry (a sidecar write
-  leaves the file's own stamp). Nothing of it runs on the UI or render thread, and the first
-  pixel and navigation never wait for it: the folder opens and lists as always, and a filter
-  already on applies as the reads land (a file not read yet counts as unrated and unlabelled). A
-  newly chosen cull filter keeps the listing as it is until the reads it needs are done, then
-  moves the stop on screen once. Rating or labelling the stop on screen never pulls it out of the
-  listing (the relist keeps it, as Marked keeps an unmarked file); choosing the filter again
-  re-applies it. Windows filters in the core (`MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / the
-  label in bits 8–10, ABI 0.20, and `mv_folder_note_metadata_written` after a write); the Mac
-  host's `meta_store` keeps the cache (`cull_marks_of`, `resolve_cull_marks`).
-- **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
-  with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens
-  a find box over the loaded listing (names, then tags; above). `Ctrl+G` goes to an index.
+- **Status:** filename, index / count, dimensions, zoom, rating (title bar), from the folder model.
+- **Sort:** name, modified, size, type, date taken; asc/desc (`mv_folder_set_sort`, `[view] sort`
+  on Windows; View ▸ Sort By). Date taken comes from the tag pass (cached in meta_cache.db); the
+  listing re-sorts in place when it ends; no stamp → mtime.
+- **Show** (View ▸ Show): **All**, **Photos**, **Videos**, **RAW**, **Marked**; this run only.
+  Navigation walks what is shown; the stop moves to the nearest shown. Scan-time flag, no I/O
+  (`io::keeps_stop`, `mv_folder_set_kind_filter`).
+- **Show, on the cull**: **Picks** (≥ 1 star), **Not rejected**, **Red** … **Purple**. Read on a
+  worker (`meta::read_cull_marks`), cached by path + size + mtime; never blocks first pixel; unread
+  files count as unrated. Rating the stop on screen never hides it. Windows filters in the core
+  (`MV_FOLDER_HIDE_REJECTED` / `_UNPICKED`, label bits 8–10); Mac `meta_store` (`cull_marks_of`).
+- **Typeahead:** filmstrip or gallery focused, typing jumps to the first name starting with it
+  (300 ms idle resets). On the canvas letters are commands, so `/` opens find; `Ctrl+G` go-to.
 - **Wrap** at folder ends: on by default, a setting.
 - **Session:** window placement, last folder, zoom mode, wrap, background. Not a catalog.
 
 ## Sticky zoom
 
-- **Off (default):** each item fits.
-- **On (`S`):** advancing keeps zoom and the pan centre as a fraction of the image; a different
-  aspect keeps the centre. Camera state, not a decode; prefetch is unaffected.
+Off (default): each item fits. On (`S`): advancing keeps zoom and the pan centre as a fraction
+of the image. Camera state only.
 
 ## Touch and trackpad
 
-Gestures are input to the commands above, never a camera path of their own (issue #212,
-[12](12-decision-log.md) 2026-10-12; maths in `shell/gesture.h`, shared by both hosts):
+Gestures drive the commands above, never a camera path of their own (`shell/gesture.h`):
 
 | Gesture | Does |
 |---|---|
-| Pinch (touchscreen, precision touchpad, Mac trackpad) | Zooms toward the fingers like the wheel: wheel units in the input snapshot, the same springs, floor and rubber-band |
-| One-finger drag, zoomed (touchscreen) | Pans; the content follows the finger through `pan_by_screen`'s springs |
-| Sideways swipe at fit (touchscreen, one finger) | Next (swipe left) / previous (swipe right), once per touch |
-| Two-finger sideways swipe (touchpad, trackpad), mouse tilt | Next / previous, once per swipe or tilt click; momentum runs out in the latch. On a PDF or DOCX with the filmstrip hidden it scrolls the page instead |
-| Three-finger swipe (Mac, when System Settings sends it) | Next / previous |
+| Pinch (touchscreen, precision touchpad, Mac trackpad) | Zooms toward the fingers like the wheel (same springs, floor, rubber-band) |
+| One-finger drag, zoomed (touchscreen) | Pans through `pan_by_screen`'s springs |
+| Sideways swipe at fit (touchscreen) | Next / previous, once per touch |
+| Two-finger sideways swipe, mouse tilt | Next / previous, once per swipe; on a PDF/DOCX with the filmstrip hidden, scrolls the page |
+| Three-finger swipe (Mac, if System Settings sends it) | Next / previous |
 
-A swipe does nothing under the gallery or in crop. A tap is the system's promoted click. Windows
-reads the touchscreen through `WM_GESTURE` (pan inertia and gutter off); the touchpad's pinch is
-already `Ctrl`+wheel. The Mac reads `magnifyWithEvent:`, `scrollWheel:` and `swipeWithEvent:`.
+No swipe under the gallery or in crop.
 
 ## Text in images
 
-As in Photos, text in a still can be selected with the mouse and copied: no menu item, mode or
-setting ([12](12-decision-log.md) 2026-10-15, which replaced 2026-10-10's Copy Text in Image).
+Text in a still can be selected with the mouse and copied; no menu, mode or setting.
 
 | Pointer | Does |
 |---|---|
 | Hover over text | I-beam cursor |
-| Press on a word and drag | Selects from that word to the word nearest the pointer, whole words in reading order; a press on text never pans or starts a file drag |
-| Double-click / triple-click | Selects the word / its line; a drag from there extends by words / lines |
-| Click on text without dragging, or press off the text | Clears the selection (off the text the press pans as before) |
+| Press on a word and drag | Selects whole words in reading order; never pans or starts a file drag |
+| Double / triple-click | Word / line; dragging extends by words / lines |
+| Click without dragging, or press off text | Clears (off text the press pans) |
 
-`Ctrl+C` / `⌘C` then copies it (the notice says "Copied 12 words"), `Ctrl+A` / `⌘A` selects every
-word, and `Esc` deselects before anything else on the canvas walks out.
+`Ctrl+C` copies ("Copied 12 words"), `Ctrl+A` selects all words, `Esc` deselects first.
 
-**When a still is read.** Recognition costs a decode and the OS recogniser, so it is never part of
-showing an image: it starts only after the pointer has rested on a still for 500 ms (arrowing or
-clicking through a folder reads nothing), on the job pool (rule 1), once per still and geometry. A
-new item, a turn, a crop, Show original, the gallery or the Edit workspace drops the words. Stills
-only: not a clip, an animation, audio or a document page.
-
-**How.** `shell/text_in_image.h` renders the still as the canvas shows it (geometry applied, 4096 px
-long edge, alpha over white) for a port, `text_recognizer`, that returns words with boxes in 0..1 of
-that image: Vision `VNRecognizeTextRequest` on the Mac (each word boxed with
-`boundingBoxForRange:`), `Windows.Media.Ocr` in the WinUI chrome on Windows (`OcrWord.BoundingRect`,
-sent back as one tab-separated record per word). `shell/text_select.h` is the hosts' shared
-selection model on the UI thread. The render thread publishes `canvas_map` (where the still is) for
-the host's hit-test and draws `input_snapshot::text`, one translucent box per selected line; a
-press that `text_press` marks is never a pan. On device, nothing logged (rule 6); without an OCR
-language Windows says so once a session and offers no Store download (rule 7).
+Recognition starts after the pointer rests on a still 500 ms, on the job pool, once per still and
+geometry (stills only). `shell/text_in_image.h` feeds the `text_recognizer` port (Vision /
+`Windows.Media.Ocr`); `shell/text_select.h` is the shared selection model; the render thread
+draws `input_snapshot::text`. On device; no OCR language → a notice, no Store download.
 
 ## Animation
 
-GIF / APNG / WebP play on the render thread's frame clock ([image pipeline](04-image-pipeline.md)).
-An animated item is in video mode: `Space` play / pause, `,` `.` frame step.
+GIF / APNG / WebP play on the render thread's frame clock ([04](04-image-pipeline.md)). Animated
+items are in video mode: `Space` play / pause, `,` `.` frame step.
 
 ## Performance properties of this surface
 
-- Key-repeat next stays inside the generation-counter + prefetch design; nothing opens an image
-  synchronously on the UI thread.
-- Copy, move, delete, reveal, export, share and rating writes run on the I/O or worker pool;
-  completions update chrome. The UI thread may open a picker but never copies bytes.
-- Overlays never start a present loop that does not idle.
-- RAW+JPEG and Live Photo pairing and companion hiding happen at scan, not on each next.
-- No slideshow transition shader, no full-texture readback, no library database: SQLite is the
-  thumbnail cache.
+Key-repeat next stays in the generation-counter + prefetch design; file operations and writes
+run on the I/O or worker pool; overlays never start a present loop that does not idle; pairing
+happens at scan.
 
 ## Window, theme
 
-- **Always on top** (`Ctrl+Shift+A`), host-side.
-- Dark / light follow the OS.
-- **New window** (`Ctrl+N`, 2026-10-05): another MediaViewer process on the empty window,
-  cascaded from the one that asked. The viewer's state is one per process (the hosts and the
-  SwiftUI stores are single-window), so a window is a process, not a second `NSWindow` or
-  `HWND` in this one. The Mac starts the bundle as a new instance (`--new-window X Y`, the
-  asking window's top-left); Windows starts the exe with `--new-instance`, which skips the
-  single-instance pipe. Add-ons run in one window's process only (see
-  [18](18-import.md) "One host process").
+- **Always on top** (`Ctrl+Shift+A`), host-side. Dark / light follow the OS.
+- **New window** (`Ctrl+N`): a new process (viewer state is per process): `--new-window X Y` /
+  `--new-instance`. Add-ons run in one window's process ([18](18-import.md) "One host process").
 
 ## ABI
 
-No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder_select`,
+No hot-path command ABI: commands call existing session calls (`mv_folder_select`,
 `mv_image_open`, camera, transport, edit, meta). Bindings never cross the C ABI;
-`describe_commands()` goes to the shell's own island. Pixels do not cross ([ABI](14-abi.md)).
+`describe_commands()` goes to the shell's own island ([ABI](14-abi.md)).
 
 ## Not built
 
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
-- `Ctrl+Tab` / tabs, and several windows inside one process.
-- `U` clear label and `X` reject mark.
-- A filter (all / photos / videos / RAW) on the listing.
-- `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
-- `U` clear label and `X` reject mark.
-- Text in images: selecting part of a word (selection is by whole words), a right-click menu
-  (Copy, Look Up), and text in PDF / DOCX pages, clips or animations.
-- A filter (all / photos / videos / RAW) on the listing.
-- Touch gestures (swipe, pinch).
-- Import / export of a person's own key map (named layouts ship as keymap packs, above).
-- Voice add-on hold-to-talk (`Ctrl+Shift+Space`).
-- **On the Mac** (issue #183): `Ctrl+G` go to index, `;` Live Photo motion, and Open RAW /
-  Open JPEG of a pair. `MvCommandSupported` leaves them out, so `?` and Settings do not list
-  them and their keys fall through. The rest of the View table, the loupe, hold `\` and the
-  slideshow's `.` / `R` run on both hosts.
+- Tabs, or several windows in one process.
+- `Ctrl+PageUp` / `Ctrl+PageDown` for HEIC sequences.
+- Text in images: partial-word selection, a right-click menu, text in document pages, clips or
+  animations.
+- Import / export of a person's key map (layouts ship as keymap packs).
+- Voice hold-to-talk (`Ctrl+Shift+Space`).
+- **Mac**: `Ctrl+G` go to index, `;` Live Photo motion, Open RAW / JPEG of a pair (left out of
+  `MvCommandSupported`, so unlisted and their keys fall through).

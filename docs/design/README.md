@@ -7,6 +7,11 @@ was retired on 2026-10-03 once it had been built; its full text is in git histor
 Build, run and test recipes are in [../DEVELOPMENT.md](../DEVELOPMENT.md). Forward plans that are not
 built yet live in [../plans/](../plans/).
 
+Read only the doc for the area you are changing; several are long, so search them for the section you
+need. They describe the current design, not rules — when the design changes, update the doc.
+[12-decision-log.md](12-decision-log.md) is history: consult it for the reason behind something, not
+as required reading.
+
 | Doc | Covers |
 |---|---|
 | [01-decisions.md](01-decisions.md) | The stack and the settled decisions D1–D9 |
