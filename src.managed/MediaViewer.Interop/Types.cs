@@ -116,7 +116,7 @@ public struct MvFolderSummary
     public uint MediaCount;
     public uint SubdirCount;
     public uint Flags;
-    public uint Reserved;
+    public uint CoverCount;  // ABI 0.42, was Reserved: covers ready, the big one first
 }
 
 /// <summary>Mirrors <c>mv_folder_item</c>: one navigation stop.</summary>

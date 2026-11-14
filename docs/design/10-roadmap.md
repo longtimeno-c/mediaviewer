@@ -512,8 +512,11 @@ both present-loop gates held while indexing.
 ### PR 26 — Folder tiles, breadcrumb, up
 The gallery shows the open folder's child folders as tiles. A folder of only folders uses big
 tiles and opens the gallery on its own; a folder that also holds photos keeps one short row of
-folders above them. A cover is the folder's own first photo, or one borrowed from a descendant
-(bounded to depth 3 / 48 directories); the tile says when the photo came from further down,
+folders above them. A cover is up to three photos, one big and two small (2026-11-14): spread
+across the folder's own listing (first, a third in, two thirds in), or for a folder of folders the
+first photo of each of its first child folders that has one (bounded to depth 3 / 48 directories,
+shared). The big photo is published first and the small ones follow; two photos halve the tile, one
+fills it; the mixed folder's small chips keep one. The tile says when the photo came from further down,
 when the level is only more folders, and when the look stopped early. Click or `Enter` opens a
 tile. The path stays on screen while a photo is open; a long middle collapses until asked for.
 `Ctrl/Cmd+Up` goes up and selects the folder left; `Ctrl/Cmd+Left/Right` opens the previous or

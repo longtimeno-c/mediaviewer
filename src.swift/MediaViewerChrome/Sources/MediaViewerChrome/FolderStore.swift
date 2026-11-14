@@ -44,6 +44,8 @@ final class FolderCard: ObservableObject {
   /// The bounded look stopped before it could say the branch has no photos.
   @Published fileprivate(set) var searchStopped = false
   @Published fileprivate(set) var cover: CGImage?
+  /// The big tile's two small photos (one big, two small), after `cover`.
+  @Published fileprivate(set) var smallCovers: [CGImage?] = [nil, nil]
   @Published fileprivate(set) var loaded = false
 
   var status: String {
@@ -175,6 +177,7 @@ final class FolderStore: ObservableObject {
     // thread (mv_chrome_bridge.h's contract).
     mv_chrome_set_thumb_ready_callback(thumbReadyTrampoline)
     mv_chrome_set_folder_summary_callback(folderSummaryTrampoline)
+    mv_chrome_set_folder_cover_callback(folderCoverTrampoline)
     // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h). The
     // listing, cursor and marks all move on the main thread, so this polls
     // when the main run loop has run (issue #178, ChromePulse), not on a timer.
@@ -417,6 +420,16 @@ final class FolderStore: ObservableObject {
     }
   }
 
+  fileprivate func folderCoverReady(path: String, slot: Int, coverThumbPath: String) {
+    guard (1...2).contains(slot), cards[path] != nil else { return }
+    Self.decodeQueue.async {
+      let image = Self.decodeThumbnail(atPath: coverThumbPath)
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated { FolderStore.shared.cards[path]?.smallCovers[slot - 1] = image }
+      }
+    }
+  }
+
   nonisolated private static func decodeThumbnail(atPath path: String) -> CGImage? {
     let url = URL(fileURLWithPath: path) as CFURL
     let options: [CFString: Any] = [
@@ -623,6 +636,18 @@ private func thumbReadyTrampoline(
   let path = pathUTF8.map { String(cString: $0) }
   MainActor.assumeIsolated {
     FolderStore.shared.thumbnailReady(key: key, path: path)
+  }
+}
+
+// The tile's small photos; same contract as folderSummaryTrampoline below.
+private func folderCoverTrampoline(
+  _ folderPathUTF8: UnsafePointer<CChar>?, _ slot: Int32, _ coverThumbUTF8: UnsafePointer<CChar>?
+) {
+  guard let folderPathUTF8, let coverThumbUTF8 else { return }
+  let path = String(cString: folderPathUTF8)
+  let cover = String(cString: coverThumbUTF8)
+  MainActor.assumeIsolated {
+    FolderStore.shared.folderCoverReady(path: path, slot: Int(slot), coverThumbPath: cover)
   }
 }
 

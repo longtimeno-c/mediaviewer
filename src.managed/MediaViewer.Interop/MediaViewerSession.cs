@@ -332,6 +332,11 @@ public sealed partial class MediaViewerSession : IDisposable
     public string FolderSummaryCoverThumb(uint index) =>
         ReadFolderString(NativeMethods.mv_folder_summary_cover_thumb_path, index);
 
+    /// <summary>ABI 0.42: cover <paramref name="slot"/> of a folder tile (0 the big one).</summary>
+    public string FolderSummaryCoverThumb(uint index, uint slot) =>
+        ReadFolderString((MvSessionHandle h, uint i, IntPtr buf, uint cap, out uint bytes) =>
+            NativeMethods.mv_folder_summary_cover_thumb_path_at(h, i, slot, buf, cap, out bytes), index);
+
     public void FolderRequestSummary(uint index) =>
         ThrowIfFailed(NativeMethods.mv_folder_request_summary(_handle, index));
 

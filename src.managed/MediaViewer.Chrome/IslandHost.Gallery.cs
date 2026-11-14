@@ -1094,7 +1094,61 @@ public static partial class IslandHost
         card.Loaded = (summary.Flags & MvFolderSummary.FlagLoaded) != 0;
         card.CoverPath = (summary.Flags & MvFolderSummary.FlagHasCover) != 0
             ? _folderSession!.FolderSummaryCoverThumb(index) : "";
+        // ABI 0.42: the tile's small photos. An older core leaves CoverCount 0,
+        // which reads as the one cover above.
+        uint covers = Math.Min(summary.CoverCount, 3u);
+        if (covers <= 1 || card.CoverPath.Length == 0)
+        {
+            card.CoverPaths = card.CoverPath.Length == 0 ? [] : [card.CoverPath];
+        }
+        else
+        {
+            var paths = new string[covers];
+            for (uint slot = 0; slot < covers; ++slot)
+                paths[slot] = _folderSession!.FolderSummaryCoverThumb(index, slot);
+            card.CoverPaths = paths;
+        }
         return card;
+    }
+
+    // The hairline between a folder tile's photos: the gallery shows through.
+    private const double FolderMosaicGap = 2;
+
+    /// <summary>
+    /// A folder tile's mosaic for <paramref name="count"/> photos (children:
+    /// big, small, small): one fills the tile; two split it in halves; three
+    /// put the big one over two thirds and stack the small ones beside it.
+    /// Only a change of count re-lays it, so the big photo never moves when
+    /// the small ones arrive after it.
+    /// </summary>
+    private static void LayoutFolderMosaic(Grid mosaic, int count)
+    {
+        int shape = Math.Clamp(count, 1, 3);
+        if (mosaic.Tag is int laid && laid == shape) return;
+        mosaic.Tag = shape;
+        mosaic.ColumnDefinitions.Clear();
+        mosaic.RowDefinitions.Clear();
+        if (shape >= 2)
+        {
+            mosaic.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(shape == 3 ? 2 : 1, GridUnitType.Star) });
+            mosaic.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        if (shape == 3)
+        {
+            mosaic.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            mosaic.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        }
+        var big = (FrameworkElement)mosaic.Children[0];
+        var first = (FrameworkElement)mosaic.Children[1];
+        var second = (FrameworkElement)mosaic.Children[2];
+        Grid.SetColumn(big, 0);
+        Grid.SetRow(big, 0);
+        Grid.SetRowSpan(big, shape == 3 ? 2 : 1);
+        Grid.SetColumn(first, 1);
+        Grid.SetRow(first, 0);
+        Grid.SetRowSpan(first, 1);
+        Grid.SetColumn(second, 1);
+        Grid.SetRow(second, 1);
     }
 
     // A clip's gallery or filmstrip tile: a play glyph in a dark disc over the
@@ -1245,12 +1299,23 @@ public static partial class IslandHost
         public UIElement GetElement(ElementFactoryGetArgs args)
         {
             var vm = (FolderCardVm)args.Data;
-            var cover = new Image
+            // One big photo and two small ones (the album look), split by a
+            // hairline of the gallery behind. Two photos halve the tile; one
+            // fills it, as before. The images fill their cells and are clipped
+            // to them, so a portrait and a landscape sit side by side.
+            var cover = new Image { Stretch = Stretch.UniformToFill };
+            var small1 = new Image { Stretch = Stretch.UniformToFill };
+            var small2 = new Image { Stretch = Stretch.UniformToFill };
+            var mosaic = new Grid
             {
                 Width = GalleryTile,
                 Height = GalleryTile,
-                Stretch = Stretch.UniformToFill,
+                ColumnSpacing = FolderMosaicGap,
+                RowSpacing = FolderMosaicGap,
             };
+            mosaic.Children.Add(cover);
+            mosaic.Children.Add(small1);
+            mosaic.Children.Add(small2);
             var placeholder = new Grid
             {
                 Width = GalleryTile,
@@ -1267,7 +1332,7 @@ public static partial class IslandHost
             });
             var box = new Grid { Width = GalleryTile, Height = GalleryTile };
             box.Children.Add(placeholder);
-            box.Children.Add(cover);
+            box.Children.Add(mosaic);
 
             // The Mac's .ultraThinMaterial Capsule: the theme's surface, a
             // little see-through, and its text colour, not a fixed black.
@@ -1326,7 +1391,28 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetCover() => ShowTileImage(cover, vm.CoverPath, GalleryDecodeWidth, placeholder);
+            void SetCover()
+            {
+                string[] paths = vm.CoverPaths;
+                LayoutFolderMosaic(mosaic, paths.Length);
+                string big = paths.Length > 0 ? paths[0] : vm.CoverPath;
+                // The big photo is already up when the small ones arrive: keep
+                // its source rather than decode it again (no blink).
+                if (cover.Tag as string != big || big.Length == 0)
+                {
+                    cover.Tag = big;
+                    ShowTileImage(cover, big, GalleryDecodeWidth, placeholder);
+                }
+                ShowSmall(small1, paths.Length > 1 ? paths[1] : "");
+                ShowSmall(small2, paths.Length > 2 ? paths[2] : "");
+            }
+            static void ShowSmall(Image image, string path)
+            {
+                image.Visibility = path.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+                if (image.Tag as string == path) return;
+                image.Tag = path;
+                ShowTileImage(image, path, GalleryDecodeWidth);
+            }
             void SetCount()
             {
                 count.Visibility = vm.Loaded ? Visibility.Visible : Visibility.Collapsed;
@@ -1337,7 +1423,8 @@ public static partial class IslandHost
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
-                if (e.PropertyName is nameof(FolderCardVm.CoverPath) or null) SetCover();
+                if (e.PropertyName is nameof(FolderCardVm.CoverPath) or nameof(FolderCardVm.CoverPaths) or null)
+                    SetCover();
                 if (e.PropertyName is nameof(FolderCardVm.Loaded) or nameof(FolderCardVm.MediaCount)
                     or nameof(FolderCardVm.SubfolderCount) or nameof(FolderCardVm.PhotosInside)
                     or nameof(FolderCardVm.SearchStopped) or nameof(FolderCardVm.Status) or null)
@@ -1521,6 +1608,18 @@ internal sealed class FolderCardVm : INotifyPropertyChanged
         get => _coverPath;
         set { if (_coverPath == value) return; _coverPath = value; Changed(nameof(CoverPath)); }
     }
+    // The big tile's photos, the big one first (0..3); the chip shows CoverPath alone.
+    public string[] CoverPaths
+    {
+        get => _coverPaths;
+        set
+        {
+            if (_coverPaths.AsSpan().SequenceEqual(value)) return;
+            _coverPaths = value;
+            Changed(nameof(CoverPaths));
+        }
+    }
+    private string[] _coverPaths = [];
     public string Status
     {
         get
