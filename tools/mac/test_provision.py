@@ -107,6 +107,9 @@ class FakeConnect:
                     caps.add(body["data"]["attributes"]["capabilityType"])
             return {"data": {}}
         if method == "GET" and path.startswith("/certificates?"):
+            # Both Developer ID types are asked for: a G2 certificate is the usual one now.
+            types = path.split("filter[certificateType]=")[1].split("&")[0].split(",")
+            assert set(types) == {"DEVELOPER_ID_APPLICATION", "DEVELOPER_ID_APPLICATION_G2"}, types
             return {"data": self.certs}
         if method == "POST" and path == "/profiles":
             bid = body["data"]["relationships"]["bundleId"]["data"]["id"]

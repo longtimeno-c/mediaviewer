@@ -49,7 +49,8 @@ TUNNEL_SUFFIX = ".DriftwireTunnel"
 APP_CAPS = ("NETWORK_EXTENSIONS", "SYSTEM_EXTENSION_INSTALL")
 TUNNEL_CAPS = ("NETWORK_EXTENSIONS",)
 DEVELOPER_ID_PROFILE = "MAC_APP_DIRECT"   # the API's name for a Developer ID profile
-DEVELOPER_ID_CERT = "DEVELOPER_ID_APPLICATION"
+# Certificates made since 2021 are G2 (the newer intermediate); older ones keep the plain type.
+DEVELOPER_ID_CERTS = ("DEVELOPER_ID_APPLICATION_G2", "DEVELOPER_ID_APPLICATION")
 REPO = "longtimeno-c/mediaviewer"
 
 
@@ -188,7 +189,7 @@ def pick_certificate(api: Api, wanted: str | None, now: datetime) -> dict:
     """The Developer ID Application certificate to put in the profiles: the
     one named by --certificate (its serial number or id), or the only valid
     one. Several valid and none named: stop and list them."""
-    certs = api.get(f"/certificates?filter[certificateType]={DEVELOPER_ID_CERT}&limit=200").get("data", [])
+    certs = api.get(f"/certificates?filter[certificateType]={','.join(DEVELOPER_ID_CERTS)}&limit=200").get("data", [])
 
     def valid(c: dict) -> bool:
         exp = parse_date(c["attributes"].get("expirationDate"))
