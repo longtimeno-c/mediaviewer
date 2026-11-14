@@ -48,6 +48,20 @@ for any download. Never hidden (App Review guideline
 Settings names it and where it comes from, and Forget removes it like any library. Cost: a release
 of about 185 MB on GitHub that must stay published, a key to keep, and one more `remote_file`.
 
+**Users of the self-hosted computer, and a LAN SMB share made through one elevated step (owner, 2026-11-14, #686 §2).**
+There is one admin password, the owner's passphrase. Anyone signed in with it, in the app or in the `driftwire`
+CLI, adds and changes other users (`admin`, `change`, `view`). The list is kept in the host service's store
+beside the passphrase, and never holds a password: an SMB password is the OS account's, typed and handed to
+the OS once. This bends call **C3** ("the CLI does not ask for it locally",
+[nas-owner-and-guests.md](../plans/nas-owner-and-guests.md) §3.7) for `host users` only, because the owner asked
+for sign-in in the CLI. The limit is said plainly: whoever can edit the host's files can edit the list, but
+every change to the OS's accounts and shares needs an OS administrator's approval besides. That approval is
+one elevated step (`driftwire host smb-apply`), started by the unprivileged command and approved each time.
+The always-running host still refuses elevation. The share is SMB3 with encryption on that share, has no
+guest access, and is never SMB1. It is LAN only: `host_ports` refuses 137–139, 445 and 3389 whoever asks, which
+keeps self-hosted.md's "never SMB, never RDP". The step changes only accounts and shares it marked as
+MediaViewer's. Plan: [self-host-users-smb.md](../plans/self-host-users-smb.md).
+
 **Claim tokens do not expire (2026-11-10).** Reading one needs access to the share, and that access could write a
 new one, so an expiry adds nothing, while comparing a NAS clock with a file's time could lock a person out.
 

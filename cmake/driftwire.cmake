@@ -214,6 +214,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_host.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_host_setup.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_host_users.cpp"
     # The phone's own reading of a pairing QR, for the host's (pure: sodium, json, pair_check).
     "${MV_SOURCE_ROOT}/src/mobile/link_payload.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
@@ -274,14 +275,17 @@ set(_C "${_S}/cli")
 if(WIN32)
   # *_win.cpp: may include <windows.h>
   set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp ${_C}/serve_tty_win.cpp
-                          ${_C}/autostart_win.cpp ${_C}/host_proc_win.cpp ${_C}/volume_win.cpp)
+                          ${_C}/autostart_win.cpp ${_C}/host_proc_win.cpp ${_C}/volume_win.cpp
+                          ${_S}/host_smb_win.cpp ${_C}/elevate_win.cpp)
 elseif(APPLE)
   set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm ${_C}/serve_tty_posix.cpp
-                          ${_C}/autostart_mac.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp)
+                          ${_C}/autostart_mac.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp
+                          ${_S}/host_smb_mac.cpp ${_C}/elevate_mac.cpp)
   set_source_files_properties(${_C}/update_net_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
   set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp ${_C}/serve_tty_posix.cpp
-                          ${_C}/autostart_linux.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp)
+                          ${_C}/autostart_linux.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp
+                          ${_S}/host_smb_none.cpp ${_C}/elevate_none.cpp)
 endif()
 # Where `driftwire` asks whether a newer version is out, and whose installers
 # `driftwire update` runs (cli/update.h): the site release.yml deploys.
@@ -302,6 +306,7 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
   ${_C}/host_cmd.cpp ${_C}/host_cmd.h ${_C}/host_keepers.cpp ${_C}/host_keepers.h
   ${_C}/host_setup.cpp ${_C}/host_setup.h ${_C}/qr.cpp ${_C}/qr.h
+  ${_S}/host_smb.cpp ${_S}/host_smb.h ${_C}/host_users.cpp ${_C}/host_users.h ${_C}/elevate.h
   ${_C}/autostart.cpp ${_C}/autostart.h ${_C}/host_proc.h ${_C}/volume.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/nas_update.cpp ${_C}/nas_update.h
@@ -316,10 +321,14 @@ target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="
                                                          MV_NAS_UPDATE_KEY="${MV_NAS_UPDATE_KEY}")
 if(WIN32)
   # winhttp: the update check (update_net_win.cpp), Windows' own DLL.
-  target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp)
+  # netapi32: the LAN share's accounts and shares (host_smb_win.cpp, the elevated step only).
+  target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp netapi32 advapi32)
 elseif(APPLE)
   # Foundation: NSURLSession for the update check (update_net_mac.mm).
-  target_link_libraries(mv_driftwire_cli_core PUBLIC "-framework Foundation")
+  # OpenDirectory, SystemConfiguration: the LAN share's accounts and this Mac's
+  # Bonjour name (host_smb_mac.cpp). Security: the authorization dialog (elevate_mac.cpp).
+  target_link_libraries(mv_driftwire_cli_core PUBLIC "-framework Foundation" "-framework OpenDirectory"
+                        "-framework SystemConfiguration" "-framework Security" "-framework CoreFoundation")
 endif()
 
 if(NOT DEFINED MV_DRIFTWIRE_CLI_VERSION OR MV_DRIFTWIRE_CLI_VERSION STREQUAL "")

@@ -156,7 +156,11 @@ struct caps_msg {
   bool has_grant = false;
   std::int64_t grant_expires = 0;
   bool grant_scoped = false;
+  // The device's role (self-host-users-smb.md §9): "view", "change" or "admin"; "" from a
+  // service older than roles (treat as "change" for a paired device: it could write).
+  std::string role;
 };
+inline constexpr const char* kCapsRole = "role";
 // `owner_fields`: members appended to the object as they are (the owner's
 // "features" and "passphrase"), or empty.
 [[nodiscard]] std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields = {});
@@ -260,9 +264,14 @@ inline constexpr std::int64_t kMaxPairTtlMs = 600000;
 
 // serve_pair: the code the QR carried and what the phone calls itself.
 [[nodiscard]] std::string pair_json(std::string_view code, std::string_view name);
+// `kind`: kDeviceDesktop for a desktop opening the folders (it starts as
+// "can view files"); "" for a phone. A service from before this ignores it.
+inline constexpr const char* kDeviceDesktop = "desktop";
+[[nodiscard]] std::string pair_json(std::string_view code, std::string_view name, std::string_view kind);
 struct pair_msg {
   std::string code;
   std::string name;
+  std::string kind;  // "" or kDeviceDesktop
 };
 [[nodiscard]] std::optional<pair_msg> parse_pair(std::string_view json);
 

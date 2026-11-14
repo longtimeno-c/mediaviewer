@@ -56,7 +56,7 @@ std::string help_text() {
          "                               serve status shows its identity and passphrase, serve passphrase\n"
          "                               set|reset changes or resets the owner's passphrase (here only);\n"
          "                               add, pair-code --for 24h|7d|... make a timed phone, serve grant\n"
-         "                               NAME-OR-KEY --for D|--forever changes one\n"
+         "                               NAME-OR-KEY --for D|--forever|--role view|change changes one\n"
          "  driftwire host               host the service and a relay on this computer, from\n"
          "         [--data DIR]          its own folder (DIR/host), until stopped: what starts at\n"
          "                               login; host share PATH [--label L] [--backup] gives phones\n"
@@ -67,7 +67,12 @@ std::string help_text() {
          "                               through it all (a DuckDNS name, a folder, the router, a\n"
          "                               phone, the VPN), host name duckdns|none sets the name (the\n"
          "                               token is typed), host pair shows a phone's pairing QR, host\n"
-         "                               vpn on [--tls-port 443]|off makes it the laptop's VPN exit\n"
+         "                               vpn on [--tls-port 443]|off makes it the laptop's VPN exit;\n"
+         "                               host users [add NAME [--role view|change|admin] [--folders\n"
+         "                               L1,L2] | role NAME ROLE | password NAME | remove NAME | apply]\n"
+         "                               keeps who may open its folders from other computers at home\n"
+         "                               (the admin passphrase and passwords are typed; an administrator\n"
+         "                               approves each change to this computer's file sharing)\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -97,6 +102,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   std::string first_word;          // a word that is not a command, for the error
   bool want_to = false, want_once = false;
   bool want_label = false, want_backup = false;
+  bool want_users_opts = false;  // --folders, --input-stdin (host users only)
+  bool want_role = false;        // --role: host users, or a device's role (serve grant)
 
   for (std::size_t i = 0; i < argv.size(); ++i) {
     const std::string_view s = argv[i];
@@ -159,6 +166,15 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--backup" && flag) {
         a.backup = true;
         want_backup = true;
+      } else if (t.name == "--role") {  // ---- host users (self-host-users-smb.md) ----
+        if (!value(a.role, "a role (view, change or admin)")) return out;
+        want_role = true;
+      } else if (t.name == "--folders") {
+        if (!value(a.folders, "folder labels (Photos,Videos) or all")) return out;
+        want_users_opts = true;
+      } else if (t.name == "--input-stdin" && flag) {
+        a.input_stdin = true;
+        want_users_opts = true;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -285,8 +301,12 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         const bool timed = a.serve == serve_action::add || a.serve == serve_action::pair_code || a.serve == serve_action::grant;
         if ((!a.for_duration.empty() || a.forever) && !timed) {
           out.error = "--for and --forever go with serve add, pair-code or grant";
-        } else if (a.serve == serve_action::grant && a.for_duration.empty() == !a.forever) {
+        } else if (a.serve == serve_action::grant && !a.for_duration.empty() && a.forever) {
           out.error = "serve grant takes --for DURATION or --forever, one of them";
+        } else if (a.serve == serve_action::grant && a.for_duration.empty() && !a.forever && !want_role) {
+          out.error = "serve grant takes --for DURATION, --forever or --role view|change";
+        } else if (want_role && (a.serve != serve_action::grant || (a.role != "view" && a.role != "change"))) {
+          out.error = "--role goes with serve grant (view or change) or host users";
         } else if (a.forever && a.serve != serve_action::grant) {
           out.error = "--forever goes with serve grant";
         }
@@ -330,13 +350,20 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.host = host_action::setup;
       } else if (what == "pair" && words.size() == 1) {
         a.host = host_action::pair;
+      } else if (what == "users") {
+        // ---- host users (self-host-users-smb.md): host_users.cpp checks the words. ----
+        a.host = host_action::users;
+        a.host_words.assign(words.begin() + 1, words.end());
+      } else if (what == "smb-apply" && words.size() <= 2) {
+        a.host = host_action::smb_apply;
+        a.host_words.assign(words.begin() + 1, words.end());
       } else if (what == "name" && words.size() == 2 && (words[1] == "duckdns" || words[1] == "none")) {
         // Only the provider: the subdomain and the token are typed or pasted, never arguments.
         a.host = host_action::name;
         a.on = words[1] == "duckdns";
       } else {
         out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
-                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off or stay-awake on|off";
+                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off, stay-awake on|off or users";
         return out;
       }
       if (a.tls_port != 0 && !(a.host == host_action::vpn && a.on)) {
@@ -345,6 +372,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       }
       if ((want_label || want_backup) && a.host != host_action::share) {
         out.error = "--label and --backup go with host share";
+        return out;
+      }
+      if ((want_users_opts || want_role) && a.host != host_action::users) {
+        out.error = "--role, --folders and --input-stdin go with host users";
         return out;
       }
       break;
@@ -360,6 +391,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   }
   if ((want_label || want_backup) && a.cmd != command::host) {
     out.error = "--label and --backup go with host share";
+    return out;
+  }
+  if ((want_users_opts || (want_role && a.cmd != command::serve)) && a.cmd != command::host) {
+    out.error = "--role, --folders and --input-stdin go with host users";
     return out;
   }
   if (want_to && a.cmd != command::send) {

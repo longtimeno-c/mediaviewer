@@ -730,6 +730,27 @@ Try the guided run without the internet or a router with the test build:
 `printf '%s\n' ~/Pictures "" "" "" "" n n n | build/bin/mv_driftwire_cli_test host setup --test-data /tmp/hs --test-loopback`
 (it never reaches duckdns.org or asks a router, and refuses start at login).
 
+#### Users and the LAN share (`driftwire host users`, plan: `docs/plans/self-host-users-smb.md`)
+
+```bash
+build/bin/driftwire host users                               # the list: names and roles (no sign-in)
+build/bin/driftwire host users add anna --role view          # asks the admin passphrase, then anna's password (echo off)
+build/bin/driftwire host users role anna change --folders all
+build/bin/driftwire host users password anna
+build/bin/driftwire host users remove anna
+build/bin/driftwire host users apply                         # a user still waiting for an administrator
+build/bin/mv_import_tests "[host-users]"                     # stand-in OS port; loopback only
+```
+
+Each change ends in one elevated step (`driftwire host smb-apply`, never typed): sudo at a terminal
+or the authorization dialog from the app on macOS, UAC on Windows. It makes sharing-only accounts
+and SMB3-encrypted shares with no guest access, and never changes an account or share it did not
+make. Linux says it is not offered yet (Samba later). The ports (`host_smb_mac.cpp`,
+`host_smb_win.cpp`) have never been run against a real OS: the tests use a recording stand-in and
+never make an account or a share. The Windows C++ only compiles in CI. `host_ports` refuses to
+forward 137–139, 445 and 3389, a test proves it, and `host status` shows the share's addresses and
+the users.
+
 `start-at-login on` from a build of your own points the entry at that build; turn it off before
 deleting the build (`host start-at-login off`). The test build refuses it. The running host asks the
 router for its ports and keeps a DuckDNS name updated; neither has been run against a real router or

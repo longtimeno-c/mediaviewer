@@ -71,6 +71,13 @@ enum class outside_kind : std::uint8_t {
 // The kind of an outside IPv4 address.
 [[nodiscard]] outside_kind classify(const net::address& outside) noexcept;
 
+// Whether a port may ever be forwarded: never NetBIOS (137-139), SMB (445) or
+// RDP (3389), whoever asks (docs/plans/self-host-users-smb.md §6): the LAN
+// share is for the home network only. The keeper refuses such a port before
+// it talks to any router.
+[[nodiscard]] bool forwardable(std::uint16_t port) noexcept;
+inline constexpr const char* kNeverForwarded = "never forwarded (a LAN-only service)";
+
 struct port_wanted {
   std::uint16_t internal_port = 0;      // what this computer listens on
   std::uint16_t external_port = 0;      // asked of the router (0: the same as internal)

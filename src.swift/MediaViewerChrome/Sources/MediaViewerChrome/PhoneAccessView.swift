@@ -120,6 +120,9 @@ final class PhoneStore: ObservableObject {
     var lockedUntil: Int64 = 0
     var qrForSeconds: Int64 = 0
     var relay = ""  // the person's own relay, "host:port"; its key stays on the NAS
+    /// This computer's users (names and roles only) and its LAN share's addresses (PhoneUsersView.swift).
+    var users: [User]?
+    var shareAddresses: [String] = []
     /// The NAS takes guest codes, time limits and a passphrase.
     var nasHasFeatures: Bool { nasFeatures.contains("passphrase") }
     /// The NAS service takes phone backups (1.1): backup folders and the per-phone switch.
@@ -243,6 +246,8 @@ final class PhoneStore: ObservableObject {
     }
     s.hostStep = o["host_step"] as? String ?? ""
     s.hostSaid = o["host_said"] as? String ?? ""
+    s.users = PhoneStore.parseUsers(o)
+    s.shareAddresses = o["share_addresses"] as? [String] ?? []
     return s
   }
 
@@ -321,6 +326,8 @@ final class PhoneStore: ObservableObject {
     case "host_not_listening": return "The server started but isn't answering yet. Another program may be using its port."
     case "host_no_network": return "Claimed, but this Mac isn't on a network, so a phone can't reach it yet."
     case "host_failed": return "The driftwire program couldn't be run."
+    case "host_users":
+      return state.hostSaid.isEmpty ? "Your Mac's file sharing wasn't changed." : "File sharing: \(state.hostSaid)"
     case "locked_out":
       return "Too many tries. Try again at \(Self.clock(state.lockedUntil)), or reset it on the server with driftwire serve passphrase reset."
     case "nas_too_old":
@@ -437,6 +444,8 @@ final class PhoneStore: ObservableObject {
     case "set_passphrase": return "Setting the passphrase"
     case "grant": return "Changing the phone's access"
     case "host_start": return "Starting the server"
+    case "user_set", "user_remove", "users_apply":
+      return state.hostStep == "users" ? "Waiting for your Mac's administrator" : "Changing the users"
     case "host_setup":
       switch state.hostStep {
       case "share": return "Sharing the folders"
@@ -580,6 +589,8 @@ struct PhoneAccessSection: View {
   @ViewBuilder private var content: some View {
     if let line = model.busyText { ProgressLine(verb: line, fraction: nil, timed: false) }
     if let h = s.host, h.setUp { hostRow(h) }
+    // Users of this Mac's LAN share (self-host-users-smb.md §8): once it is claimed.
+    if let h = s.host, h.setUp, s.claimed { PhoneUsersSection() }
     // Until a service is claimed; and again after a setup on this Mac that stopped part way.
     if !s.claimed && (s.folder.isEmpty || (s.host?.setUp ?? false)) {
       setUp

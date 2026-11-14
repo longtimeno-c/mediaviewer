@@ -41,6 +41,7 @@ class client {
     std::uint32_t ops = kAllOps;                               // what this client can use
     std::string pair_code;                                     // from the QR: redeemed before serve_hello
     std::string device_name;                                   // what the desktop shows (with pair_code)
+    std::string device_kind;                                   // kDeviceDesktop for a desktop ("": a phone)
   };
 
   // Handshakes over `l`, says what it can do, reads what the service can.

@@ -262,4 +262,33 @@ public class PhoneWordsTests
         var open = new PhoneDevice("Bea", "k");
         Assert.Equal(4, PhoneWords.ExtendDurations(open, 1000).Count);  // Limit… offers every length
     }
+
+    // This PC's users (self-host-users-smb.md §8): names and roles only, the Mac's words.
+    [Fact]
+    public void UsersAreReadWithTheirRolesAndAPasswordGoesOnlyIntoTheRequest()
+    {
+        const string json = """
+            {"driftwire":true,"users":[{"name":"anna","role":"view","applied":true,"folders":["Photos"]},
+                                       {"name":"ben","role":"change","applied":false},{"role":"view"}],
+             "share_addresses":["\\\\STUDIO\\Photos","smb://studio.local/Photos"]}
+            """;
+        PhoneLinkState s = PhoneWords.ParseLink(json)!;
+        Assert.NotNull(s.Users);
+        Assert.Equal(2, s.Users!.Count);  // one with no name is dropped
+        Assert.Equal("Can view files · Photos", PhoneWords.UserDetail(s.Users[0]));
+        Assert.Equal("Can change files · Waiting for your PC's administrator", PhoneWords.UserDetail(s.Users[1]));
+        Assert.Equal(@"\\STUDIO\Photos", s.ShareAddresses[0]);
+        Assert.True(s.SameAs(PhoneWords.ParseLink(json)!));
+        Assert.Null(PhoneWords.ParseLink("{}")!.Users);
+        Assert.True(PhoneWords.ValidUserName("anna"));
+        Assert.False(PhoneWords.ValidUserName("Anna"));
+        Assert.False(PhoneWords.ValidUserName("admin"));
+        Assert.False(PhoneWords.ValidUserName(new string('a', 21)));
+        Assert.Equal("Admin", PhoneWords.RoleLabel("admin"));
+        string set = PhoneWords.UserSetRequest("anna", "change", null, "");
+        Assert.DoesNotContain("password", set);
+        Assert.Contains("\"password\":\"eight888\"", PhoneWords.UserSetRequest("anna", "view", new[] { "Photos" }, "eight888"));
+        Assert.Equal("File sharing: no administrator", PhoneWords.ErrorText(s with { Error = "host_users", HostSaid = "no administrator" }, _ => ""));
+        Assert.Equal("Waiting for your PC's administrator", PhoneWords.BusyText(s with { Busy = "user_set", HostStep = "users" }));
+    }
 }
