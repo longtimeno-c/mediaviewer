@@ -5,7 +5,7 @@
 #include <algorithm>
 
 #include "addons/driftwire/meet.h"
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 
 namespace mv::driftwire {
 

@@ -5,9 +5,12 @@
 # Included by the Windows root and cmake/darwin.cmake after import.cmake and
 # places.cmake, so the two cannot drift, and by cmake/portable (Linux).
 #
-#   mv_driftwire_engine  the wire, Noise, the sealed channel, the transfer, the
-#                         engine and its view tree, and the network and
-#                         Bluetooth ports. Links libsodium and BLAKE3; not the
+#   mv_wire              the protocol (cmake/wire.cmake, src/wire): the wire,
+#                         Noise, the sealed channel, the NAS service, the
+#                         secret store and the network ports. The app's phone
+#                         feature links it too.
+#   mv_driftwire_engine  the transfer, the DHT, relays, the engine and its
+#                         view tree, and the Bluetooth port, over mv_wire. Links libsodium and BLAKE3; not the
 #                         core's io (the tests bring mv_io, the module compiles
 #                         the file port in).
 #   mv_driftwire         the add-on: ONE shared library whose only export is
@@ -31,86 +34,38 @@ if(NOT DEFINED MV_BLAKE3_TARGET)
   set(MV_BLAKE3_TARGET BLAKE3::blake3)
 endif()
 
-# Protocol 2's handshake is a post-quantum hybrid (noise.cpp): ML-KEM-768
-# arrived in libsodium 1.0.21. A distro libsodium (Ubuntu 24.04 ships 1.0.18)
-# fails here, at configure, rather than deep inside noise.cpp.
-include(CheckCXXSourceCompiles)
-include(CMakePushCheckState)
-cmake_push_check_state(RESET)
-set(CMAKE_REQUIRED_LIBRARIES ${MV_SODIUM_TARGET})
-check_cxx_source_compiles("
-#include <sodium.h>
-static_assert(crypto_kem_mlkem768_PUBLICKEYBYTES == 1184);
-int main() { return 0; }" MV_SODIUM_HAS_MLKEM768)
-cmake_pop_check_state()
-if(NOT MV_SODIUM_HAS_MLKEM768)
-  message(FATAL_ERROR "Driftwire needs libsodium 1.0.21 or newer (ML-KEM-768): use the pinned vcpkg port, "
-                      "or a libsodium built from source")
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/wire.cmake")
 
-# The Tunnel looking like HTTPS (slice 4, docs/plans/driftwire-tls-spike.md):
-# BoringSSL (Apache-2.0), Chrome's own TLS, for a browser's ClientHello. The
-# vcpkg port installs it as the OpenSSL package; it must be BoringSSL (the
-# ClientHello calls are its own). Without it, tls_none.cpp: the Tunnel runs on
-# the relay's plain port only.
-# The fuzz build (MV_FUZZ) leaves it out: its harnesses are /MT and libFuzzer's
-# runtime will not link with a static /MD library, and it fuzzes Driftwire's
-# parsers, not TLS.
-find_package(OpenSSL CONFIG QUIET)
-set(MV_DRIFTWIRE_TLS OFF)
-if(TARGET OpenSSL::SSL AND NOT MV_FUZZ)
-  cmake_push_check_state()
-  set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
-  check_cxx_source_compiles("
-#include <openssl/ssl.h>
-#if !defined(OPENSSL_IS_BORINGSSL)
-#error not BoringSSL
-#endif
-int main() { SSL_CTX* c = SSL_CTX_new(TLS_method()); SSL_CTX_set_permute_extensions(c, 1); return 0; }"
-    MV_HAS_BORINGSSL)
-  cmake_pop_check_state()
-  if(MV_HAS_BORINGSSL)
-    set(MV_DRIFTWIRE_TLS ON)
-  endif()
-endif()
-if(MV_DRIFTWIRE_TLS)
-  set(_driftwire_tls ${_S}/tls_boringssl.cpp)
-else()
-  message(STATUS "Driftwire: no BoringSSL; the Tunnel's HTTPS look (slice 4) is left out")
-  set(_driftwire_tls ${_S}/tls_none.cpp)
-endif()
 
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp ${_S}/sysproxy_win.cpp)
+  set(_driftwire_port ${_S}/power_win.cpp ${_S}/sysproxy_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
   set(_driftwire_vpn ${_S}/vpn_win.cpp)
+elseif(IOS)
+  # No module on iOS: mv_wire carries the file port and BLAKE3 hashing
+  # (cmake/wire.cmake), the engine the empty Bluetooth port (no bearer yet).
+  set(_driftwire_port ${_S}/power_ios.cpp ${_S}/bt_none.cpp ${_S}/sysproxy_none.cpp)
+  set(_driftwire_bt "")
+  set(_driftwire_vpn ${_S}/vpn_none.cpp)
 elseif(APPLE)
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp
-    ${_S}/sysproxy_mac.cpp)
+  set(_driftwire_port ${_S}/power_mac.cpp ${_S}/sysproxy_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
   set(_driftwire_vpn ${_S}/vpn_mac.mm)
 else()
   # Linux: the Secret Service (libsecret) and logind (libsystemd / libelogind)
   # are loaded at run time, so there is nothing to build against; no
   # Bluetooth bearer yet (bt_none.cpp: Wi-Fi and the internet only).
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/secrets_linux.cpp ${_S}/power_linux.cpp ${_S}/sysproxy_none.cpp)
+  set(_driftwire_port ${_S}/power_linux.cpp ${_S}/sysproxy_none.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
   set(_driftwire_vpn ${_S}/vpn_none.cpp)
 endif()
 
 add_library(mv_driftwire_engine STATIC
-  ${_S}/wire.cpp ${_S}/wire.h
-  ${_S}/link.h
-  ${_S}/noise.cpp ${_S}/noise.h
-  ${_S}/cpace.cpp ${_S}/cpace.h
-  ${_S}/channel.cpp ${_S}/channel.h
   ${_S}/transfer.cpp ${_S}/transfer.h
-  ${_S}/stages.cpp ${_S}/stages.h
   ${_S}/presence.cpp ${_S}/presence.h
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
-  ${_S}/net.h ${_S}/net_address.cpp
   ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/mapping.cpp ${_S}/mapping.h
   ${_S}/race.h
@@ -122,13 +77,10 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/dht.cpp ${_S}/dht.h
   ${_S}/meet.cpp ${_S}/meet.h
   ${_S}/handover.cpp ${_S}/handover.h
-  ${_S}/secrets.h ${_S}/secrets_file.cpp
-  ${_S}/known.h ${_S}/known.cpp
-  ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
+  ${_S}/presence_keys.cpp ${_S}/presence_keys.h
   ${_S}/tunnel.cpp ${_S}/tunnel.h
   ${_S}/sysproxy.h ${_S}/sysproxy_record.cpp
-  ${_S}/tls.h ${_S}/tls_common.cpp ${_driftwire_tls}
   ${_S}/netstack.cpp ${_S}/netstack.h
   ${_S}/vpn.cpp ${_S}/vpn.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
@@ -139,12 +91,8 @@ add_library(mv_driftwire_engine STATIC
   ${_driftwire_port}
 )
 target_include_directories(mv_driftwire_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
-target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options ${MV_SODIUM_TARGET} ${MV_BLAKE3_TARGET}
+target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options mv_wire ${MV_SODIUM_TARGET} ${MV_BLAKE3_TARGET}
   Threads::Threads)
-if(MV_DRIFTWIRE_TLS)
-  target_link_libraries(mv_driftwire_engine PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-  target_compile_definitions(mv_driftwire_engine PUBLIC MV_DRIFTWIRE_TLS=1)
-endif()
 set_target_properties(mv_driftwire_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(WIN32)
@@ -153,7 +101,9 @@ if(WIN32)
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
   # PowerCreateRequest is kernel32's (#530), linked by default.
   # wininet: the Tunnel's system proxy, this user's setting (sysproxy_win.cpp).
-  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 wininet)
+  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 dnsapi wininet)
+elseif(IOS)
+  target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework Security")
 elseif(APPLE)
   # Security: the Keychain (#472 PR 4). IOKit: staying awake during a transfer (#530).
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"
@@ -161,6 +111,11 @@ elseif(APPLE)
 else()
   # dlopen: libsecret (secrets_linux.cpp), libsystemd (power_linux.cpp).
   target_link_libraries(mv_driftwire_engine PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
+# iOS links the engine statically: no add-on module, relay or command line.
+if(IOS)
+  return()
 endif()
 
 if(WIN32)
@@ -242,14 +197,20 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_known.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_relay.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_serve_owner.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_vpn.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_update.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_nas_update.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
-  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core)
+  # test_phone_pairing.cpp: the desk is the app's now (src/phone, cmake/phone.cmake).
+  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone)
   target_compile_definitions(${target} PRIVATE
     MV_DRIFTWIRE_MODULE_PATH="$<TARGET_FILE:mv_driftwire>"
     MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json"
@@ -304,12 +265,12 @@ endif()
 set(_C "${_S}/cli")
 if(WIN32)
   # *_win.cpp: may include <windows.h>
-  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp)
+  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp ${_C}/serve_tty_win.cpp)
 elseif(APPLE)
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm ${_C}/serve_tty_posix.cpp)
   set_source_files_properties(${_C}/update_net_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp ${_C}/serve_tty_posix.cpp)
 endif()
 # Where `driftwire` asks whether a newer version is out, and whose installers
 # `driftwire update` runs (cli/update.h): the site release.yml deploys.
@@ -327,11 +288,18 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/args.cpp ${_C}/args.h
   ${_C}/host.cpp ${_C}/host.h
   ${_C}/session.cpp ${_C}/session.h
+  ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
   ${_C}/update.cpp ${_C}/update.h
-  ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
+  ${_C}/nas_update.cpp ${_C}/nas_update.h
+  ${_C}/term.h ${_C}/data_dir.h ${_C}/serve_tty.h ${_driftwire_cli_port}
 )
 target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)
-target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="${MV_DRIFTWIRE_SITE_URL}")
+# The NAS package's update key (docs/plans/nas-setup.md §6): 64 hex digits of
+# the Ed25519 public key that signs <site>/nas/latest.json. Empty (the default,
+# every build of one's own): `driftwire serve` never updates itself.
+set(MV_NAS_UPDATE_KEY "" CACHE STRING "Ed25519 public key (hex) pinned for the NAS service's self-update")
+target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="${MV_DRIFTWIRE_SITE_URL}"
+                                                         MV_NAS_UPDATE_KEY="${MV_NAS_UPDATE_KEY}")
 if(WIN32)
   # winhttp: the update check (update_net_win.cpp), Windows' own DLL.
   target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp)

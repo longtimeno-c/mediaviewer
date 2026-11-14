@@ -62,10 +62,24 @@ class slot_client {
   virtual status screen_open(const mv_slot_screen_request& request) = 0;
   virtual status badges(const mv_slot_badges_request& request) = 0;
   virtual void event(const mv_slot_event& event) = 0;
+  // The label of a GPS point (mv.place_labels.1); unsupported_format when
+  // the add-on has none. "" is a point with no place.
+  virtual status place_label(double lat, double lon, std::string& out) {
+    (void)lat, (void)lon, (void)out;
+    return status::unsupported_format;
+  }
+  // A request from another add-on (mv.request.1); unsupported_format when this
+  // add-on takes none.
+  virtual status request(const char* caller, const char* method, const char* json, std::string& out) {
+    (void)caller, (void)method, (void)json, (void)out;
+    return status::unsupported_format;
+  }
 };
 
 // Over a native add-on's mv.slots.1 table (which lives until its shutdown).
-[[nodiscard]] std::unique_ptr<slot_client> native_slot_client(void* addon, const mv_addon_slots* table);
+[[nodiscard]] std::unique_ptr<slot_client> native_slot_client(void* addon, const mv_addon_slots* table,
+                                                              const mv_addon_place_labels* labels = nullptr,
+                                                              const mv_addon_request_api* requests = nullptr);
 
 // What changed, for the listener.
 enum slot_change : std::uint32_t {
@@ -160,6 +174,17 @@ class slot_registry {
   // meanwhile.
   [[nodiscard]] result<std::vector<std::string>> provider_paths(const std::string& prefix, const std::string& query,
                                                                 const std::function<bool()>& keep_going);
+  // The labels of `points` (lat, lon pairs) from the add-on that declares the
+  // prefix, one request on its worker for the whole batch: `out[i]` is
+  // points[i]'s, "" for none. not_found when none declares it, it detaches
+  // meanwhile, or it has no labels to give.
+  // One add-on asking another, on the answering add-on's worker (docs/design/18
+  // "Add-ons calling add-ons"). status::not_found when `target` is not attached,
+  // detaches before answering, or takes no requests.
+  [[nodiscard]] result<std::string> addon_request(const std::string& target, const std::string& caller,
+                                                  const std::string& method, const std::string& json);
+  [[nodiscard]] expected provider_labels(const std::string& prefix, std::span<const std::pair<double, double>> points,
+                                         std::vector<std::string>& out);
   // The gallery shows `folder`: one badges request per add-on with badges.
   std::uint64_t request_badges(const std::string& folder);
   status open_screen(const std::string& addon_id, const std::string& screen_id,

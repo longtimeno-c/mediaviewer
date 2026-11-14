@@ -4,6 +4,10 @@
 
 #include <filesystem>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include "addons/ai/platform.h"
 #include "core/json.h"
 
@@ -11,7 +15,9 @@ namespace mv::ai {
 
 machine_info probe_machine(const std::string& data_dir) {
   machine_info m;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_OSX
+  m.os = "ios";
+#elif defined(__APPLE__)
   m.os = "macos";
 #elif defined(_WIN32)
   m.os = "windows";

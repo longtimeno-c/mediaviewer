@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Driftwire's Noise (src/addons/driftwire/noise.h, issue #472): the core
+// Driftwire's Noise (src/wire/noise.h, issue #472): the core
 // checked against the published Cacophony vectors (the same vectors snow,
 // noise-c and cacophony itself pass), and the hybrid patterns protocol 2
 // speaks: both sides agree, the ML-KEM-768 secret is in the keys, a fixed
@@ -14,8 +14,8 @@
 #include <string>
 #include <vector>
 
-#include "addons/driftwire/cpace.h"
-#include "addons/driftwire/noise.h"
+#include "wire/cpace.h"
+#include "wire/noise.h"
 
 namespace noise = mv::driftwire::noise;
 

@@ -389,7 +389,11 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
   (`engine_deps::tree_quiet_s` / `tree_max_wait_s`). A changed folder's own files are walked
   (`scan_dirs`, `walk_files2` at depth 0, the same pairing as a full walk); a folder that came,
   was renamed or may have gone is walked to the root's depth, or, gone, takes its rows with it
-  (`index_db::end_scan_dirs` removes only rows under walked folders). More than 64 folders, or
+  (`index_db::end_scan_dirs` removes only rows under walked folders). A walk removes a row only
+  when it can vouch for the absence (2026-11-09, [12](12-decision-log.md#local-search-ai-add-on)):
+  a walk that failed part way (`walk_files2` returns `MV_ERR_IO` after listing what it could)
+  adds what it found, deletes nothing and marks the root "error" until the next walk; a folder
+  refused to the walk keeps its rows (`engine::keep_unlistable`). More than 64 folders, or
   lost events (`MV_ADDON_TREE_OVERFLOW`), and the root is walked whole. A held root is not
   watched: Resume walks it whole. A root on a network share is watched but keeps the 15-minute
   walk (a server can stop telling without an error); every other watched root is walked whole
@@ -1616,6 +1620,159 @@ reports `documents` (`count`, `shown`, `meaning_match`: the same text model is l
 It is a one-off merge, not a sync. The Photos library root is never exported (its keys are this
 Mac's PhotoKit identifiers). The file carries folder and file names and, if ticked, faces and
 names; nothing about it is logged or sent.
+
+## Setting a phone up
+
+Since 2026-11-12 setting a phone up is the app's, not Local search's ([plan](../plans/phone-in-the-app.md)):
+Settings → Phone access (`PhoneAccessView.swift` on the Mac, `IslandHost.Phone.cs` on Windows, the same words
+and requests) asks and watches; `src/phone/link.cpp` does the work on a thread of its own and calls the desk
+(`src/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)) directly. Local search, when
+loaded, is the link's catalogue source: it builds and delivers generations (`phone_publish`) signed with the
+app's publisher key (`catalogue/publisher.h`), under the library id and epoch of the share's `library.json`,
+which the app writes when the person chooses the folder; `phone_json` says the id, the epoch and the newest
+generation's folder, for the nearby copy. Its `phone_link` entries are null now. The QR is `catalog::pair_url`, made once the
+service has taken a code, good for five minutes. Beside it is the check code (`driftwire::pairing_check`, `pair_check.h`: 80
+bits of a domain-separated BLAKE2b over the library id, the publisher key, the service identity and the access
+key). Driftwire computes it for the card, the phone computes it from the QR alone, and the person compares the
+two before the phone pairs. While it shows, the phones are polled every two seconds
+on one held session; when one appears the code comes down and the card names it. Without Local search the
+card still pairs, claims and serves, and says the phone searches by name and tag until Local search indexes the
+library.
+
+**Moving the signing key** (`catalog_chain.*`). `library.json` carries the current key, its epoch and a chain
+of records, each signed by the key it leaves. A new desktop writes `takeover.request`; the old one shows
+its name and key, and its person hands over, which signs the record and raises the epoch. The new desktop
+finds its key on the share and adopts the library id and epoch. A phone calls `follow_chain` from the key it
+pinned. With the old desktop gone, Start over writes the new key with no record, and each phone scans again.
+The share only ever moves a desktop forward: a library.json naming another library, or a lower epoch, after
+a restore or an edit, is shown on the card ("The share doesn't match this Mac") and never adopted. A desktop
+whose key the share no longer names signs no nearby copy.
+
+**The nearby copy** (`phone/nearby/`, `prepare_nearby`): the newest generation, hard-linked, with its own
+signed `current.json`, the previous one kept for a phone mid-copy, and the text tower. Thumbnail packs stay
+the NAS's. It is copied once per generation, and only with a phone paired.
+
+## The phone's catalogue
+
+A phone answers queries itself, from a copy of the library's index ([plan](../plans/mobile.md) §5,
+§6). `src/addons/ai/catalog.*` builds one **generation** from a read snapshot and delivers it to
+`<destination>/.mediaviewer/`; `engine::run_phone_publish` is the publisher. Nothing here runs
+until the person has published once, and the `phone_auto` setting stops the automatic half.
+
+**What a generation holds** (`gen/000123/`, every file hashed in `manifest.json`, the manifest's
+hash signed in `current.json`):
+
+| File | What |
+|---|---|
+| `catalog.db` | `index.db`'s tables and schema, only the answering tower's vectors and only the folders on this share; `assets.path` is `/<root id>/<rel>` |
+| `settings.json` | what a reader needs of this machine's settings, `faces` included |
+| `labels.f32` | when the index has one |
+| `faces.db` | the app's own schema: named people and the assets and moments they are in. `emb` is empty and the box is zero on every row, so `faces_db::open_read_only` accepts it and no embedding leaves the machine (owner call 7) |
+| `tiny.pack` | one 64 px JPEG per asset (`kTinyEdge`, quality `kTinyQuality`), 1.5 to 2 KB each: inside the phone's copy |
+| `thumbs.idx` | asset → pack, offset, length |
+
+Shared across generations, on the share only: `thumbs/t-<hash>.pack` (the JPEG-512s),
+`previews/p-*.pack`, `models/<spec>/<hash>-<name>`. A shared file's name holds its hash, so one
+that is there at full size is the one meant and a publish copies only what is new. The manifest
+lists the hash of each one a generation uses (`thumb_packs`, `preview_packs`, `model_files`), so
+nothing a phone parses sits outside the signature. `preview_packs` is empty until the setting
+exists.
+
+**Formats.** `tiny.pack`: `MVTINY01`, u32 count, u32 0, then rows `(i64 asset, u64 offset, u32
+length, u32 0)` sorted by asset, then the JPEGs. `thumbs.idx`: `MVTIDX01`, u32 packs, u32 rows, 40
+bytes NUL-padded per pack name, then rows `(i64 asset, u32 pack, u32 length, u64 offset)` sorted by
+asset. Little-endian, so a phone binary-searches a mapping (`find_tiny`, `find_thumb`).
+
+**Names (N7).** `assets.path` and `motion` are NFC. `nfc.cpp` is our own table
+(`tools/fold/gen_nfc_table.py`, Unicode 16), so every OS gives the same bytes. The bytes the file
+really has are in `disk_path` / `disk_motion`, with the same `/<root id>/` prefix, NULL when they
+equal the NFC form: open by `COALESCE(disk_path, path)`. Those two columns exist only in a
+catalogue. Two files that differ only in form both survive: the one already in NFC keeps the
+name, the other keeps its bytes.
+
+**Places.** `place` holds each geotagged asset's label, asked for at publish time through the
+host table's `place_labels`, which reaches Places through `mv.slots.1 place_label` in batches of
+256. A read-only engine with no Places answers `place:` from it (`stored_place_matches`): a whole
+component of the label, or the start of one from four letters, never a point at sea. It is the
+label's own language, so `lisboa` does not find a label that says Lisbon, and a route's other
+points are not searched: Places on the desktop does both.
+
+**Thumbnails.** `thumb_store` keeps a ledger at `phone/thumbs/ledger.db`. A tile is committed to
+SQLite when made, 16 at a time, so a cancel or a kill costs a few at most; hours of work are not
+redone. It runs on its own thread at the OS's background priority and waits for as long as the
+viewer wants the machine, as Import does. A run works for 30 minutes at most, then the catalogue
+goes out with what is ready and the next hour carries on (`thumbs_left`). A JPEG-512 the viewer
+has not cached is made by the host and stored nowhere (`thumbnail_make`), so a publish does not
+fill the viewer's cache. A file with no picture (`corrupt`, `unsupported_format`) is recorded and
+not asked again until it changes. Any other failure is passed over, so it cannot starve the files
+behind it, and asked again next run; after three runs at one size and date it counts as having no
+picture. A failure when the share itself has gone ends the pass and blames no file. Sealing
+writes the tiles to a pack named by its hash; a pack under 16 MiB is folded into the next, so
+hourly publishes do not leave a pack an hour. A pack that has been delivered is removed here unless it
+is small enough to be folded later, and one on neither side has its tiles forgotten and made
+again.
+
+**When it runs.** The whole publish runs at the OS's background priority. A check after each scan
+compares `index_db::content_stamp` (rows, never `seen`) and the named people, both limited to the
+folders a generation carries, with what the newest generation holds; a change in a local folder
+or the Photos library does not count. Different, then quiet for 120 s and
+at most once an hour since the last attempt, publishes. It is part of the control loop's existing
+tick, so it adds no wakeup; while nothing changed it is one lock and a few comparisons. It does
+not run on battery. A generation built while the share is away waits in `phone/gen/`, only the
+newest, with `waiting` in `phone_json`. While one waits, the control loop asks every 30 s, on the
+publisher's thread and not on battery, whether the share is there. A delivery that fails waits
+30 s, doubling to an hour, until the share or its free space changes. A pack is forgotten only
+when neither side has it: the share's `thumbs/` lists without it, or is plainly absent from a
+`.mediaviewer/` that lists (a new destination, or one someone emptied), and the share still looks
+the same once the packs are checked. A stat that fails forgets nothing. A file whose tile keeps
+failing is counted by size and date, so a changed file starts a new count and still stops. A generation the share has
+no room for reports `no_space` and `needs_bytes` without copying anything.
+
+**Retention (§5 rule 4).** The newest two generations stay, and an older one until 2 hours after
+the next generation became current, by this Mac's clock (`phone/arrivals.json`): the share's file
+times are another clock, and a folder that never became current starts no grace. A dead run's part
+folder is removed before a delivery, and the room check counts it as free. A shared file no retained generation names, and unnamed for 30 days, goes;
+a thumbnail pack under the fold size goes after 2 hours, because folding replaces it routinely.
+`phone/unused.json` remembers since when, and an unreadable manifest deletes nothing that round.
+
+**Ranking.** Exact ties break by asset id, then time (`vector_store::ranked_before`, `finish`,
+the text passes), so a phone and its desktop list the same rows in the same order.
+
+**The sample library (2026-11-12, [plan](../plans/mobile.md) §11.1).** A generation like any
+other, made by `tools/ios/sample-library.sh`: 47 CC0 and public-domain files on a disk image of their
+own, indexed by the engine over the app's own decoders with B/32 on the CPU, then `phone_publish`
+under a fixed library id and signed by the sample library's own key
+(`mv_mobile_parity_desktop sample-publish`). The catalogue and the originals are flattened into the
+GitHub release `sample-library`, one file per (root, path): `<root id>__<path with '/' as "__">`.
+`files.json`, signed by the same key (`{"signature", "list"}` in one asset, so a republish never pairs a list
+with another's signature; Ed25519 over `kFilesContext` and the list's bytes), gives
+the root list and the size and SHA-256 of every file sync does not check itself: everything but
+`current.json`, `gen/` and `models/` under the catalogue root, so the JPEG-512 pack, `library.json`
+and every original. On the phone, `sample::static_remote` (`src/mobile/sample.*`) is the `remote_file`
+over that folder; the host does the HTTPS (`mv_fetch_fn`, `SampleFetch.swift`). It passes the
+catalogue's own files through by range, for sync to check, and reads any other file only from a
+whole copy whose hash matched the list (kept in `<thumb cache>/verified` as `<name>.<16 hex of its
+hash>`, so a republished file with the same name and size is fetched again; Forget removes it);
+a file not listed is never fetched. A download belongs to the file, not to the reader that began
+it: a reader that cancels (a seek in a clip, a swipe past a photo) leaves what arrived in a
+`.part` named by the file's hash, and the next reader rehashes that prefix and asks for the rest by
+range. A reader waiting for another's download honours its own cancel. Forget leaves nothing behind for any library, NAS or
+sample: `mv_link_shut_down` stops every read in flight (each fetch polls it) and returns only once
+the core's own writers are done and refuse any later write: the sample's verified copies and the
+JPEG-512 tiles. The app's own writers (an original moved into its store, a downloaded clip
+created) run under `LinkConnection.whileLive`, which refuses a library that is forgotten or
+replaced; Forget passes that gate before it removes the folders, so a late write cannot bring
+one back. Bytes still streaming into a file already open land in a removed file and vanish. The verified copies count
+in the cache size Settings shows and stay under 256 MB, least recently read first (the whole
+library is about 55 MB). A file list the pinned key did not sign is `MV_LINK_REJECTED` from connect,
+check and copy, shown as "didn't pass its signature check", not as unreachable. The clip
+throughput probe is skipped for the sample: its clips are a few megabytes, played from the
+verified copy. `mv_pair_parse` reads the code `SAMPLE` or
+`mediaviewer://sample` as a code with `sample = 1`, the sample's library id and pinned key, and no
+service; `mv_link_open` with `static_base` opens the link over the folder. Sync, the thumb cache,
+`mv_file_read` and the catalogue's search are unchanged, so the sample is checked as a NAS's
+catalogue is: a file whose hash is not the manifest's, or a `current.json` the pinned key did not
+sign, is refused.
 
 ## Photos library source (macOS)
 

@@ -524,6 +524,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 # The Driftwire add-on (docs/design/28): libmv_driftwire.dylib in
 # build/addons/driftwire, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
+# Phone access, part of the app (docs/plans/phone-in-the-app.md).
+include("${CMAKE_CURRENT_LIST_DIR}/phone.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -538,6 +540,14 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # all (the Intel leg of the universal release links x64 dependencies only).
 if(MV_MAC_VCPKG_ARCH STREQUAL "arm64")
   include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/mobile.cmake")
+  # The desktop half of the phone's parity test (tools/ios/run-parity.sh).
+  add_executable(mv_mobile_parity_desktop "${CMAKE_SOURCE_DIR}/tools/ios/mobile_parity_desktop.mm")
+  target_link_libraries(mv_mobile_parity_desktop PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_meta mv_io mv_places_engine mv_geo_open mv_geo ${MV_SODIUM_TARGET}
+    unofficial::sqlite3::sqlite3 "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO"
+    "-framework UniformTypeIdentifiers" "-framework AVFoundation" "-framework CoreMedia")
+  target_include_directories(mv_mobile_parity_desktop SYSTEM PRIVATE "${MV_ORT_INCLUDE}")
+  set_target_properties(mv_mobile_parity_desktop PROPERTIES OSX_ARCHITECTURES "arm64")
   # Enhance (#297): its own add-on over the AI pack's model downloader.
   include("${CMAKE_CURRENT_LIST_DIR}/enhance.cmake")
 endif()
@@ -747,6 +757,7 @@ function(mv_mac_host target)
     mv_image
     mv_canvas
     mv_shell
+    mv_phone
     mv_io
     mv_player
     imgui::imgui
@@ -1158,8 +1169,23 @@ if(MV_BUILD_TESTS)
   # cases skip unless MV_AI_PACK_DIR (MV_AI_AUDIO_DIR, MV_AI_SPEECH_CLIP,
   # MV_AI_EVAL_DIR) point at staged files. arm64 only, like the pack.
   if(TARGET mv_ai)
+    include("${CMAKE_CURRENT_LIST_DIR}/mobile-link.cmake")
+    add_executable(mv_mobile_link_tests tests/test_mobile_link.cpp tests/test_mobile_backup.cpp src/addons/driftwire/bt_none.cpp)
+    target_link_libraries(mv_mobile_link_tests PRIVATE mv_mobile_link mv_driftwire_engine mv_ai_engine mv_io mv_infer
+                          Catch2::Catch2WithMain ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET})
+    target_include_directories(mv_mobile_link_tests PRIVATE src tests)
+    set_target_properties(mv_mobile_link_tests PROPERTIES OSX_ARCHITECTURES "arm64")
+    catch_discover_tests(mv_mobile_link_tests TEST_PREFIX "mobile_link_" DISCOVERY_MODE PRE_TEST)
+
+    # A real catalogue for proving the phone end to end (docs/plans/mobile.md M3/M4); not shipped.
+    add_executable(mv_publish_test_library tools/ios/publish_test_library.cpp src/addons/driftwire/bt_none.cpp)
+    target_link_libraries(mv_publish_test_library PRIVATE mv_ai_engine mv_driftwire_engine mv_infer mv_io ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET})
+    target_include_directories(mv_publish_test_library PRIVATE src)
+    set_target_properties(mv_publish_test_library PROPERTIES OSX_ARCHITECTURES "arm64")
+
     add_executable(mv_ai_tests
       tests/test_ai_engine.cpp
+      tests/test_phone_chain.cpp
       tests/test_ai_face_refine.cpp
       tests/test_ai_infer.cpp
       tests/test_ai_audio.cpp
@@ -1173,9 +1199,10 @@ if(MV_BUILD_TESTS)
       # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
       tests/test_ai_ocr.cpp
       tests/test_nle.cpp
+      tests/test_mobile_search.cpp  # docs/plans/mobile.md M5
     )
-    target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
-      Catch2::Catch2WithMain)
+    target_link_libraries(mv_ai_tests PRIVATE mv_phone mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
+      mv_mobile_search mv_mobile_test_fixture Catch2::Catch2WithMain)
     target_include_directories(mv_ai_tests PRIVATE src tests)
     target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
       MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")

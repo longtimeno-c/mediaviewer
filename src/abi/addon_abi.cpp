@@ -24,6 +24,8 @@
 
 #include "abi/addon_bridge.h"
 #include "abi/guard.h"
+#include "abi/phone_source.h"
+#include "phone/app.h"
 #include "addon/host.h"
 #include "addon/index_locations.h"
 #include "addon/manifest.h"
@@ -736,6 +738,7 @@ MV_API mv_status MV_CALL mv_addon_unload(const char* id) {
     // first; a walk in flight stops at its next row, and none is inside the
     // pack when its library goes.
     if (std::string_view(id) == "ai") {
+      mv::phone::set_app_source({});  // nothing calls into the pack's phone entries from here
       mv::addon::retract_index_locations();
       mv::addon::wait_index_locations_idle();
     }
@@ -874,6 +877,8 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
     svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
     svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
+    svc.jpeg_shrink = &mv::addon::media::jpeg_shrink;     // the phone's catalogue
+    svc.thumbnail_make = &mv::addon::media::make_thumbnail_jpeg;
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);
@@ -901,6 +906,8 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       mv::addon::publish_ai_eyes(mv::addon::ai_eyes(ai));  // edit-adjust slice 6
       mv::addon::publish_ai_faces(mv::addon::ai_faces(ai));  // edit-refresh S10: Restore faces
       mv::addon::publish_ai_person_faces(mv::addon::ai_person_faces(ai));  // Faces donors (2026-11-07)
+      // Phone access's catalogue (docs/plans/phone-in-the-app.md): the writer only.
+      if (!reader) mv::phone::set_app_source(mv::abi::ai_catalogue_source(ai));
     }
   }
   const void* iface = it->second.addon->query(interface_id);

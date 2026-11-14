@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstring>
 
+#include "addons/import/paths.h"
+
 namespace mv::import {
 namespace {
 
@@ -115,6 +117,154 @@ result<std::vector<mv_addon_volume>> host::list_volumes() const {
   if (s != MV_OK) return err(to_status(s));
   v.resize(std::min<std::size_t>(n, v.size()));
   return v;
+}
+
+namespace {
+
+constexpr char kKeySeparator = '\x1f';  // in neither a volume identity nor a sane folder name
+constexpr std::string_view kKeyPrefix = "vol:";
+constexpr std::string_view kUncPrefix = "net:\\\\";  // Windows: "net:" + "\\\\server\\share"
+
+char folded(char c) noexcept {
+  if (c == '\\') return '/';
+#if defined(_WIN32)
+  if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
+#endif
+  return c;
+}
+
+std::string_view trimmed(std::string_view p) noexcept {
+  while (!p.empty() && (p.back() == '/' || p.back() == '\\')) p.remove_suffix(1);
+  return p;
+}
+
+// `path` inside the mount at `root`, '/'-separated ("" at the mount itself).
+std::optional<std::string> inside_of(std::string_view root, std::string_view path) {
+  const std::string_view r = trimmed(root);
+  const std::string_view p = trimmed(path);
+  if (p.size() < r.size()) return std::nullopt;
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    if (folded(r[i]) != folded(p[i])) return std::nullopt;
+  }
+  if (p.size() == r.size()) return std::string();
+  if (p[r.size()] != '/' && p[r.size()] != '\\') return std::nullopt;
+  std::string out(p.substr(r.size() + 1));
+  std::replace(out.begin(), out.end(), '\\', '/');
+  return out;
+}
+
+bool has_prefix(std::string_view s, std::string_view prefix) noexcept {
+  return s.rfind(prefix, 0) == 0;
+}
+
+// A local volume's id survives a remount. A share has no such id (macOS's
+// fsid is new at each mount), so it goes by what it is a mount of. Windows'
+// id is "vsn:<serial>:<capacity>": the capacity tells two cards apart, but a
+// resized partition or a changed quota is still this destination.
+std::string volume_identity(const mv_addon_volume& v) {
+  if (v.network && v.device_key[0]) return share_identity(v.device_key);
+  std::string id(v.volume_id);
+  if (has_prefix(id, "vsn:")) id.resize(std::min(id.find(':', 4), id.size()));
+  return id;
+}
+
+bool is_share(std::string_view identity) noexcept {
+  return has_prefix(identity, "dev:") || has_prefix(identity, "net:");
+}
+
+// Whether an identity will still mean this volume after a remount. Not an
+// fsid (new at each mount), a serial of zero (no serial at all), or a share
+// Windows could not name, which is left holding its drive letter.
+bool survives_remount(std::string_view identity) noexcept {
+  if (identity.empty() || has_prefix(identity, "fsid:") || identity == "vsn:00000000") return false;
+  return !has_prefix(identity, "net:") || has_prefix(identity, kUncPrefix);
+}
+
+}  // namespace
+
+std::string share_identity(std::string_view device_key) {
+  std::string out(trimmed(device_key));
+  // SMB and UNC names ignore case; an NFS export path ("nas:/Photos") does not.
+  if (out.find("//") != std::string::npos || has_prefix(out, "net:")) {
+    for (char& c : out) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  constexpr std::string_view kBonjour = "._smb._tcp";
+  if (const auto b = out.find(kBonjour); b != std::string::npos) out.erase(b, kBonjour.size());
+  return out;
+}
+
+dest_locator::dest_locator(const host& h) : h_(h) {
+  if (auto v = h.list_volumes()) mounted_ = std::move(*v);
+}
+
+std::vector<std::string> dest_locator::roots_for(const std::string& identity) const {
+  std::vector<std::string> out;
+  for (const mv_addon_volume& m : mounted_) {
+    if (volume_identity(m) == identity) out.emplace_back(m.root_utf8);
+  }
+  return out;
+}
+
+std::string dest_locator::key_of(const std::string& root) const {
+  // A folder not made yet is on the volume of its nearest existing parent.
+  std::string probe = root;
+  auto v = h_.volume_of(probe);
+  while (!v) {
+    std::string up = parent_native(probe);
+    if (up.empty() || up == probe) return root;
+    probe = std::move(up);
+    v = h_.volume_of(probe);
+  }
+  const std::string identity = volume_identity(*v);
+  const auto inside = inside_of(v->root_utf8, root);
+  if (!survives_remount(identity) || !inside) return root;
+  std::vector<std::string> roots = roots_for(identity);
+  if (roots.size() > 1 && !is_share(identity)) return root;  // two disks, one id: a clone
+  // Windows lists drive letters only; a share used by UNC name is its own root.
+  if (identity.rfind(kUncPrefix, 0) == 0) roots.push_back(identity.substr(4));
+  for (const std::string& r : roots) {
+    if (inside_of(r, root) == inside) {
+      std::string key(kKeyPrefix);
+      key += identity;
+      key += kKeySeparator;
+      key += *inside;
+      return key;
+    }
+  }
+  return root;
+}
+
+std::optional<std::string> dest_locator::live_root(const std::string& stored) const {
+  if (!is_volume_key(stored)) return stored;
+  const auto [it, added] = resolved_.try_emplace(stored);
+  if (added) it->second = resolve(stored);
+  return it->second;
+}
+
+std::optional<std::string> dest_locator::resolve(const std::string& key) const {
+  const auto sep = key.find(kKeySeparator);
+  if (sep == std::string::npos) return std::nullopt;
+  const std::string identity = key.substr(kKeyPrefix.size(), sep - kKeyPrefix.size());
+  const std::string inside = key.substr(sep + 1);
+  std::vector<std::string> roots = roots_for(identity);
+  // One share mounted twice is the same files. Two disks with one id are not,
+  // and neither can be told to be the one this key meant.
+  if (roots.size() > 1 && !is_share(identity)) return std::nullopt;
+  if (roots.empty() && identity.rfind(kUncPrefix, 0) == 0) {
+    std::string unc = identity.substr(4);
+    if (auto st = h_.stat(unc); st && st->is_directory) roots.push_back(std::move(unc));
+  }
+  if (roots.empty()) return std::nullopt;
+  return inside.empty() ? roots.front() : join_native(roots.front(), inside);
+}
+
+std::optional<std::string> dest_locator::volume_root(const std::string& volume_id) const {
+  for (const mv_addon_volume& m : mounted_) {
+    if (volume_id == m.volume_id) return std::string(m.root_utf8);
+  }
+  return std::nullopt;
 }
 
 expected host::eject(const std::string& root) const {

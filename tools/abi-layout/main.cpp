@@ -185,6 +185,11 @@ int main() {
   MV_FIELD(mv_ai_api, person_refine_json);
   MV_FIELD(mv_ai_api, people_dedupe_json);
   MV_FIELD(mv_ai_api, faces_json);
+  MV_FIELD(mv_ai_api, phone_publish);
+  MV_FIELD(mv_ai_api, phone_cancel);
+  MV_FIELD(mv_ai_api, phone_json);
+  MV_FIELD(mv_ai_api, phone_link);
+  MV_FIELD(mv_ai_api, phone_link_json);
   MV_END(mv_ai_api);
 
   return g_failures == 0 ? 0 : 1;

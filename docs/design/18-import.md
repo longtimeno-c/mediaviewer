@@ -142,12 +142,42 @@ The preset model is `mv::import::preset` (`src/addons/import/model.h`); its JSON
 runs scans, plans and card arrivals in order; each job runs on its own thread.
 
 - **Duplicate test:** size first; BLAKE3-256 only when a size matches. Never by name. The
-  library index (`import.db`, SQLite, table `library`: root, relative path, size, mtime → hash)
+  library index (`import.db`, SQLite, table `library`: destination, relative path, size, mtime →
+  hash)
   makes a second import cost a size lookup. A row is rechecked when size or mtime differ.
 - **Per-card memory:** after each import the card's volume id plus each file's (path, size,
   mtime, hash) are recorded (`card_files`). "New since last import" is a lookup, not a re-hash.
-  Card memory and the library index key on the **volume-relative path**, so it holds whether
-  the card is scanned from its root or a subfolder.
+  Card memory keys on the **volume-relative path**, so it holds whether the card is scanned from
+  its root or a subfolder.
+- **Destination identity:** `library`, `seq` and an unfinished job's `journal` name a destination
+  by a volume key, `vol:<identity><US><folder inside the volume>`, and a journal target is relative
+  to it (`dest_locator`, `src/addons/import/host.h`). So a share that remounts as
+  `/Volumes/photos-1`, a drive whose letter moved, or `E:\` versus `\\nas\media` is the same
+  destination: dedupe still hits, `{seq}` carries on, and an interrupted job resumes at the new
+  path. A local volume's identity is its `volume_id` (the UUID, or Windows' serial without the
+  capacity, so a resize changes nothing). A share's is its `device_key`
+  folded by `share_identity`: the Mac's mount source with its user (a per-user `home` is a
+  different share for each) but no Bonjour service name, Windows' UNC name from
+  `WNetGetConnectionW` for a mapped letter. A key is issued only if the identity will outlast a
+  remount and finds the same folder again through the volume list. Otherwise (an `fsid` or a
+  serial of zero, a share Windows could not name, the Mac's internal disk through firmlinks, a
+  mount the list hides, two disks cloned with one id) the row keeps the absolute path, as before.
+  **Offline:** a destination that is not mounted resolves to nothing. Its rows stay, a plan cannot
+  confirm a duplicate there, verify-a-folder skips it, and Resume and Retry failed leave the job
+  interrupted (a Resume with its journal as it was), as they do if two disks answer to one key.
+  A row is dropped only when its file is gone and its folder is there.
+  **Migration:** absolute-path rows move to keys at engine start and at plan time, only when one of
+  32 of the root's indexed files, spread evenly across it, is really at the recorded path at its
+  size (a journal: a verified target), so another disk at that path or an offline share leaves them
+  untouched until it is back. Until they move, a plan for that path still reads them, for
+  duplicates and for `{seq}`.
+  A card source that returns under another path is found by its `volume_id` on Resume.
+  Limits: one share reached by two server names (`nas.local` and an IP) or mounted as two users is
+  two destinations, a Windows drive mapped to a subfolder of a share is not unified with the
+  share's UNC path, the folder inside a key keeps the case it was typed with (the folder picker
+  gives the on-disk case; a hand-typed `photos` for `Photos` is a second key on a case-insensitive
+  disk, and folding it would make every later path lower-case, which a case-sensitive share cannot
+  find), and saved presets still hold the path they were saved with.
 - **Verify** (`io::verified_copy`): hash while reading the source (one pass over the card).
   Write to a sibling temporary `<final>.mvtmp` (then `.mvtmp2` …), flush (`FlushFileBuffers` /
   `F_FULLFSYNC`), read back uncached (`FILE_FLAG_NO_BUFFERING` / `F_NOCACHE`), compare, then
@@ -183,6 +213,8 @@ runs scans, plans and card arrivals in order; each job runs on its own thread.
 - **Priority:** a background import waits between buffers while the present loop is presenting
   (Windows: `mv_present_set_busy` from the lab; Mac: `g_present_busy` from the Metal loop; both
   stay set for 2 s after a dropped frame). Fast never waits.
+- **Offline destinations:** a ledger row is dropped only when the file's folder answers and the
+  file is not in it; a share that is offline says nothing about what is on it (2026-11-09).
 - **Privacy:** hashes, paths, names and reports stay on the machine.
 - **Ports:** volume arrival, eject and uncached read-back live in `io/volume_{win,mac}.cpp` and
   `io/file_port_{win,mac}.cpp` behind portable headers. Windows uses `WM_DEVICECHANGE` and
@@ -405,6 +437,15 @@ why, and tries the reader again at most every 10 s. The first window treats the 
 same way (2026-10-11, issue #292): it verifies it at launch but loads it only at the first search
 or Settings → Local search → Start now ([17](17-local-ai-search.md) "Starting on demand"); Import
 still loads at launch.
+
+## Add-ons calling add-ons
+
+Add-ons link nothing of each other. One asks another through the host table: `addon_request(id, method,
+json, reply)` lands on the other's slot worker through its `mv.request.1` interface, with the caller's id
+filled in by the host so the answering add-on can decide who it serves. The answer's JSON comes back on the
+caller's thread. `MV_ERR_NOT_FOUND` means that add-on is not there, and the caller offers to install it.
+Phone access was the first user (Local search asking Driftwire); since 2026-11-12 it is part of the app
+([plan](../plans/phone-in-the-app.md)), so no add-on serves `mv.request.1` today.
 
 ## Commands
 

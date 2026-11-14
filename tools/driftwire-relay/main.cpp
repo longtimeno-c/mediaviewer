@@ -9,7 +9,7 @@
 // (#500: CPace runs on it, splice.h).
 //
 // It pairs two TCP connections that present the same random token and
-// copies bytes between them (src/addons/driftwire/splice.h). The two
+// copies bytes between them (src/wire/splice.h). The two
 // MediaViewers' handshake and session run end to end through it: it never
 // holds a key of theirs and sees only ciphertext. It prints counts, never an
 // address or a token. No configuration file, no state on disk, no account.
@@ -43,7 +43,7 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 
 namespace relay = mv::driftwire::relay;
 

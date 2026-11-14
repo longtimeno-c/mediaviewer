@@ -1,0 +1,1023 @@
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include <sodium.h>
+
+#include <algorithm>
+#include <cstring>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <optional>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
+
+#include "core/json.h"
+#include "mobile/backup.h"
+#include "wire/wire.h"
+#include "mobile/files.h"
+#include "mobile/link.h"
+#include "mobile/link_generation.h"
+#include "mobile/link_payload.h"
+#include "mobile/link_thumbs.h"
+#include "mobile/mv_mobile_link.h"
+#include "mobile/sample.h"
+#include "mobile/sound_fetch.h"
+#include "mobile/sound_tower.h"
+#include "mobile/sync.h"
+
+using namespace mv;
+using namespace mv::mobile;
+
+struct mv_cancel {
+  std::shared_ptr<cancel_flag> flag = std::make_shared<cancel_flag>();
+};
+
+struct mv_mobile_link {
+  service_config service;
+  sync_config sync;
+  std::string cache_dir;
+  std::uint64_t thumb_capacity = 0;
+  // One of the two: the Driftwire link to the service, or the sample library's static folder.
+  std::unique_ptr<link_session> session;
+  std::unique_ptr<sample::static_remote> fixed;
+  remote_file* remote = nullptr;  // whichever it is
+  std::unique_ptr<thumb_cache> thumbs;
+
+  std::mutex copy_m;  // one copy per library at a time
+
+  mutable std::shared_mutex view_m;
+  std::unique_ptr<generation_view> view;  // under view_m
+
+  std::mutex roots_m;
+  std::map<std::string, std::string> label_to_root;  // under roots_m; empty until asked
+  bool roots_known = false;
+  // File mode: whether each root is the catalogue's own folder (holds library.json), asked once
+  // per connection. Under roots_m.
+  std::map<std::string, bool> catalogue_root;
+};
+
+struct mv_file_index {
+  mv::mobile::files::index index;
+};
+
+namespace {
+
+template <std::size_t N>
+void put(char (&to)[N], const std::string& from) {
+  std::snprintf(to, N, "%s", from.c_str());
+}
+
+key32 key_at(const std::uint8_t* p) {
+  key32 k{};
+  std::memcpy(k.data(), p, k.size());
+  return k;
+}
+
+const char* or_empty(const char* s) { return s ? s : ""; }
+
+void fill_report(const route_report& r, mv_route_report* out) {
+  if (!out) return;
+  std::memset(out, 0, sizeof *out);
+  put(out->address, r.address);
+  out->over_internet = r.over_internet ? 1 : 0;
+  out->relayed = r.relayed ? 1 : 0;
+  out->upgraded = r.upgraded ? 1 : 0;
+  const std::size_t n = std::min<std::size_t>(r.failures.size(), 4);
+  out->failure_count = static_cast<std::int32_t>(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    put(out->failures[i].address, r.failures[i].address);
+    out->failures[i].problem = static_cast<std::int32_t>(r.failures[i].problem);
+  }
+}
+
+mv_link_status status_of_route(status s, const route_report& r) {
+  if (s == status::cancelled) return MV_LINK_CANCELLED;
+  if (s == status::unsupported_format) return MV_LINK_TOO_OLD;
+  if (s == status::busy) return MV_LINK_BUSY;
+  if (s == status::permission_denied) {
+    for (const auto& f : r.failures) {
+      if (f.problem == route_problem::wrong_service) return MV_LINK_WRONG_SERVICE;
+      if (f.problem == route_problem::bad_code) return MV_LINK_BAD_CODE;
+      if (f.problem == route_problem::expired) return MV_LINK_ACCESS_ENDED;
+    }
+    return MV_LINK_NOT_PAIRED;
+  }
+  return MV_LINK_UNREACHABLE;
+}
+
+mv_link_status status_of_outcome(sync_outcome o) {
+  switch (o) {
+    case sync_outcome::up_to_date: return MV_LINK_UP_TO_DATE;
+    case sync_outcome::older_refused: return MV_LINK_OLDER;
+    case sync_outcome::copy_available: return MV_LINK_COPY_AVAILABLE;
+    case sync_outcome::installed: return MV_LINK_OK;
+    case sync_outcome::rejected: return MV_LINK_REJECTED;
+    case sync_outcome::no_space: return MV_LINK_NO_SPACE;
+    case sync_outcome::unreachable: return MV_LINK_UNREACHABLE;
+    case sync_outcome::cancelled: return MV_LINK_CANCELLED;
+    case sync_outcome::waiting: return MV_LINK_WAITING;
+    case sync_outcome::no_catalogue: return MV_LINK_NO_CATALOGUE;
+  }
+  return MV_LINK_INTERNAL;
+}
+
+mv_link_status status_of_read(status s) {
+  switch (s) {
+    case status::ok: return MV_LINK_OK;
+    case status::cancelled: return MV_LINK_CANCELLED;
+    case status::not_found: return MV_LINK_NOT_FOUND;
+    case status::permission_denied: return MV_LINK_DENIED;
+    default: return MV_LINK_UNREACHABLE;
+  }
+}
+
+service_config service_of(const mv_pair_info* i, const std::uint8_t* device_key, const char* device_name) {
+  service_config c;
+  c.local = i->local;
+  c.public_name = i->public_name;
+  c.relay = i->relay;  // unused for pairing, kept for the session alike
+  c.identity = key_at(i->identity);
+  c.access_key = key_at(i->access_key);
+  c.device_key = key_at(device_key);
+  c.device_name = or_empty(device_name);
+  return c;
+}
+
+void reload_view(mv_mobile_link* l) {
+  const auto installed = read_installed(l->sync.library_dir);
+  std::unique_ptr<generation_view> next;
+  if (installed && installed->library_id == l->sync.library_id) {
+    auto opened = generation_view::open(l->sync.library_dir + "/gen/" + installed->dir);
+    if (opened) next = std::move(*opened);
+    if (l->thumbs) l->thumbs->set_catalogue_root(installed->catalogue_root);
+  }
+  std::unique_lock lock(l->view_m);
+  l->view = std::move(next);
+}
+
+// The service folder and relative path of an asset. A catalogue root is matched
+// to the service folder labelled with its share's name; a miss asks the service
+// again, in case the folder has just been added.
+mv_link_status resolve_asset(mv_mobile_link* l, std::int64_t asset, std::string& root, std::string& rel) {
+  std::optional<asset_file> f;
+  std::map<std::string, generation_view::root_ref> roots;
+  {
+    std::shared_lock lock(l->view_m);
+    if (!l->view) return MV_LINK_NOT_FOUND;
+    f = l->view->file(asset);
+    roots = l->view->roots();
+  }
+  if (!f) return MV_LINK_NOT_FOUND;
+  const auto ref = roots.find(f->uuid);
+  if (ref == roots.end()) return MV_LINK_NOT_FOUND;
+  {
+    std::lock_guard lock(l->roots_m);
+    auto found = l->label_to_root.find(ref->second.share);
+    if (!l->roots_known || found == l->label_to_root.end()) {
+      auto listed = l->remote->roots();
+      if (!listed) return status_of_read(listed.error());
+      l->label_to_root.clear();
+      for (const auto& r : *listed) l->label_to_root[r.label] = r.id;
+      l->roots_known = true;
+      found = l->label_to_root.find(ref->second.share);
+    }
+    if (found == l->label_to_root.end()) return MV_LINK_NO_FOLDER;
+    root = found->second;
+  }
+  rel = ref->second.sub.empty() ? f->rel : ref->second.sub + "/" + f->rel;
+  return MV_LINK_OK;
+}
+
+template <typename Fn>
+auto catch_all(Fn fn) noexcept -> decltype(fn()) {
+  try {
+    return fn();
+  } catch (...) {
+    return static_cast<decltype(fn())>(MV_LINK_INTERNAL);
+  }
+}
+
+// The host's HTTPS GET behind the static folder: the C callback, with the core's
+// cancel flag as its `stopped`.
+sample::fetch_fn host_fetch(mv_fetch_fn fetch, void* ctx) {
+  return [fetch, ctx](const std::string& url, std::uint64_t at, std::uint64_t length, const byte_sink& sink,
+                      const std::function<bool()>& stop) -> expected {
+    struct call {
+      const byte_sink* sink;
+      const std::function<bool()>* stop;
+    } c{&sink, &stop};
+    const mv_sink_fn to_sink = [](void* p, uint64_t offset, const uint8_t* data, size_t size) -> int32_t {
+      auto* k = static_cast<call*>(p);
+      if (*k->stop && (*k->stop)()) return 0;
+      try {  // nothing unwinds through the host's frames
+        return (*k->sink)(offset, std::span<const std::uint8_t>(data, size)) ? 1 : 0;
+      } catch (...) {
+        return 0;
+      }
+    };
+    const mv_stopped_fn stopped = [](void* p) -> int32_t {
+      const auto* k = static_cast<const call*>(p);
+      return *k->stop && (*k->stop)() ? 1 : 0;
+    };
+    const int32_t s = fetch(ctx, url.c_str(), at, length, to_sink, &c, stopped, &c);
+    switch (s) {
+      case MV_LINK_OK: return {};
+      case MV_LINK_NOT_FOUND: return err(status::not_found);
+      case MV_LINK_CANCELLED: return err(status::cancelled);
+      default: return err(status::io);
+    }
+  };
+}
+
+// The sample library's "connect": its folder answers with its root list.
+int32_t connect_static(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
+  auto done = l->fixed->connect(cancel ? cancel->flag.get() : nullptr);
+  route_report r;
+  if (done) {
+    r.address = l->fixed->host();
+    r.over_internet = true;
+  } else {
+    r.failures.push_back({l->fixed->host(), route_problem::unreachable});
+  }
+  fill_report(r, report);
+  if (done) return MV_LINK_OK;
+  if (done.error() == status::permission_denied) return MV_LINK_REJECTED;  // answered, with a list we refuse
+  return done.error() == status::cancelled ? MV_LINK_CANCELLED : MV_LINK_UNREACHABLE;
+}
+
+// The sample library's file list must be signed before sync looks at anything: a refused one is
+// "rejected", as a catalogue with a bad signature is, not "unreachable".
+bool static_list_refused(mv_mobile_link* l) {
+  if (!l->fixed) return false;
+  auto roots = l->fixed->roots();
+  return !roots && roots.error() == status::permission_denied;
+}
+
+}  // namespace
+
+extern "C" {
+
+mv_cancel* mv_cancel_new(void) {
+  try {
+    return new mv_cancel();
+  } catch (...) {
+    return nullptr;
+  }
+}
+void mv_cancel_fire(mv_cancel* c) {
+  if (c) c->flag->stop.store(true);
+}
+void mv_cancel_free(mv_cancel* c) { delete c; }
+
+int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
+  return catch_all([&]() -> int32_t {
+    if (!text || !out) return MV_LINK_INVALID;
+    const bool is_guest = sample::is_guest_code(text);
+    const bool is_sample = is_guest || sample::is_code(text);
+    auto p = is_sample ? result<pair_payload>(sample::payload(is_guest)) : parse_pair_payload(text);
+    if (!p) return MV_LINK_INVALID;
+    std::memset(out, 0, sizeof *out);
+    out->sample = is_sample ? 1 : 0;
+    put(out->library_id, p->library_id);
+    put(out->library_name, p->library_name);
+    std::memcpy(out->publisher_key, p->publisher_key.data(), 32);
+    put(out->local, p->local);
+    put(out->public_name, p->public_name);
+    std::memcpy(out->identity, p->identity.data(), 32);
+    std::memcpy(out->access_key, p->access_key.data(), 32);
+    put(out->code, p->code);
+    out->expires = p->expires;
+    out->grant_for_s = p->grant_for_s;
+    out->grant_scoped = p->grant_scoped ? 1 : 0;
+    put(out->fingerprint, p->fingerprint);
+    put(out->relay, p->relay);
+    if (!is_sample && p->expires <= now_unix) return MV_LINK_EXPIRED;
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_device_key_new(uint8_t private_key[32], uint8_t public_key[32]) {
+  return catch_all([&]() -> int32_t {
+    if (!private_key || !public_key || sodium_init() < 0) return MV_LINK_INVALID;
+    randombytes_buf(private_key, 32);
+    crypto_scalarmult_base(public_key, private_key);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_pair_redeem(const mv_pair_info* info, const uint8_t device_key[32], const char* device_name,
+                       mv_cancel* cancel, mv_route_report* report) {
+  return catch_all([&]() -> int32_t {
+    if (!info || !device_key) return MV_LINK_INVALID;
+    if (info->sample) return MV_LINK_OK;  // nothing to redeem: the folder is read-only and open to all
+    route_report r;
+    auto done = pair_device(service_of(info, device_key, device_name), info->code, r, cancel ? cancel->flag.get() : nullptr);
+    fill_report(r, report);
+    if (done) return MV_LINK_OK;
+    return status_of_route(done.error(), r);
+  });
+}
+
+mv_mobile_link* mv_link_open(const mv_link_config* c) {
+  try {
+    const bool is_static = c && c->static_base;
+    if (!c || !c->library_dir || !c->cache_dir || !c->library_id || !c->publisher_key) return nullptr;
+    if (is_static ? !c->fetch : (!c->identity || !c->access_key || !c->device_key)) return nullptr;
+    auto l = std::make_unique<mv_mobile_link>();
+    l->service.device_name = or_empty(c->device_name);
+    if (!is_static) {
+      l->service.local = or_empty(c->local);
+      l->service.public_name = or_empty(c->public_name);
+      l->service.relay = or_empty(c->relay);
+      l->service.upgrade = true;  // asked only on a relayed link, and only as mv_link_set_upgrade allows
+      l->service.identity = key_at(c->identity);
+      l->service.access_key = key_at(c->access_key);
+      l->service.device_key = key_at(c->device_key);
+    }
+    l->sync.library_dir = c->library_dir;
+    l->sync.library_id = c->library_id;
+    l->sync.publisher_key = key_at(c->publisher_key);
+    l->sync.file_mode = !is_static;
+    std::error_code ec;
+    std::filesystem::create_directories(l->sync.library_dir, ec);
+    l->cache_dir = c->cache_dir;
+    l->thumb_capacity = c->thumb_cache_bytes ? c->thumb_cache_bytes : 2ull << 30;
+    if (is_static) {
+      l->fixed = std::make_unique<sample::static_remote>(c->static_base, host_fetch(c->fetch, c->fetch_ctx),
+                                                         l->sync.publisher_key, l->sync.library_id,
+                                                         l->cache_dir + "/verified");
+      l->remote = l->fixed.get();
+    } else {
+      l->session = std::make_unique<link_session>(l->service);
+      l->remote = l->session.get();
+    }
+    l->thumbs = std::make_unique<thumb_cache>(l->cache_dir, l->thumb_capacity, *l->remote);
+    reload_view(l.get());
+    return l.release();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void mv_link_close(mv_mobile_link* l) { delete l; }
+
+void mv_link_set_upgrade(mv_mobile_link* l, int32_t on_cellular, int32_t allowed_on_cellular) {
+  try {
+    if (l && l->session) l->session->set_upgrade_policy(on_cellular != 0, allowed_on_cellular != 0);
+  } catch (...) {
+  }
+}
+
+int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {
+  return catch_all([&]() -> int32_t {
+    if (expires_unix) *expires_unix = 0;
+    if (scoped) *scoped = 0;
+    if (!l) return -1;
+    if (l->fixed || !l->session) return 0;  // the sample library: never limited
+    std::int64_t e = 0;
+    bool s = false;
+    const int r = l->session->grant(e, s);
+    if (r != 1) return r;
+    if (expires_unix) *expires_unix = e;
+    if (scoped) *scoped = s ? 1 : 0;
+    return 1;
+  });
+}
+
+int32_t mv_link_connect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return MV_LINK_INVALID;
+    if (l->fixed) return connect_static(l, cancel, report);
+    route_report r;
+    auto done = l->session->connect(r, cancel ? cancel->flag.get() : nullptr);
+    fill_report(r, report);
+    if (!done) return status_of_route(done.error(), r);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_link_reconnect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report* report) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return MV_LINK_INVALID;
+    if (l->fixed) {
+      {
+        std::lock_guard lock(l->roots_m);
+        l->roots_known = false;
+      }
+      return connect_static(l, cancel, report);
+    }
+    route_report r;
+    auto done = l->session->reconnect(r, cancel ? cancel->flag.get() : nullptr);
+    fill_report(r, report);
+    {
+      std::lock_guard lock(l->roots_m);
+      l->roots_known = false;
+      l->catalogue_root.clear();
+    }
+    if (!done) return status_of_route(done.error(), r);
+    return MV_LINK_OK;
+  });
+}
+
+void mv_link_shut_down(mv_mobile_link* l) {
+  if (!l) return;
+  // The reads first, so the waits below are short; then the core's own writers drain.
+  if (l->fixed) l->fixed->shut_down();  // waits for its verified copies too
+  else l->session->shut_down();
+  l->thumbs->shut_down();
+}
+
+int32_t mv_link_is_connected(const mv_mobile_link* l) {
+  if (!l) return 0;
+  return (l->fixed ? l->fixed->connected() : l->session->connected()) ? 1 : 0;
+}
+
+void mv_link_disconnect(mv_mobile_link* l) {
+  if (!l) return;
+  if (l->fixed) l->fixed->disconnect();
+  else l->session->disconnect();
+}
+
+const char* mv_sample_base(void) { return sample::kBase.data(); }
+
+const char* mv_sound_base(void) { return sound::kBase.data(); }
+
+uint64_t mv_sound_total_bytes(void) { return sound::total_bytes(); }
+
+// A yes or no: a throw is a no, never catch_all's MV_LINK_INTERNAL (non-zero).
+int32_t mv_sound_ready(const char* library_dir) {
+  try {
+    return library_dir && sound::ready(sound::folder(library_dir)) ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+uint64_t mv_sound_bytes(const char* library_dir) {
+  try {
+    return library_dir ? sound::bytes_on_disk(library_dir) : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+int32_t mv_sound_wanted(const char* generation_dir) {
+  try {
+    return generation_dir && sound::wanted(generation_dir) ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+int32_t mv_sound_fetch(const char* library_dir, const char* base_url, mv_fetch_fn fetch, void* fetch_ctx, mv_cancel* cancel,
+                       mv_sync_allowed_fn allowed, mv_sync_progress_fn progress, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!library_dir || !fetch) return MV_LINK_INVALID;
+    std::string base = base_url && *base_url ? base_url : std::string(sound::kBase);
+    if (base.back() != '/') base += '/';
+    return sound::fetch_all(library_dir, base, fetch, fetch_ctx, cancel ? cancel->flag.get() : nullptr, allowed, progress,
+                            ctx);
+  });
+}
+
+int32_t mv_sync_check(mv_mobile_link* l, mv_sync_report* report) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !report) return MV_LINK_INVALID;
+    std::memset(report, 0, sizeof *report);
+    if (static_list_refused(l)) return report->outcome = MV_LINK_REJECTED;
+    auto plan = check_catalogue(*l->remote, l->sync);
+    report->outcome = status_of_outcome(plan.outcome);
+    report->epoch = plan.epoch;
+    report->generation = plan.generation;
+    report->total_bytes = plan.total_bytes;
+    report->done_bytes = plan.done_bytes;
+    report->needed_bytes = plan.needed_bytes;
+    if (plan.outcome == sync_outcome::copy_available || plan.outcome == sync_outcome::up_to_date) {
+      if (!plan.catalogue_root.empty()) l->thumbs->set_catalogue_root(plan.catalogue_root);
+    }
+    if (plan.outcome == sync_outcome::no_catalogue && !plan.library_root.empty()) {
+      std::lock_guard lock(l->roots_m);
+      l->catalogue_root[plan.library_root] = true;
+    }
+    return report->outcome;
+  });
+}
+
+int32_t mv_sync_copy(mv_mobile_link* l, mv_cancel* cancel, mv_sync_allowed_fn allowed, mv_sync_progress_fn progress,
+                     void* ctx, mv_sync_report* report) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return MV_LINK_INVALID;
+    if (report) std::memset(report, 0, sizeof *report);
+    // One copy per library: two would share staging, and the second's tidy could
+    // remove what the first just installed. The check is made inside the lock,
+    // against installed.json as it is now.
+    std::lock_guard one(l->copy_m);
+    if (static_list_refused(l)) {
+      if (report) report->outcome = MV_LINK_REJECTED;
+      return MV_LINK_REJECTED;
+    }
+    sync_plan plan = check_catalogue(*l->remote, l->sync);
+    if (report) {
+      report->epoch = plan.epoch;
+      report->generation = plan.generation;
+      report->total_bytes = plan.total_bytes;
+      report->done_bytes = plan.done_bytes;
+    }
+    if (plan.outcome != sync_outcome::copy_available) {
+      if (report) report->outcome = status_of_outcome(plan.outcome);
+      return status_of_outcome(plan.outcome);
+    }
+    const auto outcome = copy_catalogue(
+        *l->remote, l->sync, plan,
+        [&](std::uint64_t done, std::uint64_t total) {
+          if (progress) progress(ctx, done, total);
+        },
+        cancel ? cancel->flag.get() : nullptr,
+        [&] { return !allowed || allowed(ctx) != 0; });
+    if (report) {
+      report->outcome = status_of_outcome(outcome);
+      report->needed_bytes = plan.needed_bytes;
+    }
+    if (outcome == sync_outcome::installed) reload_view(l);
+    return status_of_outcome(outcome);
+  });
+}
+
+int32_t mv_catalogue_read(mv_mobile_link* l, mv_catalogue_info* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    std::memset(out, 0, sizeof *out);
+    const auto installed = read_installed(l->sync.library_dir);
+    std::shared_lock lock(l->view_m);
+    if (!installed || !l->view) return MV_LINK_OK;
+    out->present = 1;
+    out->epoch = installed->epoch;
+    out->generation = installed->generation;
+    out->created_unix = l->view->created();
+    out->asset_count = l->view->asset_count();
+    put(out->dir, l->view->dir());
+    return MV_LINK_OK;
+  });
+}
+
+void mv_library_remove(const char* dir) {
+  if (dir) remove_library(dir);
+}
+
+int32_t mv_tiny_get(mv_mobile_link* l, int64_t asset, mv_bytes_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    std::shared_lock lock(l->view_m);
+    if (!l->view) return MV_LINK_NOT_FOUND;
+    const auto tile = l->view->tiny(asset);
+    if (!tile) return MV_LINK_NOT_FOUND;
+    fn(ctx, tile->data(), tile->size());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_thumb_request(mv_mobile_link* l, int64_t asset, int32_t lane, mv_done_fn done, void* ctx, mv_cancel** out_cancel) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !done || !out_cancel) return MV_LINK_INVALID;
+    *out_cancel = nullptr;
+    std::optional<ai::catalog::thumb_location> where;
+    {
+      std::shared_lock lock(l->view_m);
+      if (!l->view) return MV_LINK_NOT_FOUND;
+      where = l->view->thumb(asset);
+    }
+    if (!where) return MV_LINK_NOT_FOUND;
+    auto flag = l->thumbs->request(*where, lane, [done, ctx](result<std::vector<std::uint8_t>> r) {
+      if (r) {
+        done(ctx, MV_LINK_OK, r->data(), r->size());
+      } else {
+        done(ctx, status_of_read(r.error()), nullptr, 0);
+      }
+    });
+    auto* handle = new mv_cancel();
+    handle->flag = std::move(flag);
+    *out_cancel = handle;
+    return MV_LINK_OK;
+  });
+}
+
+uint64_t mv_thumb_bytes_used(const mv_mobile_link* l) {
+  if (!l) return 0;
+  // The sample library's verified pictures and clips are kept on the phone too.
+  return l->thumbs->bytes_used() + (l->fixed ? l->fixed->verified_bytes() : 0);
+}
+
+int32_t mv_asset_read(mv_mobile_link* l, int64_t asset, mv_asset_info* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    std::shared_lock lock(l->view_m);
+    if (!l->view) return MV_LINK_NOT_FOUND;
+    const auto f = l->view->file(asset);
+    if (!f) return MV_LINK_NOT_FOUND;
+    out->size = f->size;
+    out->kind = f->kind;
+    out->duration_ms = f->duration_ms;
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_file_read(mv_mobile_link* l, int64_t asset, uint64_t at, uint64_t length, int32_t bulk, mv_cancel* cancel,
+                     mv_sink_fn sink, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !sink) return MV_LINK_INVALID;
+    std::string root, rel;
+    if (const auto found = resolve_asset(l, asset, root, rel); found != MV_LINK_OK) return found;
+    auto done = l->remote->read_range(
+        root, rel, at, length,
+        [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
+        cancel ? cancel->flag.get() : nullptr, bulk != 0);
+    return done ? MV_LINK_OK : status_of_read(done.error());
+  });
+}
+
+int32_t mv_asset_folder_check(mv_mobile_link* l, int64_t asset) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return MV_LINK_INVALID;
+    std::string root, rel;
+    return resolve_asset(l, asset, root, rel);
+  });
+}
+
+int32_t mv_moments_get(mv_mobile_link* l, int64_t asset, mv_moment_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    std::vector<moment_row> rows;
+    {
+      std::shared_lock lock(l->view_m);
+      if (!l->view) return MV_LINK_NOT_FOUND;
+      rows = l->view->moments(asset);
+    }
+    for (const auto& m : rows) fn(ctx, m.start_ms, m.kind, m.text.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_assets_list(mv_mobile_link* l, mv_listed_asset_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    // Rows first, callbacks after: the lock is never held across the host's code.
+    std::vector<generation_view::listed_asset> rows;
+    {
+      std::shared_lock lock(l->view_m);
+      if (!l->view) return MV_LINK_NOT_FOUND;
+      l->view->for_each_asset([&](const generation_view::listed_asset& a) { rows.push_back(a); });
+    }
+    for (const auto& a : rows) fn(ctx, a.id, a.kind, a.taken_at, a.duration_ms, a.name.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+// ---- file mode ---------------------------------------------------------------------------------
+
+int32_t mv_files_roots(mv_mobile_link* l, mv_root_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    auto listed = l->remote->roots();
+    if (!listed) return status_of_read(listed.error());
+    std::vector<driftwire::serve::root_info> keep;
+    for (const auto& r : *listed) {
+      std::optional<bool> known;
+      {
+        std::lock_guard lock(l->roots_m);
+        if (auto it = l->catalogue_root.find(r.id); it != l->catalogue_root.end()) known = it->second;
+      }
+      if (!known) {
+        // The catalogue's folder is the one root whose top holds library.json; a stat each, once.
+        auto st = l->remote->stat(r.id, "library.json");
+        if (!st && st.error() != status::not_found && st.error() != status::permission_denied) {
+          return status_of_read(st.error());
+        }
+        known = st && !st->dir;
+        std::lock_guard lock(l->roots_m);
+        l->catalogue_root[r.id] = *known;
+      }
+      if (!*known) keep.push_back(r);
+    }
+    for (const auto& r : keep) fn(ctx, r.id.c_str(), r.label.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_list(mv_mobile_link* l, const char* root, const char* rel, mv_file_entry_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !fn) return MV_LINK_INVALID;
+    const std::string r = root, p = or_empty(rel);
+    if (!p.empty() && !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    auto listed = l->remote->list(r, p);
+    if (!listed) return status_of_read(listed.error());
+    for (const auto& e : files::shown(*listed)) {
+      mv_file_entry out{e.name.c_str(), e.size, e.mtime, e.dir ? 1 : 0, e.dir ? -1 : static_cast<int32_t>(e.k)};
+      fn(ctx, &out);
+    }
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_read(mv_mobile_link* l, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
+                      mv_cancel* cancel, mv_sink_fn sink, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel || !sink) return MV_LINK_INVALID;
+    const std::string p = rel;
+    if (p.empty() || !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    auto done = l->remote->read_range(
+        root, p, at, length,
+        [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
+        cancel ? cancel->flag.get() : nullptr, bulk != 0);
+    return done ? MV_LINK_OK : status_of_read(done.error());
+  });
+}
+
+int32_t mv_files_fields(const char* make, const char* model, const char* lens, const char* comment, const mv_file_tag* tags,
+                        size_t count, mv_text_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!fn || (count && !tags)) return MV_LINK_INVALID;
+    std::vector<files::tag> list;
+    list.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+      if (!tags[i].raw_tag || !tags[i].value) continue;
+      list.push_back({tags[i].raw_tag, tags[i].value});
+    }
+    for (const auto& f : files::fields_of(or_empty(make), or_empty(model), or_empty(lens), or_empty(comment), list)) {
+      fn(ctx, f.c_str());
+    }
+    return MV_LINK_OK;
+  });
+}
+
+mv_file_index* mv_file_index_new(void) {
+  try {
+    return new mv_file_index();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void mv_file_index_free(mv_file_index* index) { delete index; }
+
+int32_t mv_file_index_names(mv_file_index* index, const char* const* names, size_t count) {
+  return catch_all([&]() -> int32_t {
+    if (!index || (count && !names)) return MV_LINK_INVALID;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (size_t i = 0; i < count; ++i) list.emplace_back(or_empty(names[i]));
+    index->index.set_names(std::move(list));
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_file_index_fields(mv_file_index* index, size_t i, const char* const* fields, size_t count) {
+  return catch_all([&]() -> int32_t {
+    if (!index || (count && !fields)) return MV_LINK_INVALID;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (size_t k = 0; k < count; ++k) {
+      if (fields[k]) list.emplace_back(fields[k]);
+    }
+    index->index.set_fields(i, list);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_file_index_match(const mv_file_index* index, const char* typed, mv_file_hit_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!index || !fn) return MV_LINK_INVALID;
+    for (const auto& h : index->index.match(or_empty(typed))) fn(ctx, h.index, h.why.empty() ? nullptr : h.why.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_file_index_counts(const mv_file_index* index, size_t* tagged, size_t* count) {
+  return catch_all([&]() -> int32_t {
+    if (!index) return MV_LINK_INVALID;
+    if (tagged) *tagged = index->index.tagged();
+    if (count) *count = index->index.count();
+    return MV_LINK_OK;
+  });
+}
+
+// ---- phone backup -------------------------------------------------------------------------
+
+namespace {
+
+// The host's PhotoKit, through its callback.
+class host_source final : public backup::source {
+ public:
+  mv_backup_export_fn fn = nullptr;
+  void* ctx = nullptr;
+  std::shared_ptr<cancel_flag> flag;
+  expected export_resource(const backup::item& it, std::size_t index, const std::string& path,
+                           const cancel_flag* cancel, int ymd[3]) override {
+    if (!fn) return err(status::internal);
+    if (cancel && cancel->stopped()) return err(status::cancelled);
+    mv_cancel handle;
+    handle.flag = flag;
+    std::int32_t date[3] = {ymd[0], ymd[1], ymd[2]};
+    const auto got = fn(ctx, it.local_id.c_str(), static_cast<std::int32_t>(index), path.c_str(), &handle, date);
+    if (got == MV_LINK_OK) std::copy(date, date + 3, ymd);
+    switch (got) {
+      case MV_LINK_OK: return {};
+      case MV_LINK_NOT_FOUND: return err(status::not_found);
+      case MV_LINK_CANCELLED: return err(status::cancelled);
+      default: return err(status::internal);
+    }
+  }
+};
+
+}  // namespace
+
+struct mv_backup {
+  std::unique_ptr<backup::target> target;
+  std::unique_ptr<backup::ledger> ledger;
+  std::string scratch, library_id;
+  std::mutex run_m;  // one run at a time
+  std::mutex m;
+  std::vector<backup::item> items;          // under m
+  std::vector<backup::failure> failures;    // under m
+  std::vector<std::string> remaining;       // under m
+};
+
+mv_backup* mv_backup_open(mv_mobile_link* l, const mv_backup_config* c) {
+  try {
+    if (!l || !c || !c->ledger_path || !c->scratch_dir || !c->library_id) return nullptr;
+    auto b = std::make_unique<mv_backup>();
+    if (l->session) {
+      b->target = backup::link_target(*l->session);
+    } else {
+      if (!c->sample_folder || !*c->sample_folder) return nullptr;
+      // The sample library has no device key: one fixed folder id, on this phone only.
+      b->target = backup::local_target(c->sample_folder, "0000000000000000");
+    }
+    auto opened = backup::ledger::open(c->ledger_path);
+    if (!opened) return nullptr;
+    b->ledger = std::move(*opened);
+    b->scratch = c->scratch_dir;
+    b->library_id = c->library_id;
+    return b.release();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void mv_backup_close(mv_backup* b) {
+  if (!b) return;
+  { std::lock_guard run(b->run_m); }  // a run in flight returns first
+  delete b;
+}
+
+namespace {
+
+mv_link_status backup_status_of(status s) {
+  switch (s) {
+    case status::unsupported_format: return MV_LINK_TOO_OLD;
+    case status::permission_denied: return MV_LINK_DENIED;
+    case status::not_found: return MV_LINK_NOT_FOUND;
+    case status::cancelled: return MV_LINK_CANCELLED;
+    case status::io:
+    case status::timeout: return MV_LINK_UNREACHABLE;
+    default: return MV_LINK_INTERNAL;
+  }
+}
+
+}  // namespace
+
+int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !fn) return MV_LINK_INVALID;
+    auto folders = b->target->folders();
+    if (!folders) return backup_status_of(folders.error());
+    for (const auto& f : *folders) fn(ctx, f.id.c_str(), f.label.c_str(), f.writable ? 1 : 0);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !out) return MV_LINK_INVALID;
+    auto s = b->target->space(folder_id);
+    if (!s) return backup_status_of(s.error());
+    out->limit = s->limit;
+    out->used = s->used;
+    out->room = s->room;
+    return s->has_space ? MV_LINK_OK : MV_LINK_DENIED;
+  });
+}
+
+int32_t mv_backup_clear_items(mv_backup* b) {
+  if (!b) return MV_LINK_INVALID;
+  std::lock_guard lock(b->m);
+  b->items.clear();
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, int32_t year, int32_t month, int32_t day,
+                           const char* resources_json) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !key || !*key || !local_id || !resources_json) return MV_LINK_INVALID;
+    const auto doc = json::parse(resources_json, 3);
+    if (!doc || doc->k != json::kind::array || doc->a.empty() || year < 1900 || year > 9999) return MV_LINK_INVALID;
+    backup::item it;
+    it.key = key;
+    it.local_id = local_id;
+    it.year = year;
+    it.month = std::clamp(month, 1, 12);
+    it.day = std::clamp(day, 1, 31);
+    for (const auto& v : doc->a) {
+      const std::string* kind = v.str("kind");
+      const std::string* name = v.str("name");
+      // A name the service would refuse (a path, a hidden name) is not one Photos gives.
+      if (!kind || !name || name->empty() || !driftwire::safe_relative(*name) || name->find('/') != std::string::npos) {
+        return MV_LINK_INVALID;
+      }
+      it.resources.push_back({*kind, *name});
+    }
+    std::lock_guard lock(b->m);
+    b->items.push_back(std::move(it));
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_backup_cancelled(mv_cancel* c) { return c && c->flag && c->flag->stopped() ? 1 : 0; }
+
+int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_cancel* cancel,
+                      mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx, int32_t* state_out) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !export_fn || !state_out || !backup::valid_layout(layout)) return MV_LINK_INVALID;
+    std::lock_guard run(b->run_m);
+    backup::options o;
+    o.library_id = b->library_id;
+    o.root = folder_id;
+    o.folders = static_cast<backup::layout>(layout);
+    o.scratch_dir = b->scratch;
+    host_source src;
+    src.fn = export_fn;
+    src.ctx = ctx;
+    src.flag = cancel ? cancel->flag : std::make_shared<cancel_flag>();
+    backup::engine e(o, *b->target, src, *b->ledger);
+    {
+      std::lock_guard lock(b->m);
+      e.set_items(b->items);
+    }
+    backup::status_report last;
+    const auto st = e.run(src.flag.get(), [&](const backup::status_report& r) {
+      last = r;
+      if (!status_fn) return;
+      mv_backup_status out{};
+      out.state = static_cast<int32_t>(r.now);
+      out.total = r.total;
+      out.backed_up = r.backed_up;
+      out.files_done = r.files_done;
+      out.copied = r.copied;
+      out.bytes = r.bytes;
+      out.current_fraction = r.current_fraction;
+      out.failed = r.failures.size();
+      put(out.current, r.current);
+      status_fn(ctx, &out);
+    });
+    std::lock_guard lock(b->m);
+    b->failures = last.failures;
+    b->remaining = e.remaining();
+    *state_out = static_cast<int32_t>(st);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_backup_failures(mv_backup* b, mv_backup_failure_fn fn, void* ctx) {
+  if (!b || !fn) return MV_LINK_INVALID;
+  std::vector<backup::failure> rows;
+  {
+    std::lock_guard lock(b->m);
+    rows = b->failures;
+  }
+  for (const auto& f : rows) fn(ctx, f.key.c_str(), f.name.c_str(), f.why.c_str());
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_remaining(mv_backup* b, mv_backup_key_fn fn, void* ctx) {
+  if (!b || !fn) return MV_LINK_INVALID;
+  std::vector<std::string> keys;
+  {
+    std::lock_guard lock(b->m);
+    keys = b->remaining;
+  }
+  for (const auto& k : keys) fn(ctx, k.c_str());
+  return MV_LINK_OK;
+}
+
+void mv_backup_remove_local(const char* sample_folder, const char* ledger_path) {
+  try {
+    std::error_code ec;
+    if (sample_folder && *sample_folder) std::filesystem::remove_all(std::filesystem::path(sample_folder), ec);
+    if (ledger_path && *ledger_path) {
+      for (const char* suffix : {"", "-wal", "-shm"}) std::filesystem::remove(std::filesystem::path(std::string(ledger_path) + suffix), ec);
+    }
+  } catch (...) {
+  }
+}
+
+}  // extern "C"

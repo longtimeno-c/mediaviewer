@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The MediaViewer app's own keys; Xcode adds the generated ones (INFOPLIST_KEY_*) from the
+     target and Config/MediaViewer.xcconfig. The fixtures app keeps App/Info/Common.plist. -->
+<plist version="1.0">
+<dict>
+	<!-- Without this an iPhone holds the app to 60 Hz. -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<!-- The first copy, kept going after the person leaves the app on iOS 26 (docs/plans/mobile.md 8.4). -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>io.github.longtimeno-c.mediaviewer.mobile.first-copy</string>
+	</array>
+	<!-- One window for 1.0: the app has one model of what is on screen. -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<!-- The app's dark ground, the look it opens in. -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+	<!-- The pairing link MediaViewer shows next to its code: mediaviewer://pair#... (§11.1). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.github.longtimeno-c.mediaviewer.mobile.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mediaviewer</string>
+			</array>
+		</dict>
+	</array>
+	<!-- The Synology on its own network, and the Mac nearby for M4b's sync (§7.5). -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MediaViewer connects to your Synology on this network to show your photos and videos.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mediaviewer._tcp</string>
+	</array>
+	<!-- The link uses standard algorithms (Noise with libsodium). The owner's App Store Connect answers
+	     (2026-11-11, call 10): standard encryption, not distributed in France, so Apple asks for no
+	     documents and the app declares false here. Distributing in France needs a French declaration first. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

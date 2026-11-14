@@ -1,0 +1,80 @@
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+// The OS's secret store, behind a port (issue #472 PR 4, D9): this machine's
+// identity key and what it remembers of each known device (its key and the
+// pairwise secret) never sit in a plain file.
+//
+//   secrets_mac.cpp  the data protection keychain, in the app's own access
+//                    group (Security.framework, generic passwords under the
+//                    service "MediaViewer Driftwire"; #501). None without
+//                    the access-group entitlement.
+//   secrets_win.cpp  Credential Manager (CredWrite, per user, generic
+//                    credentials "MediaViewer Driftwire/<name>"), each
+//                    value sealed with DPAPI (#501): any process of the
+//                    same user can read or plant the items, but one not
+//                    sealed by Driftwire is refused.
+//   secrets_linux.cpp the freedesktop Secret Service (GNOME Keyring,
+//                    KWallet, KeePassXC) through libsecret loaded at run
+//                    time, items "<service>" / <name>, each value sealed as
+//                    on Windows. None without a session bus or a keyring.
+//   secrets_file.cpp a file per name in a folder, for the tests and for
+//                    `driftwire serve` (a headless service has no keyring):
+//                    not a keychain, but owner-only on POSIX (each value 0600,
+//                    written whole and renamed in; a value someone else could
+//                    read or that is a link is refused on the way back).
+//
+// Values are small (at most kMaxValue bytes: Credential Manager's limit, less DPAPI).
+// Every call is on a worker; none is on the UI or render thread.
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace mv::driftwire::secrets {
+
+// Credential Manager holds 2,560 bytes, and on Windows the value goes in
+// sealed by DPAPI, which adds ~300 (its header, salt, two SHA-512 HMACs and
+// the AES padding). The devices value is at most 2,082.
+inline constexpr std::size_t kMaxValue = 2144;
+
+class store {
+ public:
+  virtual ~store() = default;
+  [[nodiscard]] virtual bool put(const std::string& name, std::span<const std::uint8_t> value) = 0;
+  [[nodiscard]] virtual std::optional<std::vector<std::uint8_t>> get(const std::string& name) = 0;
+  virtual bool erase(const std::string& name) = 0;
+  // Whether anything is kept under `name`, readable or not: get() cannot tell
+  // a value that is missing from one it refused, and only the first may be
+  // made anew.
+  [[nodiscard]] virtual bool exists(const std::string& name) { return get(name).has_value(); }
+};
+
+// Who the items belong to: the add-on in MediaViewer, and the driftwire
+// command line, which keeps an identity and remembered devices of its own
+// (docs/design/28 "From a terminal"): the two never share a key.
+inline constexpr const char* kAppService = "MediaViewer Driftwire";
+inline constexpr const char* kCliService = "Driftwire CLI";
+
+// The platform's store for `service`; nullptr where there is none.
+[[nodiscard]] std::unique_ptr<store> os_store(const std::string& service);
+// The add-on's: os_store(kAppService).
+[[nodiscard]] std::unique_ptr<store> os_store();
+// A folder of files (the tests, and `driftwire serve`).
+[[nodiscard]] std::unique_ptr<store> file_store(const std::string& folder);
+// Makes `folder` if needed and says whether it is this user's alone: on POSIX
+// a real folder (no link), owned by this user, with no access for group or
+// others (one made here is 0700). A folder that fails is refused, never
+// chmod-ed: its files may already have been read. On Windows the per-user
+// profile's own ACL is what protects it; this only makes the folder.
+[[nodiscard]] bool owner_only_folder(const std::string& folder);
+#if defined(__APPLE__)
+// os_store() under another service name (the tests). Removes that service's
+// items from the login keychain first; nullptr without the entitlement.
+[[nodiscard]] std::unique_ptr<store> keychain_store(const std::string& service);
+#endif
+
+}  // namespace mv::driftwire::secrets

@@ -1267,6 +1267,12 @@ struct ManagementView: View {
                                peopleOn: model.facesOn && model.facesReady, docsOn: model.documentFiles)
         }
       }
+      section("Phone access") {
+        Text("Your phone searches this index once you publish it. Phone access is in Settings, under its own heading.")
+          .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(12)
+      }
       section("People") {
         row("Find people in your photos",
             detail: "Face data stays on this computer unless you include People in an index export, and can be deleted at any time. Off by default.") {

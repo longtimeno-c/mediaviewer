@@ -1,0 +1,53 @@
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+// A time-limited phone whose access ended (docs/plans/nas-owner-and-guests.md §8.2, call C6):
+// when the phone says so, and when it deletes its copy of the library. The NAS decides; the
+// phone's own clock only ever changes what is said, never what is deleted.
+import Foundation
+
+public enum AccessEnd {
+  public struct Decision: Equatable, Sendable {
+    /// Say "Your access ended", not "unreachable" or "removed".
+    public let showEnded: Bool
+    /// Delete the local copy (catalogue, tiles, originals, clips), keeping the pairing.
+    public let dropLocalCopy: Bool
+    public init(showEnded: Bool, dropLocalCopy: Bool) {
+      self.showEnded = showEnded
+      self.dropLocalCopy = dropLocalCopy
+    }
+  }
+
+  /// `serviceSaidEnded`: the NAS refused this phone as expired. `noRouteAnswered`: nothing answered
+  /// at all (not a refusal of another kind). `storedEnd`: the end the NAS last gave, unix seconds.
+  /// `wasEnded`: the last word was already "ended" (kept across launches): no answer changes nothing.
+  public static func decide(serviceSaidEnded: Bool, noRouteAnswered: Bool, storedEnd: Double?,
+                            now: Double, wasEnded: Bool = false) -> Decision {
+    if serviceSaidEnded { return Decision(showEnded: true, dropLocalCopy: true) }
+    if noRouteAnswered, wasEnded { return Decision(showEnded: true, dropLocalCopy: false) }
+    // Offline, past the end this phone was told: said, never acted on. The owner may have
+    // extended it meanwhile, and a phone's clock can be wrong.
+    if noRouteAnswered, let end = storedEnd, end <= now { return Decision(showEnded: true, dropLocalCopy: false) }
+    return Decision(showEnded: false, dropLocalCopy: false)
+  }
+
+  /// The sample library as a guest (code GUEST) has no NAS to end it: in sample mode only, the
+  /// phone stands in for one, and this says whether that end has come.
+  public static func sampleGuestEnded(isSample: Bool, accessUntil: Double?, now: Double) -> Bool {
+    guard isSample, let end = accessUntil else { return false }
+    return end <= now
+  }
+
+  /// Runs `remove` only while the library stored on this phone is still `expected` (a pairing over
+  /// it, or a Forget, meanwhile leaves everything to that). True when it ran.
+  @discardableResult
+  public static func dropIfStill(_ expected: String, stored: () -> String?, remove: () -> Void) -> Bool {
+    guard let current = stored(), current == expected else { return false }
+    remove()
+    return true
+  }
+
+  /// The folders of the local copy that are plain files on this phone: deleted whole.
+  public static func removeFolders(_ folders: [URL], fileManager: FileManager = .default) {
+    for folder in folders { try? fileManager.removeItem(at: folder) }
+  }
+}

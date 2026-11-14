@@ -38,10 +38,10 @@
 #include <vector>
 
 #include "addons/driftwire/internet.h"
-#include "addons/driftwire/link.h"
-#include "addons/driftwire/net.h"
-#include "addons/driftwire/splice.h"
-#include "addons/driftwire/tls.h"
+#include "wire/link.h"
+#include "wire/net.h"
+#include "wire/splice.h"
+#include "wire/tls.h"
 
 namespace mv::driftwire::tunnel {
 

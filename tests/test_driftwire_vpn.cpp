@@ -13,7 +13,7 @@
 #include <deque>
 
 #include "addons/driftwire/netstack.h"
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 #include "addons/driftwire/vpn.h"
 
 namespace vpn = mv::driftwire::vpn;

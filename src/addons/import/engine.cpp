@@ -87,6 +87,71 @@ std::string rel_under(const std::string& root, const std::string& target) {
   return rel;
 }
 
+// `rows` as the journal keeps them: a destination with a volume key is named
+// by it, and a target is relative to it, so the job outlives the mount path.
+std::vector<journal_row> stored_rows(std::vector<journal_row> rows,
+                                     const std::vector<std::string>& roots,
+                                     const std::vector<std::string>& keys) {
+  for (journal_row& r : rows) {
+    for (std::size_t t = 0; t < r.target_roots.size() && t < r.targets.size(); ++t) {
+      const auto at = std::find(roots.begin(), roots.end(), r.target_roots[t]);
+      if (at == roots.end()) continue;
+      const std::string& key = keys[static_cast<std::size_t>(at - roots.begin())];
+      if (!is_volume_key(key)) continue;
+      r.targets[t] = rel_under(r.target_roots[t], r.targets[t]);
+      r.target_roots[t] = key;
+    }
+  }
+  return rows;
+}
+
+// What import.db calls the destination now at `live`.
+const std::string& id_of(const std::vector<std::string>& roots, const std::vector<std::string>& ids,
+                         const std::string& live) {
+  const auto at = static_cast<std::size_t>(std::find(roots.begin(), roots.end(), live) - roots.begin());
+  return at < ids.size() ? ids[at] : live;
+}
+
+// True when `path` ends with the '/'-separated `rel`, at a component boundary.
+bool ends_with_rel(const std::string& path, const std::string& rel) {
+  if (rel.empty() || path.size() <= rel.size()) return false;
+  const std::size_t start = path.size() - rel.size();
+  const char before = path[start - 1];
+  if (before != '/' && before != '\\') return false;
+  for (std::size_t i = 0; i < rel.size(); ++i) {
+    const char c = path[start + i] == '\\' ? '/' : path[start + i];
+    if (c != rel[i]) return false;
+  }
+  return true;
+}
+
+// A card that came back at another path (a new drive letter, "EOS_DIGITAL 1"):
+// its volume id is unchanged, and each row knows its place on the volume.
+// In memory only, so the journal still matches the job that wrote it.
+void rebase_source(const host& h, const dest_locator& loc, const std::string& volume_id,
+                   std::string& source_root, std::vector<journal_row>& rows) {
+  if (volume_id.empty() || source_root.empty()) return;
+  if (const auto st = h.stat(source_root); st && st->is_directory) return;
+  const auto now = loc.volume_root(volume_id);
+  if (!now) return;
+  bool root_moved = false;
+  for (journal_row& r : rows) {
+    if (!ends_with_rel(r.src, r.rel)) continue;
+    if (!root_moved) {
+      std::string old_volume = r.src.substr(0, r.src.size() - r.rel.size());
+      while (!old_volume.empty() && (old_volume.back() == '/' || old_volume.back() == '\\')) {
+        old_volume.pop_back();
+      }
+      if (under(old_volume, source_root)) {
+        const std::string inside = rel_under(old_volume, source_root);
+        source_root = inside.empty() ? *now : join_native(*now, inside);
+        root_moved = true;
+      }
+    }
+    r.src = join_native(*now, r.rel);
+  }
+}
+
 // io/verified_copy.h's temporary names; the add-on does not link io, so the
 // rule is restated here and pinned by a test.
 // Find duplicates (kind 2): what one scan found, and what has happened to
@@ -217,8 +282,9 @@ struct engine::job {
   std::string device_key;
   bool source_removable = false;
   bool explicit_files = false;
-  std::vector<std::string> dest_roots;
-  std::vector<std::string> dest_keys;
+  std::vector<std::string> dest_roots;  // where they are now
+  std::vector<std::string> dest_ids;    // import.db's name for each (dest_locator)
+  std::vector<std::string> dest_keys;   // the per-device locks
 
   std::mutex m;  // guards everything below
   std::vector<journal_row> rows;
@@ -264,6 +330,7 @@ expected engine::start(const std::string& db_path_override) {
     }
   }
   control_ = std::thread([this] { control_loop(); });
+  post_task([this] { adopt_legacy_on_control(); });
   if (host_.api()->watch_volumes) {
     watching_ = host_.watch_volumes(
                          [](void* user, std::uint32_t event, const char* root) {
@@ -273,6 +340,57 @@ expected engine::start(const std::string& db_path_override) {
                     .has_value();
   }
   return {};
+}
+
+void engine::adopt_legacy_on_control() {
+  const std::vector<std::string> roots = idx_->legacy_roots();
+  const std::vector<job_row> jobs = idx_->unfinished_jobs();
+  if (roots.empty() && jobs.empty()) return;
+  const dest_locator loc(host_);
+  for (const std::string& root : roots) adopt_legacy_root(host_, *idx_, loc, root);
+
+  // An unfinished job's journal, so it can resume after a later remount. Same
+  // test as the library: a verified target must still be at the recorded root.
+  for (const job_row& unfinished : jobs) {
+    std::vector<journal_row> rows = idx_->journal(unfinished.id);
+    std::map<std::string, std::string> adopted;  // recorded root -> key, "" = leave it
+    for (const journal_row& r : rows) {
+      for (const std::string& root : r.target_roots) {
+        if (is_volume_key(root) || adopted.count(root)) continue;
+        const std::string key = loc.key_of(root);
+        const auto st = host_.stat(root);
+        bool here = st && st->is_directory && is_volume_key(key);
+        if (here) {
+          bool saw_verified = false;
+          bool found = false;
+          for (const journal_row& d : rows) {
+            if (d.state != member_state::done) continue;
+            for (std::size_t t = 0; t < d.target_roots.size() && t < d.targets.size(); ++t) {
+              if (d.target_roots[t] != root) continue;
+              saw_verified = true;
+              const auto file = host_.stat(d.targets[t]);
+              found = found || (file && file->size == d.size);
+            }
+          }
+          here = !saw_verified || found;
+        }
+        adopted[root] = here ? key : std::string();
+      }
+    }
+    std::vector<journal_row> changed;
+    for (journal_row r : rows) {
+      bool touched = false;
+      for (std::size_t t = 0; t < r.target_roots.size() && t < r.targets.size(); ++t) {
+        const auto it = adopted.find(r.target_roots[t]);
+        if (it == adopted.end() || it->second.empty()) continue;
+        r.targets[t] = rel_under(r.target_roots[t], r.targets[t]);
+        r.target_roots[t] = it->second;
+        touched = true;
+      }
+      if (touched) changed.push_back(std::move(r));
+    }
+    if (!changed.empty()) (void)idx_->journal_set_targets(changed);
+  }
 }
 
 void engine::shutdown() noexcept {
@@ -708,7 +826,11 @@ expected engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_re
   j->explicit_files = scan.explicit_files;
   j->settings = plan.settings;
   j->dest_roots = {plan.destination};
-  if (!plan.backup.empty()) j->dest_roots.push_back(plan.backup);
+  j->dest_ids = {plan.destination_key};
+  if (!plan.backup.empty()) {
+    j->dest_roots.push_back(plan.backup);
+    j->dest_ids.push_back(plan.backup_key);
+  }
   j->dest_keys.clear();
   for (const std::string& root : j->dest_roots) {
     (void)host_.make_directories(root);
@@ -770,12 +892,12 @@ expected engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_re
     }
     // {seq} is committed when the job starts, so a second plan cannot reuse
     // it; a cancelled import leaves a gap, never a repeat.
-    if (pu.seq > 0) idx_->commit_seq(plan.destination, pu.day, pu.seq);
+    if (pu.seq > 0) idx_->commit_seq(plan.destination_key, pu.day, pu.seq);
     ++unit_no;
   }
   // The job runs from the rows in memory, but a resume rebuilds it from the
   // journal: a journal that did not land in full fails the job unstarted.
-  const expected journaled = idx_->journal_add(rows);
+  const expected journaled = idx_->journal_add(stored_rows(rows, j->dest_roots, j->dest_ids));
   idx_->set_setting("last_preset", plan.settings.name);
   idx_->set_setting("last_destination", plan.destination);
   std::lock_guard lock(j->m);
@@ -1149,7 +1271,7 @@ void engine::run_job(const std::shared_ptr<job>& j) {
       const std::int64_t now = now_unix();
       for (const journal_row& r : members) {
         for (std::size_t t = 0; t < r.targets.size(); ++t) {
-          idx_->upsert(library_row{r.target_roots[t], rel_under(r.target_roots[t], r.targets[t]),
+          idx_->upsert(library_row{id_of(j->dest_roots, j->dest_ids, r.target_roots[t]), rel_under(r.target_roots[t], r.targets[t]),
                                    r.size, r.mtime, r.hash});
         }
         if (!j->volume_id.empty()) idx_->card_record(j->volume_id, r.rel, r.size, r.mtime, r.hash, now);
@@ -1358,12 +1480,50 @@ result<std::uint64_t> engine::retry_failed(std::uint64_t id) {
     preset p;
     if (old) (void)parse_preset(old->preset_json, p);
     p.selection = selection_mode::all;
+    // The preset holds the paths of the day it ran: the journal knows where
+    // those destinations are now, and each source file's place on its card.
+    std::vector<journal_row> old_rows = old ? idx_->journal(id) : std::vector<journal_row>{};
+    if (old) {
+      const dest_locator loc(host_);
+      std::string old_source = old->source_root;
+      rebase_source(host_, loc, old->volume_id, old_source, old_rows);
+      // Not mounted: never fall back to the preset's path, which may be
+      // another disk by now. As with Resume, nothing is planned or written.
+      bool offline = false;
+      bool keyed = false;
+      bool found_main = false;
+      for (const journal_row& r : old_rows) {
+        for (std::size_t t = 0; t < r.target_roots.size(); ++t) {
+          keyed = keyed || is_volume_key(r.target_roots[t]);
+          const auto live = loc.live_root(r.target_roots[t]);
+          if (!live) {
+            offline = true;
+            continue;
+          }
+          const bool backup_only = r.target_roots.size() < 2 && !p.backup.empty();
+          if (t == 0 && !backup_only && !found_main) {
+            p.destination = *live;
+            found_main = true;
+          } else if (t == 1 || backup_only) {
+            p.backup = *live;
+          }
+        }
+      }
+      if (keyed && !found_main) {
+        const auto st = host_.stat(p.destination);
+        offline = offline || !st || !st->is_directory;
+      }
+      if (offline) {
+        finish_job(j, MV_IMPORT_JOB_INTERRUPTED);
+        return;
+      }
+    }
     j->settings = p;
     j->fast = p.fast;
     // Re-planned from the files themselves, so a name that is now taken gets
     // a safe name and a file that now matches is skipped.
     std::vector<std::string> paths;
-    for (const journal_row& r : old ? idx_->journal(id) : std::vector<journal_row>{}) {
+    for (const journal_row& r : old_rows) {
       if (r.state == member_state::failed || r.state == member_state::cancelled ||
           r.state == member_state::pending) {
         if (std::find(paths.begin(), paths.end(), r.src) == paths.end()) paths.push_back(r.src);
@@ -1442,9 +1602,26 @@ void engine::resume_on_control(std::uint64_t id) {
   j->cancel = false;
   j->shutting_down = false;
   j->paused = false;
-  if (auto v = host_.volume_of(j->source_root)) j->source_removable = v->removable != 0;
 
   std::vector<journal_row> rows = idx_->journal(id);
+  const dest_locator loc(host_);
+  // Where each destination is now. One that is not mounted leaves the job
+  // interrupted and its journal as it was: nothing is reconciled or created.
+  bool offline = false;
+  for (journal_row& r : rows) {
+    for (std::size_t t = 0; t < r.target_roots.size() && t < r.targets.size(); ++t) {
+      if (!is_volume_key(r.target_roots[t])) continue;
+      const auto live = loc.live_root(r.target_roots[t]);
+      if (!live) {
+        offline = true;
+        continue;
+      }
+      r.targets[t] = join_native(*live, r.targets[t]);
+      r.target_roots[t] = *live;
+    }
+  }
+  rebase_source(host_, loc, j->volume_id, j->source_root, rows);
+  if (auto v = host_.volume_of(j->source_root)) j->source_removable = v->removable != 0;
   // Destinations in the job's order (main, then backup): rows that list
   // every destination set it; a backup-only row lists the backup alone.
   j->dest_roots.clear();
@@ -1452,12 +1629,36 @@ void engine::resume_on_control(std::uint64_t id) {
     for (const journal_row& r : rows) {
       if (full && r.target_roots.size() < 2) continue;
       for (const std::string& root : r.target_roots) {
-        if (std::find(j->dest_roots.begin(), j->dest_roots.end(), root) == j->dest_roots.end()) {
+        if (!is_volume_key(root) &&
+            std::find(j->dest_roots.begin(), j->dest_roots.end(), root) == j->dest_roots.end()) {
           j->dest_roots.push_back(root);
         }
       }
     }
   }
+  if (offline) {
+    {
+      std::lock_guard lock(j->m);
+      j->rows = std::move(rows);
+      j->prog = mv_import_progress{};
+      j->prog.job_id = id;
+      j->prog.eta_seconds = -1;
+    }
+    j->state = MV_IMPORT_JOB_INTERRUPTED;
+    const std::string summary = make_summary(*j, MV_IMPORT_JOB_INTERRUPTED);
+    {
+      std::lock_guard lock(j->m);
+      j->summary = summary;
+    }
+    {
+      std::lock_guard lock(mutex_);
+      j->finished = true;
+    }
+    host_.post(MV_ADDON_EVENT_JOB_DONE, MV_OK, id, MV_IMPORT_JOB_INTERRUPTED);
+    return;
+  }
+  j->dest_ids.clear();
+  for (const std::string& root : j->dest_roots) j->dest_ids.push_back(loc.key_of(root));
   j->dest_keys.clear();
   for (const std::string& root : j->dest_roots) {
     auto v = host_.volume_of(root);
@@ -1516,7 +1717,7 @@ void engine::resume_on_control(std::uint64_t id) {
       // journal keeps the full list, so another resume reconciles again.
       for (auto it = present.rbegin(); it != present.rend(); ++it) {
         const std::string root = r.target_roots[*it];
-        idx_->upsert(library_row{root, rel_under(root, r.targets[*it]), r.size, r.mtime, *src});
+        idx_->upsert(library_row{id_of(j->dest_roots, j->dest_ids, root), rel_under(root, r.targets[*it]), r.size, r.mtime, *src});
         r.targets.erase(r.targets.begin() + static_cast<std::ptrdiff_t>(*it));
         r.target_roots.erase(r.target_roots.begin() + static_cast<std::ptrdiff_t>(*it));
       }
@@ -1662,9 +1863,16 @@ void engine::run_verify(const std::shared_ptr<job>& j, const std::string& dir) {
   j->state = MV_IMPORT_JOB_RUNNING;
   idx_->set_job_state(j->id, MV_IMPORT_JOB_RUNNING, 0, "");
 
+  // r.root becomes where the row is now; an offline destination is not checked.
   std::vector<library_row> rows;
-  for (library_row& r : idx_->all_rows()) {
-    if (under(dir, join_native(r.root, r.rel))) rows.push_back(std::move(r));
+  {
+    const dest_locator loc(host_);
+    for (library_row& r : idx_->all_rows()) {
+      const auto live = loc.live_root(r.root);
+      if (!live || !under(dir, join_native(*live, r.rel))) continue;
+      r.root = *live;
+      rows.push_back(std::move(r));
+    }
   }
   std::uint64_t total = 0;
   for (const library_row& r : rows) total += r.size;

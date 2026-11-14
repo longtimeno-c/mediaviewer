@@ -40,7 +40,7 @@
 #include <string>
 #include <vector>
 
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 #include "addons/driftwire/vpn.h"
 
 namespace mv::driftwire::vpn {

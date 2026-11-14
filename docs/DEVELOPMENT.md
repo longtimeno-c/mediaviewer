@@ -321,6 +321,35 @@ slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/
 `F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
 cursor off the window.
 
+### iOS (the search and Driftwire engines)
+
+The engines the iPhone app links statically (`mv_ai_engine`, `mv_infer`, `mv_driftwire_engine`), from the
+root `CMakeLists.txt` through `cmake/ios.cmake`, with their own small manifest (`tools/ios/vcpkg.json`) and the
+`arm64-ios` / `arm64-ios-simulator` triplets. The chrome in `src.ios` will link these when it lands. Xcode with the iOS SDK and a
+Simulator runtime, CMake ≥ 3.28, Ninja, vcpkg. The minimum iOS is set in the root `CMakeLists.txt` and both
+triplets, so change them together.
+
+```sh
+cmake -S . -B build-ios-sim -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build-ios-sim
+tools/ios/run-simulator-smoke.sh "$PWD/build-ios-sim/bin/mv_ios_core_smoke"
+```
+
+`CMAKE_OSX_SYSROOT=iphoneos` builds for a device. The smoke runs in a Simulator of its own, which it deletes:
+ONNX Runtime without `dlopen` on a real graph, an index and a text search through a fake model, the Driftwire
+engine and its ports over loopback.
+
+The default target runs `tools/ios/licence_check.py` on the installed ports, ONNX Runtime's licence file and the
+smoke program. It fails on a GPL-family or non-permissive licence, an undeclared one, a non-system library or a known
+(L)GPL symbol. It does not see the app until the app's build calls it: `build-ios-*/ios-licence-check.sh --binary
+MediaViewer.app`, before the app is stripped. CI's `ios-core` job builds both SDKs and runs the smoke.
+
+ONNX Runtime's static build carries Microsoft's telemetry uploader. `src/infer/ort_static_ios.cpp` sets
+`ORT_DISABLE_TELEMETRY` before the runtime starts so the uploader is never made. `tools/ios/ort_telemetry_pin.py`
+fails the build if the collector addresses or that variable's name change, or if `MV_ORT_VERSION` moves: on a bump,
+re-read `core/platform/posix/telemetry.cc` and update the pin.
+
 ### Linux (Linux PR 1)
 
 The present lab, `frametime` and the portable tests, from the root `CMakeLists.txt` (it includes
@@ -541,6 +570,87 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
+### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-in-the-app.md`)
+
+Part of the app since 2026-11-12, with or without Local search: Settings → Phone access on both hosts
+(`PhoneAccessView.swift` in MediaViewerChrome, `IslandHost.Phone.cs` in MediaViewer.Chrome; words in
+`src.managed/Shared/PhoneWords.cs`, the Windows QR in `Shared/QrCode.cs`). The work is `src/phone`
+(`link.*` the state machine, `desk.*` claim/codes/devices/nearby, `app.*` the one link per process) over
+`src/wire` (Driftwire's protocol) and `src/catalogue` (keys, `library.json`, current.json, delivery);
+hosts reach it through `mv_phone_*` (ABI 0.41) and the Mac bridge `mv_chrome_phone_*`. Local search,
+when loaded, is a catalogue source (its `phone_publish` / `phone_json`). Only the first window's process
+runs it. Keys are in the OS store under "MediaViewer Phone access" (Credential Manager sealed with DPAPI
+on Windows, the Keychain on the Mac), copied once from "MediaViewer Local search" and "MediaViewer Driftwire".
+
+Tests, always filtered by tag: `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
+claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
+machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the app's link over
+a Local search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`),
+and `dotnet test src.managed/MediaViewer.Chrome.Tests` (QR, words against the Swift). To try it without a
+Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the card that
+machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
+
+Not done: either card seen running (the Windows one is compiled only; the Mac one built, not driven), the
+phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
+run against a real Synology or phone.
+
+### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
+
+Screens are in `src.ios/MobilePackage` (`MobileKit` holds the protocols, `MobileUI` the screens,
+`MobileCore` and `MobileLink` the real library, search and link over `src/mobile`). Two apps share
+them. `MediaViewer` is the real one and links no stand-in data (`App/MediaViewer/LiveServices.swift`).
+`MediaViewerFixtures` runs the screens on generated pictures and a generated clip; its
+`MobileFixtures` package does not compile outside Debug, so it cannot reach a release. Backup
+(release 1.1) is compiled only with the Swift condition `MV_BACKUP`, which no build sets.
+
+The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
+`DEVELOPMENT_TEAM` is empty there. Put your own in `src.ios/Config/Signing.local.xcconfig` (git
+ignores it), for example `DEVELOPMENT_TEAM = ABCDE12345`. Build a Simulator copy with signing on
+(the Keychain refuses an app without entitlements, and pairing needs it), and check a release
+archive without a team:
+
+```bash
+cd src.ios
+xcodebuild -project MediaViewerMobile.xcodeproj -scheme MediaViewer -configuration Debug \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' build
+xcodebuild archive -project MediaViewerMobile.xcodeproj -scheme MediaViewer \
+  -destination 'generic/platform=iOS' -archivePath /tmp/MediaViewer.xcarchive CODE_SIGNING_ALLOWED=NO
+```
+
+`ITSAppUsesNonExemptEncryption` is false. The link uses standard algorithms (Noise over libsodium), and
+the App Store Connect encryption answers (standard algorithms, not distributed in France) need no
+documents. Before the app is offered in France, a French declaration has to be filed and those answers
+changed. The Acknowledgements screen reads
+`App/MediaViewer/Acknowledgements.txt`; after a dependency changes, regenerate it from the device
+core build with `python3 tools/ios/acknowledgements.py build-ios-iphoneos src.ios/App/MediaViewer/Acknowledgements.txt`.
+
+To walk the real app by hand, `tools/ios/demo-service.sh <folder> [desktop build dir]` makes a
+small sample library, publishes it with `mv_publish_test_library`, runs `driftwire serve
+--test-loopback` on 127.0.0.1:18452 (never the public DHT) and writes the pairing link and its QR
+picture. Add the picture to the Simulator's Photos and use "Choose a picture", or open the link
+with `xcrun simctl openurl booted "$(cat <folder>/pair-link.txt)"`. `demo-service.sh <folder> stop`
+stops it. The code lasts 15 minutes and works once. With `DEMO_FILE_MODE=1` the share keeps only
+`library.json`, so the phone opens the library in file mode (`docs/plans/phone-in-the-app.md` §4);
+`mv_publish_test_library photos nas work 2` in that folder then publishes a catalogue with the same
+key, which the phone takes on its next sync. File mode's core tests: `mv_mobile_link_tests "[mobile-files]"`.
+
+The fixtures app:
+
+```bash
+cd src.ios
+xcodebuild -project MediaViewerMobile.xcodeproj -scheme MediaViewerFixtures -configuration Debug \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' CODE_SIGNING_ALLOWED=NO build
+```
+
+Every state in the plan's §11 has a name (`FixtureState` in `FixtureStates.swift`). In the running
+fixtures app the ladybug button lists them. To start in one, and without the button for screenshots:
+
+```bash
+xcrun simctl launch --terminate-running-process booted io.github.longtimeno-c.mediaviewer.mobile.fixtures -fixtureState library.stale -fixtureChrome NO
+```
+
+The Simulator has no camera, so the fixtures app's scan screen lists the codes it could have read.
+
 ### The `driftwire` command line (docs/design/28)
 
 Every build that includes `cmake/driftwire.cmake` builds it: the Windows root, the Mac build and
@@ -589,6 +699,144 @@ cmake --build build-cli && ctest --test-dir build-cli --output-on-failure
 ```
 
 Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
+
+### The phone's library and search (`src/mobile`, `MobileCore`; plan: `docs/plans/mobile.md` M5, M6)
+
+The real app links `src/mobile` through `tools/ios/build-core.sh`, a build phase that makes
+`build-ios-<sdk>/` from CMake. It reads an installed generation from
+`Application Support/library/gen/<epoch>-<generation>/`, the one `library/installed.json` names, with
+the manifest's shared files beside `gen/`.
+
+**Live, end to end.** `tools/ios/search-live.sh` runs the same comparison through the real app. It
+copies an indexed folder's stills and short clips onto a disk image of their own (the "NAS"), points a
+copy of the index at it, and publishes with the desktop engine's own `phone_publish` and the installed
+AI pack. That is the code the Mac's Publish runs, so the catalogue carries the phone's real tower. It
+then asks that engine every query (the Mac's answers), serves the image with `driftwire serve
+--test-loopback` on 127.0.0.1, and pairs, copies and searches in the Simulator (`LiveSearchTests`).
+
+```bash
+tools/ios/search-live.sh "$HOME/Library/Application Support/MediaViewer/Add-ons/AI/data" <indexed folder> <Simulator UDID> <out>
+```
+
+Build the app for the Simulator ad hoc signed (`CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO`) and
+copy it to `<out>/MediaViewer.app`. Without a signature it has no keychain and cannot pair. The real
+index is only read. The Mac's side runs with the index's own compute and quality (`MV_LIVE_CPU=1`:
+the CPU at quality High), and needs every AI piece installed. It answers `place:`
+with the Places add-on's own rule (`place_query`); clip routes are not walked. Tiles come from
+ImageIO and AVFoundation, which cannot read every clip. With `MV_LIVE_SOUND=<folder>` (the output of
+`tools/ios/clap_text_phone.py`, below) the folder is served on 127.0.0.1, a Debug app downloads sound
+search's model from it (`MV_SOUND_BASE`) and the queries wait until Settings says Sound search is On;
+without it the phone has no sound tower, and a query the Mac answers by sound differs. The script detaches its disk image on the way out (not with `MV_LIVE_REUSE=1`); afterwards delete
+`<out>` (the image holds copies of the files, `data/` a copy of the index and faces) with
+`hdiutil detach <out>/mnt; rm -rf <out>`. `tools/ios/small-screen.sh <out>` runs every screen on an iPhone SE
+(3rd generation) Simulator at the largest text size.
+
+The parity test runs the desktop engine, over the real AI pack, and the phone engine, in a Simulator
+of its own, on one published generation, and compares rows and order:
+
+```bash
+cmake --build build --target mv_mobile_parity_desktop
+ninja -C build-ios-sim mv_mobile_parity
+build/bin/mv_mobile_parity_desktop publish <copy of the index folder> <root> <pack> <fetched> <places.mvgeo> <work> <nas>
+tools/ios/run-parity.sh <nas>/.mediaviewer/gen/000001 <nas>/.mediaviewer <pack> <Add-ons> \
+  build/bin/mv_mobile_parity_desktop build-ios-sim/bin/mv_mobile_parity tools/ios/parity_queries.txt <work>/queries.local.txt -- <out>
+```
+
+`publish` makes `queries.local.txt` from the catalogue's own names, places and cameras, so those
+stay out of the repo. Numbers from this are Simulator numbers, not phone numbers. Both sides run
+without the sound text tower by default; `MV_PARITY_WITH_SOUND=1` keeps it on the desktop side, and
+`SIMCTL_CHILD_MV_PARITY_SOUND_DIR=<folder>` gives the phone engine sound search's model (a folder the
+phone's download would have verified: the pinned files and `verified.txt`). `mv_mobile_parity` also
+prints the process's physical footprint, the figure iOS holds an app to. The run fails below 200 queries, on a query listed twice, and when the
+two desktop runs disagree. `place:` is covered only through the labels the catalogue stores: the
+desktop app answers it through the Places add-on, which neither half loads. `RealCatalogueTests` drives the real app and is skipped unless
+`TEST_RUNNER_MV_REAL_CATALOGUE` names a folder for its screenshots. MobileCore's own tests (generation
+swaps, tiles and warm-up, over generations the publisher builds) run in a Simulator of their own:
+
+```bash
+tools/ios/run-mobilecore-tests.sh
+```
+
+### Sound search's model for the phone (plan: `docs/plans/mobile.md` §9, "Sound search")
+
+The phone downloads the text half of the Mac's CLAP once, from the GitHub release `clap-text-phone-1`,
+and keeps it only if each file matches the size and SHA-256 in `src/mobile/sound_tower.h`. To make the
+files again (onnxruntime 1.30, onnx and numpy, in a venv of their own; it downloads the pinned 501 MB
+fp32 export from Hugging Face unless `--fp32` names a copy), and print the pin lines:
+
+```bash
+python3 tools/ios/clap_text_phone.py --out <folder>
+```
+
+The same input gives the same bytes. A new export is a new pin: a new release tag, the lines in
+`sound_tower.h`, and an app update; the old release stays for the builds that name it.
+
+### The sample library (code `SAMPLE`; plan: `docs/plans/mobile.md` §11.1)
+
+Every build of the iPhone app opens a sample library from the GitHub release `sample-library` when
+someone enters `SAMPLE` on the Scan screen ("Enter a code") or opens `mediaviewer://sample`. It is
+App Review's way in (`src.ios/AppStore/review-notes.md`). The pictures are listed with their authors
+and licences in `tools/ios/sample-library/SOURCES.md` (made from `sources.json` by
+`python3 tools/ios/sample_library.py table`).
+
+To make it again, and to put it on the release (the second needs `gh` signed in to the repository):
+
+```bash
+cmake --build build --target mv_mobile_parity_desktop
+```
+
+```bash
+tools/ios/sample-library.sh <work folder> <generation>
+```
+
+```bash
+tools/ios/sample-library.sh <work folder> <generation> --upload
+```
+
+`<generation>` must be above the one on the release, or phones that have the sample keep theirs. The
+script downloads each original from Wikimedia Commons (its SHA-1 pinned, its licence rechecked),
+makes 2048 px JPEGs and 1280 px H.264 clips (the OS's encoder, no x264), indexes them on a disk image
+of their own with the AI pack's B/32 on the CPU, publishes with `phone_publish`, refuses a
+catalogue that names this Mac's home folder or user, and signs `files.json` (every original's and
+the JPEG-512 pack's SHA-256) with `mv_mobile_parity_desktop sample-sign`. It signs with
+`~/Dev/.mv-toolchain/devkey/sample-library-publisher.key` (`MV_SAMPLE_KEY`), whose public half is
+pinned in `src/mobile/sample.h`: losing it means a new key and an app update, so keep a copy. The
+upload puts the files first, then `files.json` (the list and its signature in one asset), then `current.json`. It leaves older generations' files on the release; delete them
+by hand once the new one has been out for a day.
+
+In the Simulator, with a Debug build ad hoc signed as for `search-live.sh`: the folder is served on
+127.0.0.1 with ranges, the app is pointed at it (`MV_SAMPLE_BASE`, Debug builds only), and
+`SampleLibraryTests` walks a wrong code, `SAMPLE`, the copy, six searches, a photo, a clip and Forget;
+then the script checks each search's first three answers against the pictures' tags, that Forget
+left nothing in the app's container, and that requests carried no header about the person:
+
+```bash
+tools/ios/sample-library-sim.sh <work folder> <Simulator UDID> <MediaViewer.app> <out>
+```
+
+`MV_SAMPLE_FILE=1` serves it as a `file://` folder instead. The core's side, over a folder of a
+publisher's real `deliver()`, is in `mv_mobile_link_tests "sample*"`.
+
+The same run checks phone backup (1.1) in the sample library: it grants Photos and adds 12 generated
+plain-colour pictures to the Simulator (never anyone's own photos), `test4b` backs them up to "Sample
+NAS on this iPhone", and the script checks that folder (each picture once, whole, no `.mvpart`, the
+ledger copy there) before Forget and that Forget removes it. The backup core alone:
+`mv_mobile_link_tests "backup:*"`; the service's write grant: `mv_import_tests "serve backup*"`.
+
+Typing a search, recorded, so two builds can be compared doing the same thing (the grid flicker,
+2026-11-12). `SearchSmoothnessTests` opens the sample library from the release if the app has none,
+types three queries a letter at a time and refines each; the script records the screen
+(`typing.mp4`), the time from each query's last key to its answer (`latency.txt`), the app's memory
+afterwards (`footprint.txt`) and an Instruments trace. Build each app Release, ad hoc signed as
+above, alternate the runs (base, new, base, new), and keep other work off the Mac: under load
+XCUITest times out synthesizing keys. In the Simulator pass `none` or single instruments
+(`"+SwiftUI,Hangs"`); the Animation Hitches and SwiftUI templates carry the Hitches instrument,
+which runs only on a phone. The fixtures app's frame meter counts hitches while typing in the
+Simulator: `ScrollHitchTests/testSearchTypingHitches`.
+
+```bash
+tools/ios/search-smoothness.sh <Simulator UDID> <MediaViewer.app> <out> none
+```
 
 ## Run
 
@@ -1051,6 +1299,15 @@ A local app build that should try the library in Settings needs the new `Info.pl
 with `-DMV_MAC_BUNDLE_ID=io.github.longtimeno-c.mediaviewer.dev`, so that the dev app's Photos
 permission and preferences stay apart from an installed MediaViewer.
 
+### The phone's catalogue
+
+`mv_ai_tests "[phone]"` publishes to a local folder and reads the result back as a phone would
+(docs/design/17 "The phone's catalogue"); no NAS is needed. `mv_ai_tests "[.perf-bench][phone-cost]"`
+prints the publisher's idle cost and scan throughput, and `[.perf-bench][phone-scale]` its per-tile
+and per-scan costs (`MV_TILE_DIR` points it at a folder of real JPEG-512s). The NFC table is
+generated: `python3 tools/fold/gen_nfc_table.py > src/addons/ai/nfc_table.inc`, with the newest
+Python, whose `unicodedata` sets the Unicode version.
+
 ### Local search from Final Cut Pro and FCPXML export
 
 Status and verify lines: [docs/design/23](design/23-nle-search.md) (issue #71). Phase 1 (the search
@@ -1374,6 +1631,12 @@ build/bin/mv_import_tests "[cli][e2e]"        # POSIX: two mv_driftwire_cli_test
 # "<address or name>:47614#<key>" (it prints the key) in Driftwire's "Your own relay server (optional)" on
 # the receiving computer. Only a holder of the key can wait there.
 build/bin/mv-driftwire-relay --port 47614      # --key-file F (or MV_RELAY_KEY; else it makes a key and prints it once) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
+# The NAS service (docs/design/28 "The NAS service"), any host; a Mac or Linux box stands in for the NAS here.
+# DIR/serve.json names the port and the folders; DIR/secrets is made 0700. The device key is the phone's public key.
+build/bin/driftwire serve --data DIR init                # prints the identity and, once, the library access key
+build/bin/driftwire serve --data DIR add "My phone" <64-hex-public-key>
+build/bin/driftwire serve --data DIR                     # needs no terminal; revoke with: serve --data DIR revoke "My phone"
+build/bin/mv_import_tests "[driftwire-serve]"            # the service over loopback
 # The Tunnel: key holders' forwards go to ports 80 and 443 unless told otherwise; none turns it off.
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,443 --max-forwards 64
 # Slice 4: also on 443 behind TLS, a web site to anyone without the key (BoringSSL; brew install nasm go first)
@@ -1396,7 +1659,7 @@ python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --sr
 # tools/fuzz/fuzz_driftwire.cpp with clang-cl in the fuzz job); S=src/addons/driftwire
 /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -O1 -g -fsanitize=fuzzer,address -isysroot $(xcrun --show-sdk-path) \
   -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_driftwire.cpp $S/wire.cpp $S/noise.cpp \
-  $S/cpace.cpp $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
+  $S/cpace.cpp $S/channel.cpp $S/serve_wire.cpp $S/serve.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
   $S/net_posix.cpp $S/machine_mac.cpp $S/bencode.cpp $S/sha1.cpp $S/dht_item.cpp $S/dht.cpp $S/udp_hub.cpp \
   $S/known.cpp $S/secrets_file.cpp $S/splice.cpp $S/relay.cpp $S/internet.cpp $S/meet.cpp \
   src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
@@ -2023,6 +2286,11 @@ after `publish`, on **stable** releases only and only when the repository variab
 `packaging/linux/repo/install.sh`, the page's `packaging/linux/repo/index.html`. On macOS
 `install.sh` installs nothing and prints the `brew install` line.
 
+The same deploy carries the site's own pages from `packaging/site`, copied as they are: the front
+page and the iPhone app's privacy and support pages (`/iphone/privacy/`, `/iphone/support/`), whose
+URLs are in its App Store listing (`src.ios/AppStore/listing.md`). A change to them reaches the
+site only with the next stable release's deploy.
+
 **The key** (step 1 above), on a trusted machine with GnuPG 2.2 or newer:
 
 ```sh
@@ -2515,7 +2783,7 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
     (checked against the signed `SHA256SUMS`, run, upgraded 0.1.37 → 0.1.38, removed, nothing left
     in the home) and as root into `/usr/local` (removed, `/usr/local` exactly as before).
   - `driftwire_repo.py smoke` passes as root (all of the apt and tarball checks above, in one run).
-- **Compiled by CI only:** the Windows halves (`term_win.cpp`, `data_dir_win.cpp`, the UTF-8 argv
+- **Compiled by CI only:** the Windows halves (`term_win.cpp`, `serve_tty_win.cpp`, `data_dir_win.cpp`, the UTF-8 argv
   and console print, the Windows branches of the tests; the end-to-end test is POSIX only) and the
   macOS build; the `driftwire-cli-linux` job (Ubuntu 22.04 x64 and arm64, GCC 12, vcpkg) and the
   artefact steps, with its repository step; the release's `linux-cli` and `driftwire-repo` jobs
@@ -4637,3 +4905,16 @@ native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never t
 decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
 modify an original; nothing about a user's files leaves the machine; never require a Store
 codec pack.
+
+## The iPhone app's link (src/mobile, src.ios)
+
+The core: `mv_mobile_link_tests "[mobile-link]"` (the Mac build's `build/bin`), filter by tag. The app:
+build `build-ios-sim/` (`cmake/ios.cmake`), then the `MediaViewer` scheme. End to end against
+`driftwire serve` on loopback in a Simulator of your own: `tools/ios/link-e2e.sh <udid> <folder>`
+after copying the built `MediaViewer.app` into `<folder>`. Codes for a service come from
+`driftwire serve pair-code [SECONDS]` (`--for 24h` for a guest code) until the desktop claim lands.
+The owner's passphrase and timed phones on the service: `driftwire serve init --passphrase-stdin` or
+`--no-passphrase` when no terminal can ask, `serve status`, `serve passphrase set|reset`,
+`serve grant NAME --for D|--forever` (`docs/design/28-driftwire.md` "The owner's passphrase"). Tests:
+`mv_import_tests "[driftwire-serve],[phone-pairing]"`; the iOS copy in `MobileUITests` (the package's
+test scheme links the iOS core from `build-ios-iphonesimulator/`).

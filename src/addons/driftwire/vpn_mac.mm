@@ -30,7 +30,7 @@
 #include <cstring>
 #include <mutex>
 
-#include "addons/driftwire/net.h"
+#include "wire/net.h"
 #include "addons/driftwire/vpn.h"
 
 // The system extension's activation, answered on a queue of its own.

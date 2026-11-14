@@ -34,11 +34,13 @@
 
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include "addons/ai/catalog.h"
 #include "addons/ai/faces.h"
 #include "addons/ai/fetch.h"
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
 #include "addons/ai/cloud_files.h"
+#include "wire/secrets.h"
 #include "addons/ai/pdf_reader.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
@@ -176,6 +178,8 @@ struct engine_deps {
   // Null when the ai-faces piece is not installed.
   // The embedder on a compute choice (mv_ai_compute), self-tested against CPU.
   std::function<result<std::unique_ptr<face_analyzer>>(std::uint32_t compute)> open_faces;
+  // Where the catalogue's signing key is kept. Unset: this OS's secret store.
+  std::function<std::unique_ptr<driftwire::secrets::store>()> key_store;
   // Audio: an error when the ai-audio piece is not installed.
   std::function<result<loaded_sound>(std::uint32_t compute)> open_sound;
   std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
@@ -266,6 +270,30 @@ struct engine_deps {
   // changed are walked once the changes have been quiet this long, or this
   // long after the first at most (a long copy).
   double tree_quiet_s = 2;
+  // Phone access (docs/plans/mobile.md §6): a scan quiet this long publishes,
+  // at most this often; a generation waiting for its share is offered this
+  // often; thumbnails work this long before the catalogue goes out anyway.
+  double phone_quiet_s = 120;
+  double phone_min_interval_s = 3600;
+  double phone_share_poll_s = 30;
+  double phone_retry_base_s = 30;
+  // Tests: runs as the phone state is about to be written.
+  std::function<void()> phone_save_hook;
+  // Tests: the publisher thread's very last step, after its run has ended.
+  std::function<void()> phone_thread_exit_hook;
+  // Tests: a starter's step right after its thread exists.
+  std::function<void()> phone_start_hook;  // a failed delivery waits this, doubling, to an hour
+  double phone_thumb_budget_s = 1800;
+  // Tests only: after a worker commits a transcript window, before memory
+  // follows it; after load_audio installs a Whisper and its lines.
+  std::function<void()> after_speech_commit;
+  std::function<void()> after_speech_install;
+  // Tests only: a full install has read the index, and holds no lock yet;
+  // a worker has settled the window it committed.
+  std::function<void()> after_speech_read;
+  std::function<void()> after_speech_settle;
+  // The answering text tower's files, for a phone (a tower of this spec), or none.
+  std::function<std::vector<std::string>(const std::string& spec)> text_tower_files;
   double tree_max_wait_s = 10;
 };
 
@@ -280,6 +308,10 @@ struct engine_deps {
 // every kReaderCatchUpSeconds, appending new frames rather than reloading.
 struct engine_options {
   bool read_only = false;
+  // A reader over files that can never change (a phone's installed catalogue,
+  // docs/plans/mobile.md §5 rule 2): opened with SQLite's immutable=1 and
+  // defensive mode, and never polled for what the app committed.
+  bool immutable = false;
   // Issue #299: a root whose picture indexing was unfinished when the engine
   // started (a quit or a kill part-way) is held, neither walked nor indexed,
   // until resume_root (set_setting "resume_root") or an explicit Rescan /
@@ -380,6 +412,19 @@ class engine {
   // ---- search ------------------------------------------------------------------
   [[nodiscard]] std::uint64_t search_text(const std::string& query, const std::string& scope_dir,
                                           std::uint32_t scope, std::uint32_t kinds);
+  // Transcript lines `said:` reads from now (tests: no line twice). [no-block]
+  [[nodiscard]] std::size_t speech_lines() const {
+    std::lock_guard lock(speech_m_);
+    return speech_rows_.size();
+  }
+  // Clips remembered for full installs still reading (tests: none kept once idle). [no-block]
+  [[nodiscard]] std::size_t speech_commits_kept() const {
+    std::lock_guard lock(speech_m_);
+    return speech_committed_.size() + speech_dropped_.size();
+  }
+  // A reader: whether search_text can answer this query now, before (or
+  // without) its tower: names, dates, places, words said, files. [no-block]
+  [[nodiscard]] bool answerable_now(const std::string& query);
   [[nodiscard]] std::uint64_t search_similar(const std::string& path, std::int64_t pts_ms,
                                              const std::string& scope_dir, std::uint32_t scope,
                                              std::uint32_t kinds);
@@ -469,6 +514,12 @@ class engine {
   // What a file holds and whether its vectors can answer here. [worker-thread]
   [[nodiscard]] result<std::string> inspect_export(const std::string& file);
   [[nodiscard]] std::string transfer_json() const;
+  // docs/plans/mobile.md §5, §6: builds a catalogue generation here and delivers
+  // it to `destination`'s .mediaviewer folder, on its own thread while indexing
+  // goes on. status::busy while one is running. phone_json reports it. [no-block]
+  [[nodiscard]] expected phone_publish(const std::string& destination);
+  void phone_cancel() noexcept;
+  [[nodiscard]] std::string phone_json() const;
   void transfer_cancel() noexcept;
 
   // ---- for tests -----------------------------------------------------------------
@@ -628,7 +679,21 @@ class engine {
     std::string text;
     std::vector<std::string> words;
   };
-  void load_speech(const std::string& spec);
+  // Every clip's transcript, `preferred`'s where there is one, else another
+  // Whisper's (index_db::each_speech). "": no Whisper, so none.
+  // Lock order wherever both are held: models_m_, then speech_m_.
+  void load_speech(const std::string& preferred);
+  // The same rows, read without taking a lock; `only_asset` > 0: one clip's.
+  [[nodiscard]] std::vector<speech_row> read_speech(const std::string& preferred, std::int64_t only_asset = 0);
+  // The one way memory changes for transcripts (models_m_, then speech_m_):
+  // a window committed marks its clip dirty; settling installs dirty clips as
+  // read_speech reads them now; a full install reads outside the locks, then
+  // settles what was committed during the read.
+  void note_speech_commit(std::int64_t asset);
+  void settle_speech();
+  void install_speech(const std::string& preferred, const std::function<void()>& with_locks);
+  void forget_speech_locked(const std::set<std::int64_t>* assets);  // speech_m_ held; null: all
+  void prune_speech_committed_locked();                              // speech_m_ held
   // #406: a clip's own text in memory, matched like transcript lines but kept
   // apart from them: removing the audio piece clears speech, never these.
   struct cue_row {
@@ -693,7 +758,7 @@ class engine {
   };
   [[nodiscard]] expected walk_dir(const root_row& root, const std::string& dir, int depth, walk_kinds kinds,
                                   std::int64_t gen, std::vector<index_db::seen_file>& batch,
-                                  std::vector<std::int64_t>& changed, bool& failed);
+                                  std::vector<std::int64_t>& changed, bool& failed, std::uint64_t* listed = nullptr);
   // docs/plans/index-watcher.md: walks only the folders the host said
   // changed (MV_ADDON_TREE_* flags; a folder gone takes its rows with it).
   void scan_dirs(const root_row& root, const std::map<std::string, std::uint32_t>& dirs);
@@ -710,11 +775,14 @@ class engine {
   bool see_batch(const root_row& root, std::vector<index_db::seen_file>& batch, std::int64_t gen,
                  std::vector<std::int64_t>& changed);
   // A scan's end: removed assets leave every index, changed ones their vectors.
+  void keep_unlistable(const root_row& root, std::int64_t gen, const std::vector<std::string>* trees = nullptr);
   void end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed);
   // end_root_scan's part after the index: `gone` and `changed` leave the
   // matrices, faces and text rows.
+  // `walked_whole` false: a walk that failed part way (the root is not marked
+  // as checked; what it found is still indexed).
   void after_scan(const root_row& root, const std::vector<std::int64_t>& gone,
-                  const std::vector<std::int64_t>& changed);
+                  const std::vector<std::int64_t>& changed, bool walked_whole = true);
   void forget_vectors(const std::vector<std::int64_t>& ids);
   // Whether an unavailable Photos asset is on this Mac now (the launch check).
   [[nodiscard]] bool photos_local(const asset_row& a) const;
@@ -887,7 +955,7 @@ class engine {
   void run_transfer(transfer_job job);  // control thread
   [[nodiscard]] std::string run_export(const transfer_job& job, mv::status& st);
   // An export's thumbnail: the viewer's cached one, else made now.
-  [[nodiscard]] result<std::vector<std::uint8_t>> export_thumb(const transfer::thumb_want& w);
+  [[nodiscard]] result<std::vector<std::uint8_t>> export_thumb(const transfer::thumb_want& w, const std::atomic<bool>& cancel);
   [[nodiscard]] std::string run_import(const transfer_job& job, mv::status& st);
   // The picture specs a file's rows may land under here, and the Quality to
   // adopt (0 none) when this index is empty and the file's tower is carried.
@@ -953,8 +1021,21 @@ class engine {
   loaded_docs docs_;      // #354 D3: empty model: no ai-docs piece
   vector_store meanings_; // its passage vectors (pts: the passage id)
   std::int64_t reader_meaning_ = 0;  // a reader: the last passage id taken
+  // A reader: people and transcripts are in, so searches that need no tower answer.
+  std::atomic<bool> catalogue_ready_{false};
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
+  // Under speech_m_: marks handed out in order; the clips committed and not
+  // yet settled into memory, with their mark; every clip's last commit mark.
+  std::uint64_t speech_mark_ = 0;
+  std::map<std::int64_t, std::uint64_t> speech_dirty_;
+  // Commits and drops since the oldest full install still reading began
+  // (empty while none reads); the starts of the installs reading now; the
+  // mark of the last clear, for an install whose read it overtook.
+  std::unordered_map<std::int64_t, std::uint64_t> speech_committed_;
+  std::unordered_map<std::int64_t, std::uint64_t> speech_dropped_;  // assets dropped, by mark
+  std::multiset<std::uint64_t> speech_installs_;
+  std::uint64_t speech_cleared_mark_ = 0;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
   // #403: made on the control thread (Windows joins it to the MTA first), set
   // once under models_m_ and never replaced, so a worker may keep the pointer.
@@ -1195,6 +1276,87 @@ class engine {
     std::string outcome;      // the finished job's counts, a JSON object
   } transfer_;
   std::atomic<bool> transfer_cancel_{false};
+
+  // Phone access: one publish at a time, on its own thread, so a share that
+  // hangs holds up only this and never the control thread.
+  struct phone_view {
+    bool running = false;
+    std::string phase;   // "building" / "sending"
+    double fraction = 0;
+    std::string error;   // "" / unreachable / other_library / no_index / no_folders / cancelled / failed
+    std::string library_id;
+    std::string destination;
+    std::uint64_t generation = 0;   // the last one that became current
+    std::uint64_t high_water = 0;   // the highest ever used: never used twice
+    std::uint64_t epoch = 1;
+    std::string public_key_hex;
+    std::string fingerprint;
+    std::int64_t published_unix = 0;
+    std::uint64_t assets = 0;
+    std::map<std::string, std::string> root_ids;  // index root id -> stable id
+    bool auto_on = true;           // a quiet scan publishes (the person turned it on by publishing)
+    std::uint64_t runs = 0;        // publishes started, either way
+    std::uint64_t thumbs_made = 0;
+    bool thumbs_left = false;      // the last run stopped short: the next hour carries on
+    std::uint64_t waiting = 0;     // built here, not on the share yet
+    std::uint64_t waiting_assets = 0;
+    std::int64_t waiting_created = 0;
+    std::string stamp;             // the index as the current generation has it
+    std::string waiting_stamp;
+    double last_attempt = 0;       // wall clock: at most hourly survives a restart
+    std::vector<catalog::root_map> roots;  // as last seen on the share, for building while it is away
+    std::string share_device;      // its volume, to tell whether a new folder is on it
+    // A generation that failed to land waits longer each time, until the share
+    // or its free space changes.
+    int retries = 0;
+    double retry_at = 0;           // wall clock
+    bool share_seen = true;
+    std::uint64_t last_free = 0;
+    std::string deliver_error;     // said again while waiting out the back-off
+    std::uint64_t needs_bytes = 0; // no_space: what the generation needs
+    std::uint64_t deliver_attempts = 0;
+  };
+  void load_phone_state();
+  [[nodiscard]] bool save_phone_state() const;
+  [[nodiscard]] bool write_phone_state(const phone_view& v) const;
+  void finish_phone(const std::function<void(phone_view&)>& change, const std::string& error);
+  bool start_phone_thread(const char* phase, const std::function<bool(const phone_view&)>& admit,
+                          std::function<void()> body);
+  void run_phone_publish(const std::string& destination, bool automatic);
+  void run_phone_deliver();
+  void deliver_phone_generation(const std::vector<std::uint8_t>& secret, const std::vector<std::uint8_t>& public_key,
+                                const std::string& library_id, const std::function<void(const std::string&)>& finish,
+                                const std::function<void(const char*, double)>& set_progress);
+  void phone_publish_auto();
+  void phone_deliver_waiting();
+  void phone_tick(bool walked);
+  void fill_phone_thumbs(catalog::thumb_store& store, const std::vector<std::int64_t>& roots,
+                         const std::string& destination, bool& left);
+  [[nodiscard]] result<std::vector<std::uint8_t>> phone_thumb(const catalog::thumb_want& w);
+  void note_phone_delivery_failed(const std::string& why);
+  [[nodiscard]] std::uint64_t phone_bytes_needed(const std::string& gen_dir, const std::vector<catalog::shared_file>& shared,
+                                                 const std::string& destination) const;
+  [[nodiscard]] std::vector<std::int64_t> phone_carried_roots();
+  [[nodiscard]] std::string phone_stamp(std::span<const std::int64_t> roots) const;
+  [[nodiscard]] result<std::vector<std::string>> stored_place_matches(const std::string& place);
+  // The publisher key, shared with the app's Phone access (catalogue/publisher.h).
+  [[nodiscard]] result<std::vector<std::uint8_t>> phone_key(bool make);
+  bool adopt_phone_library(const std::string& destination, std::span<const std::uint8_t> public_key);
+  mutable std::mutex phone_m_;
+  mutable std::mutex phone_save_m_;  // taken before phone_m_
+  bool phone_stopped_ = false;       // under phone_m_: stop() has taken the thread
+  phone_view phone_;
+  std::atomic<bool> phone_cancel_{false};
+  std::thread phone_thread_;
+  // The control thread's alone (phone_tick).
+  bool phone_check_ = true;      // compare the index with the published stamp, once
+  bool phone_was_busy_ = false;
+  bool phone_changed_ = false;
+  double phone_quiet_since_ = 0;
+  double phone_next_poll_ = 0;
+  std::map<std::string, bool> phone_root_on_share_;  // folders added since the last build
+  std::atomic<bool> phone_recheck_{false};      // a delivery found this generation can never land
+  std::atomic<double> phone_cancelled_at_{0};   // wall clock
   std::atomic<bool> transferring_{false};  // workers wait (an import)
   std::deque<std::pair<std::string, std::vector<float>>> text_cache_;
 };

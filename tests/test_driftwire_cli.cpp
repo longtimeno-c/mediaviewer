@@ -30,7 +30,7 @@
 #include "addons/driftwire/cli/session.h"
 #include "addons/driftwire/cli/theme.h"
 #include "addons/driftwire/cli/update.h"
-#include "addons/driftwire/splice.h"
+#include "wire/splice.h"
 #include "driftwire_cli_vt.h"
 #include "driftwire_fixture.h"
 

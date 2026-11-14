@@ -47,6 +47,14 @@ class vector_store {
     float score = 0;     // cosine
     float generic = 0;   // the row's best generic-prompt cosine
   };
+  // Score, then asset, then time: an exact tie goes the same way on every
+  // machine, whatever order the vectors were loaded in (a phone and its
+  // desktop must rank alike).
+  [[nodiscard]] static bool ranked_before(const hit& a, const hit& b) noexcept {
+    if (a.score != b.score) return a.score > b.score;
+    if (a.asset != b.asset) return a.asset < b.asset;
+    return a.pts_ms < b.pts_ms;
+  }
   // How far a query's best assets stand out from the rest of the allowed
   // index: the mean of the ten best per-asset scores, in standard deviations
   // of every asset's best score. Per asset, so a long clip's many similar

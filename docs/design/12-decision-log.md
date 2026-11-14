@@ -8,6 +8,49 @@ Trade-offs for the D1–D9 decisions are in [01-decisions.md](01-decisions.md).
 
 ---
 
+## Phone access
+
+**Phone access is part of the app, not an add-on (2026-11-12, owner).** It pairs a phone, claims and
+manages the NAS service, serves nearby and keeps the publisher key with no add-on installed: the phone app
+is its own product and must work without Local search. This is a deliberate exception to the 2026-10-11
+rule that optional features ship as add-ons carrying their own code. The Driftwire protocol it needs moves
+to `src/wire` (linked by the core, the Driftwire add-on, the `driftwire` CLI and iOS), the feature to
+`src/phone`; Local search only builds the catalogue the core signs and delivers. Plan:
+[phone-in-the-app.md](../plans/phone-in-the-app.md).
+
+**Nearby sync is the NAS's protocol, pulled by the phone (2026-11-10).** `docs/plans/mobile.md` §7.5 describes
+the Mac sending files as a Driftwire transfer that skips Accept. Instead the Mac runs a LAN-only
+`serve::server` over a local copy and the phone reads it as it reads the NAS. The phone needs no second
+receive path, resume is `read_range`, and "newest wins" is the check it already does on `current.json`.
+The Mac's identity is not in the QR, so nothing pins it; the catalogue's signature is the trust.
+
+**A sample library, opened by a code, in every build (owner, 2026-11-12).** Reverses two earlier
+calls: "no sample library" (2026-11-09, `docs/plans/mobile.md` §2, which also removed the Welcome
+screen's "Try the sample library"), and §11.1's order for App Review, where a review server and a
+reusable review grant came first and a demo mode was the last resort. The owner: "maybe there is a
+specific code that can be entered that will just open a test library? that seems easiest. all
+simulated", and "in built on all app versions". Why: App Review cannot reach a NAS, a review server
+must stay up for every future update, and the app does nothing without one. What is built: the code
+`SAMPLE` on the Scan screen ("Enter a code"), or `mediaviewer://sample` as a QR code or link, opens a
+real signed generation from the GitHub release `sample-library` (`src/mobile/sample.*`). Only the
+transport is simulated: `sample::static_remote` is a second `remote_file`, HTTPS range reads done by
+the host (`SampleFetch.swift`), so the pinned-key signature, the newest-wins rule, every manifest
+hash, the install, the tiny pack, the JPEG-512 cache, originals, clips and search on the phone are
+the code a NAS library runs. Downloaded, not bundled: the B/32 text tower alone is 127 MB, which every
+install would carry for a library few customers open; the download is free, needs no server
+process, and the app grows by code only. Its own publisher key (the secret is off the repository),
+a fixed library id, read-only. Write access to the release is not enough to put a file on a phone:
+the originals, clips and JPEG-512 pack are listed with their SHA-256 in `files.json`, signed by the
+same key, and checked whole before use (review fix, 2026-11-12). Nothing about the person is sent:
+no cookies, no cache, a fixed user agent "MediaViewer" and any language; GitHub sees an address, as
+for any download. Never hidden (App Review guideline
+2.3.1): the Enter-a-code prompt says to type SAMPLE for it, the grid carries a "Sample library" chip,
+Settings names it and where it comes from, and Forget removes it like any library. Cost: a release
+of about 185 MB on GitHub that must stay published, a key to keep, and one more `remote_file`.
+
+**Claim tokens do not expire (2026-11-10).** Reading one needs access to the share, and that access could write a
+new one, so an expiry adds nothing, while comparing a NAS clock with a file's time could lock a person out.
+
 ## Architecture and threading
 
 **Shell is native; chrome is hosted (2026-09-06).** The Win32 window and the D3D11 swapchain
@@ -1427,6 +1470,17 @@ media; hidden, system, packages and empty files are skipped) and reports groups.
 
 ---
 
+**Destinations are volume keys, not absolute paths (2026-11-10).** `import.db` keyed `library`,
+`seq` and the journal on the destination's absolute path, so a share back at `/Volumes/photos-1`
+or a re-lettered drive looked new: every file re-read to dedupe, renamed files copied again, `{seq}`
+restarted, and an interrupted job never resumed. Rows now carry a volume identity plus the folder
+inside the volume. Not `volume_id` alone: a Mac share's fsid changes at each mount, so a share goes
+by its mount source, and Windows' network `device_key` now resolves a drive letter to its UNC name
+(it was the path). Not the ABI: `mv_addon_volume` already has both fields. Absolute rows migrate
+only after a file check, because a stale mount point or another disk at the same path must not
+adopt them; offline rows are never rewritten or dropped. Details: [18](18-import.md) "Destination
+identity".
+
 ## Local search (AI add-on)
 
 **Runtime (2026-09-24).** ONNX Runtime; GPU through vendor providers shipped as optional pieces
@@ -1921,6 +1975,76 @@ nothing is noticed before the pack loads (#292), and a held root is not watched 
 **Not measured:** idle CPU with watched roots, and the PR 1 gates during a large copy into a
 watched root, on either platform; the Windows watcher has been compiled only by CI.
 
+**What a phone's catalogue carries, and when it is published (2026-11-10, `docs/plans/mobile.md`
+§5, §6).** People travel as names and asset links in a `faces.db` with an empty `emb` and a zero box:
+the reader's own code opens it, and no embedding or face position leaves the machine (owner call
+7). Thumbnails are tracked in a local ledger, each committed when made, so a cancel keeps hours of
+work; a tile lives in SQLite until a pack is sealed, which needs no crash-recovery of a growing file.
+Packs and model files are named by content and listed in the signed manifest, so a file already
+on the share at full size is not copied again. A pack under 16 MiB is folded into the next, or
+hourly publishes would leave a pack an hour. NFC is our own table, not the OS's, because OS
+normalisers differ by Unicode version and a phone and a desktop must produce the same bytes; it
+matches Python's Unicode 16 `NFC` on every code point and 400 000 random mark sequences. The bytes
+on disk go in `disk_path`, only in a catalogue, so `index.db` needs no migration. Place labels
+reach Places through a separate `mv.place_labels.1` interface: appending to `mv_addon_slots` broke
+every add-on that fills that struct under `-Wmissing-field-initializers`. Publishing is part of
+the control loop's existing tick and compares a content stamp only after a scan, so idle gains no
+wakeup. Generations go 2 hours after their successor arrives, not 7 days: hourly publishing kept
+about 170 of them, some 45 GB per 100 k assets. A small pack, replaced by folding, likewise goes
+in 2 hours rather than 30 days. The stamp covers only the folders a generation carries, so a
+local folder or the Photos library never triggers a publish.
+
+Measured against `28aa6af7`, Release, same machine, runs alternated, 30 s idle after a 40-file
+publish, fake embedder, `mv_ai_tests "[.perf-bench][phone-cost]"`. Raw output (scan 0.0: not run in
+that state):
+
+```
+base 1 {"idle_cpu_pct":0.0367,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":2070.8}
+new 1 {"idle_cpu_pct":0.0372,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":2144.5}
+new-waiting 1 {"idle_cpu_pct":0.0376,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":0.0}
+new-thumbs_left 1 {"idle_cpu_pct":0.0391,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+base 2 {"idle_cpu_pct":0.0357,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":2417.8}
+new 2 {"idle_cpu_pct":0.0365,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":2354.4}
+new-waiting 2 {"idle_cpu_pct":0.0378,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+new-thumbs_left 2 {"idle_cpu_pct":0.0395,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+base 3 {"idle_cpu_pct":0.0366,"idle_wakeups_per_s":4.967,"scan_files_per_s_median":1484.6}
+new 3 {"idle_cpu_pct":0.0375,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":2199.1}
+new-waiting 3 {"idle_cpu_pct":0.0378,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+new-thumbs_left 3 {"idle_cpu_pct":0.0373,"idle_wakeups_per_s":5.000,"scan_files_per_s_median":0.0}
+```
+
+Idle CPU rose slightly: 0.0357 to 0.0367 % on the base, 0.0365 to 0.0375 % new (the ranges barely
+overlap), 0.0376 to 0.0378 % with a generation waiting and 0.0373 to 0.0395 % with thumbnails left.
+Neither of those two overlaps the base; the increase is about 0.001 to 0.003 percentage points.
+Wakeups were 5.0 per second in every state. The bench is 30 s, so it holds at most one 30 s share
+poll, and it leaves out the stamp after a scan, a publish itself, and anything at library scale. Scan 1485 to 2418 files per second
+on the base, 2145 to 2354 new. The machine's load rose to about 60 during the last runs, so the
+scan rows are noisy. The vector comparator: 1.70 to 1.76 ms base, 1.65 to 1.75 ms new, six runs
+each. The stamp, once per finished scan and on no timer: about 400 ms at 100 k assets and 1 M
+frames on that loaded machine (`[.perf-bench][phone-scale]`), its lock released between queries.
+A 64 px tile averaged 1510 bytes and 0.43 ms over 13 system wallpapers made into JPEG-512s, not a
+camera library.
+
+**Not measured:** a pan soak or either present-loop gate during an active publish, because lab runs
+open windows on the owner's screen; a publish against a NAS; anything on Windows.
+
+**A walk deletes only what it can vouch for, and a damaged `.mvindex` is refused (2026-11-09,
+audit in `docs/plans/mobile.md` §1).** Reading the code showed a share dropping mid-walk could
+delete index rows: a subfolder that failed to open was skipped, a `readdir` error looked like the
+end of the folder, and `end_root_scan` then removed everything unseen, embeddings and face rows
+with it. `io::walk_files` now reports an `incomplete` listing unless each failure was a refused
+permission or a folder really gone (checked against the root's device or attributes after the
+walk, since an unmounted share also reads as "not found"). Only `walk_files2` hears it, as
+`MV_ERR_IO` after the files; Import's and Driftwire's walks behave as before, so a failing card
+still gives up what it can. The engine adds what was listed and deletes nothing. A refused folder
+is complete for the walk but keeps its rows: `keep_unlistable` lists the nearest existing folder of
+each unseen row and spares those that cannot list (one listing per folder, unseen rows only).
+Not exercised against a real share dropping: the tests use a refused folder and a walk made to
+fail. `.mvindex` import noted no read errors, so a damaged file committed as a shorter one, with
+assets marked done and no vectors; row loops now note any failed step and the transaction rolls
+back. Export checks its last writes, flushes each commit and passes `quick_check` before it takes
+its name.
+
 ## Final Cut Pro search (Mac)
 
 **Mac-only, over a shared reader (2026-09-28).** FCP is Mac-only, so the extension and agent have
@@ -1993,6 +2117,12 @@ person reads). An installed Sharepoint does not update itself into Driftwire (a 
 menu offers Driftwire's one-click install, and Sharepoint is removed in Settings → Add-ons. Its
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
+
+**A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
+(`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
+anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,
+[28](28-driftwire.md#the-nas-service-driftwire-serve)) now rather than wait for spike S5, which
+still decides the package format. This records only that; the details of the service are in 28.
 
 **Nearby handshakes carry no long-term key; the name is off the air with the window closed; the Mac
 keeps secrets in the data protection keychain (owner, 2026-10-20, #501).** Protocol 2 used the

@@ -34,6 +34,20 @@ foreach(candidate IN ITEMS "$ENV{VCPKG_ROOT}" "$ENV{VCPKG_INSTALLATION_ROOT}"
   endif()
 endforeach()
 
+# iOS (docs/plans/mobile.md 8.1; cmake/ios.cmake): its own small manifest, and
+# the triplet that matches the SDK. Both are read when project() loads vcpkg.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tools/ios" CACHE PATH "iOS vcpkg manifest")
+  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "iOS: Apple silicon only")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "18.0" CACHE STRING
+      "Keep in step with tools/vcpkg/triplets/arm64-ios*.cmake")
+  if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    set(VCPKG_TARGET_TRIPLET "arm64-ios-simulator" CACHE STRING "vcpkg triplet")
+  else()
+    set(VCPKG_TARGET_TRIPLET "arm64-ios" CACHE STRING "vcpkg triplet")
+  endif()
+endif()
+
 # Linux PR 1 needs two packages (imgui, Catch2) and builds without vcpkg too:
 # cmake/linux.cmake finds them as CONFIG packages first (vcpkg, CI) and falls
 # back to a source tree (MV_IMGUI_SOURCE_DIR) and the system. Windows and
@@ -45,7 +59,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Lin
 endif()
 
 project(mediaviewer
-  VERSION 0.1.41
+  VERSION 0.1.42
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -59,6 +73,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 option(MV_BUILD_TESTS "Build the core test suite" ON)
 option(MV_ASAN "Build with AddressSanitizer (docs/design/09 CI configuration)" OFF)
 
+# The iPhone core (docs/plans/mobile.md): engines only, no viewer.
+if(IOS)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ios.cmake")
+  return()
+endif()
 # PR 16: Apple Silicon present lab. Windows targets are not defined on Darwin.
 if(APPLE)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/darwin.cmake")
@@ -787,6 +806,8 @@ include("${CMAKE_SOURCE_DIR}/cmake/places.cmake")
 # The Driftwire add-on (docs/design/28): mv_driftwire.dll in
 # build/addons/driftwire, packed and signed separately; never installed with the app.
 include("${CMAKE_SOURCE_DIR}/cmake/driftwire.cmake")
+# Phone access, part of the app (docs/plans/phone-in-the-app.md).
+include("${CMAKE_SOURCE_DIR}/cmake/phone.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -798,6 +819,9 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # Milestone H: the AI pack (mv_ai, packed separately; never installed with the
 # app) and its WinUI chrome. cmake/ai.cmake.
 include("${CMAKE_SOURCE_DIR}/cmake/ai.cmake")
+# The phone's catalogue reader and search (src/mobile, portable): the said: rule the
+# engine shares with the phone is tested in mv_ai_tests on every host.
+include("${CMAKE_SOURCE_DIR}/cmake/mobile.cmake")
 # Enhance (#297): its own add-on over the AI pack's model downloader.
 include("${CMAKE_SOURCE_DIR}/cmake/enhance.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/ai-chrome-win.cmake" OPTIONAL)
@@ -843,6 +867,8 @@ add_library(mediaviewer_core SHARED
   src/abi/script_abi.cpp
   src/abi/crash_export.cpp
   src/abi/meta_abi.cpp
+  src/abi/phone_abi.cpp
+  src/abi/phone_source.h
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
@@ -858,7 +884,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip mv_phone)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -1509,6 +1535,7 @@ if(MV_BUILD_TESTS)
   # MV_AI_EVAL_DIR) point at staged files; tools/ai-bench runs the timings.
   add_executable(mv_ai_tests
     tests/test_ai_engine.cpp
+    tests/test_phone_chain.cpp
     tests/test_ai_face_refine.cpp
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
@@ -1523,8 +1550,8 @@ if(MV_BUILD_TESTS)
     tests/test_ai_ocr.cpp
     tests/test_nle.cpp
   )
-  target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
-    Catch2::Catch2WithMain)
+  target_link_libraries(mv_ai_tests PRIVATE mv_phone mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
+    mv_mobile_search Catch2::Catch2WithMain)
   target_include_directories(mv_ai_tests PRIVATE src tests)
   target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
     MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")

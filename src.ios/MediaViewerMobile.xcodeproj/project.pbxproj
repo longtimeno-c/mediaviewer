@@ -1,0 +1,654 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA00000000000000000001F0 /* MobileCore in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000001F1 /* MobileCore */; };
+		AA0000000000000000000011 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000021 /* MobileKit */; };
+		AA0000000000000000000012 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000022 /* MobileUI */; };
+		AA0000000000000000000016 /* MobileLink in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000026 /* MobileLink */; };
+		AA0000000000000000000013 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000023 /* MobileKit */; };
+		AA0000000000000000000014 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000024 /* MobileUI */; };
+		AA0000000000000000000015 /* MobileFixtures in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000025 /* MobileFixtures */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		AA0000000000000000000034 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000072;
+			remoteInfo = MediaViewerFixtures;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000036 /* MediaViewer.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = MediaViewer.xcconfig; path = Config/MediaViewer.xcconfig; sourceTree = "<group>"; };
+		AA0000000000000000000033 /* MediaViewerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MediaViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000031 /* MediaViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MediaViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000032 /* MediaViewerFixtures.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MediaViewerFixtures.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		AA0000000000000000000041 /* App/MediaViewer */ = {isa = PBXFileSystemSynchronizedRootGroup; path = App/MediaViewer; sourceTree = "<group>"; };
+		AA0000000000000000000042 /* App/MediaViewerFixtures */ = {isa = PBXFileSystemSynchronizedRootGroup; path = App/MediaViewerFixtures; sourceTree = "<group>"; };
+		AA0000000000000000000043 /* UITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = UITests; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA0000000000000000000051 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000011 /* MobileKit in Frameworks */,
+				AA0000000000000000000012 /* MobileUI in Frameworks */,
+				AA00000000000000000001F0 /* MobileCore in Frameworks */,
+				AA0000000000000000000016 /* MobileLink in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000052 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000013 /* MobileKit in Frameworks */,
+				AA0000000000000000000014 /* MobileUI in Frameworks */,
+				AA0000000000000000000015 /* MobileFixtures in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000053 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA0000000000000000000061 = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000036 /* MediaViewer.xcconfig */,
+				AA0000000000000000000041 /* App/MediaViewer */,
+				AA0000000000000000000042 /* App/MediaViewerFixtures */,
+				AA0000000000000000000043 /* UITests */,
+				AA0000000000000000000062 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000062 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000031 /* MediaViewer.app */,
+				AA0000000000000000000032 /* MediaViewerFixtures.app */,
+				AA0000000000000000000033 /* MediaViewerUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA0000000000000000000071 /* MediaViewer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000091 /* Build configuration list for PBXNativeTarget "MediaViewer" */;
+			buildPhases = (
+				AA00000000000000000001F2 /* Build the C++ core */,
+				AA0000000000000000000081 /* Sources */,
+				AA0000000000000000000051 /* Frameworks */,
+				AA00000000000000000001F3 /* Licence check */,
+				AA0000000000000000000083 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000041 /* App/MediaViewer */,
+			);
+			name = MediaViewer;
+			packageProductDependencies = (
+				AA0000000000000000000021 /* MobileKit */,
+				AA0000000000000000000022 /* MobileUI */,
+				AA00000000000000000001F1 /* MobileCore */,
+				AA0000000000000000000026 /* MobileLink */,
+			);
+			productName = MediaViewer;
+			productReference = AA0000000000000000000031 /* MediaViewer.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AA0000000000000000000072 /* MediaViewerFixtures */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000092 /* Build configuration list for PBXNativeTarget "MediaViewerFixtures" */;
+			buildPhases = (
+				AA0000000000000000000082 /* Sources */,
+				AA0000000000000000000052 /* Frameworks */,
+				AA0000000000000000000084 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000042 /* App/MediaViewerFixtures */,
+			);
+			name = MediaViewerFixtures;
+			packageProductDependencies = (
+				AA0000000000000000000023 /* MobileKit */,
+				AA0000000000000000000024 /* MobileUI */,
+				AA0000000000000000000025 /* MobileFixtures */,
+			);
+			productName = MediaViewerFixtures;
+			productReference = AA0000000000000000000032 /* MediaViewerFixtures.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AA0000000000000000000073 /* MediaViewerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000094 /* Build configuration list for PBXNativeTarget "MediaViewerUITests" */;
+			buildPhases = (
+				AA0000000000000000000085 /* Sources */,
+				AA0000000000000000000053 /* Frameworks */,
+				AA0000000000000000000086 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA0000000000000000000035 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000043 /* UITests */,
+			);
+			name = MediaViewerUITests;
+			productName = MediaViewerUITests;
+			productReference = AA0000000000000000000033 /* MediaViewerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+			};
+			buildConfigurationList = AA0000000000000000000093 /* Build configuration list for PBXProject "MediaViewerMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA0000000000000000000061;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA0000000000000000000005 /* XCLocalSwiftPackageReference "MobilePackage" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = AA0000000000000000000062 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA0000000000000000000071 /* MediaViewer */,
+				AA0000000000000000000072 /* MediaViewerFixtures */,
+				AA0000000000000000000073 /* MediaViewerUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA0000000000000000000083 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000084 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000086 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AA00000000000000000001F2 /* Build the C++ core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build the C++ core";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec \"$SRCROOT/../tools/ios/build-core.sh\"\n";
+		};
+		AA00000000000000000001F3 /* Licence check */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Licence check";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# A debug build links the app into a debug dylib the check cannot see through.\n[ \"$CONFIGURATION\" = Release ] || exit 0\nexec \"$SRCROOT/../build-ios-$PLATFORM_NAME/ios-licence-check.sh\" --binary \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA0000000000000000000081 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000082 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000085 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA0000000000000000000035 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000072 /* MediaViewerFixtures */;
+			targetProxy = AA0000000000000000000034 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AA00000000000000000000A1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AA00000000000000000000A2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AA00000000000000000000B1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
+			buildSettings = {
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
+				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MediaViewer backs up your photos and videos to the folder you choose on your own NAS. With the sample library they are copied only to a folder inside MediaViewer on this iPhone. Nothing goes anywhere else.";
+				INFOPLIST_FILE = App/Info/MediaViewer.plist;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_catalogue.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_sha256.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_catalogue.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_sha256.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA00000000000000000000B2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
+			buildSettings = {
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
+				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MediaViewer backs up your photos and videos to the folder you choose on your own NAS. With the sample library they are copied only to a folder inside MediaViewer on this iPhone. Nothing goes anywhere else.";
+				INFOPLIST_FILE = App/Info/MediaViewer.plist;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_catalogue.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_sha256.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_model_fetch.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_driftwire_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_catalogue.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_sha256.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsqlite3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreML",
+					"-framework",
+					"UIKit",
+					"-framework",
+					"Network",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AA00000000000000000000C1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
+				INFOPLIST_FILE = App/Info/Common.plist;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile.fixtures;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA00000000000000000000C2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
+				INFOPLIST_FILE = App/Info/Common.plist;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile.fixtures;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AA00000000000000000000D1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MediaViewerFixtures;
+			};
+			name = Debug;
+		};
+		AA00000000000000000000D2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.longtimeno-c.mediaviewer.mobile.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MediaViewerFixtures;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA0000000000000000000091 /* Build configuration list for PBXNativeTarget "MediaViewer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000000B1 /* Debug */,
+				AA00000000000000000000B2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000092 /* Build configuration list for PBXNativeTarget "MediaViewerFixtures" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000000C1 /* Debug */,
+				AA00000000000000000000C2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AA0000000000000000000093 /* Build configuration list for PBXProject "MediaViewerMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000000A1 /* Debug */,
+				AA00000000000000000000A2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000094 /* Build configuration list for PBXNativeTarget "MediaViewerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000000D1 /* Debug */,
+				AA00000000000000000000D2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		AA0000000000000000000005 /* XCLocalSwiftPackageReference "MobilePackage" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = MobilePackage;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA00000000000000000001F1 /* MobileCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileCore;
+		};
+		AA0000000000000000000026 /* MobileLink */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileLink;
+		};
+		AA0000000000000000000021 /* MobileKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileKit;
+		};
+		AA0000000000000000000022 /* MobileUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileUI;
+		};
+		AA0000000000000000000023 /* MobileKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileKit;
+		};
+		AA0000000000000000000024 /* MobileUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileUI;
+		};
+		AA0000000000000000000025 /* MobileFixtures */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileFixtures;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = AA0000000000000000000001 /* Project object */;
+}

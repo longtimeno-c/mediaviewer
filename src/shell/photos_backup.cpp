@@ -213,6 +213,7 @@ std::string layout_subdir(std::int64_t created_unix, layout folders) {
   const char* format = "%Y/%Y-%m-%d";
   switch (folders) {
     case layout::year: format = "%Y"; break;
+    case layout::year_month: format = "%Y/%m"; break;
     case layout::year_month_day: format = "%Y/%m/%d"; break;
     case layout::day: format = "%Y-%m-%d"; break;
     case layout::year_day:

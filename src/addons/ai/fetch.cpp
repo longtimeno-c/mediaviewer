@@ -10,7 +10,7 @@
 #include <set>
 #include <thread>
 
-#include "addons/ai/sha256.h"
+#include "catalogue/sha256.h"
 
 namespace mv::ai {
 namespace {
@@ -74,6 +74,12 @@ bool fetcher::ready(const remote_file& f) const {
 
 expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool>& stop,
                       const std::function<void(const fetch_progress&)>& progress) {
+  // The transport looks at `stop` while it waits, for as long as this runs.
+  struct watch {
+    http_transport& t;
+    ~watch() { t.stop = nullptr; }
+  } watching{net_};
+  net_.stop = &stop;
   fetch_progress p;
   p.files_total = static_cast<std::uint32_t>(files.size());
   for (const remote_file& f : files) p.total_bytes += f.size;

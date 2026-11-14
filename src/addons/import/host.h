@@ -6,6 +6,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -81,5 +83,45 @@ class host {
 };
 
 [[nodiscard]] inline status to_status(mv_status s) noexcept { return static_cast<status>(s); }
+
+// ---- where a destination is (docs/design/18 "Destination identity") ----
+
+// A stored destination is "vol:<identity><US><folder inside the volume>", or
+// an absolute path when no stable identity could be found for it.
+[[nodiscard]] inline bool is_volume_key(std::string_view stored) noexcept {
+  return stored.rfind("vol:", 0) == 0;
+}
+
+// One name for a network share however it was found: SMB and UNC names fold
+// case, and the host loses its Bonjour service ("dev://me@NAS._smb._tcp.local/Photos"
+// and "dev://me@nas.local/photos" are one share). The user stays: "home" is a
+// different share for each of them.
+[[nodiscard]] std::string share_identity(std::string_view device_key);
+
+// A snapshot of what is mounted, taken once per plan or job (a volume list is
+// not a per-file call). Worker and control threads only: it enumerates volumes.
+// One thread at a time: live_root remembers its answers.
+class dest_locator {
+ public:
+  explicit dest_locator(const host& h);
+
+  // What import.db stores for the destination folder `root`. The folder need
+  // not exist yet. A volume key is only issued if it finds `root` again, so a
+  // folder on a mount the volume list cannot see keeps its absolute path.
+  [[nodiscard]] std::string key_of(const std::string& root) const;
+  // Where a stored destination is now; nullopt when its volume is not mounted,
+  // or two different disks answer to it. Remembered per key, nullopt included.
+  [[nodiscard]] std::optional<std::string> live_root(const std::string& stored) const;
+  // Where the volume with this volume_id is mounted now (a card's source).
+  [[nodiscard]] std::optional<std::string> volume_root(const std::string& volume_id) const;
+
+ private:
+  [[nodiscard]] std::vector<std::string> roots_for(const std::string& identity) const;
+  [[nodiscard]] std::optional<std::string> resolve(const std::string& key) const;
+
+  const host& h_;
+  std::vector<mv_addon_volume> mounted_;
+  mutable std::map<std::string, std::optional<std::string>> resolved_;
+};
 
 }  // namespace mv::import
