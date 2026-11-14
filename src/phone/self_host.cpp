@@ -19,6 +19,7 @@
 #include "wire/net.h"
 #include "wire/secrets.h"
 #include "wire/serve_wire.h"
+#include "wire/share_users.h"
 
 namespace mv::phone::self_host {
 
@@ -338,6 +339,37 @@ std::vector<shared_folder> shared_folders(const where& w) {
     if (auto c = serve::parse_config(*text, true, true)) {
       for (const auto& r : c->roots) out.push_back({r.path, r.label});
     }
+  }
+  return out;
+}
+
+std::vector<std::string> share_addresses(const where& w) {
+  std::vector<std::string> out;
+  if (w.data_dir.empty()) return out;
+  auto store = driftwire::secrets::file_store(w.data_dir + "/host/serve/secrets");
+  if (!store || !store->exists("share_state")) return out;
+  const auto bytes = store->get("share_state");
+  if (!bytes) return out;
+  const auto doc = json::parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()), 3);
+  const std::string* computer = doc ? doc->str("computer") : nullptr;
+  const std::string* mdns = doc ? doc->str("mdns_host") : nullptr;
+  const json::value* shares = doc ? doc->find("shares") : nullptr;
+  if (!computer || !mdns || !shares || shares->k != json::kind::array) return out;
+  namespace su = driftwire::serve::share_users;
+  for (const auto& s : shares->a) {
+    if (s.k != json::kind::string) continue;
+    if (auto unc = su::unc_address(*computer, s.s); !unc.empty()) out.push_back(std::move(unc));
+    if (auto url = su::smb_url(*mdns, s.s); !url.empty()) out.push_back(std::move(url));
+  }
+  return out;
+}
+
+std::vector<std::string> apply_lines(std::span<const user_password> p) {
+  std::vector<std::string> out;
+  out.reserve(p.size());
+  for (const auto& x : p) {
+    if (x.name.empty() || x.password.empty()) continue;
+    out.push_back(x.name + "\t" + x.password);
   }
   return out;
 }

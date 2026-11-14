@@ -156,6 +156,12 @@ class desk {
   [[nodiscard]] expected set_relay(const std::string& address, const std::string& key);
   // A device's limit from now: `for_s` seconds, or 0 for no limit at all.
   [[nodiscard]] expected grant(const key32& key, std::int64_t for_s);
+  // The self-hosted computer's users (wire/share_users.h, docs/plans/self-host-users-smb.md §4):
+  // "users" (read), "user_set" {name, role, folders?} (needs the unlock), "user_remove" {name}.
+  // The service's answer, {"users":[{name, role, folders?, applied}]}. Never a password.
+  [[nodiscard]] result<std::string> users(std::string_view verb, const std::string& name = {},
+                                          const std::string& role = {},
+                                          const std::optional<std::vector<std::string>>& folders = std::nullopt);
   // The NAS's last refusal, {"why":...,"until":...} ("{}" when the last request went through).
   [[nodiscard]] std::string last_refusal();
   // Forgets it: each request through route_request starts with none, so a

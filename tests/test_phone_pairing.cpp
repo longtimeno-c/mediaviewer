@@ -25,6 +25,7 @@
 #include "wire/pair_check.h"
 #include "wire/serve.h"
 #include "wire/serve_client.h"
+#include "wire/share_users.h"
 #include "io/content_hash.h"
 
 #if defined(__APPLE__)
@@ -2422,3 +2423,58 @@ TEST_CASE("phone pairing: This computer with no driftwire says so", "[phone-pair
   CHECK(v.find("host")->boolean("installed") == false);
 }
 #endif
+
+TEST_CASE("phone pairing: the host's users are read freely, added only unlocked, removed without", "[phone-pairing][host-users]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto s = m.session();
+  REQUIRE(s);
+  CHECK((*s)->caps().features.end() !=
+        std::find((*s)->caps().features.begin(), (*s)->caps().features.end(), std::string(serve::kFeatureUsers)));
+  auto list = (*s)->admin("{\"do\":\"users\"}");
+  REQUIRE(list);
+  CHECK(*list == "{\"users\":[]}");
+  const std::string add = R"({"do":"user_set","name":"anna","role":"view","folders":["Photos"]})";
+  std::string refusal;
+  CHECK_FALSE((*s)->admin(add, nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  auto added = (*s)->admin(add);
+  REQUIRE(added);
+  CHECK(added->find("\"name\":\"anna\"") != std::string::npos);
+  CHECK(added->find("\"applied\":0") != std::string::npos);
+  CHECK(added->find("password") == std::string::npos);
+  // Bad names and roles, and a password field, are refused or ignored: none is kept.
+  CHECK_FALSE((*s)->admin(R"({"do":"user_set","name":"root","role":"view"})"));
+  CHECK_FALSE((*s)->admin(R"({"do":"user_set","name":"ben","role":"boss"})"));
+  REQUIRE((*s)->admin(R"({"do":"user_set","name":"ben","role":"change","password":"never kept"})"));
+  {
+    const auto bytes = n.store->get(mv::driftwire::serve::share_users::kUsersName);
+    REQUIRE(bytes);
+    CHECK(std::string(bytes->begin(), bytes->end()).find("never kept") == std::string::npos);
+  }
+  // Locked again: removing takes access away and needs nothing.
+  REQUIRE((*s)->admin("{\"do\":\"lock\"}"));
+  CHECK((*s)->admin(R"({"do":"user_remove","name":"ben"})"));
+  CHECK_FALSE((*s)->admin(R"({"do":"user_remove","name":"ben"})"));  // gone already
+  CHECK_FALSE((*s)->admin(R"({"do":"user_set","name":"anna","role":"admin"})", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+
+  // The desktop's side: the same, through the desk's kept unlock.
+  desktop mac;
+  nas other;
+  REQUIRE(mac.d->claim(utf8(other.share), other.local(), "", kPass, true));
+  auto rows = mac.d->users("user_set", "cleo", "admin");
+  REQUIRE(rows);
+  CHECK(rows->find("\"cleo\"") != std::string::npos);
+  REQUIRE(mac.d->lock());
+  CHECK_FALSE(mac.d->users("user_set", "dan", "view"));
+  CHECK(why_desk(*mac.d) == "needs-unlock");
+  auto routed = desk::route_request(*mac.d, "phone", "users", "{}");
+  REQUIRE(routed);
+  CHECK(routed->find("cleo") != std::string::npos);
+  CHECK(desk::route_request(*mac.d, "phone", "user_remove", R"({"name":"cleo"})"));
+}

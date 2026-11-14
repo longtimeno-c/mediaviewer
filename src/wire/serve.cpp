@@ -28,6 +28,7 @@
 #include "wire/keys.h"
 #include "wire/owner_pass.h"
 #include "wire/serve_backup.h"
+#include "wire/share_users.h"
 #include "core/json.h"
 #include "io/file_port.h"
 
@@ -1766,7 +1767,7 @@ std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
   json::writer w;
-  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).end_array();
+  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).string(kFeatureUsers).end_array();
   w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
   w.key("passphrase").string(stored_name(s)).end_object();
   std::string out = w.take();
@@ -2209,6 +2210,56 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       *what == "set_relay" || *what == "set_backup") {
     // (grant and guest_code check for themselves.)
     if (auto refused = needs_unlock(c)) return *refused;
+  }
+
+  // ---- the self-hosted computer's users (docs/plans/self-host-users-smb.md §4) ----
+  // Names and roles only: no password is ever sent or kept. Reading needs no
+  // unlock; adding or changing one adds access and needs it; removing does not.
+  if (*what == "users" || *what == "user_set" || *what == "user_remove") {
+    if (*what == "user_set") {
+      if (auto refused = needs_unlock(c)) return *refused;
+    }
+    std::lock_guard lock(devices_m);
+    std::unique_ptr<net::instance_lock> held;
+    if (*what != "users" && !may_change_devices(held)) return {end_code::error, {}};
+    std::vector<share_users::user> list;
+    if (!share_users::load(*store, list)) return {end_code::error, {}};
+    if (*what == "user_set") {
+      share_users::user u;
+      u.name = text("name");
+      const auto r = share_users::parse_role(text("role"));
+      if (!r) return {end_code::bad_request, {}};
+      u.r = *r;
+      if (const json::value* f = doc->find("folders")) {
+        if (f->k != json::kind::array) return {end_code::bad_request, {}};
+        std::vector<std::string> labels;
+        for (const auto& e : f->a) {
+          if (e.k != json::kind::string) return {end_code::bad_request, {}};
+          labels.push_back(e.s);
+        }
+        u.folders = std::move(labels);
+      }
+      const std::string why = share_users::upsert(list, std::move(u), now());
+      if (why == "too-many") return {end_code::too_many, {}};
+      if (!why.empty()) return {end_code::bad_request, {}};
+      if (!share_users::save(*store, list)) return {end_code::error, {}};
+    } else if (*what == "user_remove") {
+      if (!share_users::remove(list, text("name"))) return {end_code::not_found, {}};
+      if (!share_users::save(*store, list)) return {end_code::error, {}};
+    }
+    json::writer w;
+    w.begin_object().key("users").begin_array();
+    for (const auto& u : list) {
+      w.begin_object().key("name").string(u.name).key("role").string(share_users::role_name(u.r));
+      if (u.folders) {
+        w.key("folders").begin_array();
+        for (const auto& f : *u.folders) w.string(f);
+        w.end_array();
+      }
+      w.key("applied").integer(u.applied).end_object();
+    }
+    w.end_array().end_object();
+    return {end_code::ok, w.take()};
   }
 
   if (*what == "devices") {

@@ -156,6 +156,8 @@ public static partial class IslandHost
                 {
                     _phoneTimer?.Stop();  // Settings closed: nothing is read until it opens again
                     ForgetPhoneSecrets();
+                    ForgetPhoneUserInputs();
+                    _usersAsked = false;  // the list is read again next time
                     return;
                 }
                 PollPhone();
@@ -266,6 +268,8 @@ public static partial class IslandHost
             rows.Children.Add(progress.Root);
         }
         if (s.Host is { SetUp: true } host) AddPhoneHostRow(rows, host, busy);
+        // Users of this PC's LAN share (IslandHost.PhoneUsers.cs): once it is claimed.
+        if (s.Host is { SetUp: true } && s.Claimed) AddPhoneUsers(rows, s, busy);
         // Until a service is claimed; and again after a setup on this PC that stopped part way.
         if (!s.Claimed && (s.Folder.Length == 0 || s.Host is { SetUp: true })) AddPhoneSetUp(rows, s, busy);
         else AddPhoneLibrary(rows, s, busy);
@@ -274,6 +278,7 @@ public static partial class IslandHost
         if (!IsInTree(_phonePass)) { _phonePass!.SetText(""); _phonePassAgain!.SetText(""); }
         if (!IsInTree(_phoneUnlock)) _phoneUnlock!.SetText("");
         if (!IsInTree(_phoneDuckToken)) _phoneDuckToken!.SetText("");
+        ForgetPhoneUserSecretsNotShown();
         PhoneFieldsChanged();
         RefocusPhone(rows, refocus);
     }

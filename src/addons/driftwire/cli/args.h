@@ -14,7 +14,9 @@
 //                    | passphrase set|reset] [--data DIR] [--passphrase-stdin | --no-passphrase]
 //   driftwire host [setup | share PATH [--label L] [--backup] | unshare LABEL | status | pair
 //                   | name duckdns|none | vpn on [--tls-port N] | vpn off
-//                   | start-at-login on|off | stay-awake on|off] [--data DIR]
+//                   | start-at-login on|off | stay-awake on|off
+//                   | users [add NAME | role NAME ROLE | password NAME | remove NAME | apply]
+//                     [--role R] [--folders L1,L2|all] [--input-stdin]] [--data DIR]
 //   driftwire --help | --version
 //   common: --save-to DIR, --name NAME (this run only), --plain, --no-color, --verbose
 //
@@ -48,7 +50,10 @@ enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_c
 // `driftwire host` (docs/plans/self-hosted.md §3): run the service and the
 // relay together (run; `child` is the supervisor's own process, never typed),
 // or change what it shares and how it starts.
-enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake, setup, name, pair, vpn };
+enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake, setup, name, pair, vpn,
+                                        // The LAN share's users (docs/plans/self-host-users-smb.md): `host users …`, and
+                                        // the elevated step it starts (`host smb-apply`, never typed).
+                                        users, smb_apply };
 
 struct args {
   command cmd = command::session;
@@ -75,6 +80,11 @@ struct args {
   bool backup = false;    // host share --backup
   bool on = false;        // host start-at-login / stay-awake / vpn: on or off; host name: duckdns (true) or none
   std::uint16_t tls_port = 0;  // host vpn on --tls-port N: the relay's web-site look (0: none)
+  // host users / smb-apply (host_users.h checks them): the words after the action,
+  // --role, --folders, --input-stdin (the app's passwords as lines on stdin).
+  std::vector<std::string> host_words;
+  std::string role, folders;
+  bool input_stdin = false;
   // The test build's.
   bool test_loopback = false;
   std::string test_data;

@@ -145,6 +145,17 @@ inline constexpr const char* kTokenSecret = "ddns_token";  // ddns::kTokenSecret
 // gateway, else its first private IPv4. "" when it is on none.
 [[nodiscard]] std::string lan_address();
 
+// The LAN share's addresses as the host's last elevated step left them
+// (`share_state` in <data>/host/serve/secrets, docs/plans/self-host-users-smb.md §7):
+// "\\PC\Photos" and "smb://pc.local/Photos" for each share. Empty: none made.
+// For the person's own screen only, never logged.
+[[nodiscard]] std::vector<std::string> share_addresses(const where& w);
+// `host users apply --input-stdin`'s lines: "NAME<TAB>PASSWORD" for each.
+struct user_password {
+  std::string name, password;
+};
+[[nodiscard]] std::vector<std::string> apply_lines(std::span<const user_password> p);
+
 // The `host share` arguments for one folder.
 [[nodiscard]] std::vector<std::string> share_args(const std::string& path, const std::string& label, bool backup);
 

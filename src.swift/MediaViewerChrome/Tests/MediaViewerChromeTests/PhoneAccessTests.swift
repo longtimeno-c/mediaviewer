@@ -21,6 +21,28 @@ final class PhoneAccessTests: XCTestCase {
     }
   }
 
+  /// The Users section (PhoneUsersView.swift, docs/plans/self-host-users-smb.md §8): admin
+  /// unlock first, and a typed password is handed on once and cleared, never kept.
+  func testUsersAskForTheAdminFirstAndKeepNoPassword() throws {
+    var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    var text = ""
+    while dir.path != "/" {
+      let file = dir.appendingPathComponent("Sources/MediaViewerChrome/PhoneUsersView.swift")
+      if FileManager.default.fileExists(atPath: file.path) {
+        text = try String(contentsOf: file, encoding: .utf8)
+        break
+      }
+      dir.deleteLastPathComponent()
+    }
+    if text.isEmpty { throw XCTSkip("PhoneUsersView.swift not found") }
+    XCTAssertTrue(text.contains("if locked {\n        unlockRow"))
+    XCTAssertTrue(text.contains(#""do": "user_set", "name": newName, "role": newRole, "password": newPassword"#))
+    XCTAssertTrue(text.contains("newPassword = \"\""))
+    XCTAssertFalse(text.contains("AppStorage"))
+    XCTAssertFalse(text.contains("UserDefaults"))
+    XCTAssertTrue(try source.contains("PhoneUsersSection()"))
+  }
+
   func testTheCardAsksForCorrectionMAtTheSizeTested() throws {
     let text = try source
     XCTAssertTrue(text.contains(#"filter.setValue("M", forKey: "inputCorrectionLevel")"#))

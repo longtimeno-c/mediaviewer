@@ -54,6 +54,17 @@ internal sealed record PhoneHost
     public bool SameAs(PhoneHost? o) => o is not null && this with { Keepers = o.Keepers } == o && Keepers.SequenceEqual(o.Keepers);
 }
 
+/// <summary>One of this PC's users (docs/plans/self-host-users-smb.md §8): names and roles only.</summary>
+internal sealed record PhoneUser(string Name, string Role)
+{
+    public bool Applied { get; init; }                       // the OS took it (else waiting for the administrator)
+    public IReadOnlyList<string>? Folders { get; init; }     // null: every folder
+
+    public bool SameAs(PhoneUser o) =>
+        this with { Folders = o.Folders } == o &&
+        (Folders is null ? o.Folders is null : o.Folders is not null && Folders.SequenceEqual(o.Folders));
+}
+
 /// <summary>A folder the person picked for this PC to share, before Set up.</summary>
 internal sealed record PhoneHostFolder(string Path, bool Backup)
 {
@@ -100,6 +111,8 @@ internal sealed record PhoneLinkState
     public PhoneHost? Host { get; init; }             // this PC as the server, once the link has read its files
     public string HostStep { get; init; } = "";       // "share", "name", "start", "claim" while a setup runs
     public string HostSaid { get; init; } = "";       // the driftwire program's own words for a step that failed
+    public IReadOnlyList<PhoneUser>? Users { get; init; }  // this PC's users, once read (self-host-users-smb.md §8)
+    public IReadOnlyList<string> ShareAddresses { get; init; } = Array.Empty<string>();  // \\PC\Photos, smb://… (screen only)
 
     /// <summary>The NAS takes guest codes, time limits and a passphrase.</summary>
     public bool NasHasFeatures => NasFeatures.Contains("passphrase");
@@ -114,12 +127,16 @@ internal sealed record PhoneLinkState
     // updates its progress line in place, so that alone is not a change.
     public bool SameAs(PhoneLinkState o) =>
         this with { Phones = o.Phones, Folders = o.Folders, Added = o.Added, NasFeatures = o.NasFeatures, Host = o.Host,
+                    Users = o.Users, ShareAddresses = o.ShareAddresses,
                     // The unlock counts down each second; the card says minutes, so only those count.
                     UnlockedSeconds = (UnlockedSeconds + 59) / 60 == (o.UnlockedSeconds + 59) / 60
                         ? o.UnlockedSeconds : UnlockedSeconds,
                     Catalogue = Catalogue is { } c ? c with { Fraction = o.Catalogue?.Fraction ?? 0 } : null } == o &&
         Phones.SequenceEqual(o.Phones) && Folders.SequenceEqual(o.Folders) && Added.SequenceEqual(o.Added) &&
-        NasFeatures.SequenceEqual(o.NasFeatures) && (Host is null ? o.Host is null : Host.SameAs(o.Host));
+        NasFeatures.SequenceEqual(o.NasFeatures) && (Host is null ? o.Host is null : Host.SameAs(o.Host)) &&
+        ShareAddresses.SequenceEqual(o.ShareAddresses) &&
+        (Users is null ? o.Users is null : o.Users is not null && Users.Count == o.Users.Count &&
+                                           Users.Zip(o.Users).All(p => p.First.SameAs(p.Second)));
 }
 
 /// <summary>
@@ -239,6 +256,20 @@ internal static class PhoneWords
                     : null,
                 HostStep = Str(o, "host_step"),
                 HostSaid = Str(o, "host_said"),
+                Users = o.TryGetProperty("users", out JsonElement us) && us.ValueKind == JsonValueKind.Array
+                    ? us.EnumerateArray()
+                        .Where(u => u.ValueKind == JsonValueKind.Object && Has(u, "name") && Has(u, "role"))
+                        .Select(u => new PhoneUser(Str(u, "name"), Str(u, "role"))
+                        {
+                            Applied = Bool(u, "applied", false),
+                            Folders = u.TryGetProperty("folders", out JsonElement f) && f.ValueKind == JsonValueKind.Array
+                                ? f.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String)
+                                                    .Select(x => x.GetString() ?? "").ToList()
+                                : null,
+                        }).ToList()
+                    : null,
+                ShareAddresses = Items(o, "share_addresses").Where(a => a.ValueKind == JsonValueKind.String)
+                                                            .Select(a => a.GetString() ?? "").ToList(),
             };
         }
         catch (JsonException)
@@ -319,6 +350,7 @@ internal static class PhoneWords
         "host_not_listening" => "The server started but isn't answering yet. Another program may be using its port.",
         "host_no_network" => "Claimed, but this PC isn't on a network, so a phone can't reach it yet.",
         "host_failed" => "The driftwire program couldn't be run.",
+        "host_users" => "Your PC's file sharing wasn't changed.",
         _ => "That didn't work.",
     };
 
@@ -331,6 +363,7 @@ internal static class PhoneWords
             "Claimed. Update the service on your server to protect it with a passphrase.",
         // The driftwire program's own words for a step it refused.
         "host_share" when s.HostSaid.Length > 0 => $"Couldn't share it: {s.HostSaid}",
+        "host_users" when s.HostSaid.Length > 0 => $"File sharing: {s.HostSaid}",
         "host_name" when s.HostSaid.Length > 0 => $"DuckDNS: {s.HostSaid}",
         "host_start" when s.HostSaid.Length > 0 => $"The server didn't start: {s.HostSaid}",
         _ => ErrorText(s.Error),
@@ -467,11 +500,17 @@ internal static class PhoneWords
         "grant" => "Changing the phone's access",
         "host_start" => "Starting the server",
         "host_setup" => "Setting up this PC",
+        "user_set" or "user_remove" or "users_apply" => "Changing the users",
         _ => null,
     };
 
     /// <summary>The progress line's words, with the setup's step when one runs.</summary>
-    public static string? BusyText(PhoneLinkState s) => s.Busy == "host_setup"
+    public static string? BusyText(PhoneLinkState s) =>
+        s.Busy is "user_set" or "user_remove" or "users_apply" && s.HostStep == "users"
+            ? "Waiting for your PC's administrator"
+            : BusyTextOfSetup(s);
+
+    private static string? BusyTextOfSetup(PhoneLinkState s) => s.Busy == "host_setup"
         ? s.HostStep switch
         {
             "share" => "Sharing the folders",
@@ -481,6 +520,52 @@ internal static class PhoneWords
             _ => BusyText(s.Busy),
         }
         : BusyText(s.Busy);
+
+    // ---- this PC's users (docs/plans/self-host-users-smb.md §8; PhoneUsersView.swift) ----
+
+    public static readonly (string Value, string Label)[] Roles =
+        { ("view", "Can view files"), ("change", "Can change files"), ("admin", "Admin") };
+
+    public static string RoleLabel(string role)
+    {
+        foreach ((string value, string label) in Roles)
+            if (value == role) return label;
+        return "Can view files";
+    }
+
+    private static readonly HashSet<string> ReservedUserNames = new()
+    {
+        "admin", "administrator", "administrators", "guest", "guests", "root", "nobody", "daemon", "everyone",
+        "system", "users", "user", "wheel", "staff", "operator",
+    };
+
+    /// <summary>A name the service takes (share_users::valid_name): a-z first, then a-z 0-9 . _ -, 20 at most.</summary>
+    public static bool ValidUserName(string name) =>
+        name.Length is > 0 and <= 20 && name[0] is >= 'a' and <= 'z' && !name.EndsWith('.') &&
+        !ReservedUserNames.Contains(name) &&
+        name.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '_' or '-');
+
+    public static string UserDetail(PhoneUser u)
+    {
+        var parts = new List<string> { RoleLabel(u.Role) };
+        if (u.Folders is { Count: > 0 } f) parts.Add(string.Join(", ", f));
+        if (!u.Applied) parts.Add("Waiting for your PC's administrator");
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>The link's user_set: the password, when there is one, goes to the program's stdin and nowhere else.</summary>
+    public static string UserSetRequest(string name, string role, IReadOnlyList<string>? folders, string password)
+    {
+        var o = new System.Text.Json.Nodes.JsonObject { ["do"] = "user_set", ["name"] = name, ["role"] = role };
+        if (folders is not null)
+        {
+            var a = new System.Text.Json.Nodes.JsonArray();
+            foreach (string f in folders) a.Add(f);
+            o["folders"] = a;
+        }
+        if (password.Length > 0) o["password"] = password;
+        return o.ToJsonString();
+    }
 
     // ---- this PC as the server (docs/plans/self-hosted.md slice 6) ----
 

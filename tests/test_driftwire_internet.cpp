@@ -967,6 +967,51 @@ TEST_CASE("host ports: the service and relay ports are mapped, renewed, and remo
   CHECK(deletes.load() == 2);
 }
 
+TEST_CASE("host ports: SMB, NetBIOS and RDP are never forwarded, and no router is asked for them",
+          "[driftwire][host-ports][host-users]") {
+  for (std::uint16_t p : {137, 138, 139, 445, 3389}) {
+    INFO(p);
+    CHECK_FALSE(hp::forwardable(p));
+  }
+  CHECK(hp::forwardable(7878));
+  CHECK(hp::forwardable(443));
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> maps{0};
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    if (req.size() >= 60 && !deletes_pcp(req)) ++maps;
+    return pcp_answer(req, outside, 0);
+  });
+  auto o = host_on_loopback(router.sock->port());
+  {
+    // Whoever asks, and however: inside, outside, or as the fallback.
+    hp::keeper k({{.internal_port = 445, .what = "share"},
+                  {.internal_port = 139},
+                  {.internal_port = 3389},
+                  {.internal_port = 8445, .external_port = 445},
+                  {.internal_port = 9000, .external_port = 9000, .fallback_external = 137},
+                  {.internal_port = 7878, .what = "service"}},
+                 std::move(o));
+    const auto r = k.status();
+    REQUIRE(r.ports.size() == 6);
+    for (std::size_t i = 0; i < 5; ++i) {
+      INFO(i);
+      CHECK(r.ports[i].v4 == hp::port_state::refused);
+      REQUIRE(r.ports[i].why.size() == 1);
+      CHECK(r.ports[i].why[0] == hp::kNeverForwarded);
+      CHECK_FALSE(r.ports[i].v6);
+    }
+    CHECK(r.ports[5].v4 == hp::port_state::mapped);
+    CHECK(maps.load() == 1);  // the service's alone
+    // Never advised to forward one by hand either.
+    for (const auto& line : hp::advice(r)) {
+      INFO(line);
+      CHECK(line.find("445") == std::string::npos);
+      CHECK(line.find("139") == std::string::npos);
+      CHECK(line.find("3389") == std::string::npos);
+    }
+  }
+}
+
 TEST_CASE("host ports: UPnP maps the port and an IPv6 pinhole, and removes both; the ledger goes", "[driftwire][host-ports]") {
   upnp_router upnp;
   auto quiet = sp::net::open_udp(false, 1, true);

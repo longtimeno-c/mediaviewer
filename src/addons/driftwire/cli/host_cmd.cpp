@@ -23,6 +23,7 @@
 #include "addons/driftwire/cli/autostart.h"
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host_setup.h"
+#include "addons/driftwire/cli/host_users.h"
 #include "addons/driftwire/cli/nas_update.h"
 #include "addons/driftwire/cli/serve_tty.h"
 #include "addons/driftwire/cli/update.h"
@@ -969,6 +970,8 @@ int run_status(const host_layout& l, bool test_hooks) {
     std::vector<serve::grants::grant> limited;
     (void)serve::grants::load(*store, limited);
     out += "phones      " + std::to_string(known::load(*store).size() + limited.size()) + " paired\n";
+    // The LAN share and its users: addresses, names and roles only (self-host-users-smb.md §7).
+    for (const auto& line : users_status_lines(*store)) out += line + "\n";
   }
   const bool held = state && state->boolean("awake").value_or(false);
   out += std::string("stay awake  ") + (s.stay_awake ? (running ? (held ? "on" : "on (the OS refused)") : "on") : "off") + "\n";
@@ -1165,6 +1168,9 @@ int start_at_login(const args& a, const host_layout& l, bool test_hooks) { retur
 
 int run_host(const args& a, bool test_hooks, const char* version) {
   (void)version;
+  // The LAN share's elevated step is the one `host` command that runs elevated,
+  // and only that way (host_users.h); it reads its whole request from the front end.
+  if (a.host == host_action::smb_apply) return run_smb_apply(a);
   if (!test_hooks && serve_is_privileged()) {
 #if defined(_WIN32)
     return fail("it must not run as administrator; run it from a terminal that is not elevated.", 1);
@@ -1204,6 +1210,10 @@ int run_host(const args& a, bool test_hooks, const char* version) {
       return run_host_pair(a, l, test_hooks);
     case host_action::vpn:
       return run_host_vpn(a, l, test_hooks);
+    case host_action::users:
+      return run_host_users(a, l, test_hooks);
+    case host_action::smb_apply:
+      return run_smb_apply(a);
   }
   return 2;
 }

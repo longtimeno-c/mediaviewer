@@ -1026,6 +1026,41 @@ void link::run(const std::string& request) {
     host_setup(request);
     return;
   }
+  // ---- this computer's users and its LAN share (self-host-users-smb.md §8) ----
+  if (what == "users_refresh") {
+    read_users();
+    return;
+  }
+  if (what == "user_set" || what == "user_remove") {
+    json::writer w;
+    w.begin_object().key("name").string(text("name"));
+    if (what == "user_set") {
+      w.key("role").string(text("role"));
+      if (const json::value* f = doc->find("folders"); f && f->k == json::kind::array) {
+        w.key("folders").begin_array();
+        for (const auto& e : f->a) {
+          if (e.k == json::kind::string) w.string(e.s);
+        }
+        w.end_array();
+      }
+    }
+    w.end_object();
+    if (auto r = route(what.c_str(), w.str()); !r) return fail_status(r.error());
+    {
+      std::lock_guard lock(m_);
+      v_.error.clear();
+    }
+    // The password goes to the step's stdin and nowhere else.
+    std::vector<self_host::user_password> pw;
+    if (what == "user_set" && !text("password").empty()) pw.push_back({text("name"), text("password")});
+    users_apply(pw);
+    for (auto& p : pw) std::fill(p.password.begin(), p.password.end(), '\0');
+    return;
+  }
+  if (what == "users_apply") {
+    users_apply({});
+    return;
+  }
   if (what == "host_start") {
     const auto w = host_where();
     if (w.program.empty()) {
@@ -1324,6 +1359,67 @@ void link::run(const std::string& request) {
 
 self_host::where link::host_where() const { return o_.self_host ? o_.self_host() : self_host::find(); }
 
+void link::read_users() {
+  std::vector<view::user_row> rows;
+  bool read = false;
+  if (auto r = route("users", "{}")) {
+    const auto doc = json::parse(*r, 5);
+    if (const json::value* list = doc ? doc->find("users") : nullptr; list && list->k == json::kind::array) {
+      read = true;
+      for (const auto& e : list->a) {
+        view::user_row u;
+        const std::string* n = e.str("name");
+        const std::string* ro = e.str("role");
+        if (!n || !ro) continue;
+        u.name = *n;
+        u.role = *ro;
+        u.applied = e.integer("applied").value_or(0) != 0;
+        if (const json::value* f = e.find("folders"); f && f->k == json::kind::array) {
+          std::vector<std::string> labels;
+          for (const auto& x : f->a) {
+            if (x.k == json::kind::string) labels.push_back(x.s);
+          }
+          u.folders = std::move(labels);
+        }
+        rows.push_back(std::move(u));
+      }
+    }
+  }
+  auto addresses = self_host::share_addresses(host_where());
+  std::lock_guard lock(m_);
+  if (read) v_.users = std::move(rows);
+  v_.users_read = v_.users_read || read;
+  v_.share_addresses = std::move(addresses);
+}
+
+void link::users_apply(std::span<const self_host::user_password> passwords) {
+  const auto w = host_where();
+  if (w.program.empty()) {
+    read_users();
+    std::lock_guard lock(m_);
+    v_.error = "no_driftwire_program";
+    return;
+  }
+  {
+    std::lock_guard lock(m_);
+    v_.host_step = "users";
+    v_.host_said.clear();
+  }
+  auto lines = self_host::apply_lines(passwords);
+  // The OS asks for its administrator here (the dialog, or UAC): no time limit worth cutting it at.
+  auto r = self_host::run_host(w, {"users", "apply", "--input-stdin"}, lines, 600000);
+  for (auto& l : lines) std::fill(l.begin(), l.end(), '\0');
+  read_users();
+  std::lock_guard lock(m_);
+  v_.host_step.clear();
+  if (!r) {
+    v_.error = "host_users";
+  } else if (r->code != 0) {
+    v_.error = "host_users";
+    v_.host_said = r->output;
+  }
+}
+
 void link::read_host() {
   const auto w = host_where();
   auto st = self_host::read_status(w);
@@ -1596,6 +1692,23 @@ std::string link::state_json() const {
   }
   w.key("host_step").string(v_.host_step);
   w.key("host_said").string(v_.host_said);
+  // This computer's users (names and roles only) and its share's addresses (screen only).
+  if (v_.users_read) {
+    w.key("users").begin_array();
+    for (const auto& u : v_.users) {
+      w.begin_object().key("name").string(u.name).key("role").string(u.role).key("applied").boolean(u.applied);
+      if (u.folders) {
+        w.key("folders").begin_array();
+        for (const auto& f : *u.folders) w.string(f);
+        w.end_array();
+      }
+      w.end_object();
+    }
+    w.end_array();
+  }
+  w.key("share_addresses").begin_array();
+  for (const auto& a : v_.share_addresses) w.string(a);
+  w.end_array();
   w.end_object();
   return w.take();
 }
