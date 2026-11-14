@@ -321,7 +321,8 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
         (void)g->host->screen_show(g->host->host, kScreen, 1);
       } else if (node == "out_cancel" || node == "in_cancel") {
         g->get().on_event(node, MV_SLOT_EVENT_CLICK, "");
-      } else if (node == "receiving" || node == "internet" || node == "background" || node == "tunnel") {
+      } else if (node == "receiving" || node == "internet" || node == "background" || node == "tunnel" ||
+                 node == "tunnel_vpn") {
         g->get().on_event(node, MV_SLOT_EVENT_CHANGE, value);
       }
       return MV_OK;

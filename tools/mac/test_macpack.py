@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import argparse
+import plistlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -596,6 +597,61 @@ class FinalCutProPackTests(unittest.TestCase):
                               "--icon-png", str(t / "c"), "--font", str(t / "f"), "--dylib-dir", tmp,
                               "--fcp-appex-exe", str(t / "appex")])
             self.assertIn("--fcp-agent-plist", str(cm.exception))
+
+class DriftwireTunnelPackTests(unittest.TestCase):
+    """The Tunnel's slice 5: the VPN's system extension, embedded by its bundle
+    id, signed before the app (with the Network Extension entitlement only for
+    a team), and the app's right to install it."""
+
+    def _assembled(self, root: Path) -> Path:
+        app = root / "MediaViewer.app"
+        contents = app / "Contents"
+        (contents / "Frameworks").mkdir(parents=True)
+        (contents / "PlugIns" / f"{macpack.APPEX_NAME}.appex").mkdir(parents=True)
+        exe = root / "DriftwireTunnel"
+        exe.write_bytes(b"\xcf\xfa\xed\xfe")
+        plist = root / "Info.plist"
+        with open(plist, "wb") as f:
+            plistlib.dump({"CFBundleIdentifier": "com.example.MediaViewer.DriftwireTunnel"}, f)
+        with open(contents / "Info.plist", "wb") as f:
+            plistlib.dump({"CFBundleIdentifier": "com.example.MediaViewer"}, f)
+        macpack.embed_tunnel(contents, exe, plist)
+        return app
+
+    def test_embedded_by_its_bundle_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._assembled(Path(tmp))
+            sysext = app / "Contents/Library/SystemExtensions/com.example.MediaViewer.DriftwireTunnel.systemextension"
+            self.assertTrue((sysext / "Contents/MacOS/DriftwireTunnel").is_file())
+            self.assertTrue((sysext / "Contents/Info.plist").is_file())
+            self.assertEqual(macpack.tunnel_sysexts(app), [sysext])
+
+    def _sign(self, app: Path, team_id):
+        calls = []
+        with patch.object(macpack, "codesign", side_effect=lambda p, *a, **k: calls.append((p, k))), \
+             patch.object(macpack, "run"):
+            macpack.sign_app(app, "-", Path("QuickLook.entitlements"), hardened=True, team_id=team_id)
+        return calls
+
+    def test_signed_before_the_app_with_the_entitlement_only_for_a_team(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._assembled(Path(tmp))
+            sysext = macpack.tunnel_sysexts(app)[0]
+            for team, want in ((None, None), ("ABCDE12345", macpack.TUNNEL_ENTITLEMENTS)):
+                calls = self._sign(app, team)
+                paths = [p for p, _ in calls]
+                self.assertEqual(calls[paths.index(sysext)][1]["entitlements"], want)
+                self.assertLess(paths.index(sysext), paths.index(app))
+
+    def test_the_app_may_install_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._assembled(Path(tmp))
+            out = macpack.app_entitlements(app, "ABCDE12345", Path(tmp) / "app.entitlements")
+            with open(out, "rb") as f:
+                ent = plistlib.load(f)
+            self.assertTrue(ent[macpack.SYSEXT_INSTALL])
+            self.assertEqual(ent[macpack.NETWORK_EXTENSION], ["packet-tunnel-provider-systemextension"])
+
 
 class CommandLineTests(unittest.TestCase):
     """docs/design/28 "Installing": the driftwire program, signed bare (no

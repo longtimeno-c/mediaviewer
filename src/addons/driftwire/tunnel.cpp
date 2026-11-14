@@ -260,17 +260,10 @@ result<std::unique_ptr<proxy>> proxy::start(options o) {
   if (o.port != 0) l = net::listen(true, o.port);
   if (!l) l = net::listen(true);
   if (!l) return err(l.error());
+  auto d = dialer::make({o.relay, o.tls, o.tls_port, o.connect});
+  if (!d) return err(d.error());
   std::unique_ptr<proxy> p(new proxy(std::move(o)));
-  p->server_ = *server;
-  if (p->opts_.tls) {
-    if (!tls::available()) return err(status::unsupported_format);
-    const auto k = tls::derive_knock_key(server->key);  // Argon2id: once a start
-    if (!k) return err(status::out_of_memory);
-    p->knock_ = *k;
-    std::string host = server->at.substr(0, server->at.rfind(':'));
-    if (host.size() > 1 && host.front() == '[') host = host.substr(1, host.size() - 2);
-    if (!net::parse_address(host)) p->sni_ = host;  // a name, as a browser sends it
-  }
+  p->dial_ = std::move(*d);
   p->listener_ = std::move(*l);
   p->snap_.port = p->listener_->port();
   proxy* raw = p.get();
@@ -288,10 +281,10 @@ proxy::~proxy() {
     all = std::move(workers_);
     for (auto& w : all) {
       w.l->shutdown();
-      if (w.remote && *w.remote) (*w.remote)->shutdown();
+      if (w.remote) w.remote->end();
     }
-    turn_cv_.notify_all();
   }
+  if (dial_) dial_->stop();
   for (auto& w : all) w.t.join();
 }
 
@@ -325,7 +318,7 @@ void proxy::accept_loop() {
       continue;
     }
     auto done = std::make_shared<std::atomic<bool>>(false);
-    auto remote = std::make_shared<std::shared_ptr<link>>();
+    auto remote = std::make_shared<remote_slot>();
     try {
       workers_.push_back({std::thread([this, l, done, remote] {
                             try {
@@ -370,20 +363,49 @@ void proxy::note(relay::forward_answer a, bool opened) {
 }
 
 result<std::unique_ptr<link>> proxy::open(const target& to, relay::forward_answer& said,
-                                          const std::shared_ptr<std::shared_ptr<link>>& remote) {
+                                          const std::shared_ptr<remote_slot>& remote) {
+  return dial_->open(to.host, to.port, said, remote);
+}
+
+result<std::unique_ptr<dialer>> dialer::make(options o) {
+  std::string why;
+  const auto server = relay_server_of(o.relay, why);
+  if (!server) return err(status::invalid_arg);
+  std::unique_ptr<dialer> d(new dialer(std::move(o)));
+  d->server_ = *server;
+  if (d->opts_.tls) {
+    if (!tls::available()) return err(status::unsupported_format);
+    const auto k = tls::derive_knock_key(server->key);  // Argon2id: once a start
+    if (!k) return err(status::out_of_memory);
+    d->knock_ = *k;
+    std::string host = server->at.substr(0, server->at.rfind(':'));
+    if (host.size() > 1 && host.front() == '[') host = host.substr(1, host.size() - 2);
+    if (!net::parse_address(host)) d->sni_ = host;  // a name, as a browser sends it
+  }
+  return d;
+}
+
+void dialer::stop() {
+  std::lock_guard lock(m_);
+  stopped_ = true;
+  turn_cv_.notify_all();
+}
+
+result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_t port, relay::forward_answer& said,
+                                           const std::shared_ptr<remote_slot>& remote, std::uint8_t kind) {
   said = relay::forward_answer::failed;
   {
     std::unique_lock lock(m_);
-    turn_cv_.wait(lock, [&] { return stop_.load() || opening_ < kOpensAtOnce; });
-    if (stop_.load()) return err(status::cancelled);
+    turn_cv_.wait(lock, [&] { return stopped_ || opening_ < kOpensAtOnce; });
+    if (stopped_) return err(status::cancelled);
     ++opening_;
   }
   struct turn {
-    proxy& p;
+    dialer& d;
     ~turn() {
-      std::lock_guard lock(p.m_);
-      --p.opening_;
-      p.turn_cv_.notify_one();
+      std::lock_guard lock(d.m_);
+      --d.opening_;
+      d.turn_cv_.notify_one();
     }
   } given{*this};
   std::optional<net::endpoint> at;
@@ -406,10 +428,10 @@ result<std::unique_ptr<link>> proxy::open(const target& to, relay::forward_answe
     return err(c.error());
   }
   std::shared_ptr<link> raw(std::move(*c));
+  if (remote && !remote->set(raw)) return err(status::cancelled);
   {
     std::lock_guard lock(m_);
-    *remote = raw;
-    if (stop_.load()) {
+    if (stopped_) {
       raw->shutdown();
       return err(status::cancelled);
     }
@@ -418,16 +440,13 @@ result<std::unique_ptr<link>> proxy::open(const target& to, relay::forward_answe
   if (opts_.tls) {
     // Slice 4: TLS with Chrome's ClientHello, and the knock, first.
     auto t = tls::client(std::move(hop), sni_, &knock_);
-    if (!t) {
-      said = relay::forward_answer::failed;
-      return err(t.error());
-    }
+    if (!t) return err(t.error());
     hop = std::move(*t);
   }
-  return relay::forward(std::move(hop), server_.key, to.host, to.port, relay::kForwardWaitMs, said);
+  return relay::forward(std::move(hop), server_.key, host, port, relay::kForwardWaitMs, said, kind);
 }
 
-void proxy::serve(std::shared_ptr<link> local, const std::shared_ptr<std::shared_ptr<link>>& remote) {
+void proxy::serve(std::shared_ptr<link> local, const std::shared_ptr<remote_slot>& remote) {
   const auto deadline = clock::now() + std::chrono::milliseconds(kRequestMs);
   std::vector<std::uint8_t> buf;
   // Reads until `buf` holds at least `n` bytes.

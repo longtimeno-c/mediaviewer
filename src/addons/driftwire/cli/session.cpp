@@ -1310,6 +1310,26 @@ struct session::impl {
     } else if (name == "/relay-server") {
       open_field(field_kind::relay_server);
     } else if (name == "/tunnel") {
+      if (rest.rfind("vpn", 0) == 0 || rest.rfind("block", 0) == 0) {
+        // /tunnel vpn on|off, /tunnel block on|off: slice 5.
+        const bool vpn_word = rest.rfind("vpn", 0) == 0;
+        const auto on = on_off(trim(rest.substr(vpn_word ? 3 : 5)));
+        const char* label = vpn_word ? "All traffic (VPN)" : "Block when the tunnel is down";
+        if (vpn_word && !v.tunnel_vpn_available) {
+          say(tone::info, "All traffic (VPN): not here", {v.tunnel_vpn_note.empty() ? std::string("Use the proxy.")
+                                                                                     : v.tunnel_vpn_note});
+          return;
+        }
+        if (!on) {
+          say(tone::info, std::string(label) + ": " + ((vpn_word ? v.tunnel_vpn : v.tunnel_block) ? "on" : "off"),
+              {std::string("/tunnel ") + (vpn_word ? "vpn" : "block") + " on or off changes it (kept for next time)."});
+          return;
+        }
+        ev(vpn_word ? "tunnel_vpn" : "tunnel_block", 2, *on ? "true" : "false");
+        refresh_view();
+        say(tone::info, std::string(*on ? "On: " : "Off: ") + label);
+        return;
+      }
       if (rest.rfind("https", 0) == 0) {
         // /tunnel https on|off: slice 4, the relay's TLS port.
         if (!v.tunnel_tls_available) {

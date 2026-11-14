@@ -1446,11 +1446,41 @@ only the laptop there is no such machine. Plan and later slices:
   key to knock with). A network that breaks TLS with its own certificate sees the knock; Argon2id
   makes offline guesses at a typed key slow, and a made key is out of reach. `relay.pv` is
   unchanged: TLS makes no claim here and the hop inside is the same bytes.
+- **All traffic: Driftwire VPN** (slice 5, `netstack.*`, `vpn.*`; owner's ask 2026-11-12). With
+  **All traffic (VPN)** (`tunnel_vpn`, off by default; also a menu row, `/tunnel vpn`), a virtual
+  interface catches every app's packets and the proxy and the system proxy step aside. The packets
+  become connections again in the add-on: `netstack.cpp` is a small TCP/IP stack of Driftwire's own
+  (IPv4 and IPv6; TCP as the server of each app connection, in-order only, go-back-N on a 400 ms
+  timer, no window scaling; UDP; checksums both ways; no ICMP or fragments), each TCP connection
+  one forward through the proxy's dialer (`tunnel::dialer`: the same relay, TLS look and knock),
+  each UDP flow a **datagram flow** at the relay (`kForwardUdp`: the request's kind byte; the
+  stream then carries 2-byte-length datagrams, sealed; the server sends them from a socket of its
+  own and takes answers only from that host; `--forward-udp-ports`, 53 by default, so QUIC falls
+  back to TCP). DNS: the interface's resolver is `198.18.0.2` inside the tunnel, answered by the
+  relay's own resolver (`dns.driftwire`, `--dns`, else the server's first), so the Wi-Fi's DNS sees
+  no name. The interface's address is `198.18.0.1/30` (RFC 2544's range, never a real network);
+  routes send everything through it except the relay's own address and the local networks (the
+  tunnel never carries itself; the printer still works). **Block when the tunnel is down**
+  (`tunnel_block`, off by default) keeps traffic in the tunnel while it is down. The interface is
+  the OS's, behind `vpn::os_port` (D9): on the Mac a Network Extension packet tunnel, a thin pump in
+  the app's bundle that hands packets to the add-on over loopback after a token, with
+  `includeAllNetworks` as the kill switch (`vpn_mac.mm`, `mac_tunnel/`; Apple's entitlement owed,
+  [12](12-decision-log.md#driftwire)); on Windows Wintun, routes `0.0.0.0/1` and `128.0.0.0/1`,
+  the relay's own route kept, DNS on the adapter, and the kill switch as WFP filters in a sublayer of
+  Driftwire's own (only the tunnel, the relay, loopback, the local networks and DHCP out; not a
+  dynamic session, so they outlive a crash, and go at stop, the next start or a reboot)
+  (`vpn_win.cpp`; the DLL's licence and running elevated owed); none on Linux yet. The Mac provider
+  builds and embeds with `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON` (`cmake/darwin-tunnel.cmake`; `macpack.py`
+  puts it in `Contents/Library/SystemExtensions` and signs it with the entitlement only for a team);
+  the add-on reads the extension's signature and offers the VPN only when it carries the
+  packet tunnel's Network Extension entitlement. Until an
+  OS can start it, the window says why and the proxy carries on.
 - **What it exposes.** The Wi-Fi sees a connection to the relay's address; the sites see the
   relay's address; the relay sees which hosts are visited, never the content of HTTPS. A network
   that allows only listed sites, or breaks TLS with its own certificate, defeats this as it does
   every tunnel; looking like HTTPS (above) helps only against filters that block what does not
-  look like a web site. Slice 5 (a VPN for every app) is in the plan.
+  look like a web site. The VPN carries apps that ignore proxies; it does not hide more from the
+  relay than the proxy does.
 
 ## What moves, and how it lands
 
@@ -1778,9 +1808,13 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 ## Not built
 
-- **The Tunnel's later slice** ([plan](../plans/driftwire-menu-and-tunnel.md)): a VPN for every app
-  with UDP forwarding (slice 5). The system proxy is not set on Linux, and on Windows only for the
-  LAN connection's entry. Codes do not use the relay's TLS port.
+- **The Tunnel, owed** ([plan](../plans/driftwire-menu-and-tunnel.md)): Apple's Network Extension
+  entitlement on the team's profile (the Mac VPN; the build and embedding exist, off by default),
+  Wintun's licence call and a way to run elevated (the Windows VPN: an elevated helper would be a
+  second program, which "add-ons carry their own code" rules out, so this is the owner's call),
+  Linux's interface (the Linux catch-up order is open, CLAUDE.md). The system proxy is not
+  set on Linux, and on Windows only for the LAN connection's entry. Codes do not use the relay's
+  TLS port. The VPN's stack does no ICMP (a ping gets nothing) and no IP fragments.
 
 - **#500's ask before an own relay** (low): A's own computer relays without asking, so a stranger
   who made the code, by stalling direct connections, learns R's home address. The fix is a

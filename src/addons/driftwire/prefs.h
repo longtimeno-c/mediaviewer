@@ -46,6 +46,9 @@ struct prefs {
   // and which port that is (443 unless the file says another).
   bool tunnel_tls = false;
   std::uint16_t tunnel_tls_port = 443;
+  // Slice 5: "All traffic (VPN)" and "Block when the tunnel is down", both off by default.
+  bool tunnel_vpn = false;
+  bool tunnel_block = false;
   bool operator==(const prefs&) const = default;
 };
 

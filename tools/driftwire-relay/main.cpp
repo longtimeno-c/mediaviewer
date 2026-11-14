@@ -24,6 +24,9 @@
 //                       [--max-gb N] [--rate-mbs N] [--idle-s N] [--loopback]
 //                       [--forward-ports LIST|none] [--max-forwards N]
 //                       [--tls-port N [--tls-cert PEM --tls-key PEM | --tls-name NAME] [--decoy-dir DIR]]
+//                       [--forward-udp-ports LIST|none] [--dns ADDRESS[:PORT]]
+// Slice 5 (the VPN): key holders' datagram flows to those UDP ports (53 by
+// default), and their DNS to --dns (else this machine's first resolver).
 // Slice 4: --tls-port (443) also serves the hop inside TLS behind a knock
 // only a key holder can make; anything else gets a web site (tls.h).
 // The key: the first line of --key-file, else MV_RELAY_KEY, else --key
@@ -87,6 +90,25 @@ bool port_list(const char* text, std::vector<std::uint16_t>& out) {
   return !out.empty();
 }
 
+// "1.1.1.1", "1.1.1.1:53", "[2606:4700::1111]:53".
+bool dns_of(const char* text, relay::server::options& o) {
+  std::string s(text);
+  std::string host = s;
+  unsigned long long port = 53;
+  if (!s.empty() && s.front() == '[') {
+    const auto close = s.find(']');
+    if (close == std::string::npos) return false;
+    host = s.substr(1, close - 1);
+    if (close + 1 < s.size() && (s[close + 1] != ':' || !number(s.c_str() + close + 2, port, 65535))) return false;
+  } else if (s.find(':') == s.rfind(':') && s.find(':') != std::string::npos) {
+    host = s.substr(0, s.find(':'));
+    if (!number(s.c_str() + s.find(':') + 1, port, 65535)) return false;
+  }
+  if (!mv::driftwire::net::parse_address(host) || port == 0) return false;
+  o.dns_upstream = mv::driftwire::net::endpoint{host, static_cast<std::uint16_t>(port)};
+  return true;
+}
+
 // A key typed by a person, not made here: guesses at it can only be tried
 // live, one per connection, but a short one is still worth saying.
 constexpr std::size_t kWarnBelowChars = 20;
@@ -95,7 +117,8 @@ int usage() {
   std::fprintf(stderr,
                "usage: mv-driftwire-relay [--key-file PATH] [--port N] [--max-pairs N] [--wait-s N] [--max-gb N] "
                "[--rate-mbs N] [--idle-s N] [--loopback] [--forward-ports LIST|none] [--max-forwards N] "
-               "[--tls-port N] [--tls-cert PEM] [--tls-key PEM] [--tls-name NAME] [--decoy-dir DIR]\n"
+               "[--tls-port N] [--tls-cert PEM] [--tls-key PEM] [--tls-name NAME] [--decoy-dir DIR] "
+               "[--forward-udp-ports LIST|none] [--dns ADDRESS[:PORT]]\n"
                "  --key-file   a file whose first line is the key (16+ characters); else MV_RELAY_KEY; else a\n"
                "               new one, printed once (--key KEY also works, but shows in the process list)\n"
                "  --port       TCP port, IPv6 and IPv4 (default %u)\n"
@@ -110,7 +133,9 @@ int usage() {
                "  --tls-port   also listen here (443) behind TLS, looking like a web site (Tunnel: Look like a web site)\n"
                "  --tls-cert, --tls-key  its certificate chain and key (PEM; a real one passes a look best)\n"
                "  --tls-name   else a self-signed certificate for this name\n"
-               "  --decoy-dir  the web site's pages (index.html ...); else a small built-in page\n",
+               "  --decoy-dir  the web site's pages (index.html ...); else a small built-in page\n"
+               "  --forward-udp-ports  UDP ports a key holder's VPN may reach (default 53), or none\n"
+               "  --dns        the resolver the VPN's DNS goes to (default: this machine's first)\n",
                static_cast<unsigned>(relay::kDefaultPort));
   return 2;
 }
@@ -163,6 +188,10 @@ int main(int argc, char** argv) {
       o.tls_name = next;
     } else if (std::strcmp(a, "--decoy-dir") == 0) {
       o.decoy.dir = next;
+    } else if (std::strcmp(a, "--forward-udp-ports") == 0 && port_list(next, o.forward_udp_ports)) {
+      // set
+    } else if (std::strcmp(a, "--dns") == 0 && dns_of(next, o)) {
+      // set
     } else if (std::strcmp(a, "--idle-s") == 0 && number(next, v, 24 * 3600) && v > 0) {
       o.lim.idle_ms = static_cast<int>(v * 1000);
     } else {

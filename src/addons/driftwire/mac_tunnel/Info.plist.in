@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>@MV_MAC_BUNDLE_ID@.DriftwireTunnel</string>
+  <key>CFBundleName</key>
+  <string>DriftwireTunnel</string>
+  <key>CFBundleDisplayName</key>
+  <string>Driftwire Tunnel</string>
+  <key>CFBundlePackageType</key>
+  <string>SYSX</string>
+  <key>CFBundleExecutable</key>
+  <string>DriftwireTunnel</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@MV_DRIFTWIRE_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@MV_DRIFTWIRE_VERSION@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NetworkExtension</key>
+  <dict>
+    <key>NEMachServiceName</key>
+    <string>@MV_TUNNEL_MACH_PREFIX@.@MV_MAC_BUNDLE_ID@.DriftwireTunnel</string>
+    <key>NEProviderClasses</key>
+    <dict>
+      <key>com.apple.networkextension.packet-tunnel</key>
+      <string>DriftwireTunnel.PacketTunnelProvider</string>
+    </dict>
+  </dict>
+</dict>
+</plist>

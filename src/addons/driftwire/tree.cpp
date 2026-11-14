@@ -640,6 +640,37 @@ void tunnel_controls(writer& w, const view& v) {
     return;
   }
   if (!v.tunnel_note.empty()) text(w, "tunnel_problem", v.tunnel_note, "secondary");
+  // Slice 5 (vpn.h): every app, not only those that follow the proxy.
+  if (v.tunnel_vpn_available) {
+    toggle(w, "tunnel_vpn", "All traffic (VPN)", v.tunnel_vpn);
+    if (v.tunnel_vpn && v.tunnel_block_available) {
+      toggle(w, "tunnel_block", "Block when the tunnel is down", v.tunnel_block);
+    }
+  } else if (!v.tunnel_vpn_note.empty()) {
+    text(w, "tunnel_vpn_note", v.tunnel_vpn_note, "caption");
+  }
+  if (v.tunnel_mode == "vpn") {
+    // The VPN carries everything: no proxy address, no system proxy.
+    std::string through = v.tunnel_relay.empty() ? std::string("your relay server") : v.tunnel_relay;
+    if (through.size() > 64) through.resize(64);
+    const char* state = v.tunnel_open > 0 ? "moving" : !v.tunnel_note.empty() ? "failed" : "done";
+    const std::string caption = "All traffic through your relay server" +
+                                (v.tunnel_open > 0 ? ": " + std::to_string(v.tunnel_open) +
+                                                         (v.tunnel_open == 1 ? " connection" : " connections")
+                                                   : std::string());
+    w.begin_object().key("type").string("link").key("id").string("tunnel_path");
+    w.key("label").string("All of this computer's traffic goes through " + through + ". " + caption + ".");
+    w.key("via").string("tunnel").key("state").string(state).key("direction").string("send");
+    w.key("from").string("This computer").key("to").string("The internet").key("through").string(through);
+    w.key("caption").string(caption).end_object();
+    text(w, "tunnel_vpn_how",
+         v.tunnel_block ? "Every app goes through it, apart from this network's own devices. If it goes down, "
+                          "nothing reaches the internet until it is back or you turn this off."
+                        : "Every app goes through it, apart from this network's own devices. If it goes down, "
+                          "apps use the network as it is.",
+         "caption");
+    return;
+  }
   // Slice 4 (tls.h): the relay's TLS port, for networks that block what
   // does not look like a web site. Only in a build with TLS.
   if (v.tunnel_tls_available) {
@@ -951,6 +982,8 @@ std::string build_menu(const view& v) {
       label = label.substr(0, cut) + "\xE2\x80\xA6";
     }
     menu_toggle(w, "tunnel", label, v.tunnel);
+    // Slice 5: the proxy or every app, once the interface can start here.
+    if (v.tunnel_vpn_available) menu_toggle(w, "tunnel_vpn", "All Traffic (VPN)", v.tunnel_vpn);
   }
   menu_toggle(w, "background", kBackgroundLabel, v.background);
   w.end_array().end_object();
