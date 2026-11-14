@@ -26,6 +26,7 @@
 #include "addons/driftwire/cli/args.h"
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host.h"
+#include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/cli/keys.h"
 #include "addons/driftwire/cli/session.h"
 #include "addons/driftwire/cli/theme.h"
@@ -1408,6 +1409,44 @@ TEST_CASE("driftwire cli session: /tunnel turns the Tunnel on and off and says i
   type_line(ann, "/tunnel off");
   REQUIRE(ann.shows("Off: Tunnel"));
   CHECK_FALSE(has(ann.text(), ro.key));  // the key is never said
+  type_line(ann, "/quit");
+  CHECK(ann.wait_exit() == 0);
+}
+
+TEST_CASE("driftwire cli session: /host shares, shows and turns the VPN on; what asks gets the terminal",
+          "[driftwire][cli][host-setup]") {
+  scratch_dir s("driftwire_cli_host");
+  bus b;
+  fs::create_directories(s / "My Photos");
+  cli_side ann(s / "ann_received", 100, 48);
+  auto so = session_opts(s.root());
+  so.data_dir = utf8(s / "hostdata");
+  so.test_hooks = true;
+  ann.start(bus_opts(b, "Ann", s / "ann"), so);
+  REQUIRE(ann.screen_shows("Type or drop files to send"));
+  // A path with a space, quoted as a shell would; the options come off its end.
+  type_line(ann, "/host share \"" + utf8(s / "My Photos") + "\" --backup");
+  REQUIRE(ann.shows("Shared \"My Photos\", phones may back up into it"));
+  type_line(ann, "/host status");
+  REQUIRE(ann.shows("not running (driftwire host starts it)"));
+  REQUIRE(ann.shows("My Photos (backup)"));
+  type_line(ann, "/host vpn on");
+  REQUIRE(ann.shows("The VPN is on"));
+  const auto key = cli::host_files::relay_secret(cli::host_layout_of(utf8(s / "hostdata")));
+  REQUIRE(key);
+  REQUIRE(ann.shows("#" + *key));  // the relay line, for the laptop, said once here
+  type_line(ann, "/host");  // alone: the status
+  REQUIRE(ann.shows("VPN on (driftwire host vpn on shows the relay line again)"));  // the transcript folds the columns
+  // What asks at the terminal needs one to hand over (this one has none).
+  type_line(ann, "/host setup");
+  REQUIRE(ann.screen_shows("This one asks at the terminal"));
+  // A token is never an argument here either.
+  type_line(ann, "/host name duckdns home");
+  REQUIRE(ann.screen_shows("/host: host takes setup"));
+  type_line(ann, "/host child");
+  REQUIRE(ann.shows("The host runs on its own"));
+  type_line(ann, "/host unshare My Photos");  // a label with a space, unquoted
+  REQUIRE(ann.shows("\"My Photos\" is no longer shared"));
   type_line(ann, "/quit");
   CHECK(ann.wait_exit() == 0);
 }

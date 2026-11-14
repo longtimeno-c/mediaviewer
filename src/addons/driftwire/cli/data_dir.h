@@ -29,7 +29,21 @@ namespace mv::driftwire::cli {
 [[nodiscard]] std::string home_dir();
 // argv[1..] as UTF-8.
 [[nodiscard]] std::vector<std::string> utf8_args(int argc, char** argv);
-// `utf8` on standard output (or error), whole.
+// `utf8` on standard output (or error), whole; into a print_capture's string
+// instead while one lives on this thread.
 void print(std::string_view utf8, bool to_stderr = false);
+
+// The session's /host (session.cpp): a command that prints runs inside the
+// session, whose transcript shows what it said. This thread only; nests.
+class print_capture {
+ public:
+  explicit print_capture(std::string& into) noexcept;
+  ~print_capture();
+  print_capture(const print_capture&) = delete;
+  print_capture& operator=(const print_capture&) = delete;
+
+ private:
+  std::string* before_;
+};
 
 }  // namespace mv::driftwire::cli

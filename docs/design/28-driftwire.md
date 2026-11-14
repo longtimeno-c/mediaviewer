@@ -99,7 +99,7 @@ driftwire code                   the session, making a code to receive from anyw
                                  when the receive it lets in ends, or the code fails or runs out
 driftwire devices                the remembered devices (no terminal needed)
 driftwire serve [--data DIR]     the NAS service, no terminal ([below](#the-nas-service-driftwire-serve)); init, devices, add, revoke
-driftwire host [--data DIR]      this computer as the service and a relay ([below](#on-your-own-computer-driftwire-host)); share, unshare, status, start-at-login, stay-awake
+driftwire host [--data DIR]      this computer as the service and a relay ([below](#on-your-own-computer-driftwire-host)); setup, share, unshare, status, pair, name, vpn, start-at-login, stay-awake
 driftwire update                 update it the way it was installed (no terminal needed)
 driftwire --help | --version     (no terminal needed)
   --save-to DIR, --name NAME     this run only
@@ -1734,7 +1734,17 @@ driftwire host status                       name, ports, folders by label (offli
                                             VPN, staying awake, start at login
 driftwire host start-at-login on|off        per user, no administrator
 driftwire host stay-awake on|off            the "system required" request while hosting (off for laptops)
+driftwire host setup                        the guided run: a name, a folder, the router, a phone, the VPN (slice 5)
+driftwire host name duckdns|none            the DuckDNS name; subdomain and token typed or pasted, never arguments
+driftwire host pair                         a phone's pairing QR in the terminal
+driftwire host vpn on [--tls-port N] | off  the laptop's VPN exit; `on` prints the relay line (slice 7)
 ```
+
+`/host …` in the interactive program runs the same (`/host` alone is `status`): what only prints
+(`share`, `unshare`, `status`, `vpn`, `name none`, `start-at-login`, `stay-awake`) says its lines in
+the transcript; what asks or draws a QR (`setup`, `name duckdns`, `pair`) gets the terminal as a shell
+leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the session takes it back.
+`/host` and `/host child` say the host runs on its own.
 
 - **One process for the services.** `driftwire host` is a supervisor: it runs the same program as
   `host child`, which holds `serve::server` for the shared folders and the relay server (`splice.*`,
@@ -1744,7 +1754,8 @@ driftwire host stay-awake on|off            the "system required" request while 
   not this user's, its keys cannot be read) ends the supervisor with 3, which the systemd unit does
   not restart (`RestartPreventExitStatus=3`; launchd and Task Scheduler still try every 30 s / 5 min). Inside the child, a service
   whose port is taken is tried again every 30 s without stopping the other.
-- **Its folder** is `<data dir>/host` (0700): `host.json` (`relay_port`, `vpn`, `stay_awake`),
+- **Its folder** is `<data dir>/host` (0700): `host.json` (`relay_port`, `vpn`, `stay_awake`; from
+  slice 5 `ddns` and `ddns_stamp`, `tls_port`, `library_id`),
   `serve/` (`serve.json` and the service's secrets, the layout `driftwire serve --data` reads),
   `relay/secrets` (the relay's key, made at the first run, never printed: slice 7 prints the relay
   line), `secrets/` (for the keepers), `state.json` (the running child's ports, counts and pid, for
@@ -1776,12 +1787,20 @@ driftwire host stay-awake on|off            the "system required" request while 
 - **Elevation.** Refused as root or elevated, as `serve`.
 - **Rule 6.** Its lines say ports and counts, never a path or an address; `state.json` holds ports,
   counts and a pid. `host status` prints folders by their labels.
-- **Keepers.** `cli/host_keepers.h` is where the DuckDNS keeper (slice 3) and the router keeper
-  (slice 4) plug in: a factory each in `host_keepers()`, started after the services and stopped
-  before them, told when the ports change, and a status line each. None is built yet.
-- **Not yet:** `host setup` and `/host` in the session (slice 5), `host vpn on|off` and the relay line
-  (slice 7: today `vpn` is read from `host.json` and turns on forwarding to 80/443 and UDP 53), the
-  desktop's "This computer" (slice 6), watching for a volume arriving (the minute's recheck only).
+- **Keepers** (`cli/host_keepers.*`, slice 5): the DuckDNS keeper (`ddns::keeper`) and the router
+  keeper (`host_ports::keeper`), started after the services and stopped before them. Each rebuilds
+  on a worker of its own when the context changes (the service's port, the relay's and its TLS port,
+  the VPN, the DuckDNS name or its `ddns_stamp`), so neither the host's loop nor `start()` waits on
+  the network. The router is asked for the service's port while it serves, and the relay's (and the
+  web-site look at outside 443, falling back to its own number) only with the VPN on; a new public
+  outside address from the router kicks DuckDNS at once. Each writes a status line into `state.json`
+  (`host status` prints it: the name and "updated 3 min ago", or each port open or not, the outside
+  kind and `host_ports::advice()`; while nothing is open yet the router is asked again after 1,
+  5, then every 15 minutes, a plain refusal three times at most), and the router keeper the outside ports a phone and the laptop
+  dial (`service_outside_port`, `relay_outside_port`, `tls_outside_port`). In the test build
+  (`loopback_only`) both stay idle and say so, unless built for a stand-in.
+- **Not yet:** the desktop's "This computer" (slice 6), watching for a volume arriving (the minute's
+  recheck only).
 - **Tested** (`"[host]"`, loopback only): the arguments, `host.json`, sharing rules, the three entries'
   texts and the files written into a home of the test's own (the OS's tools never run in a test), the
   drive checks (`/dev` as a real mount point), the service process in-process (relay alone, a share
@@ -1790,6 +1809,54 @@ driftwire host stay-awake on|off            the "system required" request while 
   a SIGKILLed child is started again, a replaced program ends it 75 with its child, SIGTERM ends both
   with 0. Windows and Linux run in CI only; the entries were never registered with a real
   launchd, systemd or Task Scheduler.
+
+### Setting it up: `driftwire host setup` (slice 5, 2026-11-14)
+
+One guided run in the order a person needs it (`cli/host_setup.*`, plan §2):
+
+1. **A name.** A DuckDNS subdomain (typed as `home` or `home.duckdns.org`) and its token, read with
+   echo off and never an argument; one update (with `clear` first, so an old IPv6 record goes), then
+   the name resolved and compared with what DuckDNS said it set, again every 10 s for about a minute
+   and a half (the 60 s TTL). Refused, unanswered and mistyped answers each say so; three tries, then
+   no name. The token goes in the host's secret store (`ddns_token`), the subdomain in `host.json`
+   with a `ddns_stamp`, so a running host takes a new token for the same name too. Skipped: "phones
+   reach this computer at home only".
+2. **A folder** (`host share`), and optionally a backup folder with a limit in GB (the 1 GiB reserve
+   stays).
+3. **The router.** With no host running, a probe `host_ports::keeper` for the service's port (and the
+   relay's with the VPN on) under its own ledger, its result and `advice()` printed (the one port to
+   forward by hand; carrier NAT: a relay on a rented server, §5.4; double NAT), then removed: the
+   running host asks for its own. With a host running, its router line from `state.json`. Then the
+   honest outside check: the phone on mobile data.
+4. **A phone** (`host pair` alone): the pairing QR drawn in the terminal (`cli/qr.*`, the Windows
+   card's encoder in C++, Project Nayuki's MIT algorithm, byte mode at ECC M, pinned to the same
+   scanner-read matrices; black on white set by the line itself, so it reads on a dark terminal;
+   half-block characters, two module rows a line, about 99 columns for a pairing code). The payload is
+   `catalog::pair_url`'s, field for field: the service's local address (toward the gateway) and the
+   DuckDNS name with the router's outside port as the public route, a single-use code for 15 minutes,
+   and the check the phone shows. No relay route: the host's relay is behind the same router.
+   **The host library**: a phone pairs with a library, and a host has no desktop library, so `host
+   pair` makes its own: an id in `host.json`, a publisher key from a seed in the host's secrets
+   (`host_publisher_seed`), and its `library.json` (as the desktop writes one on a NAS share) in
+   `<data dir>/library/.mediaviewer`, shared as the "Catalogue" folder. The phone finds that
+   library.json and opens the shared folders in file mode. The Catalogue goes with the last of the
+   person's folders on `host unshare`. A service a desktop has claimed (its Catalogue is there) is
+   refused: its phones pair from the desktop's card, with its library.
+5. **The VPN** (`host vpn on`, below), then **start at login**.
+
+### The VPN exit: `driftwire host vpn on|off` (slice 7, 2026-11-14)
+
+`host vpn on` sets `vpn` (and `--tls-port N`, the web-site look) in `host.json`; the running host
+restarts its relay with forwarding to TCP 80 and 443 and UDP 53 (the relay's defaults; never a
+private, loopback or link-local address: owner call 5, no VPN into the home network), and its router
+keeper asks for the relay's port. It prints the relay line once, `name.duckdns.org:PORT#KEY` (the LAN
+address without a name; `PORT` the router's outside port when the running host has one), for the
+laptop's **Relay (your own server)**: the only place the relay's key is ever shown. The TLS look is a
+certificate the relay makes for the name (Let's Encrypt by DNS-01 is later, call 4); if its port
+cannot be had the relay runs without it and `host status` says so. `off` turns forwarding and the
+look off, and the router's relay port closes. Tested on loopback: a laptop's Tunnel proxy
+(`tunnel::proxy`) with the printed line reaches a site through the host's relay, off refuses, and the
+shipped options refuse a forward to the home's own addresses (403).
 
 ### DuckDNS: a name for a home's changing address (self-hosting, 2026-11-14)
 
@@ -2294,7 +2361,7 @@ protocol has no DHT.
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Phone access (the app's, `src/phone`) | `phone/desk.*` (claim, devices, codes, nearby, the route), `wire/advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
 | The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
-| Self-hosting (`driftwire host`) | `cli/host_cmd.*` (the supervisor, the service process, share and status), `cli/host_keepers.h` (slices 3–4 plug in), `cli/host_proc*` (the child process), `cli/autostart*` (start at login per OS), `cli/volume*` (a folder's drive), `power::hold_for` |
+| Self-hosting (`driftwire host`) | `cli/host_cmd.*` (the supervisor, the service process, share and status), `cli/host_keepers.*` (the DuckDNS and router keepers in the host), `cli/host_setup.*` (setup, name, pair, vpn), `cli/qr.*` (the terminal QR), `cli/host_proc*` (the child process), `cli/autostart*` (start at login per OS), `cli/volume*` (a folder's drive), `power::hold_for` |
 | Self-hosting's DuckDNS keeper (2026-11-14) | `ddns.*`; tests `tests/test_driftwire_ddns.cpp` (`"[ddns]"`) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |

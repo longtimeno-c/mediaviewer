@@ -22,6 +22,7 @@
 
 #include "addons/driftwire/cli/autostart.h"
 #include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/host_setup.h"
 #include "addons/driftwire/cli/nas_update.h"
 #include "addons/driftwire/cli/serve_tty.h"
 #include "addons/driftwire/cli/update.h"
@@ -47,11 +48,6 @@ namespace mv::driftwire::cli {
 namespace fs = std::filesystem;
 
 static_assert(host_settings{}.relay_port == relay::kDefaultPort);
-
-keeper_factories host_keepers() {
-  // Slice 3 returns its DuckDNS keeper here (ddns.*), slice 4 its router keeper (host_ports.*).
-  return {};
-}
 
 namespace {
 
@@ -191,7 +187,8 @@ std::optional<std::string> relay_key(secrets::store& store) {
   return key;
 }
 
-std::string state_json(const host_snapshot& s, const std::vector<std::string>& keeper_lines) {
+std::string state_json(const host_snapshot& s, const std::vector<std::string>& keeper_lines,
+                       const std::vector<std::pair<std::string, std::int64_t>>& numbers) {
   json::writer w;
   w.begin_object();
 #if defined(_WIN32)
@@ -200,6 +197,9 @@ std::string state_json(const host_snapshot& s, const std::vector<std::string>& k
   w.key("pid").integer(static_cast<std::int64_t>(::getpid()));
 #endif
   w.key("service_port").integer(s.service_port).key("relay_port").integer(s.relay_port);
+  w.key("relay_tls_port").integer(s.relay_tls_port);
+  if (s.tls_failed) w.key("tls_failed").boolean(true);
+  for (const auto& [k, v] : numbers) w.key(k).integer(v);
   w.key("vpn").boolean(s.vpn).key("awake").boolean(s.awake);
   w.key("folders").integer(static_cast<std::int64_t>(s.folders)).key("offline").integer(static_cast<std::int64_t>(s.offline));
   w.key("keepers").begin_array();
@@ -232,12 +232,43 @@ std::optional<host_settings> parse_host_settings(std::string_view text) {
     if (!v) return std::nullopt;
     s.stay_awake = *v;
   }
+  if (doc->find("ddns")) {
+    const std::string* v = doc->str("ddns");
+    if (!v) return std::nullopt;
+    if (!v->empty()) {
+      const auto sub = ddns::parse_subdomain(*v);
+      if (!sub || *sub != *v) return std::nullopt;  // kept parsed: anything else was not written here
+    }
+    s.ddns = *v;
+  }
+  if (doc->find("ddns_stamp")) {
+    const auto v = doc->integer("ddns_stamp");
+    if (!v) return std::nullopt;
+    s.ddns_stamp = *v;
+  }
+  if (doc->find("tls_port")) {
+    const auto p = doc->integer("tls_port");
+    if (!p || *p < 0 || *p > 65535) return std::nullopt;
+    s.tls_port = static_cast<std::uint16_t>(*p);
+  }
+  if (doc->find("library_id")) {
+    const std::string* v = doc->str("library_id");
+    if (!v || v->size() > 64 ||
+        v->find_first_not_of("0123456789abcdef") != std::string::npos) {
+      return std::nullopt;
+    }
+    s.library_id = *v;
+  }
   return s;
 }
 
 std::string host_settings_json(const host_settings& s) {
   json::writer w;
   w.begin_object().key("relay_port").integer(s.relay_port).key("vpn").boolean(s.vpn).key("stay_awake").boolean(s.stay_awake);
+  if (!s.ddns.empty()) w.key("ddns").string(s.ddns);
+  if (s.ddns_stamp != 0) w.key("ddns_stamp").integer(s.ddns_stamp);
+  if (s.tls_port != 0) w.key("tls_port").integer(s.tls_port);
+  if (!s.library_id.empty()) w.key("library_id").string(s.library_id);
   w.end_object();
   return w.take();
 }
@@ -252,6 +283,12 @@ host_layout host_layout_of(const std::string& data_dir) {
   l.state = l.folder + "/state.json";
   l.lock = l.folder + "/host.lock";
   return l;
+}
+
+std::string host_catalogue_of(const host_layout& l) {
+  const auto slash = l.folder.find_last_of("/\\");
+  const std::string data = slash == std::string::npos ? std::string(".") : l.folder.substr(0, slash);
+  return data + "/library/" + serve::kCatalogueFolder;
 }
 
 bool make_host_folders(const host_layout& l) {
@@ -303,10 +340,19 @@ std::string share_folder(serve::config& c, const std::string& abs_path, const st
   return {};
 }
 
-std::string unshare_folder(serve::config& c, std::string_view label) {
+std::string unshare_folder(serve::config& c, std::string_view label, std::string_view host_catalogue) {
   const auto before = c.roots.size();
+  if (same_label(label, serve::kCatalogueLabel)) return "the Catalogue goes with the last folder shared.";
   std::erase_if(c.roots, [&](const serve::root_config& r) { return same_label(r.label, label); });
-  return c.roots.size() == before ? "no folder is shared as \"" + std::string(label) + "\"." : std::string();
+  if (c.roots.size() == before) return "no folder is shared as \"" + std::string(label) + "\".";
+  // The host library's Catalogue names no folder of the person's: it goes with the last one
+  // (a desktop's claimed Catalogue stays: that library is the desktop's).
+  if (!host_catalogue.empty() &&
+      std::all_of(c.roots.begin(), c.roots.end(),
+                  [](const serve::root_config& r) { return r.label == serve::kCatalogueLabel; })) {
+    std::erase_if(c.roots, [&](const serve::root_config& r) { return r.path == host_catalogue; });
+  }
+  return {};
 }
 
 after_child decide_after_child(const child_process::ended& e, bool stopping) {
@@ -341,6 +387,7 @@ struct host_service::state {
   std::unique_ptr<power::stay_awake> awake;
   std::chrono::steady_clock::time_point serve_retry{}, relay_retry{}, next_roots{};
   std::size_t offline = 0;
+  bool tls_failed = false;
   bool said_bad_config = false, said_serve_failed = false, said_relay_failed = false;
   std::vector<std::unique_ptr<host_keeper>> keepers;
   std::string state_written;
@@ -357,7 +404,9 @@ struct host_service::state {
     k.secrets = keeper_store.get();
     k.service_port = srv ? srv->port() : 0;
     k.relay_port = rel ? rel->port() : 0;
+    k.relay_tls_port = rel ? rel->tls_port() : 0;
     k.vpn = settings.vpn;
+    k.ddns_subdomain = settings.ddns;
     k.loopback_only = o.loopback_only;
     k.address_moved = [this] {
       // Any thread, even inside a keeper's own call: the loop passes it on.
@@ -444,8 +493,29 @@ struct host_service::state {
     if (!settings.vpn) {
       ro.forward_ports.clear();  // forwarding (the Tunnel/VPN exit) only with `host vpn on`
       ro.forward_udp_ports.clear();
+    } else if (settings.tls_port != 0) {
+      // The web-site look, self-signed for the name (Let's Encrypt is later: call 4).
+      ro.tls_port = settings.tls_port;
+      ro.tls_name = settings.ddns.empty() ? std::string("localhost") : ddns::duckdns_name(settings.ddns);
     }
-    auto r = relay::server::start(std::move(ro));
+    // TCP 80 and 443 and UDP 53 (the relay's defaults) with the VPN on; never
+    // a private, loopback or link-local address (call 5: no VPN into the LAN).
+    if (o.relay_tweak) o.relay_tweak(ro);
+    const bool with_tls = ro.tls_port != 0;
+    auto r = relay::server::start(ro);
+    tls_failed = false;
+    if (!r && with_tls) {
+      // The look's port taken or not allowed (443 on Linux without privilege): the relay and the
+      // VPN run without it rather than not at all.
+      ro.tls_port = 0;
+      r = relay::server::start(std::move(ro));
+      if (r) {
+        tls_failed = true;
+        print("driftwire host: the web-site look could not listen on port " + std::to_string(settings.tls_port) +
+                  "; the relay runs without it\n",
+              true);
+      }
+    }
     if (!r) {
       relay_retry = std::chrono::steady_clock::now() + std::chrono::milliseconds(o.retry_ms);
       if (!said_relay_failed) {
@@ -458,7 +528,8 @@ struct host_service::state {
     }
     said_relay_failed = false;
     rel = std::move(*r);
-    print("driftwire host: relay on port " + std::to_string(rel->port()) + (settings.vpn ? ", VPN on\n" : ", VPN off\n"));
+    print("driftwire host: relay on port " + std::to_string(rel->port()) + (settings.vpn ? ", VPN on" : ", VPN off") +
+          (rel->tls_port() ? ", web-site look on port " + std::to_string(rel->tls_port()) + "\n" : std::string("\n")));
   }
 
   void set_awake_locked() {
@@ -521,12 +592,16 @@ struct host_service::state {
     if (t == settings_text) return;
     settings_text = t;
     const host_settings next = text ? parse_host_settings(*text).value_or(settings) : host_settings{};
-    const bool relay_changed = next.vpn != settings.vpn || next.relay_port != settings.relay_port;
+    const bool relay_changed = next.vpn != settings.vpn || next.relay_port != settings.relay_port ||
+                               next.tls_port != settings.tls_port || (next.tls_port != 0 && next.ddns != settings.ddns);
+    const bool name_changed = next.ddns != settings.ddns || next.ddns_stamp != settings.ddns_stamp;
     settings = next;
     if (relay_changed && rel) {
       rel.reset();
       start_relay_locked();
       ports_changed_locked();
+    } else if (name_changed) {
+      ports_changed_locked();  // the DuckDNS keeper takes the new name (and token)
     }
     set_awake_locked();
   }
@@ -581,6 +656,8 @@ struct host_service::state {
     host_snapshot s;
     s.service_port = srv ? srv->port() : 0;
     s.relay_port = rel ? rel->port() : 0;
+    s.relay_tls_port = rel ? rel->tls_port() : 0;
+    s.tls_failed = rel && tls_failed;
     s.vpn = settings.vpn;
     s.awake = awake != nullptr;
     s.folders = cfg.roots.size();
@@ -590,8 +667,12 @@ struct host_service::state {
 
   void write_state_locked() {
     std::vector<std::string> lines;
-    for (const auto& kp : keepers) lines.push_back(kp->status_line());
-    const std::string text = state_json(snapshot_locked(), lines);
+    std::vector<std::pair<std::string, std::int64_t>> numbers;
+    for (const auto& kp : keepers) {
+      lines.push_back(kp->status_line());
+      for (auto& n : kp->state_numbers()) numbers.push_back(std::move(n));
+    }
+    const std::string text = state_json(snapshot_locked(), lines, numbers);
     if (text == state_written) return;
     if (write_whole(o.where.state, text)) state_written = text;
   }
@@ -759,19 +840,28 @@ std::optional<serve::config> load_or_new(const host_layout& l, bool any_port) {
   return std::move(*c);
 }
 
-int run_share(const args& a, const host_layout& l, bool test_hooks) {
-  const std::string path = absolute_of(a.host_path);
+std::string share_path(const host_layout& l, const std::string& typed, const std::string& label_arg, bool backup,
+                       std::uint64_t limit, bool test_hooks, std::string& label) {
+  const std::string path = absolute_of(typed);
   std::error_code ec;
-  if (!fs::is_directory(to_path(path), ec)) return fail("not a folder: " + a.host_path, 1);
-  if (!make_host_folders(l)) return fail("its folder must be this user's alone (mode 700).", 1);
+  if (!fs::is_directory(to_path(path), ec)) return "not a folder: " + typed;
+  if (!make_host_folders(l)) return "its folder must be this user's alone (mode 700).";
   const auto lock = config_lock(l);
-  if (!lock) return fail("serve.json is being changed by something else; try again.", 1);
+  if (!lock) return "serve.json is being changed by something else; try again.";
   auto cfg = load_or_new(l, test_hooks);
-  if (!cfg) return fail("serve.json is not valid; not changing it.", 1);
-  const std::string label = a.label.empty() ? default_label(path) : a.label;
-  const std::string why = share_folder(*cfg, path, label, a.backup, volume_of(path), random_id(), l.folder);
+  if (!cfg) return "serve.json is not valid; not changing it.";
+  label = label_arg.empty() ? default_label(path) : label_arg;
+  std::string why = share_folder(*cfg, path, label, backup, volume_of(path), random_id(), l.folder);
+  if (!why.empty()) return why;
+  if (backup && limit != 0) cfg->roots.back().limit = limit;
+  if (!write_whole(l.serve_config, serve::config_json(*cfg))) return "could not write serve.json.";
+  return {};
+}
+
+int run_share(const args& a, const host_layout& l, bool test_hooks) {
+  std::string label;
+  const std::string why = share_path(l, a.host_path, a.label, a.backup, 0, test_hooks, label);
   if (!why.empty()) return fail(why, 1);
-  if (!write_whole(l.serve_config, serve::config_json(*cfg))) return fail("could not write serve.json.", 1);
   print("Shared \"" + label + "\"" + (a.backup ? ", phones may back up into it" : std::string()) +
         ". A running host serves it within seconds.\n");
   return 0;
@@ -782,7 +872,7 @@ int run_unshare(const args& a, const host_layout& l, bool test_hooks) {
   if (!lock) return fail("serve.json is being changed by something else; try again.", 1);
   auto cfg = load_or_new(l, test_hooks);
   if (!cfg) return fail("serve.json is not valid; not changing it.", 1);
-  const std::string why = unshare_folder(*cfg, a.label);
+  const std::string why = unshare_folder(*cfg, a.label, host_catalogue_of(l));
   if (!why.empty()) return fail(why, 1);
   if (!write_whole(l.serve_config, serve::config_json(*cfg))) return fail("could not write serve.json.", 1);
   print("\"" + a.label + "\" is no longer shared. Its files stay where they are.\n");
@@ -860,7 +950,13 @@ int run_status(const host_layout& l, bool test_hooks) {
   } else {
     out += "relay       port " + std::to_string(s.relay_port) + " when running\n";
   }
-  out += std::string("VPN         ") + (s.vpn ? "on" : "off") + "\n";
+  const bool tls_down = state && state->boolean("tls_failed").value_or(false);
+  out += std::string("VPN         ") +
+         (s.vpn ? (s.tls_port ? (tls_down ? "on; the web-site look could not listen on port "
+                                          : "on, web-site look on port ") + std::to_string(s.tls_port)
+                              : std::string("on"))
+                : "off") +
+         (s.vpn ? "  (driftwire host vpn on shows the relay line again)\n" : "\n");
   if (cfg) {
     for (const auto& r : cfg->roots) {
       std::error_code ec;
@@ -1029,6 +1125,44 @@ int run_supervisor(const args& a, const host_layout& l, const std::string& data,
 
 }  // namespace
 
+// ---- for host_setup.cpp ---------------------------------------------------------------------
+
+namespace host_files {
+
+std::optional<std::string> read(const std::string& path, std::size_t max) { return read_small(path, max); }
+bool write(const std::string& path, const std::string& text) { return write_whole(path, text); }
+std::unique_ptr<net::instance_lock> lock_config(const host_layout& l, int wait_ms) { return config_lock(l, wait_ms); }
+host_settings settings(const host_layout& l) { return load_settings(l); }
+bool save_settings(const host_layout& l, const host_settings& s) {
+  return make_host_folders(l) && write_whole(l.settings, host_settings_json(s));
+}
+std::optional<serve::config> config(const host_layout& l, bool any_port) { return load_or_new(l, any_port); }
+std::unique_ptr<secrets::store> store(const std::string& folder) { return owner_store(folder); }
+std::optional<std::string> relay_secret(const host_layout& l) {
+  if (!make_host_folders(l)) return std::nullopt;
+  auto st = owner_store(l.relay + "/secrets");
+  return st ? relay_key(*st) : std::nullopt;
+}
+std::string share(const host_layout& l, const std::string& typed, const std::string& label, bool backup,
+                  std::uint64_t limit, bool any_port, std::string& shared_as) {
+  return share_path(l, typed, label, backup, limit, any_port, shared_as);
+}
+bool running(const host_layout& l) {
+  std::error_code ec;
+  return fs::is_directory(to_path(l.folder), ec) && net::try_lock_instance(l.lock) == nullptr;
+}
+std::optional<json::value> state(const host_layout& l) {
+  if (!running(l)) return std::nullopt;
+  const auto text = read_small(l.state);
+  if (!text) return std::nullopt;
+  return json::parse(*text, 4);
+}
+std::string new_id() { return random_id(); }
+int status(const host_layout& l, bool test_hooks) { return run_status(l, test_hooks); }
+int start_at_login(const args& a, const host_layout& l, bool test_hooks) { return run_start_at_login(a, l, test_hooks); }
+
+}  // namespace host_files
+
 int run_host(const args& a, bool test_hooks, const char* version) {
   (void)version;
   if (!test_hooks && serve_is_privileged()) {
@@ -1062,6 +1196,14 @@ int run_host(const args& a, bool test_hooks, const char* version) {
       return run_start_at_login(a, l, test_hooks);
     case host_action::stay_awake:
       return run_stay_awake(a, l);
+    case host_action::setup:
+      return run_host_setup(a, l, test_hooks);
+    case host_action::name:
+      return run_host_name(a, l, test_hooks);
+    case host_action::pair:
+      return run_host_pair(a, l, test_hooks);
+    case host_action::vpn:
+      return run_host_vpn(a, l, test_hooks);
   }
   return 2;
 }

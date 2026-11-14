@@ -706,18 +706,27 @@ The service and a relay in one process on your own PC or Mac (slice 2; [docs/des
 Its folder is `<data dir>/host`; `--data DIR` uses `DIR/host` instead.
 
 ```sh
+build/bin/driftwire host setup                               # the guided run: DuckDNS, a folder, the router, a phone's QR, the VPN
 build/bin/driftwire host share ~/Pictures --label Photos     # what phones see; --backup lets them back up into it
 build/bin/driftwire host                                     # runs until Ctrl-C: the service on 7878, the relay on 47614
 build/bin/driftwire host status                              # from another terminal
 build/bin/driftwire host start-at-login on                   # LaunchAgent / systemd --user / Scheduled Task, no admin
 build/bin/driftwire host stay-awake off                      # a laptop: let it sleep
+build/bin/driftwire host name duckdns                        # asks for the subdomain and the token (never arguments)
+build/bin/driftwire host pair                                # a phone's pairing QR (needs a window ~100 columns wide)
+build/bin/driftwire host vpn on                              # prints the relay line for the laptop's Relay (your own server)
 build/bin/mv_import_tests "[host]"                           # loopback only; the supervisor case spawns mv_driftwire_cli_test
+build/bin/mv_import_tests "[host-setup]"                     # setup, pairing redeemed, DuckDNS and router keepers, the VPN through the relay
 ```
 
+Try the guided run without the internet or a router with the test build:
+`printf '%s\n' ~/Pictures "" "" "" "" n n n | build/bin/mv_driftwire_cli_test host setup --test-data /tmp/hs --test-loopback`
+(it never reaches duckdns.org or asks a router, and refuses start at login).
+
 `start-at-login on` from a build of your own points the entry at that build; turn it off before
-deleting the build (`host start-at-login off`). The test build refuses it. Router ports, DuckDNS,
-`host setup` and `host vpn` are later slices: today the host is reachable on its own network, or
-through ports you forward by hand.
+deleting the build (`host start-at-login off`). The test build refuses it. The running host asks the
+router for its ports and keeps a DuckDNS name updated; neither has been run against a real router or
+duckdns.org yet (the tests use stand-ins).
 
 ### The phone's library and search (`src/mobile`, `MobileCore`; plan: `docs/plans/mobile.md` M5, M6)
 

@@ -329,6 +329,9 @@ int main(int argc, char** argv) {
   so.mouse = co.sequences && !plain;  // clicks while there is something to click (session.h)
   so.version = MV_DRIFTWIRE_CLI_VERSION;
   so.data_dir = data;
+#if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+  so.test_hooks = true;
+#endif
   if (!a.name.empty()) so.name_note = "this run";
   so.paths = paths;
   // Is a newer driftwire out? Only for a copy an installer put here (a build

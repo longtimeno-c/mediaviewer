@@ -240,10 +240,11 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 4. **Router keeper** for the host's ports (reusing `mapping.*` against its stand-in routers), the
    carrier-NAT message, the decision-log row. **Built 2026-11-14** as a module (§12); `host` calls it in slice 2.
 5. **`host setup`** (the guided run) and `/host` in the interactive program; the QR in the terminal.
+   **Built 2026-11-14** with the keepers wired into `host` (§16).
 6. **The desktop card's "This computer"** on Mac and Windows (both halves, D9), and the copy changes
    on the phone and desktop, demoable in SAMPLE.
 7. **`host vpn on`** and the relay line; `docs/design/28` gains "Self-hosting", `docs/DEVELOPMENT.md`
-   the run recipe.
+   the run recipe. **Built 2026-11-14** (§16).
 8. Later: Let's Encrypt via DNS-01; a custom DDNS URL; the laptop as a `serve` client.
 
 **Verify (proposed):** on a Windows PC and a Mac, `driftwire host setup` with a DuckDNS name and a
@@ -397,3 +398,79 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
 - **Not yet:** the desktop card's **This computer** choice (wave 2); an offline backup folder is still
   offered in the phone's backup picker; a catalogue folder whose root is offline is not marked (the
   catalogue's folders are not tied to the service's roots on the phone).
+
+## 16. Slices 5 and 7, as built (2026-11-14)
+
+- **The keepers in the host** (`cli/host_keepers.*`): `make_ddns_keeper` around `ddns::keeper` and
+  `make_router_keeper` around `host_ports::keeper`, returned by `host_keepers()`. Each rebuilds on a
+  worker of its own when the context changes (`keeper_context` gained `relay_tls_port` and
+  `ddns_subdomain`; `host.json` gained `ddns`, `ddns_stamp`, `tls_port`, `library_id`), so the
+  host's loop never waits on the network. The router gets the service's port, and the relay's and the
+  web-site look's (outside 443, falling back to its own) with the VPN on; its new public outside
+  address kicks DuckDNS. `host status` prints both keepers' lines from `state.json` ("DuckDNS
+  home.duckdns.org, updated 3 min ago"; "router service 7878 open (UPnP), relay 47614 open" and the
+  advice), never an address or the token; `state.json` also carries the outside ports.
+- **`host setup`** (`cli/host_setup.*`): the five steps of §2 plus start at login. DuckDNS: subdomain
+  and token typed (the token with echo off), one update, then the name resolved and compared every
+  10 s for about 90 s; skip = LAN only, said plainly. The folder through `host share`, a backup folder
+  with a limit in GB. The router: a probe keeper when no host runs (its forwards removed after; the
+  host asks for its own), the running host's line when one does; `advice()` gives the one port to
+  forward by hand, and carrier NAT's "a relay on a rented server". A phone: the QR in the terminal.
+  Then `host vpn on` if wanted.
+- **`host name duckdns|none`, `host pair`, `host vpn on [--tls-port N]|off`** run one part alone;
+  `/host …` in the interactive program runs them all (`/host` alone is status): printing commands in
+  the transcript (`print_capture`), asking ones with the terminal handed over (`terminal::run_cooked`).
+- **The QR** (`cli/qr.*`): the Windows card's encoder (`QrCode.cs`, after Project Nayuki's MIT
+  library; notice kept, no new dependency) in C++, pinned to the same scanner-read matrices; drawn
+  with half blocks, black on white set by each line. A pairing code is version 19 or so: about 99
+  columns, so an 80-column window needs widening (setup says so).
+- **The host library.** A phone pairs with a library; a host with no desktop makes its own (an id,
+  a publisher key from a seed in the host's secrets) and writes its `library.json` in
+  `<data dir>/library/.mediaviewer`, shared as "Catalogue", so the phone opens the folders in file
+  mode as it does a NAS's before Local search publishes. The payload is `catalog::pair_url`'s (read
+  back in the tests by the phone's own `parse_pair_payload`); the public route is
+  `name.duckdns.org:<outside port>`; no relay route (the host's relay is behind the same router). A
+  service a desktop has claimed (another Catalogue there) is refused: its phones pair from the
+  desktop's card and get its library, since a phone that pinned the host library would be refused
+  once the desktop published. `host unshare` takes only the host library's Catalogue with the last
+  folder, never a desktop's.
+- **`host vpn on`**: forwarding on in the running host's relay (TCP 80, 443, UDP 53; private,
+  loopback and link-local refused, call 5), the relay's port mapped, the relay line
+  `name.duckdns.org:PORT#KEY` printed (the LAN address without a name). `--tls-port 443`: the
+  relay's TLS look with its own self-signed certificate for the name (call 4); a look that cannot
+  listen (443 taken, or not allowed on Linux) leaves the relay running without it, said in `host
+  status`; `vpn off` clears it.
+- **Hardening (Opus review, 2026-11-14):** the router keeper asks again on a 1, 5, 15-minute backoff
+  while nothing is open yet (a start at login before the network is up, no answer; a refusal three
+  times at most), never once a port is open, since a new ask closes the old forwards a moment; a
+  mix of open and refused ports waits for the ports wanted to change or a restart; the
+  DuckDNS keeper keeps a hash of the token it was built from, not a copy; the QR's text and the
+  session's captured relay line are wiped after use; `/host unshare` takes a label with spaces; the
+  test build's `/host` stays on loopback.
+- **Tests** `"[host-setup]"` (`tests/test_driftwire_host_setup.cpp`, two in
+  `test_driftwire_internet.cpp` beside the stand-in routers, one in `test_driftwire_cli.cpp`), Mac:
+  the QR against the C# pins; the arguments (no token or subdomain as an argument); `host.json`; the
+  whole guided run with a stand-in DuckDNS and resolver, then a phone (`serve::client` on `::1`)
+  redeeming the QR's code once, finding the host library's `library.json` and reading a photo; the
+  name skipped, refused, mistyped, offline, late to resolve, forgotten; the DuckDNS keeper in the
+  running host (status line, a new name taken, no token or address in `state.json`), the test build's
+  real keepers idle; the router keeper in the running host against a stand-in PCP router (the
+  service's port, the relay's with the VPN on, both removed on stop, `host status`); setup's router
+  step behind a stand-in carrier NAT; a laptop's Tunnel proxy forwarding through the host's relay
+  with the printed line, off refusing, and the shipped options refusing the home's own addresses;
+  `/host share|status|vpn on|setup` in a session.
+- **Owed:** running it on Windows and Linux (CI's legs build and run the tags; not run here), a real
+  router, the real duckdns.org and a real phone scanning the terminal's QR (the matrices match the
+  desktop's, which a scanner read; the terminal drawing was looked at, not scanned). On Windows,
+  setup reads lines with `fgetc` in the console's own code page (as `serve passphrase set` does), so
+  a typed folder outside ASCII arrives garbled: a `ReadConsoleW` line reader in `serve_tty_win.cpp`
+  is owed. Ctrl+C during a `/host setup` handed over from the session reaches the session, not the
+  setup (Enter through it, or run it in its own terminal). The QR's quiet zone is 2 modules (the
+  standard asks 4), and without colour (`--no-color`, `NO_COLOR`) it is ink on the terminal's own
+  background, inverted on a dark one. If a desktop claims the service after phones paired from
+  `host pair`, those phones meet the desktop's library and must pair again from its card. The TLS
+  look's fallback (the relay without it) is not tested (loopback picks its own port). The relay line's port is the
+  router's outside port only once the running host has mapped it: `host vpn on` run before that
+  prints the relay's own port (the same unless the router picked another; `host status` shows it).
+  The QR's size: a shorter payload (the hex keys) would need a new payload version on the phone.
+

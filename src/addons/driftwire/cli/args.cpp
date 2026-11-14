@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/cli/args.h"
 
+#include <cstdlib>
+
 #include <string_view>
 
 namespace mv::driftwire::cli {
@@ -61,7 +63,11 @@ std::string help_text() {
          "                               a folder (--backup: they may back up into it), host unshare\n"
          "                               LABEL takes one back, host status shows it, host\n"
          "                               start-at-login on|off and host stay-awake on|off change\n"
-         "                               how it runs (no administrator needed)\n"
+         "                               how it runs (no administrator needed); host setup walks\n"
+         "                               through it all (a DuckDNS name, a folder, the router, a\n"
+         "                               phone, the VPN), host name duckdns|none sets the name (the\n"
+         "                               token is typed), host pair shows a phone's pairing QR, host\n"
+         "                               vpn on [--tls-port 443]|off makes it the laptop's VPN exit\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -140,6 +146,16 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--label") {
         if (!value(a.label, "a label")) return out;
         want_label = true;
+      } else if (t.name == "--tls-port") {
+        std::string v;
+        if (!value(v, "a port")) return out;
+        char* end = nullptr;
+        const long p = std::strtol(v.c_str(), &end, 10);
+        if (v.empty() || *end != '\0' || p < 1 || p > 65535) {
+          out.error = "--tls-port takes a port, 1 to 65535";
+          return out;
+        }
+        a.tls_port = static_cast<std::uint16_t>(p);
       } else if (t.name == "--backup" && flag) {
         a.backup = true;
         want_backup = true;
@@ -309,9 +325,22 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.host = host_action::status;
       } else if (what == "start-at-login" && on_off(host_action::start_at_login)) {
       } else if (what == "stay-awake" && on_off(host_action::stay_awake)) {
+      } else if (what == "vpn" && on_off(host_action::vpn)) {
+      } else if (what == "setup" && words.size() == 1) {
+        a.host = host_action::setup;
+      } else if (what == "pair" && words.size() == 1) {
+        a.host = host_action::pair;
+      } else if (what == "name" && words.size() == 2 && (words[1] == "duckdns" || words[1] == "none")) {
+        // Only the provider: the subdomain and the token are typed or pasted, never arguments.
+        a.host = host_action::name;
+        a.on = words[1] == "duckdns";
       } else {
-        out.error = "host takes share PATH [--label L] [--backup], unshare LABEL, status, start-at-login on|off "
-                    "or stay-awake on|off";
+        out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
+                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off or stay-awake on|off";
+        return out;
+      }
+      if (a.tls_port != 0 && !(a.host == host_action::vpn && a.on)) {
+        out.error = "--tls-port goes with host vpn on";
         return out;
       }
       if ((want_label || want_backup) && a.host != host_action::share) {
@@ -324,6 +353,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
     case command::help:
     case command::version:
       break;
+  }
+  if (a.tls_port != 0 && a.cmd != command::host) {
+    out.error = "--tls-port goes with host vpn on";
+    return out;
   }
   if ((want_label || want_backup) && a.cmd != command::host) {
     out.error = "--label and --backup go with host share";
