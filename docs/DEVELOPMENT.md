@@ -1381,8 +1381,12 @@ build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tl
 # Slice 5 (the VPN): DNS to this resolver; UDP ports beyond 53 only if listed
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --dns 9.9.9.9 --forward-udp-ports 53
 xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/driftwire/mac_tunnel/*.swift
-# The VPN's provider built and embedded (it runs only once Apple's entitlement is on the team):
+# The VPN's provider built and embedded. It runs only from a Developer ID release with both
+# provisioning profiles (RELEASING.md, "the Driftwire VPN's provisioning profiles"):
 cmake -S . -B build -DMV_DRIFTWIRE_PACKET_TUNNEL=ON && cmake --build build --target mediaviewer_app
+python3 tools/mac/macpack.py release --app build/MediaViewer.app --identity "Developer ID Application: …" \
+  --team-id <TEAM> --app-profile <app>.provisionprofile --tunnel-profile <tunnel>.provisionprofile \
+  --skip-notarize --allow-no-updater      # then copy to /Applications and approve the extension once
 # With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
 curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network

@@ -11,6 +11,7 @@ import argparse
 import plistlib
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -651,6 +652,111 @@ class DriftwireTunnelPackTests(unittest.TestCase):
                 ent = plistlib.load(f)
             self.assertTrue(ent[macpack.SYSEXT_INSTALL])
             self.assertEqual(ent[macpack.NETWORK_EXTENSION], ["packet-tunnel-provider-systemextension"])
+
+
+class ProvisioningProfileTests(unittest.TestCase):
+    """The VPN's Developer ID provisioning profiles: checked against the team,
+    the bundle and the entitlements before anything is signed, then embedded
+    in the app and the extension, each signed with the App ID it grants."""
+
+    TEAM = "ABCDE12345"
+    NOW = datetime(2026, 11, 14)
+
+    def profile(self, bundle_id, needs, **change):
+        ent = {macpack.APP_ID_KEY: f"{self.TEAM}.{bundle_id}", macpack.TEAM_ID_KEY: self.TEAM}
+        ent.update(needs)
+        p = {"Name": "MediaViewer Developer ID", "TeamIdentifier": [self.TEAM],
+             "ProvisionsAllDevices": True, "ExpirationDate": datetime(2027, 1, 1), "Entitlements": ent}
+        p.update(change)
+        return p
+
+    def test_a_right_profile_passes(self):
+        # Apple's Developer ID profiles list every system-extension value.
+        tunnel = {macpack.NETWORK_EXTENSION: ["app-proxy-provider-systemextension",
+                                              "packet-tunnel-provider-systemextension"]}
+        p = self.profile("com.example.MediaViewer.DriftwireTunnel", tunnel)
+        self.assertIsNone(macpack.profile_problem(p, self.TEAM, "com.example.MediaViewer.DriftwireTunnel",
+                                                  macpack.TUNNEL_PROFILE_NEEDS, self.NOW))
+        app = self.profile("com.example.MediaViewer", macpack.APP_PROFILE_NEEDS)
+        self.assertIsNone(macpack.profile_problem(app, self.TEAM, "com.example.MediaViewer",
+                                                  macpack.APP_PROFILE_NEEDS, self.NOW))
+
+    def test_each_wrong_profile_says_why(self):
+        bid, needs = "com.example.MediaViewer", macpack.APP_PROFILE_NEEDS
+        cases = {
+            "team ZZZZZ99999": self.profile(bid, needs, TeamIdentifier=["ZZZZZ99999"]),
+            "lists devices": self.profile(bid, needs, ProvisionsAllDevices=False),
+            "expired": self.profile(bid, needs, ExpirationDate=datetime(2026, 1, 1)),
+            "no wildcard": self.profile("*", needs),
+            "packet-tunnel-provider-systemextension": self.profile(bid, {macpack.SYSEXT_INSTALL: True}),
+            macpack.SYSEXT_INSTALL: self.profile(bid, {macpack.NETWORK_EXTENSION: [macpack.PACKET_TUNNEL]}),
+        }
+        for why, p in cases.items():
+            problem = macpack.profile_problem(p, self.TEAM, bid, needs, self.NOW)
+            self.assertIsNotNone(problem, why)
+            self.assertIn(why, problem)
+        # The extension's profile on the app is the wrong App ID.
+        p = self.profile(bid + ".DriftwireTunnel", needs)
+        self.assertIn("not 'ABCDE12345.com.example.MediaViewer'",
+                      macpack.profile_problem(p, self.TEAM, bid, needs, self.NOW))
+
+    def _app(self, root: Path) -> Path:
+        return DriftwireTunnelPackTests._assembled(None, root)
+
+    def test_a_release_with_the_extension_needs_both(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = self._app(root)
+            a, t = root / "app.provisionprofile", root / "tunnel.provisionprofile"
+            a.write_bytes(b"x")
+            t.write_bytes(b"x")
+            for team, ap, tp in ((self.TEAM, None, t), (self.TEAM, a, None), (None, a, t)):
+                with self.assertRaises(SystemExit):
+                    macpack.check_profiles(app, team, ap, tp, read=lambda p: {})
+            good = {a: self.profile("com.example.MediaViewer", macpack.APP_PROFILE_NEEDS),
+                    t: self.profile("com.example.MediaViewer.DriftwireTunnel", macpack.TUNNEL_PROFILE_NEEDS)}
+            macpack.check_profiles(app, self.TEAM, a, t, read=good.__getitem__)
+            swapped = {a: good[t], t: good[a]}
+            with self.assertRaises(SystemExit) as e:
+                macpack.check_profiles(app, self.TEAM, a, t, read=swapped.__getitem__)
+            self.assertIn("app.provisionprofile", str(e.exception))
+
+    def test_a_release_without_the_extension_takes_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = root / "MediaViewer.app"
+            (app / "Contents").mkdir(parents=True)
+            macpack.check_profiles(app, self.TEAM, None, None)
+            with self.assertRaises(SystemExit):
+                macpack.check_profiles(app, self.TEAM, root / "a.provisionprofile", None)
+
+    def test_embedded_and_signed_with_its_app_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = self._app(root)
+            sysext = macpack.tunnel_sysexts(app)[0]
+            a, t = root / "app.provisionprofile", root / "tunnel.provisionprofile"
+            a.write_bytes(b"app profile")
+            t.write_bytes(b"tunnel profile")
+            seen = {}
+
+            def fake_codesign(path, *args, **kw):
+                if path not in (app, sysext):
+                    return
+                with open(kw["entitlements"], "rb") as f:
+                    seen[path] = plistlib.load(f)
+                # Embedded before its bundle is signed (the signature seals it).
+                self.assertTrue((path / "Contents" / macpack.PROVISION_NAME).is_file())
+
+            with patch.object(macpack, "codesign", side_effect=fake_codesign), patch.object(macpack, "run"):
+                macpack.sign_app(app, "Developer ID Application: X", Path("QuickLook.entitlements"),
+                                 hardened=True, team_id=self.TEAM, app_profile=a, tunnel_profile=t)
+            self.assertEqual((app / "Contents" / macpack.PROVISION_NAME).read_bytes(), b"app profile")
+            self.assertEqual((sysext / "Contents" / macpack.PROVISION_NAME).read_bytes(), b"tunnel profile")
+            self.assertEqual(seen[app][macpack.APP_ID_KEY], f"{self.TEAM}.com.example.MediaViewer")
+            self.assertEqual(seen[sysext][macpack.APP_ID_KEY], f"{self.TEAM}.com.example.MediaViewer.DriftwireTunnel")
+            self.assertEqual(seen[sysext][macpack.NETWORK_EXTENSION], [macpack.PACKET_TUNNEL])
+            self.assertEqual(seen[app][macpack.TEAM_ID_KEY], self.TEAM)
 
 
 class CommandLineTests(unittest.TestCase):
