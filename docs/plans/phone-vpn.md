@@ -258,6 +258,11 @@ the measured ceiling** under the load in S1's verify.
   connections, and with the kill switch off `excludeAPNs` does not apply [Apple]. So push and
   other persistent connections may sit in the tunnel, each holding a forward, two threads and its
   buffers. S1's idle measurement runs with a normal set of apps signed in, not a clean phone.
+- **Status (2026-11-14):** the ticker fix and the knock key are built (PR #675, draft). Still
+  polling while idle: the pump reads the device with a 250 ms timeout (`vpn.cpp`
+  `runner::pump`), and each UDP flow's two threads wait 250 ms at a time. On iOS, `flow_device`
+  blocks on its ring without a timeout and is woken by stop, and UDP flows wait on their
+  condition variables until the flow's idle limit. S1 changes both before it measures.
 - **Measure:** S1 records CPU wakeups and energy in Instruments (Energy Log) with the tunnel on
   and the phone idle for 30 minutes, against the tunnel off. Gate: the difference is within run
   noise (runs alternated, as CLAUDE.md asks of every perf claim).
