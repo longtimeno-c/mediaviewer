@@ -13,6 +13,7 @@
 #include "catch_compat.h"
 
 #include <atomic>
+#include <functional>
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -255,12 +256,11 @@ TEST_CASE("host drives: the erase guards", "[host-drives]") {
   CHECK(contains(drives::refusal_of(ok, g), "may be its only copy"));
   CHECK(contains(drives::refusal_of(ok, g), "host unshare"));
   g.shared_paths.clear();
-  // An unmounted volume's paths are unknown: nothing to match (and the facts line says so).
+  // An unmounted volume cannot be looked into: refused until it is mounted (a shared
+  // folder's drive unmounted but attached would otherwise pass every check).
   d = ok;
   d.volumes[0].mount.clear();
-  g.shared_paths = {"/Volumes/Photos/2024"};
-  CHECK(drives::refusal_of(d, g).empty());
-  g.shared_paths.clear();
+  CHECK(drives::refusal_of(d, g) == "it has a volume that is not mounted (\"Photos\"), so what is on it cannot be checked: mount it first");
 
   // The test build: disk images made under its folder, nothing else.
   g.images_under = "/private/var/folders/x/mv_test";
@@ -424,6 +424,17 @@ TEST_CASE("host drives: plans against a stand-in list, and the typed names", "[h
   REQUIRE(p.refusals.size() == 1);
   CHECK(contains(p.refusals[0], "Samsung T7: it has no mounted volume"));
   CHECK(drives::confirmed(p, {}));
+  // Separate never shares the system's drive whole.
+  const std::vector<std::string> sys_sep = {"disk0"};
+  p = drives::make_plan(drives::choice::separate, "", sys_sep, ds, g, drives::os_kind::mac);
+  REQUIRE(p.refusals.size() == 1);
+  CHECK(contains(p.refusals[0], "this computer's system"));
+  // A name a combined drive already has.
+  drives::set_health have;
+  have.name = "Library";
+  const std::vector<drives::set_health> sets = {have};
+  CHECK(contains(drives::make_plan(drives::choice::mirror, "library", both, ds, g, drives::os_kind::mac, true, sets).error,
+                 "already a combined drive called \"Library\""));
   // Windows' list.
   const auto w = drives::parse_windows(parsed(kWindows));
   REQUIRE(w);
@@ -459,6 +470,17 @@ TEST_CASE("host drives: what each OS is asked to run", "[host-drives]") {
   CHECK(drives::mac_create_args(p).empty());
   CHECK(drives::mac_admin_script(args) ==
         "do shell script \"/usr/sbin/diskutil 'appleRAID' 'create' 'mirror' 'Photo Mirror' 'JHFS+' 'disk4' 'disk5'\" with administrator privileges");
+  // Inside the administrator prompt, before the step: each disk still the one confirmed.
+  drives::disk withparts = p.disks[0];
+  withparts.parts = {{"disk4s2", "8441E4D2"}};
+  const std::vector<drives::disk> checked = {withparts};
+  const std::string sh = drives::mac_checked_shell({args}, checked);
+  CHECK(contains(sh, "[ \"$(/usr/sbin/diskutil info -plist 'disk4' | /usr/bin/plutil -extract TotalSize raw -o - - 2>/dev/null)\" = '2000398934016' ]"));
+  CHECK(contains(sh, "-extract MediaName raw -o - - 2>/dev/null)\" = 'Samsung T7' ]"));
+  CHECK(contains(sh, "-extract Internal raw -o - - 2>/dev/null)\" = 'false' ]"));
+  CHECK(contains(sh, "info -plist 'disk4s2' | /usr/bin/plutil -extract DiskUUID raw -o - - 2>/dev/null)\" = '8441E4D2' ]"));
+  CHECK(sh.find("exit 3") < sh.find("'appleRAID' 'create'"));
+  CHECK(contains(drives::mac_admin_wrap(sh), "do shell script \"[ \\\"$(/usr/sbin/diskutil"));
   // A refused plan has no command at all.
   const std::vector<std::string> sys = {"disk0", "disk4"};
   CHECK(drives::mac_create_args(drives::make_plan(drives::choice::mirror, "X", sys, ds, g, drives::os_kind::mac)).empty());
@@ -470,9 +492,11 @@ TEST_CASE("host drives: what each OS is asked to run", "[host-drives]") {
   const std::vector<std::string> pair = {"2", "3"};
   auto wp = drives::make_plan(drives::choice::mirror, "Photos", pair, w->disks, wg, drives::os_kind::windows);
   std::string s = drives::windows_create_script(wp);
-  CHECK(contains(s, "if ($d.UniqueId -ne 'U2') { throw"));
-  CHECK(contains(s, "if ($d.UniqueId -ne 'U3') { throw"));
-  CHECK(contains(s, "if ($d.IsSystem -or $d.IsBoot) { throw"));
+  CHECK(contains(s, "if (-not $d -or $d.UniqueId -ne 'U2') { exit 2 }"));
+  CHECK(contains(s, "if (-not $d -or $d.UniqueId -ne 'U3') { exit 2 }"));
+  CHECK(contains(s, "if ($d.IsSystem -or $d.IsBoot) { exit 3 }"));
+  CHECK(contains(s, "Update-HostStorageCache"));
+  CHECK(contains(s, "$global:mvMount = [string]$part.DriveLetter"));
   // Every check comes before the first Clear-Disk.
   CHECK(s.rfind("UniqueId -ne") < s.find("Clear-Disk"));
   CHECK(contains(s, "-ResiliencySettingName Mirror -NumberOfDataCopies 2"));
@@ -588,6 +612,8 @@ struct fake_state {
   std::vector<std::string> replaced;
   std::vector<std::string> notes;
   std::string mount;  // what create answers
+  int lists = 0;
+  std::function<void(fake_state&, int)> on_list;  // the n-th listing (from 1) may change the disks
 };
 
 class fake_port final : public drives::port {
@@ -595,6 +621,8 @@ class fake_port final : public drives::port {
   explicit fake_port(fake_state& s) : s_(s) {}
   drives::listing list() override {
     std::lock_guard g(s_.m);
+    ++s_.lists;
+    if (s_.on_list) s_.on_list(s_, s_.lists);
     auto l = s_.l;
     drives::unique_names(l.disks);
     return l;
@@ -682,6 +710,28 @@ TEST_CASE("host drives: combining through the command, against a stand-in port",
   CHECK(run_drives(data, {"combine", "stripe", "disk0", "disk12"}, st, {}, out, "Photos") == 1);
   CHECK(contains(out, "this computer's system"));
   CHECK(st.created.empty());
+  // A drive renumbered or swapped while the names were typed: listed again, refused.
+  out.clear();
+  st.lists = 0;
+  st.on_list = [](fake_state& f, int n) {
+    if (n == 2) f.l.disks[1].identity = "another drive now";
+  };
+  CHECK(run_drives(data, {"combine", "mirror", "disk12", "disk13"}, st, {"Disk Image (disk12)", "Disk Image (disk13)"}, out, "Photos") == 1);
+  CHECK(contains(out, "changed since it was confirmed; nothing was erased"));
+  CHECK(st.created.empty());
+  st.on_list = nullptr;
+  st.l.disks[1].identity = "id-disk13";
+  // A catalogue that appeared on one meanwhile.
+  out.clear();
+  st.lists = 0;
+  st.on_list = [&](fake_state& f, int n) {
+    if (n == 2) f.l.disks[0].volumes = {{utf8(dir / "late"), "Late", 1, 1, 0, true}};
+  };
+  CHECK(run_drives(data, {"combine", "mirror", "disk12", "disk13"}, st, {"Disk Image (disk12)", "Disk Image (disk13)"}, out, "Photos") == 1);
+  CHECK(contains(out, "MediaViewer catalogue"));
+  CHECK(st.created.empty());
+  st.on_list = nullptr;
+  st.l.disks[0].volumes.clear();
   // No --label.
   out.clear();
   CHECK(run_drives(data, {"combine", "mirror", "disk12", "disk13"}, st, {}, out) == 2);
@@ -801,8 +851,55 @@ TEST_CASE("host drives: the keeper watches the sets and tells the phone", "[host
     std::lock_guard g(wm);
     return words.back().empty();
   }));
+  // The tools fail for a while: what was known stands, and nothing is said again.
+  {
+    std::lock_guard g(st.m);
+    st.l.error = "diskutil could not list the RAID sets";
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  CHECK(k->status_line() == "drives      Photos (mirror): healthy");
+  {
+    std::lock_guard g(st.m);
+    CHECK(st.notes.size() == 1);
+    st.l.error.clear();
+    st.l.sets.clear();  // every drive of it unplugged: gone from the OS's list
+  }
+  CHECK(until([&] { return contains(k->status_line(), "Photos (mirror): offline"); }));
+  CHECK(until([&] {
+    std::lock_guard g(wm);
+    return words.back() == "offline";
+  }));
   k->stop();
 }
+
+#if defined(_WIN32)
+// The scripts have only been read, never run, on a real PC: at least PowerShell parses each one.
+TEST_CASE("host drives: PowerShell parses every script", "[host-drives]") {
+  scratch_dir dir("host_drives_ps");
+  const auto w = drives::parse_windows(parsed(kWindows));
+  REQUIRE(w);
+  drives::guard wg;
+  wg.os = drives::os_kind::windows;
+  std::vector<std::string> scripts;
+  for (const auto c : {drives::choice::mirror, drives::choice::span, drives::choice::stripe}) {
+    const std::vector<std::string> pair = {"2", "3"};
+    scripts.push_back(drives::windows_create_script(drives::make_plan(c, "Photos", pair, w->disks, wg, drives::os_kind::windows)));
+  }
+  scripts.push_back(drives::windows_replace_script(w->sets[0], w->disks[2]));
+  for (std::size_t i = 0; i < scripts.size(); ++i) {
+    REQUIRE(!scripts[i].empty());
+    const fs::path f = dir / ("s" + std::to_string(i) + ".ps1");
+    write_text(f, scripts[i]);
+    int code = 0;
+    const std::string cmd = "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile('" + utf8(f) +
+                            "', [ref]$null, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }";
+    const auto out = drives::run_tool("powershell.exe", std::vector<std::string>{"-NoProfile", "-NonInteractive", "-Command", cmd}, code);
+    REQUIRE(out);
+    INFO(*out);
+    CHECK(code == 0);
+  }
+}
+#endif
 
 #if defined(__APPLE__)
 // By hand: mv_tests "[.host-drives-image]". Two hdiutil images made for it, combined into a real

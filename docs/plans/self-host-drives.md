@@ -74,9 +74,16 @@ CoreFoundation, and are turned into `drives::disk` by pure parsers that every OS
 4. **An administrator, once, in the OS's own prompt.** `host drives combine` runs as the person; only
    the OS tool itself is elevated: on the Mac `osascript … with administrator privileges` (the
    password sheet), on Windows `ShellExecuteEx "runas"` of PowerShell (UAC). The running host never
-   asks for it and still refuses to run elevated. On Windows the elevated script checks each disk's
-   `UniqueId` and `IsSystem`/`IsBoot` again before `Clear-Disk`; on the Mac each disk's facts are read
-   again just before the prompt and must match what the person confirmed.
+   asks for it and still refuses to run elevated. After the names are typed every drive is listed
+   again and must be the one confirmed and still pass every guard. Then, inside the elevated step
+   itself: on Windows the script checks each disk's `UniqueId` and `IsSystem`/`IsBoot` before
+   `Clear-Disk`; on the Mac the one shell line under the password prompt compares each disk's size,
+   model, internal flag and partitions' `DiskUUID`s before `appleRAID create` (a renumbered `diskN`
+   stops there). The elevated Windows run never runs a file another process could change: a short
+   bootstrap on its command line reads the script into memory, checks its SHA-256, and runs those
+   bytes; it writes no file and reports through its exit code.
+   - A drive with a volume that is not mounted is refused (what is on it cannot be checked), and
+     Separate refuses the system's drive. A label a combined drive already has is refused.
 5. **Tests touch disk images made for them only.** The test build (`MV_DRIFTWIRE_CLI_TEST_HOOKS`, and
    `drives::guard::images_under`) refuses any disk that is not a disk image whose file is under the
    test's own folder: `hdiutil` images on the Mac (`hdiutil info` maps each `/dev/diskN` to its

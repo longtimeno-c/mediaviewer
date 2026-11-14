@@ -251,7 +251,12 @@ std::string refusal_of(const disk& d, const guard& g) {
   if (d.read_only) return "it is read-only";
   if (!d.online) return "Windows has it offline";
   for (const auto& v : d.volumes) {
-    if (v.mount.empty()) continue;
+    if (v.mount.empty()) {
+      // What is on it cannot be looked at: a shared folder's drive unplugged from its
+      // mount but still attached would pass every check below.
+      return "it has a volume that is not mounted" + (v.label.empty() ? std::string() : " (\"" + v.label + "\")") +
+             ", so what is on it cannot be checked: mount it first";
+    }
     if (v.has_catalogue) return "it holds a MediaViewer catalogue (a .mediaviewer folder)";
     for (const auto& p : g.protected_paths) {
       if (path_within(p, v.mount, g.os)) return "it holds MediaViewer's library or data";
@@ -278,7 +283,7 @@ bool good_label(std::string_view label) noexcept {
 }
 
 plan make_plan(choice c, std::string_view label, std::span<const std::string> ids, std::span<const disk> all,
-               const guard& g, os_kind os, bool pool_ok) {
+               const guard& g, os_kind os, bool pool_ok, std::span<const set_health> sets) {
   plan p;
   p.c = c;
   p.label = std::string(label);
@@ -306,13 +311,23 @@ plan make_plan(choice c, std::string_view label, std::span<const std::string> id
   if (c == choice::separate) {
     for (const auto& d : p.disks) {
       const bool any = std::any_of(d.volumes.begin(), d.volumes.end(), [](const volume_facts& v) { return !v.mount.empty(); });
-      if (!any) p.refusals.push_back(d.name + ": it has no mounted volume to share");
+      if (d.system) {
+        p.refusals.push_back(d.name + ": it holds this computer's system (share a folder on it with host share instead)");
+      } else if (!any) {
+        p.refusals.push_back(d.name + ": it has no mounted volume to share");
+      }
     }
-    return p;  // nothing is erased: the erase guards do not apply
+    return p;  // nothing is erased: the other erase guards do not apply
   }
   if (!good_label(label)) {
     p.error = "the combined drive's name (--label) is 1 to 27 letters, digits, spaces, '-' or '_'";
     return p;
+  }
+  for (const auto& s : sets) {
+    if (folded(s.name, os_kind::mac) == folded(label, os_kind::mac)) {
+      p.error = "there is already a combined drive called \"" + s.name + "\": give this one another name";
+      return p;
+    }
   }
   for (const auto& d : p.disks) {
     if (const std::string why = refusal_of(d, g); !why.empty()) p.refusals.push_back(d.name + ": " + why);
@@ -497,6 +512,7 @@ std::optional<disk> parse_mac_disk(const json::value& info, const json::value& a
     if (!str_of(*e, "MountPoint").empty() || !str_of(*e, "VolumeName").empty()) add_mac_volume(d, *e);  // a volume with no partition map
     for (const json::value* p : items(e->find("Partitions"))) {
       parts.push_back(str_of(*p, "DeviceIdentifier"));
+      d.parts.emplace_back(parts.back(), str_of(*p, "DiskUUID"));
       add_mac_volume(d, *p);
     }
   }
@@ -522,6 +538,7 @@ std::optional<disk> parse_mac_disk(const json::value& info, const json::value& a
       d.volumes.push_back(std::move(f));
     }
   }
+  for (const auto& [id, uuid] : d.parts) d.identity += "|" + id + "=" + uuid;
   return d;
 }
 
@@ -541,7 +558,7 @@ std::vector<set_health> parse_mac_raid(const json::value& list) {
       x.id = str_of(*m, "BSD Name");
       x.uuid = str_of(*m, "AppleRAIDMemberUUID");
       x.status = str_of(*m, "MemberStatus");
-      x.rebuilding = starts_with(x.status, "Rebuilding");
+      x.rebuilding = has(x.status, "Rebuilding");
       x.percent = x.rebuilding ? percent_in(x.status) : -1;
       x.missing = x.id.empty() || x.status.empty() || x.status == "Failed" || x.status == "Offline" ||
                   starts_with(x.status, "Missing");
@@ -562,6 +579,7 @@ std::vector<set_health> parse_mac_raid(const json::value& list) {
       s.state = health::healthy;
     }
     if (s.state == health::offline && s.kind == choice::mirror && online >= 1) s.state = health::degraded;  // one half still there
+    s.bsd = str_of(*e, "BSD Name");
     s.mount = str_of(*e, "MountPoint");  // the port fills it from the set's BSD Name
     out.push_back(std::move(s));
   }
@@ -685,15 +703,41 @@ std::string sh_quote(std::string_view s) {
 }
 }  // namespace
 
-std::string mac_admin_script(std::span<const std::string> diskutil_args) {
+namespace {
+std::string diskutil_line(std::span<const std::string> args) {
   std::string cmd = "/usr/sbin/diskutil";
-  for (const auto& a : diskutil_args) cmd += " " + sh_quote(a);
+  for (const auto& a : args) cmd += " " + sh_quote(a);
+  return cmd;
+}
+}  // namespace
+
+std::string mac_admin_wrap(std::string_view shell) {
   std::string esc;
-  for (const char c : cmd) {
+  for (const char c : shell) {
     if (c == '\\' || c == '"') esc += '\\';
     esc += c;
   }
   return "do shell script \"" + esc + "\" with administrator privileges";
+}
+
+std::string mac_admin_script(std::span<const std::string> diskutil_args) { return mac_admin_wrap(diskutil_line(diskutil_args)); }
+
+std::string mac_checked_shell(const std::vector<std::vector<std::string>>& steps, std::span<const disk> disks) {
+  std::string out;
+  const std::string changed = " || { echo 'A drive changed since it was confirmed; nothing was erased.' >&2; exit 3; }";
+  const auto key = [](const std::string& dev, const char* k) {
+    return "\"$(/usr/sbin/diskutil info -plist " + sh_quote(dev) + " | /usr/bin/plutil -extract " + k + " raw -o - - 2>/dev/null)\"";
+  };
+  for (const auto& d : disks) {
+    out += "[ " + key(d.id, "TotalSize") + " = " + sh_quote(std::to_string(d.size)) + " ]" + changed + "; ";
+    out += "[ " + key(d.id, "MediaName") + " = " + sh_quote(d.model) + " ]" + changed + "; ";
+    out += "[ " + key(d.id, "Internal") + " = " + sh_quote(d.internal ? "true" : "false") + " ]" + changed + "; ";
+    for (const auto& [id, uuid] : d.parts) {
+      if (!uuid.empty()) out += "[ " + key(id, "DiskUUID") + " = " + sh_quote(uuid) + " ]" + changed + "; ";
+    }
+  }
+  for (std::size_t i = 0; i < steps.size(); ++i) out += (i ? " && " : "") + diskutil_line(steps[i]);
+  return out;
 }
 
 std::string ps_quote(std::string_view s) {
@@ -708,9 +752,9 @@ std::string ps_quote(std::string_view s) {
 namespace {
 // Each disk checked again in the elevated script, by its UniqueId and its system flags.
 std::string ps_check(const disk& d) {
-  return "$d = Get-Disk -Number " + d.id + "\n"
-         "if ($d.UniqueId -ne " + ps_quote(d.identity) + ") { throw 'A drive changed since it was confirmed. Nothing was erased.' }\n"
-         "if ($d.IsSystem -or $d.IsBoot) { throw 'That drive holds this computer''s system. Nothing was erased.' }\n";
+  return "$d = Get-Disk -Number " + d.id + " -ErrorAction SilentlyContinue\n"
+         "if (-not $d -or $d.UniqueId -ne " + ps_quote(d.identity) + ") { exit 2 }  # changed since it was confirmed\n"
+         "if ($d.IsSystem -or $d.IsBoot) { exit 3 }  # this computer's system\n";
 }
 std::string ps_clear(const disk& d) {
   return "$d = Get-Disk -Number " + d.id + "\n"
@@ -728,8 +772,9 @@ std::string windows_create_script(const plan& p) {
   std::string ids;
   for (const auto& d : p.disks) ids += (ids.empty() ? "" : ",") + ps_quote(d.id);
   const std::string n = std::to_string(p.disks.size());
+  s += "Update-HostStorageCache\n";
   s += "$pds = @(Get-PhysicalDisk -CanPool $true | Where-Object { @(" + ids + ") -contains $_.DeviceId })\n"
-       "if ($pds.Count -ne " + n + ") { throw 'Windows cannot pool these drives (Storage Spaces says they are not ready).' }\n"
+       "if ($pds.Count -ne " + n + ") { exit 4 }  # Windows cannot pool them\n"
        "$ss = Get-StorageSubSystem | Where-Object { $_.FriendlyName -like 'Windows Storage*' } | Select-Object -First 1\n"
        "$pool = New-StoragePool -FriendlyName " + ps_quote("MediaViewer " + p.label) +
        " -StorageSubSystemUniqueId $ss.UniqueId -PhysicalDisks $pds\n";
@@ -747,7 +792,8 @@ std::string windows_create_script(const plan& p) {
        "Initialize-Disk -Number $disk.Number -PartitionStyle GPT\n"
        "$part = New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter\n"
        "Format-Volume -Partition $part -FileSystem NTFS -NewFileSystemLabel " + ps_quote(p.label) + " -Confirm:$false | Out-Null\n"
-       "'MOUNT ' + $part.DriveLetter + ':\\'\n";
+       "$part = Get-Partition -DiskNumber $disk.Number -PartitionNumber $part.PartitionNumber\n"  // its letter, read again
+       "$global:mvMount = [string]$part.DriveLetter\n";
   return s;
 }
 
@@ -763,11 +809,11 @@ std::vector<std::vector<std::string>> mac_replace_steps(const set_health& s, con
 
 std::string windows_replace_script(const set_health& s, const disk& fresh) {
   if ((s.kind != choice::mirror && s.kind != choice::parity) || s.id.empty()) return {};
-  std::string r = "$ErrorActionPreference = 'Stop'\n" + ps_check(fresh) + ps_clear(fresh);
+  std::string r = "$ErrorActionPreference = 'Stop'\n" + ps_check(fresh) + ps_clear(fresh) + "Update-HostStorageCache\n";
   r += "$vd = Get-VirtualDisk -UniqueId " + ps_quote(s.id) + "\n"
        "$pool = $vd | Get-StoragePool\n"
        "$pd = @(Get-PhysicalDisk -CanPool $true | Where-Object { $_.DeviceId -eq " + ps_quote(fresh.id) + " })\n"
-       "if ($pd.Count -ne 1) { throw 'Windows cannot add that drive to the pool.' }\n"
+       "if ($pd.Count -ne 1) { exit 4 }  # Windows cannot add it to the pool\n"
        "Add-PhysicalDisk -StoragePoolUniqueId $pool.UniqueId -PhysicalDisks $pd\n";
   for (const auto& m : s.members) {
     if (m.missing && !m.uuid.empty()) {

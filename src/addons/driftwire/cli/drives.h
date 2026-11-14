@@ -98,6 +98,9 @@ struct disk {
   std::string image_path; // the image's file, for the test guard ("" for a real disk)
   std::string smart;      // "verified", "failing", "" when the OS does not say
   std::vector<volume_facts> volumes;
+  // The Mac: each partition's id and DiskUUID, checked again inside the
+  // administrator prompt (a renumbered diskN is caught there, not only before it).
+  std::vector<std::pair<std::string, std::string>> parts;
 };
 
 // The names people type, one per disk and none the same: a volume's label,
@@ -140,8 +143,11 @@ struct plan {
 // starting with a space (AppleRAID's and NTFS's labels both take it, and it
 // passes through a shell and PowerShell untouched).
 [[nodiscard]] bool good_label(std::string_view label) noexcept;
+// `sets`: the combined drives there are already (a label one of them has is refused).
+struct set_health;
 [[nodiscard]] plan make_plan(choice c, std::string_view label, std::span<const std::string> ids,
-                             std::span<const disk> all, const guard& g, os_kind os, bool pool_ok = true);
+                             std::span<const disk> all, const guard& g, os_kind os, bool pool_ok = true,
+                             std::span<const set_health> sets = {});
 // The names typed, in the plan's order: each exactly its disk's name (spaces
 // at the ends dropped). Separate needs none.
 [[nodiscard]] bool confirmed(const plan& p, std::span<const std::string> typed);
@@ -169,6 +175,7 @@ struct set_health {
   health state = health::healthy;
   int percent = -1;      // rebuild progress (-1: unknown)
   std::string mount;     // its volume's mount point ("" when not mounted)
+  std::string bsd;       // the Mac: the set's own disk ("disk14"; "" while offline)
   std::uint64_t size = 0;
   std::vector<member> members;
 };
@@ -207,6 +214,12 @@ struct windows_listing {
 [[nodiscard]] std::vector<std::string> mac_create_args(const plan& p);
 // The `do shell script` text osascript runs with administrator privileges.
 [[nodiscard]] std::string mac_admin_script(std::span<const std::string> diskutil_args);
+// The shell line run in one administrator prompt: first, for every disk, its
+// size, model, internal flag and partitions' DiskUUIDs compared with what was
+// confirmed (exit 3, nothing erased, on any difference), then each step.
+[[nodiscard]] std::string mac_checked_shell(const std::vector<std::vector<std::string>>& steps, std::span<const disk> disks);
+// That line as AppleScript: do shell script "…" with administrator privileges.
+[[nodiscard]] std::string mac_admin_wrap(std::string_view shell);
 // Windows: the PowerShell script that combines the plan's disks, checking each
 // one's UniqueId and IsSystem/IsBoot first. Empty for Separate.
 [[nodiscard]] std::string windows_create_script(const plan& p);

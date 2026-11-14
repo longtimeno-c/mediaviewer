@@ -196,7 +196,6 @@ drives::listing listed(drives::port& p) {
     for (auto& v : d.volumes) {
       if (!v.mount.empty()) v.mount = canonical_or(v.mount);
     }
-    if (!d.image_path.empty()) d.image_path = canonical_or(d.image_path);
   }
   return l;
 }
@@ -209,6 +208,19 @@ struct ctx {
   std::unique_ptr<drives::port> port;
   drives::guard g;
 };
+
+// After the names are typed (which may take a while): every drive listed again, still the one
+// confirmed, and still passing every guard (a shared folder or a catalogue may have appeared).
+std::string still_ok(ctx& c, std::span<const drives::disk> confirmed) {
+  const drives::listing now = listed(*c.port);
+  if (!now.error.empty()) return now.error;
+  for (const auto& d : confirmed) {
+    const auto it = std::find_if(now.disks.begin(), now.disks.end(), [&](const drives::disk& x) { return x.id == d.id; });
+    if (it == now.disks.end() || !drives::same_disk(d, *it)) return d.name + " changed since it was confirmed";
+    if (const std::string why = drives::refusal_of(*it, c.g); !why.empty()) return d.name + ": " + why;
+  }
+  return {};
+}
 
 int list_cmd(ctx& c) {
   const drives::listing l = listed(*c.port);
@@ -286,7 +298,7 @@ int combine_cmd(ctx& c, const drives_words& w) {
   const drives::listing l = listed(*c.port);
   if (!l.error.empty()) return fail(l.error + ".", 1);
   const std::string label = w.c == drives::choice::separate ? std::string() : c.a.label;
-  const drives::plan p = drives::make_plan(w.c, label, w.ids, l.disks, c.g, drives::this_os(), l.pool_ok);
+  const drives::plan p = drives::make_plan(w.c, label, w.ids, l.disks, c.g, drives::this_os(), l.pool_ok, l.sets);
   if (!p.error.empty()) return fail(p.error + ".", 2);
   std::string out;
   for (const auto& d : p.disks) out += "  " + drives::facts_line(d) + "\n";
@@ -315,6 +327,7 @@ int combine_cmd(ctx& c, const drives_words& w) {
   print(out);
   std::vector<std::string> typed;
   if (!ask_names(c, p, typed)) return fail("a name did not match; nothing was erased.", 1);
+  if (const std::string why = still_ok(c, p.disks); !why.empty()) return fail(why + "; nothing was erased.", 1);
   print(c.run.elevate ? "Asking for an administrator (the system's own prompt)...\n" : "Combining...\n");
   const drives::run_result r = c.port->create(p, c.run.elevate);
   if (!r.ok) return fail(r.why + ".", 1);
@@ -359,6 +372,7 @@ int replace_cmd(ctx& c, const drives_words& w) {
   p.disks = {d};
   std::vector<std::string> typed;
   if (!ask_names(c, p, typed)) return fail("the name did not match; nothing was erased.", 1);
+  if (const std::string why = still_ok(c, p.disks); !why.empty()) return fail(why + "; nothing was erased.", 1);
   print(c.run.elevate ? "Asking for an administrator (the system's own prompt)...\n" : "Replacing...\n");
   const drives::run_result r = c.port->replace(*s, d, c.run.elevate);
   if (!r.ok) return fail(r.why + ".", 1);
@@ -437,7 +451,23 @@ class drives_keeper final : public host_keeper {
     std::unique_lock lock(m_);
     while (!stopping_) {
       lock.unlock();
-      const drives::listing l = port->sets_only();
+      drives::listing l = port->sets_only();
+      if (!l.error.empty()) {
+        // The tools could not be asked this time: what was known stands, and nothing is said twice.
+        lock.lock();
+        cv_.wait_for(lock, std::chrono::milliseconds(c_.every_ms), [this] { return stopping_; });
+        continue;
+      }
+      // A set that was there and is gone from the OS's list (every drive of it unplugged) is offline, not healthy.
+      for (const auto& [id, known] : known_) {
+        const bool listed = std::any_of(l.sets.begin(), l.sets.end(), [&](const drives::set_health& s) { return s.id == id; });
+        if (!listed) {
+          drives::set_health gone = known;
+          gone.state = drives::health::offline;
+          gone.members.clear();
+          l.sets.push_back(std::move(gone));
+        }
+      }
       std::vector<std::string> notes;
       for (const auto& s : l.sets) {
         const auto before = last_.find(s.id);
@@ -447,15 +477,16 @@ class drives_keeper final : public host_keeper {
       for (const auto& n : notes) port->notify("MediaViewer", n);
       lock.lock();
       last_.clear();
-      for (const auto& s : l.sets) last_[s.id] = s.state;
-      if (l.error.empty()) {
-        line_ = drives_status_line(l.sets);
-        count_ = l.sets.size();
-        worst_ = drives::worst(l.sets);
-        const std::string word = count_ == 0 || worst_ == drives::health::healthy ? std::string() : drives::health_word(worst_);
-        if (word != storage_ && ctx_.storage_changed) ctx_.storage_changed(word);
-        storage_ = word;
+      for (const auto& s : l.sets) {
+        last_[s.id] = s.state;
+        known_[s.id] = s;
       }
+      line_ = drives_status_line(l.sets);
+      count_ = l.sets.size();
+      worst_ = drives::worst(l.sets);
+      const std::string word = count_ == 0 || worst_ == drives::health::healthy ? std::string() : drives::health_word(worst_);
+      if (word != storage_ && ctx_.storage_changed) ctx_.storage_changed(word);
+      storage_ = word;
       cv_.wait_for(lock, std::chrono::milliseconds(c_.every_ms), [this] { return stopping_; });
     }
   }
@@ -470,6 +501,7 @@ class drives_keeper final : public host_keeper {
   std::size_t count_ = 0;
   drives::health worst_ = drives::health::healthy;
   std::map<std::string, drives::health> last_;
+  std::map<std::string, drives::set_health> known_;  // every set seen while the host runs (one deleted on purpose stays offline until a restart)
 };
 
 }  // namespace

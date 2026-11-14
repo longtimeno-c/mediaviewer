@@ -125,36 +125,28 @@ std::string last_line(const std::string& out) {
   return nl == std::string::npos ? s : s.substr(nl + 1);
 }
 
-// One tool run, or several joined in one administrator prompt.
-run_result run_steps(const std::vector<std::vector<std::string>>& steps, bool elevate) {
+// The steps in one shell line that first checks every disk is still the one
+// confirmed (drives::mac_checked_shell): through the administrator prompt, or
+// for the test build's own images straight through /bin/sh.
+run_result run_steps(const std::vector<std::vector<std::string>>& steps, std::span<const disk> disks, bool elevate) {
   run_result r;
   if (steps.empty()) {
     r.why = "nothing to do";
     return r;
   }
+  const std::string shell = mac_checked_shell(steps, disks);
   int code = 0;
-  std::optional<std::string> out;
-  if (elevate) {
-    std::string script;
-    for (const auto& s : steps) {
-      std::string one = mac_admin_script(s);
-      // "do shell script \"A\" with administrator privileges": joined as A && B in one prompt.
-      const std::string head = "do shell script \"", tail = "\" with administrator privileges";
-      one = one.substr(head.size(), one.size() - head.size() - tail.size());
-      script += (script.empty() ? "" : " && ") + one;
-    }
-    out = run_tool(kOsascript, std::vector<std::string>{"-e", "do shell script \"" + script + "\" with administrator privileges"}, code);
-  } else {
-    for (const auto& s : steps) {
-      out = run_tool(kDiskutil, s, code);
-      if (!out || code != 0) break;
-    }
-  }
+  const std::optional<std::string> out =
+      elevate ? run_tool(kOsascript, std::vector<std::string>{"-e", mac_admin_wrap(shell)}, code)
+              : run_tool("/bin/sh", std::vector<std::string>{"-c", shell}, code);
   if (!out) {
     r.why = "diskutil could not be started";
   } else if (code != 0) {
     r.why = last_line(*out);
-    if (r.why.find("-128") != std::string::npos || r.why.find("canceled") != std::string::npos) r.why = "the administrator prompt was cancelled; nothing was erased";
+    if (r.why.find("-128") != std::string::npos || r.why.find("canceled") != std::string::npos ||
+        r.why.find("cancelled") != std::string::npos) {
+      r.why = "the administrator prompt was cancelled; nothing was erased";
+    }
     if (r.why.empty()) r.why = "diskutil failed";
   } else {
     r.ok = true;
@@ -228,7 +220,7 @@ class mac_port final : public port {
         return r;
       }
     }
-    r = run_steps({args}, elevate);
+    r = run_steps({args}, p.disks, elevate);
     if (!r.ok) return r;
     r.mount = set_mount(p.label);
     return r;
@@ -247,7 +239,8 @@ class mac_port final : public port {
       r.why = "the new drive changed since it was confirmed; nothing was erased";
       return r;
     }
-    r = run_steps(steps, elevate);
+    const std::vector<disk> one = {fresh};
+    r = run_steps(steps, one, elevate);
     if (r.ok) r.mount = set_mount(s.name);
     return r;
   }
@@ -273,11 +266,7 @@ class mac_port final : public port {
       return {};
     }
     auto sets = parse_mac_raid(*raid);
-    const json::value* raw = raid->find("AppleRAIDSets");
-    for (std::size_t i = 0; raw && raw->k == json::kind::array && i < raw->a.size() && i < sets.size(); ++i) {
-      const std::string* bsd = raw->a[i].str("BSD Name");
-      if (bsd) sets[i].mount = mount_of(*bsd);
-    }
+    for (auto& s : sets) s.mount = mount_of(s.bsd);
     return sets;
   }
 

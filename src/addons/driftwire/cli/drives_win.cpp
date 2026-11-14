@@ -14,6 +14,8 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <sodium.h>
+
 #include <cstdio>
 #include <fstream>
 #include <random>
@@ -62,17 +64,11 @@ bool write_file(const std::string& path, const std::string& text) {
   return static_cast<bool>(f);
 }
 
-std::string read_file(const std::string& path) {
-  std::ifstream f(wide(path), std::ios::binary);
-  std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  if (s.rfind("\xEF\xBB\xBF", 0) == 0) s.erase(0, 3);
-  return s;
-}
-
 void remove_file(const std::string& path) { ::DeleteFileW(wide(path).c_str()); }
 
 constexpr const char* kSetsScript = R"PS(
 $setsOf = {
+$ErrorActionPreference = 'SilentlyContinue'  # a detached space has no disk or partition: still listed, never an error
 @(Get-VirtualDisk | ForEach-Object {
   $vd = $_
   $members = @($vd | Get-PhysicalDisk | ForEach-Object {
@@ -139,16 +135,59 @@ struct script_run {
   std::string out;
 };
 
+// The script's text around a body: errors and refusals end it with a code (exit_words).
+std::string wrapped(const std::string& body) {
+  return "$ErrorActionPreference = 'Stop'\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$global:mvMount = ''\n"
+         "try {\n& {\n" + body + "\n}\n} catch {\n$_.Exception.Message\nexit 5\n}\n"
+         "if ($global:mvMount) { 'MOUNT ' + $global:mvMount + ':\\'; exit [int][char]$global:mvMount }\nexit 0\n";
+}
+
+std::string base64(const std::string& bytes) {
+  static constexpr char k[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  std::size_t i = 0;
+  for (; i + 2 < bytes.size(); i += 3) {
+    const unsigned v = (static_cast<unsigned char>(bytes[i]) << 16) | (static_cast<unsigned char>(bytes[i + 1]) << 8) |
+                       static_cast<unsigned char>(bytes[i + 2]);
+    out += {k[(v >> 18) & 63], k[(v >> 12) & 63], k[(v >> 6) & 63], k[v & 63]};
+  }
+  if (i + 1 == bytes.size()) {
+    const unsigned v = static_cast<unsigned char>(bytes[i]) << 16;
+    out += {k[(v >> 18) & 63], k[(v >> 12) & 63], '=', '='};
+  } else if (i + 2 == bytes.size()) {
+    const unsigned v = (static_cast<unsigned char>(bytes[i]) << 16) | (static_cast<unsigned char>(bytes[i + 1]) << 8);
+    out += {k[(v >> 18) & 63], k[(v >> 12) & 63], k[(v >> 6) & 63], '='};
+  }
+  return out;
+}
+
+// Runs a script, elevated through UAC or not. The elevated run never runs a file
+// another process could change under it: a short bootstrap (on its command line,
+// -EncodedCommand) reads the script into memory once, checks its SHA-256 against
+// the one given, and runs those bytes. It writes no file (an elevated write into
+// the person's %TEMP% could be redirected): what it did is its exit code.
 script_run run_script(const std::string& body, bool elevate) {
   script_run r;
-  const std::string ps1 = temp_file(".ps1"), result = temp_file(".txt");
-  const std::string script = "$ErrorActionPreference = 'Stop'\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\n"
-                             "try {\n  & {\n" + body + "\n  } | Out-File -LiteralPath " + ps_quote(result) +
-                             " -Encoding utf8\n  exit 0\n} catch {\n  $_.Exception.Message | Out-File -LiteralPath " +
-                             ps_quote(result) + " -Encoding utf8\n  exit 1\n}\n";
-  if (!write_file(ps1, script)) return r;
-  const std::wstring params = L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + wide(ps1) + L"\"";
+  const std::string ps1 = temp_file(".ps1");
+  const std::string text = wrapped(body);
+  if (!write_file(ps1, text)) return r;
   if (elevate) {
+    const std::string bytes = "\xEF\xBB\xBF" + text;  // as write_file wrote it
+    std::uint8_t digest[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(digest, reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
+    char hex[2 * crypto_hash_sha256_BYTES + 1] = {};
+    for (std::size_t i = 0; i < sizeof digest; ++i) std::snprintf(hex + 2 * i, 3, "%02X", digest[i]);
+    const std::string boot =
+        "$b = [IO.File]::ReadAllBytes(" + ps_quote(ps1) + "); "
+        "$h = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($b) | ForEach-Object { $_.ToString('X2') }); "
+        "if ($h -ne '" + std::string(hex) + "') { exit 6 }; "
+        "& ([scriptblock]::Create([Text.Encoding]::UTF8.GetString($b, 3, $b.Length - 3)))";
+    std::string utf16;
+    for (const char c : boot) {
+      utf16 += c;
+      utf16 += '\0';
+    }
+    const std::wstring params = L"-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + wide(base64(utf16));
     const std::wstring exe = wide(powershell());
     SHELLEXECUTEINFOW sei{};
     sei.cbSize = sizeof sei;
@@ -168,21 +207,30 @@ script_run run_script(const std::string& body, bool elevate) {
       r.started = true;
       r.code = 1;
       r.out = "the administrator prompt was cancelled; nothing was erased";
-      remove_file(ps1);
-      return r;
     }
   } else {
     int code = 0;
     const std::vector<std::string> args = {"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1};
-    if (run_tool(powershell(), args, code)) {
+    if (auto out = run_tool(powershell(), args, code)) {
       r.started = true;
       r.code = code;
+      r.out = std::move(*out);
     }
   }
-  r.out = read_file(result);
   remove_file(ps1);
-  remove_file(result);
   return r;
+}
+
+// An exit code's meaning (the scripts' `exit N`, drives.cpp).
+std::string exit_words(int code, const std::string& said) {
+  switch (code) {
+    case 2: return "a drive changed since it was confirmed; nothing was erased";
+    case 3: return "that drive holds this computer's system; nothing was erased";
+    case 4: return "Windows cannot pool these drives (Storage Spaces says they are not ready)";
+    case 6: return "the script changed before it ran; nothing was erased";
+    default: break;
+  }
+  return said.empty() ? std::string("Storage Spaces failed") : said;
 }
 
 std::string first_line(std::string s) {
@@ -237,12 +285,11 @@ class win_port final : public port {
     const script_run r = run_script(body, elevate);
     if (!r.started) {
       res.why = "PowerShell could not be started";
-    } else if (r.code != 0) {
-      res.why = first_line(r.out);
-      if (res.why.empty()) res.why = "Storage Spaces failed";
-    } else {
+    } else if (r.code == 0 || (r.code >= 'A' && r.code <= 'Z')) {
       res.ok = true;
-      res.mount = mount_in(r.out);
+      res.mount = r.code >= 'A' ? std::string(1, static_cast<char>(r.code)) + ":\\" : mount_in(r.out);
+    } else {
+      res.why = r.out == "the administrator prompt was cancelled; nothing was erased" ? r.out : exit_words(r.code, first_line(r.out));
     }
     return res;
   }
@@ -256,7 +303,7 @@ class win_port final : public port {
     }
     const script_run r = run_script(body, elevate);
     res.ok = r.started && r.code == 0;
-    if (!res.ok) res.why = r.started ? first_line(r.out) : "PowerShell could not be started";
+    if (!res.ok) res.why = r.started ? exit_words(r.code, first_line(r.out)) : "PowerShell could not be started";
     if (res.ok) res.mount = s.mount;
     return res;
   }
