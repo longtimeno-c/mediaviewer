@@ -2149,8 +2149,12 @@ TEST_CASE("phone pairing: a guest code's phone backs nothing up, and the grant k
   REQUIRE(owner_session);
   const fs::path folder = n.dir.root() / "guest-backup";
   fs::create_directories(folder);
-  auto added = (*owner_session)->admin(R"({"do":"add_root","label":"Phone backup","path":")" + utf8(folder) +
-                                       R"(","backup":{"limit":8000000,"reserve":0}})");
+  // Written, not pasted: a Windows path's backslashes are escapes in JSON.
+  mv::json::writer add;
+  add.begin_object().key("do").string("add_root").key("label").string("Phone backup").key("path").string(utf8(folder));
+  add.key("backup").begin_object().key("limit").integer(8000000).key("reserve").integer(0).end_object().end_object();
+  auto added = (*owner_session)->admin(add.str());
+  INFO("add_root: " << (added ? std::string("ok") : std::string(mv::status_name(added.error()))));
   REQUIRE(added);
   const auto doc = mv::json::parse(*added, 4);
   REQUIRE(doc);
