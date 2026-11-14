@@ -661,6 +661,13 @@ TEST_CASE("host drives: combining through the command, against a stand-in port",
   st.l.disks.push_back(real);
 
   std::string out;
+  if (drives::this_os() == drives::os_kind::linux_os) {
+    // Linux has no combining yet (mdadm, later): it says so and erases nothing.
+    CHECK(run_drives(data, {"combine", "mirror", "disk12", "disk13"}, st, {"x", "y"}, out, "Photos") == 2);
+    CHECK(contains(out, "not built yet"));
+    CHECK(st.created.empty());
+    return;
+  }
   // A wrong name: nothing is erased.
   CHECK(run_drives(data, {"combine", "mirror", "disk12", "disk13"}, st, {"Disk Image (disk12)", "Disk Image"}, out, "Photos") == 1);
   CHECK(st.created.empty());
