@@ -145,6 +145,9 @@ struct library_file {
   int kind = 0;
   std::string name;  // the original file name
   std::int64_t created = 0;
+  // The resource's size as Photos records it, without a download (iCloud-only
+  // files too); 0 when Photos does not say. Check library's size-first hint.
+  std::uint64_t size = 0;
 };
 // Every original file of every asset the user owns, the Hidden album
 // included (a backup keeps what the user hid, too). Oldest first.

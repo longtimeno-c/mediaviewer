@@ -525,7 +525,7 @@ void mv_chrome_open_photos_library(void);
 // Settings closing and is cancelled at quit (nothing half-written is left).
 // Settings polls `progress` while it shows. [main-thread]
 typedef struct mv_chrome_photos_backup {
-  uint32_t state;  // 0 idle, 1 listing, 2 copying, 3 done, 4 cancelled, 5 failed
+  uint32_t state;  // 0 idle, 1 listing, 2 copying, 3 done, 4 cancelled, 5 failed, 6 checking the library
   uint64_t total;
   uint64_t done;     // copied and verified this run
   uint64_t skipped;  // already in the backup
@@ -536,6 +536,10 @@ typedef struct mv_chrome_photos_backup {
   int64_t finished_unix;
   char current[256];  // the file being copied ("" between files)
   char error[200];    // why state is 5
+  uint64_t found;        // already in the library by content: not copied (Check library)
+  uint64_t bytes_total;  // state 6: library bytes to hash (bytes: hashed so far)
+  uint64_t held;          // backed up, then deleted from the folder: not copied until someone chooses
+  uint64_t left_deleted;  // someone chose Leave deleted for these bytes
 } mv_chrome_photos_backup;
 // False when a run is going, the library is not available, or the folder is "".
 bool mv_chrome_photos_backup_start(const char* destination_utf8);
@@ -552,6 +556,29 @@ void mv_chrome_set_photos_backup_layout(int32_t layout);
 // The last run that finished, this session or an earlier one (persisted:
 // finished_unix, done, skipped, failed, state). False when there was none.
 bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);
+// Check library (docs/plans/check-library.md). A report-only run against the
+// folder: false when a run is going, the library is not available, or Import's
+// index is not (mv_chrome_photos_library_index). Progress through
+// mv_chrome_photos_backup_progress; when it is done, the report as JSON:
+// {"index","reachable","originals","in_backup","in_library_count","to_copy",
+//  "to_copy_bytes","unconfirmed","library_files","hashed","remembered",
+//  "in_library":[{"name","where":[path]}],"gone":[{"rel","moved_to"}],
+//  "duplicates":[{"size","paths":[path]}]}; length needed, "" when none.
+bool mv_chrome_photos_check_start(const char* destination_utf8);
+int32_t mv_chrome_photos_check_json(char* buf, int32_t size);
+// Where Back Up Now and Check library look: 0 this folder, 1 every library Import knows.
+int32_t mv_chrome_photos_backup_scope(void);
+void mv_chrome_set_photos_backup_scope(int32_t scope);
+// Import is loaded and has the Check library calls.
+bool mv_chrome_photos_library_index(void);
+// Deleted on purpose (owner, 2026-11-14): what someone chose for files the
+// report's "deleted" list holds, [{"asset","kind","copy_again":bool}], written
+// to the destination's manifest off the main thread. False when a run is going
+// or the JSON is not that shape. Writes run one at a time, in order;
+// mv_chrome_photos_decide_state: 0 all written, 1 writing, 2 the last failed.
+// Back Up Now and Check library do not start while one is writing.
+bool mv_chrome_photos_decide_deleted(const char* choices_json);
+int32_t mv_chrome_photos_decide_state(void);
 
 // Sort (docs/design/16). Packed as sort_order.h pack_sort: key in bits 0-2 (0 name,
 // 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3. Changing it

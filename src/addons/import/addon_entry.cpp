@@ -257,6 +257,24 @@ mv_status MV_CALL trash_duplicate(void* ctx, uint64_t job_id, const char* path) 
   });
 }
 
+mv_status MV_CALL check_library(void* ctx, const char* request, uint64_t* out_id) {
+  return guard([&] { return request ? id_out(eng(ctx).check_library(request), out_id) : MV_ERR_INVALID_ARG; });
+}
+mv_status MV_CALL library_find(void* ctx, const char* request, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    if (!request) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).library_find(request);
+    return r ? write_out(*r, out, cap, needed) : to_mv(r.error());
+  });
+}
+mv_status MV_CALL library_record(void* ctx, const char* request) {
+  return guard([&] {
+    if (!request) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).library_record(request);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
 void MV_CALL shutdown(void* addon) {
   auto* state = static_cast<addon_state*>(addon);
   try {
@@ -329,6 +347,9 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api,
     a.verify_folder = &verify_folder;
     a.find_duplicates = &find_duplicates;
     a.trash_duplicate = &trash_duplicate;
+    a.check_library = &check_library;
+    a.library_find = &library_find;
+    a.library_record = &library_record;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

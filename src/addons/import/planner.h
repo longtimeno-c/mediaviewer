@@ -12,6 +12,7 @@
 #pragma once
 
 #include <atomic>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -21,6 +22,16 @@
 #include "core/result.h"
 
 namespace mv::import {
+
+// The hash of a file already at a destination, `live` being where `root`
+// (import.db's name for it) is now: the index's when its size and mtime still
+// match, else read once (cached) and indexed. A missing file drops its row only
+// when its folder answers (docs/design/18 "Offline destinations").
+[[nodiscard]] std::optional<digest> destination_hash(const host& h, library_index& idx,
+                                                     const std::string& live,
+                                                     const std::string& root,
+                                                     const std::string& rel,
+                                                     const std::atomic<bool>& cancel);
 
 // Resolves the destination / backup roots (no trailing separator).
 [[nodiscard]] std::string normalize_root(std::string root);

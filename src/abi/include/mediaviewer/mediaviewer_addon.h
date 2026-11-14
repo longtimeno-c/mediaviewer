@@ -73,6 +73,9 @@ typedef enum mv_addon_event_kind {
    * one trash request settled (id = job; re-read the job's summary). */
   MV_ADDON_EVENT_DUPLICATES_DONE = 8,
   MV_ADDON_EVENT_DUPLICATE_TRASHED = 9,
+  /* Check library (docs/plans/check-library.md): the check finished
+   * (payload = job state); the report is summary_json(job). */
+  MV_ADDON_EVENT_LIBRARY_CHECKED = 10,
 
   /* The AI pack (docs/design/17), 20 and up so a chrome can route by kind alone. */
   MV_ADDON_EVENT_AI_STATUS = 20,     /* indexing progress / state; poll mv.ai.1 status */
@@ -592,6 +595,8 @@ typedef struct mv_host_api {
   /* ---- io (worker threads only) ---------------------------------------- */
   mv_status(MV_CALL* walk_files)(void* host, const char* root_utf8, int32_t max_depth,
                                  mv_addon_walk_fn visit, void* user);
+  /* MV_ERR_NOT_FOUND when nothing is at the path (2026-11-14); MV_ERR_IO for
+   * any other failure (refused, a share that did not answer). */
   mv_status(MV_CALL* stat_file)(void* host, const char* path_utf8, uint64_t* out_size,
                                 int64_t* out_mtime_unix, uint32_t* out_is_directory);
   mv_status(MV_CALL* make_directories)(void* host, const char* dir_utf8);

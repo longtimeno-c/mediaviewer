@@ -11,6 +11,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -27,6 +28,7 @@
 #include <mediaviewer/mediaviewer_import.h>
 
 #include "addons/import/host.h"
+#include "addons/import/library_check.h"
 #include "addons/import/library_index.h"
 #include "addons/import/model.h"
 #include "core/result.h"
@@ -97,6 +99,15 @@ class engine {
   // the file's state in the summary.
   [[nodiscard]] expected trash_duplicate(std::uint64_t job, const std::string& path);
 
+  // ---- check library (docs/plans/check-library.md) ----
+  // A job of kind 3: a source (a folder, or a host's sizes) against a library
+  // folder; the report is its summary. Report only.
+  [[nodiscard]] result<std::uint64_t> check_library(const std::string& request_json);
+  // [worker] One file of a host source: candidates by size, matches by hash.
+  [[nodiscard]] result<std::string> library_find(const std::string& request_json);
+  // [worker] A file a host tool wrote and verified joins the index.
+  [[nodiscard]] expected library_record(const std::string& request_json);
+
   // Tests: wait until the control queue and every job are idle.
   void wait_idle();
 
@@ -119,6 +130,7 @@ class engine {
   void run_job(const std::shared_ptr<job>& j);
   void run_verify(const std::shared_ptr<job>& j, const std::string& dir);
   void run_duplicates(const std::shared_ptr<job>& j, const std::string& dir);
+  void run_check(const std::shared_ptr<job>& j);
   void trash_loop(const std::shared_ptr<job>& j);
   // Moves one queued file to the bin if its group still has another copy;
   // true when it went.
@@ -158,6 +170,12 @@ class engine {
   std::map<std::string, double> rates_;             // device key -> measured bytes/s
   std::map<std::string, std::unique_ptr<std::mutex>> device_locks_;
   std::atomic<bool> cancel_control_{false};
+  // library_find / library_record: one volume snapshot, refreshed when old
+  // (a volume list per file would be a device query per Photos asset).
+  std::mutex find_m_;
+  std::unique_ptr<dest_locator> find_loc_;
+  std::chrono::steady_clock::time_point find_loc_at_{};
+  std::atomic<bool> find_cancel_{false};
   bool watching_ = false;
 };
 

@@ -10,8 +10,7 @@ with a WinUI half and a SwiftUI half ([Platforms](15-platforms.md)).
 
 Every verify line is additive: each PR's acceptance also re-runs the present-loop gate of
 [PR 1](#pr-1--present-lab) on Windows (DXGI, `frametime`) and [Mac PR 1](#mac-pr-1--metal-present-lab)
-on the Mac (Metal / display link). Which verify runs have actually been carried out, and on what
-hardware, is recorded in [DEVELOPMENT, "Where this actually is"](../DEVELOPMENT.md#where-this-actually-is).
+on the Mac (Metal / display link).
 
 **Old numbers.** Commits, branches and decision-log entries keep the numbers they were written
 with: old PRs 16–20 are the Mac halves of PRs 1–8 (table below); old PRs 8–14 are PRs 9–15 and
@@ -631,8 +630,7 @@ with the add-on installed stays within noise of the app without it. A crash repo
 that has just transferred contains no path, filename or pixel from those files. Shift-click from A
 to B selects A through B and leaves the gallery open; copy copies the range; dragging a gallery
 cell out delivers the files, one cell of a range delivers the range; the share icon opens
-Driftwire with the gallery selection; both present-loop gates hold. Where each part stands:
-[DEVELOPMENT.md](../DEVELOPMENT.md#driftwire-issues-410-413-2026-10-15).
+Driftwire with the gallery selection; both present-loop gates hold.
 
 ## Not built
 

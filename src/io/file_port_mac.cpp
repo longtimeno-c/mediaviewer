@@ -96,7 +96,9 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   if (utf8_path.empty()) return err(status::invalid_arg);
   const std::string path(utf8_path);
   struct stat st{};
-  if (::stat(path.c_str(), &st) != 0) return err(status::io);
+  // not_found only when nothing is there (Check library holds a photo as
+  // deleted on that alone); a refused or failed stat stays io.
+  if (::stat(path.c_str(), &st) != 0) return err(errno == ENOENT || errno == ENOTDIR ? status::not_found : status::io);
   file_stat out;
   out.is_directory = S_ISDIR(st.st_mode);
   out.size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
