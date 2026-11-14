@@ -205,6 +205,7 @@ function(mv_driftwire_tests target)
     # The Phone access add-on (docs/plans/phone-access-addon.md): its card, its QR, the module.
     "${MV_SOURCE_ROOT}/tests/test_phone_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_qr.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_bundled.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_self_host.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_serve_owner.cpp"

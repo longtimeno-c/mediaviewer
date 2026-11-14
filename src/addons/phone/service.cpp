@@ -149,6 +149,13 @@ void stop_app() noexcept {
     l->stop();          // stopping first: clearing the source below queues nothing
     l->set_source({});  // waits out a call in flight; Local search may go after this
   }
+  // The add-on's library stays mapped (addon_entry.cpp pin_self): removed and
+  // installed again in this run, the next resume_app makes a new link. The old
+  // one is never destroyed (its thread may still be tidying up).
+  std::lock_guard lock(st.m);
+  st.l = nullptr;
+  st.who = app_state::role::unknown;
+  st.stopped = false;
 }
 
 }  // namespace mv::phone

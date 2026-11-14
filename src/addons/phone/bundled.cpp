@@ -6,6 +6,8 @@
 #include <fstream>
 #include <iterator>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 #include "core/json.h"
 
@@ -71,7 +73,7 @@ void sweep_old(const fs::path& dir) noexcept {
   std::error_code ec;
   for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
     const std::string name = utf8_of(it->path().filename());
-    if (name.rfind("driftwire.old-", 0) == 0) {
+    if (name.find(".old-") != std::string::npos) {
       std::error_code rm;
       fs::remove(it->path(), rm);  // still running: it stays until the next install
     }
@@ -100,13 +102,26 @@ std::string bin_dir(const std::string& feature_dir) { return utf8_of(path_of(fea
 
 std::string program_in(const std::string& dir) { return utf8_of(path_of(dir) / program_name()); }
 
-result<installed> install(const std::string& source, const std::string& dir_utf8, const std::string& version,
+result<installed> install(const std::string& source_dir, const std::string& dir_utf8, const std::string& version,
                           bool rename_aside) {
-  const fs::path src = path_of(source), dir = path_of(dir_utf8);
+  const fs::path src = path_of(source_dir), dir = path_of(dir_utf8);
   const fs::path target = dir / program_name();
   std::error_code ec;
-  const std::uintmax_t size = fs::file_size(src, ec);
-  if (ec || size == 0) return err(status::not_found);
+  // The program and what it loads beside it (Windows: its DLLs), program last.
+  std::vector<fs::path> files;
+  std::uintmax_t size = 0;
+  for (fs::directory_iterator it(src, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code fe;
+    if (!it->is_regular_file(fe) || fe) continue;
+    const std::string name = utf8_of(it->path().filename());
+    if (name == program_name()) continue;
+    files.push_back(it->path());
+    size += it->file_size(fe);
+  }
+  const std::uintmax_t program_size = fs::file_size(src / program_name(), ec);
+  if (ec || program_size == 0) return err(status::not_found);
+  files.push_back(src / program_name());
+  size += program_size;
   fs::create_directories(dir, ec);
   if (ec) return err(status::io);
   sweep_old(dir);
@@ -115,37 +130,40 @@ result<installed> install(const std::string& source, const std::string& dir_utf8
   out.program = utf8_of(target);
   const bool there = fs::exists(target, ec);
   const record was = read_record(dir);
-  if (there && was.version == version && was.size == size && fs::file_size(target, ec) == size && !ec) {
-    return out;  // this version is in place: nothing copied
-  }
+  if (there && was.version == version && was.size == size) return out;  // in place: nothing copied
 
-  // Beside it first: a copy cut short never stands where the login entry looks.
-  const fs::path staged = dir / (std::string(program_name()) + ".new");
-  fs::remove(staged, ec);
-  if (!fs::copy_file(src, staged, fs::copy_options::overwrite_existing, ec) || ec) {
-    fs::remove(staged, ec);
-    return err(status::io);
-  }
-  fs::permissions(staged, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
-                              fs::perms::others_read | fs::perms::others_exec,
-                  ec);
-  if (there && rename_aside) {
-    // A running .exe cannot be replaced, but it can be renamed.
-    fs::path aside;
-    for (int n = 1; n < 1000; ++n) {
-      aside = dir / ("driftwire.old-" + std::to_string(n) + (rename_aside_here() ? ".exe" : ""));
-      if (!fs::exists(aside, ec)) break;
-    }
-    fs::rename(target, aside, ec);
-    if (ec) {
-      fs::remove(staged, ec);
+  // Every file beside its place first: a copy cut short never stands where the
+  // login entry looks.
+  std::vector<std::pair<fs::path, fs::path>> staged;  // .new, final
+  for (const fs::path& f : files) {
+    const fs::path final_path = dir / f.filename();
+    const fs::path next = dir / (utf8_of(f.filename()) + ".new");
+    fs::remove(next, ec);
+    if (!fs::copy_file(f, next, fs::copy_options::overwrite_existing, ec) || ec) {
+      for (const auto& [n, fin] : staged) fs::remove(n, ec);
+      fs::remove(next, ec);
       return err(status::io);
     }
+    staged.emplace_back(next, final_path);
   }
-  fs::rename(staged, target, ec);  // POSIX: atomic over the old one; a running one keeps its inode
-  if (ec) {
-    fs::remove(staged, ec);
-    return err(status::io);
+  fs::permissions(staged.back().first, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+                                           fs::perms::others_read | fs::perms::others_exec,
+                  ec);
+  // Then each renamed into place, the program last. A file in use (Windows: the
+  // running .exe and the DLLs it loaded) cannot be replaced but can be renamed:
+  // it goes aside first, and a later install removes it.
+  for (const auto& [next, final_path] : staged) {
+    if (rename_aside && fs::exists(final_path, ec)) {
+      fs::path aside;
+      for (int n = 1; n < 100000; ++n) {
+        aside = dir / (utf8_of(final_path.filename()) + ".old-" + std::to_string(n));
+        if (!fs::exists(aside, ec)) break;
+      }
+      fs::rename(final_path, aside, ec);
+      if (ec) return err(status::io);
+    }
+    fs::rename(next, final_path, ec);  // POSIX: atomic over the old one; a running one keeps its inode
+    if (ec) return err(status::io);
   }
   out.replaced = there;
   if (!write_record(dir, {version, size})) return err(status::io);
@@ -156,10 +174,12 @@ void remove(const std::string& dir_utf8) noexcept {
   try {
     const fs::path dir = path_of(dir_utf8);
     std::error_code ec;
-    fs::remove(dir / program_name(), ec);
-    fs::remove(dir / (std::string(program_name()) + ".new"), ec);
-    fs::remove(dir / kRecord, ec);
-    sweep_old(dir);
+    // Everything here is this add-on's (bin is its own folder); a file still
+    // running is renamed aside and stays until a later install or removal.
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+      std::error_code rm;
+      fs::remove(it->path(), rm);
+    }
     fs::remove(dir, ec);  // only when empty
   } catch (...) {
   }

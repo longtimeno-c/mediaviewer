@@ -367,42 +367,6 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'packing driftwire failed' }
 
-      # Phone access (docs/plans/phone-access-addon.md): code only, like Driftwire.
-      - name: Find the Phone access add-on build
-        id: phoneaccess
-        if: inputs.mode == 'stable'
-        run: |
-          $dll = Get-ChildItem build/addons/phone-access -Recurse -Filter mv_phone_access.dll | Select-Object -First 1
-          if (-not $dll) { throw 'mv_phone_access.dll was not built' }
-          "dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
-
-      - name: Sign the Phone access add-on's binary
-        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
-        uses: azure/artifact-signing-action@v1
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
-          files-folder: ${{ steps.phoneaccess.outputs.dir }}
-          files-folder-filter: dll
-          files-folder-recurse: false
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Pack the Phone access add-on
-        if: inputs.mode == 'stable'
-        env:
-          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
-          PHONE_ACCESS_DIR: ${{ steps.phoneaccess.outputs.dir }}
-        run: |
-          python tools/package/addon-pack.py pack --addon phone-access --platform win-x64 --src $env:PHONE_ACCESS_DIR `
-            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
-          if ($LASTEXITCODE) { throw 'packing phone-access failed' }
-
       # Enhance (#297): preferred, not required, like Places. Our DLL is signed
       # on its own (ONNX Runtime's carry Microsoft's signature); each kind's
       # weights are pins in the signed manifest, fetched on the person's click.
@@ -554,6 +518,50 @@ jobs:
 
       - name: Pack the driftwire command line
         run: ./tools/package/driftwire-windows.ps1 -Action Pack -Version $env:VERSION -OutDir dist/driftwire-cli
+
+      # Phone access (docs/plans/phone-access-addon.md): its DLL, and in host/ the
+      # signed driftwire command line staged above (driftwire.exe and the DLLs it
+      # loads), which the add-on installs for "This computer" (§8). After the
+      # command line's own signing, so it carries that signature.
+      - name: Find the Phone access add-on build
+        id: phoneaccess
+        if: inputs.mode == 'stable'
+        run: |
+          $dll = Get-ChildItem build/addons/phone-access -Recurse -Filter mv_phone_access.dll | Select-Object -First 1
+          if (-not $dll) { throw 'mv_phone_access.dll was not built' }
+          $host_dir = Join-Path $dll.DirectoryName 'host'
+          if (Test-Path $host_dir) { Remove-Item -Recurse -Force $host_dir }
+          New-Item -ItemType Directory -Force $host_dir | Out-Null
+          Copy-Item dist/driftwire-cli/sign/*.exe, dist/driftwire-cli/sign/*.dll $host_dir
+          if (-not (Test-Path (Join-Path $host_dir 'driftwire.exe'))) { throw 'driftwire.exe was not staged for Phone access' }
+          "dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
+
+      - name: Sign the Phone access add-on's binary
+        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ steps.phoneaccess.outputs.dir }}
+          files-folder-filter: dll
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Pack the Phone access add-on
+        if: inputs.mode == 'stable'
+        env:
+          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
+          PHONE_ACCESS_DIR: ${{ steps.phoneaccess.outputs.dir }}
+        run: |
+          python tools/package/addon-pack.py pack --addon phone-access --platform win-x64 --src $env:PHONE_ACCESS_DIR `
+            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+          if ($LASTEXITCODE) { throw 'packing phone-access failed' }
 
       - name: Collect release assets
         run: |
@@ -1075,6 +1083,10 @@ jobs:
           else
             cp -R phoneaccess/arm64 build/addons/phone-access
           fi
+          # host/driftwire: the command line signed and notarized above (§8).
+          mkdir -p "$RUNNER_TEMP/pa-cli" build/addons/phone-access/host
+          tar -xzf build/release/cli/driftwire-"$VERSION"-macos-*.tar.gz -C "$RUNNER_TEMP/pa-cli"
+          cp "$RUNNER_TEMP"/pa-cli/driftwire-*/driftwire build/addons/phone-access/host/driftwire
           python3 tools/mac/macpack.py addon --dir build/addons/phone-access \
             --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
           python3 tools/package/addon-pack.py pack --addon phone-access --platform macos --src build/addons/phone-access \

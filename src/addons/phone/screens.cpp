@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <optional>
 
@@ -316,6 +317,19 @@ void end_row(writer& w) {
   end(w);  // row
 }
 
+// A row's id from what it stands for, not its place: a click on a tree drawn
+// before the list changed still reaches that phone or folder (or none).
+std::string row_hash(const char* prefix, const std::string& of) {
+  std::uint64_t h = 1469598103934665603ull;  // FNV-1a
+  for (unsigned char c : of) {
+    h ^= c;
+    h *= 1099511628211ull;
+  }
+  char buf[24];
+  std::snprintf(buf, sizeof buf, "%s%016llx", prefix, static_cast<unsigned long long>(h));
+  return buf;
+}
+
 std::string short_key(const std::string& key) { return key.substr(0, std::min<std::size_t>(8, key.size())); }
 
 const std::vector<std::pair<const char*, std::int64_t>>& durations() {
@@ -327,6 +341,8 @@ constexpr const char* kUnlimited = "Until I remove it";
 constexpr std::size_t kRelayKeyMinimum = 16;  // as driftwire-relay takes it
 
 }  // namespace
+
+std::string screen::row_id(const char* prefix, const std::string& of) { return row_hash(prefix, of); }
 
 // ---- words ---------------------------------------------------------------------------------
 
@@ -421,6 +437,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   const bool busy = !s.busy.empty();
   busy_ = busy;
   claimed_ = s.claimed;
+  grants_ = s.has("passphrase");
   qr_ = s.qr;
   asking_key_ = s.asking_key;
   relay_now_ = s.relay;
@@ -669,6 +686,14 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
                   static_cast<long long>(left % 60));
     text(w, "code_left", good, "secondary");
     button(w, "pair_stop", "Cancel", false, "plain", "Cancel the code");
+    // A desktop can open the same library's folders (the app's File → Connect
+    // to a Server…, src/remote): the same code, pasted there.
+    text(w, "code_desktop",
+         "On another computer, choose File \xE2\x86\x92 Connect to a Server\xE2\x80\xA6 and paste this code's link.",
+         "caption");
+    w.begin_object().key("type").string("button").key("id").string("code_copy").key("label").string("Copy link");
+    w.key("style").string("plain").key("copy").string(s.qr).key("help").string("Copy the code's link for another computer");
+    w.end_object();
     end(w);
     end(w);
   };
@@ -676,7 +701,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   const auto phone_rows = [&] {
     for (std::size_t i = 0; i < s.phones.size(); ++i) {
       const phone_row& p = s.phones[i];
-      const std::string id = "ph" + std::to_string(i);
+      const std::string id = row_hash("ph", p.key);
       std::string lead = p.guest ? (p.backup ? "Guest \xC2\xB7 Backs up \xC2\xB7 " : "Guest \xC2\xB7 ")
                                  : (p.backup ? "" : "No backup \xC2\xB7 ");
       std::string detail;
@@ -736,7 +761,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   const auto folder_rows = [&] {
     for (std::size_t i = 0; i < s.folders.size(); ++i) {
       const folder_row& f = s.folders[i];
-      const std::string id = "fo" + std::to_string(i);
+      const std::string id = row_hash("fo", f.id);
       std::string detail = f.path;
       if (f.backup) {
         detail += " \xC2\xB7 " + gigabytes(f.used) + " of " + gigabytes(f.limit) + " GB used, keeps " + gigabytes(f.reserve) +
@@ -980,6 +1005,22 @@ bool split_row(std::string_view node, std::string_view prefix, std::size_t& inde
   return true;
 }
 
+// "ph<hash>_remove": the row whose id hashes to <hash> in `of` (now), and "_remove".
+bool find_row(std::string_view node, const char* prefix, const std::vector<std::string>& of, std::size_t& index,
+              std::string_view& rest) {
+  const std::size_t p = std::strlen(prefix), n = p + 16;
+  if (node.size() < n || node.substr(0, p) != prefix) return false;
+  const std::string id(node.substr(0, n));
+  for (std::size_t i = 0; i < of.size(); ++i) {
+    if (row_hash(prefix, of[i]) == id) {
+      index = i;
+      rest = node.substr(n);
+      return true;
+    }
+  }
+  return false;
+}
+
 struct req {
   writer w;
   req(const char* what) { w.begin_object().key("do").string(what); }
@@ -1015,7 +1056,9 @@ std::vector<std::string> screen::on_event(std::string_view node, std::uint32_t k
   }
   const bool before = holds_secret();
   auto out = handle(base, kind, value_json, now);
-  if (before && !holds_secret()) ++secret_gen_;  // sent or dropped: the host draws empty fields
+  // Sent or dropped by a click or Return: the host draws empty secure fields.
+  // Not on a change: that would empty a field still being typed in.
+  if (before && !holds_secret() && kind != kChange) ++secret_gen_;
   return out;
 }
 
@@ -1029,7 +1072,7 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   if (kind == kChange || kind == kSubmit) {
     if (node == "local") {
       local_ = v;
-      if (claimed_ && kind == kSubmit) out.push_back(req("set_addresses").s("local", local_).s("public", public_).done());
+      if (claimed_) out.push_back(req("set_addresses").s("local", local_).s("public", public_).done());
     } else if (node == "public") {
       public_ = v;
       if (claimed_) out.push_back(req("set_addresses").s("local", local_).s("public", public_).done());
@@ -1086,7 +1129,7 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     } else {
       std::size_t i = 0;
       std::string_view rest;
-      if (split_row(node, "ph", i, rest) && i < phone_keys_.size()) {
+      if (find_row(node, "ph", phone_keys_, i, rest)) {
         if (rest == "_access" && !v.empty()) {
           const std::int64_t secs = v == "unlimited" ? 0 : std::strtoll(v.c_str(), nullptr, 10);
           out.push_back(req("grant").s("key", phone_keys_[i]).i("for_s", secs).done());
@@ -1179,7 +1222,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     passphrase_.clear();
     passphrase_again_.clear();
   } else if (node == "pair") {
-    out.push_back(req("pair").i("for_s", code_for_).done());
+    // A server too old for guest codes gets a plain one, whatever was chosen before.
+    out.push_back(req("pair").i("for_s", grants_ ? code_for_ : 0).done());
   } else if (node == "pair_stop") {
     out.push_back(req("pair_stop").done());
   } else if (node == "relay_remove") {
@@ -1248,9 +1292,9 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   } else {
     std::size_t i = 0;
     std::string_view rest;
-    if (split_row(node, "ph", i, rest) && i < phone_keys_.size()) {
+    if (find_row(node, "ph", phone_keys_, i, rest)) {
       if (rest == "_remove") out.push_back(req("revoke").s("key", phone_keys_[i]).done());
-    } else if (split_row(node, "fo", i, rest) && i < folder_ids_.size()) {
+    } else if (find_row(node, "fo", folder_ids_, i, rest)) {
       if (rest == "_stop") {
         out.push_back(req("remove_folder").s("id", folder_ids_[i]).done());
       } else if (rest == "_limit") {

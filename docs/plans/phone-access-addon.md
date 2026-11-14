@@ -148,30 +148,42 @@ module builds in `cmake/portable`).
   library set up before sees the offer with the line from §3.5. Installing it without asking was
   not chosen.
 
-## 8. The `driftwire` program inside the add-on (owner, 2026-11-14: "Yes, ship it inside") — in progress
+## 8. The `driftwire` program inside the add-on (owner, 2026-11-14: "Yes, ship it inside")
 
-Reopens the decision-log row "The app runs an installed `driftwire` for 'This computer'" (2026-11-14); its
-amending row lands with the build. Started on this branch: `bundled.*` (install into a stable
-`<feature dir>/bin`, copy beside then rename into place; on Windows the running .exe renamed aside first) and
-`self_host::find()` preferring the add-on's copy. **Still owed:**
+Amends the decision-log row "The app runs an installed `driftwire` for 'This computer'" (the new row is
+above it in [12](../design/12-decision-log.md)). Built:
 
-- The add-on installs its copy at load (worker) and calls `self_host::set_bundled`; CMake copies
-  `mv_driftwire_cli` into `build/addons/phone-access`; addon-pack includes it; release.yml signs it
-  (Developer ID via macpack, the Windows step's filter gains `exe`); NOTICE names BoringSSL (Apache-2.0),
-  FTXUI (MIT), libsodium (ISC), BLAKE3 per [11](../design/11-licensing.md).
-- **Updates (the owner's question):** a MediaViewer update never touches `<feature dir>/bin`, so it never
-  stops or replaces the running host. An add-on update installs the new copy beside and renames it in; the
-  supervisor sees its program change and ends 75 (`cli/host_cmd.h`), the login entry starts the new one
-  (Windows: the task's 5-minute retry); phones see one reconnect. A separately installed CLI keeps its own
-  path and channel; the login entry points at whichever program last ran `host start-at-login on` (the
-  card's Set up / Start run the add-on's copy). The Synology's signed feed is unaffected.
-- **Removal:** a new optional export `mv_addon_removed(data_dir, keep_data)` called on every Remove; the add-on
-  runs its copy's `host start-at-login off` (which ends the task / boots out the agent) when the entry points
-  at it, then `bundled::remove`. Shared drives and pairings stay.
-- A loopback test of the staged swap (the supervisor running from `bin/driftwire` ends 75 after `install`),
-  beside `[host]`'s exit-75 test.
-- **The server's menu** (#686 §4, session `host-tray`): its `src/phone/host_tray.*` and the shell keep move into
-  this add-on once both branches merge (keep_alive + keep_menu with `host_tray::build()`'s rows; a "login"
-  flag on keep_alive owed). Its glue started beside `mv_phone_resume`, which this branch removes.
-- **Desktop as a client** (`src/remote`, another session): the card can't call the app's `mv_chrome_remote_pair`;
-  a line pointing to File → Connect to a Server… with a Copy link button is owed in `screens.cpp`.
+- **Payload.** `host/` in the add-on: on the Mac the command line the release already signed and notarized
+  (macpack `cli`), on Windows the signed `driftwire.exe` and the DLLs `driftwire-windows.ps1` stages beside
+  it. A local build copies `mv_driftwire_cli` there (cmake/phone.cmake). NOTICE names what the program links:
+  libsodium (ISC), BLAKE3 (CC0-1.0), BoringSSL (Apache-2.0, GPLv3-compatible), FTXUI (MIT), and Microsoft's
+  Visual C++ runtime on Windows ([11](../design/11-licensing.md)). `build-release.ps1` still refuses the
+  program in the app's payload: the add-on is packed apart.
+- **Where it lives.** `bundled::install` at the add-on's load (the first window's process, off the
+  foreground queue) copies `host/` into `<feature dir>/bin` when its version or size changed, and
+  `self_host::find()` takes that copy first.
+- **Updates (the owner's question).** A MediaViewer update never touches `bin`: the running host goes on.
+  An add-on update copies the new files beside (`*.new`) and renames them in, the program last, never
+  writing over a running file. On Windows the running .exe and its DLLs are renamed aside (`*.old-N`, removed
+  by a later install). The host's supervisor sees its program change and ends 75 (`cli/host_cmd.h`); the
+  login entry starts the new one (Windows: the task's retry, at most 5 minutes). Phones see one reconnect
+  (their reads are idempotent), and capability negotiation keeps an older or newer phone app working. Tested
+  on loopback: `[phone-addon]` "an add-on update swaps the program under a running host, which ends 75".
+- **Which program wins.** The card always runs the add-on's copy. A separately installed command line
+  (Homebrew, install.ps1) keeps its own path and its own update channel, so the two never write one binary;
+  the login entry points at whichever program last ran `host start-at-login on` (the card's Set up and Start
+  move it to the add-on's copy; a terminal's `driftwire host start-at-login on` moves it back).
+- **Removal.** New optional export `mv_addon_removed(data_dir, keep_data)` (mediaviewer_addon.h), called on
+  every Remove except a reinstall (`mv_addon_remove` keep_data 2). When the login entry runs the add-on's
+  copy, it runs `host start-at-login off` (Task Scheduler /End + /Delete, launchctl bootout), which stops the
+  host; then `bin` goes. Shared folders, the host's data and pairings stay; a host from a separately
+  installed command line is left alone.
+- **The Synology** keeps its own signed package feed (`nas-setup.md`), unchanged.
+
+Still owed:
+
+- **The server's menu** (#686 §4, session `host-tray`): its `src/phone/host_tray.*` and the shell keep move
+  into this add-on once both branches merge (keep_alive + keep_menu with `host_tray::build()`'s rows, and a
+  "login" flag on keep_alive for the app's login item). Its glue started beside `mv_phone_resume`, which this
+  branch removes: on the merge it starts from the add-on's load instead.
+- The Linux login entry's escaping (systemd) is not matched by `login_entry_runs`; Linux ships no add-on yet.

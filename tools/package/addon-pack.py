@@ -166,14 +166,19 @@ ADDONS = {
         "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
         "manifest_json": "src/addons/phone/manifest.json",
         "files": {
-            "win-x64": {"native": "mv_phone_access.dll", "chrome": "", "include": ["mv_phone_access.dll"]},
+            # host/: the driftwire program (and on Windows the DLLs it loads), which the
+            # add-on installs for "This computer" (docs/plans/phone-access-addon.md §8).
+            "win-x64": {"native": "mv_phone_access.dll", "chrome": "", "include": ["mv_phone_access.dll", "host"]},
             "macos": {"native": "libmv_phone_access.dylib", "chrome": "",
-                      "include": ["libmv_phone_access.dylib"]},
+                      "include": ["libmv_phone_access.dylib", "host"]},
         },
         "licences": [],
         "notice": ("Phone access add-on for MediaViewer. GPL-3.0-or-later.\n"
                    "Its link is encrypted with libsodium (ISC) and files are checked with BLAKE3 (CC0-1.0),\n"
                    "linked in on both. Its pairing QR follows Project Nayuki's QR Code generator (MIT).\n"
+                   "host/ carries the driftwire program (GPL-3.0-or-later), which links libsodium (ISC),\n"
+                   "BLAKE3 (CC0-1.0), BoringSSL (Apache-2.0) and FTXUI (MIT); on Windows the Visual C++\n"
+                   "runtime beside it is Microsoft's redistributable.\n"
                    "It talks only to the server you set up (a Synology, this computer, another computer you\n"
                    "run) and to phones you paired. No account, no cloud.\n"),
     },

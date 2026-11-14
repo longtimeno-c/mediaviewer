@@ -757,6 +757,8 @@ MV_API mv_status MV_CALL mv_addon_quit(void) {
     // #398: no index walk starts now; one in flight stops at its next row.
     // Not waited on: the pack is abandoned, never unmapped.
     mv::addon::retract_index_locations();
+    // Phone access's link no longer calls the pack (host table catalogue_*).
+    mv::addon::catalogue::set_provider({});
     for (auto& [id, entry] : all) {
       // The entry's session stays retained: a pack left running still posts.
       const bool ai_family = id == "ai" || id.rfind("ai-", 0) == 0;
@@ -783,6 +785,9 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data) {
     MV_REQUIRE(id, "id is required");
     auto s = open_store();
     if (!s) return s.error();
+    // keep_data 2: a reinstall (removed to install again at once): kept, and
+    // nothing it set up outside the app is undone (a host keeps running).
+    if (keep_data != 2) mv::addon::tell_removed(*s, id, keep_data != 0);
     if (keep_data == 0) mv::addon::forget_outside_data(*s, id);
     auto removed = s->remove(id, keep_data != 0);
     return removed ? status::ok : removed.error();

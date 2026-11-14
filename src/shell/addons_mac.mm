@@ -1256,6 +1256,9 @@ void exit_guard() {
 void MvAddonsQuit() {
   mac_addons& s = state();
   g_quitting.store(true, std::memory_order_relaxed);
+  // Phone access's link reaches Local search through the host table: nothing
+  // calls the pack from here on (waits out a call in flight), before it stops.
+  mv::addon::catalogue::set_provider({});
   MvSlotAddonsQuit();
   MvScriptsQuit();
   g_quit_at = std::chrono::steady_clock::now();
@@ -2278,6 +2281,7 @@ extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
     if (ensure_store()) {
       mac_addons& st = state();
       std::lock_guard<std::mutex> lock(st.store_writes);
+      mv::addon::tell_removed(*st.store, s, keep_data);
       if (!keep_data) mv::addon::forget_outside_data(*st.store, s);
       (void)st.store->remove(s, keep_data);
     }

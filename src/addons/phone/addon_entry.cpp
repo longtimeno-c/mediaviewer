@@ -41,6 +41,7 @@
 #include <dlfcn.h>
 #endif
 
+#include "addons/phone/bundled.h"
 #include "addons/phone/qr.h"
 #include "addons/phone/screens.h"
 #include "addons/phone/self_host.h"
@@ -87,6 +88,56 @@ void pin_self() noexcept {
     (void)::dlopen(info.dli_fname, RTLD_NOW | RTLD_NODELETE);
   }
 #endif
+}
+
+// The folder this library was loaded from (the add-on's verified version folder).
+std::string module_dir() {
+#if defined(_WIN32)
+  HMODULE self = nullptr;
+  if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&module_dir), &self)) {
+    return {};
+  }
+  std::wstring buf(32768, L'\0');
+  const DWORD n = ::GetModuleFileNameW(self, buf.data(), static_cast<DWORD>(buf.size()));
+  if (n == 0 || n >= buf.size()) return {};
+  buf.resize(n);
+  const auto slash = buf.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return {};
+  buf.resize(slash);
+  const int len = ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), nullptr, 0, nullptr, nullptr);
+  std::string out(static_cast<std::size_t>(len > 0 ? len : 0), '\0');
+  if (len > 0) (void)::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), out.data(), len, nullptr, nullptr);
+  return out;
+#else
+  Dl_info info{};
+  if (::dladdr(reinterpret_cast<const void*>(&module_dir), &info) == 0 || !info.dli_fname) return {};
+  std::string path = info.dli_fname;
+  const auto slash = path.find_last_of('/');
+  return slash == std::string::npos ? std::string() : path.substr(0, slash);
+#endif
+}
+
+std::string join_native(const std::string& dir, const char* name) {
+#if defined(_WIN32)
+  return dir + "\\" + name;
+#else
+  return dir + "/" + name;
+#endif
+}
+
+// The add-on's own driftwire (docs/plans/phone-access-addon.md §8), installed
+// into the feature's bin folder, which survives add-on updates and is where the
+// login entry points. Copied only when this version is not there yet; a
+// running host restarts on its own (it ends 75 when its program changes).
+void install_bundled(const std::string& feature) {
+  const std::string mine = module_dir();
+  if (mine.empty()) return;
+  const std::string source = join_native(mine, "host");  // the program and what it loads
+  auto got = mv::phone::bundled::install(source, mv::phone::bundled::bin_dir(feature), MV_PHONE_ACCESS_VERSION,
+                                         mv::phone::bundled::rename_aside_here());
+  if (got) mv::phone::self_host::set_bundled(got->program);
+  // A build without the program (a developer's): the card finds an installed one.
 }
 
 mv::phone::card::computer this_computer() {
@@ -299,6 +350,8 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
       state->lock = mv::driftwire::net::try_lock_instance(*dir + "/" + kLockName);
 #endif
       state->primary = state->lock != nullptr;
+      // The first window's process installs it: two would race on the same file.
+      if (state->primary) install_bundled(*dir);
     }
     g = state.release();
     // The host loads slot add-ons after first pixel, off the foreground queue:
@@ -316,7 +369,28 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
   });
 }
 
-// Removed without keeping its data: nothing is forgotten here. The desk's key,
+// Removed (kept data or not; docs/plans/phone-access-addon.md §8): the host
+// this add-on set up stops and no longer starts at login, when its login entry
+// runs the add-on's own copy; then that copy goes. The shared folders, the
+// host's data and every pairing stay. A host the person runs from a separately
+// installed driftwire is left alone. On the remover's worker.
+extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_removed(const char* /*data_dir_utf8*/, uint32_t /*keep_data*/) {
+  return guard([&] {
+    auto dir = mv::phone::feature_dir();
+    if (!dir) return MV_OK;
+    const std::string bin = mv::phone::bundled::bin_dir(*dir);
+    const std::string program = mv::phone::bundled::program_in(bin);
+    mv::phone::self_host::where w = mv::phone::self_host::find();
+    w.program = program;
+    if (mv::phone::self_host::login_entry_runs(w, program)) {
+      (void)mv::phone::self_host::run_host(w, {"start-at-login", "off"}, {}, 60000);
+    }
+    mv::phone::bundled::remove(bin);
+    return MV_OK;
+  });
+}
+
+// Removed without keeping its data: nothing more is forgotten here. The desk's key,
 // the paired phones and the publisher key are what the NAS and every paired
 // phone trust (docs/plans/phone-access-addon.md §3); they go only through the
 // card's own Start over, which tells the NAS. The library's folder is not the

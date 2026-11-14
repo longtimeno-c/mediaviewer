@@ -2140,6 +2140,22 @@ with the code's mapping rules (#499: the gateway only, never another's forward t
 leases renewed while it runs, removed on stop, a ledger for a crash). Never SMB, RDP or another
 program's port. Built as `host_ports.*` (slice 4); behind carrier NAT it says that no forward helps.
 
+**The Phone access add-on carries `driftwire` for "This computer" (2026-11-14, owner: "Yes, ship it
+inside"; amends the row below).** The add-on's package has the program in `host/` (on Windows with the DLLs
+it loads), signed as the command line is (Developer ID and notarized on the Mac, Trusted Signing on
+Windows), and installs it into `<Phone access folder>/bin`, a place that survives add-on updates and that the
+start-at-login entry points at. Installing the add-on with one click is all "This computer" needs: no
+Homebrew or install.ps1 line. Still never the viewer's child: the card runs it, `host start-at-login on`
+registers it, launchd / Task Scheduler start it. **Updates:** a MediaViewer update never touches `bin`, so it
+never stops or replaces the running host. An add-on update copies the new files beside the old ones and
+renames them in, never writing over a running program (on Windows the running .exe and its DLLs are renamed
+aside first); the supervisor sees its program change and ends 75, and the login entry starts the new one, so
+phones see one reconnect. A separately installed command line keeps its own path and its own channel; the
+card runs the add-on's copy, and the login entry points at whichever program last ran
+`host start-at-login on`. Removing the add-on (any Remove but a reinstall) turns the login entry off when it
+runs the add-on's copy, which stops the host, and deletes `bin`; the shared folders, the host's data and the
+pairings stay. The Synology's signed package feed is unaffected. Plan: [phone-access-addon.md](../plans/phone-access-addon.md) §8.
+
 **The app runs an installed `driftwire` for "This computer" (2026-11-14, self-hosting slice 6; amends
 "the app never starts it", 2026-10-23).** Settings → Phone access → Set up the service… → **This
 computer** (owner: "done in-app, no terminal"; plan §8) needs the host to run at login with no

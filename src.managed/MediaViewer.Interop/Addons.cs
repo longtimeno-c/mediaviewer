@@ -635,6 +635,14 @@ public static unsafe partial class AddonNative
         fixed (byte* p = Z(id)) Check(mv_addon_remove(p, keepData ? 1u : 0u), "mv_addon_remove");
     }
 
+    /// <summary>Removed to install again at once (Remove and install again): its
+    /// data kept, and nothing it set up outside the app undone (mv_addon_remove's
+    /// keep_data 2; a Phone access host keeps running).</summary>
+    public static void RemoveForReinstall(string id)
+    {
+        fixed (byte* p = Z(id)) Check(mv_addon_remove(p, 2u), "mv_addon_remove");
+    }
+
     /// <summary>Milestone H: a family's installed bytes and its ceiling (0 = none).
     /// An older core without the export reports (0, 0).</summary>
     public static (ulong Used, ulong Ceiling) FamilyUsage(string family)

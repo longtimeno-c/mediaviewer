@@ -1166,6 +1166,15 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
 typedef mv_status(MV_CALL* mv_addon_forget_fn)(const char* data_dir_utf8);
 #define MV_ADDON_FORGET_SYMBOL "mv_addon_forget"
 
+/* Optional third export (2026-11-14, the Phone access add-on). The host calls
+ * it on EVERY removal, with keep_data 1 or 0, after its shutdown and before
+ * MV_ADDON_FORGET_SYMBOL and before its files go, on the remover's worker; the
+ * add-on is not loaded. It undoes what it set up outside the app that must not
+ * outlive it (a login entry it registered, a program it installed for it),
+ * never the person's data. A failing call never blocks the removal. */
+typedef mv_status(MV_CALL* mv_addon_removed_fn)(const char* data_dir_utf8, uint32_t keep_data);
+#define MV_ADDON_REMOVED_SYMBOL "mv_addon_removed"
+
 /* ---------------------------------------------------------------------------
  * Host-side management, exported by the Windows core DLL for the C# chrome
  * (the Mac host calls src/addon directly). [worker-thread] unless noted:
@@ -1212,7 +1221,10 @@ MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out
 
 /* Unloads if loaded, then removes every version; keep_data = 0 also deletes
  * the add-on's data (import.db) and first calls its MV_ADDON_FORGET_SYMBOL,
- * if it has one. Locked files are removed at next start. */
+ * if it has one. Every removal but a reinstall first calls its
+ * MV_ADDON_REMOVED_SYMBOL. keep_data = 2 (0.42): removed to install again at
+ * once, its data kept and that call skipped. Locked files are removed at next
+ * start. */
 MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
 
 /* Re-verifies, loads the native library, and returns the named interface

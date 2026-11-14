@@ -1244,6 +1244,10 @@ private struct TextFieldNode: View {
     }
     .accessibilityLabel(node.label)
     .onAppear { text = node.string("value") ?? "" }
+    // Typed and not sent yet: a button's click sends it first (SlotStore.noteTyping).
+    .onChange(of: text) { _, now in
+      if focused { SlotStore.shared.noteTyping(address, node: node.id, text: now) }
+    }
     .onChange(of: revision) { _, _ in if !focused && !node.bool("secure") { text = node.string("value") ?? "" } }
   }
 }

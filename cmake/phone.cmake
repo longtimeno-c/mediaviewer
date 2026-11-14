@@ -91,3 +91,15 @@ if(APPLE)
 elseif(WIN32)
   set_target_properties(mv_phone_access PROPERTIES PREFIX "")
 endif()
+
+# host/: the driftwire program the add-on carries (docs/plans/phone-access-addon.md
+# §8), beside the module for a local build and the tests. The release packs
+# its signed standalone build instead (release.yml).
+if(TARGET mv_driftwire_cli)
+  add_dependencies(mv_phone_access mv_driftwire_cli)
+  add_custom_command(TARGET mv_phone_access POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:mv_phone_access>/host"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:mv_driftwire_cli>"
+            "$<TARGET_FILE_DIR:mv_phone_access>/host/$<TARGET_FILE_NAME:mv_driftwire_cli>"
+    VERBATIM)
+endif()

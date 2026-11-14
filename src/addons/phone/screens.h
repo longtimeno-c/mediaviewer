@@ -52,6 +52,9 @@ class screen {
   // Whether the last build had something that changes each second (the code's countdown).
   [[nodiscard]] bool ticking() const noexcept { return !qr_.empty(); }
 
+  // A phone's ("ph", its key) or a shared folder's ("fo", its id) row id prefix.
+  [[nodiscard]] static std::string row_id(const char* prefix, const std::string& of);
+
   // ---- words, for the tests -----------------------------------------------------
   [[nodiscard]] static std::string share_label(std::string_view path);
   [[nodiscard]] static std::string gigabytes(std::int64_t bytes);
@@ -94,7 +97,7 @@ class screen {
   std::vector<bool> phone_limited_, phone_backup_, folder_backup_;
   std::vector<std::int64_t> folder_limit_, folder_reserve_;
   std::string asking_key_, relay_now_;
-  bool claimed_ = false, busy_ = false;
+  bool claimed_ = false, busy_ = false, grants_ = false;
   std::string qr_;
 
   std::uint64_t secret_gen_ = 1;  // a secure field's id suffix (build)

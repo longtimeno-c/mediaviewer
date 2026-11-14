@@ -451,7 +451,28 @@ final class SlotStore: ObservableObject {
     if !item.opens.isEmpty { SlotWindows.shared.bringForward(ScreenAddress(addon: item.addon, screen: item.opens)) }
   }
 
+  /// What is typed in a screen's text fields and not yet sent, by node: a
+  /// SwiftUI button on macOS does not take focus, so the field the person typed
+  /// in never loses it; a click sends these first (as changes), in order.
+  private var unsent: [ScreenAddress: [(node: String, text: String)]] = [:]
+
+  func noteTyping(_ at: ScreenAddress, node: String, text: String) {
+    var list = unsent[at, default: []].filter { $0.node != node }
+    list.append((node, text))
+    unsent[at] = list
+  }
+
+  func typingSent(_ at: ScreenAddress, node: String) {
+    guard var list = unsent[at] else { return }
+    list.removeAll { $0.node == node }
+    unsent[at] = list.isEmpty ? nil : list
+  }
+
   func send(_ at: ScreenAddress, node: String, kind: UInt32, value: Any?) {
+    if kind == 1, let pending = unsent.removeValue(forKey: at) {
+      for p in pending where p.node != node { send(at, node: p.node, kind: 2, value: p.text) }
+    }
+    if kind == 2 || kind == 3 { typingSent(at, node: node) }
     var text = ""
     if let value {
       if let s = value as? String {
@@ -510,6 +531,7 @@ final class SlotStore: ObservableObject {
   }
 
   func close(_ at: ScreenAddress) {
+    unsent.removeValue(forKey: at)  // nothing typed outlives the screen
     _ = at.addon.withCString { a in at.screen.withCString { mv_chrome_slots_close_screen(a, $0) } }
   }
 

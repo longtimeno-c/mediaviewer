@@ -70,6 +70,11 @@ void set_bundled(std::string program);
 // the default data folder.
 [[nodiscard]] where find();
 
+// Whether the start-at-login entry (w.login_entry) starts `program`: its text
+// names that path (as written, or XML-escaped as the LaunchAgent and the task
+// write it). False with no entry.
+[[nodiscard]] bool login_entry_runs(const where& w, const std::string& program);
+
 // What `host status` would say, read from the host's files: never a path or
 // an address. A running host holds host.lock; its state.json has its ports.
 struct host_status {

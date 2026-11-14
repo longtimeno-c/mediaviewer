@@ -84,8 +84,9 @@ TEST_CASE("phone access: every state of the card is a tree the core accepts", "[
     screen c(mv::phone::card::computer::mac);
     require_valid(c.build(state, kNow));
     // Each part that opens in place stays a tree the core accepts.
-    for (const char* node : {"setup_open", "unlock_open", "change_open", "relay_open", "fo1_limit", "restart_open",
-                             "handover_open"}) {
+    for (const std::string& node : {std::string("setup_open"), std::string("unlock_open"), std::string("change_open"),
+                                   std::string("relay_open"), screen::row_id("fo", "r2") + "_limit",
+                                   std::string("restart_open"), std::string("handover_open")}) {
       (void)c.on_event(node, kClick, "", kNow);
       require_valid(c.build(state, kNow));
     }
@@ -111,22 +112,31 @@ TEST_CASE("phone access: the claimed card shows the code, its countdown, the pho
   CHECK(tree.find("Indexed by this PC") != std::string::npos);
   CHECK(tree.find("Stop sharing") != std::string::npos);
   // The Catalogue is never offered to stop sharing: one Stop sharing, the backup folder's.
-  CHECK(tree.find("\"fo0_stop\"") == std::string::npos);
-  CHECK(tree.find("\"fo1_stop\"") != std::string::npos);
+  CHECK(tree.find("\"" + screen::row_id("fo", "r1") + "_stop\"") == std::string::npos);
+  CHECK(tree.find("\"" + screen::row_id("fo", "r2") + "_stop\"") != std::string::npos);
 
   // A row's controls reach the link with that row's ids.
-  auto r = c.on_event("ph0_remove", kClick, "", kNow);
+  auto r = c.on_event(screen::row_id("ph", "aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44") + "_remove", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"revoke","key":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44"})");
-  r = c.on_event("ph1_access", kChange, quoted("604800"), kNow);
+  r = c.on_event(screen::row_id("ph", "0011") + "_access", kChange, quoted("604800"), kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"grant","key":"0011","for_s":604800})");
-  r = c.on_event("ph1_access", kChange, quoted("unlimited"), kNow);
+  r = c.on_event(screen::row_id("ph", "0011") + "_access", kChange, quoted("unlimited"), kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"grant","key":"0011","for_s":0})");
-  r = c.on_event("fo1_stop", kClick, "", kNow);
+  r = c.on_event(screen::row_id("fo", "r2") + "_stop", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"remove_folder","id":"r2"})");
+  // A row that is no longer there (removed elsewhere) reaches nothing, never its neighbour.
+  CHECK(c.on_event(screen::row_id("ph", "gone") + "_remove", kClick, "", kNow).empty());
+  // A server too old for guest codes gets a plain code, whatever was chosen.
+  (void)c.on_event("code_for", kChange, quoted("86400"), kNow);
+  (void)c.build(R"({"folder":"/x","claimed":true})", kNow);
+  r = c.on_event("pair", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"pair","for_s":0})");
+  (void)c.build(kClaimed, kNow);
   r = c.on_event("pair_stop", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"pair_stop"})");

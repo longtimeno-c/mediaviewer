@@ -200,6 +200,66 @@ std::string bundled() {
   return bundled_program();
 }
 
+namespace {
+
+// The task's XML is UTF-16LE with a BOM (cli/autostart_win.cpp); the plist and the unit are UTF-8.
+std::string as_utf8(const std::string& raw) {
+  if (raw.size() < 2 || static_cast<unsigned char>(raw[0]) != 0xFF || static_cast<unsigned char>(raw[1]) != 0xFE) return raw;
+  std::string out;
+  for (std::size_t i = 2; i + 1 < raw.size(); i += 2) {
+    std::uint32_t c = static_cast<unsigned char>(raw[i]) | (static_cast<std::uint32_t>(static_cast<unsigned char>(raw[i + 1])) << 8);
+    if (c >= 0xD800 && c < 0xDC00 && i + 3 < raw.size()) {
+      const std::uint32_t lo = static_cast<unsigned char>(raw[i + 2]) |
+                               (static_cast<std::uint32_t>(static_cast<unsigned char>(raw[i + 3])) << 8);
+      if (lo >= 0xDC00 && lo < 0xE000) {
+        c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+        i += 2;
+      }
+    }
+    if (c < 0x80) {
+      out += static_cast<char>(c);
+    } else if (c < 0x800) {
+      out += static_cast<char>(0xC0 | (c >> 6));
+      out += static_cast<char>(0x80 | (c & 0x3F));
+    } else if (c < 0x10000) {
+      out += static_cast<char>(0xE0 | (c >> 12));
+      out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+      out += static_cast<char>(0x80 | (c & 0x3F));
+    } else {
+      out += static_cast<char>(0xF0 | (c >> 18));
+      out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+      out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+      out += static_cast<char>(0x80 | (c & 0x3F));
+    }
+  }
+  return out;
+}
+
+std::string xml_escaped(const std::string& t) {
+  std::string out;
+  for (char c : t) {
+    switch (c) {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&apos;"; break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+bool login_entry_runs(const where& w, const std::string& program) {
+  if (w.login_entry.empty() || program.empty()) return false;
+  const auto raw = read_small(w.login_entry);
+  if (!raw) return false;
+  const std::string text = as_utf8(*raw);
+  return text.find(program) != std::string::npos || text.find(xml_escaped(program)) != std::string::npos;
+}
+
 where find() {
   const os o = this_os();
   const env e = read_env();

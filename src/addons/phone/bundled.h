@@ -36,12 +36,13 @@ struct installed {
   std::string program;    // the stable program, ready to run
   bool replaced = false;  // a different one was there (a running host restarts)
 };
-// Installs `source` (the add-on's copy) as bin_dir's program, recorded as
+// Installs the program in `source_dir` (the add-on's `host` folder: the program
+// and, on Windows, the DLLs it loads beside it) into bin_dir, recorded as
 // `version` (bin/installed.json): nothing is copied when that version of that
-// size is already there. `rename_aside`: move the old program out of the way
+// size is already there. `rename_aside`: move each old file out of the way
 // before renaming the new one in (Windows' way; the tests run both).
-// status::not_found with no source; status::io when it cannot be written.
-[[nodiscard]] result<installed> install(const std::string& source, const std::string& bin_dir,
+// status::not_found with no program in source_dir; status::io when it cannot be written.
+[[nodiscard]] result<installed> install(const std::string& source_dir, const std::string& bin_dir,
                                         const std::string& version, bool rename_aside);
 // The Windows way on Windows.
 [[nodiscard]] bool rename_aside_here() noexcept;

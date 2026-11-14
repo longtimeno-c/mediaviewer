@@ -377,6 +377,9 @@ class DriftwirePackTest(unittest.TestCase):
     def test_phone_access_carries_the_code_and_one_settings_screen(self):
         (self.src / "mv_phone_access.dll").write_bytes(b"MZ" + os.urandom(1024))
         (self.src / "libmv_phone_access.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "host").mkdir()
+        (self.src / "host" / "driftwire").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "host" / "driftwire.exe").write_bytes(b"MZ" + os.urandom(1024))
         for platform, native in (("win-x64", "mv_phone_access.dll"), ("macos", "libmv_phone_access.dylib")):
             addon_pack.main(["pack", "--addon", "phone-access", "--platform", platform, "--src", str(self.src),
                              "--version", "1.0.0", "--key", str(self.key_file), "--out", str(self.out)])
@@ -384,13 +387,16 @@ class DriftwirePackTest(unittest.TestCase):
             self.assertEqual(m["id"], "phone-access")
             self.assertEqual(m["native"], native)
             self.assertEqual(m["chrome"], "")
-            self.assertEqual(sorted(f["path"] for f in m["files"]), ["LICENSES/NOTICE.txt", native])
+            paths = sorted(f["path"] for f in m["files"])
+            self.assertIn(native, paths)
+            self.assertTrue(any(p.startswith("host/driftwire") for p in paths))
             c = m["contributes"]
             self.assertEqual(c["api"], {"min": 15, "max": 15})
             self.assertEqual(c["screens"], [{"id": "settings", "title": "Phone access", "place": "settings"}])
         with zipfile.ZipFile(self.out / "mediaviewer-addon-phone-access-macos.zip") as z:
             notice = z.read("LICENSES/NOTICE.txt").decode()
         self.assertIn("Project Nayuki", notice)
+        self.assertIn("BoringSSL (Apache-2.0)", notice)
 
 
 class EnhancePackTest(unittest.TestCase):

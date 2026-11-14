@@ -1799,6 +1799,18 @@ void forget_outside_data(const store& s, const std::string& id) noexcept {
   }
 }
 
+void tell_removed(const store& s, const std::string& id, bool keep_data) noexcept {
+  try {
+    auto info = s.find(id);
+    if (!info || info->state != install_state::ok || info->m.native.empty()) return;
+    auto lib = shared_library::open(io::join_path(info->dir, io::native_relative(info->m.native)));
+    if (!lib) return;
+    auto removed = reinterpret_cast<mv_addon_removed_fn>(lib->symbol(MV_ADDON_REMOVED_SYMBOL));
+    if (removed) (void)removed(info->data_dir.c_str(), keep_data ? 1u : 0u);
+  } catch (...) {
+  }
+}
+
 // ---- Quit ------------------------------------------------------------------------
 
 namespace {
