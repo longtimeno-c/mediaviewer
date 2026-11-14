@@ -439,6 +439,9 @@ int search(int argc, char** argv) {
   if (getenv("MV_PARITY_WITH_SOUND") == nullptr) deps.open_sound_text = nullptr;
   mv::ai::engine_options options;
   options.read_only = true;
+  // MV_PARITY_PHONE_RANK: a held-back description ranked by closeness, as the phone answers it
+  // (engine_options::rank_when_unanswered); without it, the desktop's newest-first list (#412).
+  options.rank_when_unanswered = getenv("MV_PARITY_PHONE_RANK") != nullptr;
   mv::ai::engine eng(&api, std::move(deps), options);
   if (!eng.start()) {
     std::fprintf(stderr, "engine failed\n");

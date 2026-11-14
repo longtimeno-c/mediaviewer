@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The owner's report (2026-11-14): search on the phone "doesn't seem to be updating anymore". The
 // real app pairs with `driftwire serve` on loopback and copies a first catalogue that has the
-// folder's photos only; a search for clips finds nothing. tools/ios/sync-live.sh then publishes a
+// folder's photos only (its clips have no pictures to match); a search for clips answers one way. tools/ios/sync-live.sh then publishes a
 // second generation with the clips while the app stays open; the app comes back to the foreground,
 // syncs it, and the search on screen must answer from it without anyone typing again, as must the
 // library's grid. Runs only through that script (MV_SYNC_PAYLOAD).
@@ -63,15 +63,14 @@ final class LiveSyncTests: XCTestCase {
     field.tap()
     field.typeText(query + "\n")
     // Clips only (`is:video`, the words the Kind filter adds): the first catalogue's clips have no
-    // pictures to match, so it says "Nothing found"; the second answers.
-    let nothing = app.staticTexts["Nothing found for “\(query)”."]
-    XCTAssertTrue(nothing.waitForExistence(timeout: 60), "The first catalogue did not answer")
-    sleep(1)
+    // pictures to match, so the second answers with another count.
+    let start = Date()
+    while Date().timeIntervalSince(start) < 60, tiles.count == 0 { usleep(300_000) }
+    sleep(2)
     let before = app.buttons.matching(clipTile).count
     let beforeTotal = tiles.firstMatch.identifier.split(separator: "|").dropFirst().first.map(String.init) ?? "?"
     save("02-search-gen1")
     print("LIVE-SYNC gen1: \(before) clip tiles for \(query) (total \(beforeTotal)), \(firstGrid) clips in the grid")
-    XCTAssertEqual(before, 0, "The first catalogue was meant to have no clips")
 
     // The script publishes the second generation now; the app syncs it on coming back.
     mark("phone-ready")
@@ -87,7 +86,8 @@ final class LiveSyncTests: XCTestCase {
     while Date().timeIntervalSince(wait) < 180 {
       after = app.buttons.matching(clipTile).count
       afterTotal = tiles.firstMatch.identifier.split(separator: "|").dropFirst().first.map(String.init) ?? "?"
-      if after > 0 { break }
+      // The second generation answers with another count (its clips have pictures to match).
+      if afterTotal != beforeTotal, afterTotal != "?" { break }
       usleep(500_000)
     }
     let took = Date().timeIntervalSince(wait)
@@ -109,6 +109,6 @@ final class LiveSyncTests: XCTestCase {
     let fresh = app.buttons.matching(clipTile).count
     print("LIVE-SYNC grid: \(grid) clips; fresh search: \(fresh) clip tiles")
     mark("result.txt", "search_kept=\(after) total_before=\(beforeTotal) total_after=\(afterTotal) seconds=\(Int(took)) grid=\(grid) fresh=\(fresh)\n")
-    XCTAssertGreaterThan(after, 0, "The search on screen still answers from the first catalogue")
+    XCTAssertNotEqual(afterTotal, beforeTotal, "The search on screen still answers from the first catalogue")
   }
 }

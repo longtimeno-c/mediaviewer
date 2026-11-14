@@ -8,7 +8,9 @@ results there are in all; the Mac's rows are paths on the Mac, turned into catal
 A query is identical when the phone has as many results as the Mac and its first k tiles are the
 Mac's first k rows in order, with k = min(tiles on screen, Mac's rows). Each difference is
 classified: a sound match (CLAP, which the phone has no tower for) among the Mac's rows on screen,
-or anywhere in them when the counts differ, or not; the second kind is unexplained.
+or anywhere in them when the counts differ, or not; the second kind is unexplained. A description
+the gate holds back is meant to differ: the Mac lists newest first (#412, every row unmatched), the
+phone ranks by closeness (decision log, 2026-11-14); those count as identical, and are counted.
 """
 import json
 import sqlite3
@@ -28,7 +30,7 @@ def main():
             d = json.loads(line)
             mac[d["query"]] = [("/" + uuid + r[0][len(root):], r[3]) for r in d["rows"]]
     phone = json.load(open(phone_file, encoding="utf-8"))
-    tried = identical = sound = unexplained = 0
+    tried = identical = sound = unexplained = unanswered = 0
     overlap_sum = 0.0
     compared = 0
     for answer in phone:
@@ -41,6 +43,11 @@ def main():
         tiles = [by_id.get(t, "?" + t) for t in answer["tiles"]]
         total = answer.get("total", len(tiles))
         rows = mac[q]
+        if total == len(rows) and rows and all(m == 0 for _, m in rows):
+            tried += 1
+            identical += 1
+            unanswered += 1
+            continue
         k = min(len(tiles), len(rows))
         want = [p for p, _ in rows[:k]]
         tried += 1
@@ -63,7 +70,8 @@ def main():
         print(f"DIFFER {q!r}: phone {total} results ({len(tiles)} on screen), Mac {len(rows)} rows, "
               f"top-{k} overlap {overlap:.2f}: {why}")
     print(json.dumps({"queries": tried, "identical": identical, "differ_sound": sound,
-                      "differ_unexplained": unexplained, "mean_top_k_overlap": round(overlap_sum / max(1, tried), 4),
+                      "differ_unexplained": unexplained,
+                      "held_back_ranked_on_phone": unanswered, "mean_top_k_overlap": round(overlap_sum / max(1, tried), 4),
                       "rows_compared": compared}))
     return 0 if identical == tried else 1
 

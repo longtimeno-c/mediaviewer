@@ -30,6 +30,24 @@ to `src/wire` (linked by the core, the Driftwire add-on, the `driftwire` CLI and
 `src/phone`; Local search only builds the catalogue the core signs and delivers. Plan:
 [phone-in-the-app.md](../plans/phone-in-the-app.md).
 
+**On the phone a description the gate holds back is ranked by closeness (owner, 2026-11-14).**
+Reverses #412 (below, "Result order") on the phone only; the desktop keeps the newest-first list. The
+owner reported phone search "not showing accurate results" and "not updating": the "nothing found"
+gate holds back broad one-word subjects that rank correctly, and #412 then showed the whole library
+newest first, the same grid for every such query. Measured the same day on a copy of the owner's
+Dolomites folder (779 items, L/14): snow, sky, clouds, tree, road, river, sunset, church, dog, car,
+food and selfie were all held back, while mountain (314), hiking (279) and "a snowy mountain" (104)
+answered; on the sample library (47, B/32) dog, beach, lake and sunset were held back. A first
+attempt that same day said "Nothing found" instead; the owner rejected it at once ("dog shows nothing
+and I can literally see a dog"). Now `engine_options::rank_when_unanswered` (set by
+`src/mobile/search.cpp`) ranks every allowed picture by its margin over the generic prompts, as an
+answered query ranks, with no cut-off. Not by raw cosine: dark and blurred clip frames sit close to
+every query and filled the top of every list. On the sample library "dog" then leads with five dogs,
+and beach, lake, sunset, city and food with their own photos; on the Dolomites copy "church" leads with
+the cathedral and "snow" with snow. The cost: a query that describes nothing still lists the closest
+pictures. Filters alone (`is:video in:2024`) still list newest first. Retuning the gate for broad
+subjects (desktop too) is separate work.
+
 **Nearby sync is the NAS's protocol, pulled by the phone (2026-11-10).** `docs/plans/mobile.md` §7.5 describes
 the Mac sending files as a Driftwire transfer that skips Accept. Instead the Mac runs a LAN-only
 `serve::server` over a local copy and the phone reads it as it reads the NAS. The phone needs no second

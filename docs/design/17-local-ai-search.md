@@ -271,6 +271,9 @@ cleanup. Port `src/addons/ai/cloud_files.h` (`cloud_win.cpp`, `cloud_mac.mm`, `c
   row, or filters only) everything the query allows, **newest by date created first**
   (`engine::newest_first`: `taken_at`, else Photos `created`, else mtime; ties by path). Hosts keep
   the order.
+  **The phone** (owner, 2026-11-14) ranks such a description instead: every allowed picture by its
+  margin over the generic prompts, best first, no cut-off (`engine_options::rank_when_unanswered`),
+  so "dog" shows the dogs the gate held back. Filters alone still list newest first.
 - **Scope:** `MV_AI_SCOPE_TREE` (open folder and subfolders, default) · `MV_AI_SCOPE_ALL`; kind and
   tower filters. No folder open: everywhere. Opening a folder re-asks the search.
 - **Find similar:** the still or paused frame; stored vector if indexed, else embedded on demand.
