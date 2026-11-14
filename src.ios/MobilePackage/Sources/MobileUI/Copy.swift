@@ -7,17 +7,17 @@ import MobileKit
 
 public enum FailureCopy {
   public static let synologyUnreachable =
-    "Can't reach your Synology. You can keep searching what's on this phone."
+    "Can't reach your server. You can keep searching what's on this phone."
   public static func catalogueStale(days: Int) -> String {
-    "Last updated \(days) days ago. Open MediaViewer on your Mac near your Synology to refresh it."
+    "Last updated \(days) days ago. Open MediaViewer on the computer that publishes it to refresh it."
   }
-  public static let originalGone = "This file isn't on the NAS any more."
-  public static let notThereYet = "This one hasn't reached your Synology yet."
+  public static let originalGone = "This file isn't on your server any more."
+  public static let notThereYet = "This one hasn't reached your server yet."
   public static let folderNotOnNAS =
-    "Your Synology isn't sharing the folder this came from. Add it in MediaViewer on your computer, named the same as its shared folder."
+    "Your server isn't sharing the folder this came from. Add it in MediaViewer on your computer, under Phone access, named the same as the folder on your server."
   public static let ownNetworkOnly =
-    "Your Synology can't be reached from the internet. Your provider may not give that building a public address."
-  public static let serviceTooOld = "The MediaViewer service on your Synology needs updating."
+    "Your server can't be reached from the internet. Your provider may not give that building a public address."
+  public static let serviceTooOld = "The MediaViewer service on your server needs updating."
   public static let publisherChanged =
     "This library was published from a different computer. Scan a new code from that computer to keep using it."
   public static let unsupportedTower =
@@ -69,11 +69,16 @@ public enum FailureCopy {
   public static let fileModeTop = "Choose a folder."
   public static let fileModeSettings = "Folders, searched by name and tag"
   public static let clipStopped = "This clip stopped playing."
+  // Offline folders (docs/plans/self-hosted.md §6): a drive unplugged from the server.
+  public static let notConnected = "Not connected"
+  public static func driveNotConnected(_ folder: String) -> String {
+    "The drive with “\(folder)” isn't connected to your server. Connect it, then try again."
+  }
 
   public static func line(for failure: CopyFailure, sample: Bool = false) -> String {
     switch failure {
     case .synologyUnreachable:
-      return sample ? "The copy stopped. The sample library went out of reach." : "The copy stopped. Your Synology went out of reach."
+      return sample ? "The copy stopped. The sample library went out of reach." : "The copy stopped. Your server went out of reach."
     case .notEnoughSpace(let bytes): return "There isn't enough space on this phone. The library needs \(ProgressWords.size(bytes))."
     case .catalogueRejected:
       return sample ? "What arrived isn't the signed sample library." : "What arrived doesn't match what your computer published."
@@ -82,12 +87,12 @@ public enum FailureCopy {
     }
   }
 
-  // The sample library (§11.1). Said wherever the Synology would be named.
+  // The sample library (§11.1). Said wherever your server would be named.
   public static let sampleCode = "SAMPLE"
   public static let sampleUnreachable =
     "Can't reach the sample library. You can keep searching what's on this phone."
   public static let sampleAbout =
-    "Free photos and clips from Wikimedia Commons, to try MediaViewer without a Mac or a NAS. They're downloaded from GitHub, and search runs on this phone."
+    "Free photos and clips from Wikimedia Commons, to try MediaViewer without a server of your own. They're downloaded from GitHub, and search runs on this phone."
   public static let sampleRejected =
     "The sample library didn't pass its signature check, so none of it is shown. Try again later."
   public static let enterCodeHelp =
@@ -100,14 +105,14 @@ public enum FailureCopy {
   // Phone backup (1.1, §10b, §11.1).
   public static let backupPausedOffWiFi = "Backup is paused until this phone is on Wi-Fi."
   public static let backupFolderNotAllowed =
-    "Your Synology doesn't let this phone write to that folder. The owner can allow it in MediaViewer on their computer."
+    "Your server doesn't let this phone write to that folder. The owner can allow it in MediaViewer on their computer."
   public static let backupLimitReached =
     "The backup folder has reached the storage limit set for it. Raise the limit in MediaViewer on your computer, or choose another folder."
-  public static let backupNASFull = "Your Synology is full, so nothing more can be backed up."
-  public static let backupServiceTooOld = "The MediaViewer service on your Synology needs updating before it can take backups."
-  public static let backupFolderGone = "That backup folder isn't on your Synology any more. Choose another."
+  public static let backupNASFull = "Your server is full, so nothing more can be backed up."
+  public static let backupServiceTooOld = "The MediaViewer service on your server needs updating before it can take backups."
+  public static let backupFolderGone = "That backup folder isn't on your server any more. Choose another."
   public static let backupNoFolders =
-    "Your Synology has no backup folder yet. Add one in MediaViewer on your computer, under Phone access."
+    "Your server has no backup folder yet. Add one in MediaViewer on your computer, under Phone access."
   public static let backupNoPhotos = "MediaViewer isn't allowed to read Photos. You can change that in Settings."
   public static let backupLimited = "Only the photos you chose for MediaViewer are backed up."
   /// Owner's call B8 (2026-11-12).
@@ -116,7 +121,7 @@ public enum FailureCopy {
     "New photos appear in search once your computer has indexed the backup folder and published the library again."
   public static let backupSampleAbout =
     "With the sample library, backup copies your photos to a folder inside MediaViewer on this iPhone, so you can see how it works. Nothing leaves this phone, and Forget removes the folder."
-  public static let sampleBackupFolder = "Sample NAS on this iPhone"
+  public static let sampleBackupFolder = "Sample server on this iPhone"
 
   public static func backupLine(for state: BackupState, sample: Bool = false) -> String? {
     switch state {

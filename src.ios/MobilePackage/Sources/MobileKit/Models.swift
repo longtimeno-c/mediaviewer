@@ -116,12 +116,16 @@ public struct Folder: Identifiable, Hashable, Sendable {
   /// folder in file mode, which is never walked).
   public let itemCount: Int
   public let hasSubfolders: Bool
+  /// The drive that holds it is not connected to the server now (unplugged, a share not mounted;
+  /// docs/plans/self-hosted.md §6): shown, said so, and never opened until it is back.
+  public let offline: Bool
 
-  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool) {
+  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool, offline: Bool = false) {
     self.id = id
     self.name = name
     self.itemCount = itemCount
     self.hasSubfolders = hasSubfolders
+    self.offline = offline
   }
 }
 

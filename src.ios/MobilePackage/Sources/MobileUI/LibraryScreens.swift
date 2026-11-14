@@ -151,7 +151,8 @@ private struct PlaceBar: View {
         ForEach(library.subfolders) { folder in
           Button { library.enter(folder) } label: { chip(folder) }
             .buttonStyle(TileButtonStyle())
-            .accessibilityLabel(folder.itemCount >= 0 ? "\(folder.name), \(folder.itemCount) items" : folder.name)
+            .accessibilityLabel(folder.offline ? "\(folder.name), \(FailureCopy.notConnected.lowercased())"
+                                : folder.itemCount >= 0 ? "\(folder.name), \(folder.itemCount) items" : folder.name)
         }
       }
       .padding(.horizontal, Theme.inset)
@@ -163,10 +164,12 @@ private struct PlaceBar: View {
 
   private func chip(_ folder: Folder) -> some View {
     ChipLabel {
-      Image(systemName: "folder.fill").font(.footnote).foregroundStyle(Theme.body)
-      Text(folder.name).font(.subheadline).foregroundStyle(Theme.title).fixedSize()
-      // A NAS folder in file mode has no count until it is opened (-1).
-      if folder.itemCount >= 0 {
+      // A drive unplugged from the server: its own icon, and the words in place of a count.
+      Image(systemName: folder.offline ? "externaldrive.badge.xmark" : "folder.fill").font(.footnote).foregroundStyle(Theme.body)
+      Text(folder.name).font(.subheadline).foregroundStyle(folder.offline ? Theme.body : Theme.title).fixedSize()
+      if folder.offline {
+        Text(FailureCopy.notConnected).font(.caption).foregroundStyle(Theme.body).fixedSize()
+      } else if folder.itemCount >= 0 {  // a server folder in file mode has no count until it is opened (-1)
         Text(folder.itemCount, format: .number).font(.caption.monospacedDigit()).foregroundStyle(Theme.body).fixedSize()
       }
     }

@@ -220,7 +220,7 @@ final class PhoneStore: ObservableObject {
     panel.canChooseDirectories = true
     panel.canCreateDirectories = true
     panel.prompt = "Choose"
-    panel.message = "Choose a folder on the NAS that holds your library."
+    panel.message = "Choose a folder on your server that holds your library."
     guard panel.runModal() == .OK, let url = panel.url else { return }
     send(["do": "folder", "path": url.path])
   }
@@ -243,26 +243,26 @@ final class PhoneStore: ObservableObject {
     case "unreachable": return "Couldn't reach the service."
     case "bad_address": return "That isn't an address. Use name:port."
     case "too_many": return "Too many phones are paired. Remove one first."
-    case "no_folder": return "Choose the folder on your NAS first."
-    case "not_published": return "Choose the folder on your NAS first."
+    case "no_folder": return "Choose the folder on your server first."
+    case "not_published": return "Choose the folder on your server first."
     case "other_library": return "That folder holds another library's catalogue."
     case "no_key_store": return "This copy of MediaViewer can't keep a signing key."
-    case "revoke_waits": return "Removed here. The NAS will be told when it can be reached."
+    case "revoke_waits": return "Removed here. Your server will be told when it can be reached."
     case "no_driftwire": return "This copy of MediaViewer can't keep phone keys."
     case "no_local_search": return "Install Local search to publish a catalogue."
-    case "needs_unlock": return "Enter the NAS passphrase to do that."
-    case "passphrase": return "That is not the NAS passphrase."
+    case "needs_unlock": return "Enter the server passphrase to do that."
+    case "passphrase": return "That is not the server passphrase."
     case "passphrase_short": return "A passphrase needs at least 10 characters."
-    case "no_passphrase": return "This NAS has no passphrase yet. Enter a new one twice to choose it."
+    case "no_passphrase": return "This server has no passphrase yet. Enter a new one twice to choose it."
     case "slow_down": return "Try again in a moment."
-    case "wrong_service": return "That is a different NAS from the one this computer claimed."
+    case "wrong_service": return "That is a different server from the one this computer claimed."
     case "locked_out":
-      return "Too many tries. Try again at \(Self.clock(state.lockedUntil)), or reset it on the NAS with driftwire serve passphrase reset."
+      return "Too many tries. Try again at \(Self.clock(state.lockedUntil)), or reset it on the server with driftwire serve passphrase reset."
     case "nas_too_old":
       if state.claimed && (state.nasPassphrase.isEmpty || state.nasPassphrase == "none") {
-        return "Claimed. Update the NAS service to protect it with a passphrase."
+        return "Claimed. Update the service on your server to protect it with a passphrase."
       }
-      return "Update the NAS service to use this."
+      return "Update the service on your server to use this."
     default: return "That didn't work."
     }
   }
@@ -277,8 +277,8 @@ final class PhoneStore: ObservableObject {
     case "set":
       return state.unlockedSeconds > 0 ? "Unlocked · \(max(1, (state.unlockedSeconds + 59) / 60)) min" : "Locked"
     case "none": return "None. Choose one so nobody else on your network can claim or change this service."
-    case "broken": return "The NAS can't read it. Reset it on the NAS with driftwire serve passphrase reset."
-    default: return "Update the NAS service to use this."
+    case "broken": return "Your server can't read it. Reset it on the server with driftwire serve passphrase reset."
+    default: return "Update the service on your server to use this."
     }
   }
 
@@ -296,11 +296,11 @@ final class PhoneStore: ObservableObject {
 
   /// There is no public relay (owner, 2026-11-12): the row says so plainly.
   nonisolated static func relayDetail(_ relay: String, available: Bool) -> String {
-    if !available { return "Update the NAS service to reach it away from home without a forwarded port." }
+    if !available { return "Update the service on your server to reach it away from home without a forwarded port." }
     if relay.isEmpty {
       return "Away from home without a forwarded port, phones need a relay you run yourself (driftwire-relay on your own server). There is no public one."
     }
-    return "Phones away from home go through \(relay) when they can't reach the NAS directly. It passes sealed bytes only."
+    return "Phones away from home go through \(relay) when they can't reach your server directly. It passes sealed bytes only."
   }
 
   /// The relay's key is at least 16 characters, as driftwire-relay takes it.
@@ -361,8 +361,8 @@ final class PhoneStore: ObservableObject {
   var busyText: String? {
     switch state.busy {
     case "claim": return "Claiming the service"
-    case "pair": return "Asking the NAS for a code"
-    case "refresh": return "Checking the NAS"
+    case "pair": return "Asking your server for a code"
+    case "refresh": return "Checking your server"
     case "revoke": return "Removing the phone"
     case "add_folder", "remove_folder": return "Changing the shared folders"
     case "set_addresses": return "Checking the address"
@@ -389,13 +389,13 @@ final class PhoneStore: ObservableObject {
     guard state.localSearch, let c = state.catalogue else {
       return "Your phone searches file names and tags. Install Local search and index this library for words, faces, places and sounds."
     }
-    if c.running { return c.phase == "sending" ? "Sending to the NAS" : "Building the catalogue" }
+    if c.running { return c.phase == "sending" ? "Sending to your server" : "Building the catalogue" }
     switch c.error {
     case "unreachable": return "Couldn't reach that folder. It will need to be mounted."
     case "other_library": return "That folder holds another library's catalogue."
     case "no_space": return "Not enough space on the share."
     case "no_index": return "Nothing is indexed yet. Your phone searches file names and tags until it is."
-    case "no_folders": return "None of your search folders are on that NAS."
+    case "no_folders": return "None of your search folders are on that server."
     case "no_key_store": return "This copy of MediaViewer can't keep a signing key, so it can't publish."
     case "failed": return "The catalogue could not be built."
     case "cancelled": return "Stopped."
@@ -472,12 +472,12 @@ struct PhoneAccessSection: View {
 
   @ViewBuilder private var content: some View {
     if let line = model.busyText { ProgressLine(verb: line, fraction: nil, timed: false) }
-    SettingsRow(title: "Folder on your NAS",
+    SettingsRow(title: "Folder on your server",
                 detail: s.folder.isEmpty ? "Where your phone reads your library. Nothing is written there until you choose it." : s.folder,
                 labelsContent: false) {
       SettingsButton(title: s.folder.isEmpty ? "Choose…" : "Change…") { model.chooseFolder() }
         .disabled(!s.busy.isEmpty || (s.catalogue?.running ?? false))
-        .accessibilityLabel("Choose the folder on your NAS")
+        .accessibilityLabel("Choose the folder on your server")
     }
     if !s.folder.isEmpty {
       search
@@ -508,7 +508,7 @@ struct PhoneAccessSection: View {
     }
     if let c = s.catalogue, c.running {
       // One progress line (docs/design/20 "Craft rules"), ending in a quiet Cancel.
-      ProgressLine(verb: c.phase == "sending" ? "Sending to the NAS" : "Building the catalogue",
+      ProgressLine(verb: c.phase == "sending" ? "Sending to your server" : "Building the catalogue",
                    fraction: min(1, max(0, c.fraction)), key: "phone-publish",
                    onCancel: { model.send(["do": "cancel"]) })
         .padding(.horizontal, MVTheme.space(12))
@@ -519,8 +519,8 @@ struct PhoneAccessSection: View {
 
   private var claim: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      SettingsRow(title: "Service on your NAS",
-                  detail: "Claim it from the NAS's own network, once. Your Mac writes a one-time token to the share to prove it can.") {
+      SettingsRow(title: "Service on your server",
+                  detail: "Claim it from your server's own network, once. Your Mac writes a one-time token to the share to prove it can.") {
         SettingsButton(title: "Claim") {
           model.send(claimRequest())
           passphrase = ""
@@ -529,12 +529,12 @@ struct PhoneAccessSection: View {
           .accessibilityLabel("Claim the service")
           .disabled(!claimable)
       }
-      field("Address on your network", hint: "nas.local:7878", text: $local)
+      field("Address on your network", hint: "server.local:7878", text: $local)
       publicField
-      secure("NAS passphrase",
-             detail: "The one you set on the NAS with driftwire serve init. If it has none, choose one here: enter it twice, at least 10 characters.",
+      secure("Server passphrase",
+             detail: "The one you set on the server with driftwire serve init. If it has none, choose one here: enter it twice, at least 10 characters.",
              text: $passphrase)
-      secure("Again, to choose it", detail: "Leave empty when the NAS already has one.", text: $passphraseAgain)
+      secure("Again, to choose it", detail: "Leave empty when the server already has one.", text: $passphraseAgain)
     }
   }
 
@@ -574,7 +574,7 @@ struct PhoneAccessSection: View {
       if unlockWanted && s.nasPassphrase == "set" { unlockRow }
       if s.qr.isEmpty {
         SettingsRow(title: "Add a phone",
-                    detail: s.added.last.map { "Added \($0)." } ?? "One scan pairs a phone with this Mac and your NAS.",
+                    detail: s.added.last.map { "Added \($0)." } ?? "One scan pairs a phone with this Mac and your server.",
                     labelsContent: false) {
           HStack(spacing: MVTheme.space(8)) {
             Picker("Access", selection: $codeFor) {
@@ -583,7 +583,7 @@ struct PhoneAccessSection: View {
             }
             .pickerStyle(.menu).frame(width: 160)
             .disabled(!s.nasHasFeatures)
-            .help(s.nasHasFeatures ? "How long the phone that scans it may use this library" : "Update the NAS service to use this")
+            .help(s.nasHasFeatures ? "How long the phone that scans it may use this library" : "Update the service on your server to use this")
             .accessibilityLabel("How long the phone may use this library")
             SettingsButton(title: "Show code") { model.send(["do": "pair", "for_s": s.nasHasFeatures ? codeFor : 0]) }
               .disabled(!s.busy.isEmpty)
@@ -613,7 +613,7 @@ struct PhoneAccessSection: View {
             }
             .menuStyle(.borderlessButton).fixedSize()
             .disabled(!s.busy.isEmpty || !s.nasHasFeatures)
-            .help(s.nasHasFeatures ? "" : "Update the NAS service to use this")
+            .help(s.nasHasFeatures ? "" : "Update the service on your server to use this")
             .accessibilityLabel(phone.limited ? "Extend \(phone.name)'s access" : "Limit \(phone.name)'s access")
             SettingsButton(title: "Remove") { model.send(["do": "revoke", "key": phone.key]) }
               .disabled(!s.busy.isEmpty)
@@ -622,10 +622,10 @@ struct PhoneAccessSection: View {
         }
       }
       if !s.reachable {
-        Text("Couldn't reach the NAS. These are the phones it knew about last.")
+        Text("Couldn't reach your server. These are the phones it knew about last.")
           .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
       }
-      field("Address on your network", hint: "nas.local:7878", text: $local, onCommit: saveAddresses)
+      field("Address on your network", hint: "server.local:7878", text: $local, onCommit: saveAddresses)
       publicField
       relayRow
       folders
@@ -634,21 +634,21 @@ struct PhoneAccessSection: View {
 
   // "NAS passphrase · Locked", Lock, and Change… or Choose…, with its fields inline.
   @ViewBuilder private var passphraseRow: some View {
-    SettingsRow(title: "NAS passphrase", detail: model.passphraseDetail, labelsContent: false) {
+    SettingsRow(title: "Server passphrase", detail: model.passphraseDetail, labelsContent: false) {
       HStack(spacing: MVTheme.space(8)) {
         if s.nasPassphrase == "set" && s.unlockedSeconds > 0 {
           SettingsButton(title: "Lock") { model.send(["do": "lock"]) }
             .disabled(!s.busy.isEmpty)
-            .accessibilityLabel("Lock: forget the NAS key on this Mac")
+            .accessibilityLabel("Lock: forget the server's key on this Mac")
         } else if s.nasPassphrase == "set" && !unlockWanted {
           SettingsButton(title: "Unlock…") { unlockWanted = true }
             .disabled(!s.busy.isEmpty)
-            .accessibilityLabel("Unlock with the NAS passphrase")
+            .accessibilityLabel("Unlock with the server passphrase")
         }
         if s.nasPassphrase == "set" || s.nasPassphrase == "none" {
           SettingsButton(title: s.nasPassphrase == "set" ? "Change…" : "Choose…") { changing.toggle() }
             .disabled(!s.busy.isEmpty)
-            .accessibilityLabel(s.nasPassphrase == "set" ? "Change the NAS passphrase" : "Choose a NAS passphrase")
+            .accessibilityLabel(s.nasPassphrase == "set" ? "Change the server passphrase" : "Choose a server passphrase")
         }
       }
     }
@@ -675,13 +675,13 @@ struct PhoneAccessSection: View {
 
   // A refused action asks for the passphrase here; unlocked, the person does it again.
   private var unlockRow: some View {
-    SettingsRow(title: "Unlock", detail: "Enter the NAS passphrase, then do that again. This Mac keeps the key for 10 minutes and never the passphrase.",
+    SettingsRow(title: "Unlock", detail: "Enter the server passphrase, then do that again. This Mac keeps the key for 10 minutes and never the passphrase.",
                 labelsContent: false) {
       HStack(spacing: MVTheme.space(8)) {
-        SecureField("NAS passphrase", text: $unlockWith)
+        SecureField("Server passphrase", text: $unlockWith)
           .onSubmit(unlock)
           .textFieldStyle(.roundedBorder).frame(width: 200).font(MVTheme.font(12))
-          .accessibilityLabel("NAS passphrase")
+          .accessibilityLabel("Server passphrase")
         SettingsButton(title: "Unlock", action: unlock)
           .disabled(unlockWith.isEmpty || !s.busy.isEmpty)
         SettingsButton(title: "Cancel") {
@@ -764,7 +764,7 @@ struct PhoneAccessSection: View {
               .accessibilityLabel("Storage limit in gigabytes")
             Text("GB, keep free").foregroundStyle(MVTheme.body)
             TextField("GB", text: $editReserveGB).textFieldStyle(.roundedBorder).frame(width: 60)
-              .accessibilityLabel("Free space to keep on the NAS, in gigabytes")
+              .accessibilityLabel("Free space to keep on the server, in gigabytes")
             Text("GB").foregroundStyle(MVTheme.body)
             SettingsButton(title: "Save") {
               if let l = PhoneStore.bytes(editLimitGB), l > 0, let r = PhoneStore.bytes(editReserveGB) {
@@ -782,8 +782,8 @@ struct PhoneAccessSection: View {
         TextField(newPath.isEmpty ? "Label" : PhoneStore.shareLabel(forPath: newPath), text: $newLabel)
           .textFieldStyle(.roundedBorder).frame(width: 120)
           .accessibilityLabel("Name of the new shared folder")
-        TextField("Folder on the NAS, like /volume1/Video", text: $newPath).textFieldStyle(.roundedBorder)
-          .accessibilityLabel("Path of the new shared folder on the NAS")
+        TextField("Folder on the server, like /volume1/Video or /Volumes/Drive/Video", text: $newPath).textFieldStyle(.roundedBorder)
+          .accessibilityLabel("Path of the new shared folder on the server")
         SettingsButton(title: "Add") {
           let label = newLabel.isEmpty ? PhoneStore.shareLabel(forPath: newPath) : newLabel
           var request: [String: Any] = ["do": "add_folder", "label": label, "path": newPath]
@@ -807,7 +807,7 @@ struct PhoneAccessSection: View {
         Toggle("Phones back up to this folder", isOn: $newIsBackup)
           .toggleStyle(.checkbox)
           .disabled(!s.nasHasBackup)
-          .help(s.nasHasBackup ? "" : "Update the NAS service to use this")
+          .help(s.nasHasBackup ? "" : "Update the service on your server to use this")
           .accessibilityLabel("Phones back up their photos to this folder")
         if newIsBackup {
           Text("Limit").foregroundStyle(MVTheme.body)
@@ -815,7 +815,7 @@ struct PhoneAccessSection: View {
             .accessibilityLabel("Storage limit in gigabytes")
           Text("GB, keep free").foregroundStyle(MVTheme.body)
           TextField("GB", text: $newReserveGB).textFieldStyle(.roundedBorder).frame(width: 60)
-            .accessibilityLabel("Free space to keep on the NAS, in gigabytes")
+            .accessibilityLabel("Free space to keep on the server, in gigabytes")
           Text("GB").foregroundStyle(MVTheme.body)
         }
       }
@@ -886,13 +886,13 @@ struct PhoneAccessSection: View {
           relayKey = ""
         }
         .disabled(!s.busy.isEmpty || !s.nasHasRelay)
-        .help(s.nasHasRelay ? "" : "Update the NAS service to use this")
+        .help(s.nasHasRelay ? "" : "Update the service on your server to use this")
         .accessibilityLabel(s.relay.isEmpty ? "Set up your own relay" : "Change the relay")
       }
     }
     if relayEditing {
       field("Relay address", hint: "relay.example.com:7879", text: $relayAddress)
-      secure("Relay key", detail: "The key your driftwire-relay was started with. Your NAS keeps it; this Mac doesn't.", text: $relayKey)
+      secure("Relay key", detail: "The key your driftwire-relay was started with. Your server keeps it; this Mac doesn't.", text: $relayKey)
         .onSubmit(saveRelay)
       HStack(spacing: MVTheme.space(8)) {
         Spacer()

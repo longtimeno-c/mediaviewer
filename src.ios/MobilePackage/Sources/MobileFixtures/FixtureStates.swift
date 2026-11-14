@@ -499,7 +499,7 @@ private struct FixtureScanView: View {
     ("A good code", "fixture:good"),
     ("An expired code", "fixture:expired"),
     ("Not a MediaViewer code", "fixture:unreadable"),
-    ("Synology not reachable", "fixture:unreachable"),
+    ("Server not reachable", "fixture:unreachable"),
     ("Reachable only at home", "fixture:own-network"),
     ("No mobile data on this iPad", "fixture:no-mobile-data"),
     ("Service needs updating", "fixture:too-old"),

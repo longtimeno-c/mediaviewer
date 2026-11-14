@@ -498,6 +498,8 @@ public final class LibraryModel {
 
   private let store: LibraryStore
   private var loading: Task<Void, Never>?
+  /// The top level's ask for the server's offline folders, after its own folders are on screen.
+  private var offlineCheck: Task<Void, Never>?
   /// Where the newest load is going. `trail` follows only once it has arrived.
   private var requested: [Folder] = []
 
@@ -505,7 +507,15 @@ public final class LibraryModel {
 
   public var scope: LibraryScope { trail.last.map(LibraryScope.folder) ?? .everything }
 
-  public func enter(_ folder: Folder) { show(trail + [folder]) }
+  public func enter(_ folder: Folder) {
+    // A folder whose drive is not connected has nothing to show: say so, stay here. The notice's
+    // Try again reloads this level, which asks the server again.
+    guard !folder.offline else {
+      failure = FailureCopy.driveNotConnected(folder.name)
+      return
+    }
+    show(trail + [folder])
+  }
 
   public func goBack(to index: Int) { show(Array(trail.prefix(index + 1))) }
 
@@ -519,6 +529,7 @@ public final class LibraryModel {
 
   func reset() {
     loading?.cancel()
+    offlineCheck?.cancel()
     requested = []
     trail = []
     subfolders = []
@@ -549,15 +560,41 @@ public final class LibraryModel {
       let built = await Task.detached(priority: .userInitiated) { Self.grid(of: list) }.value
       guard !Task.isCancelled, path == requested else { return }
       trail = path
-      subfolders = folders
+      // The top level keeps the offline folders it showed until the server answers again (no flicker).
+      subfolders = path.isEmpty ? Self.merging(subfolders.filter(\.offline), into: folders) : folders
       sections = built.sections
       entries = built.entries
       failure = nil
+      if path.isEmpty { addOfflineFolders(over: folders) }
     } catch {
       guard !Task.isCancelled, !(error is CancellationError) else { return }
       failure = FailureCopy.libraryFailed
     }
     isLoading = false
+  }
+
+  /// The server's folders whose drive is not connected join the top level once they are known: its
+  /// own folders never wait for the server to answer.
+  private func addOfflineFolders(over own: [Folder]) {
+    offlineCheck?.cancel()
+    offlineCheck = Task { [store] in
+      let offline = await store.offlineFolders()
+      guard !Task.isCancelled, requested.isEmpty, trail.isEmpty else { return }
+      // The answer replaces the offline folders shown before: a drive plugged back in drops out.
+      let merged = Self.merging(offline, into: own)
+      if merged != subfolders { subfolders = merged }
+    }
+  }
+
+  /// `folders` with each offline folder added at the end, by name, unless one of `folders` has its id
+  /// (file mode lists offline roots itself) or its name (a catalogue's own folder for that share, which
+  /// still browses from what is on the phone: no second chip beside it).
+  nonisolated static func merging(_ offline: [Folder], into folders: [Folder]) -> [Folder] {
+    let ids = Set(folders.map(\.id))
+    let names = Set(folders.map { $0.name.lowercased() })
+    let added = offline.filter { !ids.contains($0.id) && !names.contains($0.name.lowercased()) }
+      .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    return folders + added
   }
 
   nonisolated static func grid(of list: any MediaList) -> (sections: [GridSection], entries: GridSource) {

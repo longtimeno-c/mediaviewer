@@ -1284,6 +1284,15 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     CHECK(installed->generation == 1);
     CHECK(installed->catalogue_root == kSampleCatalogueRoot);
     CHECK(mv_sync_check(l, &check) == MV_LINK_UP_TO_DATE);
+    // The sample's one offline folder, for the phone's "Not connected" (self-hosted.md §6).
+    std::vector<std::pair<std::string, std::string>> offline;
+    REQUIRE(mv_files_offline_roots(l, [](void* ctx, const char* id, const char* label, int32_t is_offline) {
+              CHECK(is_offline == 1);
+              static_cast<std::vector<std::pair<std::string, std::string>>*>(ctx)->emplace_back(id, label);
+            }, &offline) == MV_LINK_OK);
+    REQUIRE(offline.size() == 1);
+    CHECK(offline[0].first == mob::sample::kOfflineRootID);
+    CHECK(offline[0].second == "Travel drive");
     mv_catalogue_info info{};
     REQUIRE(mv_catalogue_read(l, &info) == MV_LINK_OK);
     CHECK(info.present == 1);
@@ -2299,7 +2308,8 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   CHECK(info.present == 0);  // nothing installed
 
   std::vector<std::pair<std::string, std::string>> roots;
-  REQUIRE(mv_files_roots(l, [](void* ctx, const char* id, const char* label) {
+  REQUIRE(mv_files_roots(l, [](void* ctx, const char* id, const char* label, int32_t offline) {
+            CHECK(offline == 0);
             static_cast<std::vector<std::pair<std::string, std::string>>*>(ctx)->emplace_back(id, label);
           }, &roots) == MV_LINK_OK);
   REQUIRE(roots.size() == 1);  // the catalogue's own folder is not one to browse
@@ -2337,6 +2347,39 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   CHECK(got == std::string(50, 'j'));
   CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "Trip/gone.jpg", 0, 10, 0, nullptr, collect, &got) == MV_LINK_NOT_FOUND);
   CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "", 0, 10, 0, nullptr, collect, &got) == MV_LINK_INVALID);
+
+  // The folder's drive unplugged (docs/plans/self-hosted.md §6): the service marks it offline, and
+  // both lists name it so, the catalogue's folder still left out of the first.
+  struct row {
+    std::string id, label;
+    int32_t offline;
+  };
+  const mv_root_fn collect_rows = [](void* ctx, const char* id, const char* label, int32_t offline) {
+    static_cast<std::vector<row>*>(ctx)->push_back({id, label, offline});
+  };
+  std::vector<row> rows;
+  REQUIRE(mv_files_offline_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  CHECK(rows.empty());
+  const fs::path away = r.dir.root / "photos-away";
+  fs::rename(r.photos, away);
+  REQUIRE(mv_files_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  REQUIRE(rows.size() == 1);
+  CHECK((rows[0].id == "a1a1a1a1a1a1a1a1" && rows[0].label == "Photos" && rows[0].offline == 1));
+  rows.clear();
+  REQUIRE(mv_files_offline_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  REQUIRE(rows.size() == 1);
+  CHECK((rows[0].label == "Photos" && rows[0].offline == 1));
+  // Back: online again, and the folder reads as before.
+  fs::rename(away, r.photos);
+  rows.clear();
+  REQUIRE(mv_files_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].offline == 0);
+  rows.clear();
+  REQUIRE(mv_files_offline_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  CHECK(rows.empty());
+  entries.clear();
+  CHECK(mv_files_list(l, "a1a1a1a1a1a1a1a1", "Trip", collect_entries, &entries) == MV_LINK_OK);
   mv_link_close(l);
 }
 

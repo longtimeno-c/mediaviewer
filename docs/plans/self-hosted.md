@@ -370,3 +370,25 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   network keeps the old gateway's forwards until the host restarts; the outside check (§5.3: the
   DuckDNS name resolves to the outside address) belongs to the DuckDNS keeper; Windows CI runs the
   tests once the branch is in a PR.
+
+## 15. Slice 6's copy, as built (2026-11-14)
+
+- **"Your server"** wherever the phone and the desktop card meant the service in general (owner
+  2026-11-14: a Synology stays a supported choice, so what-you-need lists name it, "or your own computer" beside it): the phone's failure,
+  backup, setup and settings words (`MobileUI/Copy.swift`, `SetupScreens.swift`, `SettingsScreen.swift`,
+  `BackupScreen.swift`, `RootView.swift`), the local-network prompt, the card's rows and lines on both
+  hosts (`PhoneWords.cs`, `IslandHost.Phone.cs`, `PhoneAccessView.swift`), the site's iPhone paragraph,
+  the support and privacy pages, the review notes and the 1.1 listing draft. Code names, wire fields and
+  JSON keys (`nas`, `serve`, `synology`) are unchanged. The App Store name and subtitle (**MediaViewer
+  for NAS**) stay until the owner says otherwise; `listing.md`'s 1.0 section stays the record of what was
+  entered.
+- **The sample** stands in for a server that is a computer (Settings: "Server · A computer"), and its
+  backup folder is "Sample server on this iPhone".
+- **Offline folders on the phone:** `mv_root_fn` carries `offline`; `mv_files_roots` lists an offline
+  folder without looking inside it, and `mv_files_offline_roots` lists only those. The Library's top
+  level adds the server's offline folders after its own (a library with a catalogue too), each chip an
+  unplugged drive with "Not connected"; a tap says the drive isn't connected and opens nothing. The
+  sample's `static_remote::roots()` adds one, "Travel drive" (not in `files.json`; no republish).
+- **Not yet:** the desktop card's **This computer** choice (wave 2); an offline backup folder is still
+  offered in the phone's backup picker; a catalogue folder whose root is offline is not marked (the
+  catalogue's folders are not tied to the service's roots on the phone).

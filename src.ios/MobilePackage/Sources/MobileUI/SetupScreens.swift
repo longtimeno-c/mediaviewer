@@ -12,7 +12,7 @@ struct WelcomeScreen: View {
 
   var body: some View {
     SetupPage {
-      Text("Your NAS library, searched from your phone")
+      Text("Your own library, searched from your phone")
         .font(.largeTitle.bold())
         .foregroundStyle(Theme.title)
         .padding(.top, 32)
@@ -23,7 +23,7 @@ struct WelcomeScreen: View {
       VStack(alignment: .leading, spacing: 8) {
         Text("You'll need").font(.footnote.weight(.semibold)).foregroundStyle(Theme.title)
         need("MediaViewer on a Mac or Windows PC, with Local search and Driftwire installed.")
-        need("A Synology NAS.")
+        need("A Synology NAS, or your own computer that stays on.")
         need("A public IPv4 address with one forwarded port, or a public IPv6 address with that port open.")
       }
       .padding(.top, 32)
@@ -410,7 +410,7 @@ struct ConnectScreen: View {
       }
       Button("Keep \(confirmingReplace ?? "it")", role: .cancel) { confirmingReplace = nil }
     } message: {
-      Text("This replaces \(confirmingReplace ?? "your library") on this phone. Everything MediaViewer keeps here for it is removed. Nothing on your Synology changes, and you can pair it again with a new code from MediaViewer.")
+      Text("This replaces \(confirmingReplace ?? "your library") on this phone. Everything MediaViewer keeps here for it is removed. Nothing on your server changes, and you can pair it again with a new code from MediaViewer.")
     }
     .task(id: attempt) {
       if attempt > 0, let confirmed { await pair(confirmed) } else { await begin() }
@@ -476,7 +476,7 @@ struct ConnectScreen: View {
       VStack(alignment: .leading, spacing: 16) {
         // The computer's half waits for nearby sync (M4b); a step that did not run is not shown.
         if steps[.mac] != .skipped { row(.mac, "Pairing with your computer") }
-        row(.synology, isSample ? "Reaching the sample library" : "Reaching your Synology")
+        row(.synology, isSample ? "Reaching the sample library" : "Reaching your server")
         // The sample library is always over the internet: there is no outside route to test.
         if !isSample { row(.outsideRoute, "Testing from outside, over mobile data") }
       }
@@ -540,7 +540,7 @@ struct ConnectScreen: View {
       case .catalogueRejected: Text(FailureCopy.sampleRejected).font(.subheadline).foregroundStyle(Theme.title)
       case .synologyUnreachable(let tried):
         VStack(alignment: .leading, spacing: 8) {
-          Text(isSample ? "Can't reach the sample library." : "Can't reach your Synology.")
+          Text(isSample ? "Can't reach the sample library." : "Can't reach your server.")
             .font(.subheadline).foregroundStyle(Theme.title)
           ForEach(tried) { failure in
             AddressFailureRow(failure: failure)

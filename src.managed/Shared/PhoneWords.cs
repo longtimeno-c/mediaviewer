@@ -204,14 +204,14 @@ internal static class PhoneWords
     {
         if (!l.LocalSearch || l.Catalogue is not { } s)
             return "Your phone searches file names and tags. Install Local search and index this library for words, faces, places and sounds.";
-        if (s.Running) return s.Phase == "sending" ? "Sending to the NAS" : "Building the catalogue";
+        if (s.Running) return s.Phase == "sending" ? "Sending to your server" : "Building the catalogue";
         switch (s.Error)
         {
             case "unreachable": return "Couldn't reach that folder. It will need to be mounted.";
             case "other_library": return "That folder holds another library's catalogue.";
             case "no_space": return "Not enough space on the share.";
             case "no_index": return "Nothing is indexed yet. Your phone searches file names and tags until it is.";
-            case "no_folders": return "None of your search folders are on that NAS.";
+            case "no_folders": return "None of your search folders are on that server.";
             case "no_key_store": return "This copy of MediaViewer can't keep a signing key, so it can't publish.";
             case "failed": return "The catalogue could not be built.";
             case "cancelled": return "Stopped.";
@@ -244,20 +244,20 @@ internal static class PhoneWords
         "unreachable" => "Couldn't reach the service.",
         "bad_address" => "That isn't an address. Use name:port.",
         "too_many" => "Too many phones are paired. Remove one first.",
-        "no_folder" => "Choose the folder on your NAS first.",
-        "not_published" => "Choose the folder on your NAS first.",
+        "no_folder" => "Choose the folder on your server first.",
+        "not_published" => "Choose the folder on your server first.",
         "other_library" => "That folder holds another library's catalogue.",
         "no_key_store" => "This copy of MediaViewer can't keep a signing key.",
-        "revoke_waits" => "Removed here. The NAS will be told when it can be reached.",
+        "revoke_waits" => "Removed here. Your server will be told when it can be reached.",
         "no_driftwire" => "This copy of MediaViewer can't keep phone keys.",
         "no_local_search" => "Install Local search to publish a catalogue.",
-        "needs_unlock" => "Enter the NAS passphrase to do that.",
-        "passphrase" => "That is not the NAS passphrase.",
+        "needs_unlock" => "Enter the server passphrase to do that.",
+        "passphrase" => "That is not the server passphrase.",
         "passphrase_short" => "A passphrase needs at least 10 characters.",
-        "no_passphrase" => "This NAS has no passphrase yet. Enter a new one twice to choose it.",
+        "no_passphrase" => "This server has no passphrase yet. Enter a new one twice to choose it.",
         "slow_down" => "Try again in a moment.",
-        "wrong_service" => "That is a different NAS from the one this computer claimed.",
-        "nas_too_old" => "Update the NAS service to use this.",
+        "wrong_service" => "That is a different server from the one this computer claimed.",
+        "nas_too_old" => "Update the service on your server to use this.",
         _ => "That didn't work.",
     };
 
@@ -265,9 +265,9 @@ internal static class PhoneWords
     /// through on a NAS too old to keep a passphrase. `clock` turns a unix time into "14:20".</summary>
     public static string? ErrorText(PhoneLinkState s, Func<long, string> clock) => s.Error switch
     {
-        "locked_out" => $"Too many tries. Try again at {clock(s.LockedUntil)}, or reset it on the NAS with driftwire serve passphrase reset.",
+        "locked_out" => $"Too many tries. Try again at {clock(s.LockedUntil)}, or reset it on the server with driftwire serve passphrase reset.",
         "nas_too_old" when s.Claimed && s.NasPassphrase is "" or "none" =>
-            "Claimed. Update the NAS service to protect it with a passphrase.",
+            "Claimed. Update the service on your server to protect it with a passphrase.",
         _ => ErrorText(s.Error),
     };
 
@@ -276,8 +276,8 @@ internal static class PhoneWords
     {
         "set" => s.UnlockedSeconds > 0 ? $"Unlocked · {Math.Max(1, (s.UnlockedSeconds + 59) / 60)} min" : "Locked",
         "none" => "None. Choose one so nobody else on your network can claim or change this service.",
-        "broken" => "The NAS can't read it. Reset it on the NAS with driftwire serve passphrase reset.",
-        _ => "Update the NAS service to use this.",
+        "broken" => "Your server can't read it. Reset it on the server with driftwire serve passphrase reset.",
+        _ => "Update the service on your server to use this.",
     };
 
     /// <summary>The durations a code or a phone's access can have, in the menus' order.</summary>
@@ -357,10 +357,10 @@ internal static class PhoneWords
 
     /// <summary>There is no public relay (owner, 2026-11-12): the row says so plainly.</summary>
     public static string RelayDetail(PhoneLinkState s) =>
-        !s.NasHasRelay ? "Update the NAS service to reach it away from home without a forwarded port."
+        !s.NasHasRelay ? "Update the service on your server to reach it away from home without a forwarded port."
         : s.Relay.Length == 0
             ? "Away from home without a forwarded port, phones need a relay you run yourself (driftwire-relay on your own server). There is no public one."
-            : $"Phones away from home go through {s.Relay} when they can't reach the NAS directly. It passes sealed bytes only.";
+            : $"Phones away from home go through {s.Relay} when they can't reach your server directly. It passes sealed bytes only.";
 
     public static string DurationText(long seconds) => seconds switch
     {
@@ -390,8 +390,8 @@ internal static class PhoneWords
     public static string? BusyText(string busy) => busy switch
     {
         "claim" => "Claiming the service",
-        "pair" => "Asking the NAS for a code",
-        "refresh" => "Checking the NAS",
+        "pair" => "Asking your server for a code",
+        "refresh" => "Checking your server",
         "revoke" => "Removing the phone",
         "add_folder" or "remove_folder" => "Changing the shared folders",
         "set_addresses" => "Checking the address",
@@ -427,7 +427,7 @@ internal static class PhoneWords
     }
 
     public static string AddDetail(PhoneLinkState s) =>
-        s.Added.Count > 0 ? $"Added {s.Added[^1]}." : "One scan pairs a phone with this PC and your NAS.";
+        s.Added.Count > 0 ? $"Added {s.Added[^1]}." : "One scan pairs a phone with this PC and your server.";
 
     public static string FolderDetail(PhoneLinkState s) =>
         s.Folder.Length == 0 ? "Where your phone reads your library. Nothing is written there until you choose it." : s.Folder;

@@ -61,7 +61,7 @@ public class PhoneWordsTests
             """)!;
         Assert.Equal(@"\\nas\photos", with.Folder);
         Assert.Equal("Smart search is on. Published 2 hours ago · 12,345 files", PhoneWords.SearchDetail(with, 1000 + 2 * 3600 + 5));
-        Assert.Equal("Sending to the NAS",
+        Assert.Equal("Sending to your server",
                      PhoneWords.SearchDetail(with with { Catalogue = with.Catalogue! with { Running = true, Phase = "sending" } }, 0));
         Assert.Equal("Smart search starts once the catalogue is published.",
                      PhoneWords.SearchDetail(with with { Catalogue = PhonePublishState.None }, 0));
@@ -115,12 +115,12 @@ public class PhoneWordsTests
             said.Add(PhoneWords.PassphraseDetail(new PhoneLinkState { NasPassphrase = p }));
         said.Add(PhoneWords.RelayDetail(new PhoneLinkState()));
         said.Add(PhoneWords.RelayDetail(new PhoneLinkState { NasFeatures = new[] { "relay" } }));
-        Assert.Contains("Phones away from home go through \\(relay) when they can't reach the NAS directly. It passes sealed bytes only.", swift);
+        Assert.Contains("Phones away from home go through \\(relay) when they can't reach your server directly. It passes sealed bytes only.", swift);
         said.Add(PhoneWords.Unlimited);
         foreach ((string label, long _) in PhoneWords.Durations) said.Add(label);
         // Built from parts on the Mac: the parts, as Swift writes them.
         Assert.Contains("Too many tries. Try again at ", swift);
-        Assert.Contains("Claimed. Update the NAS service to protect it with a passphrase.", swift);
+        Assert.Contains("Claimed. Update the service on your server to protect it with a passphrase.", swift);
         Assert.Contains("Guest code · access for ", swift);
         foreach (string? text in said)
         {
@@ -161,7 +161,7 @@ public class PhoneWordsTests
         // The lockout's line has its end; a claim on a NAS too old for a passphrase still says it went through.
         Assert.StartsWith("Too many tries. Try again at 14:20,",
                           PhoneWords.ErrorText(s with { Error = "locked_out", LockedUntil = 5 }, _ => "14:20"));
-        Assert.Equal("Claimed. Update the NAS service to protect it with a passphrase.",
+        Assert.Equal("Claimed. Update the service on your server to protect it with a passphrase.",
                      PhoneWords.ErrorText(s with { Error = "nas_too_old", NasPassphrase = "" }, _ => ""));
         // The unlock counts down each second; only a new minute on the card is a change.
         Assert.True(s.SameAs(s with { UnlockedSeconds = 70 }));
