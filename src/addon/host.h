@@ -146,6 +146,9 @@ struct host_services {
       jpeg_shrink;
   // A JPEG-512 made now and not stored (media::make_thumbnail_jpeg).
   std::function<result<std::vector<std::uint8_t>>(const std::string& path, std::int64_t pts_ms)> thumbnail_make;
+  // Settings → Local search: attach the AI pack without opening the towers
+  // (issue #292, 2026-11-14). False (the default): load models as today.
+  bool ai_hold_models = false;
   // The labels of GPS points. Empty: the add-on that answers `place:`
   // (slot_registry::provider_labels, Places). Tests inject a fake.
   std::function<result<std::vector<std::string>>(std::span<const std::pair<double, double>> points)> place_labels;

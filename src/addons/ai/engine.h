@@ -325,6 +325,12 @@ struct engine_options {
   // loaded machine a background thread can wait a minute for a core, and a
   // test asserts what the engine does, not how the OS ranks it (issue #154).
   bool background_threads = true;
+  // Settings → Local search attaches the pack so folders and settings can
+  // be managed without opening ONNX sessions, downloading weights, or
+  // starting indexing threads. First search or set_setting "start" loads
+  // them (issue #292, amended 2026-11-14). Off (the default) for tests,
+  // install, search, Resume, and Faces: those still full-start.
+  bool defer_models = false;
 };
 inline constexpr double kReaderCatchUpSeconds = 5.0;
 
@@ -584,6 +590,14 @@ class engine {
 
   // threads
   void control_loop();
+  // Settings attached with defer_models: open the towers and start workers.
+  // Search and set_setting "start" call it. Idempotent.
+  void request_models();
+  // defer_models, not yet requested, towers still closed.
+  [[nodiscard]] bool models_held() const noexcept;
+  // Search thread only, and only when defer_models: request_models then wait
+  // until the towers are in, they failed, or stop. The UI thread never waits.
+  void wait_for_models();
   void reader_loop();  // a reader's control thread: load, then catch up
   // A reader: the answering tower's text half, its vectors, People's names and
   // the audio index, all read-only. False when there is nothing to answer
@@ -1047,6 +1061,9 @@ class engine {
   std::atomic<bool> pdf_ready_{false};
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
+  // Settings opened the pack without the towers (defer_models). First search
+  // or set_setting "start" sets this; control_loop then load_models().
+  std::atomic<bool> models_requested_{false};
   std::atomic<bool> reload_models_{false};
   std::atomic<bool> reload_pieces_{false};
   std::atomic<bool> first_compile_{false};  // this load compiles a tower for the first time

@@ -171,6 +171,7 @@ public unsafe struct MvAiStatus
     public const uint FlagDocsReady = 512;      // ai-docs is loaded: document words also match by meaning (#354 D3)
     public const uint FlagTierUnchosen = 1024;  // no model tier chosen yet: open the picker (#482)
     public const uint FlagFetching = 2048;      // the chosen tier's models are still arriving (#482 T3)
+    public const uint FlagModelsHeld = 4096;    // Settings attached without opening the towers (issue #292, 2026-11-14)
 
     public uint StructSize;
     public MvAiState State;

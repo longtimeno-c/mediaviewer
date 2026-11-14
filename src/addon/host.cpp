@@ -1383,6 +1383,10 @@ mv_status MV_CALL t_addon_request(void* host, const char* addon_id, const char* 
   });
 }
 
+uint32_t MV_CALL t_ai_models_held(void* host) {
+  return self(host).services().ai_hold_models ? 1u : 0u;
+}
+
 mv_status MV_CALL t_thumbnail_make(void* host, const char* path, int64_t pts_ms, uint8_t* out, uint64_t capacity,
                                    uint64_t* out_size) {
   return guarded([&] {
@@ -1615,6 +1619,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.place_labels = &t_place_labels;
   api_.addon_request = &t_addon_request;
   if (svc_.thumbnail_make) api_.thumbnail_make = &t_thumbnail_make;
+  api_.ai_models_held = &t_ai_models_held;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

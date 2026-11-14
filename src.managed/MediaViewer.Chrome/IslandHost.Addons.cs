@@ -429,7 +429,7 @@ public static partial class IslandHost
         }
     }
 
-    private static void LoadAddon(AddonSlot slot)
+    private static void LoadAddon(AddonSlot slot, bool holdModels = false)
     {
         if (slot.Interface is null || slot.Chrome is not null || _folderSession is null || slot.Busy) return;
         // A later window loads Local search only, and only as a reader.
@@ -437,11 +437,13 @@ public static partial class IslandHost
         if (reader && slot != AiSlot) return;
         MediaViewerSession session = _folderSession;
         slot.Busy = true;
+        bool hold = holdModels && slot == AiSlot && !reader;
+        if (slot == AiSlot) _aiModelsHeldLoad = hold;
         // The path bar's search icon shows while the pack starts, and the
         // command-bar pill says so: the panel is the pack's, so it cannot.
         if (slot == AiSlot)
         {
-            HostSetIndexingPill(AiStartingText, true, -1, false);
+            HostSetIndexingPill(hold ? AiOpeningText : AiStartingText, true, -1, false);
             OnSearchLoadChanged();
             RefreshLocalSearch();
         }
@@ -449,6 +451,7 @@ public static partial class IslandHost
         {
             try
             {
+                if (slot == AiSlot && !reader) AddonNative.HoldAiModels(hold);
                 // Native load re-verifies the signature and every file first.
                 (IntPtr table, string chromePath) = AddonNative.Load(session, slot.Id, slot.Interface, reader);
                 DispatcherQueueControllerTryEnqueue(() => AttachAddonChrome(slot, table, chromePath));

@@ -272,7 +272,9 @@ const mv_host_api*, mv_addon_api* out)`; it links nothing of the core.
   `mv_last_error_message`). `mv_addon_load_reader` (AI pack's read-only door; `MV_ERR_NOT_FOUND`
   when nothing is indexed) and `mv_addon_load_guest` serve windows that do not host the add-ons
   and never sweep the store. `mv_addon_quit_wait` → `MV_ERR_TIMEOUT` means the host terminates
-  without static destructors.
+  without static destructors. `mv_ai_hold_models` (0.42) is a one-shot before the next host-door
+  load of `"ai"`: the pack attaches with its models unloaded (host table `ai_models_held`,
+  `MV_AI_STATUS_MODELS_HELD`) until the first search or `set_setting` `"start"`.
 
 ## PR 55 — open add-ons (ABI 0.17)
 

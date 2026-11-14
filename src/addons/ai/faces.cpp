@@ -1743,6 +1743,9 @@ loose_snapshot faces_db::loose_begin() {
 }
 
 std::vector<loose_face> faces_db::loose_finish(const loose_snapshot& snap) {
+  if (snap.dim == 0 || snap.emb.size() != snap.rows.size() * snap.dim || snap.no.size() != snap.rows.size()) {
+    return snap.rows;
+  }
   const refine_params& p = snap.rules;
   std::vector<loose_face> out = snap.rows;
   std::vector<std::pair<float, std::size_t>> best;
