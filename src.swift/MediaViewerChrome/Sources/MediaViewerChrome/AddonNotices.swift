@@ -15,7 +15,10 @@
 //   add-on's own rows (keep_menu: lines, checkmark toggles, buttons, a Send
 //   Files… open panel; docs/plans/driftwire-menu-and-tunnel.md), Open
 //   <screen>, Open MediaViewer, Quit MediaViewer. main_mac.mm hides the
-//   viewer rather than quitting while the list is not empty.
+//   viewer rather than quitting while the list is not empty. While
+//   `driftwire host` runs the list also holds the app's own entry ("shell",
+//   docs/plans/self-hosted.md "Tray"): the host's status, phones, drives,
+//   Pause / Resume hosting and Quit hosting, and Open Phone access settings.
 //
 // Nothing here runs until the registry has a notice, an ask or a keep: with
 // Driftwire's toggles off the notification centre is never touched.
@@ -34,11 +37,15 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     var key: String { "\(addon)/\(id)" }
   }
   private struct MenuRow: Equatable { var kind, id, label: String; var value: Bool }
-  private struct Keep: Equatable { var addon, screen, title, label: String; var menu: [MenuRow] }
+  /// `shell`: the app's own entry, not an add-on's (docs/plans/self-hosted.md
+  /// "Tray": the host's rows while `driftwire host` runs); its Open row opens
+  /// Settings at Phone access.
+  private struct Keep: Equatable { var addon, screen, title, label: String; var menu: [MenuRow]; var shell: Bool }
 
   private var shown: [String: Notice] = [:]
   private var asked = 0
   private var keeps: [Keep] = []
+  private var wantsLogin = false
   private var statusItem: NSStatusItem?
   private var categories: Set<String> = []
   private var centerReady = false
@@ -73,11 +80,15 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
                        value: r["value"] as? Bool ?? false)
       }
       return Keep(addon: a, screen: s, title: $0["title"] as? String ?? s, label: $0["label"] as? String ?? "",
-                  menu: rows)
+                  menu: rows, shell: $0["shell"] as? Bool ?? false)
     }
-    if k != keeps {
+    // "Tray": the login item can be wanted with the keep list unchanged (the host's start at login).
+    let login = doc["login"] as? Bool ?? false
+    if k != keeps || login != wantsLogin {
+      let redraw = k != keeps
       keeps = k
-      syncStatusItem()
+      wantsLogin = login
+      if redraw { syncStatusItem() }
       mv_chrome_background_changed()
     }
     // #510: what each add-on said it is doing (busy_post), for Restart now and
@@ -193,7 +204,9 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     let item = statusItem ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     statusItem = item
     if let button = item.button {
-      let image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: keep.label)
+      // Driftwire's waves; the host's own entry alone, a server.
+      let symbol = keep.shell ? "server.rack" : "dot.radiowaves.left.and.right"
+      let image = NSImage(systemSymbolName: symbol, accessibilityDescription: keep.label)
       image?.isTemplate = true
       button.image = image
       button.toolTip = keep.label
@@ -204,12 +217,22 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     head.isEnabled = false
     menu.addItem(head)
     menu.addItem(.separator())
-    for k in keeps where !k.menu.isEmpty {
+    for (i, k) in keeps.enumerated() where !k.menu.isEmpty {
+      // A second entry (the host's beside Driftwire's) says whose rows follow.
+      if i > 0, !k.label.isEmpty {
+        let line = NSMenuItem(title: k.label, action: nil, keyEquivalent: "")
+        line.isEnabled = false
+        menu.addItem(line)
+      }
       for row in k.menu { menu.addItem(menuItem(row, of: k)) }
       menu.addItem(.separator())
     }
     for k in keeps {
       menu.addItem(entry("Open \(k.title)") {
+        if k.shell {
+          mv_chrome_open_phone_settings()
+          return
+        }
         mv_chrome_background_window_shown()
         SlotStore.shared.openScreen(addon: k.addon, screen: k.screen)
       })

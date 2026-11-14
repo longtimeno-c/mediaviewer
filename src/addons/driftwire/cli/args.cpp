@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/cli/args.h"
+#include "addons/driftwire/cli/host_control.h"
 
 #include <cstdlib>
 
@@ -334,6 +335,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         // Only the provider: the subdomain and the token are typed or pasted, never arguments.
         a.host = host_action::name;
         a.on = words[1] == "duckdns";
+      } else if (parse_host_control(words, a)) {
+        // pause, resume, quit: the tray's control (host_control.h)
       } else {
         out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
                     "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off or stay-awake on|off";

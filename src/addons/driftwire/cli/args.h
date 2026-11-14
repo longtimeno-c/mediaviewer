@@ -48,7 +48,8 @@ enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_c
 // `driftwire host` (docs/plans/self-hosted.md §3): run the service and the
 // relay together (run; `child` is the supervisor's own process, never typed),
 // or change what it shares and how it starts.
-enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake, setup, name, pair, vpn };
+enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake, setup, name, pair, vpn,
+                                         pause, resume, quit };  // the last three: host_control.h (the tray)
 
 struct args {
   command cmd = command::session;

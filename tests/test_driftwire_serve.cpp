@@ -1575,3 +1575,17 @@ TEST_CASE("serve backup: two phones placing one name at once keep both files", "
     CHECK(slurp(s.backup / rb->name) == two);
   }
 }
+
+TEST_CASE("serve: the devices with a session up now (the tray names them)", "[driftwire-serve][host-tray]") {
+  // docs/plans/self-hosted.md "Tray": the host's menu names the phones connected.
+  service_fixture s;
+  CHECK(s.srv->connected_devices().empty());
+  auto c = s.open_client();
+  REQUIRE(c->roots());
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), s.device.data());
+  REQUIRE(eventually([&] { return s.srv->connected_devices().size() == 1; }));
+  CHECK(s.srv->connected_devices().front() == pub);
+  c->close();
+  CHECK(eventually([&] { return s.srv->connected_devices().empty(); }));
+}

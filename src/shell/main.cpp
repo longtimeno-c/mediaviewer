@@ -12357,6 +12357,9 @@ struct kept_menu_row {
 struct kept_alive_entry {
   std::string addon, screen, title, label;
   std::vector<kept_menu_row> menu;  // the add-on's own rows (keep_menu), drawn before Open / Quit
+  // The app's own entry (docs/plans/self-hosted.md "Tray": the host's rows
+  // while `driftwire host` runs): its Open row opens Settings at Phone access.
+  bool shell = false;
 };
 
 std::string slot_notices() {
@@ -12386,7 +12389,8 @@ std::vector<kept_alive_entry> kept_alive() {
     if (!addon || !screen) continue;
     const std::string* title = k.str("title");
     const std::string* label = k.str("label");
-    kept_alive_entry e{*addon, *screen, title ? *title : *screen, label ? *label : std::string(), {}};
+    kept_alive_entry e{*addon, *screen, title ? *title : *screen, label ? *label : std::string(), {}, false};
+    if (const mv::json::value* sh = k.find("shell"); sh && sh->k == mv::json::kind::boolean) e.shell = sh->b;
     if (const mv::json::value* menu = k.find("menu"); menu && menu->k == mv::json::kind::array) {
       for (const mv::json::value& r : menu->a) {
         const std::string* kind = r.str("kind");
@@ -12401,6 +12405,17 @@ std::vector<kept_alive_entry> kept_alive() {
     out.push_back(std::move(e));
   }
   return out;
+}
+
+// #452 + "Tray": the app's login item is wanted (an add-on keeps the process,
+// or the host starts at login): notices_json's "login". Unreadable: the keep list decides.
+bool login_item_wanted(const std::vector<kept_alive_entry>& keep) {
+  const std::string json = slot_notices();
+  const auto doc = json.empty() ? std::nullopt : mv::json::parse(json, 8);
+  if (!doc || doc->k != mv::json::kind::object) return !keep.empty();
+  const mv::json::value* login = doc->find("login");
+  if (!login || login->k != mv::json::kind::boolean) return !keep.empty();
+  return login->b;
 }
 
 // #532: an add-on says it has work under way (busy_post: a Driftwire transfer).
@@ -12589,6 +12604,10 @@ void show_tray_menu(app_state* app, POINT at) {
   std::vector<row_ref> rows;
   for (std::size_t i = 0; i < keep.size() && i < 16; ++i) {
     if (keep[i].menu.empty()) continue;
+    // A second entry (the host's beside Driftwire's) says whose rows follow.
+    if (i > 0 && !keep[i].label.empty()) {
+      (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide_from_utf8(keep[i].label).c_str());
+    }
     for (const kept_menu_row& r : keep[i].menu) {
       if (r.kind == "separator") {
         (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -12637,7 +12656,14 @@ void show_tray_menu(app_state* app, POINT at) {
     }
   } else if (picked >= kOpenScreen && picked - kOpenScreen < keep.size()) {
     const kept_alive_entry& k = keep[picked - kOpenScreen];
-    (void)app->chrome.open_addon_screen(k.addon, k.screen);
+    if (k.shell) {
+      // "Tray": the viewer comes back with Settings open at Phone access.
+      leave_background(app);
+      set_settings_open(app, true);
+      app->chrome.show_popup(mv::shell::chrome_popup::settings, mv::shell::kSettingsRevealPhone);
+    } else {
+      (void)app->chrome.open_addon_screen(k.addon, k.screen);
+    }
   }
 }
 
@@ -13366,7 +13392,7 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       // kBackgroundStartTimerId decides.
       const std::vector<kept_alive_entry> keep = kept_alive();
       sync_tray(app, keep);
-      sync_login_item(app, !keep.empty());
+      sync_login_item(app, login_item_wanted(keep));
       if (!keep.empty()) {
         app->background_start = false;
       } else if (app->in_background && !app->background_start) {
@@ -13512,7 +13538,9 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         ::KillTimer(hwnd, kBackgroundStartTimerId);
         if (app->background_start && app->in_background && kept_alive().empty()) {
           MV_LOG_INFO("background start: nothing keeps the process; quitting");
-          app->remove_login_item_at_exit = true;
+          // The host starts at login but is not running: the entry stays ("Tray").
+          const std::vector<kept_alive_entry> none;
+          app->remove_login_item_at_exit = !login_item_wanted(none);
           quit_from_background(app);
         }
         return 0;

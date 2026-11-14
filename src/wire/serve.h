@@ -164,6 +164,23 @@ class server {
 
   [[nodiscard]] std::uint16_t port() const noexcept;
   [[nodiscard]] counters stats() const noexcept;
+  // The devices with a session up now, each once (docs/plans/self-hosted.md
+  // "Tray": the host's menu names the phones connected). Their keys only; the
+  // owner's own session (the desktop that claimed it) is not one of them.
+  [[nodiscard]] std::vector<std::array<std::uint8_t, 32>> connected_devices() const;
+  // "Tray" usage: per paired device (never the owner's own sessions), the file
+  // bytes read and written by this server's sessions so far (ended ones kept),
+  // whether it is connected now, since when and how. Counted with one relaxed
+  // atomic add per chunk; folded here, when the host writes its state.
+  enum class usage_via : std::uint8_t { home, internet, relay };  // its network; direct from away; the person's relay
+  struct device_usage {
+    std::array<std::uint8_t, 32> device{};
+    std::uint64_t read = 0, written = 0;
+    bool connected = false;
+    std::int64_t since_unix = 0;  // the earliest session up now
+    usage_via via = usage_via::internet;
+  };
+  [[nodiscard]] std::vector<device_usage> usage() const;
   [[nodiscard]] std::vector<root_config> roots() const;
   // Reads the paired list now and cuts sessions no longer on it (it is also
   // read on a timer and for every new connection).

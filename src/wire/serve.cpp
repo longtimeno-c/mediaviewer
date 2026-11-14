@@ -133,6 +133,11 @@ struct conn {
   std::array<std::uint8_t, 32> device{};
   bool has_device = false;  // under m
   bool is_owner = false;    // set before its session starts
+  // docs/plans/self-hosted.md "Tray": what this session read and wrote (file
+  // bytes; one relaxed add per chunk, no lock), since when and how it came.
+  std::atomic<std::uint64_t> bytes_read{0}, bytes_written{0};
+  std::int64_t since_unix = 0;        // under m, with has_device
+  server::usage_via via = server::usage_via::internet;  // under m, with has_device
   // A device with a limit (grants.h): the grant it came in with, set before
   // its session starts; nullopt for an unlimited one and the owner.
   std::optional<grants::grant> grant;
@@ -319,6 +324,7 @@ struct server::state {
   std::atomic<int> pending{0}, sessions{0};
   std::mutex conns_m;
   std::list<std::shared_ptr<conn>> conns;  // under conns_m
+  std::map<std::array<std::uint8_t, 32>, std::pair<std::uint64_t, std::uint64_t>> ended_usage;  // under conns_m: read, written
   std::mutex source_m;
   std::map<std::string, int> in_flight;  // under source_m: handshakes per address
 
@@ -472,6 +478,11 @@ class session_state {
       : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)), upgrade_(std::move(upgrade)),
         book_(book), device_(device), device_id_(device_folder_id(device)), may_write_(std::move(may_write)) {}
   ~session_state() { join_commits(); }
+  // "Tray": file bytes sent and written are added here (the conn's own).
+  void count_into(std::atomic<std::uint64_t>* read, std::atomic<std::uint64_t>* written) {
+    read_ctr_ = read;
+    write_ctr_ = written;
+  }
 
   // The reader thread's: a message from the client. False: end the session.
   bool on_message(const message& m) {
@@ -700,6 +711,9 @@ class session_state {
   void set_root_present(std::function<bool(const root_config&)> fn) { root_present_ = std::move(fn); }
 
  private:
+  std::atomic<std::uint64_t>* read_ctr_ = nullptr;   // "Tray": the conn's, set before pump starts
+  std::atomic<std::uint64_t>* write_ctr_ = nullptr;
+
 
   // A request on `root` failed with `e`: said as offline when its folder is
   // gone (a drive unplugged), so the phone can say so instead of "not found".
@@ -1005,6 +1019,7 @@ class session_state {
       return send_end(d->id, end_code::error);
     }
     w->next += n;
+    if (write_ctr_) write_ctr_->fetch_add(n, std::memory_order_relaxed);
     w->credit -= static_cast<std::uint32_t>(n);
     w->held -= n;
     book_->wrote(w->root.id, n);
@@ -1144,6 +1159,7 @@ class session_state {
       }
       put_data_header(std::span<std::uint8_t, kDataHeaderBytes>(buf.data(), kDataHeaderBytes), s.id, s.at);
       if (!send_(msg::stream_data, std::span<const std::uint8_t>(buf).first(kDataHeaderBytes + *got))) return false;
+      if (read_ctr_) read_ctr_->fetch_add(*got, std::memory_order_relaxed);
       std::uint64_t left = 0;
       {
         std::lock_guard lock(m_);
@@ -1297,6 +1313,7 @@ void server::state::session(conn& c, std::optional<message> first_message) {
                   [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler), std::move(upgrade_handler),
                   &book, c.device, [this, &c](const root_config& root) { return device_may_write(c, root); });
   s.set_root_present(root_present);
+  s.count_into(&c.bytes_read, &c.bytes_written);
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
     try {
@@ -1465,6 +1482,11 @@ void server::state::serve_connection(conn* c) {
     c->ch = std::move(opened);
     c->device = *peer;
     c->has_device = true;
+    c->since_unix = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+    c->via = c->relayed ? server::usage_via::relay
+             : (!c->source.starts_with("punch:") && on_own_network(c->from)) ? server::usage_via::home
+                                                                              : server::usage_via::internet;
   }
   n_sessions.fetch_add(1);
   if (c->source.starts_with("punch:")) n_punched.fetch_add(1);  // moved: counted once its session is up
@@ -1490,6 +1512,16 @@ void server::state::reap() {
   }
   for (auto& c : gone) {
     if (c->t.joinable()) c->t.join();
+  }
+  // "Tray": a finished session's bytes stay counted, per device.
+  std::lock_guard lock(conns_m);
+  for (auto& c : gone) {
+    const auto r = c->bytes_read.load(std::memory_order_relaxed);
+    const auto w = c->bytes_written.load(std::memory_order_relaxed);
+    if ((r == 0 && w == 0) || c->is_owner) continue;
+    auto& t = ended_usage[c->device];
+    t.first += r;
+    t.second += w;
   }
 }
 
@@ -2535,6 +2567,52 @@ void server::state::cut_sessions(const conn* except) {
     }
   }
   for (auto& c : live) (void)c->ch->cancel(kCancelWaitMs, "folders-changed");
+}
+
+std::vector<std::array<std::uint8_t, 32>> server::connected_devices() const {
+  std::vector<std::array<std::uint8_t, 32>> out;
+  {
+    std::lock_guard all(st_->conns_m);  // then each conn's m, as cut_sessions takes them
+    for (const auto& c : st_->conns) {
+      std::lock_guard lock(c->m);
+      if (c->has_device && !c->is_owner) out.push_back(c->device);  // the desktop that claimed it is no phone
+    }
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
+std::vector<server::device_usage> server::usage() const {
+  std::map<std::array<std::uint8_t, 32>, device_usage> by;
+  std::lock_guard all(st_->conns_m);
+  for (const auto& [key, t] : st_->ended_usage) {
+    auto& u = by[key];
+    u.device = key;
+    u.read += t.first;
+    u.written += t.second;
+  }
+  for (const auto& c : st_->conns) {
+    if (c->is_owner) continue;
+    std::lock_guard lock(c->m);
+    const auto r = c->bytes_read.load(std::memory_order_relaxed);
+    const auto w = c->bytes_written.load(std::memory_order_relaxed);
+    if (!c->has_device && r == 0 && w == 0) continue;  // never admitted, or nothing of it to count
+    auto& u = by[c->device];
+    u.device = c->device;
+    u.read += r;
+    u.written += w;
+    if (c->has_device) {
+      if (!u.connected || c->since_unix < u.since_unix) u.since_unix = c->since_unix;
+      // Home beats the internet beats the relay: the best way it is connected now.
+      if (!u.connected || static_cast<int>(c->via) < static_cast<int>(u.via)) u.via = c->via;
+      u.connected = true;
+    }
+  }
+  std::vector<device_usage> out;
+  out.reserve(by.size());
+  for (auto& [k, u] : by) out.push_back(u);
+  return out;
 }
 
 server::state::lists server::state::read_lists() {

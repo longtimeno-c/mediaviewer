@@ -61,6 +61,8 @@ public static partial class IslandHost
             JsonElement r = doc.RootElement;
             asks = (long)JNum(r, "ask", 0);
             if (r.TryGetProperty("keep", out JsonElement k)) keep = k.GetRawText();
+            // "Tray": the login item can be wanted with nothing kept (the host starts at login).
+            if (r.TryGetProperty("login", out JsonElement l)) keep += l.ValueKind == JsonValueKind.True ? "|login" : "|";
             foreach (JsonElement b in JArr(r, "busy"))
             {
                 if (JStr(b, "addon") is { Length: > 0 } addon) busy[addon] = JStr(b, "what");

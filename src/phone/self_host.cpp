@@ -195,7 +195,7 @@ where find() {
 }
 
 std::optional<running_state> parse_state(std::string_view text) {
-  const auto doc = json::parse(text, 4);
+  const auto doc = json::parse(text, 6);
   if (!doc || doc->k != json::kind::object) return std::nullopt;
   running_state s;
   s.pid = doc->integer("pid").value_or(0);
@@ -213,6 +213,52 @@ std::optional<running_state> parse_state(std::string_view text) {
   if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
     for (const auto& line : k->a) {
       if (line.k == json::kind::string && !line.s.empty()) s.keepers.push_back(tidy_keeper_line(line.s));
+    }
+  }
+  s.paused = doc->boolean("paused").value_or(false);
+  s.tls_failed = doc->boolean("tls_failed").value_or(false);
+  const auto count = [](const json::value& v, const char* k) {
+    const auto n = v.integer(k).value_or(0);
+    return n > 0 ? static_cast<std::uint64_t>(n) : std::uint64_t{0};
+  };
+  if (const json::value* c = doc->find("clients"); c && c->k == json::kind::array) {
+    for (const auto& v : c->a) {
+      if (v.k != json::kind::object || s.clients.size() >= 64) continue;
+      const std::string* name = v.str("name");
+      if (!name || name->empty()) continue;
+      running_state::client cl;
+      cl.name = *name;
+      const std::string* via = v.str("via");
+      cl.via = via && (*via == "home" || *via == "relay") ? *via : std::string("internet");
+      cl.since = v.integer("since").value_or(0);
+      cl.read = count(v, "read");
+      cl.written = count(v, "written");
+      cl.read_rate = count(v, "read_rate");
+      cl.write_rate = count(v, "write_rate");
+      s.clients.push_back(std::move(cl));
+    }
+  }
+  if (const json::value* u = doc->find("usage"); u && u->k == json::kind::object) {
+    if (const std::string* day = u->str("day")) s.day = *day;
+    s.read_today = count(*u, "read");
+    s.written_today = count(*u, "written");
+    s.read_rate = count(*u, "read_rate");
+    s.write_rate = count(*u, "write_rate");
+    if (const json::value* d = u->find("devices"); d && d->k == json::kind::array) {
+      for (const auto& v : d->a) {
+        const std::string* name = v.k == json::kind::object ? v.str("name") : nullptr;
+        if (name && !name->empty() && s.devices_today.size() < 16) {
+          s.devices_today.push_back({*name, count(v, "read"), count(v, "written")});
+        }
+      }
+    }
+  }
+  if (const json::value* d = doc->find("drives"); d && d->k == json::kind::array) {
+    for (const auto& v : d->a) {
+      if (v.k != json::kind::object || s.drives.size() >= 8) continue;
+      const std::string* label = v.str("label");
+      const std::string* health = v.str("health");
+      if (label && health && !label->empty()) s.drives.push_back({*label, *health});
     }
   }
   return s;

@@ -480,6 +480,11 @@ MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
  * nearby copy). A later window's process passes MV_PHONE_SECONDARY: it runs
  * none of it (two would race on the NAS), mv_phone_request answers
  * MV_ERR_UNSUPPORTED_FORMAT and the state is {"secondary":true}.
+ * The first window's process also watches `driftwire host` on this computer
+ * (docs/plans/self-hosted.md "Tray"): while it runs, its rows are a kept
+ * entry of mv_slots_notices_json ("shell": true; its Open row opens Settings
+ * → Phone access) and the process is kept in the background as an add-on's
+ * keep would; "login" says whether the app's login item is wanted.
  * mv_phone_stop: at quit, before the add-ons unload; never waits on the NAS.
  * Process-wide. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_phone_request(const char* request_json);

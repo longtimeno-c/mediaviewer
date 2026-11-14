@@ -7,6 +7,7 @@
 #include <string>
 
 #include "abi/guard.h"
+#include "abi/host_tray_glue.h"
 #include "phone/app.h"
 
 namespace {
@@ -41,13 +42,16 @@ MV_API mv_status MV_CALL mv_phone_state_json(char* utf8, uint32_t cap, uint32_t*
 
 MV_API mv_status MV_CALL mv_phone_resume(uint32_t flags) {
   return static_cast<mv_status>(mv::abi::guard("mv_phone_resume", [&]() -> status {
-    mv::phone::resume_app((flags & MV_PHONE_SECONDARY) == 0);
+    const bool primary = (flags & MV_PHONE_SECONDARY) == 0;
+    mv::phone::resume_app(primary);
+    if (primary) mv::abi::start_host_tray();
     return status::ok;
   }));
 }
 
 MV_API mv_status MV_CALL mv_phone_stop(void) {
   return static_cast<mv_status>(mv::abi::guard("mv_phone_stop", [&]() -> status {
+    mv::abi::stop_host_tray();
     mv::phone::stop_app();
     return status::ok;
   }));

@@ -731,6 +731,9 @@ set(MV_MAC_HOST_SOURCES
   src/shell/addons_mac.h
   # docs/design/25 PRs 58-59: screens and slots, the registry behind the bridge.
   src/shell/slots_mac.mm
+  # docs/plans/self-hosted.md "Tray": the host's rows in the menu-bar item.
+  src/abi/host_tray_glue.cpp
+  src/abi/host_tray_glue.h
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h

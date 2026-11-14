@@ -522,3 +522,84 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   `host stay-awake` would drop it; the router and DuckDNS status lines likewise; the phone's LAN address is this computer's IPv4 at setup and is not followed
   if DHCP moves it (the card's address field still changes it); a host set up from the terminal shows its
   status row but the card offers no unshare or rename (the terminal does).
+
+## Tray: the icon while hosting (issue #686 §4, owner 2026-11-14)
+
+Owner's call: **yes, a tray / menu-bar icon while the computer hosts, through the app's existing
+background icon code**. Not a second app or a second tray process (decision 2026-10-11: add-ons
+carry their own code; never a helper app): the icon is MediaViewer's own background presence (#452,
+[28 "In the background"](../design/28-driftwire.md)), the one Driftwire's "Receive when MediaViewer
+is closed" already uses.
+
+**How it appears when `driftwire host` starts at login with the viewer not open.** Decided:
+
+- The host does not draw anything (it is a terminal program with no UI, and a tray in it would be a
+  second app). The app reads the host's files as the This computer card's status row does:
+  `host.lock` held means it runs, `state.json` says what it has, `host.json` its DuckDNS name
+  (`phone/host_tray.h`). The icon shows **only while the host runs**.
+- The app is the one that must be running. The host's start at login (`host start-at-login on`,
+  the card's Start) is a reason for **the app's own login item** too (#452's: SMAppService on the
+  Mac, the Run entry on Windows, started `--background` with no window). So once hosting starts at
+  login, MediaViewer starts at login hidden, finds the host running within its 60 s grace, keeps
+  itself and shows the icon. Without this the icon would appear only once someone opened
+  MediaViewer and then closed its window. This is the smallest fix: the existing login item
+  follows one more reason (`slot_registry::wants_login_item`, notices_json's `"login"`); nothing
+  new is registered with the OS.
+- A login start that finds the host not running (it was quit, or uninstalled) quits after the
+  grace and keeps the login item while the host's entry is there; turning the host's start at
+  login off (and Driftwire's background off) removes it, as today.
+- With the app open, while the host runs, closing the window hides it to the icon (as a kept
+  add-on does), and Quit MediaViewer quits the app only: the host goes on. Quit hosting is the
+  host's quit.
+
+**What it shows** (`host_tray::build`, sentence case, said once): the head says "Hosting as
+home.duckdns.org" (or "Hosting from this computer"); then one status line ("Serving phones",
+"Paused: phones can't reach this computer", "Not serving: its port is taken", "Nothing shared
+yet") and a line for each problem (the relay's port taken, the web-site look); drive health
+("All 3 folders online", "1 of 3 folders offline"; combined drives once §3 of #686 lands:
+`state.json`'s `"drives":[{"label","health"}]`, health `healthy`, `degraded`, `rebuilding` or
+`failed`, two lines at most, the hook already read); the phones connected ("No phones connected",
+"Ann's iPhone connected", "3 phones connected" with up to four names, then "and N more"); then
+**Pause hosting** / **Resume hosting**, **Quit hosting**, and the hosts' own **Open Phone access
+settings** (the viewer comes back with Settings at Phone access). Phones by the names they were
+paired under (`state.json`'s `"phones"`, from `serve::server::connected_devices()` and the
+paired list, re-read only when an unknown phone is connected); never a path, an address or a port
+(rule 6). With Driftwire's rows also there, its head comes first and the host's section starts
+with its own head line. The Mac's icon is `server.rack` when the host's entry is alone, Driftwire's
+otherwise; Windows uses the app's icon as before.
+
+**Pause and Quit go through the host's own control**: three owner-only verbs,
+`driftwire host pause | resume | quit` (`cli/host_control.*`, their own block in `cli/args.cpp`),
+written to `host.json` in the host's 0700 folder, which the running host already reads every 2 s.
+No socket listens for them.
+
+- **Pause** (`"paused": true`): the service and the relay stop, the keepers hear the ports are gone
+  (the router's mapping goes), the stay-awake request is dropped; the host keeps running, so its
+  icon stays and says Paused. Kept until Resume, across restarts and logins; `state.json` says
+  `"paused": true`.
+- **Quit** (`"quit_stamp"`, unix ms): a child started before it ends with exit 4 (kHostChildQuit),
+  which the supervisor takes as a stop; a supervisor between restarts checks it before starting the
+  next child. The verb waits up to 10 s for `host.lock` to go, then clears the stamp. Start at login
+  stays as it was set: the next login hosts again.
+
+**Cost** (CLAUDE.md "Performance is the product"). One thread in the app (the first window's
+process, not a soak or harness run): every 5 s a stat of `state.json` and, when it exists, a
+moment's try of `host.lock`; the files are read only when that changed (the host rewrites
+`state.json` only on a change, at most every 2 s); the start-at-login entry is looked at every
+minute. The registry, and so the hosts' menus, hear only a changed model. Nothing presents: the
+viewer is hidden as for any background (`window_visible` false / ordered out). The verbs run on
+that thread through `io::child_process` (rule 1), up to 30 s; the app's quit does not wait for one.
+In the host, `connected_devices()` walks at most eight sessions at each 2 s pass.
+
+**Later.** When Phone access becomes its own add-on (#686 §1, session `phone-addon`), the watcher
+moves into it and it calls `keep_alive` and `keep_menu` itself (its Open row is then an add-on
+screen); the registry's shell keep (`set_shell_keep`, `"shell": true`) and `abi/host_tray_glue.*`
+go. Linux draws it once its host has a tray (the third host's background is not built). A host
+running before anyone logs in stays out (owner call 6).
+
+**Tests:** `"[host-tray]"` in `mv_import_tests`: the model (not running, start at login, serving
+with the DuckDNS name, phones and the cut, paused, each problem, nothing shared, the drives hook,
+the 16-row limit and no path or port in a label), the registry's shell keep (drawn, kept, the
+login flag, picks routed, refused rows), the watcher over a folder of the test's own (a held
+`host.lock`, `state.json` written, a pick run, the login entry, the lock released), and
+`host pause` / `resume` taken by the service in-process on loopback with the quit stamp asked.

@@ -91,6 +91,31 @@ struct running_state {
   bool vpn = false, awake = false;
   std::size_t folders = 0, offline = 0;
   std::vector<std::string> keepers;
+  // The tray (docs/plans/self-hosted.md "Tray"):
+  bool paused = false;             // `host pause`
+  bool tls_failed = false;         // the web-site look could not listen
+  // The phones connected now (state.json "clients"): the paired name, how
+  // ("home", "internet", "relay"), since when (unix s), today's bytes, the rate.
+  struct client {
+    std::string name, via;
+    std::int64_t since = 0;
+    std::uint64_t read = 0, written = 0, read_rate = 0, write_rate = 0;
+  };
+  std::vector<client> clients;
+  // Today's bytes in all (state.json "usage"), and per device by name.
+  struct day_device {
+    std::string name;
+    std::uint64_t read = 0, written = 0;
+  };
+  std::string day;
+  std::uint64_t read_today = 0, written_today = 0, read_rate = 0, write_rate = 0;
+  std::vector<day_device> devices_today;
+  // Combined drives (issue #686 §3, once it lands): {"label","health"} each,
+  // health "healthy", "degraded", "rebuilding" or "failed"; absent today.
+  struct drive {
+    std::string label, health;
+  };
+  std::vector<drive> drives;
 };
 // The keepers' lines are tidied for a card: "DuckDNS     home…" becomes
 // "DuckDNS: home…", each line of a line trimmed.

@@ -724,7 +724,13 @@ build/bin/driftwire host pair                                # a phone's pairing
 build/bin/driftwire host vpn on                              # prints the relay line for the laptop's Relay (your own server)
 build/bin/mv_import_tests "[host]"                           # loopback only; the supervisor case spawns mv_driftwire_cli_test
 build/bin/mv_import_tests "[host-setup]"                     # setup, pairing redeemed, DuckDNS and router keepers, the VPN through the relay
+build/bin/driftwire host pause                               # the tray's verbs, also typed: resume, quit (start at login stays)
+build/bin/mv_import_tests "[host-tray]"                      # the tray's menu, the registry entry, the watcher, pause/quit on loopback
 ```
+
+While a host runs, MediaViewer's menu-bar item / notification-area icon carries its section
+(plan "Tray"); the app must be running (the host's start at login also turns on the app's own
+login item, hidden). A soak or harness run of the Mac app never starts the watcher.
 
 Try the guided run without the internet or a router with the test build:
 `printf '%s\n' ~/Pictures "" "" "" "" n n n | build/bin/mv_driftwire_cli_test host setup --test-data /tmp/hs --test-loopback`
