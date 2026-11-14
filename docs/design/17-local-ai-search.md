@@ -1,57 +1,39 @@
 # 17 — Local AI search (video moments and photos)
 
 How Local search works: the AI pack add-on, its models and runtime, the frame sampler, the
-index, search and its "nothing found" rule, the query language, audio, People, index sharing,
-the macOS Photos library source, and how indexing stays out of the viewer's way.
-
-Local search is an opt-in add-on (the AI pack) installed from Settings on Windows and macOS.
-The base viewer never carries or requires it: with no pack, the feature is hidden and nothing
-else changes. Roadmap labels: PRs 20–24 (inference host, sampler and index, search, find
-similar and management, faces).
+index, search and "nothing found", the query language, audio, documents, People, index sharing,
+the phone's catalogue, the macOS Photos library source, and staying out of the viewer's way.
 
 ## What it is
 
-Type "man on a broom" or "birthday cake" and get a grid of **moments**: for a video, a frame
-thumbnail with its timestamp; for a photo, the photo. Enter opens the clip seeked to that
-moment. "Find similar" takes the frame on screen as the query. It works over the folders the
-user points it at, entirely on this machine.
-
-It is a **search index over the user's own files**, built in the background. Indexing runs on
-low-priority workers and results arrive through the completion queue ([14](14-abi.md)); the
-index is a separate SQLite file (no sidecar, no write to media); inference is local, and
-embeddings, like pixels, never go into telemetry or crash reports.
+An opt-in add-on (the AI pack), installed from Settings on Windows and macOS; without it the
+feature is hidden. Type "man on a broom" and get **moments**: a video frame with its timestamp, or
+a photo; Enter opens the clip at that moment; "Find similar" queries with the frame on screen. It
+searches folders the user chose, entirely on this machine: low-priority workers, results through
+the completion queue ([14](14-abi.md)), a separate SQLite index (nothing written to media), and no
+embeddings in telemetry or crash reports.
 
 ## Model choice
 
-A **dual-encoder image/text embedding model** (CLIP family): one image tower, one text tower, a
-shared vector space; search is a dot product. Frames are embedded once at index time; a query
-embeds in milliseconds at search time.
+A CLIP-family dual encoder; search is a dot product. Frames embed once at index time.
 
-The Core pack ships two OpenAI CLIP towers (Xenova ONNX exports, MIT), fp16, as the user's
-**Search quality** setting:
-
-| Quality | Tower | Dim | Used by Auto when |
+| Quality | Tower (Xenova ONNX of OpenAI CLIP, MIT, fp16) | Dim | Auto picks it when |
 |---|---|---|---|
-| Fast (1) | CLIP ViT-B/32 | 512 | CPU only |
-| High (2) | CLIP ViT-L/14 | 768 | an accelerated provider runs it (CUDA, Core ML), unless that provider failed it on this machine |
+| Fast (1) | ViT-B/32 | 512 | CPU only |
+| High (2) | ViT-L/14 | 768 | an accelerated provider (CUDA, Core ML) runs it and has not failed it here |
 
-Stored vectors are int8 with a per-vector scale (≤ 0.5 points R@1 lost on both towers). Each
-tower's thresholds, generic prompts and preprocessing live in its `model.json`
-(`tools/package/ai-models.json`): `dedupe` 0.97, `query_margin` 0.04, `query_z` 2.5,
-`result_z` 2.0, `result_margin` 0.015, `similar_min` 0.62, five generic prompts ("a photo.",
-"a picture of something.", "an image.", "a photo of a thing.", "a blurry photo.").
-
-Changing quality migrates: the old index answers until the new one completes, and a query
-never compares vectors from two towers.
+Vectors are stored int8 with a per-vector scale. Each tower's `model.json`
+(`tools/package/ai-models.json`) holds thresholds, generic prompts and preprocessing: `dedupe`
+0.97, `query_margin` 0.04, `query_z` 2.5, `result_z` 2.0, `result_margin` 0.015, `similar_min`
+0.62; prompts "a photo.", "a picture of something.", "an image.", "a photo of a thing.", "a blurry
+photo.". Changing quality migrates (the old index answers until the new completes); a query never
+compares vectors from two towers.
 
 ### Model tiers (#482)
 
-**Which model fills each role** (the picture tower for each quality slot, the Whisper models,
-CLAP, the face models and the documents model) comes from a **tier profile**: the pack's
-`models/tiers.json`, written from the `tiers` block of `ai-models.json`
-([model-tiers plan](../plans/model-tiers.md)). The add-on's code names no model folder; a tower
-answers for the quality slot the profile gives it. A pack staged without `tiers.json` opens
-today's Default folders.
+The model for each role comes from the pack's `models/tiers.json` (from `ai-models.json`'s `tiers`
+block; [model-tiers plan](../plans/model-tiers.md)); code names no model folder. No `tiers.json`:
+Default.
 
 | | Maxxed | Default | Intel | Potato |
 |---|---|---|---|---|
@@ -62,1906 +44,872 @@ today's Default folders.
 | Documents | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 |
 | Clip gaps (min / max) | 250 / 1000 ms | 500 / 2000 ms | 500 / 2000 ms | 1000 / 6000 ms |
 
-ViT-H/14 (~2 GB, our fp16 export by `tools/package/clip-export.py` from the pinned checkpoint,
-verified by a golden output) rides in its own piece, `ai-large`, which only Maxxed installs.
-
-**Potato's picture tower is B/32 (2026-10-18).** Both TinyCLIP candidates were exported and
-measured and neither is a Potato: ViT-8M/16 misses the bar (COCO-1k R@10 0.838 < 0.88), and
-ViT-39M/16 passes (0.922) but runs about 4× slower than B/32 on two CPU threads (6.2 vs
-25.6 img/s, fp16, ONNX Runtime 1.30, M-series). B/32 is the cheapest tower that passes; Potato
-saves elsewhere (Whisper tiny, SFace, no sound search, sparser clips). B/32 int8 weights stay
-rejected (R@10 0.822). MobileCLIP waits for its weights licence to clear `ai-models.py check`.
-
-- **The model contract** (`infer/models.h`, `audio_models.h`): a CLIP tower states
-  `tokenizer_kind` (`clip-bpe`), `score` (`cosine`, or `sigmoid`, still ranked by cosine),
-  named outputs and the Core ML dim names; Whisper states `n_mels` (80, or 128 for large-v3 /
-  turbo) and its special tokens. A kind this build lacks is unsupported, never guessed. A model
-  that fits is a manifest entry: with the contract in place, ViT-H/14, Whisper tiny and turbo
-  and SFace went in as data, with no C++ change (TinyCLIP too, before it was measured out).
-- **Choosing.** Nothing downloads until a tier is chosen (`MV_AI_STATUS_TIER_UNCHOSEN`; the
-  add-on's picker opens on install and from Settings → Local search → Models). The local check
-  (`machine.h`) recommends one: Potato on ≤ 2 cores or ≤ 8 GB, Intel on an x86_64 Mac or a PC
-  with no accelerator, Maxxed with an accelerator and ≥ 32 GB, else Default. It is shown in the
-  picker and never sent anywhere. An index made before tiers keeps Default without asking.
-  The control thread reads `tiers.json` and runs the check first, before the models wait for
-  a quiet viewer, and posts `MV_ADDON_EVENT_AI_STATUS`: the first status read has the tiers,
-  and each chrome counts the offer as made only once the picker opened (#509).
-- **Changing** tier fetches the new models, then re-indexes with the new towers while the old
-  index answers (the old tier's tower still opens by its spec key, `open_clip_spec`); once the
-  new one covers the folders the old vectors and the old tier's fetched files go.
-- **Thresholds** come from `tools/ai-eval/calibrate.py`: the PR 20 eval (COCO-1k R@10 ≥ 0.88,
-  labelled-query P@5 ≥ 0.8) and a quantile match against B/32's hand-set thresholds. Results are
-  in "Measurements".
-
-**Weights licence gate.** Every model file names its licence; `tools/package/ai-models.py check`
-refuses one outside the allow-list (a CC-BY-NC file fails the pack, tested). Licences in the
-pack: CLIP weights MIT, ONNX Runtime MIT, YuNet MIT, AdaFace MIT (weights; trained on WebFace4M,
-whose terms are non-commercial research), CLAP Apache-2.0, Whisper Apache-2.0.
+- ViT-H/14 (~2 GB, our fp16 export, `tools/package/clip-export.py`, golden-output verified) is the
+  `ai-large` piece, Maxxed only.
+- **Model contract** (`infer/models.h`, `audio_models.h`): a CLIP tower states `tokenizer_kind`
+  (`clip-bpe`), `score` (`cosine`, or `sigmoid` ranked by cosine), named outputs, Core ML dim names;
+  Whisper states `n_mels` (80, or 128 for large-v3 / turbo) and special tokens. Unknown kinds are
+  unsupported. A model that fits is a manifest entry, no C++.
+- **Choosing:** nothing downloads until a tier is chosen (`MV_AI_STATUS_TIER_UNCHOSEN`; picker on
+  install and Settings → Local search → Models). `machine.h` recommends locally (never sent):
+  Potato ≤ 2 cores or ≤ 8 GB; Intel on x86_64 Mac or a PC without accelerator; Maxxed with an
+  accelerator and ≥ 32 GB; else Default. Pre-tier indexes keep Default. The control thread reads
+  `tiers.json` and runs the check before models load, then posts `MV_ADDON_EVENT_AI_STATUS`.
+- **Changing** tier fetches models and re-indexes while the old index answers (`open_clip_spec`
+  opens the old tower by spec key); then old vectors and files go.
+- **Thresholds:** `tools/ai-eval/calibrate.py` (bar COCO-1k R@10 ≥ 0.88, labelled P@5 ≥ 0.8;
+  quantile match against B/32's hand-set values).
+- **Licence gate:** `tools/package/ai-models.py check` refuses a licence outside the allow-list
+  (CC-BY-NC fails). CLIP, ORT, YuNet, AdaFace weights: MIT; CLAP, Whisper: Apache-2.0.
 
 ### PR 20 spike results
 
-Measured on a Ryzen 16-thread / RTX 4070 box, ORT 1.30. Eval: 1,000 COCO Karpathy-test
-images, text → image with each image's first caption, plus eight labelled natural-language
-queries (P@10 by caption keywords, 1,225 images).
+Ryzen 16-thread / RTX 4070, ORT 1.30, COCO Karpathy-test 1 k (text → image).
 
-| Tower (ONNX, Xenova export of OpenAI CLIP, MIT) | R@1 | R@5 | R@10 | mean P@10 | "guy on a skateboard" P@10 | CPU img/s (4 thr) | CUDA img/s | size |
-|---|---|---|---|---|---|---|---|---|
-| ViT-B/32 fp32 | 0.494 | 0.777 | 0.888 | 0.86 | 1.0 | 20.1 | - | 606 MB |
-| **ViT-B/32 fp16** | 0.493 | 0.777 | 0.888 | 0.86 | 1.0 | 23.3 | 150.8 | 303 MB |
-| ViT-B/32 int8 | 0.398 | 0.695 | 0.822 | 0.88 | 1.0 | 31.5 | - | 154 MB |
-| ViT-B/16 fp16 | 0.500 | 0.794 | 0.885 | 0.84 | - | 8.5 | 135.7 | 300 MB |
-| **ViT-L/14 fp16** | 0.555 | 0.812 | 0.905 | 0.90 | 1.0 | 1.9 | 98.0 | 856 MB |
+| Tower | R@1 | R@10 | CPU img/s (4 thr) | CUDA img/s | size |
+|---|---|---|---|---|---|
+| ViT-B/32 fp16 | 0.493 | 0.888 | 23.3 | 150.8 | 303 MB |
+| ViT-B/32 int8 (rejected) | 0.398 | 0.822 | 31.5 | - | 154 MB |
+| ViT-L/14 fp16 | 0.555 | 0.905 | 1.9 | 98.0 | 856 MB |
 
-L/14 is +6 points R@1 over B/32 but 1.9 img/s on CPU, which would take days on a
-300,000-asset library; hence High on accelerators and Fast on CPU. int8 weights lose 6.6 points
-R@10; B/16 gains nothing at R@10 for 2.7× B/32's CPU cost.
-
-**Recall target:** on the labelled set, the top five for each natural-language query hold at
-least four relevant items (P@5 ≥ 0.8), "guy on a skateboard" included; the COCO-1k proxy
-R@10 ≥ 0.88 (Fast) / ≥ 0.90 (High).
+L/14 on CPU is too slow for large libraries, hence High on accelerators only.
 
 ## Runtime
 
-**ONNX Runtime**, loaded at run time (never linked; ORT's telemetry off, below), behind our own
-interface in `src/infer` (`ort.h`, `models.h`).
-
-ORT's telemetry is off on every OS, but not by the same switch. Outside Windows, official ORT builds
-carry Microsoft's 1DS uploader, and `dylib::open` sets `ORT_DISABLE_TELEMETRY=1` before `dlopen`, so
-the uploader, its event queue and its device id are never created. Every load goes through it,
-Enhance's too. On Windows ORT reports through ETW, which has no uploader of its own and ignores that
-variable; `DisableTelemetryEvents`, called before `CreateEnv` and again after it, is the only
-switch, and it is not airtight (`12-decision-log.md`, 2026-11-10).
-
-The interface:
+**ONNX Runtime**, loaded at run time (never linked), behind `src/infer` (`ort.h`, `models.h`):
 
 ```
 src/infer   embedder { embed_image(s), embed_text }    clip_model, clap, whisper, face_models
             backends: cpu (always), cuda (Windows piece), openvino (code path), coreml (macOS)
 ```
 
-- `infer/` headers include no D3D, DirectML or Metal headers. ORT owns whatever device the
-  provider creates; it never shares the render device and never touches the swapchain.
-- **CPU is always underneath.** Settings → Local search → *Compute*: **Auto** (default) · a
-  specific provider · **CPU only** (`mv_ai_compute`). Mac offers Auto / Core ML / CPU only.
-- **The self-test:** a provider is kept only if it agrees with CPU within cosine 0.99 on a fixed
-  input and is faster; otherwise Auto falls back to CPU and the status says why
-  (`provider_fault`: not in this build, runtime missing, failed, mismatch, slower), with the
-  provider's own message in `provider_detail_utf8` (`session::last_error`, paths replaced by
-  `<model>` / `<path>`; a tooltip on the Mac, never telemetry). Changing compute re-creates the
-  sessions; it does not re-index.
-- **Auto never runs the large tower on CPU because a provider failed it (2026-10-05).** How the
-  provider did with each tower is kept in `data/provider.txt` (runtime | provider | spec → ok or
-  the fault, open seconds, message; `src/addons/ai/provider_verdict.h`, plain files with no ORT, so
-  `test_ai_provider_verdict.cpp` checks the rule without a runtime). Where it failed ViT-L/14, Auto opens ViT-B/32 on that provider
-  instead, at once (the control thread reloads when a background upgrade fails) and on every later
-  start, and sets `MV_AI_STATUS_SMALL_FALLBACK`. Settings → *Compute* then offers **Try the larger
-  model again** (`"retry_large"`), which forgets the verdict. A new runtime tries again by itself.
-  Each switch re-indexes (the towers' vectors differ), so a passing or untried tower is left alone.
-- **Windows providers:** CUDA as the `ai-cuda` piece (ORT's CUDA 13 build; the CUDA runtime and
-  cuDNN 9 are user-supplied, on PATH; without them Local search runs on the CPU). OpenVINO has
-  a code path (`MV_AI_BACKEND_OPENVINO`) but no published piece. AMD GPUs run on CPU. There is
-  no DirectML provider, so no D3D12.
-- **macOS:** the same ONNX models through ORT's **Core ML** provider (GPU / Neural Engine), with
-  ORT's CPU provider underneath. arm64 only: there is no x86_64 macOS ORT build, so Intel Macs
-  are not offered Local search and `cmake/darwin.cmake` defines no AI target there.
-- **Core ML needs static shapes.** The image tower's free dimensions are pinned at open
-  (`session_options::fixed_dims`, batch 4 = the engine's photo batch; `embed_images` splits and
-  pads other batch sizes), which puts every node on Core ML. Opening is slow even from its cache
-  (`data/cache/coreml`, ~1.2 GB B/32 / ~4.1 GB L/14, outside the 5 GB install ceiling), so the pack
-  **answers on CPU at once** and a background thread opens Core ML, runs the self-test and swaps
-  it in (`upgrading_clip` in `pack.cpp`). Text queries stay on CPU (3.3 ms B/32, 6.4 ms L/14).
-  **Indexing waits for the swap** (`engine::upgrading`, 2026-10-05): the status stays *Loading* /
-  *Preparing … Search works meanwhile*, and no picture is embedded on the stand-in. L/14 on CPU
-  is a twelfth of B/32's rate there and took the cores the Core ML load needed (a MacBook Air
-  loaded L/14 from its cache in 694 s while it ran). A cache entry a quit cut short (ORT writes
-  `model.txt` first and takes any `model` folder as converted) is dropped at the next start, so
-  it is converted again rather than loaded broken and recorded as Core ML failing the tower.
-- **Audio stays on CPU on the Mac:** CLAP's audio tower does not compile on Core ML (unbounded
-  dimensions) and Whisper's aborts the process inside MPSGraph; `pack.cpp` never gives audio
-  models Core ML.
-- An index records the model id, spec and precision; a query only compares vectors from the same
-  model. An index is local to one machine (see *Sharing an index* for carrying one).
+- **ORT telemetry off:** outside Windows `dylib::open` sets `ORT_DISABLE_TELEMETRY=1` before
+  `dlopen` (every load); on Windows `DisableTelemetryEvents` before and after `CreateEnv`.
+- `infer/` includes no D3D, DirectML or Metal; ORT never shares the render device.
+- **Compute** (`mv_ai_compute`): Auto · a provider · CPU only (Mac: Auto / Core ML / CPU). Changing
+  it re-creates sessions, not the index.
+- **Self-test:** a provider is kept only if it matches CPU at cosine ≥ 0.99 on a fixed input and is
+  faster; else CPU with `provider_fault` (not in build, runtime missing, failed, mismatch, slower)
+  and `provider_detail_utf8` (`session::last_error`, paths replaced by `<model>` / `<path>`).
+- **Large-tower fallback:** verdicts in `data/provider.txt` (runtime | provider | spec → ok or
+  fault, open seconds, message; `provider_verdict.h`). Where a provider failed ViT-L/14, Auto opens
+  ViT-B/32 on it and sets `MV_AI_STATUS_SMALL_FALLBACK`; **Try the larger model again**
+  (`"retry_large"`) forgets the verdict; a new runtime retries itself.
+- **Windows:** `ai-cuda` piece (ORT CUDA 13; CUDA runtime and cuDNN 9 user-supplied on PATH).
+  OpenVINO is a code path only (`MV_AI_BACKEND_OPENVINO`). No DirectML.
+- **macOS:** Core ML provider over CPU, arm64 only (`cmake/darwin.cmake` has no AI target on Intel).
+  Image-tower dims are pinned (`session_options::fixed_dims`, batch 4; `embed_images` splits/pads).
+  Core ML opens slowly even from `data/cache/coreml`, so the pack answers on CPU and a background
+  thread opens Core ML, self-tests and swaps it in (`upgrading_clip`, `pack.cpp`); **indexing waits
+  for the swap** (`engine::upgrading`). A cache entry cut short by a quit is dropped next start.
+  Text queries and audio models stay on CPU.
+- An index records model id, spec and precision and is local to one machine (*Sharing an index*).
 
 ## The AI pack (delivery)
 
-The pack installs through the add-on mechanism ([18](18-import.md#add-ons-how-import-is-installed)):
-signed manifest, verify-before-load, per-user versioned folder, explicit updates, sideloading.
+Installed through the add-on mechanism ([18](18-import.md#add-ons-how-import-is-installed)).
 
-- **Pieces**, each with its own Install / Remove under Settings → **Local search**:
+| Piece | Contents | Size |
+|---|---|---|
+| `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (`LICENSES/pdfium`), the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`); CLIP towers and tokenizer fetched | ~100 MB + 1.16 GB fetched |
+| `ai-large` | OpenCLIP ViT-H/14 fp16 | ~1.97 GB |
+| `ai-faces` | YuNet, AdaFace IR-50 fp16 | ~87 MB |
+| `ai-audio` | CLAP `larger_clap_general`, Whisper base and small | ~1 GB |
+| `ai-docs` | all-MiniLM-L6-v2 fp32, WordPiece vocab | ~91 MB |
+| `ai-cuda` (Windows) | ORT's CUDA build | ~205 MB |
 
-  | Piece | Contents | Size |
-  |---|---|---|
-  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`); the CLIP towers and tokenizer are fetched | ~100 MB, plus 1.16 GB fetched (Default) |
-  | `ai-large` (Maxxed) | OpenCLIP ViT-H/14, our fp16 export | ~1.97 GB |
-  | `ai-faces` (People) | YuNet detector, AdaFace IR-50 embedder (fp16) | ~87 MB model |
-  | `ai-audio` (Sound) | CLAP `larger_clap_general`, Whisper base and small, tokenizers | ~1 GB |
-  | `ai-docs` (Documents) | all-MiniLM-L6-v2 (fp32), its WordPiece vocab (#354 D3) | ~91 MB |
-  | `ai-cuda` (Windows) | ORT's CUDA build | ~205 MB |
-
-  Pieces declare `part_of: ai` and an `arch`. Clicks queue, Core first; "Install all"; "Update
-  all" when more than one installed piece has a newer version, and a piece's Install or Update
-  queues a Core that is itself behind first, so no piece runs ahead of the engine it was built
-  with. Remove deletes the files and offers to delete the index; `data/cache` (Core ML) is
-  deleted even when the index is kept.
-- **Models from Hugging Face (#482).** The pieces on GitHub carry code, the signed model list
-  and our own exports only; each upstream model file is in the piece's signed manifest
-  (`remote`: URL, size, SHA-256, licence) and the add-on fetches the ones the chosen tier
-  needs into `data/fetched/<piece>/`, a plain GET of the pinned `resolve/<revision>/<file>`
-  URL (`fetch.h`). Resumable, verified (a mismatch is fetched again, never loaded), patient
-  (an outage waits and resumes by itself; a 404 is reported as gone). The picture tower comes
-  first, so search opens before speech, sounds, faces and documents arrive. Status:
-  `fetch_state`, `fetch_done_bytes` / `fetch_total_bytes`. No family ceiling since 2026-10-18
-  ([12](12-decision-log.md)); the picker shows each tier's download and disk size.
-- The add-on is downloaded on explicit opt-in, a plain GET of fixed release URLs with no
-  identifier. The Mac pack is Developer ID-signed and notarized and loads under library
+- Pieces declare `part_of: ai` and an `arch`; Install / Remove each, "Install all", "Update all";
+  clicks queue Core first, and a piece's install first updates a stale Core. Remove offers to delete
+  the index; `data/cache` is always deleted.
+- **Models from Hugging Face:** each upstream file is in the piece's signed manifest (`remote`: URL,
+  size, SHA-256, licence), fetched by plain GET of the pinned `resolve/<revision>/<file>` into
+  `data/fetched/<piece>/` (`fetch.h`). Resumable; a mismatch is refetched, never loaded; a 404 is
+  "gone". Picture tower first. Status `fetch_state`, `fetch_done_bytes` / `fetch_total_bytes`.
+- The pack itself: plain GET of fixed release URLs. Mac: Developer ID, notarized, library
   validation.
-- **Location:** `%LocalAppData%\MediaViewer\addons\ai\<version>` on Windows and
-  `~/Library/Application Support/MediaViewer/Add-ons/AI/<version>` on Mac; the index and caches
-  are in that add-on's `data` folder.
-- **Offline / sideload:** the pack can be dropped into that folder by hand
-  (`tools/package/ai-sideload.py` for dev builds); the app verifies it the same way.
-- **Verification cost:** the first check in a process hashes every file; later ones stat every
-  file (size and modification time) and re-walk for extras. Listing peeks at manifests without
-  hashing; only the add-on being loaded is hashed.
+- **Location:** `%LocalAppData%\MediaViewer\addons\ai\<version>`;
+  `~/Library/Application Support/MediaViewer/Add-ons/AI/<version>`. Index and caches in `data/`.
+- **Offline / sideload:** drop the pack in that folder (`tools/package/ai-sideload.py`); verified
+  the same way.
+- **Verification:** the first check in a process hashes every file, later ones stat and re-walk;
+  only the add-on being loaded is hashed.
 
 ## Frame sampling
 
-`src/edit/clip_sample.*`: its own software decoder instance, never the playback decoder.
+`src/edit/clip_sample.*`, its own software decoder, never the playback decoder.
 
-1. **Keyframe pass.** Demux with `skip_frame = AVDISCARD_NONKEY`. Phone and camera GOPs are
-   ~1 s, so this yields ~1 candidate per second cheaply.
-2. **Coverage fallback.** Long-GOP sources can go minutes between keyframes. A **maximum gap**
-   (2 s) fills the grid by decoding forward from kept packets; a **minimum gap** (500 ms) stops a
-   burst of scene-cut keyframes flooding the index. The People pass on its own (re-analyse, or
-   People turned on after the pictures) decodes the moments the picture pass kept, through the
-   host's frame fetch, so a face sharp on one indexed frame is seen (#407); only a clip with no
-   picture rows falls back to its own 2 s / 10 s grid.
-3. **Dedupe by embedding.** A frame whose cosine to the last *kept* frame is above `dedupe`
-   (0.97) is dropped. A static interview shot collapses to a few rows; an action scene keeps
-   many.
-4. **Frame → tensor** (`infer/preprocess.h`). Rotation and SAR applied, resized with PIL-exact
-   bicubic to the model's input, normalised with the model's mean/std. HDR/PQ/HLG sources go
-   through the clip core's SDR tone map (`rgba_converter`) first: the model was trained on SDR
-   sRGB.
-5. **Record** `pts` in the stream time base and in milliseconds, plus a keyframe / grid-fill
-   flag, so jump-to-moment lands on the exact frame through the player's seek.
-6. **Photos** are one row each, embedded from a first-pixel-quality decode (RAW uses the embedded
-   preview). Live Photo and RAW+JPEG pairs index once, on the pair's still. A Live Photo's movie
-   (the folder pair `IMG_1234.HEIC` + `IMG_1234.MOV`; schema 7's `motion` columns) is sampled
-   with the same sampler and the same 0.97 dedupe, seeded with the still's vector, and its frames
-   are stored on the still's id with their `pts_ms`, at most 32 (#407). A moment opens the movie
-   at that time (the result's path is the movie and its kind a clip; `N` walks the still's
-   moments); a match at no timestamp is the still. The still commits first (progress partial),
-   the movie after (done), so a kill resumes the motion alone. A movie edited, added or brought
-   down from the cloud under the same still re-queues only the motion. An online-only movie is
-   read only with *Index online-only files* on and the fetch's gate open (brought down in place
-   and given back), otherwise the still is indexed alone. Photos library Live Photos are one
-   PhotoKit asset and stay a still.
+1. **Keyframe pass:** `skip_frame = AVDISCARD_NONKEY`.
+2. **Coverage fallback:** a **maximum gap** (2 s) decodes forward to fill long GOPs; a **minimum
+   gap** (500 ms) stops scene-cut floods (per tier, above). The People pass alone decodes the
+   moments the picture pass kept; a clip with no picture rows uses its own 2 s / 10 s grid.
+3. **Dedupe:** drop a frame with cosine > `dedupe` to the last *kept* frame.
+4. **Frame → tensor** (`infer/preprocess.h`): rotation and SAR, PIL-exact bicubic, model mean/std;
+   HDR/PQ/HLG through the SDR tone map (`rgba_converter`) first.
+5. **Record** `pts` in stream time base and ms plus a keyframe / grid-fill flag.
+6. **Photos:** one row from a first-pixel-quality decode (RAW: embedded preview). Live Photo and
+   RAW+JPEG pairs index once, on the still. A Live Photo's movie (`IMG_1234.HEIC` +
+   `IMG_1234.MOV`; `assets.motion*`) is sampled seeded with the still's vector and stored on the
+   still's id with `pts_ms`, ≤ 32 moments; a moment's result is the movie (kind clip). Still commits
+   first (partial), movie after (done); a changed movie re-queues only the motion. Online-only
+   movies only with *Index online-only files*. Photos library Live Photos stay a still.
 
 ## Index store
 
-`index.db` (SQLite, WAL) in the pack's data folder, separate from the thumbnail DB so clearing
-the index cannot touch thumbnails. Schema (`index_db.cpp`):
+`index.db` (SQLite, WAL) in `data/`, apart from the thumbnail DB (`index_db.cpp`):
 
 ```
 meta(key, value)
-roots(id, path, recursive, enabled, last_scan_at, media)          -- remembered index locations
-assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud,  -- cloud: schema 3
-       tags, taken_at, lat, lon, camera, lens, made_with, ai,         -- schema 4 (#291)
-       place, country, region,                                        -- schema 4, always NULL
-       rating, label, iso, aperture_x100, focal_mm, shutter_den, shutter_us)  -- schema 5 (#405)
-asset_text(rowid = asset id, text)                                  -- FTS5, schema 4
-progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset and model spec
+roots(id, path, recursive, enabled, last_scan_at, media, docs)
+assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud,
+       tags, taken_at, lat, lon, camera, lens, made_with, ai, place, country, region,
+       rating, label, iso, aperture_x100, focal_mm, shutter_den, shutter_us,
+       motion, motion_mtime, motion_size, motion_cloud)
+asset_text(rowid = asset id, text)                                 -- FTS5
+progress(asset_id, spec, state, resume_ms, tries, indexed_at)      -- per asset and spec
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
-speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper transcript lines
-cues(id, asset_id, start_ms, end_ms, kind, text)                   -- schema 6: chapters, text subtitles (#406)
-tracks(asset_id, points)                                            -- schema 11: a clip's telemetry route (#606)
+speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper lines
+cues(id, asset_id, start_ms, end_ms, kind, text)                   -- chapters, subtitles, picture text
+passages(id, asset_id, spec, page, ord, text)                      -- documents
+passage_text(rowid, words)                                         -- FTS5
+passage_vecs(passage_id, spec, generic, scale, emb)
+tracks(asset_id PRIMARY KEY, points BLOB)                          -- a clip's GPS route
 ```
 
-`emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
-tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags, 4 -> 5
-rating and exposure, 5 -> 6 cues, ..., 10 -> 11 tracks) is one
-transaction and skips a column already there, so a crash mid-migration never leaves an index that
-will not open. A new index is made as schema 3 and takes the same 3 -> 4 step, so a fresh index and
-a migrated one cannot differ.
+`emb` int8, `scale` its scale, `generic` its best cosine to the generic prompts. `kind` 3 is a
+document, 4 audio. Each schema step is one transaction skipping existing columns; new indexes are
+made at 3 and migrated forward.
+
+| Step | Adds |
+|---|---|
+| →2, →3 | `roots.media`; `assets.cloud` |
+| →4 | tag columns, `asset_text` |
+| →5 | `rating` (1..5, −1 rejected, 0 unrated), `label`, `iso`, `aperture_x100` (f/2.8 → 280), `focal_mm`, `shutter_den` (N of 1/N s), `shutter_us`; NULL until read and for clips |
+| →6 | `cues` |
+| →7 | `assets.motion*`; next walk queues each motion alone |
+| →8 / →9 | `kind` 4 audio / `kind` 3 document, `roots.docs`, `passages`, `passage_text` |
+| →10 | `passage_vecs` |
+| →11 | `tracks`; non-clip rows at tag level 2 move to 3 |
+
+Also in `data/`: `faces.db` (People), `labels.f32`, `selftest.txt` (CPU self-test reference by
+runtime, provider, model, piece).
 
 ### Schema 4 (#291, 2026-10-12)
 
-What each asset's tags say, so Local search can filter on them:
+- **Tags:** `tags` is a level (0 unread, 1 basic, 2 rating/exposure, 3 route; `kTagsLevel`; a
+  changed file resets to 0). `taken_at` = camera wall clock read as UTC (Photos: `creationDate`);
+  `lat` / `lon` WGS 84 (a route's first fix); `camera`, `lens`, `made_with`, `ai` (positive evidence
+  only). `place` / `country` / `region` stay NULL (places are [27](27-places.md)'s).
+- **`asset_text`:** FTS5 `unicode61 remove_diacritics 2`; the search fields (camera, lens,
+  made-with, software, title, caption, keywords, creator; [06](06-metadata.md) "Search text") joined
+  by U+001F. The engine matches them in memory with the hosts' fold; `index_db::match_text` quotes
+  every word (`fts_phrases`). Without FTS5 a same-shaped plain table (`meta('asset_text')`). Numbers
+  are never search text.
+- **Backfill:** host table `tag_facts` (`MV_ADDON_TAG_FACTS_V2_SIZE` adds rating/exposure) from the
+  host's `meta_cache.db`; the control thread fills rows below `kTagsLevel` after each walk, 128 per
+  transaction, ≤ 2 s a turn, yielding to `should_yield`. A host lacking a level stops the backfill
+  there for the run. Level 3 asks `route_of` (128 points) only for `MV_ADDON_TAG_HAS_ROUTE`.
+  `wait_idle` waits for it. Exports carry no tags.
+- **`tracks.points`:** ≤ 128 (`kTrackPoints`) evenly spaced, ends kept, int32 microdegree (lat, lon)
+  LE. Served by `located_assets` / mv.ai.1 `each_location` as `MV_ADDON_LOCATION_ROUTE_POINT` rows
+  after the asset's own row ([27](27-places.md) "Routes").
 
-- **Columns:** `tags` (0 until read; a changed file goes back to 0), `taken_at` (date taken, the
-  camera's wall clock read as UTC; for a Photos item its `creationDate`), `lat` / `lon` (WGS 84,
-  from EXIF / XMP GPS, a clip's ISO 6709 or `PHAsset.location`), `camera`, `lens`, `made_with`
-  and `ai` (summary::ai_generated: positive evidence only).
-- **`asset_text`:** an FTS5 table (`unicode61 remove_diacritics 2`), rowid = asset id. `text` is
-  the search fields as shown (camera, lens, made-with, software, title, caption, keywords,
-  creator; [06](06-metadata.md) "Search text"), U+001F between fields. The engine matches the
-  same fields in memory, folded with the hosts' rule, so a result can say which field matched;
-  `index_db::match_text` is the SQL path for a reader; it quotes every typed word (`fts_phrases`), so typed text is never FTS5 syntax. A trigger drops a row with its asset.
-  SQLite without FTS5 gets a plain table of the same shape (`meta('asset_text')` says which). The
-  vcpkg `sqlite3[fts5]` feature is on for both platforms.
-- **`place` / `country` / `region` stay NULL.** Place names are the Places add-on's
-  ([27](27-places.md)); the app links no geocoder (owner, 2026-10-11). The columns are there so a
-  later step can fill them from the provider without another migration. Today `place:` is
-  answered at query time (below).
-- **Filling it:** the host table's `tag_facts` (appended after `walk_files2`, read only when
-  `struct_size` covers it) serves each file from the host's `meta_cache.db`, a bounded head read
-  on a miss ([06](06-metadata.md) "Search text"). The control thread backfills assets with
-  `tags = 0` after each walk, 128 per transaction, up to two seconds a turn, waiting while
-  `should_yield` says the viewer is busy. The `tags` column is the bookmark, so a kill, a
-  restart or an index migrated from schema 3 resumes where it stopped and reads nothing twice.
-  Photos library items take `PHAsset.location` and `creationDate` from the last enumeration. A host without `tag_facts` (the pack updated before the app) backfills nothing and leaves `tags = 0`, so the first host that has it fills them; a failed commit waits the loop's usual second before trying again.
-  An exported index (Sharing an index) carries no tags; the receiver reads them itself.
-- `wait_idle` waits for the backfill too.
+**Roots and walks:**
 
-### Schema 5 (#405, 2026-10-15)
-
-Rating, colour label and exposure, for the `rating:` / `label:` / `iso:` / `f:` / `mm:` /
-`shutter:` terms. Columns, NULL until read: `rating` (1..5, −1 rejected, 0 unrated), `label` (as
-written), `iso`, `aperture_x100` (f/2.8 → 280), `focal_mm`, `shutter_den` (N when the exposure
-time is 1/N s) and `shutter_us` (the exposure time in microseconds, always set when there is
-one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL.
-
-- **Where they come from:** the host's `tag_facts`, whose struct gained the fields at its end
-  (`MV_ADDON_TAG_FACTS_V2_SIZE`); the host's meta_cache.db reads them in the same bounded head
-  read as the search fields (`kSearchFactsVersion` 2, so each file's cache row is read once more).
-- **`tags` is a level now:** 1 = schema 4's facts read, 2 = these too (`kTagsLevel`). The step
-  leaves every schema-4 row at 1, so the backfill reads it once more for the new facts alone;
-  nothing is re-embedded. A host from before #405 answers the shorter struct: its rows stop at 1,
-  the engine asks no more of it that run, and the first host that serves the fields reads them.
-- **Never search text:** the numbers are not in `asset_text`, so a plain "400" is not an ISO
-  match.
-- A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
-  the old rating until the file's stamp changes or the index is rebuilt (the base app's
-  meta_cache drops its row; the AI index has no such signal yet).
-### Schema 11 (#606, 2026-11-02)
-
-A GoPro or DJI clip's GPS route, so `place:` matches a clip anywhere along it
-([27](27-places.md) "Routes"). `tracks(asset_id PRIMARY KEY, points BLOB)`: at most 128 points
-(`kTrackPoints`) evenly spaced along the route, the first and last kept, as int32 microdegree
-pairs (lat, lon) little-endian. The asset's own `lat` / `lon` stay the route's first fix (what the
-host's `tag_facts` gives it). An asset that goes takes its track; clearing the index empties it.
-
-- **Filling it:** `tags` level 3 (`kTagsLevel`). The backfill asks the host table's `route_of`
-  for 128 points only when the file's tag facts carry `MV_ADDON_TAG_HAS_ROUTE`, so a still or
-  an ordinary clip costs nothing more. Every level-3 read replaces the asset's track (none when
-  the file no longer has a route). A host without `route_of` keeps the backfill at level 2 for
-  the run, so the first host that has it reads the routes.
-- **The step** creates the table and moves every row already at level 2 that is not a clip
-  (`kind <> 2`) to 3, so only clips are read again.
-- **Serving it:** `located_assets` joins the track, and mv.ai.1 `each_location` sends it after
-  the asset's own row as one `MV_ADDON_LOCATION_ROUTE_POINT` row a point, under the same path.
-  `locations_of_index` passes them on; Places matches a path on any of its rows.
-
-### Schema 6 to 10 (#406, #407, #355, #354)
-
-Schema 6 adds `cues` ("Cues" below). Schema 8 lets `assets.kind` be 4, an audio file (no table
-change). Schema 9 lets it be 3, a document, and adds `roots.docs`, `passages` and `passage_text`
-("Documents" below). Schema 10 (D3) adds `passage_vecs(passage_id, spec, generic, scale, emb)`, a
-passage's vector under the Documents piece's text model, int8 like frames; a passage that goes
-takes its vectors with it. Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
-`motion_cloud` to `assets`: a Live Photo still's movie and its stamp (Frame sampling, step 6). The
-first walk after the step fills them and queues each Live Photo's motion alone; the still is not
-embedded again.
-
-People live in a separate `faces.db`; the label bars in `labels.f32`;
-the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
-
-- **Folder roots persist.** Indexing a folder (with its subfolders) writes a `roots` row.
-  Reopening the app or the folder does not rebuild it: a startup delta scan, then the host's
-  watch, queue only new, changed or removed assets. Each root can be paused, rescanned or removed.
-- **The host watches each folder root (2026-11-02, [12](12-decision-log.md)).** The pack asks the
-  host to watch every enabled folder root that is not held (`watch_tree`, appended to the host
-  table; [14](14-abi.md)). The host's `io::tree_watcher` (`src/io/tree_watch.h`) watches the
-  whole tree and names the folder whose listing changed:
-  - **Windows** (`tree_watch_win.cpp`): `ReadDirectoryChangesW` over the subtree, every root on
-    one thread and one completion port. Attributes are watched too, which is how OneDrive making
-    a file available offline (or freeing it) shows. A new name is asked whether it is a folder
-    (a folder moved in from outside the tree is one name, with nothing for what is inside).
-  - **Mac** (`tree_watch_mac.cpp`): one FSEvents stream over every root, with file events and a
-    0.5 s latency, on a private serial queue. Paths come back under each root as it was given
-    (FSEvents reports `/private/var` for `/var`).
-  - **Linux:** no watch yet (`tree_watch_none.cpp` watches nothing), so a root there keeps the
-    15-minute walk.
-
-  The pack notes each folder (`on_tree_change`, on the host's thread) and the control thread walks
-  them once the changes have been quiet for 2 s, or 10 s after the first during a long copy
-  (`engine_deps::tree_quiet_s` / `tree_max_wait_s`). A changed folder's own files are walked
-  (`scan_dirs`, `walk_files2` at depth 0, the same pairing as a full walk); a folder that came,
-  was renamed or may have gone is walked to the root's depth, or, gone, takes its rows with it
-  (`index_db::end_scan_dirs` removes only rows under walked folders). A walk removes a row only
-  when it can vouch for the absence (2026-11-09, [12](12-decision-log.md#local-search-ai-add-on)):
-  a walk that failed part way (`walk_files2` returns `MV_ERR_IO` after listing what it could)
-  adds what it found, deletes nothing and marks the root "error" until the next walk; a folder
-  refused to the walk keeps its rows (`engine::keep_unlistable`). More than 64 folders, or
-  lost events (`MV_ADDON_TREE_OVERFLOW`), and the root is walked whole. A held root is not
-  watched: Resume walks it whole. A root on a network share is watched but keeps the 15-minute
-  walk (a server can stop telling without an error); every other watched root is walked whole
-  once an hour as a backstop, and an unwatched one every 15 minutes, as before. `roots_json`
-  says `"watching"`; Settings' folder row says "new files found every 15 minutes" when it is
-  false. Not changed: nothing is noticed before the pack loads (#292, below).
-- Keyed like the thumbnail cache: change `(path, mtime, size)` or the model `spec` and the row
-  is stale and re-queued. No content hashing.
-- Result tiles are the existing **JPEG-512 cache**; moment thumbnails are stored there as
-  `path#t=ms` rows through the host table. There is no second thumbnail path.
-- Resumable: state is per asset and spec; a kill mid-clip resumes at the last committed frame
-  (`resume_ms`).
-- **Unfinished roots wait for Resume (issue #299, 2026-10-11).** A quit or a kill while a root
-  is unfinished does not resume on the next open, and unfinished work is not a reason to load the
-  pack. The shipped pack runs with `engine_options::hold_unfinished` (`addon_entry.cpp`):
-  - **Held.** A root with work left when the engine started is *held*: its pictures not all
-    indexed, or listed in the last session's `resume.json` (any pass left: documents' words or
-    pages, a clip's text, the text in photos, sounds, speech, People; until 2026-10-21 only the
-    pictures counted, so those passes carried on unasked at the next load). Held means not
-    walked, not queued on any track, not fetched from iCloud or a cloud drive, and left out of
-    the status counts, until `set_setting("resume_root", <id>)` (0: every held root), a Rescan,
-    re-enabling it or Index this folder on it. Search answers from what it committed meanwhile;
-    `roots_json` marks it `"held": true`. Opening search loads the pack (#292, above) but does
-    not resume a held root. Same rule for the Photos library and an ordinary folder.
-  - **`data/resume.json`.** The control thread keeps it current (after each walk, and at most
-    every 5 s otherwise, written only when it changed, through a `.tmp` and a rename):
-    `{"version":1,"roots":[{"id","path","kind","done","total","held"}]}`, the enabled roots
-    with work left on any pass that is on (`engine::work_left_in_root`, claim's passes and
-    filters), and every held root; `done`/`total` are still the pictures'. It holds local paths beside `index.db`, which holds them
-    already; nothing is sent anywhere (rule 6).
-  - **The launch notice, both hosts.** The worker that verifies the installed pack at launch
-    also reads `resume.json` (Mac: `addons_mac.mm` through `addon/ai_resume.h`; Windows:
-    `IslandHost.ResumeNotice.cs`). Nothing of the pack loads for it. With roots listed, a small
-    notice in the bottom-right corner, not a modal, asks "Resume indexing Photos?" (two roots:
-    "Photos and Holiday"; more: "Photos, Holiday and 2 more"). **Resume** loads the pack as the
-    first search does (no panel opens; the pill says "Starting Local search…") and, once it
-    attaches, sends `resume_root` 0: each root is walked (its startup delta was skipped), then
-    indexed from `resume_ms`, redoing nothing committed. **Dismiss** leaves them paused and loads
-    nothing; the notice does not come back that session, and the next launch asks again. The Mac
-    notice is a self-sizing SwiftUI card pinned over the canvas corner (`ResumeNoticeView.swift`,
-    above the filmstrip when it is up); on Windows it is a small island of its own over that
-    corner, as the AI badge is (`IslandHost.ResumeNotice.cs`), placed from the window's client
-    rectangle on every resize and above the other islands. It was a windowed `Popup` of the
-    command-bar island until #443, and never showed on Windows. A launch read that lands before
-    the command bar is up waits for it, as the Mac's store waits for its host. Neither takes
-    focus. A later window (the reader) indexes nothing and shows no notice.
-  - **Settings → Local search**, in the pack's folder list (`ManagementView.swift`,
-    `ManagePanel.cs`): a held root's row reads "N of M · paused since last time" and offers
-    **Resume** in place of Pause, which sends `resume_root` for that root alone.
-  - **What it costs** is in the decision log: files added to a held root wait too. A pack that
-    has never run with the option has no `resume.json`, so the first launch after the update asks
-    nothing; the roots it holds then show Resume in Settings.
-- A folder whose walk fails (offline, moved, no access) keeps its rows; `roots_json` says
-  `"error":"unreadable"` and Settings says "Couldn't read this folder" rather than "Up to date".
+- **Folder roots persist.** A `roots` row per indexed folder; reopening runs a startup delta scan,
+  then the watch queues only changes. Roots can be paused, rescanned, removed.
+- **The host watches each folder root** that is enabled and not held (`watch_tree`; `io::tree_watcher`
+  in `src/io/tree_watch.h`): Windows `ReadDirectoryChangesW` incl. attributes (`tree_watch_win.cpp`);
+  Mac one FSEvents stream, 0.5 s latency (`tree_watch_mac.cpp`); Linux none (`tree_watch_none.cpp`).
+  Changed folders are walked once quiet 2 s, or 10 s after the first (`engine_deps::tree_quiet_s` /
+  `tree_max_wait_s`): own files (`scan_dirs`, `walk_files2` depth 0), or to root depth for a new,
+  renamed or vanished folder. `index_db::end_scan_dirs` deletes only under walked folders and only
+  when the walk vouches: a partial failure (`MV_ERR_IO`) adds, deletes nothing and marks the root
+  "error"; an unlistable folder keeps its rows (`engine::keep_unlistable`). > 64 folders or
+  `MV_ADDON_TREE_OVERFLOW`: whole root. Backstop walks: network shares and unwatched roots every
+  15 min, other roots hourly. `roots_json` `"watching"`.
+- **Staleness:** `(path, mtime, size)` or `spec` change re-queues; no content hashing. Resume is per
+  asset and spec (`resume_ms`).
+- Tiles are the **JPEG-512 cache**; moments are `path#t=ms` rows via the host table.
+- **Unfinished roots wait for Resume** (`engine_options::hold_unfinished`, `addon_entry.cpp`):
+  - A root with work left at engine start (pictures, or any pass in `resume.json`) is **held**: not
+    walked, queued, fetched or counted until `set_setting("resume_root", <id>)` (0 = all), Rescan,
+    re-enable or Index this folder. Search uses what is committed; `roots_json` `"held": true`.
+  - `data/resume.json` (after each walk, ≤ every 5 s, on change, `.tmp` + rename):
+    `{"version":1,"roots":[{"id","path","kind","done","total","held"}]}` (`engine::work_left_in_root`;
+    `done`/`total` count pictures).
+  - **Launch notice** without loading the pack (Mac `addons_mac.mm` via `addon/ai_resume.h`,
+    `ResumeNoticeView.swift`; Windows `IslandHost.ResumeNotice.cs`): "Resume indexing Photos?" in the
+    canvas corner, no focus. Resume loads the pack and sends `resume_root` 0; Dismiss loads nothing.
+  - Settings shows a held root as "N of M · paused since last time" with **Resume**.
+- A root whose walk fails keeps its rows (`"error":"unreadable"`).
 
 ## Cloud files in indexed folders
 
-OneDrive (Windows) and iCloud Drive (Mac) keep some files online-only. They appear in the folder,
-but reading one downloads it. The walk lists them, flagged: host table `walk_files2`, from
-`FILE_ATTRIBUTE_RECALL_ON_*` on Windows and `SF_DATALESS` on the Mac. It still never follows a
-symlink or junction. Table v1's `walk_files` leaves them out, so Import never starts a download.
-The index marks them (`assets.cloud`): no picture, sound, speech or People pass reads one, they
-are not counted as work in hand, and the status and each folder's row say "N only in OneDrive" /
-"only in iCloud Drive" (`cloud_files_left`, roots `cloud_only`).
+`walk_files2` lists online-only files flagged (`FILE_ATTRIBUTE_RECALL_ON_*` / `SF_DATALESS`), never
+following links or junctions; table v1's `walk_files` omits them. `assets.cloud` marks them: no pass
+reads one and they are not work; status says "N only in OneDrive / iCloud Drive"
+(`cloud_files_left`, roots `cloud_only`).
 
-**Index online-only files** (`cloud_files`, off by default; owner, 2026-10-05) mirrors the Photos
-library's iCloud videos. The same fetch thread brings a file down in place: on Windows through the
-Cloud Files API (`CfHydratePlaceholder` in 16 MB slices, so it reports progress and stops between
-them), and on the Mac through `startDownloadingUbiquitousItemAtURL`. It clears the mark, so every
-track takes the file first, and makes it online-only again once no track wants it
-(`CfDehydratePlaceholder`, `evictUbiquitousItemAtURL`). The two-files-on-disk limit is shared
-with iCloud clips. It waits on battery, on a metered network (Network List Manager cost /
-`NWPathMonitor`), under 10 GB plus the file free on the file's drive, and while paused. A file the
-provider will not send is skipped until the next start. Row ids of files brought down are kept in
-`<data>/cache/cloud-fetched`, so a crash's leftovers are made online-only again at the next start.
-The port is `src/addons/ai/cloud_files.h` (`cloud_win.cpp`, `cloud_mac.mm`, `cloud_none.cpp`), in
-the pack, not the base app. On Windows `cldapi.dll` is delay-loaded and probed: without it
-(before 10 1709) the pack still loads and searches, `settings_json` says `"cloud_supported":false`,
-and the option is shown greyed with the reason. The option is always listed on Windows. Another sync client's files on the Mac (not ubiquitous items) stay
-unindexed.
-- The index holds paths locally and is excluded from crash reporting and telemetry.
+**Index online-only files** (`cloud_files`, off by default): the fetch thread brings a file down in
+place (`CfHydratePlaceholder` in 16 MB slices / `startDownloadingUbiquitousItemAtURL`), every track
+takes it first, then it is evicted (`CfDehydratePlaceholder` / `evictUbiquitousItemAtURL`). ≤ 2
+files on disk, shared with iCloud clips. Waits on battery, metered network, < 10 GB + file free, and
+pause. Refused files skip until next start. Fetched ids in `<data>/cache/cloud-fetched` for crash
+cleanup. Port `src/addons/ai/cloud_files.h` (`cloud_win.cpp`, `cloud_mac.mm`, `cloud_none.cpp`);
+`cldapi.dll` delay-loaded, absent → `"cloud_supported":false`.
 
 ## Search
 
-- **Query encode:** the text tower, cached for repeated queries. A picture query's last noun is
-  embedded in **both numbers and averaged** (`query::number_forms`, one batched run), so
-  "mountain" and "mountains" are the same query.
-- **Scan** (`vectors.h`): brute-force int8 dot product over an in-memory matrix of every stored
-  frame of the active model (loaded, not memory-mapped; ~77 MB at 100 k L/14 frames). 100,000
-  ViT-L rows scan in ~31 ms on one core. There is no ANN index. Dropping assets (a root
-  removed, a scan's gone or changed list, a reader's refresh) tombstones their rows in one
-  pass with at most one compaction (`remove_assets`), and a path finds its asset through a
-  `path_key → id` map kept beside the asset table, not a walk of it (`clip_matches`,
-  `search_similar`; issue #174).
-- **Ranking:** top frames, then **grouped per clip** with the best moment first and "N more in
-  this clip", so one long video cannot fill the page (`mv_ai_result`). `find_text` returns at
-  most 5,000 rows; a result list holds at most 1,000.
-- **Order (#412, 2026-10-15).** Best match first when the search knows what it is answering.
-  When no pass answers a description (the "nothing found" gate holds every row back), the list
-  is not empty and not a score ranking of the least-bad rows: it is what the rest of the query
-  allows, **newest by date created first** (`engine::newest_first`) — a Photos item's
-  `creationDate` (`taken_at`, else the enumeration's `created`, never its edit time), a file's
-  `taken_at`, else its modification time; the same second by path. A filter-only query (`in:2024`, `file:IMG_12`) is listed the same way.
-  The hosts keep the order they are handed: the panel's grid, and the gallery and filmstrip
-  opened from it, are one sequence.
-- **Scope:** the open folder and its subfolders (default) · all indexed folders
-  (`MV_AI_SCOPE_TREE` / `MV_AI_SCOPE_ALL`; the panel offers no folder-only scope). Kind filter
-  (photos / videos) and tower filter (pictures / sounds / speech). A nonsense query is not
-  answered with the least-bad ten (below, "Nothing found"). With no folder open the folder scope searches
-  everywhere, and the Mac panel shows *Everywhere* chosen; opening another folder asks a
-  folder-scoped search again (on the panel's next showing if it is closed), never leaving the
-  last folder's results under the new one (issue #191).
-- **Find similar:** the current still or the paused frame as the query. An indexed still or
-  moment uses its stored vector; another paused frame is embedded on demand.
+- **Query encode:** text tower, cached; a picture query's last noun is embedded singular and plural
+  and averaged (`query::number_forms`).
+- **Scan** (`vectors.h`): brute-force int8 dot product over an in-memory matrix (~77 MB at 100 k
+  L/14 rows, ~31 ms one core); no ANN. Removals tombstone in one pass with ≤ 1 compaction
+  (`remove_assets`); paths resolve via a `path_key → id` map.
+- **Ranking:** top frames **grouped per clip**, best moment first, "N more in this clip"
+  (`mv_ai_result`). `find_text` ≤ 5,000 rows; a result list ≤ 1,000.
+- **Order.** Best match first when something answers the description; otherwise (gate holds every
+  row, or filters only) everything the query allows, **newest by date created first**
+  (`engine::newest_first`: `taken_at`, else Photos `created`, else mtime; ties by path). Hosts keep
+  the order.
+- **Scope:** `MV_AI_SCOPE_TREE` (open folder and subfolders, default) · `MV_AI_SCOPE_ALL`; kind and
+  tower filters. No folder open: everywhere. Opening a folder re-asks the search.
+- **Find similar:** the still or paused frame; stored vector if indexed, else embedded on demand.
 
 ### Nothing found
 
-An absolute cosine floor does not separate nonsense from real queries on CLIP (their top scores
-overlap). The rule (`vector_store::scan_stats`, `find_text`) combines four signals:
+Rule (`vector_store::scan_stats`, `find_text`):
 
-- **Margin over generic prompts.** Each stored row keeps its best cosine against the generic
-  prompts; a row's margin is its score minus that. A result row must beat it by
-  `result_margin` (0.015).
-- **Stand-out z.** `top10_z` is how many SDs the ten best **assets** (per asset, so a long clip's
-  similar frames count once) sit above the mean of every asset's best score. For a query that
-  matches nothing it grows with the library like the top ten of N noise draws (~2.2 at 300
-  assets, 2.6 at 1,000, 3.3 at 10,000), so "stands out" means z ≥ max(`query_z`,
-  1.18 × the noise expectation for this many assets).
-- **The gate needs z and margin together.** With L = log10(assets / 1,000) (≥ −1), a query
-  passes on its best margin alone at `query_margin` × (1.375 + 0.125 L), or when it stands out
-  with a best margin of `query_margin` × 0.375 (1 + L). Below 100 assets the margin alone
-  decides.
-- **Broad subjects.** A subject that fills much of the library ("mountain" in a mountain
-  library) cannot stand out from it: it *is* the mean. A query is believable at the plain
-  calibrated margin when its rows clear that margin on at least max(5, 1 % of the assets)
-  assets (`scan_stats::over_margin`).
-- **Result z.** Once a query stands out, a row at least `result_z` (2.0) SD above the mean is a
-  result as well as the margin rows.
+- **Margin:** a row's score minus its `generic`; a result row needs `result_margin`.
+- **Stand-out z:** `top10_z` = SDs the ten best **assets** sit above the mean of every asset's best.
+  Noise grows with N (~2.2 at 300, 2.6 at 1 k, 3.3 at 10 k), so stands out = z ≥ max(`query_z`,
+  1.18 × noise expectation).
+- **Gate:** L = log10(assets / 1,000) (≥ −1); pass on best margin ≥ `query_margin` × (1.375 +
+  0.125 L), or stand out with best margin ≥ `query_margin` × 0.375 (1 + L). < 100 assets: margin
+  alone.
+- **Broad subjects** pass at the plain margin when ≥ max(5, 1 %) assets clear it
+  (`scan_stats::over_margin`).
+- **Result z:** once standing out, rows ≥ `result_z` SD above the mean are also results.
 
 ### Nothing found at scale
 
-**A label vocabulary filters rows** (`vocabulary.h`). 705 everyday labels (people, animals,
-vehicles, places, scenes, objects, food, events, text and screens; deliberately not COCO's) are
-embedded once per tower and kept in `labels.f32`. Each row stores the score of its ninth-best
-label; a row is a result only when the query scores at least that. Gibberish loses to the
-labels on most of the photos it lands on; "a dog" beats every label but near-synonyms on a dog.
-Embedding the labels takes ~4 s (B/32) / ~6 s (L/14) once per tower, cached; the per-row bars
-take 1.2 s per 100 k rows at load, filled in chunks behind searches (until then a row passes).
-+4 bytes a row; the scan cost is unchanged (100 k × 768: 1.66 → 1.73 ms).
-
-Calibrated on COCO 2017 at 1 k / 5 k / 10 k / 25 k photos, both towers on Core ML (500
-held-out captions, 85 nonsense strings), default Precision:
-
-| Tower, photos | Captions found / own photo (of 500) | Nonsense passing (of 85) | Nonsense rows (median) | Category P / R | Labelled P@5 |
-|---|---|---|---|---|---|
-| B/32, 1 k | 475 / 460 | 5 | 10 | .72 / .69 | .89 |
-| B/32, 25 k | 489 / 470 | 9 | 196 | .74 / .72 | .94 |
-| L/14, 1 k | 478 / 474 | 11 | 57 | .85 / .71 | .97 |
-| L/14, 25 k | 489 / 483 | 23 | 221 | .87 / .75 | 1.0 |
-
-Target: at 25 k assets and default Precision, at most 1 in 3 nonsense strings answered on L/14
-and 1 in 8 on B/32 (the fitted rule gives 27 % and 11 %). Placeholder and long-sentence
-gibberish (`lorem ipsum`) can still pass on L/14 at large sizes, with hundreds of rows.
+`vocabulary.h`: 705 everyday labels embedded once per tower (`labels.f32`). Each row stores its
+ninth-best label score; a row is a result only when the query scores at least that. Bars fill in
+chunks at load (a row passes until filled). Target at 25 k assets: ≤ 1/3 nonsense answered on L/14,
+≤ 1/8 on B/32.
 
 ### Sounds (CLAP)
 
-CLAP's margin over its generic prompts says almost nothing: "qwzx plorn" beats "a sound." by
-+0.31 and "waves crashing" by +0.24, and on the owner's 4,331 clips "skiing" put 3,666 sound rows
-over `result_margin`. Sorted in the picture tower's units (a margin of 0.1 = 1), a so-so sound
-then outranked the best picture: "surfing" listed GoPro ski runs (wind roar) above every surf clip
-(2026-10-28). From `kMinAssets` (30) clips up, a sound query therefore follows the **stand-out
-rule alone** (`text_thresholds::stand_out`, CLAP's `model.json`):
-
-- **Answered** only when its ten best clips stand out at `stand_out` (1.06) × noise's top-ten z
-  (the picture tower's 1.18 would silence fireworks, applause and crowds).
-- **Rows** are those `result_z` (3.0) SDs over the mean of every clip's best score, and over
-  `result_margin`.
-- **Rank** among the picture rows is the row's z × `rank_per_sd` (0.2): a picture row's rank per
-  SD is 0.22 median (0.19–0.26) over the owner's top tens, so a sound ties a picture a little
-  lower down. A clip found by both keeps its better rank.
-- Precision scales the factor, the row z and the margin as it does the picture tower's.
-
-Below 30 clips the margin rule alone answers, as before. On the owner's library (21 queries,
-default Precision): sound answered nonsense, "dog", "beach", "music", "skiing" and "surfing" before
-and none of them after; it still answers "waves crashing", "rain", "applause", "crowd cheering",
-"people laughing" and "helicopter", and no longer "fireworks", "a car engine" or "thunder" (their
-pictures still answer). Fitted on one library: the factor sits between "mountain" (1.06 × noise,
-not answered) and "applause" (1.07, answered).
+CLAP's margin barely separates, so from `kMinAssets` (30) clips a sound query uses the stand-out
+rule alone (`text_thresholds::stand_out`): answered when its ten best stand out at `stand_out` (1.06)
+× noise z; rows ≥ `result_z` (3.0) SD and over `result_margin`; rank among pictures = z ×
+`rank_per_sd` (0.2); a clip found both ways keeps its better rank. Below 30 clips, the margin rule.
 
 ### Precision scale
 
-Settings → Local search → **Precision**, five steps from Broader to Stricter; the middle (2) is
-the default and is the rule above, unchanged. The engine setting `precision` (0–4, saved) is
-read by each search as it starts: no reload, no re-index, and the chrome re-runs an open search.
-Per level (`precision_scale::at`) it scales the stand-out factor, the query margin, the row
-margin and the row z, and at 3–4 keeps only rows within Δ SDs of the best row:
+Setting `precision` 0–4 (default 2), read per search (`precision_scale::at`):
 
-| Level | stand-out × noise | query margin | row margin | row z | Δ (SD) |
+| Level | stand-out × noise | query margin | row margin | row z | keep within Δ SD of best |
 |---|---|---|---|---|---|
 | 0 Broadest | 1.13 | × 0.8 | × 0.33 | × 0.8 | - |
 | 1 | 1.15 | × 0.9 | × 0.67 | × 0.9 | - |
-| **2 (default)** | **1.18** | **× 1** | **× 1** | **× 1** | - |
+| **2** | **1.18** | **× 1** | **× 1** | **× 1** | - |
 | 3 | 1.26 | × 1.125 | × 1.5 | × 1.2 | 3 |
 | 4 Strictest | 1.38 | × 1.25 | × 2 | × 1.4 | 2 |
 
-"Nothing found" always reads the calibrated rows, so each stricter level answers a subset of the
-looser one. L/14 tells a near-miss category ("helicopter" against COCO's planes) from a real
-subject at level 3; B/32 cannot (its near misses stand out as strongly as real subjects). CLAP
-scales its stand-out factor, row z and margins the same way; spoken-word search needs all the query's words at 3–4 and
-half at 0–1.
+Each stricter level answers a subset of the looser. CLAP scales alike; speech needs all query words
+at 3–4, half at 0–1.
 
 ### Query syntax
 
-One parser in the pack (`src/addons/ai/query.*`, `mv_ai_tests "[query]"`), so both chromes, the
-Final Cut Pro panel ([23](23-nle-search.md)) and spoken requests ([19](19-voice.md)) mean the
-same thing by the same words. Terms narrow each other (AND).
+One parser (`src/addons/ai/query.*`, `mv_ai_tests "[query]"`) for both chromes, Final Cut Pro
+([23](23-nle-search.md)) and voice ([19](19-voice.md)). Terms AND.
 
 | Typed | Means |
 |---|---|
-| `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
-| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo or clip moment whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet. Quoted words also match a document's text (#354); `said:` never does |
-| `text:lease`, `says:"net 30 days"`, `-text:draft` | a document's text only (#354, "Documents"): the words in that order, at the page that holds them |
-| `lease documents`, `is:document`, `is:pdf`, `is:docx` | documents (#354); `is:pdf` / `is:docx` (`is:word`) the format |
-| `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip |
-| `Tristan or Aaryan` | either |
-| `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
-| `@tri`, `person:"anna s"` | a person by the start of a name, or a near spelling; nobody by that name: nothing found |
-| `Trist`, `tristna` (alone) | a lone word that starts or nearly spells a name: those people first, then what the word describes (so "car" still finds cars when there is a Carla) |
-| `-Nico`, `-beach`, `-"goodbye"`, `-video` | leave out a person, what a picture search finds, a phrase said, a kind |
-| `beach video`, `is:photo`, `videos of Anna` | a kind: the last word, `is:` / `type:`, or a leading "videos of"; "photos of …" asks for anything |
-| `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **date taken** (`taken_at`: the camera's wall clock read as UTC, no timezone conversion; a Photos item's `creationDate`), and the file's modification time (UTC) for a file with none or whose tags are not read yet (#404) |
-| `file:IMG_12`, `file:"trip 2024"`, `-file:copy` | the file's **name** (not its folder) contains the text, case and accents folded. Indexed files only |
-| `video in:2024`, `file:IMG_12` | filters alone: everything they allow, newest first (by the same date) |
-| `camera:R5`, `camera:canon`, `-camera:iphone` | the file's camera tag (make and model) contains the text, folded (#291) |
-| `lens:24-70`, `lens:"RF 50"` | the lens tag contains the text |
-| `ai:yes`, `ai:no`, `made:yes` | AI provenance (positive evidence: C2PA / IPTC trained-algorithmic source, or a known generator); `ai:no` is every file without that evidence |
-| `made:chatgpt`, `ai:firefly`, `-made:midjourney` | the generator the file names ("made with") contains the text |
-| `rating:5`, `rating:3+`, `rating:0`, `rejected`, `rating:-1`, `-rating:1` | the stars the file states (0 unrated, −1 rejected), or at least that many (`+`); `-` leaves that rating out (#405) |
-| `label:red`, `-label:red` | the colour label contains the word, folded |
-| `iso:400`, `iso:100-800`, `iso:1600+` | ISO: exact, an inclusive range, or at least |
-| `f:2.8`, `f:1.4-2.8` | aperture, within 0.05 stops of the stored value (f/2.8 and APEX's f/2.83 are one) |
-| `mm:35`, `mm:24-70` | focal length in whole millimetres |
-| `shutter:1/250`, `shutter:250`, `shutter:2s` | the exposure time (a bare number N is 1/N s, as a camera shows it; `s` or a decimal point is seconds), within a sixth of a stop |
-| `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). **Needs the Places add-on** (#441): which assets are in the place is its search provider's answer, which the engine asks for through the host and intersects with the rest of the query ("Places over the index" below). Without Places a place term matches nothing: the panel says "Place search needs the Places add-on" and its help line leaves `place:` out |
-| (any of the six above) | a file with no value for a kept term does not match it (an `iso:` term skips a clip); a left-out term drops only a value in its range. The terms filter before the towers run, so `iso:400 beach` ranks the ISO 400 frames by "beach" |
-| `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word at the start of a word ("r5" in "Canon EOS R5", "70mm" in "RF24-70mm"; not "cat" inside "location") come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
+| `Tristan beach` | Tristan's photos / moments ranked by "beach" (no "nothing found" inside a person) |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | words in order in a transcript, chapter, text subtitle or picture text; the line is the snippet. Quotes also match documents; `said:` never |
+| `text:lease`, `says:"net 30 days"`, `-text:draft` | document text only, at its page |
+| `is:document` / `is:doc`, `is:pdf`, `is:docx` (`is:word`), leading/trailing `documents` / `docs` / `pdf(s)` | documents; format by extension |
+| `is:audio` / `is:music` / `is:song`, leading/trailing `audio` / `songs` / `tracks` | audio files (bare `music` is a description) |
+| `Tristan Aaryan`, `Tristan and Aaryan` / `Tristan or Aaryan` | both in one photo or clip / either |
+| `Anna Smith`, `anna` | a named person, full or first name, folded |
+| `@tri`, `person:"anna s"` | name prefix or near spelling; no such person: nothing found |
+| `Trist`, `tristna` (alone) | matching people first, then what the word describes |
+| `-Nico`, `-beach`, `-"goodbye"`, `-video` | exclude a person, description, phrase, kind |
+| `beach video`, `is:photo`, `type:video`, `videos of Anna` | a kind (last word, `is:` / `type:`, leading "videos of"); "photos of …" is anything |
+| `in:2024`, `in:2024-06`, `before:`, `after:`, `since:`, `until:` | date taken (`taken_at`, no TZ conversion), else mtime (UTC) |
+| `file:IMG_12`, `file:"trip 2024"`, `-file:copy` | file name contains, folded |
+| filters alone (`video in:2024`) | everything allowed, newest first |
+| `camera:R5`, `lens:"RF 50"` | tag contains |
+| `ai:yes` / `ai:no` / `made:yes`; `made:chatgpt`, `ai:firefly` | AI provenance (C2PA / IPTC, known generator); the named generator |
+| `rating:5`, `rating:3+`, `rating:0`, `rejected`, `rating:-1` | stars (0 unrated, −1 rejected; `+` at least) |
+| `label:red` | colour label contains |
+| `iso:400`, `iso:100-800`, `iso:1600+` | exact, inclusive range, at least |
+| `f:2.8`, `f:1.4-2.8` / `mm:35`, `mm:24-70` | aperture ±0.05 stop / focal mm |
+| `shutter:1/250`, `shutter:250`, `shutter:2s` | bare N = 1/N s; `s` or decimal = seconds; ±1/6 stop |
+| `place:portugal`, `in:lisbon`, `-place:spain` | where taken; `in:` is a date if it parses, else a place; a digit-led word is never a place. **Needs Places**; without it matches nothing |
+| (rating … shutter) | no value for a kept term: no match; an excluded term drops only values in range; filters run before towers |
+| plain words (`R5`, `holiday`) | also files whose tags hold every word at a word start, first, tag as snippet (`MV_AI_MATCH_TAGS`) |
 
-Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing a name: the panel
-names people for the word being typed (`suggest_json`; prefix first, then a near spelling of one
-letter, two from eight letters); **Tab** or a click completes the word. A word that is not a
-name, a kind or an operator stays in the description; an unfinished `in:20` is ignored. Not in
-the index, so not in the syntax: nothing of a file's text is left out now; quoted words search
-speech, chapter titles, subtitle lines and the text in photos ("Text in pictures"). Date terms use the date
-taken where the tag backfill has read one (#404, [12](12-decision-log.md)). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
+Lead-ins ("show me …", "find …") are trimmed. Name suggestions (`suggest_json`: prefix, then a
+one-letter near spelling, two from eight letters); Tab completes. Unknown words stay in the
+description; an unfinished `in:20` is ignored. Folding: `core/fold.h` (decompose, drop marks,
+lowercase; ß, æ, ø, ł kept); the Mac chrome's name half uses Swift's full case folding.
 
-Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose, drop marks,
-lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
-"ss" and æ into "ae"; "strasse" no longer finds "Straße", as in file search on Windows and its tag half on the Mac (the Mac chrome's name half uses Swift's full case folding, which does turn ß into "ss"; see `core/fold.h`).
+**Places over the index.** For each `place:` / `in:<place>` term the engine calls host table
+`place_matches` on its search worker; the host routes it through `slot_registry::provider_paths` to
+the provider declaring `place:` for Local search (Places) as its own request (folder "" = whole
+index), polling every 20 ms; the engine abandons it when a newer search queues or the pack stops.
+Kept assets are in **every** kept place and **none** excluded, by path key, within the rest of the
+query; a pure place query is newest first. No provider or host row: no match. Place-term queries
+are not sent to other providers (`has_place_terms`, `src/addon/slots.cpp`); chromes check
+`mv_slots_place_terms` (Mac `placeTerms:`).
 
-**Places over the index (#398, #441).** A place term in Local search is answered by the add-on
-whose search provider declares `place:` for Local search (Places), and intersected in the engine.
-For each `place:` / `in:<place>` term, kept or left out, the engine calls the host table's
-`place_matches` (appended after `locations_of_index`) on its search worker. The host routes it
-through the slot registry (`slot_registry::provider_paths`) to that provider as a request of its
-own, with its own generation and folder "" (the whole index), so a chrome's search never replaces
-it and it never replaces one. The registry collects the provider's rows and returns their paths
-when it posts done. The engine then keeps the assets the scope, kinds, dates and other terms
-allow that are in **every** kept place and in **none** left out (`-place:spain`), by path key.
-A pure `place:portugal` is the provider's rows within the scope and kinds, newest first. A
-description (`beach place:portugal`) ranks only those assets. Two kept places are their overlap.
-While it waits, the engine stops (no rows) once a newer search is queued or the pack is stopping.
-The registry asks it every 20 ms, and the provider sees the request go stale and stops its walk.
-With no such provider (Places not installed, or removed meanwhile), or a host table without the
-row, a place term matches nothing. Before #441 the engine kept every geotagged asset and listed
-them newest first, so `place:Portugal` without Places showed a photo taken in England as its
-first result; with Places the provider's rows were only offered beside the list ("+ N in
-Portugal"). Local search no longer sends a query with place terms to other providers
-(`has_place_terms`, the pack's rule for the operators, in `src/addon/slots.cpp`): the pack's list
-is the whole answer. A plain word (`portugal`) still goes to them. The chromes ask
-`mv_slots_place_terms` (Mac: the host's `placeTerms:`) whether the words have a place term and
-whether Places is loaded. With a term and no Places they search nothing and show the empty state;
-the help line names `place:` only while Places is loaded.
-
-Over a folder Places walks the host's `locations_in`; for Local search (folder "") it walks the
-host table's `locations_of_index`, appended after `read_cues`. That call streams (path, lat, lon) for every
-indexed asset with coordinates, from what index.db already holds (schema 4's `lat` / `lon`,
-filled by the tag backfill). No file and no file's metadata is read. The pack serves it as
-mv.ai.1 `each_location`, 512 rows a `SELECT` in id order (`index_db::located_assets`), with
-index.db's lock held for the `SELECT` only and never while a row is visited, so indexing goes on
-between batches. Because the pack is an add-on, the core cannot link it. Each host publishes the
-pack's row in a process-wide source (`src/addon/index_locations.h`) when the pack attaches (the
-writer or a later window's reader). It retracts the row before the pack goes: a walk in flight
-stops at its next row, and the library is unloaded only once no walk is inside it. The Mac waits
-on its add-on queue, never the main thread. The host's thunk is generation-tagged. A request that
-goes stale, or an add-on being removed (detach joins its worker), stops the walk with
-`MV_ERR_CANCELLED`; staleness is checked every 64 rows. With no pack attached the call returns
-`MV_ERR_NOT_FOUND`, and Places posts done with no rows.
+Places reads coordinates via host table `locations_of_index`: (path, lat, lon) from index.db only,
+served as mv.ai.1 `each_location`, 512 rows a `SELECT` in id order (`index_db::located_assets`),
+lock held per `SELECT` only. Hosts publish the pack's row in `src/addon/index_locations.h` on attach
+and retract it before unload (unload waits for walks). Stale or removed → `MV_ERR_CANCELLED`
+(checked every 64 rows); no pack → `MV_ERR_NOT_FOUND`.
 
 ## UI and commands
 
-- **Results are the gallery:** the same gallery, filmstrip, keys and thumbnails over a result
-  list instead of a folder listing (base ABI `mv_folder_open_list`). A tile shows the frame
-  thumbnail and `mm:ss`. **Enter** on a video tile opens the clip paused on that moment, with
-  the scrub bar marking the clip's other matches.
-- **Search panel** (`MediaViewer.Ai.Chrome` / `AI.bundle`): opened from the search icon in the
-  path bar or `Ctrl+F` / `⌘F`. The first time in a session it starts the pack first (*Starting on
-  demand*, below): the command-bar pill reads "Starting Local search…" and the panel opens once
-  the pack attaches. Query field with name suggestions, *Look in* (this folder and
-  subfolders · everywhere · Photos on the Mac when indexed), kind and Pictures / Sounds / Speech
-  filters, the snippet under a spoken result. Without the pack the same icon and key open the
-  base app's file search ([16](16-commands.md) "File search").
-  Both hosts draw it alike (#202): a spinner in the query row while the words on screen are
-  answered; a click selects a tile and a double-click opens (Ctrl / ⌘ for the gallery grid); a
-  caption only under a tile whose words matched (speech, a tag, a document's text); capsule
-  badges (a clip's moment with a play glyph, a page, "+N in this clip") and a match badge only
-  when a sound or speech matched; a placeholder icon until the thumbnail lands; the selection
-  ring hinted, not hidden, while the keyboard is in the query; keycap hints for Enter / Return
-  and Ctrl+Enter / ⌘↩; and an icon over each empty state.
-- **Commands** (rows in `src/shell/command_table.cpp`, listed only while the pack is loaded,
-  except `Ctrl+F`):
+- **Results are the gallery:** gallery, filmstrip, keys and thumbnails over a result list
+  (`mv_folder_open_list`); tiles show `mm:ss`. **Enter** on a video tile opens the clip paused on the
+  moment, the scrub bar marking its other matches.
+- **Search panel** (`MediaViewer.Ai.Chrome` / `AI.bundle`) from the path bar's icon or `Ctrl+F` /
+  `⌘F`; first use loads the pack (*Starting on demand*). Query field with name suggestions, *Look in*
+  (folder and subfolders · everywhere · Photos on the Mac), kind and Pictures / Sounds / Speech
+  filters. Without the pack the same key opens file search ([16](16-commands.md) "File search").
+- **Commands** (`src/shell/command_table.cpp`, only while the pack is loaded, except `Ctrl+F`):
 
   | Command | Windows | Mac |
   |---|---|---|
   | `search.open` | `Ctrl+F` | `⌘F` |
   | `search.similar` (Find similar) | `Ctrl+Shift+F` | `⌘⇧F` |
-  | `search.next_match` / `search.prev_match` (within a clip) | `N` / `Shift+N` | same |
+  | `search.next_match` / `search.prev_match` | `N` / `Shift+N` | same |
+  | Find this person | `Ctrl+Shift+P` | see [16](16-commands.md) |
 
-- **Index this folder and subfolders:** offered when an unindexed folder is open and the Core
-  pack is installed (also in the folder toolbar/menu and Settings → Add a folder). It adds a
-  remembered root and starts background work; the scope becomes searchable as results commit.
-- **Indexing status:** a status pill (progress, pause/resume, "paused — playing video"), never a
-  modal. It shows assets/frames completed, the active root, measured rate and an ETA range from
-  completed work (`mv_ai_status`). The Windows pill does not appear for a load that is waiting
-  on the viewer. On both hosts the command-bar pill has a ring (the pass's progress, with an arc
-  that turns while work runs), fades in and out, and has a menu: Open search, and Index anyway
-  while on battery. The search footer and Settings → Local search show the same pill in full:
-  the ring (a check when idle), the line, the other passes as stage chips ("Pictures ✓",
-  "Sound 14%") while sound or speech work is in hand, and a detail line for a provider fallback,
-  an upgrade, a full index and (in the footer) a OneDrive wait. On Windows the pack reports these through `IAddonHost3.SetIndexingPill`;
-  an older pack's `SetIndexingStatus` still drives the line.
-- **Settings → Local search:** per-piece install, Compute, Quality, Precision, "Index videos
-  for", battery threshold, index size and cap, remembered roots (with *Index Pictures* / *Videos*
-  (*Movies*) offered while no root covers them, and the reason when an add fails), *Index
-  online-only files* (shown once there are any), People, sharing, the Photos Library (Mac) and
-  Final Cut Pro search (Mac, [23](23-nle-search.md)).
-  Each remembered root shows "N of M" (or "Up to date"), its share of the index on disk, and
-  "Checking for changes…" while it is being walked. The rows follow the work: the pack posts
-  `AI_ROOTS` when a root's count moves (at most once a control pass, ~1 s), when a rescan is
-  asked for, and when a walk starts and ends; a row button greys out until the row is read
-  again, and Windows re-reads the panel each time Settings opens (2026-10-05).
+- **Index this folder and subfolders:** offered for an unindexed folder with Core installed.
+- **Status pill** (never modal; `mv_ai_status`): progress ring, active root, rate, ETA range from
+  completed work, menu (Open search; Index anyway on battery); full form in the search footer and
+  Settings with stage chips and a detail line. Windows: `IAddonHost3.SetIndexingPill` (older:
+  `SetIndexingStatus`).
+- **Settings → Local search:** pieces, Compute, Quality, Precision, "Index videos for", battery
+  threshold, index cap, roots, online-only files, Text in pictures, Documents, People, sharing,
+  Photos Library and Final Cut Pro (Mac). The pack posts `AI_ROOTS` when a root's count moves (≤ once
+  a control pass), on rescan and at walk start/end.
 
 ## Not hurting the viewer
 
-Indexing is a background load on the machine and GPU of a viewer whose point is smoothness.
-
-- **Inference workers:** a thread role of their own at OS background priority (I/O too), at
-  most `min(2, cores / 4)`, never the pool that decodes for the viewport. The generation
-  counter cancels stale work on navigation.
-- **Yield policy** (`engine::yield_reason`, `wait_turn`): indexing waits while the host's
-  present loop is busy (`should_yield`: playback, panning, springs, a slideshow, a transition,
-  and for 2 s after any dropped frame), while on battery below the threshold (default 30 %), and
-  while the user has paused it. **Index anyway** wherever "Paused on battery" shows (search
-  footer, Settings, the command-bar pill's menu) sets `battery_override` for that spell on
-  battery; it is never saved, and going back to AC or restarting ends it. The viewer's own
-  yields are not overridable.
-- **Starting on demand (issue #292, 2026-10-11; amended 2026-11-14):** at launch nothing of the
-  pack loads: no ONNX Runtime, no model sessions, no indexing threads. The host only verifies the
-  installed pack, so the search icon and `Ctrl+F` / `⌘F` offer Local search (Windows `AiOnDemand`,
-  Mac `mv_addon2_ai_on_demand`). The first search of the session loads the pack (the query-side
-  models with the rest), and the pack's startup delta and indexing then run for the rest of the
-  session (a root left unfinished last session excepted: it waits for Resume, below); the
-  command-bar pill reads "Starting Local search…" meanwhile, since the panel is the pack's and
-  cannot show before it attaches. **Settings → Local search attaches the pack without opening
-  the towers** (`mv_ai_hold_models` / Mac `mv_addon2_ai_manage`): folders, compute, precision,
-  videos, documents, the index cap, Clear, battery, People, cloud and the tier picker are the
-  pack's own panel, and they work while models stay unloaded (`MV_AI_STATUS_MODELS_HELD`). The
-  first search, or **Start indexing** in that panel (`set_setting` `"start"`), opens the towers
-  and starts indexing. Installing Core (or a piece with Core already running) in Settings still
-  loads the models at once. A later window's reader was already on demand
-  ([18](18-import.md) "One host process"), and so is the Final Cut Pro agent: launchd starts it
-  only when the extension connects, and it exits when idle ([23](23-nle-search.md)).
-  The cost is in the decision log: files added while search was never opened are indexed only
-  once search is first opened that session.
-- **Loading:** opening the models (a GPU context, a gigabyte of weights, the self-test) waits for
-  the same quiet viewer indexing does, and reports LOADING with `yield_reason` VIEWER meanwhile.
-  Pictures become searchable first; the audio models open after them. Settings' own reads never
-  load the runtime. The self-test's CPU half is cached in `selftest.txt` (~15 s off a 40 s CUDA
-  ViT-L load); the provider still runs and is checked against it every start.
-- **GPU:** a vendor provider owns its own device; the CPU backend is the pressure valve.
-- **Memory:** decoded-frame and tensor memory are capped; the search matrix is ~77 MB at 100 k
-  L/14 frames.
-- **Disk:** the index has a size cap (`index_cap_bytes`, default 8 GB; over it, indexing stops
-  with `MV_AI_STATUS_INDEX_FULL`) and per-folder delete; its size shows in Settings, where both
-  hosts pick the cap (2, 5, 10, 20 or 50 GB) and removing a folder asks first.
+- **Workers:** own thread role at OS background priority (CPU and I/O), ≤ `min(2, cores / 4)`,
+  never the viewport decode pool; the generation counter cancels stale work.
+- **Yield policy** (`engine::yield_reason`, `wait_turn`): wait while `should_yield` (playback,
+  panning, springs, slideshow, transition, 2 s after a dropped frame), on battery below the
+  threshold (30 %), and while paused. **Index anyway** sets `battery_override` for that battery
+  spell, never saved; viewer yields cannot be overridden.
+- **Starting on demand:** launch only verifies the pack (Windows `AiOnDemand`, Mac
+  `mv_addon2_ai_on_demand`); the first search loads it and indexing runs for the session (held roots
+  excepted). Settings → Local search attaches the pack without opening the towers
+  (`mv_ai_hold_models` / Mac `mv_addon2_ai_manage`, status `MV_AI_STATUS_MODELS_HELD`): the pack's
+  own panel (folders, compute, People, the tier picker…) works while models stay unloaded; the
+  first search or **Start indexing** (`set_setting` `"start"`) opens them. Installing Core loads at
+  once (issue #292, amended 2026-11-14). Readers in later windows
+  and the Final Cut Pro agent are on demand too ([18](18-import.md) "One host process",
+  [23](23-nle-search.md)).
+- **Loading** models waits for a quiet viewer (LOADING, `yield_reason` VIEWER); pictures first, then
+  audio. Settings never loads the runtime.
+- **GPU:** vendor providers own their devices; CPU is the pressure valve. **Memory:** frame and
+  tensor memory capped.
+- **Disk:** `index_cap_bytes` (default 8 GB, choices 2–50 GB; over it `MV_AI_STATUS_INDEX_FULL`);
+  per-folder delete.
 
 ## ABI
 
-`mv.ai.1` (`mediaviewer_ai.h`), the pack's own table beside `mv_addon_get`, wrapped by
-`Ai.cs` and the Swift chrome. Flat, POD, opaque ids, `[no-block]` / worker annotations, append-only
-(`struct_size` tells the host which entries a pack has). Groups:
+`mv.ai.1` (`mediaviewer_ai.h`), beside `mv_addon_get`, wrapped by `Ai.cs` and the Swift chrome. Flat,
+POD, opaque ids, `[no-block]` / worker annotations, append-only (`struct_size`).
 
 | Group | Entries |
 |---|---|
-| Status and settings | `status` (`mv_ai_status`), `settings_json`, `set_setting` (compute, quality, precision, battery, cap, video_index, reload), `pause` |
-| Roots | `roots_json`, `index_folder`, `root_set_enabled`, `root_rescan`, `root_remove`, `root_set_media`, `root_set_documents` (#354, appended), `folder_coverage`, `note_folder_opened`, `clear_index` |
+| Status and settings | `status` (`mv_ai_status`), `settings_json`, `set_setting`, `pause` |
+| Roots | `roots_json`, `index_folder`, `root_set_enabled`, `root_rescan`, `root_remove`, `root_set_media`, `root_set_documents`, `folder_coverage`, `note_folder_opened`, `clear_index` |
 | Search | `search_text`, `search_similar`, `result_count`, `result_at`, `result_path`, `result_thumb`, `result_snippet`, `result_duration`, `clip_matches`, `search_release`, `suggest_json` |
-| People | `faces_enable`, `people_json`, `people_in_json`, `person_faces_json`, `person_rename`, `person_merge`, `face_reject`, `face_split`, `search_person`, `search_this_person`, `face_thumb`, `person_refine`, `people_dedupe`, `people_reanalyse` |
+| People | `faces_enable`, `people_json`, `people_in_json`, `person_faces_json`, `person_rename`, `person_merge`, `face_reject`, `face_split`, `search_person`, `search_this_person`, `face_thumb`, `person_refine`, `people_dedupe`, `people_reanalyse`, review entries (*People*) |
 | Sharing | `export_index`, `inspect_export`, `import_index`, `transfer_json`, `transfer_cancel` |
 | Photos library (Mac) | `index_photos_library`, `photos_access` |
 
-A second export, `mv_ai_reader_get` (`MV_AI_READER_ENTRY_SYMBOL`), builds the same engine
-read-only for the Final Cut Pro search agent ([23](23-nle-search.md)).
-
-The host table (`mediaviewer_addon.h`) v2 gives the pack stills and sampled video frames as
-pixels, moment thumbnails in the JPEG-512 cache, `audio_open` / `audio_read` / `audio_close`
-(mono float PCM at a requested rate from the viewer's FFmpeg), `thumbnail_jpeg` /
-`thumbnail_store_jpeg` (sharing), `read_cues` (#406), `document_text` (#354: a DOCX's text; a
-document's page is `video_frame_rgb` with `pts_ms` the page), and verified family pieces. Table
-versions only append; the host serves every layout from 1 up, so Import keeps loading.
+`mv_ai_reader_get` (`MV_AI_READER_ENTRY_SYMBOL`) builds the engine read-only for the Final Cut Pro
+agent. The host table (`mediaviewer_addon.h`, append-only, every layout served) gives pixels
+(`video_frame`, `video_frame_rgb`), JPEG-512 moments, `audio_open` / `audio_read` / `audio_close`
+(mono float PCM), `thumbnail_jpeg` / `thumbnail_store_jpeg` / `thumbnail_make`, `tag_facts`,
+`route_of`, `read_cues`, `document_text`, `watch_tree`, `place_matches`, `locations_of_index`,
+`place_labels`, and verified family pieces.
 
 ## Audio
 
-A video's **soundtrack** is indexed for what it **sounds like** (CLAP) and what is **said**
-(Whisper transcripts).
-
-**Standalone audio files** (MP3, M4A, M4P; #355, [audio-search](../plans/audio-search.md)) are
-indexed only while File types "Show audio files" is on. Each chrome forwards that setting to the
-pack as `audio_files` when it attaches and on every change; off is the default. Off, the walk
-drops them by name, so they cost nothing. Turned on, every enabled root is walked again. Turned
-off, the search leaves them out at once and the control thread deletes their rows
-(`index_db::remove_kind`). An audio file is `asset_kind::audio` (4; schema 8, no table change)
-and `MV_AI_KIND_AUDIO` (8; `MV_AI_KIND_ALL` is 11, so an older chrome's 3 still means photos and
-videos). Slice A1 indexes its tags (title, artist, album, album artist, composer, genre) and its
-cover art: one picture at `pts_ms` -1, read from the header (`edit::clip::cover_art_rgb`), on the
-picture track while the folder's media takes pictures. No cover art is done, not failed. It never
-pairs, never goes to People or to the text-in-photos pass, and an `.mvindex` import skips it. Its
-sound and speech are slice A2. Query words: `is:audio` / `is:music` / `is:song`, and a trailing
-or leading `audio` / `songs` / `tracks`; bare `music` stays a description.
-
-- **The option.** Settings "Index videos for" is Pictures / Sound / Both, and each remembered
-  folder may override it (`root_set_media`, `MV_AI_MEDIA_*`). Unset means Pictures, or Both once
-  the audio piece is installed. Adding Sound to a folder queues its clips; removing it drops
-  their audio rows.
-- **Sounds: LAION CLAP `larger_clap_general`** (Apache-2.0; fp16), 48 kHz, 10 s windows on a
-  5 s hop, stored like frames (int8 vectors, a generic-prompt score each). It scored 87.2 % on
-  ESC-50 zero-shot against 84.4 % for `htsat-unfused`.
-- **Speech: Whisper** (onnx-community exports, Apache-2.0) through the merged KV-cache decoder
-  with timestamp rules, a no-speech and log-probability guard, a re-listen when a window
-  (including a full 30 s window) ends mid-sentence or stops early, and an energy-based refinement
-  of segment starts. **small** where the picture tower runs High, **base** elsewhere. Real-time
-  factor on the Windows dev box:
-
-  | Model | CPU (2 threads) | CUDA |
-  |---|---|---|
-  | base | 0.075 | 0.029 |
-  | small | 0.23 | 0.036 |
-
-  Mel features match `transformers`' `audio_utils` (periodic Hann, centred reflect padding,
-  Slaney mels); the tokenizers are GPT-2 byte-level BPE (RoBERTa's for CLAP, Whisper's decode)
-  (`infer/audio_features.*`, `audio_models.*`).
-- **Search.** `MV_AI_FIND_PICTURES` / `SOUNDS` / `SPEECH` choose the towers (none set: all).
-  Each model's rows rank in their own units (margin over generic prompts for pictures and
-  sounds, word coverage for speech) and merge per clip; a speech result carries its sentence
-  (`result_snippet`). `MV_AI_STATUS_AUDIO_READY` and the sound / speech counts are in the status.
+- **Soundtracks:** "Index videos for" Pictures / Sound / Both, per-folder override
+  (`root_set_media`, `MV_AI_MEDIA_*`); unset = Pictures, or Both with the audio piece.
+- **Sounds:** CLAP `larger_clap_general` fp16, 48 kHz, 10 s windows, 5 s hop, stored like frames.
+- **Speech:** Whisper (onnx-community) via the merged KV-cache decoder with timestamp rules,
+  no-speech and log-prob guards, a re-listen when a window ends mid-sentence, energy-refined segment
+  starts. Mel features match `transformers` `audio_utils` (periodic Hann, centred reflect, Slaney);
+  GPT-2 byte-level BPE tokenizers (`infer/audio_features.*`, `audio_models.*`).
+- **Search:** `MV_AI_FIND_PICTURES` / `SOUNDS` / `SPEECH` (none = all); each model ranks in its own
+  units, merged per clip; speech results carry their sentence. `MV_AI_STATUS_AUDIO_READY`.
+- **Audio files** (MP3, M4A, M4P; [audio-search](../plans/audio-search.md)): only while "Show audio
+  files" is on (forwarded as `audio_files`); off drops them by name and deletes their rows
+  (`index_db::remove_kind`). `asset_kind::audio` 4, `MV_AI_KIND_AUDIO` 8. Indexed: tags (title,
+  artist, album, album artist, composer, genre) and cover art at `pts_ms` −1
+  (`edit::clip::cover_art_rgb`). Never paired, no People or picture text, skipped by import.
 
 ## Cues (chapter titles and text subtitles, #406)
 
-Exact text a clip carries, so a chapter titled "birthday cake" or a caption "suited and booted"
-is found without the audio piece and without Whisper hearing it.
-
-- **Read by the host** (`read_cues` on the host table, appended after `tag_facts`;
-  `meta/cues.h`): chapters from the header, and the packets of text subtitle streams (mov_text,
-  SubRip, ASS / SSA, WebVTT) read as text with their markup removed. No subtitle decoder and no
-  new library: a cue is its packet. Bitmap subtitles (DVD, PGS) are pictures and are skipped, as
-  is a cue whose bytes are not UTF-8. At most the first two hours and 8,000 lines a file. A
-  file with neither chapters nor a text subtitle stream is done after its header.
-- **Stored** in `cues(id, asset_id, start_ms, end_ms, kind, text)` (schema 6), not as speech rows
-  under the Whisper spec: a shared index must not disagree about what was said, and removing the
-  audio piece keeps them. No spec: the text is the file's; a changed `(mtime, size)` drops the
-  rows. An export carries none (its cue progress is left out), so the receiver reads them.
-- **Its own pass:** a work track after the pictures (they never wait on it), on the index workers,
-  `wait_turn` between cues. It commits 64 cues at a time under progress spec `cues/1`; a kill
-  resumes at the last committed cue's start, and that commit first drops the rows from there, so
-  a resumed clip never holds a line twice. A host without `read_cues` leaves the track off.
-- **Search:** quoted phrases and `said:` match cue text as they match transcript lines, at the
-  cue's `start_ms`; plain words also match it by the speech rule (word coverage), beside the
-  picture search, not instead of it. Such a row has `MV_AI_MATCH_TEXT`, and its snippet names the
-  source: "Chapter: Birthday cake" or "Subtitle: suited and booted", shown unquoted (both chromes).
-  Burned-in text is read by the OS instead ("Text in pictures"). The cue pass and the text pass
-  share the table but not their rows: a resumed cue pass drops only chapters and subtitles.
+- **Read by the host** (`read_cues`, `meta/cues.h`): chapters and text subtitle packets (mov_text,
+  SubRip, ASS / SSA, WebVTT) with markup removed. Bitmap subtitles and non-UTF-8 skipped. ≤ first
+  two hours and 8,000 lines.
+- **Stored** in `cues`, no spec; a changed `(mtime, size)` drops them; not exported.
+- **Pass** after pictures, 64 cues per commit, spec `cues/1`; resume drops rows from its start.
+- **Search:** quotes and `said:` match in order at `start_ms`; plain words by coverage.
+  `MV_AI_MATCH_TEXT`; snippet "Chapter: …" / "Subtitle: …".
 
 ## Text in pictures (#403)
 
-Words in a photo (a sign, a poster, a shirt, a screenshot) are searchable: "suited and booted"
-finds the photo with those words on it, as Apple Photos' Live Text does. CLIP does not read; this
-does.
-
-- **Read by the operating system** (`text_reader.h`, a port in the pack like `cloud_files.h`):
-  Apple Vision's `VNRecognizeTextRequest` (accurate level, language correction, languages
-  detected) on the Mac, `Windows.Media.Ocr` for the user's profile languages on Windows (C++/WinRT
-  from the Windows SDK; `windowsapp.lib`, no package). No model ships and nothing leaves the
-  machine. A Windows with no OCR language installed, or another platform, has no reader: the
-  track stays off and nothing else changes.
-- **Its own pass** (`track::text`), after the pictures and the clips' cues: a 2,048 px decode
-  (small text needs pixels; the picture pass reads 448) and the OS reader, four photos a claim,
-  `wait_turn` before each. One `cues` row per photo, kind 3 (`picture`), `start_ms` −1, the lines
-  joined by spaces so a phrase split over two lines of a sign is one phrase, at most 4,000 bytes.
-  Progress under the reader's spec (`ocr/vision-accurate/1`, `ocr/windows-media/1`): read once,
-  ever, until the file changes; a photo read again (a new reader, a Live Photo's movie changed)
-  replaces its row. An export carries none.
-- **Clip moments** (2026-10-15): a clip is taken only once its picture pass is done
-  (`index_db::pending`'s `after`), under a spec of its own, the reader's plus `/moments`
-  (`ocr/vision-accurate/1/moments`), so photos already read stay read. The moments are the ones
-  the picture pass stored (`engine::stored_moments`, as the People pass reads them), each seeked
-  and decoded again at 2,048 px (the clip's own size when smaller) by the host's `video_frame`,
-  read, and dropped: nothing is embedded or kept but the text. One `picture` row per moment at its
-  `pts_ms`; a moment whose text is the one before's is not stored again, so a sign held in shot is
-  one row at the moment it appears. Committed every 8 moments (partial, `resume_ms` the last
-  moment read); a stop commits what was read and a restart goes on after it; a fresh read first
-  drops the clip's earlier text rows. A clip where no moment decoded or read is failed (tried
-  again like any failure). Only clips whose root indexes pictures; the iCloud fetch keeps a
-  downloaded clip until its moments are read. A quoted search returns the clip at that moment with
-  "In the picture: …" as the snippet.
-- **Search** as for cues: quoted words and `said:` match the photo's text, plain words by word
-  coverage beside the picture search; words are folded (`core/fold.h`) on both sides, so
-  "koln" finds "KÖLN". The row has `MV_AI_MATCH_TEXT` and the snippet "In the picture: …".
-- **Off switch:** Settings → Local search → Text in pictures → **Read text in photos** on both
-  hosts (`set_setting("read_text", 0/1)`, saved, read back from `settings_json`) leaves the
-  photo and clip passes out from the next claim; on brings them back for what was not read; text
-  already read stays searchable. `settings_json`'s `text_available` is false when the OS has no
-  reader (a Windows without an OCR language): the switch is shown off and greyed, and says why.
-- **Status:** `mv_ai_status` counts both text passes (appended `cues_total` / `cues_done`, a clip's
-  own text; `text_total` / `text_done`, photos plus clips whose pictures are done; failed and
-  unavailable count as done). While either is short the state is not idle, so no chrome says "Up
-  to date" while they run; the status lines name them ("Reading chapters and subtitles 3 of 40
-  clips", "Reading text in pictures 120 of 400"), after the pictures, as the pack runs them.
-  The three counts cost 14 ms together at 25,000 assets (`mv_ai_tests "[.perf-bench]"`, beside the
-  picture count's 8 ms), and the status refreshes once a second even idle, so they are kept
-  between refreshes and counted again only after a cue or text item, a `read_text` change, a
-  change in the picture counts, spec or held roots, while a text pass has work, or every 30 s.
-- **Measured** (Apple M-series, `mv_ai_tests "[.ocr-fixture]"` over `tools/ai/ocr-fixture.py`'s
-  40 labelled camera-sized photos: signs, posters, shirts, screenshots): Vision found 38 of 40
-  phrases (0.95), "suited and booted" among them; it read "trom" for "from" on one sign and lost
-  the last word of a tilted shirt. Per photo: the text pass's 2,048 px decode 10.1 ms median
-  against the picture pass's 448 px decode 8.6 ms, and the read 44 ms median, 84 ms mean. Two runs,
-  the same numbers. Windows is not measured.
-- **Measured, clip moments** (Apple M-series, `MV_OCR_CLIP_DIR=<dir> mv_ai_tests
-  "[.ocr-moments]"`: six of the owner's clips (3840×2160 and 2704×1520 GoPro, two 1080×1920
-  iPhone, a 2688×1520 CCTV clip with a burned-in clock, a 720×1280 phone clip), 12 moments each; 72 moments, 19 with text). Per moment, 180, 210 and 218 ms
-  median over three runs (264–269 ms mean), on a machine other builds kept at load 8–12 (two more
-  runs at load 33: 303 and 400 ms; not a quiet-machine number). Of that the OS read is 20–22 ms;
-  the rest is the host's seek and software decode from the keyframe before the moment, 165–170 ms
-  at 2,048 px and the same (166–169 ms) at 448 px: the decode, not the edge or the reader, is the
-  cost. So a clip costs its moment count × ~0.2 s once, on one background worker, after its
-  pictures; the People pass already pays one such decode a moment. Windows is not measured.
+- **OS reader** (`text_reader.h`): Vision `VNRecognizeTextRequest` (accurate) on the Mac,
+  `Windows.Media.Ocr` (profile languages, C++/WinRT) on Windows. No reader: the track is off.
+- **Photos** (`track::text`): 2,048 px decode, four a claim; one `cues` row, kind 3 (`picture`),
+  `start_ms` −1, lines joined by spaces, ≤ 4,000 bytes; spec `ocr/vision-accurate/1` /
+  `ocr/windows-media/1`.
+- **Clip moments:** after the clip's picture pass, spec + `/moments`; each stored moment
+  (`engine::stored_moments`) decoded again at 2,048 px via `video_frame`, read, dropped. A row per
+  moment unless equal to the previous; commit every 8 (`resume_ms`). Picture roots only.
+- **Search** as cues; snippet "In the picture: …". **Off switch:** `set_setting("read_text", 0/1)`;
+  `text_available` false greys it.
+- **Status:** `cues_total` / `cues_done`, `text_total` / `text_done` (failed and unavailable count as
+  done), cached and recounted after changes or every 30 s.
 
 ## Documents (#354)
 
-PDFs and Word documents are searchable by the **words in them**: a quoted phrase from any page
-finds the document and opens it on that page, plain words rank documents by how many of them a
-passage holds. At **Words and pages** they are also found by **what a page looks like** ("a
-receipt", "a floor plan"), and with the **Documents** piece by **what a passage is about** ("tax
-return from my accountant" finds the page about one without those words). A **scanned** page,
-one with no text layer, is read by the operating system, so its words are found the same way.
-Slices D1 to D4 of [document-search](../plans/document-search.md).
+PDF and DOCX by words, page looks, meaning and OCR ([document-search](../plans/document-search.md)).
 
-- **Behind File types "Show documents"** (off by default), as audio files are behind "Show audio
-  files": each chrome forwards it to the pack as `document_files` when it attaches and on every
-  change. Off, the walk drops `.pdf` and `.docx` by name, so they cost nothing; on, every root is
-  walked again; off again, documents leave results at once and the control thread deletes them
-  and their text (`index_db::remove_kind`). A document is `asset_kind::document` (3; schema 9)
-  and `MV_AI_KIND_DOCUMENTS` (4; `MV_AI_KIND_ALL` is 15, so an older chrome's 3 or 11 never sees
-  one). It never pairs, never goes to the picture, People or text-in-pictures passes in D1, and
-  an `.mvindex` export leaves it out, name and all (page pictures too), unless Documents is
-  ticked for that export (v2, D3; "Sharing an index").
-- **What a folder indexes them for.** Settings "Documents" (`doc_index`): 0 Off, 1 **Words**
-  (the default: cheap, no model), 2 **Words and pages** (page pictures, below). Each folder
-  may override it (`root_set_documents`, `MV_AI_DOCS_*`, `roots.docs`): the case is a Downloads
-  folder that should search photos and not bank statements. A folder's Off leaves its documents
-  out of the search at once and drops them with the walk that follows; a change of the setting
-  walks every root.
-- **Text.** A PDF's is read by **PDFium in the pack** (owner call 2): bblanchon/pdfium-binaries
-  chromium/8066, pinned by SHA-256 in `cmake/ai.cmake`, staged beside `mv_ai` and loaded at run
-  time (`pdf_pdfium.cpp`, `infer::dylib`), so the base installer does not grow and both OSes
-  read the same text into the same index. The viewer still draws pages with the OS. PDFium is
-  hostile-input code in this process: it runs on the index workers only, one call at a time
-  (it is not thread-safe), at most 500 pages and 60 s a document, through a file reader that
-  reads the blocks it asks for. A DOCX's is the **host's** (`document_text` on the host table,
-  appended after `keep_alive`): `codec::docx_text`, the viewer's own DOCX reader and
-  layout with no picture decoded, a paragraph at a time with the page that shows it.
-- **Passages** (`passages.h`): a few sentences each (a passage closes at a sentence end past 40
-  words, and at 80 wherever it is), never across a page, at most 20,000 a document. A PDF page's
-  lines are joined (a word hyphenated over a line break is whole again); typographic quotes,
-  dashes, no-break spaces and ligatures (ﬁ) are made plain. Each passage stores its text (the
-  snippet) and its **words**: folded (`core/fold.h`) and split by the speech rule, led by the last
-  8 words of the passage before, so a quoted phrase over a passage break is still one phrase.
-  Schema 9: `passages(id, asset_id, spec, page, ord, text)` and `passage_text(rowid, words)`, FTS5
-  when SQLite has it (else a plain table the engine scans); a deleted passage takes its words
-  with it (a trigger, which the cascade from `assets` fires too). A changed file drops them.
-- **Its own pass** (`track::docs`, progress spec `doctext/1`), after the pictures and before a
-  clip's own text, one document a claim, `wait_turn` before each page (a DOCX: every 64
-  paragraphs). A PDF commits every 8 pages, so a stop resumes at the next page; a DOCX is read
-  whole (its layout needs every page before the one asked for) and a resumed one starts again. A
-  password-protected file (PDFium's password error; a DOCX that is an OLE container, not a zip)
-  is **`locked`** (progress state 5): never retried, counted apart. One that does not open fails
-  (tried again up to three times). A PDF with no text layer (a scan) is done with no passages; D4
-  reads those. With no PDFium (an older pack) or no `document_text` (an older host) a document
-  is set aside (`unavailable`) and read again at the next start that can.
-- **Scanned pages (D4)**, at Words (no setting of their own): a PDF page with **no text layer**
-  (fewer than 16 characters other than spaces, so a stamped page or Bates number alone is still
-  none) is drawn by the host (`video_frame_rgb`, `pts_ms` the page, at 2,048 px, the host's
-  ceiling: 1,583 × 2,048 for a Letter page, about 186 dpi) and read by the **OS text reader of
-  "Text in pictures"** (`text_reader.h`: Vision on the Mac, `Windows.Media.Ocr` on Windows; no
-  model). Its lines are joined as a PDF page's are (`pdf_paragraphs`: a word hyphenated over a
-  line is whole again) and stored as **passages of that page** under the reader's spec plus
-  `/pages` (`ocr/vision-accurate/1/pages`), beside the text layer's `doctext/1` rows, which it
-  never touches; search reads both alike, so a quoted phrase finds the scanned page and Enter opens
-  it there. Its own pass (`track::scan`), **last of all**: after every other pass, the People pass
-  included, and one document at a time (`pending`'s `after` is `doctext/1`). The pass asks PDFium
-  again which pages from its resume point have no text layer (cheap beside a draw and a read),
-  then reads **at most 4 pages a claim**, committing each (state partial, resume the next page),
-  and returns: the next claim looks at every other pass first, so a 100-page scan never stands in
-  front of a new photo for more than one chunk, and a stop resumes at the next page. A fresh read
-  first drops what an earlier one stored. Like the words pass it **needs no model**, so it also runs
-  while the picture towers load. A document read whole from its first page with no page lacking a
-  text layer, and every DOCX, is done for this pass with its words, so a text library is never
-  opened twice. Not behind **Read text in photos**: that switch is the photos' and clips'; a
-  machine with no reader (a Windows without an OCR language) has no pass and no count. A page
-  that does not draw or read is skipped; a document none of whose pages draw or read is done with
-  nothing read, not failed. With the Documents piece the meaning pass (D3) waits for this one
-  (`meaning_after`), so a scan's text is embedded too.
-  `mv_ai_status` appends `scans_total` (documents whose words are read) and `scans_done`; while
-  they differ the state is not idle, and both chromes read "Reading scanned pages 3 of 5
-  documents" after the other passes' lines.
-  **Measured** (M5, 2026-10-17; DEVELOPMENT, "slice D4"): over 50 synthetic scanned pages
-  (`tools/ai-bench/doc-scans`), a quoted search finds a mean 99.4 % of a page's words, 49 of 50
-  pages at 90 % or more. On the worst, 83.5 %, Vision skipped four lines at that scale. A dense
-  page costs about 60 ms to draw and 640 ms to read, so a 100-page scan is about 70 s of one
-  worker. While a Core ML compile holds the Neural Engine, Vision waits behind it. The real-machine
-  timing of a long scan beside new photos, Windows and the Mac PR 1 gate with scans read are owed.
-- **Page pictures (D2)**, at Words and pages: a document's pages through the **picture tower
-  already loaded** (no new model), so a visual query finds the page. Its own pass (`track::pages`,
-  progress spec `docpage/<picture spec>`, so a model change pictures them again) takes a document
-  once its words are read (`pending`'s `after` is `doctext/1`; a locked or broken one never comes),
-  after the words pass and before a clip's own text. Which pages: the **first 3**, plus any page
-  **mostly covered by images** (PDFium's image objects, each clipped to the page, over half its
-  area: a scan, a photo, a full-page figure; `pdf_reader::look`), at most **64** of those a
-  document, within the 500-page and 60 s caps. A DOCX (and a PDF with no PDFium): the first 3,
-  the host saying where the document ends. Each page is drawn by the host, `video_frame_rgb` with
-  `pts_ms` the page (the viewer's own renderer, as the tiles are), at the photo pass's edge (448 px
-  for ViT-B/32 and ViT-L/14), embedded in batches of 4, and stored in one transaction as `frames`
-  rows under the tower's spec with `pts_ms` the page and `kFramePage` (0x100) in `flags` (no
-  schema change), replacing the pages it had. A stop leaves the document pending: it is drawn
-  again whole. A page that does not draw ends the document there; none drawn fails it (its words
-  still find it). A folder or the setting going below Words and pages deletes those documents'
-  page pictures and their progress on the control thread (`index_db::drop_pages`) and takes them
-  out of the matrix. `mv_ai_status` appends `pages_total` and `pages_done`; while they differ the
-  state is not idle, and both chromes read "Looking at document pages 12 of 200".
-  **Measured** (M5, ViT-L/14, 2026-10-16; DEVELOPMENT, "slice D2"): 20 visual queries over 120
-  labelled visual PDFs among 200 text documents reach mean P@5 0.80 as typed and 0.83 with Match by
-  Picture only. Every hit is on the right page, and 316 documents (851 pages) are pictured in 49 s.
-  Weak spots: a word match outranks a picture ("a receipt" against documents that say "receipt"),
-  plain text pages pass for "a spreadsheet", and person queries meet the "nothing found" gate. The
-  Mac PR 1 gate held while pages were pictured: 0 dropped, p99 17.05 ms against 16.80 alone.
-- **Meaning (D3), with the Documents piece** (`ai-docs`, optional, as Sound is): a document's
-  passages through a small sentence-embedding model, **all-MiniLM-L6-v2** (Apache-2.0, the
-  Xenova ONNX export, fp32, 384 dimensions, ~91 MB), chosen by the spike below. Its tokenizer is
-  BERT's uncased WordPiece in `infer/text_models.*` (BertNormalizer's cleaning, CJK split and
-  accent strip: `core/fold.h` for Latin, Greek and Cyrillic, a generated NFD table past them,
-  Hangul by formula), mean pooling, no prefixes, 256 tokens. It runs on CPU, 2 threads, in every
-  compute choice: the same vector on every machine, and a query in ~2 ms. fp32 rather than the
-  int8 export: int8 quantises each batch's activations together, so a passage's vector moved with
-  its batch (cosine 0.998 against ORT-Python), for 10 % more speed and no gain in the spike.
-  Its own pass (`track::meaning`, progress under the model's spec `all-minilm-l6-v2/fp32/pre1`)
-  takes a document once its words are read, 16 passages a run between the viewer's busy spells,
-  and commits the document whole (`passage_vecs`, schema 10: int8 with a scale, as frames, and
-  each passage's best cosine against five generic prompts). A stop embeds it again. Like the
-  words pass it does not wait for the picture towers to load or move to an accelerator. The
-  vectors are a third matrix in memory (`meanings_`, the passage id as its "pts"), loaded at
-  start and kept as passes commit; a passage dropped (a changed file, a resumed read) takes its
-  vector. `mv_ai_status` appends `meaning_total`, `meaning_done` and sets
-  `MV_AI_STATUS_DOCS_READY`; `settings_json` has `docs_ready` and `docs_model`. Without the
-  piece nothing changes: Words matches as typed. Removing it keeps the vectors for when it comes
-  back (they are dropped with the documents).
-- **The spike** (D3, `tools/ai-bench/doc-meaning`): 478 public documents (141 IRS forms and
-  publications, 164 arXiv papers on 15 subjects, 173 Wikipedia articles on 12 subjects written
-  as DOCX or PDF, 29 of them in French, German or Spanish), 50 queries written from the titles
-  before any model ran (3 not in English), each document scored by its best passage, the first 64
-  passages a document. Targets fixed first: P@5 >= 0.70, R@10 >= 0.80, both above keyword
-  BM25 on the same passages. P@5 counts relevant results in the top 5 over min(5, relevant).
-
-  | Model (Xenova ONNX) | Licence | Size | P@5 fp32 / int8 | R@10 fp32 / int8 | passages/s, CPU 2 threads (M5) |
-  |---|---|---|---|---|---|
-  | **all-MiniLM-L6-v2** | Apache-2.0 | 90 / 23 MB | **0.810** / 0.806 | 0.827 / 0.832 | **112-119** / 118-132 |
-  | snowflake-arctic-embed-s | Apache-2.0 | 133 / 34 MB | 0.810 / 0.794 | 0.831 / 0.834 | 57-63 / 59-66 |
-  | bge-small-en-v1.5 | MIT | 133 / 34 MB | 0.780 / 0.757 | 0.838 / 0.802 | 59-61 / 62-69 |
-  | multilingual-e5-small | MIT | 470 / 118 MB | 0.766 / 0.755 | 0.818 / 0.793 | 57-58 / 53-61 |
-  | BM25 (keywords) | | | 0.662 | 0.639 | |
-
-  On the 3 other-language queries e5 led (P@5 0.53 against MiniLM's 0.40, n = 3); on the 47
-  English ones MiniLM did (0.836 / 0.851). The speed runs were alternated over three rounds on a
-  machine other work kept at load 10-36. MiniLM met the targets with the best P@5, at twice the
-  others' speed and a quarter of e5's size; the English-only cost is what Whisper's speech and
-  the keyword path already cover in other languages.
-- **Ranking by meaning** is CLAP's rule: a passage is a result when it beats the generic prompts
-  ("a document.", "some text.", "a page of a document.", "this is a paragraph of text.",
-  "information.", embedded as queries) by `result_margin` 0.25, and a query answers only when one
-  of its ten best passages beats them by `query_margin` 0.415 ("nothing found"), both scaled by
-  Precision. Calibrated in the spike, the way CLAP's margin was: at 0.415, 47 of the 50 queries
-  answer (the other 3 within 0.025) and 1 of 20 queries about nothing in the corpus ("a gym
-  membership contract"); the 0.25 row floor costs no P@5 or R@10. A hit is a row at its passage's
-  page with the passage as its snippet (`MV_AI_MATCH_TEXT`, as a word match), merged per document
-  with the words. The margins gate; the **cosine orders** (by margin the spike lost 0.03 of P@5
-  and R@10): a row's rank is 2 x (cosine - `rank_offset` 0.096, the mean generic cosine) /
-  `query_margin`, so a close passage (~2.4) leads a document that only holds most of the words
-  (0.6-1.6).
-- **Measured end to end** (M5, `ai-bench --documents` over the spike's 478 documents with every
-  passage embedded, 93,726, the 50 queries as typed, words and meaning merged; DEVELOPMENT, slice
-  D3): **P@5 0.731, R@10 0.767** (English 0.748 / 0.784), against 0.304 / 0.272 for the words
-  alone (no piece; 19 queries answer nothing) and 0.612 / 0.631 for BM25 on the same passages. The spike's 0.810 / 0.827 was over the first 64 passages a document: uncapped, the same
-  model scores 0.757 / 0.782 alone, because the long IRS publications' thousands of passages
-  outrank the forms a query is about. **The R@10 target (0.80) is not met** on the whole corpus.
-  One query ("turning recorded speech into written text automatically") meets "nothing found".
-  Embedding all 478 took 838 s of the run (about 112 passages a second on the workers, with the
-  machine at load 10-36); queries took up to 94 ms.
-- **Search.** Candidates come from the FTS5 index; the engine's own rule decides each, so the
-  index only narrows. A **quoted phrase** matches a passage's words in order (anywhere, as it
-  matches speech, cues and text in pictures); `text:` / `says:` matches documents only; `said:`
-  never a document. **Plain words** match by the speech rule (most of the words; a word of four
-  letters or more also matches its longer forms) when `MV_AI_FIND_TEXT` is asked (none set: all),
-  beside the picture search. Each matching passage is a row at its **page**: `pts_ms` is the
-  0-based page, `kind` `MV_AI_KIND_DOCUMENTS`, `match` `MV_AI_MATCH_TEXT`, the snippet the part of
-  the passage around the first word, shown unquoted. `clip_matches` returns a document's matching
-  pages, one each. A page picture is a picture row like a clip's moment (`MV_AI_MATCH_PICTURE`,
-  `pts_ms` the page, under `MV_AI_FIND_PICTURES` and the "nothing found" rule); a document matched
-  both ways is one row at its better page. `is:document` / `is:doc`, a leading or trailing `documents` / `docs` / `pdf` /
-  `pdfs`; `is:pdf` and `is:docx` (`is:word`) name the format by extension.
-- **Results.** The tile is the matched page: page 0 is the viewer's own thumbnail, any other is a
-  moment row of the JPEG-512 cache (`path#t=<page>`), drawn by `video_frame_rgb` with `pts_ms` the
-  page (the host's renderer, so the tile is what the viewer shows). The chromes show "p. 3" where a
-  clip shows its time. Enter opens the result list with the page as the item's moment; both hosts
-  open a document there (`present_lab_mac::open_item(..., page)`; Windows `mv_folder_select_page`
-  from `edit_item_opened`), and Page Down goes on from it.
-- **Settings and status.** Both chromes: a Documents section (Off / Words / Words and pages, the privacy line "an
-  index of documents holds their text on this computer; it never leaves it"), a per-folder
-  "Documents: Default ▾" menu, the folder's document count beside its photos and videos (counted
-  apart: `roots_json` `documents`, `documents_done`, `docs`; "Up to date" covers the picture pass
-  only), and the panel's **Documents** segment and **Text** token while documents are shown.
-  `mv_ai_status` appends `docs_total`, `docs_done` (failed and locked count as done), `docs_locked`
-  and `docs_failed`; while documents are short the state is not idle, and the line reads
-  "Reading documents 12 of 200". `settings_json` has `document_files`, `doc_index` and
-  `pdf_available`.
-- **Privacy.** A document's text is the most sensitive thing the index holds. It stays in
-  `index.db` beside the transcripts, never in a log, a crash report or telemetry, and in an
-  export only when Documents is ticked for it (D3, off by default); Clear index, removing a root, a folder's Off and Show documents off delete it.
-- **Never waits for the models.** Every other pass waits while the picture towers load or move
-  to an accelerator (about two minutes for ViT-L/14 on the M5's Neural Engine at each pack start,
-  more on a first compile). The document pass reads words and needs no model, so while they do,
-  `claim` hands the workers documents alone, straight from the index (`wait_turn(false)`); the
-  pause, the viewer's yield, a clear and an import still hold it.
-- **Measured** (Apple M5, `ai-bench --documents`, a synthetic 200-document folder, three runs):
-  every document read within 3 s of the pack loading, the 500-page PDF included; a quoted phrase
-  from the first and from the last page of each of the 196 readable ones found that page (392 of
-  392, the slowest query 4.1 ms); plain words 70 ms over 190 matches. The Mac PR 1 gate held with
-  4,000 documents being read (0 dropped, p99 16.90 ms against 16.95 alone). Windows is not
-  measured.
+- **Gate:** "Show documents" (off by default; `document_files`). Off drops `.pdf` / `.docx` by name
+  and deletes them (`index_db::remove_kind`). `asset_kind::document` 3, `MV_AI_KIND_DOCUMENTS` 4
+  (`MV_AI_KIND_ALL` 15). Not exported unless ticked.
+- **Per folder** `doc_index`: 0 Off, 1 Words (default), 2 Words and pages; override
+  `root_set_documents` (`MV_AI_DOCS_*`, `roots.docs`).
+- **Text:** PDF via **PDFium** in the pack (bblanchon/pdfium-binaries chromium/8066, SHA-256 in
+  `cmake/ai.cmake`, `pdf_pdfium.cpp` / `infer::dylib`); index workers only, one call at a time, ≤ 500
+  pages and 60 s a document. DOCX via host `document_text` (`codec::docx_text`), paragraph by
+  paragraph with its page.
+- **Passages** (`passages.h`): close at a sentence end past 40 words, or at 80; never across a page;
+  ≤ 20,000 a document; hyphenation undone, typography made plain. `words` folded, led by the previous
+  passage's last 8 words. A trigger deletes words with their passage.
+- **Words pass** (`track::docs`, `doctext/1`): one document a claim; PDF commits every 8 pages,
+  DOCX whole. Password-protected → `locked` (state 5, never retried); unopenable → failed (≤ 3);
+  no PDFium / `document_text` → `unavailable`. Needs no model: while towers load, `claim` hands out
+  documents alone (`wait_turn(false)`).
+- **Scanned pages** (`track::scan`, at Words): a page with < 16 non-space characters is drawn
+  (`video_frame_rgb`, `pts_ms` = page, 2,048 px), read by the Text-in-pictures reader, stored as
+  passages under reader spec + `/pages`. Last of all passes, ≤ 4 pages a claim. Every DOCX, and any
+  PDF with no textless page, is done with its words. `scans_total` / `scans_done`.
+- **Page pictures** (`track::pages`, Words and pages, `docpage/<picture spec>`): first 3 pages plus
+  ≤ 64 pages over half images (`pdf_reader::look`); drawn at 448 px, embedded by the picture tower in
+  batches of 4, stored as `frames` with `pts_ms` = page and `kFramePage` (0x100). Dropping the level
+  deletes them (`index_db::drop_pages`). `pages_total` / `pages_done`.
+- **Meaning** (`ai-docs`, `track::meaning`, `all-minilm-l6-v2/fp32/pre1`, waits for the scan pass via
+  `meaning_after`): all-MiniLM-L6-v2, 384-d, BERT uncased WordPiece (`infer/text_models.*`), mean
+  pooling, 256 tokens, CPU 2 threads always (fp32: int8 makes vectors batch-dependent). 16 passages a
+  run, committed per document to `passage_vecs`; a third in-memory matrix (`meanings_`). Status
+  `meaning_total` / `meaning_done`, `MV_AI_STATUS_DOCS_READY`; `settings_json` `docs_ready`,
+  `docs_model`.
+- **Ranking by meaning** (CLAP's rule): generic prompts "a document.", "some text.", "a page of a
+  document.", "this is a paragraph of text.", "information."; row `result_margin` 0.25, query
+  `query_margin` 0.415 (top ten), Precision-scaled; ordered by rank = 2 × (cosine − `rank_offset`
+  0.096) / `query_margin`.
+- **Search:** FTS5 narrows, the engine decides. Quotes: words in order; `text:` / `says:` documents
+  only. Plain words by the speech rule (≥ 4-letter words match longer forms) under
+  `MV_AI_FIND_TEXT`. Row: `pts_ms` = 0-based page, `MV_AI_MATCH_TEXT`; page pictures are
+  `MV_AI_MATCH_PICTURE`; one row per document at its better page. `clip_matches` lists pages.
+- **Results:** tile = matched page (page 0 the viewer thumbnail, others `path#t=<page>`); "p. 3";
+  Enter opens at the page (`present_lab_mac::open_item(..., page)`; Windows
+  `mv_folder_select_page`).
+- **Status:** `docs_total`, `docs_done`, `docs_locked`, `docs_failed`; `roots_json` `documents`,
+  `documents_done`, `docs`; `settings_json` `document_files`, `doc_index`, `pdf_available`.
+- **Privacy:** text stays in `index.db`, never logged or reported; exported only when ticked.
 
 ## People
 
-Local face search: faces are detected in photos and video frames, clustered on-device into
-unnamed **people**, and named if the user wants. Search gains people by name and "this person"
-from the current frame.
+Faces in photos and frames are clustered on-device into unnamed **people**, optionally named;
+search gains names and "this person".
 
-**Biometric handling.** Face data lives in its own `faces.db` (`PRAGMA secure_delete=ON`), off
-until a separate opt-in ("Find people in your photos", `faces_enable`), deleted in one click
-(the file is destroyed), never in telemetry, crash reports or minidumps, and exported only by the
-user's own index export with "Include People" ticked (off by default). Face data is used for
-local search and, on request, for one edit: **Open closed eyes** (owner 2026-11-02,
-[12](12-decision-log.md); [plan](../plans/edit-adjust.md) slice 6), where `eyes_json` matches the
-face in the photo being edited to the same person in the frames taken within 10 s, by the People
-embedding, so their open eyes can be used. It reads the stills through the host, writes nothing
-to `faces.db`, keeps nothing, and is refused while People is off.
+**Biometric handling.** Only in `faces.db` (`PRAGMA secure_delete=ON`); off until "Find people in
+your photos" (`faces_enable`); one-click delete destroys the file; never in telemetry, crash reports
+or minidumps; exported only with "Include People". One edit also uses it, on request: **Open closed
+eyes** ([edit-adjust plan](../plans/edit-adjust.md) slice 6), `eyes_json` matching the face to the
+same person in frames within 10 s; writes nothing; refused while People is off.
 
-`faces.db` schema: `people(id, name, created_at)`, `faces(id, asset_id, path, pts_ms, x, y, w, h,
-score, person_id, emb, pinned, quality, tta, spec)`, `rejected(face_id, person_id)`,
-`rejected_at(asset_id, pts_ms, x, y, w, h, person_id)`, `no_merge(a, b)`, `merge_log(token, …)`,
-`scanned(asset_id, spec)`, `meta`.
+Schema: `people(id, name, created_at)`, `faces(id, asset_id, path, pts_ms, x, y, w, h, score,
+person_id, emb, pinned, quality, tta, spec)`, `faces_cover(person_id, pinned, quality, score·w·h,
+asset_id)`, `rejected(face_id, person_id)`, `rejected_at(asset_id, pts_ms, x, y, w, h, person_id)`,
+`no_merge(a, b)`, `merge_log(token, …)`, `scanned(asset_id, spec)`, `meta` (`rules`).
 
-Corrections: rename, merge (undoable this session), "not this person" (`face_reject`,
-`faces_reject_json`), split (`face_split`), "Move to…" (`faces_assign`), "Yes" / "Unpin"
-(`faces_pin`). They persist, survive every automatic pass, and count as evidence:
-"Corrections that hold" below.
+Corrections: rename, merge, "not this person" (`face_reject`, `faces_reject_json`), split
+(`face_split`), "Move to…" (`faces_assign`), "Yes" / "Unpin" (`faces_pin`).
 
 ### People model
 
-**Detector:** YuNet 2023mar (MIT), 640 px input, confidence ≥ 0.8, NMS IoU 0.3, faces at least
-4 % of the short side; on CPU. **Embedder: AdaFace IR-50 (WebFace4M), fp16**, 512-d, on the
-ArcFace 112 × 112 template with flip averaging (below). It runs on the towers' compute choice
-(Core ML ~6 ms a face; CUDA with the `ai-cuda` piece) and keeps the provider only if a fixed
-crop agrees with CPU at cosine ≥ 0.99. Windows without the CUDA piece runs it on CPU, on the
-background workers. Spec key `yunet-2023mar+adaface-ir50-webface4m/1`.
-
-Chosen on LFW through our own pipeline (13,233 photos; the 6,000 standard pairs; 5,985 photos
-of 423 people for clustering, at full size and with faces shrunk to ~40 px and ~24 px):
-
-| Embedder (licence) | Size | LFW | TAR@1e-4 full | @1e-4 40 px | @1e-4 24 px | F 24 px | CPU, 1 thread | Core ML |
-|---|---|---|---|---|---|---|---|---|
-| SFace 2021dec (Apache-2.0) | 39 MB | 99.38 % | 99.00 % | 98.52 % | 94.33 % | 0.958 | 17 ms | — |
-| AdaFace IR-18 WebFace4M (MIT) | 96 MB | 99.43 % | 99.62 % | 99.40 % | 97.26 % | — | — | 17 ms |
-| **AdaFace IR-50 WebFace4M (MIT)** | 175 MB / **87 MB fp16** | **99.80 %** | **99.93 %** | **99.92 %** | **99.81 %** | **0.998** | 97 ms | **6 ms (fp16)** |
-| AdaFace IR-101 WebFace12M (MIT) | 261 MB | 99.80 % | 99.94 % | 99.94 % | 99.90 % | 0.998 | 2× IR-50 | — |
-
-fp16 IR-50 agrees with fp32 at cosine ≥ 0.99999 and settles to the same people. There is no
-upstream ONNX: `tools/package/face-export.py` re-declares the IR backbone, loads the pinned
-safetensors as data, exports fp16 weights with fp32 input/output, and checks ONNX against
-PyTorch; `ai-models.json` pins the source with an `export` block whose `golden` values verify a
-re-export by output, not bytes. Pack builders need `requirements-export.txt`; the app does not.
-
-**Thresholds** (`model.json` → `face_tuning`; `faces.h` holds SFace-era fallbacks), at IR-50's
-FAR ~1e-4 point: **same_person 0.30, keep 0.20, keep_weak 0.24, margin 0.10, ambiguous 0.04,
-merge_at 0.32.** Through the real code (`mv_ai_tests "[.people-bench]"`), BCubed on the 5,985
-faces:
-
-| | Precision | Recall | F | People (423 true) |
-|---|---|---|---|---|
-| SFace, full size | 0.9938 | 0.9938 | 0.9938 | 433 |
-| SFace, ~24 px faces | 0.9972 | 0.9760 | 0.9865 | 473 |
-| **IR-50 (0.30), full size** | **0.9994** | **0.9982** | **0.9988** | 426 |
-| **IR-50 (0.30), ~24 px faces** | **0.9994** | **0.9966** | **0.9980** | 429 |
-
-**Re-run** (`people_reanalyse`; "Re-analyse faces" in Settings → People on both platforms). It forgets what the People pass scanned and the workers analyse every photo
-and clip again. faces.db records each vector's embedder (`faces.spec`) and compares only vectors
-of the current one. A re-analysed face whose box matches an existing one (IoU ≥ 0.5) **keeps its
-row: id, person, name, pin, "not this person"**; a new face waits unassigned; an old face the
-new pass does not find goes when its asset is done. Until then old faces still show their person
-but are compared with nothing. When every asset is done and indexing is idle, the control thread
-**settles** once: a full refinement with no focus (up to three calls until nothing moves), then
-the merge. The same settle, without reading any asset again, is owed when faces.db's people were
-filed under older clustering rules (meta `rules`, `faces_db::settle_due`; rules 2 = the quality
-floor, 2026-10-06): ~13 s once on the control thread for the owner's 36 k faces. Pinned faces never move. A new face model in a pack update starts the same re-run by
-itself (faces.db notes the spec it last opened with). Progress: `MV_AI_STATUS_PEOPLE_RERUN` /
-`_SETTLING`, `people_scan_total` / `_done`, `people_model_utf8`. Settle cost: ~0.3 s for 6 k
-faces on the control thread.
+- **Detector:** YuNet 2023mar, 640 px, confidence ≥ 0.8, NMS IoU 0.3, faces ≥ 4 % of the short side,
+  CPU.
+- **Embedder:** AdaFace IR-50 (WebFace4M) fp16, 512-d, ArcFace 112 × 112, flip averaging (`tta`).
+  Uses the towers' provider if a fixed crop matches CPU at ≥ 0.99. Spec
+  `yunet-2023mar+adaface-ir50-webface4m/1`. Exported by `tools/package/face-export.py` (fp16 weights,
+  fp32 I/O, checked against PyTorch; `golden` values in `ai-models.json`).
+- **Thresholds** (`model.json` → `face_tuning`; `faces.h` SFace fallbacks): **same_person 0.30, keep
+  0.20, keep_weak 0.24, margin 0.10, ambiguous 0.04, merge_at 0.32**; `shortlist` 3, `max_refs` 256,
+  `max_negatives` 12, `track_ms` 15 s.
+- **Quality** = min(size, sharpness, frontal) × (0.6 + 0.4 × score): size 40 → 112 px; sharpness =
+  Laplacian variance of the aligned luma, log ramp 20 → 300; frontal = nose offset from the eye
+  midline over half the eye distance. **Weak** < 0.35 (`weak_quality`), **unusable** < 0.10
+  (`refine_params::unusable_quality`); missing quality is proxied from score and box.
+- **Re-run** (`people_reanalyse`): re-analyses every asset; only the current `faces.spec` is
+  compared. A face whose box matches (IoU ≥ 0.5) keeps id, person, name, pin and rejections. When
+  done and idle, the control thread **settles**: full refinement (≤ 3 calls) then the merge. Settle
+  also runs when `meta` `rules` is older (`faces_db::settle_due`; rules 3). A new face model starts a
+  re-run. Status `MV_AI_STATUS_PEOPLE_RERUN` / `_SETTLING`, `people_scan_total` / `_done`,
+  `people_model_utf8`.
 
 ### Online clustering
 
-`faces.cpp`. Scores are in pairwise cosine units everywhere — assign, "this person",
-consolidate — never cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
-is matched in two steps. Every person is scored by mean pairwise cosine (sum · v / n), and the
-best `shortlist` (3) at or above `same_person − 2 × margin` are kept. Then each shortlisted person
-the user **confirmed** (it has a pinned face) is rescored by its **exemplars**: the refinement's
-`support`, the mean of the top 3 cosines to its pinned faces and good core (≤ 12, built by
-`build_person_proto`, the refinement's own `build_proto`). Every other person keeps its mean.
-The face joins the best person at `same_person`. If a second shortlisted person is within
-`ambiguous` of the best, it waits **unassigned** (`person_id` NULL). "This person"
-(`nearest_person`) uses the same scorer without the ambiguity rule. **Quality gates it:** an
-*unusable* face (quality < 0.10) joins nobody. A *weak* one (< 0.35) may join a person but never
-starts one, and it is matched by the mean alone, because the refinement never admits a weak face
-by exemplars either. The idle consolidate merges at mean pairwise `merge_at`, an average that
-stays an average after a merge (no chaining), with the limits in "Corrections that hold". The
-user's faces are **pinned**: faces they split out or moved, the cover they saw when they named a
-person (`person_rename_cover`; else the grid's cover, and never a face below `weak_quality`),
-both covers when they merge, and faces they said "Yes" to. Covers prefer pinned faces. **One face
-per frame:** a person that already has a face in the photo or frame is no candidate for another
-one there (unless the two are one face twice, below), and a frame's new faces are filed clearest
-first. **Rejections count:** a shortlisted person is passed over when the face is as like the
-faces the user rejected from it as like the person (by `margin`).
+`faces.cpp`; scores are pairwise cosine everywhere, never cosine to a centroid.
 
-**Corrections are what new faces meet (2026-10-15, #434).** Before this change a person's
-corrections counted only in the refinement. Online, a new face met the average of every member,
-so a varied person ("Tristan", front-on and side-on) scored *lower* as he grew. Now the faces the
-user confirmed are anchors for every new photo: a side-on face whose mean to him is below the
-threshold joins once a side-on cover of his is pinned. The exemplars are cached per person in
-`faces_db` and rebuilt lazily, under the lock, only for a shortlisted confirmed person. Only the
-first `max_refs` (256) refs' vectors are read. The cache is dropped on a rename, merge, split or
-reject, when faces leave or are re-analysed, and on an import. A refinement commit replaces it
-with the protos it just built. Ordinary growth rebuilds it only once the person is a quarter
-larger or smaller than when it was built. **Unconfirmed people keep the mean.** On LFW, scoring
-every person by exemplars let a newcomer whose mean was just under the threshold join a lookalike
-(IR-50 online BCubed F 0.9975 → 0.9945, P 0.9991 → 0.9933). Restricted to confirmed people, LFW
-is unchanged (`[.people-bench]`: IR-50 online F 0.9975, +merge 0.9980, settled 0.9988; SFace
-0.9899 / 0.9893 / 0.9938). The bench's corrections phase merges each person's fragments and names
-everyone with 3+ photos after 60 % of the faces, then files the remaining 40 % online. There, SFace's
-remaining 40 % rises from F 0.9964 (P 0.9983, R 0.9946) to 0.9969 (P 0.9972, R 0.9966), and
-IR-50's is unchanged at 0.9989. On a copy of the owner's library (`[.people-api]`), the 3,284 unfiled usable faces offered
-again cost 0.28–0.30 ms per `add` against 0.27–0.33 ms before (runs alternated), and one more of
-them files to a named person (556 against 555). The settle (`[.people-settle]`) does not use
-this path and is unchanged (263 people in 2+ photos, 76 in 5+).
+1. Score every person by mean pairwise cosine; shortlist the best 3 ≥ `same_person − 2 × margin`.
+2. Rescore **confirmed** people (with a pinned face) by **exemplars**: mean of the top 3 cosines to
+   pinned faces and good core (≤ 12, `build_person_proto`). Unconfirmed keep the mean.
+3. Join the best at `same_person`, unless the runner-up is within `ambiguous`: then unassigned.
 
-**Cost at a large library (2026-10-06, owner: "a lot of other UI seems to lag").** Every People
-read holds the engine's model lock, which a search, a rename and the status counts wait on, so
-none may grow with the library. `faces_cover (person_id, pinned, quality, score·w·h, asset_id)`
-answers the grid's covers and photo counts without the face rows (each carries a 2 KB vector);
-the idle merge looks only at pairs with a person changed since its last pass; a face landing sets
-a flag the control loop turns into one `AI_PEOPLE` a second, not one per frame; the Mac's People
-re-reads only while Settings shows them; `note_folder_opened` (a host's UI thread) hands the
-folder to the next claim instead of waiting on the work queue's lock. On the owner's library
-(36 k faces, 2 k people; `"[.people-api]"` on a copy): people list 69 → 3 ms, scoped 83 → 4 ms,
-the per-second person count 34 → 1.7 ms, the minutely merge 550–770 → 8–11 ms.
-
-**Quality** = min(size, sharpness, frontal) × (0.6 + 0.4 × detector score): size ramps 40 → 112
-px, sharpness is the Laplacian variance of the aligned crop's luma on a log ramp 20 → 300,
-frontal is the nose's offset from the eye midline against half the eye distance. Weak = quality
-< 0.35; unusable = quality < 0.10 (`refine_params::unusable_quality`). Rows without a recorded
-quality get a proxy from score and box size.
-
-**Why the floor (2026-10-06).** On the owner's library (36 k faces, 31 k of them clip frames)
-54 % of faces scored below 0.1: blurred frames, 25–60 px strangers, hoods and ears. Their vectors
-resemble each other more than anyone, so online clustering made "people" of them — the largest
-was 297 frames of one clip, every one below 0.1 — and 424 of the 710 people in two or more photos
-were more than 80 % weak faces. The same library settled under the floor (`mv_ai_tests
-"[.people-settle]"` on a copy): 284 people in two or more photos, 6 of them mostly weak (named
-ones), mean face quality per person 0.21 → 0.58; named people kept 7,645 of 7,767 faces. LFW
-(`[.people-bench]`, every face clear) is unchanged: F 0.9988, 426 people.
+- Unusable faces join nobody; weak ones may join (by mean) but never start a person.
+- **One face per frame**, filed clearest first (except "one face twice").
+- A person is passed over when the face is as like its rejected faces as like it (by `margin`).
+- **Pins:** faces split out, moved, the cover shown when naming (`person_rename_cover`), both covers
+  of a merge, faces said "Yes" to.
+- Exemplar cache per person, rebuilt lazily under the lock from the first `max_refs` refs; dropped on
+  any correction, re-analyse or import; rebuilt on ±25 % growth.
+- **Idle consolidate** at mean pairwise `merge_at`, only pairs with a changed person.
+- People reads hold the engine's model lock, so none grows with the library: `faces_cover` serves
+  covers and counts; ≤ one `AI_PEOPLE` a second; `note_folder_opened` never waits on the queue lock.
 
 ### People refinement
 
 `face_refine.h/.cpp` (pure), `faces_db::refine_begin / refine_commit`, `engine::person_refine`.
-Per person: *refs* = pinned + good-quality members (≤ 256); *anchors* = the pinned faces plus the
-refs' medoid (for a person with pins, the medoid only if it is within `same_person` of a pin, so
-an impostor majority cannot define a named person); *core* = refs within `same_person` of an
-anchor (one hop); *exemplars* = pinned then core, ≤ 12. A face's **support** by a person is the
-mean of its top 3 cosines to that person's exemplars. Candidates are shortlisted by the core
-mean, the top 3 re-scored by exemplars. For every face that is not pinned:
+*refs* = pinned + good members (≤ 256); *anchors* = pins plus the refs' medoid (with pins, only if
+within `same_person` of one); *core* = refs within `same_person` of an anchor; *exemplars* = pinned
+then core, ≤ 12; **support** = mean top-3 cosine to exemplars.
 
 | Verdict | Rule |
 |---|---|
-| **move** to b | support(b) ≥ join (`same_person`) and beats its own person, the runner-up and neg(b) by `margin`; never a weak face; never into a person it was rejected from, nor one that holds another face of its frame |
-| **evict** to unassigned | support(own) < `keep` (`keep_weak` for a weak face); always when unusable, or when its person is unnamed, unpinned and has no face that is not weak (`weak_only`: nothing vouches for it, and it is no candidate), or it was rejected from its own person (a merge brought it back), or neg(own) ≥ join and above support(own), or a better supported face of its own frame is in the same person |
-| **admit** (unassigned) | the same test as move |
-| **regroup** | unassigned good faces within join of a leader and at join mean to the group so far (average linkage), ≥ 2, never two of one frame, become a new unnamed person |
+| **move** to b | support(b) ≥ join (`same_person`) and beats own, runner-up and neg(b) by `margin`; never weak; never into a person it was rejected from or that holds another face of its frame |
+| **evict** | support(own) < `keep` (`keep_weak` if weak); or unusable; or person is `weak_only`; or rejected from it; or neg(own) ≥ join and > support(own); or a better face of its frame is there |
+| **admit** (unassigned) | as move |
+| **regroup** | unassigned good faces within join of a leader and at join mean (average linkage), ≥ 2, one per frame → new person |
 
-**A clip's frames are one sighting (2026-11-02).** Exemplars take one face per photo or clip
-(pinned anchors excepted), the medoid counts each photo or clip once (its refs share a vote), and
-a face's support skips exemplars from its own photo or clip while the person has others. Frames
-of one clip resemble each other more than anyone, so they vouched for each other; now a misfiled
-clip has to be vouched for by the person's other photos. A person seen in one clip only still has
-its own frames.
-
-**Pins that agree (2026-11-02).** A pin is *lone* when it agrees (≥ `core`) with none of the
-person's other pins nor its medoid. In pass 0, a lone pin that another person supports at ≥ join
-and by `margin` above the rest of the person stops being an anchor (`refine_output::distrusted`),
-when the person keeps another pin. It stays pinned where it is; the sheet asks about it. An
-unusable pin is no anchor while the person has anything else. A lone pin nobody explains (a
-side-on cover the user merged on purpose) keeps anchoring, as #434 wants.
-
-**Rejections are negatives.** For each person, the clearest `max_negatives` (12) faces rejected
-from it; neg(f, p) is their top-3 mean cosine to f. A rejected face the person vouches for as
-for an unmistakable face of its own (join + 2 margins) is taken for a slip and left out, so one
-mistaken "not this person" does not shut out everyone who looks like them.
-
-**One face twice.** Two faces of one frame are two people unless they are at least join + 2
-margins alike: a mirror, a screen, a photo in the photo. On the owner's library 13 frames hold
-two faces of one person; without this rule the cannot-link split 113 of his faces off.
-
-Passes are Jacobi (every face judged against the same prototypes, so order never matters), up to
-4, until nothing changes; a face changes at most once per call, and keep < join is the
-hysteresis that stops flapping. Later passes rebuild only the persons the previous one changed.
-
-**Re-looking at the thumbnails:** flip averaging — the mirrored aligned crop is embedded too and
-the vector is the normalised mean (one more embedder run per face; `tta`). Borderline faces from
-before it are re-analysed, 16 assets per call and once per asset per session, replacing vectors
-box by box (IoU ≥ 0.5 keeps the row's id, person and pin).
-
-**Refinement runs only when the user asks:** "Refine faces" in the person's sheet (a sheet on the
-Mac, an owned window on Windows) calls `person_refine` on a worker. It takes a full snapshot and judges **only that
-person's faces** (`refine_input::focus`): a face may move to someone else, leave to unassigned,
-or with others that left together become a new unnamed person; nothing is admitted into the
-person. Snapshot and commit hold the People lock, the compute holds nothing. The commit skips any
-face the user (or a scan) changed after the snapshot. The chrome reports how many faces left.
-
-Cost (Apple M5, one thread, synthetic 128-d vectors): 34 ms at 5 k faces / 100 people, 135 ms at
-20 k / 300, 2.7 s at 100 k / 1,500 for a full call. Tests: `tests/test_ai_face_refine.cpp`
-(`[refine]`).
+- **A clip's frames are one sighting:** one exemplar per photo or clip (pins excepted); the medoid
+  counts each once; support skips the face's own photo or clip while others exist.
+- **Lone pins:** agreeing (≥ `core`) with no other pin nor the medoid; in pass 0 one another person
+  supports at ≥ join by `margin` stops anchoring (`refine_output::distrusted`) when another pin
+  remains. Unusable pins anchor only if nothing else does.
+- **Negatives:** the clearest 12 rejected faces; neg = their top-3 mean. A rejected face supported at
+  join + 2 margins is taken for a slip.
+- **One face twice:** two faces in one frame are one person only at ≥ join + 2 margins.
+- Jacobi passes, ≤ 4; a face changes ≤ once per call; keep < join is hysteresis.
+- Pre-flip-averaging borderline faces are re-analysed 16 assets per call.
+- **Refinement runs only when the user asks** ("Refine faces"): `person_refine` on a worker judges
+  only that person's faces (`refine_input::focus`), admits nothing; the commit skips faces changed
+  since the snapshot. Tests `[refine]`.
 
 ### Corrections that hold
 
-Before 2026-11-02 a user's corrections could be lost or undone by the automatic passes (owner:
-"there are still some cases where the wrong person is in another person's group"). On a copy of
-the owner's faces.db, 61 of 67 rejections named faces that no longer existed, two rejected faces
-were back in the person they were rejected from, and 21 frames held two people in one person.
-
-- **The idle merge never joins two confirmed people** (a name or a pinned face), not even through
-  an unconfirmed cluster that took the first one's faces: the survivor becomes confirmed. An
-  unconfirmed cluster joins a confirmed person only when the person's exemplars do not call it a
-  stranger (mean cosine across ≥ `same_person − 2 × margin`, the shortlist's bound). Stricter was
-  tried: at `merge_at` by exemplars a varied person's own fragments (0.29–0.37 to his agreeing
-  pins, his own faces 0.365) stayed out, 470 more of his faces than the old settle; the stranger a
-  merge had glued in sat at 0.04. It also skips pairs a split, a rejection either way or a frame
-  together keeps apart, and carries every correction to the survivor.
-- **A merge remaps the corrections** (`remap_corrections_locked`): rejections, kept rejections and
-  split pairs naming the merged person name the survivor; a pair that would name one person twice
-  goes. A face rejected from the survivor leaves it (unassigned). When a person row is deleted,
-  every row naming its id goes (ids are reused). Open drops rejections of gone faces or people.
-- **A changed file keeps its rejections:** before its faces are forgotten, their rejections move
-  to `rejected_at` by box; the face found again in that box (IoU ≥ 0.5) inherits them and is not
-  filed under those people; `mark_scanned` drops what was not found again.
-- **Not this person** (`faces_reject_json`): several faces at once; the frames of the same clip in
-  that person that are the same face (≥ `same_person` to it) go with it (`spread`); each is filed
-  under another existing person it clearly matches, never a new person of its own, else nobody.
-  The answer says where they went.
-- **Move to** (`faces_assign`): the faces are that person's (with `MV_AI_ASSIGN_PIN`, the user's),
-  rejected from where they were, and any rejection from the target is withdrawn. With
-  `MV_AI_ASSIGN_UNDO` (a chrome's Undo) nothing is recorded against where they are, and person 0
-  returns them to nobody. **Yes / Unpin**
-  (`faces_pin`). **Undo a merge** (`person_merge_undo`, token from `person_merge_covers`;
-  `merge_log` is cleared on open): the faces still in the survivor go back to the person with its
-  id, name, pins and corrections; the covers the merge pinned are unpinned.
-- **Rules 3** (`faces.db` meta): a library filed under older rules settles once, nothing read again.
+- **The idle merge never joins two confirmed people**, even via an unconfirmed cluster; an
+  unconfirmed cluster joins a confirmed person only when its exemplars do not call it a stranger
+  (≥ `same_person − 2 × margin`). Splits, rejections and shared frames keep pairs apart.
+- **A merge remaps corrections** (`remap_corrections_locked`); deleting a person deletes every row
+  naming its id; open drops rejections of gone faces or people.
+- **A changed file keeps its rejections** via `rejected_at` by box (IoU ≥ 0.5); `mark_scanned` drops
+  what was not re-found.
+- **Not this person** (`faces_reject_json`): also same-clip frames of that face (`spread`); each is
+  filed under another person it clearly matches, else nobody; the answer lists where.
+- **Move to** (`faces_assign`): `MV_AI_ASSIGN_PIN` pins; rejected from the old person; a rejection
+  from the target withdrawn. `MV_AI_ASSIGN_UNDO` records nothing; person 0 = nobody.
+- **Undo a merge** (`person_merge_undo`, token from `person_merge_covers`; `merge_log` cleared on
+  open) restores id, name, pins and corrections.
 
 ### A person's own fragment is no rival
 
-A clip's frames no longer vouch for a face, so a face is judged by the person's other photos and
-clips; a tighter fragment of the same person (one session's clips) then outscored the whole
-person by `margin`, and the first build of these rules moved 408 of the owner's clear faces into
-such fragments (his other clips vouched for them at 0.70; the fragment at 0.84) and distrusted
-four of his own pins. Three rules stop it:
-- A face its person vouches for as for an unmistakable face (≥ join + 2 margins) is not moved.
-- A smaller person whose core is no stranger to the face's own (mean pairwise cosine across the
-  cores ≥ join − margin / 2) is no destination: it is the same person, and the merge or "Might
-  also be" joins them. Into a larger or confirmed one a face may go (the fragment going home).
-  join − margin cost LFW one correct move between two lookalikes (settled F 0.9988 → 0.9985);
-  join − margin / 2 does not.
+- A face its person supports at ≥ join + 2 margins is not moved.
+- A smaller person whose core is no stranger (cross-core mean ≥ join − margin / 2) is no destination;
+  a larger or confirmed one is.
 - A lone pin is distrusted only when the rest of its person calls it a stranger (< join − margin).
-
-`[.people-why]` tallies a named person's verdicts in the settle (counts and mean scores only).
 
 ### Tracks
 
-A weak clip frame (quality 0.10 to 0.35) nobody has follows its track: the clear frames of its
-clip within `track_ms` (15 s) that it resembles at `same_person`, when they are all in one person
-and the user has not said otherwise (a rejection, a frame together, its negatives); online as it
-is filed (`faces_db::track_locked`) and in the settle. A weak vector alone still files nothing.
-Not built: a clip counted once in an unconfirmed person's online average (docs/plans).
+A weak clip frame nobody has follows the clear frames of its clip within `track_ms` it resembles at
+`same_person`, when all are in one person and no correction objects (`faces_db::track_locked`, and
+in the settle).
 
 ### Measured
 
-On a copy of the owner's faces.db (50,588 faces, 13 named people), the base commit and this work
-built in their own worktrees, settled alternately (`[.people-settle]`, which prints the three
-"never" counts; a NumPy count over the copy, aggregate only), and LFW (`[.people-bench]`):
+Benches: `mv_ai_tests` `"[.people-bench]"` (LFW, 5,985 faces of 423 people, BCubed),
+`"[.people-settle]"`, `"[.people-api]"`, `"[.people-heldout]"`, `"[.people-unknown-order]"`,
+`"[.people-why]"` (on a private faces.db copy; aggregate counts only).
 
-| | Base | This work |
-|---|---|---|
-| Faces filed under a person they were rejected from | 2 | **0** |
-| Rejections of gone faces | 61 | **0** |
-| Two people of one frame in one person (not one face twice) | 28 | **0** |
-| Named people's faces better matched by a different person | 45 of 10,794 | **5** of 11,478 |
-| … by a fragment of their own person (kept: same person) | 33 | 104 |
-| Unfiled faces after the settle | 31,107 | **29,805** |
-| Settle (two runs each) | 4.6 s | **4.0 s** |
-| LFW settled BCubed F, full / ~24 px | 0.9988 / 0.9980 | 0.9988 / 0.9980 (every line equal) |
-| `add` per face (3,410 offered again; one run each) | 0.285 ms | 0.297 ms |
+| LFW | Precision | Recall | F | People (423) |
+|---|---|---|---|---|
+| SFace, full size | 0.9938 | 0.9938 | 0.9938 | 433 |
+| IR-50, full size | 0.9994 | 0.9982 | 0.9988 | 426 |
+| IR-50, ~24 px | 0.9994 | 0.9966 | 0.9980 | 429 |
 
-Held out and filed again (`[.people-heldout]`, the base has no such case, so the first build of
-these rules stands in where noted):
-
-| | Before | This work |
-|---|---|---|
-| A tenth of named people's clear faces (862, the smaller copy of the morning; base build) | 597 back | **695** back, 0 to another named person |
-| The same, 903 on today's copy (the first build) | 732 | 732, 0 to another named person |
-| A tenth of their weak faces (179), tracks off / on | 118 back | **139** back, 0 to another named person |
-
-The held-out rows are "training on the named people" as it works here: new photos are matched
-against the faces the user confirmed; one exemplar per photo or clip gives those a person's
-range; a weak frame follows its clear track. Tried and left out: admitting into unconfirmed people
-by their average in the settle (16 → 18 misfiled), farthest-point exemplars (5 → 9 misfiled).
+Tried and rejected: admitting into unconfirmed people by average in the settle; farthest-point
+exemplars.
 
 ### Reviewing a person
 
-`faces_db::review_begin` (under the lock: the person's vectors, every other person's average and
-the cached exemplars of confirmed ones; 23 ms for the owner's largest, 5,197 faces) and
-`review_finish` (no lock: 109 ms there) give each face its **support** by the person (as the
-refinement scores it), its **rival** (the best other person seen more than once, never one in a
-frame with this one: shortlist by average, rescored by exemplars where cached) and **check**: not
-pinned and support below `same_person`, or the rival within `margin`, or unusable; or a pin that
-is lone. `person_review_json` lists the checks first, least supported first. **Unknown faces**
-(`unknown_faces_json`): unassigned faces at or above `weak_quality`, each with its nearest person
-(≥ `same_person − 2 × margin`, never one rejected or in its frame), in the order the user answers
-best: suggested for a named person first (surest first), then for anyone, then the clearest.
-Scored outside the lock (`loose_begin` 25 ms, `loose_finish` 45 ms for the owner's 1,249) and kept
-between pages until a person's faces change. Held-out named faces made unknown
-(`[.people-unknown-order]`): of the first 60 one-click suggestions 60 right, 0 wrong (clearest
-first: 39 / 5); of the first 600, 519 / 0 (397 / 40).
-**Might also be** (`person_suggest_json`, 31 ms under the lock + 3 ms): unknown faces whose
-support by the person, and unnamed unpinned people whose average to the person's exemplars, reach
-`same_person − margin` (the user answers it, so a margin lower than filing), never one kept apart.
-A JSON answer too large for the caller's buffer is kept for its retry (`write_out_once`), so a
-large review is computed once.
+- `faces_db::review_begin` (locked) / `review_finish` (unlocked): each face's **support**, **rival**
+  (best other person seen more than once, never sharing a frame) and **check** (unpinned with support
+  < `same_person`, rival within `margin`, unusable, or a lone pin). `person_review_json` lists checks
+  first, least supported first.
+- **Unknown faces** (`unknown_faces_json`): unassigned faces ≥ `weak_quality` with their nearest
+  person (≥ `same_person − 2 × margin`); named suggestions first (surest first), then anyone, then
+  clearest. Scored outside the lock (`loose_begin` / `loose_finish`), cached between pages.
+- **Might also be** (`person_suggest_json`): unknown faces and unnamed unpinned people reaching
+  `same_person − margin`.
+- Answers too large for the buffer are kept for the retry (`write_out_once`).
 
-The chromes (both): the person's sheet shows "Check these" first with "Looks like <name>?",
-"Pinned, but unlike the others" or "Not sure", a pin glyph, Doubtful first | Clearest, Yes / Not /
-Move to… / Unpin on the selection (sheet keys Y, N, M, Space for the whole picture with the box,
-⌘Z / Ctrl+Z undo of the last action), where rejected faces went with Undo, and a "Might also be"
-strip; the grid gains "Unknown faces (N)", rename with the cover shown, and "Merged · Undo".
-Undo of a move or a reject puts the faces back with `MV_AI_ASSIGN_UNDO` (nothing recorded
-against where they went; each face's earlier pin restored), the frames of a clip that went with
-a reject included (`faces_reject_json` lists every face that left); Undo of a "Yes" on an unknown
-or suggested face makes it nobody's again (person 0). On the Mac, Return means Done in the sheet,
-as in every Mac sheet; on Windows, Enter on a focused face no longer closes it. Neither chrome
-has been run against a real pack or with VoiceOver / Narrator: SwiftUI builds and its tests pass,
-the C# compiles and its tests pass, Windows' native build is CI's.
-
-Timings come from `mv_ai_tests "[.people-api]"` and `"[.people-settle]"` on a copy (Apple M5);
-the "better matched" count from a NumPy script over a copy (aggregate counts only), kept with the
-owner's bench files, not in the repository. Windows is not measured.
+Chromes: "Check these" first; Yes / Not / Move to… / Unpin (keys Y, N, M, Space; ⌘Z / Ctrl+Z);
+"Might also be" strip; "Unknown faces (N)"; "Merged · Undo". Undos use `MV_AI_ASSIGN_UNDO`; undoing
+a "Yes" on an unknown face assigns person 0.
 
 ### Refine and Merge duplicates in detail
 
-`person_refine_json` and `people_dedupe_json` (2026-11-02): with `MV_AI_DRY_RUN` a look first,
-nothing changed: which faces would leave a person and where (a new person as its group number),
-which people would merge into whom (Merge duplicates' look counts the faces its check would move
-rather than moving them). For real, what was done: each face's destination, and an undo token per
-automatic merge (`merge_auto` logs one, `person_merge_undo` takes it). Undo of a refine puts each
-face back with `MV_AI_ASSIGN_UNDO`. A real run's answer is kept for the buffer retry, so it is
-never run twice. Both chromes look first, then Apply / Cancel, then Undo.
+`person_refine_json` / `people_dedupe_json`: `MV_AI_DRY_RUN` looks without changing (faces leaving and
+where, people merging into whom); a real run returns destinations and an undo token per automatic
+merge (`merge_auto`, `person_merge_undo`), kept for the buffer retry. Chromes: look, Apply / Cancel,
+Undo.
 
-**Find this person** (`Ctrl+Shift+P`, docs/design/16): the photos and moments of the largest face
-in the still or paused frame on screen (`search_this_person`), beside Find similar; only while the
-AI pack is loaded.
+**Find this person** (`Ctrl+Shift+P`, [16](16-commands.md)): the largest face on screen
+(`search_this_person`).
 
 ### Merge duplicates
 
-`people_dedupe`, a button in both chromes, only on request:
+`people_dedupe`, on request:
 
-1. **Every face re-checked:** the refinement with no focus, then `refine_commit` (the user's
-   later changes win).
-2. **The same person twice** (`find_duplicates` in `face_refine.h`, no lock held). Two people
-   link when each one's exemplars **vouch** for the other's at `join` (the refinement's support,
-   averaged, both ways, the smaller kept). Links group strongest first by **complete linkage**
-   (a group takes a person only when every member links to it, so a chain of lookalikes cannot
-   walk). Exemplars are pinned and good-quality faces, so weak crops cannot hide a duplicate the
-   idle whole-cluster merge misses. Never linked: two people named differently, a pair a split
-   kept apart (`no_merge`), a pair where a face of one was rejected from the other. Cores below
-   0.24 mean pairwise are not scored.
-3. **Who survives:** a named person over an unnamed one, then more faces, then older; the
-   others merge into it (`faces_db::merge_auto`). Nothing is pinned.
+1. Full refinement, then `refine_commit` (later user changes win).
+2. `find_duplicates` (`face_refine.h`, no lock): two people link when each's exemplars support the
+   other at `join` (smaller kept); groups by **complete linkage**, strongest first. Never: different
+   names, `no_merge`, a cross rejection. Cores < 0.24 mean pairwise are skipped.
+3. Survivor: named, then more faces, then older (`faces_db::merge_auto`); nothing pinned.
 
-The chrome says "3 people merged, 12 faces moved." or "No duplicates found, and every face
-matches." Undo is Split (a split pair never merges again on its own). Tests: `"[dedupe]"`.
+Undo is Split. Tests `"[dedupe]"`.
 
 ### People in the open folder
 
-`people_in_json(scope_dir, scope, …)`: `people_json` narrowed to the people with a face in a
-photo or clip under `scope_dir` by the same scopes `search_text` takes. `faces` counts the
-**photos and clips** they are in there (not faces: a clip sampled every few seconds gave one
-stranger hundreds, 2026-10-06) and the cover is the clearest of those (pinned, then quality), so a
-card's count and face are the folder's. *Who
-qualifies at all* (minimum faces, or a name) is still judged over the whole index. The minimum
-is two photos or clips, or **one when fewer than 100 photos and clips are in view** (the scoped folder's,
-or the whole index for Everywhere and the status count): in a small folder nobody may appear
-twice, and the grid said "No people found yet" over five clear faces (owner, 2026-10-05). A
-large library keeps two so a stranger in one photo does not fill it (`people_min_faces`).
-`faces_db::people(min, assets)` does one indexed pass per person against the scope's asset set.
-
-Chrome: a "People in · This folder | + Subfolders · <folder>" control at the top of the People
-grid (Settings → People on both platforms). Default **+ Subfolders**; it
-follows the folder the viewer opens. Everyone shows only when no folder is open (the viewer's
-home): the control is then absent. A scope
-of Everywhere left from before reads as + Subfolders when a folder opens. "Show photos" on a card
-and the empty-grid wording search the same scope. The choice is not persisted. The status bar's
-people count stays the whole index's. A pack without the entry shows everyone. The search panel
-keeps all three scopes.
-
-**The first 24 (2026-10-06, owner: "200 people … the settings screen now scrolls quite slowly").**
-Settings shows the first 24 people (named, then most photos) and "Show all N people". On the Mac
-the base Settings list is not lazy, so every card in it is live: "Show all" opens a sheet whose
-grid is in its own scroll view, where only the cards on screen exist (`AllPeopleSheet`;
-`PeopleGridBench`: a re-sorted list costs 16 ms of CPU with 24 shown against 89 ms with 200). On
-Windows the repeater is virtualised already, so "Show all" expands the grid in place.
+`people_in_json(scope_dir, scope, …)`: people with a face under `scope_dir`; `faces` counts photos
+and clips there; the cover is the clearest there. Qualifying (judged on the whole index): two photos
+or clips, or **one when fewer than 100 are in view** (`people_min_faces`).
+`faces_db::people(min, assets)` is one indexed pass per person. Chrome: "People in · This folder |
++ Subfolders" (default + Subfolders, follows the viewer's folder, absent with no folder, not
+persisted). Settings shows the first 24 people and "Show all N" (Mac `AllPeopleSheet`, lazy).
 
 ## Sharing an index
 
-Index a library once and carry it to another machine (`src/addons/ai/transfer.*`,
-`export_index` / `inspect_export` / `import_index`, both chromes).
+`src/addons/ai/transfer.*`, `export_index` / `inspect_export` / `import_index`. A one-off merge.
 
-**The file** (`.mvindex`, SQLite, `info.format = "mediaviewer.index"`, version 2; a version 1 file
-still imports) holds the chosen
-roots with each asset's path **relative to its root** (`/`-separated), its `(mtime, size)`, kind
-and duration, and its rows: `progress` (done and partial only), `frames`, `speech`. Optional
-(`MV_AI_TRANSFER_*`): **People** (`people`, `faces` without a path, `rejected`, `no_merge`,
-`face_scanned`) and **thumbnails** (`thumbs`: the JPEG-512 cache's bytes for a still and each
-stored moment; one the cache lacks is made then, between the viewer's busy spells). Roots keep
-their original absolute path and a display name so an import can offer the same place. Written
-to `<dest>.part` and renamed. The export reads index.db and faces.db on its own read connections,
-so indexing is not paused by it.
+**`.mvindex`** (SQLite, `info.format = "mediaviewer.index"`, v2; v1 imports): chosen roots (absolute
+path, display name), assets by path **relative to the root** (`/`), `(mtime, size)`, kind,
+duration; `progress` (done and partial), `frames`, `speech`. Optional (`MV_AI_TRANSFER_*`, all off
+by default): **People** (`people`, pathless `faces`, `rejected`, `no_merge`, `face_scanned`; current
+model only), **thumbnails** (`thumbs`, JPEG-512 bytes, made if missing), **Documents** (documents,
+`passages`, `passage_vecs` with `info.docs_spec`, page-picture frames). Never: the Photos root, tags,
+cues, picture text. Written to `<dest>.part` then renamed, from read connections (indexing goes on).
 
-**Import** maps each root in the file to a folder here (the chrome pre-fills folders that exist).
-Per asset at `folder + rel`:
+**Import** maps each root to a folder here. Per asset at `folder + rel`:
 
 | Here | Does |
 |---|---|
-| no row | the row and its vectors are added (`seen` 0) |
-| same `(mtime, size)`, already done for a spec | this machine's rows for that spec stay |
-| same `(mtime, size)`, not done | replaced by the file's |
-| different `(mtime, size)` | this machine's row stays |
+| no row | row and vectors added (`seen` 0) |
+| same `(mtime, size)`, done for a spec | local rows for that spec stay |
+| same `(mtime, size)`, not done | replaced |
+| different `(mtime, size)` | local row stays |
 
-The imported roots are then rescanned by the ordinary delta: a file whose `(mtime, size)` differs
-from the file's row loses its imported vectors and is queued. Indexing pauses for the import (it
-runs on the control thread) and the search matrix, sounds, transcripts and People reload after.
+Then the ordinary delta rescans. Indexing pauses during import (control thread) and models' matrices
+reload after.
 
-**Models.** Picture rows are imported for a spec this pack is using. When this machine's index is
-empty and the file's tower is one the pack carries, the import **adopts it** (Quality is set to
-that tower), so nothing is re-embedded. Otherwise picture rows are skipped and the chrome says
-which Quality would use them (`inspect_export`'s `picture_usable`). Sound and speech rows are
-imported for the loaded audio piece's spec, else skipped and counted.
-
-**People** (biometric): off by default on both sides, with a warning that the file then
-identifies the people in it. An import with People needs the ai-faces piece and turns the People
-opt-in on. A named person joins the local person of the same name (case-insensitive), else
-becomes a new one; unnamed clusters come in as new people. Assets whose faces this machine has
-already scanned keep this machine's faces. Only the current face model's faces are exported.
-
-**Thumbnails** go through the host's `thumbnail_jpeg` (look up, never make) and
-`thumbnail_store_jpeg`; the host checks the bytes are a baseline JPEG no larger than 512 on the
-long edge before storing (a shared file is untrusted input), and the pack stores one only when
-the local file's `(mtime, size)` equals the file's row.
-
-**Documents** (v2, #354 D3; `MV_AI_TRANSFER_DOCUMENTS`): off by default, as People is, because
-the file then holds what the documents say. Ticked, it carries the documents (kind 3), their
-passages and words (`passages`), their passage vectors (`passage_vecs`, with `info.docs_spec` the
-text model) and their page pictures (frames with the page flag, whose progress is
-`docpage/<picture spec>`). Unticked, no document travels, nor its name, as in v1. An import takes
-them only when ticked there too and documents are shown on that machine; the passages get new ids
-and their vectors follow them. Vectors come only with the passages they belong to: a document
-whose words this machine had already read keeps its own and embeds them itself. `inspect_export`
-reports `documents` (`count`, `shown`, `meaning_match`: the same text model is loaded here).
-
-It is a one-off merge, not a sync. The Photos library root is never exported (its keys are this
-Mac's PhotoKit identifiers). The file carries folder and file names and, if ticked, faces and
-names; nothing about it is logged or sent.
+- **Models:** picture rows import for a spec in use; an empty local index **adopts** the file's
+  tower if carried (sets Quality); else skipped (`picture_usable`). Sound / speech for the loaded
+  audio spec only.
+- **People** needs `ai-faces` and enables the opt-in; named people join a same-named local person
+  (case-insensitive); assets already scanned keep local faces.
+- **Thumbnails:** host `thumbnail_store_jpeg` checks a baseline JPEG ≤ 512 px; stored only when the
+  local `(mtime, size)` matches.
+- **Documents** only when ticked here and documents are shown; passages get new ids.
+  `inspect_export` `documents` (`count`, `shown`, `meaning_match`).
 
 ## Setting a phone up
 
-Since 2026-11-12 setting a phone up is the app's, not Local search's ([plan](../plans/phone-in-the-app.md)):
-Settings → Phone access (`PhoneAccessView.swift` on the Mac, `IslandHost.Phone.cs` on Windows, the same words
-and requests) asks and watches; `src/phone/link.cpp` does the work on a thread of its own and calls the desk
-(`src/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)) directly. Local search, when
-loaded, is the link's catalogue source: it builds and delivers generations (`phone_publish`) signed with the
-app's publisher key (`catalogue/publisher.h`), under the library id and epoch of the share's `library.json`,
-which the app writes when the person chooses the folder; `phone_json` says the id, the epoch and the newest
-generation's folder, for the nearby copy. Its `phone_link` entries are null now. The QR is `catalog::pair_url`, made once the
-service has taken a code, good for five minutes. Beside it is the check code (`driftwire::pairing_check`, `pair_check.h`: 80
-bits of a domain-separated BLAKE2b over the library id, the publisher key, the service identity and the access
-key). Driftwire computes it for the card, the phone computes it from the QR alone, and the person compares the
-two before the phone pairs. While it shows, the phones are polled every two seconds
-on one held session; when one appears the code comes down and the card names it. Without Local search the
-card still pairs, claims and serves, and says the phone searches by name and tag until Local search indexes the
-library.
+Owned by the app ([plan](../plans/phone-in-the-app.md)): Settings → Phone access
+(`PhoneAccessView.swift`, `IslandHost.Phone.cs`) drives `src/phone/link.cpp`, which calls the desk
+(`src/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)). Local search is the
+catalogue source: `phone_publish` builds generations signed with the app's publisher key
+(`catalogue/publisher.h`) under the library id and epoch in the share's `library.json`. `phone_json`
+gives id, epoch and newest generation folder. The pack's `phone_link` entries are null.
 
-**Moving the signing key** (`catalog_chain.*`). `library.json` carries the current key, its epoch and a chain
-of records, each signed by the key it leaves. A new desktop writes `takeover.request`; the old one shows
-its name and key, and its person hands over, which signs the record and raises the epoch. The new desktop
-finds its key on the share and adopts the library id and epoch. A phone calls `follow_chain` from the key it
-pinned. With the old desktop gone, Start over writes the new key with no record, and each phone scans again.
-The share only ever moves a desktop forward: a library.json naming another library, or a lower epoch, after
-a restore or an edit, is shown on the card ("The share doesn't match this Mac") and never adopted. A desktop
-whose key the share no longer names signs no nearby copy.
-
-**The nearby copy** (`phone/nearby/`, `prepare_nearby`): the newest generation, hard-linked, with its own
-signed `current.json`, the previous one kept for a phone mid-copy, and the text tower. Thumbnail packs stay
-the NAS's. It is copied once per generation, and only with a phone paired.
+- **Pairing:** QR = `catalog::pair_url` (five minutes). Check code `driftwire::pairing_check`
+  (`pair_check.h`): 80 bits of a domain-separated BLAKE2b over library id, publisher key, service
+  identity and access key, compared by the person. Phones polled every 2 s while shown.
+- **Moving the signing key** (`catalog_chain.*`): `library.json` holds the key, epoch and a chain of
+  records each signed by the key it leaves. A new desktop writes `takeover.request`; the old one
+  signs the handover and raises the epoch. Phones `follow_chain` from their pinned key. Start over
+  writes a new key with no record (phones rescan). Another library's or a lower epoch's
+  library.json is never adopted.
+- **Nearby copy** (`phone/nearby/`, `prepare_nearby`): the newest generation hard-linked with its own
+  signed `current.json`, the previous kept, and the text tower; only with a phone paired.
 
 ## The phone's catalogue
 
-A phone answers queries itself, from a copy of the library's index ([plan](../plans/mobile.md) §5,
-§6). `src/addons/ai/catalog.*` builds one **generation** from a read snapshot and delivers it to
-`<destination>/.mediaviewer/`; `engine::run_phone_publish` is the publisher. Nothing here runs
-until the person has published once, and the `phone_auto` setting stops the automatic half.
+A phone answers queries from a copy of the index ([plan](../plans/mobile.md) §5, §6).
+`src/addons/ai/catalog.*` builds a **generation** from a read snapshot into
+`<destination>/.mediaviewer/`; `engine::run_phone_publish`. Off until the first publish;
+`phone_auto` stops the automatic half.
 
-**What a generation holds** (`gen/000123/`, every file hashed in `manifest.json`, the manifest's
-hash signed in `current.json`):
+**A generation** (`gen/000123/`; `manifest.json` hashes every file; `current.json` signs the
+manifest hash):
 
 | File | What |
 |---|---|
-| `catalog.db` | `index.db`'s tables and schema, only the answering tower's vectors and only the folders on this share; `assets.path` is `/<root id>/<rel>` |
-| `settings.json` | what a reader needs of this machine's settings, `faces` included |
-| `labels.f32` | when the index has one |
-| `faces.db` | the app's own schema: named people and the assets and moments they are in. `emb` is empty and the box is zero on every row, so `faces_db::open_read_only` accepts it and no embedding leaves the machine (owner call 7) |
-| `tiny.pack` | one 64 px JPEG per asset (`kTinyEdge`, quality `kTinyQuality`), 1.5 to 2 KB each: inside the phone's copy |
+| `catalog.db` | `index.db`'s schema, only the answering tower's vectors and this share's folders; `assets.path` = `/<root id>/<rel>` |
+| `settings.json` | what a reader needs, `faces` included |
+| `labels.f32` | when present |
+| `faces.db` | named people and their assets / moments; `emb` empty, box zero (`faces_db::open_read_only` accepts it) |
+| `tiny.pack` | 64 px JPEG per asset (`kTinyEdge`, `kTinyQuality`) |
 | `thumbs.idx` | asset → pack, offset, length |
 
-Shared across generations, on the share only: `thumbs/t-<hash>.pack` (the JPEG-512s),
-`previews/p-*.pack`, `models/<spec>/<hash>-<name>`. A shared file's name holds its hash, so one
-that is there at full size is the one meant and a publish copies only what is new. The manifest
-lists the hash of each one a generation uses (`thumb_packs`, `preview_packs`, `model_files`), so
-nothing a phone parses sits outside the signature. `preview_packs` is empty until the setting
-exists.
+Shared, share only, named by hash: `thumbs/t-<hash>.pack`, `previews/p-*.pack` (empty for now),
+`models/<spec>/<hash>-<name>`; listed in the manifest (`thumb_packs`, `preview_packs`,
+`model_files`), so everything parsed is signed.
 
-**Formats.** `tiny.pack`: `MVTINY01`, u32 count, u32 0, then rows `(i64 asset, u64 offset, u32
-length, u32 0)` sorted by asset, then the JPEGs. `thumbs.idx`: `MVTIDX01`, u32 packs, u32 rows, 40
-bytes NUL-padded per pack name, then rows `(i64 asset, u32 pack, u32 length, u64 offset)` sorted by
-asset. Little-endian, so a phone binary-searches a mapping (`find_tiny`, `find_thumb`).
+**Formats** (LE, binary-searchable: `find_tiny`, `find_thumb`): `tiny.pack` = `MVTINY01`, u32 count,
+u32 0, rows `(i64 asset, u64 offset, u32 length, u32 0)` by asset, then JPEGs. `thumbs.idx` =
+`MVTIDX01`, u32 packs, u32 rows, 40-byte NUL-padded pack names, rows `(i64 asset, u32 pack, u32
+length, u64 offset)` by asset.
 
-**Names (N7).** `assets.path` and `motion` are NFC. `nfc.cpp` is our own table
-(`tools/fold/gen_nfc_table.py`, Unicode 16), so every OS gives the same bytes. The bytes the file
-really has are in `disk_path` / `disk_motion`, with the same `/<root id>/` prefix, NULL when they
-equal the NFC form: open by `COALESCE(disk_path, path)`. Those two columns exist only in a
-catalogue. Two files that differ only in form both survive: the one already in NFC keeps the
-name, the other keeps its bytes.
+**Names (N7).** `assets.path` / `motion` are NFC (`nfc.cpp`, `tools/fold/gen_nfc_table.py`, Unicode
+16); on-disk bytes in `disk_path` / `disk_motion` (NULL when equal; catalogue only); open by
+`COALESCE(disk_path, path)`.
 
-**Places.** `place` holds each geotagged asset's label, asked for at publish time through the
-host table's `place_labels`, which reaches Places through `mv.slots.1 place_label` in batches of
-256. A read-only engine with no Places answers `place:` from it (`stored_place_matches`): a whole
-component of the label, or the start of one from four letters, never a point at sea. It is the
-label's own language, so `lisboa` does not find a label that says Lisbon, and a route's other
-points are not searched: Places on the desktop does both.
+**Places.** `place` = each geotagged asset's label from host `place_labels` (`mv.slots.1
+place_label`, batches of 256); a read-only engine answers `place:` from it (`stored_place_matches`:
+a whole component, or a prefix from four letters).
 
-**Thumbnails.** `thumb_store` keeps a ledger at `phone/thumbs/ledger.db`. A tile is committed to
-SQLite when made, 16 at a time, so a cancel or a kill costs a few at most; hours of work are not
-redone. It runs on its own thread at the OS's background priority and waits for as long as the
-viewer wants the machine, as Import does. A run works for 30 minutes at most, then the catalogue
-goes out with what is ready and the next hour carries on (`thumbs_left`). A JPEG-512 the viewer
-has not cached is made by the host and stored nowhere (`thumbnail_make`), so a publish does not
-fill the viewer's cache. A file with no picture (`corrupt`, `unsupported_format`) is recorded and
-not asked again until it changes. Any other failure is passed over, so it cannot starve the files
-behind it, and asked again next run; after three runs at one size and date it counts as having no
-picture. A failure when the share itself has gone ends the pass and blames no file. Sealing
-writes the tiles to a pack named by its hash; a pack under 16 MiB is folded into the next, so
-hourly publishes do not leave a pack an hour. A pack that has been delivered is removed here unless it
-is small enough to be folded later, and one on neither side has its tiles forgotten and made
-again.
+**Thumbnails.** `thumb_store`, ledger `phone/thumbs/ledger.db`, 16 tiles per commit, background
+thread yielding to the viewer, ≤ 30 min a run (`thumbs_left`). Uncached JPEG-512s via
+`thumbnail_make` (stored nowhere). `corrupt` / `unsupported_format` recorded until the file changes;
+other failures retried, three strikes at one size and date = no picture. Packs named by hash; under
+16 MiB folded into the next.
 
-**When it runs.** The whole publish runs at the OS's background priority. A check after each scan
-compares `index_db::content_stamp` (rows, never `seen`) and the named people, both limited to the
-folders a generation carries, with what the newest generation holds; a change in a local folder
-or the Photos library does not count. Different, then quiet for 120 s and
-at most once an hour since the last attempt, publishes. It is part of the control loop's existing
-tick, so it adds no wakeup; while nothing changed it is one lock and a few comparisons. It does
-not run on battery. A generation built while the share is away waits in `phone/gen/`, only the
-newest, with `waiting` in `phone_json`. While one waits, the control loop asks every 30 s, on the
-publisher's thread and not on battery, whether the share is there. A delivery that fails waits
-30 s, doubling to an hour, until the share or its free space changes. A pack is forgotten only
-when neither side has it: the share's `thumbs/` lists without it, or is plainly absent from a
-`.mediaviewer/` that lists (a new destination, or one someone emptied), and the share still looks
-the same once the packs are checked. A stat that fails forgets nothing. A file whose tile keeps
-failing is counted by size and date, so a changed file starts a new count and still stops. A generation the share has
-no room for reports `no_space` and `needs_bytes` without copying anything.
+**When it runs.** Background priority, never on battery, in the control loop's tick. Compares
+`index_db::content_stamp` (rows, never `seen`) and named people for the generation's folders; if
+changed, quiet 120 s and ≤ hourly, publishes. Share away: the newest waits in `phone/gen/`
+(`waiting`), checked every 30 s. Failed delivery backs off 30 s → 1 h. No room: `no_space`,
+`needs_bytes`.
 
-**Retention (§5 rule 4).** The newest two generations stay, and an older one until 2 hours after
-the next generation became current, by this Mac's clock (`phone/arrivals.json`): the share's file
-times are another clock, and a folder that never became current starts no grace. A dead run's part
-folder is removed before a delivery, and the room check counts it as free. A shared file no retained generation names, and unnamed for 30 days, goes;
-a thumbnail pack under the fold size goes after 2 hours, because folding replaces it routinely.
-`phone/unused.json` remembers since when, and an unreadable manifest deletes nothing that round.
+**Retention (§5 rule 4).** Newest two generations, plus older ones until 2 h after the next became
+current by this machine's clock (`phone/arrivals.json`). Unnamed shared files go after 30 days,
+small thumbnail packs after 2 h (`phone/unused.json`); an unreadable manifest deletes nothing.
 
-**Ranking.** Exact ties break by asset id, then time (`vector_store::ranked_before`, `finish`,
-the text passes), so a phone and its desktop list the same rows in the same order.
+**Ranking.** Ties break by asset id, then time (`vector_store::ranked_before`, `finish`), so phone
+and desktop agree.
 
-**The sample library (2026-11-12, [plan](../plans/mobile.md) §11.1).** A generation like any
-other, made by `tools/ios/sample-library.sh`: 47 CC0 and public-domain files on a disk image of their
-own, indexed by the engine over the app's own decoders with B/32 on the CPU, then `phone_publish`
-under a fixed library id and signed by the sample library's own key
-(`mv_mobile_parity_desktop sample-publish`). The catalogue and the originals are flattened into the
-GitHub release `sample-library`, one file per (root, path): `<root id>__<path with '/' as "__">`.
-`files.json`, signed by the same key (`{"signature", "list"}` in one asset, so a republish never pairs a list
-with another's signature; Ed25519 over `kFilesContext` and the list's bytes), gives
-the root list and the size and SHA-256 of every file sync does not check itself: everything but
-`current.json`, `gen/` and `models/` under the catalogue root, so the JPEG-512 pack, `library.json`
-and every original. On the phone, `sample::static_remote` (`src/mobile/sample.*`) is the `remote_file`
-over that folder; the host does the HTTPS (`mv_fetch_fn`, `SampleFetch.swift`). It passes the
-catalogue's own files through by range, for sync to check, and reads any other file only from a
-whole copy whose hash matched the list (kept in `<thumb cache>/verified` as `<name>.<16 hex of its
-hash>`, so a republished file with the same name and size is fetched again; Forget removes it);
-a file not listed is never fetched. A download belongs to the file, not to the reader that began
-it: a reader that cancels (a seek in a clip, a swipe past a photo) leaves what arrived in a
-`.part` named by the file's hash, and the next reader rehashes that prefix and asks for the rest by
-range. A reader waiting for another's download honours its own cancel. Forget leaves nothing behind for any library, NAS or
-sample: `mv_link_shut_down` stops every read in flight (each fetch polls it) and returns only once
-the core's own writers are done and refuse any later write: the sample's verified copies and the
-JPEG-512 tiles. The app's own writers (an original moved into its store, a downloaded clip
-created) run under `LinkConnection.whileLive`, which refuses a library that is forgotten or
-replaced; Forget passes that gate before it removes the folders, so a late write cannot bring
-one back. Bytes still streaming into a file already open land in a removed file and vanish. The verified copies count
-in the cache size Settings shows and stay under 256 MB, least recently read first (the whole
-library is about 55 MB). A file list the pinned key did not sign is `MV_LINK_REJECTED` from connect,
-check and copy, shown as "didn't pass its signature check", not as unreachable. The clip
-throughput probe is skipped for the sample: its clips are a few megabytes, played from the
-verified copy. `mv_pair_parse` reads the code `SAMPLE` or
-`mediaviewer://sample` as a code with `sample = 1`, the sample's library id and pinned key, and no
-service; `mv_link_open` with `static_base` opens the link over the folder. Sync, the thumb cache,
-`mv_file_read` and the catalogue's search are unchanged, so the sample is checked as a NAS's
-catalogue is: a file whose hash is not the manifest's, or a `current.json` the pinned key did not
-sign, is refused.
+**The sample library** ([plan](../plans/mobile.md) §11.1): `tools/ios/sample-library.sh` indexes 47
+CC0 / public-domain files (B/32, CPU) and publishes under a fixed id and the sample's key
+(`mv_mobile_parity_desktop sample-publish`) to the GitHub release `sample-library`, flattened as
+`<root id>__<path with '/' as "__">`.
+
+- `files.json` = `{"signature", "list"}` (Ed25519 over `kFilesContext` + list) gives the size and
+  SHA-256 of every file sync does not check (all but `current.json`, `gen/`, `models/`).
+- Phone: `sample::static_remote` (`src/mobile/sample.*`), HTTPS by the host (`mv_fetch_fn`,
+  `SampleFetch.swift`). Catalogue files pass through by range; others only from a whole hash-checked
+  copy (`<thumb cache>/verified/<name>.<16 hex>`, ≤ 256 MB LRU); unlisted files never fetched. A
+  cancelled read leaves a hash-named `.part` to resume by range. Unsigned list →
+  `MV_LINK_REJECTED`.
+- `mv_pair_parse` reads `SAMPLE` / `mediaviewer://sample` as `sample = 1`; `mv_link_open` with
+  `static_base`.
+- **Forget:** `mv_link_shut_down` stops reads and returns once core writers are done and refuse
+  more; app writers run under `LinkConnection.whileLive`.
 
 ## Photos library source (macOS)
 
-A Photos result's path stays its key: the host lists it as a virtual item and resolves it to the
-file as it is shown, the same mechanism that opens the whole library as a folder once it was added
-in Settings ([26](26-photos-library.md)). The chrome prepares no files itself.
+One more remembered root (`src/addons/ai/photos_source.h`; `photos_mac.mm`, `photos_none.cpp`). A
+result's path is its key, listed as a virtual item ([26](26-photos-library.md)).
 
-The system Photos library (where iCloud Photos lives on a Mac) is one more remembered root beside
-folder roots, feeding the same indexer, index and search. Mac only: the source sits behind a
-portable interface (`src/addons/ai/photos_source.h`; PhotoKit in `photos_mac.mm`,
-`photos_none.cpp` elsewhere). On Windows, iCloud for Windows syncs to a folder, which a folder
-root covers.
+- **Source:** assets `photos:<localIdentifier>` under root `photos:`; `(mtime, size)` =
+  `(modificationDate, pixel count)`. PhotoKit enumeration (iCloud included; shared albums and Hidden
+  excluded; one row per burst and Live Photo). `PHPhotoLibraryChangeObserver` rescans ≤ every 10 s.
+- **Local only, read-only:** network off except the opt-in fetch; stills from the local rendition
+  (sRGB), clips from `requestAVAsset`. iCloud-only assets are **unavailable** (state 4,
+  `assets_unavailable`); a clip is found by its poster at 0 ms. Re-checked once per launch, when
+  access returns, and (assets first seen this session) on change notices.
+- **Downloading iCloud-only clips** (`"icloud_videos"`, off): `engine::fetch_loop`, newest first,
+  `photos_source::fetch_video` (`PHAssetResourceManager`) into `<data>/cache/icloud/<row id>.<ext>`;
+  ≤ 2 (`kFetchAhead`); `requeue_unavailable`, then `claim` takes them first
+  (`index_db::pending_among`); `file_of` maps the key; `fetch_reap` deletes. Waits (`icloud_fetch`)
+  on battery, costly network (`network_unmetered`), < 10 GB free, pause. Status
+  `icloud_videos_left` / `_fetched`. Photos are never fetched.
+- **Permission:** only from Settings → **Add Photos Library**, then `index_photos_library`; before,
+  `permission_denied`. Access off: rows searchable, root idle, *Open Privacy Settings*. Base app:
+  `NSPhotoLibraryUsageDescription`, `com.apple.security.personal-information.photos-library`
+  (`packaging/macos/MediaViewer.entitlements`).
+- **Search:** `scope_dir "photos:"`; tiles from PhotoKit's cached rendition with a badge.
+- **Opening:** read in place; `src/shell/write_guard.h` refuses writes inside `*.photoslibrary` and to
+  registered result files (trash, move, ratings, metadata, rotate, export, trims: "From your Photos
+  library: read-only here."); Copy To and drag-out allowed; `⌘E` shows it in Photos. An iCloud-only
+  original opens as `<name> (preview).jpg` in `~/Library/Caches/MediaViewer/Photos Library/`, fetched
+  after 400 ms on it; downloads deleted on the next list and at quit.
 
-**Source, not a folder.** An asset is keyed `photos:<localIdentifier>` under one root whose path
-is `photos:`. `(mtime, size)` is `(modificationDate, pixel count)`, so an edit in Photos
-re-queues the asset. The scan is PhotoKit's enumeration of the library: iCloud Photos included,
-shared albums and the Hidden album excluded, one row per burst and per Live Photo. A
-`PHPhotoLibraryChangeObserver` rescans at most once per 10 s; the full re-enumeration is the
-delta (0.9 s cold, 0.4 s warm for 23 k assets).
-
-**Local only, read-only.** Every PhotoKit read has network access off (except the opt-in fetch
-below); nothing is written to
-the library. A still is embedded from PhotoKit's local rendition at the indexer's size (the edit
-as Photos shows it, colour-matched to sRGB). A clip is sampled from its local file
-(`requestAVAsset`), opened read-only. An asset only iCloud has is **unavailable** (progress state
-4), neither done nor failed:
-
-- `mv_ai_status.assets_unavailable` counts them; Settings says "N only in iCloud".
-- An iCloud-only clip is found by its local poster, stored as one row at 0 ms.
-- Once per launch, and when access returns, each is asked whether it is on this Mac now; only
-  those that are go back to pending. The People pass treats them the same way.
-- One that first appeared this session (a photo taken on the phone, arrived only in iCloud) is
-  asked again at each change notice too (2026-11-02): when Photos downloads it, its
-  `(modificationDate, pixel count)` stays the same, so the re-enumeration alone would not
-  re-queue it until the next launch. Only these are asked; the library's first walk notes none.
-
-**Downloading iCloud-only clips (opt-in, 2026-10-05).** Settings → Photos Library → *Download
-iCloud videos to index them* (`"icloud_videos"`, off by default; [12](12-decision-log.md)). The
-engine's fetch thread (`engine::fetch_loop`) takes unavailable clips newest first and downloads each
-with `photos_source::fetch_video` (`PHAssetResourceManager`, network on; the current edit, else the
-original) into `<data>/cache/icloud/<row id>.<ext>`:
-
-- At most two on disk (`kFetchAhead`). Each is put back to pending (`requeue_unavailable`, its
-  poster row dropped) and `claim` takes the fetched clips' pictures, sound, speech and People work
-  before anything else (`index_db::pending_among`), so a download is indexed at once.
-- `file_of` answers the downloaded file for that `photos:` key; `fetch_reap` deletes it once no track
-  wants the clip. A file left by a crash is deleted at the next start, and its clip, still pending,
-  goes back to unavailable and is fetched again.
-- It waits (`mv_ai_status.icloud_fetch`) on battery, on an expensive or constrained network
-  (`network_unmetered`, `NWPathMonitor`), under 10 GB free, and while indexing is paused. A clip iCloud
-  does not send is skipped until the next start. `icloud_videos_left` / `_fetched` and the download's
-  progress are in the status. The status line treats the queue as the rest of the same run
-  (issue #417, 2026-10-15): while the pictures pass still has this Mac's files, its count and ETA
-  are that pass only, so the line says "Indexing pictures 24,442 of 24,443 on this Mac · under a
-  minute" and the note under it carries on with "Then 1,833 clips from iCloud · downloading the
-  next (42%), each indexed as it lands" (or why the fetch waits: for indexing to catch up, power,
-  an unmetered network, 10 GB free). Once nothing local is left the line is "Downloading from
-  iCloud · 1,847 clips left". Clips put off to the next launch are not counted as this run.
-- Photos are never fetched: PhotoKit keeps a local preview of nearly every photo, which is what the
-  picture pass reads.
-
-**Permission.** The pack never raises the system prompt itself. Settings → Local search →
-*Photos Library* → **Add Photos Library** asks from that click, then calls
-`index_photos_library`. Until then the source answers `permission_denied` without touching the
-library. When access is off (denied, restricted, revoked), the rows stay searchable and the root
-is left out of the work; Settings offers *Open Privacy Settings*. The base app carries
-`NSPhotoLibraryUsageDescription` and the hardened-runtime entitlement
-`com.apple.security.personal-information.photos-library`
-(`packaging/macos/MediaViewer.entitlements`), which cannot live in the pack.
-
-**Search and results.** `scope_dir "photos:"` scopes a search to the library: the panel's *Look
-in* gains a **Photos** segment once it is indexed; *Everywhere* includes it. A Photos tile is
-drawn from PhotoKit's cached rendition (no second cache) with a small Photos badge.
-
-**Opening a result.** The viewer reads each result where Photos keeps it (the current
-rendition's file, `requestContentEditingInput` / `requestAVAsset`); there are no copies. The
-host refuses every write to it (`src/shell/write_guard.h`): any path inside a
-`*.photoslibrary` bundle, and any file the result list registered.
-
-- **Refused:** Move to Trash, Move To, ratings and every metadata edit (the pane's edit controls
-  show disabled), rotate / flip, Save copy / export, trims and clip exports. A refusal beeps and
-  says "From your Photos library: read-only here."
-- **Allowed:** Copy To and drag-out, because both copy.
-- **`⌘E`** shows the result in the Photos app, selected, not its file in Finder
-  ([26](26-photos-library.md) "Show in Photos").
-
-**An original only iCloud has** opens at once as Photos' best local picture,
-`<name> (preview).jpg`, in `~/Library/Caches/MediaViewer/Photos Library/`. If the user stays on
-it for 400 ms, the original is fetched from iCloud (the only network request, made on the user's
-own viewing) and replaces the preview in place. Downloads are deleted when the next list opens
-and at quit; the folder is emptied when the chrome attaches. Scrub markers, N / Shift+N and Find
-similar on an opened Photos result ask about the asset, not the file. The index never downloads.
-
-Harnesses: `tools/ai/photos-spike.sh` (the source alone) and `tools/ai-bench/photos-bench.sh`
-(the whole pack).
+Harnesses: `tools/ai/photos-spike.sh`, `tools/ai-bench/photos-bench.sh`.
 
 ## Measurements
 
-### Model tiers: the picture towers (#482, 2026-10-18)
+COCO-1k, `tools/ai-eval/calibrate.py`, ORT 1.30 CPU, Apple M-series (bar R@10 ≥ 0.88, P@5 ≥ 0.8):
 
-`tools/ai-eval/calibrate.py` on COCO-1k (val2017's first 1,000 images, five captions each),
-ONNX Runtime 1.30 on CPU, Apple M-series, the pack's preprocessing. Bar: R@10 ≥ 0.88 and
-P@5 ≥ 0.8. Calibrated thresholds are a quantile match against B/32's hand-set ones.
+| Tower | Tier | R@10 | P@5 |
+|---|---|---|---|
+| CLIP ViT-B/32 | Default fast, Intel, Potato | 0.881 | 0.943 |
+| CLIP ViT-L/14 | Default high | 0.904 | 0.914 |
+| OpenCLIP ViT-H/14 | Maxxed high | 0.946 | 0.971 |
+| TinyCLIP ViT-8M/16 / 39M/16 | rejected (misses bar / 4× slower than B/32) | 0.838 / 0.922 | 0.886 / 1.000 |
 
-| Tower | Tier | R@1 | R@5 | R@10 | P@5 | Passes | img/s, 2 CPU threads |
-|---|---|---|---|---|---|---|---|
-| CLIP ViT-B/32 | Default fast, Intel, Potato | — | — | 0.881 | 0.943 | yes (reference) | 25.6 |
-| CLIP ViT-L/14 | Default high | 0.553 | 0.813 | 0.904 | 0.914 | yes | — |
-| OpenCLIP ViT-H/14 | Maxxed high | 0.687 | 0.894 | 0.946 | 0.971 | yes | — |
-| TinyCLIP ViT-8M/16 | (Potato candidate) | 0.415 | 0.731 | 0.838 | 0.886 | **no** | 23.4 |
-| TinyCLIP ViT-39M/16 | (Potato candidate) | 0.592 | 0.852 | 0.922 | 1.000 | yes, but slower than B/32 | 6.2 |
-
-The img/s column was timed while another eval ran, so read it as a ratio. On L/14 the method
-gives query_margin 0.033 and result_margin 0.010 against the 0.04 and 0.015 set by hand in PR
-20: it lands near the hand calibration, so ViT-H/14's (0.023, -0.015, similar_min 0.449) are
-used as computed. **Not measured yet:** per-tier img/s on an accelerator, Whisper RTF, time to
-first searchable result and size on disk per tier, on either platform, and both present-loop
-gates while indexing on every tier (plan T8).
+ViT-H/14 thresholds: query_margin 0.023, result_margin −0.015, similar_min 0.449.
 
 ### Verified on Windows
 
-Ryzen 16-thread, RTX 4070, ORT 1.30.
-
-- Embeddings within cosine 0.999 of the ORT-Python reference on CPU for both towers; CUDA
-  0.9991–0.99999 (`mv_ai_tests`, `tests/data/ai/reference.json`). Audio FFT / mel features match
-  the Python reference (`tests/data/ai/audio_reference.json`); CLAP at cosine ~1.0; Whisper base
-  and small find every sentence of the speech clip at its time (`test_ai_audio.cpp`).
-- Engine suite over the real host table with fake models (`test_ai_engine.cpp`): indexing,
-  resume without redoing committed frames, re-queue on edit, delta on reopen, removal, scope,
-  grouping, dedupe, yield, pause, migration never mixing specs, clear, size cap, find-similar,
-  people corrections, face deletion leaving no faces.db.
-- Query scan: 100,000 ViT-L int8 rows (2,000 clips × 50, with per-asset stats) in **31 ms** on
-  one core (`mv_ai_tests "[.perf-bench]"`, which fails over 100 ms in optimised builds); with the ~30 ms
-  CUDA text tower a query is ~60 ms.
-- A 1-hour 4K HEVC clip (synthetic, with a soundtrack): pictures, sound and speech in **302 s**
-  on CUDA with ViT-L and Whisper small — model load ~25 s, 255 picture moments ~190 s, sound
-  ~70 s, speech ~17 s. The picture phase is bounded by the sampler's software 4K HEVC keyframe
-  decode, not the model.
-- PR 1 soak with every piece sideloaded: 0 dropped frames, p99 16.9 ms.
+Ryzen 16-thread, RTX 4070, ORT 1.30: embeddings within cosine 0.999 of the ORT-Python reference
+(`tests/data/ai/reference.json`; audio `audio_reference.json`); engine suite `test_ai_engine.cpp`;
+100 k ViT-L rows scan in 31 ms (`"[.perf-bench]"` fails over 100 ms). Whisper RTF: base 0.075 CPU /
+0.029 CUDA; small 0.23 / 0.036.
 
 ### Verified on macOS
 
-Apple M5, 24 GB, macOS 26.6, ORT 1.30. Core ML with the image tower's dimensions pinned:
+Apple M5, ORT 1.30, dims pinned:
 
-| Tower | CPU (2 threads) | Core ML, pinned | cosine to reference (Core ML) | first compile | cached open |
+| Tower | CPU (2 thr) | Core ML | cosine | first compile | cached open |
 |---|---|---|---|---|---|
-| ViT-B/32 fp16 | 73 img/s | **499 img/s** | 0.9992 | 82 s | 17 s |
-| ViT-L/14 fp16 | 4.9 img/s | **31 img/s** | 0.9983 | 5.3 min | 64 s |
+| ViT-B/32 | 73 img/s | 499 img/s | 0.9992 | 82 s | 17 s |
+| ViT-L/14 | 4.9 img/s | 31 img/s | 0.9983 | 5.3 min | 64 s |
 
-Re-measured 2026-10-05 on the same Mac (macOS 26.6), a standalone probe with the pack's settings:
-B/32 opens in 99 s cold / 20 s cached (peak 6.8 / 5.0 GB); **L/14 takes 493 s from its cache, peak
-12.7 GB**, and a cold compile was still running after 28 min. Core ML re-compiles on every load and
-writes the program as text (ORT inlines the transposed `linear` weights: `model.mil` 1.05 GB for
-B/32, 3.5 GB for L/14), single-threaded. So on this Mac an L/14 start runs on CPU for minutes, and
-a failed upgrade left it on CPU for good (the 2026-10-05 fallback). Not yet fixed: shipping the
-large tower so Core ML need not rewrite it each load.
-
-With shapes left dynamic ORT placed only 130 of 830 (B/32) and 250 of 1,622 (L/14) nodes on
-Core ML, no faster than CPU. `MLComputeUnits` stays `ALL`. The Mac checklist is
+Core ML recompiles each load (hence CPU first, then swap). `MLComputeUnits` `ALL`. Checklist:
 `src.swift/AIChrome/MAC-VALIDATION.md`.
-
-Photos library (a real 23,089-asset library, Optimize Mac Storage on): local stills at 448 px
-304–411 per s (p50 4.3–5.7 ms) on 2 threads; resolving a file to open p50 7.0 ms; the source's
-peak footprint 70 MB (212 MB with opening). PhotoKit is not the bottleneck; the image tower is.
-The whole pack handled every asset (19,007 indexed, 4,082 iCloud-only, 0 failed) at ~23 assets/s
-on Core ML; queries 17–30 ms after a 1.7 s first query. The Mac PR 1 gate run beside a
-non-yielding bench process indexing on every core: 0 dropped frames in 3 of 4 runs, one missed
-refresh in the fourth, p99 ≤ 17.1 ms.
 
 ## Not built
 
-- Documents' page pictures (D2), meaning search over passages with a text model (D3, the
-  `ai-docs` piece, `.mvindex` v2 carrying passages) and OCR of scanned pages (D4)
-  ([document-search](../plans/document-search.md)).
-
-- Hardware decode (D3D11VA / VideoToolbox) for the frame sampler; it decodes in software.
-- An OpenVINO piece (the code path exists, nothing is published).
-- A memory-mapped search matrix (it is loaded into memory).
-- Local search on Intel Macs (no x86_64 ORT).
-- Place names in the index and query language (places are the Places add-on's, answered at query time).
-- Reading a clip's text from the picture pass's own decode: each moment is seeked and decoded
-  again, which is most of a moment's cost ("Text in pictures").
-- A CLAP stand-out calibration on more than one library (it is fitted on the owner's 4,331 clips).
-- Background (unrequested) People refinement; the incremental refinement path
-  (`refine_begin(false)`) exists in faces.db and its tests but has no caller.
-- Inference outside the viewer's process (#390): the pack and ONNX Runtime load into the first
-  window's process. The investigation and a spike plan are in
-  [ai-out-of-process](../plans/ai-out-of-process.md); nothing is decided.
+- Hardware decode for the frame sampler; an OpenVINO piece; a memory-mapped matrix.
+- Local search on Intel Macs; file watching on Linux.
+- Place names in the index; a pre-compiled large tower for Core ML.
+- Clip text read from the picture pass's own decode; sound and speech for audio files.
+- Background People refinement (`refine_begin(false)` has no caller).
+- Inference outside the viewer's process ([ai-out-of-process](../plans/ai-out-of-process.md)).

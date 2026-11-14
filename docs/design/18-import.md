@@ -1,556 +1,296 @@
 # 18 — Import (an installable add-on)
 
 How the Import add-on copies a card or folder into a photo library, and how the add-on
-mechanism it introduced installs, verifies and loads add-ons on Windows and macOS.
-
-Import skips what is already in the library, checks every copy, sorts by date on the way in,
-and never loses a file. It is an optional add-on installed from Settings; the base viewer, its
-installer and its updates do not carry it. Both platforms share one engine (`src/addons/import`)
-with a WinUI and a SwiftUI window. Roadmap labels: PRs 16–19 (engine, window, presets,
-library tools) and PR 54 (Find duplicates).
+mechanism (manifest, signing, host function table, install) works for every first-party add-on.
+Import is optional, installed from Settings; the base app does not carry it. One engine
+(`src/addons/import`) with a WinUI and a SwiftUI window.
 
 ## What it is, honestly
 
-Import does not move bytes faster than the hardware: the card reader, the USB link and the SSD
-set the speed, and Explorer and Finder already copy close to it. Import saves time where it is
-actually lost:
-
-- **copying less:** files already in the library are skipped by content, not by name;
-- **no second pass:** each file is checked as it is copied, not in a separate re-read of the card;
-- **no babysitting:** every decision is made before the copy starts, so it never stops
-  halfway to ask "Replace or skip?";
-- **no sorting afterwards:** files land in dated folders, with pairs kept together;
-- **no guessing:** what is new on the card is shown before copying, and a report comes after.
-
-## Compared with Explorer and Finder
-
-| | Explorer / Finder copy | Import |
-|---|---|---|
-| Already-copied files | Name clash dialog, mid-copy; a renamed duplicate is copied again | Skipped by **content hash** (size, then BLAKE3). Renamed duplicates are caught. Same name with different bytes is kept under a safe name. Decided up front |
-| "What's new on this card?" | You work it out | **New since last import** per file and per day; default selection is "new only" |
-| Is the copy good? | Not checked | **Every file verified**: hashed while read, read back from the destination uncached, compared. A bad copy is retried, then reported, never counted as done |
-| Move to another drive | Deletes the source after copying, unchecked | Deletes the source **only after verify**. Import never deletes from, formats or erases a card |
-| Card pulled / crash mid-copy | Partial file left; restart from scratch | No partial files (temp + rename). **Resumes**: already verified files are not re-copied |
-| Backup at the same time | A second copy job, reading the card twice | **Second destination** from the same read, both verified |
-| Where files go | One folder you picked | **Layouts** (date taken, camera, type, keep card structure, flat) with a live preview of the resulting folders |
-| Names | Camera names (`IMG_0001` repeats every 10 000 shots) | Optional **rename templates** with a live preview |
-| RAW+JPEG, Live Photos, camera sidecars | Copied as loose files; may be split | Moved as **one unit**: pairs, `.xmp`, `.THM`, `.LRV`, Sony `.XML` travel with their file |
-| Preview before copying | Slow thumbnails; RAW needs codecs on Windows | The viewer's own thumbnails: embedded RAW previews, HEIC, no codec packs |
-| Two cards at once | Two jobs that fight over one disk | One reader per card, one writer per disk. Cards in different readers run together |
-| Viewer while copying | n/a | Keeps panning at refresh: Import yields to the render thread |
-| Afterwards | Nothing | Summary (copied / skipped duplicates / failed), **Eject**, **Open in viewer**, a saved local report |
+Import does not copy faster than the hardware. It saves time by copying less (duplicates
+skipped by content hash, renamed ones too), verifying each file as it copies, deciding
+everything up front (no mid-copy prompts), moving pairs and sidecars as one unit into dated
+folders, resuming after a crash, writing a backup from the same read, and never deleting from,
+formatting or erasing a card.
 
 ## Painless by default
 
-Plug in a card, press **Import**. The defaults:
-
-- source: the card that just appeared; selection: **new files only**;
-- destination: the last one used, else `Pictures\MediaViewer` / `~/Pictures/MediaViewer`;
-- layout: `YYYY/YYYY-MM-DD`; names unchanged; duplicates skipped; full verify; eject when done.
-
-One screen, one button, no prompts while copying. The first import asks for the destination
-once.
+Source: the card that just appeared; selection: new only; destination: last used, else
+`Pictures\MediaViewer` / `~/Pictures/MediaViewer`; layout `YYYY/YYYY-MM-DD`; names unchanged;
+duplicates skipped; full verify; eject when done. The first import asks for the destination once.
 
 ## The Import window
 
-A separate window on both platforms (WinUI 3 `MediaViewer.Import.Chrome`; SwiftUI
-`Import.bundle`), so viewing carries on while it copies. It is keyboard-complete
-([16-commands.md](16-commands.md)).
+A separate window (WinUI `MediaViewer.Import.Chrome`; SwiftUI `Import.bundle`), keyboard-complete
+([16](16-commands.md)).
 
-```
-┌ Import ─────────────────────────────────────────────────────────────────────────┐
-│ SOURCES            │ EOS_DIGITAL · 812 new of 1,204 · 38.4 GB     [New only ▾] │ PRESET  Daily ▾   │
-│ ▣ EOS_DIGITAL      │ ☑ Sat 21 Sep · 142 (all new)                             │ To  D:\Photos   … │
-│   64 GB · 812 new  │  [▣][▣][▣][▣][▣][▣][▣][▣]                                │ Backup  E:\Bak  … │
-│ ▢ SD Card 2        │ ☑ Sun 22 Sep · 670 (670 new)                             │ Layout  Date  ▾   │
-│   32 GB · 0 new    │  [▣][▣][▣][▣][▣][▣][▣][▣]                                │ Rename  Off   ▾   │
-│ ＋ Folder…          │ ☐ Mon 16 Sep · 392 (already imported)                    │ ─ Where files go ─│
-│                    │  [◌][◌][◌][◌]  dimmed: already in library                │ 2026/2026-09-21 142│
-│ RECENT             │                                                          │ 2026/2026-09-22 670│
-│  Imports…          │  RAW+JPEG = one tile · LIVE badge · ▶ video              │                    │
-├────────────────────┴──────────────────────────────────────────────────────────┴────────────────────┤
-│ 812 files · 38.4 GB · 392 duplicates skipped · ≈ 6 min at 110 MB/s        [ Import 812 ]          │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-- **Sources** (left): cards and drives as they appear, each with an "N new" count. Folders can
-  be added (remembered in `import.db`). A network share works and is labelled slower.
-- **Contents** (centre): a virtualised grid (GridView / LazyVGrid) grouped by day, with a
-  checkbox per day and per file. Files already imported are dimmed. RAW+JPEG and Live Photo
-  pairs are one tile. `Space` toggles; `Enter` on a focused tile opens it in the main viewer
-  (culling before copying); viewer marks carry over.
-- **Preset** (right), simplified 2026-10-05 (owner: "its really complicated to use"): three plain
-  steps — **Where to** (the destination, or one *Choose a folder…* button while none is set),
-  **What to import** (New / All / Marked / Dates) and **How to organise** (the layout in words,
-  with the first folders of the **Where files go** preview under it) — then *Also copy to a
-  backup drive*, *Eject the card when done* (removable sources only), and everything else
-  (file types, camera / type folders, date source, rename, duplicate skipping and scope, full
-  verify, notify, fast, saving settings, card binding) under a collapsed **More options**. The
-  preset keys and the engine are unchanged. The saved-settings picker shows only once there
-  is more than one.
-- **Empty states:** no source ("Insert a memory card, or choose a folder"), reading, unreadable,
-  everything already imported (a strip over the grid, or *Show all N files* when the grid is
-  empty), and nothing matching. **Select all / Select none** sit over the grid.
-- **Tools** (Past imports, Check a folder for damaged files, Find duplicates, Check a folder
-  against the library, About Import) are one menu under the sources instead of five buttons.
-- **Bottom bar:** what is selected and its size, then a quieter line with what will be skipped
-  and an ETA from measured throughput per device. With no destination the button reads
-  *Choose where to import…* (and Return opens the folder picker) instead of confirming an
-  import to nowhere. *Import N* waits for the plan on screen: it is off during a rescan or a
-  replan, and while a typed field (rename, dates) has not been planned yet (that happens when
-  typing pauses, or on Return).
-- **While copying:** the window becomes a progress view: per-destination bars, the current file,
-  MB/s, verified so far, **Pause** and **Cancel**. Closing the window keeps the job running, with
-  a progress indicator in the main command bar. A notification arrives when it finishes.
-- **Summary:** copied / skipped (with what each matched) / failed (with the reason, and **Retry
-  failed**). **Eject**, **Open in viewer** (opens the destination folder), **Show report**.
-  Import history (what came from which card, when) is listed under Recent.
-- **Interrupted jobs:** when a copy fails because the source or destination root is gone, the
-  job stops as *interrupted* with the rest pending; the app lists it at next open with
-  **Resume**.
+- **Sources** (left): cards, drives, added folders and shares, each with an "N new" count.
+- **Contents** (centre): virtualised grid grouped by day; imported files dimmed; pairs one tile.
+  `Space` toggles; `Enter` opens the tile in the viewer.
+- **Preset** (right): **Where to**, **What to import**, **How to organise** (with the **Where
+  files go** preview), backup and eject; the rest under **More options**.
+- **Tools** menu: Past imports, Check a folder for damaged files, Find duplicates, Check a folder
+  against the library, About Import.
+- **Bottom bar:** selection, skips, ETA from measured per-device MB/s. *Import N* is disabled
+  until the plan on screen is current.
+- **While copying / after:** progress with **Pause** / **Cancel** (closing the window keeps the
+  job running); a summary with **Retry failed**, **Eject**, **Open in viewer**, **Show report**.
+  A job whose source or destination vanished stops *interrupted* and offers **Resume** next open.
 
 ## Configurability
 
-All settings are saved in **named presets** (`presets` table). A preset can be bound to a card
-(by volume id), so that card opens with it selected.
+Settings live in **named presets** (`presets` table; `mv::import::preset` in
+`src/addons/import/model.h`, strict JSON: unknown keys ignored, a mistyped known key fails). A
+preset can be bound to a card by volume id.
 
 | Setting | Options | Default |
 |---|---|---|
 | Selection | New since last import · all · marked in viewer · date range · type filter (RAW / JPEG / HEIC / video / other) | New only |
-| Destination | Any folder or drive; network shares labelled slower | Last used |
-| Backup destination | Off · a second folder or drive, written from the same read | Off |
-| Layout | `YYYY/YYYY-MM-DD` · `YYYY/MM/DD` · `YYYY-MM-DD` · + camera model · + type subfolders (`RAW`/`JPEG`/`Video`) · keep card structure · flat | `YYYY/YYYY-MM-DD` |
+| Destination | Any folder or drive | Last used |
+| Backup destination | Off · second folder/drive, same read | Off |
+| Layout | `YYYY/YYYY-MM-DD` · `YYYY/MM/DD` · `YYYY-MM-DD` · + camera · + type subfolders (`RAW`/`JPEG`/`Video`) · keep card structure · flat | `YYYY/YYYY-MM-DD` |
 | Date source | Date taken (EXIF / container) → file time fallback, labelled · file time only | Date taken |
-| Rename | Off · template of `{date}` `{time}` `{camera}` `{seq}` `{original}` `{ext}` with a live preview; `{seq}` is per-day and survives re-imports | Off |
-| Duplicates | Skip content duplicates · import anyway (safe name) · scope: this destination / the whole library index | Skip, this destination |
-| Name clash, different bytes | Keep both (safe name). Overwrite is not offered | Keep both |
-| Verify | Full read-back · hash-on-read only (network targets) | Full |
-| Companions | Keep camera sidecars with their file (`.xmp` `.THM` `.LRV` `.XML`) | On |
+| Rename | Off · template of `{date}` `{time}` `{camera}` `{seq}` `{original}` `{ext}`; `{seq}` per day, survives re-imports | Off |
+| Duplicates | Skip · import anyway (safe name) · scope: this destination / whole library index | Skip, this destination |
+| Name clash, different bytes | Keep both (safe name) | Keep both |
+| Verify | Full read-back · hash-on-read only | Full |
+| Companions | Keep camera sidecars with their file | On |
 | After import | Eject card · open destination in viewer · notify · nothing | Eject + notify |
-| On card insert | Do nothing · open Import · **auto-import with this preset** (per card, opt-in, remembered by volume id) | Open Import |
-| Priority | Background (viewer stays smooth) · fast | Background |
+| On card insert | Nothing · open Import · auto-import with this preset (per card, opt-in) | Open Import |
+| Priority | Background · fast | Background |
 
-**Never offered:** deleting from the card, formatting a card, overwriting a destination file,
-or any upload.
-
-The preset model is `mv::import::preset` (`src/addons/import/model.h`); its JSON parse is strict
-(unknown keys ignored, a mistyped known key fails).
+**Never offered:** deleting from or formatting a card, overwriting a destination file, uploading.
 
 ## The engine
 
 `src/addons/import/engine.*`, behind `mv.import.1` (`mediaviewer_import.h`). One control thread
-runs scans, plans and card arrivals in order; each job runs on its own thread.
+runs scans, plans and card arrivals in order; each job has its own thread. I/O workers only.
 
-- **Duplicate test:** size first; BLAKE3-256 only when a size matches. Never by name. The
-  library index (`import.db`, SQLite, table `library`: destination, relative path, size, mtime →
-  hash)
-  makes a second import cost a size lookup. A row is rechecked when size or mtime differ.
-- **Per-card memory:** after each import the card's volume id plus each file's (path, size,
-  mtime, hash) are recorded (`card_files`). "New since last import" is a lookup, not a re-hash.
-  Card memory keys on the **volume-relative path**, so it holds whether the card is scanned from
-  its root or a subfolder.
-- **Destination identity:** `library`, `seq` and an unfinished job's `journal` name a destination
-  by a volume key, `vol:<identity><US><folder inside the volume>`, and a journal target is relative
-  to it (`dest_locator`, `src/addons/import/host.h`). So a share that remounts as
-  `/Volumes/photos-1`, a drive whose letter moved, or `E:\` versus `\\nas\media` is the same
-  destination: dedupe still hits, `{seq}` carries on, and an interrupted job resumes at the new
-  path. A local volume's identity is its `volume_id` (the UUID, or Windows' serial without the
-  capacity, so a resize changes nothing). A share's is its `device_key`
-  folded by `share_identity`: the Mac's mount source with its user (a per-user `home` is a
-  different share for each) but no Bonjour service name, Windows' UNC name from
-  `WNetGetConnectionW` for a mapped letter. A key is issued only if the identity will outlast a
-  remount and finds the same folder again through the volume list. Otherwise (an `fsid` or a
-  serial of zero, a share Windows could not name, the Mac's internal disk through firmlinks, a
-  mount the list hides, two disks cloned with one id) the row keeps the absolute path, as before.
-  **Offline:** a destination that is not mounted resolves to nothing. Its rows stay, a plan cannot
-  confirm a duplicate there, verify-a-folder skips it, and Resume and Retry failed leave the job
-  interrupted (a Resume with its journal as it was), as they do if two disks answer to one key.
-  A row is dropped only when its file is gone and its folder is there.
-  **Migration:** absolute-path rows move to keys at engine start and at plan time, only when one of
-  32 of the root's indexed files, spread evenly across it, is really at the recorded path at its
-  size (a journal: a verified target), so another disk at that path or an offline share leaves them
-  untouched until it is back. Until they move, a plan for that path still reads them, for
-  duplicates and for `{seq}`.
-  A card source that returns under another path is found by its `volume_id` on Resume.
-  Limits: one share reached by two server names (`nas.local` and an IP) or mounted as two users is
-  two destinations, a Windows drive mapped to a subfolder of a share is not unified with the
-  share's UNC path, the folder inside a key keeps the case it was typed with (the folder picker
-  gives the on-disk case; a hand-typed `photos` for `Photos` is a second key on a case-insensitive
-  disk, and folding it would make every later path lower-case, which a case-sensitive share cannot
-  find), and saved presets still hold the path they were saved with.
-- **Verify** (`io::verified_copy`): hash while reading the source (one pass over the card).
-  Write to a sibling temporary `<final>.mvtmp` (then `.mvtmp2` …), flush (`FlushFileBuffers` /
-  `F_FULLFSYNC`), read back uncached (`FILE_FLAG_NO_BUFFERING` / `F_NOCACHE`), compare, then
-  rename into place without replacing anything. On mismatch: delete the temporary, retry once,
-  then fail that file. On a share, the uncached read-back proves the bytes the server returns,
-  which may come from the NAS's RAM rather than its disks.
-- **Throughput:** one reader per physical source and one writer per physical destination
-  (a per-device lock held for each file, so two cards to one disk alternate file by file), with
-  2–4 large buffers in flight between them. Reads and writes overlap. **No parallel reads of one
-  card.** Two sources on different devices run concurrently. Measured MB/s per device drives the
-  ETA. **A network destination** uses the deep path ([24](24-transfer.md)): several writes in
-  flight at their offsets (depth 8, 2 MiB chunks) and a pipelined read-back. The card side stays
-  one request at a time.
-- **Units:** RAW+JPEG and Live Photo pairs (the viewer's pairing) and camera sidecars are one
-  unit, copied, verified, skipped and sorted together, never split across dated folders. Type
-  folders keep units together (a RAW+JPEG pair goes under `RAW`, a clip under `Video`). A unit is
-  all-or-nothing: if one member fails, the members already written for it are removed and the
-  whole unit is reported.
-- **Backup:** duplicates are decided per destination. A unit the main destination (or, at
-  library scope, the library) already holds is skipped there, but a backup destination that
-  lacks it still gets it, so the backup mirrors the card. A copy on the backup drive does not
-  count as "in the library". A member is all-or-nothing across destinations too: if one
-  destination fails, the copy the other verified is removed.
-- **Resume and cancel:** the job journal (`jobs`, `journal` tables) lives in `import.db`. A job's
-  journal is written in one transaction before it starts; if any of it fails to land (busy, disk
-  full) it is rolled back and the job fails unstarted, since a resume could not see it. After
-  a crash or unplug, verified files are done and the rest re-queue; resume after a crash between
-  two destinations' renames keeps the destination that holds matching bytes and copies only the
-  missing one. Cancel leaves no temporary files.
-- **`{seq}`** is committed when a job starts (`seq` table), so a cancelled import leaves a gap,
-  never a repeat.
-- **Threads:** I/O workers only, never the UI or render thread.
-- **Priority:** a background import waits between buffers while the present loop is presenting
-  (Windows: `mv_present_set_busy` from the lab; Mac: `g_present_busy` from the Metal loop; both
-  stay set for 2 s after a dropped frame). Fast never waits.
-- **Offline destinations:** a ledger row is dropped only when the file's folder answers and the
-  file is not in it; a share that is offline says nothing about what is on it (2026-11-09).
+- **Duplicate test:** size first; BLAKE3-256 only when a size matches; never by name. The library
+  index (`import.db` table `library`: destination, relative path, size, mtime → hash) makes a
+  re-import a size lookup; a row is rechecked when size or mtime differ.
+- **Per-card memory** (`card_files`): volume id plus (volume-relative path, size, mtime, hash) per
+  file, so "new since last import" is a lookup whether the card is scanned from root or subfolder.
+- **Destination identity:** `library`, `seq` and `journal` name a destination by a volume key
+  `vol:<identity><US><folder inside the volume>`; journal targets are relative to it
+  (`dest_locator`, `src/addons/import/host.h`). A remount, moved drive letter or `E:\` vs
+  `\\nas\media` is the same destination. Identity: a local volume's `volume_id` (UUID, or Windows
+  serial without capacity); a share's `device_key` folded by `share_identity` (Mac mount source
+  with user, no Bonjour name; Windows UNC from `WNetGetConnectionW`). A key is issued only if it
+  survives a remount and resolves through the volume list; otherwise the row keeps the absolute
+  path. Absolute rows migrate to keys only when one of 32 evenly spread indexed files is really at
+  its recorded path and size. Two server names or users for one share are two destinations.
+- **Offline destinations:** an unmounted destination resolves to nothing: its rows stay, a plan
+  cannot confirm a duplicate there, verify-a-folder skips it, Resume / Retry leave the job
+  interrupted (also when two disks answer to one key). A row is dropped only when its folder
+  answers and the file is not in it.
+- **Verify** (`io::verified_copy`): hash while reading the source; write `<final>.mvtmp` (then
+  `.mvtmp2` …); flush (`FlushFileBuffers` / `F_FULLFSYNC`); read back uncached
+  (`FILE_FLAG_NO_BUFFERING` / `F_NOCACHE`); compare; rename into place without replacing. On
+  mismatch delete the temp, retry once, then fail. On a share the read-back proves what the
+  server returns (possibly its RAM).
+- **Throughput:** one reader per physical source, one writer per physical destination (a
+  per-device lock per file), 2–4 large buffers in flight; reads and writes overlap. No parallel
+  reads of one card. A network destination uses the deep path ([24](24-transfer.md)): depth 8,
+  2 MiB chunks, pipelined read-back.
+- **Units:** pairs and sidecars are copied, verified, skipped and sorted together; type folders
+  keep them together (RAW+JPEG under `RAW`). All-or-nothing: a failed member removes the unit's
+  written members.
+- **Backup:** duplicates are decided per destination, so a backup lacking a unit still gets it;
+  a backup copy does not count as "in the library". All-or-nothing across destinations.
+- **Resume and cancel:** `jobs` / `journal` in `import.db`, written in one transaction before the
+  job starts (failure → job fails unstarted). After a crash, verified files are done and the rest
+  re-queue; cancel leaves no temp files.
+- **`{seq}`** is committed at job start (`seq` table): a cancel leaves a gap, never a repeat.
+- **Priority:** background waits between buffers while the present loop presents (Windows
+  `mv_present_set_busy`, Mac `g_present_busy`; both held 2 s after a dropped frame). Fast never
+  waits.
 - **Privacy:** hashes, paths, names and reports stay on the machine.
-- **Ports:** volume arrival, eject and uncached read-back live in `io/volume_{win,mac}.cpp` and
-  `io/file_port_{win,mac}.cpp` behind portable headers. Windows uses `WM_DEVICECHANGE` and
-  `CM_Request_Device_Eject`; the Mac card watch uses DiskArbitration's mount callbacks (the C
-  API NSWorkspace sits on, so `io/` stays free of Objective-C) and `DADiskUnmount` + eject. The
-  base app's one-time card hint uses NSWorkspace itself.
-- BLAKE3 is taken under **CC0** (Apache-2.0 alone does not combine with GPL-2.0).
+- **Ports:** `io/volume_{win,mac}.cpp`, `io/file_port_{win,mac}.cpp` (Windows
+  `WM_DEVICECHANGE`, `CM_Request_Device_Eject`; Mac DiskArbitration, `DADiskUnmount`). BLAKE3 is
+  taken under **CC0**.
 
-`import.db` lives in the add-on's data folder and holds: `library`, `card_files`, `seq`,
-`presets`, `card_presets`, `sources`, `seen_hashes` (Find duplicates), `jobs` and `journal`.
+`import.db` (the add-on's data folder) tables: `library`, `card_files`, `seq`, `presets`,
+`card_presets`, `sources`, `seen_hashes`, `jobs`, `journal`.
 
-**Library tools (PR 19):** library-wide duplicate scope; import history; **verify a folder**
-(re-hash against `import.db` to find silent corruption on an old drive, uncached reads); import
-from a folder or network share as a first-class source.
+**Library tools:** library-wide duplicate scope; import history; **verify a folder** (re-hash
+against `import.db`, uncached, to find rot); folders and shares as sources.
 
-**F8 across volumes** (base app, not the add-on): a move to another volume deletes the source
-only after the copy is verified, through the same `io::verified_copy`
+**F8 across volumes** (base app): deletes the source only after `io::verified_copy` verifies
 (`src/io/file_ops_win.cpp`, `src/shell/file_jobs.cpp`, `src/shell/main_mac.mm`).
 
 ## Add-ons: how Import is installed
 
-Import was the first add-on, and its mechanism is the one every add-on uses: the AI pack
-([17](17-local-ai-search.md)) installs the same way.
+Every first-party add-on (Import, the AI pack [17](17-local-ai-search.md), Places, Driftwire)
+uses this mechanism.
 
-- **Settings → Add-ons** is a short list (#510, owner 2026-10-20: "click into it, cleans up
-  Settings"): one row per add-on, in the order Import, Local search, Places, Driftwire, any other
-  installed add-on of MediaViewer's, then **From other makers**. Each row is the name and its
-  state in a few words: *Installed · 1.2.0*, *Update available · 1.3.0*, *Restart to finish
-  updating*, *Not installed*, *Needs an update*, *Couldn't start*, *Installing…*; From other
-  makers says how many are installed. A row opens the add-on's own page in Settings (**All
-  add-ons** or Esc goes back): what it does, Install / Update to X / Open / Remove… / Remove and install again,
-  the install bar and its messages, and its settings page (from its manifest, or, from
-  contribution API 8, a screen the add-on draws under the card: Driftwire's,
-  [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)). Nothing of an add-on's configuration
-  is on the list itself. Opening Settings shows the list, unless something asked for a page: an
-  add-on's alert opens its page, a package to install opens From other makers, Local search's own
-  Settings link opens Local search. The same on both platforms (`IslandHost.AddonList.cs`,
-  `AddonListView.swift`); the words are `src.managed/Shared/AddonListWords.cs` and their Swift
-  copy, which Chrome.Tests keeps the same.
-  Installing is one click, with the size shown ("Install Import, 3 MB"). The first time a card
-  appears without Import installed, a **one-time**, dismissible hint offers it; after
-  "Not now" it does not return. Settings reads the signed manifest when it opens and offers
-  Install, with the archive's real size, only when it verifies for the running app; otherwise it
-  says Import is not published yet, or needs a newer MediaViewer. The card hint appears only
-  when there is something to install, and its network check waits on the automatic
-  update-check switch ([13](13-updates-and-telemetry.md)).
-  While an update waits on a restart the list starts with "Restart to finish updating
-  Import 1.3.0." and **Restart now**, and the add-on's row says so (#510, "Updates" below).
-- **Installing: one flow (#525).** Every add-on of MediaViewer's own, Import, the Local search
-  pieces, Places, Driftwire and any other slot add-on, installs the same way on both platforms:
-  **check** (the channel's signed manifest, when its page opens) → **download** (a bar, "Connecting…",
-  then "412 MB of 1.08 GB" and the percentage) → **verify** ("Checking the download…": size and
-  SHA-256) → **install** ("Installing…": unpacked, then every file checked by the store) →
-  **attach live** (a slot add-on, Import or Core not yet running, a piece) or the **restart card**
-  (a running Import or Core, "Updates" below). Windows: one helper, `RunInstall` in
-  `IslandHost.InstallFlow.cs`; each add-on keeps only its own line, Local search its 5 GB rule, and
-  how it attaches. An add-on from another maker adds its question between verify and install
-  ([25](25-open-addons.md)) and uses the same step words.
-  **A failure** says what happened in plain words, the same text on both platforms, with one next
-  step: "Places could not be downloaded. Check the connection, then retry." (no connection), "The
-  download of Import was damaged, so nothing was installed." (size, SHA-256 or manifest), "… did
-  not pass verification, so nothing was installed." (the store refused a file), "There is not
-  enough free space to install …", "… is installed but could not start.", "… could not be
-  installed." The next step is **Retry**, or **Remove and install again** when the copy on disk is
-  itself unusable (it did not verify, or it would not start): that removes it keeping its data
-  and settings, then installs. A working copy whose update failed is never removed; it keeps
-  running and Retry downloads the update again. The exception's type and the core's status and
-  reference go to the log, never on screen (#509), and never its message, which can hold a path
-  (rule 6). The words are `src.managed/Shared/InstallWords.cs` and `InstallWords.swift`;
-  Chrome.Tests fails when a string or a failure kind differs.
-- **Signed, verified, then loaded.** Downloads are two fixed release assets per platform,
-  `mediaviewer-addon-<id>-<platform>.json` (+ `.sig`) and the `.zip` it names, fetched by the
-  chrome with a plain GET: no identifier, no query, no cookies. `manifest.json` lists files,
-  SHA-256 and a licence per file, and is signed with the update-manifest **Ed25519** key, which
-  the core checks with libsodium (one verifier for both platforms; the key is pinned in
-  `src/addon/manifest.cpp` and `UpdateKeys.cs`, and a test checks they agree). The core verifies
-  the manifest before the archive is requested, the archive's size and SHA-256 before it is
-  opened, and every file (and that there is nothing extra) before install **and at every load**.
-  Windows binaries are Authenticode-signed when the release is. The Mac bundle is Developer
-  ID-signed and notarized and loads only under library validation (same Team ID).
-- **Files an add-on fetches itself (#482).** A manifest may list `remote` files (URL, path,
-  size, SHA-256, licence): pinned `https://huggingface.co/` files the add-on downloads after
-  install into its `data` folder and checks against that list (the AI pack's models,
-  [17](17-local-ai-search.md) "The AI pack"). They are not in the version folder, so the
-  install and every load verify without them; the core checks the list's shape (only plain
-  Hugging Face URLs, safe paths, never a shipped path). Third-party add-ons get no network
-  ([25](25-open-addons.md)).
-- **Location:** `%LocalAppData%\MediaViewer\addons\import\<version>` on Windows and
-  `~/Library/Application Support/MediaViewer/Add-ons/Import/<version>` on Mac; the add-on's own
-  data (`import.db`) is in `<addon>/data`, and downloads verify in `<addons>/.staging/<n>`
-  (`src/addon/store.h`). Uninstalling the app removes add-ons; removing the add-on offers to
-  keep or delete its data. Delete also calls the add-on's optional `mv_addon_forget` first, for
-  anything it keeps outside that folder, such as an OS secret store (#507, [14](14-abi.md)).
-- **Updates:** Settings offers **Update to X** when the release channel has a newer signed
-  version than the installed one; nothing downloads until it is clicked. Every installed add-on
-  has it: Import, the Local search pieces, Places, and each other slot add-on (Driftwire, …),
-  whose card asks its own channel when Settings opens (until 2026-10-16 only Places' did, so
-  Driftwire never offered an update). **Updates available without opening Settings (#525):**
-  while "Check for updates automatically" is on ([13](13-updates-and-telemetry.md)), the channels
-  of what is installed are also asked in the background, 30 s after a window's add-ons have been
-  read and then once a day: two small GETs each on a worker, never before the first pixel, never
-  in a later window (the first one owns the store), nothing drawn per frame. With the switch off
-  only Settings opening asks. A newer version shows one quiet item in the command bar, in the
-  app-update button's place and only when that has nothing to say: **Add-on update available**
-  (or "2 add-on updates available"), its tooltip naming them ("Places 1.1.0 is available. Open
-  Settings → Add-ons to update it."). It opens that add-on's page, or the list when there are
-  several; it goes when the update is installed or waits on a restart. The new version
-  installs beside the running one and the store removes the old one at the next start
-  (`prune.pending`), so a running add-on never loses its files. What happens next depends on
-  what kind of add-on it is, the same on both platforms (#510, 2026-10-20):
-  - **Reloaded live, no restart.** A slot add-on (Places, Driftwire) is unloaded (its items,
-    commands, pill and windows go, as at Remove) and the newest verified version loads at once;
-    Settings says "Driftwire updated to 1.4.2." A script add-on from another maker is replaced
-    by the store's reload as it installs ([25](25-open-addons.md)). A People or Sound piece is
-    picked up by the loaded pack ("reload"). If the add-on says work is under way (host row
-    `busy_post`, below: a Driftwire transfer), the reload waits for it to end ("Driftwire 1.4.2
-    is installed. It takes over when a Driftwire transfer has finished.").
-  - **Restart card.** A running Import or Local search Core takes over only at the next start,
-    so the app offers one (owner, 2026-10-05; the card #510). A card in the bottom-right corner,
-    the place and look of the "Resume indexing" notice and the filmstrip hint (stacked: resume,
-    restart, hint, from the bottom), says "Import was updated to 1.3.0. Restart MediaViewer to
-    use it. It opens again on this folder and file." with **Later** and **Restart now**. Several
-    updates make one card ("Import and Local search were updated."), one line per add-on.
-    **Later** hides it; Settings → Add-ons then shows "Restart to finish updating Import 1.3.0."
-    with Restart now, and the command bar **Add-on updated — restart**, until the next start.
-    Never a forced restart.
-  - **Restart now never cuts work off.** It restarts at once only when nothing runs; otherwise
-    the card says "Waiting for an import and a Driftwire transfer to finish", restarts by itself
-    when they have, and offers **Cancel** and **Restart anyway** (whose tooltip says what it
-    stops). It waits for an import (Import's status line is up), anything an add-on reports
-    through `busy_post`, Local search indexing (its pill is busy) and an add-on download. An
-    F7 / F8 copy or move needs no wait: the file worker finishes it before the process exits
-    (`shell/file_jobs.h`), and the new process waits for that exit. The host still refuses
-    under a playing clip. The card's words are `src.managed/Shared/RestartWords.cs` and their
-    Swift copy in `RestartNoticeView.swift`; Chrome.Tests fails when the two differ.
-    `MV_ADDON_RESTART_SELFTEST` shows the card without an update (DEVELOPMENT).
+- **Settings → Add-ons** is a short list: Import, Local search, Places, Driftwire, other own
+  add-ons, then **From other makers**. Each row is name + state (*Installed · 1.2.0*, *Update
+  available · 1.3.0*, *Restart to finish updating*, *Not installed*, *Needs an update*,
+  *Couldn't start*, *Installing…*). A row opens the add-on's page: actions (Install / Update to X
+  / Open / Remove… / Remove and install again), the install bar, and its settings (manifest, or a
+  screen the add-on draws, [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
+  Code: `IslandHost.AddonList.cs`, `AddonListView.swift`; words in
+  `src.managed/Shared/AddonListWords.cs` and its Swift copy (Chrome.Tests keeps them equal).
+  Install is offered, with the real size, only when the signed manifest verifies for the running
+  app. A **one-time** hint offers Import when a card first appears (its network check obeys the
+  automatic update-check switch, [13](13-updates-and-telemetry.md)).
+- **Installing** is one flow on both platforms: **check** (signed manifest) → **download** →
+  **verify** (size, SHA-256) → **install** (store checks every file) → **attach live** or the
+  **restart card** (see Updates). Windows: `RunInstall` in `IslandHost.InstallFlow.cs`. A failure
+  says what happened in plain words with one next step: **Retry**, or **Remove and install
+  again** when the copy on disk is unusable (keeps data). A working copy whose update failed is
+  never removed. Details go to the log, never a message that could hold a path. Words:
+  `src.managed/Shared/InstallWords.cs`, `InstallWords.swift`.
+- **Signed, verified, then loaded.** Two fixed release assets per platform:
+  `mediaviewer-addon-<id>-<platform>.json` (+ `.sig`) and the `.zip` it names, fetched by plain GET
+  (no identifier, query or cookies). `manifest.json` lists files, SHA-256 and a licence per file,
+  signed with the update-manifest **Ed25519** key, checked by the core with libsodium (key pinned
+  in `src/addon/manifest.cpp` and `UpdateKeys.cs`; a test checks they agree). Order: manifest
+  before the archive is requested; archive size + SHA-256 before it is opened; every file and
+  nothing extra before install **and at every load**. Windows binaries Authenticode-signed; the
+  Mac bundle Developer ID-signed, notarized, loaded under library validation (same Team ID).
+- **Remote files:** a manifest may list `remote` files (URL, path, size, SHA-256, licence):
+  pinned `https://huggingface.co/` files the add-on downloads into `data` and checks itself.
+- **Location:** `%LocalAppData%\MediaViewer\addons\import\<version>` /
+  `~/Library/Application Support/MediaViewer/Add-ons/Import/<version>`; data in `<addon>/data`;
+  downloads verify in `<addons>/.staging/<n>` (`src/addon/store.h`). Removing offers to keep or
+  delete data; delete first calls optional `mv_addon_forget` ([14](14-abi.md)).
+- **Updates:** **Update to X** when the channel has a newer signed version; nothing downloads
+  until clicked. With automatic update checks on, channels are also asked in the background (30 s
+  after the first window reads its add-ons, then daily, on a worker) and a newer version shows
+  **Add-on update available** in the command bar. The new version installs beside the old; the
+  store prunes the old at next start (`prune.pending`). Then:
+  - **Reloaded live:** a slot add-on (Places, Driftwire) is unloaded and reloaded; an AI piece is
+    picked up by the pack. A posted `busy_post` makes the reload wait.
+  - **Restart card:** a running Import or Local search Core takes over only at next start: a card
+    with **Later** / **Restart now** (several updates, one card). Never forced.
+  - **Restart now never cuts work off:** it waits for an import, any `busy_post`, indexing and
+    downloads, offering **Cancel** / **Restart anyway**. Words: `src.managed/Shared/RestartWords.cs`,
+    `RestartNoticeView.swift`; `MV_ADDON_RESTART_SELFTEST` shows the card. The restart restores
+    folder and file (Windows `--relaunch-after <pid>`, `update_guard.h`; Mac
+    `-restartForAddons`).
 
-  The restart puts back the folder and file (as an app update's does); with an app update also
-  staged it is that update's restart, which loads the new add-on too. Otherwise Windows starts
-  the exe again with `--relaunch-after <pid>`, which waits for the old process to exit before
-  claiming the single instance (`update_guard.h`), and the Mac opens the app again from a small
-  waiter once the old process is gone (`-restartForAddons`).
-
-  `busy_post(host, what)` (host table, appended after `document_text`, #510) is how an add-on
-  says it is doing something the person would not want cut off; `what` (≤ 120 bytes, never a
-  path or a name) completes "Waiting for … to finish"; "" ends it. The registry keeps one per
-  add-on, drops it at detach, and lists it in `mv_slots_notices_json`'s `busy`. Driftwire posts
-  "a Driftwire transfer" while a send or receive runs. The manifest declares the host
-  API range it supports; an add-on outside that range is not loaded and the app says "Import
-  needs an update". **No downgrades:** install refuses a signed manifest older than a working
-  installed version; the same version again is a repair. Offline sideloading works: a folder
-  dropped in is verified the same way.
+  `busy_post(host, what)` (host table): `what` (≤ 120 bytes, never a path or name) completes
+  "Waiting for … to finish"; "" ends it; listed in `mv_slots_notices_json`'s `busy`. The manifest
+  declares its host API range; outside it the add-on is not loaded ("Import needs an update").
+  **No downgrades:** an older signed manifest than a working install is refused; the same
+  version is a repair. A sideloaded folder is verified the same way.
 - **What an add-on is, technically:**
   - **Native:** one shared library (`mv_import.dll` / `libmv_import.dylib`) exporting
-    `mv_addon_get(uint32_t host_api, const mv_host_api* host, mv_addon_api* out)`. The host
-    passes a **function table** (`mediaviewer_addon.h`): jobs, the folder model, thumbnails,
-    metadata read, pairing, `io` ports, the verified copy, and the completion queue. The add-on
-    does not link the core statically and does not reach into it (`mv_import` links SQLite
-    only). Flat C, POD, status codes, correlation ids ([14](14-abi.md)). Table versions only
+    `mv_addon_get(uint32_t host_api, const mv_host_api* host, mv_addon_api* out)`. The host passes
+    a **function table** (`mediaviewer_addon.h`): jobs, folder model, thumbnails, metadata read,
+    pairing, `io` ports, verified copy, completion queue. The add-on
+    does not link the core statically and does not reach into it — add-ons link nothing of the core (`mv_import` links
+    SQLite only). Flat C, POD, status codes, correlation ids ([14](14-abi.md)). Table versions only
     append; the host serves every layout from 1 up.
-  - **Windows chrome:** `MediaViewer.Import.Chrome.dll`, loaded into its own
-    `AssemblyLoadContext` and given the chrome's `IAddonHost` (`IslandHost.Addons.cs`,
-    `abi/addon_abi.cpp`).
-  - **Mac chrome:** `Import.bundle` loaded with `NSBundle`, whose principal class returns the
-    SwiftUI root view for an `NSHostingView` window (`src/shell/addons_mac.mm`,
-    `AddonsView.swift`). Its `-shutdown` closes the table before the host unloads the pack:
-    later calls from its detached tasks fail, and it waits (at most 2 s) for those already
-    inside (a RAW thumbnail, an eject); at quit `-shutdownForQuit` does not wait, and a call
-    still inside leaves the pack running for the exit, as the AI chrome's does (issue #193).
-  - **The Mac add-on is universal** (arm64 + x86_64, platform `macos`): both architectures'
-    trees are joined with `tools/mac/lipo_merge.py` before signing and packing.
-- **Screens and slots (host table v3, 2026-10-11):** a first-party add-on whose manifest names
-  screens or slots (an info-pane section, a search provider, items, badges, windows) answers
+  - **Windows chrome:** `MediaViewer.Import.Chrome.dll` in its own `AssemblyLoadContext`, given
+    `IAddonHost` (`IslandHost.Addons.cs`, `abi/addon_abi.cpp`).
+  - **Mac chrome:** `Import.bundle` loaded with `NSBundle`; its principal class returns the
+    SwiftUI root view (`src/shell/addons_mac.mm`, `AddonsView.swift`). The Mac add-on is
+    universal (`tools/mac/lipo_merge.py`).
+- **Screens and slots (host table v3):** an add-on whose manifest names screens or slots answers
   through `mv.slots.1` and posts back through the v3 rows (`screen_post`, `screen_diff`,
   `surface_post`, `search_post`, `search_progress`, `is_stale`, `badges_post`, `status_post`,
   `screen_show`, `location_of`, `locations_in`); `loaded_addon::load` attaches its contributions
-  to the registry and its destructor detaches them before shutdown. Such an add-on needs no chrome
-  of its own (the hosts render its trees) and carries its own code and data in its package
-  (owner, 2026-10-11). The Mac host loads every installed one on the add-on queue after Import's
-  and the AI pack's checks; Windows loads it with `mv_addon_load(…, MV_SLOTS_INTERFACE)`. Details:
-  [25-open-addons.md](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11).
-- **Add-ons from other makers** are a second kind, with their own package, key, folder and
-  store: [25-open-addons.md](25-open-addons.md). Nothing in this section changes for
-  MediaViewer's own add-ons, and neither kind loads through the other's path.
-- **Absent means absent.** With no add-on installed nothing under the add-ons folder is
-  written, the base install tree carries none of the add-on payloads, and no Import command,
-  menu or key appears. `F7`/`F8` behave as in the base app.
-- **Packing:** `tools/package/addon-pack.py` (cross-checked by `tools/addon-verify`); the
-  release workflow builds, signs and packs both platforms' add-on at the release version
-  (`--require-pinned-key`; Mac via `macpack.py addon`, Developer ID + notarization), and
-  `publish` refuses a stable release without it (`MV_RELEASE_ADDONS=1`).
-
-**Other makers' code (PR 57, 2026-10-11)** never sees the host function table. A script add-on runs in the Lua sandbox of [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs) and reaches the viewer only through the `mv.*` calls its permissions put in its environment; `MV_ADDON_HOST_API` is unchanged by it. Scripts run in every window's process (they never write the store), so their keys answer in every window.
+  and its destructor detaches them. It needs no chrome of its own and carries its own code and
+  data. Windows loads it with `mv_addon_load(…, MV_SLOTS_INTERFACE)`. Details:
+  [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11).
+- **Add-ons from other makers** have their own package, key, folder and store
+  ([25](25-open-addons.md)); neither kind loads through the other's path. Their scripts never see
+  the host function table: they run in the Lua sandbox
+  ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)) in every window's process.
+- **Absent means absent.** With no add-on installed nothing under the add-ons folder is written,
+  the base install carries no add-on payload, and no add-on command, menu or key appears.
+- **Packing:** `tools/package/addon-pack.py` (cross-checked by `tools/addon-verify`); the release
+  workflow builds, signs and packs both platforms (`--require-pinned-key`; Mac via
+  `macpack.py addon`), and `publish` refuses a stable release without Import
+  (`MV_RELEASE_ADDONS=1`).
 
 ### One host process
 
-Each window is its own process (`Ctrl+N`, [16](16-commands.md) "Window"). The add-ons —
-Import's volume watch, the AI pack and its indexer, Final Cut search on the Mac — load in
-the first window's process only: the one that owns `Add-ons/.host.lock` (an `flock` on the
-Mac) or the `Local\MediaViewer.AddonHost` mutex (Windows). Two indexers writing one index
-would fight over it. The lock is the process's until it exits, crash or not. Closing the first
-window does not hand the add-ons to a window that is already open; the next window to start
-takes them.
-
-MediaViewer's own add-ons that only fill screens and slots (Places) are the exception: they
-write nothing, so every window loads them (issue #402, [25](25-open-addons.md) "Every window");
-installing and removing them stays with the first window.
-
-Later windows search too (2026-10-07). At their first search (Ctrl+F / ⌘F, the search icon)
-or when Settings opens, not at launch, they load the AI pack through its reader
-(`MV_AI_READER_ENTRY_SYMBOL`; `mv_addon_load_reader` on Windows). Reading what is installed
-hashes every file once per process (~1.2 GB with the AI pack), which must not compete with
-the window's first pixel or cost a window that never searches. The reader opens the index
-read-only, loads only the text towers on CPU, and catches up with the first window's commits
-every 5 s ([23](23-nle-search.md) "The reader"). Search, Find similar and People's photos work
-there. Indexing, Local search settings, People edits, Import, and installing, updating or
-removing an add-on stay in the first window, and Settings says so. A reader never sweeps the
-store. With nothing indexed yet the reader reports `not_found`: Ctrl+F searches by name, says
-why, and tries the reader again at most every 10 s. The first window treats the full pack the
-same way (2026-10-11, issue #292): it verifies it at launch but loads it only at the first search
-or Settings → Local search → Start now ([17](17-local-ai-search.md) "Starting on demand"); Import
-still loads at launch.
+Each window is its own process. Add-ons (Import's volume watch, the AI pack and indexer, Final
+Cut search) load only in the process owning `Add-ons/.host.lock` (`flock`, Mac) or the
+`Local\MediaViewer.AddonHost` mutex (Windows), held until exit; the next window to start takes it
+over, not one already open. Slot-only add-ons (Places) write nothing, so every window loads them;
+install and removal stay with the first window. Later windows load the AI pack's read-only
+**reader** (`MV_AI_READER_ENTRY_SYMBOL`; `mv_addon_load_reader`) at first search or Settings
+([23](23-nle-search.md) "The reader"); indexing, People edits, Import and add-on management stay
+in the first window. The first window loads the full pack on demand
+([17](17-local-ai-search.md) "Starting on demand"); Import loads at launch.
 
 ## Add-ons calling add-ons
 
-Add-ons link nothing of each other. One asks another through the host table: `addon_request(id, method,
-json, reply)` lands on the other's slot worker through its `mv.request.1` interface, with the caller's id
-filled in by the host so the answering add-on can decide who it serves. The answer's JSON comes back on the
-caller's thread. `MV_ERR_NOT_FOUND` means that add-on is not there, and the caller offers to install it.
-Phone access was the first user (Local search asking Driftwire); since 2026-11-12 it is part of the app
-([plan](../plans/phone-in-the-app.md)), so no add-on serves `mv.request.1` today.
+Add-ons link nothing of each other. `addon_request(id, method, json, reply)` (host table) lands on
+the other add-on's slot worker through `mv.request.1`, with the caller's id filled in by the host;
+the reply comes back on the caller's thread. `MV_ERR_NOT_FOUND` means not installed (offer to
+install). No add-on serves `mv.request.1` today.
 
 ## Commands
 
-Rows in the shared command table (`src/shell/command_table.cpp`), present only while Import is
-installed:
+Rows in `src/shell/command_table.cpp`. They exist only while Import is installed.
 
 | Command | Windows | Mac |
 |---|---|---|
 | Open Import | `Ctrl+Shift+I` | `⌘⇧I` |
 | Import marked now (last preset) | `Ctrl+Shift+F7` | `⌘⇧F7` |
-| Start (Import window) | `Enter` (when no tile has focus) · `Ctrl+Enter` always | `Return` · `⌘Return` always |
+| Start (Import window) | `Enter` (no tile focused) · `Ctrl+Enter` | `Return` · `⌘Return` |
 | Pause / resume while copying | `Space` | `Space` |
-| Open the focused tile in the viewer | `Enter` | `Return` |
-| Toggle file or day | `Space` / `Shift+Space` | same |
-| Next / previous source (inside the Import window only) | `Ctrl+Tab` / `Ctrl+Shift+Tab` | `⌃Tab` / `⌃⇧Tab` |
+| Open focused tile in viewer | `Enter` | `Return` |
+| Toggle file / day | `Space` / `Shift+Space` | same |
+| Next / previous source | `Ctrl+Tab` / `Ctrl+Shift+Tab` | `⌃Tab` / `⌃⇧Tab` |
 | Eject after summary | `Ctrl+J` | `⌘J` |
 
 ## Where it lives
 
 | Piece | Code |
 |---|---|
-| Verified copy, BLAKE3, file / volume ports (both OSes) | `src/io/verified_copy.*`, `content_hash.*`, `file_port*.cpp`, `volume_{win,mac}.cpp` |
-| F8 across volumes, verify-before-delete | `src/io/file_ops_win.cpp`, `src/shell/file_jobs.cpp`, `src/shell/main_mac.mm` |
-| Add-on host: manifest check, store, loader, host table | `src/addon/`, C header `mediaviewer_addon.h` |
-| The Import add-on (`mv_import`) | `src/addons/import/` (scanner, planner, naming, library index, engine), C header `mediaviewer_import.h` (`mv.import.1`) |
-| Windows chrome | `IslandHost.Addons.cs` (Settings, download, hint, loading), `src.managed/MediaViewer.Import.Chrome`, `src/abi/addon_abi.cpp` |
-| Mac chrome | `AddonsView.swift` (Settings, download, hint), `src.swift/ImportChrome` → `Import.bundle`, `src/shell/addons_mac.mm` |
-| Packing and signing | `tools/package/addon-pack.py`, `tools/addon-verify` |
-| Tests | `tests/test_import_engine.cpp`, `test_verified_copy.cpp`, `test_addon_manifest.cpp`, `test_import_naming.cpp`, `test_json.cpp`, `test_content_hash.cpp`, `tools/package/test_addon_pack.py`; the headless build is `cmake/portable` |
+| Verified copy, BLAKE3, file / volume ports | `src/io/verified_copy.*`, `content_hash.*`, `file_port*.cpp`, `volume_{win,mac}.cpp` |
+| Add-on host: manifest, store, loader, host table | `src/addon/`, `mediaviewer_addon.h` |
+| Import add-on (`mv_import`) | `src/addons/import/` (scanner, planner, naming, library index, engine), `mediaviewer_import.h` |
+| Windows chrome | `IslandHost.Addons.cs`, `src.managed/MediaViewer.Import.Chrome`, `src/abi/addon_abi.cpp` |
+| Mac chrome | `AddonsView.swift`, `src.swift/ImportChrome` → `Import.bundle`, `src/shell/addons_mac.mm` |
+| Packing | `tools/package/addon-pack.py`, `tools/addon-verify` |
+| Tests | `tests/test_import_engine.cpp`, `test_verified_copy.cpp`, `test_addon_manifest.cpp`, `test_import_naming.cpp`, `test_json.cpp`, `test_content_hash.cpp`, `tools/package/test_addon_pack.py`; headless build `cmake/portable` |
 
 ## Check library (2026-11-14)
 
-A tool in the Import window on both platforms (`CheckLibraryWindow.cs`, `CheckLibraryView.swift`;
-engine `library_check.{h,cpp}`, job kind 3), and the index behind the Mac's Photos backup
-([26](26-photos-library.md) "Backup"; plan: [check-library](../plans/check-library.md)). Pick a folder
-to check and a library folder: Import says which of the folder's files are already in the library,
-wherever they are and whatever they are called, which are not, and which duplicates the library
-already holds. Report only: nothing is copied, moved or deleted.
+A Tools entry (`CheckLibraryWindow.cs`, `CheckLibraryView.swift`; engine `library_check.{h,cpp}`,
+job kind 3), also the index behind the Mac's Photos backup ([26](26-photos-library.md) "Backup").
+Given a folder and a library folder it reports which files are already in the library (any path,
+any name), which are not, and the library's own duplicates. Report only.
 
-- **The same test as an import:** size first, BLAKE3-256 only where a size matches, never the name.
-  The library is walked for sizes and mtimes; a library file is read only when its size is one the
-  source has (or another library file has, for the duplicates list).
-- **The library index learns the folder.** Every hash goes into `library` under the destination's
-  volume key, so a second check of an unchanged library reads no file (measured: 20,000 files,
-  2.56 GB, 2.2–3.7 s the first time with every file hashed, 63–91 ms the second, three runs; Mac,
-  local SSD, warm cache), Import's own duplicate skip now knows files that someone else put there, and a remount is
-  the same library. The source folder's hashes are remembered by path (`seen_hashes`, as Find
-  duplicates).
-- **Scope:** this library folder and its subfolders, or every library Import knows (each where it
-  is mounted now; an offline one confirms nothing).
-- **Offline:** a library folder that does not answer is reported unreachable and nothing is
-  dropped from the index. After a complete walk, a row is dropped only when its folder answers and
-  the file is not in it.
-- **For a host source** (the Photos library, which only the Mac host can read) the request carries
-  the source's sizes instead of a folder and the host's record of what it put there (`expected`),
-  and the host asks `library_find` per file with the hash of the bytes it has. `library_record`
-  adds a file the host just wrote and verified. These calls are `mv.import.1`'s, after PR 54's.
-- **Where it runs:** the add-on's own I/O thread behind the destination's device lock, always at
-  background priority (waits while the present loop is busy).
+- Same test as an import (size, then BLAKE3). Library files are read only when their size matches.
+- Every hash goes into `library` under the destination's volume key, so a re-check of an unchanged
+  library reads nothing and Import's duplicate skip learns those files. Source hashes go into
+  `seen_hashes`.
+- **Scope:** this library folder, or every library Import knows (offline ones confirm nothing).
+- **Offline:** an unreachable library is reported; nothing is dropped from the index.
+- **Host source** (Photos library, Mac): the host calls `library_find` per file and
+  `library_record` after writing and verifying (`mv.import.1`). Background priority.
 
 ## Find duplicates (PR 54)
 
-A tool in the Import window on both platforms (`DuplicatesWindow.cs`, `DuplicatesView.swift`;
-engine `find_duplicates` / `trash_duplicate`, job kind 2): pick a folder, and Import finds every
-set of files with identical bytes in it and every folder under it, wherever they sit and
-whatever they are called.
+A Tools entry (`DuplicatesWindow.cs`, `DuplicatesView.swift`; engine `find_duplicates` /
+`trash_duplicate`, job kind 2): every set of byte-identical files under a folder.
 
-- **What counts as a duplicate:** the same bytes. Size first; BLAKE3-256 only where two files
-  share a size, the same test an import uses. Never the name, never a near-duplicate picture.
-- **Every file, not only media.** Hidden and system entries and macOS packages are not walked (a
-  Photos library is never opened up), links are not followed, and empty files are not compared.
-- **Fast the second time.** Each hash is remembered in `import.db` (`seen_hashes`: path, size,
-  mtime) and trusted while size and mtime match. A second scan of an unchanged folder reads no
-  file contents; a finished scan forgets files that have gone.
-- **Where it runs:** the add-on's own I/O thread, one reader per physical device (it waits
-  behind an import from the same disk), yielding to the viewer like a background import. Cached
-  reads: this is a comparison, not verify-a-folder's check for rot.
-- **What you see:** groups, largest waste first, with the space that could be freed. Each file
-  can be **opened in the viewer**, **shown in Explorer / the Finder**, or **moved to the Recycle
-  Bin / Trash**. Several copies can be picked (Ctrl / Shift or ⌘ / ⇧ click) and moved in one go,
-  with the count and space freed shown beside the button. A local report lists every group.
-- **Deleting is safe by construction:**
-  - only ever to the Recycle Bin / Trash; where a location has none (a network share, some
-    removable drives), nothing is removed and the file says so. There is no permanent delete;
-  - **a group is never emptied:** before the move, the engine checks the file is unchanged since
-    it was hashed and re-reads another copy in the group to confirm the same bytes are still
-    there. If none is, the request is refused ("the last copy is always kept");
-  - only the files the person picked. A pick that takes **every** copy of some file is not sent
-    at all, and says so. There is no "delete all duplicates" and no keep rule.
-- **Keys:** arrows move through files (`Shift`+arrows / `Ctrl+Space`, `⇧`-arrows on the Mac,
-  pick several), `Enter` opens one in the viewer, `Delete` / `⌘⌫` moves the picked copies to the
-  bin, `Ctrl+E` / `⌘R` shows it in Explorer / the Finder, `Esc` closes (a running scan carries
-  on, with a line in the command bar).
-- **Privacy:** paths and hashes stay in `import.db` and the local report.
+- Size first, BLAKE3-256 where sizes match; never names or look-alikes. Every file type; hidden,
+  system and package entries are not walked, links not followed, empty files skipped.
+- Hashes cached in `seen_hashes` (path, size, mtime); an unchanged rescan reads no contents.
+- Runs on the add-on's I/O thread, one reader per device, yielding like a background import;
+  cached reads.
+- Groups by largest waste; files can be opened, revealed, or moved to the Recycle Bin / Trash.
+  **Deleting is safe by construction:** Trash only; the file must be unchanged and another copy
+  re-read to confirm ("the last copy is always kept"); a pick of every copy is not sent.
+- **Keys:** `Enter` opens; `Delete` / `⌘⌫` trashes; `Ctrl+E` / `⌘R` reveals; `Esc` closes.
 
 ## Known gaps
 
-- **Clip tiles show ▶ without a poster** in the Import grid unless the viewer's thumbnail cache
-  already holds one: the host's thumbnail service makes stills only (a poster needs the player).
-- **The Mac finish notification is a beep** (`NSBeep` in `addons_mac.mm`); the window's
-  summary is the notification. Windows uses an app notification where the unpackaged app has an
-  AUMID, else the window's summary.
+- Clip tiles show ▶ without a poster unless the viewer's thumbnail cache has one.
+- The Mac finish notification is a beep (`NSBeep`); Windows uses an app notification where the
+  app has an AUMID.
 
 ## Not in Import
 
-Any cloud or upload; a catalogue, albums or keywords database; near-duplicate or burst
-detection; writing copyright or other metadata on import; deleting from or formatting cards;
-tethered capture; video transcoding on import.
+Cloud or upload; a catalogue/albums/keywords database; near-duplicate or burst detection; writing
+metadata on import; deleting from or formatting cards; tethered capture; transcoding.
