@@ -480,11 +480,6 @@ MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
  * nearby copy). A later window's process passes MV_PHONE_SECONDARY: it runs
  * none of it (two would race on the NAS), mv_phone_request answers
  * MV_ERR_UNSUPPORTED_FORMAT and the state is {"secondary":true}.
- * The first window's process also watches `driftwire host` on this computer
- * (docs/plans/self-hosted.md "Tray"): while it runs, its rows are a kept
- * entry of mv_slots_notices_json ("shell": true; its Open row opens Settings
- * → Phone access) and the process is kept in the background as an add-on's
- * keep would; "login" says whether the app's login item is wanted.
  * mv_phone_stop: at quit, before the add-ons unload; never waits on the NAS.
  * Process-wide. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_phone_request(const char* request_json);
@@ -492,6 +487,16 @@ MV_API mv_status MV_CALL mv_phone_state_json(char* utf8, uint32_t cap, uint32_t*
 #define MV_PHONE_SECONDARY 1u
 MV_API mv_status MV_CALL mv_phone_resume(uint32_t flags);
 MV_API mv_status MV_CALL mv_phone_stop(void);
+
+/* docs/plans/self-hosted.md "Tray": mv_host_tray_start, in the first window's
+ * process at launch, watches `driftwire host` on this computer: while it runs
+ * its server menu is a kept entry of mv_slots_notices_json ("shell": true; its
+ * Open row opens Settings → Phone access; its own icon) and the process is kept
+ * in the background as an add-on's keep would; "login" says whether the app's
+ * login item is wanted. mv_host_tray_stop at quit, before the add-ons unload;
+ * it never waits on a `host` verb in flight. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_host_tray_start(void);
+MV_API mv_status MV_CALL mv_host_tray_stop(void);
 
 /* 0.19. Kinds the folder listing leaves out (Settings, "Show audio files" /
  * "Show documents"): MV_FOLDER_HIDE_AUDIO (MP3, M4A, M4P) and

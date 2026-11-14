@@ -523,83 +523,140 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   if DHCP moves it (the card's address field still changes it); a host set up from the terminal shows its
   status row but the card offers no unshare or rename (the terminal does).
 
-## Tray: the icon while hosting (issue #686 §4, owner 2026-11-14)
+## Tray: the server menu while hosting (issue #686 §4, owner 2026-11-14)
 
-Owner's call: **yes, a tray / menu-bar icon while the computer hosts, through the app's existing
-background icon code**. Not a second app or a second tray process (decision 2026-10-11: add-ons
-carry their own code; never a helper app): the icon is MediaViewer's own background presence (#452,
+Owner's calls: **yes, a tray / menu-bar icon while the computer hosts, through the app's existing
+background icon code**; then (same day) **its own item, as Driftwire's is, with Hosting on/off,
+read/write usage and the clients connected, and the same numbers in the desktop app and the
+command line**. Not a second app or a tray process (decision 2026-10-11: add-ons carry their own
+code; never a helper app): it is MediaViewer's own background presence (#452,
 [28 "In the background"](../design/28-driftwire.md)), the one Driftwire's "Receive when MediaViewer
-is closed" already uses.
+is closed" uses.
 
-**How it appears when `driftwire host` starts at login with the viewer not open.** Decided:
+### Its own item
 
-- The host does not draw anything (it is a terminal program with no UI, and a tray in it would be a
-  second app). The app reads the host's files as the This computer card's status row does:
-  `host.lock` held means it runs, `state.json` says what it has, `host.json` its DuckDNS name
-  (`phone/host_tray.h`). The icon shows **only while the host runs**.
-- The app is the one that must be running. The host's start at login (`host start-at-login on`,
-  the card's Start) is a reason for **the app's own login item** too (#452's: SMAppService on the
-  Mac, the Run entry on Windows, started `--background` with no window). So once hosting starts at
-  login, MediaViewer starts at login hidden, finds the host running within its 60 s grace, keeps
-  itself and shows the icon. Without this the icon would appear only once someone opened
-  MediaViewer and then closed its window. This is the smallest fix: the existing login item
-  follows one more reason (`slot_registry::wants_login_item`, notices_json's `"login"`); nothing
-  new is registered with the OS.
-- A login start that finds the host not running (it was quit, or uninstalled) quits after the
-  grace and keeps the login item while the host's entry is there; turning the host's start at
-  login off (and Driftwire's background off) removes it, as today.
-- With the app open, while the host runs, closing the window hides it to the icon (as a kept
-  add-on does), and Quit MediaViewer quits the app only: the host goes on. Quit hosting is the
-  host's quit.
+The #452 mechanism is a list of kept entries (host table `keep_alive` + `keep_menu`, rows `text`,
+`toggle`, `button`, `files`, [driftwire-menu-and-tunnel.md](driftwire-menu-and-tunnel.md) slice 1).
+Until now every kept entry shared one menu-bar item. Now **each kept entry has its own item** on the
+Mac (an `NSStatusItem` per entry, `AddonNotices.swift`) and **its own notification-area icon** on
+Windows (one `NOTIFYICONDATA` uID per entry, `main.cpp sync_tray`; the icon's uID picks its menu).
+Driftwire alone looks as before. The server menu is one more entry: until Phone access is its own
+add-on (#686 §1, PR #691) the base app holds it (`slot_registry::set_shell_keep("mediaviewer.host")`,
+`"shell": true` in notices_json, its Open row opening Settings → Phone access); then the add-on calls
+`keep_alive` / `keep_menu` with the same rows and gets the same item with no host change. The Mac's
+icon is `server.rack`, Driftwire's stays the waves; Windows uses the app's icon with the entry's
+tooltip ("Hosting as home.duckdns.org").
 
-**What it shows** (`host_tray::build`, sentence case, said once): the head says "Hosting as
-home.duckdns.org" (or "Hosting from this computer"); then one status line ("Serving phones",
-"Paused: phones can't reach this computer", "Not serving: its port is taken", "Nothing shared
-yet") and a line for each problem (the relay's port taken, the web-site look); drive health
-("All 3 folders online", "1 of 3 folders offline"; combined drives once §3 of #686 lands:
-`state.json`'s `"drives":[{"label","health"}]`, health `healthy`, `degraded`, `rebuilding` or
-`failed`, two lines at most, the hook already read); the phones connected ("No phones connected",
-"Ann's iPhone connected", "3 phones connected" with up to four names, then "and N more"); then
-**Pause hosting** / **Resume hosting**, **Quit hosting**, and the hosts' own **Open Phone access
-settings** (the viewer comes back with Settings at Phone access). Phones by the names they were
-paired under (`state.json`'s `"phones"`, from `serve::server::connected_devices()` and the
-paired list, re-read only when an unknown phone is connected); never a path, an address or a port
-(rule 6). With Driftwire's rows also there, its head comes first and the host's section starts
-with its own head line. The Mac's icon is `server.rack` when the host's entry is alone, Driftwire's
-otherwise; Windows uses the app's icon as before.
+### How it appears when the host starts at login with no window open
 
-**Pause and Quit go through the host's own control**: three owner-only verbs,
-`driftwire host pause | resume | quit` (`cli/host_control.*`, their own block in `cli/args.cpp`),
-written to `host.json` in the host's 0700 folder, which the running host already reads every 2 s.
-No socket listens for them.
+- The host draws nothing (a terminal program; a tray in it would be a second app). The app reads the
+  host's files as the This computer card does: `host.lock` held means it runs, `state.json` says what
+  it has, `host.json` its DuckDNS name (`phone/host_tray.h`). The item shows **only while the host
+  runs** (and for 90 s after it lets go of its lock, "Not running just now: starting again…", so an
+  update's restart or a crash the supervisor restarts neither ends the hidden app nor pops its
+  window; not after Quit hosting from the menu).
+- The app must be running, so the host's start at login (`host start-at-login on`, the card's Start)
+  is also a reason for **the app's own login item** (#452's: SMAppService on the Mac, the Run entry on
+  Windows, started `--background`, no window): `slot_registry::wants_login_item`, notices_json's
+  `"login"`. Nothing new is registered with the OS. A login start that finds the host not running
+  quits after its 60 s grace and keeps the login item while the host's entry is there.
+- With the app open, while the host runs, closing the window hides it to the item (as a kept add-on
+  does). When the host's entry was all that kept a hidden app and it goes (Quit hosting, past the
+  grace), the app quits on both hosts (Windows no longer shows the window for that case). Quit
+  MediaViewer quits the app only: the host goes on.
 
-- **Pause** (`"paused": true`): the service and the relay stop, the keepers hear the ports are gone
-  (the router's mapping goes), the stay-awake request is dropped; the host keeps running, so its
-  icon stays and says Paused. Kept until Resume, across restarts and logins; `state.json` says
-  `"paused": true`.
-- **Quit** (`"quit_stamp"`, unix ms): a child started before it ends with exit 4 (kHostChildQuit),
-  which the supervisor takes as a stop; a supervisor between restarts checks it before starting the
-  next child. The verb waits up to 10 s for `host.lock` to go, then clears the stamp. Start at login
-  stays as it was set: the next login hosts again.
+### What it shows (`host_tray::build`, sentence case, said once)
 
-**Cost** (CLAUDE.md "Performance is the product"). One thread in the app (the first window's
-process, not a soak or harness run): every 5 s a stat of `state.json` and, when it exists, a
-moment's try of `host.lock`; the files are read only when that changed (the host rewrites
-`state.json` only on a change, at most every 2 s); the start-at-login entry is looked at every
-minute. The registry, and so the hosts' menus, hear only a changed model. Nothing presents: the
-viewer is hidden as for any background (`window_visible` false / ordered out). The verbs run on
-that thread through `io::child_process` (rule 1), up to 30 s; the app's quit does not wait for one.
-In the host, `connected_devices()` walks at most eight sessions at each 2 s pass.
+1. The head: "Hosting as home.duckdns.org" (or "Hosting from this computer").
+2. **Hosting** (a checkmark toggle). On: serving. **Off = `host pause`**: the service and the relay
+   stop, the router keeper lets its mappings go, the stay-awake request is dropped; the host process
+   keeps running (so the item stays and says "Off: phones can't reach this computer"), and start at
+   login stays as set. Kept across restarts and logins until turned on again (`host resume`).
+3. One status line ("Serving phones", "Not serving: its port is taken", "Nothing shared yet") and a
+   line per problem (the relay's port taken, the web-site look).
+4. Drive health: "All 3 folders online" / "1 of 3 folders offline", then combined drives from PR
+   #692's keeper (its `state.json` keeper line, a set per line, the advice after ";" left to the card;
+   `drives_health` degraded, offline or failing marks the item's status as a problem), two lines at
+   most.
+5. Usage: "Today: 3.4 GB read, 120 MB written · reading 12 MB/s" (both rates: "now 12 MB/s and
+   2.0 MB/s"). Today is the computer's local date.
+6. The phones connected, four at most then "and 2 more phones": "Ann's iPhone · home network since
+   14:02 · 1.2 GB read, 3.0 MB written · reading". How: **home network** (a direct session from this
+   computer's own network), **over the internet** (direct from away, a punched path included),
+   **through your relay**. Since: the earliest session up now, local time. Reading / writing: bytes
+   moved in the last 2 s. By the name the phone was paired under ("A phone" for one not on the list);
+   never an address, a key or a path (rule 6). The owner's own sessions (the desktop that claimed the
+   service) are not a phone and not counted.
+7. **Quit hosting** (`host quit`), then the hosts' **Open Phone access settings**, Open MediaViewer,
+   Quit MediaViewer.
 
-**Later.** When Phone access becomes its own add-on (#686 §1, session `phone-addon`), the watcher
-moves into it and it calls `keep_alive` and `keep_menu` itself (its Open row is then an add-on
-screen); the registry's shell keep (`set_shell_keep`, `"shell": true`) and `abi/host_tray_glue.*`
-go. Linux draws it once its host has a tray (the third host's background is not built). A host
-running before anyone logs in stays out (owner call 6).
+### One source for the numbers: the host's `state.json`
 
-**Tests:** `"[host-tray]"` in `mv_import_tests`: the model (not running, start at login, serving
-with the DuckDNS name, phones and the cut, paused, each problem, nothing shared, the drives hook,
-the 16-row limit and no path or port in a label), the registry's shell keep (drawn, kept, the
-login flag, picks routed, refused rows), the watcher over a folder of the test's own (a held
-`host.lock`, `state.json` written, a pick run, the login entry, the lock released), and
-`host pause` / `resume` taken by the service in-process on loopback with the quit stamp asked.
+- **The service counts** (`serve::server::usage()`): per session, file bytes sent (`read_range`) and
+  written (backup uploads), one relaxed atomic add per chunk on the conn, no lock and no syscall;
+  how and since when are set once at admission. A finished session's bytes are folded per device
+  when it is reaped. `usage()` sums ended and live sessions per paired device.
+- **The host folds** at its existing 2 s pass (`cli/host_usage.h` `usage_book`): what is new since
+  the last pass is added to today's totals, per device and in all, and divided by the time for the
+  rate; a service started again (a new port, Hosting turned on) counts from 0 and nothing is lost.
+  Today's totals are kept in `<host>/usage.json` (device keys in hex, never a name), written only when
+  they moved, so a restart or an update keeps them; a new local day starts from 0.
+- `state.json` gains `"paused"`, `"clients": [{"name","via","since","read","written","read_rate",
+  "write_rate"}]` (connected now) and `"usage": {"day","read","written","read_rate","write_rate",
+  "devices": [{"name","read","written"}]}` (today, every device that moved bytes). It is rewritten only
+  when it changed, as before: idle, nothing is written.
+- **Read by three:** the menu (above); the This computer card's status row in Settings → Phone access
+  (Mac and Windows: "Running, hosting off" when off, then the same usage and phone lines from the
+  core, `host_tray::usage_lines` through `self_host::host_status::stats`); and the command line:
+  `driftwire host status` (`hosting on|off`, `today`, a line per device today, `connected` and a line
+  per phone) and **`driftwire host status --watch`**, which prints it again whenever it changed,
+  looked at every 2 s (the host's own cadence), redrawn in place in a terminal, until Ctrl-C.
+
+### Control through the host's own verbs
+
+`driftwire host pause | resume | quit` (`cli/host_control.*`; one `else if` in `cli/args.cpp`'s host
+chain, `--watch` one flag), owner-only: each writes `host.json` in the host's 0700 folder, which the
+running host already reads every 2 s. No socket listens for them.
+- **Pause / resume**: `"paused"`, as Hosting off / on above.
+- **Quit**: `"quit_stamp"` (unix ms). The supervisor gives its own start to its child
+  (`DRIFTWIRE_HOST_SINCE_MS`); a child whose supervisor started before the stamp ends with exit 4
+  (kHostChildQuit), which the supervisor takes as a stop and then clears the stamp (so a clock set
+  back at the next boot stops nothing); a supervisor between restarts checks it before the next
+  child. The verb waits up to 10 s for `host.lock` to go. Start at login stays as set.
+
+### Cost (CLAUDE.md "Performance is the product")
+
+One thread in the app (the first window's process; the Mac skips it in a soak or harness run):
+every 5 s a stat of `state.json` and, when it exists, a moment's try of `host.lock` (30 s when there is
+no host folder at all; 1 s for three looks after a verb, as the host takes it within 2 s); the files
+are read only when the stat changed; the start-at-login entry every minute. The registry, and so the
+hosts' items, hear only a changed model. Nothing presents: the viewer is hidden as for any
+background. The verbs run on that thread through `io::child_process` (rule 1), up to 30 s; the app's
+quit does not wait for one. In the service, one relaxed atomic add per chunk sent or written; in the
+host, `usage()` walks at most eight sessions at each 2 s pass. Not measured against the PR 1 gates on
+this branch (nothing on the render path changed).
+
+### Later, and not done
+
+- Started on its own (Windows `mv_host_tray_start` / `mv_host_tray_stop` from the chrome's first-window
+  branch and the shell's quit; the Mac beside its add-on host claim), not by Phone access's resume,
+  which PR #691 removes. The verbs run whichever driftwire `self_host::find()` returns first (PR
+  #691's own copy in the add-on's folder once it lands).
+- When Phone access is its own add-on (PR #691), the watcher moves into it and it calls `keep_alive`
+  and `keep_menu`; `set_shell_keep`, `abi/host_tray_glue.*` and the hosts' `"shell"` cases go. An
+  add-on keep has no "login" reason yet: carry `wants_login_item`'s over (a flag on `keep_alive`).
+- "Later desktop": a laptop connected as a client of the service (slice 8) shows as a phone does.
+- Linux draws it once its host has a tray. A host before anyone logs in stays out (owner call 6).
+- Windows: the watcher is not skipped in a soak run (the Mac's is); only matters on a soak machine
+  that hosts.
+
+**Tests:** `"[host-tray]"` in `mv_import_tests`: the model (not running, start at login, the head,
+the toggle on and off, each problem, nothing shared, usage and its rates, each way a phone is
+connected, the cut after four, a long name cut, the drives keeper's lines, the 16-row limit, no path
+or port in a label), the bytes words, `state.json`'s clients / usage / drives read, the usage book
+(rates, a service started again, kept and read back, a new day), the registry's shell keep (drawn,
+kept, the login flag, picks routed, refused rows), the watcher over a folder of the test's own (a held
+`host.lock`, `state.json` written, the toggle's pick run as `resume`, a made-up one refused, the login
+entry, the grace then gone), `host pause` / `resume` taken by the service in-process on loopback with
+the quit stamp asked, and the service's `usage()` with a paired session reading a file (counted,
+connected, then kept once it ended). C#: `PhoneWordsTests` (the card's line with the stats, off).

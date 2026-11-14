@@ -869,6 +869,7 @@ add_library(mediaviewer_core SHARED
   src/abi/meta_abi.cpp
   src/abi/phone_abi.cpp
   src/abi/host_tray_glue.cpp
+  src/abi/host_tray_abi.cpp
   src/abi/host_tray_glue.h
   src/abi/phone_source.h
   src/abi/include/mediaviewer/mediaviewer_crash.h

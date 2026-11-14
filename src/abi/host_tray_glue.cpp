@@ -7,6 +7,7 @@
 #include <string>
 
 #include "addon/slots.h"
+#include "core/trace.h"
 #include "phone/host_tray.h"
 
 namespace mv::abi {
@@ -45,7 +46,9 @@ void start_host_tray() {
       std::lock_guard g(tray().m);
       if (tray().w) tray().w->pick(id, value);
     };
-    (void)mv::addon::default_slots().set_shell_keep(ht::kKeepId, std::move(k));
+    if (mv::addon::default_slots().set_shell_keep(ht::kKeepId, std::move(k)) != mv::status::ok) {
+      MV_LOG_WARN("tray: the server menu was refused by the registry");
+    }
   };
   tray().w = ht::watcher::start(std::move(o));
 }

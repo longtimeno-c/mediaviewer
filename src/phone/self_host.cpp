@@ -4,6 +4,8 @@
 // driftwire program.
 #include "phone/self_host.h"
 
+#include "phone/host_tray.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -253,12 +255,22 @@ std::optional<running_state> parse_state(std::string_view text) {
       }
     }
   }
-  if (const json::value* d = doc->find("drives"); d && d->k == json::kind::array) {
-    for (const auto& v : d->a) {
-      if (v.k != json::kind::object || s.drives.size() >= 8) continue;
-      const std::string* label = v.str("label");
-      const std::string* health = v.str("health");
-      if (label && health && !label->empty()) s.drives.push_back({*label, *health});
+  if (doc->find("drives_sets")) s.drives_health = static_cast<int>(doc->integer("drives_health").value_or(-1));
+  if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
+    for (const auto& line : k->a) {
+      if (line.k != json::kind::string || !line.s.starts_with("drives ")) continue;
+      // The keeper's column, then a set per line.
+      std::string_view rest(line.s);
+      std::size_t at = 0;
+      while (at < rest.size() && s.drive_lines.size() < 8) {
+        const auto end = rest.find('\n', at);
+        std::string part = trim(rest.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at));
+        if (at == 0) part = trim(part.substr(std::string_view("drives").size()));
+        if (const auto semi = part.find(';'); semi != std::string::npos) part.resize(semi);
+        if (!part.empty()) s.drive_lines.push_back(part);
+        if (end == std::string_view::npos) break;
+        at = end + 1;
+      }
     }
   }
   return s;
@@ -327,6 +339,8 @@ host_status read_status(const where& w) {
       if (st->folders) s.folders = st->folders;
       s.offline = st->offline;
       s.keepers = st->keepers;
+      s.paused = st->paused;
+      s.stats = host_tray::usage_lines(*st);
     }
   }
   return s;

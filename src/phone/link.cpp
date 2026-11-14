@@ -1589,6 +1589,9 @@ std::string link::state_json() const {
     w.key("configured_port").integer(h.configured_port).key("outside_port").integer(h.outside_port);
     w.key("folders").integer(static_cast<std::int64_t>(h.folders)).key("offline").integer(static_cast<std::int64_t>(h.offline));
     w.key("name").string(h.name).key("duckdns").string(h.duckdns);
+    w.key("paused").boolean(h.paused).key("stats").begin_array();
+    for (const auto& k : h.stats) w.string(k);
+    w.end_array();
     w.key("keepers").begin_array();
     for (const auto& k : h.keepers) w.string(k);
     w.end_array();

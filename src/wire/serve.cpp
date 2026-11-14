@@ -1503,6 +1503,16 @@ void server::state::reap() {
     std::lock_guard lock(conns_m);
     for (auto it = conns.begin(); it != conns.end();) {
       if ((*it)->done.load()) {
+        // "Tray": its bytes are final (its session ended); kept per device in the
+        // same step as it leaves the list, so usage() never sees it in neither.
+        const conn& c = **it;
+        const auto r = c.bytes_read.load(std::memory_order_relaxed);
+        const auto w = c.bytes_written.load(std::memory_order_relaxed);
+        if ((r != 0 || w != 0) && !c.is_owner) {
+          auto& t = ended_usage[c.device];
+          t.first += r;
+          t.second += w;
+        }
         gone.push_back(std::move(*it));
         it = conns.erase(it);
       } else {
@@ -1512,16 +1522,6 @@ void server::state::reap() {
   }
   for (auto& c : gone) {
     if (c->t.joinable()) c->t.join();
-  }
-  // "Tray": a finished session's bytes stay counted, per device.
-  std::lock_guard lock(conns_m);
-  for (auto& c : gone) {
-    const auto r = c->bytes_read.load(std::memory_order_relaxed);
-    const auto w = c->bytes_written.load(std::memory_order_relaxed);
-    if ((r == 0 && w == 0) || c->is_owner) continue;
-    auto& t = ended_usage[c->device];
-    t.first += r;
-    t.second += w;
   }
 }
 

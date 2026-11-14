@@ -42,6 +42,13 @@ struct usage_book {
   // paused host; the next service counts from 0).
   void take(const std::vector<serve::server::device_usage>& now, const std::string& day_now,
             std::chrono::steady_clock::time_point t);
+  // The service is about to stop (a pause, a new port): what it counted is
+  // taken first, and the next one is counted from 0.
+  void service_gone(const std::vector<serve::server::device_usage>& last, const std::string& day_now,
+                    std::chrono::steady_clock::time_point t) {
+    take(last, day_now, t);
+    last_.clear();
+  }
   // usage.json: the day and its totals (no rates).
   [[nodiscard]] std::string to_json() const;
   [[nodiscard]] static std::optional<usage_book> from_json(std::string_view text);

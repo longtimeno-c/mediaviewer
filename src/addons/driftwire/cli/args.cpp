@@ -160,6 +160,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--backup" && flag) {
         a.backup = true;
         want_backup = true;
+      } else if (t.name == "--watch" && flag) {
+        a.watch = true;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -339,7 +341,12 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         // pause, resume, quit: the tray's control (host_control.h)
       } else {
         out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
-                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off or stay-awake on|off";
+                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off, stay-awake on|off, "
+                    "pause, resume or quit";
+        return out;
+      }
+      if (a.watch && a.host != host_action::status) {
+        out.error = "--watch goes with host status";
         return out;
       }
       if (a.tls_port != 0 && !(a.host == host_action::vpn && a.on)) {

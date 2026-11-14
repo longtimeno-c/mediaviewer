@@ -74,6 +74,12 @@ struct model {
 
 // "1.2 GB", "340 MB", "12 KB", "0 B" (decimal, as the OS's file sizes).
 [[nodiscard]] std::string bytes_words(std::uint64_t n);
+// The usage line ("Today: 3.4 GB read, 120 MB written · reading 12 MB/s") and
+// a line per phone connected ("Ann's iPhone · home network since 14:02 ·
+// 1.2 GB read · reading"), as the menu, the This computer card and
+// `host status` say them. `clock` empty: the local "14:02".
+[[nodiscard]] std::vector<std::string> usage_lines(const self_host::running_state& s,
+                                                   const std::function<std::string(std::int64_t)>& clock = {});
 
 // Pure: the menu for what the files said.
 [[nodiscard]] model build(const input& in);

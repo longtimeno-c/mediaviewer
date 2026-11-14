@@ -50,8 +50,13 @@ internal sealed record PhoneHost
     public string Name { get; init; } = "";
     public string Duckdns { get; init; } = "";
     public IReadOnlyList<string> Keepers { get; init; } = Array.Empty<string>();  // the router's and DuckDNS's lines
+    // docs/plans/self-hosted.md "Tray": hosting turned off, and today's usage and the
+    // phones connected in the notification-area menu's words (the core's).
+    public bool Paused { get; init; }
+    public IReadOnlyList<string> Stats { get; init; } = Array.Empty<string>();
 
-    public bool SameAs(PhoneHost? o) => o is not null && this with { Keepers = o.Keepers } == o && Keepers.SequenceEqual(o.Keepers);
+    public bool SameAs(PhoneHost? o) => o is not null && this with { Keepers = o.Keepers, Stats = o.Stats } == o &&
+                                        Keepers.SequenceEqual(o.Keepers) && Stats.SequenceEqual(o.Stats);
 }
 
 /// <summary>A folder the person picked for this PC to share, before Set up.</summary>
@@ -235,6 +240,9 @@ internal static class PhoneWords
                         Duckdns = Str(h, "duckdns"),
                         Keepers = Items(h, "keepers").Where(k => k.ValueKind == JsonValueKind.String)
                                                      .Select(k => k.GetString() ?? "").ToList(),
+                        Paused = h.TryGetProperty("paused", out JsonElement paused) && paused.ValueKind == JsonValueKind.True,
+                        Stats = Items(h, "stats").Where(k => k.ValueKind == JsonValueKind.String)
+                                                 .Select(k => k.GetString() ?? "").ToList(),
                     }
                     : null,
                 HostStep = Str(o, "host_step"),
@@ -495,10 +503,12 @@ internal static class PhoneWords
         if (!h.Running)
             return h.AtLogin ? "Not running. It starts when you log in; Start runs it now."
                              : "Not running, and not set to start at login. Start runs it and keeps it starting at login.";
-        var parts = new List<string> { "Running", h.ServicePort > 0 ? $"port {h.ServicePort}" : "not listening yet" };
+        var parts = new List<string> { h.Paused ? "Running, hosting off" : "Running" };
+        if (!h.Paused) parts.Add(h.ServicePort > 0 ? $"port {h.ServicePort}" : "not listening yet");
         if (h.Duckdns.Length > 0) parts.Add($"{h.Duckdns}.duckdns.org");
         if (h.Offline > 0) parts.Add(h.Offline == 1 ? "1 drive not connected" : $"{h.Offline} drives not connected");
         string line = string.Join(" · ", parts);
+        if (h.Stats.Count > 0) line += "\n" + string.Join("\n", h.Stats);
         return h.Keepers.Count > 0 ? line + "\n" + string.Join("\n", h.Keepers) : line;
     }
 

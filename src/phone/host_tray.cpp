@@ -75,6 +75,41 @@ std::string via_words(const std::string& via) {
   return via == "home" ? "home network" : via == "relay" ? "through your relay" : "over the internet";
 }
 
+std::vector<std::string> usage_lines(const self_host::running_state& s,
+                                     const std::function<std::string(std::int64_t)>& clock_in) {
+  const auto clock = clock_in ? clock_in : local_clock;
+  std::vector<std::string> out;
+  if (!s.day.empty() && (s.read_today > 0 || s.written_today > 0)) {
+    std::string u = "Today: " + bytes_words(s.read_today) + " read, " + bytes_words(s.written_today) + " written";
+    if (s.read_rate > 0 && s.write_rate > 0) {
+      u += " \u00b7 now " + bytes_words(s.read_rate) + "/s and " + bytes_words(s.write_rate) + "/s";
+    } else if (s.read_rate > 0) {
+      u += " \u00b7 reading " + bytes_words(s.read_rate) + "/s";
+    } else if (s.write_rate > 0) {
+      u += " \u00b7 writing " + bytes_words(s.write_rate) + "/s";
+    }
+    out.push_back(std::move(u));
+  }
+  if (s.paused) return out;
+  const std::size_t n = s.clients.size();
+  if (n == 0) out.emplace_back("No phones connected");
+  for (std::size_t i = 0; i < n && i < kMaxNames; ++i) {
+    const auto& c = s.clients[i];
+    std::string l = clip(c.name, 40) + " \u00b7 " + via_words(c.via);
+    if (c.since > 0) l += " since " + clock(c.since);
+    if (c.read > 0 || c.written > 0) {
+      l += " \u00b7 " + bytes_words(c.read) + " read";
+      if (c.written > 0) l += ", " + bytes_words(c.written) + " written";
+    }
+    if (c.read_rate > 0 && c.write_rate > 0) l += " \u00b7 reading and writing";
+    else if (c.read_rate > 0) l += " \u00b7 reading";
+    else if (c.write_rate > 0) l += " \u00b7 writing";
+    out.push_back(std::move(l));
+  }
+  if (n > kMaxNames) out.push_back("and " + count_of(n - kMaxNames, "more phone", "more phones"));
+  return out;
+}
+
 model build(const input& in) {
   model m;
   m.login = in.at_login;
@@ -83,7 +118,6 @@ model build(const input& in) {
   m.shown = true;
   m.label = in.duckdns.empty() ? std::string("Hosting from this computer")
                                : "Hosting as " + in.duckdns + ".duckdns.org";
-  const auto clock = in.clock ? in.clock : local_clock;
 
   std::vector<row> info;
   const auto text = [&](std::string t) { info.push_back({"text", {}, std::move(t), false}); };
@@ -119,54 +153,20 @@ model build(const input& in) {
       text(s.folders == 1 ? std::string("Its folder is online") : "All " + std::to_string(s.folders) + " folders online");
     }
   }
-  std::size_t drives = 0;
-  for (const auto& d : s.drives) {
-    if (drives++ == 2) break;
-    std::string h = d.health == "healthy"      ? "healthy"
-                    : d.health == "degraded"   ? "lost a drive"
-                    : d.health == "rebuilding" ? "rebuilding"
-                    : d.health == "failed"     ? "failed"
-                                               : "unknown";
-    if (d.health == "degraded" || d.health == "failed") trouble = true;
-    text(clip(d.label, 40) + ": " + h);
-  }
-  // Usage today, and now.
-  if (!s.day.empty() && (s.read_today > 0 || s.written_today > 0)) {
-    std::string u = "Today: " + bytes_words(s.read_today) + " read, " + bytes_words(s.written_today) + " written";
-    if (s.read_rate > 0 && s.write_rate > 0) {
-      u += " \u00b7 now " + bytes_words(s.read_rate) + "/s and " + bytes_words(s.write_rate) + "/s";
-    } else if (s.read_rate > 0) {
-      u += " \u00b7 reading " + bytes_words(s.read_rate) + "/s";
-    } else if (s.write_rate > 0) {
-      u += " \u00b7 writing " + bytes_words(s.write_rate) + "/s";
-    }
-    text(std::move(u));
-  }
-  // The phones connected: each by its paired name, how, since when, its bytes today.
-  if (!s.paused) {
-    const std::size_t n = s.clients.size();
-    if (n == 0) text("No phones connected");
-    for (std::size_t i = 0; i < n && i < kMaxNames; ++i) {
-      const auto& c = s.clients[i];
-      std::string l = clip(c.name, 40) + " \u00b7 " + via_words(c.via);
-      if (c.since > 0) l += " since " + clock(c.since);
-      if (c.read > 0 || c.written > 0) {
-        l += " \u00b7 " + bytes_words(c.read) + " read";
-        if (c.written > 0) l += ", " + bytes_words(c.written) + " written";
-      }
-      if (c.read_rate > 0 && c.write_rate > 0) l += " \u00b7 reading and writing";
-      else if (c.read_rate > 0) l += " \u00b7 reading";
-      else if (c.write_rate > 0) l += " \u00b7 writing";
-      text(std::move(l));
-    }
-    if (n > kMaxNames) text("and " + count_of(n - kMaxNames, "more phone", "more phones"));
-  }
+  // Combined drives (PR #692's keeper): a line per set, two at most; degraded,
+  // offline or failing is a problem.
+  for (std::size_t i = 0; i < s.drive_lines.size() && i < 2; ++i) text(clip(s.drive_lines[i], 80));
+  if (s.drives_health >= 2) trouble = true;
+  // Usage today and now, then each phone connected (the card and `host status` say the same).
+  for (auto& l : usage_lines(s, in.clock)) text(std::move(l));
   if (!s.paused && s.folders > 0) m.what = trouble ? status::problem : status::serving;
 
   const std::vector<row> buttons{
       {"separator", {}, {}, false},
       {"button", "quit", "Quit hosting", false},
   };
+  // The registry takes a label of 120 bytes at most (keep_menu's rule).
+  for (auto& r : info) r.label = clip(r.label, 117);
   // The buttons always fit: what is said is cut first.
   if (info.size() + buttons.size() > kMaxRows) info.resize(kMaxRows - buttons.size());
   m.rows = std::move(info);
@@ -231,6 +231,7 @@ struct watcher::state {
     auto next_login = std::chrono::steady_clock::now();
     int quick = 0;              // looks left at 1 s after a verb (the host takes it within 2 s)
     bool quit_ran = false;      // Quit hosting from here: gone at once, no grace
+    std::chrono::steady_clock::time_point quit_at{};
     std::optional<std::chrono::steady_clock::time_point> gone_since;  // the host stopped holding its lock
     bool host_folder = true;
     for (;;) {
@@ -258,7 +259,10 @@ struct watcher::state {
         }
         force = true;
         quick = 3;
-        if (verb == "quit") quit_ran = true;
+        if (verb == "quit") {
+          quit_ran = true;
+          quit_at = std::chrono::steady_clock::now();
+        }
       }
       const auto now = std::chrono::steady_clock::now();
       if (now >= next_login) {
@@ -286,7 +290,9 @@ struct watcher::state {
       bool grace_over = false;
       if (l.running) {
         gone_since.reset();
-        quit_ran = false;
+        // A slow quit (the router's mapping let go first) still holds the lock: the
+        // quit stands until the lock goes, or a minute has passed and it runs on.
+        if (quit_ran && std::chrono::steady_clock::now() - quit_at > std::chrono::minutes(1)) quit_ran = false;
       } else if (cur.shown && !quit_ran) {
         const auto t = std::chrono::steady_clock::now();
         if (!gone_since) gone_since = t;

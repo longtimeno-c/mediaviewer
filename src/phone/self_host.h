@@ -80,6 +80,10 @@ struct host_status {
   std::string duckdns;  // the DuckDNS subdomain (host.json's "ddns"), "" for none
   // The keepers' lines (the router, DuckDNS), as the running host wrote them.
   std::vector<std::string> keepers;
+  // "Tray": hosting off (`host pause`), and today's usage and the phones
+  // connected, in the menu's words (host_tray::usage_lines).
+  bool paused = false;
+  std::vector<std::string> stats;
 };
 [[nodiscard]] host_status read_status(const where& w);
 
@@ -110,12 +114,12 @@ struct running_state {
   std::string day;
   std::uint64_t read_today = 0, written_today = 0, read_rate = 0, write_rate = 0;
   std::vector<day_device> devices_today;
-  // Combined drives (issue #686 §3, once it lands): {"label","health"} each,
-  // health "healthy", "degraded", "rebuilding" or "failed"; absent today.
-  struct drive {
-    std::string label, health;
-  };
-  std::vector<drive> drives;
+  // Combined drives (issue #686 §3, PR #692's drives keeper): its state.json
+  // keeper line ("drives      Photos (mirror): healthy", a line per set) and
+  // its "drives_health" number, the worst set (drives::health: 0 healthy,
+  // 1 rebuilding, 2 degraded, 3 offline, 4 failing; -1: no set).
+  std::vector<std::string> drive_lines;  // "Photos (mirror): healthy", the advice after ';' left out
+  int drives_health = -1;
 };
 // The keepers' lines are tidied for a card: "DuckDNS     home…" becomes
 // "DuckDNS: home…", each line of a line trimmed.
