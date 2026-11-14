@@ -71,6 +71,7 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | Crashpad (+ mini_chromium) | Apache-2.0 (BSD-3) | Client static; `crashpad_handler` a separate program |
 | BLAKE3 | CC0-1.0 (dual CC0 / Apache-2.0, taken under CC0) | DLL / static; static in the Linux `driftwire` |
 | libsodium | ISC | DLL / static; static in the Linux `driftwire` |
+| BoringSSL | Apache-2.0 | Static everywhere (the x64-windows overlay triplet makes this one port static); the Driftwire engine and `mv-driftwire-relay` only, never the app or the core: the Tunnel's TLS with a browser's ClientHello (2026-11-12, [spike](../plans/driftwire-tls-spike.md)). It cannot share an install with OpenSSL; nothing pulls OpenSSL. Built by vcpkg with Perl, NASM and Go as build tools; its `bssl` tool is not shipped |
 | FTXUI | MIT | Static (its vcpkg port is static only); the `driftwire` command line's look, its `dom` and `screen` parts. Never in the app or an add-on |
 | Lua 5.4.8 | MIT | **Static, vendored** in `third_party/lua` (both platforms): the add-on script runtime ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)). Interpreter only; no JIT exists in Lua, and `io` / `os` / `package` / `debug` are not compiled in. `tools/licence-check.ps1` fails if one of those files, or a `luajit` / `luasocket`-style port, appears |
 | Dear ImGui | MIT | Static; present lab and F3 overlay only |

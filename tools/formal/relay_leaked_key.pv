@@ -1,0 +1,78 @@
+(* Sanity for relay.pv: the same hop when the attacker holds the server key
+   (it leaked, or the server is not the person's). ProVerif must then find
+   the request read and a forward nobody asked for, or relay.pv's "true"
+   would mean nothing. Expected: false false. *)
+
+free key: bitstring.
+free host: bitstring [private].   (* the site a person asks for *)
+free dataC, dataS: bitstring [private].
+
+const NAME_NNPSK0: bitstring.      (* "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2b" *)
+const PROLOGUE_RELAY: bitstring.   (* "MediaViewer Driftwire relay 3", the head (kForwarder) *)
+const AD_RELAY: bitstring.
+const FORWARDING: bitstring.       (* kForwarding *)
+
+event ClientAsks(bitstring).        (* a key holder sent this request *)
+event ServerForwards(bitstring).    (* the server opened this request and connects onward *)
+event ClientForwarding(bitstring).  (* the client heard kForwarding for this request *)
+
+query attacker(host).
+query r: bitstring; event(ServerForwards(r)) ==> event(ClientAsks(r)).
+
+let Client(k: bitstring, req: bitstring, data: bitstring) =
+  new sid: bitstring; new ya: bitstring;
+  let bya = exp(gen(k, sid), ya) in
+  out(c, (sid, bya));
+  in(c, byb: bitstring);
+  let psk = isk(sid, exp(byb, ya), bya, byb) in
+  let h0 = NAME_NNPSK0 in
+  let ck0 = h0 in
+  let hp = hash(h0, (PROLOGUE_RELAY, sid, bya, byb)) in
+  let ck1 = hkdf1(ck0, psk) in
+  (* <- psk, e *)
+  in(c, (re: bitstring, p1_enc: bitstring));
+  let ck2 = hkdf1(ck1, re) in let k2 = hkdf2(ck1, re) in
+  if aead_open(k2, n0, AD_RELAY, p1_enc) = empty then
+  (* -> e, ee, the request *)
+  new e: bitstring;
+  let epub = exp(g, e) in
+  let ck3 = hkdf1(ck2, epub) in
+  let ck4 = hkdf1(ck3, exp(re, e)) in let k4 = hkdf2(ck3, exp(re, e)) in
+  event ClientAsks(req);
+  out(c, (epub, aead(k4, n0, AD_RELAY, req)));
+  let ki2r = hkdf1(ck4, empty) in let kr2i = hkdf2(ck4, empty) in
+  in(c, w: bitstring);
+  if aead_open(ki2r, n0, empty, w) = FORWARDING then
+  event ClientForwarding(req);
+  out(c, aead(kr2i, n0, empty, data));
+  in(c, back: bitstring);
+  let got = aead_open(ki2r, n1, empty, back) in 0.
+
+let Server(k: bitstring, data: bitstring) =
+  in(c, (sid: bitstring, bya: bitstring));
+  new yb: bitstring;
+  let byb = exp(gen(k, sid), yb) in
+  out(c, byb);
+  let psk = isk(sid, exp(bya, yb), bya, byb) in
+  let h0 = NAME_NNPSK0 in
+  let ck0 = h0 in
+  let hp = hash(h0, (PROLOGUE_RELAY, sid, bya, byb)) in
+  let ck1 = hkdf1(ck0, psk) in
+  new e: bitstring;
+  let epub = exp(g, e) in
+  let ck2 = hkdf1(ck1, epub) in let k2 = hkdf2(ck1, epub) in
+  out(c, (epub, aead(k2, n0, AD_RELAY, empty)));
+  in(c, (re: bitstring, req_enc: bitstring));
+  let ck3 = hkdf1(ck2, re) in
+  let ck4 = hkdf1(ck3, exp(re, e)) in let k4 = hkdf2(ck3, exp(re, e)) in
+  let req = aead_open(k4, n0, AD_RELAY, req_enc) in
+  let ki2r = hkdf1(ck4, empty) in let kr2i = hkdf2(ck4, empty) in
+  event ServerForwards(req);
+  out(c, aead(ki2r, n0, empty, FORWARDING));
+  in(c, sent: bitstring);
+  let got = aead_open(kr2i, n0, empty, sent) in
+  out(c, aead(ki2r, n1, empty, data)).
+
+process
+  ( !Client(key, host, dataC)
+  | !Server(key, dataS) )

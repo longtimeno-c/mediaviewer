@@ -14,8 +14,18 @@
 // holds a key of theirs and sees only ciphertext. It prints counts, never an
 // address or a token. No configuration file, no state on disk, no account.
 //
+// The Tunnel (2026-11-12): a key holder may also ask it to open a TCP
+// connection to a web site and copy bytes both ways (splice.h, forwarding),
+// so the person's own traffic leaves from here on a network that filters
+// sites. Only to ports 80 and 443 unless --forward-ports says others ("none"
+// turns it off), at most --max-forwards at once, public addresses only.
+//
 //   mv-driftwire-relay [--key-file PATH] [--port N] [--max-pairs N] [--wait-s N]
 //                       [--max-gb N] [--rate-mbs N] [--idle-s N] [--loopback]
+//                       [--forward-ports LIST|none] [--max-forwards N]
+//                       [--tls-port N [--tls-cert PEM --tls-key PEM | --tls-name NAME] [--decoy-dir DIR]]
+// Slice 4: --tls-port (443) also serves the hop inside TLS behind a knock
+// only a key holder can make; anything else gets a web site (tls.h).
 // The key: the first line of --key-file, else MV_RELAY_KEY, else --key
 // (which other users can see in the process list), else a new one, printed
 // once; a key given is never printed (#500: service logs keep what is).
@@ -28,6 +38,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "addons/driftwire/splice.h"
 
@@ -60,6 +71,22 @@ std::optional<std::string> first_line(const char* path) {
   return out;
 }
 
+// "80,443": ports, 1..65535, at most 32; "none": empty.
+bool port_list(const char* text, std::vector<std::uint16_t>& out) {
+  out.clear();
+  if (std::strcmp(text, "none") == 0) return true;
+  std::string s(text);
+  std::size_t at = 0;
+  while (at <= s.size()) {
+    const std::size_t comma = std::min(s.find(',', at), s.size());
+    unsigned long long v = 0;
+    if (!number(s.substr(at, comma - at).c_str(), v, 65535) || v == 0 || out.size() >= 32) return false;
+    out.push_back(static_cast<std::uint16_t>(v));
+    at = comma + 1;
+  }
+  return !out.empty();
+}
+
 // A key typed by a person, not made here: guesses at it can only be tried
 // live, one per connection, but a short one is still worth saying.
 constexpr std::size_t kWarnBelowChars = 20;
@@ -67,7 +94,8 @@ constexpr std::size_t kWarnBelowChars = 20;
 int usage() {
   std::fprintf(stderr,
                "usage: mv-driftwire-relay [--key-file PATH] [--port N] [--max-pairs N] [--wait-s N] [--max-gb N] "
-               "[--rate-mbs N] [--idle-s N] [--loopback]\n"
+               "[--rate-mbs N] [--idle-s N] [--loopback] [--forward-ports LIST|none] [--max-forwards N] "
+               "[--tls-port N] [--tls-cert PEM] [--tls-key PEM] [--tls-name NAME] [--decoy-dir DIR]\n"
                "  --key-file   a file whose first line is the key (16+ characters); else MV_RELAY_KEY; else a\n"
                "               new one, printed once (--key KEY also works, but shows in the process list)\n"
                "  --port       TCP port, IPv6 and IPv4 (default %u)\n"
@@ -76,7 +104,13 @@ int usage() {
                "  --max-gb     bytes each way per transfer, in GiB (default 64)\n"
                "  --rate-mbs   MB/s each way per transfer, 0 for no cap (default 0)\n"
                "  --idle-s     a transfer silent this long ends (default 120)\n"
-               "  --loopback   listen on 127.0.0.1 only, on a port the OS picks (tests)\n",
+               "  --loopback   listen on 127.0.0.1 only, on a port the OS picks (tests)\n"
+               "  --forward-ports  ports a key holder's Tunnel may reach, e.g. 80,443 (default), or none\n"
+               "  --max-forwards   Tunnel connections at once (default 64)\n"
+               "  --tls-port   also listen here (443) behind TLS, looking like a web site (Tunnel: Look like a web site)\n"
+               "  --tls-cert, --tls-key  its certificate chain and key (PEM; a real one passes a look best)\n"
+               "  --tls-name   else a self-signed certificate for this name\n"
+               "  --decoy-dir  the web site's pages (index.html ...); else a small built-in page\n",
                static_cast<unsigned>(relay::kDefaultPort));
   return 2;
 }
@@ -115,6 +149,20 @@ int main(int argc, char** argv) {
       o.lim.max_bytes = v << 30;
     } else if (std::strcmp(a, "--rate-mbs") == 0 && number(next, v, 1ull << 20)) {
       o.lim.rate = v * 1000 * 1000;
+    } else if (std::strcmp(a, "--forward-ports") == 0 && port_list(next, o.forward_ports)) {
+      // set
+    } else if (std::strcmp(a, "--max-forwards") == 0 && number(next, v, 4096) && v > 0) {
+      o.max_forwards = static_cast<int>(v);
+    } else if (std::strcmp(a, "--tls-port") == 0 && number(next, v, 65535) && v > 0) {
+      o.tls_port = static_cast<std::uint16_t>(v);
+    } else if (std::strcmp(a, "--tls-cert") == 0) {
+      o.tls_cert = next;
+    } else if (std::strcmp(a, "--tls-key") == 0) {
+      o.tls_key = next;
+    } else if (std::strcmp(a, "--tls-name") == 0) {
+      o.tls_name = next;
+    } else if (std::strcmp(a, "--decoy-dir") == 0) {
+      o.decoy.dir = next;
     } else if (std::strcmp(a, "--idle-s") == 0 && number(next, v, 24 * 3600) && v > 0) {
       o.lim.idle_ms = static_cast<int>(v * 1000);
     } else {
@@ -158,12 +206,24 @@ int main(int argc, char** argv) {
     std::printf("mv-driftwire-relay: in Driftwire type <this machine's address or name>:%u#<your key>\n",
                 static_cast<unsigned>((*s)->port()));
   }
+  if (o.tls_port != 0) {
+    std::printf("mv-driftwire-relay: also on port %u behind TLS (%s certificate), a web site to anyone without the key\n",
+                static_cast<unsigned>((*s)->tls_port()), o.tls_cert.empty() ? "a self-signed" : "your");
+  }
+  if (o.forward_ports.empty()) {
+    std::printf("mv-driftwire-relay: Tunnel forwarding off\n");
+  } else {
+    std::string ports;
+    for (const auto p : o.forward_ports) ports += (ports.empty() ? "" : ",") + std::to_string(p);
+    std::printf("mv-driftwire-relay: Tunnel forwarding for key holders to ports %s\n", ports.c_str());
+  }
   std::fflush(stdout);
   while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
   const auto c = (*s)->snapshot();
   s->reset();
-  std::printf("mv-driftwire-relay: stopped; %llu relayed, %llu refused, %llu bytes\n",
-              static_cast<unsigned long long>(c.paired), static_cast<unsigned long long>(c.refused),
-              static_cast<unsigned long long>(c.bytes));
+  std::printf("mv-driftwire-relay: stopped; %llu relayed, %llu forwarded, %llu web pages, %llu refused, %llu bytes\n",
+              static_cast<unsigned long long>(c.paired), static_cast<unsigned long long>(c.forwarded),
+              static_cast<unsigned long long>(c.website),
+              static_cast<unsigned long long>(c.refused + c.forward_refused), static_cast<unsigned long long>(c.bytes));
   return 0;
 }

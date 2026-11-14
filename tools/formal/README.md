@@ -14,6 +14,9 @@ resume secret, the tag, `resume_at`), and the internet handshake (CPace, then `N
 | `handshake_x25519_later.pv`, `handshake_mlkem_later.pv` | A recorded first link stays secret when X25519, or ML-KEM-768, is broken later |
 | `handshake_both_later.pv` | Sanity: with both broken later, ProVerif reads it |
 | `internet.pv` | Over the internet (#501): CPace on the password, then `XXhfs+psk0`. The password resists offline guessing, neither identity (the statics) reaches anyone without it, what follows stays secret, and each finished side met the identity it pinned (the sender one for one) |
+| `relay.pv` | The hop to the person's own relay server (protocol 3, #500) as the Tunnel's forward uses it: CPace on the server key, then `Noise_NNpsk0` with the host and port sealed. The key resists offline guessing, the host asked for and the bytes either way stay secret, the server forwards only what a key holder asked for (not an open proxy), and a client that hears "forwarding" heard it from the server about its own request |
+| (slice 4) | The relay's TLS port changes no model: TLS there is camouflage (no security claim), the hop inside is the same bytes as `relay.pv`'s, and the knock in front of it is a keyed hash of a per-session TLS exporter (an access gate, not a protocol of its own) |
+| `relay_leaked_key.pv` | Sanity: with the server key public, ProVerif reads the host and makes a forward nobody asked for |
 | `rejoin.pv` | Only a holder of the resume secret gets a rejoin adopted, a replay never is, link keys are fresh per rejoin, and a rejoined link stays secret when the resume secret and one of X25519 / ML-KEM-768 leak later |
 
 Run (ProVerif 2.05; build it from source with OCaml, see docs/DEVELOPMENT.md):

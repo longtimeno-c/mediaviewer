@@ -173,7 +173,7 @@ network at all it says so and waits, as the window does: a network can come up.
   shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
   empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
   `/code`, `/copy`, `/send-to`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
-  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/updates`, `/settings`,
+  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/tunnel [on|off|apps on|off]`, `/updates`, `/settings`,
   `/help`, `/quit` (`/updates` is the command line's own, [Updates](#updates-in-the-terminal)). An internet option says what it means the first time it is turned on in a session (the
   window's words).
 - **Its own identity and data folder.** Its settings (`driftwire.json`), what it keeps of a
@@ -1354,6 +1354,104 @@ link. The tests check that no 32-byte run of the file passes through either rela
 - **Tor** (option 11) was evaluated, not built, and dropped for now
   ([plan](../plans/driftwire-tor-spike.md), [12](12-decision-log.md#driftwire)).
 
+## The Tunnel (2026-11-12)
+
+The owner's ask: on a public network that filters sites (and blocks the common VPNs), reach the
+web through one's own relay server. Encryption alone does not pass a filter, which blocks by DNS
+name, TLS SNI or address; traffic has to *leave* through a machine the filter allows, and the
+person's relay server (`tools/driftwire-relay`, a NAS or a home computer) is that machine. With
+only the laptop there is no such machine. Plan and later slices:
+[driftwire-menu-and-tunnel](../plans/driftwire-menu-and-tunnel.md).
+
+- **Forwarding on the relay server** (`splice.*`, slice 2). A third role on the sealed hop,
+  `kForwarder` (2): `MVRL`, 3, the role, a session id and a CPace message on the server key (its
+  own channel name, `…forwarder-server`), the server's CPace answer, then Noise NNpsk0 with the
+  server first; the client's answer carries the port, the host's length and the host (a name or an
+  address, `forward_host_ok`), sealed against the server's fresh ephemeral, so a network on the
+  path sees neither, and a recorded forward said again opens nothing. The server says one sealed
+  word: `F` forwarding, else why not (`O` off, `X` not that port, `B` busy, `U` unreachable, `N` a
+  private address, `K` a kind it does not carry). The request starts with a kind byte (TCP, 0;
+  a datagram flow for the plan's slice 5 takes another value, and a server without it answers
+  `K`). Then the bytes go both ways as **sealed frames** (`sealed_link`: a 2-byte length
+  and the AEAD of at most 16 KiB under the split keys), never as they are: a plain `http://`
+  request would otherwise show its host to the filter. Never for anyone without the key, so it is
+  not an open proxy (a wrong key gets one live guess and hears nothing). Limits: ports 80 and 443
+  unless `--forward-ports` says others (`none` turns it off), `--max-forwards` at once (64), TCP
+  only, public addresses only (a name that resolves to loopback, a private or a link-local address
+  is refused: the server is not a way into its own network), 10 minutes idle. The server resolves
+  names, so the Wi-Fi's DNS sees none of them. It counts forwards, never names them.
+  `tools/formal/relay.pv` models the hop with the forward request (the key resists offline
+  guessing, the host and the bytes stay secret, the server forwards only what a key holder asked,
+  the client's "forwarding" came from the server about its own request), and
+  `relay_leaked_key.pv` checks the model can fail.
+- **The local proxy** (`tunnel.*`, slice 3). SOCKS5 (CONNECT, no authentication; a name is sent
+  as a name, so `socks5h` resolution happens at the relay) and HTTP (CONNECT; a plain `http://`
+  request in absolute form is sent on in origin form with `Connection: close` and without the
+  proxy's own headers) on **127.0.0.1**, on the port it had last time (kept in the prefs as
+  `tunnel_port`, so a browser set up once keeps working), else one the OS picks. Each connection
+  is one forward at the relay server in the Relay (your own server) field. At most 128 streams,
+  3 being opened at once (the server takes 4 handshakes at once from one source). Browsers, the
+  Claude app and command-line tools (`HTTPS_PROXY`, `ALL_PROXY`) use it; no VPN driver, no OS
+  entitlement, no system setting changed. Not carried: UDP (browsers fall back from QUIC to TCP),
+  and programs that ignore proxy settings. Any program of this machine's users may connect to the
+  loopback port while it runs, as with any local proxy; it reaches only what the relay forwards.
+  Nothing is logged with a host, an address or a port (rule 6).
+- **The system proxy** (owner, 2026-11-12; `sysproxy.*`). With **Use for all apps** on (by
+  default) while the Tunnel runs, the computer's automatic proxy setting points at a PAC script the
+  proxy serves on its own port (`http://127.0.0.1:<port>/driftwire-tunnel.pac`): local names and
+  literal private addresses go DIRECT, everything else `SOCKS5 127.0.0.1:<port>; DIRECT`, so an
+  app that follows the system setting goes through the relay with nothing to paste, and goes
+  direct if the proxy stops answering. The script never calls `dnsResolve` (it would ask the
+  network's DNS). The OS calls are behind a port, one file per OS as `power.h` (D9):
+  `sysproxy_mac.cpp`, every enabled network service's ProxyAutoConfigURLString through
+  SystemConfiguration, authorised by an administrator once a run; `sysproxy_win.cpp`, this user's
+  WinINet setting for the LAN connection (no administrator; other connection entries keep theirs);
+  `sysproxy_none.cpp` on Linux, where the window says to point apps at the address. What was there
+  is kept in `driftwire_proxy.json` beside the prefs as soon as it is set; it goes back when the
+  Tunnel or Use for all apps goes off, when the engine is destroyed (quit), and at the next start
+  after a crash, and only where the setting is still Driftwire's URL (one the person changed since
+  is theirs). A declined or failed change is said once and not asked again until the person
+  flips one of the two switches. Only a host that hands the engine `make_sysproxy` (the add-on and
+  the `driftwire` program) changes a setting; the tests use a stand-in. Not a VPN: apps that ignore
+  the system setting, and anything over UDP, go direct.
+- **One switch, every surface.** Node `tunnel` (a `kChange` boolean), opt-in and off by default,
+  kept in the prefs: the window's **Tunnel through <relay>** under Internet options (its own card
+  while the internet switch is off, so it can still be seen and turned off), the settings page
+  (same id), the menu-bar row (slice 1's, same id and event), and `/tunnel [on|off]` in the
+  `driftwire` program. The engine starts and stops the proxy on its control thread
+  (`sync_tunnel`), restarts it when the relay field changes, and posts its state: the address with
+  **Copy**, a `link` node with the new bearer `via: "tunnel"` (green, a lock; "moving" while
+  streams are open, "failed" with the relay's problem, "done" when ready), and why it does not run
+  (no relay server set, or the relay's last answer: the wrong key, forwarding off, no answer), with
+  **Use for all apps** (`tunnel_all_apps`) under it and `/tunnel apps on|off` in the program. The
+  view's `tunnel_mode` is "proxy" until the plan's slice 5 adds a VPN mode beside the same switch. A
+  site's own refusal (a port, a private address) is answered to the browser (SOCKS5 reply 2 or 4,
+  HTTP 403 or 502) and is not the tunnel's problem.
+- **Looking like HTTPS** (slice 4, `tls.*`; [spike](../plans/driftwire-tls-spike.md)). With
+  **Look like a web site (port 443)** (`tunnel_tls`, off by default; `/tunnel https`) the Tunnel
+  reaches the relay on its TLS port (`mv-driftwire-relay --tls-port 443`) through BoringSSL with
+  Chrome's ClientHello: GREASE, permuted extensions, ECH GREASE, ALPS, brotli certificate
+  compression offered, X25519MLKEM768 first, Chrome's ciphers and signature algorithms, ALPN `h2`
+  and `http/1.1`, SNI when the relay is a name. Its JA4 in the tests is
+  `t13d1516h2_8daaf6152771_d8a2da3f94cd` (the first two parts pinned to Chrome's; the third moves
+  with Chrome's own codepoints). TLS is camouflage only: the client does not check the
+  certificate, since the hop inside (CPace, then Noise, unchanged) proves the key. Inside TLS the
+  client's first 32 bytes are the **knock**, a keyed BLAKE2b of the session's TLS exporter
+  (`EXPORTER-driftwire-knock`) keyed by an Argon2id hash of the server key; good for its own
+  session only. With it, the hop runs as on the plain port (every role). Without it, whatever came
+  is the start of an HTTP request and the relay answers as a web site (`Server: nginx`; a small
+  built-in page, or `--decoy-dir`; 404, 405 and 400 as a web server would; 10 s idle). The
+  certificate is `--tls-cert` / `--tls-key` (a real one passes a prober's look best), else a
+  self-signed one for `--tls-name`. Codes keep the relay's plain port (a sender holds no server
+  key to knock with). A network that breaks TLS with its own certificate sees the knock; Argon2id
+  makes offline guesses at a typed key slow, and a made key is out of reach. `relay.pv` is
+  unchanged: TLS makes no claim here and the hop inside is the same bytes.
+- **What it exposes.** The Wi-Fi sees a connection to the relay's address; the sites see the
+  relay's address; the relay sees which hosts are visited, never the content of HTTPS. A network
+  that allows only listed sites, or breaks TLS with its own certificate, defeats this as it does
+  every tunnel; looking like HTTPS (above) helps only against filters that block what does not
+  look like a web site. Slice 5 (a VPN for every app) is in the plan.
+
 ## What moves, and how it lands
 
 `transfer.h`. Copies only: an original is only ever read (rule 5).
@@ -1679,6 +1777,10 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
 
 ## Not built
+
+- **The Tunnel's later slice** ([plan](../plans/driftwire-menu-and-tunnel.md)): a VPN for every app
+  with UDP forwarding (slice 5). The system proxy is not set on Linux, and on Windows only for the
+  LAN connection's entry. Codes do not use the relay's TLS port.
 
 - **#500's ask before an own relay** (low): A's own computer relays without asking, so a stranger
   who made the code, by stalling direct connections, learns R's home address. The fix is a

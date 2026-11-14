@@ -569,6 +569,7 @@ public static partial class IslandHost
             "wifi" => Windows.UI.Color.FromArgb(255, 48, 176, 199),
             "internet" => Windows.UI.Color.FromArgb(255, 94, 92, 230),
             "dht" => Windows.UI.Color.FromArgb(255, 255, 149, 0),
+            "tunnel" => Windows.UI.Color.FromArgb(255, 52, 199, 89),
             _ => Windows.UI.Color.FromArgb(255, 175, 82, 222),
         };
         string glyph = state == "paused" ? "" : via switch
@@ -578,12 +579,13 @@ public static partial class IslandHost
             "internet" => "",
             "dht" => "",
             "relay" => "",
+            "tunnel" => "\uE72E",  // Lock: Driftwire's Tunnel
             _ => "",
         };
         bool reduce = false;
         try { reduce = !new Windows.UI.ViewManagement.UISettings().AnimationsEnabled; } catch (Exception) { }
         bool failed = state == "failed";
-        double lift = via is "internet" or "dht" or "relay" or "server" ? 22 : 0;
+        double lift = via is "internet" or "dht" or "relay" or "server" or "tunnel" ? 22 : 0;
         const double H = 64;
 
         var root = new StackPanel { Spacing = Space(6), HorizontalAlignment = HorizontalAlignment.Stretch };

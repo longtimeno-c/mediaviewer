@@ -48,19 +48,52 @@ if(NOT MV_SODIUM_HAS_MLKEM768)
                       "or a libsodium built from source")
 endif()
 
+# The Tunnel looking like HTTPS (slice 4, docs/plans/driftwire-tls-spike.md):
+# BoringSSL (Apache-2.0), Chrome's own TLS, for a browser's ClientHello. The
+# vcpkg port installs it as the OpenSSL package; it must be BoringSSL (the
+# ClientHello calls are its own). Without it, tls_none.cpp: the Tunnel runs on
+# the relay's plain port only.
+# The fuzz build (MV_FUZZ) leaves it out: its harnesses are /MT and libFuzzer's
+# runtime will not link with a static /MD library, and it fuzzes Driftwire's
+# parsers, not TLS.
+find_package(OpenSSL CONFIG QUIET)
+set(MV_DRIFTWIRE_TLS OFF)
+if(TARGET OpenSSL::SSL AND NOT MV_FUZZ)
+  cmake_push_check_state()
+  set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
+  check_cxx_source_compiles("
+#include <openssl/ssl.h>
+#if !defined(OPENSSL_IS_BORINGSSL)
+#error not BoringSSL
+#endif
+int main() { SSL_CTX* c = SSL_CTX_new(TLS_method()); SSL_CTX_set_permute_extensions(c, 1); return 0; }"
+    MV_HAS_BORINGSSL)
+  cmake_pop_check_state()
+  if(MV_HAS_BORINGSSL)
+    set(MV_DRIFTWIRE_TLS ON)
+  endif()
+endif()
+if(MV_DRIFTWIRE_TLS)
+  set(_driftwire_tls ${_S}/tls_boringssl.cpp)
+else()
+  message(STATUS "Driftwire: no BoringSSL; the Tunnel's HTTPS look (slice 4) is left out")
+  set(_driftwire_tls ${_S}/tls_none.cpp)
+endif()
+
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp)
+  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp ${_S}/sysproxy_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
 elseif(APPLE)
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp)
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp
+    ${_S}/sysproxy_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
 else()
   # Linux: the Secret Service (libsecret) and logind (libsystemd / libelogind)
   # are loaded at run time, so there is nothing to build against; no
   # Bluetooth bearer yet (bt_none.cpp: Wi-Fi and the internet only).
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/secrets_linux.cpp ${_S}/power_linux.cpp)
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/secrets_linux.cpp ${_S}/power_linux.cpp ${_S}/sysproxy_none.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
 endif()
 
@@ -90,6 +123,9 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/known.h ${_S}/known.cpp
   ${_S}/splice.cpp ${_S}/splice.h
   ${_S}/relay.cpp ${_S}/relay.h
+  ${_S}/tunnel.cpp ${_S}/tunnel.h
+  ${_S}/sysproxy.h ${_S}/sysproxy_record.cpp
+  ${_S}/tls.h ${_S}/tls_common.cpp ${_driftwire_tls}
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -100,6 +136,10 @@ add_library(mv_driftwire_engine STATIC
 target_include_directories(mv_driftwire_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
 target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options ${MV_SODIUM_TARGET} ${MV_BLAKE3_TARGET}
   Threads::Threads)
+if(MV_DRIFTWIRE_TLS)
+  target_link_libraries(mv_driftwire_engine PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(mv_driftwire_engine PUBLIC MV_DRIFTWIRE_TLS=1)
+endif()
 set_target_properties(mv_driftwire_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(WIN32)
@@ -107,7 +147,8 @@ if(WIN32)
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
   # PowerCreateRequest is kernel32's (#530), linked by default.
-  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32)
+  # wininet: the Tunnel's system proxy, this user's setting (sysproxy_win.cpp).
+  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 wininet)
 elseif(APPLE)
   # Security: the Keychain (#472 PR 4). IOKit: staying awake during a transfer (#530).
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"

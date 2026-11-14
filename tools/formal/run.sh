@@ -18,11 +18,13 @@ expected() {
     handshake_both_later)    echo "false false" ;;    # sanity: both broken
     rejoin)                  echo "true true true true true true true false" ;;
     internet)                echo "true true true true true true" ;;
+    relay)                   echo "true true true true true true" ;;
+    relay_leaked_key)        echo "false false" ;;    # sanity: the attacker holds the server key
     *) echo "unknown" ;;
   esac
 }
 
-models=${*:-"handshake_code handshake_nonce code_order handshake_x25519_later handshake_mlkem_later handshake_both_later rejoin internet"}
+models=${*:-"handshake_code handshake_nonce code_order handshake_x25519_later handshake_mlkem_later handshake_both_later rejoin internet relay relay_leaked_key"}
 for m in $models; do
   ( start=$(date +%s)
     "$PROVERIF" -lib driftwire "$m.pv" > "$out/$m.log" 2>&1

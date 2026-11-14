@@ -373,7 +373,7 @@ error check_props(node& n, std::size_t& items) {
                (key == "size" && int_in(v, 32, 160)) || (key == "static" && v.k == json::kind::boolean);
           break;
         case node_type::link:
-          ok = (key == "via" && one_of(v, {"bluetooth", "wifi", "internet", "dht", "relay", "server"})) ||
+          ok = (key == "via" && one_of(v, {"bluetooth", "wifi", "internet", "dht", "relay", "server", "tunnel"})) ||
                (key == "state" && one_of(v, {"connecting", "moving", "paused", "done", "failed"})) ||
                (key == "direction" && one_of(v, {"send", "receive"})) ||
                ((key == "from" || key == "to" || key == "through") && str_max(v, 64)) ||

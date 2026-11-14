@@ -1,8 +1,11 @@
 # Driftwire: a fuller menu-bar menu, then a tunnel through your own relay
 
-Status: **slice 1 under way** (2026-11-12, owner's ask). Slices 2–5 are a proposal awaiting the
-owner's sign-off: they add a product surface Driftwire does not have (forwarding a person's
-own web traffic), so nothing of them is built until that call is made.
+Status: **slice 1 built** (#665, in main, 2026-11-12). **Slices 2 and 3 built** on branch
+`claude/driftwire-tunnel-70ba6c` (2026-11-12, the owner's ask that day; draft PR): forwarding on
+the relay server and the local proxy, with the switch in the window, the settings page and
+`/tunnel`, and the system proxy (PAC, Use for all apps); slice 1's menu has the Tunnel row. **Slice 4
+built** (owner's ask 2026-11-12, [spike](driftwire-tls-spike.md)). Slice 5 under way. What was
+built is in [28 "The Tunnel"](../design/28-driftwire.md#the-tunnel-2026-11-12).
 
 ## Why
 
@@ -68,12 +71,14 @@ gates hold (nothing here touches the render path; the menu is chrome).
 
 ## Slices 2–5: Driftwire Tunnel (proposal; owner's sign-off first)
 
-- **2. Forwarding on the relay server.** A key holder may ask `driftwire-relay` to open a TCP
+- **2. Forwarding on the relay server.** *(Built.)* A key holder may ask `driftwire-relay` to open a TCP
   connection to `host:port` and copy bytes both ways, on the relay's existing sealed hop
   (CPace on the server key, then Noise). Never for anyone without the key: not an open proxy.
   Limits: ports 80/443 only by default, a connection cap, no UDP. ProVerif: the new request
-  type in `relay.pv`.
-- **3. A local proxy in the add-on.** SOCKS5 and HTTP CONNECT on `127.0.0.1` (a random port,
+  type in `tools/formal/relay.pv` (new: no model of the relay hop existed before).
+- **3. A local proxy in the add-on.** *(Built, with the system proxy below; the switch's node
+  id is `tunnel`, which slice 1's menu row sends. `relay::forward` is a standalone call from a
+  host and port to a sealed stream, so slice 5's packet layer calls it per connection.)* SOCKS5 and HTTP CONNECT on `127.0.0.1` (a random port,
   shown with a Copy button), each connection one forwarded stream. Browsers, the Claude app and
   CLIs (`HTTPS_PROXY`) use it; no VPN driver, no OS entitlement. The menu gets **✓ Tunnel
   through <relay>**; the path picture a "tunnel" bearer. The `driftwire` terminal program gets
@@ -96,7 +101,8 @@ gates hold (nothing here touches the render path; the menu is chrome).
   - Not a VPN: apps that ignore the system proxy (many command-line tools, some games, anything
     over UDP) keep using the network directly. The window says so in one line. The SOCKS5
     hostname is resolved at the relay, so DNS filtering on the Wi-Fi does not see it.
-- **4. Looking like HTTPS.** The relay on TCP 443 behind TLS 1.3 with a browser's ClientHello,
+- **4. Looking like HTTPS.** *(Built: BoringSSL, Chrome's ClientHello, the knock, the web site;
+  [spike](driftwire-tls-spike.md), [28](../design/28-driftwire.md#the-tunnel-2026-11-12).)* The relay on TCP 443 behind TLS 1.3 with a browser's ClientHello,
   the sealed hop inside; a connection that does not authenticate is answered as an ordinary web
   site. For networks that block what looks like a tunnel. Its own spike first.
 - **5. Driftwire VPN: every app, not only those that follow the proxy** (owner, 2026-11-12).

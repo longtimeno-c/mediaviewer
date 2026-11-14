@@ -47,6 +47,7 @@ The order is:
 | #472 PR 4 | **Driftwire remembered devices**: an identity key kept in the Keychain / Credential Manager (a secret-store port); after a protocol 2 transfer **Remember** on both sides keeps the peer's name, key and a pairing secret; a later send is one click, met on the DHT under hourly per-direction keys, CPace + Noise on the pair's secret, the remembered key checked (refused loudly if it changed); "Waiting for … to come online" until Cancel; Forget ([docs/design/28](design/28-driftwire.md#remembered-devices-472-pr-4)) | Mac: built; `"[driftwire]"` passes (TSan-clean for the new cases) with two engines remembering each other over a stand-in swarm, the list and identity across restarts, an impostor holding the pair's secret refused; the fuzz harness covers the record. Keychain and Credential Manager are not exercised by tests (a folder stands in). Not built: the own-device relay. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)), Credential Manager included ([Where this actually is](#driftwire-remembered-devices-issue-472-pr-4-2026-10-18)) |
 | #472 PR 2 | **Driftwire over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-driftwire.md#over-the-internet-472-pr-2)) | Mac: built; `"[driftwire]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)). Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#driftwire-over-the-internet-issue-472-pr-2-2026-10-18)) |
 | Driftwire window, 2026-10-19 | **Simpler Driftwire window**: no address field (a code finds its own); a transfer under way is a card at the top with a picture of its path, its own shape, colour and badge for Wi-Fi, Bluetooth, internet direct, internet met on the DHT, through one of your computers, or through your relay server, dots moving while bytes do; the receive code is selectable with **Copy code** / **Copy link**; the internet part reads receive, send to a code, then options. New screen vocabulary on both hosts: a `link` node and a button's `copy`, contribution API 6 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md#what-a-person-sees)) | Mac: built; `"[driftwire]"` (124 cases) and `"[addon]"` (60) pass; the Swift chrome builds; the link picture rendered offscreen for every bearer and state, light and dark. Windows: the C# compiles. Owed: the window opened in the app on both hosts with a live transfer, the animation's idle cost measured (it runs only while bytes move), Narrator on the picture |
+| Driftwire Tunnel, 2026-11-12 | **Driftwire Tunnel** (slices 2 and 3 of [the plan](plans/driftwire-menu-and-tunnel.md)): a key holder's request to `mv-driftwire-relay` to open TCP to a host and copy both ways, on the sealed hop (CPace, then Noise NNpsk0; host, port and bytes sealed; ports 80/443 by default, a cap, public addresses only), and a local SOCKS5 / HTTP CONNECT proxy on 127.0.0.1 in the engine, one forward per connection. One switch, node `tunnel`, opt-in: the window, the settings page, `/tunnel` in `driftwire`, and slice 1's menu row; a `tunnel` bearer in the path picture ([docs/design/28](design/28-driftwire.md#the-tunnel-2026-11-12)) | Mac: built (full build and the Swift chrome); `"[driftwire]"` passes, with two engines and a relay on loopback and curl-style CONNECT, SOCKS5 and plain HTTP through the proxy; `"[addon]"` passes; `tools/formal/relay.pv` all true, its leaked-key sanity false. Windows: the C# compiles; native is CI's. The system proxy (PAC, **Use for all apps**) through a per-OS port, checked with a stand-in; the real Mac and Windows settings not changed in a run. Not built: slices 4 and 5. Owed: a real filtered network, a browser by hand, the system proxy set for real on both ([Where this actually is](#driftwire-tunnel-2026-11-12)) |
 | #501 | **Driftwire privacy**: a nearby handshake's static is a key of that link; the identity goes sealed in the offer (after the code) and the accept (after Accept); the beacon and Bluetooth INFO carry the name only while the window is open and a new id while idle (10 min) and at every open and close; the Mac keeps the identity and remembered devices in the data protection keychain in the app's access group, or nowhere; Windows seals each Credential Manager value with DPAPI; key material is wiped when it goes; a ProVerif model of the internet handshake (`tools/formal/internet.pv`) ([docs/design/28](design/28-driftwire.md#privacy-rule-6), [12](design/12-decision-log.md#driftwire)) | Mac: built; `"[driftwire]~[.driftwire-dht-live]"` passes (130 cases) with new ones: a connector never sees the receiver's identity, the sender's goes only in the offer after the right code, both sides remember the other's identity after a nearby send, the id rotates and the name is off the air, a planted login-keychain item is removed and never read. Windows: portable C++ only, CI's. The release adds Driftwire's app group `<team>.<bundle id>.driftwire` when it signs (`macpack.py release --team-id`, `APPLE_TEAM_ID`; `test_macpack.py` covers it); dev builds have no store. Owed: a signed build's Keychain path, two machines, v0.1.35 interop by hand |
 | #512 | **A status item opens its add-on's screen**: "Driftwire: receiving" in the command bar is a flat button that opens the Driftwire window (or brings it forward), on both hosts; any add-on whose status item names a screen, or that has exactly one window / pane / sheet, gets the same; a manifest may name it on a status item from contribution API 7 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)) | Mac: `mv_import_tests` passes (a new `[slots]` case for `status_json`'s `opens`); the Mac app builds. Windows: the C# compiles; the native side is CI's. Owed: the click, hover, hand cursor, keyboard and VoiceOver / Narrator checked in the running app on both hosts |
 | #601 | **Places: a folder map**: a **This folder** toggle on the Place section draws every geotagged item of the open folder on the same offline map as dots that cluster by zoom; the current item is the pin; a click on a dot or cluster opens that item, or its first. Read-only. Host table `open_item` and `MV_SLOT_EVENT_TAP` appended, version not bumped ([docs/design/27](design/27-places.md#the-folder-map-601)) | Linux container: the Places engine and its tests built with g++ 13 (`-Wall -Wextra -Werror -fno-rtti`); `"[places]"` 15 cases pass (1 skipped: no full blob); the `[.perf-bench]` case: the dot layer for 600 items at 2x in 0.27–0.29 ms CPU median, at most 1.12 ms (three runs); ASan + UBSan clean. `addon_entry.cpp`, `slots.cpp`, `screen.cpp` and `host.cpp` compile. Not built or run: `mv_import_tests` (no libsodium here), either app, either PR 1 gate, the click and `--browse-soak` with the pane open ([Where this actually is](#places-folder-map-issue-601-2026-11-02)) |
@@ -1373,6 +1374,12 @@ build/bin/mv_import_tests "[cli][e2e]"        # POSIX: two mv_driftwire_cli_test
 # "<address or name>:47614#<key>" (it prints the key) in Driftwire's "Your own relay server (optional)" on
 # the receiving computer. Only a holder of the key can wait there.
 build/bin/mv-driftwire-relay --port 47614      # --key-file F (or MV_RELAY_KEY; else it makes a key and prints it once) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
+# The Tunnel: key holders' forwards go to ports 80 and 443 unless told otherwise; none turns it off.
+build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,443 --max-forwards 64
+# Slice 4: also on 443 behind TLS, a web site to anyone without the key (BoringSSL; brew install nasm go first)
+build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tls-cert fullchain.pem --tls-key privkey.pem --decoy-dir site/
+# With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
+curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
 python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --src build/addons/driftwire \
   --version 1.0.0 --key <key file> --out dist/
@@ -1889,6 +1896,8 @@ manifest, clients reject updates. The production public key is already pinned in
 The `driftwire` command line's packages come from `cmake/driftwire-cli`
 ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire)); CI and the release build them
 on Ubuntu 22.04 with GCC 12 (`.github/actions/driftwire-cli-linux`), so they run from glibc 2.35 up.
+vcpkg's BoringSSL (the Tunnel's TLS, linked in statically like libsodium; its Apache-2.0 notice is
+in the packages' copyright file) needs `nasm` and Go to build: `sudo apt-get install nasm golang-go`.
 
 ```sh
 cmake -S cmake/driftwire-cli -B build-cli -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -3598,6 +3607,43 @@ every PR head in its own worktree and build folder.
   forgets, in its own Windows-only case.
 - **Not run on Windows:** `[.driftwire-idle]` and `[.driftwire-bench]` (POSIX-only harnesses),
   the fuzz harness (CI's smoke builds it), two machines, real Bluetooth, routers and NATs.
+
+### Driftwire Tunnel (2026-11-12)
+
+What is built is in [docs/design/28 "The Tunnel"](design/28-driftwire.md#the-tunnel-2026-11-12);
+what comes next in [the plan](plans/driftwire-menu-and-tunnel.md).
+
+- **Mac (M-series, Release):** the full build (with the Swift chrome) is green;
+  `mv_import_tests "[driftwire]"` passes (281 cases at the time; new: the relay's forward sealed
+  both ways, with no host, payload or key on the wire; the wrong key, another port, forwarding off,
+  loopback / private / `localhost` refused by default, the cap, nothing listening, a replayed
+  forward; the proxy's parsers; SOCKS5 with a name, HTTP CONNECT, a plain `http://` request, a
+  method it does not take, a 403; the relay's problem said for a wrong key or forwarding off; two
+  engines and a relay server on loopback with the switch on, curl-style CONNECT and a held stream
+  counted while a send goes through the same relay; the switch and the port kept across runs;
+  `/tunnel` in the `driftwire` program). `"[addon]"` passes (the `tunnel` bearer).
+- **ProVerif:** `tools/formal/relay.pv` (6 queries true) and `relay_leaked_key.pv` (2 false, as
+  expected) with ProVerif 2.05 built from the source tarball against Homebrew's OCaml.
+- **Windows:** the C# compiles on the Mac (`msbuild -t:Compile`); `net_win.cpp`'s `listen(…, port)`
+  and the rest of the native side meet MSVC in CI only.
+- **The system proxy:** the PAC script served from the proxy's port; set, kept on disk, put back
+  on off, on Use for all apps off, at quit and after a crash, never over a setting the person
+  changed, and a decline asked again only when a switch moves: all through a stand-in for the OS
+  (`fake_port`). `sysproxy_mac.cpp` compiles in the Mac build but was **not run**: it changes this
+  Mac's network settings and asks for an administrator, so it waits for a hand check (turn the
+  Tunnel on, approve, check System Settings -> Network -> Details -> Proxies, turn it off, check
+  it is back; kill MediaViewer with it on, start again, check). `sysproxy_win.cpp` is CI's.
+- **Slice 4 (looking like HTTPS):** BoringSSL from vcpkg (needs `nasm` and `go` from Homebrew on
+  the Mac; CI installs them). `"driftwire tls*"` passes: the ClientHello's JA4 is
+  `t13d1516h2_8daaf6152771_d8a2da3f94cd` (parts a and b pinned to Chrome's), the same across two
+  hellos with permuted extensions; a forward inside TLS after the knock; a browser's GET answered
+  as a web site (200, 404), Driftwire's own head without a knock and a wrong-key knock answered as
+  one too, plain bytes on the TLS port closed; the engine's switch through the TLS port and back.
+  Not run: a real network's DPI, a real certificate.
+- **The menu's Tunnel row:** `build_menu` and the `MV_SLOT_EVENT_MENU` branch, after #665 merged;
+  `"[driftwire]"` covers the row. The menu itself was not opened by hand.
+- **Not run:** a real filtered network; a browser pointed at the proxy by hand; Linux. Not
+  built: slice 5.
 
 ### Driftwire relays (issue #472, 2026-10-18)
 
