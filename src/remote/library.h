@@ -189,7 +189,7 @@ class library {
   // The tests: counters of what crossed the network.
   struct counters {
     std::atomic<std::uint64_t> bytes_read{0};
-    std::atomic<std::uint64_t> whole_fetches{0};
+    std::atomic<std::uint64_t> whole_fetches{0};  // originals fetched whole and kept
     std::atomic<std::uint64_t> head_reads{0};
     std::atomic<std::uint64_t> listings{0};
   };

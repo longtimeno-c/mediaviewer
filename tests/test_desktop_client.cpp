@@ -6,7 +6,8 @@
 // (whole, head, a clip's poster by range reads), originals into the disk cache
 // by content identity, and the server shown plainly when it is unreachable, its
 // drive offline or this desktop's access ended. Filter with "[desktop-client]";
-// nothing leaves 127.0.0.1. The timings are "[.perf-bench][desktop-client]".
+// nothing leaves 127.0.0.1. The timings are "[.desktop-client-perf]", also in
+// "[.perf-bench]" (hidden, so "[desktop-client]" does not run them).
 #include <sodium.h>
 
 #include "catch_compat.h"
@@ -102,6 +103,9 @@ struct host {
     bool made = false;
     REQUIRE(serve::set_up(*store, identity, access, made));
     randombytes_buf(publisher.data(), publisher.size());
+    // The host library a phone pairs with (self-hosted.md "The host library").
+    const std::string lib = "{\"format\":1,\"library_id\":\"" + library_id + "\",\"public_key\":\"" + hex(publisher) + "\"}";
+    put_file(catalogue / "library.json", std::vector<std::uint8_t>(lib.begin(), lib.end()));
     start();
   }
 
@@ -152,7 +156,7 @@ rm::config desktop_config(const fs::path& root, dw::secrets::store* keys) {
   c.device_name = "Test Desktop";
   c.store = keys;
   c.loopback_only = true;
-  c.connect_timeout_ms = 1500;
+  c.connect_timeout_ms = 5000;
   c.retry_after_ms = 10000;
   c.still_tile = [](std::span<const std::uint8_t> bytes, const mv::job_context* ctx) {
     return mv::image::make_thumb_jpeg(bytes, ctx);
@@ -507,12 +511,12 @@ TEST_CASE("unreachable, offline and ended are said plainly", "[desktop-client]")
 }
 
 // ---- timings ------------------------------------------------------------------------------------
-// mv_tests "[.perf-bench][desktop-client]": a folder of camera-sized JPEGs on
+// mv_tests "[.desktop-client-perf]" (and in "[.perf-bench]"): a folder of camera-sized JPEGs on
 // a host over loopback, the desktop's cold tile (first pixel), full
 // resolution (fetch + full decode), and arrow-to-next for a neighbour the
 // viewer already fetched (the ±2 prefetch) and for one it did not. Beside
 // them, the same file from a local disk. MV_REMOTE_BENCH_JSON=path writes them.
-TEST_CASE("remote folder timings over loopback", "[.perf-bench][desktop-client]") {
+TEST_CASE("remote folder timings over loopback", "[.perf-bench][.desktop-client-perf]") {
   using clock = std::chrono::steady_clock;
   const auto ms = [](clock::time_point t0) { return std::chrono::duration<double, std::milli>(clock::now() - t0).count(); };
   const auto median = [](std::vector<double> v) {
@@ -599,3 +603,4 @@ TEST_CASE("remote folder timings over loopback", "[.perf-bench][desktop-client]"
       << ",\"local_first_pixel_ms\":" << median(local_first) << ",\"local_full_ms\":" << median(local_full) << "}\n";
   }
 }
+

@@ -80,6 +80,14 @@ std::string utf8_of(const fs::path& p) {
   return std::string(reinterpret_cast<const char*>(u.data()), u.size());
 }
 
+// io::replace_atomic replaces a file that is there; a first write is write_new_atomic.
+expected write_atomic(const std::string& path, std::span<const std::uint8_t> bytes) {
+  if (io::file_exists(path)) return io::replace_atomic(path, bytes);
+  auto made = io::write_new_atomic(path, bytes);
+  if (!made && io::file_exists(path)) return io::replace_atomic(path, bytes);  // another writer won the race
+  return made;
+}
+
 bool is_hidden(std::string_view name) { return name.empty() || name.front() == '.'; }
 
 std::string join_rel(std::string_view rel, std::string_view name) {
@@ -307,7 +315,7 @@ expected library::save_locked() const {
   std::error_code ec;
   fs::create_directories(fs_path(cfg_.data_dir), ec);
   const std::string& text = w.str();
-  return io::replace_atomic(servers_file(),
+  return write_atomic(servers_file(),
                             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
 }
 
@@ -519,7 +527,7 @@ void library::keep_listing(std::string_view server, std::string_view folder_key,
   std::error_code ec;
   fs::create_directories(fs_path(path).parent_path(), ec);
   const std::string& text = w.str();
-  (void)io::replace_atomic(path, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
+  (void)write_atomic(path, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
 }
 
 std::optional<listing> library::kept_listing(std::string_view server, std::string_view folder_key) {
@@ -692,7 +700,6 @@ expected library::fetch_into(server_rt& s, const key_parts& k, const identity& i
   fs::create_directories(fs_path(final_path).parent_path(), ec);
   std::ofstream out(fs_path(part), std::ios::binary | std::ios::trunc);
   if (!out) return err(status::io);
-  stats_.whole_fetches.fetch_add(1, std::memory_order_relaxed);
   std::uint64_t written = 0;
   int tries_left = kFetchTries;
   while (written < id.size || id.size == 0) {
@@ -730,6 +737,7 @@ expected library::fetch_into(server_rt& s, const key_parts& k, const identity& i
     return err(written != id.size ? status::corrupt : status::io);  // the file changed under us
   }
   if (!cache_.admit(id, part)) return err(status::io);
+  stats_.whole_fetches.fetch_add(1, std::memory_order_relaxed);  // whole files that landed
   return {};
 }
 
@@ -757,7 +765,8 @@ result<std::string> library::fetch(std::string_view file_key, const mobile::canc
       }
     }
     if (lead) {
-      auto done = fetch_into(*s, *k, *id, cancel, progress);
+      // A fetch that finished between our cache look and taking the lead.
+      expected done = cache_.find(*id) ? expected{} : fetch_into(*s, *k, *id, cancel, progress);
       {
         std::lock_guard lock(st->m);
         st->done = true;
@@ -846,7 +855,7 @@ result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const
   if (!jpeg) return err(jpeg.error());
   std::error_code ec;
   fs::create_directories(fs_path(tile_path).parent_path(), ec);
-  (void)io::replace_atomic(tile_path, jpeg.value());
+  (void)write_atomic(tile_path, jpeg.value());
   return jpeg;
 }
 
