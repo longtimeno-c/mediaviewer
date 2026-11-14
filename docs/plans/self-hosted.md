@@ -7,6 +7,11 @@ DuckDNS in** so a home address that changes still has a name the phone and lapto
 enough for someone who has never forwarded a port. Not built; this maps it out. Owner calls are in §9.
 **A Synology stays supported** (owner, 2026-11-14: "synology is good to support"): self-hosting is a
 second way to run the same service, beside the NAS, not a replacement for it.
+**Not in this plan, owner's asks of 2026-11-14 (#686):** Phone access as an add-on (the Synology path
+and self-hosting out of the base app); the shared drive as a LAN-only SMB share with a username and
+password; combining two or more drives (mirror, span, stripe, parity) through the OS's own tools, with
+each choice explained and erasing guarded; a tray / menu-bar presence while hosting. Each waits for
+the owner's calls listed there.
 
 ## 1. The good news: almost nothing is Synology code
 
