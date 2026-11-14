@@ -2478,3 +2478,89 @@ TEST_CASE("phone pairing: the host's users are read freely, added only unlocked,
   CHECK(routed->find("cleo") != std::string::npos);
   CHECK(desk::route_request(*mac.d, "phone", "user_remove", R"({"name":"cleo"})"));
 }
+
+TEST_CASE("phone pairing: a device's role is in its caps; a desktop starts view-only; only change may write",
+          "[phone-pairing][host-users]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto owner_session = m.session();
+  REQUIRE(owner_session);
+  CHECK((*owner_session)->caps().role == "admin");
+  REQUIRE((*owner_session)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  const fs::path folder = n.dir.root() / "role-backup";
+  fs::create_directories(folder);
+  mv::json::writer add;
+  add.begin_object().key("do").string("add_root").key("label").string("Phone backup").key("path").string(utf8(folder));
+  add.key("backup").begin_object().key("limit").integer(8000000).key("reserve").integer(0).end_object().end_object();
+  auto added = (*owner_session)->admin(add.str());
+  REQUIRE(added);
+  const std::string root = *mv::json::parse(*added, 4)->str("id");
+  const auto code_request = [](char c) {
+    return "{\"do\":\"pair_code\",\"code\":\"" + std::string(32, c) + "\",\"ttl_ms\":60000}";
+  };
+
+  // A phone by a plain code: unlimited, "change", may write.
+  REQUIRE((*owner_session)->admin(code_request('a')));
+  const key32 phone = random_key();
+  auto p = n.phone(phone, std::string(32, 'a'));
+  REQUIRE(p);
+  CHECK((*p)->caps().role == "change");
+  CHECK(n.has_device(phone));
+
+  // A desktop by a plain code: "view", on the grants (not the paired list), no guest, no write.
+  REQUIRE((*owner_session)->admin(code_request('b')));
+  const key32 desk_key = random_key();
+  serve::client::options o;
+  o.access_key = n.access;
+  o.device_key = desk_key;
+  o.service_key = n.identity;
+  o.id = "cccccccccccccccc";
+  o.pair_code = std::string(32, 'b');
+  o.device_name = "Studio Mac";
+  o.device_kind = serve::kDeviceDesktop;
+  o.ops = serve::kAllOps | serve::kWriteOp;
+  auto d = serve::client::open(n.connect(), o);
+  REQUIRE(d);
+  CHECK((*d)->caps().role == "view");
+  CHECK_FALSE(n.has_device(desk_key));
+  std::vector<serve::grants::grant> limited;
+  REQUIRE(serve::grants::load(*n.store, limited));
+  REQUIRE(limited.size() == 1);
+  CHECK_FALSE(limited[0].backup);
+  CHECK_FALSE(limited[0].guest);
+  CHECK(limited[0].expires == 0);
+  {
+    auto w = writer(n, desk_key);
+    CHECK(w->caps().role == "view");
+    serve::client::write_refused why;
+    CHECK_FALSE(backup_write(*w, root, "desk.jpg", why));
+    CHECK(why.why == serve::kWhyNotAllowed);
+  }
+  const std::string desk_hex = mv::driftwire::key_hex(public_of(desk_key));
+  // "change" adds access: refused locked, then given unlocked; the next session says so and writes.
+  REQUIRE((*owner_session)->admin("{\"do\":\"lock\"}"));
+  std::string refusal;
+  CHECK_FALSE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"change\"}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  CHECK_FALSE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"boss\"}"));
+  CHECK_FALSE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"view\",\"backup\":true}"));
+  REQUIRE((*owner_session)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  REQUIRE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"change\"}"));
+  {
+    auto w = writer(n, desk_key);
+    CHECK(w->caps().role == "change");
+    serve::client::write_refused why;
+    CHECK(backup_write(*w, root, "desk.jpg", why));
+  }
+  // Back to "view": takes access away, no unlock needed.
+  REQUIRE((*owner_session)->admin("{\"do\":\"lock\"}"));
+  REQUIRE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"view\"}"));
+  auto w = writer(n, desk_key);
+  CHECK(w->caps().role == "view");
+  // Wire form: kind only "desktop"; anything else is a phone.
+  CHECK(serve::parse_pair(serve::pair_json(std::string(32, 'c'), "X", "desktop"))->kind == "desktop");
+  CHECK(serve::parse_pair(R"({"code":")" + std::string(32, 'c') + R"(","kind":"fridge"})")->kind.empty());
+}

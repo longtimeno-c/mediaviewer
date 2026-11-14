@@ -65,6 +65,9 @@ struct service_config {
   key32 device_key{};       // this phone's X25519 private key
   std::string device_id = "0000000000000000";
   std::string device_name = "iPhone";
+  // "desktop" (serve::kDeviceDesktop) when a desktop pairs to open the folders: it starts
+  // as "can view files" (docs/plans/self-host-users-smb.md §9). "": a phone.
+  std::string device_kind;
   // Ask for a direct path once on the relay (docs/plans/nas-relay.md §9).
   bool upgrade = false;
   bool loopback_only = false;  // the tests: punch on 127.0.0.1 only

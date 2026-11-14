@@ -56,7 +56,7 @@ std::string help_text() {
          "                               serve status shows its identity and passphrase, serve passphrase\n"
          "                               set|reset changes or resets the owner's passphrase (here only);\n"
          "                               add, pair-code --for 24h|7d|... make a timed phone, serve grant\n"
-         "                               NAME-OR-KEY --for D|--forever changes one\n"
+         "                               NAME-OR-KEY --for D|--forever|--role view|change changes one\n"
          "  driftwire host               host the service and a relay on this computer, from\n"
          "         [--data DIR]          its own folder (DIR/host), until stopped: what starts at\n"
          "                               login; host share PATH [--label L] [--backup] gives phones\n"
@@ -102,7 +102,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   std::string first_word;          // a word that is not a command, for the error
   bool want_to = false, want_once = false;
   bool want_label = false, want_backup = false;
-  bool want_users_opts = false;  // --role, --folders, --input-stdin (host users only)
+  bool want_users_opts = false;  // --folders, --input-stdin (host users only)
+  bool want_role = false;        // --role: host users, or a device's role (serve grant)
 
   for (std::size_t i = 0; i < argv.size(); ++i) {
     const std::string_view s = argv[i];
@@ -167,7 +168,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         want_backup = true;
       } else if (t.name == "--role") {  // ---- host users (self-host-users-smb.md) ----
         if (!value(a.role, "a role (view, change or admin)")) return out;
-        want_users_opts = true;
+        want_role = true;
       } else if (t.name == "--folders") {
         if (!value(a.folders, "folder labels (Photos,Videos) or all")) return out;
         want_users_opts = true;
@@ -300,8 +301,12 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         const bool timed = a.serve == serve_action::add || a.serve == serve_action::pair_code || a.serve == serve_action::grant;
         if ((!a.for_duration.empty() || a.forever) && !timed) {
           out.error = "--for and --forever go with serve add, pair-code or grant";
-        } else if (a.serve == serve_action::grant && a.for_duration.empty() == !a.forever) {
+        } else if (a.serve == serve_action::grant && !a.for_duration.empty() && a.forever) {
           out.error = "serve grant takes --for DURATION or --forever, one of them";
+        } else if (a.serve == serve_action::grant && a.for_duration.empty() && !a.forever && !want_role) {
+          out.error = "serve grant takes --for DURATION, --forever or --role view|change";
+        } else if (want_role && (a.serve != serve_action::grant || (a.role != "view" && a.role != "change"))) {
+          out.error = "--role goes with serve grant (view or change) or host users";
         } else if (a.forever && a.serve != serve_action::grant) {
           out.error = "--forever goes with serve grant";
         }
@@ -369,7 +374,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         out.error = "--label and --backup go with host share";
         return out;
       }
-      if (want_users_opts && a.host != host_action::users) {
+      if ((want_users_opts || want_role) && a.host != host_action::users) {
         out.error = "--role, --folders and --input-stdin go with host users";
         return out;
       }
@@ -388,7 +393,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
     out.error = "--label and --backup go with host share";
     return out;
   }
-  if (want_users_opts && a.cmd != command::host) {
+  if ((want_users_opts || (want_role && a.cmd != command::serve)) && a.cmd != command::host) {
     out.error = "--role, --folders and --input-stdin go with host users";
     return out;
   }

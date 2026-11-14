@@ -183,12 +183,30 @@ The link's requests: `users_refresh`, `user_set {name, role, folders?, password?
 `user_remove {name}`, `users_apply`. The card's state JSON gains `users:[{name, role, applied}]`,
 `users_unlocked` and `share_addresses:[…]`, and never a password.
 
-## 9. Phones and roles (mapping now, linking later)
+## 9. Phones, desktops and their role
 
-`share_users::phone_limit(role, folders, label_to_id)` gives the `grants::limit` a phone paired for
-that user gets: view means backup off; change means backup on; admin means no limit; folders become
-root ids. The pairing that ties a phone to a user (`host pair --for NAME`, and a grant's `user` that
-follows role changes) is **not built in this slice** (§11).
+Every paired device has a role, kept in the grants it already has (`grants.*`). No new store is
+needed:
+
+| Role | What it is in the grants | What the service lets it do |
+|---|---|---|
+| `view` (can view files) | a grant with `backup` off (no end, all folders, unless also timed or scoped) | read only; every write is refused (`not-allowed`) |
+| `change` (can change files) | unlimited (the paired list), or a grant with `backup` on | read, and write. Today the service's only write is phone backup, into backup folders |
+| `admin` | the owner's session | the owner's requests (the passphrase still gates what adds access) |
+
+- **Caps** carry it to every client: `"role":"view"|"change"|"admin"` (`caps_msg::role`,
+  `kCapsRole`). A service from before roles sends none. A client then treats a paired device as
+  `change`, because it could write. The desktop client stays read-only whatever the role.
+- **A desktop starts as `view`.** It pairs with `serve_pair {code, name, kind:"desktop"}`
+  (`serve::kDeviceDesktop`, `client::options::device_kind`, `mobile::service_config::device_kind`).
+  Whatever the code gave, its grant has `backup` off. A plain code's desktop is no guest. A phone
+  by a plain code is unlimited, as before.
+- **Setting it:** `serve_admin grant {key, role}`. `change` adds access, so it needs the unlock;
+  `view` does not. From the desktop, the card's per-phone backup switch (`phone_backup`) is the
+  same flag. From the CLI: `driftwire serve grant NAME-OR-KEY --role view|change`, alone or with
+  `--for`/`--forever`.
+- `share_users::phone_limit(user)` maps a LAN user's role to a grant. Pairing a device *for* a
+  user, with a grant that follows that user's role changes, is **not built** (§11).
 
 ## 10. Tests (`"[host-users]"`)
 
@@ -226,7 +244,7 @@ change this Mac's sharing settings, and use loopback only.
   guess through.
 - **Windows halves:** the C++ compiles in CI only. The WinUI half is checked with
   `msbuild -t:Compile`, and its words with `dotnet test` (`PhoneWordsTests`), on the Mac.
-- **Phone linking** (§9): `host pair --for NAME` and grants that follow a user's role.
+- **Linking a device to a user** (§9): `host pair --for NAME`, and grants that follow that user's role.
 - **Windows firewall:** File and Printer Sharing on the Private profile is the person's own call.
   The step only says when the network is marked Public.
 - **Linux:** Samba, with the Linux host.

@@ -281,6 +281,7 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
   auto opts_with_code = opts;
   opts_with_code.pair_code = code_copy;
   opts_with_code.device_name = name;
+  opts_with_code.device_kind = c.device_kind;
   auto done = race<std::shared_ptr<serve::client>>(
       targets, timeout_ms, cancel, report.failures, report,
       [opts_with_code](std::shared_ptr<dw::link> l, serve::refusal& why) -> result<std::shared_ptr<serve::client>> {

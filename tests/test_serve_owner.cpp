@@ -344,6 +344,23 @@ TEST_CASE("serve owner: the command line sets, shows and resets the passphrase, 
     CHECK(limited[0].roots);
     CHECK(run("revoke Scoped", "", code).find("revoked") != std::string::npos);
   }
+  // A device's role (self-host-users-smb.md §9): view moves it to the grants with backup off and no
+  // end; change takes it back to the paired list; the time stays as it was.
+  CHECK(run("grant Guest --role view", "", code).find("can view files") != std::string::npos);
+  CHECK(code == 0);
+  REQUIRE(mv::driftwire::serve::grants::load(*store, limited));
+  REQUIRE(limited.size() == 1);
+  CHECK_FALSE(limited[0].backup);
+  CHECK(limited[0].expires == 0);
+  CHECK(sp::known::load(*store).empty());
+  CHECK(run("grant Guest --role change", "", code).find("can change files") != std::string::npos);
+  REQUIRE(mv::driftwire::serve::grants::load(*store, limited));
+  CHECK(limited.empty());
+  CHECK(sp::known::load(*store).size() == 1);
+  CHECK(run("grant Guest --role admin", "", code).find("--role") != std::string::npos);
+  CHECK(code != 0);
+  CHECK(run("devices --role view", "", code).find("--role") != std::string::npos);
+  CHECK(code != 0);
   out = run(std::string("revoke Guest"), "", code);
   CHECK(code == 0);
   CHECK(sp::known::load(*store).empty());

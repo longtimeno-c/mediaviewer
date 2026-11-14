@@ -585,7 +585,9 @@ int run_grant(const args& a, secrets::store& store, const std::string& data) {
   // Its folders, whether it is a guest and when it was added stay as they are:
   // only the time changes.
   std::optional<serve::grants::grant> next;
-  if (!a.forever) {
+  if (a.for_duration.empty() && !a.forever) {
+    next = current;  // --role alone: the time and the folders stay as they are
+  } else if (!a.forever) {
     const auto parsed = serve::grants::parse_duration(a.for_duration);
     if (!parsed) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
     next = current.value_or(serve::grants::grant{});
@@ -595,9 +597,26 @@ int run_grant(const args& a, secrets::store& store, const std::string& data) {
     next = *current;  // no end, still only its folders
     next->expires = 0;
   }
+  // The device's role (docs/plans/self-host-users-smb.md §9): change may write (phone backup,
+  // the service's only write); view may not. Otherwise what it had is kept.
+  // (--forever for every folder lifts every limit, backup with it, as the service's own grant does.)
+  const bool lifts_all = a.forever && !(current && current->roots);
+  const bool may_change = !a.role.empty() ? a.role == "change" : (lifts_all || !current || current->backup);
+  if (!may_change) {
+    if (!next) {
+      next = serve::grants::grant{};
+      next->created = now;
+    }
+    next->backup = false;
+  } else if (next) {
+    next->backup = true;
+    if (next->expires == 0 && !next->roots) next.reset();  // no limit left: the paired list
+  }
   if (const int r = put_device(store, found->first, found->second, next, now); r != 0) return r;
-  print(next && next->expires != 0 ? "until " + std::to_string(next->expires) + " (unix seconds)\n"
-                                   : std::string(next ? "no end, its folders only\n" : "unlimited\n"));
+  std::string out = next && next->expires != 0 ? "until " + std::to_string(next->expires) + " (unix seconds)"
+                                               : std::string(next && next->roots ? "no end, its folders only" : "no end");
+  out += std::string(", ") + (may_change ? "can change files" : "can view files") + "\n";
+  print(out);
   return 0;
 }
 

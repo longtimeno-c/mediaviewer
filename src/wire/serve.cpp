@@ -1281,6 +1281,16 @@ void server::state::session(conn& c, std::optional<message> first_message) {
     const std::string g = w.take();
     extra = g.substr(1, g.size() - 2);
   }
+  {
+    // The device's role (kCapsRole; self-host-users-smb.md §9): "change" may write (phone
+    // backup, the service's one write), "view" may not, "admin" is the owner's session. A
+    // client that writes nothing (a desktop opening the host's folders) reads it to say so.
+    const char* role = c.is_owner ? "admin" : (!c.grant || c.grant->backup) ? "change" : "view";
+    json::writer w;
+    w.begin_object().key(kCapsRole).string(role).end_object();
+    const std::string r = w.take();
+    extra += (extra.empty() ? "" : ",") + r.substr(1, r.size() - 2);
+  }
   if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
     // Nothing in common (one side too old). The answer said so.
@@ -2107,12 +2117,17 @@ server::state::redeemed server::state::redeem(channel& ch, const std::array<std:
     }
   } counted{*this};
   std::optional<grants::grant> g;
+  // A desktop (pair_msg::kind "desktop": it opens the folders, it backs nothing up)
+  // starts as "can view files" whatever the code gave; an admin may change it
+  // (serve_admin grant {role}). A plain code's desktop is no guest.
+  const bool plain_code = !gives->any();
+  if (p && p->kind == kDeviceDesktop) gives->backup = false;
   if (gives->any()) {
     grants::grant x;
     const auto t = now();
     x.expires = gives->for_s != 0 ? t + gives->for_s : 0;
     x.roots = gives->roots;
-    x.guest = true;
+    x.guest = !plain_code;
     x.created = t;
     x.backup = gives->backup;
     g = std::move(x);
@@ -2342,8 +2357,15 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     const auto for_s = doc->integer("for_s");
     const bool forever = doc->boolean("forever") == true;
     // "backup" (phone backup, B2) alone keeps the expiry and the folders as they are.
-    const std::optional<bool> backup_flag = doc->find("backup") ? doc->boolean("backup") : std::nullopt;
+    // "role" says the same in the words the host's users have: "change" may write, "view" not.
+    std::optional<bool> backup_flag = doc->find("backup") ? doc->boolean("backup") : std::nullopt;
     if (doc->find("backup") && !backup_flag) return {end_code::bad_request, {}};
+    if (const std::string* role = doc->str("role")) {
+      if ((*role != "change" && *role != "view") || doc->find("backup")) return {end_code::bad_request, {}};
+      backup_flag = *role == "change";
+    } else if (doc->find("role")) {
+      return {end_code::bad_request, {}};
+    }
     const bool keep_time = !forever && !for_s && backup_flag.has_value();
     if ((!keep_time && forever == for_s.has_value()) || (for_s && (*for_s <= 0 || *for_s > grants::kMaxSeconds))) {
       return {end_code::bad_request, {}};

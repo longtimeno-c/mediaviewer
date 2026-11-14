@@ -154,6 +154,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
       c.grant_scoped = g->boolean("scoped") == true;
     }
   }
+  if (const std::string* r = doc->str(kCapsRole); r && (*r == "view" || *r == "change" || *r == "admin")) c.role = *r;
   return c;
 }
 
@@ -401,9 +402,13 @@ std::optional<std::vector<list_entry>> parse_listing(std::string_view lines) {
   return out;
 }
 
-std::string pair_json(std::string_view code, std::string_view name) {
+std::string pair_json(std::string_view code, std::string_view name) { return pair_json(code, name, {}); }
+
+std::string pair_json(std::string_view code, std::string_view name, std::string_view kind) {
   json::writer w;
-  w.begin_object().key("code").string(code).key("name").string(clean_name(std::string(name))).end_object();
+  w.begin_object().key("code").string(code).key("name").string(clean_name(std::string(name)));
+  if (!kind.empty()) w.key("kind").string(kind);
+  w.end_object();
   return w.take();
 }
 
@@ -415,6 +420,7 @@ std::optional<pair_msg> parse_pair(std::string_view text) {
   pair_msg out;
   out.code = *code;
   if (const std::string* name = doc->str("name")) out.name = clean_name(*name);
+  if (const std::string* kind = doc->str("kind"); kind && *kind == kDeviceDesktop) out.kind = *kind;
   return out;
 }
 
