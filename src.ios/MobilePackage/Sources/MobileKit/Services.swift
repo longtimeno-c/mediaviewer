@@ -95,6 +95,13 @@ public protocol ConnectionService: Sendable {
   func pair(code: String, confirmed: LibraryIdentity) -> AsyncThrowingStream<PairingEvent, Error>
   func retry() async
   func forget() async
+  /// The sample library's stand-in for a server whose mirror lost a drive (docs/plans/self-host-drives.md
+  /// §4; owner 2026-11-12: every phone feature demoable in SAMPLE). Sample mode only; a no-op otherwise.
+  func showSampleLostDrive(_ lost: Bool) async
+}
+
+public extension ConnectionService {
+  func showSampleLostDrive(_ lost: Bool) async {}
 }
 
 public protocol CatalogueSync: Sendable {

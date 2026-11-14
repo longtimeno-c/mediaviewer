@@ -87,6 +87,8 @@ final class PhoneStore: ObservableObject {
     var host: Host?
     var hostStep = ""  // "share", "name", "start", "claim" while a setup runs
     var hostSaid = ""  // the driftwire program's own words for a step that failed
+    var drives: PhoneDrives.Listing?         // host_drives (PhoneDrivesModel.swift)
+    var drivesChoices: PhoneDrives.Choices?  // host_drives_choices
     var starting = false
     var secondary = false
     var driftwire = true
@@ -243,6 +245,8 @@ final class PhoneStore: ObservableObject {
     }
     s.hostStep = o["host_step"] as? String ?? ""
     s.hostSaid = o["host_said"] as? String ?? ""
+    s.drives = PhoneDrives.listing(o["drives"])
+    s.drivesChoices = PhoneDrives.choices(o["drives_choices"])
     return s
   }
 
@@ -321,6 +325,8 @@ final class PhoneStore: ObservableObject {
     case "host_not_listening": return "The server started but isn't answering yet. Another program may be using its port."
     case "host_no_network": return "Claimed, but this Mac isn't on a network, so a phone can't reach it yet."
     case "host_failed": return "The driftwire program couldn't be run."
+    case "host_drives": return "The drives on this Mac couldn't be read. Connect them and try again."
+    case "host_drives_failed": return state.hostSaid.isEmpty ? "The drives weren't changed." : "The drives weren't changed: \(state.hostSaid)"
     case "locked_out":
       return "Too many tries. Try again at \(Self.clock(state.lockedUntil)), or reset it on the server with driftwire serve passphrase reset."
     case "nas_too_old":
@@ -437,6 +443,10 @@ final class PhoneStore: ObservableObject {
     case "set_passphrase": return "Setting the passphrase"
     case "grant": return "Changing the phone's access"
     case "host_start": return "Starting the server"
+    case "host_drives": return "Reading the drives"
+    case "host_drives_choices": return "Working out the choices"
+    case "host_drives_combine": return "Combining the drives. Allow it in the administrator prompt."
+    case "host_drives_replace": return "Replacing the drive. Allow it in the administrator prompt."
     case "host_setup":
       switch state.hostStep {
       case "share": return "Sharing the folders"
@@ -579,7 +589,10 @@ struct PhoneAccessSection: View {
 
   @ViewBuilder private var content: some View {
     if let line = model.busyText { ProgressLine(verb: line, fraction: nil, timed: false) }
-    if let h = s.host, h.setUp { hostRow(h) }
+    if let h = s.host, h.setUp {
+      hostRow(h)
+      PhoneDrivesSection()
+    }
     // Until a service is claimed; and again after a setup on this Mac that stopped part way.
     if !s.claimed && (s.folder.isEmpty || (s.host?.setUp ?? false)) {
       setUp
@@ -655,6 +668,7 @@ struct PhoneAccessSection: View {
         }
         .disabled(!s.busy.isEmpty)
       }
+      if !(s.host?.setUp ?? false) { PhoneDrivesSection() }
       SettingsRow(title: "DuckDNS name",
                   detail: "Optional, free at duckdns.org: how your phone finds this Mac away from home. DuckDNS learns your home's address, nothing about your files.") {
         TextField("home.duckdns.org", text: $duckName)
