@@ -113,6 +113,51 @@ void copy_str(char* dst, std::size_t cap, const std::string& src) {
 }
 
 constexpr std::size_t kPhotoBatch = 4;
+// Small text on a sign or a shirt needs pixels: a 2,048 px decode, not the
+// picture pass's 448. A clip's moment is decoded at the same edge (capped at
+// the clip's own size by the host).
+constexpr std::uint32_t kTextEdge = 2048;
+
+// Box filter fitting the long edge (never enlarging): the host's decode_still
+// fit, on pixels already decoded. The picture pass decodes a photo owed its
+// text once at kTextEdge and shrinks it to its own edge with this.
+void fit_long_edge(rgb_frame& img, std::uint32_t edge) {
+  const std::uint32_t w = img.width, h = img.height;
+  const std::uint32_t long_edge = std::max(w, h);
+  if (edge == 0 || long_edge <= edge || w == 0 || h == 0) return;
+  const std::uint32_t dw = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(std::uint64_t{w} * edge / long_edge));
+  const std::uint32_t dh = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(std::uint64_t{h} * edge / long_edge));
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(dw) * dh * 3);
+  const std::uint8_t* src = img.rgb.data();
+  for (std::uint32_t y = 0; y < dh; ++y) {
+    const std::uint32_t y0 = static_cast<std::uint32_t>(std::uint64_t{y} * h / dh);
+    std::uint32_t y1 = static_cast<std::uint32_t>((std::uint64_t{y + 1} * h + dh - 1) / dh);
+    if (y1 <= y0) y1 = y0 + 1;
+    for (std::uint32_t x = 0; x < dw; ++x) {
+      const std::uint32_t x0 = static_cast<std::uint32_t>(std::uint64_t{x} * w / dw);
+      std::uint32_t x1 = static_cast<std::uint32_t>((std::uint64_t{x + 1} * w + dw - 1) / dw);
+      if (x1 <= x0) x1 = x0 + 1;
+      std::uint32_t r = 0, g = 0, b = 0, n = 0;
+      for (std::uint32_t sy = y0; sy < y1 && sy < h; ++sy) {
+        const std::uint8_t* row = src + static_cast<std::size_t>(sy) * w * 3;
+        for (std::uint32_t sx = x0; sx < x1 && sx < w; ++sx) {
+          r += row[sx * 3];
+          g += row[sx * 3 + 1];
+          b += row[sx * 3 + 2];
+          ++n;
+        }
+      }
+      if (n == 0) n = 1;
+      std::uint8_t* p = out.data() + (static_cast<std::size_t>(y) * dw + x) * 3;
+      p[0] = static_cast<std::uint8_t>(r / n);
+      p[1] = static_cast<std::uint8_t>(g / n);
+      p[2] = static_cast<std::uint8_t>(b / n);
+    }
+  }
+  img.width = dw;
+  img.height = dh;
+  img.rgb = std::move(out);
+}
 // #354 D3: passages embedded per run of the text model, between wait_turns.
 constexpr std::size_t kMeaningBatch = 16;
 constexpr std::size_t kFrameBatch = 8;
@@ -4553,6 +4598,29 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
     if (faces_model_) face_spec = faces_model_->spec_key();
   }
   const std::uint32_t edge = faces_on ? 1024u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
+  // One read for the picture and text passes: a photo still owed its text
+  // is decoded once at kTextEdge, read here, and fitted to `edge` for the
+  // picture and People models. A library on a hard disk was read twice,
+  // once per pass, and the disk (not the GPU) set the pace.
+  text_reader* reader = nullptr;
+  std::string text_spec_now;
+  std::unordered_set<std::int64_t> text_owed;
+  if (!faces_only) {
+    text_spec_now = text_spec();
+    if (!text_spec_now.empty()) {
+      std::lock_guard lock(models_m_);
+      reader = text_.get();  // set once, never replaced (engine.h)
+    }
+    if (reader) {
+      std::vector<std::int64_t> ids;
+      for (const work_item& w : items) {
+        if (w.asset.kind == asset_kind::photo) ids.push_back(w.asset.id);
+      }
+      // The text pass's own filter (claim), so this reads what it would.
+      const track_filter f{true, 0, default_media(), skip_root(), held_list()};
+      for (const work_item& w : db_->pending_among(text_spec_now, ids, kMaxTries, f)) text_owed.insert(w.asset.id);
+    }
+  }
   // #407: each still's Live Photo movie ("" none).
   std::unordered_map<std::int64_t, std::pair<std::string, bool>> motion;
   {
@@ -4572,7 +4640,12 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       ok.push_back(&w);
       continue;
     }
-    auto img = still_of(w.asset.path, edge);
+    const bool with_text = text_owed.count(w.asset.id) != 0;
+    auto img = still_of(w.asset.path, with_text ? std::max(edge, kTextEdge) : edge);
+    if (img && with_text) {
+      read_photo_text(w, *img, *reader, text_spec_now);
+      fit_long_edge(*img, edge);
+    }
     if (!img && w.asset.kind == asset_kind::audio && !faces_only &&
         (img.error() == status::not_found || img.error() == status::unsupported_format)) {
       // #355: no cover art (or none that decodes). Its tags still find it:
@@ -4608,6 +4681,7 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
     imgs.push_back(std::move(*img));
     ok.push_back(&w);
   }
+  if (!text_owed.empty()) text_counts_due_ = true;  // read, failed or not: the text counts moved
   if (imgs.empty()) return;
   if (!faces_only) {
     // A still whose movie alone is owed (#407: partial) is in the index already.
@@ -7170,11 +7244,6 @@ std::string engine::text_spec() const {
   return text_ ? text_->spec_key() : std::string();
 }
 
-// Small text on a sign or a shirt needs pixels: a 2,048 px decode, not the
-// picture pass's 448. A clip's moment is decoded at the same edge (capped at
-// the clip's own size by the host).
-constexpr std::uint32_t kTextEdge = 2048;
-
 std::string engine::joined_text(const std::vector<std::string>& lines) {
   // A wall of text (a screenshot, a page) keeps its first 4,000 bytes.
   constexpr std::size_t kMaxBytes = 4000;
@@ -7253,18 +7322,22 @@ void engine::process_text(std::vector<work_item>& items) {
       }
       continue;
     }
-    auto lines = reader->read(*img);
-    if (!lines) {
-      (void)db_->fail(w.asset.id, spec);
-      continue;
-    }
-    const std::string joined = joined_text(*lines);
-    std::vector<cue_in> rows;
-    if (!joined.empty()) rows.push_back(cue_in{-1, -1, cue_kind::picture, joined});
-    // Read again (a new reader, a Live Photo's movie changed): the old row goes.
-    if (!db_->commit_cues(w.asset.id, rows, work_state::done, 0, kAllCues, spec)) continue;
-    store_text(w.asset.id, kAllCues, rows);
+    read_photo_text(w, *img, *reader, spec);
   }
+}
+
+void engine::read_photo_text(const work_item& w, const rgb_frame& img, text_reader& reader, const std::string& spec) {
+  auto lines = reader.read(img);
+  if (!lines) {
+    (void)db_->fail(w.asset.id, spec);
+    return;
+  }
+  const std::string joined = joined_text(*lines);
+  std::vector<cue_in> rows;
+  if (!joined.empty()) rows.push_back(cue_in{-1, -1, cue_kind::picture, joined});
+  // Read again (a new reader, a Live Photo's movie changed): the old row goes.
+  if (!db_->commit_cues(w.asset.id, rows, work_state::done, 0, kAllCues, spec)) return;
+  store_text(w.asset.id, kAllCues, rows);
 }
 
 void engine::process_text_moments(const work_item& item, text_reader& reader, const std::string& spec) {

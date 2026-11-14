@@ -611,6 +611,10 @@ class engine {
   // #403: the text in a batch of photos, read by the OS, one cue row each;
   // a clip goes to process_text_moments.
   void process_text(std::vector<work_item>& items);
+  // One photo's text from pixels already decoded (at kTextEdge), committed
+  // under `spec`: process_text's read, and the picture pass's when it reads
+  // a photo still owed its text (one read of the file for both passes).
+  void read_photo_text(const work_item& w, const rgb_frame& img, text_reader& reader, const std::string& spec);
   // The text on the moments a clip's picture pass kept: each decoded again,
   // read, one cue row at its pts_ms (the same text as the moment before is
   // not stored twice). Committed every few moments under `spec`, so a stop
