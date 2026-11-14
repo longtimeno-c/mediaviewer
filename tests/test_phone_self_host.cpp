@@ -89,6 +89,11 @@ TEST_CASE("phone self host: state.json and host.json are read as the host writes
   CHECK(s->offline == 1);
   REQUIRE(s->keepers.size() == 2);
   CHECK(s->keepers[1] == "duckdns: updated 2 min ago");
+  // As the host writes them: a terminal column, advice on following lines.
+  CHECK(sh::tidy_keeper_line("DuckDNS     home.duckdns.org, updated 3 min ago") == "DuckDNS: home.duckdns.org, updated 3 min ago");
+  CHECK(sh::tidy_keeper_line("router      port 7878 not mapped\n            forward TCP 7878 by hand") ==
+        "router: port 7878 not mapped\nforward TCP 7878 by hand");
+  CHECK(sh::parse_state(R"({"service_port":7878,"service_outside_port":17878})")->service_outside_port == 17878);
   // Out of range ports are none; a broken file is nothing.
   CHECK(sh::parse_state(R"({"service_port":70000})")->service_port == 0);
   CHECK_FALSE(sh::parse_state("[1]"));

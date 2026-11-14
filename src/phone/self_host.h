@@ -74,6 +74,7 @@ struct host_status {
   bool at_login = false;  // the start-at-login entry is there
   std::uint16_t service_port = 0, relay_port = 0;  // 0: not listening (or not running)
   std::uint16_t configured_port = 0;               // serve.json's port
+  std::uint16_t outside_port = 0;                  // the router's outside port for the service, once mapped
   std::size_t folders = 0, offline = 0;
   std::string name;     // the service's name (serve.json)
   std::string duckdns;  // the DuckDNS subdomain (host.json's "ddns"), "" for none
@@ -86,11 +87,15 @@ struct host_status {
 struct running_state {
   std::int64_t pid = 0;
   std::uint16_t service_port = 0, relay_port = 0;
+  std::uint16_t service_outside_port = 0;  // the router keeper's, once mapped (0: not mapped)
   bool vpn = false, awake = false;
   std::size_t folders = 0, offline = 0;
   std::vector<std::string> keepers;
 };
+// The keepers' lines are tidied for a card: "DuckDNS     home…" becomes
+// "DuckDNS: home…", each line of a line trimmed.
 [[nodiscard]] std::optional<running_state> parse_state(std::string_view json);
+[[nodiscard]] std::string tidy_keeper_line(std::string_view line);
 // host.json's DuckDNS subdomain ("ddns"), "" when none or not that shape.
 [[nodiscard]] std::string parse_duckdns(std::string_view host_json);
 

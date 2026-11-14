@@ -414,7 +414,8 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   in `state.json` to answer on loopback (a file left by a crashed host names a dead port);
   the first folder phones read becomes the library's folder (`library.json`); the claim over loopback
   (127.0.0.1, then ::1); the addresses (this computer's on the route to its gateway, and
-  `name.duckdns.org:PORT` from outside, else an address typed before stays); then a code, as **Add a
+  `name.duckdns.org:PORT` from outside, PORT being the router keeper's `service_outside_port` once it
+  has mapped one, else an address typed before stays); then a code, as **Add a
   phone** makes it. A setup that stopped part way (claimed nothing yet) offers the choice again.
 - **The program** is found where its installers put it (Homebrew's `/opt/homebrew/bin` and
   `/usr/local/bin`, `~/.local/bin`; `%LOCALAPPDATA%\Programs\Driftwire`; then PATH), and the data

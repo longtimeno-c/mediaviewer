@@ -1488,7 +1488,9 @@ void link::host_setup(const std::string& request) {
       std::lock_guard lock(m_);
       keep = v_.public_name;  // one typed before stays when there is no DuckDNS name
     }
-    a.key("public").string(sub ? self_host::public_route(*sub, st.service_port) : keep);
+    // From outside, the port the router opened for it when it has (it may differ), else the service's own.
+    const std::uint16_t outside = st.outside_port != 0 ? st.outside_port : st.service_port;
+    a.key("public").string(sub ? self_host::public_route(*sub, outside) : keep);
     a.end_object();
     run(a.str());
     std::lock_guard lock(m_);
@@ -1584,7 +1586,7 @@ std::string link::state_json() const {
     w.key("installed").boolean(h.installed).key("set_up").boolean(h.set_up).key("running").boolean(h.running);
     w.key("at_login").boolean(h.at_login);
     w.key("service_port").integer(h.service_port).key("relay_port").integer(h.relay_port);
-    w.key("configured_port").integer(h.configured_port);
+    w.key("configured_port").integer(h.configured_port).key("outside_port").integer(h.outside_port);
     w.key("folders").integer(static_cast<std::int64_t>(h.folders)).key("offline").integer(static_cast<std::int64_t>(h.offline));
     w.key("name").string(h.name).key("duckdns").string(h.duckdns);
     w.key("keepers").begin_array();

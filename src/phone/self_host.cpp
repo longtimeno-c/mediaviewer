@@ -205,16 +205,42 @@ std::optional<running_state> parse_state(std::string_view text) {
   };
   s.service_port = port("service_port");
   s.relay_port = port("relay_port");
+  s.service_outside_port = port("service_outside_port");
   s.vpn = doc->boolean("vpn").value_or(false);
   s.awake = doc->boolean("awake").value_or(false);
   s.folders = static_cast<std::size_t>(std::max<std::int64_t>(0, doc->integer("folders").value_or(0)));
   s.offline = static_cast<std::size_t>(std::max<std::int64_t>(0, doc->integer("offline").value_or(0)));
   if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
     for (const auto& line : k->a) {
-      if (line.k == json::kind::string && !line.s.empty()) s.keepers.push_back(line.s);
+      if (line.k == json::kind::string && !line.s.empty()) s.keepers.push_back(tidy_keeper_line(line.s));
     }
   }
   return s;
+}
+
+std::string tidy_keeper_line(std::string_view line) {
+  std::string out;
+  bool first = true;
+  std::size_t at = 0;
+  while (at <= line.size()) {
+    const auto end = line.find('\n', at);
+    std::string part = trim(line.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at));
+    if (first) {
+      // The terminal's column: a label, then two or more spaces.
+      if (const auto gap = part.find("  "); gap != std::string::npos && gap > 0) {
+        const auto rest = part.find_first_not_of(' ', gap);
+        part = part.substr(0, gap) + ": " + (rest == std::string::npos ? std::string() : part.substr(rest));
+      }
+    }
+    if (!part.empty()) {
+      if (!out.empty()) out += '\n';
+      out += part;
+    }
+    first = false;
+    if (end == std::string_view::npos) break;
+    at = end + 1;
+  }
+  return out;
 }
 
 std::string parse_duckdns(std::string_view text) {
@@ -251,6 +277,7 @@ host_status read_status(const where& w) {
     if (const auto st = parse_state(*text)) {
       s.service_port = st->service_port;
       s.relay_port = st->relay_port;
+      s.outside_port = st->service_outside_port;
       if (st->folders) s.folders = st->folders;
       s.offline = st->offline;
       s.keepers = st->keepers;
