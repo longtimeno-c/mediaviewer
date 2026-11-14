@@ -164,7 +164,24 @@ without them it builds exactly as before, with no VPN.
 | `MV_APP_PROVISION_PROFILE_B64` | Base64 of the app's Developer ID profile (App ID `io.github.longtimeno-c.mediaviewer`) |
 | `MV_TUNNEL_PROVISION_PROFILE_B64` | Base64 of the extension's Developer ID profile (App ID `io.github.longtimeno-c.mediaviewer.DriftwireTunnel`) |
 
-Making them, in developer.apple.com → Certificates, Identifiers & Profiles (no request to
+**From a terminal** (`tools/mac/provision.py`, the App Store Connect API). It creates the
+extension's App ID if missing, turns on the capabilities, makes both Developer ID profiles,
+checks them with the release's own check, saves them to `~/Dev/.mv-toolchain/profiles` and,
+with `--set-secrets`, sets both secrets. It needs an API key with the **Admin** role, made once
+in App Store Connect → Users and Access → Integrations → App Store Connect API → Team Keys (the
+`.p8` downloads once; note its Key ID and the Issuer ID). The key stays on the machine: the
+script signs a 20-minute token with it and sends only that.
+
+```sh
+python3 tools/mac/provision.py --key ~/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer-id <ISSUER> --dry-run
+python3 tools/mac/provision.py --key ~/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer-id <ISSUER> --set-secrets
+```
+
+With more than one Developer ID Application certificate on the team it stops and lists them;
+pass `--certificate <serial>` for the one in `MV_MAC_CERT_P12_BASE64`. Each run makes new
+profiles (old ones stay in the account until deleted there).
+
+**Or by hand**, in developer.apple.com → Certificates, Identifiers & Profiles (no request to
 Apple: the Network Extension capability is self-service for a paid team):
 
 1. **Identifiers:** open the app's App ID and tick **Network Extensions** and **System
