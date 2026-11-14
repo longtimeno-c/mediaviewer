@@ -202,6 +202,10 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_ddns.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
+    # The Phone access add-on (docs/plans/phone-access-addon.md): its card, its QR, the module.
+    "${MV_SOURCE_ROOT}/tests/test_phone_addon.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_qr.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_bundled.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_self_host.cpp"
     "${MV_SOURCE_ROOT}/tests/test_host_tray.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_relay.cpp"
@@ -220,16 +224,18 @@ function(mv_driftwire_tests target)
     # The phone's own reading of a pairing QR, for the host's (pure: sodium, json, pair_check).
     "${MV_SOURCE_ROOT}/src/mobile/link_payload.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
-  # test_phone_pairing.cpp: the desk is the app's now (src/phone, cmake/phone.cmake).
+  # test_phone_*.cpp: the Phone access add-on's (src/addons/phone, cmake/phone.cmake).
   target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone)
   target_compile_definitions(${target} PRIVATE
     MV_DRIFTWIRE_MODULE_PATH="$<TARGET_FILE:mv_driftwire>"
     MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json"
+    MV_PHONE_ACCESS_MODULE_PATH="$<TARGET_FILE:mv_phone_access>"
+    MV_PHONE_ACCESS_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/phone/manifest.json"
     # The command line, run by its tests: the program (it refuses a pipe) and
     # the test build (two of them talk in the end-to-end test).
     MV_DRIFTWIRE_CLI_PATH="$<TARGET_FILE:mv_driftwire_cli>"
     MV_DRIFTWIRE_CLI_TEST_PATH="$<TARGET_FILE:mv_driftwire_cli_test>")
-  add_dependencies(${target} mv_driftwire mv_driftwire_relay mv_driftwire_cli mv_driftwire_cli_test)
+  add_dependencies(${target} mv_driftwire mv_phone_access mv_driftwire_relay mv_driftwire_cli mv_driftwire_cli_test)
 endfunction()
 
 # ---- the driftwire command line (docs/design/28 "From a terminal") ----------

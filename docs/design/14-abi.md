@@ -298,9 +298,12 @@ set; keymap packs native applies).
   command from the UI thread. Listener codes: 1 notice waiting, 2 an add-on started or stopped.
   `MV_SCRIPT_STORE` / `MV_SCRIPT_SPIN` are verify rigs, inert unless set. The Mac host drives
   `src/addon/script_host.h` directly.
-- **`mv_phone_*`**: all `[no-block]`; `mv_phone_resume` at launch (`MV_PHONE_SECONDARY` in a later
-  window's process, which runs none of it), `mv_phone_stop` at quit before the add-ons, never
-  waiting on the NAS.
+- **Phone access** is the `phone-access` add-on since ABI **0.42** (2026-11-14,
+  [plan](../plans/phone-access-addon.md)): `mv_phone_*` and `MV_PHONE_SECONDARY` are gone (the Mac
+  bridge's `mv_chrome_phone_*` too); the card is the add-on's settings screen through `mv_slots_*`.
+  Host table `catalogue_publish` / `catalogue_cancel` / `catalogue_json` appended after
+  `thumbnail_make` (Local search's publisher while the pack is loaded, else `MV_ERR_NOT_FOUND`;
+  `MV_ADDON_HOST_API` stays 3).
 
 ## Chrome bridges (outside `mediaviewer.h`)
 

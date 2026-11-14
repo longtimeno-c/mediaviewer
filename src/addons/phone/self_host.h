@@ -62,8 +62,18 @@ struct where {
   std::vector<std::string> data_args;
   std::string login_entry;  // "" for none to look at (the tests)
 };
-// The person's: the first candidate that is a file, and the default data folder.
+// The add-on's own copy of the program (bundled.h), set at its load: find()
+// takes it before every other place. "" for none (a build without it).
+void set_bundled(std::string program);
+[[nodiscard]] std::string bundled();
+// The person's: the add-on's copy, else the first candidate that is a file, and
+// the default data folder.
 [[nodiscard]] where find();
+
+// Whether the start-at-login entry (w.login_entry) starts `program`: its text
+// names that path (as written, or XML-escaped as the LaunchAgent and the task
+// write it). False with no entry.
+[[nodiscard]] bool login_entry_runs(const where& w, const std::string& program);
 
 // What `host status` would say, read from the host's files: never a path or
 // an address. A running host holds host.lock; its state.json has its ports.

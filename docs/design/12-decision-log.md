@@ -10,7 +10,19 @@ Trade-offs for the D1–D9 decisions are in [01-decisions.md](01-decisions.md).
 
 ## Phone access
 
-**Phone access is part of the app, not an add-on (2026-11-12, owner).** It pairs a phone, claims and
+**Phone access is an add-on, offered the first time someone opens it (2026-11-14, owner; reverses
+2026-11-12 below).** Issue #686 §1: the Synology path, this computer as the server and their setup screens
+leave the base viewer for a new Phone access add-on (`src/addons/phone`, id `phone-access`), not installed by
+default and offered in Settings → Phone access. The owner wants the viewer to carry the viewer only, now that
+self-hosting made the feature large; the 2026-10-11 rule (add-ons carry their own code) applies again. What
+2026-11-12 built stays: the protocol in `src/wire`, the catalogue's generic half in `src/catalogue`, Local
+search as the catalogue's only builder. The core no longer links either; Local search's catalogue reaches the
+add-on through the host table (`catalogue_*`), and its card is a view tree both hosts draw, so its words exist
+once instead of twice. Phones already paired keep working: the NAS or this computer's `driftwire host` serves
+them on its own; the add-on reads the same OS secret-store items and the same feature folder (the library id)
+in place, nothing is copied or renamed. Plan: [phone-access-addon.md](../plans/phone-access-addon.md).
+
+**Phone access is part of the app, not an add-on (2026-11-12, owner; reversed 2026-11-14 above).** It pairs a phone, claims and
 manages the NAS service, serves nearby and keeps the publisher key with no add-on installed: the phone app
 is its own product and must work without Local search. This is a deliberate exception to the 2026-10-11
 rule that optional features ship as add-ons carrying their own code. The Driftwire protocol it needs moves
@@ -2167,6 +2179,22 @@ service's, and the relay's with the VPN on; 443 for the TLS look unless someone 
 with the code's mapping rules (#499: the gateway only, never another's forward taken over, short
 leases renewed while it runs, removed on stop, a ledger for a crash). Never SMB, RDP or another
 program's port. Built as `host_ports.*` (slice 4); behind carrier NAT it says that no forward helps.
+
+**The Phone access add-on carries `driftwire` for "This computer" (2026-11-14, owner: "Yes, ship it
+inside"; amends the row below).** The add-on's package has the program in `host/` (on Windows with the DLLs
+it loads), signed as the command line is (Developer ID and notarized on the Mac, Trusted Signing on
+Windows), and installs it into `<Phone access folder>/bin`, a place that survives add-on updates and that the
+start-at-login entry points at. Installing the add-on with one click is all "This computer" needs: no
+Homebrew or install.ps1 line. Still never the viewer's child: the card runs it, `host start-at-login on`
+registers it, launchd / Task Scheduler start it. **Updates:** a MediaViewer update never touches `bin`, so it
+never stops or replaces the running host. An add-on update copies the new files beside the old ones and
+renames them in, never writing over a running program (on Windows the running .exe and its DLLs are renamed
+aside first); the supervisor sees its program change and ends 75, and the login entry starts the new one, so
+phones see one reconnect. A separately installed command line keeps its own path and its own channel; the
+card runs the add-on's copy, and the login entry points at whichever program last ran
+`host start-at-login on`. Removing the add-on (any Remove but a reinstall) turns the login entry off when it
+runs the add-on's copy, which stops the host, and deletes `bin`; the shared folders, the host's data and the
+pairings stay. The Synology's signed package feed is unaffected. Plan: [phone-access-addon.md](../plans/phone-access-addon.md) §8.
 
 **The app runs an installed `driftwire` for "This computer" (2026-11-14, self-hosting slice 6; amends
 "the app never starts it", 2026-10-23).** Settings → Phone access → Set up the service… → **This

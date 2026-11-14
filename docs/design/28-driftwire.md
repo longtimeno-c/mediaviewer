@@ -477,8 +477,9 @@ session run end to end; the relay sees ciphertext only.
 
 ## Claiming and pairing (phone access)
 
-`src/phone/desk.*`, `wire/advert*`, the owner's half of `wire/serve.*`; plans `docs/plans/mobile.md`
-§7.2, §7.4, §7.5, `docs/plans/phone-in-the-app.md`. Phone access is the app's (`src/phone/link.*`
+`src/addons/phone/desk.*`, `wire/advert*`, the owner's half of `wire/serve.*`; plans `docs/plans/mobile.md`
+§7.2, §7.4, §7.5, `docs/plans/phone-in-the-app.md`, `docs/plans/phone-access-addon.md`. Since
+2026-11-14 Phone access is the `phone-access` add-on's (`src/addons/phone/link.*`
 via `route_request`, caller "phone"), items under "MediaViewer Phone access" (`desk::take_items`).
 
 **Claiming.** Only from the service's own network (`net::on_link`) and only while unowned (or for a
@@ -993,7 +994,7 @@ The protocol is `src/wire` (`mv_wire`, `cmake/wire.cmake`), linked by the app's 
 | Packaging | `cmake/driftwire-cli/` (`needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`, `repo/`), `packaging/windows/install.ps1`, `packaging/macos/driftwire.rb.in`, `tools/package/driftwire_repo.py`, `driftwire-windows.ps1`, `homebrew_formula.py`, `github-release.py`, `tools/mac/macpack.py cli`, `.github/actions/driftwire-cli-linux` |
 | Mac chrome | `Driftwire.swift`, `SlotItems.swift`, `ScreenView.swift`, `GalleryView.swift`, `FolderStore.swift`, `AddonNotices.swift` |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` |
-| Phone access | `src/phone/desk.*`, `wire/advert_{mac,win,none}.cpp` |
+| Phone access (the `phone-access` add-on) | `src/addons/phone/desk.*`, `wire/advert_{mac,win,none}.cpp` |
 | NAS service | `serve_wire.*`, `serve.*`, `serve_client.*`, `serve_backup.*`, `channel.*` (`open_library`, `read_library_hello`) |
 | Self-hosting (`driftwire host`) | `cli/host_cmd.*`, `cli/host_keepers.*`, `cli/host_setup.*`, `cli/qr.*`, `cli/host_control.*`, `cli/host_usage.*`, `cli/host_users.*`, `cli/host_drives*`, `cli/autostart*`, `cli/volume*`, `cli/elevate*`, `host_smb*`, `power::hold_for`; tests `test_driftwire_host*.cpp`, `test_host_users.cpp` |
 | Native hosts, notices | `src/shell/main_mac.mm`, `src/shell/main.cpp`, `src/shell/login_item_win.*`, `src/shell/addons_mac.mm`, `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |

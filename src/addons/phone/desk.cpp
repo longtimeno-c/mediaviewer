@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "phone/desk.h"
+#include "addons/phone/desk.h"
 
 #include <sodium.h>
 

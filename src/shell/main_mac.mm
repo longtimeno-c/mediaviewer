@@ -68,7 +68,6 @@
 #include "io/file_port.h"
 #include "io/in_flight.h"
 #include "io/verified_copy.h"
-#include "phone/app.h"
 #include "abi/host_tray_glue.h"
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
@@ -1805,14 +1804,6 @@ extern "C" int32_t mv_chrome_storage_report(char* buf, int32_t size) {
     extra.push_back({"crash_reports", std::move(crashes)});
   }
   return MvCopyOut(mv::io::storage_json(mv::io::measure_storage(extra)), buf, size);
-}
-// Settings -> Phone access (phone/app.h). [any-thread][no-block]
-extern "C" bool mv_chrome_phone_request(const char* request_json) {
-  if (!request_json) return false;
-  return mv::phone::app_request(request_json).has_value();
-}
-extern "C" int32_t mv_chrome_phone_state(char* buf, int32_t size) {
-  return MvCopyOut(mv::phone::app_state_json(), buf, size);
 }
 // [any-thread], a background task: deletes every cached thumbnail.
 extern "C" bool mv_chrome_thumb_cache_clear(void) {
@@ -4133,8 +4124,6 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
     MvAddonsSetFolderModel(&_folder);  // docs/design/25 PR 57: scripts with folder.read
     if (MvClaimAddonHost()) {
-      // Phone access (docs/plans/phone-in-the-app.md): this process runs it.
-      mv::phone::resume_app(true);
       // docs/plans/self-hosted.md "Tray": the host's rows in the menu-bar item
       // while `driftwire host` runs (a soak or a harness run measures the viewer).
       if (_options.soak_seconds <= 0.0 && !_options.harness) mv::abi::start_host_tray();
@@ -4144,7 +4133,6 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     } else {
       // A later window (2026-10-07): Local search through the AI pack's
       // read-only reader, started on the first ⌘F; nothing at launch.
-      mv::phone::resume_app(false);  // Phone access is the first window's
       MvAddonsStartReader(open_from_addon, nullptr);
     }
   }
@@ -16807,10 +16795,8 @@ static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #
   if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
   std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
   std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
-  // Phone access lets go of Local search before its pack stops, and of the
-  // NAS without waiting on it (phone/app.h).
-  mv::abi::stop_host_tray();  // never waits on a `host` verb in flight
-  mv::phone::stop_app();
+  // "Tray": the server menu goes first; it never waits on a `host` verb in flight.
+  mv::abi::stop_host_tray();
   // Add-on chromes shut down here, before their packs stop (below, off the
   // main thread): nothing may call a table whose add-on is gone. Nothing
   // here waits on a pack.

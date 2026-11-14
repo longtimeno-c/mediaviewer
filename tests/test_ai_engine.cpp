@@ -23,7 +23,7 @@
 
 #include "addons/ai/catalog.h"
 #include "catalogue/catalog_chain.h"
-#include "phone/link.h"
+#include "addons/phone/link.h"
 #include "addons/ai/nfc.h"
 #include "codec/decode.h"
 #include "catalogue/sha256.h"

@@ -748,9 +748,10 @@ reload after.
 
 ## Setting a phone up
 
-Owned by the app ([plan](../plans/phone-in-the-app.md)): Settings → Phone access
-(`PhoneAccessView.swift`, `IslandHost.Phone.cs`) drives `src/phone/link.cpp`, which calls the desk
-(`src/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)). Local search is the
+Owned by the Phone access add-on ([plan](../plans/phone-access-addon.md), 2026-11-14): its card
+(`src/addons/phone/screens.*`, drawn by both hosts) drives `src/addons/phone/link.cpp`, which calls
+the desk (`src/addons/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)) and
+reaches Local search through the host table's `catalogue_*` rows. Local search is the
 catalogue source: `phone_publish` builds generations signed with the app's publisher key
 (`catalogue/publisher.h`) under the library id and epoch in the share's `library.json`. `phone_json`
 gives id, epoch and newest generation folder. The pack's `phone_link` entries are null.

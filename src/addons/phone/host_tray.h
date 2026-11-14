@@ -29,7 +29,7 @@
 #include <string>
 #include <vector>
 
-#include "phone/self_host.h"
+#include "addons/phone/self_host.h"
 
 namespace mv::phone::host_tray {
 

@@ -26,8 +26,8 @@
 #include "addons/driftwire/cli/host_usage.h"
 #include "core/json.h"
 #include "import_fixture.h"
-#include "phone/host_tray.h"
-#include "phone/self_host.h"
+#include "addons/phone/host_tray.h"
+#include "addons/phone/self_host.h"
 #include "wire/net.h"
 #include "wire/serve_wire.h"
 

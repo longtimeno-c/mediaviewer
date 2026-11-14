@@ -5,7 +5,7 @@
 // failure rules; what changed is who owns what. The library's folder, id and
 // epoch are this feature's (state.json), the desk is called directly, and
 // Local search, when loaded, is a source of generations followed here.
-#include "phone/link.h"
+#include "addons/phone/link.h"
 
 #include <algorithm>
 #include <cctype>
@@ -417,6 +417,9 @@ void link::read_source() {
     any = static_cast<bool>(source_);
     if (any) text = source_.json();
   }
+  // The add-on's source asks the host (catalogue_json): "" while Local search
+  // is not loaded, which is no source at all.
+  if (text.empty()) any = false;
   const auto doc = any ? json::parse(text, 4) : std::nullopt;
   std::lock_guard lock(m_);
   pub_.source = any;

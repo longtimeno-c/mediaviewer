@@ -371,6 +371,7 @@ slot-only add-on names no `chrome`.
 | 11 | `editor_items` |
 | 12 | Screen place `"edit"` (`MV_SLOT_PLACE_EDIT`); `surface` `"fill"` and `open_list`; a `choice` option's `"disabled"` |
 | 13 | `progress` `detail` and `timed` |
+| 15 | `text_field` `"secure": true`: dots on screen, its value never kept in the tree, a snapshot, a log or a crash report (the Phone access add-on, 2026-11-14) |
 
 An add-on asks for the API of each addition it uses, so an older host says "needs a newer
 MediaViewer" instead of refusing the tree or showing a blank window.

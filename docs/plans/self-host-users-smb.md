@@ -192,9 +192,10 @@ as the router keeper's are. With no users: `LAN share   off (driftwire host user
 
 ## 8. The desktop: Users
 
-This is in Settings → Phone access → This computer, on both hosts (`PhoneAccessView.swift`, the
-WinUI card in `IslandHost.Phone.cs`). The session `phone-addon` is moving this card into an add-on;
-only its Users section is touched here, in its own view or method:
+This is in Settings → Phone access → This computer, on both hosts. Built first as `PhoneUsersView.swift`
+and `IslandHost.PhoneUsers.cs`; since the Phone access add-on (2026-11-14, `docs/plans/phone-access-addon.md`)
+it is the add-on's card, `users_rows` in `src/addons/phone/screens.cpp`, one copy for both hosts, the
+same rows and requests:
 
 1. Locked: one line, "Users can open your folders from other computers at home", and **Unlock as
    admin** (the passphrase field the card already has).

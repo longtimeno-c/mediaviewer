@@ -353,7 +353,13 @@ error check_props(node& n, std::size_t& items) {
                (key == "placeholder" && str_max(v, kMaxLabel)) ||
                (key == "multiline" && v.k == json::kind::boolean) ||
                (key == "pick" && one_of(v, {"folder"})) ||
-               (key == "look" && one_of(v, {"plain", "code"})) || (key == "digits" && int_in(v, 1, 12));
+               (key == "look" && one_of(v, {"plain", "code"})) || (key == "digits" && int_in(v, 1, 12)) ||
+               // "secure" (contribution API 15, 2026-11-14, Phone access): the host
+               // draws a secure field (SecureField, PasswordBox) for a passphrase or
+               // a token. Its value is never kept in the tree, so no snapshot, log
+               // or crash report holds it: a tree may only give it "" (below), and
+               // an event's value goes to the add-on and nowhere else (check_event).
+               (key == "secure" && v.k == json::kind::boolean);
           break;
         case node_type::progress:
           // "look": "ring" (#442): a circle that fills, `size` points across.
@@ -462,6 +468,15 @@ error check_props(node& n, std::size_t& items) {
       break;
     case node_type::link:
       if (!has("via") || !has("state")) return error::bad_prop;
+      break;
+    case node_type::text_field:
+      // A secure field (API 15) carries no value, and is one line, never a code entry.
+      if (p.boolean("secure").value_or(false)) {
+        const std::string* value = p.str("value");
+        if ((value && !value->empty()) || p.boolean("multiline").value_or(false) || has("pick") || has("look")) {
+          return error::bad_prop;
+        }
+      }
       break;
     default:
       break;
@@ -870,7 +885,8 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
           !plain(v->s, kMaxText, true)) {
         return error::bad_value;
       }
-      set_prop(n->props, "value", *v);
+      // A secure field's value goes to the add-on only: the tree never keeps it.
+      if (!n->props.boolean("secure").value_or(false)) set_prop(n->props, "value", *v);
       return error::none;
     case node_type::list:
     case node_type::table:

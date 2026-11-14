@@ -8,7 +8,7 @@
 
 #include "addon/slots.h"
 #include "core/trace.h"
-#include "phone/host_tray.h"
+#include "addons/phone/host_tray.h"
 
 namespace mv::abi {
 

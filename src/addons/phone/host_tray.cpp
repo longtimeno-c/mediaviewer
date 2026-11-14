@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "phone/host_tray.h"
+#include "addons/phone/host_tray.h"
 
 #include <chrono>
 #include <cstdio>
