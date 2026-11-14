@@ -233,7 +233,7 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 3. **DuckDNS keeper** (`ddns.*`, `"[ddns]"` against a loopback stand-in) and `host name duckdns`.
    **The keeper built 2026-11-14** (§12); `host name duckdns` is owed to slice 2's `host` command.
 4. **Router keeper** for the host's ports (reusing `mapping.*` against its stand-in routers), the
-   carrier-NAT message, the decision-log row.
+   carrier-NAT message, the decision-log row. **Built 2026-11-14** as a module (§12); `host` calls it in slice 2.
 5. **`host setup`** (the guided run) and `/host` in the interactive program; the QR in the terminal.
 6. **The desktop card's "This computer"** on Mac and Windows (both halves, D9), and the copy changes
    on the phone and desktop, demoable in SAMPLE.
@@ -336,3 +336,37 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   `address_changed` and `set_ipv6` calls (slice 4); the setup check's wording and retry (slice 5).
   Not run: the real `https_get` against duckdns.org (by design, never in CI), Windows and Linux
   builds of the module (portable C++ over `net::resolve`; CI's legs will build it).
+
+## 14. Slice 4, as built (2026-11-14)
+
+- **`host_ports::keeper`** (`src/addons/driftwire/host_ports.*`): given the host's ports (each with
+  an optional outside port and a fallback, e.g. the relay's TLS port at 443 falling back to its own),
+  it removes a crashed run's leftovers (the ledger), asks the router for each with `mapping::mapper`
+  (PCP → NAT-PMP → UPnP-IGD; an IGDv2 IPv6 pinhole at the internal port where this computer has a
+  public IPv6 address and PCP did not map it), and hands what it got to `mapping::keeper`, which
+  renews each 120 s lease every 60 s and removes everything when the host stops.
+- **The report** per port: mapped / refused / not offered (nobody answered), the method, the outside
+  port a phone dials; the router's outside IPv4 and its kind: public, double NAT (private),
+  carrier-grade NAT (100.64/10, and DS-Lite's 192.0.0/29) or "not public" (a non-public IPv6
+  outside address); 0.0.0.0 (a WAN that is down) is no address. The ledger is written as each forward
+  is made, so a crash mid-start leaves nothing unlisted. `mapping::mapper::last_outside()` is new for this: PCP's answer now tells the kinds apart.
+- **`host_ports::advice()`**: plain lines with no address. Carrier NAT: no forward helps, a relay on a
+  rented server is needed (§5.4), IPv6 noted if a pinhole opened; no hand-forward line then. Double
+  NAT: bridge mode or forward on both. A port not mapped: the one port to forward by hand (the
+  fallback for 443, "outside port 443 instead if nothing else uses it").
+- **The outside address is asked every minute** on the keeper's own thread (NAT-PMP, else UPnP); a new
+  public one calls `on_outside_changed` at once (the DuckDNS keeper's kick) with no dependency on `ddns.*`.
+- **Tests** `"[host-ports]"` (in `tests/test_driftwire_internet.cpp`, against its stand-in PCP,
+  NAT-PMP and UPnP routers on loopback): mapped, renewed and removed on stop; a UPnP forward and
+  pinhole removed and the ledger gone; someone else's 443 left alone and the fallback mapped; carrier
+  NAT from NAT-PMP and from PCP; double NAT; a silent router and its hand-forward lines; a changed
+  outside address told once, and a move behind carrier NAT followed. Mac only so far.
+- **Owed:** the host and the app's own receive over the internet share UPnP's description
+  ("MediaViewer Driftwire"), so on the same outside port one could renew or remove the other's
+  forward (unlikely: different ports); the IPv6 pinhole takes the first public IPv6 address, which
+  may be a temporary one that rotates; the call from `driftwire host` and `host status` (slice 2's session); a router that stops
+  renewing is not shown in the report (`mapping::keeper` retries quietly); a PCP-only router's outside
+  address is read once at start, not followed (NAT-PMP and UPnP are asked); moving the PC to another
+  network keeps the old gateway's forwards until the host restarts; the outside check (§5.3: the
+  DuckDNS name resolves to the outside address) belongs to the DuckDNS keeper; Windows CI runs the
+  tests once the branch is in a PR.

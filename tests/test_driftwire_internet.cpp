@@ -7,10 +7,12 @@
 #include "driftwire_fixture.h"
 
 #include "addons/driftwire/handover.h"
+#include "addons/driftwire/host_ports.h"
 #include "addons/driftwire/invite.h"
 #include "addons/driftwire/mapping.h"
 
 namespace mp = mv::driftwire::mapping;
+namespace hp = mv::driftwire::host_ports;
 
 namespace {
 
@@ -875,4 +877,249 @@ TEST_CASE("driftwire internet: failed rounds back off 1, 2, 5, 10, then 30 s", "
   CHECK(sp::backoff_ms(4) == 10000);
   CHECK(sp::backoff_ms(5) == 30000);
   CHECK(sp::backoff_ms(1000) == 30000);
+}
+
+// ---- the self-host's router keeper (docs/plans/self-hosted.md §5, slice 4) ------------------------
+
+namespace {
+
+hp::options host_on_loopback(std::uint16_t gateway_port, std::uint16_t ssdp_port = 9) {
+  hp::options o;
+  o.router = on_loopback(gateway_port, ssdp_port);
+  o.router.timeout_ms = 400;
+  return o;
+}
+
+bool deletes_pcp(std::span<const std::uint8_t> req) {
+  return req.size() >= 8 && req[4] == 0 && req[5] == 0 && req[6] == 0 && req[7] == 0;
+}
+
+// No line a log may carry names an address (rule 6).
+void no_addresses(const std::vector<std::string>& lines) {
+  for (const auto& l : lines) {
+    INFO(l);
+    CHECK(l.find("127.0.0.1") == std::string::npos);
+    CHECK(l.find("81.2.69") == std::string::npos);
+    CHECK(l.find("100.64") == std::string::npos);
+    CHECK(l.find("192.168") == std::string::npos);
+    CHECK(l.find("2a00:") == std::string::npos);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("host ports: outside addresses are told apart", "[driftwire][host-ports]") {
+  CHECK(hp::classify(addr("81.2.69.160")) == hp::outside_kind::public_address);
+  CHECK(hp::classify(addr("100.64.0.1")) == hp::outside_kind::carrier_nat);
+  CHECK(hp::classify(addr("100.127.255.254")) == hp::outside_kind::carrier_nat);
+  CHECK(hp::classify(addr("100.128.0.1")) == hp::outside_kind::public_address);
+  CHECK(hp::classify(addr("192.168.0.1")) == hp::outside_kind::double_nat);
+  CHECK(hp::classify(addr("10.1.2.3")) == hp::outside_kind::double_nat);
+  CHECK(hp::classify(addr("192.0.0.2")) == hp::outside_kind::carrier_nat);  // DS-Lite
+  CHECK(hp::classify(addr("192.0.0.9")) == hp::outside_kind::double_nat);
+  CHECK(hp::classify(addr("0.0.0.0")) == hp::outside_kind::unknown);       // a WAN that is down
+  CHECK(hp::classify(addr("2a00:1450:4009:81f::200e")) == hp::outside_kind::public_address);
+  CHECK(hp::classify(addr("fd00::1")) == hp::outside_kind::not_public);
+}
+
+TEST_CASE("host ports: the service and relay ports are mapped, renewed, and removed on stop", "[driftwire][host-ports]") {
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> maps{0}, deletes{0};
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    if (deletes_pcp(req)) {
+      ++deletes;
+    } else if (req.size() >= 60) {
+      ++maps;
+    }
+    return pcp_answer(req, outside, 0);
+  });
+  auto o = host_on_loopback(router.sock->port());
+  o.lease_s = 2;  // renewed every second
+  o.local_v6 = addr("2a00:1450:4009:81f::200e");
+  {
+    hp::keeper k({{.internal_port = 7878, .what = "service"}, {.internal_port = 8443, .what = "relay"}}, std::move(o));
+    const auto r = k.status();
+    REQUIRE(r.ports.size() == 2);
+    for (const auto& p : r.ports) {
+      CHECK(p.v4 == hp::port_state::mapped);
+      CHECK(p.how == mp::method::pcp);
+      CHECK(p.external_port == p.wanted.internal_port);
+      CHECK_FALSE(p.v6);  // PCP answered: no UPnP search for a pinhole (#499)
+      no_addresses(p.why);
+    }
+    CHECK(r.router_found);
+    CHECK(r.kind == hp::outside_kind::public_address);
+    REQUIRE(r.outside);
+    CHECK(*r.outside == outside);
+    CHECK(hp::advice(r).empty());
+    CHECK(maps.load() == 2);
+    CHECK(eventually([&] { return maps.load() >= 4; }, 10));
+    CHECK(deletes.load() == 0);
+  }
+  CHECK(deletes.load() == 2);
+}
+
+TEST_CASE("host ports: UPnP maps the port and an IPv6 pinhole, and removes both; the ledger goes", "[driftwire][host-ports]") {
+  upnp_router upnp;
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  scratch_dir dir("host_ports_ledger");
+  const std::string ledger = (dir / "router.ledger").string();
+  auto o = host_on_loopback((*quiet)->port(), upnp.ssdp->port());
+  o.ledger = ledger;
+  o.local_v6 = addr("2a00:1450:4009:81f::200e");
+  {
+    hp::keeper k({{.internal_port = 7878, .what = "service"}}, std::move(o));
+    const auto r = k.status();
+    REQUIRE(r.ports.size() == 1);
+    CHECK(r.ports[0].v4 == hp::port_state::mapped);
+    CHECK(r.ports[0].how == mp::method::upnp);
+    CHECK(r.ports[0].external_port == 7878);
+    CHECK(r.ports[0].v6 == hp::port_state::mapped);
+    CHECK(r.kind == hp::outside_kind::public_address);
+    CHECK(std::filesystem::exists(ledger));  // a crash now: the next start removes them
+    const auto listed = mp::parse_ledger([&] {
+      std::ifstream f(ledger, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }());
+    REQUIRE(listed);
+    CHECK(listed->second.size() == 2);  // the forward and the pinhole
+  }
+  CHECK_FALSE(std::filesystem::exists(ledger));
+  const auto seen = upnp.seen();
+  auto count = [&](const char* op) {
+    return std::count_if(seen.begin(), seen.end(), [&](const std::string& s) { return s.find(op) != std::string::npos; });
+  };
+  CHECK(count("#AddPortMapping") == 1);
+  CHECK(count("#AddPinhole") == 1);
+  CHECK(count("#DeletePortMapping") == 1);
+  CHECK(count("#DeletePinhole") == 1);
+}
+
+TEST_CASE("host ports: the relay's 443 that someone else forwards is left alone and its own port asked instead",
+          "[driftwire][host-ports]") {
+  upnp_router upnp;
+  upnp.igd2 = false;
+  upnp.existing_443 = "192.168.1.50";  // the person's own web server
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  hp::keeper k({{.internal_port = 8443, .external_port = 443, .fallback_external = 8443, .v6 = false, .what = "relay"}},
+               host_on_loopback((*quiet)->port(), upnp.ssdp->port()));
+  const auto r = k.status();
+  REQUIRE(r.ports.size() == 1);
+  CHECK(r.ports[0].v4 == hp::port_state::mapped);
+  CHECK(r.ports[0].external_port == 8443);
+  const auto seen = upnp.seen();
+  // One AddPortMapping (for 8443): 443 was looked up and never asked for.
+  CHECK(std::count_if(seen.begin(), seen.end(), [](const std::string& s) { return s.find("#AddPortMapping") != std::string::npos; }) == 1);
+}
+
+TEST_CASE("host ports: carrier-grade NAT is named, and no forward is offered as the fix", "[driftwire][host-ports]") {
+  SECTION("NAT-PMP says the address") {
+    const auto cgnat = addr("100.64.12.34");
+    udp_router router([&](std::span<const std::uint8_t> req) { return nat_pmp_answer(req, cgnat); });
+    hp::keeper k({{.internal_port = 7878, .what = "service"}}, host_on_loopback(router.sock->port()));
+    const auto r = k.status();
+    CHECK(r.ports[0].v4 == hp::port_state::refused);
+    CHECK(r.kind == hp::outside_kind::carrier_nat);
+    const auto a = hp::advice(r);
+    REQUIRE_FALSE(a.empty());
+    CHECK(a[0].find("carrier-grade NAT") != std::string::npos);
+    CHECK(std::any_of(a.begin(), a.end(), [](const std::string& l) { return l.find("rented server") != std::string::npos; }));
+    CHECK(std::none_of(a.begin(), a.end(), [](const std::string& l) { return l.find("Forward") != std::string::npos; }));
+    no_addresses(a);
+    no_addresses(r.ports[0].why);
+  }
+  SECTION("PCP's answer says it") {
+    const auto cgnat = addr("100.64.12.34");
+    std::atomic<int> deletes{0};
+    udp_router router([&](std::span<const std::uint8_t> req) {
+      if (deletes_pcp(req)) ++deletes;
+      return pcp_answer(req, cgnat, 0);
+    });
+    {
+      hp::keeper k({{.internal_port = 7878, .what = "service"}}, host_on_loopback(router.sock->port()));
+      CHECK(k.status().kind == hp::outside_kind::carrier_nat);
+      CHECK(k.status().ports[0].v4 == hp::port_state::refused);
+      CHECK(deletes.load() == 1);  // the mapping a non-public address got is not kept
+    }
+    CHECK(deletes.load() == 1);  // nothing held, nothing more to remove
+  }
+}
+
+TEST_CASE("host ports: double NAT is named, with the port to forward", "[driftwire][host-ports]") {
+  const auto inner = addr("192.168.0.2");
+  udp_router router([&](std::span<const std::uint8_t> req) { return nat_pmp_answer(req, inner); });
+  hp::keeper k({{.internal_port = 7878, .what = "service"}}, host_on_loopback(router.sock->port()));
+  const auto r = k.status();
+  CHECK(r.kind == hp::outside_kind::double_nat);
+  CHECK(r.ports[0].v4 == hp::port_state::refused);
+  const auto a = hp::advice(r);
+  REQUIRE(a.size() == 2);
+  CHECK(a[0].find("double NAT") != std::string::npos);
+  CHECK(a[1] == "Forward TCP port 7878 on your router to this computer (the service).");
+  no_addresses(a);
+}
+
+TEST_CASE("host ports: a router that offers nothing gets the one port to forward by hand", "[driftwire][host-ports]") {
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  hp::keeper k({{.internal_port = 7878, .what = "service"},
+                {.internal_port = 8443, .external_port = 443, .fallback_external = 8443, .what = "relay"}},
+               host_on_loopback((*quiet)->port()));
+  const auto r = k.status();
+  REQUIRE(r.ports.size() == 2);
+  CHECK(r.ports[0].v4 == hp::port_state::not_offered);
+  CHECK(r.ports[1].v4 == hp::port_state::not_offered);
+  CHECK(r.kind == hp::outside_kind::unknown);
+  CHECK_FALSE(r.outside);
+  const auto a = hp::advice(r);
+  REQUIRE(a.size() == 3);
+  CHECK(a[0].find("did not answer") != std::string::npos);
+  CHECK(a[1] == "Forward TCP port 7878 on your router to this computer (the service).");
+  CHECK(a[2] == "Forward TCP port 8443 on your router to this computer (the relay); outside port 443 instead if "
+                "nothing else uses it.");
+  no_addresses(a);
+}
+
+TEST_CASE("host ports: a new outside address is told at once", "[driftwire][host-ports]") {
+  std::mutex m;
+  auto outside = addr("81.2.69.160");
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    std::lock_guard lock(m);
+    return nat_pmp_answer(req, outside);
+  });
+  std::mutex seen_m;
+  std::vector<sp::net::address> told;
+  auto o = host_on_loopback(router.sock->port());
+  o.check_every_ms = 100;
+  o.on_outside_changed = [&](const sp::net::address& a) {
+    std::lock_guard lock(seen_m);
+    told.push_back(a);
+  };
+  hp::keeper k({{.internal_port = 7878, .what = "service"}}, std::move(o));
+  CHECK(k.status().ports[0].v4 == hp::port_state::mapped);
+  CHECK(k.status().ports[0].external_port == 40001);  // the stand-in's choice, kept (no fallback)
+  std::this_thread::sleep_for(std::chrono::milliseconds(350));
+  {
+    std::lock_guard lock(seen_m);
+    CHECK(told.empty());  // the same address: nothing to tell
+  }
+  {
+    std::lock_guard lock(m);
+    outside = addr("81.2.69.161");
+  }
+  CHECK(eventually([&] {
+    std::lock_guard lock(seen_m);
+    return told.size() == 1 && told[0] == addr("81.2.69.161");
+  }, 5));
+  CHECK(*k.status().outside == addr("81.2.69.161"));
+  {
+    std::lock_guard lock(m);
+    outside = addr("100.64.0.9");  // the provider moved the home behind its NAT
+  }
+  CHECK(eventually([&] { return k.status().kind == hp::outside_kind::carrier_nat; }, 5));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::lock_guard lock(seen_m);
+  CHECK(told.size() == 1);  // carrier NAT's address is never told (a name must not point there)
 }
