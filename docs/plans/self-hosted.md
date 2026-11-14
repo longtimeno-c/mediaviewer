@@ -5,6 +5,8 @@ going to do on one's own PC, from the `driftwire` command line: **host the VPN**
 **host a NAS** (open one of the PC's drives to the phone the way the Synology would have), and **build
 DuckDNS in** so a home address that changes still has a name the phone and laptop can find, simple
 enough for someone who has never forwarded a port. Not built; this maps it out. Owner calls are in §9.
+**A Synology stays supported** (owner, 2026-11-14: "synology is good to support"): self-hosting is a
+second way to run the same service, beside the NAS, not a replacement for it.
 
 ## 1. The good news: almost nothing is Synology code
 
@@ -199,13 +201,16 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
   (the manual guide).
 - The phone's sample library shows a "server" whose kind is "a computer" so the copy change is
   demoable through SAMPLE (owner's rule, 2026-11-12).
-- **The Synology work is paused, not removed** (§9 call 1): the SPK and its tests stay; S5's real-unit
-  checks wait for a unit.
+- **A Synology stays a supported choice** (§9 call 1): the setup card, the SPK, its updates and the
+  docs keep it; "your server" covers both, and the Synology's own words stay in its guide and wherever
+  the text is about a NAS.
 
 ## 9. Owner calls (answered 2026-11-14: "use recommendations")
 
-1. **The Synology path is paused**, not removed: the SPK, its tests and the plan stay; S5's real-unit
-   checks wait for a unit.
+1. **Both are supported** (owner, 2026-11-14, replacing the first answer "paused"): a Synology
+   (`nas-setup.md`, the SPK, signed updates) and this computer (`driftwire host`) are equal choices in
+   the setup card and the docs. `nas-setup.md` work continues; only S5's real-unit checks wait, until
+   the owner has a working unit to try them on.
 2. **The host may map router ports** for its own ports only, short leases removed on stop. This
    reverses "serve never touches a router's mapping" for the host; the decision-log row lands with
    slice 4, which builds it.
