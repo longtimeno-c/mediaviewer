@@ -167,3 +167,39 @@ the service says.
 > *remote first pixel* (tile, cold), *remote full resolution* and *remote arrow-to-next* (cached
 > neighbour, cold) over loopback. Local folders are not slower: `--browse-soak` and the local
 > `[.perf-bench]` rows, base vs new, alternated, same machine. Both present-loop gates hold.
+
+## 9. As built (2026-11-14, draft PR on `claude/self-host-integration`)
+
+- **Core** `src/remote` as §4; the phone's `link.*` / `link_payload.*` shared through the
+  `mv_mobile_route` OBJECT library (its objects go into `libmv_mobile_link.a` too, so the iOS project
+  is unchanged; `mv_mobile_link_tests "[mobile-link]"` passes, 51 cases). Each folder's last listing
+  is kept on disk (`<cache>/<server>/listings/`), so an unreachable server shows the folder as it
+  was and what was fetched still opens. The head-read tile is for RAWs only: a JPEG cut at 1 MiB
+  decoded to a wrong picture (found by the bench). The 8 most recently used originals are never
+  trimmed (the one on screen and its ±2); tiles are not capped yet (a few tens of KiB each, cleared
+  with Forget).
+- **Mac**: File → Connect to a Server… (paste, then the fingerprint to compare, then connect on a
+  worker), the server rows above the tree in `FolderTreeView.swift` (expand to folders, Forget in
+  the context menu), a folder opens as a virtual list (`folder_model` now takes one provider per
+  prefix), an item shows its tile then its original, the ±2 fetched behind it (clips over 256 MiB
+  wait), `write_guard` refuses every write on a `remote:` key or the cache with its own words.
+  Bridge: `mv_chrome_remote_*`; `mv_chrome_remote_pair(code)` is the hook for the Phone access add-on.
+- **Windows**: `mv_folder_open` / `mv_list_subdirectories` take a folder key; the session's thumb job
+  makes the tile, its decode job shows the tile then fetches the original (neighbours: stills up to
+  256 MiB), `mv_remote_*` (ABI 0.42) for the C# tree's rows and its paste-to-connect panel
+  (`IslandHost.Remote.cs`). Native `open_folder` skips siblings and the trail for a key.
+- **Measured** (Mac, Release, loopback, `mv_tests "[.desktop-client-perf]"`, 12 JPEGs 4032×3024,
+  9.9 MiB each, three runs): list 5.0–6.9 ms; **remote first pixel (tile, cold) 79–88 ms**; remote
+  full resolution (tile, fetch, full decode, cold) 139–155 ms; **arrow to a prefetched neighbour
+  56–60 ms**, to a cold one 78–87 ms; the same files from the local disk: first pixel 52–57 ms, full
+  59–64 ms. Local folders, base vs new alternated on the same machine (other sessions were building,
+  so these are noisy): `--browse-soak` on 40 local JPEGs, five base and three new runs, no timeouts,
+  cold arrow medians base 80–138 ms / new 88–108 ms, warm base 0.27–0.41 ms / new 0.35–0.38 ms
+  (overlapping); `mv_tests "[.perf-bench]"` decode and list rows overlapping (base 128–200 ms, new
+  153–200 ms for the 24 MP decode). The local paths gain one prefix compare per selection.
+- **Owed**: either host driven on screen against a real `driftwire host` (the Mac half is built and
+  its core tested; the Windows native half is compiled only in CI, the C# compiled here); the
+  Windows "Downloading… %" notice (the Mac shows it); streaming playback through `read_range` (a
+  clip plays once fetched); write access with #686 §2's roles (`smb-users`' #690 has no per-device
+  role yet: proposed `grant_role` in caps); a desktop link for `mediaviewer://pair`; a run against a
+  Synology; both present-loop gates (the change does not touch the present loop; not re-run).
