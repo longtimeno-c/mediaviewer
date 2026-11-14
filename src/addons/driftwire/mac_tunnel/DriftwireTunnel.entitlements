@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- OWED: Apple grants the Network Extension capability (packet-tunnel-provider,
-     Developer ID: "-systemextension") to the signing team on request. Until it is
-     on the team's profile this file cannot be signed with, and the extension is
-     not built or embedded (MV_DRIFTWIRE_PACKET_TUNNEL=OFF). Never faked. -->
+<!-- The Network Extension capability (packet-tunnel-provider; Developer ID:
+     "-systemextension") is ticked on the extension's App ID by the team, and macOS
+     loads the extension only with that App ID's Developer ID provisioning profile
+     embedded (macpack.py release, its tunnel profile option; RELEASING.md). Without the
+     profiles the extension is not built (MV_DRIFTWIRE_PACKET_TUNNEL=OFF). -->
 <plist version="1.0">
 <dict>
   <key>com.apple.developer.networking.networkextension</key>

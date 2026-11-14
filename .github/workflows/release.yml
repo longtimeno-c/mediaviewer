@@ -602,6 +602,9 @@ jobs:
       # docs/design/23: the Final Cut Pro agent's Mach service and the extension's app
       # group are named under the team that signs the app.
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # Driftwire VPN: its system extension is built only when both Developer ID
+      # provisioning profiles are secrets (macOS loads it only with them).
+      MV_VPN_PROFILES: ${{ secrets.MV_APP_PROVISION_PROFILE_B64 != '' && secrets.MV_TUNNEL_PROVISION_PROFILE_B64 != '' && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -679,6 +682,9 @@ jobs:
           # Both legs: the app compiles the agent's name on both architectures.
           if [ -n "${APPLE_TEAM_ID:-}" ]; then
             args+=(-DMV_FCP_TEAM_ID="$APPLE_TEAM_ID")
+          fi
+          if [ "$MODE" != "artifacts" ] && [ -n "$MV_VPN_PROFILES" ]; then
+            args+=(-DMV_DRIFTWIRE_PACKET_TUNNEL=ON)
           fi
           cmake -S . -B build "${args[@]}"
 
@@ -867,6 +873,10 @@ jobs:
           # #501: Driftwire's keychain app group is "<team>.<bundle id>.driftwire".
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WHATS_NEW_B64: ${{ needs.prepare.outputs.whats_new }}
+          # Driftwire VPN: the app's and the extension's Developer ID profiles
+          # (docs/DEVELOPMENT.md, "The VPN's provisioning profiles").
+          APP_PROFILE_B64: ${{ secrets.MV_APP_PROVISION_PROFILE_B64 }}
+          TUNNEL_PROFILE_B64: ${{ secrets.MV_TUNNEL_PROVISION_PROFILE_B64 }}
         run: |
           args=(--app build/universal/MediaViewer.app --out-dir build/release)
           # #620: "What's new", embedded in the signed appcast as the item's
@@ -881,6 +891,12 @@ jobs:
                    --sparkle-bin "$RUNNER_TEMP/sparkle/bin"
                    --sparkle-key-file "$RUNNER_TEMP/sparkle.key"
                    --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/")
+            if [ -n "$APP_PROFILE_B64" ] && [ -n "$TUNNEL_PROFILE_B64" ]; then
+              printf '%s' "$APP_PROFILE_B64" | base64 --decode > "$RUNNER_TEMP/app.provisionprofile"
+              printf '%s' "$TUNNEL_PROFILE_B64" | base64 --decode > "$RUNNER_TEMP/tunnel.provisionprofile"
+              args+=(--app-profile "$RUNNER_TEMP/app.provisionprofile"
+                     --tunnel-profile "$RUNNER_TEMP/tunnel.provisionprofile")
+            fi
           else
             args+=(--identity - --skip-notarize --allow-no-updater)
           fi

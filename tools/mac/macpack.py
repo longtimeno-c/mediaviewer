@@ -41,6 +41,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -55,13 +56,25 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Driftwire VPN (the Tunnel's slice 5): the packet tunnel provider, a system
 # extension in Contents/Library/SystemExtensions, embedded only from a build
 # with -DMV_DRIFTWIRE_PACKET_TUNNEL=ON. Its Network Extension entitlement must
-# be on the team's Developer ID profile (Apple grants it): a release signs it
-# with TUNNEL_ENTITLEMENTS; an ad hoc assemble cannot carry that restricted
-# entitlement, so its copy is signed without it and macOS will not load it.
+# be granted by the extension's Developer ID profile (the team ticks it on the
+# App ID): a release embeds that profile and signs with TUNNEL_ENTITLEMENTS; an
+# ad hoc assemble cannot carry that restricted entitlement, so its copy is
+# signed without it and macOS will not load it.
 TUNNEL_SYSEXT_NAME = "DriftwireTunnel"
 TUNNEL_ENTITLEMENTS = REPO_ROOT / "src" / "addons" / "driftwire" / "mac_tunnel" / "DriftwireTunnel.entitlements"
 SYSEXT_INSTALL = "com.apple.developer.system-extension.install"
 NETWORK_EXTENSION = "com.apple.developer.networking.networkextension"
+PACKET_TUNNEL = "packet-tunnel-provider-systemextension"
+# Outside the App Store, macOS runs a bundle that claims a restricted
+# entitlement (the two above) only with a Developer ID provisioning profile
+# embedded that grants it: one for the app, one for the extension, each made
+# for its own explicit App ID (docs/DEVELOPMENT.md, "The VPN's provisioning
+# profiles"). A release with the extension inside refuses to sign without them.
+PROVISION_NAME = "embedded.provisionprofile"
+APP_ID_KEY = "com.apple.application-identifier"
+TEAM_ID_KEY = "com.apple.developer.team-identifier"
+APP_PROFILE_NEEDS = {SYSEXT_INSTALL: True, NETWORK_EXTENSION: [PACKET_TUNNEL]}
+TUNNEL_PROFILE_NEEDS = {NETWORK_EXTENSION: [PACKET_TUNNEL]}
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no macOS needed): tested by tools/mac/test_macpack.py.
@@ -522,11 +535,98 @@ def embed_tunnel(contents: Path, exe: Path, plist: Path) -> Path:
     return target
 
 
-def app_entitlements(app: Path, team_id: str | None, into: Path) -> Path:
+def read_profile(path: Path) -> dict:
+    """A provisioning profile's plist, from inside its CMS signature."""
+    # Not run(): `security` may warn on stderr, which must not reach the plist.
+    proc = subprocess.run(["security", "cms", "-D", "-i", str(path)], check=False,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if proc.returncode != 0 or not proc.stdout:
+        raise SystemExit(f"macpack: {path.name} is not a provisioning profile")
+    try:
+        return plistlib.loads(proc.stdout)
+    except plistlib.InvalidFileException:
+        raise SystemExit(f"macpack: {path.name} is not a provisioning profile") from None
+
+
+def profile_problem(profile: dict, team_id: str, bundle_id: str, needs: dict,
+                    now: datetime | None = None) -> str | None:
+    """Why `profile` cannot sign `bundle_id` for `team_id` with the
+    entitlements in `needs` (a value, or a list the profile's list must
+    hold), or None. Pure; tested."""
+    name = repr(profile.get("Name", "the profile"))
+    teams = profile.get("TeamIdentifier") or []
+    if team_id not in teams:
+        return f"{name} belongs to team {', '.join(teams) or '(none)'}, not {team_id}"
+    if not profile.get("ProvisionsAllDevices"):
+        return f"{name} lists devices: make a Developer ID profile (Distribution > Developer ID)"
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # plistlib dates are naive UTC
+    expires = profile.get("ExpirationDate")
+    if not isinstance(expires, datetime) or expires <= now:
+        return f"{name} has expired: download a new one"
+    ent = profile.get("Entitlements") or {}
+    want_id = f"{team_id}.{bundle_id}"
+    if ent.get(APP_ID_KEY) != want_id:
+        return f"{name} is for {ent.get(APP_ID_KEY)!r}, not {want_id!r} (an explicit App ID, no wildcard)"
+    for key, want in needs.items():
+        have = ent.get(key)
+        if isinstance(want, list):
+            missing = [w for w in want if not isinstance(have, list) or w not in have]
+            if missing:
+                return f"{name} does not grant {key} {', '.join(missing)}: tick it on the App ID, then remake the profile"
+        elif have != want:
+            return f"{name} does not grant {key}: tick it on the App ID, then remake the profile"
+    return None
+
+
+def bundle_id_of(bundle: Path) -> str:
+    with open(bundle / "Contents" / "Info.plist", "rb") as f:
+        return plistlib.load(f)["CFBundleIdentifier"]
+
+
+def check_profiles(app: Path, team_id: str | None, app_profile: Path | None,
+                   tunnel_profile: Path | None,
+                   read: Callable[[Path], dict] = read_profile) -> None:
+    """A Developer ID release with the VPN's extension inside needs both
+    profiles, each right for its bundle; one without the extension takes
+    none. Stops the release with the reason, before anything is signed."""
+    sysexts = tunnel_sysexts(app)
+    if not sysexts:
+        if app_profile or tunnel_profile:
+            raise SystemExit("macpack: provisioning profiles given, but this build has no VPN extension "
+                             "(configure with -DMV_DRIFTWIRE_PACKET_TUNNEL=ON)")
+        return
+    if not team_id or not app_profile or not tunnel_profile:
+        raise SystemExit("macpack: this build carries the VPN's system extension, which macOS loads only "
+                         "with Developer ID provisioning profiles: pass --team-id, --app-profile and "
+                         "--tunnel-profile (docs/DEVELOPMENT.md, \"The VPN's provisioning profiles\"), "
+                         "or build without -DMV_DRIFTWIRE_PACKET_TUNNEL")
+    for path, bundle, needs in ((app_profile, app, APP_PROFILE_NEEDS),
+                                (tunnel_profile, sysexts[0], TUNNEL_PROFILE_NEEDS)):
+        if not path.is_file():
+            raise SystemExit(f"macpack: {path} not found")
+        problem = profile_problem(read(path), team_id, bundle_id_of(bundle), needs)
+        if problem:
+            raise SystemExit(f"macpack: {path.name}: {problem}")
+
+
+def tunnel_entitlements(sysext: Path, team_id: str, into: Path) -> Path:
+    """TUNNEL_ENTITLEMENTS plus the extension's App ID and team, as its
+    profile grants them (written to `into`)."""
+    with open(TUNNEL_ENTITLEMENTS, "rb") as f:
+        ent = plistlib.load(f)
+    ent[APP_ID_KEY] = f"{team_id}.{bundle_id_of(sysext)}"
+    ent[TEAM_ID_KEY] = team_id
+    with open(into, "wb") as f:
+        plistlib.dump(ent, f)
+    return into
+
+
+def app_entitlements(app: Path, team_id: str | None, into: Path, profiled: bool = False) -> Path:
     """The app's entitlements file to sign with: APP_ENTITLEMENTS, plus
     Driftwire's app group when the team is known (written to `into`), and
     with the VPN's system extension inside, the right to install it and the
-    packet tunnel's Network Extension value."""
+    packet tunnel's Network Extension value. `profiled`: a profile is embedded,
+    so the App ID and team it grants are claimed too."""
     if not team_id:
         return APP_ENTITLEMENTS
     if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
@@ -538,14 +638,18 @@ def app_entitlements(app: Path, team_id: str | None, into: Path) -> Path:
     ent[APP_GROUPS] = [f"{team_id}.{bundle_id}{DRIFTWIRE_GROUP_SUFFIX}"]
     if tunnel_sysexts(app):
         ent[SYSEXT_INSTALL] = True
-        ent[NETWORK_EXTENSION] = ["packet-tunnel-provider-systemextension"]
+        ent[NETWORK_EXTENSION] = [PACKET_TUNNEL]
+    if profiled:
+        ent[APP_ID_KEY] = f"{team_id}.{bundle_id}"
+        ent[TEAM_ID_KEY] = team_id
     with open(into, "wb") as f:
         plistlib.dump(ent, f)
     return into
 
 
 def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
-             fcp_appex_entitlements: Path | None = None, team_id: str | None = None) -> None:
+             fcp_appex_entitlements: Path | None = None, team_id: str | None = None,
+             app_profile: Path | None = None, tunnel_profile: Path | None = None) -> None:
     """Inside out: every nested binary before the bundle that seals it. No
     --deep: it signs everything with one set of options, which is wrong for
     the sandboxed extension.
@@ -555,7 +659,9 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
     keeps the ones it already carries. lipo_merge copies it untouched (arm64
     only), so the assemble signature and its entitlements survive to the
     release. The search agent is the app's own executable, signed with it.
-    `team_id`: the app also gets Driftwire's app group (app_entitlements)."""
+    `team_id`: the app also gets Driftwire's app group (app_entitlements).
+    `app_profile` / `tunnel_profile` (checked by check_profiles first): each is
+    embedded in its bundle before that bundle is signed, with its App ID."""
     frameworks = app / "Contents" / "Frameworks"
     for dylib in sorted(frameworks.glob("*.dylib")):
         codesign(dylib, identity, hardened)
@@ -580,12 +686,20 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
                  preserve_entitlements=fcp_appex_entitlements is None)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
-    for sysext in tunnel_sysexts(app):
-        # The Network Extension entitlement only with the team that holds it.
-        codesign(sysext, identity, hardened, entitlements=TUNNEL_ENTITLEMENTS if team_id else None)
     with tempfile.TemporaryDirectory() as tmp:
+        for sysext in tunnel_sysexts(app):
+            # The Network Extension entitlement only with the team that holds it.
+            ent = TUNNEL_ENTITLEMENTS if team_id else None
+            if tunnel_profile and team_id:
+                shutil.copyfile(tunnel_profile, sysext / "Contents" / PROVISION_NAME)
+                ent = tunnel_entitlements(sysext, team_id, Path(tmp) / "DriftwireTunnel.entitlements")
+            codesign(sysext, identity, hardened, entitlements=ent)
+        profiled = bool(app_profile and team_id)
+        if profiled:
+            shutil.copyfile(app_profile, app / "Contents" / PROVISION_NAME)
         codesign(app, identity, hardened,
-                 entitlements=app_entitlements(app, team_id, Path(tmp) / "MediaViewer.entitlements"))
+                 entitlements=app_entitlements(app, team_id, Path(tmp) / "MediaViewer.entitlements",
+                                               profiled=profiled))
     run(["codesign", "--verify", "--strict", "--deep", "--verbose=2", str(app)])
 
 
@@ -787,12 +901,20 @@ def cmd_release(args: argparse.Namespace) -> None:
                          "anyone else's machine must be able to update. --allow-no-updater "
                          "overrides for a private test build.")
 
+    app_profile = Path(args.app_profile) if getattr(args, "app_profile", None) else None
+    tunnel_profile = Path(args.tunnel_profile) if getattr(args, "tunnel_profile", None) else None
+    if args.identity != "-":
+        check_profiles(app, team_id, app_profile, tunnel_profile)
+    elif app_profile or tunnel_profile:
+        raise SystemExit("macpack: an ad hoc build cannot use provisioning profiles; sign with Developer ID")
+
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     entitlements = REPO_ROOT / "packaging" / "macos" / "QuickLook.entitlements"
 
     # 1. Developer ID + hardened runtime, inside out.
-    sign_app(app, identity=args.identity, appex_entitlements=entitlements, hardened=True, team_id=team_id)
+    sign_app(app, identity=args.identity, appex_entitlements=entitlements, hardened=True, team_id=team_id,
+             app_profile=app_profile, tunnel_profile=tunnel_profile)
 
     # 2. Notarize and staple the app itself, so a copy dragged out of the image
     #    opens offline too.
@@ -898,6 +1020,12 @@ def main(argv: list[str]) -> None:
                    help="`xcrun notarytool store-credentials` profile (or $MV_NOTARY_PROFILE)")
     r.add_argument("--team-id", default=os.environ.get("APPLE_TEAM_ID") or None,
                    help="the signing team (or $APPLE_TEAM_ID): prefixes Driftwire's app group")
+    r.add_argument("--app-profile", default=os.environ.get("MV_APP_PROVISION_PROFILE") or None,
+                   help="the app's Developer ID provisioning profile, needed when the VPN's extension "
+                        "is inside (or $MV_APP_PROVISION_PROFILE)")
+    r.add_argument("--tunnel-profile", default=os.environ.get("MV_TUNNEL_PROVISION_PROFILE") or None,
+                   help="the extension's (<bundle id>.DriftwireTunnel) Developer ID provisioning profile "
+                        "(or $MV_TUNNEL_PROVISION_PROFILE)")
     r.add_argument("--out-dir", default="build/release")
     r.add_argument("--skip-notarize", action="store_true", help="local dry run only")
     r.add_argument("--allow-no-updater", action="store_true")
