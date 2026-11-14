@@ -95,6 +95,11 @@ internal sealed class PeopleGrid
     private bool _loadAgain;
     // Read again the next time Settings shows it (nothing reads while hidden).
     private bool _stale = true;
+    // A read that landed while a name was being typed: applied when the edit ends.
+    private List<PersonVm>? _held;
+    // Names shown but not yet written (person_rename on a worker): a read that
+    // started before the write must not put the old name back.
+    private readonly Dictionary<ulong, string> _renames = new();
     private PersonSheet? _sheet;
 
     private static readonly string[] ScopeNames = { "This folder", "+ Subfolders" };
@@ -459,23 +464,45 @@ internal sealed class PeopleGrid
     /// The new list, changed in place where it can be: a rebuilt grid loses
     /// its scroll and crops every time a face lands.
     /// </summary>
+    /// <remarks>
+    /// While faces stream in, people reorder (most photos first) on nearly every
+    /// read. Clearing the list rebuilt every card twice a second: the grid
+    /// flickered, and a name being typed was thrown away. Now each person keeps
+    /// their Slot and card; only those that changed place are moved, and while
+    /// a name is being typed the read waits until the edit ends.
+    /// </remarks>
     private void Apply(List<PersonVm> people)
     {
-        if (All.Select(p => p.Id).SequenceEqual(people.Select(p => p.Id)))
+        // A name not yet written wins over a read that started before it.
+        if (_renames.Count > 0)
         {
-            for (int i = 0; i < people.Count; ++i)
+            people = people.Select(p => _renames.TryGetValue(p.Id, out string? n) ? p with { Name = n } : p).ToList();
+        }
+        if (Editing)
+        {
+            _held = people;
+            return;
+        }
+        _held = null;
+        var slots = new Dictionary<ulong, Slot>();
+        foreach (Slot s in _items) slots.TryAdd(s.P.Id, s);
+        var want = new List<Slot>(people.Count);
+        foreach (PersonVm p in people)
+        {
+            if (slots.Remove(p.Id, out Slot? s))
             {
-                if (!SameValues(_items[i].P, people[i])) Set(_items[i], people[i]);
+                if (!SameValues(s.P, p)) Set(s, p);
             }
+            else
+            {
+                s = new Slot(p);
+            }
+            want.Add(s);
         }
-        else
-        {
-            _applying = true;
-            _items.Clear();
-            foreach (PersonVm p in people) _items.Add(new Slot(p));
-            _applying = false;
-            SyncVisible();
-        }
+        _applying = true;
+        Reconcile(_items, want);
+        _applying = false;
+        SyncVisible();
         // A merged or regrouped person leaves the selection with the grid.
         _selection.IntersectWith(All.Select(p => p.Id));
         if (_opening != 0 && All.All(p => p.Id != _opening)) _opening = 0;
@@ -486,15 +513,26 @@ internal sealed class PeopleGrid
     /// <summary>The repeater follows _items, cut to FirstShown until "Show all".</summary>
     private void SyncVisible()
     {
-        IEnumerable<Slot> want = _showAll ? _items : _items.Take(FirstShown);
-        if (!_visible.SequenceEqual(want))
-        {
-            _visible.Clear();
-            foreach (Slot s in want) _visible.Add(s);
-        }
+        List<Slot> want = (_showAll ? _items : _items.Take(FirstShown)).ToList();
+        if (!_visible.SequenceEqual(want)) Reconcile(_visible, want);
         int n = _items.Count;
         _more.Visibility = n > FirstShown ? Visibility.Visible : Visibility.Collapsed;
         _more.Content = _showAll ? "Show fewer" : $"Show all {n:N0} people";
+    }
+
+    // The fewest moves (Shared\PeopleWords.cs, tested there).
+    private static void Reconcile(ObservableCollection<Slot> list, List<Slot> want) =>
+        MediaViewer.Shared.PeopleWords.Reconcile(list, want);
+
+    private bool Editing => _cards.Values.Any(c => c.Editing);
+
+    /// <summary>A name edit ended: the read that waited for it lands now (after the edit's own turn).</summary>
+    private void EditEnded()
+    {
+        _root.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_held is { } held && !Editing) Apply(held);
+        });
     }
 
     private void Set(Slot slot, PersonVm person)
@@ -594,15 +632,19 @@ internal sealed class PeopleGrid
     }
 
     /// <summary>A person's faces, to correct (the Mac's sheet).</summary>
+    /// <remarks>One sheet window, retargeted from person to person and hidden on Done:
+    /// closing one and making the next in the same click crashed the host.</remarks>
     internal void OpenFaces(PersonVm person)
     {
-        _sheet?.Close();
-        _sheet = new PersonSheet(_chrome, this, person);
-        _sheet.Closed += (s, _) =>
+        if (_sheet is null)
         {
-            if (ReferenceEquals(s, _sheet)) _sheet = null;
-        };
-        _sheet.Present();
+            _sheet = new PersonSheet(_chrome, this, person);
+            _sheet.Closed += (s, _) =>
+            {
+                if (ReferenceEquals(s, _sheet)) _sheet = null;
+            };
+        }
+        _sheet.Present(person);
     }
 
     /// <summary>"Unknown faces (N)": the faces nobody is filed under, to name.</summary>
@@ -620,7 +662,7 @@ internal sealed class PeopleGrid
     /// <summary>Settings built a newer panel, or the pack is going: the sheets go too.</summary>
     internal void Detach()
     {
-        _sheet?.Close();
+        _sheet?.Destroy();
         _sheet = null;
         _unknownSheet?.Close();
         _unknownSheet = null;
@@ -639,6 +681,7 @@ internal sealed class PeopleGrid
     {
         Slot? slot = _items.FirstOrDefault(s => s.P.Id == id);
         if (slot is not null) Set(slot, slot.P with { Name = name });
+        _renames[id] = name;
         _sheet?.PeopleChanged();
         AiApi api = _api;
         _ = Task.Run(() =>
@@ -652,8 +695,10 @@ internal sealed class PeopleGrid
             catch (MediaViewerException) { failed = true; }
             _root.DispatcherQueue.TryEnqueue(() =>
             {
-                if (!failed) return;
-                Note("The name could not be saved. Try again.");
+                // A later rename of the same person keeps its own entry.
+                if (_renames.TryGetValue(id, out string? shown) && shown == name) _renames.Remove(id);
+                if (failed) Note("The name could not be saved. Try again.");
+                // Written (or not): read the truth, which also puts a named person in place.
                 Refresh();
             });
         });
@@ -957,6 +1002,8 @@ internal sealed class PeopleGrid
         private bool _dropTarget;
         public PersonVm Person { get; private set; }
 
+        public bool Editing => _editor is not null;
+
         public Card(PeopleGrid grid, PersonVm person)
         {
             _grid = grid;
@@ -1151,12 +1198,31 @@ internal sealed class PeopleGrid
             PersonVm p = Person;
             bool selected = _grid._selection.Contains(p.Id);
             bool opening = _grid._opening == p.Id;
-            if (_crop is null || _cropFace != p.CoverFace)
+            if (_crop is null)
             {
-                if (_crop is not null) _cover.Children.Remove(_crop);
                 _crop = _grid._chrome.Crops.Crop(p.CoverFace, p.Box, Cover, FaceCrops.Monogram(p.Name), _grid._root.DispatcherQueue);
                 _cropFace = p.CoverFace;
                 _cover.Children.Insert(0, _crop);
+            }
+            else if (_cropFace != p.CoverFace)
+            {
+                // The cover moved to another face (faces streaming in): the new crop
+                // goes in under the old one, which leaves once the new picture is
+                // there, never a blank disc in between.
+                FrameworkElement? next = null;
+                next = _grid._chrome.Crops.Crop(p.CoverFace, p.Box, Cover, FaceCrops.Monogram(p.Name),
+                                                _grid._root.DispatcherQueue, () =>
+                {
+                    if (next is null || !ReferenceEquals(_crop, next)) return;  // superseded
+                    // Every older crop sits above it, from index 1 up to the ring.
+                    while (_cover.Children.Count > 1 && !ReferenceEquals(_cover.Children[1], _ring))
+                    {
+                        _cover.Children.RemoveAt(1);
+                    }
+                });
+                _crop = next;
+                _cropFace = p.CoverFace;
+                _cover.Children.Insert(0, next);
             }
             bool lit = selected || _hover || _dropTarget;
             _ring.StrokeThickness = lit ? 2.5 : 1;
@@ -1256,6 +1322,7 @@ internal sealed class PeopleGrid
             if (save && name != Person.Name) _grid.Rename(Person.Id, name, _cropFace != 0 ? _cropFace : Person.CoverFace);
             Update();
             if (refocus) _nameHost.Focus(FocusState.Keyboard);
+            _grid.EditEnded();
         }
     }
 
@@ -1276,6 +1343,8 @@ internal sealed class PeopleGrid
             {
                 if (!ReferenceEquals(card.Root, args.Element)) continue;
                 grid._cards.Remove(id);
+                // A card scrolled away mid-edit: a read held for it may land.
+                if (card.Editing) grid.EditEnded();
                 break;
             }
         }
