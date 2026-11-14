@@ -265,9 +265,16 @@ int32_t mv_assets_list(mv_mobile_link* link, mv_listed_asset_fn fn, void* ctx);
  * A library with no catalogue yet is the NAS's named folders. Paths are a service
  * root id plus a '/'-separated path under it ("" for its top). Never logged. */
 
-typedef void (*mv_root_fn)(void* ctx, const char* id, const char* label);
-/* BLOCKS. The named folders, without the one that holds the catalogue (`.mediaviewer`). */
+/* `offline` 1: the folder's drive is not connected to the service now (an external drive unplugged,
+ * a share not mounted; docs/plans/self-hosted.md §6). Listed so the phone can say so; every
+ * request on it fails until it is back. */
+typedef void (*mv_root_fn)(void* ctx, const char* id, const char* label, int32_t offline);
+/* BLOCKS. The named folders, without the one that holds the catalogue (`.mediaviewer`). An offline
+ * folder is listed as it is, with no look inside it. */
 int32_t mv_files_roots(mv_mobile_link* link, mv_root_fn fn, void* ctx);
+/* BLOCKS. Only the offline folders (`offline` is always 1), with no look inside any folder: what a
+ * library with a catalogue shows beside its own folders. The sample library has one, "Travel drive". */
+int32_t mv_files_offline_roots(mv_mobile_link* link, mv_root_fn fn, void* ctx);
 
 typedef struct mv_file_entry {
   const char* name;
@@ -314,7 +321,7 @@ int32_t mv_file_index_counts(const mv_file_index* index, size_t* tagged, size_t*
  * The host lists Photos (newest first) with mv_backup_add_item and exports one
  * resource at a time when asked; the core keeps the ledger, files by date, and
  * writes through the service. With the sample library the "NAS" is a folder on
- * this phone, labelled "Sample NAS on this iPhone": nothing is sent anywhere. */
+ * this phone, labelled "Sample server on this iPhone": nothing is sent anywhere. */
 
 typedef struct mv_backup mv_backup;
 

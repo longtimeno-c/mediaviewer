@@ -4,7 +4,7 @@
 // folder on the NAS while the app is open, through src/mobile/backup.* (mv_backup_* in
 // mv_mobile_link.h). One original at a time is exported from PhotoKit to a scratch file, downloaded
 // from iCloud first if need be, sent and removed, so the phone never holds more than the largest
-// file. With the sample library the "NAS" is "Sample NAS on this iPhone", a folder in the app's own
+// file. With the sample library the server is "Sample server on this iPhone", a folder in the app's own
 // storage: nothing is sent anywhere, and Forget removes it.
 import AVFoundation
 import CMobileLink

@@ -61,12 +61,12 @@ public static partial class IslandHost
         view.Children.Add(SettingsSection("Phone access"));
         _phoneRows = new StackPanel { Spacing = Space(8) };
         view.Children.Add(_phoneRows);
-        _phoneLocal = PhoneInput("nas.local:7878", "Address on your network");
+        _phoneLocal = PhoneInput("server.local:7878", "Address on your network");
         _phonePublic = PhoneInput("photos.example.com:7878", "Address from outside");
         _phoneNewLabel = PhoneInput("Label", "Name of the new shared folder", 120);
-        _phoneNewPath = PhoneInput("Folder on the NAS, like /volume1/Video", "Path of the new shared folder on the NAS", 0);
+        _phoneNewPath = PhoneInput("Folder on the server, like /volume1/Video or E:\\Video", "Path of the new shared folder on the server", 0);
         _phoneNewLimit = PhoneInput("GB", "Storage limit in gigabytes", 70);
-        _phoneNewReserve = PhoneInput("GB", "Free space to keep on the NAS, in gigabytes", 60);
+        _phoneNewReserve = PhoneInput("GB", "Free space to keep on the server, in gigabytes", 60);
         _phoneNewReserve.SetText("1");
         _phoneNewLimit.Changed += PhoneFieldsChanged;
         _phoneNewReserve.Changed += PhoneFieldsChanged;
@@ -76,9 +76,9 @@ public static partial class IslandHost
         _phoneNewPath.Changed += PhoneFieldsChanged;
         _phoneNewPath.Submitted += AddPhoneFolder;
         _phoneNewLabel.Submitted += AddPhoneFolder;
-        _phonePass = PhoneSecret("Passphrase", "NAS passphrase");
+        _phonePass = PhoneSecret("Passphrase", "Server passphrase");
         _phonePassAgain = PhoneSecret("Again", "The passphrase again");
-        _phoneUnlock = PhoneSecret("NAS passphrase", "NAS passphrase to unlock");
+        _phoneUnlock = PhoneSecret("Server passphrase", "Server passphrase to unlock");
         _phonePass.Changed += PhoneFieldsChanged;
         _phonePassAgain.Changed += PhoneFieldsChanged;
         _phoneUnlock.Submitted += UnlockPhone;
@@ -243,9 +243,9 @@ public static partial class IslandHost
             progress.Show(line, null);
             rows.Children.Add(progress.Root);
         }
-        Button choose = PhoneButton(s.Folder.Length == 0 ? "Choose…" : "Change…", () => _ = ChoosePhoneFolder(), "Choose the folder on your NAS");
+        Button choose = PhoneButton(s.Folder.Length == 0 ? "Choose…" : "Change…", () => _ = ChoosePhoneFolder(), "Choose the folder on your server");
         choose.IsEnabled = !busy && s.Catalogue is not { Running: true };
-        rows.Children.Add(SettingsRow("Folder on your NAS", PhoneWords.FolderDetail(s), choose, keepName: true));
+        rows.Children.Add(SettingsRow("Folder on your server", PhoneWords.FolderDetail(s), choose, keepName: true));
         if (s.Folder.Length > 0)
         {
             AddPhoneSearch(rows, s, busy);
@@ -351,22 +351,22 @@ public static partial class IslandHost
     }
 
     private static void ShowPublishProgress(PhonePublishState c) =>
-        _phonePublishLine?.Show(c.Phase == "sending" ? "Sending to the NAS" : "Building the catalogue",
+        _phonePublishLine?.Show(c.Phase == "sending" ? "Sending to your server" : "Building the catalogue",
                                 Math.Clamp(c.Fraction, 0, 1), key: "phone-publish", timed: true);
 
     private static void AddPhoneClaim(StackPanel rows, bool busy)
     {
         _phoneClaim = PhoneButton("Claim", ClaimPhone, "Claim the service");
         _phoneClaim.IsEnabled = !busy;
-        rows.Children.Add(SettingsRow("Service on your NAS",
-            "Claim it from the NAS's own network, once. This PC writes a one-time token to the share to prove it can.",
+        rows.Children.Add(SettingsRow("Service on your server",
+            "Claim it from your server's own network, once. This PC writes a one-time token to the share to prove it can.",
             _phoneClaim, keepName: true));
         rows.Children.Add(SettingsRow("Address on your network", "", _phoneLocal!, keepName: true));
         AddPhonePublicField(rows);
-        rows.Children.Add(SettingsRow("NAS passphrase",
-            "The one you set on the NAS with driftwire serve init. If it has none, choose one here: enter it twice, at least 10 characters.",
+        rows.Children.Add(SettingsRow("Server passphrase",
+            "The one you set on the server with driftwire serve init. If it has none, choose one here: enter it twice, at least 10 characters.",
             _phonePass!, keepName: true));
-        rows.Children.Add(SettingsRow("Again, to choose it", "Leave empty when the NAS already has one.", _phonePassAgain!, keepName: true));
+        rows.Children.Add(SettingsRow("Again, to choose it", "Leave empty when the server already has one.", _phonePassAgain!, keepName: true));
     }
 
     private static void ClaimPhone()
@@ -399,7 +399,7 @@ public static partial class IslandHost
                 if (_phoneShown is { } shown) ShowPhone(shown);
             }, "Cancel the unlock"));
             rows.Children.Add(SettingsRow("Unlock",
-                "Enter the NAS passphrase, then do that again. This PC keeps the key for 10 minutes and never the passphrase.",
+                "Enter the server passphrase, then do that again. This PC keeps the key for 10 minutes and never the passphrase.",
                 unlock, keepName: true));
         }
         if (s.Qr.Length == 0)
@@ -407,7 +407,7 @@ public static partial class IslandHost
             var code = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
             _phoneCodeFor!.IsEnabled = s.NasHasFeatures;
             ToolTipService.SetToolTip(_phoneCodeFor, s.NasHasFeatures ? "How long the phone that scans it may use this library" : null);
-            code.Children.Add(PhoneTipHolder(_phoneCodeFor, s.NasHasFeatures ? null : "Update the NAS service to use this"));
+            code.Children.Add(PhoneTipHolder(_phoneCodeFor, s.NasHasFeatures ? null : "Update the service on your server to use this"));
             Button show = PhoneButton("Show code", () =>
             {
                 int i = _phoneCodeFor.SelectedIndex;
@@ -429,13 +429,13 @@ public static partial class IslandHost
             string key = phone.Key;
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
             buttons.Children.Add(PhoneTipHolder(PhoneAccessMenu(phone, s.NasHasFeatures, busy, now, s.NasHasBackup),
-                                                s.NasHasFeatures ? null : "Update the NAS service to use this"));
+                                                s.NasHasFeatures ? null : "Update the service on your server to use this"));
             Button remove = PhoneButton("Remove", () => PhoneRequest(("do", "revoke"), ("key", key)), $"Remove {phone.Name}");
             remove.IsEnabled = !busy;
             buttons.Children.Add(remove);
             rows.Children.Add(SettingsRow(phone.Name, PhoneWords.PhoneDetail(phone, now, PhoneWhen), buttons, keepName: true));
         }
-        if (!s.Reachable) rows.Children.Add(PhoneNote("Couldn't reach the NAS. These are the phones it knew about last."));
+        if (!s.Reachable) rows.Children.Add(PhoneNote("Couldn't reach your server. These are the phones it knew about last."));
         rows.Children.Add(SettingsRow("Address on your network", "", _phoneLocal!, keepName: true));
         AddPhonePublicField(rows);
         AddPhoneRelay(rows, s, busy);
@@ -476,7 +476,7 @@ public static partial class IslandHost
                                     "Phones back up their photos to this folder");
         toggle.IsEnabled = s.NasHasBackup && !busy;
         // A disabled control shows no tooltip (docs/design/20 "Craft rules"): its holder carries the reason.
-        backup.Children.Add(PhoneTipHolder(toggle, s.NasHasBackup ? null : "Update the NAS service to use this"));
+        backup.Children.Add(PhoneTipHolder(toggle, s.NasHasBackup ? null : "Update the service on your server to use this"));
         if (_phoneNewIsBackup)
         {
             backup.Children.Add(PhoneNote("Limit"));
@@ -541,7 +541,7 @@ public static partial class IslandHost
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (s.NasPassphrase == "set" && s.UnlockedSeconds > 0)
         {
-            Button lockNow = PhoneButton("Lock", () => PhoneRequest(("do", "lock")), "Lock: forget the NAS key on this PC");
+            Button lockNow = PhoneButton("Lock", () => PhoneRequest(("do", "lock")), "Lock: forget the server's key on this PC");
             lockNow.IsEnabled = !busy;
             buttons.Children.Add(lockNow);
         }
@@ -551,7 +551,7 @@ public static partial class IslandHost
             {
                 _phoneUnlockWanted = true;
                 if (_phoneShown is { } shown) ShowPhone(shown);
-            }, "Unlock with the NAS passphrase");
+            }, "Unlock with the server passphrase");
             unlockNow.IsEnabled = !busy;
             buttons.Children.Add(unlockNow);
         }
@@ -561,11 +561,11 @@ public static partial class IslandHost
             {
                 _phoneChanging = !_phoneChanging;
                 if (_phoneShown is { } shown) ShowPhone(shown);
-            }, s.NasPassphrase == "set" ? "Change the NAS passphrase" : "Choose a NAS passphrase");
+            }, s.NasPassphrase == "set" ? "Change the server passphrase" : "Choose a server passphrase");
             change.IsEnabled = !busy;
             buttons.Children.Add(change);
         }
-        rows.Children.Add(SettingsRow("NAS passphrase", PhoneWords.PassphraseDetail(s), buttons, keepName: true));
+        rows.Children.Add(SettingsRow("Server passphrase", PhoneWords.PassphraseDetail(s), buttons, keepName: true));
         if (!_phoneChanging || _phonePass is null || _phonePassAgain is null) return;
         rows.Children.Add(SettingsRow("New passphrase", "At least 10 characters. Nothing on this PC keeps it.", _phonePass!, keepName: true));
         rows.Children.Add(SettingsRow("Again", "", _phonePassAgain!, keepName: true));
@@ -611,11 +611,11 @@ public static partial class IslandHost
             if (_phoneShown is { } shown) ShowPhone(shown);
         }, relay.Length == 0 ? "Set up your own relay" : "Change the relay");
         set.IsEnabled = !busy && s.NasHasRelay;
-        buttons.Children.Add(PhoneTipHolder(set, s.NasHasRelay ? null : "Update the NAS service to use this"));
+        buttons.Children.Add(PhoneTipHolder(set, s.NasHasRelay ? null : "Update the service on your server to use this"));
         rows.Children.Add(SettingsRow("Relay (your own server)", PhoneWords.RelayDetail(s), buttons, keepName: true));
         if (!_phoneRelayEditing || _phoneRelayAddress is null || _phoneRelayKey is null) return;
         rows.Children.Add(SettingsRow("Relay address", "", _phoneRelayAddress, keepName: true));
-        rows.Children.Add(SettingsRow("Relay key", "The key your driftwire-relay was started with. Your NAS keeps it; this PC doesn't.",
+        rows.Children.Add(SettingsRow("Relay key", "The key your driftwire-relay was started with. Your server keeps it; this PC doesn't.",
                                       _phoneRelayKey, keepName: true));
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8), HorizontalAlignment = HorizontalAlignment.Right };
         actions.Children.Add(PhoneButton("Cancel", () =>
@@ -908,7 +908,7 @@ public static partial class IslandHost
         var column = new StackPanel { Spacing = Space(4) };
         var flyout = new Flyout { Content = column };
         FakeInput limit = PhoneInput("GB", "Storage limit in gigabytes", 70);
-        FakeInput reserve = PhoneInput("GB", "Free space to keep on the NAS, in gigabytes", 60);
+        FakeInput reserve = PhoneInput("GB", "Free space to keep on the server, in gigabytes", 60);
         limit.SetText(PhoneWords.Gigabytes(f.Limit));
         reserve.SetText(PhoneWords.Gigabytes(f.Reserve));
         column.Children.Add(PhoneNote("Limit (GB)"));

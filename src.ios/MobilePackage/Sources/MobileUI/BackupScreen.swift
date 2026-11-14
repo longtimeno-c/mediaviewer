@@ -3,7 +3,7 @@
 // §11.1 Backup (1.1): the folder, how files are filed, how much is done, what is left. The screen
 // says one thing (§10b): "1,204 of 18,320 backed up · 17,116 to go", then the one progress line.
 // States: running; paused off Wi-Fi; folder not allowed by the service; storage limit reached;
-// NAS full. With the sample library, the folder is "Sample NAS on this iPhone" and says so.
+// NAS full. With the sample library, the folder is "Sample server on this iPhone" and says so.
 import MobileKit
 import SwiftUI
 
@@ -81,7 +81,7 @@ struct BackupScreen: View {
     InfoCard {
       VStack(alignment: .leading, spacing: 6) {
         if backup.folder == nil {
-          Text(backup.isSample ? "Choose the sample folder to try backup." : "Choose the folder on your Synology to back this phone up to.")
+          Text(backup.isSample ? "Choose the sample folder to try backup." : "Choose the folder on your server to back this phone up to.")
             .font(.subheadline).foregroundStyle(Theme.title)
             .fixedSize(horizontal: false, vertical: true)
         } else if backup.state == .checking && backup.total == 0 {

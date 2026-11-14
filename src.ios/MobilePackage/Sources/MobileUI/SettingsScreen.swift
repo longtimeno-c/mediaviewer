@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// §11.1 Connection, as the app's settings: the Synology's status, where the catalogue came from and
+// §11.1 Connection, as the app's settings: your server's status, where the catalogue came from and
 // when, what is kept on this phone, the look, the viewer's filmstrip, and Forget. Each failure
 // names its cause.
 import MobileKit
@@ -10,7 +10,9 @@ import SwiftUI
 enum SettingsCopy {
   static let directOnMobileData = "Faster direct connection on mobile data"
   static let directOnMobileDataDetail =
-    "When MediaViewer reaches your Synology through your own relay, it tries to connect to it directly, which is faster. On Wi-Fi it always tries."
+    "When MediaViewer reaches your server through your own relay, it tries to connect to it directly, which is faster. On Wi-Fi it always tries."
+  /// What kind of server the sample library stands in for.
+  static let sampleServerKind = "A computer"
 }
 
 struct SettingsScreen: View {
@@ -32,11 +34,14 @@ struct SettingsScreen: View {
                 .font(.footnote)
                 .foregroundStyle(Theme.body)
                 .fixedSize(horizontal: false, vertical: true)
+              // The sample stands in for a server that is a computer (docs/plans/self-hosted.md §8),
+              // so the words a self-hosted library shows can be seen without one.
+              InfoRow(label: "Server", value: SettingsCopy.sampleServerKind)
               if case .reachable(let address, _, _) = model.connection.synology {
                 InfoRow(label: "Served from", value: address)
               }
             } else if case .reachable(let address, _, _) = model.connection.synology {
-              InfoRow(label: "Synology", value: synologyWords)
+              InfoRow(label: "Server", value: synologyWords)
               InfoRow(label: "Address", value: address)
             }
             if let end = model.connection.accessUntil {
@@ -47,7 +52,7 @@ struct SettingsScreen: View {
             }
             if let catalogue = model.connection.catalogue {
               InfoRow(label: "Catalogue from",
-                      value: model.connection.isSample ? "GitHub" : catalogue.source == .synology ? "Your Synology" : "Your Mac, nearby")
+                      value: model.connection.isSample ? "GitHub" : catalogue.source == .synology ? "Your server" : "Your Mac, nearby")
               InfoRow(label: "Updated", value: catalogue.updatedAt.formatted(.relative(presentation: .named)))
               InfoRow(label: "Items", value: catalogue.itemCount.formatted())
             }
@@ -131,7 +136,7 @@ struct SettingsScreen: View {
             } message: {
               Text(model.connection.isSample
                    ? "Everything MediaViewer keeps on this phone for it is removed. To open it again, enter the code \(FailureCopy.sampleCode) on the Scan screen."
-                   : "Everything MediaViewer keeps on this phone is removed. Nothing on your Synology changes. You'll need a new code from MediaViewer to connect again.")
+                   : "Everything MediaViewer keeps on this phone is removed. Nothing on your server changes. You'll need a new code from MediaViewer to connect again.")
             }
         }
         .frame(maxWidth: Theme.readableWidth)
@@ -208,7 +213,7 @@ struct SettingsScreen: View {
   private var backupSummary: String {
     let b = model.backup
     guard let folder = b.folder else {
-      return model.connection.isSample ? "Try it with a folder on this iPhone" : "Off · choose a folder on your Synology"
+      return model.connection.isSample ? "Try it with a folder on this iPhone" : "Off · choose a folder on your server"
     }
     if b.total > 0 { return "\(folder.label) · \(b.line)" }
     return folder.label

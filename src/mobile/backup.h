@@ -18,7 +18,7 @@
 // resource at a time is exported to a scratch file, hashed, sent and removed, so
 // the phone never holds more than the largest single file. Files go out through
 // `target`: the NAS service over the link, or in the sample library the
-// clearly labelled "Sample NAS on this iPhone" folder (local_target), which
+// clearly labelled "Sample server on this iPhone" folder (local_target), which
 // writes through the service's own commit step (serve_backup.h) and never
 // sends anything anywhere.
 //
@@ -83,7 +83,7 @@ class target {
 
 // The sample library's "NAS": a folder on this phone, never sent anywhere.
 inline constexpr const char* kSampleFolderId = "5a3b1e0f5a3b1e0f";
-inline constexpr const char* kSampleFolderLabel = "Sample NAS on this iPhone";
+inline constexpr const char* kSampleFolderLabel = "Sample server on this iPhone";
 inline constexpr std::uint64_t kSampleLimit = 250ull * 1024 * 1024;
 [[nodiscard]] std::unique_ptr<target> local_target(const std::string& folder_path, const std::string& device_id,
                                                    std::uint64_t limit = kSampleLimit,

@@ -211,6 +211,11 @@ struct FixtureStore: LibraryStore {
     FixtureLibrary.folders[parent?.id ?? ""] ?? []
   }
 
+  /// One folder whose drive is unplugged from the server, as the sample library has.
+  func offlineFolders() async -> [Folder] {
+    [Folder(id: "travel drive", name: "Travel drive", itemCount: -1, hasSubfolders: false, offline: true)]
+  }
+
   func people() async throws -> [Person] {
     if world.peopleFailures > 0 {
       world.peopleFailures -= 1
@@ -574,7 +579,7 @@ final class FixtureBackup: BackupService, @unchecked Sendable {
   private var listeners: [UUID: AsyncStream<BackupSnapshot>.Continuation] = [:]
   private var runner: Task<Void, Never>?
   private static let nas = BackupFolder(id: "c3c3c3c3c3c3c3c3", label: "Phone backup", writable: true)
-  private static let sample = BackupFolder(id: "5a3b1e0f5a3b1e0f", label: "Sample NAS on this iPhone", writable: true)
+  private static let sample = BackupFolder(id: "5a3b1e0f5a3b1e0f", label: "Sample server on this iPhone", writable: true)
 
   init(world: FixtureWorld) {
     self.world = world

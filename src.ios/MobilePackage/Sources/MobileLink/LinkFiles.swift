@@ -114,18 +114,33 @@ public final class LinkFiles: @unchecked Sendable {
 
   func roots() async throws -> [Folder] {
     guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
-    let (status, rows) = await onLinkQueue { () -> (Int32, [(String, String)]) in
-      final class Rows { var list: [(String, String)] = [] }
+    let (status, rows) = await Self.rootRows(link, offlineOnly: false)
+    guard status == 0 else { throw Self.failure(status) }
+    return rows.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+  }
+
+  /// The server's folders whose drive is not connected now; [] when it can't be asked.
+  func offlineRoots() async -> [Folder] {
+    guard let link = await connection.awaitLink() else { return [] }
+    let (status, rows) = await Self.rootRows(link, offlineOnly: true)
+    guard status == 0 else { return [] }
+    return rows.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+  }
+
+  private static func rootRows(_ link: LinkHandle, offlineOnly: Bool) async -> (Int32, [Folder]) {
+    await onLinkQueue { () -> (Int32, [Folder]) in
+      final class Rows { var list: [Folder] = [] }
       let rows = Rows()
-      let status = mv_files_roots(link.raw, { ctx, id, label in
+      let collect: mv_root_fn = { ctx, id, label, offline in
         guard let ctx, let id, let label else { return }
-        Unmanaged<Rows>.fromOpaque(ctx).takeUnretainedValue().list.append((String(cString: id), String(cString: label)))
-      }, Unmanaged.passUnretained(rows).toOpaque())
+        Unmanaged<Rows>.fromOpaque(ctx).takeUnretainedValue().list.append(
+          Folder(id: FilePath(root: String(cString: id), rel: "").id, name: String(cString: label), itemCount: -1,
+                 hasSubfolders: offline == 0, offline: offline != 0))
+      }
+      let ctx = Unmanaged.passUnretained(rows).toOpaque()
+      let status = offlineOnly ? mv_files_offline_roots(link.raw, collect, ctx) : mv_files_roots(link.raw, collect, ctx)
       return (status, rows.list)
     }
-    guard status == 0 else { throw Self.failure(status) }
-    return rows.map { Folder(id: FilePath(root: $0.0, rel: "").id, name: $0.1, itemCount: -1, hasSubfolders: true) }
-      .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
   }
 
   func list(_ folder: FilePath) async throws -> FolderListing {
@@ -752,6 +767,8 @@ public struct FileModeLibrary: LibraryStore {
     guard let path = FilePath(id: parent.id) else { return [] }
     return try await files.list(path).folders
   }
+
+  public func offlineFolders() async -> [Folder] { await files.offlineRoots() }
 
   public func people() async throws -> [Person] { [] }
 

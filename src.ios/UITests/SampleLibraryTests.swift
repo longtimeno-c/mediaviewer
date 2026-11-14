@@ -131,7 +131,7 @@ final class SampleLibraryTests: XCTestCase {
     save("07-clip")
   }
 
-  /// Release 1.1 (§10b): backup in the sample library goes to "Sample NAS on this iPhone", a folder in
+  /// Release 1.1 (§10b): backup in the sample library goes to "Sample server on this iPhone", a folder in
   /// the app's own container, through the real backup code. The script grants Photos and adds
   /// generated pictures first, then checks the folder against them (and that Forget removes it).
   func test4b_BackupGoesToTheSampleFolder() throws {
@@ -146,7 +146,7 @@ final class SampleLibraryTests: XCTestCase {
       .waitForExistence(timeout: 10), "The Backup screen does not say the sample backup stays on the phone")
     save("06b-backup-start")
     app.buttons["backup.folder"].tap()
-    let sample = app.buttons["backup.folder.Sample NAS on this iPhone"]
+    let sample = app.buttons["backup.folder.Sample server on this iPhone"]
     XCTAssertTrue(sample.waitForExistence(timeout: 15), "The sample folder is not offered")
     sample.tap()
     save("06c-backup-choose")
