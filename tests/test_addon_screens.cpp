@@ -145,7 +145,7 @@ TEST_CASE("the 2026-10-19 additions: a transfer's path, a button that copies", "
   // A picture, not a control; the button still reports its click.
   CHECK(t.check_event("p1", ev_click, "") == error::not_interactive);
   CHECK(t.check_event("copy", ev_click, "") == error::none);
-  for (const char* via : {"bluetooth", "wifi", "internet", "dht", "relay", "server"}) {
+  for (const char* via : {"bluetooth", "wifi", "internet", "dht", "relay", "server", "tunnel"}) {
     tree x;
     CHECK(x.set(std::string(R"x({"type":"link","id":"l","label":"L","state":"paused","via":")x") + via + "\"}") ==
           error::none);

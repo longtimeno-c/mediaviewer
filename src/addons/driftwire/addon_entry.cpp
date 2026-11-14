@@ -231,6 +231,9 @@ struct addon_state {
       // Credential Manager / the Secret Service (none without one: nothing
       // is remembered).
       if (!o.offline) o.make_secrets = [] { return mv::driftwire::secrets::os_store(); };
+      // The Tunnel's system proxy (sysproxy.h): this OS's setting, changed
+      // only while the Tunnel and "Use for all apps" are on.
+      if (!o.offline) o.make_sysproxy = [] { return mv::driftwire::sysproxy::os_port(); };
       eng = std::make_unique<engine>(*bridge, std::move(o));
     }
     return *eng;
@@ -318,7 +321,8 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
         (void)g->host->screen_show(g->host->host, kScreen, 1);
       } else if (node == "out_cancel" || node == "in_cancel") {
         g->get().on_event(node, MV_SLOT_EVENT_CLICK, "");
-      } else if (node == "receiving" || node == "internet" || node == "background") {
+      } else if (node == "receiving" || node == "internet" || node == "background" || node == "tunnel" ||
+                 node == "tunnel_vpn") {
         g->get().on_event(node, MV_SLOT_EVENT_CHANGE, value);
       }
       return MV_OK;

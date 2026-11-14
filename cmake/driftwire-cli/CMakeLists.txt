@@ -15,7 +15,7 @@
 #   cmake --build build-cli --target driftwire_needed   # the NEEDED gate
 #   (cd build-cli && cpack -G "DEB;RPM;TGZ")
 #
-# Everything but the C library is linked in: libsodium (1.0.22 for ML-KEM-768;
+# Everything but the C library is linked in (BoringSSL too, slice 4): libsodium (1.0.22 for ML-KEM-768;
 # a distro's 1.0.18 cannot build it), BLAKE3 and FTXUI from vcpkg's static
 # x64-linux / arm64-linux triplets, and libstdc++ / libgcc (-static-libstdc++
 # -static-libgcc, under the GCC Runtime Library Exception). libsecret and
@@ -267,7 +267,7 @@ set(CPACK_DEBIAN_COMPRESSION_TYPE xz)
 set(CPACK_RPM_FILE_NAME "driftwire-${PROJECT_VERSION}-1.${_rpm_arch}.rpm")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE ${_rpm_arch})
 set(CPACK_RPM_PACKAGE_RELEASE 1)
-set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-or-later AND ISC AND MIT AND CC0-1.0")
+set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-or-later AND ISC AND MIT AND CC0-1.0 AND Apache-2.0")
 set(CPACK_RPM_PACKAGE_GROUP "Applications/Internet")
 set(CPACK_RPM_PACKAGE_URL "${PROJECT_HOMEPAGE_URL}")
 set(CPACK_RPM_PACKAGE_DESCRIPTION "${CPACK_PACKAGE_DESCRIPTION}")

@@ -40,22 +40,26 @@ include("${CMAKE_CURRENT_LIST_DIR}/wire.cmake")
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_driftwire_port ${_S}/power_win.cpp)
+  set(_driftwire_port ${_S}/power_win.cpp ${_S}/sysproxy_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
+  set(_driftwire_vpn ${_S}/vpn_win.cpp)
 elseif(IOS)
   # No module on iOS: mv_wire carries the file port and BLAKE3 hashing
   # (cmake/wire.cmake), the engine the empty Bluetooth port (no bearer yet).
-  set(_driftwire_port ${_S}/power_ios.cpp ${_S}/bt_none.cpp)
+  set(_driftwire_port ${_S}/power_ios.cpp ${_S}/bt_none.cpp ${_S}/sysproxy_none.cpp)
   set(_driftwire_bt "")
+  set(_driftwire_vpn ${_S}/vpn_none.cpp)
 elseif(APPLE)
-  set(_driftwire_port ${_S}/power_mac.cpp)
+  set(_driftwire_port ${_S}/power_mac.cpp ${_S}/sysproxy_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
+  set(_driftwire_vpn ${_S}/vpn_mac.mm)
 else()
   # Linux: the Secret Service (libsecret) and logind (libsystemd / libelogind)
   # are loaded at run time, so there is nothing to build against; no
   # Bluetooth bearer yet (bt_none.cpp: Wi-Fi and the internet only).
-  set(_driftwire_port ${_S}/power_linux.cpp)
+  set(_driftwire_port ${_S}/power_linux.cpp ${_S}/sysproxy_none.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
+  set(_driftwire_vpn ${_S}/vpn_none.cpp)
 endif()
 
 add_library(mv_driftwire_engine STATIC
@@ -75,6 +79,10 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/handover.cpp ${_S}/handover.h
   ${_S}/relay.cpp ${_S}/relay.h
   ${_S}/presence_keys.cpp ${_S}/presence_keys.h
+  ${_S}/tunnel.cpp ${_S}/tunnel.h
+  ${_S}/sysproxy.h ${_S}/sysproxy_record.cpp
+  ${_S}/netstack.cpp ${_S}/netstack.h
+  ${_S}/vpn.cpp ${_S}/vpn.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -92,7 +100,8 @@ if(WIN32)
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
   # PowerCreateRequest is kernel32's (#530), linked by default.
-  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 dnsapi)
+  # wininet: the Tunnel's system proxy, this user's setting (sysproxy_win.cpp).
+  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 dnsapi wininet)
 elseif(IOS)
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework Security")
 elseif(APPLE)
@@ -118,6 +127,8 @@ endif()
 add_library(mv_driftwire MODULE
   ${_S}/addon_entry.cpp
   ${_driftwire_bt}
+  # Slice 5: the OS's virtual interface (vpn.h), the add-on's alone.
+  ${_driftwire_vpn}
   # The file port and BLAKE3 hashing, compiled in: the add-on links nothing
   # of the core (as Places carries io/mapped_file).
   ${MV_SOURCE_ROOT}/src/io/file_port.cpp
@@ -128,11 +139,15 @@ target_link_libraries(mv_driftwire PRIVATE mv_driftwire_engine)
 if(WIN32)
   # C++/WinRT for the Bluetooth bearer (Windows.Devices.Bluetooth,
   # windowsapp.lib). Its projection throws; bt_win.cpp catches every call.
-  target_link_libraries(mv_driftwire PRIVATE windowsapp ole32)
+  # iphlpapi: the VPN's address, routes and DNS on the Wintun adapter (slice 5, vpn_win.cpp).
+  # fwpuclnt: the VPN's kill switch (WFP filters, vpn_win.cpp).
+  target_link_libraries(mv_driftwire PRIVATE windowsapp ole32 iphlpapi fwpuclnt)
   set_source_files_properties(${_S}/bt_win.cpp PROPERTIES COMPILE_OPTIONS "/bigobj")
 elseif(APPLE)
-  target_link_libraries(mv_driftwire PRIVATE "-framework Foundation" "-framework CoreBluetooth")
-  set_source_files_properties(${_S}/bt_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  # NetworkExtension, SystemExtensions: the VPN (slice 5, vpn_mac.mm).
+  target_link_libraries(mv_driftwire PRIVATE "-framework Foundation" "-framework CoreBluetooth"
+    "-framework NetworkExtension" "-framework SystemExtensions" "-framework Security")
+  set_source_files_properties(${_S}/bt_mac.mm ${_S}/vpn_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 endif()
 target_compile_definitions(mv_driftwire PRIVATE MV_DRIFTWIRE_VERSION="${MV_DRIFTWIRE_VERSION}")
 set_target_properties(mv_driftwire PROPERTIES
@@ -186,6 +201,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_serve_owner.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_vpn.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"

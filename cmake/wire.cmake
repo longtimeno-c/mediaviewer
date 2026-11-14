@@ -41,6 +41,38 @@ if(NOT MV_SODIUM_HAS_MLKEM768)
                       "or a libsodium built from source")
 endif()
 
+# The Tunnel looking like HTTPS (slice 4, docs/plans/driftwire-tls-spike.md):
+# BoringSSL (Apache-2.0), Chrome's own TLS, for a browser's ClientHello. The
+# vcpkg port installs it as the OpenSSL package; it must be BoringSSL (the
+# ClientHello calls are its own). Without it, tls_none.cpp: the Tunnel runs on
+# the relay's plain port only.
+# The fuzz build (MV_FUZZ) leaves it out: its harnesses are /MT and libFuzzer's
+# runtime will not link with a static /MD library, and it fuzzes Driftwire's
+# parsers, not TLS.
+find_package(OpenSSL CONFIG QUIET)
+set(MV_DRIFTWIRE_TLS OFF)
+if(TARGET OpenSSL::SSL AND NOT MV_FUZZ)
+  cmake_push_check_state()
+  set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
+  check_cxx_source_compiles("
+#include <openssl/ssl.h>
+#if !defined(OPENSSL_IS_BORINGSSL)
+#error not BoringSSL
+#endif
+int main() { SSL_CTX* c = SSL_CTX_new(TLS_method()); SSL_CTX_set_permute_extensions(c, 1); return 0; }"
+    MV_HAS_BORINGSSL)
+  cmake_pop_check_state()
+  if(MV_HAS_BORINGSSL)
+    set(MV_DRIFTWIRE_TLS ON)
+  endif()
+endif()
+if(MV_DRIFTWIRE_TLS)
+  set(_driftwire_tls ${_W}/tls_boringssl.cpp)
+else()
+  message(STATUS "Driftwire: no BoringSSL; the Tunnel's HTTPS look (slice 4) is left out")
+  set(_driftwire_tls ${_W}/tls_none.cpp)
+endif()
+
 if(WIN32)
   set(_wire_port ${_W}/net_win.cpp ${_W}/secrets_win.cpp ${_W}/advert_win.cpp)
 elseif(IOS)
@@ -76,11 +108,16 @@ add_library(mv_wire STATIC
   ${_W}/serve_client.cpp ${_W}/serve_client.h
   ${_W}/pair_check.cpp ${_W}/pair_check.h
   ${_W}/splice.cpp ${_W}/splice.h
+  ${_W}/tls.h ${_W}/tls_common.cpp ${_driftwire_tls}
   ${_W}/advert.h
   ${_wire_port}
 )
 target_include_directories(mv_wire PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
 target_link_libraries(mv_wire PUBLIC mv_project_options ${MV_SODIUM_TARGET} Threads::Threads)
+if(MV_DRIFTWIRE_TLS)
+  target_link_libraries(mv_wire PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(mv_wire PUBLIC MV_DRIFTWIRE_TLS=1)
+endif()
 set_target_properties(mv_wire PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(WIN32)

@@ -643,7 +643,7 @@ jobs:
       - name: Install macOS dynamic codec libraries
         run: |
           # libsodium (Import add-on) builds through autoreconf in vcpkg.
-          brew install nasm ninja autoconf autoconf-archive automake libtool
+          brew install nasm go ninja autoconf autoconf-archive automake libtool
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \

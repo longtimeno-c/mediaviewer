@@ -55,7 +55,8 @@ struct address {
 [[nodiscard]] bool is_private_v4(const address& a) noexcept;
 
 // A TCP listener on a port the OS picks: on every interface, or on loopback
-// only (the tests).
+// only (the tests). IPv4. `port`: that one instead (the Tunnel's proxy on
+// 127.0.0.1 keeps its port across runs); status::io when it is taken.
 class listener {
  public:
   virtual ~listener() = default;
@@ -77,7 +78,7 @@ class listener {
   }
   virtual void shutdown() noexcept = 0;
 };
-[[nodiscard]] result<std::unique_ptr<listener>> listen(bool loopback_only = false);
+[[nodiscard]] result<std::unique_ptr<listener>> listen(bool loopback_only = false, std::uint16_t port = 0);
 
 // Connects within `timeout_ms`, over IPv4 or IPv6 as the address is.
 [[nodiscard]] result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms);

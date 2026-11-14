@@ -317,7 +317,7 @@ class udp_beacon final : public beacon_socket {
 
 }  // namespace
 
-result<std::unique_ptr<listener>> listen(bool loopback_only) {
+result<std::unique_ptr<listener>> listen(bool loopback_only, std::uint16_t port) {
   if (!winsock_ready()) return err(status::io);
   const SOCKET s = ::WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
   if (s == INVALID_SOCKET) return err(status::io);
@@ -327,7 +327,7 @@ result<std::unique_ptr<listener>> listen(bool loopback_only) {
   sockaddr_in a{};
   a.sin_family = AF_INET;
   a.sin_addr.s_addr = ::htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
-  a.sin_port = 0;
+  a.sin_port = ::htons(port);
   int len = sizeof a;
   // A backlog of 4 refused a fifth connect outright (WSAECONNREFUSED) while a
   // busy accept thread had not yet taken the first four; the caps that matter

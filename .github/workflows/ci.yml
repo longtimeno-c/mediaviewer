@@ -138,7 +138,7 @@ jobs:
       # release.yml: a second manifest install would remove the other triplet.
       - name: Install macOS dynamic codec libraries
         run: |
-          brew install libomp nasm ninja autoconf autoconf-archive automake libtool
+          brew install libomp nasm go ninja autoconf autoconf-archive automake libtool
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
@@ -328,6 +328,7 @@ jobs:
       # distro FFmpeg is a test dependency only; the product FFmpeg is the
       # pinned LGPL vcpkg port (tools/licence-check.ps1), and the clip tests
       # write their fixtures with FFmpeg's own MPEG-4 / MP2 encoders. dbus,
+      # nasm and Go: vcpkg's BoringSSL build (the Tunnel's TLS, slice 4).
       # gnome-keyring and libsecret: a Secret Service for Driftwire's Linux
       # secret store (secrets_linux.cpp loads libsecret-1.so.0 at run time;
       # secret-tool checks the keyring before the tests, see Tests).
@@ -335,6 +336,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool pkg-config python3-cryptography \
+            nasm golang-go \
             libavformat-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev libswresample-dev \
             libspng-dev libjpeg-turbo8-dev dbus gnome-keyring libsecret-1-0 libsecret-tools
 
@@ -1001,7 +1003,7 @@ jobs:
             eval "$(/opt/homebrew/bin/brew shellenv)"
             echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           fi
-          brew install libomp nasm ninja autoconf autoconf-archive automake libtool
+          brew install libomp nasm go ninja autoconf autoconf-archive automake libtool
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \

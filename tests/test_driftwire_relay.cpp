@@ -12,10 +12,14 @@
 // needs the stand-in DHT, is in test_driftwire_dht.cpp.
 #include "driftwire_fixture.h"
 
+#include <cctype>
+
 #include "addons/driftwire/invite.h"
 #include "wire/known.h"
 #include "addons/driftwire/relay.h"
 #include "wire/splice.h"
+#include "wire/tls.h"
+#include "addons/driftwire/tunnel.h"
 
 namespace relay = mv::driftwire::relay;
 namespace invite = mv::driftwire::invite;
@@ -149,7 +153,7 @@ TEST_CASE("driftwire relay: a rendezvous head carries its role and version, and 
   CHECK(relay::parse_head(h) == relay::kWaiter);
   for (std::size_t i = 0; i < h.size(); ++i) {
     auto bad = h;
-    bad[i] ^= 2;
+    bad[i] ^= 0x40;  // not 2: roles 0-3 (sender, waiter, forwarder, kAsk) are all real
     CHECK_FALSE(relay::parse_head(bad));  // magic, version, role, reserved
   }
   auto v2 = h;
@@ -895,4 +899,890 @@ TEST_CASE("driftwire relay: the relay server's key is kept in the secret store, 
   }
   auto store = sp::secrets::file_store(utf8(dir / "secrets"));
   CHECK_FALSE(store->get(mv::driftwire::known::kRelayKeyName));
+}
+
+// ---- the Tunnel: forwarding on the relay server (docs/plans/driftwire-menu-and-tunnel.md) ----
+
+namespace {
+
+// A TCP server on loopback that echoes what each connection says, upper-cased
+// (so an echo is not mistaken for the bytes going one way only).
+struct echo_server {
+  std::unique_ptr<sp::net::listener> l;
+  std::thread t;
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> conns;
+  echo_server() {
+    auto x = sp::net::listen(true);
+    REQUIRE(x);
+    l = std::move(*x);
+    t = std::thread([this] {
+      while (!stop.load()) {
+        auto c = l->accept(200);
+        if (!c) {
+          if (c.error() == mv::status::cancelled) return;
+          continue;
+        }
+        std::shared_ptr<sp::link> one(std::move(*c));
+        conns.emplace_back([this, one] {
+          std::vector<std::uint8_t> b(4096);
+          while (!stop.load()) {
+            auto n = one->read_some(b, 200);
+            if (!n && n.error() == mv::status::timeout) continue;
+            if (!n || *n == 0) break;
+            for (std::size_t i = 0; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
+            if (!one->write_all(std::span<const std::uint8_t>(b.data(), *n))) break;
+          }
+          one->shutdown();
+        });
+      }
+    });
+  }
+  ~echo_server() {
+    stop.store(true);
+    l->shutdown();
+    t.join();
+    for (auto& c : conns) c.join();
+  }
+  std::uint16_t port() const { return l->port(); }
+};
+
+relay::server::options forward_options(std::uint16_t allowed_port) {
+  auto o = server_options();
+  o.forward_ports = {allowed_port};
+  o.forward_private = true;  // the echo server is on loopback
+  return o;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire relay: a key holder's forward reaches the host, sealed both ways", "[driftwire]") {
+  echo_server echo;
+  auto s = relay::server::start(forward_options(echo.port()));
+  REQUIRE(s);
+  auto tap = std::make_unique<wiretap>(dial((*s)->port()));
+  auto sent = tap->sent, heard = tap->heard;
+  relay::forward_answer said{};
+  auto f = relay::forward(std::move(tap), kKey, "127.0.0.1", echo.port(), relay::kForwardWaitMs, said);
+  REQUIRE(f);
+  CHECK(said == relay::forward_answer::ok);
+  CHECK(std::string((*f)->through()) == "relay");
+  // More than one sealed frame each way.
+  std::string ask = "GET / HTTP/1.1\r\nHost: blocked.example\r\n\r\n";
+  while (ask.size() < 3 * relay::kSealedChunk) ask += "padding-padding-padding-";
+  REQUIRE((*f)->write_all({reinterpret_cast<const std::uint8_t*>(ask.data()), ask.size()}));
+  const auto back = read_n(**f, ask.size());
+  std::string upper = ask;
+  for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  CHECK(std::string(back.begin(), back.end()) == upper);
+  // A network on the path sees neither the host asked for, nor what went.
+  const std::string host = "127.0.0.1", site = "blocked.example", key = kKey;
+  CHECK_FALSE(contains(*sent, host));
+  CHECK_FALSE(contains(*sent, site));
+  CHECK_FALSE(contains(*heard, std::string("BLOCKED.EXAMPLE")));
+  CHECK_FALSE(contains(*sent, key));
+  (*f)->shutdown();
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((*s)->snapshot().forwarding > 0 && std::chrono::steady_clock::now() < until) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  const auto c = (*s)->snapshot();
+  CHECK(c.forwarded == 1);
+  CHECK(c.forwarding == 0);
+  CHECK(c.bytes >= 2 * ask.size());
+}
+
+TEST_CASE("driftwire relay: no forward without the key, to another port, past the cap, or into a private network",
+          "[driftwire]") {
+  echo_server echo;
+  relay::forward_answer said{};
+  SECTION("the wrong key: the server proves nothing and hears no host") {
+    auto s = relay::server::start(forward_options(echo.port()));
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), "not the server's key at all", "127.0.0.1", echo.port(), 5000,
+                               said));
+    CHECK(said == relay::forward_answer::key);
+    CHECK((*s)->snapshot().forwarded == 0);
+  }
+  SECTION("a port it does not forward to") {
+    auto s = relay::server::start(forward_options(echo.port()));
+    REQUIRE(s);
+    const std::uint16_t other = echo.port() == 443 ? 444 : 443;
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", other, 5000, said));
+    CHECK(said == relay::forward_answer::port);
+  }
+  SECTION("forwarding off") {
+    auto o = forward_options(echo.port());
+    o.forward_ports.clear();
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::off);
+  }
+  SECTION("by default, only public addresses: loopback and a private name are refused") {
+    auto o = forward_options(echo.port());
+    o.forward_private = false;
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "192.168.1.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "localhost", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+  }
+  SECTION("the cap: a second forward while the first is open is busy") {
+    auto o = forward_options(echo.port());
+    o.max_forwards = 1;
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    auto first = relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said);
+    REQUIRE(first);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), 5000, said));
+    CHECK(said == relay::forward_answer::busy);
+  }
+  SECTION("nothing listening there") {
+    auto o = forward_options(1);  // nothing listens on loopback port 1
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", 1, relay::kForwardWaitMs, said));
+    CHECK(said == relay::forward_answer::unreachable);
+  }
+}
+
+TEST_CASE("driftwire relay: a forward's host is checked, and a sealed frame that does not open closes it",
+          "[driftwire]") {
+  CHECK(relay::forward_host_ok("example.com"));
+  CHECK(relay::forward_host_ok("2001:db8::1"));
+  CHECK_FALSE(relay::forward_host_ok(""));
+  CHECK_FALSE(relay::forward_host_ok("bad host"));
+  CHECK_FALSE(relay::forward_host_ok("a/b"));
+  CHECK_FALSE(relay::forward_host_ok(std::string(relay::kMaxHostBytes + 1, 'a')));
+  echo_server echo;
+  auto s = relay::server::start(forward_options(echo.port()));
+  REQUIRE(s);
+  // A recorded forward said again opens nothing: the server's fresh
+  // ephemeral makes the old answer useless (the connection is closed).
+  auto tap = std::make_unique<wiretap>(dial((*s)->port()));
+  auto sent = tap->sent;
+  relay::forward_answer said{};
+  auto f = relay::forward(std::move(tap), kKey, "127.0.0.1", echo.port(), 5000, said);
+  REQUIRE(f);
+  (*f)->shutdown();
+  CHECK(says_and_is_closed((*s)->port(), *sent));
+  CHECK((*s)->snapshot().forwarded == 1);
+}
+
+// ---- the Tunnel: the local proxy (tunnel.h) and the engine's switch -------------------------
+
+namespace tunnel = mv::driftwire::tunnel;
+
+namespace {
+
+// What a client reads up to the end of a proxy's HTTP answer (its head).
+std::string read_head(sp::link& l) {
+  std::string got;
+  std::uint8_t b = 0;
+  while (got.find("\r\n\r\n") == std::string::npos && got.size() < 4096) {
+    if (!sp::read_exact(l, {&b, 1}, 10000)) break;
+    got.push_back(static_cast<char>(b));
+  }
+  return got;
+}
+
+std::string upper(std::string s) {
+  for (auto& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return s;
+}
+
+void say(sp::link& l, const std::string& s) {
+  REQUIRE(l.write_all({reinterpret_cast<const std::uint8_t*>(s.data()), s.size()}));
+}
+
+std::string hear(sp::link& l, std::size_t n) {
+  const auto b = read_n(l, n);
+  return {b.begin(), b.end()};
+}
+
+// curl -p (HTTP CONNECT) through the proxy at `proxy_port` to `host:port`,
+// then a line both ways: true when the echo came back.
+bool curl_connect(std::uint16_t proxy_port, const std::string& authority, std::string* status = nullptr) {
+  auto l = dial(proxy_port);
+  say(*l, "CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\nUser-Agent: curl/8.7.1\r\n"
+          "Proxy-Connection: Keep-Alive\r\n\r\n");
+  const auto head = read_head(*l);
+  if (status) *status = head.substr(0, head.find("\r\n"));
+  if (head.rfind("HTTP/1.1 200", 0) != 0) return false;
+  const std::string hello = "hello through the tunnel";
+  say(*l, hello);
+  return hear(*l, hello.size()) == upper(hello);
+}
+
+// As curl_connect, but false (never a failed REQUIRE) when any step fails:
+// for a proxy that may be restarting.
+bool try_curl_connect(std::uint16_t proxy_port, const std::string& authority) {
+  auto c = sp::net::connect({"127.0.0.1", proxy_port}, 1000);
+  if (!c) return false;
+  auto& l = **c;
+  const std::string ask = "CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\n\r\n";
+  if (!l.write_all({reinterpret_cast<const std::uint8_t*>(ask.data()), ask.size()})) return false;
+  std::string head;
+  std::uint8_t b = 0;
+  while (head.find("\r\n\r\n") == std::string::npos && head.size() < 4096) {
+    if (!sp::read_exact(l, {&b, 1}, 10000)) return false;
+    head.push_back(static_cast<char>(b));
+  }
+  if (head.rfind("HTTP/1.1 200", 0) != 0) return false;
+  const std::string hello = "hello again";
+  if (!l.write_all({reinterpret_cast<const std::uint8_t*>(hello.data()), hello.size()})) return false;
+  std::vector<std::uint8_t> back(hello.size());
+  if (!sp::read_exact(l, back, 10000)) return false;
+  return std::string(back.begin(), back.end()) == upper(hello);
+}
+
+}  // namespace
+
+TEST_CASE("driftwire tunnel: proxy requests are read with care", "[driftwire]") {
+  auto t = tunnel::parse_authority("example.com:443", 0);
+  REQUIRE(t);
+  CHECK(t->host == "example.com");
+  CHECK(t->port == 443);
+  t = tunnel::parse_authority("[2001:db8::1]:8443", 0);
+  REQUIRE(t);
+  CHECK(t->host == "2001:db8::1");
+  CHECK(t->port == 8443);
+  CHECK(tunnel::parse_authority("example.com", 80)->port == 80);
+  CHECK_FALSE(tunnel::parse_authority("example.com", 0));
+  CHECK_FALSE(tunnel::parse_authority("example.com:0", 0));
+  CHECK_FALSE(tunnel::parse_authority("example.com:99999", 0));
+  CHECK_FALSE(tunnel::parse_authority("bad host:443", 0));
+
+  auto c = tunnel::parse_http_head("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n");
+  REQUIRE(c);
+  CHECK(c->connect);
+  CHECK(c->to.host == "example.com");
+  CHECK(c->to.port == 443);
+  auto g = tunnel::parse_http_head(
+      "GET http://user:pw@example.com/a/b?q=1 HTTP/1.1\r\nHost: example.com\r\nProxy-Connection: keep-alive\r\n"
+      "Proxy-Authorization: Basic eA==\r\nAccept: */*\r\n\r\n");
+  REQUIRE(g);
+  CHECK_FALSE(g->connect);
+  CHECK(g->to.host == "example.com");
+  CHECK(g->to.port == 80);
+  CHECK(g->head == "GET /a/b?q=1 HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+  CHECK(tunnel::parse_http_head("GET http://example.com:8080 HTTP/1.1\r\n\r\n")->head.rfind("GET / HTTP/1.1", 0) == 0);
+  CHECK_FALSE(tunnel::parse_http_head("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"));  // not a proxy request
+  CHECK_FALSE(tunnel::parse_http_head("GET https://example.com/ HTTP/1.1\r\n\r\n"));     // https goes by CONNECT
+  CHECK_FALSE(tunnel::parse_http_head("CONNECT example.com HTTP/1.1\r\n\r\n"));          // no port
+  CHECK_FALSE(tunnel::parse_http_head("hello\r\n\r\n"));
+
+  std::size_t needed = 0;
+  const std::vector<std::uint8_t> name = {5, 1, 0, 3, 11, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', 1, 187};
+  auto s = tunnel::parse_socks_request(name, needed);
+  REQUIRE(s);
+  CHECK(s->reply == 0);
+  CHECK(s->to.host == "example.com");
+  CHECK(s->to.port == 443);
+  CHECK_FALSE(tunnel::parse_socks_request(std::span(name).first(7), needed));
+  CHECK(needed == name.size());
+  const std::vector<std::uint8_t> v4 = {5, 1, 0, 1, 93, 184, 216, 34, 0, 80};
+  s = tunnel::parse_socks_request(v4, needed);
+  REQUIRE(s);
+  CHECK(s->to.host == "93.184.216.34");
+  CHECK(s->to.port == 80);
+  const std::vector<std::uint8_t> bind = {5, 2, 0, 1, 1, 2, 3, 4, 0, 80};
+  CHECK(tunnel::parse_socks_request(bind, needed)->reply == 7);
+  CHECK(tunnel::parse_socks_request(std::vector<std::uint8_t>{5, 1, 0, 9}, needed)->reply == 8);
+  CHECK(tunnel::socks_reply_for(relay::forward_answer::ok) == 0);
+  CHECK(tunnel::socks_reply_for(relay::forward_answer::port) == 2);
+  CHECK(tunnel::http_reply_for(relay::forward_answer::ok).rfind("HTTP/1.1 200", 0) == 0);
+  CHECK(tunnel::http_reply_for(relay::forward_answer::port).rfind("HTTP/1.1 403", 0) == 0);
+  CHECK(tunnel::relay_shown(std::string("relay.example:47614#") + kKey) == "relay.example:47614");
+  CHECK(tunnel::relay_shown("relay.example:47614") == "");
+}
+
+TEST_CASE("driftwire tunnel: SOCKS5, CONNECT and a plain request go through the relay server", "[driftwire]") {
+  echo_server echo;
+  auto s = relay::server::start(forward_options(echo.port()));
+  REQUIRE(s);
+  tunnel::proxy::options o;
+  o.relay = "127.0.0.1:" + std::to_string((*s)->port()) + "#" + kKey;
+  auto p = tunnel::proxy::start(o);
+  REQUIRE(p);
+  const auto pp = (*p)->port();
+  REQUIRE(pp != 0);
+  const std::string to = "127.0.0.1:" + std::to_string(echo.port());
+
+  // HTTP CONNECT, as curl -p or a browser's HTTPS.
+  std::string status;
+  CHECK(curl_connect(pp, to, &status));
+  CHECK(status == "HTTP/1.1 200 Connection established");
+
+  // SOCKS5 with a name (resolved at the relay: socks5h).
+  {
+    auto l = dial(pp);
+    say(*l, std::string("\x05\x01\x00", 3));
+    CHECK(hear(*l, 2) == std::string("\x05\x00", 2));
+    std::string req("\x05\x01\x00\x03", 4);
+    req.push_back(static_cast<char>(9));
+    req += "localhost";
+    req.push_back(static_cast<char>(echo.port() >> 8));
+    req.push_back(static_cast<char>(echo.port() & 0xFF));
+    say(*l, req);
+    const auto reply = hear(*l, 10);
+    CHECK(reply[0] == 5);
+    CHECK(reply[1] == 0);
+    say(*l, "socks bytes");
+    CHECK(hear(*l, 11) == "SOCKS BYTES");
+  }
+  // A SOCKS5 client that offers no method this proxy takes.
+  {
+    auto l = dial(pp);
+    say(*l, std::string("\x05\x01\x02", 3));  // username/password only
+    CHECK(hear(*l, 2) == std::string("\x05\xFF", 2));
+    CHECK(closed_soon(*l));
+  }
+  // A plain http:// request (HTTP_PROXY): sent on in origin form, closed after.
+  {
+    auto l = dial(pp);
+    say(*l, "GET http://" + to + "/page HTTP/1.1\r\nHost: " + to + "\r\nProxy-Connection: keep-alive\r\n\r\n");
+    const std::string sent = "GET /page HTTP/1.1\r\nHost: " + to + "\r\nConnection: close\r\n\r\n";
+    CHECK(hear(*l, sent.size()) == upper(sent));
+  }
+  // A port the relay does not forward to: 403, and counted as the site's,
+  // not the tunnel's problem.
+  CHECK_FALSE(curl_connect(pp, "127.0.0.1:1", &status));
+  CHECK(status.rfind("HTTP/1.1 403", 0) == 0);
+  const auto st = (*p)->state();
+  CHECK(st.streams == 3);
+  CHECK(st.failed == 1);
+  CHECK(st.problem.empty());
+  CHECK((*s)->snapshot().forwarded == 3);
+}
+
+TEST_CASE("driftwire tunnel: a relay that does not take the key, or does not forward, is said", "[driftwire]") {
+  echo_server echo;
+  auto o = forward_options(echo.port());
+  o.forward_ports.clear();
+  auto s = relay::server::start(o);
+  REQUIRE(s);
+  const std::string to = "127.0.0.1:" + std::to_string(echo.port());
+  {
+    tunnel::proxy::options po;
+    po.relay = "127.0.0.1:" + std::to_string((*s)->port()) + "#not-the-servers-key-at-all";
+    auto p = tunnel::proxy::start(po);
+    REQUIRE(p);
+    std::string status;
+    CHECK_FALSE(curl_connect((*p)->port(), to, &status));
+    CHECK(status.rfind("HTTP/1.1 502", 0) == 0);
+    CHECK((*p)->state().problem.find("key") != std::string::npos);
+  }
+  {
+    tunnel::proxy::options po;
+    po.relay = "127.0.0.1:" + std::to_string((*s)->port()) + "#" + kKey;
+    auto p = tunnel::proxy::start(po);
+    REQUIRE(p);
+    CHECK_FALSE(curl_connect((*p)->port(), to));
+    CHECK((*p)->state().problem.find("does not forward") != std::string::npos);
+  }
+  CHECK_FALSE(tunnel::proxy::start({}));  // no relay: nothing listens
+}
+
+TEST_CASE("driftwire tunnel: two engines and a relay; the switch runs the proxy beside a relayed send",
+          "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel");
+  echo_server echo;
+  auto o = forward_options(echo.port());
+  auto server = relay::server::start(o);
+  REQUIRE(server);
+  const std::uint16_t relay_port = (*server)->port();
+  const std::string field = "\"127.0.0.1:" + std::to_string(relay_port) + "#" + kKey + "\"";
+  far_end bea(dir / "bea_received", "Bea", {});
+  far_end ann(dir / "ann_received", "Ann", [relay_port](const sp::net::endpoint& to) { return to.port == relay_port; });
+  bea.eng.on_event("relay_server", 2, field);
+  ann.eng.on_event("relay_server", 2, field);
+
+  // Off by default: nothing listens, and the window offers the switch.
+  CHECK_FALSE(ann.eng.snapshot().tunnel);
+  CHECK(ann.eng.snapshot().tunnel_address.empty());
+  const auto off_tree = sp::build_tree(ann.eng.snapshot());
+  CHECK(off_tree.find("\"id\":\"tunnel\"") != std::string::npos);
+  CHECK(off_tree.find("Tunnel through 127.0.0.1:" + std::to_string(relay_port)) != std::string::npos);
+
+  // The window's switch (the menu-bar row sends the same event).
+  ann.eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return !ann.eng.snapshot().tunnel_address.empty(); }));
+  const auto v = ann.eng.snapshot();
+  CHECK(v.tunnel);
+  CHECK(v.tunnel_relay == "127.0.0.1:" + std::to_string(relay_port));
+  CHECK(v.tunnel_address.rfind("127.0.0.1:", 0) == 0);
+  const auto proxy_port = static_cast<std::uint16_t>(std::stoi(v.tunnel_address.substr(10)));
+  const auto on_tree = sp::build_tree(v);
+  CHECK(on_tree.find("\"via\":\"tunnel\"") != std::string::npos);
+  CHECK(on_tree.find("\"copy\":\"" + v.tunnel_address + "\"") != std::string::npos);
+  CHECK(sp::build_settings_tree(v).find("\"id\":\"tunnel\"") != std::string::npos);
+
+  // curl -p through it, while a send goes through the same relay server.
+  const fs::path f = dir / "out" / "clip.mov";
+  const auto bytes = pattern(512 * 1024 + 7, 3);
+  write_bytes(f, bytes);
+  const std::string code = bea.make_code();
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
+  ann.eng.on_event("send_code", 2, "\"" + code + "\"");
+  ann.eng.on_event("send_to_code", 1, "");
+  CHECK(curl_connect(proxy_port, "127.0.0.1:" + std::to_string(echo.port())));
+  {
+    // A stream held open shows in the window.
+    auto l = dial(proxy_port);
+    say(*l, "CONNECT 127.0.0.1:" + std::to_string(echo.port()) + " HTTP/1.1\r\n\r\n");
+    CHECK(read_head(*l).rfind("HTTP/1.1 200", 0) == 0);
+    CHECK(eventually([&] { return ann.eng.snapshot().tunnel_open == 1; }));
+    CHECK(sp::build_tree(ann.eng.snapshot()).find("\"state\":\"moving\"") != std::string::npos);
+  }
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 30));
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  CHECK(read_bytes(dir / "bea_received" / "clip.mov") == bytes);
+  CHECK(ann.eng.snapshot().tunnel_streams >= 2);
+  CHECK((*server)->snapshot().forwarded >= 2);
+
+  // Off: the port closes and the address goes.
+  ann.eng.on_event("tunnel", 2, "false");
+  REQUIRE(eventually([&] { return ann.eng.snapshot().tunnel_address.empty(); }));
+  CHECK_FALSE(sp::net::connect({"127.0.0.1", proxy_port}, 1000));
+}
+
+TEST_CASE("driftwire tunnel: on with no relay server says why; the switch and its port are kept", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_prefs");
+  const auto prefs_path = utf8(dir / "driftwire.json");
+  std::uint16_t first_port = 0;
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  {
+    fake_host host(dir / "received");
+    auto o = far_end::options("Ann", {});
+    o.prefs_path = prefs_path;
+    sp::engine eng(host, o);
+    eng.on_event("tunnel", 2, "true");
+    REQUIRE(eventually([&] { return !eng.snapshot().tunnel_note.empty(); }));
+    CHECK(eng.snapshot().tunnel_address.empty());
+    CHECK(sp::build_tree(eng.snapshot()).find("relay server") != std::string::npos);
+    eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+    REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
+    first_port = static_cast<std::uint16_t>(std::stoi(eng.snapshot().tunnel_address.substr(10)));
+  }
+  const auto kept = sp::load_prefs(prefs_path);
+  REQUIRE(kept);
+  CHECK(kept->tunnel);
+  CHECK(kept->tunnel_port == first_port);
+  {
+    // The next run listens on the same port, so a browser set up once keeps working.
+    fake_host host(dir / "received");
+    auto o = far_end::options("Ann", {});
+    o.prefs_path = prefs_path;
+    sp::engine eng(host, o);
+    REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
+    CHECK(eng.snapshot().tunnel_address == "127.0.0.1:" + std::to_string(first_port));
+  }
+}
+
+// ---- the Tunnel's system proxy (sysproxy.h), through a stand-in for the OS ----------------
+
+namespace sysproxy = mv::driftwire::sysproxy;
+
+namespace {
+
+// The OS's setting, as a stand-in: what it is now, and every call.
+struct fake_os {
+  std::mutex m;
+  std::string url = "http://wpad.example/proxy.pac";  // the person's own, before
+  int sets = 0, restores = 0;
+  bool deny = false;
+  std::string now() {
+    std::lock_guard lock(m);
+    return url;
+  }
+};
+
+struct fake_port final : sysproxy::port {
+  std::shared_ptr<fake_os> os;
+  explicit fake_port(std::shared_ptr<fake_os> o) : os(std::move(o)) {}
+  std::string unsupported() const override { return {}; }
+  mv::result<std::string> set(const std::string& pac) override {
+    std::lock_guard lock(os->m);
+    ++os->sets;
+    if (os->deny) return mv::err(mv::status::permission_denied);
+    std::string was = os->url;
+    os->url = pac;
+    return was;
+  }
+  bool restore(const std::string& saved, const std::string& pac) override {
+    std::lock_guard lock(os->m);
+    ++os->restores;
+    if (os->url == pac) os->url = saved;  // only if still ours
+    return true;
+  }
+};
+
+std::string http_get(std::uint16_t port, const std::string& path) {
+  auto l = dial(port);
+  say(*l, "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  std::string got;
+  std::vector<std::uint8_t> buf(4096);
+  for (;;) {
+    auto n = l->read_some(buf, 5000);
+    if (!n || *n == 0) break;
+    got.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  return got;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire tunnel: the PAC script and the record read with care", "[driftwire]") {
+  const auto script = tunnel::pac_script(54321);
+  CHECK(script.find("FindProxyForURL") != std::string::npos);
+  CHECK(script.find("\"SOCKS5 127.0.0.1:54321; DIRECT\"") != std::string::npos);  // DIRECT when it is gone
+  CHECK(script.find("dnsResolve") == std::string::npos);  // never asks the network's DNS
+  CHECK(tunnel::pac_url(54321) == "http://127.0.0.1:54321/driftwire-tunnel.pac");
+  CHECK(tunnel::asks_for_pac("GET /driftwire-tunnel.pac HTTP/1.1\r\n\r\n"));
+  CHECK(tunnel::asks_for_pac("GET /driftwire-tunnel.pac?x=1 HTTP/1.1\r\n\r\n"));
+  CHECK_FALSE(tunnel::asks_for_pac("GET /driftwire-tunnel.pacx HTTP/1.1\r\n\r\n"));
+  CHECK_FALSE(tunnel::asks_for_pac("GET http://example.com/driftwire-tunnel.pac HTTP/1.1\r\n\r\n"));
+  CHECK_FALSE(tunnel::asks_for_pac("POST /driftwire-tunnel.pac HTTP/1.1\r\n\r\n"));
+  const sysproxy::record r{"http://127.0.0.1:1/driftwire-tunnel.pac", "1\tsvc\t0\t\n"};
+  const auto back = sysproxy::parse_record(sysproxy::record_json(r));
+  REQUIRE(back);
+  CHECK(back->pac_url == r.pac_url);
+  CHECK(back->saved == r.saved);
+  CHECK_FALSE(sysproxy::parse_record("{}"));
+  CHECK_FALSE(sysproxy::parse_record("not json"));
+}
+
+TEST_CASE("driftwire tunnel: Use for all apps points the system proxy at it, and puts it back", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_sysproxy");
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  auto os = std::make_shared<fake_os>();
+  const std::string before = os->now();
+  fake_host host(dir / "received");
+  auto o = far_end::options("Ann", {});
+  o.prefs_path = utf8(dir / "driftwire.json");
+  o.make_sysproxy = [os] { return std::make_unique<fake_port>(os); };
+  sp::engine eng(host, o);
+  eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+  CHECK(eng.snapshot().tunnel_all_apps);  // on by default
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  const auto v = eng.snapshot();
+  const auto port = static_cast<std::uint16_t>(std::stoi(v.tunnel_address.substr(10)));
+  CHECK(os->now() == tunnel::pac_url(port));
+  // Kept on disk while it is Driftwire's, so a crash can put it back.
+  const auto rec = sysproxy::load_record(utf8(dir / sysproxy::kRecordFile));
+  REQUIRE(rec);
+  CHECK(rec->pac_url == tunnel::pac_url(port));
+  CHECK(rec->saved == before);
+  CHECK(sp::build_tree(v).find("\"id\":\"tunnel_all_apps\"") != std::string::npos);
+  // The script, from the proxy's own port.
+  const auto pac = http_get(port, std::string(tunnel::kPacPath));
+  CHECK(pac.rfind("HTTP/1.1 200", 0) == 0);
+  CHECK(pac.find("application/x-ns-proxy-autoconfig") != std::string::npos);
+  CHECK(pac.find("SOCKS5 127.0.0.1:" + std::to_string(port) + "; DIRECT") != std::string::npos);
+  // More reconciles set nothing again.
+  eng.screen_opened("");
+  eng.screen_closed();
+  CHECK(os->sets == 1);
+
+  // Use for all apps off: back as it was; on: pointed again.
+  eng.on_event("tunnel_all_apps", 2, "false");
+  REQUIRE(eventually([&] { return os->now() == before; }));
+  CHECK_FALSE(eng.snapshot().tunnel_system);
+  CHECK_FALSE(sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)));
+  CHECK_FALSE(eng.snapshot().tunnel_address.empty());  // the Tunnel itself still runs
+  eng.on_event("tunnel_all_apps", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  // The Tunnel off: back as it was.
+  eng.on_event("tunnel", 2, "false");
+  REQUIRE(eventually([&] { return os->now() == before && eng.snapshot().tunnel_address.empty(); }));
+  CHECK_FALSE(sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)));
+
+  // On, then quit: the engine's way out puts it back.
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  // A setting the person changed since is theirs: not touched on the way out.
+}
+
+TEST_CASE("driftwire tunnel: the system proxy goes back at quit, after a crash, and never over the person's own",
+          "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_sysproxy_quit");
+  auto os = std::make_shared<fake_os>();
+  const std::string before = os->now();
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  const std::string field = "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"";
+  const auto make = [&] {
+    auto o = far_end::options("Ann", {});
+    o.prefs_path = utf8(dir / "driftwire.json");
+    o.make_sysproxy = [os] { return std::make_unique<fake_port>(os); };
+    return o;
+  };
+  SECTION("quit") {
+    fake_host host(dir / "received");
+    {
+      sp::engine eng(host, make());
+      eng.on_event("relay_server", 2, field);
+      eng.on_event("tunnel", 2, "true");
+      REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+    }
+    CHECK(os->now() == before);
+    CHECK_FALSE(sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)));
+  }
+  SECTION("a crash left it set: the next start puts it back, Tunnel on or off") {
+    const std::string left = "http://127.0.0.1:1234/driftwire-tunnel.pac";
+    os->url = left;
+    REQUIRE(sysproxy::save_record(utf8(dir / sysproxy::kRecordFile), {left, before}));
+    fake_host host(dir / "received");
+    sp::engine eng(host, make());
+    REQUIRE(eventually([&] { return os->now() == before; }));
+    CHECK(eventually([&] { return !sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)); }));
+  }
+  SECTION("the person changed it while the Tunnel was on: left alone") {
+    fake_host host(dir / "received");
+    {
+      sp::engine eng(host, make());
+      eng.on_event("relay_server", 2, field);
+      eng.on_event("tunnel", 2, "true");
+      REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+      std::lock_guard lock(os->m);
+      os->url = "http://corp.example/their.pac";
+    }
+    CHECK(os->now() == "http://corp.example/their.pac");
+  }
+}
+
+TEST_CASE("driftwire tunnel: a declined system proxy says so once, and asks again only when the switch moves",
+          "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_sysproxy_denied");
+  auto os = std::make_shared<fake_os>();
+  os->deny = true;
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  fake_host host(dir / "received");
+  auto o = far_end::options("Ann", {});
+  o.make_sysproxy = [os] { return std::make_unique<fake_port>(os); };
+  sp::engine eng(host, o);
+  eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system_note.find("administrator") != std::string::npos; }));
+  CHECK_FALSE(eng.snapshot().tunnel_system);
+  CHECK_FALSE(eng.snapshot().tunnel_address.empty());  // the Tunnel runs; apps can be pointed at it by hand
+  eng.screen_opened("");  // reconciles: no second prompt
+  eng.screen_closed();
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_system_note.empty(); }));
+  CHECK(os->sets == 1);
+  {
+    std::lock_guard lock(os->m);
+    os->deny = false;
+  }
+  eng.on_event("tunnel_all_apps", 2, "false");
+  eng.on_event("tunnel_all_apps", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_system; }));
+  CHECK(os->sets == 2);
+}
+
+// ---- slice 4: looking like HTTPS (tls.h) ---------------------------------------------------
+
+namespace tls = mv::driftwire::tls;
+
+namespace {
+
+relay::server::options tls_options(std::uint16_t echo_port) {
+  auto o = forward_options(echo_port);
+  o.tls_port = 1;  // loopback: the OS picks (tls_port())
+  o.tls_name = "relay.example";
+  return o;
+}
+
+// What a TLS client says first: the ClientHello's record, from the bytes it sent.
+std::vector<std::uint8_t> first_record(const std::vector<std::uint8_t>& sent) {
+  REQUIRE(sent.size() >= 5);
+  const std::size_t n = 5 + (std::size_t{sent[3]} << 8 | sent[4]);
+  REQUIRE(sent.size() >= n);
+  return {sent.begin(), sent.begin() + static_cast<std::ptrdiff_t>(n)};
+}
+
+std::string https_get(std::uint16_t port, const std::string& request) {
+  auto t = tls::client(dial(port), "relay.example", nullptr);  // a browser: no knock
+  REQUIRE(t);
+  say(**t, request);
+  std::string got;
+  std::vector<std::uint8_t> buf(4096);
+  for (;;) {
+    auto n = (*t)->read_some(buf, 15000);
+    if (!n || *n == 0) break;
+    got.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  return got;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire tls: the web site a prober sees, read with care", "[driftwire]") {
+  const tls::decoy builtin;
+  auto r = tls::decoy_response("GET / HTTP/1.1\r\nHost: a\r\n\r\n", builtin);
+  CHECK(r.rfind("HTTP/1.1 200 OK", 0) == 0);
+  CHECK(r.find("Server: nginx") != std::string::npos);
+  CHECK(r.find("Welcome") != std::string::npos);
+  CHECK(tls::decoy_response("GET /admin HTTP/1.1\r\n\r\n", builtin).rfind("HTTP/1.1 404", 0) == 0);
+  CHECK(tls::decoy_response("POST / HTTP/1.1\r\n\r\n", builtin).rfind("HTTP/1.1 405", 0) == 0);
+  CHECK(tls::decoy_response("\x16\x03\x01garbage", builtin).rfind("HTTP/1.1 400", 0) == 0);
+  const auto head = tls::decoy_response("HEAD / HTTP/1.1\r\n\r\n", builtin);
+  CHECK(head.find("Welcome") == std::string::npos);  // a HEAD has no body
+  scratch_dir dir("driftwire_tls_decoy");
+  write_bytes(dir / "site" / "index.html", std::vector<std::uint8_t>{'h', 'i'});
+  write_bytes(dir / "secret.txt", std::vector<std::uint8_t>{'n', 'o'});
+  const tls::decoy site{utf8(dir / "site")};
+  CHECK(tls::decoy_response("GET / HTTP/1.1\r\n\r\n", site).find("\r\n\r\nhi") != std::string::npos);
+  CHECK(tls::decoy_response("GET /../secret.txt HTTP/1.1\r\n\r\n", site).rfind("HTTP/1.1 404", 0) == 0);
+  CHECK(tls::decoy_response("GET /%2e%2e/secret.txt HTTP/1.1\r\n\r\n", site).rfind("HTTP/1.1 404", 0) == 0);
+  // The knock: keyed by the server key, one per exporter.
+  const auto k1 = tls::derive_knock_key(kKey);
+  const auto k2 = tls::derive_knock_key("another key entirely, 2");
+  REQUIRE(k1);
+  REQUIRE(k2);
+  CHECK(*k1 != *k2);
+  const std::array<std::uint8_t, 32> e1{1}, e2{2};
+  CHECK(tls::knock_of(*k1, e1) != tls::knock_of(*k1, e2));
+  CHECK(tls::knock_of(*k1, e1) != tls::knock_of(*k2, e1));
+  CHECK_FALSE(tls::ja4_of(std::vector<std::uint8_t>{0x17, 3, 3, 0, 0}));
+}
+
+TEST_CASE("driftwire tls: the ClientHello is Chrome's by JA4, and the Tunnel forwards inside TLS", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  const auto tp = (*s)->tls_port();
+  REQUIRE(tp != 0);
+  const auto k = tls::derive_knock_key(kKey);
+  REQUIRE(k);
+  auto tap = std::make_unique<wiretap>(dial(tp));
+  auto sent = tap->sent;
+  auto t = tls::client(std::move(tap), "relay.example", &*k);
+  REQUIRE(t);
+  // The fingerprint a filter matches: TLS 1.3, SNI, 15 ciphers, 16
+  // extensions, h2; Chrome's cipher hash.
+  const auto ja4 = tls::ja4_of(first_record(*sent));
+  REQUIRE(ja4);
+  INFO(*ja4);
+  CHECK(ja4->substr(0, 10) == "t13d1516h2");
+  CHECK(ja4->substr(11, 12) == "8daaf6152771");
+  // The permuted extensions: a second hello's order differs, its JA4 does not.
+  {
+    auto tap2 = std::make_unique<wiretap>(dial(tp));
+    auto sent2 = tap2->sent;
+    auto t2 = tls::client(std::move(tap2), "relay.example", &*k);
+    REQUIRE(t2);
+    CHECK(tls::ja4_of(first_record(*sent2)) == ja4);
+  }
+  // The sealed hop inside: a forward to the echo server.
+  relay::forward_answer said{};
+  auto f = relay::forward(std::move(*t), kKey, "127.0.0.1", echo.port(), relay::kForwardWaitMs, said);
+  REQUIRE(f);
+  CHECK(said == relay::forward_answer::ok);
+  say(**f, "inside tls");
+  CHECK(hear(**f, 10) == "INSIDE TLS");
+  // Neither the key nor the host is in what went on the wire (TLS's own
+  // SNI names only the relay).
+  const std::string key = kKey;
+  CHECK_FALSE(contains(*sent, key));
+  CHECK_FALSE(contains(*sent, std::string("inside tls")));
+  CHECK((*s)->snapshot().forwarded == 1);
+}
+
+TEST_CASE("driftwire tls: without the knock, the relay is an ordinary web site", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  const auto tp = (*s)->tls_port();
+  // A browser.
+  const auto page = https_get(tp, "GET / HTTP/1.1\r\nHost: relay.example\r\nUser-Agent: Mozilla/5.0\r\n\r\n");
+  CHECK(page.rfind("HTTP/1.1 200 OK", 0) == 0);
+  CHECK(page.find("Server: nginx") != std::string::npos);
+  CHECK(https_get(tp, "GET /wp-admin HTTP/1.1\r\nHost: relay.example\r\n\r\n").rfind("HTTP/1.1 404", 0) == 0);
+  // A prober that speaks Driftwire's own hop inside TLS, without the knock:
+  // a web server's 400, never a CPace answer.
+  {
+    auto t = tls::client(dial(tp), "relay.example", nullptr);
+    REQUIRE(t);
+    say(**t, std::string("MVRL\x03\x02\x00\x00", 8) + std::string(48, 'x'));
+    std::string got;
+    std::vector<std::uint8_t> buf(4096);
+    for (;;) {
+      auto n = (*t)->read_some(buf, 15000);
+      if (!n || *n == 0) break;
+      got.append(reinterpret_cast<const char*>(buf.data()), *n);
+    }
+    CHECK((got.empty() || got.rfind("HTTP/1.1 400", 0) == 0));
+  }
+  // A knock made with the wrong key: the same.
+  {
+    const auto wrong = tls::derive_knock_key("not the server's key at all");
+    REQUIRE(wrong);
+    auto t = tls::client(dial(tp), "relay.example", &*wrong);
+    REQUIRE(t);
+    relay::forward_answer said{};
+    CHECK_FALSE(relay::forward(std::move(*t), kKey, "127.0.0.1", echo.port(), 15000, said));
+  }
+  // Plain bytes on the TLS port (not TLS at all): closed.
+  CHECK(says_and_is_closed(tp, std::vector<std::uint8_t>{'G', 'E', 'T', ' ', '/', '\r', '\n', '\r', '\n'}));
+  const auto c = (*s)->snapshot();
+  CHECK(c.website >= 4);
+  CHECK(c.forwarded == 0);
+}
+
+TEST_CASE("driftwire tls: the Tunnel's Look like a web site switch goes through the TLS port", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  scratch_dir dir("driftwire_tunnel_tls");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  fake_host host(dir / "received");
+  auto o = far_end::options("Ann", {});
+  o.tunnel_tls_port = (*s)->tls_port();
+  sp::engine eng(host, o);
+  eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*s)->port()) + "#" + kKey + "\"");
+  CHECK(eng.snapshot().tunnel_tls_available);
+  CHECK_FALSE(eng.snapshot().tunnel_tls);  // off by default
+  eng.on_event("tunnel_tls", 2, "true");
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
+  CHECK(sp::build_tree(eng.snapshot()).find("\"id\":\"tunnel_tls\"") != std::string::npos);
+  const auto pp = static_cast<std::uint16_t>(std::stoi(eng.snapshot().tunnel_address.substr(10)));
+  CHECK(curl_connect(pp, "127.0.0.1:" + std::to_string(echo.port())));
+  CHECK((*s)->snapshot().forwarded == 1);
+  CHECK((*s)->snapshot().website == 0);
+  // Off again: the plain port.
+  eng.on_event("tunnel_tls", 2, "false");
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
+  // The proxy restarts: on the same port when it can be had again, else on
+  // one the OS picks, so follow the address the window shows. Until it
+  // listens a connect is refused: probe without a REQUIRE (one inside
+  // eventually ends the test).
+  REQUIRE(eventually([&] {
+    const auto at = eng.snapshot().tunnel_address;
+    if (at.size() <= 10) return false;
+    const auto now = static_cast<std::uint16_t>(std::stoi(at.substr(10)));
+    return try_curl_connect(now, "127.0.0.1:" + std::to_string(echo.port()));
+  }));
 }

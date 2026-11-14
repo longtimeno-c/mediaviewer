@@ -480,11 +480,40 @@ struct session::impl {
     on_in(prev);
     on_code(prev);
     on_remember(prev);
+    on_tunnel(prev);
     keep_selection(prev);
     try_send_to_name();
     if (field == field_kind::save_elsewhere && v.in != in_phase::asking) close_field();
 
     if (o.plain) plain_nearby_update();
+  }
+
+  // The Tunnel (2026-11-12): the engine starts its proxy on its own thread,
+  // so the address is said when it first shows, and a problem when it changes.
+  void on_tunnel(const view& prev) {
+    if (!v.tunnel) return;
+    if (!v.tunnel_address.empty() && v.tunnel_address != prev.tunnel_address) say_tunnel();
+    if (!v.tunnel_note.empty() && v.tunnel_note != prev.tunnel_note) say(tone::warning, "Tunnel", {v.tunnel_note});
+    if (!v.tunnel_system && !v.tunnel_system_note.empty() && v.tunnel_system_note != prev.tunnel_system_note) {
+      say(tone::info, "Tunnel", {v.tunnel_system_note});
+    }
+  }
+
+  void say_tunnel() {
+    if (!v.tunnel) {
+      say(tone::info, "Tunnel: off", {"/tunnel on sends this computer's web traffic through your relay server."});
+      return;
+    }
+    if (v.tunnel_address.empty()) {
+      say(tone::info, "Tunnel: on, not running", {v.tunnel_note.empty() ? "Starting" + std::string(th.g->ellipsis)
+                                                                       : v.tunnel_note});
+      return;
+    }
+    say(tone::info, "Tunnel through " + (v.tunnel_relay.empty() ? std::string("your relay server") : v.tunnel_relay) +
+                        glue() + v.tunnel_address,
+        {(v.tunnel_system ? std::string("This computer's proxy setting points at it. ") : std::string()) +
+             "SOCKS5 or HTTP proxy: HTTPS_PROXY=http://" + v.tunnel_address + " in a terminal.",
+         std::to_string(v.tunnel_open) + " open now; /tunnel off turns it off (kept for next time)."});
   }
 
   void print_banner() {
@@ -1280,6 +1309,75 @@ struct session::impl {
       set_option(option, *on, true);
     } else if (name == "/relay-server") {
       open_field(field_kind::relay_server);
+    } else if (name == "/tunnel") {
+      if (rest.rfind("vpn", 0) == 0 || rest.rfind("block", 0) == 0) {
+        // /tunnel vpn on|off, /tunnel block on|off: slice 5.
+        const bool vpn_word = rest.rfind("vpn", 0) == 0;
+        const auto on = on_off(trim(rest.substr(vpn_word ? 3 : 5)));
+        const char* label = vpn_word ? "All traffic (VPN)" : "Block when the tunnel is down";
+        if (vpn_word && !v.tunnel_vpn_available) {
+          say(tone::info, "All traffic (VPN): not here", {v.tunnel_vpn_note.empty() ? std::string("Use the proxy.")
+                                                                                     : v.tunnel_vpn_note});
+          return;
+        }
+        if (!on) {
+          say(tone::info, std::string(label) + ": " + ((vpn_word ? v.tunnel_vpn : v.tunnel_block) ? "on" : "off"),
+              {std::string("/tunnel ") + (vpn_word ? "vpn" : "block") + " on or off changes it (kept for next time)."});
+          return;
+        }
+        ev(vpn_word ? "tunnel_vpn" : "tunnel_block", 2, *on ? "true" : "false");
+        refresh_view();
+        say(tone::info, std::string(*on ? "On: " : "Off: ") + label);
+        return;
+      }
+      if (rest.rfind("https", 0) == 0) {
+        // /tunnel https on|off: slice 4, the relay's TLS port.
+        if (!v.tunnel_tls_available) {
+          flash("This driftwire has no TLS (built without BoringSSL).");
+          return;
+        }
+        const auto tls_on = on_off(trim(rest.substr(5)));
+        if (!tls_on) {
+          say(tone::info, std::string("Look like a web site (port 443): ") + (v.tunnel_tls ? "on" : "off"),
+              {"/tunnel https on or /tunnel https off changes it (kept for next time)."});
+          return;
+        }
+        ev("tunnel_tls", 2, *tls_on ? "true" : "false");
+        refresh_view();
+        say(tone::info, std::string(*tls_on ? "On" : "Off") + ": Look like a web site (port 443)",
+            {*tls_on ? "The Tunnel reaches your relay server on 443, inside TLS. It needs --tls-port 443 there."
+                     : "The Tunnel reaches your relay server on its own port."});
+        return;
+      }
+      if (rest.rfind("apps", 0) == 0) {
+        // /tunnel apps on|off: the system proxy, "Use for all apps".
+        const auto apps = on_off(trim(rest.substr(4)));
+        if (!apps) {
+          say(tone::info, std::string("Use for all apps: ") + (v.tunnel_all_apps ? "on" : "off"),
+              {"/tunnel apps on or /tunnel apps off changes it (kept for next time)."});
+          return;
+        }
+        ev("tunnel_all_apps", 2, *apps ? "true" : "false");
+        refresh_view();
+        say(tone::info, std::string(*apps ? "On" : "Off") + ": Use for all apps",
+            {*apps ? "While the Tunnel is on, this computer's proxy setting points at it."
+                   : "This computer's proxy setting is left as it was."});
+        return;
+      }
+      const auto on = on_off(rest);
+      if (!on) {
+        say_tunnel();
+        return;
+      }
+      if (*on && v.relay_server.empty()) {
+        flash("Set /relay-server first: the Tunnel goes through it.");
+        return;
+      }
+      const bool was = v.tunnel;
+      ev("tunnel", 2, *on ? "true" : "false");
+      refresh_view();
+      if (!*on) say(tone::info, std::string("Off: Tunnel") + (was ? "" : " (it already was)"));
+      else if (was) say_tunnel();  // already on: the address now; else on_tunnel says it once it listens
     } else if (name == "/updates") {
       if (!o.updates) {
         say(tone::info, "This copy does not check for updates.", {o.no_updates_why});
@@ -1368,6 +1466,8 @@ struct session::impl {
         "Continue over the internet if Wi-Fi drops: " + onoff(v.handover),
         "Relay through my computers: " + onoff(v.relay),
         "Relay server: " + std::string(v.relay_server.empty() ? "none" : "set"),
+        "Tunnel: " + (v.tunnel ? (v.tunnel_address.empty() ? std::string("on, not running") : "on, " + v.tunnel_address)
+                               : std::string("off")),
         "Remembers devices: " + std::string(v.can_remember ? "yes" : "no (no secret store here)"),
         "Checks for updates: " + (o.updates ? onoff(o.updates->enabled()) : "no (" + o.no_updates_why + ")"),
     };

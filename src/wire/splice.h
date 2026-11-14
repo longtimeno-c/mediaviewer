@@ -44,6 +44,20 @@
 // learns that two connections wanted each other, their addresses, the time
 // and the size. Nothing here logs an address or a token (rule 6): a server
 // counts pairs, never names them. Portable (D9): links only.
+//
+// Forwarding (the Tunnel, 2026-11-12; docs/plans/driftwire-menu-and-tunnel.md):
+// a key holder may also ask the server to open a TCP connection to a host
+// and port and copy bytes both ways, so a person's own web traffic leaves
+// through their own server. The same handshake as a waiter's (CPace on the
+// key, then Noise NNpsk0), role kForwarder; the client's answer carries the
+// host and port, sealed, so a network on the path sees neither. The server
+// says one sealed word (kForwarding, or why not), then the bytes go both
+// ways as sealed frames (sealed_link), never as they are: a plain HTTP
+// request would otherwise show its host to the filter it is meant to pass.
+// Never for anyone without the key: not an open proxy. Ports 80 and 443
+// unless the server's person says others, a cap on forwards at once, TCP
+// only, and only to public addresses (a name that resolves to a private one
+// is refused: the server is not a way into its own network).
 #pragma once
 
 #include <array>
@@ -57,12 +71,14 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #include "wire/link.h"
 #include "wire/net.h"
 #include "wire/noise.h"
+#include "wire/tls.h"
 
 namespace mv::driftwire::relay {
 
@@ -71,12 +87,13 @@ using token = std::array<std::uint8_t, kTokenBytes>;
 inline constexpr std::size_t kIdBytes = 16;
 using token_id_bytes = std::array<std::uint8_t, kIdBytes>;
 inline constexpr std::uint8_t kVersion = 3;  // #500: 2 said the token and a replayable proof in the clear
-inline constexpr std::uint8_t kSender = 0, kWaiter = 1;
+inline constexpr std::uint8_t kSender = 0, kWaiter = 1, kForwarder = 2;
 // "What do you see of me?" (docs/plans/nas-relay.md §9): the server answers
 // kSeenBytes, the address and port this connection comes from (a NAT's
 // public side), in the clear, and closes. It says only what anyone on the
 // path already sees, and asks nothing; a relay from before closes it unanswered.
-inline constexpr std::uint8_t kAsk = 2;
+// 3, not 2: main's Tunnel took 2 for kForwarder (merged 2026-11-14).
+inline constexpr std::uint8_t kAsk = 3;
 // 4 or 6, the address (IPv4 in the first 4 of 16), the port big-endian.
 inline constexpr std::size_t kSeenBytes = 1 + 16 + 2;
 // "MVRL", the version, the role, two zero bytes.
@@ -84,6 +101,23 @@ inline constexpr std::size_t kHeadBytes = 8;
 inline constexpr std::size_t kSessionIdBytes = 16;  // a waiter's CPace sid
 // The server's word, sealed: one byte and its tag.
 inline constexpr std::uint8_t kRegistered = 'R', kPaired = 'P';
+// The server's word to a forwarder: forwarding, or why not.
+inline constexpr std::uint8_t kForwarding = 'F', kForwardOff = 'O', kForwardPort = 'X', kForwardBusy = 'B',
+                              kForwardUnreachable = 'U', kForwardNotPublic = 'N', kForwardKind = 'K';
+// A forward request's first byte: what to carry. TCP only today; a datagram
+// flow (UDP, for the plan's slice 5 VPN: DNS and QUIC) takes another value
+// and an older server answers kForwardKind.
+inline constexpr std::uint8_t kForwardTcp = 0;
+// Slice 5 (the VPN): a datagram flow. The stream then carries datagrams,
+// each as a 2-byte length and itself (write_datagram / read_datagram), in
+// sealed frames as a TCP forward's bytes. The server sends them from one UDP
+// socket of its own to the host and port, and only that host's answers come
+// back. Ports it carries: --forward-udp-ports (53 by default; QUIC's 443 is
+// off, so browsers use TCP). kDnsHost names the server's own resolver.
+inline constexpr std::uint8_t kForwardUdp = 1;
+inline constexpr std::string_view kDnsHost = "dns.driftwire";
+inline constexpr std::size_t kMaxDatagram = 1500;
+inline constexpr int kUdpIdleMs = 60000;
 inline constexpr std::size_t kWordBytes = 1 + noise::kTagBytes;
 // A connection to a relay server finishes its handshake within this.
 inline constexpr int kHelloMs = 5000;
@@ -96,6 +130,14 @@ inline constexpr int kReregisterMs = 60000;
 inline constexpr std::uint16_t kDefaultPort = 47614;
 // A server key, as typed after '#', at least this long.
 inline constexpr std::size_t kMinKeyChars = 16;
+// A forward's host, as asked: a name or an address, at most this long.
+inline constexpr std::size_t kMaxHostBytes = 253;
+// The server's connect to a forward's host, every address of it in all.
+inline constexpr int kForwardConnectMs = 8000;
+// A forwarder's wait for the server's word: the handshake and that connect.
+inline constexpr int kForwardWaitMs = kHelloMs + kForwardConnectMs;
+// A sealed frame's plaintext, at most.
+inline constexpr std::size_t kSealedChunk = 16 * 1024;
 
 [[nodiscard]] token random_token();
 // A fresh server key: 26 characters of Crockford base32 (130 bits).
@@ -166,6 +208,66 @@ class waiting {
 // closed it (replaced, refused, or gone).
 [[nodiscard]] expected wait_paired(waiting& w, int wait_ms, const std::function<bool()>& stopped);
 
+// A link whose bytes go as sealed frames (a 2-byte length, then the AEAD of
+// at most kSealedChunk bytes) under one key each way: a forward's stream
+// between the client and the server. A frame that does not open closes it.
+// One reader and one writer at a time (on two threads, as a splice).
+class sealed_link final : public link {
+ public:
+  sealed_link(std::unique_ptr<link> inner, std::unique_ptr<noise::cipher_state> send,
+              std::unique_ptr<noise::cipher_state> recv, const char* through = "relay")
+      : inner_(std::move(inner)), send_(std::move(send)), recv_(std::move(recv)), through_(through) {}
+  [[nodiscard]] expected write_all(std::span<const std::uint8_t> bytes) override;
+  [[nodiscard]] result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override;
+  void shutdown() noexcept override { inner_->shutdown(); }
+  [[nodiscard]] transport via() const noexcept override { return inner_->via(); }
+  [[nodiscard]] const char* through() const noexcept override { return through_; }
+
+ private:
+  std::unique_ptr<link> inner_;
+  std::unique_ptr<noise::cipher_state> send_, recv_;
+  const char* through_;
+  // The reader's own: a frame read in part, and plaintext not yet handed out.
+  std::array<std::uint8_t, 2> len_{};
+  std::size_t len_got_ = 0;
+  std::vector<std::uint8_t> frame_;
+  std::size_t frame_got_ = 0;
+  std::vector<std::uint8_t> plain_;
+  std::size_t plain_at_ = 0;
+};
+
+// What a forward came to, on the client's side.
+enum class forward_answer : std::uint8_t {
+  ok,
+  key,          // the server did not prove the key (the wrong key, or not that server)
+  off,          // the server does not forward
+  port,         // not a port it forwards to
+  busy,         // its forwards are all in use
+  unreachable,  // nothing at that host answered it (or the name did not resolve)
+  not_public,   // the host is on a private network (or the server itself)
+  kind,         // not a kind of forward it does (a datagram flow, to a server without them)
+  failed,       // the connection to the server failed or closed
+};
+[[nodiscard]] const char* forward_answer_name(forward_answer a) noexcept;
+// A forwarder: the handshake with the server key `key`, the host and port
+// sealed, and the server's word, within `wait_ms`. On ok, the stream to the
+// host (a sealed_link). `said` says what came of it either way. `host`: a
+// name or an address (no brackets), 1..kMaxHostBytes. One call is one
+// connection to one host: the proxy calls it per client connection, and a
+// later packet layer (a userspace TCP/IP stack under a VPN) per TCP flow.
+[[nodiscard]] result<std::unique_ptr<link>> forward(std::unique_ptr<link> l, const std::string& key,
+                                                    const std::string& host, std::uint16_t port, int wait_ms,
+                                                    forward_answer& said, std::uint8_t kind = kForwardTcp);
+// A datagram flow's framing (kForwardUdp), either side.
+[[nodiscard]] expected write_datagram(link& l, std::span<const std::uint8_t> datagram);
+// The next whole datagram into `out`; status::timeout when none came (a
+// part read stays in `part` for the next call).
+[[nodiscard]] expected read_datagram(link& l, std::vector<std::uint8_t>& part, std::vector<std::uint8_t>& out,
+                                     int timeout_ms);
+// A host a forward may name: 1..kMaxHostBytes of letters, digits, '.', '-',
+// '_' and ':' (an IPv6 address). Pure.
+[[nodiscard]] bool forward_host_ok(std::string_view host) noexcept;
+
 // A link through a relay (through() says so, for the window), whose first
 // bytes may already have been read: they come first.
 class relayed_link final : public link {
@@ -211,17 +313,50 @@ class server {
     int max_waiting = 64;
     int wait_ms = 10 * 60 * 1000;  // a code lives 10 minutes
     limits lim;
+    // Forwarding (the Tunnel): the ports a key holder may reach (empty: no
+    // forwarding at all), forwards at once, and each forward's limits (a
+    // browser keeps a connection open a while between requests).
+    std::vector<std::uint16_t> forward_ports{80, 443};
+    int max_forwards = 64;
+    limits forward_lim = [] {
+      limits l;
+      l.idle_ms = 10 * 60 * 1000;
+      return l;
+    }();
+    // The tests: forward to loopback and private addresses too.
+    bool forward_private = false;
+    // Slice 5: the UDP ports a key holder's datagram flows may reach (DNS
+    // by default; empty: none), and the resolver kDnsHost means (the
+    // system's first, else 1.1.1.1:53; private allowed: it is this server's own).
+    std::vector<std::uint16_t> forward_udp_ports{53};
+    std::optional<net::endpoint> dns_upstream;
+    // Slice 4 (tls.h): a second port where the hop runs inside TLS behind
+    // the knock, and anything else is answered as a web site. 0: none.
+    // With loopback_only, the OS picks it (tls_port() says which).
+    std::uint16_t tls_port = 0;
+    std::string tls_cert, tls_key;  // PEM files; empty: a self-signed one for tls_name
+    std::string tls_name;
+    tls::decoy decoy;
+    // How a forward reaches its host (net::resolve, then net::connect, when
+    // empty; the tests).
+    std::function<result<std::unique_ptr<link>>(const std::string& host, std::uint16_t port, int timeout_ms,
+                                                forward_answer& why)>
+        forward_connect;
   };
   struct counts {
     std::uint64_t paired = 0, refused = 0, waiting = 0, active = 0;
     std::uint64_t asked = 0;  // kAsk answered
     std::uint64_t bytes = 0;  // spliced, both ways, every splice that ended
+    std::uint64_t forwarded = 0, forwarding = 0;  // forwards made, and open now
+    std::uint64_t forward_refused = 0;            // key holders' forwards said no to
+    std::uint64_t website = 0;                    // TLS connections answered as a web site
   };
   [[nodiscard]] static result<std::unique_ptr<server>> start(options o);
   ~server();
   server(const server&) = delete;
   server& operator=(const server&) = delete;
   [[nodiscard]] std::uint16_t port() const noexcept;
+  [[nodiscard]] std::uint16_t tls_port() const noexcept;
   [[nodiscard]] counts snapshot() const;
   // Where a connection counts toward kPerSource: its IPv6 /64, or its IPv4 /24.
   [[nodiscard]] static net::address source_of(const net::address& a) noexcept;
@@ -229,15 +364,26 @@ class server {
  private:
   struct waiter;
   explicit server(options o) : opts_(std::move(o)) {}
-  void accept_loop();
+  void accept_loop(net::listener& from, bool tls);
   void handle(std::shared_ptr<link> l, const net::address& from, const net::address& peer, std::uint16_t peer_port);
+  // Slice 4: TLS and the knock first, then handle(), or the web site.
+  void handle_tls(std::shared_ptr<link> l, const net::address& from, const net::address& peer, std::uint16_t peer_port);
+  void release_handshake(const net::address& from);
   void serve_waiter(std::shared_ptr<link> l, const token& t, std::unique_ptr<noise::cipher_state> to_waiter,
                     const net::address& from);
+  void serve_forward(std::shared_ptr<link> l, std::string host, std::uint16_t port,
+                     std::unique_ptr<noise::cipher_state> to_client, std::unique_ptr<noise::cipher_state> from_client);
+  void serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t port,
+                 std::unique_ptr<noise::cipher_state> to_client, std::unique_ptr<noise::cipher_state> from_client);
   void reap_locked();
 
   options opts_;
   std::unique_ptr<net::listener> listener_;
   std::thread accept_thread_;
+  std::unique_ptr<net::listener> tls_listener_;
+  std::thread tls_accept_thread_;
+  std::unique_ptr<tls::server_context> tls_ctx_;
+  tls::knock_key knock_{};
   std::atomic<bool> stop_{false};
   mutable std::mutex m_;
   std::condition_variable cv_;

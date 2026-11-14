@@ -30,6 +30,7 @@
 #include "addons/driftwire/cli/session.h"
 #include "addons/driftwire/cli/theme.h"
 #include "addons/driftwire/cli/update.h"
+#include "wire/splice.h"
 #include "driftwire_cli_vt.h"
 #include "driftwire_fixture.h"
 
@@ -1365,5 +1366,43 @@ TEST_CASE("driftwire cli session: closed mid-receive, the next session says what
   type_line(bea2, "/quit");
   type_line(ann, "/quit");
   CHECK(bea2.wait_exit() == 0);
+  CHECK(ann.wait_exit() == 0);
+}
+
+TEST_CASE("driftwire cli session: /tunnel turns the Tunnel on and off and says its address", "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_tunnel");
+  bus b;
+  mv::driftwire::relay::server::options ro;
+  ro.key = "TEST-RELAY-KEY-0123456789";
+  ro.loopback_only = true;
+  auto relay = mv::driftwire::relay::server::start(ro);
+  REQUIRE(relay);
+  const std::string at = "127.0.0.1:" + std::to_string((*relay)->port());
+  cli_side ann(s / "ann_received");
+  ann.start(bus_opts(b, "Ann", s / "ann"), session_opts(s.root()));
+  REQUIRE(ann.screen_shows("Type or drop files to send"));
+  type_line(ann, "/tunnel");
+  REQUIRE(ann.shows("Tunnel: off"));
+  // It goes through the person's own relay server: none yet.
+  type_line(ann, "/tunnel on");
+  REQUIRE(ann.screen_shows("Set /relay-server first"));
+  type_line(ann, "/relay-server");
+  REQUIRE(ann.screen_shows("Your own relay server"));
+  ann.con.type(at + "#" + ro.key);
+  ann.con.type("\r");
+  REQUIRE(ann.shows("Relay server set."));
+  type_line(ann, "/tunnel on");
+  REQUIRE(ann.shows("Tunnel through " + at));
+  REQUIRE(ann.shows("HTTPS_PROXY=http://127.0.0.1:"));
+  type_line(ann, "/settings");
+  REQUIRE(ann.shows("Tunnel: on, 127.0.0.1:"));
+  type_line(ann, "/tunnel vpn");
+  REQUIRE(ann.shows("All traffic (VPN): not here"));
+  type_line(ann, "/tunnel https");
+  REQUIRE(ann.shows("Look like a web site (port 443): off"));
+  type_line(ann, "/tunnel off");
+  REQUIRE(ann.shows("Off: Tunnel"));
+  CHECK_FALSE(has(ann.text(), ro.key));  // the key is never said
+  type_line(ann, "/quit");
   CHECK(ann.wait_exit() == 0);
 }

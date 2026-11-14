@@ -257,14 +257,20 @@ class udp_beacon final : public beacon_socket {
 
 }  // namespace
 
-result<std::unique_ptr<listener>> listen(bool loopback_only) {
+result<std::unique_ptr<listener>> listen(bool loopback_only, std::uint16_t port) {
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return err(status::io);
   close_on_exec(fd);
+  if (port != 0) {
+    // A port asked for again after its last listener closed (its
+    // connections may linger in TIME_WAIT).
+    int one = 1;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+  }
   sockaddr_in a{};
   a.sin_family = AF_INET;
   a.sin_addr.s_addr = htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
-  a.sin_port = 0;
+  a.sin_port = htons(port);
   socklen_t len = sizeof a;
   if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || ::listen(fd, 16) != 0 ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
