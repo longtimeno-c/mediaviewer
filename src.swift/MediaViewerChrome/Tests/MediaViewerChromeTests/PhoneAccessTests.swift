@@ -36,6 +36,36 @@ final class PhoneAccessTests: XCTestCase {
     XCTAssertTrue(text.contains(#"model.send(["do": "set_relay""#))
   }
 
+  // docs/plans/self-hosted.md §8 (owner 2026-11-14): three equal choices, a Synology kept.
+  func testSetUpTheServiceOffersThreeChoices() throws {
+    let text = try source
+    XCTAssertTrue(text.contains(#"SettingsButton(title: "Set up the service…")"#))
+    XCTAssertTrue(text.contains(#"Text("This computer").tag(SetupKind.thisComputer)"#))
+    XCTAssertTrue(text.contains(#"Text("A Synology").tag(SetupKind.synology)"#))
+    XCTAssertTrue(text.contains(#"Text("Something else").tag(SetupKind.other)"#))
+    XCTAssertTrue(text.contains("Package Center → Manual Install"))
+  }
+
+  // This computer: done through the installed driftwire, on the link's thread; the token never stays.
+  func testThisComputerSendsOneRequestAndForgetsTheToken() throws {
+    let text = try source
+    XCTAssertTrue(text.contains(#""do": "host_setup""#))
+    XCTAssertTrue(text.contains(#"request["duckdns_token"] = duckToken"#))
+    XCTAssertTrue(text.contains(#"duckToken = ""  // handed on"#))
+    XCTAssertTrue(text.contains(#"secure("DuckDNS token""#))
+    XCTAssertTrue(text.contains(#"model.send(["do": "host_start"])"#))
+    XCTAssertTrue(text.contains("brew install longtimeno-c/tap/driftwire"))
+    // Every new error the link can give has words.
+    for code in ["no_driftwire_program", "host_no_folders", "host_no_library", "host_twice", "host_bad_name",
+                 "host_bad_token", "host_share", "host_name", "host_start", "host_not_listening", "host_no_network",
+                 "host_failed"] {
+      XCTAssertTrue(text.contains("case \"\(code)\":"), code)
+    }
+    // The status row reads the host's object from the state, and never a path or an address.
+    XCTAssertTrue(text.contains(#"if let h = o["host"] as? [String: Any]"#))
+    XCTAssertTrue(text.contains("static func hostDetail(_ h: Host) -> String"))
+  }
+
   func testALongPairingStringReadsBack() throws {
     let payload = "mediaviewer://pair#" + String(repeating: "eyJ2IjoxLCJsaWJyYXJ5X2lkIjoiYWJjIn0", count: 18)
     let filter = try XCTUnwrap(CIFilter(name: "CIQRCodeGenerator"))

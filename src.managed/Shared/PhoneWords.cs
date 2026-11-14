@@ -34,6 +34,32 @@ internal sealed record PhoneFolder(string Id, string Label, string Path)
     public bool Indexed { get; init; }   // Local search on this PC covers it (§10b.1, B7)
 }
 
+/// <summary>This PC as the server (docs/plans/self-hosted.md slice 6): what the host's own files
+/// say, read by the link thread (phone/self_host.h). Never a path or an address.</summary>
+internal sealed record PhoneHost
+{
+    public bool Installed { get; init; }  // the driftwire program is on this PC
+    public bool SetUp { get; init; }      // a folder is shared
+    public bool Running { get; init; }
+    public bool AtLogin { get; init; }
+    public long ServicePort { get; init; }
+    public long RelayPort { get; init; }
+    public long ConfiguredPort { get; init; }
+    public long Folders { get; init; }
+    public long Offline { get; init; }
+    public string Name { get; init; } = "";
+    public string Duckdns { get; init; } = "";
+    public IReadOnlyList<string> Keepers { get; init; } = Array.Empty<string>();  // the router's and DuckDNS's lines
+
+    public bool SameAs(PhoneHost? o) => o is not null && this with { Keepers = o.Keepers } == o && Keepers.SequenceEqual(o.Keepers);
+}
+
+/// <summary>A folder the person picked for this PC to share, before Set up.</summary>
+internal sealed record PhoneHostFolder(string Path, bool Backup)
+{
+    public string Label => Backup ? "Phone backup" : PhoneWords.ShareLabel(Path.Replace('\\', '/'));
+}
+
 /// <summary>mv_phone_state_json: the folder, the service, the code, the phones (docs/plans/phone-in-the-app.md).</summary>
 internal sealed record PhoneLinkState
 {
@@ -71,6 +97,9 @@ internal sealed record PhoneLinkState
     public long LockedUntil { get; init; }            // unix; the NAS refuses tries until then
     public long QrForSeconds { get; init; }           // the code showing is a guest code for this long
     public string Relay { get; init; } = "";          // the person's own relay, "host:port"; its key stays on the NAS
+    public PhoneHost? Host { get; init; }             // this PC as the server, once the link has read its files
+    public string HostStep { get; init; } = "";       // "share", "name", "start", "claim" while a setup runs
+    public string HostSaid { get; init; } = "";       // the driftwire program's own words for a step that failed
 
     /// <summary>The NAS takes guest codes, time limits and a passphrase.</summary>
     public bool NasHasFeatures => NasFeatures.Contains("passphrase");
@@ -84,13 +113,13 @@ internal sealed record PhoneLinkState
     // The catalogue's fraction moves on every read while it publishes: the card
     // updates its progress line in place, so that alone is not a change.
     public bool SameAs(PhoneLinkState o) =>
-        this with { Phones = o.Phones, Folders = o.Folders, Added = o.Added, NasFeatures = o.NasFeatures,
+        this with { Phones = o.Phones, Folders = o.Folders, Added = o.Added, NasFeatures = o.NasFeatures, Host = o.Host,
                     // The unlock counts down each second; the card says minutes, so only those count.
                     UnlockedSeconds = (UnlockedSeconds + 59) / 60 == (o.UnlockedSeconds + 59) / 60
                         ? o.UnlockedSeconds : UnlockedSeconds,
                     Catalogue = Catalogue is { } c ? c with { Fraction = o.Catalogue?.Fraction ?? 0 } : null } == o &&
         Phones.SequenceEqual(o.Phones) && Folders.SequenceEqual(o.Folders) && Added.SequenceEqual(o.Added) &&
-        NasFeatures.SequenceEqual(o.NasFeatures);
+        NasFeatures.SequenceEqual(o.NasFeatures) && (Host is null ? o.Host is null : Host.SameAs(o.Host));
 }
 
 /// <summary>
@@ -190,6 +219,26 @@ internal static class PhoneWords
                 LockedUntil = Int(o, "locked_until"),
                 QrForSeconds = Int(o, "qr_for_s"),
                 Relay = Str(o, "relay"),
+                Host = o.TryGetProperty("host", out JsonElement h) && h.ValueKind == JsonValueKind.Object
+                    ? new PhoneHost
+                    {
+                        Installed = Bool(h, "installed", false),
+                        SetUp = Bool(h, "set_up", false),
+                        Running = Bool(h, "running", false),
+                        AtLogin = Bool(h, "at_login", false),
+                        ServicePort = Int(h, "service_port"),
+                        RelayPort = Int(h, "relay_port"),
+                        ConfiguredPort = Int(h, "configured_port"),
+                        Folders = Int(h, "folders"),
+                        Offline = Int(h, "offline"),
+                        Name = Str(h, "name"),
+                        Duckdns = Str(h, "duckdns"),
+                        Keepers = Items(h, "keepers").Where(k => k.ValueKind == JsonValueKind.String)
+                                                     .Select(k => k.GetString() ?? "").ToList(),
+                    }
+                    : null,
+                HostStep = Str(o, "host_step"),
+                HostSaid = Str(o, "host_said"),
             };
         }
         catch (JsonException)
@@ -258,6 +307,18 @@ internal static class PhoneWords
         "slow_down" => "Try again in a moment.",
         "wrong_service" => "That is a different server from the one this computer claimed.",
         "nas_too_old" => "Update the service on your server to use this.",
+        "no_driftwire_program" => InstallLine,
+        "host_no_folders" => "Choose a folder for your phone to read.",
+        "host_no_library" => "Choose a folder for your phone to read, not only a backup folder.",
+        "host_twice" => "That folder is in the list twice.",
+        "host_bad_name" => "That isn't a DuckDNS name. Use the name you chose there, like home or home.duckdns.org.",
+        "host_bad_token" => "That isn't a DuckDNS token. Copy it from duckdns.org; it looks like 1a2b3c4d-…",
+        "host_share" => "The folder couldn't be shared.",
+        "host_name" => "DuckDNS didn't take the name.",
+        "host_start" => "The server didn't start.",
+        "host_not_listening" => "The server started but isn't answering yet. Another program may be using its port.",
+        "host_no_network" => "Claimed, but this PC isn't on a network, so a phone can't reach it yet.",
+        "host_failed" => "The driftwire program couldn't be run.",
         _ => "That didn't work.",
     };
 
@@ -268,6 +329,10 @@ internal static class PhoneWords
         "locked_out" => $"Too many tries. Try again at {clock(s.LockedUntil)}, or reset it on the server with driftwire serve passphrase reset.",
         "nas_too_old" when s.Claimed && s.NasPassphrase is "" or "none" =>
             "Claimed. Update the service on your server to protect it with a passphrase.",
+        // The driftwire program's own words for a step it refused.
+        "host_share" when s.HostSaid.Length > 0 => $"Couldn't share it: {s.HostSaid}",
+        "host_name" when s.HostSaid.Length > 0 => $"DuckDNS: {s.HostSaid}",
+        "host_start" when s.HostSaid.Length > 0 => $"The server didn't start: {s.HostSaid}",
         _ => ErrorText(s.Error),
     };
 
@@ -400,8 +465,66 @@ internal static class PhoneWords
         "unlock" => "Unlocking",
         "set_passphrase" => "Setting the passphrase",
         "grant" => "Changing the phone's access",
+        "host_start" => "Starting the server",
+        "host_setup" => "Setting up this PC",
         _ => null,
     };
+
+    /// <summary>The progress line's words, with the setup's step when one runs.</summary>
+    public static string? BusyText(PhoneLinkState s) => s.Busy == "host_setup"
+        ? s.HostStep switch
+        {
+            "share" => "Sharing the folders",
+            "name" => "Naming it on DuckDNS",
+            "start" => "Starting the server",
+            "claim" => "Claiming it",
+            _ => BusyText(s.Busy),
+        }
+        : BusyText(s.Busy);
+
+    // ---- this PC as the server (docs/plans/self-hosted.md slice 6) ----
+
+    /// <summary>How to get the driftwire program, which runs the server (the app does not carry it).
+    /// The Mac's says Homebrew; this is install.ps1's one line (docs/design/28 "Installing").</summary>
+    public const string InstallLine =
+        "This PC needs the driftwire program to be the server. Install it once in PowerShell with irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex (no administrator), then choose Check again.";
+
+    /// <summary>The status row's line for a server on this PC: never a path or an address.</summary>
+    public static string HostDetail(PhoneHost h)
+    {
+        if (!h.Running)
+            return h.AtLogin ? "Not running. It starts when you log in; Start runs it now."
+                             : "Not running, and not set to start at login. Start runs it and keeps it starting at login.";
+        var parts = new List<string> { "Running", h.ServicePort > 0 ? $"port {h.ServicePort}" : "not listening yet" };
+        if (h.Duckdns.Length > 0) parts.Add($"{h.Duckdns}.duckdns.org");
+        if (h.Offline > 0) parts.Add(h.Offline == 1 ? "1 drive not connected" : $"{h.Offline} drives not connected");
+        string line = string.Join(" · ", parts);
+        return h.Keepers.Count > 0 ? line + "\n" + string.Join("\n", h.Keepers) : line;
+    }
+
+    /// <summary>One request for the whole setup: the folders phones read first (the first holds the
+    /// library), then the backup folders; the DuckDNS name and token only together.</summary>
+    public static string HostSetupRequest(IEnumerable<PhoneHostFolder> folders, string duckdns, string token)
+    {
+        var list = new System.Text.Json.Nodes.JsonArray();
+        foreach (PhoneHostFolder f in folders.Where(f => !f.Backup).Concat(folders.Where(f => f.Backup)))
+        {
+            var o = new System.Text.Json.Nodes.JsonObject { ["path"] = f.Path, ["backup"] = f.Backup };
+            if (f.Backup) o["label"] = f.Label;
+            list.Add(o);
+        }
+        var r = new System.Text.Json.Nodes.JsonObject { ["do"] = "host_setup", ["folders"] = list };
+        if (duckdns.Length > 0)
+        {
+            r["duckdns"] = duckdns;
+            r["duckdns_token"] = token;
+        }
+        return r.ToJsonString();
+    }
+
+    /// <summary>Set up is offered once a folder phones read is chosen, and a DuckDNS name has its token.</summary>
+    public static bool HostReady(IReadOnlyCollection<PhoneHostFolder> folders, string duckdns, string token, bool busy) =>
+        !busy && folders.Any(f => !f.Backup) && (duckdns.Length == 0 || token.Length > 0);
 
     public static string? WarningText(string warning) => warning switch
     {

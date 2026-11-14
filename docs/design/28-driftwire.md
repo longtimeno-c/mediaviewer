@@ -1779,9 +1779,14 @@ driftwire host stay-awake on|off            the "system required" request while 
 - **Keepers.** `cli/host_keepers.h` is where the DuckDNS keeper (slice 3) and the router keeper
   (slice 4) plug in: a factory each in `host_keepers()`, started after the services and stopped
   before them, told when the ports change, and a status line each. None is built yet.
+- **From the desktop** (slice 6, [plan](../plans/self-hosted.md) §16): Settings → Phone access →
+  Set up the service… → **This computer** runs the installed program's `host share` and
+  `host start-at-login on` on the phone link's thread, writes the DuckDNS name where slice 5's
+  `host name duckdns` does, claims the host over loopback and shows a code; its status row reads `state.json` and
+  `host.lock`. The app does not carry the program ([12](12-decision-log.md#driftwire), 2026-11-14).
 - **Not yet:** `host setup` and `/host` in the session (slice 5), `host vpn on|off` and the relay line
-  (slice 7: today `vpn` is read from `host.json` and turns on forwarding to 80/443 and UDP 53), the
-  desktop's "This computer" (slice 6), watching for a volume arriving (the minute's recheck only).
+  (slice 7: today `vpn` is read from `host.json` and turns on forwarding to 80/443 and UDP 53),
+  watching for a volume arriving (the minute's recheck only).
 - **Tested** (`"[host]"`, loopback only): the arguments, `host.json`, sharing rules, the three entries'
   texts and the files written into a home of the test's own (the OS's tools never run in a test), the
   drive checks (`/dev` as a real mount point), the service process in-process (relay alone, a share

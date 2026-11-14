@@ -2183,3 +2183,229 @@ TEST_CASE("phone pairing: a guest code's phone backs nothing up, and the grant k
   CHECK_FALSE(backup_write(*c, root, "x.jpg", why));
   CHECK(why.why == serve::kWhyNotAllowed);
 }
+
+// ---- This computer as the server (docs/plans/self-hosted.md slice 6) --------------------------
+
+#if !defined(_WIN32)
+#include "io/child_process.h"
+#include "phone/self_host.h"
+
+namespace {
+
+// The card's setup run against the test build of the program: `host share`
+// as the person's would run it, and the host itself started here on loopback
+// in place of `host start-at-login on` (a test never registers a login entry).
+struct this_computer {
+  scratch_dir dir{"phone_self_host"};
+  fs::path data = dir.root() / "driftwire";
+  fs::path photos = dir.root() / "Photos";
+  fs::path backup = dir.root() / "Backup";
+  std::unique_ptr<mv::io::child_process> host;
+  int starts = 0;
+  mv::phone::self_host::where where() const {
+    mv::phone::self_host::where w;
+    w.program = MV_DRIFTWIRE_CLI_TEST_PATH;
+    w.data_dir = utf8(data);
+    w.data_args = {"--test-data", utf8(data)};
+    return w;
+  }
+  this_computer() {
+    fs::create_directories(data / "host" / "serve");
+    fs::create_directories(photos);
+    fs::create_directories(backup);
+    fs::permissions(data, fs::perms::owner_all, fs::perm_options::replace);
+    fs::permissions(data / "host", fs::perms::owner_all, fs::perm_options::replace);
+    fs::permissions(data / "host" / "serve", fs::perms::owner_all, fs::perm_options::replace);
+    // Port 0 (the test build takes it): never the real 7878 in a test.
+    std::ofstream(data / "host" / "serve" / "serve.json", std::ios::binary) << R"({"port":0,"name":"Test host","roots":[]})";
+  }
+  ~this_computer() {
+    if (host) {
+      host->close_stdin();
+      host->kill();
+      (void)host->wait();
+    }
+  }
+  mv::expected start() {
+    ++starts;
+    if (host) return {};
+    host = std::make_unique<mv::io::child_process>();
+    const std::vector<std::string> args = {"host", "--test-loopback", "--test-quick", "--test-data", utf8(data)};
+    return host->start(MV_DRIFTWIRE_CLI_TEST_PATH, args);
+  }
+};
+
+struct host_link {
+  scratch_dir dir{"phone_link_host"};
+  std::unique_ptr<sp::secrets::store> keys = folder_store(dir.root() / "keys");
+  std::unique_ptr<mv::phone::link> l;
+  host_link(desktop& mac, this_computer& pc) {
+    mv::phone::link::options o;
+    o.data_dir = utf8(dir.root() / "phone");
+    o.key_store = [this]() { return sp::secrets::file_store(utf8(dir.root() / "keys")); };
+    o.route = [&mac](const char* method, const std::string& json) {
+      return desk::route_request(*mac.d, "phone", method, json);
+    };
+    o.tick_s = 3600;
+    o.self_host = [&pc] { return pc.where(); };
+    o.start_host = [&pc](const mv::phone::self_host::where&) { return pc.start(); };
+    o.lan_address = [] { return std::string("::1"); };  // the test build listens on ::1 alone
+    o.host_wait_ms = 20000;
+    l = std::make_unique<mv::phone::link>(std::move(o));
+  }
+  mv::json::value done() {
+    mv::json::value v;
+    REQUIRE(eventually([&] {
+      auto t = mv::json::parse(l->state_json(), 6);
+      if (!t || !t->str("busy") || !t->str("busy")->empty()) return false;
+      v = *t;
+      return true;
+    }, 40));
+    return v;
+  }
+  mv::json::value ask(const std::string& request) {
+    REQUIRE(l->request(request));
+    return done();
+  }
+};
+
+std::string setup_request(const this_computer& pc, const std::string& duckdns = {}, const std::string& token = {}) {
+  mv::json::writer w;
+  w.begin_object().key("do").string("host_setup").key("folders").begin_array();
+  w.begin_object().key("path").string(utf8(pc.photos)).end_object();
+  w.begin_object().key("path").string(utf8(pc.backup)).key("label").string("Phone backup").key("backup").boolean(true).end_object();
+  w.end_array();
+  if (!duckdns.empty()) w.key("duckdns").string(duckdns).key("duckdns_token").string(token);
+  w.end_object();
+  return w.str();
+}
+
+}  // namespace
+
+TEST_CASE("phone pairing: This computer shares, starts, claims over loopback and shows a code", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+
+  // Before: installed (the program is there), nothing shared, not running.
+  auto v = app.ask(R"({"do":"host_status"})");
+  const auto* h = v.find("host");
+  REQUIRE(h);
+  CHECK(h->boolean("installed") == true);
+  CHECK(h->boolean("set_up") == false);
+  CHECK(h->boolean("running") == false);
+
+  v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  CHECK(pc.starts == 1);
+  CHECK(v.boolean("claimed") == true);
+  CHECK(*v.str("folder") == utf8(pc.photos));  // the library is in the folder phones read
+  CHECK(*v.str("host_step") == "");
+  h = v.find("host");
+  REQUIRE(h);
+  CHECK(h->boolean("running") == true);
+  CHECK(h->boolean("set_up") == true);
+  const auto port = h->integer("service_port").value_or(0);
+  CHECK(port > 0);
+  CHECK(*h->str("name") == "Test host");
+  CHECK(*v.str("local") == "[::1]:" + std::to_string(port));
+  CHECK(*v.str("public") == "");
+  // Both folders shared by the program, the backup one as a backup folder, plus the catalogue's.
+  bool photos = false, backup = false;
+  for (const auto& f : v.find("folders")->a) {
+    photos = photos || *f.str("label") == "Photos";
+    backup = backup || (*f.str("label") == "Phone backup" && f.boolean("backup") == true);
+  }
+  CHECK(photos);
+  CHECK(backup);
+  // The code for the first phone follows by itself, with this computer's address in it.
+  REQUIRE(*v.str("qr") != "");
+  const auto qr = mv::json::parse(qr_payload(*v.str("qr")), 4);
+  REQUIRE(qr);
+  CHECK(qr->str("code"));
+
+  // Run again: nothing shared twice, the same host, claimed again by its owner.
+  v = app.ask(R"({"do":"pair_stop"})");
+  v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  CHECK(*v.str("error") == "");
+  CHECK(v.boolean("claimed") == true);
+  CHECK(v.find("host")->integer("folders").value_or(0) == 2);
+}
+
+TEST_CASE("phone pairing: This computer with a DuckDNS name puts it in the code and the token in the host's store", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  const std::string token = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+  auto v = app.ask(setup_request(pc, "Home.duckdns.org", token));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  const auto port = v.find("host")->integer("service_port").value_or(0);
+  CHECK(*v.str("public") == "home.duckdns.org:" + std::to_string(port));
+  CHECK(*v.find("host")->str("duckdns") == "home");
+  // Where `host name duckdns` keeps them: host.json's "ddns", the token in the host's own store.
+  std::ifstream in(pc.data / "host" / "host.json", std::ios::binary);
+  std::stringstream text;
+  text << in.rdbuf();
+  const auto settings = mv::json::parse(text.str(), 4);
+  REQUIRE(settings);
+  CHECK(*settings->str("ddns") == "home");
+  CHECK(settings->integer("ddns_stamp").value_or(0) > 0);
+  CHECK(text.str().find(token) == std::string::npos);  // never in a file anyone reads
+  auto store = sp::secrets::file_store(utf8(pc.data / "host" / "secrets"));
+  REQUIRE(store);
+  const auto kept = store->get(mv::phone::self_host::kTokenSecret);
+  REQUIRE(kept);
+  CHECK(std::string(kept->begin(), kept->end()) == token);
+  // Nothing the card shows holds it.
+  CHECK(app.l->state_json().find(token) == std::string::npos);
+}
+
+TEST_CASE("phone pairing: This computer says what is wrong before anything runs", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  auto v = app.ask(R"({"do":"host_setup","folders":[]})");
+  CHECK(*v.str("error") == "host_no_folders");
+  v = app.ask(R"({"do":"host_setup","folders":[{"path":"/x","backup":true}]})");
+  CHECK(*v.str("error") == "host_no_library");
+  v = app.ask(setup_request(pc, "a.b", "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"));
+  CHECK(*v.str("error") == "host_bad_name");
+  v = app.ask(setup_request(pc, "home", "not-a-token"));
+  CHECK(*v.str("error") == "host_bad_token");
+  CHECK(pc.starts == 0);
+  // The program's own refusal is shown in its words: a folder that is not there.
+  mv::json::writer w;
+  w.begin_object().key("do").string("host_setup").key("folders").begin_array();
+  w.begin_object().key("path").string(utf8(pc.dir.root() / "gone")).end_object();
+  w.end_array().end_object();
+  v = app.ask(w.str());
+  CHECK(*v.str("error") == "host_share");
+  CHECK(v.str("host_said")->find("not a folder") != std::string::npos);
+  CHECK(pc.starts == 0);
+  CHECK_FALSE(v.boolean("claimed").value_or(false));
+}
+
+TEST_CASE("phone pairing: This computer with no driftwire says so", "[phone-pairing][phone-self-host]") {
+  desktop mac;
+  scratch_dir dir{"phone_no_driftwire"};
+  mv::phone::link::options o;
+  o.data_dir = utf8(dir.root() / "phone");
+  o.key_store = [&dir]() { return sp::secrets::file_store(utf8(dir.root() / "keys")); };
+  o.route = [&mac](const char* method, const std::string& json) { return desk::route_request(*mac.d, "phone", method, json); };
+  o.self_host = [] { return mv::phone::self_host::where{}; };
+  mv::phone::link l(std::move(o));
+  REQUIRE(l.request(R"({"do":"host_setup","folders":[{"path":"/Volumes/P"}]})"));
+  mv::json::value v;
+  REQUIRE(eventually([&] {
+    auto t = mv::json::parse(l.state_json(), 6);
+    if (!t || !t->str("busy")->empty()) return false;
+    v = *t;
+    return true;
+  }));
+  CHECK(*v.str("error") == "no_driftwire_program");
+  CHECK(v.find("host")->boolean("installed") == false);
+}
+#endif

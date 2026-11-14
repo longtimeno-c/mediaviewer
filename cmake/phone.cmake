@@ -27,6 +27,7 @@ add_library(mv_phone STATIC
   ${_P}/desk.cpp ${_P}/desk.h
   ${_P}/link.cpp ${_P}/link.h
   ${_P}/app.cpp ${_P}/app.h
+  ${_P}/self_host.cpp ${_P}/self_host.h
 )
 target_include_directories(mv_phone PUBLIC "${MV_SOURCE_ROOT}/src")
 target_link_libraries(mv_phone PUBLIC mv_project_options mv_wire mv_catalogue Threads::Threads

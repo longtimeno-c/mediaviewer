@@ -57,7 +57,7 @@ child_process::~child_process() {
   close_fd(impl_->out_fd);
 }
 
-expected child_process::start(std::string_view exe_utf8, std::span<const std::string> args) {
+expected child_process::start(std::string_view exe_utf8, std::span<const std::string> args, bool stderr_too) {
   if (impl_->pid > 0) return err(status::internal);
   int in_pipe[2] = {-1, -1};
   int out_pipe[2] = {-1, -1};
@@ -71,6 +71,7 @@ expected child_process::start(std::string_view exe_utf8, std::span<const std::st
   posix_spawn_file_actions_init(&actions);
   posix_spawn_file_actions_adddup2(&actions, in_pipe[0], STDIN_FILENO);
   posix_spawn_file_actions_adddup2(&actions, out_pipe[1], STDOUT_FILENO);
+  if (stderr_too) posix_spawn_file_actions_adddup2(&actions, out_pipe[1], STDERR_FILENO);
 
   const std::string exe(exe_utf8);
   std::vector<std::string> owned;

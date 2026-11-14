@@ -33,7 +33,10 @@ class child_process {
 
   // Starts `exe_utf8` with `args` (not including argv[0]). status::io if it
   // cannot be started. The child inherits the environment, nothing else.
-  [[nodiscard]] expected start(std::string_view exe_utf8, std::span<const std::string> args);
+  // `stderr_too`: the child's standard error goes into the same pipe as its
+  // standard output (a program that says why it failed on stderr); else it is
+  // the caller's own.
+  [[nodiscard]] expected start(std::string_view exe_utf8, std::span<const std::string> args, bool stderr_too = false);
 
   // One line to the child's stdin ('\n' appended). False once the pipe is gone.
   bool write_line(std::string_view line) noexcept;

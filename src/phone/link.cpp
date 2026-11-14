@@ -44,6 +44,20 @@ std::string last_part(std::string path) {
   return at == std::string::npos ? path : path.substr(at + 1);
 }
 
+// The program's first line, as it said it (the card shows why a step failed).
+std::string first_line(const std::string& out) {
+  std::string l = out.substr(0, out.find('\n'));
+  static constexpr std::string_view kLead = "driftwire host: ";
+  if (l.rfind(kLead, 0) == 0) l.erase(0, kLead.size());
+  while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+  if (l.size() > 300) {
+    std::size_t at = 300;
+    while (at > 0 && (static_cast<unsigned char>(l[at]) & 0xC0) == 0x80) --at;  // never half a character
+    l.resize(at);
+  }
+  return l;
+}
+
 std::string slurp(const std::string& path) {
   std::ifstream in(fs_path(path), std::ios::binary);
   std::ostringstream s;
@@ -527,6 +541,12 @@ void link::loop() {
 }
 
 void link::tick() {
+  bool host_known = false;
+  {
+    std::lock_guard lock(m_);
+    host_known = v_.host_read && v_.host.set_up;
+  }
+  if (host_known) read_host();  // three small files and a moment's lock: the status row
   std::uint64_t newest = 0;
   bool used = false;
   {
@@ -998,6 +1018,38 @@ void link::run(const std::string& request) {
     choose_folder(text("path"));
     return;
   }
+  if (what == "host_status") {
+    read_host();
+    return;
+  }
+  if (what == "host_setup") {
+    host_setup(request);
+    return;
+  }
+  if (what == "host_start") {
+    const auto w = host_where();
+    if (w.program.empty()) {
+      read_host();
+      return fail("no_driftwire_program");
+    }
+    {
+      std::lock_guard lock(m_);
+      v_.host_step = "start";
+      v_.host_said.clear();
+    }
+    const expected started = start_host_now(w);
+    // The OS starts it a moment later: look for a few seconds, not only at the next tick.
+    for (int i = 0; started && i < 40 && !stopping_.load(); ++i) {
+      const auto st = self_host::read_status(w);
+      if (st.running && self_host::answers(st.service_port, 300)) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    read_host();
+    std::lock_guard lock(m_);
+    v_.host_step.clear();
+    if (!started) v_.error = "host_start";
+    return;
+  }
   if (what == "publish") {
     if (destination.empty()) return fail("no_folder");
     expected started = err(status::not_found);
@@ -1268,6 +1320,194 @@ void link::run(const std::string& request) {
   fail("failed");
 }
 
+// ---- this computer as the server (docs/plans/self-hosted.md slice 6) ------------------------
+
+self_host::where link::host_where() const { return o_.self_host ? o_.self_host() : self_host::find(); }
+
+void link::read_host() {
+  const auto w = host_where();
+  auto st = self_host::read_status(w);
+  std::lock_guard lock(m_);
+  v_.host = std::move(st);
+  v_.host_read = true;
+}
+
+expected link::start_host_now(const self_host::where& w) {
+  if (o_.start_host) return o_.start_host(w);
+  // Registers the entry and starts it now (launchctl bootstrap, schtasks /Run,
+  // systemctl --user enable --now): the host is the OS's to run, never the app's child.
+  // Task Scheduler may take a minute for each of /Create and /Run: never cut it short.
+  auto r = self_host::run_host(w, {"start-at-login", "on"}, {}, 150000);
+  if (r && r->code == 0) return {};
+  std::lock_guard lock(m_);
+  v_.host_said = r ? first_line(r->output) : std::string();
+  return err(r ? status::io : r.error());
+}
+
+void link::host_setup(const std::string& request) {
+  const auto doc = json::parse(request, 4);
+  const auto text = [&](const char* k) -> std::string {
+    const std::string* v = doc ? doc->str(k) : nullptr;
+    return v ? *v : std::string();
+  };
+  const auto step = [this](const char* what) {
+    std::lock_guard lock(m_);
+    v_.host_step = what;
+  };
+  const auto fail = [this](const char* why, std::string said = {}) {
+    std::lock_guard lock(m_);
+    v_.error = why;
+    v_.host_step.clear();
+    if (!said.empty()) v_.host_said = std::move(said);
+  };
+  {
+    std::lock_guard lock(m_);
+    v_.host_said.clear();
+  }
+  std::vector<self_host::folder_choice> folders;
+  if (const json::value* a = doc ? doc->find("folders") : nullptr; a && a->k == json::kind::array) {
+    for (const auto& f : a->a) {
+      if (f.k != json::kind::object) continue;
+      self_host::folder_choice c;
+      if (const std::string* p = f.str("path")) c.path = *p;
+      if (const std::string* l = f.str("label")) c.label = *l;
+      c.backup = f.boolean("backup").value_or(false);
+      folders.push_back(std::move(c));
+    }
+  }
+  if (const std::string why = self_host::check_folders(folders); !why.empty()) {
+    return fail(why == "no_library" ? "host_no_library" : why == "twice" ? "host_twice" : "host_no_folders");
+  }
+  // The DuckDNS name: both or neither (the token is checked here, and only hex
+  // and '-' ever reach the program's input).
+  std::optional<std::string> sub;
+  const std::string typed_sub = text("duckdns"), typed_token = text("duckdns_token");
+  if (!typed_sub.empty() || !typed_token.empty()) {
+    sub = self_host::parse_subdomain(typed_sub);
+    if (!sub) return fail("host_bad_name");
+    if (!self_host::parse_token(typed_token)) return fail("host_bad_token");
+  }
+  const auto w = host_where();
+  if (w.program.empty()) {
+    read_host();
+    return fail("no_driftwire_program");
+  }
+
+  // 1. The folders, each with the program's own `host share` (its rules: never
+  // the host's own folder, nor one holding it). One already shared stays.
+  step("share");
+  const auto shared = self_host::shared_folders(w);
+  std::vector<self_host::folder_choice> fresh;
+  for (const auto& f : folders) {
+    const std::string key = self_host::same_path_key(f.path);
+    bool there = false;
+    for (const auto& s : shared) there = there || self_host::same_path_key(s.path) == key;
+    if (!there) fresh.push_back(f);
+  }
+  std::vector<std::string> taken;
+  for (const auto& s : shared) taken.push_back(s.label);
+  const auto labels = self_host::unique_labels(fresh, taken);  // the program refuses a label in use
+  for (std::size_t i = 0; i < fresh.size(); ++i) {
+    auto r = self_host::run_host(w, self_host::share_args(fresh[i].path, labels[i], fresh[i].backup));
+    if (!r) return fail("host_failed");
+    if (r->code != 0) return fail("host_share", first_line(r->output));
+  }
+  // 2. The name, kept by the host's DuckDNS keeper.
+  if (sub) {
+    step("name");
+    if (!self_host::set_duckdns(w, *sub, typed_token)) return fail("host_name");
+  }
+  // 3. Started, and at every login from now.
+  step("start");
+  if (!start_host_now(w)) return fail("host_start");
+  self_host::host_status st;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(o_.host_wait_ms);
+  for (;;) {
+    st = self_host::read_status(w);
+    // A state.json left by a host that crashed names a port nobody holds: it counts once it answers.
+    if (st.running && self_host::answers(st.service_port, 300)) break;
+    if (stopping_.load() || std::chrono::steady_clock::now() >= until) {
+      read_host();
+      return fail("host_not_listening");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  {
+    std::lock_guard lock(m_);
+    v_.host = st;
+    v_.host_read = true;
+  }
+  // 4. The library goes in the first folder phones read, as a NAS's share.
+  step("claim");
+  const self_host::folder_choice* lib = self_host::library_folder(folders);
+  std::string destination;
+  {
+    std::lock_guard lock(m_);
+    destination = pub_.destination;
+  }
+  if (destination.empty() || self_host::same_path_key(destination) != self_host::same_path_key(lib->path)) {
+    choose_folder(lib->path);
+    std::lock_guard lock(m_);
+    if (pub_.destination != lib->path) {
+      if (v_.error.empty()) v_.error = "failed";
+      v_.host_step.clear();
+      return;
+    }
+  }
+  // 5. Claimed over loopback: the host's own network by its own rule, and the
+  // token written on this computer's own drive.
+  // The host listens on both where it can ([::] dual stack), on one where the
+  // OS has only one: IPv4's loopback first, then IPv6's.
+  for (const char* loopback : {"127.0.0.1", "::1"}) {
+    json::writer c;
+    c.begin_object().key("do").string("claim").key("local").string(self_host::host_port(loopback, st.service_port));
+    c.key("public").string("").end_object();
+    {
+      std::lock_guard lock(m_);
+      v_.error.clear();
+    }
+    run(c.str());
+    std::lock_guard lock(m_);
+    if (v_.claimed && v_.error.empty()) break;
+    if (v_.error != "unreachable" || std::string_view(loopback) == "::1") {
+      if (v_.error.empty()) v_.error = "unreachable";
+      v_.host_step.clear();
+      return;
+    }
+  }
+  // 6. The addresses a phone dials: this computer on its network, and the
+  // DuckDNS name from outside (the one set now, or the host's already).
+  const std::string lan = o_.lan_address ? o_.lan_address() : self_host::lan_address();
+  if (!sub && !st.duckdns.empty()) sub = st.duckdns;
+  {
+    json::writer a;
+    a.begin_object().key("do").string("set_addresses");
+    a.key("local").string(lan.empty() ? std::string() : self_host::host_port(lan, st.service_port));
+    std::string keep;
+    {
+      std::lock_guard lock(m_);
+      keep = v_.public_name;  // one typed before stays when there is no DuckDNS name
+    }
+    a.key("public").string(sub ? self_host::public_route(*sub, st.service_port) : keep);
+    a.end_object();
+    run(a.str());
+    std::lock_guard lock(m_);
+    if (!v_.error.empty()) {
+      v_.host_step.clear();
+      return;
+    }
+    if (lan.empty()) {
+      v_.error = "host_no_network";  // claimed; the code would carry loopback only
+      v_.host_step.clear();
+      return;
+    }
+  }
+  // 7. A code for the first phone, as Add a phone makes it.
+  std::lock_guard lock(m_);
+  v_.host_step.clear();
+  requests_.push_back("{\"do\":\"pair\"}");
+}
+
 std::string link::state_json() const {
   json::writer w;
   std::lock_guard lock(m_);
@@ -1335,6 +1575,25 @@ std::string link::state_json() const {
   w.key("asking_name").string(v_.asking_name);
   w.key("asking_key").string(v_.asking_key);
   w.key("asking_fingerprint").string(v_.asking_fingerprint);
+  // This computer as the server: what its host's files said (ports and counts,
+  // never an address); host_said is the program's own line, which may name a
+  // folder as the card's other rows do. On screen only, never logged.
+  if (v_.host_read) {
+    const auto& h = v_.host;
+    w.key("host").begin_object();
+    w.key("installed").boolean(h.installed).key("set_up").boolean(h.set_up).key("running").boolean(h.running);
+    w.key("at_login").boolean(h.at_login);
+    w.key("service_port").integer(h.service_port).key("relay_port").integer(h.relay_port);
+    w.key("configured_port").integer(h.configured_port);
+    w.key("folders").integer(static_cast<std::int64_t>(h.folders)).key("offline").integer(static_cast<std::int64_t>(h.offline));
+    w.key("name").string(h.name).key("duckdns").string(h.duckdns);
+    w.key("keepers").begin_array();
+    for (const auto& k : h.keepers) w.string(k);
+    w.end_array();
+    w.end_object();
+  }
+  w.key("host_step").string(v_.host_step);
+  w.key("host_said").string(v_.host_said);
   w.end_object();
   return w.take();
 }

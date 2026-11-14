@@ -2128,6 +2128,21 @@ with the code's mapping rules (#499: the gateway only, never another's forward t
 leases renewed while it runs, removed on stop, a ledger for a crash). Never SMB, RDP or another
 program's port. Built as `host_ports.*` (slice 4); behind carrier NAT it says that no forward helps.
 
+**The app runs an installed `driftwire` for "This computer" (2026-11-14, self-hosting slice 6; amends
+"the app never starts it", 2026-10-23).** Settings → Phone access → Set up the service… → **This
+computer** (owner: "done in-app, no terminal"; plan §8) needs the host to run at login with no
+MediaViewer open, so the host stays the command line's, never the viewer's (plan §4: DuckDNS never in
+the viewer). On the person's click, and only then, the app runs the installed program's own
+`driftwire host share` and `driftwire host start-at-login on` (which registers the login entry and
+starts the host through launchd / Task Scheduler / systemd, never as the app's child), and reads the
+host's files (`state.json`, `host.lock`, `serve.json`, `host.json`) for the status row. The DuckDNS
+name is written where `host name duckdns` (slice 5, built beside this) writes it (`host.json` `ddns`,
+the token as `ddns_token` in `<data>/host/secrets`), because that command asks at a terminal only. The program is still **not in
+the app's payload** (`build-release.ps1` still refuses it) and is installed once with its own one line
+(Homebrew, `install.ps1`); the card says so and checks again. Still no second *app*: nothing opens a
+window. Reopen if the owner wants the program shipped inside the app or the add-on (so the card needs
+no install line), or a non-terminal `host name duckdns` for the card to call instead of the files.
+
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
 anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,
