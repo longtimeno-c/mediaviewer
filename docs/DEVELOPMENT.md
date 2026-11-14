@@ -727,7 +727,7 @@ Files added to or removed from the open folder show up without a restart.
 
 A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
-| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
+| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS/MTS/MPG) |
 | `Ctrl+Shift+O` | open a folder |
 | `Ctrl+E` | show the current file in Explorer, selected (`⌘E`: Finder; a Photos library item opens in Photos, selected). Open menu: **Show in Explorer** (Mac: **Show in Finder**, or **Open in Photos** while a Photos library item is current; `?` and Settings use the same words) |
 | Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac); pinned folders first (#617: right-click a welcome-card row to pin or unpin). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`). With OneDrive set up, a **OneDrive** row leads the card, above Recent folders, as iCloud Photos does on the Mac: it opens OneDrive's Pictures folder (OneDrive itself if there is none) |

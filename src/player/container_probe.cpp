@@ -56,17 +56,35 @@ namespace {
 // A single 0x47 byte is meaningless — it is a common value. A transport stream
 // is 0x47 every 188 bytes, so confirm the cadence before claiming it. Without
 // this check, roughly one file in 256 probes as MPEG-TS on its first byte.
-[[nodiscard]] bool probe_mpeg_ts(std::span<const std::uint8_t> b) noexcept {
-  constexpr std::size_t packet = 188;
-  if (b.empty() || b[0] != 0x47) return false;
+// AVCHD's .mts/.m2ts is the same stream with a 4-byte timecode before each
+// packet: 192-byte packets, sync byte at offset 4.
+[[nodiscard]] bool probe_ts_cadence(std::span<const std::uint8_t> b, std::size_t first,
+                                    std::size_t packet) noexcept {
+  if (b.size() <= first || b[first] != 0x47) return false;
   int confirmed = 0;
-  for (std::size_t offset = packet; offset < b.size(); offset += packet) {
+  for (std::size_t offset = first + packet; offset < b.size(); offset += packet) {
     if (b[offset] != 0x47) return false;
     ++confirmed;
   }
   // At least two more sync bytes, i.e. three packets seen. One repeat is still
   // plausible coincidence.
   return confirmed >= 2;
+}
+
+[[nodiscard]] bool probe_mpeg_ts(std::span<const std::uint8_t> b) noexcept {
+  return probe_ts_cadence(b, 0, 188) || probe_ts_cadence(b, 4, 192);
+}
+
+// MPEG program stream (.mpg/.mpeg, DVD/VOB-style): a pack start code
+// 00 00 01 BA, then the SCR whose leading bits name the version — '01' for
+// MPEG-2, '0010' for MPEG-1 — with a marker bit set in both. The marker check
+// keeps a stray start code from passing on four bytes alone.
+[[nodiscard]] bool probe_mpeg_ps(std::span<const std::uint8_t> b) noexcept {
+  if (b.size() < 5 || b[0] != 0x00 || b[1] != 0x00 || b[2] != 0x01 || b[3] != 0xBA) return false;
+  const std::uint8_t v = b[4];
+  if ((v & 0xC4) == 0x44) return true;  // MPEG-2: 01xx x1xx
+  if ((v & 0xF1) == 0x21) return true;  // MPEG-1: 0010 xxx1
+  return false;
 }
 
 // MP3: an ID3v2 tag ("ID3", version 2–4), or a bare MPEG audio frame header —
@@ -120,6 +138,8 @@ container probe(std::span<const std::uint8_t> head) noexcept {
 
   if (probe_mpeg_ts(head)) return container::mpeg_ts;
 
+  if (probe_mpeg_ps(head)) return container::mpeg_ps;
+
   if (probe_mp3(head)) return container::mp3;
 
   return container::unknown;
@@ -134,6 +154,7 @@ const char* container_name(container c) noexcept {
     case container::webm:      return "webm";
     case container::avi:       return "avi";
     case container::mpeg_ts:   return "mpegts";
+    case container::mpeg_ps:   return "mpeg";
     case container::mp3:       return "mp3";
     case container::m4a:       return "m4a";
   }

@@ -49,7 +49,8 @@ ADDON_UTIS = {"io.github.longtimeno-c.mediaviewer.addon"}
 
 VIDEO_UTIS = {"public.mpeg-4", "com.apple.m4v-video", "com.apple.quicktime-movie",
               "org.matroska.mkv", "org.webmproject.webm", "public.avi",
-              "public.mpeg-2-transport-stream"}
+              "public.mpeg-2-transport-stream", "public.avchd-mpeg-2-transport-stream",
+              "public.mpeg"}
 
 
 # Open With only (docs/plans/audio-and-documents.md §3): declared so Finder offers

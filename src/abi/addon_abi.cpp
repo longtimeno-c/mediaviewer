@@ -242,7 +242,8 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
     MV_REQUIRE(path_utf8, "path required");
     std::string lower(path_utf8);
     for (char& c : lower) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-    for (const char* ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts"}) {
+    for (const char* ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts",
+                            ".mpg", ".mpeg"}) {
       const std::size_t n = std::strlen(ext);
       if (lower.size() >= n && lower.compare(lower.size() - n, n, ext) == 0) return status::unsupported_format;
     }

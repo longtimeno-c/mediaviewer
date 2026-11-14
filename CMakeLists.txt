@@ -1204,6 +1204,7 @@ if(MV_BUILD_TESTS)
     tests/test_transport.cpp
     tests/test_container_probe.cpp
     tests/test_audio_files.cpp
+    tests/test_camera_containers.cpp
     tests/test_pages.cpp
     tests/test_pdf.cpp
     tests/test_page_thumbs.cpp

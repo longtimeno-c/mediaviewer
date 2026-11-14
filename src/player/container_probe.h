@@ -28,7 +28,9 @@ enum class container : std::uint8_t {
   matroska,   // .mkv and .webm — same EBML magic, distinguished by DocType
   webm,
   avi,        // RIFF
-  mpeg_ts,    // .ts, 0x47 sync bytes on a 188-byte cadence
+  mpeg_ts,    // .ts, 0x47 sync bytes on a 188-byte cadence; .mts/.m2ts (AVCHD)
+              // on a 192-byte one, behind a 4-byte timecode
+  mpeg_ps,    // .mpg/.mpeg, MPEG-1/2 program stream: a 00 00 01 BA pack header
   mp3,        // ID3v2 tag, or an MPEG audio frame header
   m4a,        // ISO-BMFF with an iTunes audio brand: M4A, M4B, M4P (FairPlay)
 };

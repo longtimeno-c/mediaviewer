@@ -110,7 +110,7 @@ module, NLE or movie player; the larger editing surfaces are their own documents
 |---|---|
 | Stills | JPEG, PNG (incl. APNG), BMP, GIF (incl. animated), TIFF, WebP (incl. animated), HEIC/HEIF, AVIF, ICO |
 | RAW | CR2/CR3, NEF, ARW, RAF, ORF, RW2, PEF, DNG — embedded preview first, full decode as refinement |
-| Containers | MP4/M4V, MOV, MKV, WebM, AVI, TS |
+| Containers | MP4/M4V, MOV, MKV, WebM, AVI, TS, MTS/M2TS (AVCHD), MPG/MPEG (program stream) |
 | Video codecs | H.264, HEVC, VP9, AV1, MPEG-2; **on macOS also Apple ProRes** (422 and 4444, in MOV) |
 | Audio | MP3, M4A (AAC/ALAC); M4P is recognised and shown with a padlock, never played (FairPlay) |
 | Documents | PDF, DOCX, PPTX — one navigation stop per file, pages (slides) inside it |
