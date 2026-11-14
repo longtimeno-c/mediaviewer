@@ -143,8 +143,14 @@ class dialer {
     bool tls = false;
     std::uint16_t tls_port = tls::kDefaultPort;
     connect_fn connect;  // net::connect when empty
+    // With tls: the knock key already derived (tls::derive_knock_key of the
+    // relay's key), so make() runs no Argon2id. Its 64 MiB is more than an
+    // iOS packet tunnel extension may hold (docs/plans/phone-vpn.md §2.1), so
+    // the app derives it and the extension passes it here. Empty: derived here.
+    std::optional<tls::knock_key> knock;
   };
-  // status::invalid_arg for a relay field that is not one; Argon2id runs here with tls.
+  // status::invalid_arg for a relay field that is not one; with tls and no
+  // `knock`, Argon2id runs here.
   [[nodiscard]] static result<std::unique_ptr<dialer>> make(options o);
   // `remote` (optional): where the connection to the server is kept while
   // it opens, so stop() and an owner's destructor can end it.
