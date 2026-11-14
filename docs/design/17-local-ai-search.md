@@ -893,7 +893,13 @@ does.
   from the Windows SDK; `windowsapp.lib`, no package). No model ships and nothing leaves the
   machine. A Windows with no OCR language installed, or another platform, has no reader: the
   track stays off and nothing else changes.
-- **Its own pass** (`track::text`), after the pictures and the clips' cues: a 2,048 px decode
+- **Read with the picture** (2026-11-14): the picture pass reads a photo's text too when it is
+  still owed (`index_db::pending_among` under the reader's spec, with the text pass's own filter):
+  one 2,048 px decode, read by the OS reader, then box-fitted to the picture pass's edge (1,024 with
+  People, else 448) for CLIP and the face models (`fit_long_edge`, the host's `decode_still` fit). A
+  library on a hard disk was read twice, once per pass, and the disk, not the GPU, set the pace.
+- **Its own pass** (`track::text`), after the pictures and the clips' cues, for what the picture
+  pass did not read (the switch turned on later, a new reader, a failed read): a 2,048 px decode
   (small text needs pixels; the picture pass reads 448) and the OS reader, four photos a claim,
   `wait_turn` before each. One `cues` row per photo, kind 3 (`picture`), `start_ms` −1, the lines
   joined by spaces so a phrase split over two lines of a sign is one phrase, at most 4,000 bytes.
