@@ -58,6 +58,10 @@ struct server_info {
   std::string name;  // the library's name in the code, else "Server"
   reach state = reach::unknown;
   std::int64_t paired_unix = 0;
+  // What the server lets this desktop do (#686 §2, the service's caps): "view" (a desktop starts
+  // so, owner call 1), "change" or "admin" once a host's admin grants it; "" until it has
+  // answered this run, or from a service older than roles.
+  std::string role;
 };
 
 struct folder {
@@ -187,8 +191,8 @@ class library {
   [[nodiscard]] expected read_range(std::string_view file_key, std::uint64_t at, std::uint64_t length,
                                     const mobile::byte_sink& sink, const mobile::cancel_flag* cancel = nullptr);
 
-  // Read-only for now (owner call 1): false always. The role a host's admin
-  // grants (#686 §2) will make this per folder.
+  // False always: the role a host's admin grants ("change", server_info::role) is shown, but the
+  // service takes writes only into a backup folder today, so this client writes nothing yet.
   [[nodiscard]] bool can_write(std::string_view key) const noexcept;
 
   [[nodiscard]] disk_cache& cache() noexcept { return cache_; }

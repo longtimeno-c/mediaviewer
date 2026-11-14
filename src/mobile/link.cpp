@@ -619,6 +619,13 @@ int link_session::storage(std::string& word) const {
   return 1;
 }
 
+int link_session::role(std::string& word) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed()) return -1;
+  word = live_->caps().role;
+  return 1;
+}
+
 bool link_session::connected() const {
   std::lock_guard lock(m_);
   return live_ && !live_->closed();

@@ -165,6 +165,7 @@ MV_API mv_status MV_CALL mv_remote_servers_json(char* utf8, uint32_t cap, uint32
             .key("name").string(s.name)
             .key("key").string(mv::remote::server_key(s.id))
             .key("state").string(mv::remote::reach_name(s.state))
+            .key("role").string(s.role)
             .end_object();
       }
     }

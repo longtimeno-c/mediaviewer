@@ -498,8 +498,10 @@ MV_API mv_status MV_CALL mv_host_tray_stop(void);
  * MediaViewer\remote-cache). A server that does not answer lists the folder as
  * it was last listed here.
  *
- * mv_remote_servers_json: [{"name","key","state"}], state one of unknown,
- * online, unreachable, access_ended, wrong_service, too_old; never blocks.
+ * mv_remote_servers_json: [{"name","key","state","role"}], state one of unknown,
+ * online, unreachable, access_ended, wrong_service, too_old; role what the
+ * server lets this desktop do ("view", "change", "admin"; "" until it has
+ * answered this run, or from a service older than roles); never blocks.
  * mv_remote_generation bumps when that changes.
  * mv_remote_preview_json: what a pasted code says before it is used:
  * {"name","fingerprint"} (compare it with the other computer's card), or
