@@ -151,6 +151,64 @@ runner; the key is still checked against the pinned public key before building.
 Follow Sparkle's key-rotation procedure
 before replacing its pinned public key.
 
+### macOS: the Driftwire VPN's provisioning profiles (optional)
+
+Driftwire's VPN (the Tunnel's slice 5) is a system extension inside the app. It claims two
+restricted entitlements, and outside the App Store macOS runs a bundle that claims them only
+with a matching **Developer ID provisioning profile** embedded. A stable release builds the
+extension (`-DMV_DRIFTWIRE_PACKET_TUNNEL=ON`) only when **both** of these secrets are set;
+without them it builds exactly as before, with no VPN.
+
+| Secret | Value |
+|---|---|
+| `MV_APP_PROVISION_PROFILE_B64` | Base64 of the app's Developer ID profile (App ID `io.github.longtimeno-c.mediaviewer`) |
+| `MV_TUNNEL_PROVISION_PROFILE_B64` | Base64 of the extension's Developer ID profile (App ID `io.github.longtimeno-c.mediaviewer.DriftwireTunnel`) |
+
+**From a terminal** (`tools/mac/provision.py`, the App Store Connect API). It creates the
+extension's App ID if missing, turns on the capabilities, makes both Developer ID profiles,
+checks them with the release's own check, saves them to `~/Dev/.mv-toolchain/profiles` and,
+with `--set-secrets`, sets both secrets. It needs an API key with the **Admin** role, made once
+in App Store Connect → Users and Access → Integrations → App Store Connect API → Team Keys (the
+`.p8` downloads once; note its Key ID and the Issuer ID). The key stays on the machine: the
+script signs a 20-minute token with it and sends only that.
+
+```sh
+python3 tools/mac/provision.py --key ~/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer-id <ISSUER> --dry-run
+python3 tools/mac/provision.py --key ~/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer-id <ISSUER> --set-secrets
+```
+
+With more than one Developer ID Application certificate on the team it stops and lists them;
+pass `--certificate <serial>` for the one in `MV_MAC_CERT_P12_BASE64`. Each run makes new
+profiles (old ones stay in the account until deleted there).
+
+**Or by hand**, in developer.apple.com → Certificates, Identifiers & Profiles (no request to
+Apple: the Network Extension capability is self-service for a paid team):
+
+1. **Identifiers:** open the app's App ID and tick **Network Extensions** and **System
+   Extension**. Add an explicit App ID `io.github.longtimeno-c.mediaviewer.DriftwireTunnel` and
+   tick **Network Extensions**.
+2. **Profiles → +:** Distribution → **Developer ID**, the app's App ID, the Developer ID
+   Application certificate in `MV_MAC_CERT_P12_BASE64`; download. The same for the extension's
+   App ID.
+3. Set them:
+
+```sh
+base64 -i MediaViewer_DeveloperID.provisionprofile | gh secret set MV_APP_PROVISION_PROFILE_B64 --repo longtimeno-c/mediaviewer
+base64 -i DriftwireTunnel_DeveloperID.provisionprofile | gh secret set MV_TUNNEL_PROVISION_PROFILE_B64 --repo longtimeno-c/mediaviewer
+```
+
+`macpack.py release` checks each profile before signing: the team, Developer ID (no device
+list), not expired, the exact App ID (no wildcard), and that it grants the packet tunnel
+(and, for the app, installing a system extension). A wrong profile stops the release with the
+reason. Profiles expire. A release fails with "has expired" until new ones are downloaded and set.
+Changing a capability on an App ID invalidates its profile; remake it.
+
+A local signed build takes the same files: `macpack.py release … --app-profile <app profile>
+--tunnel-profile <extension profile>` (or `MV_APP_PROVISION_PROFILE` /
+`MV_TUNNEL_PROVISION_PROFILE`). A system extension activates only from `/Applications`; the
+first start asks for approval in System Settings → General → Login Items & Extensions →
+Network Extensions.
+
 ### Optional Windows publisher signing
 
 Configure all six, or leave all unset: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
