@@ -225,6 +225,7 @@ final class ManagementModel: ObservableObject {
   }
 
   var facesReady: Bool { flags & MV_AI_STATUS_FACES_READY != 0 }
+  var modelsHeld: Bool { flags & MV_AI_STATUS_MODELS_HELD != 0 }
 
   func appeared() {
     visible += 1
@@ -1058,14 +1059,28 @@ struct ManagementView: View {
 
   private var fullBody: some View {
     VStack(alignment: .leading, spacing: 10) {
-      LiveStatus(live: model.live) { live in
-        StatusPill(line: live.line, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
-        if !live.line.sound.isEmpty && live.line.stages.isEmpty {
-          // "Sound: 12 of 40 clips · Speech: 8 of 40" once it is done; while a
-          // pass runs, the pill's stages say it.
-          Label(live.line.sound, systemImage: "speaker.wave.2")
+      if model.modelsHeld {
+        VStack(alignment: .leading, spacing: 8) {
+          Text("Search and indexing have not started, so the models stay unloaded. Folders and these settings are saved.")
             .font(AITheme.font(12)).foregroundStyle(AITheme.body)
-            .contentTransition(.numericText())
+            .fixedSize(horizontal: false, vertical: true)
+          Button("Start indexing") { model.set("start", 1) }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: AITheme.radius(8)).fill(AITheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: AITheme.radius(8)).stroke(AITheme.hairline, lineWidth: 1))
+      }
+      if !model.modelsHeld {
+        LiveStatus(live: model.live) { live in
+          StatusPill(line: live.line, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
+          if !live.line.sound.isEmpty && live.line.stages.isEmpty {
+            // "Sound: 12 of 40 clips · Speech: 8 of 40" once it is done; while a
+            // pass runs, the pill's stages say it.
+            Label(live.line.sound, systemImage: "speaker.wave.2")
+              .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+              .contentTransition(.numericText())
+          }
         }
       }
       if !model.message.isEmpty {
@@ -1283,7 +1298,11 @@ struct ManagementView: View {
           confirmRow("Turn off people search? Every face, crop and name is deleted now.",
                      action: "Delete face data", destructive: true) { model.facesOffConfirmed() }
         }
-        if model.facesOn && !model.facesReady {
+        if model.facesOn && model.modelsHeld {
+          Text("Faces already in the index stay put. They show here once you start indexing.")
+            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+            .padding(.horizontal, 12).padding(.bottom, 10)
+        } else if model.facesOn && !model.facesReady {
           Text("Install People above to find faces. Until then nothing about faces is computed.")
             .font(AITheme.font(12)).foregroundStyle(AITheme.body)
             .padding(.horizontal, 12).padding(.bottom, 10)

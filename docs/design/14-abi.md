@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.41**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.42**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -722,6 +722,7 @@ and inert unless set. The Mac host drives
 | 0.39 | Docked Edit screens (docs/plans/edit-refresh.md S5, [29 "Docked in Edit"](29-enhance.md#docked-in-edit-2026-11-05)): `MV_SLOT_PLACE_EDIT` (5, contribution API 13, a screen in place `"edit"` drawn in the Edit workspace's Enhance tab) and `mv_slots_screen_command` (the workspace opens the docked screen on the file on screen when it is not open, then delivers `MV_SLOT_EVENT_COMMAND` with screen = node = the screen id and one JSON object of at most 4096 bytes; `slot_registry::screen_command`). `screen_show` refuses a place `"edit"` screen. Mac bridge: `mv_chrome_edit_enhance_tool` / `mv_chrome_edit_enhance_result`; Windows `chrome_edit_action` 9–14. `MV_ADDON_CONTRIBUTION_API` 13 (2026-11-05, no ABI change): a `progress` node's `detail` and `timed` ([25](25-open-addons.md), [20 "Craft rules"](20-edit-workspace.md#craft-rules)) |
 | 0.40 | The kept menu's rows ([docs/plans/driftwire-menu-and-tunnel.md](../plans/driftwire-menu-and-tunnel.md) slice 1, [28 "In the background"](28-driftwire.md#in-the-background-452)): host table `keep_menu` appended after `still_extend` (an add-on's own rows for the menu-bar item / tray icon: text, toggle, button, files, separator; at most 16); `MV_SLOT_EVENT_MENU` (16) when one is picked; `mv_slots_notices_json`'s `keep` entries gain `menu`; `mv_slots_menu_action`. Mac bridge `mv_chrome_slots_menu_action` |
 | 0.41 | Phone access in the app ([plan](../plans/phone-in-the-app.md), owner 2026-11-12): `mv_phone_request` (one JSON request `{"do":…}` for the feature's thread), `mv_phone_state_json` (the card's state), `mv_phone_resume(flags)` (at launch; `MV_PHONE_SECONDARY` in a later window's process, which runs none of it) and `mv_phone_stop` (at quit, before the add-ons; never waits on the NAS). All [no-block]. Mac bridge: `mv_chrome_phone_request` / `mv_chrome_phone_state`. `mv_ai_api.phone_link` / `phone_link_json` are null from Local search now; `phone_json` gains `library_id`, `epoch` and `gen_dir`. The card's requests include the NAS owner's passphrase, guest codes and timed phones ([docs/plans/nas-owner-and-guests.md](../plans/nas-owner-and-guests.md) §8.1) |
+| 0.42 | Local search settings without a model load (issue #292, 2026-11-14): `mv_ai_hold_models` (one-shot before `mv_addon_load` of `"ai"` through the host door). Host table `ai_models_held` appended after `thumbnail_make`. `MV_AI_STATUS_MODELS_HELD` (4096). Mac bridge: `mv_addon2_ai_manage`, `mv_addon2_ai_opening`. Settings attaches the pack; towers, indexing threads and weight download wait for the first search or `set_setting` `"start"` |
 
 ## Not built
 

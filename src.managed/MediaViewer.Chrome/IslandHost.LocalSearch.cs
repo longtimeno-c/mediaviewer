@@ -81,8 +81,12 @@ public static partial class IslandHost
         && AiSlot.Usable;
 
     private const string AiStartingText = "Starting Local search…";
+    private const string AiOpeningText = "Opening Local search…";
+    // Settings asked for a held attach: the wait line and pill say Opening,
+    // not Starting (the towers stay closed).
+    private static bool _aiModelsHeldLoad;
 
-    // The first search after launch, or Settings' Start now: the pack loads.
+    // The first search after launch, or Settings' Start indexing: the pack loads.
     // `open`: its panel opens once it attaches. True when a load is on its way.
     private static bool StartAiOnDemand(bool open)
     {
@@ -552,7 +556,7 @@ public static partial class IslandHost
         // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
         bool battery = _indexingOnBattery || _indexingText.Text.Contains("battery", StringComparison.OrdinalIgnoreCase);
         string key = KeyNote(Command.SearchOpen);
-        ToolTipService.SetToolTip(_indexingPill, _indexingText.Text == AiStartingText
+        ToolTipService.SetToolTip(_indexingPill, _indexingText.Text is AiStartingText or AiOpeningText
             ? $"Local search is starting. Click to search{key}; the panel opens once it is ready."
             : battery
             ? (_indexingOnBattery
@@ -865,9 +869,8 @@ public static partial class IslandHost
     }
 
     // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
-    // Before that (issue #292): "Starting Local search…" while it loads, or
-    // Start now while it waits for the first search. Opening Settings alone
-    // does not start it.
+    // Settings attaches the pack without opening the towers (issue #292,
+    // 2026-11-14): folders and settings show; search and indexing wait.
     private static void AddAiSettingsPanel()
     {
         if (_localSearchPanel is null) return;
@@ -875,16 +878,14 @@ public static partial class IslandHost
         {
             // Loading takes seconds (it verifies its files): the shared line
             // on its calm sweep, not a bare label (docs/design/20 "Craft rules").
-            _localSearchPanel.Children.Add(WaitLine("Starting Local search", 320));
+            _localSearchPanel.Children.Add(WaitLine(
+                _aiModelsHeldLoad ? "Opening Local search" : "Starting Local search", 320));
             return;
         }
         if (AiOnDemand())
         {
-            _localSearchPanel.Children.Add(WrappedLabel(
-                "Local search starts the first time you search. Start it now to see its folders and settings."));
-            Button start = SettingsButton("Start now", () => StartAiOnDemand(open: false));
-            start.HorizontalAlignment = HorizontalAlignment.Left;
-            _localSearchPanel.Children.Add(start);
+            LoadAddon(AiSlot, holdModels: true);
+            _localSearchPanel.Children.Add(WaitLine("Opening Local search", 320));
             return;
         }
         if (SearchChrome is ISearchChrome search)
