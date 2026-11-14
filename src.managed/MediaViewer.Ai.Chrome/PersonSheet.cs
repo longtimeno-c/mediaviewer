@@ -115,7 +115,7 @@ internal sealed class PersonSheet : Window
         // One window for every person, hidden between them, never closed and made
         // again: closing one sheet and opening the next in the same click, with the
         // closed one's face crops still decoding, fail-fast the host (E_INVALIDARG
-        // from a queued XAML callback) on the second person's ?.
+        // from a queued XAML callback) on the second person's ⋯.
         AppWindow.Closing += (_, e) =>
         {
             if (_destroyed) return;
@@ -384,7 +384,7 @@ internal sealed class PersonSheet : Window
         Load();
     }
 
-    /// <summary>Done, Esc, the title bar's ?: the sheet steps aside, kept for the next person.</summary>
+    /// <summary>Done, Esc, the title bar's ✕: the sheet steps aside, kept for the next person.</summary>
     internal void Dismiss()
     {
         if (_closed || _destroyed) return;
