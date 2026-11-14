@@ -2818,6 +2818,13 @@ its anchor is no longer selected, so no selection path needs a hook.
 `ScrollView` the cell's `DragGesture` never saw the mouse drag; a local event monitor turns a
 press on a hovered cell that moves 4 pt into the file drag.
 
+**One Share button, and a folder tile shares the folder (2026-11-14, owner).** Reverses #413's
+share icon over the grid: two buttons judged "something to share" differently (the bar's was off
+over a folder of folders, the grid's stayed on and did nothing), so the command bar's button beside
+Home is the only one, on both hosts. With the gallery open and the keyboard on a folder tile (no
+range), Share sends that folder through Driftwire, whole (`share_takes_folder`); the system sheet,
+which takes files, is off for it. A folder tile's right-click has Share ▸ Driftwire.
+
 ---
 
 ## Open add-ons

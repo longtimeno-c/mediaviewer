@@ -41,7 +41,6 @@ public static partial class IslandHost
     private static StackPanel? _galleryStack;
     private static TextBlock? _photosHeader;
     private static Grid? _photosRow;
-    private static Button? _galleryShare;  // #413
     private static TextBlock? _galleryEmpty;
     private static TextBlock? _folderFindLabel;
     private static ItemsRepeater? _folderChipRepeater;
@@ -295,6 +294,7 @@ public static partial class IslandHost
         {
             _galleryVisible = true;
             RenderEditBarButton();
+            UpdateBarShareButton();
             UpdateGalleryCount();
             _dispatcher?.DispatcherQueue.TryEnqueue(RealiseGallery);
         },
@@ -303,6 +303,7 @@ public static partial class IslandHost
             _galleryVisible = false;
             ClearGalleryRange();  // #413: the range belongs to the grid
             RenderEditBarButton();
+            UpdateBarShareButton();  // a folder tile is no longer under the cursor
             GallerySearchHidden();
             ReleaseRepeater(ref _galleryRepeater);
             ReleaseRepeater(ref _folderRepeater);
@@ -549,24 +550,17 @@ public static partial class IslandHost
         _galleryStack.Children.Add(_folderFindLabel);
         _galleryStack.Children.Add(_folderStrip);
         _galleryStack.Children.Add(_folderRepeater);
-        // Issue #413: the photos' header, and one share icon for the grid's
-        // selection. Issue #444: it opens the share menu (Driftwire, then
-        // Windows Share), the one share command's. The Mac's row over its grid
-        // (GalleryView): the count of a range is said once, by Share. 12 DIP
-        // over the first row of tiles, never touching it; collapsed when empty.
+        // The photos' header in a mixed folder, 12 DIP over the first row of
+        // tiles, never touching it; collapsed when empty. Share is the command
+        // bar's one button beside Home (docs/design/16 "Share"), not a second
+        // one over the grid.
         var photosRow = new Grid
         {
-            ColumnSpacing = Space(8),
             Margin = Pad(0, 0, 0, 12),
             Visibility = Visibility.Collapsed,
         };
-        photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         photosRow.Children.Add(_photosHeader);
         _photosRow = photosRow;
-        _galleryShare = BuildGalleryShareButton();
-        Grid.SetColumn(_galleryShare, 1);
-        photosRow.Children.Add(_galleryShare);
         _galleryStack.Children.Add(photosRow);
         _galleryStack.Children.Add(_galleryRepeater);
         _galleryStack.Children.Add(_galleryEmpty);
@@ -625,7 +619,7 @@ public static partial class IslandHost
         return root;
     }
 
-    // On the tiles' edge (no 2 DIP near-tangent) and centred on Share beside it.
+    // On the tiles' edge (no 2 DIP near-tangent).
     private static TextBlock SectionLabel(string text)
     {
         var t = new TextBlock
@@ -643,12 +637,11 @@ public static partial class IslandHost
         return t;
     }
 
-    // The photos' row shows while its header or Share does.
+    // The photos' row shows while its header does.
     private static void SyncPhotosRow()
     {
         if (_photosRow is null) return;
-        bool any = _photosHeader?.Visibility == Visibility.Visible || _galleryShare?.Visibility == Visibility.Visible;
-        _photosRow.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
+        _photosRow.Visibility = _photosHeader?.Visibility ?? Visibility.Collapsed;
     }
 
     // The folder trail, in the command bar just left of `?` (Mac PathBar in
@@ -1024,6 +1017,7 @@ public static partial class IslandHost
         for (int i = 0; i < Folders.Count; ++i) Folders[i].Cursor = i == _folderCursor;
         for (int i = 0; i < Items.Count; ++i)
             Items[i].GalleryCurrent = Items[i].Selected && _folderCursor < 0;
+        UpdateBarShareButton();  // the outlined folder tile is something to share
     }
 
     private static void FolderScrollTo(int index)
@@ -1346,6 +1340,7 @@ public static partial class IslandHost
             }
             BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            AttachFolderContextMenu(border, vm);
             if (!vm.Requested)
             {
                 vm.Requested = true;
@@ -1445,6 +1440,7 @@ public static partial class IslandHost
             }
             BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            AttachFolderContextMenu(border, vm);
             if (!vm.Requested)
             {
                 vm.Requested = true;

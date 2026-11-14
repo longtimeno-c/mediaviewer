@@ -15982,8 +15982,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 }
 
 // Issue #444 (docs/design/16 "Share"): the one share command. ⌘⇧S, the
-// gallery's share icon, the bar's share button and the right-click Share
-// submenu all run it. The files are the range, else the marks, else the
+// bar's share button and the right-click Share submenu all run it. The files
+// are the range, else the outlined folder tile, else the marks, else the
 // current one (markedOrCurrentEntries), or the right-clicked file when it is
 // not one of them. The Mac lists both halves of a pair as items and keeps no
 // pairing, so this is a walk of the in-memory listing with no syscall: no
@@ -16004,9 +16004,19 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 }
 
 // {"files": [...], "media": [...]}: Driftwire's, and the system picker's
-// (media only, no sidecars).
+// (media only, no sidecars). The outlined folder tile (shell::share_takes_folder)
+// is one path and no media: Driftwire walks it once picked; the picker, which
+// takes files, gets none.
 - (std::string)shareFilesJSONForClicked:(NSInteger)clicked {
-  const std::vector<std::string> files = [self shareFilesForClicked:clicked];
+  // A Photos library album is no folder on disk (docs/design/26): not this case.
+  const bool folder =
+      mv::shell::share_takes_folder(_galleryVisible, static_cast<int>(_folderCursor),
+                                    static_cast<int>(_subdirs.size()), !_galleryRange.empty(),
+                                    static_cast<std::int32_t>(clicked)) &&
+      !mv::shell::photos::is_key(_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8);
+  const std::vector<std::string> files =
+      folder ? std::vector<std::string>{_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8}
+             : [self shareFilesForClicked:clicked];
   if (files.empty()) return {};
   mv::json::writer w;
   w.begin_object();
@@ -16014,7 +16024,9 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   for (const std::string& f : files) w.string(f);
   w.end_array();
   w.key("media").begin_array();
-  for (const std::string& f : mv::shell::share_system_files(files)) w.string(f);
+  if (!folder) {
+    for (const std::string& f : mv::shell::share_system_files(files)) w.string(f);
+  }
   w.end_array();
   w.end_object();
   return w.str();

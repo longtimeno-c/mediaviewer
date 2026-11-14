@@ -9804,10 +9804,10 @@ void on_text_read(app_state* app, std::unique_ptr<text_read_result> r) {
 }
 
 // Issue #444 (docs/design/16 "Share"): the one share command. Ctrl+Shift+S,
-// the gallery's share icon, the bar's share button and the right-click Share
-// entries all land here. The UI thread only picks the stops (the range, else
-// the marks, else the current file; or the right-clicked file when it is not
-// one of them). The pair halves come from a walk of the whole listing, so that
+// the bar's share button and the right-click Share entries all land here. The
+// UI thread only picks the stops (the range, else the folder tile under the
+// cursor, else the marks, else the current file; or the right-clicked file when
+// it is not one of them). The pair halves come from a walk of the whole listing, so that
 // runs on the pool; kMsgShareReady then hands the files to the chrome, which
 // shows the menu (Driftwire, Windows Share) or runs the entry picked. Nothing
 // is read from disk and nothing is sent until the person picks a target.
@@ -9815,6 +9815,7 @@ struct share_gathered {
   std::uint64_t seq = 0;
   mv::shell::share_request request;
   std::vector<std::string> files;  // stops with their pair halves: Driftwire's
+  bool folder = false;             // files is one folder, which Driftwire walks
 };
 
 // Pool thread: each stop followed by its pair's other half. mv_folder_entries
@@ -9848,8 +9849,22 @@ std::vector<std::string> share_gather(mv_session_t session, std::vector<std::str
   return mv::shell::share_with_pairs(std::move(stops), pairs);
 }
 
+void on_share_ready(app_state* app, std::unique_ptr<share_gathered> r);
+
 bool share_request_run(app_state* app, mv::shell::share_request request) {
   if (!app || !app->window || !app->session) return false;
+  // The outlined folder tile: that folder, whole. Nothing to gather (a folder
+  // has no pair half), so the menu comes up now; Driftwire walks it on its own
+  // reader thread once picked.
+  if (mv::shell::share_takes_folder(app->gallery_visible, app->folder_cursor,
+                                    static_cast<int>(subfolder_count(app)), gallery_range_live(app),
+                                    request.clicked)) {
+    std::string folder = subfolder_path_at(app, static_cast<std::uint32_t>(app->folder_cursor));
+    if (folder.empty()) return false;
+    on_share_ready(app, std::make_unique<share_gathered>(
+                            share_gathered{++app->share_seq, request, {std::move(folder)}, true}));
+    return true;
+  }
   std::string clicked;
   if (request.clicked >= 0) clicked = item_path_at(app, static_cast<std::uint32_t>(request.clicked));
   std::vector<std::string> stops = mv::shell::share_stops(selection_targets(app), clicked);
@@ -9875,9 +9890,12 @@ void on_share_ready(app_state* app, std::unique_ptr<share_gathered> r) {
   w.key("files").begin_array();
   for (const std::string& f : r->files) w.string(f);
   w.end_array();
-  // The system sheet's: media only, no sidecars (issue #444).
+  // The system sheet's: media only, no sidecars (issue #444); none for a
+  // folder, which it cannot take.
   w.key("media").begin_array();
-  for (const std::string& f : mv::shell::share_system_files(r->files)) w.string(f);
+  if (!r->folder) {
+    for (const std::string& f : mv::shell::share_system_files(r->files)) w.string(f);
+  }
   w.end_array();
   w.end_object();
   (void)app->chrome.share_menu(app->window, static_cast<std::int32_t>(r->request.target),

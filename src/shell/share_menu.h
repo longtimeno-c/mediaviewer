@@ -70,6 +70,18 @@ inline constexpr std::int32_t kShareClickedLimit = (1 << 20) - 1;
   return {std::string(clicked)};
 }
 
+// Whether a request shares a folder tile instead of files: the gallery is open,
+// the keyboard is on one of its folder tiles (`folder_cursor`, the outlined
+// tile), no range stands and no file was right-clicked. The range, being the
+// person's explicit pick, wins; the folder under the cursor wins over the marks
+// and the current file, which the folder tiles hide. Driftwire sends the folder
+// whole (its walk, docs/design/28 "What moves"); the system sheet takes files,
+// so it gets none.
+[[nodiscard]] inline bool share_takes_folder(bool gallery_open, int folder_cursor, int folder_count,
+                                             bool range_live, std::int32_t clicked) noexcept {
+  return gallery_open && folder_cursor >= 0 && folder_cursor < folder_count && !range_live && clicked < 0;
+}
+
 // Each stop followed by its pair's other half (the RAW of a RAW+JPEG, a Live
 // Photo's MOV), as Driftwire and a drag take them. `pairs` maps a primary to
 // its secondary; the host fills it off the UI thread (the listing walk).
