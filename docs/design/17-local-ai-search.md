@@ -735,8 +735,8 @@ goes stale, or an add-on being removed (detach joins its worker), stops the walk
   an upgrade, a full index and (in the footer) a OneDrive wait. On Windows the pack reports these through `IAddonHost3.SetIndexingPill`;
   an older pack's `SetIndexingStatus` still drives the line.
 - **Settings → Local search:** per-piece install, Compute, Quality, Precision, "Index videos
-  for", battery threshold, index size and cap, remembered roots (with *Index Pictures* / *Videos*
-  (*Movies*) offered while no root covers them, and the reason when an add fails), *Index
+  for", battery threshold, index size and cap, remembered roots (with *Add Pictures folder* / *Add Videos
+  folder* (*Movies*) offered while no root covers them, and the reason when an add fails), *Index
   online-only files* (shown once there are any), People, sharing, the Photos Library (Mac) and
   Final Cut Pro search (Mac, [23](23-nle-search.md)).
   Each remembered root shows "N of M" (or "Up to date"), its share of the index on disk, and
