@@ -225,6 +225,7 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 2. **`driftwire host`**: the supervisor, `host.json`, `share`/`unshare`, serve + relay in one process,
    `status`, autostart per OS, the power assertion. Tests `"[host]"` on loopback.
 3. **DuckDNS keeper** (`ddns.*`, `"[ddns]"` against a loopback stand-in) and `host name duckdns`.
+   **The keeper built 2026-11-14** (§12); `host name duckdns` is owed to slice 2's `host` command.
 4. **Router keeper** for the host's ports (reusing `mapping.*` against its stand-in routers), the
    carrier-NAT message, the decision-log row.
 5. **`host setup`** (the guided run) and `/host` in the interactive program; the QR in the terminal.
@@ -266,3 +267,35 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   share can stall that one session's `roots`.
 - **Not yet:** the phone saying "offline" (the Swift side reads the flag only once a screen shows it),
   the volume GUID path for a drive letter that changes, and the host's minute recheck (slice 2).
+
+## 12. Slice 3, as built (2026-11-14)
+
+- **`src/addons/driftwire/ddns.*`** in `mv_driftwire_engine`, a module of its own with no caller
+  yet: `ddns::provider` with `ddns::duckdns` the only one, `ddns::keeper` (its thread, the schedule
+  of §4, `status()` for `host status`), `parse_subdomain` / `parse_token`, `save_token` /
+  `load_token` / `forget_token` (`ddns_token` in the secret store), and `check_name` (resolve the
+  name, compare it with what DuckDNS reported). The header shows the whole use for `host`.
+- **The HTTPS client** stays the command line's (`cli::https_get`); the engine cannot link it, so
+  `host` hands it in as a `fetch_fn` that keeps the status and body and drops the transport's
+  error text (it can hold the URL, and so the token). No new TLS dependency.
+- **DuckDNS keeps an old IPv6** until `clear=true`, which clears both records: an update without
+  IPv6 clears and sets the IPv4 again (one round trip with no record) when the answer shows one,
+  and also on the keeper's first update and until one without IPv6 has succeeded, so it does not
+  hang on whether DuckDNS's verbose answer reports a kept record (not checked against the real
+  service). One timeout covers the update's requests together.
+- **The IPv4 sent** is the router keeper's (slice 4, `address_changed`) when public; none, or a
+  carrier-NAT or private one, sends `ip=` empty and DuckDNS uses the address it sees, which it can
+  do over IPv4 only (a host that reaches DuckDNS over IPv6 needs slice 4's address; open).
+- **Hardening (Opus review, 2026-11-14):** a subdomain or token that `parse_*` would not give back
+  unchanged is refused before any request; `stop()` is safe twice and from any thread; the log has
+  a line for the first success, a change, a failure and a recovery, not every quiet 5 minutes.
+- **Tests** `"[ddns]"` (`tests/test_driftwire_ddns.cpp`), on a Mac: a stand-in DuckDNS on
+  `127.0.0.1` over plain HTTP (the real fetch takes https only, so the stand-in's fetch is the
+  test's own GET): OK, KO, an HTTP error, a timeout, nobody there, the stale-IPv6 clear, the
+  schedule with made-up times, the keeper's thread (start, period, change, IPv6 only when public,
+  backoff and recovery, stop while hanging), and no log line with the token, subdomain or an
+  address.
+- **Owed:** `host name duckdns` and the keeper in `host` (slice 2's session); the router keeper's
+  `address_changed` and `set_ipv6` calls (slice 4); the setup check's wording and retry (slice 5).
+  Not run: the real `https_get` against duckdns.org (by design, never in CI), Windows and Linux
+  builds of the module (portable C++ over `net::resolve`; CI's legs will build it).

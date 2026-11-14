@@ -1713,6 +1713,40 @@ for a service too old to wait at a relay.
   up a stop. The phone's side is in `"[mobile-link]"` (the race through the relay, the direct route
   winning, an old code, pairing never relayed). Never a public relay or the public DHT. The phone's
   Swift tests were not run with it (no iOS core build here); the Swift side compiles.
+### DuckDNS: a name for a home's changing address (self-hosting, 2026-11-14)
+
+For a computer that hosts the service itself ([plan](../plans/self-hosted.md) §4), `ddns.*` keeps
+`SUB.duckdns.org` on the home's public address so the phone's QR and the laptop's relay line can
+carry a name. Built as a module of its own (slice 3); `driftwire host` (slice 2) runs it, nothing
+else does (never the viewer, never the phone).
+
+- **One provider, DuckDNS** (`ddns::provider`, `ddns::duckdns`): one HTTPS GET,
+  `…/update?domains=SUB&token=TOKEN&ip=[V4]&ipv6=[V6]&verbose=true`, answered `OK` with the addresses
+  set and `UPDATED`/`NOCHANGE`, or `KO`. The HTTPS client is the command line's (`cli::https_get`),
+  handed in as a function that returns a status and a body only, never the transport's error text
+  (which can hold the URL). DuckDNS keeps an old `ipv6=` until `clear=true`, which clears both
+  records, so an update with no IPv6 clears and sets the IPv4 again when one is shown, on the
+  keeper's first update, and until an update without one has succeeded. A non-public IPv4 from
+  the router (carrier NAT) is not sent: DuckDNS then uses the address it sees.
+- **When** (`ddns::schedule`, `ddns::keeper`): at start, every 5 minutes, at once when told the
+  address moved (`address_changed`) or the IPv6 the port is open on changed (`set_ipv6`; only a
+  public v6 counts, else the record is cleared), never twice within a minute, and 1, 2, 4 … 30
+  minutes after failures in a row. `status()` is what `host status` shows: the last outcome and
+  time, the last success, failures, the next try, the addresses DuckDNS reported.
+- **What the person types**: the subdomain (`parse_subdomain`: one label of `[a-z0-9-]`, a
+  trailing `.duckdns.org` dropped, any other dot refused) and the token (`parse_token`: a UUID and
+  nothing else, so only hex and `-` reach the URL), typed or pasted, never an argument. The token
+  is kept in the secret store as `ddns_token`; the subdomain in the host's config.
+- **The check** (`check_name`): resolves the name and compares it with what the update reported,
+  for setup; a fresh record may take DuckDNS's 60 s TTL to show.
+- **Tested on loopback only** (`tests/test_driftwire_ddns.cpp`, `"[ddns]"`): a stand-in DuckDNS on
+  `127.0.0.1` over plain HTTP (the real fetch takes https only) answers OK, KO, an HTTP error, a
+  hang past the timeout and nobody there; the stale-IPv6 clear; the schedule with made-up times;
+  the keeper's thread updating at start, on its period, at once on a change, backing off and
+  recovering, and stopping while a request hangs; no log line holds the token, the subdomain or an
+  address. Never the real duckdns.org. Not run: the real `https_get` against DuckDNS, Windows and
+  Linux.
+
 ## The Tunnel (2026-11-12)
 
 The owner's ask: on a public network that filters sites (and blocks the common VPNs), reach the
@@ -2088,6 +2122,10 @@ second while bytes move; those posts update chrome and never present the canvas.
   `latest.json` from the Pages site: no cookie, identifier, version or anything about a file; the
   site sees the address and the time. On by default (the owner's call), off with `/updates off`
   or `DRIFTWIRE_NO_UPDATE_CHECK`; never in the add-on, which the app's updater updates.
+- `driftwire host`'s DuckDNS name (opt-in, [DuckDNS](#duckdns-a-name-for-a-homes-changing-address-self-hosting-2026-11-14)):
+  DuckDNS learns the home's public address and that the name is in use, which is the point of it;
+  nothing about files. The token is in the secret store and never in a log line, a status or an
+  argument; log lines carry no address or name either.
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
   code. It is shown by the OS on this machine only; nothing about it leaves the machine. At most
   three a minute from one source (#502).
@@ -2177,6 +2215,7 @@ protocol has no DHT.
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Phone access (the app's, `src/phone`) | `phone/desk.*` (claim, devices, codes, nearby, the route), `wire/advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
 | The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
+| Self-hosting's DuckDNS keeper (2026-11-14) | `ddns.*`; tests `tests/test_driftwire_ddns.cpp` (`"[ddns]"`) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
 | Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_serve.cpp` (the NAS service over `::1`: the verify line as far as loopback goes), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |

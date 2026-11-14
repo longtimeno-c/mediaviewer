@@ -177,8 +177,9 @@ class tcp_rendezvous {
 // port the OS picks; `loopback_only`: 127.0.0.1 (the tests).
 [[nodiscard]] result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only = false);
 
-// A name to addresses (the DHT's bootstrap routers only; nothing else in
-// Driftwire resolves a name).
+// A name to addresses: the DHT's bootstrap routers, a relay server the person
+// typed, and self-hosting's DuckDNS check (ddns.h); nothing else in Driftwire
+// resolves a name.
 [[nodiscard]] std::vector<address> resolve(const std::string& name);
 
 // The discovery socket: UDP on `port`, joined to kMulticastGroup, sharing the
