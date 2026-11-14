@@ -1225,7 +1225,7 @@ void open_file_dialog(app_state* app, HWND hwnd) {
   ofn.hwndOwner = hwnd;
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrFilter = L"Photos and video\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.ts\0All files\0*.*\0";
+  ofn.lpstrFilter = L"Photos and video\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.ts;*.mts;*.m2ts;*.mpg;*.mpeg\0All files\0*.*\0";
   ofn.nFilterIndex = 1;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
   if (::GetOpenFileNameW(&ofn)) open_path(app, file);

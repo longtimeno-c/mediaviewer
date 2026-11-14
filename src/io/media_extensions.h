@@ -47,7 +47,8 @@ inline constexpr media_extension kMediaExtensions[] = {
 
     {".mp4", media_kind::video},   {".mov", media_kind::video},  {".mkv", media_kind::video},
     {".webm", media_kind::video},  {".avi", media_kind::video},  {".ts", media_kind::video},
-    {".m4v", media_kind::video},
+    {".m4v", media_kind::video},   {".mts", media_kind::video},  {".m2ts", media_kind::video},
+    {".mpg", media_kind::video},   {".mpeg", media_kind::video},
 
     {".mp3", media_kind::audio},   {".m4a", media_kind::audio},  {".m4p", media_kind::audio},
 
@@ -106,7 +107,9 @@ inline constexpr std::size_t kNoMediaExtension = sizeof(kMediaExtensions) / size
 }
 
 static_assert(is_listed_extension(".JPG") && is_media_extension(".Cr3", media_kind::raw) &&
-              is_media_extension(".mov", media_kind::video) && !is_listed_extension(".jxl") &&
+              is_media_extension(".mov", media_kind::video) &&
+              is_media_extension(".MTS", media_kind::video) &&
+              is_media_extension(".mpg", media_kind::video) && !is_listed_extension(".jxl") &&
               !is_listed_extension(".") && !is_listed_extension(""));
 
 }  // namespace mv::io

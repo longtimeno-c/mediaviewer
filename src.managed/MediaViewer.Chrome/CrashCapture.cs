@@ -31,7 +31,7 @@ internal static class CrashCapture
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static readonly Regex MediaName = new(
-        @"[^\\/:*?""<>|\r\n\s]+\.(jpe?g|jfif|png|bmp|gif|tiff?|webp|hei[cf]|avif|ico|dng|cr[23w]|nef|nrw|arw|sr[f2]|raf|orf|rw2|pef|srw|x3f|mp4|m4v|mov|mkv|webm|avi|m?ts|m2ts|xmp|aae)\b",
+        @"[^\\/:*?""<>|\r\n\s]+\.(jpe?g|jfif|png|bmp|gif|tiff?|webp|hei[cf]|avif|ico|dng|cr[23w]|nef|nrw|arw|sr[f2]|raf|orf|rw2|pef|srw|x3f|mp4|m4v|mov|mkv|webm|avi|m?ts|m2ts|mpe?g|xmp|aae)\b",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static void Install()

@@ -93,6 +93,32 @@ TEST_CASE("MPEG-TS needs the 188-byte cadence, not one lucky byte", "[probe]") {
   REQUIRE(probe(ts(4, /*corrupt_cadence=*/true)) == container::unknown);
 }
 
+TEST_CASE("AVCHD .MTS/.M2TS: 192-byte packets behind a 4-byte timecode", "[probe]") {
+  // A camcorder's 00000.MTS. The 188-byte check alone never sees its sync
+  // bytes, so the clip used to probe as unknown.
+  std::vector<std::uint8_t> m2ts(192 * 5, 0x11);
+  for (std::size_t i = 0; i < 5; ++i) m2ts[i * 192 + 4] = 0x47;
+  REQUIRE(probe(m2ts) == container::mpeg_ts);
+
+  m2ts[192 * 2 + 4] = 0x00;  // one packet off cadence
+  REQUIRE(probe(m2ts) == container::unknown);
+}
+
+TEST_CASE("MPEG-1 and MPEG-2 program streams (.mpg) are recognised", "[probe]") {
+  // Pack header 00 00 01 BA; the next byte's leading bits name the version.
+  REQUIRE(probe(bytes({0x00, 0x00, 0x01, 0xBA, 0x44, 0x00, 0x04, 0x00})) == container::mpeg_ps);
+  REQUIRE(probe(bytes({0x00, 0x00, 0x01, 0xBA, 0x21, 0x00, 0x01, 0x00})) == container::mpeg_ps);
+  REQUIRE(is_video(container::mpeg_ps));
+  REQUIRE_FALSE(is_audio(container::mpeg_ps));
+}
+
+TEST_CASE("a stray pack start code without its marker bits is not a program stream",
+          "[probe]") {
+  REQUIRE(probe(bytes({0x00, 0x00, 0x01, 0xBA, 0x00, 0x00, 0x00, 0x00})) == container::unknown);
+  // Another start code (an MPEG video sequence header) is not a pack header.
+  REQUIRE(probe(bytes({0x00, 0x00, 0x01, 0xB3, 0x44, 0x00, 0x04, 0x00})) == container::unknown);
+}
+
 TEST_CASE("a single 0x47 byte is not a transport stream", "[probe]") {
   auto lucky = bytes({0x47, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB});
   REQUIRE(probe(lucky) == container::unknown);
@@ -131,7 +157,7 @@ TEST_CASE("a truncated or empty file is not video and does not read past the end
 
 TEST_CASE("every recognised container reports as video and has a name", "[probe]") {
   for (auto c : {container::mp4, container::quicktime, container::matroska,
-                 container::webm, container::avi, container::mpeg_ts}) {
+                 container::webm, container::avi, container::mpeg_ts, container::mpeg_ps}) {
     REQUIRE(is_video(c));
     REQUIRE(container_name(c) != nullptr);
     REQUIRE(std::strlen(container_name(c)) > 0);
