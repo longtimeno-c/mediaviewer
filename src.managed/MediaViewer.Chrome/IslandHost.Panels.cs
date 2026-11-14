@@ -406,6 +406,7 @@ public static partial class IslandHost
         _metaLast = "";
         _metaContent = null;
         _metaSlots = null;
+        _metaSlotsHost = null;
         _metaTabs = null;
         _metaTabHost = null;
         _metaTabMark = null;
@@ -472,6 +473,7 @@ public static partial class IslandHost
         // coordinates and map), placed by each tab's builder as the last items of its
         // scrolling content (WithSlotSections); shown, never collapsed.
         _metaSlots = new StackPanel();
+        _metaSlotsHost = null;
         // A wider or narrower pane: the sections are asked again at the new width
         // (AskSlotInfo keys on width, so a height change asks nothing).
         _metaSlots.SizeChanged += (_, _) => AskSlotInfo();
@@ -1675,8 +1677,9 @@ public static partial class IslandHost
         StackPanel? slots = _metaSlots;
         if (slots is not null)
         {
-            if (slots.Parent is Panel old) old.Children.Remove(slots);
+            _metaSlotsHost?.Children.Remove(slots);
             outer.Children.Add(slots);
+            _metaSlotsHost = outer;
         }
         return outer;
     }
