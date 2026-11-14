@@ -86,7 +86,12 @@ internal sealed class PersonSheet : Window
     private int _loadGeneration;
     private bool _loading = true;
     private bool _refining;
-    private bool _closed;
+    // Not showing: hidden between people, or closed for good. Answers that land
+    // while it is set are dropped.
+    private bool _closed = true;
+    // Closed for good (the pack is going, or Settings built a newer panel).
+    private bool _destroyed;
+    private bool _placed;
 
     internal PersonSheet(AiChrome chrome, PeopleGrid grid, PersonVm person)
     {
@@ -107,7 +112,21 @@ internal sealed class PersonSheet : Window
         }
         AppWindow.IsShownInSwitchers = false;
         Native.Adopt(WinRT.Interop.WindowNative.GetWindowHandle(this), chrome.Host.MainWindow);
-        Closed += (_, _) => _closed = true;
+        // One window for every person, hidden between them, never closed and made
+        // again: closing one sheet and opening the next in the same click, with the
+        // closed one's face crops still decoding, fail-fast the host (E_INVALIDARG
+        // from a queued XAML callback) on the second person's ⋯.
+        AppWindow.Closing += (_, e) =>
+        {
+            if (_destroyed) return;
+            e.Cancel = true;
+            Dismiss();
+        };
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            _destroyed = true;
+        };
 
         var root = new Grid { Padding = new Thickness(20), RowSpacing = 10 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                      // name
@@ -129,7 +148,7 @@ internal sealed class PersonSheet : Window
         Button photos = _look.Button("Show photos", () =>
         {
             PersonVm who = _person;
-            Close();
+            Dismiss();
             _grid.ShowPhotos(who);
         });
         Grid.SetColumn(photos, 1);
@@ -313,7 +332,7 @@ internal sealed class PersonSheet : Window
         refineState.Children.Add(_refineNote);
         Grid.SetColumn(refineState, 1);
         foot.Children.Add(refineState);
-        Button done = _look.Button("Done", Close, accent: true);
+        Button done = _look.Button("Done", Dismiss, accent: true);
         Grid.SetColumn(done, 2);
         foot.Children.Add(done);
         Grid.SetRow(foot, 5);
@@ -348,11 +367,74 @@ internal sealed class PersonSheet : Window
         ItemsSource = items,
     };
 
-    internal void Present()
+    /// <summary>Shows <paramref name="person"/>'s faces: the same window, retargeted when it showed someone else.</summary>
+    internal void Present(PersonVm person)
     {
-        AppWindow.MoveAndResize(Native.CentreOver(_chrome.Host.MainWindow, 720, 620));
+        if (_destroyed) return;
+        bool wasShown = !_closed;
+        if (person.Id != _person.Id || !wasShown) Retarget(person);
+        _closed = false;
+        if (!wasShown || !_placed)
+        {
+            AppWindow.MoveAndResize(Native.CentreOver(_chrome.Host.MainWindow, 720, 620));
+            _placed = true;
+        }
+        AppWindow.Show();
         Activate();
         Load();
+    }
+
+    /// <summary>Done, Esc, the title bar's ✕: the sheet steps aside, kept for the next person.</summary>
+    internal void Dismiss()
+    {
+        if (_closed || _destroyed) return;
+        _closed = true;
+        _preview.Hide();
+        AppWindow.Hide();
+    }
+
+    /// <summary>The pack is going, or Settings built a newer panel: closed for good.</summary>
+    internal void Destroy()
+    {
+        if (_destroyed) return;
+        _destroyed = true;
+        _closed = true;
+        try { Close(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+    }
+
+    // A clean sheet for another person: nothing of the last one's faces, selection,
+    // status, Undo or Refine look carries over; answers still in flight for them
+    // are superseded (_loadGeneration, _action).
+    private void Retarget(PersonVm person)
+    {
+        _person = person;
+        ++_loadGeneration;
+        ++_action;
+        _all = new List<ReviewFace>();
+        _checkItems.Clear();
+        _otherItems.Clear();
+        _selection.Clear();
+        _cursor = -1;
+        _loading = true;
+        _undo = null;
+        SetStatus("", null);
+        _refineNote.Text = "";
+        _suggest.Children.Clear();
+        _suggest.Visibility = Visibility.Collapsed;
+        if (_looking)
+        {
+            _looking = false;
+            _refineLook.Visibility = Visibility.Collapsed;
+            _refineLookFaces.ItemsSource = null;
+            _focusHost.Visibility = Visibility.Visible;
+            _actions.Visibility = Visibility.Visible;
+        }
+        _preview.Hide();
+        _title.Text = person.Label;
+        Title = person.Label;
+        UpdateGroups();
+        UpdateButtons();
     }
 
     /// <summary>The grid read the people again: the title and the merge menu follow.</summary>
@@ -363,7 +445,7 @@ internal sealed class PersonSheet : Window
         if (now is null)
         {
             // Merged away (or gone): nothing left to correct here.
-            Close();
+            Dismiss();
             return;
         }
         bool more = now.Faces != _person.Faces;
@@ -400,7 +482,12 @@ internal sealed class PersonSheet : Window
                 _selection.IntersectWith(_all.Select(f => f.Face));
                 UpdateGroups();
                 UpdateButtons();
-                if (FocusManager.GetFocusedElement(Content.XamlRoot) is not (ButtonBase or FakeInput)) _focusHost.Focus(FocusState.Programmatic);
+                // No XamlRoot yet (or any more): GetFocusedElement(null) throws, and a throw
+                // in a queued callback fail-fasts the host.
+                if (Content.XamlRoot is XamlRoot xr && FocusManager.GetFocusedElement(xr) is not (ButtonBase or FakeInput))
+                {
+                    _focusHost.Focus(FocusState.Programmatic);
+                }
                 LoadSuggestions();
             });
         });
@@ -1029,7 +1116,7 @@ internal sealed class PersonSheet : Window
             item.Click += (_, _) =>
             {
                 _grid.Merge(into, new[] { from });
-                Close();
+                Dismiss();
             };
             menu.Items.Add(item);
         }
@@ -1092,13 +1179,13 @@ internal sealed class PersonSheet : Window
                 e.Handled = true;
                 break;
             case VirtualKey.Escape:
-                Close();
+                Dismiss();
                 e.Handled = true;
                 break;
             // Done is the default button, as on the Mac (a focused button keeps its own
             // Enter), but never while a face is focused: Enter there is not "close".
             case VirtualKey.Enter when focused is not ButtonBase && !(ReferenceEquals(focused, _focusHost) && n > 0):
-                Close();
+                Dismiss();
                 e.Handled = true;
                 break;
         }

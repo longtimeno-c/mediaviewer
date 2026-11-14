@@ -1046,7 +1046,7 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   if (dir.empty()) return;
   const std::string select = utf8_from_wide(wide_select);
   if (mv::remote::is_key(dir)) {
-    // 0.43 (docs/plans/desktop-client.md): another computer's folder is a list
+    // 0.44 (docs/plans/desktop-client.md): another computer's folder is a list
     // from its server. No siblings or trail (nothing on this disk to walk);
     // the folder tree keeps its pinned row lit.
     app->reveal_child.clear();
@@ -1259,7 +1259,7 @@ void open_file_dialog(app_state* app, HWND hwnd) {
   ofn.hwndOwner = hwnd;
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrFilter = L"Photos and video\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.ts\0All files\0*.*\0";
+  ofn.lpstrFilter = L"Photos and video\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.ts;*.mts;*.m2ts;*.mpg;*.mpeg\0All files\0*.*\0";
   ofn.nFilterIndex = 1;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
   if (::GetOpenFileNameW(&ofn)) open_path(app, file);

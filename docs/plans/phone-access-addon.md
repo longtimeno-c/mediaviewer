@@ -60,7 +60,7 @@ Both shells set the provider when the pack attaches as the writer and clear it b
 goes (`src/addon/catalogue_port.*`, where `phone::set_app_source` was): clearing waits out a call
 in flight, so the pack can unload after it.
 
-**C ABI 0.42:** `mv_phone_request`, `mv_phone_state_json`, `mv_phone_resume`, `mv_phone_stop` and
+**C ABI 0.43:** `mv_phone_request`, `mv_phone_state_json`, `mv_phone_resume`, `mv_phone_stop` and
 `MV_PHONE_SECONDARY` go; the Mac bridge's `mv_chrome_phone_*` go. Both chromes reach the add-on
 through the slots ABI they already use.
 

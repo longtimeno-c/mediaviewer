@@ -471,7 +471,10 @@ agent. The host table (`mediaviewer_addon.h`, append-only, every layout served) 
 
 - **OS reader** (`text_reader.h`): Vision `VNRecognizeTextRequest` (accurate) on the Mac,
   `Windows.Media.Ocr` (profile languages, C++/WinRT) on Windows. No reader: the track is off.
-- **Photos** (`track::text`): 2,048 px decode, four a claim; one `cues` row, kind 3 (`picture`),
+- **Read with the picture** (2026-11-14): a photo still owed its text is decoded once at 2,048 px
+  in the picture pass, read, then box-fitted (`fit_long_edge`) to that pass's edge for CLIP and
+  People: one read per photo, not one per pass (a hard disk, not the GPU, set the pace).
+- **Photos** (`track::text`), for what the picture pass did not read: 2,048 px decode, four a claim; one `cues` row, kind 3 (`picture`),
   `start_ms` −1, lines joined by spaces, ≤ 4,000 bytes; spec `ocr/vision-accurate/1` /
   `ocr/windows-media/1`.
 - **Clip moments:** after the clip's picture pass, spec + `/moments`; each stored moment

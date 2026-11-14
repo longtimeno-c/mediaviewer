@@ -303,7 +303,8 @@ struct mv_session {
     bool loaded = false;
     bool photos_inside = false;
     bool search_incomplete = false;
-    std::string cover_thumb;
+    // Up to io::kFolderCovers JPEG-512 paths, the tile's big photo first.
+    std::vector<std::string> cover_thumbs;
   };
   std::vector<folder_card> folder_subdirs;
   std::string folder_dir;
@@ -870,7 +871,7 @@ void submit_thumb_at(mv_session* session, uint32_t index) {
         // it never touches the D3D11VA session the playing clip is using.
         std::vector<std::uint8_t> jpeg_bytes;
         if (mv::remote::is_key(item.path)) {
-          // 0.43: another computer's file: its tile (whole for a small still,
+          // 0.44: another computer's file: its tile (whole for a small still,
           // its head for a large one, a clip's poster by range reads).
           auto tile = mv::abi::remote_source::tile(item.path, &ctx);
           if (!tile) return tile.error();
@@ -1145,7 +1146,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;
         }
-        // 0.43 (docs/plans/desktop-client.md): another computer's file. Its
+        // 0.44 (docs/plans/desktop-client.md): another computer's file. Its
         // tile first, on screen at once (rule 3 over the network), then its
         // original fetched into the cache; everything below reads that file.
         const std::string* media = &path;
@@ -1363,7 +1364,7 @@ void refresh_subdirs(mv_session* session) {
         card.subdir_count = old.subdir_count;
         card.requested = old.requested;
         card.loaded = old.loaded;
-        card.cover_thumb = old.cover_thumb;
+        card.cover_thumbs = old.cover_thumbs;
         break;
       }
     }
@@ -1424,7 +1425,7 @@ void submit_folder_summary(mv_session* session, uint32_t index) {
   const auto correlation = mv::abi::current_correlation_id();
   (void)session->jobs.submit_at(
       mv::background_generation,
-      [session, path, folder_gen](const mv::job_context& ctx) -> status {
+      [session, path, folder_gen, correlation, index](const mv::job_context& ctx) -> status {
         const auto stale = [&] {
           return session->folder_generation.load(std::memory_order_relaxed) != folder_gen;
         };
@@ -1444,23 +1445,40 @@ void submit_folder_summary(mv_session* session, uint32_t index) {
           return summary.error();
         }
         const auto value = std::move(summary).value();
-        std::string cover_thumb;
-        if (value.has_cover) {
-          auto thumb = cached_thumb_path(session, value.cover.path_utf8, value.cover.mtime_unix,
-                                         value.cover.size, ctx, folder_gen);
-          if (thumb) cover_thumb = std::move(thumb).value();
+        // The big photo publishes as soon as it exists (the tile's first pixel
+        // is never behind the small ones); the rest follow, one completion more.
+        const auto publish = [&](std::vector<std::string> thumbs) {
+          std::lock_guard lock(session->folder_mutex);
+          for (auto& card : session->folder_subdirs) {
+            if (card.path != path) continue;
+            card.media_count = value.media_count;
+            card.subdir_count = value.subdir_count;
+            card.photos_inside = value.photos_inside;
+            card.search_incomplete = value.search_incomplete;
+            card.loaded = true;
+            card.cover_thumbs = std::move(thumbs);
+            break;
+          }
+        };
+        std::vector<std::string> thumbs;
+        for (std::size_t i = 0; i < value.covers.size(); ++i) {
+          const auto& cover = value.covers[i];
+          auto thumb = cached_thumb_path(session, cover.path_utf8, cover.mtime_unix, cover.size, ctx,
+                                         folder_gen);
+          if (!thumb && thumb.error() == status::cancelled) break;
+          if (thumb) thumbs.push_back(std::move(thumb).value());
+          if (i == 0 && thumbs.size() == 1 && value.covers.size() > 1) {
+            publish(thumbs);
+            mv_completion early{};
+            early.kind = MV_COMPLETION_FOLDER_SUMMARY;
+            early.status = static_cast<uint32_t>(status::ok);
+            early.correlation_id = correlation;
+            early.generation = folder_gen;
+            early.payload = static_cast<int64_t>(index);
+            session->push_completion(early);
+          }
         }
-        std::lock_guard lock(session->folder_mutex);
-        for (auto& card : session->folder_subdirs) {
-          if (card.path != path) continue;
-          card.media_count = value.media_count;
-          card.subdir_count = value.subdir_count;
-          card.photos_inside = value.photos_inside;
-          card.search_incomplete = value.search_incomplete;
-          card.loaded = true;
-          card.cover_thumb = std::move(cover_thumb);
-          break;
-        }
+        publish(std::move(thumbs));
         return status::ok;
       },
       [session, correlation, index, folder_gen](mv::job_id id, mv::generation, status result) {
@@ -1823,6 +1841,7 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     if (i != selected) submit_thumb_at(session, i);
   }
   bool shown_early = false;
+  bool loading = false;
   const mv::generation gen = session->jobs.current_generation();
   if (!selected_path.empty()) {
     // A file appearing beside the current one is not a reason to decode it
@@ -1831,10 +1850,15 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     if (!(changed && selected_path == previous_path)) {
       shown_early = !changed && full_decode_shown(session, selected_path);
       if (!shown_early) submit_decode_to_lru(session, selected_path, gen);
+      loading = true;
     }
     submit_prefetch(session, selected, gen);
   }
-  push_folder_selected(session, selected);
+  // The host reads FOLDER_SELECTED as "loading" until an IMAGE/VIDEO_OPENED.
+  // A folder of only subfolders, or a watcher refresh that keeps the item on
+  // screen, opens nothing, so saying it left the pulse running for good
+  // (2026-11-14). The reload's item flags carry the selection either way.
+  if (loading) push_folder_selected(session, selected);
   // After the selection, which the host reads as "loading": the early decode
   // reported its image before there was a listing to select it in.
   if (shown_early) push_image_opened(session, mv::abi::current_correlation_id(), gen, status::ok);
@@ -1857,7 +1881,7 @@ void on_folder_watch(void* user) {
   });
 }
 
-// 0.43 (docs/plans/desktop-client.md): a remote folder opens as a list (no
+// 0.44 (docs/plans/desktop-client.md): a remote folder opens as a list (no
 // watcher, no stat): its files from the server, named and stamped by it.
 status open_remote_folder(mv_session* session, std::string key, uint64_t* out_job_id) {
   session->watcher.stop();
@@ -1951,7 +1975,7 @@ mv_status MV_CALL mv_session_create(const mv_session_config* config, mv_session_
     if (etw) mv::trace::provider_register();
 
     auto session = std::make_unique<mv_session>();
-    // 0.43: the remote folders' library loads off this thread (servers.json, DPAPI).
+    // 0.44: the remote folders' library loads off this thread (servers.json, DPAPI).
     mv::abi::remote_source::start();
     // #291: the first image opened starts the folder's tag pass, on a worker
     // (push_completion may run under another lock; the pass takes folder_mutex).
@@ -2727,7 +2751,7 @@ mv_status MV_CALL mv_thumb_cache_clear(mv_session_t session) {
     // chrome's next request regenerates them rather than loading nothing.
     std::lock_guard lock(session->folder_mutex);
     for (auto& item : session->folder_items) item.thumb_path.clear();
-    for (auto& card : session->folder_subdirs) card.cover_thumb.clear();
+    for (auto& card : session->folder_subdirs) card.cover_thumbs.clear();
     return status::ok;
   }));
 }
@@ -2760,7 +2784,7 @@ mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint3
     };
     std::string out;
     if (mv::remote::is_key(utf8_dir)) {
-      // 0.43: a remote folder's folders, from its server (a worker: the tree's own task).
+      // 0.44: a remote folder's folders, from its server (a worker: the tree's own task).
       auto listed = mv::abi::remote_source::list(utf8_dir);
       if (!listed) return listed.error();
       for (const auto& f : listed->folders) out += flat(f.name) + "\t" + f.key + "\n";
@@ -3176,9 +3200,10 @@ mv_status MV_CALL mv_folder_summary_at(mv_session_t session, uint32_t index,
     s.media_count = card.media_count;
     s.subdir_count = card.subdir_count;
     if (card.loaded) s.flags |= 1u;
-    if (!card.cover_thumb.empty()) s.flags |= 2u;
+    if (!card.cover_thumbs.empty()) s.flags |= 2u;
     if (card.photos_inside) s.flags |= 4u;
     if (card.search_incomplete) s.flags |= 8u;
+    s.cover_count = static_cast<uint32_t>(card.cover_thumbs.size());
     *out_summary = s;
     return status::ok;
   }));
@@ -3190,7 +3215,21 @@ mv_status MV_CALL mv_folder_summary_cover_thumb_path(mv_session_t session, uint3
     MV_REQUIRE(valid(session), "session must not be null");
     std::lock_guard lock(session->folder_mutex);
     MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
-    return copy_utf8(session->folder_subdirs[index].cover_thumb, utf8, cap, out_bytes);
+    const auto& thumbs = session->folder_subdirs[index].cover_thumbs;
+    return copy_utf8(thumbs.empty() ? std::string{} : thumbs.front(), utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_summary_cover_thumb_path_at(mv_session_t session, uint32_t index,
+                                                        uint32_t slot, char* utf8, uint32_t cap,
+                                                        uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_summary_cover_thumb_path_at", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
+    const auto& thumbs = session->folder_subdirs[index].cover_thumbs;
+    MV_REQUIRE(slot < thumbs.size(), "slot out of range");
+    return copy_utf8(thumbs[slot], utf8, cap, out_bytes);
   }));
 }
 

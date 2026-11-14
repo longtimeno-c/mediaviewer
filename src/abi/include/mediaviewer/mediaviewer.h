@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 43 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend; 0.40: docs/plans/driftwire-menu-and-tunnel.md kept menu rows (host table keep_menu, mv_slots_menu_action, MV_SLOT_EVENT_MENU); 0.41: Phone access in the app (mv_phone_*, docs/plans/phone-in-the-app.md); 0.42: Phone access as an add-on (mv_phone_* removed; host table catalogue_*; contribution API 15 secure text fields; docs/plans/phone-access-addon.md); 0.43: another computer's folders (mv_remote_*, docs/plans/desktop-client.md) */
+#define MV_ABI_VERSION_MINOR 44 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend; 0.40: docs/plans/driftwire-menu-and-tunnel.md kept menu rows (host table keep_menu, mv_slots_menu_action, MV_SLOT_EVENT_MENU); 0.41: Phone access in the app (mv_phone_*, docs/plans/phone-in-the-app.md); 0.42: folder tiles show three covers (mv_folder_summary.cover_count, mv_folder_summary_cover_thumb_path_at); 0.43: Phone access as an add-on (mv_phone_* removed, docs/plans/phone-access-addon.md); 0.44: another computer's folders (mv_remote_*, docs/plans/desktop-client.md) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -386,7 +386,8 @@ typedef struct mv_folder_summary {
   uint32_t subdir_count;   /* direct child folders */
   uint32_t flags;          /* bit 0 loaded, bit 1 has cover, bit 2 photos in a
                             * descendant, bit 3 bounded walk stopped early */
-  uint32_t reserved;
+  uint32_t cover_count;    /* 0.42: cover thumbs ready, 0..3, the big one first;
+                            * was reserved (0), so an older core reads as one */
 } mv_folder_summary;
 
 /* [any-thread][no-block] Last summary for this tile; zeros until loaded. */
@@ -395,6 +396,13 @@ MV_API mv_status MV_CALL mv_folder_summary_at(mv_session_t session, uint32_t ind
 MV_API mv_status MV_CALL mv_folder_summary_cover_thumb_path(mv_session_t session, uint32_t index,
                                                             char* utf8, uint32_t cap,
                                                             uint32_t* out_bytes);
+/* [any-thread][no-block] 0.42. Cover `slot` < cover_count: the tile shows one big
+ * photo and two small ones, spread across the folder (io/dir.h). The big one is
+ * published first; FOLDER_SUMMARY fires again when the small ones are in. */
+MV_API mv_status MV_CALL mv_folder_summary_cover_thumb_path_at(mv_session_t session,
+                                                               uint32_t index, uint32_t slot,
+                                                               char* utf8, uint32_t cap,
+                                                               uint32_t* out_bytes);
 
 /* [any-thread][no-block] Counts and a cover on a pool thread. Completion
  * FOLDER_SUMMARY, payload = index. A no-op if already loaded or out of range. */
@@ -463,7 +471,7 @@ MV_API mv_status MV_CALL mv_thumb_cache_sweep(mv_session_t session);
 MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
 
 /* 0.41 added mv_phone_request / _state_json / _resume / _stop (Phone access in
- * the app, docs/plans/phone-in-the-app.md); 0.42 removed them: Phone access is
+ * the app, docs/plans/phone-in-the-app.md); 0.43 removed them: Phone access is
  * an add-on (docs/plans/phone-access-addon.md), reached through mv_slots_* like
  * every add-on's screen, and Local search's catalogue reaches it through the
  * host table's catalogue_* rows. */
@@ -478,7 +486,7 @@ MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
 MV_API mv_status MV_CALL mv_host_tray_start(void);
 MV_API mv_status MV_CALL mv_host_tray_stop(void);
 
-/* 0.42 (docs/plans/desktop-client.md, #686). Another computer's folders: a
+/* 0.44 (docs/plans/desktop-client.md, #686). Another computer's folders: a
  * self-hosted computer or a Synology running driftwire, paired from its code
  * (no password) and pinned in the folder tree, read-only.
  *

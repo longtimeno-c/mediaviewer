@@ -412,6 +412,7 @@ mv_chrome_thumb_ready_fn g_thumb_ready_callback = nullptr;
 // columns). Main-thread only, like every other bridge call.
 int32_t g_gallery_columns = 1;
 mv_chrome_folder_summary_fn g_folder_summary_callback = nullptr;
+mv_chrome_folder_cover_fn g_folder_cover_callback = nullptr;
 }  // namespace
 
 // [any-thread] SwiftUI runs button actions on the main actor, so these run
@@ -1441,6 +1442,9 @@ extern "C" void mv_chrome_request_folder_summary(int32_t index) {
 }
 extern "C" void mv_chrome_set_folder_summary_callback(mv_chrome_folder_summary_fn callback) {
   g_folder_summary_callback = callback;
+}
+extern "C" void mv_chrome_set_folder_cover_callback(mv_chrome_folder_cover_fn callback) {
+  g_folder_cover_callback = callback;
 }
 extern "C" int32_t mv_chrome_crumb_count(void) {
   return g_chrome_app ? static_cast<int32_t>([g_chrome_app crumbCount]) : 0;
@@ -7043,11 +7047,29 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
         }
         const std::uint32_t media = summary.media_count;
         const std::uint32_t subs = summary.subdir_count;
-        folder->request_thumb(summary.cover.path_utf8, summary.cover.mtime_unix,
-                              summary.cover.size,
-                              [deliver, dir_path, media, subs, flags](std::string, std::string thumb) {
-                                deliver(dir_path, true, media, subs, flags, std::move(thumb));
-                              });
+        // The big photo first; the small ones are asked for only once it is
+        // delivered, so the tile's first pixel is never behind them, and the
+        // main queue keeps them in that order.
+        std::vector<mv::io::dir_entry> smalls;
+        for (std::size_t i = 1; i < summary.covers.size(); ++i) smalls.push_back(summary.covers[i]);
+        folder->request_thumb(
+            summary.cover.path_utf8, summary.cover.mtime_unix, summary.cover.size,
+            [folder, deliver, dir_path, media, subs, flags, smalls = std::move(smalls)](
+                std::string, std::string thumb) {
+              deliver(dir_path, true, media, subs, flags, std::move(thumb));
+              for (std::size_t i = 0; i < smalls.size(); ++i) {
+                const auto slot = static_cast<int32_t>(i + 1);
+                folder->request_thumb(
+                    smalls[i].path_utf8, smalls[i].mtime_unix, smalls[i].size,
+                    [dir_path, slot](std::string, std::string small) {
+                      if (small.empty()) return;
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        if (!g_folder_cover_callback) return;
+                        g_folder_cover_callback(dir_path.c_str(), slot, small.c_str());
+                      });
+                    });
+              }
+            });
       });
 }
 

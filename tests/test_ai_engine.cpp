@@ -4314,6 +4314,9 @@ TEST_CASE("words in a photo are found by quoted and plain words (#403)", "[ai][e
   CHECK(r.status().assets_failed == 0);
   CHECK(r.text_reads.load() == 3);       // each photo once
   CHECK(r.clip_text_reads.load() == 3);  // and the clip's three moments (red, green, blue)
+  // One read of each photo for its picture and its text (the picture pass
+  // reads the text too), not one per pass: a hard disk set the pace.
+  CHECK(r.stills_decoded.load() == 3);
   const int embedded = r.fast->images_embedded.load();
 
   const auto top = [&](const std::string& q) {

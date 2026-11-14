@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// 0.42: another computer's folders (mediaviewer.h, docs/plans/desktop-client.md):
+// 0.44: another computer's folders (mediaviewer.h, docs/plans/desktop-client.md):
 // the process's remote library for the Windows core, the tile makers wired to
 // the image pipeline and the poster, and the mv_remote_* calls the C# chrome
 // makes. Portable C++ (no Win32 here); only built into mediaviewer_core.

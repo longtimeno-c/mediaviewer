@@ -321,8 +321,9 @@ private struct FolderStrip: View {
   }
 }
 
-/// A child folder: its first photo as a cover (from the folder itself or, for a
-/// year of month folders, the first month that has one), name, and a count.
+/// A child folder: up to three photos as a cover, one big and two small (from
+/// the folder itself, spread across it, or for a year of month folders one from
+/// each of the first months that have one), name, and a count.
 private struct FolderTile: View {
   let index: Int
   let path: String
@@ -337,9 +338,7 @@ private struct FolderTile: View {
         .frame(width: size, height: size)
         .overlay {
           if let cover = card.cover {
-            Image(decorative: cover, scale: 1)
-              .resizable()
-              .aspectRatio(contentMode: .fill)
+            FolderMosaic(big: cover, smalls: card.smallCovers.compactMap { $0 }, size: size)
           } else {
             ZStack {
               Rectangle().fill(.quaternary)
@@ -380,6 +379,48 @@ private struct FolderTile: View {
       .frame(width: size)
     }
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
+  }
+}
+
+/// A folder tile's photos: one fills it; two split it in halves; three put the
+/// big one over two thirds and stack the small ones beside it, split by a
+/// hairline of the gallery behind (WinUI's LayoutFolderMosaic, the same gap).
+private struct FolderMosaic: View {
+  let big: CGImage
+  let smalls: [CGImage]
+  let size: CGFloat
+  private static let gap: CGFloat = 2
+
+  var body: some View {
+    let gap = Self.gap
+    switch smalls.count {
+    case 0:
+      cell(big, width: size, height: size)
+    case 1:
+      let half = (size - gap) / 2
+      HStack(spacing: gap) {
+        cell(big, width: half, height: size)
+        cell(smalls[0], width: half, height: size)
+      }
+    default:
+      let side = (size - gap) / 3
+      let row = (size - gap) / 2
+      HStack(spacing: gap) {
+        cell(big, width: size - gap - side, height: size)
+        VStack(spacing: gap) {
+          cell(smalls[0], width: side, height: row)
+          cell(smalls[1], width: side, height: row)
+        }
+      }
+    }
+  }
+
+  private func cell(_ image: CGImage, width: CGFloat, height: CGFloat) -> some View {
+    Image(decorative: image, scale: 1)
+      .resizable()
+      .aspectRatio(contentMode: .fill)
+      .frame(width: width, height: height)
+      .clipped()
   }
 }
 

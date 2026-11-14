@@ -19,7 +19,8 @@ needing Store codec packs for HEVC/AV1) would slot in behind the same interface.
 Containers are identified by magic bytes (`player::probe`,
 [`src/player/container_probe.h`](../../src/player/container_probe.h), first 1024 bytes):
 MP4 / QuickTime (ISO-BMFF), Matroska, WebM (EBML DocType), AVI (RIFF), MPEG-TS (0x47 on a
-188-byte cadence). Codecs: H.264, HEVC, VP9, AV1, MPEG-2; on the Mac also Apple ProRes
+188-byte cadence, or 192 bytes behind a 4-byte timecode for AVCHD .mts/.m2ts), MPEG
+program stream (.mpg/.mpeg, a `00 00 01 BA` pack header). Codecs: H.264, HEVC, VP9, AV1, MPEG-2; on the Mac also Apple ProRes
 (hardware decode only). `mv_probe_is_video` exposes the probe so the host routes image vs video
 without opening anything.
 

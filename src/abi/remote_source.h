@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// 0.42 (docs/plans/desktop-client.md): what the Windows core's session needs of
+// 0.44 (docs/plans/desktop-client.md): what the Windows core's session needs of
 // the remote folder (remote/library.h), set up once per process by remote_abi.cpp.
 // Every call that can block runs on a pool worker, never the UI or render thread.
 #pragma once

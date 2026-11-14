@@ -1227,7 +1227,7 @@ MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out
 /* Unloads if loaded, then removes every version; keep_data = 0 also deletes
  * the add-on's data (import.db) and first calls its MV_ADDON_FORGET_SYMBOL,
  * if it has one. Every removal but a reinstall first calls its
- * MV_ADDON_REMOVED_SYMBOL. keep_data = 2 (0.42): removed to install again at
+ * MV_ADDON_REMOVED_SYMBOL. keep_data = 2 (0.43): removed to install again at
  * once, its data kept and that call skipped. Locked files are removed at next
  * start. */
 MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);

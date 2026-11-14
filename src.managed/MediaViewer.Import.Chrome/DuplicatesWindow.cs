@@ -28,7 +28,7 @@ public sealed class DupFileVm : INotifyPropertyChanged
     };
     private static readonly HashSet<string> s_video = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts",
+        ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts", ".mpg", ".mpeg",
     };
 
     private string _state = "kept";

@@ -186,7 +186,7 @@ the service says.
   Bridge: `mv_chrome_remote_*`; `mv_chrome_remote_pair(code)` is the hook for the Phone access add-on.
 - **Windows**: `mv_folder_open` / `mv_list_subdirectories` take a folder key; the session's thumb job
   makes the tile, its decode job shows the tile then fetches the original (neighbours: stills up to
-  256 MiB), `mv_remote_*` (ABI 0.43) for the C# tree's rows and its paste-to-connect panel
+  256 MiB), `mv_remote_*` (ABI 0.44) for the C# tree's rows and its paste-to-connect panel
   (`IslandHost.Remote.cs`). Native `open_folder` skips siblings and the trail for a key.
 - **Measured** (Mac, Release, loopback, `mv_tests "[.desktop-client-perf]"`, 12 JPEGs 4032×3024,
   9.9 MiB each, three runs): list 5.0–6.9 ms; **remote first pixel (tile, cold) 79–88 ms**; remote

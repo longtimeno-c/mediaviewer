@@ -215,6 +215,14 @@ internal static partial class NativeMethods
                                                                         uint index, IntPtr utf8,
                                                                         uint cap, out uint outBytes);
 
+    // ABI 0.42: a folder tile's covers, slot < MvFolderSummary.CoverCount.
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_summary_cover_thumb_path_at(MvSessionHandle session,
+                                                                           uint index, uint slot,
+                                                                           IntPtr utf8, uint cap,
+                                                                           out uint outBytes);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_request_summary(MvSessionHandle session, uint index);

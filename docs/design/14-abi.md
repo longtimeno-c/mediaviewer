@@ -298,13 +298,13 @@ set; keymap packs native applies).
   command from the UI thread. Listener codes: 1 notice waiting, 2 an add-on started or stopped.
   `MV_SCRIPT_STORE` / `MV_SCRIPT_SPIN` are verify rigs, inert unless set. The Mac host drives
   `src/addon/script_host.h` directly.
-- **Phone access** is an add-on since 0.42 ([plan](../plans/phone-access-addon.md)): `mv_phone_*` and
+- **Phone access** is an add-on since 0.43 ([plan](../plans/phone-access-addon.md)): `mv_phone_*` and
   `MV_PHONE_SECONDARY` are gone (0.41 had them); its card is the `phone-access` add-on's settings
   screen through `mv_slots_*`. Host table `catalogue_publish` / `_cancel` / `_json` (after
   `thumbnail_make`) reach Local search's catalogue, `MV_ERR_NOT_FOUND` without the pack; the optional
   export `mv_addon_removed` runs on every Remove but a reinstall (`mv_addon_remove` keep_data 2).
   Contribution API 15: a `secure` text field, never a value in the tree.
-- **`mv_remote_*`** (0.43, [plan](../plans/desktop-client.md), #686): another computer's folders,
+- **`mv_remote_*`** (0.44, [plan](../plans/desktop-client.md), #686): another computer's folders,
   a host or a Synology paired from its code, as a pinned remote folder; read-only until the server
   grants "change". Listings and reads run on workers; the viewer opens a remote file as a list item.
 - **`mv_host_tray_start` / `_stop`**: the server's menu while `driftwire host` runs (the base app's

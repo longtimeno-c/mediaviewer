@@ -6,7 +6,7 @@ using System.Text;
 namespace MediaViewer.Interop;
 
 /// <summary>
-/// Another computer's folders (ABI 0.43, docs/plans/desktop-client.md): the paired
+/// Another computer's folders (ABI 0.44, docs/plans/desktop-client.md): the paired
 /// servers the folder tree pins, a pasted code's preview, pairing on a worker, and
 /// Forget. Every call is [no-block]; a server's folders are listed and opened through
 /// mv_list_subdirectories and the tree's open, as a disk folder is. Nothing here

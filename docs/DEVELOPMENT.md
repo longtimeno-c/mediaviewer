@@ -442,7 +442,7 @@ listings, tiles and fetches) over the phone's own link (`src/mobile/link.*`, sha
 `mv_mobile_route` OBJECT library in `cmake/remote.cmake`, so `libmv_mobile_link.a` keeps its contents for
 the iOS project). The Mac host is `main_mac.mm` (File → Connect to a Server…, `mv_chrome_remote_*`) with the
 rows in `FolderTreeView.swift`; Windows is the core's session (`abi/abi.cpp`, `abi/remote_abi.cpp`,
-`mv_remote_*`, ABI 0.42) with the rows in `IslandHost.Remote.cs`. Servers are in `servers.json`
+`mv_remote_*`, ABI 0.44) with the rows in `IslandHost.Remote.cs`. Servers are in `servers.json`
 (Mac `~/Library/Application Support/MediaViewer/Remote Folders`, Windows `%LocalAppData%\MediaViewer\remote`);
 their keys in the OS store ("MediaViewer Driftwire", `remote_<id>`); the cache in
 `~/Library/Caches/MediaViewer/Remote` / `%LocalAppData%\MediaViewer\remote-cache`.
@@ -821,7 +821,7 @@ Files added to or removed from the open folder show up without a restart.
 
 A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
-| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
+| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS/MTS/MPG) |
 | `Ctrl+Shift+O` | open a folder |
 | `Ctrl+E` | show the current file in Explorer, selected (`⌘E`: Finder; a Photos library item opens in Photos, selected). Open menu: **Show in Explorer** (Mac: **Show in Finder**, or **Open in Photos** while a Photos library item is current; `?` and Settings use the same words) |
 | Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac); pinned folders first (#617: right-click a welcome-card row to pin or unpin). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`). With OneDrive set up, a **OneDrive** row leads the card, above Recent folders, as iCloud Photos does on the Mac: it opens OneDrive's Pictures folder (OneDrive itself if there is none) |
