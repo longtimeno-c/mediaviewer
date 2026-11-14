@@ -474,6 +474,8 @@ bool ai_installed_ok(std::string* data_dir = nullptr) {
 // [main-thread] The chrome shuts down first: it closes the table and waits
 // (bounded) for the calls its detached tasks have inside the pack (a RAW
 // thumbnail, an eject), so nothing reaches the engine after the reset below.
+bool (*g_import_unload_hook)(double seconds) = nullptr;
+
 void unload_import() {
   mac_addons& s = state();
   if (s.chrome) {
@@ -1254,6 +1256,10 @@ void exit_guard() {
 }  // namespace
 
 void MvAddonsQuit() {
+  // A Photos backup holding Import's table is cancelled and its gate closed,
+  // without waiting (the main thread never waits on it at quit): a call still
+  // inside Import leaves the pack running for the exit, as the chrome's does.
+  const bool backup_idle = !g_import_unload_hook || g_import_unload_hook(0);
   mac_addons& s = state();
   g_quitting.store(true, std::memory_order_relaxed);
   MvSlotAddonsQuit();
@@ -1274,7 +1280,7 @@ void MvAddonsQuit() {
     }
   }
   s.chrome = nil;
-  if (import_idle) {
+  if (import_idle && backup_idle) {
     mv::addon::stop_for_exit(std::move(s.import));
   } else {
     mv::addon::abandon_for_exit(std::move(s.import));
@@ -1730,8 +1736,20 @@ extern "C" bool mv_addons_install(const char* staged_dir) {
 
 extern "C" bool mv_addons_load(void) { return load_import(); }
 
+const mv_import_api* MvAddonsImportTable() {
+  mac_addons& s = state();
+  if (!s.import) return nullptr;
+  return static_cast<const mv_import_api*>(s.import->query(MV_IMPORT_INTERFACE));
+}
+
+void MvAddonsSetImportUnloadHook(bool (*hook)(double seconds)) { g_import_unload_hook = hook; }
+
 extern "C" bool mv_addons_remove(bool keep_data) {
   if (state().reader) return false;  // the first window manages add-ons
+  // A Photos backup using Import's index is cancelled; its call into Import
+  // gets a short, bounded wait. Still inside after that: nothing is removed
+  // (the table must outlive the call), and Remove can be pressed again.
+  if (g_import_unload_hook && !g_import_unload_hook(2.0)) return false;
   unload_import();
   // Not under store_writes: this runs on the main thread, and an install in
   // flight holds that lock while it hashes a download.

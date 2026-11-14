@@ -67,6 +67,7 @@ struct ImportView: View {
     }
     .sheet(isPresented: $model.confirmingImport) { importConfirmationSheet }
     .background(DuplicatesSheetHost(model: model.duplicates))
+    .background(CheckLibrarySheetHost(model: model.check))
   }
 
   // MARK: first-use explainer (issue #41)
@@ -192,6 +193,7 @@ struct ImportView: View {
         Button("Past imports…") { showHistory = true }
         Button("Check a folder for damaged files…") { model.verifyFolder() }.disabled(model.copying)
         Button("Find duplicates…") { model.duplicates.choose() }
+        Button("Check a folder against the library…") { model.check.open(library: model.destinationPreview) }
         Divider()
         Button("About Import") { model.showExplainer() }
       } label: {

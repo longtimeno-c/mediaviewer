@@ -180,6 +180,48 @@ typedef struct mv_import_api {
    * MV_ERR_INVALID_ARG when the path is not in the job's groups;
    * MV_ERR_UNSUPPORTED_FORMAT when the host has no bin (can_trash false). */
   mv_status(MV_CALL* trash_duplicate)(void* ctx, uint64_t job_id, const char* path_utf8);
+
+  /* ---- check library (docs/plans/check-library.md) ---------------------- */
+  /* Present when struct_size covers them: an older Import has none, and a
+   * caller checks before it calls.
+   *
+   * [ui-thread][no-block] What a source already has in a library folder (and
+   * every folder under it), by content alone: size first, BLAKE3-256 only
+   * where a size matches, never the name. The library's hashes are kept in
+   * import.db's `library` table under the destination's volume key, so a
+   * second check reads no unchanged file. Background priority, always. Report
+   * only: nothing is copied, moved or deleted. Request:
+   *   {"destination", "scope":"destination"|"library",
+   *    "source_folder"?,              a folder the add-on walks and hashes
+   *    "source_sizes"?:[n],           or a host source's sizes (Photos)
+   *    "expected"?:[{"rel","size","hash"?}],  a host's record of what it put there
+   *    "history"?:bool}               in Past imports with a report (default true)
+   * Progress through progress(job): destination_count is the phase (0 walking,
+   * 1 hashing the library, 2 hashing the source), units_done the files walked,
+   * bytes_read / bytes_total the bytes hashed of those to hash.
+   * MV_ADDON_EVENT_LIBRARY_CHECKED; summary_json(job):
+   *   {"kind":"check","destination","reachable","walk_complete","cancelled",
+   *    "library_files","library_bytes","hashed","hashed_bytes","remembered","dropped",
+   *    "source_files","source_bytes","found_count","not_found_count","not_found_bytes",
+   *    "duplicate_groups","duplicate_files","wasted_bytes","deleted_count","moved_count",
+   *    "unreadable_count",
+   *    "found":[{"path","size","where":[path]}], "not_found":[path],
+   *    "matched_sizes":[n], "duplicates":[{"size","paths":[path]}],
+   *    "gone":[{"rel","moved_to"}], "unreadable":[path], "elapsed_ms"}.
+   * An unreachable destination ends INTERRUPTED with reachable false and
+   * nothing dropped from the index (an offline share says nothing). */
+  mv_status(MV_CALL* check_library)(void* ctx, const char* request_json, uint64_t* out_job_id);
+  /* [worker-thread] One file of a host source: {"destination","scope","size",
+   * "hash"?,"exclude"?} -> {"candidates":n,"paths":[path]}. Without a hash only
+   * the indexed files of that size in scope are counted (no I/O beyond
+   * import.db); with one, each match is confirmed where it is now (a stat, a
+   * re-read if it changed). Blocks for that I/O; never call it on the UI thread. */
+  mv_status(MV_CALL* library_find)(void* ctx, const char* request_json, char* out, uint32_t cap,
+                                   uint32_t* needed);
+  /* [worker-thread] A file a host tool just wrote and verified under a library
+   * folder joins the index: {"destination","path","size","mtime","hash"}. The
+   * file must be there now at that size and mtime (MV_ERR_INVALID_ARG if not). */
+  mv_status(MV_CALL* library_record)(void* ctx, const char* request_json);
 } mv_import_api;
 
 #ifdef __cplusplus
