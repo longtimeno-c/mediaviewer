@@ -33,6 +33,8 @@
 #include "codec/decode.h"
 #include "image/colour.h"
 #include "abi/guard.h"
+#include "abi/remote_source.h"
+#include "remote/key.h"
 #include "abi/native.h"
 #include "abi/video_session.h"
 #include "player/container_probe.h"
@@ -615,7 +617,11 @@ void publish_clip_placeholder(mv_session* session, const std::string& path, std:
   publish_locked(session, key_for(path), session->info, nullptr, std::move(gpu));
 }
 
-status open_video_worker(mv_session* session, const std::string& path, const mv::job_context& ctx) {
+// `media`: the file to play when it is not `path` itself (a remote folder's
+// clip, fetched into the cache: docs/plans/desktop-client.md). `path` stays
+// the item's key for the selection and the listing.
+status open_video_worker(mv_session* session, const std::string& path, const mv::job_context& ctx,
+                         const std::string* media = nullptr) {
   auto device = session->copy_device();
   if (!device) return status::device_lost;
   // Milestone H: a clip opened from search results lands paused on its moment
@@ -634,7 +640,7 @@ status open_video_worker(mv_session* session, const std::string& path, const mv:
     }
   }
   if (moment_ms >= 0) publish_clip_placeholder(session, path, moment_ms, item_mtime, item_size, ctx);
-  auto result = mv::player::open_media(path.c_str(), device.Get());
+  auto result = mv::player::open_media((media ? *media : path).c_str(), device.Get());
   if (!result) return result.error();
   auto* source = result.value();
   if (ctx.cancelled()) { mv::player::close_media(source); return status::cancelled; }
@@ -863,7 +869,16 @@ void submit_thumb_at(mv_session* session, uint32_t index) {
         // The poster frame is a one-shot software decode on this pool thread —
         // it never touches the D3D11VA session the playing clip is using.
         std::vector<std::uint8_t> jpeg_bytes;
-        if (video_path(item.path)) {
+        if (mv::remote::is_key(item.path)) {
+          // 0.42: another computer's file: its tile (whole for a small still,
+          // its head for a large one, a clip's poster by range reads).
+          auto tile = mv::abi::remote_source::tile(item.path, &ctx);
+          if (!tile) return tile.error();
+          if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+            return status::cancelled;
+          }
+          jpeg_bytes = std::move(tile).value();
+        } else if (video_path(item.path)) {
           auto poster = mv::player::poster_frame(item.path.c_str(), mv::image::kThumbLongEdge, &ctx);
           if (!poster) return poster.error();
           if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
@@ -1130,13 +1145,39 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;
         }
+        // 0.42 (docs/plans/desktop-client.md): another computer's file. Its
+        // tile first, on screen at once (rule 3 over the network), then its
+        // original fetched into the cache; everything below reads that file.
+        std::string media = path;
+        if (mv::remote::is_key(path)) {
+          if (path_is_selected(session, path)) {
+            if (auto tile = mv::abi::remote_source::cached_tile(path)) {
+              if (auto preview = mv::image::decode_first_pixel(*tile, &ctx)) {
+                if (auto dev = session->copy_device()) {
+                  if (auto up = mv::image::upload(dev.Get(), preview.value(), ctx.gen(), &ctx, 1)) {
+                    auto gpu = std::make_unique<mv::image::gpu_image>(std::move(up).value());
+                    gpu->quality = mv::image::gpu_quality::preview;
+                    if (path_is_selected(session, path)) {
+                      publish_ready(session, key_for(path), info_from(preview.value()), nullptr, std::move(gpu));
+                      push_image_opened(session, correlation, ctx.gen(), status::ok);
+                    }
+                  }
+                }
+              }
+            }
+          }
+          auto local = mv::abi::remote_source::fetch(path, &ctx);
+          if (!local) return local.error();
+          if (ctx.cancelled()) return status::cancelled;
+          media = std::move(local).value();
+        }
         if (video_path(path)) {
           if (!path_is_selected(session, path)) return status::ok;
-          const status opened = open_video_worker(session, path, ctx);
+          const status opened = open_video_worker(session, path, ctx, &media);
           if (opened == status::ok) ticket->shown.store(true, std::memory_order_relaxed);
           return opened;
         }
-        auto bytes = mv::io::read_all(path);
+        auto bytes = mv::io::read_all(media);
         if (!bytes) return bytes.error();
         if (ctx.cancelled()) return status::cancelled;
 
@@ -1833,6 +1874,8 @@ mv_status MV_CALL mv_session_create(const mv_session_config* config, mv_session_
     if (etw) mv::trace::provider_register();
 
     auto session = std::make_unique<mv_session>();
+    // 0.42: the remote folders' library loads off this thread (servers.json, DPAPI).
+    mv::abi::remote_source::start();
     // #291: the first image opened starts the folder's tag pass, on a worker
     // (push_completion may run under another lock; the pass takes folder_mutex).
     {
@@ -2135,6 +2178,67 @@ mv_status MV_CALL mv_session_image_info(mv_session_t session, mv_image_info* out
   }));
 }
 
+// 0.42 (docs/plans/desktop-client.md): a remote folder opens as a list (no
+// watcher, no stat): its files from the server, named and stamped by it.
+static status open_remote_folder(mv_session* session, std::string key, uint64_t* out_job_id) {
+  session->watcher.stop();
+  session->folder_generation.fetch_add(1, std::memory_order_relaxed);
+  (void)session->jobs.bump_generation();
+  {
+    std::lock_guard lock(session->folder_mutex);
+    session->folder_dir.clear();
+    session->folder_is_list = true;
+    session->folder_list_title.clear();
+    session->folder_list_moments.clear();
+    session->folder_select_path.clear();
+    session->renamed_from.clear();
+    session->renamed_to.clear();
+    session->folder_listing.clear();
+    session->folder_items.clear();
+    session->folder_subdirs.clear();
+    session->folder_selected = 0;
+  }
+  if (!session->thumbs.is_open()) {
+    if (auto cache = mv::io::thumb_cache_dir()) (void)session->thumbs.open(cache.value());
+  }
+  const auto correlation = mv::abi::current_correlation_id();
+  const mv::job_id id = session->jobs.submit_at(
+      mv::background_generation,
+      [session, key](const mv::job_context&) -> status {
+        auto listed = mv::abi::remote_source::list(key);
+        if (!listed) return listed.error();
+        {
+          std::lock_guard lock(session->folder_mutex);
+          session->folder_list_title = listed->title;
+        }
+        std::vector<mv::io::listed_item> items;
+        items.reserve(listed->files.size());
+        for (const auto& f : listed->files) {
+          mv::io::listed_item item;
+          item.primary.path_utf8 = f.key;
+          item.primary.name_utf8 = f.name;
+          item.primary.size = f.size;
+          item.primary.mtime_unix = f.mtime;
+          items.push_back(std::move(item));
+        }
+        apply_folder_list(session, std::move(items), false);
+        return status::ok;
+      },
+      [session, correlation](mv::job_id id, mv::generation gen, status result) {
+        if (result == status::ok) return;
+        mv_completion c{};
+        c.kind = MV_COMPLETION_FOLDER_READY;
+        c.status = static_cast<uint32_t>(result);
+        c.job_id = id;
+        c.correlation_id = correlation;
+        c.generation = gen;
+        session->push_completion(c);
+      });
+  if (id == mv::invalid_job) return status::internal;
+  if (out_job_id) *out_job_id = id;
+  return status::ok;
+}
+
 mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
                                  const char* utf8_select_path, uint64_t* out_job_id) {
   return static_cast<mv_status>(guard("mv_folder_open", [&]() -> status {
@@ -2143,6 +2247,7 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
 
     std::string dir(utf8_dir);
     std::string select = utf8_select_path ? std::string(utf8_select_path) : std::string{};
+    if (mv::remote::is_key(dir)) return open_remote_folder(session, std::move(dir), out_job_id);
     session->watcher.stop();
     session->folder_generation.fetch_add(1, std::memory_order_relaxed);
     {
@@ -2631,8 +2736,6 @@ mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint3
                                          uint32_t* out_bytes) {
   return static_cast<mv_status>(guard("mv_list_subdirectories", [&]() -> status {
     MV_REQUIRE(utf8_dir != nullptr && utf8_dir[0] != '\0', "utf8_dir must not be empty");
-    auto dirs = mv::io::list_subdirectories(utf8_dir);
-    if (!dirs) return dirs.error();
     const auto flat = [](std::string v) {
       for (char& c : v) {
         if (c == '\t' || c == '\n' || c == '\r') c = ' ';
@@ -2640,6 +2743,15 @@ mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint3
       return v;
     };
     std::string out;
+    if (mv::remote::is_key(utf8_dir)) {
+      // 0.42: a remote folder's folders, from its server (a worker: the tree's own task).
+      auto listed = mv::abi::remote_source::list(utf8_dir);
+      if (!listed) return listed.error();
+      for (const auto& f : listed->folders) out += flat(f.name) + "\t" + f.key + "\n";
+      return copy_utf8(out, utf8, cap, out_bytes);
+    }
+    auto dirs = mv::io::list_subdirectories(utf8_dir);
+    if (!dirs) return dirs.error();
     for (const auto& d : dirs.value()) out += flat(d.name_utf8) + "\t" + d.path_utf8 + "\n";
     return copy_utf8(out, utf8, cap, out_bytes);
   }));

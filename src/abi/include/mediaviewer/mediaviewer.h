@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 41 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend; 0.40: docs/plans/driftwire-menu-and-tunnel.md kept menu rows (host table keep_menu, mv_slots_menu_action, MV_SLOT_EVENT_MENU); 0.41: Phone access in the app (mv_phone_*, docs/plans/phone-in-the-app.md) */
+#define MV_ABI_VERSION_MINOR 42 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend; 0.40: docs/plans/driftwire-menu-and-tunnel.md kept menu rows (host table keep_menu, mv_slots_menu_action, MV_SLOT_EVENT_MENU); 0.41: Phone access in the app (mv_phone_*, docs/plans/phone-in-the-app.md); 0.42: another computer's folders (mv_remote_*, docs/plans/desktop-client.md) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -487,6 +487,36 @@ MV_API mv_status MV_CALL mv_phone_state_json(char* utf8, uint32_t cap, uint32_t*
 #define MV_PHONE_SECONDARY 1u
 MV_API mv_status MV_CALL mv_phone_resume(uint32_t flags);
 MV_API mv_status MV_CALL mv_phone_stop(void);
+
+/* 0.42 (docs/plans/desktop-client.md, #686). Another computer's folders: a
+ * self-hosted computer or a Synology running driftwire, paired from its code
+ * (no password) and pinned in the folder tree, read-only.
+ *
+ * A remote folder is a key, "remote:<server>/<root>/<rel>/", and its files
+ * "remote:<server>/<root>/<rel>". mv_list_subdirectories and mv_folder_open
+ * take a folder key as they take a path: the listing comes from the server
+ * (no stat), each item's thumbnail is its tile, and opening one shows its tile
+ * first, then its original once fetched into the cache (%LocalAppData%\
+ * MediaViewer\remote-cache). A server that does not answer lists the folder as
+ * it was last listed here.
+ *
+ * mv_remote_servers_json: [{"name","key","state"}], state one of unknown,
+ * online, unreachable, access_ended, wrong_service, too_old; never blocks.
+ * mv_remote_generation bumps when that changes.
+ * mv_remote_preview_json: what a pasted code says before it is used:
+ * {"name","fingerprint"} (compare it with the other computer's card), or
+ * {"error":"words to show"}; never blocks.
+ * mv_remote_pair_start: pairs on a worker; mv_remote_pair_state_json polls
+ * {"busy":bool,"ok":bool,"words":"..."} for the notice.
+ * mv_remote_forget: forgets a server here (keys, cache) on a worker; the
+ * server's owner removes this computer there.
+ * Buffer rules as mv_storage_report_json. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_remote_servers_json(char* utf8, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_generation(uint64_t* out_generation);
+MV_API mv_status MV_CALL mv_remote_preview_json(const char* code_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_pair_start(const char* code_utf8);
+MV_API mv_status MV_CALL mv_remote_pair_state_json(char* utf8, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_forget(const char* server_key_utf8);
 
 /* 0.19. Kinds the folder listing leaves out (Settings, "Show audio files" /
  * "Show documents"): MV_FOLDER_HIDE_AUDIO (MP3, M4A, M4P) and
