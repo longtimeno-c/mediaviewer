@@ -225,6 +225,10 @@ A screen is a **view tree**, a vocabulary both hosts render with their own contr
   list, table, button, toggle, choice, slider, number, text field, progress, separator, `surface`
   (pixels the add-on drew), and later `tiles`, `link` and looks; full list with APIs in the
   [PRs 58–59 notes](#implementation-notes-prs-58-59-2026-10-11).
+- **Secure text fields** (contribution API 15, the Phone access add-on): `"secure": true` draws
+  dots; the core never keeps the value in the tree (a posted tree may only give `""`; an event's
+  value goes to the add-on alone). The add-on renames the field once it has used or dropped what
+  was typed, so the host draws a new, empty one.
 - **State** lives in the add-on: it posts a tree, then diffs; the host applies them on the UI
   thread in one pass. Events post back to the add-on's worker.
 - **Keyboard-complete:** every control focusable and named; commands are table rows
