@@ -68,6 +68,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
   ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/mapping.cpp ${_S}/mapping.h
+  ${_S}/ddns.cpp ${_S}/ddns.h
   ${_S}/race.h
   ${_S}/internet.cpp ${_S}/internet.h
   ${_S}/bencode.cpp ${_S}/bencode.h
@@ -197,6 +198,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_known.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_ddns.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_relay.cpp"
