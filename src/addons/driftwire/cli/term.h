@@ -19,6 +19,8 @@
 //              console and the engine has stopped.
 #pragma once
 
+#include <functional>
+
 #include <memory>
 #include <string>
 #include <string_view>
@@ -57,6 +59,13 @@ class terminal : public output {
   // Ctrl+Z: hand the terminal back and stop until continued (console);
   // nothing where there is no job control.
   virtual void suspend_self() {}
+  // Runs `fn` with the terminal as a shell leaves it (lines typed and echoed,
+  // the session's /host setup asking its questions), then takes it back.
+  // False, `fn` not run, where there is no terminal to hand over (the tests').
+  virtual bool run_cooked(const std::function<void()>& fn) {
+    (void)fn;
+    return false;
+  }
 };
 
 class console final : public terminal {
@@ -93,6 +102,13 @@ class console final : public terminal {
   // erases its live region before and draws it again after. Windows has no
   // job control: nothing happens.
   void suspend_self() override;
+  bool run_cooked(const std::function<void()>& fn) override {
+    const bool was_raw = raw();
+    leave_raw();
+    fn();
+    if (was_raw) (void)enter_raw();
+    return true;
+  }
 
   [[nodiscard]] term_size size() const override;
   void wait(term_input& in, int timeout_ms) override;

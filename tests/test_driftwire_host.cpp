@@ -120,8 +120,8 @@ TEST_CASE("driftwire host: the arguments", "[host]") {
   CHECK_FALSE(parse({"host", "share"}).error.empty());
   CHECK_FALSE(parse({"host", "start-at-login"}).error.empty());
   CHECK_FALSE(parse({"host", "stay-awake", "maybe"}).error.empty());
-  CHECK_FALSE(parse({"host", "vpn", "on"}).error.empty());    // slice 7
-  CHECK_FALSE(parse({"host", "setup"}).error.empty());        // slice 5
+  CHECK(parse({"host", "vpn", "on"}).a.host == cli::host_action::vpn);  // slice 7 (more in [host-setup])
+  CHECK(parse({"host", "setup"}).a.host == cli::host_action::setup);    // slice 5
   CHECK_FALSE(parse({"host", "status", "--backup"}).error.empty());
   CHECK_FALSE(parse({"serve", "--label", "x"}).error.empty());
   CHECK_FALSE(parse({"host", "unshare", "A", "--label", "B"}).error.empty());

@@ -11,6 +11,14 @@
 #include "addons/driftwire/invite.h"
 #include "addons/driftwire/mapping.h"
 
+#include <deque>
+
+#include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/host_cmd.h"
+#include "addons/driftwire/cli/host_keepers.h"
+#include "addons/driftwire/cli/host_setup.h"
+#include "wire/serve.h"
+
 namespace mp = mv::driftwire::mapping;
 namespace hp = mv::driftwire::host_ports;
 
@@ -1122,4 +1130,173 @@ TEST_CASE("host ports: a new outside address is told at once", "[driftwire][host
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   std::lock_guard lock(seen_m);
   CHECK(told.size() == 1);  // carrier NAT's address is never told (a name must not point there)
+}
+
+// ---- the router keeper in the running host (docs/plans/self-hosted.md §5, slice 5) ---------------
+
+namespace {
+
+namespace cli = mv::driftwire::cli;
+
+std::string state_of(const cli::host_layout& l) {
+  std::ifstream f(fs::path(l.state), std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// A host folder sharing one folder, serve.json on port 0 (the test build).
+cli::host_layout host_sharing(const fs::path& root, std::uint16_t port = 0) {
+  fs::create_directories(root / "Photos");
+  const cli::host_layout l = cli::host_layout_of(utf8(root / "data"));
+  REQUIRE(cli::make_host_folders(l));
+  mv::driftwire::serve::config c;
+  c.port = port;
+  c.name = "Test PC";
+  mv::driftwire::serve::root_config r;
+  r.id = "a1a1a1a1a1a1a1a1";
+  r.label = "Photos";
+  r.path = utf8(root / "Photos");
+  c.roots.push_back(r);
+  write_text(fs::path(l.serve_config), mv::driftwire::serve::config_json(c));
+  return l;
+}
+
+cli::host_service_options host_on(const cli::host_layout& l, std::uint16_t router_port) {
+  cli::host_service_options o;
+  o.where = l;
+  o.loopback_only = true;
+  o.any_port = true;
+  o.config_every_ms = 100;
+  o.roots_every_ms = 100000;
+  o.retry_ms = 200;
+  o.power = false;
+  o.present = [](const mv::driftwire::serve::root_config&) { return true; };
+  o.locate = [](const mv::driftwire::serve::root_config& r) -> std::optional<std::string> { return r.path; };
+  o.keepers.router = [router_port] {
+    cli::router_keeper_config c;
+    c.ports = host_on_loopback(router_port);
+    c.on_loopback = true;
+    return cli::make_router_keeper(std::move(c));
+  };
+  return o;
+}
+
+}  // namespace
+
+TEST_CASE("host ports in the running host: the service's port, the relay's with the VPN on, gone on stop",
+          "[driftwire][host-setup][host-ports]") {
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> maps{0}, deletes{0};
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    if (deletes_pcp(req)) {
+      ++deletes;
+    } else if (req.size() >= 60) {
+      ++maps;
+    }
+    return pcp_answer(req, outside, 0);
+  });
+  scratch_dir s("host_router_keeper");
+  const cli::host_layout l = host_sharing(s.root());
+  std::string why;
+  auto host = cli::host_service::start(host_on(l, router.sock->port()), why);
+  REQUIRE(host);
+  REQUIRE(eventually([&] {
+    const std::string st = state_of(l);
+    return st.find("router      service ") != std::string::npos && st.find("open (PCP)") != std::string::npos &&
+           st.find("\"service_outside_port\":" + std::to_string(host->snapshot().service_port)) != std::string::npos;
+  }, 10));
+  CHECK(state_of(l).find("relay ") == std::string::npos);  // VPN off: the relay's port stays closed
+  CHECK(state_of(l).find("81.2.69") == std::string::npos);  // no address in the status (rule 6)
+
+  // The VPN on (another terminal's `host vpn on`): the relay's port asked for too.
+  cli::host_settings on;
+  on.vpn = true;
+  write_text(fs::path(l.settings), cli::host_settings_json(on));
+  REQUIRE(eventually([&] {
+    const std::string st = state_of(l);
+    return st.find("\"relay_outside_port\":") != std::string::npos && st.find(", relay ") != std::string::npos;
+  }, 10));
+  // `host status` shows the router's line.
+  {
+    std::string out;
+    {
+      const cli::print_capture cap(out);
+      const auto lock = mv::driftwire::net::try_lock_instance(l.lock);  // as the supervisor holds it
+      cli::args a;
+      a.cmd = cli::command::host;
+      a.host = cli::host_action::status;
+      a.data = utf8(s / "data");
+      CHECK(cli::run_host(a, true, "0.0.0") == 0);
+    }
+    CHECK(out.find("router      service ") != std::string::npos);
+    CHECK(out.find("VPN         on") != std::string::npos);
+  }
+  const int held = deletes.load();
+  host->stop();
+  CHECK(deletes.load() >= held + 2);  // both forwards removed on stop
+  CHECK(maps.load() >= 3);
+}
+
+TEST_CASE("host ports in the running host: a router silent at the start is asked again", "[driftwire][host-setup][host-ports]") {
+  // A start at login before the network is up: the router answers nothing, then it does.
+  const auto outside = addr("81.2.69.160");
+  std::atomic<bool> answering{false};
+  std::atomic<int> deletes{0};
+  udp_router router([&](std::span<const std::uint8_t> req) -> std::vector<std::uint8_t> {
+    if (!answering.load()) return {};
+    if (deletes_pcp(req)) ++deletes;
+    return pcp_answer(req, outside, 0);
+  });
+  scratch_dir s("host_router_retry");
+  const cli::host_layout l = host_sharing(s.root());
+  auto o = host_on(l, router.sock->port());
+  o.keepers.router = [port = router.sock->port()] {
+    cli::router_keeper_config c;
+    c.ports = host_on_loopback(port);
+    c.on_loopback = true;
+    c.retry_ms = {300};
+    return cli::make_router_keeper(std::move(c));
+  };
+  std::string why;
+  auto host = cli::host_service::start(o, why);
+  REQUIRE(host);
+  REQUIRE(eventually([&] { return state_of(l).find(" not open") != std::string::npos; }, 10));
+  answering.store(true);
+  REQUIRE(eventually([&] { return state_of(l).find("open (PCP)") != std::string::npos; }, 10));
+  host->stop();
+  CHECK(deletes.load() >= 1);
+}
+
+TEST_CASE("host setup: the router step behind carrier NAT says so, and what would help", "[driftwire][host-setup]") {
+  const auto cgnat = addr("100.64.12.34");
+  udp_router router([&](std::span<const std::uint8_t> req) { return nat_pmp_answer(req, cgnat); });
+  scratch_dir s("host_setup_cgnat");
+  const cli::host_layout l = host_sharing(s.root(), 7878);  // setup asks for serve.json's port
+  cli::setup_world w;
+  w.loopback = true;
+  w.any_port = true;
+  w.router = host_on_loopback(router.sock->port());
+  // No DuckDNS question: the test build has no stand-in for it here.
+  std::deque<std::string> answers = {"", "",      // no other folder, no backup folder
+                                     "n",         // no phone now
+                                     "",          // the VPN: off
+                                     "n"};        // not at login
+  std::string said;
+  cli::setup_io io;
+  io.ask = [&](const std::string& prompt, bool) -> std::optional<std::string> {
+    said += prompt;
+    if (answers.empty()) return std::nullopt;
+    std::string a = answers.front();
+    answers.pop_front();
+    return a;
+  };
+  io.say = [&](const std::string& t) { said += t; };
+  io.colour = false;
+  CHECK(cli::host_setup(l, io, w) == 0);
+  CHECK(answers.empty());
+  INFO(said);
+  CHECK(said.find("carrier-grade NAT") != std::string::npos);
+  CHECK(said.find("rented server") != std::string::npos);
+  CHECK(said.find("Phones still reach this computer at home.") != std::string::npos);
+  CHECK(said.find("100.64") == std::string::npos);
+  CHECK_FALSE(fs::exists(fs::path(l.folder) / "setup-router.ledger"));  // the probe's forwards are gone
 }

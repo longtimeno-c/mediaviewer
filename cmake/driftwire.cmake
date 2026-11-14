@@ -212,6 +212,9 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_nas_update.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_host.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_host_setup.cpp"
+    # The phone's own reading of a pairing QR, for the host's (pure: sodium, json, pair_check).
+    "${MV_SOURCE_ROOT}/src/mobile/link_payload.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
   # test_phone_pairing.cpp: the desk is the app's now (src/phone, cmake/phone.cmake).
   target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone)
@@ -296,7 +299,8 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/host.cpp ${_C}/host.h
   ${_C}/session.cpp ${_C}/session.h
   ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
-  ${_C}/host_cmd.cpp ${_C}/host_cmd.h ${_C}/host_keepers.h
+  ${_C}/host_cmd.cpp ${_C}/host_cmd.h ${_C}/host_keepers.cpp ${_C}/host_keepers.h
+  ${_C}/host_setup.cpp ${_C}/host_setup.h ${_C}/qr.cpp ${_C}/qr.h
   ${_C}/autostart.cpp ${_C}/autostart.h ${_C}/host_proc.h ${_C}/volume.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/nas_update.cpp ${_C}/nas_update.h

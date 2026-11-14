@@ -71,7 +71,18 @@ std::vector<std::string> utf8_args(int argc, char** argv) {
   return out;
 }
 
+namespace {
+thread_local std::string* g_capture = nullptr;
+}
+
+print_capture::print_capture(std::string& into) noexcept : before_(g_capture) { g_capture = &into; }
+print_capture::~print_capture() { g_capture = before_; }
+
 void print(std::string_view utf8, bool to_stderr) {
+  if (g_capture) {
+    g_capture->append(utf8);
+    return;
+  }
   std::FILE* f = to_stderr ? stderr : stdout;
   std::fwrite(utf8.data(), 1, utf8.size(), f);
   std::fflush(f);

@@ -12,7 +12,8 @@
 //   driftwire update
 //   driftwire serve [init | status | devices | add NAME KEY | revoke NAME-OR-KEY | pair-code [SECONDS] | disown
 //                    | passphrase set|reset] [--data DIR] [--passphrase-stdin | --no-passphrase]
-//   driftwire host [share PATH [--label L] [--backup] | unshare LABEL | status
+//   driftwire host [setup | share PATH [--label L] [--backup] | unshare LABEL | status | pair
+//                   | name duckdns|none | vpn on [--tls-port N] | vpn off
 //                   | start-at-login on|off | stay-awake on|off] [--data DIR]
 //   driftwire --help | --version
 //   common: --save-to DIR, --name NAME (this run only), --plain, --no-color, --verbose
@@ -47,7 +48,7 @@ enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_c
 // `driftwire host` (docs/plans/self-hosted.md §3): run the service and the
 // relay together (run; `child` is the supervisor's own process, never typed),
 // or change what it shares and how it starts.
-enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake };
+enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake, setup, name, pair, vpn };
 
 struct args {
   command cmd = command::session;
@@ -72,7 +73,8 @@ struct args {
   std::string host_path;  // host share: the folder, as given
   std::string label;      // host share --label; host unshare: the label
   bool backup = false;    // host share --backup
-  bool on = false;        // host start-at-login / stay-awake: on or off
+  bool on = false;        // host start-at-login / stay-awake / vpn: on or off; host name: duckdns (true) or none
+  std::uint16_t tls_port = 0;  // host vpn on --tls-port N: the relay's web-site look (0: none)
   // The test build's.
   bool test_loopback = false;
   std::string test_data;

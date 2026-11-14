@@ -17,12 +17,20 @@
 //                                   VPN, staying awake, start at login: never a
 //                                   path or an address (rule 6)
 //   driftwire host start-at-login on|off | stay-awake on|off
+//   driftwire host setup            the guided run (host_setup.h, slice 5)
+//   driftwire host name duckdns|none   the DuckDNS name; the token typed or pasted
+//   driftwire host pair             a phone's pairing QR in the terminal
+//   driftwire host vpn on [--tls-port N] | off   the Tunnel/VPN exit (slice 7);
+//                                   `on` prints the relay line for the laptop
 //
 // Its folder is <data dir>/host (0700): host.json (its settings), serve/ (the
 // service's serve.json and secrets, as `driftwire serve --data` keeps them),
-// relay/ (the relay's key, in a secret store of its own: made here, never
-// printed; slice 7 shows the relay line), secrets/ (the keepers'), state.json
-// (what the running host has, for `host status`), host.lock.
+// relay/ (the relay's key, in a secret store of its own: made here, printed
+// only in the relay line `host vpn on` shows), secrets/ (the keepers': the
+// DuckDNS token; the host library's publisher key), state.json (what the
+// running host has, for `host status`), host.lock, router.ledger. Beside it,
+// <data dir>/library/.mediaviewer holds the host library's library.json, the
+// "Catalogue" folder a phone paired from `host pair` opens in file mode.
 //
 // What it changes while it runs comes from those files: a `host share` from
 // another terminal, the desktop's owner edits (written by the service itself),
@@ -47,7 +55,11 @@
 #include "addons/driftwire/cli/host_keepers.h"
 #include "addons/driftwire/cli/host_proc.h"
 #include "addons/driftwire/cli/volume.h"
+#include "core/json.h"
+#include "wire/net.h"
+#include "wire/secrets.h"
 #include "wire/serve_wire.h"
+#include "wire/splice.h"
 
 namespace mv::driftwire::cli {
 
@@ -65,6 +77,10 @@ struct host_settings {
   std::uint16_t relay_port = 47614;  // relay::kDefaultPort
   bool vpn = false;                  // forwarding for the Tunnel/VPN (slice 7's `host vpn on`)
   bool stay_awake = true;            // the "system required" request while hosting
+  std::string ddns;                  // the DuckDNS subdomain ("home"; "": none), as ddns::parse_subdomain gives it
+  std::int64_t ddns_stamp = 0;       // when the name or its token was last set: a running host takes them again
+  std::uint16_t tls_port = 0;        // the relay's web-site look with the VPN on (0: none; `--tls-port`)
+  std::string library_id;            // the host library's id (`host pair`; "": none made yet)
 };
 [[nodiscard]] std::optional<host_settings> parse_host_settings(std::string_view json);
 [[nodiscard]] std::string host_settings_json(const host_settings& s);
@@ -79,6 +95,8 @@ struct host_layout {
   std::string lock;          // <data>/host/host.lock
 };
 [[nodiscard]] host_layout host_layout_of(const std::string& data_dir);
+// <data dir>/library/.mediaviewer: the host library's Catalogue folder.
+[[nodiscard]] std::string host_catalogue_of(const host_layout& l);
 // Makes the folders, each this user's alone (secrets::owner_only_folder).
 [[nodiscard]] bool make_host_folders(const host_layout& l);
 
@@ -91,7 +109,9 @@ struct host_layout {
 [[nodiscard]] std::string share_folder(serve::config& c, const std::string& abs_path, const std::string& label,
                                        bool backup, const volume_facts& facts, const std::string& id,
                                        const std::string& host_folder);
-[[nodiscard]] std::string unshare_folder(serve::config& c, std::string_view label);
+// The host library's Catalogue goes with the last folder of the person's.
+// `host_catalogue`: host_catalogue_of(); another Catalogue (a desktop's claim) stays.
+[[nodiscard]] std::string unshare_folder(serve::config& c, std::string_view label, std::string_view host_catalogue = {});
 
 // ---- the supervisor's rule ------------------------------------------------------------------
 
@@ -113,11 +133,15 @@ struct host_service_options {
   std::function<bool(const serve::root_config&)> present;
   std::function<std::optional<std::string>(const serve::root_config&)> locate;
   keeper_factories keepers;
+  // The tests: the relay's options last (forward to a loopback echo server).
+  std::function<void(relay::server::options&)> relay_tweak;
 };
 
 struct host_snapshot {
   std::uint16_t service_port = 0;  // 0: not serving (no folder, or its port taken)
   std::uint16_t relay_port = 0;    // 0: the relay is not running
+  std::uint16_t relay_tls_port = 0;  // the web-site look's port (0: none)
+  bool tls_failed = false;           // the look was asked for and could not listen: the relay runs without it
   bool vpn = false;
   bool awake = false;  // the request to stay awake is held
   std::size_t folders = 0, offline = 0;
@@ -142,6 +166,30 @@ class host_service {
   struct state;
   std::unique_ptr<state> st_;
 };
+
+// The host's files, for host_setup.cpp (each as `host share`, `host status`
+// and the service use them: whole-file writes renamed in, owner-only, the
+// serve.json lock).
+namespace host_files {
+[[nodiscard]] std::optional<std::string> read(const std::string& path, std::size_t max = 256 * 1024);
+[[nodiscard]] bool write(const std::string& path, const std::string& text);
+[[nodiscard]] std::unique_ptr<net::instance_lock> lock_config(const host_layout& l, int wait_ms = 3000);
+[[nodiscard]] host_settings settings(const host_layout& l);
+[[nodiscard]] bool save_settings(const host_layout& l, const host_settings& s);
+[[nodiscard]] std::optional<serve::config> config(const host_layout& l, bool any_port);
+[[nodiscard]] std::unique_ptr<secrets::store> store(const std::string& folder);
+// The relay's key, made if there is none (never printed but in the relay line).
+[[nodiscard]] std::optional<std::string> relay_secret(const host_layout& l);
+// `host share`: "" when shared (as `shared_as`), else why not. `limit`: a backup folder's most (0: none).
+[[nodiscard]] std::string share(const host_layout& l, const std::string& typed, const std::string& label, bool backup,
+                                std::uint64_t limit, bool any_port, std::string& shared_as);
+[[nodiscard]] bool running(const host_layout& l);
+// The running host's state.json (none when it is not running).
+[[nodiscard]] std::optional<json::value> state(const host_layout& l);
+[[nodiscard]] std::string new_id();
+int status(const host_layout& l, bool test_hooks);
+int start_at_login(const args& a, const host_layout& l, bool test_hooks);
+}  // namespace host_files
 
 // Runs a.cmd == command::host. `test_hooks`: --test-loopback, --test-quick and
 // port 0 honoured, the privilege check skipped, start-at-login refused.

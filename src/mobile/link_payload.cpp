@@ -4,6 +4,8 @@
 
 #include <sodium.h>
 
+#include <charconv>
+#include <system_error>
 #include <vector>
 
 #include "wire/pair_check.h"
@@ -61,6 +63,31 @@ bool address_ok(const std::string& text) {
 }
 
 }  // namespace
+
+// link.h; here beside its first use, so the payload reads with nothing else of the link.
+bool split_host_port(std::string_view text, std::string& host, std::uint16_t& port) {
+  if (text.empty() || text.size() > 512) return false;
+  std::string_view h, p;
+  if (text.front() == '[') {
+    const auto close = text.find(']');
+    if (close == std::string_view::npos || close + 2 >= text.size() || text[close + 1] != ':') return false;
+    h = text.substr(1, close - 1);
+    p = text.substr(close + 2);
+  } else {
+    const auto colon = text.rfind(':');
+    if (colon == std::string_view::npos || text.find(':') != colon) return false;  // a bare IPv6 needs its brackets
+    h = text.substr(0, colon);
+    p = text.substr(colon + 1);
+  }
+  if (h.empty() || h.size() > 255) return false;
+  if (p.empty() || p.size() > 5) return false;
+  unsigned v = 0;
+  const auto [stop, why] = std::from_chars(p.data(), p.data() + p.size(), v);
+  if (why != std::errc{} || stop != p.data() + p.size() || v == 0 || v > 65535) return false;
+  host.assign(h);
+  port = static_cast<std::uint16_t>(v);
+  return true;
+}
 
 result<pair_payload> parse_pair_payload(std::string_view text) {
   if (text.size() > kMaxPayloadBytes || !text.starts_with(kPrefix)) return err(status::invalid_arg);
