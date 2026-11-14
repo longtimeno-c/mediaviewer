@@ -352,11 +352,14 @@ the phone's follows the same pattern.
 
 **From a terminal (recommended; S2 builds it).** S2 extends `provision.py` with an iOS mode
 (`--ios`), using the same API key, the same token code and the same dry run:
-- bundle IDs with `platform: IOS`;
-- `NETWORK_EXTENSIONS` and `APP_GROUPS` on both App IDs;
+- bundle IDs with `platform: IOS`, for the phone's own `….mobile` and its `.DriftwireTunnel`;
+- `NETWORK_EXTENSIONS` and `APP_GROUPS` on both App IDs (no `SYSTEM_EXTENSION_INSTALL`, which is
+  macOS only);
 - no profiles, since Xcode's automatic signing makes the iOS ones.
-Whether the API can create the App Group identifier itself is unverified. If it cannot, that one
-step is a single click in the portal (step 3 below), or Xcode's automatic signing makes it.
+The API **cannot create an App Group** or attach a particular group to an App ID: it has no App
+Group resource, and `CapabilitySetting` has no key for one (checked against Apple's API reference,
+2026-11-14). Creating the group and assigning it is either Xcode's automatic signing or two clicks
+in the portal (steps 1 and 3 below).
 
 **Or by hand**,
 
