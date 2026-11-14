@@ -1,6 +1,6 @@
 # 01 — Stack Decisions
 
-The technology stack MediaViewer is built on, and the settled decisions D1–D9 that code comments cite, each with the reason it holds.
+The technology stack MediaViewer is built on, and the choices D1–D9 that code comments cite, each with the reason it was made. These describe the current direction, not fixed rules: change them when the product needs to, and update this doc when you do.
 
 ## The stack
 

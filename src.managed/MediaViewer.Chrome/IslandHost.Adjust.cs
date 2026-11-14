@@ -470,11 +470,17 @@ public static partial class IslandHost
         }
         _adjustWidthClass = cls;
         bool two = cls >= WidthWide;
-        static void Detach(UIElement e)
+        // Out of every place it can be. Not through VisualTreeHelper.GetParent
+        // (or Parent): both are null until the tree is live, and the first call
+        // runs inside BuildAdjustPane, so the histogram and Curves frames, still
+        // in their slots, were added a second time and threw. The class was
+        // already recorded, so the retried build skipped the cards: the Windows
+        // Adjust tab showed no sliders.
+        static void Detach(UIElement e, params Panel?[] places)
         {
-            if (VisualTreeHelper.GetParent(e) is Panel p) p.Children.Remove(e);
+            foreach (Panel? p in places) p?.Children.Remove(e);
         }
-        foreach (Border card in _sectionCards) Detach(card);
+        foreach (Border card in _sectionCards) Detach(card, _adjustOneColumn, _adjustLeft, _adjustRight);
         if (two)
         {
             foreach (int s in AdjustLeftSections) _adjustLeft.Children.Add(_sectionCards[s]);
@@ -491,8 +497,8 @@ public static partial class IslandHost
         if (_adjustHistFrame is not null && _adjustCurveFrame is not null && _adjustScopes is not null &&
             _adjustHistSlot is not null && _adjustCurveSlot is not null)
         {
-            Detach(_adjustHistFrame);
-            Detach(_adjustCurveFrame);
+            Detach(_adjustHistFrame, _adjustHistSlot, _adjustScopes);
+            Detach(_adjustCurveFrame, _adjustCurveSlot, _adjustScopes);
             if (scopes)
             {
                 Grid.SetColumn(_adjustCurveFrame, 1);

@@ -145,7 +145,7 @@ jobs:
           # Scratch on the runner's local disk, as CI's Unit tests (ci.yml).
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --repeat until-pass:2
 
       - name: Licence policy (manifest + vcpkg tree)
         run: ./tools/licence-check.ps1 -VcpkgInstalledRoot build/vcpkg_installed
@@ -758,8 +758,12 @@ jobs:
       - name: Unit tests
         # 30, as CI's macOS core (ci.yml): the 0.1.42 release timed out at 20
         # (2026-11-14) with no test hung.
+        # A failing test runs once more: a timing test that loses to a busy
+        # runner (2026-11-14: the Driftwire cancel on x64, the audio clock on
+        # arm64) does not cost the release; one that fails twice still does.
+        # CI (ci.yml) runs each once.
         timeout-minutes: 30
-        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error --repeat until-pass:2
 
       - name: Bundle policy
         run: |

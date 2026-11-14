@@ -100,7 +100,9 @@ TEST_CASE("An audio-only clip seeks, pauses in place and steps by five seconds",
   CHECK(source->position_ns() == 4'000'000'000);
 
   source->play();
-  run(*source, 0.6, [] { return false; });
+  // Until the clock has moved 300 ms, not a fixed 0.6 s of wall time: a CI
+  // runner's Core Audio can start late (0.21 s played in 0.6 s, 2026-11-14).
+  run(*source, 3.0, [&] { return source->position_ns() > 4'350'000'000; });
   source->pause();
   const auto paused = source->position_ns();
   CHECK(paused > 4'300'000'000);

@@ -401,6 +401,11 @@ public static partial class IslandHost
     // The pane's bottom area (BuildMetaPane): the add-ons' sections after all the
     // built-in metadata, each under its heading; empty when none answered.
     private static StackPanel? _metaSlots;
+    // The panel _metaSlots sits in now (WithSlotSections). Kept, not read back
+    // through Parent: that is null until the tab's tree is live, so a second
+    // build before then re-added the panel and threw ("No installed components
+    // were detected"), which left the Windows Info tab on "Nothing selected".
+    private static Panel? _metaSlotsHost;
 
     // What the panel shows: the info generation (a new file), then each section's
     // address and tree revision, in order. Two children per section (rule, section).

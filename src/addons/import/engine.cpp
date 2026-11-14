@@ -265,7 +265,7 @@ struct engine::plan_slot {
 
 struct engine::job {
   std::uint64_t id = 0;
-  std::uint32_t kind = 0;  // 0 import, 1 verify-a-folder, 2 find duplicates
+  std::uint32_t kind = 0;  // 0 import, 1 verify-a-folder, 2 find duplicates, 3 check library
   std::atomic<std::uint32_t> state{MV_IMPORT_JOB_QUEUED};
   std::atomic<bool> cancel{false};
   std::atomic<bool> paused{false};
@@ -299,6 +299,8 @@ struct engine::job {
   std::string report;
   std::string summary;
   dup_scan dups;  // kind 2
+  check_request check_req;  // kind 3
+  check_result check;
 
   // kind 2: files waiting for the bin, drained in order by trash_loop on
   // `thread` once the scan has finished. Guarded by engine::mutex_.
@@ -394,6 +396,7 @@ void engine::adopt_legacy_on_control() {
 }
 
 void engine::shutdown() noexcept {
+  find_cancel_.store(true);  // a library_find re-hashing a changed file stops
   if (watching_) {
     (void)host_.watch_volumes(nullptr, nullptr);
     watching_ = false;
@@ -920,6 +923,8 @@ void engine::launch(const std::shared_ptr<job>& j) {
       run_verify(j, j->source_root);
     } else if (j->kind == 2) {
       run_duplicates(j, j->source_root);
+    } else if (j->kind == 3) {
+      run_check(j);
     } else {
       run_job(j);
     }
@@ -1306,6 +1311,7 @@ std::string engine::make_summary(job& j, std::uint32_t state) {
   std::lock_guard lock(j.m);
   if (j.kind == 1) return j.verify_json;
   if (j.kind == 2) return dup_json(j.id, j.dups, j.prog.elapsed_ms, true);
+  if (j.kind == 3) return check_json(j.check, j.id, j.prog.elapsed_ms, true);
   std::uint32_t copied_units = 0;
   std::uint32_t copied_files = 0;
   std::uint64_t copied_bytes = 0;
@@ -1386,7 +1392,6 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
   }
   // Outside j->m, which the UI thread's progress() takes.
   if (rate > 0) idx_->set_setting("rate." + j->device_key, std::to_string(rate));
-  j->state = state;
 
   // The local report: plain text beside import.db, never sent anywhere (rule 6).
   if (!data_dir_.empty() && j->persisted) {
@@ -1410,6 +1415,7 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
         }
         for (const std::string& p : j->dups.unreadable) text += "unreadable  " + p + "\n";
       }
+      if (j->kind == 3) text += check_report_text(j->check);
       for (const journal_row& r : j->rows) {
         const char* word = r.state == member_state::done      ? "copied   "
                            : r.state == member_state::skipped ? "skipped  "
@@ -1423,7 +1429,7 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
     }
     for (int n = 0; n < 100; ++n) {
       const std::string path = join_native(
-          dir, std::string(j->kind == 2 ? "duplicates-" : "import-") + std::to_string(j->id) + (n ? "-" + std::to_string(n) : "") + ".txt");
+          dir, std::string(j->kind == 2 ? "duplicates-" : j->kind == 3 ? "check-" : "import-") + std::to_string(j->id) + (n ? "-" + std::to_string(n) : "") + ".txt");
       if (host_.write_new_file(path, text)) {
         std::lock_guard lock(j->m);
         j->report = path;
@@ -1432,14 +1438,24 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
     }
   }
   const std::string summary = make_summary(*j, state);
+  std::string counts_only;
   {
     std::lock_guard lock(j->m);
+    if (j->kind == 3) counts_only = check_json(j->check, j->id, j->prog.elapsed_ms, false);
     j->summary = summary;
+    // Check library: the full result is in the summary now; a check the
+    // backup runs before every Back Up Now must not keep every path twice.
+    if (j->kind == 3) j->check = check_result{};
   }
+  // The finished state is visible only once its summary is: a caller that
+  // polls progress() and then reads summary_json() never finds it empty.
+  j->state = state;
   std::string stored = summary;
   if (j->kind == 2) {
     std::lock_guard lock(j->m);
     stored = dup_json(j->id, j->dups, j->prog.elapsed_ms, false);
+  } else if (j->kind == 3) {
+    stored = counts_only;
   }
   if (j->persisted) idx_->set_job_state(j->id, state, now_unix(), stored);
   {
@@ -1448,6 +1464,7 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
   }
   host_.post(j->kind == 1   ? MV_ADDON_EVENT_VERIFY_DONE
              : j->kind == 2 ? MV_ADDON_EVENT_DUPLICATES_DONE
+             : j->kind == 3 ? MV_ADDON_EVENT_LIBRARY_CHECKED
                             : MV_ADDON_EVENT_JOB_DONE,
              MV_OK, j->id, state);
   cv_.notify_all();
@@ -1826,7 +1843,10 @@ std::string engine::history_json() {
   for (const job_row& r : idx_->jobs(500)) {
     w.begin_object();
     w.key("job").integer(static_cast<std::int64_t>(r.id));
-    w.key("kind").string(r.kind == 1 ? "verify" : r.kind == 2 ? "duplicates" : "import");
+    w.key("kind").string(r.kind == 1   ? "verify"
+                         : r.kind == 2 ? "duplicates"
+                         : r.kind == 3 ? "check"
+                                       : "import");
     w.key("created").integer(r.created);
     w.key("finished").integer(r.finished);
     w.key("state").string(state_word(r.state));
@@ -1990,6 +2010,132 @@ result<std::uint64_t> engine::find_duplicates(const std::string& dir) {
     launch(j);
   });
   return j->id;
+}
+
+// ---------------------------------------------------------------------------
+// Check library (docs/plans/check-library.md): library_check.h does the work;
+// this is the job around it.
+
+result<std::uint64_t> engine::check_library(const std::string& request_json) {
+  MV_TRY(check_request req, parse_check_request(request_json));
+  {
+    // The backup's own checks are not in Past imports: once finished and read
+    // by their caller, nothing needs them. Keep only the newest few. Their
+    // threads have ended (finished is set last); joined outside the lock.
+    std::vector<std::shared_ptr<job>> drop;
+    {
+      std::lock_guard lock(mutex_);
+      std::vector<std::uint64_t> done;
+      for (const auto& [id, old] : jobs_) {
+        if (old->kind == 3 && !old->persisted && old->finished) done.push_back(id);
+      }
+      for (std::size_t i = 0; i + 4 < done.size(); ++i) {
+        drop.push_back(jobs_[done[i]]);
+        jobs_.erase(done[i]);
+      }
+    }
+    for (const auto& old : drop) {
+      if (old->thread.joinable()) old->thread.join();
+    }
+  }
+  auto j = make_job(3, preset{});
+  j->source_root = req.source_folder.empty() ? req.destination : req.source_folder;
+  j->label = "check";
+  j->device_key = "check:" + req.destination;
+  j->dest_roots = {req.destination};
+  const bool history = req.history;
+  j->check_req = std::move(req);
+  post_task([this, j, history] {
+    if (auto v = host_.volume_of(j->check_req.destination); v && v->device_key[0]) j->device_key = v->device_key;
+    if (history) persist(j);
+    launch(j);
+  });
+  return j->id;
+}
+
+void engine::run_check(const std::shared_ptr<job>& j) {
+  // One reader per physical device: the check waits behind an import that is
+  // writing to the same disk, as find duplicates does.
+  std::unique_lock source_lock(device_lock(j->device_key));
+  {
+    std::lock_guard lock(j->m);
+    j->started = clock_type::now();
+  }
+  j->state = MV_IMPORT_JOB_RUNNING;
+  if (j->persisted) idx_->set_job_state(j->id, MV_IMPORT_JOB_RUNNING, 0, "");
+
+  check_hooks hooks;
+  hooks.cancelled = [&j] { return j->cancel.load(); };
+  hooks.cancel_flag = &j->cancel;
+  // Background priority always (docs/design/18 "Priority"): a check is never urgent.
+  hooks.yield = [this, &j] {
+    while (!j->cancel.load() && (j->paused.load() || host_.should_yield())) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  };
+  auto last_post = clock_type::now();
+  hooks.progress = [&](check_phase phase, std::uint64_t done, std::uint64_t total, std::uint64_t bytes,
+                       const std::string& current) {
+    {
+      std::lock_guard lock(j->m);
+      // units: files walked (walking) or bytes as units of the hashing phases.
+      j->prog.destination_count = static_cast<std::uint32_t>(phase);
+      if (phase == check_phase::walking) {
+        j->prog.units_done = static_cast<std::uint32_t>(done);
+      } else {
+        j->prog.bytes_total = total;
+        j->prog.bytes_read = done;
+        j->prog.bytes_verified[0] = bytes;
+      }
+      std::snprintf(j->prog.current_name_utf8, sizeof j->prog.current_name_utf8, "%s", current.c_str());
+    }
+    if (const auto now = clock_type::now(); now - last_post > std::chrono::milliseconds(250)) {
+      last_post = now;
+      host_.post(MV_ADDON_EVENT_JOB_PROGRESS, MV_OK, j->id, 0);
+    }
+  };
+  const dest_locator loc(host_);
+  check_result r = run_library_check(host_, *idx_, loc, j->check_req, hooks);
+  const bool reachable = r.reachable;
+  {
+    std::lock_guard lock(j->m);
+    j->check = std::move(r);
+    j->prog.units_total = static_cast<std::uint32_t>(j->check.library_files);
+    j->prog.units_done = static_cast<std::uint32_t>(j->check.found.size());
+    j->prog.units_skipped = static_cast<std::uint32_t>(j->check.not_found.size());
+    j->prog.units_failed = static_cast<std::uint32_t>(j->check.unreadable.size());
+  }
+  source_lock.unlock();
+  finish_job(j, j->cancel ? MV_IMPORT_JOB_CANCELLED : reachable ? MV_IMPORT_JOB_DONE : MV_IMPORT_JOB_INTERRUPTED);
+}
+
+namespace {
+// How long one volume snapshot answers library_find and library_record.
+constexpr auto kFindLocatorAge = std::chrono::seconds(30);
+}  // namespace
+
+result<std::string> engine::library_find(const std::string& request_json) {
+  MV_TRY(find_request req, parse_find_request(request_json));
+  std::lock_guard lock(find_m_);
+  const auto now = std::chrono::steady_clock::now();
+  if (!find_loc_ || now - find_loc_at_ > kFindLocatorAge) {
+    find_loc_ = std::make_unique<dest_locator>(host_);
+    find_loc_at_ = now;
+  }
+  const find_answer a = mv::import::library_find(host_, *idx_, *find_loc_, req, find_cancel_);
+  // A lookup cut short is not "nowhere": the caller must not decide on it.
+  if (find_cancel_.load()) return err(status::cancelled);
+  return find_json(a);
+}
+
+expected engine::library_record(const std::string& request_json) {
+  std::lock_guard lock(find_m_);
+  const auto now = std::chrono::steady_clock::now();
+  if (!find_loc_ || now - find_loc_at_ > kFindLocatorAge) {
+    find_loc_ = std::make_unique<dest_locator>(host_);
+    find_loc_at_ = now;
+  }
+  return mv::import::library_record(host_, *idx_, *find_loc_, request_json);
 }
 
 void engine::run_duplicates(const std::shared_ptr<job>& j, const std::string& dir) {

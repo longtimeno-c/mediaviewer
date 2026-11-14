@@ -10,6 +10,19 @@
 
 using MvAddonsOpenPathFn = void (*)(void* ctx, const char* utf8_path);
 
+struct mv_import_api;
+
+// Check library (docs/plans/check-library.md): the loaded Import's mv.import.1
+// table, for the Photos backup's library index; nullptr when Import is not
+// loaded (not installed, or it could not start). Never loads it. The table
+// stays valid until Import unloads (Remove, quit). `hook(seconds)` runs on the
+// main thread just before that: the backup is cancelled and its gate on the
+// table closed, waiting at most `seconds` for a call already inside Import;
+// false when one still is (quit then leaves Import running for the exit,
+// Remove refuses).
+const mv_import_api* MvAddonsImportTable();
+void MvAddonsSetImportUnloadHook(bool (*hook)(double seconds));
+
 // Once at launch: verify and load Import, and verify the AI pack (Apple
 // silicon) without loading it (issue #292: it starts at the first search or
 // when Settings shows it), off the main thread; watch for cards to offer the

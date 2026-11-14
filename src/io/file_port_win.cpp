@@ -145,7 +145,12 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
   WIN32_FILE_ATTRIBUTE_DATA data{};
-  if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return err(status::io);
+  // not_found only when nothing is there (Check library holds a photo as
+  // deleted on that alone); a refused or failed stat stays io.
+  if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+    const DWORD e = ::GetLastError();
+    return err(e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? status::not_found : status::io);
+  }
   file_stat out;
   out.is_directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
   out.cloud_placeholder = (data.dwFileAttributes & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS |

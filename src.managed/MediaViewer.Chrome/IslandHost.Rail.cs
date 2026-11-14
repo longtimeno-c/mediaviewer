@@ -50,10 +50,14 @@ public static partial class IslandHost
         public const string Done = "";      // Accept
     }
 
-    private sealed record RailItem(Button Button, Border Bar);
+    // Holder is the 44 × 34 Grid the rail lays out (button and selection bar).
+    // Kept here, not read back through Parent: a WinUI element's Parent is null
+    // until its tree is live, and re-adding the Button that then came back threw
+    // ("No installed components were detected"), leaving the Windows rail blank.
+    private sealed record RailItem(Button Button, Border Bar, Grid Holder);
     private static readonly List<(RailItem Item, int Tab)> RailTabs = new();
     private static RailItem? _railCompare;
-    private static Button? _railUndo;
+    private static RailItem? _railUndo;
 
     private static void DropRailUi()
     {
@@ -119,7 +123,7 @@ public static partial class IslandHost
             string tip = keyedBy >= 0 ? WithKey(label, keyedBy) : label;
             RailItem item = RailButton(glyph, label, tip, () => Send(Command.EditTab, t));
             RailTabs.Add((item, tab));
-            top.Children.Add(Holder(item));
+            top.Children.Add(item.Holder);
         }
         if (!EditIsClip)
         {
@@ -128,8 +132,8 @@ public static partial class IslandHost
                 Height = 1, Width = 24, Background = Brush(Hairline), Margin = Pad(0, 6, 0, 6),
                 HorizontalAlignment = HorizontalAlignment.Center,
             });
-            top.Children.Add(Holder(RailButton(RailGlyph.RedEye, "Red-eye", "Red-eye: click each red pupil on the photo",
-                () => Send(Command.EditAction, EditActions.ArmRedEye))));
+            top.Children.Add(RailButton(RailGlyph.RedEye, "Red-eye", "Red-eye: click each red pupil on the photo",
+                () => Send(Command.EditAction, EditActions.ArmRedEye)).Holder);
         }
         root.Children.Add(top);
 
@@ -138,20 +142,22 @@ public static partial class IslandHost
         {
             RailItem undo = RailButton(RailGlyph.Undo, "Undo edit", WithKey("Undo the last edit", Command.UndoEdit),
                                        () => Send(Command.UndoEdit));
-            _railUndo = undo.Button;
-            foot.Children.Add(Holder(undo));
+            _railUndo = undo;
+            foot.Children.Add(undo.Holder);
             // docs/design/20 "Compare": the before/after split (Y held: the before alone).
             _railCompare = RailButton(RailGlyph.Compare, "Compare before and after", CompareTipWithKey,
                 () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn));
-            if (Holder(_railCompare) is Panel compareHolder) compareHolder.Background = Brush(Colors.Transparent);
-            foot.Children.Add(Holder(_railCompare));
+            // A background, so the holder takes the pointer and shows its tooltip
+            // while the Button is disabled.
+            _railCompare.Holder.Background = Brush(Colors.Transparent);
+            foot.Children.Add(_railCompare.Holder);
         }
         string? enter = KeyOf(Command.EditWorkspace);
         RailItem done = RailButton(RailGlyph.Done, "Done",
             enter is null ? "Done: close the editor  Esc" : $"Done: close the editor  {enter} or Esc",
             () => Send(Command.EditWorkspace));
         done.Button.Foreground = Brush(Title);
-        foot.Children.Add(Holder(done));
+        foot.Children.Add(done.Holder);
         Grid.SetRow(foot, 2);
         root.Children.Add(foot);
 
@@ -161,8 +167,6 @@ public static partial class IslandHost
         ThemeField.Lay(root);
         return root;
     }
-
-    private static UIElement Holder(RailItem item) => item.Bar.Parent as UIElement ?? item.Button;
 
     // One 32 DIP icon: a wash on hover (FlattenButton), the accent and a 2 DIP
     // bar on its leading edge while selected; the tooltip and the screen
@@ -205,7 +209,7 @@ public static partial class IslandHost
         var holder = new Grid { Width = 44, Height = 34 };
         holder.Children.Add(b);
         holder.Children.Add(bar);
-        return new RailItem(b, bar);
+        return new RailItem(b, bar, holder);
     }
 
     private static void SetRailSelected(RailItem item, bool selected, bool marked)
@@ -232,15 +236,14 @@ public static partial class IslandHost
             // A disabled Button shows no tooltip: its holder says why then.
             _railCompare.Button.IsEnabled = CanCompare;
             ToolTipService.SetToolTip(_railCompare.Button, CompareTipWithKey);
-            ToolTipService.SetToolTip(Holder(_railCompare), CanCompare ? null : CompareTip);
+            ToolTipService.SetToolTip(_railCompare.Holder, CanCompare ? null : CompareTip);
             // Folded only: open, the header carries Compare (docs/design/20 "Craft rules").
-            Holder(_railCompare).Visibility = _editCollapsed ? Visibility.Visible : Visibility.Collapsed;
+            _railCompare.Holder.Visibility = _editCollapsed ? Visibility.Visible : Visibility.Collapsed;
         }
         if (_railUndo is not null)
         {
-            _railUndo.IsEnabled = _editCount > 0;
-            if (_railUndo.Parent is UIElement holder)
-                holder.Visibility = _editCollapsed ? Visibility.Visible : Visibility.Collapsed;
+            _railUndo.Button.IsEnabled = _editCount > 0;
+            _railUndo.Holder.Visibility = _editCollapsed ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 

@@ -1,276 +1,135 @@
 # 28 — Driftwire: send files to a MediaViewer nearby
 
-How one MediaViewer sends photos, video and audio to another, the way a nearby share does: the
-two clients find each other, the receiver shows a short code that the sender types, and nothing
-moves until the person on the other side accepts. Issues [#410](https://github.com/longtimeno-c/mediaviewer/issues/410)
-(the add-on and its window) and [#413](https://github.com/longtimeno-c/mediaviewer/issues/413)
-(the gallery's range, drag-out and share icon). Built 2026-10-15; where each part stands is in
-[DEVELOPMENT.md](../DEVELOPMENT.md#driftwire-issues-410-413-2026-10-15). Protocol 2 (issue
-[#472](https://github.com/longtimeno-c/mediaviewer/issues/472) PR 1, 2026-10-18): a Noise handshake
-with a post-quantum hybrid, and a transfer that survives its link, moving between Bluetooth and
-Wi-Fi with no new code and no new Accept ([The wire](#the-wire), [The session](#the-session-protocol-2-472)).
+One MediaViewer sends photos, video and audio to another: the two find each other, the receiver
+shows a six-digit code the sender types, and nothing moves until the receiver accepts. Protocol 2
+adds a post-quantum hybrid Noise handshake and a session that survives its link, moving between
+Bluetooth, Wi-Fi and the internet with no new code or Accept ([The wire](#the-wire),
+[The session](#the-session-protocol-2-472)).
 
-Driftwire is a first-party add-on (option B of [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs),
-the same kind as Import and Places). It carries its own code, has no chrome of its own, and
-fills one window through the screens contribution point ([25 §10](25-open-addons.md#10-screens)):
-both hosts draw it with their own controls, so it follows the theme, text size, VoiceOver and
-Narrator. Other makers' script add-ons still have no network permission (owner, 2026-10-03).
-The same engine also runs in a terminal: `driftwire`, a program of its own on Linux, Windows and
-macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
+A first-party add-on (option B of [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs),
+like Import): its own code, no chrome, one window through the screens contribution point
+([25 §10](25-open-addons.md#10-screens)) drawn by both hosts with native controls. Third-party
+script add-ons still have no network. The same engine runs in a terminal as `driftwire`
+([From a terminal](#from-a-terminal-driftwire)).
 
 ## What a person sees
 
-- **The window**, "Driftwire", opened from its row in Settings → Add-ons (**Open Driftwire**),
-  from its command (the palette; no default key, issue #410), and from the share menu's first
-  entry ([16 "Share"](16-commands.md#share-444)): the gallery's share icon, the bar's share button,
-  `Ctrl+Shift+S` and right-click Share ▸. Its manifest's own **Send with Driftwire…** context
-  entry is left out of the hosts' right-click menus (#444), so there is one route. Its design is
-  AirDrop's (#442), the same on both hosts, top to bottom. Every group is a card of its own
-  (#508, 2026-10-20), never a card in a card:
-  - a card with this computer's name as others see it, and **Keep receiving when this window is closed** (kept
-    across launches; the command bar shows **Driftwire: receiving** while it is on), then
-    **Receive when MediaViewer is closed** (#452, off by default; [In the background](#in-the-background-452));
-  - **what is happening now**, first: a card for what is offered to this computer and one for a
-    send under way, each opening with a **picture of the path** (2026-10-19, the screen `link`
-    node): this computer, the other, and between them the bearer's badge, Wi-Fi, Bluetooth,
-    internet straight to each other, internet met through the public DHT, through one of the
-    person's computers (named), or through their relay server, each its own shape and colour, with
-    the part moved so far and dots that travel the way the bytes go while they do (still with
-    Reduce Motion; paused while it reconnects; a done or failed mark at the end). Each card
-    **shows itself** (2026-10-28, the screen `reveal` key): when it appears, when the bytes start
-    to move and when it ends, the window glides to it and an accent outline glows on it and fades,
-    so a send begun from a code typed at the foot of the page, or a tile clicked under Nearby, is
-    seen at once rather than found by scrolling up; progress alone never moves the page. Whether an
-    internet link was met on the DHT comes from the link (`link::punched`, `udp_hub`'s stream);
-  - **what is offered to this computer**: "… wants to send you files" and the **code** in large
-    digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
-    names, **Save to** with Choose…, **Decline** / **Accept**; then the path filling with its
-    percentage, the count, the speed and the time left ("1.2 GB of 4.8 GB · 14 MB/s · about 4 min
-    left", #529, both sides: `eta.h`, shown after 3 s and half a megabyte, hidden while it
-    reconnects) and **Cancel**; then what arrived and **OK**. Every end, delivered, cancelled or
-    lost, stays on screen with **OK** on both sides until it is dismissed (#531; until 2026-10-21 a
-    cancel or a loss cleared itself after 6 s, #511);
-  - **Unfinished transfers** (#530), a card while any is kept: from whom, how much is here, and
-    **Discard** for each ([Resuming a receive that stopped](#resuming-a-receive-that-stopped-530));
-  - **Send**, a card: a strip of the first six files' thumbnails (the viewer's cache), the count
-    and size, the first names, **Send a folder** (Choose…), **Clear**;
-  - **Nearby**: the MediaViewers it can see as large round tiles (a monogram, the name, "Wi-Fi",
-    "Bluetooth" or both). **One click on a tile sends** to it. A card then asks for the code the
-    other screen shows, in one large field that takes digits only and goes by itself at the sixth
-    (three wrong codes end the link; this screen never shows the code); then "Waiting for … to
-    accept"; then the tile's own ring fills while the bytes move (and the path card above shows
-    how), and it ends with a done or failed mark on the tile and a line saying what happened, with
-    **OK** to go back (#531).
-    With no one in sight it says **No one nearby yet** and how to fix that, not a status line;
-    what this computer cannot search (no network, Bluetooth off or missing) is one quiet line at
-    the card's foot, and nothing when Wi-Fi and Bluetooth both work (#508);
-  - **Over the internet**, a card with one toggle, then, each a card, in the order a person uses it: **Receive from
-    anywhere** (Make a code; the code in large type, selectable, with **Copy code** and **Copy
-    link**), **Send to a code**, Remembered devices, and **Internet options** (the DHT, Wi-Fi drops,
-    relaying, and the optional own relay server). Nothing asks for an address: a code finds its
-    own (2026-10-19).
-- **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click selects a range,
-  dragging a cell drags it out, and one share icon opens the share menu ([16 "Share"](16-commands.md#share-444)),
-  whose first entry is Driftwire with the selection (issue #444: the same menu as `Ctrl+Shift+S`,
-  the bar's share button and right-click Share ▸).
-  Without Driftwire the icon offers the same one-click install as the other add-ons.
+- **The window**, "Driftwire": from Settings → Add-ons (**Open Driftwire**), its palette command (no
+  default key), and the share menu's first entry ([16 "Share"](16-commands.md#share-444)). The
+  manifest's **Send with Driftwire…** context entry is left out of right-click menus. AirDrop-like,
+  the same on both hosts; each group its own card, never nested:
+  - this computer's name, **Keep receiving when this window is closed** (persisted; command bar
+    shows **Driftwire: receiving**), **Receive when MediaViewer is closed** ([In the background](#in-the-background-452));
+  - **what is happening now**, first: incoming-offer and send cards, each with a **picture of the
+    path** (screen `link` node: both computers, the bearer badge — Wi-Fi, Bluetooth, internet,
+    DHT-met (`link::punched`), via own computer, via own relay — progress, travelling dots, a
+    done/failed mark). A card **shows itself** (screen `reveal`) on appear, start and end;
+    progress alone never scrolls;
+  - **the incoming offer**: the **code** in large digits and **Decline**; then count, size, first
+    names, **Save to**, **Decline** / **Accept**; then "1.2 GB of 4.8 GB · 14 MB/s · about 4 min
+    left" (`eta.h`, after 3 s and 0.5 MB) and **Cancel**; every end stays until **OK**, both sides;
+  - **Unfinished transfers** with **Discard** ([Resuming a receive that stopped](#resuming-a-receive-that-stopped-530));
+  - **Send**: six thumbnails, count, size, **Send a folder**, **Clear**;
+  - **Nearby**: round tiles; **one click sends**, then a digits-only code field that submits at the
+    sixth digit (three wrong end the link), "Waiting for … to accept", the tile's ring, a result
+    and **OK**. Empty: **No one nearby yet** and how to fix it;
+  - **Over the internet**: one toggle, then **Receive from anywhere** (Make a code, **Copy code**,
+    **Copy link**), **Send to a code**, Remembered devices, **Internet options**.
+- **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click range, drag-out,
+  one share icon (Driftwire first; a one-click install when absent).
 
 ## From a terminal (`driftwire`)
 
-`driftwire` is a terminal host of the same engine (owner, 2026-10-23,
-[12](12-decision-log.md#driftwire)): a program of its own, outside MediaViewer, on Linux, Windows
-and macOS. It speaks the same wire, so it sends to and receives from the add-on and another
-`driftwire`, and it installs on its own, with no MediaViewer: on Linux from signed apt and dnf
-repositories (one line, or apt, dnf or zypper), on macOS from a Homebrew tap, on Windows with a
-PowerShell one-liner, each of which also updates it; stable releases publish all three
-([Installing](#installing), [12](12-decision-log.md#driftwire)). It is built and tested with the
-app on Windows and macOS and is never in the app's payload. Its manual page is
-`packaging/linux/driftwire.1`.
+A terminal host of the same engine ([12](12-decision-log.md#driftwire)) on Linux, Windows and
+macOS, wire-compatible with the add-on, installed without MediaViewer ([Installing](#installing)),
+never in the app's payload. Manual page `packaging/linux/driftwire.1`.
 
 ```
 driftwire                        the session: visible nearby while it runs; send and receive
-driftwire send PATH... [--to NAME]
-                                 the session with these files (or one folder) ready, closing
-                                 when that send ends (sent, declined, cancelled or failed);
-                                 --to sends to NAME as soon as it is heard (the code is typed)
-driftwire receive [--once]       the session for receiving; --once closes after the first offer,
-                                 accepted or declined (a knock that offers nothing does not count)
-driftwire code                   the session, making a code to receive from anywhere, closing
-                                 when the receive it lets in ends, or the code fails or runs out
-driftwire devices                the remembered devices (no terminal needed)
-driftwire serve [--data DIR]     the NAS service, no terminal ([below](#the-nas-service-driftwire-serve)); init, devices, add, revoke
-driftwire host [--data DIR]      this computer as the service and a relay ([below](#on-your-own-computer-driftwire-host)); setup, share, unshare, status, pair, name, vpn, start-at-login, stay-awake
-driftwire update                 update it the way it was installed (no terminal needed)
-driftwire --help | --version     (no terminal needed)
+driftwire send PATH... [--to NAME]   files or one folder ready; closes when that send ends;
+                                 --to sends to NAME once heard (the code is still typed)
+driftwire receive [--once]       --once closes after the first offer (a knock does not count)
+driftwire code                   makes a code; closes when its receive ends or the code dies
+driftwire devices                remembered devices (no terminal needed)
+driftwire serve [--data DIR]     the NAS service ([below](#the-nas-service-driftwire-serve))
+driftwire host [--data DIR]      this computer as the service and a relay ([below](#on-your-own-computer-driftwire-host))
+driftwire update                 update through the install channel (no terminal needed)
+driftwire --help | --version
   --save-to DIR, --name NAME     this run only
   --plain, --no-color, --verbose
 ```
 
-Exit 0 when it ends normally (for `send`, `receive --once` and `code`, the transfer went through);
-1 when the transfer of one of those did not go through (declined, cancelled, failed); 2 for a
-usage error, no terminal, or a start that fails (another session of the same user). With no
-network at all it says so and waits, as the window does: a network can come up.
+Exit 0 normal (for `send`, `receive --once`, `code`: the transfer went through); 1 that transfer did
+not; 2 usage error, no terminal, or failed start.
 
-- **Interactive only** (owner). Nothing is accepted or sent without the person at that terminal
-  answering: there is no `--yes` and no auto-accept, and the program refuses to start the session
-  when stdin or stdout is not a terminal (`driftwire: this needs a terminal (it asks before
-  anything is sent or saved).`, exit 2). Only the test build, `mv_driftwire_cli_test`
-  (`MV_DRIFTWIRE_CLI_TEST_HOOKS`, never packaged), reads keys from a pipe, keeps to loopback and
-  prints machine-readable lines, for the end-to-end test.
-- **No secret on the command line.** No code, check digits or relay key is ever an argument:
-  it would sit in the shell's history and in `ps`. `driftwire code 123456` is a usage error; a
-  code someone gave you is pasted into `/send-to`, a relay server's key typed into
-  `/relay-server`'s field. `--to NAME` names a computer, never a code.
-- **The look**, after Claude Code's terminal UI, in Driftwire's own colours: an inline UI, never
-  the alternate screen. What finished is printed once, above, as a transcript that stays in the
-  scrollback (`⏺` and the engine's own sentence, `⎿` and the size, the time, the bearer and where
-  it saved), so the terminal keeps a log after it closes. Only a live region at the bottom is
-  redrawn: the card under way (a rounded frame with its title in the border), Nearby, a prompt
-  box with a hint line under it, and the palette of `/` commands, filtered as it is typed. One
-  accent, teal (Wi-Fi's tint); the bearers in the window's colours (Bluetooth blue, internet
-  indigo, the DHT orange, a relay purple). A wait is one shimmering line ("Waiting for Ann's
-  MacBook to accept… (12s · esc to cancel)"); a transfer is the window's path picture in
-  characters, its dots travelling toward the receiver while bytes move and frozen with
-  "reconnecting…", over a gradient bar in eighth blocks and the window's stats line (`eta.h`, the
-  bytes and times formatted as `tree.cpp` does). It animates only while something waits or moves
-  (about 12 frames a second); idle, its loop blocks. Names are cut by display width with `…`;
-  under 40 columns the code is plain digits. `NO_COLOR` or `--no-color` drops colour; `--plain`,
-  or `TERM=dumb`, is lines only with no escape sequence at all and questions as lines ("Accept 24
-  files (412 MB) from Ann's MacBook? [y/N/s]"), for screen readers and dumb terminals.
-- **The code.** The receiver's card shows the six digits in large box-drawing digits, grouped
-  "123 456" as the window groups them, to type on the other screen; Esc there declines. The sender
-  gets six boxes that take digits only and send by themselves at the sixth, with the engine's note
-  and the tries left (three wrong entries end the link, as in the window). Over the internet the
-  check is shown to compare ("Make sure Ann's MacBook shows 482 917"), never as a code to type.
-  `/code`'s card shows the code large with its link and life; `/copy` copies the code and
-  `/copy link` the link (OSC 52, where the terminal allows it): commands, not keys, since any
-  letter at the prompt may begin a path.
-- **Accept is typed** (owner, [12](12-decision-log.md#driftwire)): the offer is a numbered choice
-  under the card, **1** Accept and save to the folder shown, **2** save somewhere else (a folder
-  typed, Tab completing), **3** Decline; `y` accepts, `n` or Esc declines. A card that says yes to
-  someone else (the offer, the check to compare, Remember) answers only the card drawn, and only
-  once keys have stopped for 750 ms with it on screen (`kAnswerSettleMs`), so typing under way at
-  the prompt or in a field as it appears ("y" of "~/my-trip") is not an answer; Esc always is.
-  Three minutes with no answer, the engine declines, as in the window. Esc twice cancels a transfer under way; Ctrl+C
-  twice closes Driftwire (during a transfer it says it will cancel it first).
-- **Clicks** (owner, 2026-10-25, [12](12-decision-log.md#driftwire)): choices are also chosen with
-  the mouse, but only while something on screen can be clicked: the offer's three, a question's,
-  the check to compare, Remember's, the `/` palette's rows, and Nearby while files are ready. Only
-  then is mouse reporting on (CSI ?1000h with SGR's ?1006h), so the rest of the time the terminal
-  selects and scrolls its scrollback as ever; while it is on, most select with Shift (Option in
-  macOS Terminal). A click on a choice is its number typed, so it answers only the card drawn and,
-  on a card that says yes to someone else, only once it has settled (`kAnswerSettleMs`); the
-  wheel is ↑↓. A click on a computer in Nearby points at it; a second click on the one pointed at
-  sends, as Enter on an empty prompt does (the code is still typed and the other side still
-  accepts). A palette row clicked is Enter on it. Each clickable row's box comes from the layout
-  (FTXUI `reflect`, `hit_boxes` in `render.h`); where the live region is on screen comes from the
-  terminal: after each write the session asks for the cursor (CSI 6n), which `inline_view` keeps
-  `up_from_top()` rows below the region's first row, and a click that comes before the answer
-  waits for it. Off in plain mode, on suspend and on the way out (the console's restore string
-  turns it off too, and a cursor answer still on its way is read first, so none lands in the
-  shell). Measured in the tests' terminal only; Windows Terminal, conhost, macOS Terminal, iTerm2
-  and the Linux terminals not yet by hand.
-- **Files** are typed, pasted or dropped (a terminal pastes a dropped file as its path): quotes,
-  backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
-  shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
-  empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
-  `/code`, `/copy`, `/send-to`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
-  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/tunnel [on|off|apps on|off]`, `/updates`, `/settings`,
-  `/help`, `/quit` (`/updates` is the command line's own, [Updates](#updates-in-the-terminal)). An internet option says what it means the first time it is turned on in a session (the
-  window's words).
-- **Its own identity and data folder.** Its settings (`driftwire.json`), what it keeps of a
-  receive that stopped (`driftwire_resume.json`), the DHT's table (`driftwire_dht.dat`) and the
-  session's lock live in a folder of its own, made 0700: `${XDG_STATE_HOME:-~/.local/state}/driftwire` on Linux,
-  `~/Library/Application Support/Driftwire` on macOS, `%LOCALAPPDATA%\Driftwire` on Windows; never
-  the add-on's data folder. Its identity and remembered devices are under the secret-store service
-  "Driftwire CLI" (`secrets::kCliService`), never the app's "MediaViewer Driftwire"
-  ([12](12-decision-log.md#driftwire)): the Secret Service on Linux, Credential Manager on Windows.
-  On macOS there is none (the data protection keychain needs an access group, which a bare program
-  cannot be entitled to), so each run has a key of its own and Remember does not show there.
-  `--save-to` and `--name` apply to this run only: they go to the engine as its starting state and
-  `default_destination`, never as an event (which would save them), and the kept Save to is put
-  back when the session closes, since the engine saves its whole view at any change.
-- **The name on the air while the session runs.** Opening the session is opening the window
-  (`screen_opened("")`): presence starts and this computer's name is in the beacon (#501) until it
-  closes. There is no receiving with the session closed: Keep receiving and Receive when
-  MediaViewer is closed do not exist in a terminal (both are forced off at start).
-- **One session per user**: `net::try_lock_instance` on `<data folder>/driftwire.json.lock`; a
-  second prints "Driftwire is already open in another terminal." and exits 2. The app's lock is in
-  its own folder, so MediaViewer and `driftwire` can be open on one computer at once: two devices
-  to the others, each with its own identity (not measured).
-- **No Bluetooth** on any OS (`use_bluetooth = false`, `bt_none.cpp`): CoreBluetooth needs a
-  bundle's usage string, the WinRT GATT server in an unpackaged console is unverified, and Linux
-  has no bearer. Wi-Fi and the internet only.
-- **Threads.** The session thread owns the engine and the terminal and makes every engine call;
-  the host's `post_tree` only counts and wakes it (`cli_host`, the host table's rest: a free-space
-  check, a log ring shown with `--verbose`, notices taken, no yielding). `~engine` runs on that
-  thread before the terminal is restored, so a receive cut off by closing keeps what arrived (#530)
-  and the next session lists it under `/unfinished`. SIGTERM, SIGHUP and the console closing quit
-  in order; in raw mode Ctrl+C is a key; Ctrl+Z suspends and draws again on resume. While a
-  transfer keeps the machine awake the reason names Driftwire ("Driftwire is receiving files",
-  `power::set_owner`).
-- **Idle cost**, measured 2026-10-23 in a Linux container (a pty, nothing on screen moving):
-  60 s idle took 10 ms of CPU (0.017 %) and 6.0 context switches a second, and wrote 0 bytes to the
-  terminal; the engine's own `[.driftwire-idle]` "on" phase is 7.4–8.2 ms in 20 s at 6.0–6.1 a
-  second. Nothing above the engine's own cost could be measured.
-- **The Linux packages** (`cmake/driftwire-cli`, [12](12-decision-log.md#platforms)): one program,
-  `/usr/bin/driftwire`, that needs only glibc (2.35 or newer, the build machine's): libsodium 1.0.22
-  (a distro's 1.0.18 has no ML-KEM-768), BLAKE3, FTXUI and the C++ runtime are linked in, and the
-  build fails if anything else is `NEEDED`. libsecret, libsystemd and libcurl (the update check)
-  are opened at run time when they are there; the `.deb` recommends `libsecret-1-0` and
-  `libcurl4t64 | libcurl4`, the `.rpm` `libsecret` and `libcurl`. With it: the manual
-  page, bash and zsh completions, a firewalld service for the beacon (`driftwire`, 47613/udp; the
-  manual page says what ufw needs, and that receiving nearby also needs incoming TCP from the local
-  network, on a port the system picks) and the DEP-5 copyright file with every notice.
+- **Interactive only**: no `--yes`; refuses when stdin/stdout is not a terminal (`driftwire: this
+  needs a terminal (it asks before anything is sent or saved).`, exit 2). Only the never-packaged
+  test build `mv_driftwire_cli_test` (`MV_DRIFTWIRE_CLI_TEST_HOOKS`) reads a pipe.
+- **No secret on the command line**: codes, checks and relay keys are pasted into `/send-to` or
+  `/relay-server`, never arguments (`driftwire code 123456` is a usage error).
+- **The look** (after Claude Code's terminal UI): inline, never the alternate screen; finished
+  events print once to scrollback (`⏺` sentence, `⎿` size, time, bearer, destination); only the
+  live region redraws (current card, Nearby, prompt box and hint, `/` palette). Accent teal; bearer
+  colours as the window. Animates ~12 fps only while waiting or moving; idle, the loop blocks.
+  Under 40 columns the code is plain digits. `NO_COLOR`/`--no-color` drops colour; `--plain` or
+  `TERM=dumb`: lines only, no escapes ("Accept 24 files (412 MB) from Ann's MacBook? [y/N/s]").
+- **The code**: receiver shows six box-drawing digits "123 456" (Esc declines); sender types into
+  six digit boxes (three wrong end the link). Internet checks are shown to compare. `/copy`,
+  `/copy link` use OSC 52.
+- **Accept is typed**: **1** Accept, **2** save elsewhere (Tab completes), **3** Decline; `y`/`n`/Esc.
+  A card that says yes to someone else answers only once keys have been idle 750 ms with it shown
+  (`kAnswerSettleMs`); Esc always answers. Three minutes declines. Esc twice cancels a transfer;
+  Ctrl+C twice closes.
+- **Clicks**: mouse reporting (CSI ?1000h + ?1006h) is on only while something clickable is shown
+  (offer, question, check, Remember, palette, Nearby with files ready). A click is the choice's
+  number typed (same settle rule); wheel is ↑↓; Nearby: first click points, second sends. Hit boxes
+  from FTXUI `reflect` (`hit_boxes`, `render.h`); the region's row from a CSI 6n report after each
+  write (`inline_view`, `up_from_top()`). Off in plain mode, on suspend and on exit.
+- **Files**: typed, pasted or dropped; quotes, escapes, `~`, `file://`, globs `* ? [...]` expanded by
+  the program. Commands: `/send`, `/folder`, `/files`, `/clear`, `/code`, `/copy`, `/send-to`,
+  `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`, `/save-to`, `/internet`,
+  `/dht`, `/handover`, `/relay`, `/relay-server`, `/tunnel [on|off|apps on|off]`, `/updates`,
+  `/settings`, `/help`, `/quit`.
+- **Its own data folder** (0700): `driftwire.json`, `driftwire_resume.json`, `driftwire_dht.dat`, the
+  lock; `${XDG_STATE_HOME:-~/.local/state}/driftwire`, `~/Library/Application Support/Driftwire`,
+  `%LOCALAPPDATA%\Driftwire`. Secrets under service "Driftwire CLI" (`secrets::kCliService`), never
+  the app's. macOS has no store for a bare program: per-run key, Remember hidden. `--save-to`/`--name`
+  are starting state, never saved.
+- **Session = window**: `screen_opened("")` while it runs; Keep receiving and background are forced
+  off. **One per user** (`net::try_lock_instance` on `<data folder>/driftwire.json.lock`; second:
+  "Driftwire is already open in another terminal.", exit 2); independent of the app's lock.
+- **No Bluetooth** (`use_bluetooth = false`, `bt_none.cpp`).
+- **Threads**: the session thread owns engine and terminal and makes every engine call; `post_tree`
+  only wakes it (`cli_host`). `~engine` runs before the terminal is restored so a cut-off receive
+  is kept. SIGTERM/SIGHUP quit in order; raw Ctrl+C is a key; Ctrl+Z suspends.
+- **Linux packages** (`cmake/driftwire-cli`): `/usr/bin/driftwire` needing only glibc ≥ 2.35;
+  libsodium 1.0.22 (ML-KEM-768), BLAKE3, FTXUI, C++ runtime linked in; the build fails on any other
+  `NEEDED`. libsecret, libsystemd, libcurl opened at run time (recommended by `.deb`/`.rpm`). Ships
+  completions, a firewalld service (`driftwire`, 47613/udp), DEP-5 copyright.
 
 ### Updates in the terminal
 
-The owner asked (2026-10-25) for the command line to say when a newer version is out, as Claude
-Code's does, and for a command that installs it ([12](12-decision-log.md#driftwire)):
 `src/addons/driftwire/cli/update.h`.
 
-- **The check.** As the session opens, once a day at most and only for a copy one of the
-  installers put there, a detached thread GETs `<site>/latest.json` (`{"version": "0.1.40"}`,
-  written by `driftwire_repo.py` with the rest of the site, so it names what the site installs).
-  The session never waits for it: a version already known to be newer is said under the banner, a
-  fetched one when it arrives (the thread wakes the session's wait and calls nobody once it has
-  closed). The answer is kept in `driftwire_update.json` in the data folder (`check`, `checked`,
-  `latest`); no answer, or one that is not a version, is asked again next run. On by default (the
-  owner's call); `/updates off` keeps it off, `DRIFTWIRE_NO_UPDATE_CHECK` set to anything skips it,
-  and `/settings` says which. The test build never checks.
-- **The notice** is one transcript line, "driftwire 0.1.40 is available · this is 0.1.38", and "Run
-  driftwire update to update it (/updates off stops these checks)." under it, once a session.
-- **`driftwire update`** asks the site again, says "driftwire 0.1.38 is up to date." and exits 0
-  when it is, and otherwise (or when the site does not answer) runs this copy's channel, printing
-  it first, with the installer's own output: `brew upgrade driftwire` (the program's path, links
-  resolved, is in a Homebrew Cellar); the site's `install.sh` again, from a file so a failed
-  download runs nothing (`/usr/bin/driftwire` on Linux, or `<prefix>/bin/driftwire` beside the
-  archive's `share/driftwire/install-manifest` on Linux or a Mac without Homebrew), which upgrades
-  the package through apt, dnf or zypper, or the archive (on a Mac that has Homebrew by then it
-  installs nothing and says to use brew); the site's `install.ps1` again through `powershell.exe -NoProfile -Command`
-  (`%LOCALAPPDATA%\Programs\Driftwire\driftwire.exe`), which moves the running copy's folder aside,
-  so an open session is no obstacle. Exit 1 when the installer fails, or for a copy none of them put
-  there (a build of one's own), which is told where the installers are.
-- **The site** is built in (`MV_DRIFTWIRE_SITE_URL`, the Pages address release.yml deploys to);
-  `DRIFTWIRE_REPO_URL`, as the installers read it, overrides it when it is https (or http on
-  127.0.0.1 or localhost) and holds only URL characters, since it goes into a shell command.
-- **What it sends**: a GET with the User-Agent `driftwire`, no cookie, query, version or
-  identifier, through WinHTTP, NSURLSession (ephemeral) or libcurl (opened at run time; without it
-  Linux has no check). https only, redirects to https only, the answer cut at 4 KiB, 10 s. Only
-  digits and dots from it are a version (at most four parts), so nothing it says reaches the
-  terminal as text. `latest.json` is not signed: it only says that an update exists, and what
-  installs it is checked as before ([Installing](#installing)).
+- **The check**: on session open, at most daily, only for an installer-placed copy, a detached
+  thread GETs `<site>/latest.json` (`{"version": "0.1.40"}`, from `driftwire_repo.py`); never
+  waited on. Kept in `driftwire_update.json` (`check`, `checked`, `latest`). Off with `/updates
+  off` or `DRIFTWIRE_NO_UPDATE_CHECK`. Notice: "driftwire 0.1.40 is available · this is 0.1.38" /
+  "Run driftwire update to update it (/updates off stops these checks)."
+- **`driftwire update`**: up to date → exit 0; else runs the channel: `brew upgrade driftwire`
+  (path in a Homebrew Cellar), the site's `install.sh` from a file (`/usr/bin/driftwire`, or beside
+  `share/driftwire/install-manifest`), or `install.ps1` via `powershell.exe -NoProfile -Command`
+  (`%LOCALAPPDATA%\Programs\Driftwire\driftwire.exe`). Exit 1 on failure or a self-built copy.
+- **Site**: `MV_DRIFTWIRE_SITE_URL`; `DRIFTWIRE_REPO_URL` overrides if https (or http on localhost)
+  and URL characters only.
+- **Request**: User-Agent `driftwire`, no cookie/query/identifier; WinHTTP, NSURLSession
+  (ephemeral) or run-time libcurl; https only, 4 KiB, 10 s. Only digits and dots are a version.
+  Unsigned: it only says an update exists.
 
 ### Installing
 
-The owner asked (2026-10-24) to install `driftwire` on its own, as `sudo apt install` does, with
-no MediaViewer present, and then for the macOS and Windows command line, choosing a Homebrew tap
-and a PowerShell one-liner ([12](12-decision-log.md#driftwire)). It needs no MediaViewer: it has
-its own identity and data folder, and sends to and receives from MediaViewer's add-on or another
-`driftwire`. The Linux and Windows installers come from a site on this repository's GitHub Pages,
-`https://longtimeno-c.github.io/mediaviewer/driftwire/`, and the Mac's from the tap
-`longtimeno-c/homebrew-tap`; until the owner has set them up
-([DEVELOPMENT](../DEVELOPMENT.md#publishing-the-command-line)) neither serves anything.
+Pages site `https://longtimeno-c.github.io/mediaviewer/driftwire/` (Linux, Windows) and tap
+`longtimeno-c/homebrew-tap` (macOS); setup in [DEVELOPMENT](../DEVELOPMENT.md#publishing-the-command-line).
 
 ```
 Linux    curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh
@@ -280,1451 +139,500 @@ Windows  irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | 
 
 | | What it writes | Updates | Removing it |
 |---|---|---|---|
-| Linux | the package, through apt, dnf, yum or zypper, with the repository's source and key; with none of them, the tarball's files in `~/.local` (`/usr/local` as root) | the package manager (`apt upgrade`, `dnf upgrade`, `zypper update`); the tarball: the line again | `curl -fsSL <site>/install.sh \| sh -s -- --uninstall` |
-| macOS | Homebrew's copy, `$(brew --prefix)/bin/driftwire` and its manual page; without Homebrew, `install.sh` unpacks the macOS archive into `~/.local` (`/usr/local` as root) | `brew upgrade`; the archive: the line again | `brew uninstall driftwire`; the archive: `curl -fsSL <site>/install.sh \| sh -s -- --uninstall` |
-| Windows | `%LOCALAPPDATA%\Programs\Driftwire` (`driftwire.exe`, the DLLs it loads, the notices) and that folder on the user's `Path` | the line again | `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` |
+| Linux | the package via apt, dnf, yum or zypper with the repo's source and key; else the tarball in `~/.local` (`/usr/local` as root) | the package manager; tarball: the line again | `curl -fsSL <site>/install.sh \| sh -s -- --uninstall` |
+| macOS | Homebrew's copy; without Homebrew, the macOS archive via `install.sh` into `~/.local` | `brew upgrade`; archive: the line again | `brew uninstall driftwire`; archive: `install.sh --uninstall` |
+| Windows | `%LOCALAPPDATA%\Programs\Driftwire` on the user's `Path` | the line again | `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` |
 
-None of them touches the data folder; none needs an administrator on Windows or macOS.
+None touches the data folder or needs an administrator on Windows/macOS.
 
-- **Linux: the one line** (`packaging/linux/repo/install.sh`, POSIX sh). It checks Linux, x86_64 or
-  arm64, glibc 2.35 or newer (musl is refused, with Alpine named) and curl or wget, says what it is
-  about to do, and prints each command as it runs it, through sudo when it is not root. On apt
-  systems (Debian, Ubuntu and their derivatives) it saves the key as
-  `/etc/apt/keyrings/driftwire.gpg`, adds `/etc/apt/sources.list.d/driftwire.sources` (deb822:
-  `URIs: <site>/apt`, `Suites: stable`, `Components: main`, the machine's architecture,
-  `Signed-By:` that key), runs `apt-get update` for that source alone and installs. With dnf or yum
-  (Fedora; a RHEL-like system from 10, since 9 has glibc 2.34) it imports the key into rpm, writes
-  `/etc/yum.repos.d/driftwire.repo` and installs or upgrades; with zypper (openSUSE) it adds the
-  same file as the repository `driftwire`. With none of them it unpacks the tarball into
-  `~/.local`, or `/usr/local` as root, after checking it against `SHA256SUMS` (and that file's
-  signature when `gpgv` is there), and records what it put where; that copy does not update
-  itself, and the installer says so. A source the package manager cannot read or verify is taken
-  away again, with what apt fetched of it (a refused `InRelease` stays in
-  `/var/lib/apt/lists/partial/` otherwise). Running it again upgrades. `--uninstall` removes the
-  package, the source, the key and apt's files of that source (`partial/` too), or the tarball's
-  files and the folders it made, and nothing else. Everything is in functions and `main` runs on
-  the last line, so a download cut off part way runs nothing. The site's address, key fingerprints,
-  Homebrew tap and release page are written in when the site is built; `DRIFTWIRE_REPO_URL`
-  overrides the address (https only, or http on 127.0.0.1 or localhost for the tests). On macOS with
-  `brew` on the `PATH` it installs nothing: it prints the `brew install` line and exits 1 (naming
-  `--uninstall` when an archive it unpacked earlier is still there). Without Homebrew (2026-10-25)
-  it checks macOS 14 or later and the Mac's architecture (`sysctl hw.optional.arm64`, so a shell
-  under Rosetta still counts as Apple silicon), prints Homebrew's own install line and that this
-  copy does not update itself, and takes the tarball route with the macOS archive the site carries
-  (the universal one, or `-arm64` on Apple silicon only), checked with `shasum` against the signed
-  `SHA256SUMS`. The archive's flat folder is laid out as the Linux tarball is: the program in
-  `bin`, `driftwire.1` in `share/man/man1`, the notices in `share/doc/driftwire`; `finish` names
-  `~/.zprofile` for the `PATH`. `--uninstall` removes that copy and names `brew uninstall driftwire`
-  for Homebrew's (exit 1 when that is all there is). A copy curl downloaded carries no quarantine,
-  so Gatekeeper does not look up its ticket.
-- **Linux by hand.** The site's page has the same as commands: the keyring and the deb822 source,
-  then `sudo apt install driftwire`; `driftwire.repo` into `/etc/yum.repos.d/` and `sudo dnf install
-  driftwire` (dnf asks once to trust the key; the page shows its fingerprint); `sudo zypper
-  addrepo --refresh <site>/driftwire.repo`; or the tarball and its signed checksums.
-- **macOS: the Homebrew tap.** `brew install longtimeno-c/tap/driftwire` reads
-  `Formula/driftwire.rb` in the public repository `longtimeno-c/homebrew-tap`, which release.yml's
-  `driftwire-homebrew` job rewrites for each stable release (`tools/package/homebrew_formula.py`
-  from `packaging/macos/driftwire.rb.in`): a binary formula whose `url` is the release asset
-  `driftwire-<version>-macos-universal.tar.gz` and whose `sha256` is that file's as published;
-  macOS 14 or later; the program into `bin`, its manual page into `man1`; a caveat on the
-  firewall's question and on Driftwire being open on the other side; a test of `--version`. The
-  archive (`tools/mac/macpack.py cli`) is one folder holding the program (the arm64 and x86_64
-  builds joined by `lipo_merge.py`), `driftwire.1`, `LICENSE`, `NOTICE` and `COPYRIGHT.txt`. The
-  program is signed with the Developer ID identity, the hardened runtime, a secure timestamp and
-  the identifier `io.github.longtimeno-c.driftwire`, with no entitlements (it keeps nothing in the
-  keychain: Remember does not show on macOS, as above), and notarized in a zip. A bare program
-  cannot be stapled, so Gatekeeper looks the ticket up online the first time a quarantined copy
-  runs; Homebrew does not quarantine what a formula installs. When the release's Intel leg did not
-  build, the archive is `-macos-arm64.tar.gz` and the formula adds `depends_on arch: :arm64`, so an
-  Intel Mac is told instead of given a program it cannot run. The same archive, as published, is on
-  the site for `install.sh` on a Mac without Homebrew (the Linux bullet above).
-- **Windows: the one-liner** (`packaging/windows/install.ps1`). Windows PowerShell 5.1 and
-  PowerShell 7; ASCII; one function called on the last line, so a cut-off download runs nothing
-  and only that function stays in the session. It calls only binary cmdlets and .NET: Windows
-  PowerShell 5.1's `Get-FileHash` and `Expand-Archive` live in script modules, which a Windows
-  client's default execution policy (Restricted) will not load, though it runs `irm | iex`. It
-  checks 64-bit Windows 10 or later (x64: Windows 11 on Arm runs it too; Windows 10 on Arm, which
-  emulates 32-bit x86 only, and 32-bit Windows are refused before anything changes), downloads
-  `driftwire-<version>-windows-x64.zip` from the site to a temporary file, checks it against the
-  SHA-256 written into the script and, when the release was signed, that every `.exe` and `.dll`
-  in it has a valid Authenticode signature, all before anything changes. It unpacks next to
-  `%LOCALAPPDATA%\Programs\Driftwire`, moves the old copy aside (a running `driftwire` stops that,
-  and it says to close it), the new one in and the old one away, then adds the folder to the
-  user's `Path` once. It writes `Path` through the registry so the value keeps its kind and its
-  `%VARIABLES%` (`SetEnvironmentVariable` would write it back expanded, as `REG_SZ`), lets
-  Explorer know so new terminals have it, puts it on this session's `PATH`, and prints
-  `driftwire --version`. `-Uninstall` removes the folder and the `Path` entry. Installing and
-  `-Uninstall` also take away an earlier run's leftovers beside the folder (an old copy that was
-  still running, a download cut off while unpacking), matched by the names it gives them:
-  `Driftwire.old-` or `.driftwire-` and eight hex digits; any other folder there stays.
-  A folder of that name without `driftwire.exe` in it is not its own and is left alone. The zip
-  comes from the site, not the release page, so the installer and the file it checks go live
-  together and a copy of the site served elsewhere is whole; `DRIFTWIRE_REPO_URL` or `-BaseUrl`
-  point it at one (the written SHA-256 must still match). Off Windows it refuses, naming the brew
-  and curl lines; with `DRIFTWIRE_INSTALL_TEST=1` it runs there for the tests, with the user's
-  `Path` in a file and no registry or Authenticode. winget may come later.
-- **The Windows zip** (`tools/package/driftwire-windows.ps1`): `driftwire.exe` and every DLL it
-  loads, found by reading the import and delay-load tables of the program and of each DLL it finds:
-  ours from the build (`libsodium.dll`, `blake3.dll`; x64-windows is a dynamic triplet, FTXUI's
-  port static only) and the Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`,
-  `msvcp140.dll`, whichever it imports) from Visual Studio's redistributable folder, never
-  System32: the build uses the dynamic C runtime, a per-user install cannot run `vc_redist`, and a
-  clean Windows lacks it. The Universal CRT and the API sets are Windows'; any other DLL fails the
-  build. Release signing signs ours with Trusted Signing when it is configured (optional, as for
-  the installer; without it the zip is unsigned); Microsoft's runtime keeps Microsoft's
-  signature. With `LICENSE`, `NOTICE` and `COPYRIGHT.txt`.
-- **Updates** come through each channel: the package manager on Linux (this is the updater a build
-  needs before it leaves this machine, CLAUDE.md), `brew upgrade` on macOS, the one line again on
-  Windows (it installs the site's version over what is there). The Linux packages are not attached
-  to the release page (`MV_RELEASE_LINUX_CLI` stays off): a `.deb` from there would install without
-  the source that updates it. The macOS archive and the Windows zip are, since the tap and the
-  site take them from the release. The program says when one is out, and `driftwire update` runs
-  its channel ([Updates in the terminal](#updates-in-the-terminal)).
-- **One switch.** The repository variable `MV_DRIFTWIRE_REPO=1` publishes the command line from
-  each stable release: publish then requires and uploads the macOS archive and the Windows zip
-  (`tools/package/github-release.py`), `driftwire-repo` deploys the site (the apt and dnf
-  repositories, `install.sh`, the Windows zip and `install.ps1`), and `driftwire-homebrew` pushes
-  the formula. The preflight refuses to start a stable release with it on and the repository key
-  or the tap's token missing. Previews leave all three alone, and a release with it off is the
-  installers alone, as before.
-- **The repository** (`tools/package/driftwire_repo.py`) is a static tree built by release.yml's
-  `driftwire-repo` job from the release's packages and the Windows zip as published, after the
-  release is published. Each run replaces the Pages site, so it holds the newest version only.
-  apt: the pool, `Packages` and `Packages.gz` for each architecture present, a `Release` (Origin
-  and Label `Driftwire`, Suite and Codename `stable`, component `main`) with `InRelease` and
-  `Release.gpg`. rpm: the packages signed with `rpmsign`, `createrepo_c` metadata (gzip and no
-  sqlite, which older dnf and zypper read) with `repomd.xml.asc`, and a `.repo` with `gpgcheck=1`
-  and `repo_gpgcheck=1`. The tarballs and the Windows zip with `SHA256SUMS` and `SHA256SUMS.asc`,
-  the public key as `key.asc` and `key.gpg`, the page (Linux, macOS and Windows), both
-  installers, and `latest.json` (the version, for the program's update check); `install.ps1` gets the zip's version, name and SHA-256, and whether `driftwire.exe`
-  carries an Authenticode signature (read from the file; a release with Trusted Signing configured
-  refuses an unsigned one). No external asset or script on the page.
-- **Valid-Until a year ahead.** apt refuses a `Release` past it, so a mirror or a network in the
-  way cannot keep serving an old, correctly signed index to hold back a fix for longer than that.
-  The cost: a stable release must come within the year, or `apt update` on every installed
-  machine fails ("Release file … is expired", exit 100, checked here) and takes nothing new from
-  the repository until the next release re-signs it.
-- **Nothing unsigned goes out.** The builder refuses packages whose versions disagree, an
-  architecture without all three packages, anything that is not driftwire, a tarball or zip path
-  outside its folder, a Windows `driftwire.exe` that is not x64, and a base URL that is not https.
-  It signs with the key named (two during a key change: every index then carries both signatures
-  and `key.asc` both keys; an `.rpm` carries the first), checks every signature against the
-  exported key with `gpgv` and `rpmkeys`, checks that `install.ps1` has the zip's SHA-256 and that
-  no private key material is in the tree, and only then replaces the site; a failure leaves the old
-  one. The release job then serves the result on localhost and installs from it before deploying
-  (`driftwire_repo.py smoke`): apt installs, refuses an `InRelease` changed by one byte, and
-  `--uninstall` leaves nothing, `partial/` included; then the tarball route with no package manager.
-- **The keys** are the owner's: the repository's OpenPGP key, made once, its private half in the
-  Actions secret `DRIFTWIRE_REPO_GPG_KEY` with an offline backup, the passphrase (if any) in
-  `DRIFTWIRE_REPO_GPG_PASSPHRASE`; apt keeps the key the installer saved, so a new key reaches an
-  apt machine only when the installer runs again (or the key is fetched by hand), and a key change
-  overlaps the two keys across at least one release. The tap is written with `HOMEBREW_TAP_TOKEN`,
-  a fine-grained token with Contents: write on the tap repository alone. The Apple credentials the
-  release already uses sign and notarize the Mac program. The Windows programs are signed only
-  when the release's optional Trusted Signing credentials are set, as the installer is; without
-  them `driftwire.exe` ships unsigned and `install.ps1` checks the zip's SHA-256 alone.
-- Run here only (2026-10-24, Linux): the Linux repository in an Ubuntu 24.04 container (apt 2.8,
-  dnf 4.14 with repo_gpgcheck, rpm 4.18: install, upgrade by apt and by the installer again,
-  refusal of a changed `InRelease` and of a changed `repomd.xml`, uninstall with `partial/`
-  cleared, the tarball route as root and as a user); `install.ps1` in its test mode under
-  PowerShell 7.6 (`tools/package/check-driftwire-install.ps1`: install, again, an update to a newer
-  version and back, a changed zip refused, a cut-off script doing nothing, uninstall keeping the
-  other `Path` entries, only its own leftovers removed, Windows 10 on Arm refused, only binary
-  cmdlets called); the formula under Ruby 3.3 against a stand-in for Homebrew's `Formula`;
-  `macpack.py cli` and `driftwire-windows.ps1` on tiny stand-in programs. CI's Windows leg runs
-  the one-liner for real under the Restricted execution policy (installs in both PowerShells,
-  signed and unsigned, and uninstalls in both; the re-run, the update and a changed zip in
-  PowerShell 7), and has not run yet; nor have
-  the release's macOS and Windows jobs, Homebrew, the tap or Pages, nor a real Fedora, openSUSE or
-  arm64 machine.
+- **`install.sh`** (`packaging/linux/repo/install.sh`, POSIX sh, `main` on the last line): checks
+  x86_64/arm64, glibc ≥ 2.35 (musl refused), curl/wget; prints each command. apt: key
+  `/etc/apt/keyrings/driftwire.gpg`, deb822 `/etc/apt/sources.list.d/driftwire.sources` (`URIs:
+  <site>/apt`, `Suites: stable`, `Components: main`, `Signed-By:`). dnf/yum/zypper:
+  `/etc/yum.repos.d/driftwire.repo` (zypper repo `driftwire`). Else the tarball, checked against
+  signed `SHA256SUMS`. A source that fails to verify is removed with apt's `partial/` files.
+  `--uninstall` removes only what it added. On macOS with `brew` it prints the brew line and exits
+  1; without, it checks macOS ≥ 14 and arch (`sysctl hw.optional.arm64`) and installs the archive.
+- **Homebrew**: `Formula/driftwire.rb`, rewritten per stable release by release.yml's
+  `driftwire-homebrew` (`tools/package/homebrew_formula.py`, `packaging/macos/driftwire.rb.in`);
+  `url` = `driftwire-<version>-macos-universal.tar.gz` (`-macos-arm64` + `depends_on arch: :arm64`
+  without an Intel build). Archive from `tools/mac/macpack.py cli` (`lipo_merge.py`); Developer ID,
+  hardened runtime, identifier `io.github.longtimeno-c.driftwire`, no entitlements, notarized.
+- **`install.ps1`** (`packaging/windows/install.ps1`): PowerShell 5.1 and 7, ASCII, binary cmdlets
+  and .NET only (Restricted policy blocks script modules). 64-bit Windows 10+ x64 (Windows 10 on Arm
+  and 32-bit refused). Downloads `driftwire-<version>-windows-x64.zip` from the site, checks the
+  embedded SHA-256 and (signed releases) Authenticode before changing anything; swaps the folder,
+  adds `Path` via the registry (keeping `REG_EXPAND_SZ`), broadcasts. Cleans only its own
+  leftovers (`Driftwire.old-` / `.driftwire-` + 8 hex). `-BaseUrl`/`DRIFTWIRE_REPO_URL` repoint;
+  `DRIFTWIRE_INSTALL_TEST=1` runs off Windows for tests.
+- **Windows zip** (`tools/package/driftwire-windows.ps1`): `driftwire.exe` plus every DLL found from
+  import/delay-load tables: `libsodium.dll`, `blake3.dll`, and the VC++ runtime from VS's
+  redistributable folder (never System32). Any other DLL fails the build. Trusted Signing when
+  configured.
+- **Publishing**: `MV_DRIFTWIRE_REPO=1` makes each stable release upload the macOS archive and
+  Windows zip (`tools/package/github-release.py`), deploy the site (`driftwire-repo`) and push the
+  formula; preflight refuses it with the repo key or tap token missing. Linux packages are not on
+  the release page (`MV_RELEASE_LINUX_CLI` off) so they always come with their update source.
+- **The repository** (`tools/package/driftwire_repo.py`): a static tree, newest version only. apt
+  pool, `Packages`, `Release` (Origin/Label `Driftwire`, `stable`, `main`) with `InRelease` and
+  `Release.gpg`, Valid-Until a year ahead (a stable release must come within the year); rpm signed
+  with `rpmsign`, `createrepo_c` (gzip, no sqlite), `repomd.xml.asc`, `.repo` with `gpgcheck=1` and
+  `repo_gpgcheck=1`; tarballs and zip with `SHA256SUMS`/`.asc`; `key.asc`/`key.gpg`; the page; both
+  installers; `latest.json`. It refuses mismatched versions, missing arches, foreign packages, bad
+  paths, a non-x64 exe, non-https URLs; verifies every signature (`gpgv`, `rpmkeys`) and that no
+  private key is in the tree before replacing the site. `driftwire_repo.py smoke` installs from it
+  on localhost first. Key change: two keys overlap for at least one release.
+- **Secrets**: `DRIFTWIRE_REPO_GPG_KEY`, `DRIFTWIRE_REPO_GPG_PASSPHRASE`, `HOMEBREW_TAP_TOKEN`
+  (Contents: write on the tap only); the release's Apple and optional Trusted Signing credentials.
 
 ## Finding each other
 
-Presence runs only while the window is open, while **Keep receiving** is on, or while a transfer
-runs. With the window closed and receiving off there is no socket, no beacon, no Bluetooth and no
-thread: the idle viewer announces nothing and polls nothing. Nothing in the add-on runs before the
-host loads it after first pixel, and the engine is made at the first open or command, not at load,
-unless Keep receiving was on.
+**What stays put.** Presence runs only while the window is open, Keep receiving is on, or a
+transfer runs; otherwise no socket, beacon, Bluetooth or thread. The add-on loads after first
+pixel; the engine is made at the first open or command unless Keep receiving was on.
 
-**Keep receiving is kept across launches** (#442, [12](12-decision-log.md#driftwire)). The toggle
-is written to the add-on's prefs (`prefs.h`, `driftwire.json` in its data folder) on the engine's
-control thread. At load, `mv_addon_get` reads that file (one small read); when the toggle was on it
-makes the engine, whose control thread starts presence. The host loads slot add-ons on its add-on
-queue (Mac) or a worker (Windows) after first pixel, so presence never starts before first pixel
-or on the foreground queue. Each window is its own process ([18](18-import.md) "One host
-process"): only the one holding `driftwire.json.lock` (`net::try_lock_instance`: `flock` on the
-Mac, an unshared handle on Windows) starts receiving at load, so one machine shows up once. While
-the toggle is on, the command bar shows **Driftwire: receiving** (a status item, both hosts), so
-a person can see this machine is discoverable after a relaunch. Clicking it opens the Driftwire
-window, or brings it forward (#512: Driftwire's one screen, [25](25-open-addons.md)). Off at load: the read, and nothing
-else (no engine, thread, socket or lock).
-
-Idle cost with it on and the window closed (`mv_import_tests "[.driftwire-idle]"`, Mac M-series,
-15 s per phase, the real UDP beacon, listener on loopback, no Bluetooth in the test build): off
-0.0003 % CPU and 0.1 context switches a second; on 0.020 % (2.9 ms of CPU in 15 s) and 6.4 switches
-a second (the beacon once a second, the listener's 200 ms poll); off again 0.0001 %. No present:
-the engine never touches the canvas.
+**Keep receiving is kept across launches** in `driftwire.json` (`prefs.h`, written on the control
+thread). At load `mv_addon_get` reads it and, if on, makes the engine. Each window is its own
+process ([18](18-import.md) "One host process"); only the holder of `driftwire.json.lock`
+(`net::try_lock_instance`) receives. Clicking **Driftwire: receiving** opens the window.
 
 | Bearer | Announce | Hear | Carry |
 |---|---|---|---|
-| **Wi-Fi** (`presence.cpp`, `net_*`) | A UDP beacon a second, port 47613, to the group 239.255.77.83 and the subnet broadcast, TTL 1 | The same socket, shared with other windows on the machine | One TCP connection to the beacon's address and port; the listener's port is the OS's pick |
-| **Bluetooth** (`bt_mac.mm`, `bt_win.cpp`) | A GATT service advertised connectable | A scan filtered to that service; each new device is read once for its INFO (id, name) | The service as a byte pipe (`bt_pipe.h`): C2P written without response, P2C notifying |
+| **Wi-Fi** (`presence.cpp`, `net_*`) | A UDP beacon a second, port 47613, to 239.255.77.83 and the subnet broadcast, TTL 1 | The same socket, shared with other windows on the machine | One TCP connection to the beacon's address and port; the listener's port is the OS's pick |
+| **Bluetooth** (`bt_mac.mm`, `bt_win.cpp`) | A GATT service advertised connectable | A scan filtered to that service; each new device read once for INFO (id, name) | The service as a byte pipe (`bt_pipe.h`): C2P written without response, P2C notifying |
 
-- A **beacon** is `MVSP1` and `{"v","p","id","name","port"}`: a random session id (16 hex digits),
-  the machine's name (the Sharing name on the Mac, the computer name on Windows) **only while the
-  window is open**, a port, and `"p"`, the highest protocol it speaks (#472; `"v"` stays 1, which is
-  what a protocol 1 client checks, so old and new still see each other; no `"p"` is protocol 1).
-  Bluetooth's INFO carries the same id, name and `"p"`. Never a path, a name of a file or anything
-  about one. A peer's `"p"` is never lowered while it is listed (#497): anyone on the network can
-  send a beacon in its name, and one with no `"p"` would talk a send down to protocol 1. The name a
-  send shows and remembers is the one the peer gives inside the sealed channel (`ident`), not the
-  beacon's.
-- **The id and the name change (#501).** With the window closed (Keep receiving, or Receive when
-  MediaViewer is closed) the name field says `MediaViewer`, which every version reads, and the id is
-  replaced every 10 minutes (`kIdRotateMs`) while nothing is under way; it is replaced too whenever
-  presence starts and whenever the window opens or closes, so the named and unnamed ids are not one
-  machine. With the window open the id holds, so a tile does not change under the pointer. Nothing
-  changes while a transfer, a handshake or a wait for a peer runs (the peer knows this side by the
-  id `ident` gave); the change waits for the end. A sender learns a background receiver's name from
-  `ident`, sealed, once it connects (and the receiver posts its notification). A protocol 1 send waiting to hear its peer on Wi-Fi follows the id, so a
-  receiver that changes its id meanwhile is lost to that wait.
-- A peer leaves the list 4.5 s after its last beacon or advertisement. One heard on both bearers
-  is one row.
-- **Nearby is this machine's link** (#502). The listener and the beacon take a source only when it
-  is on one of this machine's networks (an interface's subnet, `net::local_subnets`), link-local
-  or loopback: not another subnet, a VPN's far side or anything routable that reaches the port.
-  The networks are cached and looked up again on a miss (at most every 2 s) or after 30 s.
-- **The list cannot be filled or starved** (#502). It holds 64 peers; a new one takes the place
-  of the one heard from longest ago (never the picked peer, nor the one a send is for), one
-  address lists at most 4 ids (loopback, this computer's own windows, is not capped), and Wi-Fi
-  fills at most 48 places, so 16 stay for peers heard only on Bluetooth. A Bluetooth probe
-  (connect, read INFO) gives its place up after 5 s, at most 8 run at a time, and at most 256
-  devices are remembered (`bt_pipe.h`); on Windows at most 32 probe threads may still be waiting
-  on the OS, and none start past that.
-- **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
-  gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second. To a
-  **protocol 2** peer (#472) a set of any size starts on Bluetooth when that is all there is, and
-  the session moves to Wi-Fi the moment the peer is heard there ([The session](#the-session-protocol-2-472)).
-  To a **protocol 1** peer a set over **32 MiB never goes over Bluetooth**
-  ([12](12-decision-log.md#driftwire)); Wi-Fi carries anything. A protocol 1 peer heard only on
-  Bluetooth, selected with such a set, shows why and what to do:
-  put both computers on the same Wi-Fi network, or, when this computer has no network, turn on
-  Wi-Fi here. A click on its tile then waits ("Waiting for … on Wi-Fi", with Cancel); the moment
-  that peer's beacon arrives the send starts by itself, code and Accept as always. Presence stays up while it waits, window closed or not.
-- Sending prefers Wi-Fi when the peer's beacon is fresh, and falls back to Bluetooth.
+- **Beacon**: `MVSP1` + `{"v","p","id","name","port"}`: random session id (16 hex), machine name
+  **only while the window is open**, port, `"p"` = highest protocol (`"v"` stays 1; no `"p"` =
+  protocol 1). INFO carries id, name, `"p"`. A listed peer's `"p"` is never lowered (anti-downgrade).
+  Displayed names come from sealed `ident`.
+- **Rotation**: with the window closed the name is `MediaViewer` and the id changes every 10 min
+  (`kIdRotateMs`) while idle and whenever presence starts or the window opens/closes; never during
+  a transfer, handshake or wait.
+- Peers expire 4.5 s after their last beacon; both bearers = one row.
+- **Nearby is this link**: only sources on this machine's subnets (`net::local_subnets`, cached,
+  re-read on miss ≤ every 2 s or after 30 s), link-local or loopback.
+- **Limits**: 64 peers (evict longest-unheard, never the picked or target peer); ≤ 4 ids per address
+  (loopback uncapped); Wi-Fi ≤ 48 places. Bluetooth probe 5 s timeout, ≤ 8 at once, ≤ 256 devices;
+  Windows ≤ 32 probe threads.
+- **Bluetooth LE** Mac↔Windows is GATT only (tens of KB/s). Protocol 2: any set starts on Bluetooth
+  and moves to Wi-Fi when heard. Protocol 1: a set over **32 MiB never goes over Bluetooth**; the
+  tile waits ("Waiting for … on Wi-Fi") and starts when the beacon arrives.
+- Sending prefers Wi-Fi when the beacon is fresh.
 
 ## In the background (#452)
 
-**Receive when MediaViewer is closed** is opt-in and off by default, like AirDrop or Nearby Share
-being reachable. It implies Keep receiving (turning that off turns this off too) and is kept in
-`driftwire.json` with it. It is the same app, not a helper: the add-on asks the host to keep its
-process (`keep_alive`), and the hosts do the rest.
+**Receive when MediaViewer is closed**: opt-in, implies Keep receiving, in `driftwire.json`. The
+add-on asks the host to keep its process (`keep_alive`).
 
-- **Off** (the default) changes nothing: the last window closing quits, ⌘Q / Alt+F4 quit, and
-  with Keep receiving off there is no process, socket, beacon or Bluetooth after quitting.
-- **On**, closing the last window on the Mac, and closing the window on Windows, leave the
-  process running. ⌘Q, the menu's Quit and the Dock's Quit on the Mac quit (owner, 2026-10-29:
-  a Quit that hid the app kept an old version running past updates). The viewer drops what it
-  showed (no clip plays, the folder and its watch close; `returnToWelcome` / `return_to_welcome`) and its window is hidden, not
-  closed. On the Mac the app then leaves the Dock (accessory policy) and a **menu-bar item**
-  stays; on Windows a **notification-area icon**. Both menus: "Driftwire: receiving", then
-  Driftwire's own rows (2026-11-12, host table `keep_menu`, `build_menu`;
-  [plan](../plans/driftwire-menu-and-tunnel.md)): what is happening now ("Sending to Ann's
-  MacBook · 42%", "Laptop wants to send you files"; never the code or a file name) with **Cancel
-  Sending** / **Cancel Receiving** while it can be cancelled, **Send Files…** (the system's open
-  panel; the files go to the Send card and the window opens), and checkmarks for **Receive from
-  Nearby**, **Send and Receive over the Internet** and **Receive when MediaViewer is closed**,
-  which are the window's `receiving`, `internet` and `background` toggles under the same ids
-  (turning the first or last off ends the background, and the menu goes with it); then **Open
-  Driftwire**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). The rows are
-  re-sent only when one changes (a percentage moves in whole steps). Each kept entry has its own
-  item (2026-11-14): while `driftwire host` runs on this computer the server menu is a second one
-  (Hosting on/off, usage, phones connected, drives, Quit hosting; "On your own computer" below), and
-  it keeps the process as a kept add-on would. Opening the app
-  again (Finder, Spotlight, Start, a file) brings the hidden window back. Logout, restart and shut
-  down, and an update's restart, quit as before. Only the process that holds
-  `driftwire.json.lock` keeps itself; another window's process quits as usual. Hidden, a staged
-  app update installs once no transfer is under way and the process comes back in the
-  background; "Update ready — restart" clicked during a transfer waits for it to end, and a
-  copy asked to quit for another's update finishes its transfer first (#532,
-  [13](13-updates-and-telemetry.md)).
-- **A notification when someone sends** (both hosts, background or not). The engine posts a
-  notice (`notice_post`) the moment a sender's link is up, while its code shows: "Ann's MacBook
-  wants to send you files. Open Driftwire to see the code." Once the sender has typed the code
-  and the offer arrives: "… wants to send you 24 files, 412 MB. Open Driftwire to accept." It
-  never shows the code or a file name (rule 6: a lock screen shows it), only the sender's name, the
-  count and the size. **Clicking it opens the Driftwire window** with the card and its code;
-  its one button is **Decline** (the window's own Decline), tagged with the offer it is about, so a
-  notification left from an earlier offer declines nothing newer (#502). Accept is only in the
-  window, after the code: nothing is accepted from a notification. It is taken back however the
-  offer ends.
-  One source (a LAN address, or Bluetooth) gets at most three notifications a minute, the window
-  brought forward counted with them; past that its offers wait in the window unannounced (#502:
-  a sender that connects as "IT Support", idles and connects again all night).
-- The host skips the notification when the Driftwire window is the front window of the active
-  app (the card is in plain sight), and shows it when the window is closed, behind another window
-  or the app is in the background: the Keep receiving case gets it too.
-- **Mac:** `UNUserNotificationCenter` (`AddonNotices.swift`). Permission is asked the first time
-  either toggle is turned on (`notice_authorize`), never at launch. Without permission, or in the
-  unbundled lab binary (no notification centre), the window opens and the Dock bounces, as
-  before #452. Import's finished-job notice (`notifyTitle:`) now uses the same centre when
-  allowed, and beeps otherwise.
-- **Windows:** `AppNotificationManager`, registered once for the unpackaged build under the
-  process's AUMID (`MediaViewer.Viewer`, set before the first window), on the first ask or notice
-  (`IslandHost.Notices.cs`); before #452 `Show` threw without a registration and Import's notices
-  never appeared. Where Windows refuses, the window opens instead. A notification clicked after
-  the process ended starts the app normally (`----AppNotificationActivated:` is accepted).
-- **Idle cost, windowless:** see [12](12-decision-log.md#driftwire) and DEVELOPMENT.md. The
-  canvas presents nothing while hidden.
-- **It starts at login / sign-in** (2026-10-17), so a restart does not leave the machine
-  unreachable until someone opens MediaViewer. While the toggle is on the host keeps a login item:
-  on the Mac `SMAppService.mainApp` (System Settings → General → Login Items lists MediaViewer);
-  on Windows a per-user Run value, `HKCU\…\CurrentVersion\Run\MediaViewer` =
-  `"<install>\MediaViewer.exe" --background` (Settings → Apps → Startup lists it;
-  `src/shell/login_item_win.*`). The host follows the keep-alive list: it registers when the list
-  turns non-empty and removes the item when it turns empty, and only on that edge (a window whose
-  add-on never kept the process, or the list emptying while the app quits, leaves it alone). The
-  Windows uninstaller hook removes it too. Installed builds and the bundled app only; a dev build
-  or the lab binary registers nothing.
-- **That start is the background, not a window.** On the Mac a login item's launch (the
-  open-application event's `keyAELaunchedAsLogInItem`) and on Windows `--background` make the
-  viewer window but never show it: the app is an accessory app (Mac) with no taskbar button
-  (Windows), the add-ons load as on any start, and Driftwire's keep-alive brings up the menu-bar
-  item / notification-area icon. Opening MediaViewer, a file or the icon's **Open MediaViewer**
-  shows the window as from the background. A Windows `--background` start never forwards to a
-  viewer already running; it exits. **Self-cleaning:** if no add-on keeps the process within
-  60 s (the add-on was removed, or the toggle was turned off where this process could not see it),
-  the start removes its own login item and quits, so an orphaned entry costs one quiet launch.
-  `--background` also starts the Mac host this way, for testing.
+- **On**: closing the window leaves the process running (⌘Q / menu / Dock Quit still quit). The
+  viewer returns to welcome (`returnToWelcome` / `return_to_welcome`) and hides; Mac: accessory
+  policy and a **menu-bar item**; Windows: a **notification-area icon**. Menu (host table
+  `keep_menu`, `build_menu`): "Driftwire: receiving"; current activity ("Sending to Ann's MacBook ·
+  42%") with **Cancel Sending**/**Cancel Receiving**; **Send Files…**; checkmarks **Receive from
+  Nearby**, **Send and Receive over the Internet**, **Receive when MediaViewer is closed** (ids
+  `receiving`, `internet`, `background`); **Open Driftwire**, **Open MediaViewer**, **Quit
+  MediaViewer**. Re-sent only on change. While `driftwire host` runs, the server menu is a second item
+  (Hosting on/off, usage, phones connected, drives, Quit hosting; [below](#on-your-own-computer-driftwire-host)). Only the lock holder keeps itself. A staged update installs
+  once no transfer runs ([13](13-updates-and-telemetry.md)).
+- **Notifications** (`notice_post`), background or not, unless the window is frontmost: "Ann's
+  MacBook wants to send you files. Open Driftwire to see the code."; then "… wants to send you 24
+  files, 412 MB. Open Driftwire to accept." Never the code or a file name. Click opens the window;
+  the one button is **Decline**, tagged with its offer. Accept only in the window. ≤ 3 a minute per
+  source.
+  - **Mac**: `UNUserNotificationCenter` (`AddonNotices.swift`), permission asked when a toggle is
+    first turned on (`notice_authorize`); without it the window opens and the Dock bounces.
+  - **Windows**: `AppNotificationManager` under AUMID `MediaViewer.Viewer` (`IslandHost.Notices.cs`);
+    refused → window opens; `----AppNotificationActivated:` accepted at start.
+- **Sign-in start** while on: Mac `SMAppService.mainApp`; Windows
+  `HKCU\…\CurrentVersion\Run\MediaViewer` = `"<install>\MediaViewer.exe" --background`
+  (`src/shell/login_item_win.*`), registered/removed on the keep-alive list's empty edge; installed
+  builds only. A login launch (`keyAELaunchedAsLogInItem`) or `--background` never shows the window;
+  a Windows `--background` never forwards to a running viewer. If nothing keeps the process within
+  60 s it removes its login item and quits.
 
 ## The wire
 
-`wire.h`, `noise.h`, `channel.h`. One session, either bearer; the bearer moves bytes and decides
-nothing. A client speaks the protocol the peer's beacon or INFO announces (`"p"`); a receiver
-answers whichever hello arrives, so protocol 1 peers (from before #472) still send and receive on
-the LAN and Bluetooth. They get no rejoin and no move between bearers.
+`wire.h`, `noise.h`, `channel.h`. The bearer only moves bytes. A client speaks the peer's announced
+`"p"`; a receiver answers any hello, so protocol 1 peers still work (no rejoin or bearer moves).
 
-**Protocol 2 (#472) and 3 (#497)**, `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`. Protocol 3 is
-protocol 2 with the server's commitment (steps 2 and 4, and its own prologue, so the version is
-bound into the handshake); a peer that announces 2 (v0.1.34, v0.1.35) is spoken to in 2, a
-receiver answers either, and rejoins and internet hellos are the same in both:
+**Protocol 2 and 3**: `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`. Protocol 3 adds the server's
+commitment (steps 2, 4) and its own prologue; rejoins and internet hellos are the same in both.
 
-1. The client (the side that connected, the sender) sends `MVSP`, 2, `N` and the first Noise
-   message: an X25519 key and an **ML-KEM-768** key made for this link (the "hfs" modifier), and as
-   its payload a BLAKE2b commitment to a random 32-byte nonce.
-2. The server (the receiver) answers: its X25519 key, `ee`, the ML-KEM ciphertext encapsulated to
-   the client's key (its shared secret mixed into the chaining key beside the X25519 ones), its
-   static key and `es`, and (protocol 3) as its payload its own commitment to a random 32-byte
-   nonce. A
-   recording of the link needs both X25519 and ML-KEM-768 broken to read.
-3. The client sends its static key, `se`, and reveals the nonce, which must match the commitment.
-   **Both statics are keys made for this link alone (#501).** Anyone in range can connect and read
-   message 2, and a sender sends message 3 to whatever answers, before any code is typed, so the
-   machine's long-term identity ([below](#remembered-devices-472-pr-4)) is never a nearby static.
-   It goes sealed instead, once the link is authenticated: the sender's in its **offer** (`"key"`,
-   sent only after its person typed the right code, so only to the receiver that code names), the
-   receiver's in its **accept** (only after its person accepted). Remember keeps those. A handshake
-   behind CPace (an internet code, a remembered device's meeting) carries the identity as its
-   static, where the CPace key hides it from anyone without the code or the pairing secret and the
-   meeting checks it.
-4. Protocol 3: the server's first sealed message (`code_nonce`, unnumbered, like `resume_at`)
-   reveals its nonce, which must match its commitment.
-5. **The code** is six digits from a BLAKE2b hash of the handshake hash after message 2 and both
-   nonces (protocol 2: the client's only). Each side's part is fixed before it sees the other's, and the server reveals last, so
-   neither side knows the code before the other has finished its part: a machine in the middle can
-   neither search for keys that give both people the same digits nor learn the server's code and
-   drop the link before the server shows it (#497; before it, a client learned the server's code
-   from message 2 and could reconnect until one matched, unseen). Only the receiver's window shows
-   it.
-6. Both sides open an XChaCha20-Poly1305 secretstream each way keyed from the handshake's Split, and
-   keep Split's third output as the session's **resume secret** (memory only). Ephemerals are wiped
-   (`sodium_memzero`) as the handshake ends. Every later message is sealed with a sequence number
-   and an acknowledgement ([The session](#the-session-protocol-2-472)).
+1. Client (sender): `MVSP`, 2, `N`, message 1: X25519 + **ML-KEM-768** keys; payload a BLAKE2b
+   commitment to a random 32-byte nonce.
+2. Server: X25519 key, `ee`, ML-KEM ciphertext (mixed into the chaining key), static, `es`;
+   protocol 3 payload: its own nonce commitment.
+3. Client: static, `se`, reveals its nonce. **Both statics are per-link keys**; the long-term
+   identity ([below](#remembered-devices-472-pr-4)) goes sealed: the sender's in its **offer**
+   (`"key"`), the receiver's in its **accept**. Behind CPace the identity is the static.
+4. Protocol 3: the server's first sealed message `code_nonce` (unnumbered) reveals its nonce.
+5. **The code**: six digits from BLAKE2b of the handshake hash after message 2 and both nonces
+   (protocol 2: client's only). Commit-then-reveal with the server last stops a MITM searching for
+   or learning the code early. Only the receiver shows it.
+6. XChaCha20-Poly1305 secretstreams from Split; Split's third output is the **resume secret**
+   (memory only). Ephemerals `sodium_memzero`ed.
 
-The Noise core is checked against the published Cacophony vectors (`Noise_XX` and `Noise_NNpsk0`
-over 25519, ChaChaPoly and BLAKE2b); the hybrid patterns have fixed-key regression vectors and
-tests that the ML-KEM secret is in the keys and a tampered key or ciphertext fails
-(`tests/test_driftwire_noise.cpp`). Those are our own: no other implementation of the `hfs`
-patterns with ML-KEM-768 publishes vectors, so the hybrid half is checked against Cacophony only
-where it shares code with plain XX, and against itself (#501 names the gap; it closes when one
-does). libsodium 1.0.22 (already pinned) has ML-KEM-768.
+Vectors: Cacophony for `Noise_XX`/`Noise_NNpsk0`; own fixed-key vectors for `hfs`
+(`tests/test_driftwire_noise.cpp`). **Formal model**: `tools/formal/` (ProVerif 2.05) covers both
+handshakes, the code (with a collision oracle), forward secrecy if only one of X25519/ML-KEM breaks,
+the internet handshake (`internet.pv`) and rejoin; primitives are ideal.
 
-**The formal model** (`tools/formal/`, ProVerif 2.05, #472's assurance list) writes both handshakes
-out token by token from `noise.cpp` and `channel.cpp`: h and ck as hash and HKDF chains, the
-commitment, the code, the tag and `resume_at`. The attacker owns the network, replays and crosses
-messages between any number of sessions and rejoins, and for the code holds a **collision oracle**:
-given one side's code inputs and the other side's h2 it gets a nonce that gives both the same six
-digits, the power a real search over 10^6 gives. What it shows:
+**Tries, not people.** A nearby link that ends with no offer counts toward a limit (five a minute,
+then 30 s of not answering, `note_unconfirmed`): about ten MITM tries per three-minute wait.
+Protocols 1–2 lack the server nonce, so for them this limit is all that holds.
 
-- **The code.** When the sender's person typed the code the receiver showed, both sides ran the
-  same handshake (same h2, nonce, link keys and resume secret, one for one), and the files and the
-  resume secret stay secret, oracle and all. The oracle never helps because of the order: the
-  server's nonce is bound by its commitment before the server's ephemeral (so its h2) exists, and
-  the client's nonce is secret until its h2 is fixed. On the handshake's skeleton with the commitment check removed, ProVerif finds that
-  attack (the full first link without the check does not finish).
-- **Broken later.** A first link recorded now stays secret if X25519 is broken later (every
-  ephemeral and static handed over), or ML-KEM-768 is; with both broken it is read (the check that
-  the model can lose).
-- **Over the internet** (#501, `internet.pv`): CPace on the code (or a remembered pair's hourly
-  password), then `XXhfs+psk0` keyed by it. The password resists offline guessing from any number
-  of recorded and active runs (`weaksecret`: a 48-bit code or a word code is not given away by a
-  transcript; online, one try per code, which then dies). Neither side's identity, the statics
-  here, reaches anyone without the password, and what is sent after the handshake stays secret. A
-  sender that finished, its pin checked, met a receiver holding the identity it pinned that answered
-  its message 1, one for one; a receiver that finished shares its keys with a sender that saw its
-  identity (asked without "one for one", which does not finish; the keys hold a fresh ephemeral of
-  each run, so no two runs share them). About 9 minutes.
-- **The rejoin.** A link is adopted only by a side holding the session's resume secret, each
-  adoption matches one rejoin the other side really ran (a replayed first message is never adopted,
-  either way round), no two adoptions share link keys, and what a rejoined link carries stays
-  secret even if the resume secret leaks after the session, and then also X25519 or ML-KEM-768
-  is broken.
+**Protocol 1**: client `MVSP`, 1, BLAKE2b of its X25519 key; server `MVSP`, 1, its key; client
+reveals. `crypto_kx`; code from a hash of both keys. Other versions are refused at the hello.
 
-Simplifications: the primitives are ideal (symbolic hashes, HKDF, AEAD, the Diffie-Hellman
-equation, ML-KEM as an ideal KEM), so this says nothing about side channels or implementation
-bugs (the tests, the vectors and the fuzz harness do). The first link's handshake ciphertexts carry
-a constant associated data instead of h; that only helps the attacker, so what holds there holds for
-the code, and with the real h ProVerif does not finish. The code's 10^-6 is outside the symbolic
-model: the oracle gives the attacker a perfect search, and the model shows no order of messages lets
-it use one. The statics are modelled as fixed keys; since #501 a nearby static is a key of that link,
-which only shrinks what a recording or a stolen key gives. The identity the sender says in its offer
-is part of what goes after the code (`OFFER` in the model), so it is secret against a machine in the
-middle; the receiver's in its accept goes to whoever its person accepted, which no code can prove
-(see "Who can take what"). CPace's generator is an abstract group element with the Diffie-Hellman
-equation, and the internet handshake's ciphertexts carry a constant associated data too.
+Then, on any protocol:
 
-
-**Tries, not people** (#497). The symbolic model cannot count: an attacker in the middle can run
-the server's half many times, and each run is a try at matching the code its victim will type.
-Before #497 the client learned the server's code from message 2 and could drop the link there,
-unseen and unlimited (about 10^5 tries in the three minutes a person has to type). Now the server's
-nonce comes after the client's, so a client learns the code only once the server has finished and
-shows it; and a nearby link that ends with no offer counts toward a limit: five in a minute, and
-new nearby links are not answered for 30 s (`note_unconfirmed`). So a machine in the middle gets
-about ten tries in those three minutes, 10^-5, and the receiver's window shows each as a code
-nobody used. Protocols 1 and 2 have no server nonce (their code is fixed by the server's answer),
-so to a peer from before #497 the limit is all that holds; a receiver still answers them, so an
-attacker can choose 2, and the limit is what bounds it. The model's skeleton is unchanged; the server's commitment adds
-a check it does not need. Not modelled: protocol 1, `ident` (sent sealed before the code, so a machine in the
-middle learns the sender's id and name before a code is typed), timeouts and the flapping rule.
-
-**Protocol 1** (a peer from before #472): commit, answer, reveal, each with an X25519 key made for
-this link alone: the client sends `MVSP`, 1 and a BLAKE2b hash of its public key; the server
-answers `MVSP`, 1 and its public key; the client reveals its key, which must hash to what it sent.
-Both derive one key per direction (`crypto_kx`) and open the same secretstreams. The code is six
-digits from a hash of both public keys. Another version is refused at the hello.
-
-Then, on either protocol:
-
-1. The first sealed message on each side is who it is (`ident`: id, name). Names on screen are
-   these, not the beacon's.
-2. **The sender's person types the code** the receiver's screen shows (#442, passkey entry rather
-   than numeric comparison: typing makes the person read the other screen). The sender checks it
-   on its own machine against the code it derived, digits only, in constant time; a partial entry
-   is not a try. A wrong one says so and how many tries are left; the third wrong one sends
-   `cancel` and ends the link. Nobody typing it for 60 s ends the link on both sides (#502: the
-   receiver's one slot is held meanwhile, under a name the sender chose). Until a right one nothing about the files leaves, not even a name:
-   a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
-   another one, so what the person types cannot match.
-3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
-   up front: the sender would have to read every file twice before the first byte moved. An offer
-   that does not fit one message (a folder of more than a few thousand files) says `"parts"` and
-   sends the rest of its files in `offer_more` messages straight after (#498), at most 128 in all
-   (some 33 MB of offer; with paths of ~330 bytes that is `kMaxFiles`, 100 000). One that fits is
-   sent exactly as before; a receiver before #498 ends the link on `offer_more`, as it ended it on
-   the oversized offer.
-4. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
-   window, or three minutes without an answer, declines; a receiver already in a transfer answers
-   `busy` straight after the handshake.
-5. Each file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with the
-   BLAKE3 of the bytes as read; or `file_skip` for one that is gone or changed since the offer.
-   The receiver answers each with `file_done` (verified or not) and the end with `done`.
-6. `cancel` from either side ends it (`channel::cancel`, [The session](#the-session-protocol-2-472)
-   has the details): it goes out after the chunk being written, waiting at most 250 ms
-   (`kCancelWaitMs`) in all, then the link closes. A receiver that stops on an error sends it with
-   `{"why":"error"}`, so the sender does not say the person there cancelled.
-   Protocol 1: a ping goes out whenever a side has sent nothing for 2 s, 20 s of silence is a
-   dropped link, and a frame must arrive whole within 20 s of its first byte. Protocol 2: below.
-   Every wait before Accept is a deadline (the handshake 8 s, typing the code 60 s, the answer 3
-   minutes) that pings never extend, and a handshake still running is ended by Cancel or by the
-   add-on stopping. After Accept, a receive where nothing of the files moves for 60 s (no message,
-   and no file being read back) ends as failed (#502): pings alone do not hold the slot.
+1. `ident` (id, name) each way.
+2. **The sender types the code**; checked locally, constant time; three wrong → `cancel`; 60 s idle
+   ends the link. Nothing about the files leaves before.
+3. **Offer**: count, total, each relative path and size. Too big for one message: `"parts"` then
+   `offer_more`, ≤ 128 messages (`kMaxFiles` 100 000).
+4. `accept`, or `decline` with `declined`, `busy` or `no_room`; three minutes declines; a busy
+   receiver answers `busy` after the handshake.
+5. Per file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with BLAKE3; or
+   `file_skip`. Receiver: `file_done` each, `done` at the end.
+6. `cancel` either way, ≤ 250 ms (`kCancelWaitMs`); `{"why":"error"}` for a receiver error.
+   Protocol 1: ping after 2 s idle, 20 s silence = dropped. Deadlines before Accept (handshake 8 s,
+   code 60 s, answer 3 min) ignore pings; after Accept 60 s with no file progress fails.
 
 ## The session (protocol 2, #472)
 
-The channel is a session above the link (`channel.h`); `transfer.h` sees none of what follows: a
-send or a receive waits through a rejoin.
+A session above the link (`channel.h`); `transfer.h` just waits through rejoins.
 
-- **Nothing lost, nothing twice.** Every sealed message carries its sequence number and the count
-  the sender of it has received (the acknowledgement). A side keeps what the other has not
-  acknowledged, at most **16 MiB** (`kReplayBytes`, a budget: [12](12-decision-log.md#driftwire));
-  past it a sender waits, as a full socket would. The receiver acknowledges at least every 1 MiB
-  and at once for anything but file bytes; pings (at least every second while a link is idle)
-  carry the acknowledgement too.
-- **Rejoin over any bearer, no second code.** The client opens a new link and sends `MVSP`, 2, `R`,
-  a 16-byte tag (8 random bytes and a keyed hash of them under the resume secret: only the two
-  sides make or recognise one, and no two look alike) and a fresh
-  `Noise_NNhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` handshake with the resume secret as the psk:
-  new X25519 and ML-KEM keys, new link keys. The receiver routes it by the tag to the session it
-  names (`engine::route_busy`); a tag that names nothing here closes the link. Each side's first
-  sealed message on the new link is **`resume_at`**: how many messages it has received. That
-  proves it holds the keys (a recorded rejoin played again opens its first message and stops
-  there), and the other side sends again, in order, what is past that point. Its sequence field
-  (0 before #502, ignored by older peers) says which rejoin this is to that side, and both take
-  the larger: a rejoin one side adopted and the other did not (an on-path cut between the two
-  `resume_at`s) cannot leave the DHT handover's keys, which mix in the rejoin count, out of step.
-  A message that came
-  twice (sent on the old link, and again after the rejoin) is dropped by its sequence number.
-- **While a transfer runs, other links (#496).** Every link that reaches this side then
-  (`engine::route_busy`) is the transfer's rejoin or is turned away, and a stranger cannot keep
-  the rejoin out:
-  - **Over the internet, a rejoin or nothing.** On a code's listener, the way in or any other
-    internet link, a hello that is not a rejoin (a nearby `N` in protocol 1, 2 or 3, a code's `I`)
-    is closed before any handshake: no message 2, no `ident`, not even `busy`. Only a nearby link
-    is answered `busy` after its handshake, as before.
-  - **Each tag opens once.** The receiver remembers the tags of the rejoins it has taken (the last
-    256 per session; only the peer can make one), so a recorded rejoin played again is closed
-    before a byte is read or written. Only adopting the new link is one at a time: a rejoin that
-    never proves `resume_at` (a bearer that died under it) does not hold up the next, and of two
-    that both prove, the later rejoin count wins.
-  - **Room for the rescue.** Links in their hello have a short wait over the internet (2 s; a
-    sender writes it as it connects), and their own pool there (8; nearby keeps its 4). Each
-    source (an address, or an IPv6 /64) holds at most 4 of them. When a pool or a source's share
-    is full, a new link closes a random one still in its hello, of that source or of the source
-    with the most, so idle connections cannot fill the slots a rejoin needs; past its hello a
-    link is never closed to make room. The way in and a code's listener say where each link came
-    from (`source_of`, `internet.h`).
-  Messages are chunk-sized, so this is the issue's "resume at a chunk boundary": the receiver
-  keeps its open `.mvtmp`, its BLAKE3 state and its verifier exactly as they were, and nothing
-  that arrived is sent again. Every file is still verified end to end.
-- **When it moves** (the sender's mover thread, `engine::run_mover`):
-  - **Break.** A link that fails, or that is silent for **3 s** (`kSuspectMs`), is suspect: every
-    bearer the peer is heard on is raced (Wi-Fi to its fresh beacon, Bluetooth to its handle).
-    **The race is of whole rejoins, not connects** (#502, `channel::begin_rejoin`): each bearer
-    connects and sends the rejoin's first message, and wins only with the answer, proof the other
-    end holds the session's secret, within **3 s** of connecting. Only the winner goes on to
-    `resume_at` and moves the session; the others close before anything is adopted on either side.
-    A machine that beacons the peer's id and connects at once (when the peer's Wi-Fi is stale, or
-    it is on Bluetooth only) cannot win or stall the rescue, and a Wi-Fi place first heard during
-    the session is used only once it has answered so (owner, 2026-10-20). The window
-    says **Reconnecting to …** and the ring holds where it is. **20 s** (`kRejoinMs`) without a
-    link, or without a sign of life, ends the session as a lost link ends it today.
-  - **Make before break.** A send on Bluetooth whose peer appears on Wi-Fi opens Wi-Fi alongside,
-    rejoins there, and closes Bluetooth; the switch loses nothing (what was in flight on Bluetooth
-    is sent again from the replay). Wi-Fi is always the faster by far, so this is also the "too
-    slow" rule; after a move the next move for speed waits **10 s** (`kSwitchHoldMs`).
-  - **Flapping.** Three rejoins in **10 s** end the session.
-  - **Wi-Fi → internet** (#472 PR 5, [below](#wi-fi--internet-472-pr-5)): with the toggle on, the
-    receiver's internet places are raced too; with the DHT toggle on as well, both sides also meet
-    on the DHT under the session's keys when those places are gone.
-- **One bad byte ends the link, not the session**: after the handshake, a frame that does not open
-  is treated as a dropped link, and the rejoin sends it again. A gap in the sequence numbers (never
-  on an ordered link) or an acknowledgement of what was never sent ends the session.
-- **The end.** The receiver answers `done` and waits up to 5 s for it to be acknowledged before it
-  closes, so a link that drops at the last moment is rejoined rather than the sender waiting out a
-  lost `done`.
-- **A cancel is final** (#511). `channel::cancel` marks the session cancelled first, then writes
-  `cancel` as soon as the frame being written (if any) is done (the send lock is a timed mutex),
-  waits for the peer to acknowledge it so it is read before the link closes, and shuts down: 250 ms
-  at most in all. Nothing is sent after it. The side that reads `cancel` marks its session
-  cancelled too. From then on, on either side, a link that drops is not a loss: no
-  `link_event::down`, no suspect, no "Reconnecting", no mover race, no wait for `kRejoinMs`, and
-  a rejoin of the session is refused. The window then says who cancelled: "Cancelled. 2 of 5
-  files arrived whole on Bea." on the side that cancelled, "Ann cancelled. 2 files arrived whole;
-  nothing partial was kept." on the other ("You cancelled. …" and "Bea cancelled. …" when the
-  receiver did). A link lost with no cancel is unchanged: "Reconnecting to …", then "The
-  connection to … was lost". If the frame being written cannot finish within 250 ms (a slow
-  Bluetooth link), the cancel is not said, and the other side sees a lost link.
-  On Windows a screen window is rebuilt whenever its tree moves, ten times a second during a
-  transfer, and a rebuild between a press and its release lost the click, so Cancel there could
-  do nothing. `IslandHost.Screens.cs` now holds a window's rebuild while a pointer is down in it
-  and catches up on release ([25](25-open-addons.md)).
-- Not here yet: the slower too-slow rule between two fast bearers (over the internet a send
-  moves back to Wi-Fi when the peer is heard there again, as Bluetooth does).
+- **Nothing lost, nothing twice**: each message carries a sequence number and an ack; unacked data
+  is kept ≤ **16 MiB** (`kReplayBytes`), then the sender waits. Acks at least per 1 MiB; pings
+  (≥ 1/s idle) carry them.
+- **Rejoin, no second code**: `MVSP`, 2, `R`, a 16-byte tag (8 random bytes + keyed hash under the
+  resume secret), then `Noise_NNhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` with the resume secret
+  as psk. Routed by tag (`engine::route_busy`); unknown tag closes. First message each way
+  **`resume_at`** (count received; the other resends from there); its sequence field is the rejoin
+  count, both take the larger. Duplicates dropped by sequence.
+- **Other links during a transfer**: internet listeners close any non-rejoin hello before a
+  handshake; nearby links get `busy`. Each tag opens once (last 256). Hello wait 2 s over the
+  internet, pool 8 (nearby 4), ≤ 4 per source (address or IPv6 /64); when full a random in-hello
+  link is closed (`source_of`, `internet.h`). The receiver's `.mvtmp`, BLAKE3 state and verifier
+  carry on untouched.
+- **Moves** (`engine::run_mover`):
+  - **Break**: suspect after a failure or **3 s** silence (`kSuspectMs`); every bearer the peer is
+    heard on races a **whole rejoin** (`channel::begin_rejoin`), winning only with the answer within
+    **3 s**. **Reconnecting to …**. **20 s** (`kRejoinMs`) without a link ends the session.
+  - **Make before break**: Bluetooth → Wi-Fi when the peer appears there; next move waits **10 s**
+    (`kSwitchHoldMs`).
+  - **Flapping**: three rejoins in **10 s** end it.
+  - [Wi-Fi → internet](#wi-fi--internet-472-pr-5) adds internet places and DHT meetings to the race.
+- A frame that does not open is a dropped link; a sequence gap or a bogus ack ends the session.
+- **End**: the receiver waits ≤ 5 s for `done`'s ack.
+- **A cancel is final**: `channel::cancel` marks the session, writes `cancel` after the current frame
+  (timed mutex), waits for its ack, ≤ 250 ms; afterwards a drop is not a loss and rejoins are
+  refused. Messages say who cancelled ("Ann cancelled. 2 files arrived whole; nothing partial was
+  kept."). On Windows `IslandHost.Screens.cs` holds rebuilds while a pointer is down so clicks land.
 
-**Who can take what.** Bytes move only from a sender to the peer its person picked, after that
-person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
-files, so a third machine that hears the beacon learns a port (and a name, while the window is open),
-and nothing else. A
-peer heard in the last 4.5 s keeps its address and device: a beacon claiming its id from another
-address is ignored, and the list holds at most 64 ([Finding each other](#finding-each-other)).
-A receiver already in a transfer answers `busy`; at most four such refusals run at once. One
-source starts at most six receives a minute (#502); a link past that closes before its handshake.
+**Who can take what.** Bytes go only to the peer the sender's person picked, after the code and the
+peer's Accept; a sender never answers a request for files. A peer heard in the last 4.5 s keeps its
+address. ≤ 4 `busy` refusals at once; ≤ 6 receives a minute per source.
 
 ## Over the internet (#472 PR 2)
 
-A sender anywhere reaches a receiver with a **code**, and no server of anyone's is involved. One
-toggle, **Send and receive over the internet**, is off by default; with it off nothing below runs or
-shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `mapping.*`,
-`cpace.*`.)
+A **code** reaches a receiver anywhere with no server. Toggle **Send and receive over the
+internet**, off by default (off: no listener, mapping or socket). (`internet.*`, `invite.*`,
+`mapping.*`, `cpace.*`.)
 
-- **The receiver makes a code** (one at a time). It opens a TCP listener on IPv6 and IPv4, then
-  gathers the places a sender could reach, in this order, at most four:
-  - a port the **router maps** (`mapping.h`): PCP (RFC 6887), then NAT-PMP (RFC 6886), then
-    UPnP-IGD (WANIPConnection 1/2, WANPPPConnection), the first that answers; also external
-    **443** when the router allows, for a sender whose network lets only 443 out. A router whose
-    own outside address is not public (double NAT, carrier NAT) is reported, not used;
-  - this machine's **public IPv6** address (with an IGDv2 pinhole on the router when it offers
-    one);
-  - its address on this network, for a sender on the same network or behind the same router.
-
-  With no public place at all, the window says why (no mapping and no IPv6, or the router behind
-  another NAT) and what to try (UPnP / NAT-PMP on the router, the DHT toggle, a phone hotspot
-  with IPv6). **UPnP talks to the gateway only** (#499): only an SSDP answer from the default
-  gateway is read, and the description's LOCATION, URLBase and every control URL must name the
-  gateway itself (never loopback, 0/8, link-local, multicast or a public address); a service type
-  must be `urn:` and `[A-Za-z0-9.:-]` only, since it goes into the `SOAPAction` header (a CR/LF
-  there was a second, attacker-written request to whatever the control URL named). A port the
-  router already forwards (`GetSpecificPortMappingEntry`), unless to this machine by an earlier
-  run of this app, is not taken over, so the person's own 443 forward survives; a 443 mapping the
-  router put on another port is removed at once. When PCP mapped the port, UPnP is not searched
-  for an IPv6 pinhole besides.
-- **Leases are 120 s** (`kMapLifetimeS`, #499; was an hour), renewed at half their life while the
-  code or transfer holds them (`mapping::keeper`: PCP and NAT-PMP ask again with the same nonce
-  and ports, UPnP repeats `AddPortMapping`, a pinhole `UpdatePinhole`; one the router refuses is
-  asked again within 10 s). A crash or force-quit leaves a forward or pinhole open two minutes at
-  most, and a transfer longer than an hour keeps its way back in. While held they are listed in
-  a ledger beside the prefs (`driftwire_mappings.dat`, the handover's way in
-  `driftwire_way_in.dat`; deleted once removed): the next launch's first code removes what a crash
-  left, on the same gateway only, a UPnP forward only if the router still names this machine and
-  this app (`mapping::clean_leftovers`).
-- **The code** (`invite.h`) is a 48-bit secret and the places, encrypted under a key from the
-  secret (a link preview shows no address), and a two-byte check that catches a typo on the
-  sender before the code is spent. Crockford base32 in groups of four, case and O/0, I/1 forgiven,
-  or a link (`mediaviewer://driftwire?code=…`). An IPv4-only code is 26 characters; with IPv6
-  and several places up to about 90. The issue's "about 16 characters" cannot hold an address and
-  a secret: the link carries the long ones.
-- **It works once, for 10 minutes.** It dies at the first internet hello that reaches it, right or
-  wrong, and at 10 minutes; then the listener closes and every mapping is removed (before the
-  window shows it over), unless a transfer over it runs, whose rejoins come back the same way.
-  A wrong attempt is said on the receiver ("Someone tried this code and it was wrong, so it no
-  longer works"). Asked for a code while one is being made or waits, the receiver keeps it: a
-  host asks until its view shows one, and a second code made then replaced the first after it
-  had been given out (on Windows its listener could even take the first one's port, so the first
-  code reached the second's listener, a wrong code there; 2026-10-28).
-- **The sender pastes the code** and tries every place at once, IPv6 first and the rest 250 ms
-  later (happy eyeballs, `race.h`). The first TCP connection wins; the others close before a byte
-  goes, so one attempt reaches the receiver. A round with no connection is tried again after 1, 2,
-  5, 10, then every 30 seconds until Cancel, the window saying "Trying to reach the other computer
-  (attempt 4)…" and, from what each place answered, why: nothing answered (a firewall, either
-  side), refused (the code expired or MediaViewer closed), or only IPv6 in the code and none
-  here. **#499:** only public places that are not this machine's own are tried (never loopback,
-  multicast or 0.0.0.0); the receiver's address on its own network only after this network's
-  router (NAT-PMP or UPnP) says it faces the internet from the code's public address, so a host
-  at that private address on the sender's network cannot answer for the receiver.
-- **The code is spent only by its own ways in** (#499): its listener, its relay and its word
-  meeting. A code's hello over the Wi-Fi → internet way in (or any other internet link) is closed
-  without spending the code shown.
-- **The handshake** (`channel::open_internet`): the hello `MVSP` 2 `I` carries a CPace session id
-  and the sender's CPace message (draft-irtf-cfrg-cpace-18, ristretto255 / SHA-512, checked
-  against the draft's vectors); the receiver answers with its own. Then
-  `Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` keyed by the CPace key, with the CPace
-  transcript in the prologue: a wrong code fails at the receiver's first read, before it says
-  anything of itself (not even its static key), and a machine in the middle gets one live guess
-  per code and nothing to test guesses against offline. A hello that is not a code's on these
-  listeners (a nearby one) is closed before any handshake, with or without a transfer running
-  (#496, [above](#the-session-protocol-2-472)): nothing of this machine goes to whoever found the
-  port.
-- **Both confirm the other's name before any byte moves.** The sender sees "Connected to Bea
-  (new device)" and a six-digit **check** (from the whole handshake hash), and clicks **Send to
-  Bea**; the receiver sees "Ann (new device) wants to send you files" with the same check, and
-  still accepts or declines as always. The check is optional to compare and differs whenever
-  someone else is in the middle. Names are self-declared for a first-time peer: "new device".
-- Then the transfer is protocol 2's session ([above](#the-session-protocol-2-472)) over the TCP
-  link ("over the internet" on the window): a drop rejoins at the place the sender reached, and if
-  the peer turns up on this network the send moves there.
-- **TCP only, in PR 2.** With a direct code only the receiver's addresses are known, so the
-  paths that need both sides to send (UDP hole punching, birthday punch, port prediction, IPv6
-  simultaneous sends) wait for the DHT (#472 PR 3), and with them the QUIC-or-own-UDP transport
-  spike. The keepalive is the session's ping (every second while a link is up).
+- **Making a code**: a TCP listener (IPv6 + IPv4), then ≤ 4 places: a **router-mapped** port
+  (`mapping.h`: PCP, then NAT-PMP, then UPnP-IGD; also external **443** when allowed; a non-public
+  router address is reported, not used); the **public IPv6** (IGDv2 pinhole if offered); the LAN
+  address. No public place → the window says why. **UPnP talks to the gateway only** (its SSDP
+  answer; URLs must name the gateway; service type `urn:` + `[A-Za-z0-9.:-]`); foreign forwards are
+  never taken over.
+- **Leases 120 s** (`kMapLifetimeS`), renewed at half-life (`mapping::keeper`); ledger
+  `driftwire_mappings.dat` / `driftwire_way_in.dat` lets the next code clean crash leftovers
+  (`mapping::clean_leftovers`).
+- **The code** (`invite.h`): 48-bit secret + places encrypted under a key from it + a two-byte typo
+  check. Crockford base32 in groups of four, or `mediaviewer://driftwire?code=…`; 26 to ~90 chars.
+- **Once, for 10 minutes**: dies at the first internet hello (right or wrong) or at 10 min, closing
+  the listener and mappings unless a transfer runs. A second request keeps the current code.
+- **Sender**: races every place, IPv6 first, others +250 ms (`race.h`); retries after 1, 2, 5, 10,
+  then every 30 s, saying why. Only public non-own places; the LAN address only when this router
+  shares the code's public address. Only the code's own ways in spend it.
+- **Handshake** (`channel::open_internet`): `MVSP` 2 `I`, CPace session id and message
+  (draft-irtf-cfrg-cpace-18, ristretto255/SHA-512); then `Noise_XXhfs+psk0` keyed by the CPace key,
+  transcript in the prologue. A wrong code fails at the receiver's first read; one online guess.
+- **Names confirmed**: "Connected to Bea (new device)" + a six-digit **check**, **Send to Bea**; the
+  receiver sees the same check and accepts as usual.
+- Then protocol 2's session over TCP. Direct codes are TCP only.
 
 ## Four words over the DHT (#472 PR 3)
 
-When the receiver has no public address of its own (no mapping, no IPv6), a
-second opt-in toggle, **Find each other over the internet (public DHT)**, off by default, lets the
-code be **four words** instead, and both computers meet on the public BitTorrent DHT. The DHT runs
-only while a code waits or a send looks for its receiver; never at idle. (`dht_item.*`, `dht.*`,
+With **Find each other over the internet (public DHT)** (opt-in) the code is **four words** and both
+meet on the BitTorrent DHT, only while a code waits or a send looks. (`dht_item.*`, `dht.*`,
 `meet.*`, `udp_hub.*`, `bencode.*`, `sha1.*`.)
 
-- **The words** are BIP-39's English list (2048 words, MIT; `wordlist.inc`), 44 bits; typed whole
-  or as their first four letters. Argon2id (libsodium, moderate: 256 MiB, about a second) turns
-  them into an Ed25519 key, a key for the items' contents, a salt base and CPace's password. Its
-  salt holds the hour (UTC) the code was made in (#499: with a fixed salt one table of all 2^44
-  codes, a one-off cost, broke every code; now such a table serves one hour). The receiver's keys
-  are its hour's; a sender whose code may have been made last hour (the first ten minutes of an
-  hour) works out both and meets under the one the receiver's item is found under.
-- **Each side publishes a BEP 44 mutable item** under four salts of its role (receiver, sender):
-  its addresses (on this network, its public address as the DHT saw it, its public IPv6, all at
-  its one UDP port), XChaCha20-Poly1305-sealed, padded to 512 bytes, the timestamp inside. The
-  target is SHA-1(key ‖ salt): without the words, 20 random bytes nobody can find, read or forge.
-  Each side looks up the other's four targets in parallel; an item is taken only if its key
-  hashes to the target, its signature verifies, it opens under the code and it is under ten
-  minutes old. After the link is up each side overwrites its items with "gone", and a sender of
-  words does so too when its meeting or handshake fails (#499).
-- **The DHT client** (`dht.h`) is the spike's "small KRPC + BEP 44/42 client in the add-on", not
-  libtorrent (Boost, a torrent engine, sockets of its own): read-only (BEP 43, it answers no
-  queries and stays out of others' tables), iterative lookups (three in flight, the eight closest),
-  BEP 42 votes for this machine's public address from every answer (no STUN), nodes whose id
-  matches their address preferred, a routing table kept between runs (`driftwire_dht.dat` beside
-  the prefs, up to 200 nodes, all of which load again), and the four routers of #472 to start from
-  the first time. **#499:** one vote per voter's network (an IPv4 /24, an IPv6 /48), and with at
-  least four BEP 42-secure voters theirs alone, so one host on many ports or addresses cannot set
-  this side's public address (which its item publishes) or call its NAT hard (256 sockets). Only
-  public nodes are learned, asked or kept: a node list naming this network, loopback or multicast
-  no longer makes this machine send there, nor survives in the saved table.
-- **One UDP socket** (`udp_hub.h`) carries the DHT, the punching and the transfer: the hole a probe
-  punches is the one the transfer uses. **Punching**: each side probes every address the other
-  gave, and 16 ports above the other's public one (a NAT that hands ports out in sequence), every
-  100 ms for up to 10 s. Its addresses on its own network (RFC 1918) are probed only when both
-  sides face the internet from one site (`one_site`): the same public address (behind one router,
-  #499) or public IPv4 addresses in one /16 (a campus or an office, 2026-10-28): elsewhere such an
-  address is a stranger's on this side's network. On a campus the inside routes to itself without
-  the NAT, so a laptop's packets reach a lab PC from the laptop's own 10.x address, and a PC whose
-  policy blocks all inbound (Windows' Domain profile with local rules ignored) lets them in only
-  after it has sent there itself. A hello from a path the item did not name (a NAT's fresh
-  mapping) is answered and probed back at once. The sender takes the first path a reply came back
-  on and offers it (*choose*) until the receiver answers (*chosen*); the receiver answers only the
-  first path it is offered, so both end on the same one, whichever transport it is on.
-- **Probes are authenticated** (#499). Each carries a tag from the code (a quick filter, shown in
-  the clear) and this side's random 16-byte nonce for the meeting; a hello adds a 16-byte MAC
-  over (kind, nonce), and a reply, choose and chosen add the nonce of the side they answer and a
-  MAC over (kind, nonce, that nonce), keyed BLAKE2b under a key from the code (`prober`,
-  `meet.cpp`). A probe that does not verify is dropped before anything else, so a stranger who saw
-  the tag (a host at the other side's private address on this network, a carrier-NAT neighbour)
-  cannot answer a hello, fill the 8 learned-path slots, pick the path or take it, and an answer
-  recorded in one meeting fails in the next (new nonces). The stream's id comes from both nonces
-  under the same key, not from the tag. Hellos are 46 bytes, the rest 63; v0.1.35's 14-byte
-  tag-only probes are ignored, so **this side cannot meet a v0.1.35 peer over the DHT** (words or
-  a remembered device; direct codes and Wi-Fi are unchanged).
-- **Nothing is kept before the handshake** (#499, `meet_options::open` / `later`). A choose and
-  its chosen carry an attempt number. The sender runs the internet handshake (CPace, Noise) over
-  the path agreed on before it keeps it; when that fails on a path that did not carry it, it
-  agrees on the next path a reply came back on under the next attempt (fresh hellos meanwhile,
-  8 s at most to agree), up to three, and the receiver, whose meeting has already handed on the
-  first link, hands each later pick on the same way for a minute (`later`, on the hub's reader
-  thread). The stream id holds the attempt. Wrong words, or a key that is not the one
-  remembered, end it at once: no other path mends those. A word code is still spent by the first
-  hello that reaches the receiver, so a later pick after a handshake that got that far fails
-  too; the fallback mends paths that answered probes but did not carry the stream.
-- **Every probe**, of every kind, is at most 200 a second each way (20 a 100 ms tick): the paths
-  learned from hellos first (at most 8), the birthday's share (below), then the item's addresses
-  and predicted ports in turn with what is left.
-- **The birthday punch** (one hard NAT, #472): each item says whether its side's NAT maps each
-  destination apart, from BEP 42 votes: each node's latest answer counts once, for ten minutes,
-  and "hard" needs at least three ports seen for the most-seen address with no port seen by half
-  the voters, so one node's lie (or two's) does not set it. A client with fewer than four voters
-  looks up once more before it decides, and a side the puts show to be hard says so again. When
-  exactly one side is hard, it opens 256 more UDP sockets on the hub (64 KiB buffers; one reader
-  thread polls them all, `net::wait_readable`) and probes the easy side's public address from
-  each, every one a new mapping in its NAT; the easy side probes random ports of the hard side's
-  address. The birthday's probes are at most 100 a second each way, until the punch's deadline.
-  The hard side's mappings open 10 at a time (all 256 by 2.6 s), so the ~1000 random probes of a
-  10 s punch meet about 97 times in 100 on a real NAT (the arithmetic, not a measurement). The
-  stream runs on the socket that met (its buffers grown to the main socket's); every other one is
-  closed when the punch ends, and the stream's own when the stream ends, so the hub is back to its
-  one socket and its idle wait. On POSIX the soft descriptor limit is raised to 1024 + 256 for
-  them, for the rest of the process (lowered again it could fail another part's next open). Two
-  hard NATs do not birthday-punch each other (256 × 256 of 64k ports would not meet in time).
-- **TCP simultaneous open** (#472, `net::tcp_rendezvous`, POSIX and Winsock): each side binds one
-  TCP port (`SO_REUSEADDR`, and `SO_REUSEPORT` where the OS has it), publishes it, and while
-  listening on it connects from it to the other's port at each of its addresses, again every
-  250 ms, so SYNs that cross in two NATs open one connection and one that arrives after ours
-  failed is accepted. It runs beside the UDP punch, only in a word code's meeting (the window is
-  open) and in a remembered device's once a sender has knocked, never while it waits, since it
-  listens on every interface (Windows asks its firewall at the first). The sender picks a TCP
-  connection only if no UDP path came back in the first 1.5 s, and the same choose / chosen
-  settles it. On each connection both sides first write a hello (an answer to it within 2 s or the
-  connection is dropped), and the sender offers its choose only on a connection whose hello
-  verifies (#499). Once it has offered a TCP connection it waits for the verified chosen there
-  until the punch ends; a connection that closes or answers with anything else was not taken by
-  the other side (TCP loses nothing), so the sender falls back to the next path that answers. The
-  two sides cannot end on different transports. It meets where a NAT keeps a TCP
-  connection's port (most home routers), whatever it does to UDP: two hard UDP NATs can still
-  meet this way. On Windows the port is shared with `SO_REUSEADDR` (there is no `SO_REUSEPORT`),
-  not `SO_EXCLUSIVEADDRUSE`. Each OS shares a bound port only within one user account (Windows'
-  socket security, the BSD and Linux uid check), so only a process of the same user, which can
-  read Driftwire's keys anyway, could bind it and take a connection. It gains nothing (#499):
-  its hello fails the code's MAC and the sender passes it over, and CPace would refuse it after. A connection closed after its choose leaves the
-  4-tuple in TIME_WAIT on this side, which blocks a retry to the same peer from the same port:
-  the sender does not retry that way.
-- **The stream** over it is the spike's third option, "our own simple UDP transport", not QUIC: it
-  must share the socket on both OSes (msquic owns its sockets and has no macOS; ngtcp2 needs TLS
-  beside Noise), and the session above already seals, orders and resumes. 1200-byte packets,
-  cumulative and 256-packet selective acknowledgements, RACK loss detection and a tail-loss probe
-  (RFC 8985, simplified), the receiver's buffer as the window. Since #529 (2026-10-21) the sender
-  follows a model of the path, BBR v1 simplified (draft-cardwell-iccrg-bbr-congestion-control),
-  rather than NewReno: it paces at the bandwidth it measures (per-packet delivery-rate samples,
-  draft-cheng-iccrg-delivery-rate-estimation; a max filter over 10 round trips), keeps two
-  bandwidth-delay products in flight, starts up at 2.885 × until three round trips stop growing
-  the rate by a quarter, drains, then cycles its pace 1.25 / 0.75 / 1 × six, and probes the
-  smallest RTT again after 10 s without one. Two pieces come from BBR v2: startup also ends on a
-  round that loses more than 2 %, and such a round caps the packets in flight near what it held
-  (raised 2 % a clean round), so a router queue shallower than one bandwidth-delay product is not
-  overrun round after round. Lost packets are marked and sent again as the pace and window allow,
-  never in one burst; a sample the sender itself limited (a paused writer, a repair, a pipe still
-  refilling) may raise the estimate, never lower it; the RTO floor (200 ms) sits under the
-  variance, not the sum, so a steady long path does not time out on a little queue. Past the
-  256-packet bitmap an ack adds up to 16 runs `[start, end)` of packets held (`kMaxRuns`),
-  appended after the fixed part, so an older peer reads what it always did and ignores them; the
-  sender visits only packets still in flight for them, each visit forgetting one.
-  The stream exists before CPace, so its peer is not yet trusted (#499): a data packet over
-  1200 bytes is dropped, what waits to be read and what is held out of order together stay within
-  the 16 MiB window it advertises (`kStreamMaxRx`; the advertised window subtracts both, so an
-  honest sender never hits the bound), an ack of a packet never sent is ignored, and an ack visits
-  only the 256 packets its bitmap covers (and the runs past it only touch packets in flight).
-  Loopback, Mac (`"[driftwire]"`'s stream case, before #529): about 60 MB/s clean, 17–26 MB/s at
-  1 % loss each way, 6–10 MB/s at 5 %.
-  **Emulated paths** (#529, `mv_import_tests "[.driftwire-stream-bench]"`, `tests/driftwire_path.h`:
-  a bottleneck with a drop-tail queue, delay, in-order jitter and random loss behind the hub's
-  `socket_wrap`), base and new alternated three times, 15 s each, Linux container (4 vCPU),
-  RelWithDebInfo (`docs/perf/driftwire-stream.jsonl`):
-
-  | Profile (RTT, bottleneck, queue, loss) | Before | After | Share of the line, before → after |
-  |---|---|---|---|
-  | lan-ish (4 ms, 300 Mbit, 20 ms) | 33.6–34.9 MB/s | 35.7–36.2 MB/s | 0.95 → 0.99 |
-  | home-fibre (25 ms, 100 Mbit, 50 ms) | 10.4–10.8 | 11.8 | 0.87 → 0.98 |
-  | cross-country (80 ms, 50 Mbit, 40 ms, 0.1 %) | 0.82–0.84 | 5.39–5.59 | 0.14 → 0.91 |
-  | intercontinental (160 ms, 30 Mbit, 30 ms, 0.3 %) | 0.23–0.25 | 2.89–3.23 | 0.07 → 0.84 |
-  | wifi-jitter (30 ms ± 15, 80 Mbit, 60 ms, 0.5 %) | 0.42 | 9.12–9.22 | 0.04 → 0.95 |
-  | bufferbloat (40 ms, 20 Mbit, 500 ms) | 2.05–2.12 | 2.36–2.39 | 0.87 → 0.98; queue 500 → 82 ms |
-
-  Timeouts in the three runs fell from 7, 9, 7, 22, 0, 13 to 0, 0, 1, 0, 0, 0. No real path has
-  been measured: what a person sees between two machines is also bounded by the sender's upload
-  and the receiver's download. BBR is not fair to a loss-based flow sharing a shallow queue; on
-  a person's own uplink the other flow is usually their own.
-- Then the **internet handshake** runs over the stream as with a direct code (CPace on the words'
-  password, `Noise_XXhfs+psk0`), the names are confirmed and the check is shown, and the transfer
-  is protocol 2's session ("over the internet").
-- **Measured on loopback only** (Mac, stand-in NATs in the tests: a symmetric one and a
-  port-restricted cone that wrap every socket a hub opens): a hard receiver or a hard sender
-  meets an easy one by the birthday punch, the stream on the one extra socket left open; two hard
-  NATs time out over UDP with no extra socket opened, and meet over TCP when TCP is allowed. On
-  loopback the kernel answers a SYN to a port nobody connects from with a reset, so the test's
-  connection is one side's connect accepted by the other's listener: SYNs crossing in flight (the
-  simultaneous open proper) happen only where a NAT drops the first SYN, which no test here makes.
-  No real NAT, router or public path has been tried (the public DHT and real networks are never
-  contacted by a test).
-- **Not built**: port mapping for the UDP socket, and disjoint lookup paths in the S/Kademlia
-  sense (each item has four targets, looked up apart, which spreads them over the keyspace). Two
-  hard NATs that also rewrite TCP ports, or a network with no UDP, do not meet this way, and the
-  window says what to try.
+- **Words**: BIP-39 English (`wordlist.inc`), 44 bits, whole or first four letters. Argon2id
+  (256 MiB) → Ed25519 key, content key, salt base, CPace password. Salt includes the UTC hour; in an
+  hour's first ten minutes a sender derives both hours.
+- **BEP 44 items** under four salts per role: addresses (LAN, DHT-seen public, IPv6, one UDP port),
+  XChaCha20-Poly1305-sealed, 512 bytes. Target SHA-1(key ‖ salt). Taken only if key, signature,
+  seal and < 10 min age check. Overwritten with "gone" afterwards.
+- **DHT client** (`dht.h`): read-only (BEP 43), 3 in flight / 8 closest, BEP 42 public-address votes
+  (one per IPv4 /24 or IPv6 /48; secure voters only once ≥ 4), table in `driftwire_dht.dat` (≤ 200
+  nodes), four bootstrap routers. Public nodes only.
+- **One UDP socket** (`udp_hub.h`) for DHT, punching and stream. Probe every given address plus 16
+  ports above the public one, every 100 ms for ≤ 10 s; RFC 1918 only when `one_site` (same public
+  address or one /16). The sender offers the first replying path (*choose*) until *chosen*.
+- **Authenticated probes** (`prober`, `meet.cpp`): code tag, 16-byte nonce, keyed-BLAKE2b MAC
+  (hello 46 bytes, others 63). v0.1.35's 14-byte probes are ignored: no DHT meeting with v0.1.35.
+- **Nothing kept before the handshake** (`meet_options::open` / `later`): attempt-numbered
+  choose/chosen; on handshake failure the next path, ≤ 3 attempts.
+- **Rate** ≤ 200 probes/s each way.
+- **Birthday punch** (exactly one hard NAT; "hard" from BEP 42 votes): the hard side opens 256 extra
+  sockets (10 at a time) probing the easy side's address; the easy side probes random ports (≤
+  100/s). POSIX fd limit raised to 1024 + 256. Two hard NATs do not try.
+- **TCP simultaneous open** (`net::tcp_rendezvous`, `SO_REUSEADDR`/`SO_REUSEPORT`): beside the UDP
+  punch in word-code and remembered-device meetings; used only if no UDP path in 1.5 s; verified
+  hello within 2 s before choose.
+- **The stream**: our own UDP transport (shares the socket; the session already seals and
+  resumes): 1200-byte packets, cumulative + 256-packet selective acks plus ≤ 16 runs (`kMaxRuns`),
+  RACK and tail-loss probe (RFC 8985, simplified), BBR v1 simplified with BBR v2's loss exit and
+  inflight cap, RTO floor 200 ms, 16 MiB window (`kStreamMaxRx`); untrusted input bounded. Bench:
+  `mv_import_tests "[.driftwire-stream-bench]"`, `tests/driftwire_path.h`,
+  `docs/perf/driftwire-stream.jsonl`.
+- Then CPace on the words' password and `Noise_XXhfs+psk0`, as a direct code.
 
 ## Wi-Fi → internet (#472 PR 5)
 
-A third opt-in toggle in the internet section, **Continue over the internet if Wi-Fi drops**, off
-by default, lets a transfer nearby carry on over the internet when its Wi-Fi goes. Both computers
-need it on (and "Send and receive over the internet").
+Toggle **Continue over the internet if Wi-Fi drops** (opt-in, both sides, plus the internet toggle).
 
-- **Places swapped over the sealed link, no lookup.** A sender with the toggle on says so in its
-  offer (`"handover":true`). A receiver with it on, receiving over Wi-Fi or Bluetooth in protocol 2,
-  then opens a way in for as long as the transfer runs (`way_in`, `internet.h`): a listener, the
-  router asked for a port (PCP, NAT-PMP, UPnP-IGD) and an IPv6 pinhole, as a code's places
-  ([above](#over-the-internet-472-pr-2)) less the LAN address. It sends those places to the sender
-  as `places` (message 14, protocol 2; only to a sender whose offer asked, since a channel before
-  this PR ends the link on a type it does not know). The sender's window says "If Wi-Fi drops,
-  this continues over the internet." **#499:** the sender takes the first list that names any
-  place and no later one, and keeps only public places that are not its own (the relay's
-  `may_reach`), so a receiver cannot make it connect to loopback or its network on every rescue.
-- **The move.** When the link is suspect or drops, the mover races the receiver's places beside
-  Wi-Fi and Bluetooth; a TCP connection that reaches the way in is a rejoin (`NNhfs+psk0` and
-  `resume_at`, as any), and the window says "over the internet". Anything else that reaches the
-  way in is closed unanswered, and idle connections there cannot keep the rejoin out (#496,
-  [The session](#the-session-protocol-2-472)). When the peer is heard on Wi-Fi
-  again, the send moves back there (make before break). On loopback in the tests the move takes
-  10–14 ms after the cut.
-- When the transfer ends the listener closes and every mapping is removed. With the toggle off on
-  either side nothing is offered and a Wi-Fi drop with no Bluetooth ends the transfer as before.
-- What the sender learns: the receiver's public address, which the receiver gives to a peer its
-  person already accepted from.
-- **When both sides move (#472, after PR 5).** The places above go with the receiver's own
-  network (its mapped port, its pinhole; only a public IPv6 on another interface survives). With
-  **Find each other over the internet** (the DHT, [above](#four-words-over-the-dht-472-pr-3)) on as
-  well, on both sides, the two meet on the DHT the way four words do, under keys from the session
-  itself (`dht_handover`, `handover.h`):
-  - The sender's offer says `"dht":true` beside `"handover"`; a receiver with the DHT toggle on
-    answers at once with `places` carrying `"dht":true` (before its way in has opened, which may
-    take the router seconds), and again with its places.
-  - **Pre-started.** The receiver once it has accepted and the offer asked, the sender once those
-    `places` arrive (so a receiver that never says so costs the sender nothing): from then until the
-    files are in, each side keeps its UDP hub open and has joined the DHT (the bootstrap and saved
-    table, as a word code's), so a drop costs no join. With nothing to rescue a side sends nothing
-    more on the DHT than the join; the window shows nothing new. When the transfer ends the engine
-    stops it without waiting (a join may be in a DNS lookup) and joins its thread later.
-  - **The keys.** `channel::handover_secret()`: BLAKE2b over the resume secret under its own context
-    (`"MediaViewer Driftwire handover v1"`, apart from the pairing secret's), then `crypto_kdf`
-    (context `MVSPhand`) into the four parts of a word code's set (item key, box, salt base, CPace
-    password), at index `4 × rejoins()`: the resume secret is fixed for the session (decision log,
-    2026-10-18), so the count of rejoins both ends have adopted is what makes each drop's targets
-    and stream id new. Only the two ends of the session hold the secret. Should the counts ever
-    differ (a rejoin that completed on one end only), the meeting finds nobody and the session
-    ends after 20 s, as with the toggle off. The sender publishes and looks as the sender, the
-    receiver as the receiver, so neither meets its own item.
-  - **On a drop** (the link suspect or down, looked at every 200 ms): each side asks up to eight
-    known nodes again how they see it (its network may have changed), publishes its candidates,
-    looks up the other's every 500 ms (a word code waits 2 s between looks), and punches. The
-    sender rejoins over the punched stream (`NNhfs+psk0`, `resume_at`, as any rejoin); the receiver
-    hands it to the engine's rejoin path. A meeting stops as soon as the link is up again some
-    other way (Wi-Fi back, the swapped places); the sender drops a stream met after that. Every
-    meeting, met or not, ends with this side's items saying "gone" (at most 2 s, at a sequence
-    number above any it used under those keys). It runs beside the swapped places, not after them,
-    so a drop the places rescue in milliseconds may still cost each side one publish.
-  - **Measured** on the stand-in swarm (16 loopback nodes; 10 runs, 2026-10-18): the stream is up
-    0.14–0.69 s after the drop is seen, the send is over the internet 0.87–1.88 s after the cut.
-    The bimodal tail is the stream's first retransmit (1 s): when the receiver's punch completes
-    ~100 ms after the sender's, the sender's first stream packet arrives before the receiver's
-    stream exists. A second drop after a move over the DHT meets again under the next keys in
-    ~5.5 s: the sender sees its cut at once, the receiver only as silence (`kSuspectMs`, 3 s).
-    Well inside `kRejoinMs` (20 s); the public DHT's publish and lookup during a drop and real NATs
-    are not measured.
-  - With the DHT toggle off on either side (both cases tested), neither joins the DHT, and a drop
-    that takes the receiver's places ends the transfer after 20 s, as before.
-- **Not built** (said so in #472's PR 5): a handover does not go through a relay ([below](#relays-472)); with the DHT toggle off on either side, the receiver's own network going still ends the transfer after 20 s.
+- The offer says `"handover":true`; the receiver opens a way in (`way_in`, `internet.h`: listener,
+  mapping, pinhole) and sends `places` (message 14). The sender keeps only the first non-empty list
+  of public non-own places (`may_reach`). "If Wi-Fi drops, this continues over the internet."
+- On suspect/drop the mover races these beside Wi-Fi and Bluetooth (a normal rejoin), and moves
+  back to Wi-Fi when heard. Closed at transfer end.
+- **Both sides move**: with the DHT toggle also on both sides, they meet like four words under
+  session keys (`dht_handover`, `handover.h`). The offer adds `"dht":true`; the receiver answers
+  `places` `"dht":true` at once. Both keep a UDP hub joined to the DHT from accept to end.
+  Keys: `channel::handover_secret()` = BLAKE2b(resume secret, `"MediaViewer Driftwire handover
+  v1"`), `crypto_kdf` context `MVSPhand` at index `4 × rejoins()`. On a drop (checked every 200 ms):
+  re-ask ≤ 8 nodes, publish, look every 500 ms, punch, rejoin over the stream; items "gone" after.
+- **Not built**: a handover through a relay ([below](#relays-472)).
 
 ## Remembered devices (#472 PR 4)
 
-After a transfer over protocol 2 that went through, either window shows **Remember Bea** under the
-result (nearby, only when Bea said its identity after the code: a MediaViewer from before #501 says
-none, and would remember this side by the link's key, so Remember waits until it updates). Ticked on both computers, a later send needs no code: Bea is a tile under **Remembered
-devices** (in the internet section), and one click sends to it over the internet, whenever both
-are online. The receiver still accepts or declines every transfer. (`secrets.*`, `known.*`.)
-The question stays until the next transfer: this computer's next send, or the next offer it
-receives. A link that offers nothing (a knock, a sender's rejoin as its send ends) leaves it;
-until #553 any incoming link took it away, sometimes before it was drawn.
+After a protocol 2 transfer, **Remember Bea** (nearby only if Bea sent its identity). Ticked on both,
+Bea is a tile under **Remembered devices** and one click sends over the internet, no code; Accept
+still applies. (`secrets.*`, `known.*`.) The question stays until the next send or offer.
 
-- **Identity.** An X25519 key made once and kept in the OS's secret store (`secrets.h`, a port, D9):
-  - **Mac (#501):** the *data protection* keychain, in the app's own keychain access group (a
-    generic password under "MediaViewer Driftwire", `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`,
-    not synchronised). There "this device only" holds: it is never in a backup or a migration to
-    another Mac. Every query names the group, so another app of the same user can neither read
-    these items nor plant one before Driftwire's first use (the OS lets only apps signed with the
-    group touch it). The group is the app group `<team>.io.github.longtimeno-c.mediaviewer.driftwire`
-    (owner, 2026-10-20: a team-prefixed app group needs no provisioning profile), added to the app's
-    entitlements when the release is signed (`macpack.py release --team-id`, from the `APPLE_TEAM_ID`
-    secret). The store reads it from the app's own entitlements; a build signed without it (a dev
-    build, the lab binary) has no store. Items in the login keychain from before #501 (where
-    the accessibility attribute is ignored, and a same-user app could have planted one) are
-    removed without a prompt and never read: a Mac remembers its devices again after the update.
-  - **Windows:** Credential Manager (generic credentials, this machine only, not roamed). Any
-    process of the same user can read, enumerate or plant these with `CredRead` / `CredEnumerate` /
-    `CredWrite`, without a prompt. So since #501 each value is sealed with DPAPI first
-    (`CryptProtectData` for this user, Driftwire's own entropy, no UI): enumerating the store no
-    longer shows the key or the pairing secrets, and an item written in plain (by another program,
-    or by a version before #501) does not open and is refused, never believed. That is not a
-    boundary against a program of the same user that calls DPAPI the same way (the entropy is in
-    the source). Items from before #501 are refused, so a PC also remembers its devices again after
-    the update, as a Mac does; the new ones overwrite them.
-  - **Linux:** the freedesktop Secret Service (GNOME Keyring, KWallet, KeePassXC), through
-    libsecret loaded at run time (`secrets_linux.cpp`; nothing to build against). Items have the
-    schema `io.github.longtimeno_c.Driftwire`, a `service` ("MediaViewer Driftwire", or the
-    command line's "Driftwire CLI") and a `name`, in the default collection (the login keyring,
-    which the login unlocks). The Secret Service has no per-app access: any process of the same
-    user on the session bus can read, list or plant an item. So each value goes in sealed
-    (`crypto_secretbox`, a key from "<service> secrets v1"), and one that does not open is
-    refused, as on Windows; it is no boundary against a program of the same user that does the
-    same. Without a session bus nothing is loaded; a service that does not answer a probe within
-    10 s, or a call that does not end in 10 s (an unlock prompt nobody answers), is no store.
+- **Identity**: X25519 key in the OS secret store (`secrets.h`):
+  - **Mac**: data protection keychain, generic password "MediaViewer Driftwire",
+    `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, app group
+    `<team>.io.github.longtimeno-c.mediaviewer.driftwire` (`macpack.py release --team-id`,
+    `APPLE_TEAM_ID`); unsigned builds have no store.
+  - **Windows**: Credential Manager, values sealed with DPAPI (`CryptProtectData`, own entropy);
+    plain items refused.
+  - **Linux**: Secret Service via run-time libsecret (`secrets_linux.cpp`), schema
+    `io.github.longtimeno_c.Driftwire`, attributes `service`, `name`; values `crypto_secretbox`-sealed
+    (key from "<service> secrets v1"). No bus or > 10 s → no store.
 
-  It is the static of the handshakes behind CPace (an internet code, a remembered device's
-  meeting); nearby it is said sealed after the code and Accept ([The wire](#the-wire)). Where there is no store (or it does
-  not keep what it is given) the key is this run's and nothing can be remembered; the toggle does
-  not show. The tests use a folder (`secrets::file_store`).
-- **What is remembered**: the peer's name, its identity (the static of an internet session; the
-  `"key"` of its offer or accept nearby, #501), and a **pairing
-  secret** only the two ends of that session hold (BLAKE2b over the session's resume secret). At
-  most 16 devices, in one value of the store; Forget removes one. Removing Driftwire without
-  keeping its data (**Remove everything**) erases the identity and every remembered device from
-  the store too (`mv_addon_forget`, #507): installed again, it is a new device nobody remembers.
-  The 17th takes the oldest's place, never one marked as this person's own; with all 16 so marked it is not remembered and
-  the result says why (#502). Ticking Remember again for a device already remembered (or
-  unticking and ticking it) keeps the secret it had: this session's would be on one side only,
-  and the pair would stop meeting.
-- **Tiles and Forget name a device by its fingerprint** (`relay::fingerprint` of its key, as the
-  "own" toggles), never its place in the list (#502): a click from a window drawn before a Forget
-  reaches the device it showed, or nothing. A device forgotten while it was meeting is not
-  received from.
-- **Who proved whom** (#497). A nearby code proves the receiver to the sender (its person typed
-  what the receiver shows), not the sender to the receiver: the sender's name is what it says it
-  is. So after a nearby transfer the sender's window shows a six-digit check
-  (`remember_check`, keyed by the session's secret), and the receiver keeps the sender only once
-  its person types that check ("Code shown on Ann"); ticking is not enough. Three wrong ones and
-  Remember is not offered again for that transfer. Over the internet the receiver made the code
-  and gave it to one person (CPace), so both sides are proved and Remember is a tick on both.
-- **Mutual by construction.** Nothing is sent to say "I remembered you": the meeting is keyed by
-  the pairing secret, so a device is found only when both kept it. One-sided, the sender waits
-  ("Waiting for Bea to come online… Bea must remember this computer too") until Cancel.
-- **Meeting.** Each hour (UTC) the secret gives the pair a fresh set of the four-word code's keys
-  ([above](#four-words-over-the-dht-472-pr-3)) per direction: toward the receiving device's
-  identity, so each side's wait and send are apart and a device never meets its own item. While
-  the window is open (or Keep receiving is on), the internet and DHT toggles are on and something
-  is remembered, one UDP socket and DHT client look for a sender's item (its knock) every 15
-  seconds, one target per look, and publish nothing. A knock found, the waiting side publishes its
-  item and the two meet and punch as with four words, UDP and TCP simultaneous open together, 15 s
-  each; the first item the sender finds is that meeting's, with its live TCP port, so both punch at
-  once. When the meeting ends, met or not, its item says "gone", so a later send does not punch
-  toward it. (Until 2026-10-20 the waiting side kept an item up and met over UDP only: two
-  computers that had met on four words over TCP never met again, [12](12-decision-log.md).) The
-  sender's rounds end on the hour, when both change keys; it keeps going until it meets or Cancel.
-- **Trust on first use.** The handshake is the internet one (CPace on the password of the hour the
-  two met in, #499: not the hour the receiver's handshake starts in, which may have turned; then
-  `Noise_XXhfs+psk0`), so only a holder of the pairing secret gets through; then the peer's static
-  must be the one remembered. Another key ends the link on the side that sees it, loudly: "This is
-  not the Bea you remembered: its security key has changed… If Bea was set up again, forget it
-  here and send once nearby or with a code to remember it again. If not, someone may be pretending
-  to be Bea." Nothing is sent or received. A device set up again with a new key is not found at all
-  (its wait is keyed by its new identity), which is the same advice.
-- What DHT nodes see: this computer's address taking part and looking up targets that change every
-  hour and mean nothing without the pair's secret, and an item under them only while a remembered
-  device is sending to it (the knock, then the meeting's item).
-- **Not built**: remembered devices are not marked on the nearby tiles (the beacon carries an id, not the identity). Two clocks more than
-  a minute apart around the hour may miss each other for that minute.
+  No store → per-run key, Remember hidden. Tests: `secrets::file_store`.
+- **Kept**: name, identity, a **pairing secret** (BLAKE2b over the resume secret); ≤ 16 in one value;
+  the 17th replaces the oldest not marked "my computer". **Remove everything** wipes them
+  (`mv_addon_forget`). Tiles and Forget use `relay::fingerprint`, never list position.
+- **Who proved whom**: nearby, the sender shows a check (`remember_check`) the receiver must type
+  ("Code shown on Ann"; three wrong withdraw Remember). Over the internet CPace proves both.
+- **Mutual**: the meeting is keyed by the pairing secret; one-sided, "Waiting for Bea to come
+  online… Bea must remember this computer too".
+- **Meeting**: each UTC hour the secret yields a four-word key set per direction. While the window is
+  open or Keep receiving is on (internet + DHT on), the receiver looks for a knock every 15 s,
+  publishing nothing; on a knock both publish and punch (UDP + TCP, 15 s each); items "gone" after.
+- **Trust on first use**: CPace on the meeting hour's password, `Noise_XXhfs+psk0`, then the static
+  must match: "This is not the Bea you remembered: its security key has changed…".
+- **Not built**: marks on nearby tiles. Clocks > 1 min apart may miss around the hour.
 
 ## Relays (#472)
 
-When nothing answers directly, a transfer may go **through a computer of the person's own** or
-**through a relay server they run**, never anyone else's. Either way the two MediaViewers' handshake
-(CPace on the code, then Noise XX) and their session run end to end through it: the relay passes
-ciphertext, holds no key of theirs, and cannot read or change what they say; at most it drops the
-link. The tests check that no 32-byte run of the file passes through either relay in the clear.
+Only **through a computer of the person's own** or **their own relay server**. Handshake and
+session run end to end; the relay sees ciphertext only.
 
-- **Through your own computer** (option 9; `relay.*`, `engine_relay.cpp`). A toggle in the internet
-  section, **Use my other computers to relay**, off by default; with it on, each remembered device
-  shows **<name> is my computer** (kept in its record, `known.h`, and keyed in the window by a hash
-  of the device's key, not its place in the list; a record with no mark is written as before). A
-  sends to a direct code; beside the code's places, 1.5 s in, each round also meets each computer
-  marked as its own in turn, as any remembered device (the DHT, the pair's hourly keys, its key
-  checked; up to 45 s each, given up as soon as the round is decided), and over that sealed channel
-  sends `relay` (20) with the code's places. R serves only if its toggle is on and it marks A as
-  its own too, now: then it connects onward to those places and only those, and only to public
-  addresses outside its own networks (#500, `relay::fence`): never one of its addresses, nothing
-  on a network an interface of its is on (a LAN of public IPv4 addresses: a university, an
-  office), nothing in an IPv6 /56 it has an address in (the /64s a router delegates beside R's:
-  guest, IoT), never its default gateway or its router's outside IPv4 as the DHT last saw it
-  (routers answer admin pages, UPnP and DNS there from inside), and never Teredo, ORCHID,
-  benchmarking or 6to4 relay ranges. It answers `relay_answer` (21), and from then on the bytes of
-  A's link to B travel as `relay_data` (22), sealed again between A and R; R forwards nothing until
-  they start as an internet hello (`MVSP`, 2, `I` and its 48 bytes), so it is a pipe for a
-  MediaViewer's handshake, not any TCP from R's address. A runs the internet handshake with B
-  through it; B sees R's address as the sender's, and both see the same check. One relay at a time
-  (it is R's one transfer; while R is busy it meets nobody, so A's meeting runs out rather than
-  hearing "busy"); 256 GiB each way at most, no rate cap (it is the person's own line); 120 s of
-  silence ends it. R's window says **Relaying for Ann**, sealed, with **Stop relaying**; A's says
-  **Through R (your computer)**, and when R says no, why (after the round's own reason). Nothing is
-  logged about either peer; R logs one fixed line that it relayed. A relayed send does not move
-  between links (its rejoins would need R again), and R must be reachable over the DHT (Keep
-  receiving on, the internet and DHT toggles on). Word codes and sends to a remembered device are
-  not relayed: R would need the code's DHT meeting. R reads a remembered sender's first message
-  within 20 s (`kSilenceMs`): the request or the offer comes at once, nothing waits on a person.
-- **Through your own relay server** (option 10; `splice.*`, `tools/driftwire-relay`). An advanced
-  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints a key it
-  made, once (or takes `--key-file`, `MV_RELAY_KEY` or `--key`; a key it was given is never
-  printed, and one under 20 characters is warned about). Driftwire keeps the key in the secret
-  store and only the address in its settings file (#500). The name is the one Driftwire resolves,
-  because the person typed it; the code carries the address, never the key. With it set, each
-  code also registers at that server as a **waiter** under a fresh random 16-byte token sealed in
-  the code with its places; this runs beside the router's mapping, and a server slower than 3 s is
-  left out of that code and the window says so. A code with a relay is about 115 characters, and
-  only a build with relays opens it. A sender races the code's places as before and the relay
-  1.5 s later, so a direct path that works wins. The server pairs a sender with the waiter under
-  its token and copies bytes between them; it relays only for key holders' codes, so it is not an
-  open relay.
+- **Own computer** (`relay.*`, `engine_relay.cpp`): toggle **Use my other computers to relay**;
+  devices then show **<name> is my computer** (`known.h`). From 1.5 s into a direct-code round, A
+  meets each own computer R (≤ 45 s) and sends `relay` (20) with the code's places. R serves only if
+  its toggle is on and it marks A as its own, connects only to those public places outside its own
+  networks (`relay::fence`), answers `relay_answer` (21), then carries `relay_data` (22) once the
+  bytes start as an internet hello. One at a time, ≤ 256 GiB each way, 120 s idle; **Relaying for
+  Ann** / **Through R (your computer)**. Relayed sends do not move; word codes and remembered sends
+  are not relayed; `kSilenceMs` 20 s.
+- **Own relay server** (`splice.*`, `tools/driftwire-relay`): field **Relay (your own server)**
+  `<address or name>:<port>#<key>`; key in the secret store, address in settings, never in the code.
+  Each code registers a **waiter** under a random 16-byte token sealed in the code (server slower
+  than 3 s is left out); the sender tries it 1.5 s after the direct places.
 
-  **The hop to the server is sealed** (protocol 3, #500). Every connection runs a handshake before
-  it says anything that matters, so neither the token nor anything about the key is ever on the
-  wire in the clear, and nothing recorded opens again. A waiter says `MVRL`, 3, its role, a random
-  session id and its CPace message on the server key; the server answers with its own, so a
-  machine on the path (or one answering for the server's name) gets one live guess at the key per
-  connection and nothing to test guesses against offline, however short the key. A sender says
-  its token's id (a keyed BLAKE2b of the token, which says nothing of it); a server with no waiter
-  under that id closes it at once (senders never wait). Then Noise NNpsk0, the server first, keyed
-  by the CPace key or by a key from the token, with everything said before it in the prologue:
-  the server's message opens only under the same key, and the client's answer, made against the
-  server's fresh ephemeral key, opens only on that connection. A waiter's answer carries its
-  token, sealed. The server's words are sealed too: **registered** to a waiter once it waits, and
-  **paired** to both; after that the splice copies bytes as they are (the two MediaViewers' own
-  handshake is end to end). A server that does not prove the key is not asked again for that code
-  (the window says to check the key). A waiter registering again under its token replaces its old
-  wait, which the receiver does every 60 s, ahead of NATs that drop an idle TCP connection: it
-  closes the old connection only once the server has said the new one waits. Anything that is not
-  a hello, a handshake that does not open, or a byte before the pair, is closed. The receiver
-  hands a paired link on only once the sender has spoken, so a sender that lost its race to a
-  direct place costs nothing. The hop is not post-quantum (it guards a token that lives 10
-  minutes). The token is not the code's secret and says nothing about it; the server learns two
-  addresses, the time and the size, and prints counts only. Caps: 16 handshakes at once and 4 from
-  one source; 64 waiters, 4 from one source (a source is an IPv6 /64 or an IPv4 /24, #500); 8
-  splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter second of
-  burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone, portable (D9),
-  no state on disk.
-- **TURN is left out**: allocations, permissions, STUN's message format and long-term credentials
-  are a server of their own for the same job the splice does in a few hundred lines.
-- **Tor** (option 11) was evaluated, not built, and dropped for now
-  ([plan](../plans/driftwire-tor-spike.md), [12](12-decision-log.md#driftwire)).
+  **The hop to the server is sealed** (protocol 3): `MVRL`, 3, role, session id, CPace on the server
+  key; a sender sends its token's keyed-BLAKE2b id (no waiter → closed); then Noise NNpsk0, server
+  first. Sealed server words **registered** and **paired**; then raw splice. Waiters re-register
+  every 60 s. Caps: 16 handshakes (4 per source), 64 waiters (4 per IPv6 /64 or IPv4 /24), 8
+  splices, 64 GiB each way, optional rate, 120 s idle. Not post-quantum; no state on disk.
+- TURN and Tor are not used ([plan](../plans/driftwire-tor-spike.md)).
 
 ## Claiming and pairing (phone access)
 
-`src/addons/phone/desk.*`, `wire/advert*`, the owner's half of `wire/serve.*`; plans: `docs/plans/mobile.md` §7.2,
-§7.4, §7.5, `docs/plans/phone-in-the-app.md` and `docs/plans/phone-access-addon.md`. Since 2026-11-14 the
-desktop's side of a phone is the Phone access add-on's (`phone-access`; 2026-11-12 to 2026-11-14 it was the
-app's, before that the Driftwire add-on's): its phone link (`src/addons/phone/link.*`) asks the desk through
-`route_request`, which takes only the caller "phone". Its items are in the OS store under "MediaViewer Phone access", copied
-once from Driftwire's (`desk::take_items`).
+`src/addons/phone/desk.*`, `wire/advert*`, the owner's half of `wire/serve.*`; plans `docs/plans/mobile.md`
+§7.2, §7.4, §7.5, `docs/plans/phone-in-the-app.md`, `docs/plans/phone-access-addon.md`. Phone access is the
+`phone-access` add-on's since 2026-11-14 (`src/addons/phone/link.*` via `route_request`, caller "phone"),
+items under "MediaViewer Phone access" (`desk::take_items`).
 
-**Claiming.** Only for a connection from its own network (`net::on_link`, loopback included), and only
-while the service has no owner or, once it has, for a hello the access key does not open (so a phone's
-session never reads the share), it looks for `.mediaviewer/claim.token` under its named folders:
-64 hex digits the desktop wrote over the share. A hello that opens under the key derived from that
-token (`claim_key`, `channel::hello_opens_under`, one AEAD) becomes a claim channel. Everyone else
-gets the silence a wrong access key gets, and from outside no file is read. The token proves the desktop
-can read the share; the service then sends a nonce, and the claim goes through only once that nonce is in
-`.mediaviewer/claim.proof` beside it, which proves the desktop can also write there (a read-only account
-cannot claim). What is not proven: that the desktop is the share's owner, or a person's own computer;
-anyone who can write the share on the NAS's own network, before the owner does, can claim it. The claimant's device
-key is stored as `owner`; the answer carries the access key, and `<folder>/.mediaviewer` becomes a
-named folder labelled `Catalogue` (a hidden name cannot be reached any other way). The desktop deletes
-the token whatever happens. There is no expiry on the token: anyone who can read it could also write
-one. Behind a NAT that rewrites sources, an outside connection can look local, and the token is then
-the only gate. `driftwire serve disown` forgets the owner when that desktop is gone.
-Owned, a claim is answered only for the owner's own device key (with a fresh token and proof), with the same
-keys and nothing changed: a claim whose answer was lost can fetch them again. Anyone else's claim on an owned
-service ends with the link closed and no reason given, before any challenge. That is not the silence of a
-wrong key: the handshake completes first, so the caller can tell owned (closed) from unowned (a challenge)
-from no token (no handshake). Reading the token on the share is enough to learn it; claiming still needs the
-write proof. A claim that crashes before its cleanup leaves the token on the share until the next claim
-replaces and removes it.
+**Claiming.** Only from the service's own network (`net::on_link`) and only while unowned (or for a
+hello the access key does not open), the service reads `.mediaviewer/claim.token` (64 hex) under its
+named folders; a hello opening under `claim_key` (`channel::hello_opens_under`) is a claim channel.
+It then sends a nonce that must appear in `.mediaviewer/claim.proof` (write proof). The device key
+becomes `owner`; the answer carries the access key; `<folder>/.mediaviewer` becomes named folder
+`Catalogue`. The desktop deletes the token. Owned: only the owner's key may re-claim (same keys);
+others are closed after the handshake. `driftwire serve disown` forgets the owner.
 
-**Who may do what.** A phone holds a read-only grant. The owner's session alone is granted
-`kAdminOp` and sends `serve_admin` (devices, add or revoke a device, a pairing code, the named folders,
-with their NAS paths, which no phone is told). Anyone else's `serve_admin` is answered `refused`.
-Removing a named folder cuts every other session, so nothing keeps reading it.
+**Who may do what.** Phones hold read-only grants. Only the owner's session has `kAdminOp` and may
+send `serve_admin` (devices, add/revoke, pairing code, named folders); others get `refused`.
 
-**Pairing.** The owner hands the service a single-use code with a lifetime measured on the service's
-clock; a new code withdraws the one before, and Cancel or expiry on the card withdraws it (`pair_cancel`).
-The device list says whether a code is still waiting, so the card takes down one a re-scan used. A device not yet paired redeems it with `serve_pair` before `serve_hello`; a used, expired or
-made-up code is `bad-code`, and the phone is told to scan again. A phone already paired that scans again is
-answered `serve_paired` and goes on, and a code it carries is spent so it pairs nothing else. Codes are in memory, hashed, at most
-`kMaxPairCodes`, and a restart forgets them. The desktop learns the phone from the service's device list,
-which is its own list too (`phone_devices`), so one scan pairs with both. A revoke takes the phone off the
-desktop at once, then tells the service; if the NAS is away it is kept (`phone_revoke_pending`), and Local
-search asks again by itself, from 30 s and doubling to an hour, until the service has it.
+**Pairing.** Single-use code on the service's clock; a new one withdraws the last (`pair_cancel`).
+`serve_pair` before `serve_hello`; failure `bad-code`; a paired phone rescanning gets `serve_paired`.
+Codes hashed in memory, ≤ `kMaxPairCodes`. The desktop's list is the service's (`phone_devices`). A
+revoke while the NAS is away is queued (`phone_revoke_pending`), retried 30 s doubling to an hour.
 
-**The owner's passphrase** (`owner_pass.h`; plan: `docs/plans/nas-owner-and-guests.md` §3, owner calls
-made 2026-11-12). A second factor beside the owner's device key and, for a claim, the share token and
-write proof. Set at `serve init` (recommended: it closes the race in which someone else on the network
-claims first) or by the first claim. The passphrase is stretched with Argon2id (3 passes, 256 MiB) into the
-seed of an Ed25519 key; the service stores only the salt, the cost and the public key
-(`owner_passphrase`), never the passphrase or anything that can answer for it. To prove it, the owner
-signs a fresh nonce bound to the session's Noise handshake hash (`channel::handshake_hash`; a library
-channel keeps no resume secret, so `pairing_secret()` is a constant there and is not used), the
-service's identity and its own device key. A client refuses a challenge cheaper than 64 MiB, so a fake
-service cannot ask for a cheap answer.
+**The owner's passphrase** (`owner_pass.h`; `docs/plans/nas-owner-and-guests.md` §3). Set at `serve
+init` or the first claim; Argon2id (3 passes, 256 MiB) → Ed25519 seed; the service keeps salt, cost,
+public key (`owner_passphrase`). The owner signs a nonce bound to `channel::handshake_hash`, the
+service identity and its device key; clients refuse challenges under 64 MiB.
 
-- **The claim** gains a third round trip after the write proof (`serve_claim_challenge`, 38): a
-  signature when a passphrase is set, or the public key to set when none is. Nothing about it is said
-  before the write proof. A desktop from before this claims a NAS with none as it always did, and is
-  refused (`passphrase`) by one that has one. A claim can pin the identity `serve status` shows.
-- **What needs it** (call C1): adding a device, a pairing or guest code, extending or widening a
-  grant, adding or removing a named folder, changing the passphrase. A session is unlocked for 10
-  minutes of steady time (`challenge`, `unlock`, `lock`, `owner_status`). Reading, revoking, cancelling
-  a code and shortening or narrowing a grant need the device key alone, so a stolen Mac can only take
-  access away, and a revoke queued while the NAS is away still goes through. With no passphrase set
-  (a NAS claimed before this) the device key does everything, as before (call C4).
-- **Wrong answers** are counted per counter (claims; the owner's sessions and its own re-claim) in
-  `owner_lockout`, written before the answer is checked: 5 free, then 15 minutes doubling to a day,
-  and wrong answers at most one a second (a right one never waits). A broken lockout file reads as
-  locked for 15 minutes and is written back readable.
-- **Recovery**: `driftwire serve passphrase reset` on the NAS, as the service's user, which can edit
-  the store anyway (so the command line never asks for the passphrase, call C3). The new one is
-  stretched first and written over the old; the lockouts go. A NAS rolled back to a binary from before
-  this ignores the passphrase: that fails open, and only signed updates can stop it.
+- Claim adds `serve_claim_challenge` (38) after the write proof; a NAS with a passphrase refuses an
+  older desktop (`passphrase`).
+- **Needs it**: adding devices, pairing/guest codes, extending or widening grants, folder changes,
+  passphrase change; unlock lasts 10 min (`challenge`, `unlock`, `lock`, `owner_status`). Reading,
+  revoking, cancelling and narrowing need only the device key.
+- **Lockout** (`owner_lockout`, written before checking): 5 free, then 15 min doubling to a day,
+  ≤ 1 wrong answer/s.
+- **Recovery**: `driftwire serve passphrase reset` as the service's user.
 
-**Timed and scoped phones** (`grants.h`; plan §5). A device with an expiry or a set of named folders is
-kept in `library_grants` and never in the paired list, which keeps its format: a service, or a Mac,
-from before this reads only that list, so after a rollback it refuses a guest rather than letting it
-in for ever. Guest codes from `pair-code --for` live in their own value (`library_guest_codes`) for the
-same reason. The owner's `guest_code` makes one; its phone's time starts when it is redeemed.
+**Timed and scoped phones** (`grants.h`): in `library_grants`, never the paired list (older services
+refuse them); guest codes in `library_guest_codes` (`guest_code`; time starts at redemption). The 2
+s watch cuts expired sessions (`expired`) and refreshes changed ones (`folders-changed`). A scoped
+phone sees only its folders and the Catalogue. **Folder scope is not offered yet** (needs per-scope
+catalogues). `serve_caps` reports `features`, passphrase state and a limited phone's end.
 
-- At connect an unlimited phone goes on; anyone else's first message decides: a code is redeemed (an
-  expired guest re-invited gets the new grant; an unlimited phone that scans a guest code stays
-  unlimited; a live guest with a spent code goes on with the grant it has), a live grant goes on, and
-  an expired one is refused `expired`. The 2 s watch cuts an expired session with `expired` and
-  refreshes one whose limit changed with `folders-changed`; both lists are read together, and a revoke
-  is read twice before anyone is cut. A key on both lists is treated by its grant.
-- A scoped phone sees only its folders and the Catalogue; anything else is refused like an unknown id,
-  and an empty list is none. **Folder scope is not offered yet** (call C5): the catalogue covers every
-  folder, so it waits for per-scope catalogues. `devices` never lists a limited device, because a Mac
-  from before this copies that list into its nearby service; `grants` does, with expired ones for 7 days.
-- `serve_caps` tells the owner `features` and the passphrase state, and a limited phone its end.
-
-**Nearby.** `desk::start_nearby` runs a second `serve::server` on the Mac over the local copy, `lan_only`,
-never claimable, with its keys in memory so its timer never wakes the Keychain. It takes the same access key
-and the same device list, and is advertised as `_mediaviewer._tcp` (TXT `v=1`, `lib=` the first 16 hex of the
-library id's SHA-256; `advert_mac.cpp`). The phone reads it exactly as it reads the NAS, so a paired phone
-needs no Accept and a dropped transfer resumes by `read_range`. Its identity is made per run and nothing
-pins it: the catalogue's signature is the trust. Windows registers the same service with its own mDNS responder (`advert_win.cpp`, `DnsServiceRegister`; the
-instance is `MediaViewer-` and six random hex digits, since Windows does not rename on a conflict). Linux has
-`advert_none.cpp`, so no advert yet.
+**Nearby.** `desk::start_nearby` runs a second `serve::server` on the Mac over the local copy,
+`lan_only`, unclaimable, same access key and devices, advertised `_mediaviewer._tcp` (TXT `v=1`,
+`lib=` first 16 hex of SHA-256 of the library id; `advert_mac.cpp`). Windows: `DnsServiceRegister`
+(`advert_win.cpp`, instance `MediaViewer-` + 6 hex). Linux: `advert_none.cpp`.
 
 ## The NAS service (`driftwire serve`)
 
-`serve.h`, `serve_wire.h`, `serve_client.h`, `channel::open_library`; plan: `docs/plans/mobile.md`
-§7.2, M2b. A headless mode of the command line that lets a paired phone list and read named folders
-on a NAS through one forwarded port, the same way on the NAS's own network. It moves bytes and
-nothing else. It never touches the DHT, a router's mapping or the beacon. The one exception is the
-self-host (`docs/plans/self-hosted.md` §5, decision log 2026-11-14): run under `driftwire host`, its
-router keeper (`host_ports.h`) asks the router to forward the host's own ports while it runs and
-removes them on stop; `serve` alone still never does.
+`serve.h`, `serve_wire.h`, `serve_client.h`, `channel::open_library`; plan `docs/plans/mobile.md`
+§7.2, M2b. Headless: a paired phone lists and reads named folders through one forwarded port. No
+DHT, mapping or beacon, except that under `driftwire host` its router keeper (`host_ports.h`) holds
+the host's own ports while it runs (decision log, 2026-11-14).
 
 ```
-driftwire serve [--data DIR]              the service, with no terminal: DIR/serve.json, DIR/secrets
-driftwire serve init                      makes the identity and library access key; shows the key once;
-     [--passphrase-stdin | --no-passphrase]   asks for the owner's passphrase on the terminal
-driftwire serve status                    identity, owner, passphrase set or not, both lockouts
-driftwire serve devices                   lists paired devices, and timed ones with their end
-driftwire serve add NAME KEY [--for D]    pairs a device by its public key (64 hex digits); --for: timed
-driftwire serve grant NAME-OR-KEY         --for D (24h, 7d, 90m, seconds) or --forever: a device's limit
-driftwire serve revoke NAME-OR-KEY        revokes one; a running session is cut within 2 s
-driftwire serve pair-code [S] [--for D]   prints a single-use pairing code for the QR (default 600 s);
-                                          --for: a guest code, whose phone gets D from when it scans
-driftwire serve passphrase set|reset      changes the owner's passphrase; reset is the recovery (below)
+driftwire serve [--data DIR]              the service: DIR/serve.json, DIR/secrets
+driftwire serve init [--passphrase-stdin | --no-passphrase]   identity + access key (shown once)
+driftwire serve status                    identity, owner, passphrase, lockouts
+driftwire serve devices                   paired devices, timed ones with their end
+driftwire serve add NAME KEY [--for D]    pair by public key (64 hex)
+driftwire serve grant NAME-OR-KEY         --for D (24h, 7d, 90m, seconds) or --forever
+driftwire serve revoke NAME-OR-KEY        a running session is cut within 2 s
+driftwire serve pair-code [S] [--for D]   single-use QR code (default 600 s); --for: guest code
+driftwire serve passphrase set|reset
+driftwire serve disown
 ```
 
-`serve.json`, normally written by the desktop at setup:
-`{"port":N,"name":"...","roots":[{"id":"16 hex digits","label":"Photos","path":"/volume1/photo"}]}`.
-The port is fixed; there is no mapping and no hole punching. A catalogue folder like
-`.mediaviewer` is its own named folder, because `safe_relative` refuses hidden parts everywhere.
+`serve.json`: `{"port":N,"name":"...","roots":[{"id":"16 hex digits","label":"Photos","path":"/volume1/photo"}]}`.
 
-**Who gets in.** The order of work for a connection is the design, because the port is open to
-everyone:
+**Who gets in**, in order:
 
-1. Limits, past which the connection is closed and nothing is said, checked coarsest first so a
-   block over its limit never reaches the per-address table. Per IPv6 /48: 120 a minute and 4
-   handshakes in progress. Per address (an IPv6 /64): 30 a minute and 2 in progress, the /48 being charged only after its
-   address has passed. Each table keeps
-   4096 sources. Last, 200 new connections a second across the service, spent only by a connection
-   that would be admitted, so a flood that the per-address limits drop costs nothing (measured
-   below). At most 16 handshakes are in progress: when full, the oldest connection whose hello
-   has not all arrived and that has had 500 ms is closed, so a phone arriving last can still get in.
-   A complete hello is given 2 s from the reply to the end of ident, and when no silent connection
-   can go, the oldest handshake still waiting a second after its reply is closed instead, so a
-   holder of the key (a revoked phone) cannot fill the table with stalled handshakes. A
-   normal round trip finishes well inside that second. Residuals: someone with many addresses can keep all 16
-   young and refuse new arrivals for as long as they keep it up, and an evicted connection may be a
-   phone whose hello is slow.
-2. `read_library_hello`: `MVSP`, 2, `L`, then a two-byte length that must be exactly the size of
-   the first Noise message. All 1256 bytes are read before any is judged, so a wrong prefix
-   closes no sooner than a right one. That only stops the prefix being probed: a wrong one is still
-   a few microseconds quicker, and a scanner that counts bytes until the close (1256 versus 1255) can
-   tell a listener of this shape. An older kind of hello reaches nothing, because this listener never
-   calls `read_hello`, and an engine listener never takes this one.
-3. `Noise_XXhfs+psk0` keyed by the **library access key** (32 random bytes, in the QR). The client's
-   ML-KEM key is sealed under a key mixed from the psk, so a client without the access key fails at
-   the service's first AEAD: one ChaCha20-Poly1305 open, no X25519, no ML-KEM, no reply.
-   `noise::kem_encapsulations()` counts that work, and the tests assert it does not move.
-4. A first message that opens is checked against the last 4096 seen since the service started. A recording of a real client's
-   hello opens too, but is not worth a reply, and only messages that opened are remembered, so
-   a stranger cannot flush the ring. The ring is memory: after a restart a recording works once
-   more (one ML-KEM and one reply each, never a session, since message 3 needs the device's key).
-5. A device not on the list that holds the access key may send one `serve_pair` message with a
-   single-use code from `serve pair-code` (only its hash is stored, with an expiry): a good one
-   adds its key to the list and the session goes on as `serve_paired`, anything else is
-   `{"why":"bad-code"}`. A pairing code never reaches a device without the access key.
-6. After the handshake the client's device key (`peer_key`) must be in the paired list, read fresh
-   for every connection. Not paired or revoked: sealed `msg::cancel` with `{"why":"not-paired"}`,
-   then closed. A running session is checked against the list every 2 s and cut with
-   `{"why":"revoked"}`.
+1. Silent limits, coarsest first: per IPv6 /48 120/min, 4 in progress; per address (/64) 30/min, 2
+   in progress; 4096 sources per table; 200 admitted/s overall; ≤ 16 handshakes (evict an incomplete
+   hello after 500 ms, else a handshake stalled > 1 s after reply; full hello gets 2 s).
+2. `read_library_hello`: `MVSP`, 2, `L`, a two-byte length equal to Noise message 1; all 1256 bytes
+   read before judging.
+3. `Noise_XXhfs+psk0` keyed by the **library access key** (32 bytes, in the QR); the ML-KEM key is
+   sealed under a psk-mixed key, so without the key: one AEAD open, no reply
+   (`noise::kem_encapsulations()` asserted in tests).
+4. Replay ring of the last 4096 opened first messages (memory).
+5. `serve_pair` with a code (hash + expiry) → added, `serve_paired`; else `{"why":"bad-code"}`.
+6. `peer_key` must be paired (read per connection), else `{"why":"not-paired"}`; re-checked every
+   2 s, cut with `{"why":"revoked"}`.
 
-The identity, the access key and the paired list live in `secrets::file_store` (a file per value,
-0600, written whole and renamed in, refused on read when group- or world-readable, or a link) in a
-folder that must be 0700 and this user's own. A value that is there but cannot be read is an error,
-never a reason to make a new one: replacing the identity would lose every phone that pinned it. The
-service only reads the keys; `init` makes them. `serve.json` and the data folder must be writable
-by this user alone. There is no keyring on a NAS. Paired devices hold a
-read-only grant on the named folders; a write path for the backup folder waits for 1.1.
+Keys and lists in `secrets::file_store` (0600 files, renamed in, refused if group/world-readable or a
+link; folder 0700, this user's). An unreadable value is an error, never regenerated. **As root, or
+elevated on Windows, it refuses to start** (except the test build).
 
-**The protocol.** A library channel takes only message ids 25–31 and 33–34 (`wire.h`), plus ident, ping and
-cancel, and no other channel takes them. After ident the client sends `serve_hello` (protocol
-versions and operation names), the service answers `serve_caps` with what both have, and neither
-sends an operation the other did not list. An operation name the service does not know answers
-`end_code::unsupported` on that one stream, so a new app and an older service, or the reverse,
-still talk; if nothing is shared the app says the service is too old.
+**The protocol.** Message ids 25–31, 33–34 (`wire.h`) plus ident, ping, cancel. `serve_hello`
+(versions, operation names) → `serve_caps` (intersection); unknown operation →
+`end_code::unsupported`. Streams with client ids: `roots`, `list` (NDJSON), `stat`, `read_range`
+(`file_reader::read_at`). Credit per stream (≤ 8 MiB); interactive chunks ≤ 64 KiB, bulk ≤ 256 KiB,
+one bulk per four interactive. `stream_cancel`; seek = cancel + new `read_range`. No rejoin or
+replay; reads are idempotent.
 
-Each operation is a stream with a client-chosen id: `roots`, `list` (NDJSON, in `stream_data`),
-`stat`, `read_range` (`file_reader::read_at`). The client grants credit in bytes per stream (at most
-8 MiB outstanding); the service sends at most that, one chunk at a time. Interactive streams use
-chunks of 64 KiB or less, and bulk streams (a whole-file pull) up to 256 KiB, with one bulk chunk
-after every four interactive ones when both wait. `stream_cancel` ends one between chunks, and a
-seek is a cancel plus a new `read_range`.
+**Paths.** Root id + relative path; absolute paths never sent or logged. `safe_relative`, then
+`io::stat_beneath`, `list_beneath`, `file_reader::open_beneath` walk part by part from the root's
+descriptor (`openat(O_NOFOLLOW|O_DIRECTORY)`); Windows holds each folder open without share-delete.
+Listings omit hidden and link entries.
 
-A library channel is never rejoined and keeps no replay. The channel sends straight to the socket
-(no copy of every chunk, no 16 MiB per stalled client), a dropped link ends the session at once,
-and the client reconnects and asks again, which is safe because every read is idempotent.
+**Rule 6.** Prints its port and stop; counts totals (`server::stats`); logs no address, path or name.
 
-**Paths.** A root id from the service's list and a relative path: the id is opaque and the absolute
-path is never sent or logged. A request fails `refused` before any file is touched if the root is
-unknown or the path fails `safe_relative`. Then `io::stat_beneath`, `list_beneath` and
-`file_reader::open_beneath` go one part at a time from an open descriptor of the root
-(`openat(O_NOFOLLOW|O_DIRECTORY)`, and `O_NOFOLLOW|O_NONBLOCK` for the file, on POSIX), so a link at any
-part is refused and a folder swapped for a link after it was checked changes nothing. Windows holds
-each folder of the walk open without share-delete, which stops it being renamed, instead of
-handle-relative opens (which need the native NT calls). A folder is listed with its hidden and
-link entries left out.
+**Revocation removes a device, not the access key.** A revoked phone can still drive the first
+handshake steps. Rotating the access key is not built.
 
-**A folder that is not there** (an external drive unplugged, a share not mounted;
-[self-hosted.md](../plans/self-hosted.md) §6): `roots` lists it with `"offline":true`, sent only then,
-and a request on it that fails ends `not_found` with `{"why":"offline"}`. The folder is looked at only
-for `roots`, before a write at its top, and after a request failed. The session is not ended; the folder serves again when it is
-back. A folder `driftwire host share` keeps with `"mount":true` (POSIX: it was a mount point) or a
-`"volume"` (Windows: its volume's GUID path) is also not there while it is not a mount point, or while
-its letter names another volume (`server::options::root_present`, the host's `cli/volume.*`), and is
-looked at before every write, not only one at its top: an unmounted mount point is an empty folder on
-the system disk, and the write's walk would make folders there. Neither field is ever sent.
+**A folder that is not there** (a drive unplugged, a share not mounted): `roots` lists it with
+`"offline":true` (only then); a failed request on it ends `not_found` `{"why":"offline"}`; the session
+goes on. Looked at for `roots`, before a write at its top, and after a failure. A `host share` folder
+with `"mount":true` (POSIX) or a `"volume"` GUID path (Windows) is also offline while unmounted or
+while its letter names another volume (`server::options::root_present`, `cli/volume.*`), checked
+before every write. Neither field is sent.
 
-**Rule 6.** The service prints its port and that it stopped, and counts totals (`server::stats`).
-No address, path or file name is ever logged.
-
-**Not built, for spike S5 and later.**
-
-- **The Synology package** (which build, which models): the service needs only a start at boot as
-  an unprivileged user, a fixed `--data` folder on the system volume (0700, surviving updates), and
-  read access to the shares in `serve.json`. A Task Scheduler job or container must run as the
-  service's own user with a `--data` folder that user owns, and `serve init` and `serve add` must
-  be run as that user too, because the keys are its alone and root is refused. Spike S5 has to
-  confirm DSM allows this. Its firewall rule and port forward are the setup
-  guide's.
-- **Unattended signed updates** ([nas-setup.md](../plans/nas-setup.md) §6): the core is built
-  (`cli/nas_update.*`, `"[nas-update]"`): an Ed25519-signed `latest.json` per arch, a staged
-  download checked by SHA-256 and size and self-tested before it replaces `var/bin/driftwire`, the
-  one before kept as `.prev`, and the package's `start-stop-status` rolling back after three failed
-  starts. Wired: inside the package (`start-stop-status` sets `MV_NAS_VAR` and supervises the
-  service), a build with `MV_NAS_UPDATE_KEY` checks 10–70 minutes after starting and then daily
-  (±2 h), runs the download as `serve self-test` (keys readable, `serve.json` valid, changes
-  nothing), and exits 75 after installing; the supervisor starts the new binary at once and counts
-  each start toward the trial; five minutes up clears it. Not built: signing `latest.json` in a
-  release and the static NAS builds in CI, so no build pins a key yet and none updates itself.
-- **Claiming from the desktop**: writing the token into `.mediaviewer/` over SMB. Needs a claim
-  operation (a capability; only while there is no owner, and only from the NAS's own network, the
-  plan says), and the `add` / `revoke` / folder changes as owner operations over the channel. Today
-  those are the local command line.
-- Rejoin on a library channel, per-stream priorities beyond interactive and bulk, and the phone's
-  `remote_file` wrapper (M3).
-
-**Revocation removes a device, not the access key.** A revoked phone still holds the shared key, so
-it can still make the service do the first handshake steps (never a session, and never a file). Only
-a new key would stop that, and every other phone would need it too: rotating it is an **open
-decision for the owner**, not built.
-
-**As root, or elevated on Windows, it refuses to start** (except the test build): the keys would be
-root's or the administrator's and the service would run with more than the unprivileged user §7.2
-asks for.
-
-**Tested only on loopback, on one Mac.** Every test here runs over `::1`: a 5 GB sparse file read
-and seeked past 4 GiB, silence and no KEM work without the key (and with a replayed hello), revoked
-and unpaired devices, paths outside the folders and through links, credit and cancel, capability
-negotiation. The program runs with no terminal and stops on SIGTERM. Not run: anything over a real
-network or a real forwarded port (M2b's "from outside the building"), a seek under load at 30 Mbit,
-Synology hardware or Linux (`file_store` and sockets are portable, but only macOS ran them here),
-Windows. On Windows, `file_store` relies on the per-user profile's ACL; there are no POSIX modes
-to check.
+**Not built**: the Synology package; release signing of the NAS update `latest.json` (the updater is
+built: `cli/nas_update.*`, `"[nas-update]"`, Ed25519-signed per-arch manifest, `serve self-test`,
+`.prev` rollback after three failed starts, `MV_NAS_VAR`, `MV_NAS_UPDATE_KEY`, exit 75); claiming
+over SMB with owner operations over the channel; library rejoin; the phone's `remote_file`.
 
 ### Phone backup: the write grant (1.1)
 
-`src/wire/serve_backup.*`, `src/wire/grants.*`; plan: `docs/plans/mobile.md` §10b, §10b.1 (owner's calls
-B1–B8, 2026-11-12), M11. A named folder can be a **backup folder**: `"backup":{"limit","reserve"}` in
-`serve.json`, set by the owner's `add_root` or `set_backup` (Settings → Phone access on the Mac and on
-Windows: "Phones back up to this folder", the limit and the free space to keep, both editable, and
-whether Local search on that computer covers the folder, from the `search_roots` Local search reports in
-its `phone_json`). A phone that lists `write` in its hello is given the op (a name on the wire; this
-build's bit is `1u << 6`); an older service leaves it out of `serve_caps`, and the phone says the
-service needs updating.
+`src/wire/serve_backup.*`, `src/wire/grants.*`; plan `docs/plans/mobile.md` §10b, M11. A backup
+folder is `"backup":{"limit","reserve"}` in `serve.json` (owner's `add_root` / `set_backup`;
+Settings → Phone access). A phone listing `write` gets the op (bit `1u << 6`).
 
-**Who may write is a phone's grant** (B2, with `docs/plans/nas-owner-and-guests.md`): a grant carries
-`backup`. A device is on the paired list only with no expiry, no folder scope and backup allowed; a phone
-with backup off lives only in `library_grants`, which an older NAS never reads, so it fails closed. A
-guest code gives backup off; "Until I remove it" for every folder gives it back. The owner's `grant` verb
-takes `backup` (alone, it keeps the expiry and the folders); turning it on adds access and needs the
-unlock once there is a passphrase, off never does. Each write asks the device's grant afresh
-(`device_may_write`), so a change applies to the next file; a scoped grant writes only in its folders.
-The tests' `server::options::may_write` stands in for the grants.
+**Who may write is a phone's grant** (`backup`): the paired list holds only unlimited devices with
+backup; others live in `library_grants`. Guest codes give backup off. Turning backup on needs the
+unlock. Checked per write (`device_may_write`).
 
-A write is a stream the other way: `stream_open {"op":"write","root","rel","at","size","hash"}`, the
-service's `stream_credit`, the client's `stream_data` at the offsets it expects. The service, in order:
-refuses anything but a backup folder this device may write (`not-allowed`), a name over 200 bytes
-(`name`); makes the folders beneath the root, never through a link; answers at once when an identical
-file (name or a numbered form, size, BLAKE3) is already there; holds the bytes against the limit
-(`limit`) and the volume's reserve, counting every folder's held bytes (`full`); writes
-`.<name>.<device id>.mvpart`, hidden; with every byte there, flushes, hashes what is on disk and renames
-without replacing (`" (2)"` for a taken name), one commit at a time per folder. A wrong hash removes the
-part (`hash`). Never replaced or removed: anything but a device's **own** `.mvpart` (appended to on
-resume from `have`, removed on a bad hash or when the whole file turns up) and that device's own
-`.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`), the one file replaced, bounded by
-the reserve and not the limit. Writes count against `kMaxStreams`; a small file costs 4 KiB against the
-limit. The phone's side is `src/mobile/backup.*` (ledger, run, the sample library's on-phone target
-through the same `commit_part`). Tests: `[driftwire-serve]` "serve backup:", `[phone-pairing]` (the
-backup folder, the grant flag, a guest code), `[mobile-link]` "backup:". Not run: a real NAS, a real
-exFAT or SMB volume, Windows (the WinUI rows compile only in CI).
+A write: `stream_open {"op":"write","root","rel","at","size","hash"}`, `stream_credit`,
+`stream_data`. Errors `not-allowed`, `name` (> 200 bytes), `limit`, `full`, `hash`. Folders made
+beneath the root, never through a link; an identical file (name, size, BLAKE3) answers at once;
+writes hidden `.<name>.<device id>.mvpart`, then flushes, hashes and renames without replacing
+(`" (2)"`), one commit per folder at a time. Only the device's own `.mvpart` and
+`.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`) are ever replaced. Phone side
+`src/mobile/backup.*`.
 
-### Through the person's own relay (piece 3, 2026-11-12)
+### Through the person's own relay
 
-Plan and owner calls: [nas-relay.md](../plans/nas-relay.md). **There is no public relay and there
-will not be one** (owner, 2026-11-12): away from home without a forwarded port, a phone reaches the
-NAS only through a `driftwire-relay` the person runs on their own server. Settings → Phone access
-says so on its **Relay (your own server)** row (Mac and Windows), which is greyed, with the reason,
-for a service too old to wait at a relay.
+Plan [nas-relay.md](../plans/nas-relay.md). No public relay: away from home a phone reaches the NAS
+only through the person's `driftwire-relay`.
 
-- **The service waits at it** (`serve.cpp` `relay_loop` / `wait_at_relay`). With `"relay"` in
-  `serve.json` and the server's key in the secret store (`relay_key`), the service keeps one waiter
-  per paired device, at most `kMaxRelayWaiters` (4, the relay's per-source cap), each re-registering
-  every `kReregisterMs`. A waiter's token is `relay_token(access_key, device_pub)` = BLAKE2b-128 keyed
-  by the access key over `"MediaViewer relay token v1" || device_pub`: opaque to the relay, unrelated
-  across libraries, not computable without the access key. A revoked device's waiter goes.
-- **A relayed link is admitted like a direct one** (`admit()`), keyed `relay:<token hex>` instead of
-  the relay's shared address, and is never the service's own network: no claim comes through a
-  relay. Noise XX+psk0 and the device-key check run end to end; the relay carries ciphertext only.
-  `stats().relayed` counts them.
-- **Set from the desktop, never put in the QR.** The owner's `set_relay {address, key}` verb (owner
-  only, needs an unlocked session once there is a passphrase; feature `"relay"` in the caps) writes
-  the address to `serve.json` and the key to the store; `owner_status` and the caps report the
-  address only. The pairing QR stays `"v":1` and gains an optional `"relay":{"address"}`, which an
-  older app ignores.
-- **The phone tries it last** (`src/mobile/link.cpp`): a paired phone's race adds the relay 1.5 s
-  after the direct routes and joins its own waiter with `relay::join` under its own token; a direct
-  route that answers always wins, pairing never goes through the relay, and the route report and
-  Settings say "Connected through your relay" (it counts as over the internet for the mobile-data
-  rules). The code's `"relay"` is read when there and kept with the pairing; an old code has none.
-- **Known limits:** an expired guest has no waiter, so a re-invite code is redeemed only over a
-  direct route (at home or through a forwarded port); a phone's race gives the relay the full time
-  after its start (5 s, from 1.5 s), and starts it at once when every direct route has already failed.
-- **Then a direct path** (owner call 4, 2026-11-12; [plan §9](../plans/nas-relay.md)). No DHT: the
-  service still never touches it. With a session up through the relay, a phone whose service offers
-  `kUpgradeOp` (granted only to a relayed session) sends its candidates inside the session
-  (`serve_upgrade` on serve_admin's frame): its own network's addresses at a `tcp_rendezvous` port,
-  and its public side as the relay sees it, asked from that same port with the relay's new **`kAsk`**
-  role (the server says the address and port it sees, in the clear, and closes; an older relay
-  refuses it). The service answers with its own, gathered the same way, and both punch for 10 s.
-  The phone runs the whole handshake again on the new path, which the service admits bound to that
-  device as on the relay, and swaps it in as a reconnect does: reads running on the relayed client
-  finish there, later ones go direct. A failed try stays on the relay and tries again after 1, 5
-  and 15 minutes, then hourly; Forget ends a try at once. On mobile data only with Settings →
-  **Faster direct connection on mobile data** on (default on), enforced in the core
-  (`mv_link_set_upgrade`); on Wi-Fi always. Tests: `"[phone-upgrade]"` (loopback only).
-  Throughput on loopback, 64 MB, three runs alternated (`"[.phone-upgrade-bench]"`): relay
-  619/649/661 MB/s, direct 659/686/671 MB/s; loopback shows only the relay's copying, not a real
-  relay's distance, which is where the upgrade pays. Not run: a real NAT, a real relay.
-  Limits on what a paired phone can ask: candidates must be unicast and elsewhere (no unspecified,
-  loopback, multicast, broadcast or link-local address; `usable_candidate`), at most 8; one ask per
-  device per 30 s and 4 punches at once, the slot taken before anything is gathered. A punch admits
-  each connection it opens (8 at most) and the phone tries its handshake on each in turn, so two
-  paths opening at once cannot leave the sides on different ones (not reproducible on loopback; by
-  review only). The gathering and the answer run on the punch's own thread, never the session's
-  reader: a range read or a clip's next range asked meanwhile is answered at once (tested with a
-  2 s gathering).
-- **Tested on loopback only** (`tests/test_phone_relay.cpp`, `"[phone-relay]"`; the desktop's
-  `set_relay` and the QR field in `"[phone-pairing]"`): a paired client lists and range-reads through
-  an in-process relay on `127.0.0.1` with no 32-byte run of the file in the relay's bytes; a wrong
-  access key and a revoked phone get nothing; a claim never comes in through it; a changed key
-  restarts the waiters; only the waiter's own device gets through it; a silent relay does not hold
-  up a stop. The phone's side is in `"[mobile-link]"` (the race through the relay, the direct route
-  winning, an old code, pairing never relayed). Never a public relay or the public DHT. The phone's
-  Swift tests were not run with it (no iOS core build here); the Swift side compiles.
+- **Waiting** (`serve.cpp` `relay_loop` / `wait_at_relay`): with `"relay"` in `serve.json` and
+  `relay_key` stored, one waiter per paired device (≤ `kMaxRelayWaiters` 4), re-registering every
+  `kReregisterMs`. Token `relay_token` = BLAKE2b-128 keyed by the access key over `"MediaViewer
+  relay token v1" || device_pub`.
+- **Admission** (`admit()`) keyed `relay:<token hex>`, never local (no claim via relay);
+  `stats().relayed`.
+- **Set by the owner** (`set_relay {address, key}`, feature `"relay"`); the QR (`"v":1`) may carry
+  `"relay":{"address"}`.
+- **The phone** (`src/mobile/link.cpp`) joins its waiter (`relay::join`) 1.5 s after direct routes;
+  direct always wins; pairing never relays; "Connected through your relay".
+- **Then a direct path**: a relayed session may get `kUpgradeOp`; candidates via `serve_upgrade`
+  (LAN at a `tcp_rendezvous` port, public as seen by the relay's **`kAsk`** role); both punch 10 s;
+  the phone redoes the handshake and swaps in. Retries 1, 5, 15 min, then hourly; on mobile data only
+  with **Faster direct connection on mobile data** (`mv_link_set_upgrade`). ≤ 8 candidates
+  (`usable_candidate`), one ask per device per 30 s, 4 punches at once. Tests `"[phone-upgrade]"`,
+  `"[phone-relay]"`.
+
 ### On your own computer: `driftwire host`
 
 [Self-hosted.md](../plans/self-hosted.md) slice 2 (2026-11-14): the job a NAS would have done, on a PC
@@ -1918,517 +826,193 @@ else does (never the viewer, never the phone).
 
 ## The Tunnel (2026-11-12)
 
-The owner's ask: on a public network that filters sites (and blocks the common VPNs), reach the
-web through one's own relay server. Encryption alone does not pass a filter, which blocks by DNS
-name, TLS SNI or address; traffic has to *leave* through a machine the filter allows, and the
-person's relay server (`tools/driftwire-relay`, a NAS or a home computer) is that machine. With
-only the laptop there is no such machine. Plan and later slices:
+Reach the web through one's own relay server on a filtering network. Plan
 [driftwire-menu-and-tunnel](../plans/driftwire-menu-and-tunnel.md).
 
-- **Forwarding on the relay server** (`splice.*`, slice 2). A third role on the sealed hop,
-  `kForwarder` (2): `MVRL`, 3, the role, a session id and a CPace message on the server key (its
-  own channel name, `…forwarder-server`), the server's CPace answer, then Noise NNpsk0 with the
-  server first; the client's answer carries the port, the host's length and the host (a name or an
-  address, `forward_host_ok`), sealed against the server's fresh ephemeral, so a network on the
-  path sees neither, and a recorded forward said again opens nothing. The server says one sealed
-  word: `F` forwarding, else why not (`O` off, `X` not that port, `B` busy, `U` unreachable, `N` a
-  private address, `K` a kind it does not carry). The request starts with a kind byte (TCP, 0;
-  a datagram flow for the plan's slice 5 takes another value, and a server without it answers
-  `K`). Then the bytes go both ways as **sealed frames** (`sealed_link`: a 2-byte length
-  and the AEAD of at most 16 KiB under the split keys), never as they are: a plain `http://`
-  request would otherwise show its host to the filter. Never for anyone without the key, so it is
-  not an open proxy (a wrong key gets one live guess and hears nothing). Limits: ports 80 and 443
-  unless `--forward-ports` says others (`none` turns it off), `--max-forwards` at once (64), TCP
-  only, public addresses only (a name that resolves to loopback, a private or a link-local address
-  is refused: the server is not a way into its own network), 10 minutes idle. The server resolves
-  names, so the Wi-Fi's DNS sees none of them. It counts forwards, never names them.
-  `tools/formal/relay.pv` models the hop with the forward request (the key resists offline
-  guessing, the host and the bytes stay secret, the server forwards only what a key holder asked,
-  the client's "forwarding" came from the server about its own request), and
-  `relay_leaked_key.pv` checks the model can fail.
-- **The local proxy** (`tunnel.*`, slice 3). SOCKS5 (CONNECT, no authentication; a name is sent
-  as a name, so `socks5h` resolution happens at the relay) and HTTP (CONNECT; a plain `http://`
-  request in absolute form is sent on in origin form with `Connection: close` and without the
-  proxy's own headers) on **127.0.0.1**, on the port it had last time (kept in the prefs as
-  `tunnel_port`, so a browser set up once keeps working), else one the OS picks. Each connection
-  is one forward at the relay server in the Relay (your own server) field. At most 128 streams,
-  3 being opened at once (the server takes 4 handshakes at once from one source). Browsers, the
-  Claude app and command-line tools (`HTTPS_PROXY`, `ALL_PROXY`) use it; no VPN driver, no OS
-  entitlement, no system setting changed. Not carried: UDP (browsers fall back from QUIC to TCP),
-  and programs that ignore proxy settings. Any program of this machine's users may connect to the
-  loopback port while it runs, as with any local proxy; it reaches only what the relay forwards.
-  Nothing is logged with a host, an address or a port (rule 6).
-- **The system proxy** (owner, 2026-11-12; `sysproxy.*`). With **Use for all apps** on (by
-  default) while the Tunnel runs, the computer's automatic proxy setting points at a PAC script the
-  proxy serves on its own port (`http://127.0.0.1:<port>/driftwire-tunnel.pac`): local names and
-  literal private addresses go DIRECT, everything else `SOCKS5 127.0.0.1:<port>; DIRECT`, so an
-  app that follows the system setting goes through the relay with nothing to paste, and goes
-  direct if the proxy stops answering. The script never calls `dnsResolve` (it would ask the
-  network's DNS). The OS calls are behind a port, one file per OS as `power.h` (D9):
-  `sysproxy_mac.cpp`, every enabled network service's ProxyAutoConfigURLString through
-  SystemConfiguration, authorised by an administrator once a run; `sysproxy_win.cpp`, this user's
-  WinINet setting for the LAN connection (no administrator; other connection entries keep theirs);
-  `sysproxy_none.cpp` on Linux, where the window says to point apps at the address. What was there
-  is kept in `driftwire_proxy.json` beside the prefs as soon as it is set; it goes back when the
-  Tunnel or Use for all apps goes off, when the engine is destroyed (quit), and at the next start
-  after a crash, and only where the setting is still Driftwire's URL (one the person changed since
-  is theirs). A declined or failed change is said once and not asked again until the person
-  flips one of the two switches. Only a host that hands the engine `make_sysproxy` (the add-on and
-  the `driftwire` program) changes a setting; the tests use a stand-in. Not a VPN: apps that ignore
-  the system setting, and anything over UDP, go direct.
-- **One switch, every surface.** Node `tunnel` (a `kChange` boolean), opt-in and off by default,
-  kept in the prefs: the window's **Tunnel through <relay>** under Internet options (its own card
-  while the internet switch is off, so it can still be seen and turned off), the settings page
-  (same id), the menu-bar row (slice 1's, same id and event), and `/tunnel [on|off]` in the
-  `driftwire` program. The engine starts and stops the proxy on its control thread
-  (`sync_tunnel`), restarts it when the relay field changes, and posts its state: the address with
-  **Copy**, a `link` node with the new bearer `via: "tunnel"` (green, a lock; "moving" while
-  streams are open, "failed" with the relay's problem, "done" when ready), and why it does not run
-  (no relay server set, or the relay's last answer: the wrong key, forwarding off, no answer), with
-  **Use for all apps** (`tunnel_all_apps`) under it and `/tunnel apps on|off` in the program. The
-  view's `tunnel_mode` is "proxy" until the plan's slice 5 adds a VPN mode beside the same switch. A
-  site's own refusal (a port, a private address) is answered to the browser (SOCKS5 reply 2 or 4,
-  HTTP 403 or 502) and is not the tunnel's problem.
-- **Looking like HTTPS** (slice 4, `tls.*`; [spike](../plans/driftwire-tls-spike.md)). With
-  **Look like a web site (port 443)** (`tunnel_tls`, off by default; `/tunnel https`) the Tunnel
-  reaches the relay on its TLS port (`mv-driftwire-relay --tls-port 443`) through BoringSSL with
-  Chrome's ClientHello: GREASE, permuted extensions, ECH GREASE, ALPS, brotli certificate
-  compression offered, X25519MLKEM768 first, Chrome's ciphers and signature algorithms, ALPN `h2`
-  and `http/1.1`, SNI when the relay is a name. Its JA4 in the tests is
-  `t13d1516h2_8daaf6152771_d8a2da3f94cd` (the first two parts pinned to Chrome's; the third moves
-  with Chrome's own codepoints). TLS is camouflage only: the client does not check the
-  certificate, since the hop inside (CPace, then Noise, unchanged) proves the key. Inside TLS the
-  client's first 32 bytes are the **knock**, a keyed BLAKE2b of the session's TLS exporter
-  (`EXPORTER-driftwire-knock`) keyed by an Argon2id hash of the server key; good for its own
-  session only. With it, the hop runs as on the plain port (every role). Without it, whatever came
-  is the start of an HTTP request and the relay answers as a web site (`Server: nginx`; a small
-  built-in page, or `--decoy-dir`; 404, 405 and 400 as a web server would; 10 s idle). The
-  certificate is `--tls-cert` / `--tls-key` (a real one passes a prober's look best), else a
-  self-signed one for `--tls-name`. Codes keep the relay's plain port (a sender holds no server
-  key to knock with). A network that breaks TLS with its own certificate sees the knock; Argon2id
-  makes offline guesses at a typed key slow, and a made key is out of reach. `relay.pv` is
-  unchanged: TLS makes no claim here and the hop inside is the same bytes.
-- **All traffic: Driftwire VPN** (slice 5, `netstack.*`, `vpn.*`; owner's ask 2026-11-12). With
-  **All traffic (VPN)** (`tunnel_vpn`, off by default; also a menu row, `/tunnel vpn`), a virtual
-  interface catches every app's packets and the proxy and the system proxy step aside. The packets
-  become connections again in the add-on: `netstack.cpp` is a small TCP/IP stack of Driftwire's own
-  (IPv4 and IPv6; TCP as the server of each app connection, in-order only, go-back-N on a 400 ms
-  timer, no window scaling; UDP; checksums both ways; no ICMP or fragments), each TCP connection
-  one forward through the proxy's dialer (`tunnel::dialer`: the same relay, TLS look and knock),
-  each UDP flow a **datagram flow** at the relay (`kForwardUdp`: the request's kind byte; the
-  stream then carries 2-byte-length datagrams, sealed; the server sends them from a socket of its
-  own and takes answers only from that host; `--forward-udp-ports`, 53 by default, so QUIC falls
-  back to TCP). DNS: the interface's resolver is `198.18.0.2` inside the tunnel, answered by the
-  relay's own resolver (`dns.driftwire`, `--dns`, else the server's first), so the Wi-Fi's DNS sees
-  no name. The interface's addresses are `198.18.0.1/30` (RFC 2544's range, never a real network)
-  and `fd5d:7269:6674::1/64` (a unique local /64 of Driftwire's own); routes send everything of
-  **both families** through it except the relay's own addresses (every one its name resolves to,
-  IPv4 and IPv6) and the local networks (the tunnel never carries itself; the printer still
-  works). One builder makes both OSes' routes (`vpn::plan_routes`). IPv6 goes through the relay as
-  IPv4 does (the relay connects out over IPv6); with a unique local source address the OS tries a
-  site's IPv4 first (RFC 6724), so IPv6 is used mostly where a site has nothing else. Until
-  2026-11-14 only IPv4 was routed, and with the kill switch off an app's IPv6 went around the
-  tunnel (found by `docs/plans/phone-vpn.md` S5). **Block when the tunnel is down**
-  (`tunnel_block`, off by default) keeps traffic in the tunnel while it is down. The interface is
-  the OS's, behind `vpn::os_port` (D9): on the Mac a Network Extension packet tunnel, a thin pump in
-  the app's bundle that hands packets to the add-on over loopback after a token, with
-  `includeAllNetworks` as the kill switch (`vpn_mac.mm`, `mac_tunnel/`; Apple's entitlement owed,
-  [12](12-decision-log.md#driftwire)); on Windows Wintun, routes `0.0.0.0/1` and `128.0.0.0/1`,
-  `::/1` and `8000::/1` (IPv4 only where the machine has IPv6 off), the relay's own routes kept
-  (both families), DNS on the adapter, and the kill switch as WFP filters in a sublayer of
-  Driftwire's own (only the tunnel, the relay, loopback, the local networks and DHCP and DHCPv6 out; not a
-  dynamic session, so they outlive a crash, and go at stop, the next start or a reboot)
-  (`vpn_win.cpp`; the DLL's licence and running elevated owed); none on Linux yet. The Mac provider
-  builds and embeds with `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON` (`cmake/darwin-tunnel.cmake`; `macpack.py`
-  puts it in `Contents/Library/SystemExtensions` and signs it with the entitlement only for a team);
-  the add-on reads the extension's signature and offers the VPN only when it carries the
-  packet tunnel's Network Extension entitlement. Until an
-  OS can start it, the window says why and the proxy carries on.
-- **What it exposes.** The Wi-Fi sees a connection to the relay's address; the sites see the
-  relay's address; the relay sees which hosts are visited, never the content of HTTPS. A network
-  that allows only listed sites, or breaks TLS with its own certificate, defeats this as it does
-  every tunnel; looking like HTTPS (above) helps only against filters that block what does not
-  look like a web site. The VPN carries apps that ignore proxies; it does not hide more from the
-  relay than the proxy does.
+- **Forwarding** (`splice.*`): role `kForwarder` (2): CPace (`…forwarder-server`) then Noise NNpsk0;
+  the client's sealed answer carries kind byte, port and host (`forward_host_ok`). Reply `F`, or `O`
+  off, `X` port, `B` busy, `U` unreachable, `N` private, `K` kind. Then **sealed frames**
+  (`sealed_link`: 2-byte length + AEAD ≤ 16 KiB). Ports 80/443 unless `--forward-ports` (`none`
+  off), `--max-forwards` 64, public destinations only, 10 min idle; the server resolves names and
+  logs only counts. Models: `tools/formal/relay.pv`, `relay_leaked_key.pv`.
+- **Local proxy** (`tunnel.*`): SOCKS5 CONNECT (names sent as names) and HTTP CONNECT / absolute-form
+  on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 3 opening at once. No UDP.
+- **System proxy** (`sysproxy.*`): **Use for all apps** (`tunnel_all_apps`, on by default) sets the
+  OS auto-proxy to `http://127.0.0.1:<port>/driftwire-tunnel.pac` (local DIRECT, else `SOCKS5
+  127.0.0.1:<port>; DIRECT`; no `dnsResolve`). `sysproxy_mac.cpp` (SystemConfiguration, admin once
+  a run), `sysproxy_win.cpp` (WinINet LAN, per user), `sysproxy_none.cpp` (Linux). The prior setting
+  is saved in `driftwire_proxy.json` and restored on off, quit or the next start after a crash, only
+  where still ours. Only hosts passing `make_sysproxy` change it.
+- **One switch**: node `tunnel` (`kChange`, off by default) in the window (**Tunnel through
+  <relay>**), settings page, menu bar, `/tunnel`. `sync_tunnel` on the control thread; `link` node
+  bearer `via: "tunnel"`; `tunnel_mode` "proxy" or VPN. Site refusals map to SOCKS5 reply 2/4 or
+  HTTP 403/502.
+- **Looking like HTTPS** (`tls.*`; [spike](../plans/driftwire-tls-spike.md)): **Look like a web site
+  (port 443)** (`tunnel_tls`) uses BoringSSL with Chrome's ClientHello to `mv-driftwire-relay
+  --tls-port 443` (JA4 in tests `t13d1516h2_8daaf6152771_d8a2da3f94cd`). Certificate unchecked (the
+  inner hop proves the key). First 32 bytes inside TLS are the **knock** (keyed BLAKE2b of exporter
+  `EXPORTER-driftwire-knock`, key = Argon2id of the server key); without it the relay acts as a web
+  server (`Server: nginx`, `--decoy-dir`). `--tls-cert`/`--tls-key` or self-signed `--tls-name`.
+  Codes use the plain port.
+- **All traffic: Driftwire VPN** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`tunnel_vpn`,
+  `/tunnel vpn`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
+  no window scaling; UDP; no ICMP or fragments). TCP → `tunnel::dialer` forwards; UDP → datagram
+  flows (`kForwardUdp`, `--forward-udp-ports` default 53). DNS `198.18.0.2` answered by the relay
+  (`dns.driftwire`, `--dns`). Addresses `198.18.0.1/30`, `fd5d:7269:6674::1/64`; everything routed
+  except the relay's addresses and local networks (`vpn::plan_routes`). **Block when the tunnel is
+  down** (`tunnel_block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,
+  `mac_tunnel/`, `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON`, `cmake/darwin-tunnel.cmake`, embedded by
+  `macpack.py` in `Contents/Library/SystemExtensions`, offered only when entitled;
+  `includeAllNetworks` kill switch); Windows Wintun (`vpn_win.cpp`, routes `0.0.0.0/1`,
+  `128.0.0.0/1`, `::/1`, `8000::/1`, WFP kill-switch sublayer that outlives a crash until stop, next
+  start or reboot); Linux none.
+- **Exposure**: the network sees the relay; sites see the relay; the relay sees hostnames, not
+  HTTPS content.
 
 ## What moves, and how it lands
 
-`transfer.h`. Copies only: an original is only ever read (rule 5).
+`transfer.h`. Originals are only read (rule 5).
 
-- **What is offered**: the files a command, the context entry or the share icon hands over (the
-  gallery range, the marks, or the current file), each with its pair half (RAW + JPEG, Live Photo,
-  through the host's `pair_names`) and its XMP sidecars (`IMG_1.xmp`, `IMG_1.CR2.xmp`), one listing
-  per folder. Or a folder the person picks, recursively (`walk_files`, depth 32), keeping its
-  shape under its own name, without housekeeping (`@eaDir`, `#recycle`, `$RECYCLE.BIN`, `System
-  Volume Information`, `lost+found`, `__MACOSX`, `Thumbs.db`, `desktop.ini`, dot files, our own
-  `.mvtmp`).
-- **Only the file picked is read** (#498): the pick and the walk note each file's identity (its
-  volume and file number: `st_dev`/`st_ino` from the walk's own `lstat` on the Mac; on Windows,
-  whose listing has none, `io::identify` opens each for its attributes only, never following a
-  link and never downloading a cloud placeholder). The send opens it with `file_reader::open_same`:
-  `O_NOFOLLOW` (on Windows a link or junction at the last part is refused before the read handle
-  opens), then the identity of what opened must be the one noted. A file swapped for a link (to
-  `~/.ssh/…`, say) or for another file, or reached through a folder swapped for a link or
-  junction, is `file_skip`, never sent. A picked file that is itself a link is not offered, as a
-  walk never offered one.
-- **Where it lands**: the system **Downloads** folder, as AirDrop (`FOLDERID_Downloads` on Windows,
-  `~/Downloads` on the Mac; `net::downloads_folder`, #442), made on Accept if it is missing. A sent
-  folder keeps its own name inside it. **Save to** picks another folder, and that choice is kept
-  across launches in the add-on's own prefs (`prefs.h`: `driftwire.json` in its data folder,
-  written on the engine's control thread); a kept folder that is gone falls back to Downloads
-  until another is picked. Until #442 the default was `<the default photo folder>/Received`.
-  Every relative path passes
-  `safe_relative` (`/` only, no `..`, no root, no drive or stream, no device name, no trailing dot
-  or space, valid UTF-8, at most 1024 bytes and 32 levels; since #498 also no part starting with
-  `.` and none of the characters that make text read as something else: C0 and C1 controls, the
-  bidirectional overrides, embeddings, isolates and marks, line and paragraph separators, the zero
-  width space and byte order mark; ZWJ and ZWNJ stay): one bad path refuses the whole offer.
-- **Only the shapes a sender makes** (#498): files picked one by one (every path a bare name), or
-  one folder and what is in it (every path under the same first part). Anything else (photos
-  beside `Library/LaunchAgents/…`) is refused whole, so a sender cannot plant files around the
-  ones the card names. The card names the files, or says "In the folder Trip".
-- **Never through a link, never merged** (#498): the destination is the person's choice and is
-  followed; every folder below it is made one part at a time by `io::make_directories_beneath`,
-  which refuses a symlink or junction already there. A sent folder whose name is taken lands
-  beside it as `Trip (2)`, never inside the one already there.
-- **Marked as from another computer** (#498): each temporary gets the OS's download mark before
-  its first byte, `com.apple.quarantine` on the Mac and the Mark of the Web (`Zone.Identifier`,
-  zone 3) on Windows (`io::mark_from_elsewhere`), so Gatekeeper, SmartScreen and Office check it
-  before it opens or runs, and an app inside a received zip inherits it when extracted. Best
-  effort, as a browser's: a FAT or exFAT card on Windows keeps no stream. Received files are
-  written 0644 (no execute bit).
-  A free-space check (the volume's free bytes less 64 MiB) answers `no_room` before any byte moves.
-- **The write follows `io::verified_copy`'s rules** ([24](24-transfer.md)) on bytes that come from
-  a link: a sibling `<final>.mvtmp` created exclusively, hashed as written; at `file_end` the hash
-  must be the sender's, the file is flushed to stable storage, read back uncached and hashed
-  again; only then is it renamed into place with no-replace. A taken name keeps both
-  (`name (2).ext`, `io::unique_name`). A mismatch, an error, a cancel or a dropped link removes the
-  temporary. Files that finished stay; nothing partial is left. The file's mtime is kept,
-  clamped to between 1970 and tomorrow (#498).
-- **The next file arrives while the last one is checked** (#442). The thread reading the link
-  writes and hashes each file; at `file_end`, once the streamed hash is the sender's, the file
-  goes to a verifier (two threads, in order, at most four files waiting, each an open
-  temporary) that flushes it, reads it back uncached, hashes again, renames it with no-replace
-  and sends its `file_done`; the sender's `done` is answered only after every check. Every rule
-  above holds for each file exactly as before; only file N+1 no longer waits for file N's flush
-  and read-back. A cancel drops the file being written; a dropped link keeps it to resume
-  (below); files that had arrived whole finish their check, as they did when it ran inline.
-- **Staying awake** (#530). From the accept to the end, each side holds a request that the system
-  not sleep from idleness (`power.h`: `PowerCreateRequest` / `PowerSetRequest(
-  PowerRequestSystemRequired)` with a reason on Windows, `powercfg /requests`; an IOKit
-  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; a systemd-logind
-  `sleep` inhibitor in `block` mode on Linux, `systemd-inhibit --list`, through libsystemd or
-  libelogind loaded at run time, none without a system bus or when polkit refuses; asking takes
-  at most 2 s, even of a bus that never answers). The reason names the app ("MediaViewer is
-  receiving files (Driftwire)"; the command line's, "Driftwire is receiving files":
-  `power::set_owner`). The display may turn off and the screen lock. A closed lid, a shutdown or a
-  flat battery is not held off: resume is for those.
+- **Offered**: the handed-over files with pair halves (`pair_names`) and XMP sidecars, one listing
+  per folder; or a folder (`walk_files`, depth 32) minus housekeeping (`@eaDir`, `#recycle`,
+  `$RECYCLE.BIN`, `System Volume Information`, `lost+found`, `__MACOSX`, `Thumbs.db`, `desktop.ini`,
+  dot files, `.mvtmp`).
+- **Only the file picked is read**: identity noted at pick (`st_dev`/`st_ino`; `io::identify` on
+  Windows, no hydration) and re-checked at open (`file_reader::open_same`, `O_NOFOLLOW`); a swap is
+  `file_skip`. Links are not offered.
+- **Lands in Downloads** (`net::downloads_folder`) or **Save to** (kept in `driftwire.json`). Every
+  path passes `safe_relative` (`/` only, no `..`, root, drive, stream, device name, trailing dot or
+  space, leading `.`; UTF-8; ≤ 1024 bytes, 32 levels; no C0/C1, bidi controls, separators, ZWSP,
+  BOM). One bad path refuses the offer. Only bare names or one folder are accepted.
+- **Never through a link, never merged**: `io::make_directories_beneath`; a taken folder lands as
+  `Trip (2)`.
+- **Marked as downloaded** (`io::mark_from_elsewhere`: `com.apple.quarantine`, `Zone.Identifier`
+  zone 3), 0644. `no_room` if free space less 64 MiB is short.
+- **`io::verified_copy`'s rules** ([24](24-transfer.md)): exclusive `<final>.mvtmp`, hash on write,
+  match at `file_end`, flush, uncached read-back hash, no-replace rename (`io::unique_name`). Errors
+  remove the temporary. mtime clamped to 1970–tomorrow.
+- **Pipelined check**: two verifier threads, in order, ≤ 4 waiting; `done` after every check.
+- **Staying awake** (`power.h`): `PowerSetRequest(PowerRequestSystemRequired)`, IOKit
+  `PreventUserIdleSystemSleep`, logind `sleep` inhibitor (`block`); reason via `power::set_owner`.
+- Both sides yield between chunks while the viewer presents (`should_yield`).
 
 ## Resuming a receive that stopped (#530)
 
-Until 2026-10-21 nothing partial stayed: a receive that lost its link deleted the file being
-written, and the next send started from zero (and sent again what had arrived, landing as
-`name (2).ext`). Now (`resume.h`, `transfer.h`'s `resume_plan`, decision log 2026-10-21):
+`resume.h`, `transfer.h`'s `resume_plan`.
 
-- **What is kept.** A receive that fails (the link lost, either machine asleep or off, MediaViewer
-  quitting) keeps the file it was writing as its temporary, flushed to stable storage, and a
-  record in the add-on's data folder (`driftwire_resume.json`, written whole and crash-safe as
-  the prefs are): the sender's identity (#501), the destination, the folder's landed name, the
-  files that arrived whole (the sender's path, size and time; where it landed and the time it was
-  stamped with) and the partial (its temporary and the bytes known durable). While a receive
-  runs, the record is rewritten at most once a second, and the partial is flushed at most every
-  5 s once 32 MiB more has arrived, so a power cut costs at most that much again. A cancel or a
-  decline keeps nothing, as before. One record per sender, at most 8; one unused for 7 days goes
-  with its temporary (on the control thread at start); **Discard** removes one.
-- **Never taken for the finished file.** The temporary keeps its `.mvtmp` name (never the final
-  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`), and is
-  shown again just before its rename, since the flag travels with it. Linux has no such flag, so
-  there the temporary's name starts with a dot (`.IMG_1.JPG.mvtmp`), which Files, Dolphin and
-  `ls` leave out (`io::kHasHiddenFlag`, `transfer.h`'s `temp_name`). MediaViewer's own folder
-  listing never lists `.mvtmp`.
-- **The same sender, the same files.** The offer now says each file's time and `"resume": true`.
-  When an offer comes from a sender that says its identity and has a record into the same
-  folder, a file with the same path, size and time is matched: one whole and still there at its
-  size and stamped time is **had**; the partial, still at least its kept length, is **taken up**.
-  The accept says them: `"have"`, runs `[first, end)` of indexes (at most 8192 runs, so the accept
-  fits a message whatever the offer; what does not fit is sent again), and `"at"`, `[{"i","at"}]`.
-  The free-space check counts only what is still to come.
-- **The sender** sends nothing of a had file, and for the partial a `file_begin` with `"at"`: it
-  reads and hashes the kept bytes locally, so `file_end` is still the whole file's BLAKE3, and
-  sends the rest. Both sides count what was there as moved (the progress and the time left are
-  of what remains). The receiver accepts `"at"` only where it said so, exactly there, reopens the
-  temporary (`io::file_writer::open_resume`: cut to that length, never through a link) and writes
-  on. **The read-back after `file_end` checks the whole file**, as for every file: a damaged
-  partial is refused and dropped, never renamed into place, and the next send sends it whole.
-- **Older peers.** An offer without `"resume"` gets no `"have"` or `"at"`, and the receive is as
-  before. A sender without an identity (no secret store) cannot be told apart from another, so
-  nothing is kept for it.
-- **Trust.** The identity in the offer is the sender's claim inside the sealed channel. A sender
-  that claims another's key gains nothing: it can only skip files (nothing is written) or write
-  on a partial whose earlier bytes it would have to know for the read-back to pass, and the
-  person accepted that transfer anyway. Records and temporaries never leave the machine (rule 6).
-- Between chunks both sides wait while the viewer presents (the host table's `should_yield`, as
-  Import does), so a pan keeps its frames. A rejoin changes nothing here (`should_yield` is
-  unchanged).
+- **Kept**: on failure (not cancel/decline) the flushed temporary and a record in
+  `driftwire_resume.json`: sender identity, destination, landed folder name, whole files (path,
+  size, time, where landed), the partial (temporary, durable bytes). Rewritten ≤ 1/s; partial
+  flushed ≤ every 5 s per 32 MiB. One per sender, ≤ 8, expired after 7 days; **Discard** removes.
+- **Hidden temporaries** (`io::set_hidden`; Linux leading dot `.IMG_1.JPG.mvtmp`,
+  `io::kHasHiddenFlag`, `temp_name`), unhidden before rename.
+- **Matching**: the offer carries file times and `"resume": true`; same path, size and time →
+  **had** or **taken up**. Accept carries `"have"` (runs `[first, end)`, ≤ 8192) and `"at"`
+  (`[{"i","at"}]`).
+- **Sender** skips had files and resumes the partial with `file_begin` `"at"`, hashing the kept
+  bytes locally so `file_end` is the whole file's BLAKE3. Receiver reopens via
+  `io::file_writer::open_resume`; **the read-back checks the whole file**.
+- No `"resume"` or no identity → nothing kept. Records never leave the machine.
 
-**Throughput** (`mv_import_tests "[.driftwire-bench]"`, #442): two engines in one process over
-loopback TCP, timed from Accept to the receiver's `done`, against a plain copy of the same files
-through a loopback socket (no hash, seal, flush or read-back). Mac M-series (Mac17,4), Release,
-warm cache, base and new alternated three times, load average ~5 (other work on the machine):
-
-| Case | Plain copy | Before | After |
-|---|---|---|---|
-| 500 × 2 MiB | 2,150–2,950 MB/s | 124–141 MB/s | 158–180 MB/s |
-| 1 × 1 GiB | 1,285–2,920 MB/s | 251–373 MB/s | 243–273 MB/s (no change: within noise) |
-
-Many files gained from the pipelined check (each file's flush to stable storage is most of its
-cost on loopback, and two checks overlap); a single file cannot, and on loopback it is bound by
-the seal (libsodium's portable ChaCha20-Poly1305, about a third of the CPU in a profile). Tried
-and dropped, because it measured no faster: reading and hashing a few chunks ahead of the seal on
-the sender (1 GiB: 373–389 MB/s against 370–385 before). Not tried: larger chunks (the frame limit
-is part of protocol 1; an older receiver would refuse the frame), socket buffer sizes (setting
-them turns off the OS's autotuning on a real link, which loopback cannot show), and pausing only
-for a pan rather than for every present (`should_yield` is the host table's one signal, shared
-with Import; it would need a host change on both platforms and the PR 1 gate measured with a
-transfer running). Loopback is not Wi-Fi or Bluetooth: no radio was measured here, so the MB/s a
-person sees between two machines is not in this table.
-
-**Protocol 2 (#472, 2026-10-18)**, the same bench, base (protocol 1) and new alternated three times,
-Mac M-series, Release, warm cache, load average ~4.6: 1 GiB 395.8–397.6 → 392.6–398.2 MB/s, 500 ×
-2 MiB 178.9–183.3 → 178.0–201.1 MB/s. No difference within noise. The first measurement was 3 %
-slower on 1 GiB: the receiver's wait for its `done` to be acknowledged read in 100 ms slices; it
-now returns on the acknowledgement. Kept messages are sealed where they lie and their buffers
-reused (one copy a chunk, as protocol 1 had).
-
-**Where the time goes (#540 step 1, 2026-10-22).** A transfer can time each of its stages on each
-side (`stages.h`): the sender's read, hash, seal (the copy into the replay and the AEAD), send
-and any wait for the replay's room; the receiver's receive, open, write, hash, a wait for room
-among the files being verified, flush, read-back, its hash and the rename. Each stage adds its
-thread time and its bytes, so `bytes / time` is what one thread of that stage sustains: a stage
-far above the transfer's rate has headroom, one near it is the limit. `recv`, `wait_room` and
-`verify_wait` are waits, not work. The app gives no timers (`hooks::stages` null), and a stage
-without one costs a branch. Two harnesses print it: `[.driftwire-bench]` (one line per side after
-each case) and `mv-driftwire-bench` (`tools/driftwire-bench`), the real handshake of a direct
-code (CPace on a random secret the receiver prints, then XXhfs+psk0) and `transfer.h`, between
-two processes or two machines, one JSON line per side with MB/s, files/s, CPU, time to the first
-byte, the stages, the busiest stage that is work, the receiver's disk measured first (write,
-uncached read-back, and the ceiling both together allow: past 90 % of it the line says
-`disk_bound`), and on the sender iperf3's rate on the same path and the share of it the transfer
-got. Results go to `docs/perf/driftwire-lan.jsonl`. The first numbers (Windows, loopback, two
-processes on one laptop SSD: 1 GiB 264–299 MB/s, 500 × 2 MiB 113–124, 5,000 × 200 KiB 29–31)
-put the cost in the receiver's durability work on many files, not in the network or the seal:
-with 5,000 files the link loop waits for one of the two verifiers 67 % of the time (each file
-~3.5 ms of flush, ~1.3 ms of read-back, ~1 ms of rename). One big file is flushed and read back
-only after its last byte, serially; its flush varied from 0.9 to 3.5 s between runs on the same
-disk. Seal and open ran at ~900–1,000 MB/s a thread, the receiver's open its busiest stage on
-1 GiB. No two machines are measured yet.
+**Benchmarks**: `mv_import_tests "[.driftwire-bench]"` and `mv-driftwire-bench`
+(`tools/driftwire-bench`, per-stage timing from `stages.h`, `disk_bound`, iperf3 share) →
+`docs/perf/driftwire-lan.jsonl`. The app passes no stage timers (`hooks::stages` null).
 
 ## Threads
 
-The host calls in on its worker for this add-on (open, close, clicks, commands). The engine
-(`engine.h`) keeps its own threads for what waits on the network: a control thread (the only one
-that starts and stops presence, and sends throttled posts), the listener's accept loop, the
-discovery thread, Bluetooth's queue or handlers, the one transfer, a folder reader, and while a
-protocol 2 send runs, its mover (#472) with a connect thread per bearer it races, each with its own
-timeout and joined before the send's thread ends. A channel has its pinger, which also watches the
-session's health (suspect at 3 s, ended at 20 s). The folder
-reader is one thread, made at the first set: a newer set replaces one waiting and stops one being
-read (its generation goes stale), and no caller waits for it, so handing over a large gallery
-selection returns at once (#442; it used to join the previous reader on the caller's thread). On
-Windows the share icon then closes the grid, which ends its range, as on the Mac. None is a
-UI or render thread; no lock is held across I/O; a Bluetooth callback that hands a link to the
-engine goes off the radio's queue and through a gate the bearer closes before it stops. The
-window is posted whole (`build_tree`, a pure function of the state, tested), at most ~10 times a
-second while bytes move; those posts update chrome and never present the canvas.
+Host calls arrive on its worker for the add-on. The engine (`engine.h`) owns: a control thread (the
+only one starting/stopping presence; throttled posts), the accept loop, discovery, Bluetooth's
+queue, the transfer, a folder reader (replaced by a newer set, never waited on), and during a
+protocol 2 send the mover with per-bearer connect threads. Each channel has a pinger (suspect 3 s,
+end 20 s). None is UI or render; no lock across I/O; Bluetooth hand-offs pass a gate the bearer
+closes before stopping. The window is posted whole (`build_tree`, pure), ≤ ~10/s; posts never
+present the canvas.
 
 ## Privacy (rule 6)
 
-- Nothing about a transfer goes to telemetry or a crash report: no path, file name, pixel, EXIF,
-  address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
-  scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
-- The beacon and Bluetooth INFO carry a random id, a port, the protocol spoken, and the machine's
-  name only while the Driftwire window is open, or a `driftwire` session runs (#501). A machine receiving in the background, maybe
-  for weeks, says `MediaViewer` and changes its id every 10 minutes while idle and whenever the
-  window opens or closes, so a listener on a café network or a Bluetooth observer cannot follow it
-  or read its owner's name off the air (on the Mac this keeps Bluetooth's private-address rotation
-  meaningful). What stays: a machine that connects learns the name from `ident` (sealed, before any
-  code), and that connection shows the receiver's notification; and the port and protocol are
-  constant while presence runs. The offer travels sealed, to the peer picked.
-- The long-term identity key is never in a nearby handshake (#501): each link has keys of its own,
-  and the identity goes sealed, the sender's after the right code, the receiver's after Accept. A
-  connector that reads message 2 and hangs up learns a key that is never used again. No account, no cloud, no server of ours: the beacon's TTL is
-  1 and nothing resolves a name. Protocol 2 (#472 PR 1) opens no new network surface: the same
-  listener, beacon and Bluetooth service carry it.
-- **Over the internet** (#472 PR 2, opt-in, off by default; [12](12-decision-log.md#driftwire)
-  amends "no internet relay, by design"): a sealed link to the peer the person picked, local or
-  over the internet, with no server of ours. A relay only ever through the person's own devices or
-  one they configure ([Relays](#relays-472)), and it sees only ciphertext. What cannot be hidden: the code gives its holder this machine's
-  public address; the router learns of a mapping (PCP, NAT-PMP, UPnP); a network observer sees
-  encrypted traffic and roughly how much moved. With only the internet toggle on, nothing goes
-  anywhere else: no lookup, no STUN, no name resolution. With **Find each other over the internet**
-  (the DHT) on, the client resolves the four bootstrap routers' names (`dht.h`) unless its saved
-  table answers, and DHT nodes see this machine's address taking part in the DHT (never what it
-  looks up: the targets mean nothing without the code or the pair's secret). A relay server the
-  person typed is resolved too. Codes, addresses and peer names are never logged. While four words meet
-  (a word code, or a remembered device once it is sent to), a TCP port listens on every interface (its number is in
-  the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
-  side's public address only (46-byte hellos, #499).
-- Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
-  about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
-  and pairing secret, in the OS's secret store, never a plain file, until Forget. On the Mac that is
-  the data protection keychain in the app's own access group, this device only (#501); on Windows
-  Credential Manager, each value sealed with DPAPI; on Linux the Secret Service, each value sealed
-  the same way ([Remembered devices](#remembered-devices-472-pr-4)).
-  Key material in memory is wiped when it goes (#501): the session's resume secret with the
-  channel, the identity and the code with every copy of a channel's options, and CPace's buffers
-  are sized once, so no reallocation leaves a copy of the code or its key behind.
-- Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
-  launches until turned off (#442), and the command bar says so (**Driftwire: receiving**). In a
-  terminal it is on only while the session runs ([From a terminal](#from-a-terminal-driftwire)).
-- What `driftwire` prints stays in that terminal. Its `--verbose` lines are the engine's `log`
-  text, which never holds a path, a file name, an address, a peer's name or a code.
-- `driftwire`'s update check (2026-10-25, [Updates](#updates-in-the-terminal)) is one GET a day of
-  `latest.json` from the Pages site: no cookie, identifier, version or anything about a file; the
-  site sees the address and the time. On by default (the owner's call), off with `/updates off`
-  or `DRIFTWIRE_NO_UPDATE_CHECK`; never in the add-on, which the app's updater updates.
-- `driftwire host`'s DuckDNS name (opt-in, [DuckDNS](#duckdns-a-name-for-a-homes-changing-address-self-hosting-2026-11-14)):
-  DuckDNS learns the home's public address and that the name is in use, which is the point of it;
-  nothing about files. The token is in the secret store and never in a log line, a status or an
-  argument; log lines carry no address or name either.
-- A notification (#452) names the sender and a count and size; never a file name, a path or the
-  code. It is shown by the OS on this machine only; nothing about it leaves the machine. At most
-  three a minute from one source (#502).
-- "Nearby" is this machine's link (#502): the LAN listener and the beacon ignore sources that are
-  not on one of its networks, so a public address with the firewall off, or a VPN's far side, is
-  not taken for a computer in the room.
+- No path, file name, pixel, EXIF, address or peer name in logs (`log` is ASCII without them),
+  telemetry or crash reports ([13](13-updates-and-telemetry.md)).
+- Beacon/INFO: random id, port, protocol; the name only while the window or a `driftwire` session is
+  open; otherwise `MediaViewer` and a rotating id. The long-term identity never appears in a nearby
+  handshake.
+- Internet (opt-in): the code reveals this public address; routers see mappings; with the DHT on,
+  bootstrap names are resolved and nodes see participation, never meaningful targets. Relays only
+  the person's own.
+- Secrets in memory are wiped when they go; only Remember writes (to the OS store).
+- Receiving is off until turned on, then persists and is shown in the command bar.
+- `driftwire`'s update check sends nothing about the user; never in the add-on.
+- Notifications: sender, count and size only; ≤ 3 a minute per source.
+- `driftwire host`'s DuckDNS name (opt-in): DuckDNS learns the home's public address, nothing about
+  files. The token stays in the secret store, never in a log, a status or an argument.
 
 ## Host pieces this added
 
-- **Notices and keep-alive** (#452, host table entries after `place_matches`, ABI 0.33):
-  generic, held by `slot_registry` and drawn by both hosts ([In the background](#in-the-background-452),
-  [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
-
-- **Screens vocabulary**: a `text_field` may carry `"pick": "folder"`; the hosts add **Choose…**
-  (`NSOpenPanel`; WinUI's `FolderPicker`) and report the folder as the field's change
-  ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)). For the AirDrop-like window
-  (#442), generic additions drawn by both hosts, not a Driftwire-only path: a `tiles` node, a
-  `stack` `"look": "card"`, a `progress` `"look": "ring"`, a `text_field` `"look": "code"` with
-  `"digits"`, and the `text` style `"display"` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
-  For the path picture and the code's copy (2026-10-19): a `link` node and a button's `"copy"`,
-  contribution API 6; Driftwire's manifest asks for 6.
-- **Commands of an add-on that fills slots** become command events to it
-  (`slot_registry::run_command`, `mv_slots_command`, ABI 0.29, [14](14-abi.md)): Driftwire's key-less
-  "Driftwire" row carries the marked or current files.
-- **Settings → Add-ons**: an add-on that fills slots and has a window gets **Open …**; Driftwire
-  is offered with one click while it is not installed (its release channel,
-  `mediaviewer-addon-driftwire-<platform>`). **Driftwire's page there carries its settings**
-  (2026-10-21; a screen in place `"settings"`, contribution API 8, so Driftwire's manifest asks
-  for 8 and an older app says it needs a newer MediaViewer): under its card, in the window's
-  cards and controls, **Nearby** (Keep receiving when the Driftwire window is closed, Receive when
-  MediaViewer is closed), **Received files** (Save to, the folder an offer's Save to starts at),
-  **Over the internet**, and while that is on, **Remembered devices** (Forget, "is my computer")
-  and **Internet options** (DHT, handover, relays, your own relay server). The same node ids as
-  the window, so one engine answers both and the two never disagree (`build_settings_tree`).
-  Nothing that sends, makes a code or lists who is nearby. Opening it makes the engine (its
-  control thread) but is not the window: no presence, beacon or Bluetooth starts unless Keep
-  receiving is on, as at launch. Its tree is posted only when it changed, not with every
-  progress post.
-  On Windows each add-on there is one card (#442): its name, what it does, its state, the install
-  bar while it installs, its buttons (**Open …**, **Update**, **Remove…**), its message and its
-  settings page together, Import's status and restart inside Import's card; the Mac's
-  `AddonsSection` / `SlotAddonsSection` group the same way.
-- **The gallery's range** on both hosts ([16](16-commands.md#gallery-range-and-share-413)).
-- **An add-on's screen window on Windows is a MediaViewer window** (#442, `OpenScreenWindow`): the
-  app's icon in the title bar, taskbar and Alt+Tab (`Shared/AppIcon.cs`, as Import's windows);
-  the manifest's size in DIPs at the viewer's DPI, with a floor (`PreferredMinimumWidth` /
-  `Height`); a window or sheet is owned by the viewer (above it, minimised with it) and opens
-  centred over it; and every one carries `MediaViewer.AddonWindow`, so the viewer's key router
-  leaves its keys alone (a digit typed into the code field is text, not a rating). A docked pane
-  stays unowned, as [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11) says.
-- **App permissions**: the Mac's Info.plist names `NSLocalNetworkUsageDescription` and
-  `NSBluetoothAlwaysUsageDescription` (macOS asks once each, the first time Driftwire looks).
-  Windows asks through Defender Firewall at the first listen.
+- **Notices and keep-alive** (host table after `place_matches`, ABI 0.33), held by `slot_registry`
+  ([In the background](#in-the-background-452), [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
+- **Screens vocabulary** ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)):
+  `text_field` `"pick": "folder"` (**Choose…**), `tiles`, `stack` `"look": "card"`, `progress`
+  `"look": "ring"`, `text_field` `"look": "code"` + `"digits"`, `text` `"display"`; `link` and a
+  button's `"copy"` (contribution API 6).
+- **Slot add-on commands** become command events (`slot_registry::run_command`, `mv_slots_command`,
+  ABI 0.29, [14](14-abi.md)).
+- **Settings → Add-ons**: **Open …**; one-click install (`mediaviewer-addon-driftwire-<platform>`);
+  Driftwire's settings in place (`"settings"`, contribution API 8, `build_settings_tree`, same node
+  ids as the window): Nearby, Received files, Over the internet, Remembered devices, Internet
+  options. Opening it makes the engine but starts no presence.
+- **The gallery's range** ([16](16-commands.md#gallery-range-and-share-413)).
+- **Windows screen windows are MediaViewer windows** (`OpenScreenWindow`, `Shared/AppIcon.cs`,
+  `PreferredMinimumWidth`/`Height`, owned by the viewer, `MediaViewer.AddonWindow` so the key
+  router ignores them).
+- **Permissions**: `NSLocalNetworkUsageDescription`, `NSBluetoothAlwaysUsageDescription`; Windows
+  Defender Firewall at the first listen.
 
 ## Where it lives
 
-Since 2026-11-12 the protocol is `src/wire` (target `mv_wire`, `cmake/wire.cmake`), so the app's phone feature
-can link it with no add-on installed ([plan](../plans/phone-in-the-app.md)): `wire.*`, `keys.*`, `noise.*`,
-`cpace.*`, `stages.*`, `channel.*`, `link.h`, `net*`, `machine_*`, `admission.h`, `secrets*`, `known.*`,
-`serve*`, `pair_check.*`, `advert*`. The rest is `src/addons/driftwire` (`mv_driftwire_engine`, over `mv_wire`).
-The namespace stays `mv::driftwire`. The pair's hourly DHT keys left `known` for `presence_keys.*`, so the
-protocol has no DHT.
+The protocol is `src/wire` (`mv_wire`, `cmake/wire.cmake`), linked by the app's phone feature
+([plan](../plans/phone-in-the-app.md)): `wire.*`, `keys.*`, `noise.*`, `cpace.*`, `stages.*`,
+`channel.*`, `link.h`, `net*`, `machine_*`, `admission.h`, `secrets*`, `known.*`, `serve*`,
+`pair_check.*`, `advert*`, `grants.*`, `owner_pass.h`. The rest is `src/addons/driftwire`
+(`mv_driftwire_engine`). Namespace `mv::driftwire`. Hourly DHT keys: `presence_keys.*`.
 
 | Piece | Code |
 |---|---|
 | Wire, code, path rule, beacon | `src/wire/wire.*` |
-| Noise (protocol 2's handshakes, #472) | `noise.*` |
-| CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
-| The self-host's router keeper (its own ports held, outside address and kind, carrier-NAT advice; `docs/plans/self-hosted.md` §5) | `host_ports.*` (tests `"[host-ports]"` in `test_driftwire_internet.cpp`) |
-| Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
-| The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
-| Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |
-| The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
-| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*`, `presence_keys.*` |
-| Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
-| Sending and the verified receive | `transfer.*` |
-| Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
-| What is kept across launches | `prefs.*` |
+| Handshakes, internet codes, mapping, race | `noise.*`, `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
+| DHT, word codes, UDP stream, punching | `dht_item.*`, `wordlist.inc`, `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
+| Handover | `internet.*` (`way_in`), `handover.*`, `channel.*` (`handover_secret`) |
+| Relays | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |
+| Self-host router keeper | `host_ports.*` (`"[host-ports]"` in `test_driftwire_internet.cpp`) |
+| Self-host DuckDNS keeper | `ddns.*` (`tests/test_driftwire_ddns.cpp`, `"[ddns]"`) |
+| Identity and remembered devices | `secrets.h`, `secrets_{mac,win,linux,file}.cpp`, `known.*`, `presence_keys.*` |
+| Session, transfer, resume | `channel.*`, `link.h`, `transfer.*`, `resume.h` |
+| Engine, presence, tree, prefs | `engine.*`, `presence.*`, `tree.cpp`, `prefs.*` |
 | Sockets, machine name, Downloads | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
-| Bluetooth | `bt_pipe.*`, `bt_mac.mm` (CoreBluetooth), `bt_win.cpp` (C++/WinRT), `bt_none.cpp` |
-| The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/driftwire.cmake` |
-| The command line, `driftwire` (2026-10-23): the terminal port, keys, the line editor, paths, completion, the look and the live region, the arguments, the host, the session, the data folder, `main()` | `cli/term.h`, `cli/term_posix.cpp`, `cli/term_win.cpp`, `cli/serve_tty.h` (a passphrase typed with echo off: `serve_tty_posix.cpp`, `serve_tty_win.cpp`), `cli/keys.*`, `cli/line_editor.*`, `cli/paths_arg.*`, `cli/complete.*`, `cli/theme.h`, `cli/text.*`, `cli/render.*`, `cli/inline_view.*`, `cli/args.*`, `cli/host.*`, `cli/session.*`, `cli/data_dir.h`, `cli/data_dir_posix.cpp`, `cli/data_dir_win.cpp`, `cli/update.*` and its ports `cli/update_net_win.cpp`, `cli/update_net_mac.mm`, `cli/update_net_linux.cpp` (2026-10-25), `cli/main.cpp`; `cmake/driftwire.cmake` (`mv_driftwire_cli_core`, `mv_driftwire_cli` with `OUTPUT_NAME driftwire`, the test build `mv_driftwire_cli_test`, the gallery `mv_driftwire_cli_gallery` from `tools/driftwire-cli-gallery`) |
-| Its Linux packages | `cmake/driftwire-cli/` (the project, CPack, the `NEEDED` gate `needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`), `.github/actions/driftwire-cli-linux` |
-| Its package repository and installers (2026-10-24) | `tools/package/driftwire_repo.py` (`build`: the site, its signatures and checks; `smoke`: installing from it on localhost; `windows-site`: `install.ps1` and the zip alone), `packaging/linux/repo/` (`install.sh`, the page `index.html` and its Windows part `index-windows.html`), `packaging/windows/install.ps1`, release.yml's `driftwire-repo` job, the repository step of ci.yml's `driftwire-cli-linux`; tests `tools/package/test_driftwire_repo.py`, `tools/package/check-driftwire-install.ps1` (the Windows installer end to end, on Build's msvc Release leg) |
-| Its Windows zip and macOS archive (2026-10-24) | `tools/package/driftwire-windows.ps1` (`pe_fixture.py`, `test_driftwire_windows.py`), `tools/mac/macpack.py cli` (`test_macpack.py`), release.yml's `windows` and `macos` jobs, `tools/package/github-release.py` (`MV_RELEASE_CLI`) |
-| Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
-| Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
-| Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
-| Phone access (the `phone-access` add-on, `src/addons/phone`) | `addons/phone/desk.*` (claim, devices, codes, nearby, the route), `wire/advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
-| The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
-| Self-hosting (`driftwire host`) | `cli/host_cmd.*` (the supervisor, the service process, share and status), `cli/host_keepers.*` (the DuckDNS and router keepers in the host), `cli/host_setup.*` (setup, name, pair, vpn), `cli/qr.*` (the terminal QR), `cli/host_proc*` (the child process), `cli/autostart*` (start at login per OS), `cli/volume*` (a folder's drive), `power::hold_for` |
-| Self-hosting's DuckDNS keeper (2026-11-14) | `ddns.*`; tests `tests/test_driftwire_ddns.cpp` (`"[ddns]"`) |
-| Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
-| Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_serve.cpp` (the NAS service over `::1`: the verify line as far as loopback goes), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`), `tests/test_driftwire_host.cpp` (`"[host]"`) |
+| Bluetooth | `bt_pipe.*`, `bt_mac.mm`, `bt_win.cpp`, `bt_none.cpp` |
+| The Tunnel | `tunnel.*`, `sysproxy*`, `tls.*`, `netstack.*`, `vpn*`, `mac_tunnel/` |
+| Add-on entry and manifest | `addon_entry.cpp`, `manifest.json`, `cmake/driftwire.cmake` |
+| The command line | `src/addons/driftwire/cli/` (`term*`, `keys`, `line_editor`, `paths_arg`, `complete`, `theme.h`, `text`, `render`, `inline_view`, `args`, `host`, `session`, `data_dir*`, `update*`, `serve_cmd`, `serve_tty*`, `nas_update`, `main.cpp`); targets `mv_driftwire_cli_core`, `mv_driftwire_cli` (`OUTPUT_NAME driftwire`), `mv_driftwire_cli_test`, `mv_driftwire_cli_gallery` |
+| Packaging | `cmake/driftwire-cli/` (`needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`, `repo/`), `packaging/windows/install.ps1`, `packaging/macos/driftwire.rb.in`, `tools/package/driftwire_repo.py`, `driftwire-windows.ps1`, `homebrew_formula.py`, `github-release.py`, `tools/mac/macpack.py cli`, `.github/actions/driftwire-cli-linux` |
+| Mac chrome | `Driftwire.swift`, `SlotItems.swift`, `ScreenView.swift`, `GalleryView.swift`, `FolderStore.swift`, `AddonNotices.swift` |
+| Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` |
+| Phone access (the `phone-access` add-on) | `src/addons/phone/` (`desk.*`, `link.*`, `service.*`, `screens.*`, `qr.*`, `bundled.*`, `self_host.*`, `host_tray.*`), `wire/advert_{mac,win,none}.cpp` |
+| NAS service | `serve_wire.*`, `serve.*`, `serve_client.*`, `serve_backup.*`, `channel.*` (`open_library`, `read_library_hello`) |
+| Self-hosting (`driftwire host`) | `cli/host_cmd.*`, `cli/host_keepers.*`, `cli/host_setup.*`, `cli/qr.*`, `cli/host_control.*`, `cli/host_usage.*`, `cli/host_users.*`, `cli/host_drives*`, `cli/autostart*`, `cli/volume*`, `cli/elevate*`, `host_smb*`, `power::hold_for`; tests `test_driftwire_host*.cpp`, `test_host_users.cpp` |
+| Native hosts, notices | `src/shell/main_mac.mm`, `src/shell/main.cpp`, `src/shell/login_item_win.*`, `src/shell/addons_mac.mm`, `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
+| Formal models, fuzzing | `tools/formal/`, `tools/fuzz/fuzz_driftwire.cpp` |
+| Tests | `tests/test_driftwire*.cpp` (`_noise`, `_internet`, `_dht`, `_known`, `_session`, `_serve`, `_relay`, `_addon`, `_cli`, `_cli_ui`, `_cli_update`, `_cli_e2e`), `tests/test_phone_relay.cpp`, `tests/driftwire_{fixture,swarm,path,cli_vt}.h`, `tools/package/test_*.py`, `tools/package/check-driftwire-install.ps1` |
 
 ## Not built
 
-- **The Tunnel, owed** ([plan](../plans/driftwire-menu-and-tunnel.md)): Apple's Network Extension
-  entitlement on the team's profile (the Mac VPN; the build and embedding exist, off by default),
-  Wintun's licence call and a way to run elevated (the Windows VPN: an elevated helper would be a
-  second program, which "add-ons carry their own code" rules out, so this is the owner's call),
-  Linux's interface (the Linux catch-up order is open, CLAUDE.md). The system proxy is not
-  set on Linux, and on Windows only for the LAN connection's entry. Codes do not use the relay's
-  TLS port. The VPN's stack does no ICMP (a ping gets nothing) and no IP fragments.
-
-- **#500's ask before an own relay** (low): A's own computer relays without asking, so a stranger
-  who made the code, by stalling direct connections, learns R's home address. The fix is a
-  question in both hosts' windows ("Try through R? The other side will see R's address"); not
-  built in #500's PR.
-
-- Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
-- Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the
-  internet only.
-- In the command line: Bluetooth on any OS; Remember on macOS (no keychain identity for a bare
-  program); winget; the site and the tap live (they wait for the owner's setup: the tap
-  repository and its token, Pages, the key, `MV_DRIFTWIRE_REPO`); "the first time" an internet
-  option is explained is per session, not per computer. Not run: a transfer between two machines
-  over Wi-Fi with the command line on one side; `driftwire update` end to end through a real
-  install on any OS, and the update check's Mac and Linux transports (built in CI only).
-- Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
-  TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
-- The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):
-  re-gathering and republishing on an OS network change; a remembered device's last-known direct
-  addresses; DHT bootstrap from a LAN peer or a remembered device; a 15 s keepalive during a wait;
-  S/Kademlia disjoint lookups; the 2x-faster switch between two fast bearers; port mapping for the
-  UDP socket; per-source rate limits on the add-on's listener and on rejoins; the Wi-Fi Direct
-  soft-AP spike; AES-256-GCM, larger chunks and parallel streams; a word code's failure naming its
-  reason.
-- Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
-  Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
-  rejoins in 10 s, the app quitting) is not resumed later.
-- A formal model of protocol 1, and of CPace and the internet bearers (#472 PRs 2–5). Protocol 2's
-  handshake and rejoin are modelled ([The wire](#the-wire)). The parsers of what a peer sends before it is authenticated (the beacon, INFO, the hello, the
-  Noise messages, a whole receiver's open) and the offer have a libFuzzer harness
-  (`tools/fuzz/fuzz_driftwire.cpp`); `resume_at` is parsed only after its frame opens under the
-  rejoin's keys.
+- **The Tunnel**: the Mac VPN's Network Extension entitlement; the Windows VPN's Wintun licence and
+  elevation (owner's call); a Linux interface; the system proxy on Linux and beyond Windows' LAN
+  entry; codes over the relay's TLS port; ICMP and fragments.
+- A prompt before an own computer relays (it reveals R's address to the code's maker).
+- Bonjour discovery for transfers; IPv6 on the LAN; Bluetooth on Linux.
+- Command line: Bluetooth; Remember on macOS; winget; the live site and tap (owner setup).
+- Internet: TURN; relaying word codes, remembered sends and handovers; moving a relayed send.
+- Deferred from #472: re-gathering on network change; last-known direct addresses; DHT bootstrap
+  from peers; a keepalive during waits; S/Kademlia disjoint lookups; UDP port mapping; per-source
+  limits on the listener and rejoins; Wi-Fi Direct; AES-256-GCM, larger chunks, parallel streams.
+- Resuming protocol 1 transfers, or a protocol 2 session after it ends, beyond what
+  [Resuming a receive that stopped](#resuming-a-receive-that-stopped-530) keeps.
+- A formal model of protocol 1.

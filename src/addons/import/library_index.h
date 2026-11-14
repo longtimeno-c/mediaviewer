@@ -14,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "addons/import/model.h"
@@ -100,6 +101,12 @@ class library_index {
   void upsert(const library_row& row);
   void drop(const std::string& root, const std::string& rel);
   [[nodiscard]] std::vector<library_row> all_rows();
+  // Check library (docs/plans/check-library.md): every row of one destination,
+  // and many writes in one transaction (a first check of a large library adds
+  // thousands of rows; one commit each would be one fsync each). All or nothing.
+  [[nodiscard]] std::vector<library_row> by_root(const std::string& root);
+  [[nodiscard]] expected store(const std::vector<library_row>& upserts,
+                               const std::vector<std::pair<std::string, std::string>>& drops);
 
   // ---- absolute roots from before volume keys (docs/design/18) ----
   // Distinct roots in `library` and `seq` that are still absolute paths.
