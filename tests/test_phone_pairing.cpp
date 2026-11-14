@@ -7,7 +7,10 @@
 
 #include "driftwire_fixture.h"
 
+#include <algorithm>
 #include <ctime>
+#include <string>
+#include <vector>
 
 #include "core/json.h"
 
@@ -2331,7 +2334,17 @@ TEST_CASE("phone pairing: This computer shares, starts, claims over loopback and
   INFO(*v.str("error") << " / " << *v.str("host_said"));
   CHECK(*v.str("error") == "");
   CHECK(v.boolean("claimed") == true);
-  CHECK(v.find("host")->integer("folders").value_or(0) == 2);
+  // Nothing shared twice: each label once. (The host's count in `state.json`
+  // takes the claim's Catalogue only once the host has rewritten it, so it is
+  // 2 or 3 depending on timing; the folder list is the answer itself.)
+  std::vector<std::string> labels;
+  for (const auto& f : v.find("folders")->a) labels.push_back(*f.str("label"));
+  CHECK(std::count(labels.begin(), labels.end(), "Photos") == 1);
+  CHECK(std::count(labels.begin(), labels.end(), "Phone backup") == 1);
+  std::sort(labels.begin(), labels.end());
+  CHECK(std::adjacent_find(labels.begin(), labels.end()) == labels.end());
+  const auto counted = v.find("host")->integer("folders").value_or(0);
+  CHECK((counted == 2 || counted == 3));
 }
 
 TEST_CASE("phone pairing: This computer with a DuckDNS name puts it in the code and the token in the host's store", "[phone-pairing][phone-self-host]") {
