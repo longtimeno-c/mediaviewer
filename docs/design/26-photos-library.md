@@ -193,7 +193,7 @@ the deep network path once docs/design/24's PR 49 lands, since the copy goes thr
   that remounts elsewhere (`/Volumes/photos-1`) or a drive whose letter moved is still the same
   backup (rows from before 2026-10-05 held absolute paths, all in the year/day layout; their last
   three components rebase the same way). The next run skips a recorded file that is still there (one
-  stat), copies one the user deleted again, and a cancelled run picks up where it stopped.
+  stat), holds one the user deleted (below), and a cancelled run picks up where it stopped.
   Zero bytes are written for an asset already backed up. `last-run.txt` beside it lists what
   did not make it. If the destination itself disappears mid-run (the NAS drops off the
   network, the drive is unplugged), the run stops as failed rather than failing — and
@@ -209,10 +209,39 @@ the deep network path once docs/design/24's PR 49 lands, since the copy goes thr
   buffers and leaves no part file. Progress (counts, bytes, the file being copied) is polled by
   Settings at 2 Hz; the last run is remembered.
 
+- **Photos already in the library (Check library, 2026-11-14; [18](18-import.md#check-library-2026-11-14)).**
+  With Import installed, Back Up Now first checks the folder against the Photos library: the folder
+  is walked, and a library file is hashed only when its size is one a Photos original has (the size
+  comes from PhotoKit without a download), into Import's index, so later runs are a walk and
+  lookups. An asset whose bytes are already anywhere in the folder (or, with *Skip photos already
+  in → Every library Import knows*, in any library Import knows) is **not copied**: the manifest
+  records it as `found`, with where, and the next run confirms it by content, so a file moved or
+  renamed inside the library stays found. A manifest file no longer where it was put but whose
+  bytes are elsewhere in the library is found, not copied again. A new copy joins Import's index.
+  Without Import the backup is as before, and Settings says Import is needed.
+  **Check library** (the button beside the scope) runs the same comparison and changes nothing:
+  how many originals are already in the folder (and where, for the ones under another name or
+  folder), how many would be copied and their size, how many iCloud-only originals have a size the
+  folder has (never downloaded to answer; settled when backed up), the manifest's files no longer
+  where they were backed up (deleted, or moved and where to), and the duplicates the folder already
+  holds. It creates nothing in the destination.
+  **Deleted on purpose (owner, 2026-11-14):** a file backed up and then removed from the folder (and
+  not found elsewhere in it) is **held**: Back Up Now does not copy it back, says how many it held,
+  and offers *Review…*. Check library lists them with **Copy again** (the next backup copies it) and
+  **Leave deleted** (its hash goes into the manifest's `left_deleted`; those bytes are never copied
+  to this folder again, whatever asset or name they come back as, until Copy again). The choice is
+  written by `backup::decide_deleted` off the main thread. A file counts as removed only when the
+  destination answers with its manifest; one found in another library, only when its own folder
+  answers, and only when nothing is there (a stat that is refused or fails holds nothing). Works
+  without Import too (without Import a moved file cannot be told from a deleted one). An asset whose
+  bytes are left deleted is recorded with an empty place, so it is not fetched from iCloud again
+  each run. A MediaViewer older than this, backing up into the same folder from another Mac, does
+  not know `left_deleted` and copies those photos back.
+
 **Not done:** a schedule (run it from Settings); moving an existing backup into a newly chosen
 layout; a mirror (a file deleted in Photos stays in
-the backup); hashing an existing destination file against the source when the manifest was
-lost (such a run copies beside it as ` (2)`); Photos' edited renditions as an option.
+the backup); without Import, hashing an existing destination file against the source when the
+manifest was lost (such a run copies beside it as ` (2)`); Photos' edited renditions as an option.
 
 ## Clips with a display matrix (both platforms)
 

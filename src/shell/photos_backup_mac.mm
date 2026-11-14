@@ -20,6 +20,7 @@ class photokit_source final : public source {
       a.kind = static_cast<file_kind>(f.kind);
       a.filename = std::move(f.name);
       a.created_unix = f.created;
+      a.size = f.size;
       out.push_back(std::move(a));
     }
     return out;

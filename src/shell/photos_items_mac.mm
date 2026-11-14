@@ -567,6 +567,17 @@ result<std::vector<library_file>> enumerate_files(const std::atomic<bool>* cance
           f.name = utf8(r.originalFilename);
           if (f.name.empty()) f.name = kind == 1 ? "Live Photo.MOV" : "Photo";
           f.created = created;
+          // PHAssetResource has no public size property; `fileSize` is the
+          // key Photos itself fills (KVC, read-only). Absent or not a number:
+          // 0, unknown, and Check library treats the file as not matched.
+          @try {
+            id size = [r valueForKey:@"fileSize"];
+            if ([size isKindOfClass:[NSNumber class]]) {
+              const long long n = [(NSNumber*)size longLongValue];
+              if (n > 0) f.size = static_cast<std::uint64_t>(n);
+            }
+          } @catch (NSException*) {
+          }
           sink->push_back(std::move(f));
         }
       }

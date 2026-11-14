@@ -91,8 +91,8 @@ A separate window on both platforms (WinUI 3 `MediaViewer.Import.Chrome`; SwiftU
 - **Empty states:** no source ("Insert a memory card, or choose a folder"), reading, unreadable,
   everything already imported (a strip over the grid, or *Show all N files* when the grid is
   empty), and nothing matching. **Select all / Select none** sit over the grid.
-- **Tools** (Past imports, Check a folder for damaged files, Find duplicates, About Import) are
-  one menu under the sources instead of four buttons.
+- **Tools** (Past imports, Check a folder for damaged files, Find duplicates, Check a folder
+  against the library, About Import) are one menu under the sources instead of five buttons.
 - **Bottom bar:** what is selected and its size, then a quieter line with what will be skipped
   and an ETA from measured throughput per device. With no destination the button reads
   *Choose where to import…* (and Return opens the folder picker) instead of confirming an
@@ -475,6 +475,36 @@ installed:
 | Mac chrome | `AddonsView.swift` (Settings, download, hint), `src.swift/ImportChrome` → `Import.bundle`, `src/shell/addons_mac.mm` |
 | Packing and signing | `tools/package/addon-pack.py`, `tools/addon-verify` |
 | Tests | `tests/test_import_engine.cpp`, `test_verified_copy.cpp`, `test_addon_manifest.cpp`, `test_import_naming.cpp`, `test_json.cpp`, `test_content_hash.cpp`, `tools/package/test_addon_pack.py`; the headless build is `cmake/portable` |
+
+## Check library (2026-11-14)
+
+A tool in the Import window on both platforms (`CheckLibraryWindow.cs`, `CheckLibraryView.swift`;
+engine `library_check.{h,cpp}`, job kind 3), and the index behind the Mac's Photos backup
+([26](26-photos-library.md) "Backup"; plan: [check-library](../plans/check-library.md)). Pick a folder
+to check and a library folder: Import says which of the folder's files are already in the library,
+wherever they are and whatever they are called, which are not, and which duplicates the library
+already holds. Report only: nothing is copied, moved or deleted.
+
+- **The same test as an import:** size first, BLAKE3-256 only where a size matches, never the name.
+  The library is walked for sizes and mtimes; a library file is read only when its size is one the
+  source has (or another library file has, for the duplicates list).
+- **The library index learns the folder.** Every hash goes into `library` under the destination's
+  volume key, so a second check of an unchanged library reads no file (measured: 20,000 files,
+  2.56 GB, 2.2–3.7 s the first time with every file hashed, 63–91 ms the second, three runs; Mac,
+  local SSD, warm cache), Import's own duplicate skip now knows files that someone else put there, and a remount is
+  the same library. The source folder's hashes are remembered by path (`seen_hashes`, as Find
+  duplicates).
+- **Scope:** this library folder and its subfolders, or every library Import knows (each where it
+  is mounted now; an offline one confirms nothing).
+- **Offline:** a library folder that does not answer is reported unreachable and nothing is
+  dropped from the index. After a complete walk, a row is dropped only when its folder answers and
+  the file is not in it.
+- **For a host source** (the Photos library, which only the Mac host can read) the request carries
+  the source's sizes instead of a folder and the host's record of what it put there (`expected`),
+  and the host asks `library_find` per file with the hash of the bytes it has. `library_record`
+  adds a file the host just wrote and verified. These calls are `mv.import.1`'s, after PR 54's.
+- **Where it runs:** the add-on's own I/O thread behind the destination's device lock, always at
+  background priority (waits while the present loop is busy).
 
 ## Find duplicates (PR 54)
 

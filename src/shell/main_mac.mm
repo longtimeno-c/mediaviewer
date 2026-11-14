@@ -145,6 +145,7 @@
 #include "shell/photos_items_mac.h"
 #include "shell/photos_backup.h"
 #include "shell/photos_backup_mac.h"
+#include "shell/photos_backup_library.h"
 
 // Whether two file URLs are on one volume, where a move is a rename. Unknown
 // counts as different, so an unanswerable case takes the verified path.
@@ -660,6 +661,15 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (int32_t)photosBackupLayout;
 - (void)setPhotosBackupLayout:(int32_t)layout;
 - (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out;
+// Check library (docs/plans/check-library.md): a report-only run, its JSON,
+// the scope, and whether Import's index is there.
+- (BOOL)startPhotosCheckTo:(const std::string&)destination;
+- (std::string)photosCheckJson;
+- (int32_t)photosBackupScope;
+- (void)setPhotosBackupScope:(int32_t)scope;
+- (BOOL)photosLibraryIndexAvailable;
+- (void)stopPhotosBackupForImportUnload;
+- (BOOL)decidePhotosDeleted:(const std::string&)json;
 - (BOOL)openListTitled:(const std::string&)title
                entries:(std::vector<mv::shell::folder_model::list_entry>)entries
                 select:(std::size_t)select
@@ -1853,6 +1863,42 @@ extern "C" void mv_chrome_set_photos_backup_layout(int32_t layout) {
 }
 extern "C" bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out) {
   return g_chrome_app && out && [g_chrome_app photosBackupLast:out] == YES;
+}
+// Check library (docs/plans/check-library.md).
+extern "C" bool mv_chrome_photos_check_start(const char* destination_utf8) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || !destination_utf8 || !*destination_utf8) return false;
+  return [g_chrome_app startPhotosCheckTo:std::string(destination_utf8)] == YES;
+}
+extern "C" int32_t mv_chrome_photos_check_json(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app photosCheckJson] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_photos_backup_scope(void) {
+  return g_chrome_app ? [g_chrome_app photosBackupScope] : 0;
+}
+extern "C" void mv_chrome_set_photos_backup_scope(int32_t scope) {
+  if (g_chrome_app) [g_chrome_app setPhotosBackupScope:scope];
+}
+extern "C" bool mv_chrome_photos_library_index(void) {
+  return g_chrome_app && [g_chrome_app photosLibraryIndexAvailable] == YES;
+}
+// Copy again / Leave deleted writes: one at a time, in the order chosen, on
+// their own serial queue. `pending` counts the ones not written yet (a backup
+// does not start meanwhile); `failed` says the last one did not land.
+static std::atomic<int> g_photos_decide_pending{0};
+static std::atomic<bool> g_photos_decide_failed{false};
+static dispatch_queue_t MvPhotosDecideQueue() {
+  static dispatch_queue_t q = dispatch_queue_create("mediaviewer.photos-backup.choices", DISPATCH_QUEUE_SERIAL);
+  return q;
+}
+extern "C" bool mv_chrome_photos_decide_deleted(const char* choices_json) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || !choices_json) return false;
+  return [g_chrome_app decidePhotosDeleted:std::string(choices_json)] == YES;
+}
+extern "C" int32_t mv_chrome_photos_decide_state(void) {
+  if (g_photos_decide_pending.load() > 0) return 1;
+  return g_photos_decide_failed.load() ? 2 : 0;
 }
 extern "C" int32_t mv_chrome_sort_order(void) {
   return g_chrome_app ? [g_chrome_app sortOrder] : 0;
@@ -3803,6 +3849,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
   BOOL _photosBackupRecorded;
+  // The running backup or check holds Import's mv.import.1 table.
+  BOOL _photosBackupUsesIndex;
   BOOL _exportVisible;
   int32_t _exportChoice;  // pack_export; 0 until the first export picks defaults
   // PR 11 (docs/design/07, docs/design/16). The adjust pane's state and the preview-sized
@@ -15097,6 +15145,14 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 static NSString* const kPhotosBackupDestinationDefault = @"mv.photosBackup.destination";
 static NSString* const kPhotosBackupLastDefault = @"mv.photosBackup.last";
 static NSString* const kPhotosBackupLayoutDefault = @"mv.photosBackup.layout";  // backup::layout
+static NSString* const kPhotosBackupScopeDefault = @"mv.photosBackup.scope";    // backup::library_scope
+
+// Import is about to unload (Remove, quit): a backup holding its table is
+// cancelled and stops calling it; true when no call is inside Import.
+static bool MvPhotosBackupBeforeImportUnload(double seconds) {
+  if (g_chrome_app) [g_chrome_app stopPhotosBackupForImportUnload];
+  return mv::shell::backup::close_import_library(seconds);
+}
 
 static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::progress& p) {
   *out = {};
@@ -15106,7 +15162,11 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   out->skipped = p.skipped;
   out->failed = p.failed;
   out->fetched = p.fetched;
+  out->found = p.found;
+  out->held = p.held;
+  out->left_deleted = p.left_deleted;
   out->bytes = p.bytes;
+  out->bytes_total = p.bytes_total;
   out->started_unix = p.started_unix;
   out->finished_unix = p.finished_unix;
   std::snprintf(out->current, sizeof(out->current), "%s", p.current.c_str());
@@ -15114,19 +15174,38 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 }
 
 - (BOOL)startPhotosBackupTo:(const std::string&)destination {
+  return [self startPhotosRunTo:destination checkOnly:NO];
+}
+
+- (BOOL)startPhotosCheckTo:(const std::string&)destination {
+  return [self startPhotosRunTo:destination checkOnly:YES];
+}
+
+- (BOOL)startPhotosRunTo:(const std::string&)destination checkOnly:(BOOL)checkOnly {
   if (destination.empty() || ![self photosLibraryAvailable]) return NO;
+  // A choice still being written to the manifest goes first (a moment).
+  if (g_photos_decide_pending.load() > 0) return NO;
   if (_photosBackup && _photosBackup->running()) return NO;
   if (!_photosBackup) _photosBackup = std::make_unique<mv::shell::backup::engine>();
   mv::shell::backup::options opts;
   opts.destination = destination;
   opts.folders = static_cast<mv::shell::backup::layout>([self photosBackupLayout]);
+  // Check library: Import's index, when Import is loaded. A check needs it; a
+  // backup without it is as before.
+  opts.index = mv::shell::backup::make_import_library(MvAddonsImportTable());
+  opts.scope = static_cast<mv::shell::backup::library_scope>([self photosBackupScope]);
+  opts.check_only = checkOnly == YES;
+  if (opts.check_only && !opts.index) return NO;
+  _photosBackupUsesIndex = opts.index ? YES : NO;
+  MvAddonsSetImportUnloadHook(&MvPhotosBackupBeforeImportUnload);
   // Fetched originals wait here for their verified copy; emptied at the end.
   NSArray<NSString*>* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
   NSString* base = caches.firstObject ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"];
   opts.scratch = std::string([[[base stringByAppendingPathComponent:@"MediaViewer"]
       stringByAppendingPathComponent:@"Photos Backup"] UTF8String]);
   if (!_photosBackup->start(mv::shell::backup::make_photos_source(), std::move(opts))) return NO;
-  _photosBackupRecorded = NO;
+  // A check is not a backup: the "last backup" line keeps the last real run.
+  _photosBackupRecorded = checkOnly;
   [[NSUserDefaults standardUserDefaults] setObject:[NSString stringWithUTF8String:destination.c_str()]
                                             forKey:kPhotosBackupDestinationDefault];
   return YES;
@@ -15154,6 +15233,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
       @"finished" : @(p.finished_unix),
       @"done" : @(p.done),
       @"skipped" : @(p.skipped),
+      @"found" : @(p.found),
+      @"held" : @(p.held),
       @"failed" : @(p.failed),
       @"state" : @(static_cast<int>(p.state)),
     }
@@ -15178,6 +15259,64 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   [[NSUserDefaults standardUserDefaults] setInteger:layout forKey:kPhotosBackupLayoutDefault];
 }
 
+// Absent is 0, this destination (Import's default scope).
+- (int32_t)photosBackupScope {
+  const NSInteger v = [[NSUserDefaults standardUserDefaults] integerForKey:kPhotosBackupScopeDefault];
+  return v >= 0 && v < mv::shell::backup::kLibraryScopeCount ? static_cast<int32_t>(v) : 0;
+}
+
+- (void)setPhotosBackupScope:(int32_t)scope {
+  if (scope < 0 || scope >= mv::shell::backup::kLibraryScopeCount) return;
+  [[NSUserDefaults standardUserDefaults] setInteger:scope forKey:kPhotosBackupScopeDefault];
+}
+
+- (BOOL)photosLibraryIndexAvailable {
+  return mv::shell::backup::import_has_library_check(MvAddonsImportTable()) ? YES : NO;
+}
+
+- (std::string)photosCheckJson {
+  if (!_photosBackup) return {};
+  const mv::shell::backup::check_report r = _photosBackup->last_check();
+  if (r.originals == 0 && !r.index) return {};
+  return mv::shell::backup::check_report_json(r);
+}
+
+// Copy again / Leave deleted, from Check library's list. The manifest is in
+// the destination (often a share), so the write runs off the main thread, and
+// never beside a run, which has the manifest open.
+- (BOOL)decidePhotosDeleted:(const std::string&)json {
+  if (_photosBackup && _photosBackup->running()) return NO;
+  const std::string destination = [self photosBackupDestination];
+  if (destination.empty()) return NO;
+  const auto doc = mv::json::parse(json, 4);
+  if (!doc || doc->k != mv::json::kind::array) return NO;
+  std::vector<mv::shell::backup::deleted_choice> choices;
+  for (const mv::json::value& v : doc->a) {
+    const std::string* asset = v.str("asset");
+    const auto kind = v.integer("kind");
+    const auto again = v.boolean("copy_again");
+    if (!asset || !kind || *kind < 0 || *kind > 2 || !again) return NO;
+    choices.push_back({*asset, static_cast<mv::shell::backup::file_kind>(*kind), *again});
+  }
+  if (choices.empty()) return NO;
+  g_photos_decide_pending.fetch_add(1);
+  dispatch_async(MvPhotosDecideQueue(), ^{
+    const bool ok = static_cast<bool>(mv::shell::backup::decide_deleted(destination, choices));
+    if (!ok) MV_LOG_WARN("photos backup: a choice could not be written");
+    g_photos_decide_failed.store(!ok);
+    g_photos_decide_pending.fetch_sub(1);
+  });
+  return YES;
+}
+
+// [main] Cancel only: the main thread never joins the backup (rule 1). The
+// gate in photos_backup_library.cpp keeps it out of Import from now on.
+- (void)stopPhotosBackupForImportUnload {
+  if (!_photosBackup || !_photosBackupUsesIndex) return;
+  _photosBackup->cancel();
+  _photosBackupUsesIndex = NO;
+}
+
 - (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out {
   if (!out) return NO;
   NSDictionary* last = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kPhotosBackupLastDefault];
@@ -15186,6 +15325,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   out->finished_unix = [last[@"finished"] longLongValue];
   out->done = static_cast<uint64_t>([last[@"done"] unsignedLongLongValue]);
   out->skipped = static_cast<uint64_t>([last[@"skipped"] unsignedLongLongValue]);
+  out->found = static_cast<uint64_t>([last[@"found"] unsignedLongLongValue]);
+  out->held = static_cast<uint64_t>([last[@"held"] unsignedLongLongValue]);
   out->failed = static_cast<uint64_t>([last[@"failed"] unsignedLongLongValue]);
   out->state = static_cast<uint32_t>([last[@"state"] intValue]);
   return out->finished_unix != 0;

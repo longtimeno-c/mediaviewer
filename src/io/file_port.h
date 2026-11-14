@@ -83,6 +83,8 @@ struct file_id {
 };
 
 // status::io when nothing is there or it cannot be read.
+// status::not_found when nothing is at the path (or a folder on it is
+// missing); io for any other failure (refused, a share that did not answer).
 [[nodiscard]] result<file_stat> stat_path(std::string_view utf8_path);
 
 // #498: the file at `utf8_path` itself, never through a link: a symlink,

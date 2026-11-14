@@ -1481,10 +1481,15 @@ if(MV_BUILD_TESTS)
     tests/test_ai_resume.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
+    # Check library (docs/plans/check-library.md): the engine and the Photos
+    # backup over it through mv.import.1.
+    tests/test_check_library.cpp
+    src/shell/photos_backup.cpp
+    src/shell/photos_backup_library.cpp
     tests/test_json.cpp
   )
   target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
-    unofficial-sodium::sodium Catch2::Catch2WithMain)
+    unofficial-sodium::sodium ${MV_SQLITE_TARGET} Catch2::Catch2WithMain)
   target_include_directories(mv_import_tests PRIVATE src tests)
   target_compile_definitions(mv_import_tests PRIVATE
     MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"

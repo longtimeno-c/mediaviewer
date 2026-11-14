@@ -1361,7 +1361,13 @@ File gains *Open Photos Library*: the host lists the library as **virtual items*
 **Back Up Now** runs `shell/photos_backup.h` over PhotoKit into a chosen folder. Tests, no library
 needed: `mv_tests "[folder][photos]"` (virtual entries and tiles over a fake provider),
 `"[photos_backup]"` (the engine over a fake library: each folder layout, verified copies, the
-manifest across a layout change and a remount, a collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
+manifest across a layout change and a remount, a collision, a cancel, a deleted file held until Copy
+again or Leave deleted, Leave deleted by hash), `mv_import_tests
+"[check_library]"` (Check library over the real engine and `import.db`: a folder against a library
+with renamed copies, duplicates, deletions, an offline share and library scope; the Photos backup
+over the same engine through `mv.import.1` with a fake Photos source; its cost on 20,000 files is
+the hidden `"[.perf-bench][check_library]"`, `MV_CHECK_BENCH_FILES` to change the count),
+`"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
 poster; the thumbnail spec is `jpg512.4`). Edits of a library photo (docs/design/26 "Edits of a library
 photo", docs/plans/edit-refresh.md S0): `mv_ai_tests "[photos]"`, with the writer audit
 `"[photos][audit]"` (Detail, Remove, Extend, Open closed eyes, Improve faces and Save copy on a
