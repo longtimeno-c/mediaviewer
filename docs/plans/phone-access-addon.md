@@ -184,6 +184,10 @@ Still owed:
 
 - **The server's menu** (#686 §4, session `host-tray`): its `src/phone/host_tray.*` and the shell keep move
   into this add-on once both branches merge (keep_alive + keep_menu with `host_tray::build()`'s rows, and a
-  "login" flag on keep_alive for the app's login item). Its glue started beside `mv_phone_resume`, which this
-  branch removes: on the merge it starts from the add-on's load instead.
+  "login" flag on keep_alive for the app's login item). On the merge with its branch, keep its own start and
+  stop lines when this branch's phone lines go: Windows `PhoneNative.StartHostTray()` (after the removed
+  `PhoneNative.Resume(primary: true)` in IslandHost.Addons.cs) and `mv_host_tray_stop()` in main.cpp (before the
+  removed `mv_phone_stop()`); Mac `mv::abi::start_host_tray()` / `stop_host_tray()` in main_mac.mm beside the
+  removed `resume_app(true)` / `stop_app()`. Its `src/phone/host_tray.*` and `self_host.cpp`'s include of it move
+  to `src/addons/phone` together. Its verbs run `self_host::find()`'s program, which is now the add-on's copy.
 - The Linux login entry's escaping (systemd) is not matched by `login_entry_runs`; Linux ships no add-on yet.
