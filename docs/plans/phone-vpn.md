@@ -343,18 +343,32 @@ phone's other apps, which leave anyway. What each party sees:
 ### 4.1 Entitlements and what the owner clicks
 
 On iOS, Network Extension packet tunnels are a capability any paid membership can enable. There is
-no request form, unlike the content-filter and DNS-proxy cases of the past [Apple, §10]. The
-Mac's system-extension entitlement on Developer ID is a separate question, already owed in 12.
+no request form, unlike the content-filter and DNS-proxy cases of the past [Apple, §10]. The Mac
+found the same thing for Developer ID: since #673 (on `main`, 2026-11-14) the capability is ticked
+by the team, and `tools/mac/provision.py` creates the Mac App IDs, capabilities and Developer ID
+profiles through the App Store Connect API (`RELEASING.md`, "the Driftwire VPN's provisioning
+profiles"). The Mac extension's App ID is `io.github.longtimeno-c.mediaviewer.DriftwireTunnel`, and
+the phone's follows the same pattern.
 
-In the **developer portal** (Certificates, Identifiers & Profiles), team 23FQ4A4Q35, Oakforge
+**From a terminal (recommended; S2 builds it).** S2 extends `provision.py` with an iOS mode
+(`--ios`), using the same API key, the same token code and the same dry run:
+- bundle IDs with `platform: IOS`;
+- `NETWORK_EXTENSIONS` and `APP_GROUPS` on both App IDs;
+- no profiles, since Xcode's automatic signing makes the iOS ones.
+Whether the API can create the App Group identifier itself is unverified. If it cannot, that one
+step is a single click in the portal (step 3 below), or Xcode's automatic signing makes it.
+
+**Or by hand**,
+
+in the **developer portal** (Certificates, Identifiers & Profiles), team 23FQ4A4Q35, Oakforge
 Studios LTD:
 
 1. **App ID `io.github.longtimeno-c.mediaviewer.mobile`** (explicit; exists): enable **Network
    Extensions**, **App Groups** (assign `group.io.github.longtimeno-c.mediaviewer.mobile`), and
    keep **Keychain Sharing** as an Xcode entitlement (`keychain-access-groups`; it needs no portal
    switch).
-2. **New App ID `io.github.longtimeno-c.mediaviewer.mobile.vpn`** (explicit, description
-   "MediaViewer VPN extension"): **Network Extensions**, **App Groups** (the same group).
+2. **New App ID `io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel`** (explicit,
+   description "MediaViewer VPN extension"; the Mac's suffix): **Network Extensions**, **App Groups** (the same group).
 3. **New App Group** `group.io.github.longtimeno-c.mediaviewer.mobile` if Xcode has not made it.
 4. **Profiles:** with automatic signing (`CODE_SIGN_STYLE = Automatic`, [code]
    `MediaViewer.xcconfig`), Xcode regenerates both development and App Store profiles at the next
@@ -499,6 +513,8 @@ run on a throwaway branch that has both.
   old service never sees it; the desktop card's "may use the relay as a VPN" per phone.
 - The tunnel Keychain item, the App Group and `vpn_abi.*`.
 - The extension target in `MediaViewerMobile.xcodeproj`, with the entitlements of §4.1.
+- `provision.py --ios` (§4.1), tested with the same fake API as `test_provision.py`; the owner runs
+  it, with `--dry-run` first.
 - `tools/ios/vcpkg.json` + BoringSSL; `licence_check.py` and `acknowledgements.py` run over the
   `.app` with the `.appex`.
 
@@ -611,7 +627,7 @@ Under A, the demo is clearly a demo:
 | 5 | **SAMPLE: how a reviewer sees the VPN** (§8). | **A, the labelled in-app demo**: no project relay, so the 2026-11-12 "no public relay will exist" call and "Data Not Collected" both stand. |
 | 6 | **If S1's memory gate fails:** multiplex forwards over one connection to the relay (a relay protocol change, shared with the desktop). | Decide only if S1 fails; S1 tries the smaller profile and a worker pool first. |
 | 7 | **When** (§4.4). | A later update, after 1.0 is approved. Spikes and S2–S4 may run on TestFlight before then. |
-| 8 | **The extension's App ID and group names** (§4.1). | `io.github.longtimeno-c.mediaviewer.mobile.vpn` and `group.io.github.longtimeno-c.mediaviewer.mobile`. They cannot be renamed after release without losing the saved VPN configuration. |
+| 8 | **The extension's App ID and group names** (§4.1). | `io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel` (the Mac's suffix, #673), the Keychain group `….mobile.vpn` and `group.io.github.longtimeno-c.mediaviewer.mobile`. They cannot be renamed after release without losing the saved VPN configuration. |
 
 Not owner calls, but owed elsewhere and named so they are not lost:
 
@@ -621,7 +637,7 @@ Not owner calls, but owed elsewhere and named so they are not lost:
 
 ## 10. How the claims were checked
 
-- **[code]:** read on `origin/main` at `928b2e9d` (Tunnel, `netstack`, `vpn`, `tls_common.cpp`, the
+- **[code]:** read on `origin/main` at `928b2e9d`, rechecked at `f7eba029` (#673: Mac provisioning) (Tunnel, `netstack`, `vpn`, `tls_common.cpp`, the
   Mac provider) and on `origin/claude/mobile-integration-c6a3b5` (the phone's `Keychain.swift`,
   `link.cpp`, `SettingsScreen.swift`, `MediaViewer.xcconfig`, `licence_check.py`, `vcpkg.json`,
   `nas-relay.md`, `mobile.md`) on 2026-11-14. vcpkg's `boringssl` port declares Apache-2.0
