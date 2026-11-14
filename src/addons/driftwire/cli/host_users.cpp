@@ -160,19 +160,19 @@ admin_answer check_admin(secrets::store& store, std::string_view passphrase, std
     until = l.owner.until;
     return admin_answer::locked;
   }
+  // Counted as a miss before it is checked, as the service does (serve.cpp answer()):
+  // a store that cannot be written must never mean guesses that are never counted.
+  l.owner.miss(now);
+  if (!owner::save_lockout(store, l)) return admin_answer::unreadable;
   bool right = false;
   if (owner::acceptable(passphrase) && owner::sane_cost(v.ops, v.mem)) {
     if (auto s = owner::derive(passphrase, v.salt, v.ops, v.mem)) right = sodium_memcmp(s->pk.data(), v.pk.data(), v.pk.size()) == 0;
   }
   if (right) {
-    if (l.owner.misses != 0 || l.owner.level != 0) {
-      l.owner.success();
-      (void)owner::save_lockout(store, l);
-    }
+    l.owner.success();
+    (void)owner::save_lockout(store, l);  // if this fails the miss stays counted: never in the guesser's favour
     return admin_answer::ok;
   }
-  l.owner.miss(now);
-  (void)owner::save_lockout(store, l);  // a miss that cannot be written still refuses
   until = l.owner.locked(now) ? l.owner.until : 0;
   return until ? admin_answer::locked : admin_answer::wrong;
 }
@@ -552,6 +552,7 @@ int run_smb_apply(const args& a) {
     print("driftwire host: smb-apply is the elevated step that driftwire host users starts; it is not typed.\n", true);
     return 2;
   }
+  host_smb::note_invoker();
   if (sodium_init() < 0) return 1;
   const std::string channel = a.host_words.empty() ? std::string() : a.host_words.front();
   std::string line;
@@ -562,6 +563,17 @@ int run_smb_apply(const args& a) {
     std::string why;
     auto r = host_smb::parse_request(line, why);
     sodium_memzero(line.data(), line.size());
+    if (r) {
+      // Never a system folder, a folder reached through a link, or one that is not
+      // the person's: the request came from a process anyone logged in as them can run.
+      for (const auto& s : r->shares) {
+        if (std::string refused = host_smb::check_share_folder(s.path); !refused.empty()) {
+          why = s.name + ": " + refused;
+          r.reset();
+          break;
+        }
+      }
+    }
     if (!r) {
       out.why = why;
     } else {

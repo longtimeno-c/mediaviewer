@@ -985,10 +985,10 @@ TEST_CASE("host ports: SMB, NetBIOS and RDP are never forwarded, and no router i
   {
     // Whoever asks, and however: inside, outside, or as the fallback.
     hp::keeper k({{.internal_port = 445, .what = "share"},
-                  {.internal_port = 139},
-                  {.internal_port = 3389},
-                  {.internal_port = 8445, .external_port = 445},
-                  {.internal_port = 9000, .external_port = 9000, .fallback_external = 137},
+                  {.internal_port = 139, .what = "netbios"},
+                  {.internal_port = 3389, .what = "rdp"},
+                  {.internal_port = 8445, .external_port = 445, .what = "outside 445"},
+                  {.internal_port = 9000, .external_port = 9000, .fallback_external = 137, .what = "fallback 137"},
                   {.internal_port = 7878, .what = "service"}},
                  std::move(o));
     const auto r = k.status();

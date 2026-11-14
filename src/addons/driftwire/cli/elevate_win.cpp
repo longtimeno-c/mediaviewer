@@ -16,6 +16,8 @@
 #include <sodium.h>
 
 #include <array>
+#include <atomic>
+#include <thread>
 #include <cstdint>
 #include <string>
 
@@ -46,6 +48,7 @@ bool write_all(HANDLE h, std::string_view s) {
 
 std::string read_line_h(HANDLE h) {
   std::string out;
+  out.reserve(kMaxLine);  // never reallocated: no copy of a password left in freed memory
   char c = 0;
   while (out.size() < kMaxLine) {
     DWORD n = 0;
@@ -123,7 +126,19 @@ elevated_run run_elevated(const std::string& program, std::string_view request, 
     return r;
   }
   const DWORD started = GetProcessId(sei.hProcess);
+  // A step that ends (or never starts its side) without connecting must not leave
+  // this waiting for ever: the watcher connects itself, and is refused below as
+  // not the process started.
+  std::atomic<bool> connected_flag{false};
+  std::thread watcher([&] {
+    if (WaitForSingleObject(sei.hProcess, 120000) == WAIT_OBJECT_0 || !connected_flag.load()) {
+      if (connected_flag.load()) return;
+      HANDLE poke = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+      if (poke != INVALID_HANDLE_VALUE) CloseHandle(poke);
+    }
+  });
   const bool connected = ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED;
+  connected_flag.store(true);
   ULONG client = 0;
   if (connected && GetNamedPipeClientProcessId(pipe, &client) && client == started) {
     std::string line(request);
@@ -137,6 +152,7 @@ elevated_run run_elevated(const std::string& program, std::string_view request, 
   DisconnectNamedPipe(pipe);
   CloseHandle(pipe);
   WaitForSingleObject(sei.hProcess, 60000);
+  watcher.join();
   CloseHandle(sei.hProcess);
   r.started = !r.answer.empty();
   if (!r.started && r.why.empty()) r.why = "the elevated step gave no answer";

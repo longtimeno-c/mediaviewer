@@ -37,6 +37,7 @@ bool write_all(int fd, std::string_view s) {
 
 std::string read_line_fd(int fd) {
   std::string out;
+  out.reserve(kMaxLine);  // never reallocated: no copy of a password left in freed memory
   char c = 0;
   while (out.size() < kMaxLine) {
     const ssize_t n = ::read(fd, &c, 1);
@@ -126,9 +127,11 @@ elevated_run with_dialog(const std::string& program, std::string_view request) {
   sodium_memzero(line.data(), line.size());
   r.answer = read_line_fd(fileno(pipe));
   std::fclose(pipe);
-  // The step's process is reaped here: it ends right after its answer.
+  // The step's process is reaped here: it ends right after its answer (this
+  // command line has no other children by now).
   int status = 0;
-  (void)waitpid(-1, &status, WNOHANG);
+  while (waitpid(-1, &status, 0) < 0 && errno == EINTR) {
+  }
   r.started = !r.answer.empty();
   if (!r.started) r.why = "the elevated step gave no answer";
   return r;

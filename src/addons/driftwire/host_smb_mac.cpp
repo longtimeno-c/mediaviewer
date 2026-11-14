@@ -23,6 +23,7 @@
 #include <membership.h>
 #include <pwd.h>
 #include <spawn.h>
+#include <dirent.h>
 #include <sys/acl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -34,11 +35,10 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <climits>
 #include <optional>
 
 #include "core/json.h"
-
-extern char** environ;
 
 namespace mv::driftwire::host_smb {
 
@@ -95,7 +95,10 @@ int run(const char* program, const std::vector<std::string>& args, std::string* 
   if (!output) posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
   posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
   pid_t pid = 0;
-  const int rc = posix_spawn(&pid, program, &fa, nullptr, argv.data(), environ);
+  // A clean environment: the step runs as the administrator, its tools need none of the person's.
+  char path_env[] = "PATH=/usr/bin:/bin:/usr/sbin:/sbin";
+  char* env[] = {path_env, nullptr};
+  const int rc = posix_spawn(&pid, program, &fa, nullptr, argv.data(), env);
   posix_spawn_file_actions_destroy(&fa);
   if (output) close(fds[1]);
   if (rc != 0) {
@@ -217,11 +220,11 @@ void add_perms(acl_permset_t ps, role r) {
   }
 }
 
-// One item's extended ACL: the entries of `strip` gone, `members` added
-// (inherited when `inherited`). False when it could not be written.
-bool set_acl(const std::string& path, const std::vector<uid_t>& strip, const std::vector<member>& members, bool dir,
-             bool inherited) {
-  acl_t old = acl_get_link_np(path.c_str(), ACL_TYPE_EXTENDED);
+// One item's extended ACL, by its open descriptor (never a path: nothing can be
+// swapped for a link between the look and the write): the entries of `strip`
+// gone, `members` added (inherited when `inherited`). False when it could not be written.
+bool set_acl(int fd, const std::vector<uid_t>& strip, const std::vector<member>& members, bool dir, bool inherited) {
+  acl_t old = acl_get_fd_np(fd, ACL_TYPE_EXTENDED);
   acl_t next = acl_init(static_cast<int>(members.size()) + 4);
   if (!next) {
     if (old) acl_free(old);
@@ -257,31 +260,50 @@ bool set_acl(const std::string& path, const std::vector<uid_t>& strip, const std
     if (inherited) acl_add_flag_np(fs, ACL_ENTRY_INHERITED);
     acl_set_flagset_np(e, fs);
   }
-  const bool ok = acl_set_link_np(path.c_str(), ACL_TYPE_EXTENDED, next) == 0;
+  const bool ok = acl_set_fd_np(fd, next, ACL_TYPE_EXTENDED) == 0;
   acl_free(next);
   return ok;
 }
 
-// The folder and everything in it (links not followed, other volumes not entered).
-bool set_tree(const std::string& root, const std::vector<uid_t>& strip, const std::vector<member>& members) {
-  if (!set_acl(root, strip, members, true, false)) return false;
-  namespace fs = std::filesystem;
-  std::error_code ec;
-  struct stat top {};
-  if (lstat(root.c_str(), &top) != 0) return false;
-  fs::recursive_directory_iterator it(fs::path(root), fs::directory_options::skip_permission_denied, ec), end;
-  for (; !ec && it != end; it.increment(ec)) {
-    const std::string p = it->path().string();
-    struct stat st {};
-    if (lstat(p.c_str(), &st) != 0) continue;
-    if (st.st_dev != top.st_dev) {
-      it.disable_recursion_pending();
-      continue;
-    }
-    if (S_ISLNK(st.st_mode)) continue;
-    (void)set_acl(p, strip, members, S_ISDIR(st.st_mode), true);
+// What is inside an open folder, by descriptor: links are never followed, other
+// volumes never entered, only folders and plain files touched.
+void set_inside(int dirfd, dev_t dev, const std::vector<uid_t>& strip, const std::vector<member>& members, int depth) {
+  if (depth > 256) return;
+  const int listfd = dup(dirfd);
+  if (listfd < 0) return;
+  DIR* d = fdopendir(listfd);
+  if (!d) {
+    close(listfd);
+    return;
   }
-  return true;
+  for (dirent* e; (e = readdir(d)) != nullptr;) {
+    if (std::strcmp(e->d_name, ".") == 0 || std::strcmp(e->d_name, "..") == 0) continue;
+    struct stat st {};
+    if (fstatat(dirfd, e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+    if (st.st_dev != dev || (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))) continue;
+    const int flags = O_NOFOLLOW | O_CLOEXEC | (S_ISDIR(st.st_mode) ? (O_RDONLY | O_DIRECTORY) : (O_RDONLY | O_NONBLOCK));
+    const int fd = openat(dirfd, e->d_name, flags);
+    if (fd < 0) continue;
+    struct stat now {};
+    // The same item as looked at: a swap in between is skipped.
+    if (fstat(fd, &now) == 0 && now.st_ino == st.st_ino && now.st_dev == st.st_dev) {
+      (void)set_acl(fd, strip, members, S_ISDIR(now.st_mode), true);
+      if (S_ISDIR(now.st_mode)) set_inside(fd, dev, strip, members, depth + 1);
+    }
+    close(fd);
+  }
+  closedir(d);
+}
+
+// The folder and everything in it. The folder itself must not be a link.
+bool set_tree(const std::string& root, const std::vector<uid_t>& strip, const std::vector<member>& members) {
+  const int fd = open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return false;
+  struct stat st {};
+  bool ok = fstat(fd, &st) == 0 && S_ISDIR(st.st_mode) && set_acl(fd, strip, members, true, false);
+  if (ok) set_inside(fd, st.st_dev, strip, members, 0);
+  close(fd);
+  return ok;
 }
 
 // ---- `sharing -l -f json` ----
@@ -444,6 +466,25 @@ class mac_port final : public port {
     return out;
   }
 
+  std::vector<std::string> our_accounts() override {
+    std::vector<std::string> out;
+    ODRecordRef g = dir_.record(kODRecordTypeGroups, kGroup);
+    if (!g) return out;
+    cf held(g);
+    CFErrorRef err = nullptr;
+    CFArrayRef names = ODRecordCopyValues(g, kODAttributeTypeGroupMembership, &err);
+    if (err) CFRelease(err);
+    if (!names) return out;
+    for (CFIndex i = 0; i < CFArrayGetCount(names); ++i) {
+      const void* x = CFArrayGetValueAtIndex(names, i);
+      if (!x || CFGetTypeID(x) != CFStringGetTypeID()) continue;
+      const std::string n = utf8(static_cast<CFStringRef>(x));
+      if (account(n) == owner::ours) out.push_back(n);
+    }
+    CFRelease(names);
+    return out;
+  }
+
   std::string start_service() override {
     if (run("/bin/launchctl", {"enable", "system/com.apple.smbd"}) != 0) return "could not turn on file sharing";
     (void)run("/bin/launchctl", {"kickstart", "system/com.apple.smbd"});
@@ -507,5 +548,40 @@ class mac_port final : public port {
 }  // namespace
 
 std::unique_ptr<port> os_port() { return std::make_unique<mac_port>(); }
+
+namespace {
+uid_t g_invoker = static_cast<uid_t>(-1);
+}
+
+void note_invoker() {
+  // sudo: SUDO_UID; the authorization dialog: the real uid is still the person's.
+  g_invoker = getuid();
+  if (g_invoker == 0) {
+    if (const char* u = std::getenv("SUDO_UID")) {
+      char* end = nullptr;
+      const unsigned long v = std::strtoul(u, &end, 10);
+      if (end && *end == '\0' && v > 0) g_invoker = static_cast<uid_t>(v);
+    }
+  }
+  // The dialog's tool runs with only the effective uid root; its tools want both.
+  if (geteuid() == 0 && getuid() != 0) (void)setuid(0);
+}
+
+std::string check_share_folder(const std::string& path) {
+  if (std::string why = refuse_system_folder(path, false); !why.empty()) return why;
+  char real[PATH_MAX];
+  if (!realpath(path.c_str(), real) || path != real) return "that folder is reached through a link; share the folder itself";
+  struct stat st {}, parent {}, root {};
+  if (lstat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return "that folder is not there";
+  if (refuse_system_folder(real, false).size() != 0) return refuse_system_folder(real, false);
+  if (g_invoker == static_cast<uid_t>(-1) || g_invoker == 0) return "the step could not tell who started it";
+  if (st.st_uid == g_invoker) return {};
+  // A drive of its own (a mount point, not the system's volume) whose files the Mac ignores owners of.
+  const std::string up = std::filesystem::path(path).parent_path().string();
+  if (stat(up.c_str(), &parent) == 0 && stat("/", &root) == 0 && st.st_dev != parent.st_dev && st.st_dev != root.st_dev) {
+    return {};
+  }
+  return "that folder is not yours (it belongs to another account on this Mac)";
+}
 
 }  // namespace mv::driftwire::host_smb

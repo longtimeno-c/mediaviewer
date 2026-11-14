@@ -28,6 +28,8 @@
 #include <sddl.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cwctype>
 #include <vector>
 
 #ifndef SHI1005_FLAGS_ENCRYPT_DATA
@@ -93,15 +95,21 @@ std::wstring computer_name(COMPUTER_NAME_FORMAT f) {
   return out;
 }
 
-// A local account's SID, or empty.
+// A local user account's SID (this computer's own, never a domain's or a
+// well-known group's), or empty.
 std::vector<BYTE> sid_of(const std::wstring& name) {
+  const std::wstring here = computer_name(ComputerNameNetBIOS);
+  if (here.empty()) return {};
+  const std::wstring qualified = here + L"\\" + name;
   DWORD sid_n = 0, dom_n = 0;
   SID_NAME_USE use{};
-  LookupAccountNameW(nullptr, name.c_str(), nullptr, &sid_n, nullptr, &dom_n, &use);
-  if (sid_n == 0) return {};
+  LookupAccountNameW(nullptr, qualified.c_str(), nullptr, &sid_n, nullptr, &dom_n, &use);
+  if (sid_n == 0 || dom_n == 0) return {};
   std::vector<BYTE> sid(sid_n);
   std::wstring dom(dom_n, L'\0');
-  if (!LookupAccountNameW(nullptr, name.c_str(), sid.data(), &sid_n, dom.data(), &dom_n, &use)) return {};
+  if (!LookupAccountNameW(nullptr, qualified.c_str(), sid.data(), &sid_n, dom.data(), &dom_n, &use)) return {};
+  dom.resize(dom_n);
+  if (use != SidTypeUser || _wcsicmp(dom.c_str(), here.c_str()) != 0) return {};
   return sid;
 }
 
@@ -323,6 +331,7 @@ class win_port final : public port {
   std::string make_account(const std::string& name, std::string_view password) override {
     if (!ensure_group()) return "could not make the group for MediaViewer's users";
     std::wstring w = wide(name), pw = wide(password);
+    if (w.empty() || pw.empty()) return "the name or password could not be read";
     USER_INFO_1 u{};
     u.usri1_name = w.data();
     u.usri1_password = pw.data();
@@ -348,6 +357,7 @@ class win_port final : public port {
   std::string set_password(const std::string& name, std::string_view password) override {
     if (account(name) != owner::ours) return "that account is not MediaViewer's";
     std::wstring w = wide(name), pw = wide(password);
+    if (w.empty() || pw.empty()) return "the password could not be read";
     USER_INFO_1003 u{};
     u.usri1003_password = pw.data();
     const NET_API_STATUS s = NetUserSetInfo(nullptr, w.c_str(), 1003, reinterpret_cast<LPBYTE>(&u), nullptr);
@@ -425,6 +435,25 @@ class win_port final : public port {
     return out;
   }
 
+  std::vector<std::string> our_accounts() override {
+    std::vector<std::string> out;
+    net_buffer b;
+    DWORD read = 0, total = 0;
+    DWORD_PTR resume = 0;
+    if (NetLocalGroupGetMembers(nullptr, kGroup, 3, &b.p, MAX_PREFERRED_LENGTH, &read, &total, &resume) != NERR_Success) {
+      return out;
+    }
+    const auto* m = reinterpret_cast<LOCALGROUP_MEMBERS_INFO_3*>(b.p);
+    for (DWORD i = 0; i < read; ++i) {
+      if (!m[i].lgrmi3_domainandname) continue;
+      std::wstring n = m[i].lgrmi3_domainandname;
+      if (const auto at = n.find(L'\\'); at != std::wstring::npos) n = n.substr(at + 1);
+      const std::string name = narrow(n.c_str());
+      if (!name.empty() && account(name) == owner::ours) out.push_back(name);
+    }
+    return out;
+  }
+
   std::string start_service() override {
     SC_HANDLE m = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!m) return "could not turn on file sharing";
@@ -439,5 +468,72 @@ class win_port final : public port {
 }  // namespace
 
 std::unique_ptr<port> os_port() { return std::make_unique<win_port>(); }
+
+void note_invoker() {}  // the step's token is the person's own, elevated: its user is who started it
+
+std::string check_share_folder(const std::string& path) {
+  // The system's drive is named "c:" for the pure check, whatever its letter.
+  std::wstring sysdir(MAX_PATH, L'\0');
+  const UINT n = GetSystemWindowsDirectoryW(sysdir.data(), MAX_PATH);
+  const wchar_t sys = n > 0 ? static_cast<wchar_t>(towlower(sysdir[0])) : L'c';
+  std::string as_c = path;
+  if (!as_c.empty()) {
+    const char d = static_cast<char>(tolower(static_cast<unsigned char>(as_c[0])));
+    if (static_cast<wchar_t>(d) == sys) as_c[0] = 'c';
+    else if (d == 'c') as_c[0] = '#';
+  }
+  if (std::string why = refuse_system_folder(as_c, true); !why.empty()) return why;
+  const std::wstring w = wide(path);
+  if (w.size() < 3 || w[1] != L':') return "that folder is not on a drive of this computer";
+  HANDLE h = CreateFileW(w.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return "that folder is not there";
+  std::string why;
+  FILE_BASIC_INFO basic{};
+  if (!GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof basic) ||
+      (basic.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    why = "that folder is not there";
+  } else if ((basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    why = "that folder is a link; share the folder itself";
+  }
+  if (why.empty()) {
+    // The folder as given is the folder itself: no link or junction anywhere above it.
+    std::wstring finalp(32768, L'\0');
+    const DWORD got = GetFinalPathNameByHandleW(h, finalp.data(), static_cast<DWORD>(finalp.size()), VOLUME_NAME_DOS);
+    finalp.resize(got < finalp.size() ? got : 0);
+    if (finalp.rfind(L"\\\\?\\", 0) == 0) finalp = finalp.substr(4);
+    std::wstring given = w;
+    for (auto& c : given) {
+      if (c == L'/') c = L'\\';
+    }
+    while (given.size() > 3 && given.back() == L'\\') given.pop_back();
+    while (finalp.size() > 3 && finalp.back() == L'\\') finalp.pop_back();
+    if (finalp.empty() || _wcsicmp(finalp.c_str(), given.c_str()) != 0) why = "that folder is reached through a link; share the folder itself";
+  }
+  if (why.empty()) {
+    const bool drive_root = w.size() <= 3;
+    PSID owner_sid = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    bool mine = false;
+    if (GetSecurityInfo(h, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner_sid, nullptr, nullptr, nullptr, &sd) ==
+        ERROR_SUCCESS) {
+      HANDLE token = nullptr;
+      if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        DWORD len = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &len);
+        std::vector<BYTE> buf(len);
+        if (len > 0 && GetTokenInformation(token, TokenUser, buf.data(), len, &len)) {
+          mine = EqualSid(reinterpret_cast<TOKEN_USER*>(buf.data())->User.Sid, owner_sid) != FALSE;
+        }
+        CloseHandle(token);
+      }
+      LocalFree(sd);
+    }
+    // A drive of its own (not the system's: refused above) may belong to Administrators.
+    if (!mine && !drive_root) why = "that folder is not yours (it belongs to another account on this PC)";
+  }
+  CloseHandle(h);
+  return why;
+}
 
 }  // namespace mv::driftwire::host_smb

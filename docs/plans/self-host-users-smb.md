@@ -138,6 +138,31 @@ the OS's own prompt.
 | Service | `launchctl enable` + `kickstart system/com.apple.smbd` if file sharing is off (said before the prompt) | the Server service is assumed running; if not, the step says so |
 | Address | `smb://<LocalHostName>.local/<share>` | `\\<COMPUTERNAME>\<share>` |
 
+**What the step checks itself** (Opus review, 2026-11-14), because the request comes from a process
+anyone logged in as the person can run:
+
+- **The folder** (`check_share_folder`, per OS):
+  - It must not be a system folder (`refuse_system_folder`): not `/` or the system drive's root,
+    not `/System`, `/Library`, `/private`, `/usr`, `/Applications` or the like, not `C:\Windows`,
+    Program Files or ProgramData, and not `/Users`, `/Volumes` or `C:\Users` themselves.
+  - It must be the folder itself, with no link, junction or reparse point anywhere in its path
+    (`realpath`, or `GetFinalPathNameByHandle`).
+  - It must belong to the person who started the step: `SUDO_UID` or the dialog's real uid on
+    the Mac, the token's user on Windows. The one exception is the root of a drive that is not
+    the system's.
+- **The Mac's ACL walk** works by open descriptor (`openat`, `O_NOFOLLOW`, `acl_set_fd_np`).
+  It follows no link and enters no other volume, so nothing swapped in during the walk is
+  touched.
+- **Removals the step was never told about:** every account in MediaViewer's own group that the
+  request no longer lists is taken away. That covers a removal made in the app, or one whose
+  step was declined.
+- **Only MediaViewer's accounts** have their entries stripped from a folder. On Windows a
+  name resolves only to a local user of this computer, never a domain or well-known account.
+- **Passwords** must be valid UTF-8, and one Windows cannot convert is refused, never set empty.
+- **The admin sign-in** counts a miss before it checks, and refuses when the count cannot be
+  written, as the service does.
+- **On Windows**, a step that ends without connecting no longer leaves the front end waiting.
+
 Removing a user deletes the account only if it is ours. It also removes that user's entries from
 each share's permissions. A share no user may open any more is removed. The folder and its files
 are never touched (rule 5).

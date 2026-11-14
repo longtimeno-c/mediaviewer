@@ -41,10 +41,63 @@ password_for::~password_for() { wipe(password); }
 
 bool acceptable_password(std::string_view p) noexcept {
   if (p.size() < 8 || p.size() > kMaxPasswordBytes) return false;
-  return std::none_of(p.begin(), p.end(), [](char c) {
-    const auto u = static_cast<unsigned char>(c);
-    return u < 0x20 || u == 0x7f;
-  });
+  // Valid UTF-8 (Windows turns anything else into an empty password), no control characters.
+  for (std::size_t i = 0; i < p.size();) {
+    const auto u = static_cast<unsigned char>(p[i]);
+    if (u < 0x20 || u == 0x7f) return false;
+    std::size_t n = u < 0x80 ? 1 : (u >> 5) == 0x6 ? 2 : (u >> 4) == 0xE ? 3 : (u >> 3) == 0x1E ? 4 : 0;
+    if (n == 0 || i + n > p.size() || (n == 2 && u < 0xC2) || (n == 4 && u > 0xF4)) return false;
+    for (std::size_t k = 1; k < n; ++k) {
+      if ((static_cast<unsigned char>(p[i + k]) & 0xC0) != 0x80) return false;
+    }
+    if (n == 3) {
+      const auto v = static_cast<unsigned char>(p[i + 1]);
+      if ((u == 0xE0 && v < 0xA0) || (u == 0xED && v >= 0xA0)) return false;  // overlong, surrogates
+    }
+    if (n == 4) {
+      const auto v = static_cast<unsigned char>(p[i + 1]);
+      if ((u == 0xF0 && v < 0x90) || (u == 0xF4 && v >= 0x90)) return false;
+    }
+    i += n;
+  }
+  return true;
+}
+
+std::string refuse_system_folder(std::string_view path, bool windows) {
+  std::string p(path);
+  if (windows) {
+    for (auto& c : p) {
+      if (c == '/') c = '\\';
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  const char sep = windows ? '\\' : '/';
+  while (p.size() > (windows ? 3u : 1u) && p.back() == sep) p.pop_back();
+  const auto under = [&](std::string_view top) {
+    return p == top || (p.size() > top.size() && p.compare(0, top.size(), top) == 0 && p[top.size()] == sep);
+  };
+  if (p.find(std::string(1, sep) + "..") != std::string::npos || p.find(std::string(1, sep) + "." + sep) != std::string::npos) {
+    return "that folder is not a plain path";
+  }
+  if (windows) {
+    // The system's drive: its root and its own trees (the drive letter is the one the system has; C: here).
+    if (p.size() <= 3) return p.rfind("c:", 0) == 0 ? "the system's drive is never shared whole" : std::string();
+    for (const char* top : {"c:\\windows", "c:\\program files", "c:\\program files (x86)", "c:\\programdata",
+                            "c:\\$recycle.bin", "c:\\system volume information", "c:\\recovery"}) {
+      if (under(top)) return "a folder of the system's own is never shared";
+    }
+    if (p == "c:\\users" || p == "c:\\users\\public" || p == "c:\\users\\default") return "the folder of everyone's accounts is never shared";
+    return {};
+  }
+  if (p == "/") return "the system's root is never shared";
+  for (const char* top : {"/System", "/Library", "/private", "/usr", "/bin", "/sbin", "/etc", "/var", "/tmp", "/cores",
+                          "/dev", "/opt", "/Applications", "/boot", "/proc", "/sys", "/root", "/lib", "/lib64", "/srv", "/run"}) {
+    if (under(top)) return "a folder of the system's own is never shared";
+  }
+  if (p == "/Users" || p == "/home" || p == "/Volumes" || p == "/Users/Shared" || p == "/mnt" || p == "/media") {
+    return "the folder of everyone's accounts or drives is never shared whole";
+  }
+  return {};
 }
 
 std::string request_json(const request& r) {
@@ -201,10 +254,13 @@ answer apply(const request& r, port& p) {
     return out;
   }
   bool all = true;
-  // Everyone whose earlier entries on a folder go before the new ones are written.
-  std::vector<std::string> ours;
-  for (const auto& u : r.users) ours.push_back(u.name);
-  for (const auto& n : r.remove) ours.push_back(n);
+  // Taken away: those asked, and any account of ours the request does not list (a
+  // removal whose step was declined, or made where the step was never told).
+  std::vector<std::string> removing = r.remove;
+  for (const auto& n : p.our_accounts()) {
+    const bool listed = std::any_of(r.users.begin(), r.users.end(), [&](const user_want& u) { return u.name == n; });
+    if (!listed && !has(removing, n) && serve::share_users::valid_name(n)) removing.push_back(n);
+  }
 
   // Accounts first: a share lists only users whose account is there and ours.
   std::vector<std::string> ready;
@@ -229,6 +285,16 @@ answer apply(const request& r, port& p) {
     if (it.ok) ready.push_back(u.name);
     all = all && it.ok;
     out.users.push_back(std::move(it));
+  }
+
+  // Whose earlier entries on a folder go before the new ones are written: MediaViewer's
+  // accounts only (made or kept above, or about to be taken away), never anyone else's.
+  std::vector<std::string> ours;
+  for (const auto& u : r.users) {
+    if (p.account(u.name) == port::owner::ours) ours.push_back(u.name);
+  }
+  for (const auto& n : removing) {
+    if (p.account(n) == port::owner::ours && !has(ours, n)) ours.push_back(n);
   }
 
   bool made_any = false;
@@ -263,7 +329,7 @@ answer apply(const request& r, port& p) {
     out.shares.push_back(std::move(it));
   }
 
-  for (const auto& n : r.remove) {
+  for (const auto& n : removing) {
     item it{n, false, {}};
     switch (p.account(n)) {
       case port::owner::none:
@@ -311,7 +377,7 @@ request plan(const std::vector<su::user>& users, const std::vector<folder>& fold
     }
     for (auto& p : passwords) {
       if (p.user == u.name) {
-        w.password = std::move(p.password);
+        w.password.assign(p.password);  // copied, then the source wiped (a move leaves short ones behind)
         wipe(p.password);
       }
     }

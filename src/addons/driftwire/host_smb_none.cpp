@@ -26,11 +26,19 @@ class none_port final : public port {
   }
   std::string remove_share(const std::string&, const std::vector<std::string>&) override { return {}; }
   std::vector<std::string> our_shares() override { return {}; }
+  std::vector<std::string> our_accounts() override { return {}; }
   std::string start_service() override { return "not offered here"; }
 };
 
 }  // namespace
 
 std::unique_ptr<port> os_port() { return std::make_unique<none_port>(); }
+
+void note_invoker() {}
+
+std::string check_share_folder(const std::string& path) {
+  if (std::string why = refuse_system_folder(path, false); !why.empty()) return why;
+  return "a network share is not offered on this computer yet";
+}
 
 }  // namespace mv::driftwire::host_smb

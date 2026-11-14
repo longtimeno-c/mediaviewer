@@ -94,10 +94,19 @@ struct stand_in_port final : smb::port {
     if (it == shares.end()) return owner::none;
     return it->second.ours ? owner::ours : owner::theirs;
   }
-  std::string put_share(const smb::share_want& s, const std::vector<smb::member>& m, const std::vector<std::string>&) override {
+  std::vector<std::string> last_strip;  // whose entries the last share change removed first
+  std::string put_share(const smb::share_want& s, const std::vector<smb::member>& m, const std::vector<std::string>& ours) override {
     calls.push_back("share " + s.name);
     shares[s.name] = {s.path, m, true};
+    last_strip = ours;
     return {};
+  }
+  std::vector<std::string> our_accounts() override {
+    std::vector<std::string> out;
+    for (const auto& [n, o] : accounts) {
+      if (o == owner::ours) out.push_back(n);
+    }
+    return out;
   }
   std::string remove_share(const std::string& n, const std::vector<std::string>&) override {
     calls.push_back("unshare " + n);
@@ -610,4 +619,51 @@ TEST_CASE("host users: a declined administrator keeps the list waiting, and appl
   h.input = {"ben\tshort"};
   h.next = 0;
   CHECK(cli::run_users(a, h.l, e) == 2);
+}
+
+TEST_CASE("host users: the step takes away its own accounts the request no longer lists, and strips no one else's entries",
+          "[host-users]") {
+  stand_in_port os;
+  os.accounts["bob"] = stand_in_port::owner::theirs;  // a real account named like a user
+  os.accounts["old"] = stand_in_port::owner::ours;    // removed in the app; its step was declined
+  smb::request r;
+  r.shares.push_back({"Photos", "/p"});
+  r.users.push_back({"anna", su::role::view, {"Photos"}, "anna's password"});
+  r.users.push_back({"bob", su::role::view, {"Photos"}, "bob's password"});
+  const auto a = smb::apply(r, os);
+  CHECK(os.accounts.count("old") == 0);  // taken away though nobody asked this time
+  CHECK(std::find(os.calls.begin(), os.calls.end(), "delete old") != os.calls.end());
+  CHECK(os.accounts["bob"] == stand_in_port::owner::theirs);
+  // Only MediaViewer's accounts have entries removed from the folder: anna and old, never bob.
+  CHECK(std::find(os.last_strip.begin(), os.last_strip.end(), "anna") != os.last_strip.end());
+  CHECK(std::find(os.last_strip.begin(), os.last_strip.end(), "old") != os.last_strip.end());
+  CHECK(std::find(os.last_strip.begin(), os.last_strip.end(), "bob") == os.last_strip.end());
+  const auto it = std::find_if(a.users.begin(), a.users.end(), [](const smb::item& i) { return i.name == "old"; });
+  REQUIRE(it != a.users.end());
+  CHECK(it->ok);
+}
+
+TEST_CASE("host users: the step never shares a system folder, and takes only valid UTF-8 passwords", "[host-users]") {
+  for (const char* p : {"/", "/System", "/System/Library", "/Library/Preferences", "/private/etc", "/usr/local", "/etc",
+                        "/Applications", "/Users", "/Users/", "/Volumes", "/home", "/Users/x/../../etc"}) {
+    INFO(p);
+    CHECK_FALSE(smb::refuse_system_folder(p, false).empty());
+  }
+  for (const char* p : {"/Users/anna/Pictures", "/Volumes/Photos", "/home/anna/Photos", "/Users/anna"}) {
+    INFO(p);
+    CHECK(smb::refuse_system_folder(p, false).empty());
+  }
+  for (const char* p : {"C:\\", "c:/", "C:\\Windows", "C:\\Windows\\System32", "C:\\Program Files\\X",
+                        "C:\\ProgramData", "C:\\Users", "c:\\users\\public"}) {
+    INFO(p);
+    CHECK_FALSE(smb::refuse_system_folder(p, true).empty());
+  }
+  for (const char* p : {"E:\\", "C:\\Users\\anna\\Pictures", "D:\\Photos"}) {
+    INFO(p);
+    CHECK(smb::refuse_system_folder(p, true).empty());
+  }
+  CHECK(smb::acceptable_password("p\xc3\xa4" "ssw\xc3\xb6" "rd"));  // "pässwörd"
+  CHECK_FALSE(smb::acceptable_password("bad\xff\xfe" "bytes!"));
+  CHECK_FALSE(smb::acceptable_password("over\xc0\xaf" "long!!"));
+  CHECK_FALSE(smb::acceptable_password("cut off \xe2\x82"));
 }
