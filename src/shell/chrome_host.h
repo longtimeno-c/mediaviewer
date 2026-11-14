@@ -344,6 +344,10 @@ enum class chrome_popup : std::int32_t {
   clip_tools = 7,    // PR 14; mode_mask carries clip flags (trim_state.h kClipFlag*)
   rename = 8,        // issue #210; mode_mask carries the folder index of the stop to rename
 };
+// chrome_popup::settings's mode_mask: bring Settings → Phone access into view
+// (docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row).
+// IslandHost.Settings.cs mirrors it.
+inline constexpr std::int32_t kSettingsRevealPhone = 1;
 
 struct chrome_popup_args {
   std::int32_t kind;       // chrome_popup

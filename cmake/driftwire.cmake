@@ -203,6 +203,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_self_host.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_host_tray.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_serve_owner.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_vpn.cpp"
@@ -308,6 +309,7 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/host_cmd.cpp ${_C}/host_cmd.h ${_C}/host_keepers.cpp ${_C}/host_keepers.h
   ${_C}/host_setup.cpp ${_C}/host_setup.h ${_C}/qr.cpp ${_C}/qr.h
   ${_S}/host_smb.cpp ${_S}/host_smb.h ${_C}/host_users.cpp ${_C}/host_users.h ${_C}/elevate.h
+  ${_C}/host_control.cpp ${_C}/host_control.h ${_C}/host_usage.cpp ${_C}/host_usage.h
   ${_C}/autostart.cpp ${_C}/autostart.h ${_C}/host_proc.h ${_C}/volume.h
   ${_C}/drives.cpp ${_C}/drives.h ${_C}/host_drives.cpp ${_C}/host_drives.h
   ${_C}/update.cpp ${_C}/update.h

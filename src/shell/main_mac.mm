@@ -69,6 +69,7 @@
 #include "io/in_flight.h"
 #include "io/verified_copy.h"
 #include "phone/app.h"
+#include "abi/host_tray_glue.h"
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
 #include "shell/filmstrip_hint.h"
@@ -1107,6 +1108,17 @@ extern "C" void mv_chrome_background_quit(void) {
 }
 extern "C" void mv_chrome_background_changed(void) {
   if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app backgroundChanged];
+}
+// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row.
+// The viewer's window comes back with Settings open at that section.
+extern "C" void mv_chrome_open_phone_settings(void) {
+  MvLabApp* app = (MvLabApp*)NSApp.delegate;
+  if (![app isKindOfClass:[MvLabApp class]]) return;
+  [app leaveBackground];
+  [app.window makeKeyAndOrderFront:nil];
+  [NSApp activateIgnoringOtherApps:YES];
+  [app setSettingsVisible:YES];
+  [MVChromeHost revealPhoneSettings];
 }
 // An add-on window is coming forward (a notification, the menu-bar item): the
 // app is a regular one again (Dock icon, menu bar) while it is on screen.
@@ -4075,6 +4087,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     if (MvClaimAddonHost()) {
       // Phone access (docs/plans/phone-in-the-app.md): this process runs it.
       mv::phone::resume_app(true);
+      // docs/plans/self-hosted.md "Tray": the host's rows in the menu-bar item
+      // while `driftwire host` runs (a soak or a harness run measures the viewer).
+      if (_options.soak_seconds <= 0.0 && !_options.harness) mv::abi::start_host_tray();
       MvAddonsStart(open_from_addon, nullptr);
       // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
       MvFcpStart();
@@ -11249,7 +11264,9 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 - (void)backgroundChanged {
   const bool kept = mv::addon::default_slots().keeping_alive();
   if (kept) _backgroundStart = false;
-  [self syncLoginItem:kept];
+  // docs/plans/self-hosted.md "Tray": also while the host starts at login,
+  // so the app is there to show its icon when it does.
+  [self syncLoginItem:mv::addon::default_slots().wants_login_item()];
   if (_inBackground) [self backgroundSettle];
 }
 
@@ -11275,6 +11292,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (!_backgroundStart || !_inBackground) return;
   _backgroundStart = false;
   if (mv::addon::default_slots().keeping_alive()) return;
+  // The host starts at login but is not running (quit, or not yet installed
+  // again): quit, keeping the login item for the next login ("Tray").
+  if (mv::addon::default_slots().wants_login_item()) {
+    [self quitFromBackground];
+    return;
+  }
 #if MV_APP_BUNDLE
   // An XPC call off the main thread; quit once it has answered.
   __weak MvLabApp* weakSelf = self;
@@ -16645,6 +16668,7 @@ static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #
   std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
   // Phone access lets go of Local search before its pack stops, and of the
   // NAS without waiting on it (phone/app.h).
+  mv::abi::stop_host_tray();  // never waits on a `host` verb in flight
   mv::phone::stop_app();
   // Add-on chromes shut down here, before their packs stop (below, off the
   // main thread): nothing may call a table whose add-on is gone. Nothing

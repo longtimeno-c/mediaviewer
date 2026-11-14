@@ -2175,6 +2175,19 @@ host (which still refuses elevation); and tests touch only disk images made for 
 refuses any other disk). Plan: [self-host-drives.md](../plans/self-host-drives.md). Reopen before
 adding any other erase, or RAID code of our own.
 
+**The app keeps itself, and starts at login, while the self-host does (owner, 2026-11-14; issue
+#686 §4, plan "Tray").** The owner asked for a tray / menu-bar icon while hosting "through the app's
+existing background icon code". So the icon is MediaViewer's own #452 background presence, never a
+second app or a tray in `driftwire host`: while the host runs (its `host.lock` held), the app's
+registry holds one kept entry of its own (`set_shell_keep`, "shell": true) that the hosts draw as a
+kept add-on's, and closing the viewer's window hides it to the icon; while the host's start-at-login
+entry is there, the app's own login item is wanted too (it starts hidden, as #452's does), so the
+icon is there after a login with no window opened. The app runs the host's own `pause`, `resume`
+and `quit` (owner-only, through `host.json`; no socket). Reopen if the cost of MediaViewer hidden
+at every login while hosting is too much (then the icon appears only once the app is opened), or
+when Phone access becomes an add-on (#686 §1), which takes this entry over with `keep_alive` /
+`keep_menu`.
+
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
 anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,

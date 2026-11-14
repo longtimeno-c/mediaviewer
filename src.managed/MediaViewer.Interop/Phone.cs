@@ -26,6 +26,20 @@ public static partial class PhoneNative
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     private static partial MvStatus mv_phone_resume(uint flags);
 
+    [LibraryImport(NativeMethods.Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    private static partial MvStatus mv_host_tray_start();
+
+    /// <summary>
+    /// docs/plans/self-hosted.md "Tray": the first window's process shows the server menu
+    /// while driftwire host runs (its own pair: Phone access's resume moves into an add-on).
+    /// </summary>
+    public static void StartHostTray()
+    {
+        try { _ = mv_host_tray_start(); }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException) { }
+    }
+
     /// <summary>At launch: this window's process runs Phone access (the first window), or not.</summary>
     public static void Resume(bool primary)
     {

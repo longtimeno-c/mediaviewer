@@ -4,6 +4,8 @@
 // driftwire program.
 #include "phone/self_host.h"
 
+#include "phone/host_tray.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -196,7 +198,7 @@ where find() {
 }
 
 std::optional<running_state> parse_state(std::string_view text) {
-  const auto doc = json::parse(text, 4);
+  const auto doc = json::parse(text, 6);
   if (!doc || doc->k != json::kind::object) return std::nullopt;
   running_state s;
   s.pid = doc->integer("pid").value_or(0);
@@ -214,6 +216,62 @@ std::optional<running_state> parse_state(std::string_view text) {
   if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
     for (const auto& line : k->a) {
       if (line.k == json::kind::string && !line.s.empty()) s.keepers.push_back(tidy_keeper_line(line.s));
+    }
+  }
+  s.paused = doc->boolean("paused").value_or(false);
+  s.tls_failed = doc->boolean("tls_failed").value_or(false);
+  const auto count = [](const json::value& v, const char* k) {
+    const auto n = v.integer(k).value_or(0);
+    return n > 0 ? static_cast<std::uint64_t>(n) : std::uint64_t{0};
+  };
+  if (const json::value* c = doc->find("clients"); c && c->k == json::kind::array) {
+    for (const auto& v : c->a) {
+      if (v.k != json::kind::object || s.clients.size() >= 64) continue;
+      const std::string* name = v.str("name");
+      if (!name || name->empty()) continue;
+      running_state::client cl;
+      cl.name = *name;
+      const std::string* via = v.str("via");
+      cl.via = via && (*via == "home" || *via == "relay") ? *via : std::string("internet");
+      cl.since = v.integer("since").value_or(0);
+      cl.read = count(v, "read");
+      cl.written = count(v, "written");
+      cl.read_rate = count(v, "read_rate");
+      cl.write_rate = count(v, "write_rate");
+      s.clients.push_back(std::move(cl));
+    }
+  }
+  if (const json::value* u = doc->find("usage"); u && u->k == json::kind::object) {
+    if (const std::string* day = u->str("day")) s.day = *day;
+    s.read_today = count(*u, "read");
+    s.written_today = count(*u, "written");
+    s.read_rate = count(*u, "read_rate");
+    s.write_rate = count(*u, "write_rate");
+    if (const json::value* d = u->find("devices"); d && d->k == json::kind::array) {
+      for (const auto& v : d->a) {
+        const std::string* name = v.k == json::kind::object ? v.str("name") : nullptr;
+        if (name && !name->empty() && s.devices_today.size() < 16) {
+          s.devices_today.push_back({*name, count(v, "read"), count(v, "written")});
+        }
+      }
+    }
+  }
+  if (doc->find("drives_sets")) s.drives_health = static_cast<int>(doc->integer("drives_health").value_or(-1));
+  if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
+    for (const auto& line : k->a) {
+      if (line.k != json::kind::string || !line.s.starts_with("drives ")) continue;
+      // The keeper's column, then a set per line.
+      std::string_view rest(line.s);
+      std::size_t at = 0;
+      while (at < rest.size() && s.drive_lines.size() < 8) {
+        const auto end = rest.find('\n', at);
+        std::string part = trim(rest.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at));
+        if (at == 0) part = trim(part.substr(std::string_view("drives").size()));
+        if (const auto semi = part.find(';'); semi != std::string::npos) part.resize(semi);
+        if (!part.empty()) s.drive_lines.push_back(part);
+        if (end == std::string_view::npos) break;
+        at = end + 1;
+      }
     }
   }
   return s;
@@ -282,6 +340,8 @@ host_status read_status(const where& w) {
       if (st->folders) s.folders = st->folders;
       s.offline = st->offline;
       s.keepers = st->keepers;
+      s.paused = st->paused;
+      s.stats = host_tray::usage_lines(*st);
     }
   }
   return s;

@@ -1603,3 +1603,35 @@ TEST_CASE("serve: every session hears the server's drives' health in its caps", 
   }
   CHECK(s.open_client()->caps().storage.empty());
 }
+
+TEST_CASE("serve: the devices with a session up now (the tray names them)", "[driftwire-serve][host-tray]") {
+  // docs/plans/self-hosted.md "Tray": the host's menu names the phones connected.
+  service_fixture s;
+  CHECK(s.srv->connected_devices().empty());
+  auto c = s.open_client();
+  REQUIRE(c->roots());
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), s.device.data());
+  REQUIRE(eventually([&] { return s.srv->connected_devices().size() == 1; }));
+  CHECK(s.srv->connected_devices().front() == pub);
+  // Its file bytes, counted per device, with how and since when.
+  write_file(s.library / "u.bin", marker(0, 50000));
+  auto r = c->read_range(kRootA, "u.bin", 0, 50000);
+  REQUIRE(r);
+  CHECK(read_all(**r).size() == 50000);
+  auto u = s.srv->usage();
+  REQUIRE(u.size() == 1);
+  CHECK(u[0].device == pub);
+  CHECK(u[0].read == 50000);
+  CHECK(u[0].written == 0);
+  CHECK(u[0].connected);
+  CHECK(u[0].since_unix > 0);
+  CHECK(u[0].via != serve::server::usage_via::relay);
+  c->close();
+  CHECK(eventually([&] { return s.srv->connected_devices().empty(); }));
+  // Ended, its bytes stay counted (once the session is reaped).
+  CHECK(eventually([&] {
+    const auto after = s.srv->usage();
+    return after.size() == 1 && after[0].read == 50000 && !after[0].connected;
+  }));
+}

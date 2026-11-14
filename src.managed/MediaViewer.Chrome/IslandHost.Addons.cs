@@ -284,6 +284,7 @@ public static partial class IslandHost
         // Phone access (docs/plans/phone-in-the-app.md): this window's process runs
         // it; a library set up before carries on with no card open.
         PhoneNative.Resume(primary: true);
+        PhoneNative.StartHostTray();  // "Tray": the server menu, the first window's alone
         MediaViewerSession session = _folderSession;
         _ = Task.Run(() =>
         {

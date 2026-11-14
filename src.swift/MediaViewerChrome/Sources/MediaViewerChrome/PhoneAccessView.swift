@@ -30,6 +30,26 @@ enum PhoneQR {
   }
 }
 
+/// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings
+/// row opens Settings at this section. Its own small store (as
+/// PhotosBackupStore's reveal), so Settings does not redraw on every phone
+/// state change; `pending` carries a request made before the page appeared.
+@MainActor
+final class PhoneReveal: ObservableObject {
+  static let shared = PhoneReveal()
+  static let anchor = "phone-access-section"
+  @Published private(set) var requests = 0
+  private var pending = false
+  func reveal() {
+    pending = true
+    requests += 1
+  }
+  func take() -> Bool {
+    defer { pending = false }
+    return pending
+  }
+}
+
 @MainActor
 final class PhoneStore: ObservableObject {
   static let shared = PhoneStore()
@@ -82,6 +102,10 @@ final class PhoneStore: ObservableObject {
     var name = ""
     var duckdns = ""
     var keepers: [String] = []  // the router's and DuckDNS's lines, as the host wrote them
+    /// docs/plans/self-hosted.md "Tray": hosting turned off, and today's usage and
+    /// the phones connected in the menu-bar item's words (the core's).
+    var paused = false
+    var stats: [String] = []
   }
   struct State: Equatable {
     var host: Host?
@@ -244,6 +268,8 @@ final class PhoneStore: ObservableObject {
       host.name = h["name"] as? String ?? ""
       host.duckdns = h["duckdns"] as? String ?? ""
       host.keepers = h["keepers"] as? [String] ?? []
+      host.paused = h["paused"] as? Bool ?? false
+      host.stats = h["stats"] as? [String] ?? []
       s.host = host
     }
     s.hostStep = o["host_step"] as? String ?? ""
@@ -487,11 +513,13 @@ final class PhoneStore: ObservableObject {
       return h.atLogin ? "Not running. It starts when you log in; Start runs it now."
                        : "Not running, and not set to start at login. Start runs it and keeps it starting at login."
     }
-    var parts = ["Running"]
-    if h.servicePort > 0 { parts.append("port \(h.servicePort)") } else { parts.append("not listening yet") }
+    var parts = [h.paused ? "Running, hosting off" : "Running"]
+    if h.paused {
+    } else if h.servicePort > 0 { parts.append("port \(h.servicePort)") } else { parts.append("not listening yet") }
     if !h.duckdns.isEmpty { parts.append("\(h.duckdns).duckdns.org") }
     if h.offline > 0 { parts.append(h.offline == 1 ? "1 drive not connected" : "\(h.offline) drives not connected") }
     var line = parts.joined(separator: " · ")
+    if !h.stats.isEmpty { line += "\n" + h.stats.joined(separator: "\n") }
     if !h.keepers.isEmpty { line += "\n" + h.keepers.joined(separator: "\n") }
     return line
   }

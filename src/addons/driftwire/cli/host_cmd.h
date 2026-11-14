@@ -22,6 +22,8 @@
 //   driftwire host pair             a phone's pairing QR in the terminal
 //   driftwire host vpn on [--tls-port N] | off   the Tunnel/VPN exit (slice 7);
 //                                   `on` prints the relay line for the laptop
+//   driftwire host pause | resume | quit   the tray's control (host_control.h):
+//                                   written to host.json, taken within 2 s
 //
 // Its folder is <data dir>/host (0700): host.json (its settings), serve/ (the
 // service's serve.json and secrets, as `driftwire serve --data` keeps them),
@@ -70,6 +72,8 @@ inline constexpr int kHostConfigEveryMs = 2000;           // serve.json and host
 inline constexpr int kHostRootsEveryMs = 60000;           // each folder's drive looked at
 inline constexpr int kHostUpdateEveryMs = 60000;          // the program looked at, for an update
 inline constexpr int kHostChildCannotRun = 3;             // the child's exit: no use trying again
+inline constexpr const char* kHostSinceEnv = "DRIFTWIRE_HOST_SINCE_MS";  // the supervisor's start, for its child
+inline constexpr int kHostChildQuit = 4;                  // the child's exit: `host quit` asked; the supervisor stops
 inline constexpr const char* kHostReason = "Driftwire is hosting your server";
 
 // host.json.
@@ -81,6 +85,9 @@ struct host_settings {
   std::int64_t ddns_stamp = 0;       // when the name or its token was last set: a running host takes them again
   std::uint16_t tls_port = 0;        // the relay's web-site look with the VPN on (0: none; `--tls-port`)
   std::string library_id;            // the host library's id (`host pair`; "": none made yet)
+  // The tray's control (docs/plans/self-hosted.md "Tray"; `host pause|resume|quit`):
+  bool paused = false;               // nothing served, no relay, no stay-awake; kept until resumed
+  std::int64_t quit_stamp = 0;       // unix ms of the last `host quit`: a host started before it stops
 };
 [[nodiscard]] std::optional<host_settings> parse_host_settings(std::string_view json);
 [[nodiscard]] std::string host_settings_json(const host_settings& s);
@@ -133,6 +140,10 @@ struct host_service_options {
   std::function<bool(const serve::root_config&)> present;
   std::function<std::optional<std::string>(const serve::root_config&)> locate;
   keeper_factories keepers;
+  // A `host quit` stamped at or after this (unix ms) stops the service; 0: when
+  // it started. The supervisor gives its own start (kHostSinceEnv), so a quit
+  // between its restart check and the child's start is not missed.
+  std::int64_t quit_since_ms = 0;
   // The tests: the relay's options last (forward to a loopback echo server).
   std::function<void(relay::server::options&)> relay_tweak;
 };
@@ -145,6 +156,24 @@ struct host_snapshot {
   bool vpn = false;
   bool awake = false;  // the request to stay awake is held
   std::size_t folders = 0, offline = 0;
+  bool paused = false;
+  // "Tray": the phones connected now, by the paired list's names ("A phone"
+  // for one not on it), how (home network, over the internet, through the
+  // relay), since when, and today's bytes and the rate now. Never an address.
+  struct client {
+    std::string name, via;  // via: "home", "internet", "relay"
+    std::int64_t since = 0; // unix seconds
+    std::uint64_t read = 0, written = 0, read_rate = 0, write_rate = 0;
+  };
+  std::vector<client> clients;
+  // Today's (the computer's date) bytes in all, the rate now, and per device by name.
+  struct day_device {
+    std::string name;
+    std::uint64_t read = 0, written = 0;
+  };
+  std::string day;
+  std::uint64_t read_today = 0, written_today = 0, read_rate = 0, write_rate = 0;
+  std::vector<day_device> devices_today;
 };
 
 class host_service {
@@ -157,6 +186,8 @@ class host_service {
   host_service& operator=(const host_service&) = delete;
 
   [[nodiscard]] host_snapshot snapshot() const;
+  // A `host quit` written after this service started: the child ends with kHostChildQuit.
+  [[nodiscard]] bool quit_asked() const noexcept;
   // One pass of the loop now (the files, the drives, the retries): the tests.
   void recheck_now();
   void stop() noexcept;

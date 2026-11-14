@@ -56,7 +56,8 @@ enum class host_action : std::uint8_t { run, child, share, unshare, status, star
                                         // The LAN share's users (docs/plans/self-host-users-smb.md): `host users …`, and
                                         // the elevated step it starts (`host smb-apply`, never typed).
                                         users, smb_apply,
-                                        drives };
+                                        drives,
+                                        pause, resume, quit };  // the last three: host_control.h (the tray)
 
 struct args {
   command cmd = command::session;
@@ -81,6 +82,7 @@ struct args {
   std::string host_path;  // host share: the folder, as given
   std::string label;      // host share --label; host unshare: the label
   bool backup = false;    // host share --backup
+  bool watch = false;     // host status --watch (the tray's numbers, live)
   bool on = false;        // host start-at-login / stay-awake / vpn: on or off; host name: duckdns (true) or none
   std::uint16_t tls_port = 0;  // host vpn on --tls-port N: the relay's web-site look (0: none)
   // host users / smb-apply (host_users.h checks them): the words after the action,

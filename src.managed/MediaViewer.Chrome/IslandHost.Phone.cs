@@ -65,9 +65,42 @@ public static partial class IslandHost
     private static FakeInput? _phoneDuckName, _phoneDuckToken;
     private static Button? _phoneHostGo;
 
+    // docs/plans/self-hosted.md "Tray": the host's Open Phone access settings
+    // row opens Settings here (src/shell/chrome_host.h kSettingsRevealPhone).
+    private const int SettingsRevealPhone = 1;
+    private static bool _phoneRevealWanted;
+    private static TextBlock? _phoneSection;
+
+    private static void RevealPhoneSettings()
+    {
+        _phoneRevealWanted = false;
+        if (_addonPage.Length > 0) CloseAddonPage();  // Phone access is on the list
+        // After layout: a page built this tick has no place to scroll to yet.
+        void Bring()
+        {
+            try
+            {
+                _phoneSection?.StartBringIntoView(new BringIntoViewOptions
+                {
+                    VerticalAlignmentRatio = 0.0,
+                    AnimationDesired = false,
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+            }
+        }
+        if (_dispatcher is not null)
+            _dispatcher.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Bring);
+        else
+            Bring();
+    }
+
     private static void AddPhoneSettings(StackPanel view)
     {
-        view.Children.Add(SettingsSection("Phone access"));
+        _phoneSection = SettingsSection("Phone access");
+        view.Children.Add(_phoneSection);
         _phoneRows = new StackPanel { Spacing = Space(8) };
         view.Children.Add(_phoneRows);
         _phoneLocal = PhoneInput("server.local:7878", "Address on your network");

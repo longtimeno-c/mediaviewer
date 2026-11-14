@@ -164,6 +164,24 @@ public class PhoneWordsTests
     }
 
     [Fact]
+    public void TheCardSaysTheTraysUsageAndPhones()
+    {
+        // docs/plans/self-hosted.md "Tray": the core's lines, appended as the Mac does.
+        PhoneLinkState s = PhoneWords.ParseLink("""
+            {"host":{"installed":true,"set_up":true,"running":true,"at_login":true,"service_port":7878,"folders":1,
+                     "duckdns":"home","paused":false,
+                     "stats":["Today: 3.4 GB read, 120 MB written","Ann's iPhone · home network since 14:02"],"keepers":[]}}
+            """)!;
+        Assert.Equal("Running · port 7878 · home.duckdns.org\nToday: 3.4 GB read, 120 MB written\nAnn's iPhone · home network since 14:02",
+                     PhoneWords.HostDetail(s.Host!));
+        PhoneLinkState off = PhoneWords.ParseLink("""
+            {"host":{"installed":true,"set_up":true,"running":true,"paused":true,"service_port":0,"stats":[],"keepers":[]}}
+            """)!;
+        Assert.Equal("Running, hosting off", PhoneWords.HostDetail(off.Host!));
+        Assert.Contains("\"Running, hosting off\"", Repo.Read("src.swift", "MediaViewerChrome", "Sources", "MediaViewerChrome", "PhoneAccessView.swift"));
+    }
+
+    [Fact]
     public void TheHostIsReadAndTheSetupAskedForInOneRequest()
     {
         PhoneLinkState s = PhoneWords.ParseLink("""
