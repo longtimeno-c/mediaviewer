@@ -181,6 +181,7 @@ struct library::server_rt {
   std::unique_ptr<mobile::link_session> link;
   std::atomic<reach> state{reach::unknown};
   std::atomic<std::int64_t> failed_at_ms{0};
+  std::atomic<int> role{0};  // role_code: 0 not known this run
 
   ~server_rt() {
     sodium_memzero(device_key.data(), device_key.size());
@@ -396,6 +397,9 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   c.access_key = s->access_key;
   c.device_key = s->device_key;
   c.device_name = cfg_.device_name;
+  // Paired as a desktop, so the service starts it as "can view files" (owner call 1), never as a
+  // phone that may back up (docs/plans/self-host-users-smb.md §9).
+  c.device_kind = driftwire::serve::kDeviceDesktop;
   c.loopback_only = cfg_.loopback_only;
   mobile::route_report report;
   if (auto done = mobile::pair_device(c, p->code, report, cancel, cfg_.connect_timeout_ms); !done) {
@@ -448,11 +452,31 @@ expected library::forget(std::string_view server_id) {
   return {};
 }
 
+namespace {
+
+// The caps' role word as a small number, so a server keeps it in an atomic.
+int role_code(std::string_view w) noexcept {
+  if (w == "view") return 1;
+  if (w == "change") return 2;
+  if (w == "admin") return 3;
+  return 0;
+}
+const char* role_word(int c) noexcept {
+  switch (c) {
+    case 1: return "view";
+    case 2: return "change";
+    case 3: return "admin";
+    default: return "";
+  }
+}
+
+}  // namespace
+
 std::vector<server_info> library::servers() const {
   std::vector<server_info> out;
   std::lock_guard lock(m_);
   out.reserve(servers_.size());
-  for (const auto& [id, s] : servers_) out.push_back({id, s->name, s->state.load(), s->paired_unix});
+  for (const auto& [id, s] : servers_) out.push_back({id, s->name, s->state.load(), s->paired_unix, role_word(s->role.load())});
   std::sort(out.begin(), out.end(), [](const server_info& a, const server_info& b) { return less_name(a.name, b.name); });
   return out;
 }
@@ -460,7 +484,7 @@ std::vector<server_info> library::servers() const {
 std::optional<server_info> library::server(std::string_view id) const {
   auto s = find(id);
   if (!s) return std::nullopt;
-  return server_info{s->id, s->name, s->state.load(), s->paired_unix};
+  return server_info{s->id, s->name, s->state.load(), s->paired_unix, role_word(s->role.load())};
 }
 
 std::shared_ptr<library::server_rt> library::find(std::string_view id) const {
@@ -497,6 +521,10 @@ expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* 
   mobile::route_report report;
   auto done = s.link->connect(report, cancel, cfg_.connect_timeout_ms);
   if (done) {
+    std::string word;
+    if (s.link->role(word) >= 0 && s.role.exchange(role_code(word)) != role_code(word)) {
+      gen_.fetch_add(1, std::memory_order_acq_rel);  // the rows say what it may do
+    }
     set_state(s, reach::online);
     return {};
   }

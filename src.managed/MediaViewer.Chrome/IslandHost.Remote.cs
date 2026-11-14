@@ -99,6 +99,16 @@ public static partial class IslandHost
         _ => "",
     };
 
+    // The role the server gave this PC (#686 §2), said only while nothing is wrong.
+    // The same words as the Mac's RemoteServer.roleWords.
+    internal static string RemoteRoleWords(string role) => role switch
+    {
+        "view" => "View only",
+        "change" => "Can change files",
+        "admin" => "Admin",
+        _ => "",
+    };
+
     // The rows as the core lists them; only a new generation rebuilds anything, and a
     // row that stays keeps its node (its expansion and listed folders).
     private static void SyncRemoteRows()
@@ -107,7 +117,7 @@ public static partial class IslandHost
         ulong gen = RemoteNative.Generation();
         if (gen == _remoteGen) return;
         _remoteGen = gen;
-        var rows = new List<(string Name, string Key, string State)>();
+        var rows = new List<(string Name, string Key, string State, string Role)>();
         try
         {
             using JsonDocument doc = JsonDocument.Parse(RemoteNative.ServersJson());
@@ -116,7 +126,8 @@ public static partial class IslandHost
                 string name = e.GetProperty("name").GetString() ?? "";
                 string key = e.GetProperty("key").GetString() ?? "";
                 string state = e.GetProperty("state").GetString() ?? "";
-                if (IsRemoteKey(key)) rows.Add((name, key, state));
+                string role = e.TryGetProperty("role", out JsonElement r) ? r.GetString() ?? "" : "";
+                if (IsRemoteKey(key)) rows.Add((name, key, state, role));
             }
         }
         catch (JsonException) { return; }
@@ -125,9 +136,10 @@ public static partial class IslandHost
         _remoteRows.Children.Clear();
         var keep = new HashSet<string>(rows.Select(r => r.Key), StringComparer.Ordinal);
         foreach (string gone in _remoteNodes.Keys.Where(k => !keep.Contains(k)).ToList()) _remoteNodes.Remove(gone);
-        foreach (var (name, key, state) in rows)
+        foreach (var (name, key, state, role) in rows)
         {
             string note = RemoteNote(state);
+            if (note.Length == 0) note = RemoteRoleWords(role);
             string label = note.Length == 0 ? name : name + " · " + note;
             if (!_remoteNodes.TryGetValue(key, out TreeNodeUi? node) || node.Label != label)
             {

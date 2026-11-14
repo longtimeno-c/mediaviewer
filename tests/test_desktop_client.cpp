@@ -267,7 +267,13 @@ TEST_CASE("a desktop pairs from the code alone and is listed with the phones", "
   // A relaunch finds it again, with its keys from the OS store.
   d.relaunch();
   REQUIRE(d.lib->servers().size() == 1);
+  CHECK(d.lib->servers()[0].role.empty());  // not known until it has answered this run
   CHECK(d.lib->list(rm::server_key(*id)));
+  // It paired as a desktop, so the service gives it "view" (owner call 1), never a phone's
+  // "change" that may back up (#686 §2); the rows say so.
+  CHECK(d.lib->servers()[0].role == "view");
+  REQUIRE(d.lib->server(*id));
+  CHECK(d.lib->server(*id)->role == "view");
 }
 
 TEST_CASE("the host's folders list as remote keys, the Catalogue hidden", "[desktop-client]") {

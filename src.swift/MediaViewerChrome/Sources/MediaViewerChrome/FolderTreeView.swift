@@ -150,6 +150,7 @@ final class FolderTreeStore: ObservableObject {
         servers = rows.map { r in
           let s = old[r.key] ?? RemoteServer(name: r.name, key: r.key)
           s.state = r.state
+          s.role = r.role
           return s
         }
       }
@@ -193,7 +194,9 @@ final class FolderTreeStore: ObservableObject {
     }
     return String(cString: buf).split(separator: "\n").compactMap { line in
       let f = line.split(separator: "\t", omittingEmptySubsequences: false)
-      return f.count == 3 ? RemoteServer.Plain(name: String(f[0]), key: String(f[1]), state: String(f[2])) : nil
+      guard f.count >= 3 else { return nil }
+      return RemoteServer.Plain(name: String(f[0]), key: String(f[1]), state: String(f[2]),
+                                role: f.count >= 4 ? String(f[3]) : "")
     }
   }
 
@@ -223,13 +226,16 @@ final class RemoteServer: ObservableObject, Identifiable {
     let name: String
     let key: String
     let state: String
+    var role = ""
   }
   let name: String
   let key: String
   let node: TreeNode
   @Published var state = "unknown"
+  /// What the server lets this Mac do ("view", "change", "admin"; "" not known yet).
+  @Published var role = ""
   nonisolated var id: String { key }
-  var plain: Plain { Plain(name: name, key: key, state: state) }
+  var plain: Plain { Plain(name: name, key: key, state: state, role: role) }
 
   init(name: String, key: String) {
     self.name = name
@@ -244,6 +250,16 @@ final class RemoteServer: ObservableObject, Identifiable {
     case "access_ended": return "Access ended"
     case "wrong_service": return "Not the paired server"
     case "too_old": return "Needs an update"
+    default: return RemoteServer.roleWords(role)
+    }
+  }
+
+  /// The role the server gave this Mac (#686 §2), said only while nothing is wrong.
+  static func roleWords(_ role: String) -> String? {
+    switch role {
+    case "view": return "View only"
+    case "change": return "Can change files"
+    case "admin": return "Admin"
     default: return nil
     }
   }

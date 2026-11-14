@@ -1855,7 +1855,8 @@ extern "C" int32_t mv_chrome_remote_servers(char* buf, int32_t size) {
   std::string out;
   if (lib) {
     for (const auto& s : lib->servers()) {
-      out += MvFlat(s.name) + "\t" + mv::remote::server_key(s.id) + "\t" + mv::remote::reach_name(s.state) + "\n";
+      out += MvFlat(s.name) + "\t" + mv::remote::server_key(s.id) + "\t" + mv::remote::reach_name(s.state) + "\t" +
+             s.role + "\n";
     }
   }
   return MvCopyOut(out, buf, size);
