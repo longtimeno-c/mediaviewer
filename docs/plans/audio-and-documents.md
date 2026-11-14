@@ -12,8 +12,7 @@ All slices are built and on review branches, stacked in order: docs and the plan
 the new types are Open With only and never made the default (owner, 2026-10-03); PDF uses the
 OS renderers (§2.4, recommended); DOCX is drawn by our own layout (§2.5 option C), because B
 (LibreOffice) is a 300 MB download and A breaks the single-canvas rule. Slice 4 (preview only)
-is folded into slice 5: the thumbnail is page 1 of the real layout. What is measured and what is
-owed is in `docs/DEVELOPMENT.md`, "Where this actually is". When these land, fold §2 into
+is folded into slice 5: the thumbnail is page 1 of the real layout. When these land, fold §2 into
 `docs/design/` (04, 05) and retire this file.
 
 ## 0. Before any code: the scope change
