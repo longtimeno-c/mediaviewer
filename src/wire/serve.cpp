@@ -686,6 +686,22 @@ class session_state {
     return e == status::permission_denied ? end_code::refused : end_code::not_found;
   }
 
+  // Whether a named folder is there now. Asked for `roots`, and after a
+  // request on it failed, never before one: a working request costs nothing.
+  static bool root_online(const root_config& root) {
+    auto st = io::stat_beneath(root.path, "");
+    return st && st->is_directory;
+  }
+
+  // A request on `root` failed with `e`: said as offline when its folder is
+  // gone (a drive unplugged), so the phone can say so instead of "not found".
+  bool send_failed(std::uint32_t id, const root_config& root, status e) {
+    if (e != status::permission_denied && !root_online(root)) {
+      return send_end(id, end_code::not_found, why_json(kWhyOffline));
+    }
+    return send_end(id, end_for(e));
+  }
+
   bool send_end(std::uint32_t id, end_code code, std::string_view json = {}) {
     return send_(msg::stream_end, encode_end(id, code, json));
   }
@@ -718,6 +734,7 @@ class session_state {
         root_info info{c.id, c.label};
         info.backup = c.backup;
         info.writable = c.backup && may_write(c);
+        info.offline = !root_online(c);
         out.push_back(std::move(info));
       }
       return send_end(r.id, end_code::ok, roots_json(out));
@@ -732,7 +749,7 @@ class session_state {
     if (r.kind == op::read_range && rel.empty()) return send_end(r.id, end_code::refused);
     if (r.kind == op::stat) {
       auto st = io::stat_beneath(root->path, rel);
-      if (!st) return send_end(r.id, end_for(st.error()));
+      if (!st) return send_failed(r.id, *root, st.error());
       stat_info info{st->size, st->mtime_unix, st->is_directory};
       if (root->backup && rel.empty() && may_write(*root)) book_->space(*root, info);
       return send_end(r.id, end_code::ok, stat_json(info));
@@ -752,7 +769,7 @@ class session_state {
       }
       if (held >= kMaxListBytes) return send_end(r.id, end_code::too_many);  // no lock across a send
       auto children = io::list_beneath(root->path, rel, true);
-      if (!children) return send_end(r.id, end_for(children.error()));
+      if (!children) return send_failed(r.id, *root, children.error());
       for (const auto& c : *children) {
         if (!safe_relative(c.name)) continue;  // a hidden name, or one no peer may ask for
         if (s->body.size() >= kMaxListBytes) {
@@ -763,7 +780,7 @@ class session_state {
         ++s->count;
       }
     } else {
-      if (auto opened = s->reader.open_beneath(root->path, rel); !opened) return send_end(r.id, end_for(opened.error()));
+      if (auto opened = s->reader.open_beneath(root->path, rel); !opened) return send_failed(r.id, *root, opened.error());
       const std::uint64_t size = s->reader.size();
       s->at = std::min(r.at, size);
       s->remaining = std::min(r.length, size - s->at);
@@ -832,8 +849,11 @@ class session_state {
       }
       rel_dir = std::string(kBackupMetaFolder) + "/" + device_id_;
     }
+    // At the folder's top there is no walk to fail, so its drive is looked
+    // at here (one stat, as the walk's own open of the folder would be).
+    if (rel_dir.empty() && !root_online(root)) return send_end(r.id, end_code::not_found, why_json(kWhyOffline));
     auto dir = rel_dir.empty() ? result<std::string>(root.path) : io::make_directories_beneath(root.path, rel_dir);
-    if (!dir) return send_end(r.id, end_for(dir.error()));
+    if (!dir) return send_failed(r.id, root, dir.error());
     if (!r.meta) {
       // Already there under this name or a numbered one: nothing to send.
       if (const auto found = backup::find_existing(*dir, name, r.size, r.hash, book_)) {

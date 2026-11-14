@@ -738,6 +738,64 @@ TEST_CASE("serve: a path outside the named folders is refused", "[driftwire-serv
   CHECK(read_all(**ok) == "inside");
 }
 
+TEST_CASE("serve: a named folder whose drive is gone is listed offline, and comes back", "[driftwire-serve]") {
+  service_fixture s;
+  write_file(s.other / "a.txt", "on the drive");
+  auto c = s.open_client();
+  const auto offline = [&](const std::string& id) {
+    auto roots = c->roots();
+    REQUIRE(roots);
+    for (const auto& r : *roots) {
+      if (r.id == id) return r.offline;
+    }
+    FAIL("no such root");
+    return false;
+  };
+  CHECK_FALSE(offline(kRootA));
+  CHECK_FALSE(offline(kRootB));
+
+  // The drive unplugged: its folder is not there. The session goes on.
+  const fs::path away = s.dir.root() / "unplugged";
+  fs::rename(s.other, away);
+  CHECK(offline(kRootB));
+  CHECK_FALSE(offline(kRootA));
+  serve::end_code code = serve::end_code::ok;
+  CHECK_FALSE(c->list(kRootB, "", &code));
+  CHECK(code == serve::end_code::not_found);
+  code = serve::end_code::ok;
+  CHECK_FALSE(c->stat(kRootB, "a.txt", &code));
+  CHECK(code == serve::end_code::not_found);
+  auto gone = c->read_range(kRootB, "a.txt", 0, 100);
+  REQUIRE(gone);
+  CHECK(read_all(**gone).empty());
+  CHECK((*gone)->code() == serve::end_code::not_found);
+  CHECK_FALSE(c->closed());
+
+  // Plugged back in: the same session reads it again.
+  fs::rename(away, s.other);
+  CHECK_FALSE(offline(kRootB));
+  auto back = c->read_range(kRootB, "a.txt", 0, 100);
+  REQUIRE(back);
+  CHECK(read_all(**back) == "on the drive");
+}
+
+TEST_CASE("serve: the roots list says offline only when it is", "[driftwire-serve]") {
+  std::vector<serve::root_info> roots(2);
+  roots[0].id = "a1a1a1a1a1a1a1a1";
+  roots[0].label = "Photos";
+  roots[1].id = "b2b2b2b2b2b2b2b2";
+  roots[1].label = "Drive";
+  roots[1].offline = true;
+  const std::string text = serve::roots_json(roots);
+  // A root that is there reads exactly as before, for an older phone.
+  CHECK(text.find("\"offline\"") == text.rfind("\"offline\""));
+  auto back = serve::parse_roots(text);
+  REQUIRE(back);
+  REQUIRE(back->size() == 2);
+  CHECK_FALSE((*back)[0].offline);
+  CHECK((*back)[1].offline);
+}
+
 #if !defined(_WIN32)
 TEST_CASE("serve: a folder swapped for a link during a read never serves outside bytes", "[driftwire-serve]") {
   service_fixture s;

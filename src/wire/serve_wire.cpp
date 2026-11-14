@@ -298,6 +298,7 @@ std::string roots_json(std::span<const root_info> roots) {
     w.begin_object().key("id").string(r.id).key("label").string(r.label);
     // Only on a backup folder, so a reader from before 1.1 sees exactly what it did.
     if (r.backup) w.key("backup").boolean(true).key("writable").boolean(r.writable);
+    if (r.offline) w.key("offline").boolean(true);
     w.end_object();
   }
   w.end_array().end_object();
@@ -317,6 +318,7 @@ std::optional<std::vector<root_info>> parse_roots(std::string_view text) {
     root_info info{*id, *label};
     info.backup = v.boolean("backup").value_or(false);
     info.writable = info.backup && v.boolean("writable").value_or(false);
+    info.offline = v.boolean("offline").value_or(false);
     out.push_back(std::move(info));
   }
   return out;

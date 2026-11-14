@@ -1560,6 +1560,12 @@ each folder of the walk open without share-delete, which stops it being renamed,
 handle-relative opens (which need the native NT calls). A folder is listed with its hidden and
 link entries left out.
 
+**A folder that is not there** (an external drive unplugged, a share not mounted;
+[self-hosted.md](../plans/self-hosted.md) §6): `roots` lists it with `"offline":true`, sent only then,
+and a request on it that fails ends `not_found` with `{"why":"offline"}`. The folder is looked at only
+for `roots`, before a write at its top, and after a request failed. The session is not ended; the folder serves again when it is
+back.
+
 **Rule 6.** The service prints its port and that it stopped, and counts totals (`server::stats`).
 No address, path or file name is ever logged.
 
@@ -1594,8 +1600,9 @@ it can still make the service do the first handshake steps (never a session, and
 a new key would stop that, and every other phone would need it too: rotating it is an **open
 decision for the owner**, not built.
 
-**As root it refuses to start** (except the test build): the keys would be root's and the service
-would run with more than the unprivileged user §7.2 asks for.
+**As root, or elevated on Windows, it refuses to start** (except the test build): the keys would be
+root's or the administrator's and the service would run with more than the unprivileged user §7.2
+asks for.
 
 **Tested only on loopback, on one Mac.** Every test here runs over `::1`: a 5 GB sparse file read
 and seeked past 4 GiB, silence and no KEM work without the key (and with a replayed hello), revoked

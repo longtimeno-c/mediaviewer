@@ -78,7 +78,10 @@ struct nas {
   std::mutex saved_m;
   std::unique_ptr<serve::server> srv;
 
-  nas() {
+  // `real_network`: the service decides what its own network is, as it does
+  // on a NAS or a PC (loopback is the same machine), instead of the test's switch.
+  bool real_network = false;
+  explicit nas(bool real = false) : real_network(real) {
     fs::create_directories(share);
     bool made = false;
     REQUIRE(serve::set_up(*store, identity, access, made));
@@ -93,7 +96,7 @@ struct nas {
     o.loopback_only = true;
     o.per_minute = 100000;
     o.claimable = true;
-    o.own_network = [this](const sp::net::address&) { return own.load(); };
+    if (!real_network) o.own_network = [this](const sp::net::address&) { return own.load(); };
     o.now_unix = [this] {
       const auto t = fake_now.load();
       return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
@@ -191,6 +194,18 @@ TEST_CASE("phone pairing: a desktop that can write the share claims the service"
   std::lock_guard lock(n.saved_m);
   REQUIRE(n.saved.size() == 1);
   CHECK(n.saved[0].roots.size() == 2);
+}
+
+TEST_CASE("phone pairing: a desktop on the same computer claims the service over loopback", "[phone-pairing]") {
+  // Self-hosting (docs/plans/self-hosted.md): the service and the desktop on
+  // one PC. The service's own rule for its network, not the test's, admits it.
+  nas n(true);
+  desktop pc("Home PC");
+  REQUIRE(pc.d->claim(utf8(n.share), n.local(), "home.duckdns.org:7878"));
+  const auto s = pc.d->service();
+  REQUIRE(s);
+  CHECK(s->identity == n.identity);
+  CHECK(n.store->exists(serve::kOwnerName));
 }
 
 TEST_CASE("phone pairing: a service is claimed once", "[phone-pairing]") {

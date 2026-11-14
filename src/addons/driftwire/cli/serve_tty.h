@@ -9,6 +9,11 @@ namespace mv::driftwire::cli {
 
 [[nodiscard]] bool serve_stdin_is_terminal();
 
+// Whether this process runs with more than an ordinary user's rights: root on
+// POSIX, an elevated token on Windows. The service refuses to run so (its keys
+// would be the administrator's, and it faces the internet).
+[[nodiscard]] bool serve_is_privileged();
+
 // Echo off on stdin for its lifetime when `hide` and stdin is a terminal;
 // active() says whether it was turned off (and a newline is owed).
 class serve_echo_off {

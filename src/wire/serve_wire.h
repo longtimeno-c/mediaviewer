@@ -126,6 +126,7 @@ inline constexpr const char* kWhyOffset = "offset";            // `at` is not wh
 inline constexpr const char* kWhyHash = "hash";                // what reached the disk is not what was sent
 inline constexpr const char* kWhyBusy = "busy";                // this device is already writing that name
 inline constexpr const char* kWhyName = "name";                // a name too long to keep beside its unfinished copy
+inline constexpr const char* kWhyOffline = "offline";          // the folder is not there now (a drive unplugged)
 inline constexpr std::size_t kMaxWriteName = 200;              // bytes of the last part of `rel`
 // The 16 hex digits a device's files are known by in a backup folder: its unfinished
 // copies and its ledger. The first 8 bytes of BLAKE2b-256 over its public key.
@@ -220,6 +221,10 @@ struct root_info {
   std::string label;
   bool backup = false;    // a backup folder (1.1)
   bool writable = false;  // and this device may write there
+  // Its folder is not there right now (an external drive unplugged, a share
+  // not mounted): listed so the phone keeps it, every request on it answers
+  // not_found with {"why":"offline"} until it is back. Sent only when true.
+  bool offline = false;
 };
 [[nodiscard]] std::string roots_json(std::span<const root_info> roots);
 [[nodiscard]] std::optional<std::vector<root_info>> parse_roots(std::string_view json);

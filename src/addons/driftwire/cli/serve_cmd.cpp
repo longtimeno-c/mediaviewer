@@ -664,9 +664,13 @@ int run_devices(secrets::store& store) {
 }  // namespace
 
 int run_serve(const args& a, bool test_hooks, const char* version) {
-#if !defined(_WIN32)
-  // It faces the internet, and its keys would then be root's: it runs as its own unprivileged user.
-  if (!test_hooks && ::geteuid() == 0) return fail("it must not run as root; run it as its own user.", 1);
+  // It faces the internet, and its keys would then be root's (or the
+  // administrator's): it runs as its own unprivileged user.
+#if defined(_WIN32)
+  if (!test_hooks && serve_is_privileged())
+    return fail("it must not run as administrator; run it from a terminal that is not elevated.", 1);
+#else
+  if (!test_hooks && serve_is_privileged()) return fail("it must not run as root; run it as its own user.", 1);
 #endif
   if (sodium_init() < 0) return fail("could not start its cryptography.", 1);
   const std::string data = data_folder(a);
