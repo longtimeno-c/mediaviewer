@@ -674,10 +674,10 @@ bool engine::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_t
   vpn::settings s;
   s.kill_switch = block;
   s.relay_name = field->at.substr(0, field->at.rfind(':'));
-  // Left out of the tunnel: the relay itself, and every local network.
-  if (const auto at = relay_endpoint(field->at)) {
-    if (const auto a = net::parse_address(at->address)) s.exclude.push_back(*a);
-  }
+  // Left out of the tunnel: the relay itself at every address it has, IPv4
+  // and IPv6 (the dialer may reach it at any), and every local network.
+  s.exclude = relay_addresses(field->at);
+  if (s.exclude.empty()) return proxy_mode();  // the relay's name did not resolve: routes would loop
   for (const auto& n : net::local_subnets()) {
     if (!net::is_public(n.base) || n.prefix >= 8) s.exclude_nets.push_back(n);
   }

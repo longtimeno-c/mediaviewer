@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/vpn.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <deque>
@@ -343,6 +344,67 @@ void runner::serve_udp(std::shared_ptr<udp_flow> u) {
   stream->shutdown();
   back.join();
   forget();
+}
+
+
+namespace {
+
+// `a` with every bit past `prefix` cleared.
+net::address masked(net::address a, int prefix) {
+  const int bits = a.v6 ? 128 : 32;
+  for (int i = 0; i < bits / 8; ++i) {
+    const int keep = std::clamp(prefix - i * 8, 0, 8);
+    a.bytes[static_cast<std::size_t>(i)] &= static_cast<std::uint8_t>(0xff00 >> keep);
+  }
+  return a;
+}
+
+bool holds(const net::subnet& n, const net::address& a) {
+  return n.base.v6 == a.v6 && masked(a, n.prefix) == n.base;
+}
+
+void add_once(std::vector<net::subnet>& to, net::subnet n) {
+  for (const auto& x : to) {
+    if (x.base == n.base && x.prefix == n.prefix) return;
+  }
+  to.push_back(n);
+}
+
+}  // namespace
+
+route_plan plan_routes(const settings& s, route_style style) {
+  route_plan p;
+  const auto at = [](const char* text, int prefix) { return net::subnet{*net::parse_address(text), prefix}; };
+  if (style == route_style::halves) {
+    p.include4 = {at("0.0.0.0", 1), at("128.0.0.0", 1)};
+    p.include6 = {at("::", 1), at("8000::", 1)};
+  } else {
+    p.include4 = {at("0.0.0.0", 0)};
+    p.include6 = {at("::", 0)};
+  }
+  // The tunnel's own addresses: never left out of it.
+  std::vector<net::address> ours;
+  for (const auto& t : {s.address4, s.dns4, s.address6}) {
+    if (const auto a = net::parse_address(t)) ours.push_back(*a);
+  }
+  const auto exclude = [&](net::address base, int prefix) {
+    const int bits = base.v6 ? 128 : 32;
+    if (prefix <= 0 || prefix > bits) return;
+    const net::subnet n{masked(base, prefix), prefix};
+    for (const auto& a : ours) {
+      if (holds(n, a)) return;
+    }
+    add_once(base.v6 ? p.exclude6 : p.exclude4, n);
+  };
+  for (const auto& a : s.exclude) exclude(a, a.v6 ? 128 : 32);
+  // An IPv6 network wider than a /48 is not a local one (a 6to4 or Teredo
+  // adapter's 2002::/16 or 2001::/32 would take a block of the internet
+  // around the tunnel).
+  for (const auto& n : s.exclude_nets) {
+    if (n.base.v6 && n.prefix < kMinLocalPrefix6) continue;
+    exclude(n.base, n.prefix);
+  }
+  return p;
 }
 
 }  // namespace mv::driftwire::vpn
