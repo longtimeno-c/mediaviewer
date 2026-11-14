@@ -1787,6 +1787,7 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     if (i != selected) submit_thumb_at(session, i);
   }
   bool shown_early = false;
+  bool loading = false;
   const mv::generation gen = session->jobs.current_generation();
   if (!selected_path.empty()) {
     // A file appearing beside the current one is not a reason to decode it
@@ -1795,10 +1796,15 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     if (!(changed && selected_path == previous_path)) {
       shown_early = !changed && full_decode_shown(session, selected_path);
       if (!shown_early) submit_decode_to_lru(session, selected_path, gen);
+      loading = true;
     }
     submit_prefetch(session, selected, gen);
   }
-  push_folder_selected(session, selected);
+  // The host reads FOLDER_SELECTED as "loading" until an IMAGE/VIDEO_OPENED.
+  // A folder of only subfolders, or a watcher refresh that keeps the item on
+  // screen, opens nothing, so saying it left the pulse running for good
+  // (2026-11-14). The reload's item flags carry the selection either way.
+  if (loading) push_folder_selected(session, selected);
   // After the selection, which the host reads as "loading": the early decode
   // reported its image before there was a listing to select it in.
   if (shown_early) push_image_opened(session, mv::abi::current_correlation_id(), gen, status::ok);

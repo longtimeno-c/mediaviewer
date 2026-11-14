@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cwchar>
@@ -99,7 +100,86 @@ bool wait_kind(mv_session_t s, mv_completion_kind kind, mv_completion* out) {
   return false;
 }
 
+// Every completion kind drained for `span` (wait_kind drops a batch's others).
+std::vector<uint32_t> drain_kinds(mv_session_t s, std::chrono::milliseconds span) {
+  HANDLE wait = static_cast<HANDLE>(mv_completion_wait_handle(s));
+  const auto deadline = std::chrono::steady_clock::now() + span;
+  std::vector<uint32_t> kinds;
+  mv_completion buf[16]{};
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (::WaitForSingleObject(wait, 50) == WAIT_OBJECT_0) {
+      const uint32_t n = mv_completion_drain(s, buf, 16);
+      for (uint32_t i = 0; i < n; ++i) kinds.push_back(buf[i].kind);
+    }
+  }
+  return kinds;
+}
+
+// The Windows chrome shows its loading pulse from FOLDER_SELECTED until an
+// IMAGE_OPENED / VIDEO_OPENED: each selected must be answered.
+bool every_selected_opens(const std::vector<uint32_t>& kinds) {
+  bool waiting = false;
+  for (uint32_t k : kinds) {
+    if (k == MV_COMPLETION_FOLDER_SELECTED) waiting = true;
+    if (k == MV_COMPLETION_IMAGE_OPENED || k == MV_COMPLETION_VIDEO_OPENED) waiting = false;
+  }
+  return !waiting;
+}
+
 }  // namespace
+
+TEST_CASE("a folder of only subfolders does not say it is loading", "[abi][folder]") {
+  // 2026-11-14: a library root holding only subfolders pushed FOLDER_SELECTED
+  // for item 0 of none, and the pulse ran for good.
+  const auto dir = temp_dir();
+  REQUIRE(::CreateDirectoryW((dir + L"\\2024").c_str(), nullptr));
+  write_bmp(dir + L"\\2024", L"cover.bmp");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), nullptr, &job) == MV_OK);
+  const auto kinds = drain_kinds(session.handle, 1500ms);
+  CHECK(std::find(kinds.begin(), kinds.end(), uint32_t{MV_COMPLETION_FOLDER_READY}) != kinds.end());
+  CHECK(std::find(kinds.begin(), kinds.end(), uint32_t{MV_COMPLETION_FOLDER_SELECTED}) == kinds.end());
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
+TEST_CASE("a refresh that keeps the photo on screen leaves nothing loading", "[abi][folder]") {
+  // A file landing beside the one on screen (or a re-sort) keeps the selection
+  // without decoding it again, so it must not say a load started.
+  const auto dir = temp_dir();
+  write_bmp(dir, L"b.bmp");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\b.bmp").c_str(), &job) == MV_OK);
+  auto kinds = drain_kinds(session.handle, 1500ms);
+  REQUIRE(std::find(kinds.begin(), kinds.end(), uint32_t{MV_COMPLETION_FOLDER_READY}) != kinds.end());
+  CHECK(every_selected_opens(kinds));
+
+  const auto changed = [](const std::vector<uint32_t>& k) {
+    return std::find(k.begin(), k.end(), uint32_t{MV_COMPLETION_FOLDER_CHANGED}) != k.end();
+  };
+  write_bmp(dir, L"a.bmp");
+  kinds = drain_kinds(session.handle, 3000ms);
+  REQUIRE(changed(kinds));
+  CHECK(every_selected_opens(kinds));
+  uint32_t selected = 99;
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  CHECK(selected == 1);  // still b.bmp, one later
+
+  REQUIRE(mv_folder_set_sort(session.handle, 8) == MV_OK);  // name, descending
+  kinds = drain_kinds(session.handle, 1500ms);
+  REQUIRE(changed(kinds));
+  CHECK(every_selected_opens(kinds));
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
 
 TEST_CASE("mv_folder_open lists stills and serves item names", "[abi][folder]") {
   const auto dir = temp_dir();
