@@ -8147,7 +8147,7 @@ std::vector<float> engine::query_vector(const loaded_clip& answer, const std::st
 
 std::vector<vector_store::hit> engine::picture_hits(const std::string& text,
                                                    const std::function<bool(std::int64_t)>& allow, bool gate,
-                                                   std::uint32_t precision) {
+                                                   std::uint32_t precision, bool closest) {
   // The query is embedded by the tower whose vectors are in the matrix, and
   // both are read as one pair: a migration finishing (or a reload) meanwhile
   // runs the query again on the new pair.
@@ -8169,7 +8169,11 @@ std::vector<vector_store::hit> engine::picture_hits(const std::string& text,
       t.result_z = answer.meta.result_z;
       // The rule, its noise scaling and the Precision setting: find_text
       // (vectors.h), the same function the calibration runs (docs/design/17).
-      hits = find_text(store_, v, allow, t, precision_scale::at(precision), gate);
+      // Every allowed row (no k cut by raw score: a dark or blurred frame is
+      // close to every query), for group() to rank by margin over the generic
+      // prompts.
+      hits = closest ? store_.scan(v, allow, std::numeric_limits<std::size_t>::max(), true, -2.0f, -2.0f)
+                     : find_text(store_, v, allow, t, precision_scale::at(precision), gate);
     }
     if (answer_gen_.load() != gen) continue;
     return hits;
@@ -8521,8 +8525,14 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     // #412: a description nothing answered (the "nothing found" rule held
     // every pass back) is not an empty page: what the rest of the query
     // allows, newest first. An answered query keeps its best match. A phone
-    // (empty_when_unanswered) says "nothing found" instead.
-    if (!plan.text.empty() && st.rows.empty() && !options_.empty_when_unanswered) newest_first(st, *allowed);
+    // (rank_when_unanswered) ranks every picture by how close it is instead:
+    // the gate holds back one-word subjects that rank correctly ("dog").
+    if (!plan.text.empty() && st.rows.empty() && options_.rank_when_unanswered && (find & MV_AI_FIND_PICTURES)) {
+      // Ranked by margin over the generic prompts, as an answered query is,
+      // with no "nothing found" rule (query_margin -1).
+      group(st, picture_hits(plan.text, allow, false, precision, true), true, -1.0f, MV_AI_MATCH_PICTURE, true);
+    }
+    if (!plan.text.empty() && st.rows.empty()) newest_first(st, *allowed);
     // The phrase under a result that matched on something else too.
     for (said& r : said_rows) {
       if (!st.row_of.count(r.asset)) continue;

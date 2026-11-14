@@ -499,8 +499,9 @@ unindexed.
   `taken_at`, else its modification time; the same second by path. A filter-only query (`in:2024`, `file:IMG_12`) is listed the same way.
   The hosts keep the order they are handed: the panel's grid, and the gallery and filmstrip
   opened from it, are one sequence.
-  **The phone** (owner, 2026-11-14) answers such a description with no rows and says "Nothing
-  found" (`engine_options::empty_when_unanswered`); filters alone still list newest first.
+  **The phone** (owner, 2026-11-14) ranks such a description instead: every allowed picture by its
+  margin over the generic prompts, best first, with no cut-off (`engine_options::rank_when_unanswered`),
+  so "dog" shows the dogs the gate held back. Filters alone still list newest first.
 - **Scope:** the open folder and its subfolders (default) · all indexed folders
   (`MV_AI_SCOPE_TREE` / `MV_AI_SCOPE_ALL`; the panel offers no folder-only scope). Kind filter
   (photos / videos) and tower filter (pictures / sounds / speech). A nonsense query is not

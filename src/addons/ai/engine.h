@@ -326,11 +326,12 @@ struct engine_options {
   // test asserts what the engine does, not how the OS ranks it (issue #154).
   bool background_threads = true;
   // A description no pass answers (the "nothing found" gate held every row
-  // back) is answered with no rows, never #412's newest-first list of what the
-  // rest of the query allows. The phone's search turns it on (owner,
-  // 2026-11-14): there an unanswered search looked like the same grid for every
-  // query. Filters alone ("is:video in:2024") still list newest first.
-  bool empty_when_unanswered = false;
+  // back) is answered with every picture ranked by how much closer it is to
+  // the words than to the generic prompts ("a photo."), best first, never #412's newest-first list. The phone's search
+  // turns it on (owner, 2026-11-14): the gate holds back one-word subjects
+  // ("dog") that rank correctly, and there "dog" must show the dogs. Filters
+  // alone ("is:video in:2024") still list newest first.
+  bool rank_when_unanswered = false;
 };
 inline constexpr double kReaderCatchUpSeconds = 5.0;
 
@@ -933,8 +934,10 @@ class engine {
       std::int64_t to_unix = std::numeric_limits<std::int64_t>::max()) const;
   // The picture tower's rows for a description (find_text), the query and the
   // matrix read as one pair (answer_gen_). `gate` false: no "nothing found".
+  // `closest`: no rule at all, every allowed row, for group() to rank by its
+  // margin over the generic prompts (engine_options::rank_when_unanswered).
   std::vector<vector_store::hit> picture_hits(const std::string& text, const std::function<bool(std::int64_t)>& allow,
-                                              bool gate, std::uint32_t precision);
+                                              bool gate, std::uint32_t precision, bool closest = false);
   // Merges one model's hits into the result rows (one row per asset, its best
   // moment first). `text`: rank by margin over the generic prompts and apply
   // the "nothing found" rule; else rank by score.

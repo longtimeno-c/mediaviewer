@@ -78,14 +78,14 @@ final class SearchUpdatesTests: XCTestCase {
       if t == nil { stale += 1 }
     }
     func clear() { if field.buttons["Clear text"].exists { field.buttons["Clear text"].tap() } }
-    // Words nothing in the library answers: "Nothing found", never the library newest first
-    // (owner, 2026-11-14).
-    for query in ["qwxzv", "zebra"] {
+    // One-word subjects the "nothing found" gate holds back ("dog") rank by closeness: dogs on
+    // screen, never "Nothing found" and never the library newest first (owner, 2026-11-14).
+    for query in ["dog", "beach", "sunset"] {
       clear()
       field.typeText(query)
-      check(query, "nothing")
-      XCTAssertTrue(app.staticTexts["Nothing found for “\(query)”."].exists, "“\(query)” did not say Nothing found")
-      XCTAssertEqual(app.buttons.matching(tilePredicate).count, 0, "“\(query)” showed tiles")
+      check(query, "one word")
+      XCTAssertFalse(app.staticTexts["Nothing found for “\(query)”."].exists, "“\(query)” said Nothing found")
+      XCTAssertGreaterThan(app.buttons.matching(tilePredicate).count, 0, "“\(query)” showed no tiles")
     }
     // Each round: quick, slow, a pause mid-word, backspacing into another query.
     for round in 0..<3 {

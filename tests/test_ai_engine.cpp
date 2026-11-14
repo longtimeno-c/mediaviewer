@@ -9592,30 +9592,34 @@ TEST_CASE("perf: a 30k-asset folder removed during a 300k-line reload", "[.perf-
   std::printf("{\"rows\":300000,\"dropped_assets\":30000,\"install_after_drop_ms\":%.1f}\n", after_drop_ms);
 }
 
-TEST_CASE("a phone's reader says nothing found for a description nothing answers; filters still list",
+TEST_CASE("a phone's reader ranks a description the gate holds back by closeness; filters still list",
           "[ai][search-agent][order]") {
-  // Owner, 2026-11-14: on the phone #412's newest-first list read as the same
-  // grid for every search. engine_options::empty_when_unanswered.
+  // Owner, 2026-11-14: on the phone "dog" must show the dogs, not #412's
+  // newest-first list. engine_options::rank_when_unanswered.
   rig r;
   r.file("red_car.jpg");
   r.file("green_field.jpg");
+  r.file("blue_sea.jpg");
   r.file("holiday_rgb.mp4");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
   REQUIRE(r.idle());
-  auto phone = r.start_reader({.read_only = true, .background_threads = false, .empty_when_unanswered = true});
+  auto phone = r.start_reader({.read_only = true, .background_threads = false, .rank_when_unanswered = true});
   auto desk = r.start_reader();
-  // Nonsense: the desktop lists everything newest first (#412); the phone, nothing.
-  CHECK(ranked(*desk, "xyzzy plugh", MV_AI_KIND_ALL, false).size() == 3);
-  CHECK(ranked(*phone, "xyzzy plugh", MV_AI_KIND_ALL, false).empty());
-  CHECK(ranked(*phone, "xyzzy plugh video", MV_AI_KIND_ALL, false).empty());
+  // Held back by the gate: the desktop lists newest first, unmatched (#412);
+  // the phone ranks every picture by how close it is, each a picture match.
+  const auto held_desk = ranked(*desk, "xyzzy plugh", MV_AI_KIND_ALL, false);
+  REQUIRE(ranked(*desk, "xyzzy plugh").empty());
+  const auto held_phone = ranked(*phone, "xyzzy plugh");
+  CHECK(held_phone.size() == held_desk.size());
+  for (std::size_t i = 1; i < held_phone.size(); ++i) CHECK(held_phone[i - 1].score >= held_phone[i].score);
   // An answered description is the same on both.
   const auto red_desk = ranked(*desk, "red");
-  const auto red_phone = ranked(*phone, "red", MV_AI_KIND_ALL, false);
+  const auto red_phone = ranked(*phone, "red");
   REQUIRE_FALSE(red_phone.empty());
   REQUIRE(red_phone.size() == red_desk.size());
-  CHECK(red_phone.front().name == red_desk.front().name);
+  for (std::size_t i = 0; i < red_desk.size(); ++i) CHECK(red_phone[i].name == red_desk[i].name);
   // Filters alone still list what they allow, newest first.
   CHECK(ranked(*phone, "video", MV_AI_KIND_ALL, false).size() == 1);
-  CHECK(ranked(*phone, "photo", MV_AI_KIND_ALL, false).size() == 2);
+  CHECK(ranked(*phone, "photo", MV_AI_KIND_ALL, false).size() == 3);
 }
